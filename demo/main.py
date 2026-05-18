@@ -47,7 +47,9 @@ async def lifespan(app: FastAPI):
             f"SAFE_KEYS contains secret-named entries: {offenders}. "
             "Remove them — /debug/config must never expose secrets."
         )
-    cfg = {k: os.environ.get(k, "<unset>") for k in SAFE_KEYS}
+    # Sort so the startup log line is deterministic — SAFE_KEYS is a set, and
+    # the demo Beat 0 will likely point at this log line on screen.
+    cfg = {k: os.environ.get(k, "<unset>") for k in sorted(SAFE_KEYS)}
     logging.info(
         "Runtime config loaded: %s",
         " ".join(f"{k}={v}" for k, v in cfg.items()),
