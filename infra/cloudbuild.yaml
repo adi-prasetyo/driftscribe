@@ -60,7 +60,13 @@ steps:
       - --min-instances=0
       - --max-instances=1
       - --concurrency=1
-      - --set-env-vars=DRY_RUN=true,GCP_PROJECT=$PROJECT_ID,TARGET_SERVICE=payment-demo,TARGET_REGION=asia-northeast1,GITHUB_REPO=adi-prasetyo/driftscribe,USE_ADK=true
+      # USE_ADK is FALSE by default so a fresh `gcloud builds submit` doesn't
+      # silently restore the ADK path before the operator has confirmed Gemini
+      # quota. Flip on a running revision with:
+      #   gcloud run services update driftscribe-agent --update-env-vars=USE_ADK=true
+      # ...after verifying https://ai.studio/projects credit balance, then run
+      # the Beat C smoke test before recording the demo video.
+      - --set-env-vars=DRY_RUN=true,GCP_PROJECT=$PROJECT_ID,TARGET_SERVICE=payment-demo,TARGET_REGION=asia-northeast1,GITHUB_REPO=adi-prasetyo/driftscribe,USE_ADK=false,DEBUG_CONFIG_URL=https://payment-demo-u272wv52kq-an.a.run.app/debug/config
       - --set-secrets=GITHUB_TOKEN=github-pat:latest,GOOGLE_API_KEY=gemini-api-key:latest
 
 images:
