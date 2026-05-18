@@ -59,9 +59,15 @@ def validate(proposal: DecisionProposal, contract: OpsContract) -> None:
                     f"docs_pr for {diff.name!r} rejected: contract says allow_manual_change=False"
                 )
 
-        # Target section must match contract for known vars
+        # Target file + section must match contract for known vars
+        # (pinned so the LLM can't redirect a sanctioned change into README.md or similar)
         for diff in proposal.env_diffs:
             rule = contract.expected_env.get(diff.name)
+            if rule and proposal.target_docs_file and rule.docs.file != proposal.target_docs_file:
+                raise ValidationError(
+                    f"target_docs_file {proposal.target_docs_file!r} does not match "
+                    f"contract docs file {rule.docs.file!r} for {diff.name!r}"
+                )
             if rule and proposal.target_docs_section and rule.docs.section != proposal.target_docs_section:
                 raise ValidationError(
                     f"target_docs_section {proposal.target_docs_section!r} does not match "

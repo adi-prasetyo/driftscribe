@@ -37,13 +37,43 @@ def _path_safe(p: str) -> bool:
     return not p.startswith("/") and ".." not in Path(p).parts
 
 
+def _lines_mentioning(body: str, pattern: re.Pattern[str]) -> list[int]:
+    return [i for i, line in enumerate(body.splitlines()) if pattern.search(line)]
+
+
+def _operator_note_near(body: str, var_pattern: re.Pattern[str]) -> bool:
+    """True if 'operator note' (case-insensitive) appears in the same line as a
+    var mention or within the next 2 lines (continuation block)."""
+    lines = body.splitlines()
+    for i, line in enumerate(lines):
+        if var_pattern.search(line):
+            window = "\n".join(lines[i : i + 3]).lower()
+            if "operator note" in window:
+                return True
+    return False
+
+
 def check_docs_cover_contract(contract_path: Path, repo_root: Path) -> CheckResult:
-    raw = yaml.safe_load(contract_path.read_text())
     failures: list[str] = []
+    try:
+        raw = yaml.safe_load(contract_path.read_text())
+    except yaml.YAMLError as e:
+        failures.append(f"contract {contract_path}: YAML parse error: {e}")
+        return CheckResult(ok=False, failures=failures)
+    except FileNotFoundError:
+        failures.append(f"contract {contract_path}: file not found")
+        return CheckResult(ok=False, failures=failures)
     if not isinstance(raw, dict):
         failures.append(f"contract {contract_path} is empty or not a YAML mapping")
         return CheckResult(ok=False, failures=failures)
-    for var_name, rule in raw.get("expected_env", {}).items():
+    expected_env = raw.get("expected_env", {})
+    if not isinstance(expected_env, dict):
+        failures.append(
+            f"contract {contract_path}: 'expected_env' must be a mapping, got "
+            f"{type(expected_env).__name__}"
+        )
+        return CheckResult(ok=False, failures=failures)
+    for var_name, rule in expected_env.items():
         if not isinstance(rule, dict):
             failures.append(f"{var_name}: contract entry is not a mapping")
             continue
@@ -78,16 +108,22 @@ def check_docs_cover_contract(contract_path: Path, repo_root: Path) -> CheckResu
 
         section_body = sections[section_name]
         # Match the env var as a token (word boundary), case-sensitive
-        if not re.search(rf"\b{re.escape(var_name)}\b", section_body):
+        var_pattern = re.compile(rf"\b{re.escape(var_name)}\b")
+        var_lines = _lines_mentioning(section_body, var_pattern)
+        if not var_lines:
             failures.append(
                 f"{var_name}: not mentioned in section '{section_name}' of {docs_file}"
             )
             continue
 
-        if rule.get("allow_manual_change") and "operator note" not in section_body.lower():
-            failures.append(
-                f"{var_name}: allow_manual_change=true but no 'operator note' in section '{section_name}'"
-            )
+        if rule.get("allow_manual_change"):
+            # Per-variable check: 'operator note' must appear in the same line as
+            # the variable, OR within the next 2 lines (for indented continuations).
+            if not _operator_note_near(section_body, var_pattern):
+                failures.append(
+                    f"{var_name}: allow_manual_change=true but no 'operator note' "
+                    f"near its mention in section '{section_name}'"
+                )
 
     return CheckResult(ok=len(failures) == 0, failures=failures)
 

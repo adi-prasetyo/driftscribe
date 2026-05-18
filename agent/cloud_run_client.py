@@ -9,6 +9,10 @@ def read_live_env(service: str, region: str, project: str, client=None) -> dict[
     env: dict[str, str] = {}
     for container in svc.template.containers:
         for ev in container.env:
-            if ev.value:  # skip value_source-only entries (secrets)
-                env[ev.name] = ev.value
+            # Skip Secret-Manager-backed entries (value_source is set).
+            # Empty string is a legitimate Cloud Run env value, so we cannot use
+            # truthiness on .value as the discriminator.
+            if getattr(ev, "value_source", None):
+                continue
+            env[ev.name] = ev.value or ""
     return env
