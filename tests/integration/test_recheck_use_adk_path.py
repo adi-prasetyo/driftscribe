@@ -66,6 +66,8 @@ def test_use_adk_path_wires_through_to_perform_action(monkeypatch):
     # Rationale comes from the LLM proposal, not the classifier — pin that
     # the ADK path's prose is what we see in the response body.
     assert "policy violation" in body["rationale"]
+    # Provenance label: USE_ADK=true → this proposal came from the ADK path.
+    assert body["decision_path"] == "adk"
     # The agent should have been called exactly once.
     mock_run_agent.assert_awaited_once()
 

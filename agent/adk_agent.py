@@ -45,7 +45,9 @@ operational contract (ops-contract.yaml).
 For each invocation, you must:
 1. Call `load_contract_tool` with the contract path.
 2. Call `read_live_env_tool` with the service/region/project.
-3. Optionally call `call_debug_config_tool` if a /debug/config URL is given.
+3. Only call `call_debug_config_tool` if the user message provides a real URL.
+   If the user message says the debug config URL is "not provided", do NOT
+   call the tool — there is no URL to call. Do not fabricate a URL.
 4. For variables that differ from the contract, call `search_recent_prs_tool`
    with the var names as keywords.
 5. Emit a single JSON DecisionProposal — and ONLY that JSON, no prose around it.
