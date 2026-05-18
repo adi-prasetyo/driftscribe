@@ -1,24 +1,47 @@
 from agent.models import DecisionProposal, EnvDiff
-from agent.validator import _SECRET_NAME_PATTERN
+from agent.secret_guard import is_secret_name
 
 _REDACTED = "`(value redacted: secret-like name)`"
 
 
-def _format_cell(name: str, value: str | None) -> str:
-    """Return a markdown-cell-safe display of the value. Redacts when the env
-    var name matches the secret pattern, so we never leak secret values into
-    public GitHub artifacts."""
-    if _SECRET_NAME_PATTERN.search(name):
+def _escape_markdown_cell(s: str) -> str:
+    """Escape characters that would break a markdown table cell."""
+    return s.replace("|", "\\|").replace("`", "\\`")
+
+
+def _format_value_cell(name: str, value: str | None) -> str:
+    """Render a value cell. Redacts when var name matches the secret pattern.
+
+    Empty string is NOT collapsed to "—" — an empty live value is a real drift
+    signal (var was explicitly unset) and must be distinguishable from missing.
+    """
+    if is_secret_name(name):
         return _REDACTED if value is not None else "`—`"
-    return f"`{value or '—'}`"
+    if value is None:
+        return "`—`"
+    return f"`{_escape_markdown_cell(value)}`"
+
+
+def _format_name_cell(name: str) -> str:
+    return f"`{_escape_markdown_cell(name)}`"
+
+
+def _format_pr_cell(name: str, url: str | None) -> str:
+    if url is None:
+        return "—"
+    # Even though merged-PR URLs are reviewed, defense in depth: hide them
+    # for secret-named vars in case a PR title/body quoted the value verbatim.
+    if is_secret_name(name):
+        return "(redacted)"
+    return _escape_markdown_cell(url)
 
 
 def _diff_row(d: EnvDiff) -> str:
     return (
-        f"| `{d.name}` | {_format_cell(d.name, d.expected)} | "
-        f"{_format_cell(d.name, d.live)} | "
-        f"`{d.contract_status.value}` | {d.recent_pr_match or '—'} | "
-        f"{_format_cell(d.name, d.debug_config_value)} |"
+        f"| {_format_name_cell(d.name)} | {_format_value_cell(d.name, d.expected)} | "
+        f"{_format_value_cell(d.name, d.live)} | "
+        f"`{d.contract_status.value}` | {_format_pr_cell(d.name, d.recent_pr_match)} | "
+        f"{_format_value_cell(d.name, d.debug_config_value)} |"
     )
 
 
@@ -28,11 +51,29 @@ def _evidence_table(proposal: DecisionProposal) -> str:
     return f"{header}\n{rows}"
 
 
+def _scrub_secret_values_from_rationale(rationale: str, diffs: list[EnvDiff]) -> str:
+    """If the LLM rationale string contains a value for a secret-named var,
+    replace that substring with a redaction marker. Defense-in-depth against
+    the LLM quoting the actual secret in prose."""
+    scrubbed = rationale
+    seen: set[str] = set()
+    for d in diffs:
+        if not is_secret_name(d.name):
+            continue
+        for v in (d.expected, d.live, d.debug_config_value):
+            if v and v not in seen and len(v) >= 4:
+                # Only scrub values long enough that incidental collisions are unlikely
+                scrubbed = scrubbed.replace(v, "(redacted)")
+                seen.add(v)
+    return scrubbed
+
+
 def render_docs_pr_body(p: DecisionProposal) -> str:
+    rationale = _scrub_secret_values_from_rationale(p.rationale, p.env_diffs)
     return f"""\
 ## DriftScribe — sanctioned change detected
 
-{p.rationale}
+{rationale}
 
 ### Changes
 
@@ -48,10 +89,11 @@ def render_docs_pr_body(p: DecisionProposal) -> str:
 
 
 def render_drift_issue_body(p: DecisionProposal) -> str:
+    rationale = _scrub_secret_values_from_rationale(p.rationale, p.env_diffs)
     return f"""\
 ## DriftScribe — unsanctioned production drift
 
-{p.rationale}
+{rationale}
 
 ### Drift
 
@@ -68,10 +110,11 @@ def render_drift_issue_body(p: DecisionProposal) -> str:
 
 
 def render_escalation_issue_body(p: DecisionProposal) -> str:
+    rationale = _scrub_secret_values_from_rationale(p.rationale, p.env_diffs)
     return f"""\
 ## DriftScribe — uncertain change requires review
 
-{p.rationale}
+{rationale}
 
 ### Observed (no contract entry, no recent PR mention)
 

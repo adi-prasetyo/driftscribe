@@ -1,15 +1,10 @@
-import re
 from pathlib import Path
 from agent.models import DecisionProposal, DecisionAction
 from agent.contract import OpsContract
+from agent.secret_guard import is_secret_name
 
 class ValidationError(Exception):
     pass
-
-_SECRET_NAME_PATTERN = re.compile(
-    r"(SECRET|TOKEN|KEY|PASSWORD|PASSWD|CRED|PRIVATE|AUTH|BEARER|JWT|SIGNATURE|SALT|DSN|OAUTH)",
-    re.IGNORECASE,
-)
 
 def _validate_path(p: str | None) -> None:
     if p is None:
@@ -43,7 +38,7 @@ def validate(proposal: DecisionProposal, contract: OpsContract) -> None:
         for diff in proposal.env_diffs:
             # Secret-leak guard runs first — never document a secret-like name,
             # regardless of contract presence.
-            if _SECRET_NAME_PATTERN.search(diff.name):
+            if is_secret_name(diff.name):
                 raise ValidationError(
                     f"refusing docs_pr that would document secret-like var {diff.name!r}"
                 )
