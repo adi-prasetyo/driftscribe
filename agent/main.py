@@ -1,7 +1,10 @@
 # agent/main.py
+import hashlib
+import json
 import re
 import secrets
 import time
+import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -23,6 +26,7 @@ from agent.renderer import (
     render_escalation_issue_body,
 )
 from agent.runbook_patcher import patch_runbook
+from agent.state_store import FirestoreStateStore, InMemoryStateStore, StateStore
 from agent.validator import validate
 
 # Match git refspec rules (https://git-scm.com/docs/git-check-ref-format):
@@ -57,6 +61,53 @@ def _read_runbook_content(s: Settings, target_in_repo: str) -> str:
     return target_path.read_text()
 
 app = FastAPI(title="DriftScribe Agent")
+
+
+_state_singleton: StateStore | None = None
+
+
+def get_state() -> StateStore:
+    """Return the process-wide StateStore singleton.
+
+    Picks InMemoryStateStore in DRY_RUN / no-project mode so tests and demos
+    don't touch GCP; otherwise FirestoreStateStore.
+    """
+    global _state_singleton
+    if _state_singleton is None:
+        s = get_settings()
+        if s.dry_run or not s.gcp_project:
+            _state_singleton = InMemoryStateStore()
+        else:
+            _state_singleton = FirestoreStateStore(project=s.gcp_project)
+    return _state_singleton
+
+
+def _reset_state_for_tests() -> None:
+    """Test helper — drop the cached state singleton.
+
+    Not exposed to production callers. The integration test conftest uses
+    this so each test starts with an empty in-memory store.
+    """
+    global _state_singleton
+    _state_singleton = None
+
+
+def _event_key(
+    trigger: str, service: str, contract_path: str, live_env: dict[str, str]
+) -> str:
+    """Derive a stable event key from the inputs that define a decision.
+
+    Including ``live_env`` (normalized by sorted-key order) is the fix for the
+    v1 bug where Beats B and C of the demo collided on a service-only hash.
+    """
+    payload = {
+        "trigger": trigger,
+        "service": service,
+        "contract_path": contract_path,
+        "live_env": dict(sorted(live_env.items())),
+    }
+    h = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
+    return f"{trigger}-{service}-{h}"
 
 
 @app.get("/healthz")
@@ -132,8 +183,20 @@ def _perform_action(
     )
 
 
-@app.post("/recheck")
-def recheck():
+def _do_recheck(trigger: str, force: bool = False) -> dict:
+    """Run a recheck under the trigger label, with idempotency.
+
+    Idempotency contract:
+    - Computes ``event_key`` from trigger + service + contract_path + live_env.
+    - If the key is already known and ``force`` is false, returns the cached
+      decision (so retries don't spawn duplicate PRs/issues).
+    - Claims the event_key BEFORE invoking GitHub side effects. If the claim
+      is refused (concurrent recheck won the race), returns the recorded
+      decision if available, else 409.
+    - ``force=true`` derives a brand-new event_key (suffixed with a random
+      shortuuid) so the fresh decision is cached under a distinct key and
+      doesn't shadow the pre-existing one for unforced retries.
+    """
     s = get_settings()
     try:
         contract = load_contract(Path(s.contract_path))
@@ -145,15 +208,40 @@ def recheck():
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"cloud run read failed: {e}")
 
-    proposal = classify(ClassificationInput(
-        contract=contract, live_env=live_env, recent_prs=[],
-    ))
-    validate(proposal, contract)
+    event_key = _event_key(trigger, s.target_service, s.contract_path, live_env)
+    if force:
+        # Distinct key so subsequent unforced retries find this fresh decision
+        # and not the previous cached one.
+        event_key = f"{event_key}-force-{uuid.uuid4().hex[:8]}"
 
+    state = get_state()
+    if not force:
+        existing = state.find_decision_for_event(event_key)
+        if existing:
+            return existing
+
+    proposal = classify(
+        ClassificationInput(contract=contract, live_env=live_env, recent_prs=[])
+    )
+    validate(proposal, contract)
     rendered = _render_for(proposal.action, proposal)
+
+    # Claim the event BEFORE any side effects so retries don't spawn duplicate
+    # PRs/issues. If the claim is refused (race), look up the recorded
+    # decision; if no decision yet, surface 409 so the caller can retry.
+    claimed = state.record_event(event_key, {"trigger": trigger})
+    if not claimed:
+        existing = state.find_decision_for_event(event_key)
+        if existing:
+            return existing
+        raise HTTPException(status_code=409, detail="event in-progress, retry")
+
     github_result = _perform_action(s, contract, proposal, rendered)
 
-    return {
+    decision_id = str(uuid.uuid4())
+    response = {
+        "decision_id": decision_id,
+        "event_key": event_key,
         "action": proposal.action.value,
         "rendered_body": rendered,
         "rationale": proposal.rationale,
@@ -163,4 +251,20 @@ def recheck():
         "requires_human_review": proposal.requires_human_review,
         "dry_run": s.dry_run,
         "github": github_result,
+        "trigger": trigger,
     }
+    state.record_decision(decision_id, event_key, response)
+    return response
+
+
+@app.post("/recheck")
+def recheck(force: bool = False):
+    return _do_recheck("manual_recheck", force=force)
+
+
+@app.get("/runs/{decision_id}")
+def get_run(decision_id: str):
+    d = get_state().get_decision(decision_id)
+    if not d:
+        raise HTTPException(status_code=404, detail="decision not found")
+    return d
