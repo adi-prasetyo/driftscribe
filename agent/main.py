@@ -93,21 +93,39 @@ def _reset_state_for_tests() -> None:
 
 
 def _event_key(
-    trigger: str, service: str, contract_path: str, live_env: dict[str, str]
+    trigger: str,
+    service: str,
+    contract_path: str,
+    contract_hash: str,
+    live_env: dict[str, str],
 ) -> str:
     """Derive a stable event key from the inputs that define a decision.
 
     Including ``live_env`` (normalized by sorted-key order) is the fix for the
     v1 bug where Beats B and C of the demo collided on a service-only hash.
+
+    Including ``contract_hash`` (not just contract_path) means a contract edit
+    while live env stays the same still invalidates the prior cached decision.
     """
     payload = {
         "trigger": trigger,
         "service": service,
         "contract_path": contract_path,
+        "contract_hash": contract_hash,
         "live_env": dict(sorted(live_env.items())),
     }
     h = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
     return f"{trigger}-{service}-{h}"
+
+
+def _hash_contract(contract: OpsContract) -> str:
+    """Stable hash of the contract's *content* (not just its path).
+
+    Used as a component of the event key so editing the contract invalidates
+    cached decisions even when the file path is unchanged.
+    """
+    blob = contract.model_dump_json()
+    return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
 
 @app.get("/healthz")
@@ -187,15 +205,22 @@ def _do_recheck(trigger: str, force: bool = False) -> dict:
     """Run a recheck under the trigger label, with idempotency.
 
     Idempotency contract:
-    - Computes ``event_key`` from trigger + service + contract_path + live_env.
+    - Computes ``event_key`` from trigger + service + contract_path +
+      contract_hash + live_env. The contract hash means edits to the contract
+      invalidate cached decisions even when the file path stays the same.
     - If the key is already known and ``force`` is false, returns the cached
       decision (so retries don't spawn duplicate PRs/issues).
     - Claims the event_key BEFORE invoking GitHub side effects. If the claim
       is refused (concurrent recheck won the race), returns the recorded
       decision if available, else 409.
+    - On side-effect failure, releases the claim so a subsequent retry can
+      proceed. The patcher's atomic pre-check + the github branch random
+      suffix mean a retry doesn't create duplicate state.
     - ``force=true`` derives a brand-new event_key (suffixed with a random
-      shortuuid) so the fresh decision is cached under a distinct key and
-      doesn't shadow the pre-existing one for unforced retries.
+      shortuuid) so the fresh decision is cached under a distinct key. Later
+      unforced retries still compute the base key and find the prior base-key
+      decision if one exists; the forced decision is only retrievable via its
+      own decision_id.
     """
     s = get_settings()
     try:
@@ -208,10 +233,13 @@ def _do_recheck(trigger: str, force: bool = False) -> dict:
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"cloud run read failed: {e}")
 
-    event_key = _event_key(trigger, s.target_service, s.contract_path, live_env)
+    contract_hash = _hash_contract(contract)
+    event_key = _event_key(
+        trigger, s.target_service, s.contract_path, contract_hash, live_env
+    )
     if force:
-        # Distinct key so subsequent unforced retries find this fresh decision
-        # and not the previous cached one.
+        # Distinct key so the forced decision is cached under its own slot
+        # without overwriting the base key's record.
         event_key = f"{event_key}-force-{uuid.uuid4().hex[:8]}"
 
     state = get_state()
@@ -236,7 +264,17 @@ def _do_recheck(trigger: str, force: bool = False) -> dict:
             return existing
         raise HTTPException(status_code=409, detail="event in-progress, retry")
 
-    github_result = _perform_action(s, contract, proposal, rendered)
+    try:
+        github_result = _perform_action(s, contract, proposal, rendered)
+    except HTTPException:
+        # Side effect failed — release the claim so retries can proceed.
+        # The patcher's atomic pre-check + branch random suffix mean a retry
+        # won't create duplicate partial state.
+        state.release_event(event_key)
+        raise
+    except Exception as e:
+        state.release_event(event_key)
+        raise HTTPException(status_code=502, detail=f"side effect failed: {e}")
 
     decision_id = str(uuid.uuid4())
     response = {
