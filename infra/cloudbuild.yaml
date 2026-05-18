@@ -68,11 +68,13 @@ steps:
       # the Beat C smoke test before recording the demo video.
       - --set-env-vars=DRY_RUN=true,GCP_PROJECT=$PROJECT_ID,TARGET_SERVICE=payment-demo,TARGET_REGION=asia-northeast1,GITHUB_REPO=adi-prasetyo/driftscribe,USE_ADK=false,DEBUG_CONFIG_URL=https://payment-demo-u272wv52kq-an.a.run.app/debug/config
       # DRIFTSCRIBE_TOKEN (Phase 11.1) gates /recheck via the X-DriftScribe-Token
-      # header. Generate + create the secret manually before the first deploy
-      # that includes this line — see docs/architecture/multi-agent-design.md
-      # §2 and the Phase 11.1 implementation report. If the secret is missing,
-      # the deploy still succeeds (no value injected) and /recheck fail-closes
-      # with 503 ("auth not configured") rather than silently exposing itself.
+      # header. The `coordinator-shared-token` secret MUST exist in Secret
+      # Manager BEFORE the first build that includes this line — Cloud Run
+      # validates secret references at deploy time and fails the revision with
+      # `INVALID_ARGUMENT: Revision is not ready... Secret not found` if the
+      # resource is missing. The 503 fail-closed in agent/auth.py only kicks in
+      # if DRIFTSCRIBE_TOKEN is empty at runtime (e.g., an operator removed
+      # this --set-secrets line). See docs/architecture/multi-agent-design.md §2.
       - --set-secrets=GITHUB_TOKEN=github-pat:latest,GOOGLE_API_KEY=gemini-api-key:latest,DRIFTSCRIBE_TOKEN=coordinator-shared-token:latest
 
 images:

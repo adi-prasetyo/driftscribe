@@ -64,7 +64,7 @@ DriftScribe has **two non-overlapping** auth mechanisms. Mixing them up has been
 ### Layer A — Operator → Coordinator: `X-DriftScribe-Token`
 
 - **Where:** `agent/auth.py::verify_token` wired via `Depends(verify_token)` on `/recheck` (and on `/chat` in Phase 11.7).
-- **Mechanism:** Shared random 32-byte URL-safe token, generated once by the operator and stored in Secret Manager (`coordinator-shared-token`). Cloud Run injects it via `--set-secrets=DRIFTSCRIBE_TOKEN=coordinator-shared-token:latest`. The same token is pasted into the operator's `curl` invocations.
+- **Mechanism:** Shared random URL-safe token with 32 bytes of entropy (`python -c 'import secrets; print(secrets.token_urlsafe(32))'` → 43-character string; do NOT use `token_urlsafe(24)` which produces a 32-*character* string with less entropy), generated once by the operator and stored in Secret Manager (`coordinator-shared-token`). Cloud Run injects it via `--set-secrets=DRIFTSCRIBE_TOKEN=coordinator-shared-token:latest`. The same token is pasted into the operator's `curl` invocations.
 - **Comparison:** `secrets.compare_digest(provided.encode(), expected.encode())` — never `==`. The unit test `tests/integration/test_token_guard.py::test_constant_time_compare_is_used` enforces this mechanically by patching `agent.auth.secrets.compare_digest` and asserting it was called.
 - **Status codes:** 503 if `DRIFTSCRIBE_TOKEN` is unset (fail closed — see `agent/auth.py`), 401 if header missing, 403 if mismatch. The 403 response never echoes the supplied token back.
 - **Scope:** Operator-facing endpoints only. `/healthz`, `/runs/{id}`, `/eventarc`, and `/approvals/*` are **not** guarded by this layer — they use Cloud Run health probes (open), best-effort public reads, Google-signed ID tokens from Eventarc, and per-approval HMAC tokens respectively.
@@ -136,6 +136,8 @@ The coordinator's ADK agent does not have a shell, an arbitrary HTTP client, or 
 - `load_contract()` → reads the baked-in `ops-contract.yaml`
 - `search_recent_prs(...)` → read-only GitHub search via the coordinator's PAT
 - `get_session_state(...)` / `set_session_state(...)` → in-memory session helpers
+
+> If you add/remove a tool in Phase 11.7, update this list AND `tests/integration/test_coordinator_tool_inventory.py` in the same commit — Phase 11.4b is the enforcement gate.
 
 Nothing else. The enforcement test (`tests/unit/test_coordinator_tool_inventory.py`, Phase 11.4b) asserts two properties:
 
