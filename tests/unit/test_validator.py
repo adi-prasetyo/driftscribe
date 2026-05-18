@@ -120,6 +120,32 @@ def test_validator_allows_no_op_with_empty_env_diffs():
     )
     validate(p, _contract())  # must not raise
 
+def test_validator_rejects_docs_pr_with_no_target_docs_file():
+    p = DecisionProposal(
+        action=DecisionAction.DOCS_PR,
+        env_diffs=[EnvDiff(name="FEATURE_X", expected="false", live="true",
+                           contract_status=ContractStatus.PRESENT_ALLOW_MANUAL)],
+        target_docs_file=None,
+        target_docs_section="Feature Flags",
+        rationale="t", confidence=0.9,
+    )
+    with pytest.raises(ValidationError, match="target_docs_file"):
+        validate(p, _contract())
+
+
+def test_validator_rejects_docs_pr_with_no_target_docs_section():
+    p = DecisionProposal(
+        action=DecisionAction.DOCS_PR,
+        env_diffs=[EnvDiff(name="FEATURE_X", expected="false", live="true",
+                           contract_status=ContractStatus.PRESENT_ALLOW_MANUAL)],
+        target_docs_file="demo/docs/runbook.md",
+        target_docs_section=None,
+        rationale="t", confidence=0.9,
+    )
+    with pytest.raises(ValidationError, match="target_docs_section"):
+        validate(p, _contract())
+
+
 def test_validator_rejects_target_docs_file_not_matching_contract():
     # LLM could try to redirect a sanctioned change into README.md or elsewhere
     p = _proposal(DecisionAction.DOCS_PR, "FEATURE_X", "false", "true",
