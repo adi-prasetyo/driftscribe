@@ -1,10 +1,13 @@
 FROM python:3.12-slim
 WORKDIR /app
 RUN pip install --no-cache-dir uv
+# Editable install needs the source tree present at install time. Copy
+# pyproject.toml + source first; the install layer busts on source changes,
+# but the hackathon doesn't need fancy two-stage layer caching.
 COPY pyproject.toml ./
-RUN uv pip install --system -e .
 COPY agent/ ./agent/
 COPY checker/ ./checker/
+RUN uv pip install --system -e .
 # Preserve the contract-relative path so DOCS_ROOT=/contract resolves
 # `demo/docs/runbook.md` to `/contract/demo/docs/runbook.md`.
 COPY demo/ /contract/demo/
