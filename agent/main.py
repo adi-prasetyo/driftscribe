@@ -281,7 +281,13 @@ async def _do_recheck(trigger: str, force: bool = False) -> dict:
             # That's weaker idempotency (the LLM's tool call already saw the
             # live state, but we can't observe that here), but it lets the
             # demo proceed even when /run.services.get permission is missing.
-            live_env = {d.name: d.live or "" for d in proposal.env_diffs}
+            # Sentinel `<ABSENT>` keeps live=None distinct from live="" so the
+            # event_key doesn't bucket two genuinely-different states together
+            # (Cloud Run treats empty-string-as-value as a valid live state).
+            live_env = {
+                d.name: "<ABSENT>" if d.live is None else d.live
+                for d in proposal.env_diffs
+            }
     else:
         try:
             live_env = read_live_env(s.target_service, s.target_region, s.gcp_project)
@@ -317,7 +323,13 @@ async def _do_recheck(trigger: str, force: bool = False) -> dict:
         # classifier and validator are co-designed. If it does, the deploy
         # is broken (500).
         if s.use_adk:
-            raise HTTPException(status_code=502, detail=f"adk proposal rejected: {e}")
+            # Hint at non-retryability in the detail: the model responded, but
+            # the deterministic safety gate refused the proposal. Mechanical
+            # retry without prompt/model changes is unlikely to fix it.
+            raise HTTPException(
+                status_code=502,
+                detail=f"adk proposal rejected by safety gate: {e}",
+            )
         raise HTTPException(status_code=500, detail=f"validator rejected proposal: {e}")
     rendered = _render_for(proposal.action, proposal)
 
@@ -348,6 +360,10 @@ async def _do_recheck(trigger: str, force: bool = False) -> dict:
         "decision_id": decision_id,
         "event_key": event_key,
         "action": proposal.action.value,
+        # Tells demo viewers / on-call which engine produced this proposal.
+        # The deterministic validator gates BOTH paths the same way, so this
+        # is purely a provenance label, not a safety boundary.
+        "decision_path": "adk" if s.use_adk else "classifier",
         "rendered_body": rendered,
         "rationale": proposal.rationale,
         "diffs": [d.model_dump(mode="json") for d in proposal.env_diffs],

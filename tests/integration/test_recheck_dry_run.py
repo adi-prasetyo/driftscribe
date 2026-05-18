@@ -14,6 +14,9 @@ def test_recheck_renders_drift_issue_when_live_violates_contract():
     assert body["action"] == "drift_issue"
     assert "PAYMENT_MODE" in body["rendered_body"]
     assert body["dry_run"] is True
+    # Provenance label: USE_ADK defaults to false in the test fixture, so
+    # this is the classifier path.
+    assert body["decision_path"] == "classifier"
 
 
 def test_recheck_no_op_when_live_matches_contract():
