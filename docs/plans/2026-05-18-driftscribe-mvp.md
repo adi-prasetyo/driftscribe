@@ -2562,6 +2562,22 @@ git commit -m "feat(demo): payment-demo FastAPI app + /debug/config + Dockerfile
 
 No heavy Terraform. Use Cloud Build YAML + Secret Manager for tokens. Terraform stays as a Phase 11 stretch.
 
+**Pre-deploy security hardening (added per Codex Phase-7 review — MUST address before any non-DRY_RUN deploy):**
+
+The deploy below uses `--allow-unauthenticated` on both services. For `payment-demo` that's fine (read-only `/debug/config`). For `driftscribe-agent` with `DRY_RUN=false`, anyone with the URL can call `/recheck` and trigger real GitHub issues/PRs. Pick one mitigation before deploying with `DRY_RUN=false`:
+
+- **Option A (cheapest):** add a shared-secret header check in `agent/main.py::recheck`. Require `X-DriftScribe-Token` matching a Secret-Manager-backed value. Reject otherwise with 401.
+- **Option B:** drop `--allow-unauthenticated` and require an IAM-authenticated invoker. Eventarc's service account would need `roles/run.invoker` separately.
+- **Option C:** keep DRY_RUN=true for the demo and use `?force=true` curls to refresh decisions on stage. Side effects stay simulated.
+
+Recommendation: **Option C for the live judges-watching demo** (no risk of demo-day randos hitting the URL), then switch to Option A or B post-judging if the project continues.
+
+**Cost-cap reality (per Codex):** GCP budget alerts are NOT a hard cap. To genuinely bound spend:
+- Use a fresh GCP project for this hackathon (easy to nuke).
+- Set Cloud Run `--min-instances=0 --max-instances=1 --concurrency=1` for both services.
+- Set a budget *alert* at $5 and a Pub/Sub-driven kill-switch (Cloud Function that disables billing) only if you're paranoid — extra work, skip unless you've been burned.
+- Run `infra/scripts/teardown.sh` (create this; not in the plan yet) to nuke services + delete the project when done.
+
 ### Task 8.1: `Dockerfile.agent` + `cloudbuild.yaml`
 
 **Files:**
@@ -2583,7 +2599,10 @@ COPY demo/ /contract/demo/
 ENV PORT=8080
 ENV DOCS_ROOT=/contract
 ENV CONTRACT_PATH=/contract/demo/ops-contract.yaml
-CMD ["uvicorn", "agent.main:app", "--host", "0.0.0.0", "--port", "8080"]
+# Shell form so $PORT expands at runtime. Cloud Run injects PORT and expects
+# the container to listen on its chosen value; hardcoding --port 8080 would
+# break health checks the moment Cloud Run picked a different port.
+CMD ["sh", "-c", "uvicorn agent.main:app --host 0.0.0.0 --port ${PORT:-8080}"]
 ```
 
 **Step 2: `infra/scripts/setup_secrets.sh`** (MUST run before first deploy)
@@ -2596,13 +2615,49 @@ PROJECT="${1:?usage: $0 PROJECT GITHUB_TOKEN GOOGLE_API_KEY}"
 GITHUB_TOKEN="${2:?}"
 GOOGLE_API_KEY="${3:?}"
 
-# Enable APIs
+# Enable APIs (artifactregistry added per Codex Phase-7 review — Cloud Build
+# pushes images to Artifact Registry, not the legacy gcr.io bucket)
 gcloud services enable --project "$PROJECT" \
   run.googleapis.com \
   eventarc.googleapis.com \
   firestore.googleapis.com \
   secretmanager.googleapis.com \
-  cloudbuild.googleapis.com
+  cloudbuild.googleapis.com \
+  artifactregistry.googleapis.com
+
+# Artifact Registry repo for the agent + demo images (idempotent)
+gcloud artifacts repositories describe driftscribe \
+  --project "$PROJECT" --location=asia-northeast1 >/dev/null 2>&1 || \
+gcloud artifacts repositories create driftscribe \
+  --project "$PROJECT" --location=asia-northeast1 --repository-format=docker \
+  --description="DriftScribe agent + payment-demo images"
+
+# IAM grants (idempotent — gcloud is happy to re-bind)
+PROJECT_NUMBER="$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')"
+CLOUDBUILD_SA="${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com"
+
+# Cloud Build SA needs to push to AR, deploy to Cloud Run, and act-as the
+# default compute SA (which runs the deployed services).
+for role in \
+  roles/artifactregistry.writer \
+  roles/run.admin \
+  roles/iam.serviceAccountUser \
+; do
+  gcloud projects add-iam-policy-binding "$PROJECT" \
+    --member="serviceAccount:${CLOUDBUILD_SA}" --role="$role" >/dev/null
+done
+
+# Default compute SA (which the deployed agent will run as) needs Secret
+# Manager + Firestore + Cloud Run read so /recheck can read live state.
+COMPUTE_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+for role in \
+  roles/secretmanager.secretAccessor \
+  roles/datastore.user \
+  roles/run.viewer \
+; do
+  gcloud projects add-iam-policy-binding "$PROJECT" \
+    --member="serviceAccount:${COMPUTE_SA}" --role="$role" >/dev/null
+done
 
 # Create secrets (idempotent)
 for secret in driftscribe-github-token driftscribe-google-api-key; do
@@ -2623,15 +2678,21 @@ echo "✓ secrets + firestore ready"
 **Step 3: `infra/cloudbuild.yaml`**
 
 ```yaml
+# Artifact Registry path (per Codex Phase-7 review — gcr.io is the legacy
+# Container Registry; AR is what the IAM grants in setup_secrets.sh authorize).
+# Image refs use ${_AR_PATH} so this stays single-source across the file.
+substitutions:
+  _AR_PATH: 'asia-northeast1-docker.pkg.dev/${PROJECT_ID}/driftscribe'
+
 steps:
   - name: gcr.io/cloud-builders/docker
-    args: ['build', '-t', 'gcr.io/$PROJECT_ID/driftscribe-agent:$SHORT_SHA', '-f', 'Dockerfile.agent', '.']
+    args: ['build', '-t', '${_AR_PATH}/driftscribe-agent:${SHORT_SHA}', '-f', 'Dockerfile.agent', '.']
   - name: gcr.io/cloud-builders/docker
-    args: ['build', '-t', 'gcr.io/$PROJECT_ID/payment-demo:$SHORT_SHA', '-f', 'demo/Dockerfile', 'demo']
+    args: ['build', '-t', '${_AR_PATH}/payment-demo:${SHORT_SHA}', '-f', 'demo/Dockerfile', 'demo']
   - name: gcr.io/cloud-builders/docker
-    args: ['push', 'gcr.io/$PROJECT_ID/driftscribe-agent:$SHORT_SHA']
+    args: ['push', '${_AR_PATH}/driftscribe-agent:${SHORT_SHA}']
   - name: gcr.io/cloud-builders/docker
-    args: ['push', 'gcr.io/$PROJECT_ID/payment-demo:$SHORT_SHA']
+    args: ['push', '${_AR_PATH}/payment-demo:${SHORT_SHA}']
 
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
     entrypoint: gcloud
@@ -2639,9 +2700,12 @@ steps:
       - run
       - deploy
       - payment-demo
-      - --image=gcr.io/$PROJECT_ID/payment-demo:$SHORT_SHA
+      - --image=${_AR_PATH}/payment-demo:${SHORT_SHA}
       - --region=asia-northeast1
       - --allow-unauthenticated
+      - --min-instances=0
+      - --max-instances=1
+      - --concurrency=1
       - --set-env-vars=PAYMENT_MODE=mock,FEATURE_NEW_CHECKOUT=false
 
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
@@ -2650,10 +2714,17 @@ steps:
       - run
       - deploy
       - driftscribe-agent
-      - --image=gcr.io/$PROJECT_ID/driftscribe-agent:$SHORT_SHA
+      - --image=${_AR_PATH}/driftscribe-agent:${SHORT_SHA}
       - --region=asia-northeast1
+      # SECURITY: see Phase 8 pre-deploy note. For the live demo we leave
+      # --allow-unauthenticated + DRY_RUN=true (Option C). Flip to DRY_RUN=false
+      # ONLY after adding the X-DriftScribe-Token guard (Option A) or removing
+      # --allow-unauthenticated (Option B).
       - --allow-unauthenticated
-      - --set-env-vars=DRY_RUN=false,GCP_PROJECT=$PROJECT_ID,TARGET_SERVICE=payment-demo,TARGET_REGION=asia-northeast1,GITHUB_REPO=theghostsquad00/driftscribe,USE_ADK=true
+      - --min-instances=0
+      - --max-instances=1
+      - --concurrency=1
+      - --set-env-vars=DRY_RUN=true,GCP_PROJECT=$PROJECT_ID,TARGET_SERVICE=payment-demo,TARGET_REGION=asia-northeast1,GITHUB_REPO=theghostsquad00/driftscribe,USE_ADK=true
       - --set-secrets=GITHUB_TOKEN=driftscribe-github-token:latest,GOOGLE_API_KEY=driftscribe-google-api-key:latest
 ```
 
