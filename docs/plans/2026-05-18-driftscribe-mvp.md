@@ -2926,7 +2926,7 @@ The 5-beat demo with exact gcloud commands and what to point at on screen:
 
 | Beat | Command | What to show |
 |---|---|---|
-| 0. Bootstrap | `driftscribe init --service payment-demo --region asia-northeast1 --project $GCP_PROJECT --github-repo theghostsquad00/driftscribe --output demo/ops-contract.yaml` | The generated YAML + a manually-opened PR. |
+| 0. Bootstrap | `driftscribe init --service payment-demo --region asia-northeast1 --project $GCP_PROJECT --github-repo theghostsquad00/driftscribe --output demo/ops-contract.yaml --docs-file demo/docs/runbook.md` | The generated YAML + a manually-opened PR. |
 | A. Sanctioned | `gcloud run services update payment-demo --update-env-vars FEATURE_NEW_CHECKOUT=true` then `curl -s -X POST $AGENT_URL/recheck` | The docs PR DriftScribe opens. |
 | B. Unsanctioned | `gcloud run services update payment-demo --update-env-vars PAYMENT_MODE=live` then `curl /recheck` | The drift issue. |
 | C. Uncertain | `gcloud run services update payment-demo --update-env-vars NEW_THING=x` then `curl /recheck` | The escalation issue with evidence table. |
