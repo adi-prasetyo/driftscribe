@@ -2,16 +2,20 @@
 # region or repo name once and the rest follows.
 substitutions:
   _AR_PATH: 'asia-northeast1-docker.pkg.dev/${PROJECT_ID}/driftscribe'
+  # _TAG is overridden via `gcloud builds submit --substitutions=_TAG=<sha>`.
+  # Default `manual` keeps the file valid when running from a local context
+  # without a commit (e.g., uncommitted experiments).
+  _TAG: 'manual'
 
 steps:
   - name: gcr.io/cloud-builders/docker
-    args: ['build', '-t', '${_AR_PATH}/driftscribe-agent:${SHORT_SHA}', '-f', 'Dockerfile.agent', '.']
+    args: ['build', '-t', '${_AR_PATH}/driftscribe-agent:${_TAG}', '-f', 'Dockerfile.agent', '.']
   - name: gcr.io/cloud-builders/docker
-    args: ['build', '-t', '${_AR_PATH}/payment-demo:${SHORT_SHA}', '-f', 'demo/Dockerfile', 'demo']
+    args: ['build', '-t', '${_AR_PATH}/payment-demo:${_TAG}', '-f', 'demo/Dockerfile', 'demo']
   - name: gcr.io/cloud-builders/docker
-    args: ['push', '${_AR_PATH}/driftscribe-agent:${SHORT_SHA}']
+    args: ['push', '${_AR_PATH}/driftscribe-agent:${_TAG}']
   - name: gcr.io/cloud-builders/docker
-    args: ['push', '${_AR_PATH}/payment-demo:${SHORT_SHA}']
+    args: ['push', '${_AR_PATH}/payment-demo:${_TAG}']
 
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
     entrypoint: gcloud
@@ -19,7 +23,7 @@ steps:
       - run
       - deploy
       - payment-demo
-      - --image=${_AR_PATH}/payment-demo:${SHORT_SHA}
+      - --image=${_AR_PATH}/payment-demo:${_TAG}
       - --region=asia-northeast1
       - --allow-unauthenticated
       - --min-instances=0
@@ -33,7 +37,7 @@ steps:
       - run
       - deploy
       - driftscribe-agent
-      - --image=${_AR_PATH}/driftscribe-agent:${SHORT_SHA}
+      - --image=${_AR_PATH}/driftscribe-agent:${_TAG}
       - --region=asia-northeast1
       # SECURITY: live demo runs DRY_RUN=true + --allow-unauthenticated (Option C
       # from Phase 8 plan). Flip to DRY_RUN=false ONLY after adding the
@@ -47,5 +51,5 @@ steps:
       - --set-secrets=GITHUB_TOKEN=github-pat:latest,GOOGLE_API_KEY=gemini-api-key:latest
 
 images:
-  - '${_AR_PATH}/driftscribe-agent:${SHORT_SHA}'
-  - '${_AR_PATH}/payment-demo:${SHORT_SHA}'
+  - '${_AR_PATH}/driftscribe-agent:${_TAG}'
+  - '${_AR_PATH}/payment-demo:${_TAG}'
