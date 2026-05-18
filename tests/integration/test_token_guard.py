@@ -132,10 +132,11 @@ def test_healthz_does_not_require_token(monkeypatch):
 
 
 def test_constant_time_compare_is_used(monkeypatch):
-    """Prove we use ``secrets.compare_digest`` (constant-time) and not ``==``.
+    """Lock in that auth uses ``secrets.compare_digest`` instead of ``==``.
 
-    Mechanical: patch the compare_digest symbol that ``agent.auth`` imported
-    and assert it was called on the wrong-token path.
+    Does NOT prove constant-time behavior itself (that's CPython's guarantee for
+    ``compare_digest``, not something this test can observe). Catches a future
+    refactor that quietly swaps in ``==``.
     """
     _set_token(monkeypatch, "test-token-value-123")
     with patch("agent.auth.secrets.compare_digest", return_value=False) as cmp_:

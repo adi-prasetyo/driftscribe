@@ -37,6 +37,8 @@ gcloud secrets add-iam-policy-binding coordinator-shared-token \
   --role=roles/secretmanager.secretAccessor
 ```
 
+> **Phase ordering note:** the `coordinator-shared-token` secret resource AND this binding to the coordinator SA must both exist *before* the Phase 11.1 deploy can succeed — Cloud Run validates `--set-secrets=DRIFTSCRIBE_TOKEN=coordinator-shared-token:latest` at deploy time and rejects the revision with `INVALID_ARGUMENT` if the resource is missing or unreadable by the runtime SA. The other per-worker bindings in this matrix (reader/docs/rollback/notifier) get added incrementally during Phase 11.3–11.6 and are not a prerequisite for the 11.1 deploy.
+
 The crucial property: **no SA has `roles/secretmanager.secretAccessor` at the project level.** Each grant is scoped to a single secret resource, so a future "let me just read another secret real quick" attempt fails closed.
 
 ## Resource-scoped Cloud Run example

@@ -27,8 +27,11 @@ class Settings(BaseSettings):
     use_adk: bool = False
     # Operator-facing shared token guarding /recheck (and future /chat in
     # Phase 11.7). Cloud Run injects this from Secret Manager secret
-    # ``coordinator-shared-token`` via cloudbuild.yaml's --set-secrets. Empty
-    # default means the guard fails closed (503) — see agent/auth.py.
+    # ``coordinator-shared-token`` via cloudbuild.yaml's --set-secrets (Cloud
+    # Run validates the secret reference at deploy time and refuses the
+    # revision if the secret is missing). The empty default here only matters
+    # at runtime: if --set-secrets is removed, the guard fail-closes with 503
+    # rather than silently accepting anything — see agent/auth.py.
     driftscribe_token: str = ""
 
 

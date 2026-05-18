@@ -30,10 +30,11 @@ def _agent_settings(monkeypatch, request):
     monkeypatch.setenv("CONTRACT_PATH", "demo/ops-contract.yaml")
     monkeypatch.setenv("GITHUB_REPO", "theghostsquad00/driftscribe")
     monkeypatch.setenv("USE_ADK", "false")
-    # DRIFTSCRIBE_TOKEN (Phase 11.1) gates /recheck. A non-empty default
-    # avoids the fail-closed 503 in tests that don't care about auth and
-    # haven't explicitly disabled the dep override below.
-    monkeypatch.setenv("DRIFTSCRIBE_TOKEN", "test-token-integration")
+    # DRIFTSCRIBE_TOKEN intentionally NOT set here. Tests that don't care
+    # about auth get the dependency_overrides[verify_token] bypass below, so
+    # the env var is never consulted. The token-guard tests in
+    # test_token_guard.py opt out of the bypass and set their own value via
+    # _set_token() — a stale autouse env value would shadow that and hide bugs.
     get_settings.cache_clear()
     _reset_state_for_tests()
 
