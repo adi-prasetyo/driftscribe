@@ -119,6 +119,45 @@ def test_evidence_table_escapes_pipe_in_var_name():
     assert len(cells) == 8  # leading empty + 6 cells + trailing empty
 
 
+def test_credentialed_url_value_redacted_even_when_name_is_innocuous():
+    # DATABASE_URL doesn't match the name pattern in the old version, but
+    # the value embeds credentials. Must redact.
+    p = _proposal(DecisionAction.DRIFT_ISSUE, [
+        EnvDiff(name="MY_CONNECTION", expected=None,
+                live="postgres://admin:s3cr3t@db.example.com:5432/prod",
+                contract_status=ContractStatus.ABSENT),
+    ])
+    body = render_drift_issue_body(p)
+    assert "s3cr3t" not in body
+    assert "admin" not in body or "admin:s3cr3t" not in body
+    assert "redacted" in body.lower()
+
+
+def test_database_url_var_name_redacted_by_expanded_pattern():
+    # DATABASE_URL contains "URL" which is now in SECRET_NAME_PATTERN
+    p = _proposal(DecisionAction.DRIFT_ISSUE, [
+        EnvDiff(name="DATABASE_URL", expected="old", live="postgres://u:p@h/d",
+                contract_status=ContractStatus.PRESENT_DISALLOW_MANUAL),
+    ])
+    body = render_drift_issue_body(p)
+    assert "old" not in body  # short value but still redacted by name
+    assert "postgres" not in body
+    assert "DATABASE_URL" in body
+
+
+def test_newlines_in_value_normalized_in_table():
+    # A value containing newlines must not break the markdown row layout
+    p = _proposal(DecisionAction.DRIFT_ISSUE, [
+        EnvDiff(name="PAYMENT_MODE", expected="mock", live="line1\nline2\r\nline3",
+                contract_status=ContractStatus.PRESENT_DISALLOW_MANUAL),
+    ])
+    body = render_drift_issue_body(p)
+    # Find the row containing PAYMENT_MODE — must be a single line (no embedded newlines)
+    payment_lines = [ln for ln in body.splitlines() if "PAYMENT_MODE" in ln]
+    assert len(payment_lines) == 1
+    assert "line1" in payment_lines[0] and "line2" in payment_lines[0]
+
+
 def test_empty_string_live_value_not_collapsed_to_dash():
     # Empty live value is a real drift signal (var was unset)
     p = _proposal(DecisionAction.DRIFT_ISSUE, [
