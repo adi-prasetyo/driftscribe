@@ -27,13 +27,19 @@ def _render_for(action: DecisionAction, proposal: DecisionProposal) -> str:
         return render_docs_pr_body(proposal)
     if action == DecisionAction.DRIFT_ISSUE:
         return render_drift_issue_body(proposal)
-    return render_escalation_issue_body(proposal)
+    if action == DecisionAction.ESCALATION:
+        return render_escalation_issue_body(proposal)
+    raise ValueError(f"no renderer for action {action!r}")
 
 
 @app.post("/recheck")
 def recheck():
     s = get_settings()
-    contract = load_contract(Path(s.contract_path))
+    try:
+        contract = load_contract(Path(s.contract_path))
+    except Exception as e:
+        # Bad contract = our deploy is broken, not GCP. 500, not 502.
+        raise HTTPException(status_code=500, detail=f"contract load failed: {e}")
     try:
         live_env = read_live_env(s.target_service, s.target_region, s.gcp_project)
     except Exception as e:

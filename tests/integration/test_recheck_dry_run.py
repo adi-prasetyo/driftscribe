@@ -1,10 +1,6 @@
-import os
-os.environ["DRY_RUN"] = "true"
-os.environ["GCP_PROJECT"] = "test-proj"
-os.environ["CONTRACT_PATH"] = "demo/ops-contract.yaml"
-
 from fastapi.testclient import TestClient
 from unittest.mock import patch
+
 from agent.main import app
 
 
@@ -43,6 +39,19 @@ def test_recheck_returns_502_on_cloud_run_read_failure():
         r = client.post("/recheck")
     assert r.status_code == 502
     assert "cloud run read failed" in r.json()["detail"]
+
+
+def test_recheck_returns_500_on_contract_load_failure(monkeypatch):
+    # Point at a non-existent contract — should surface as 500, not 502
+    monkeypatch.setenv("CONTRACT_PATH", "demo/does-not-exist.yaml")
+    from agent.config import get_settings
+    get_settings.cache_clear()
+    with patch("agent.main.read_live_env") as m:
+        m.return_value = {}
+        client = TestClient(app)
+        r = client.post("/recheck")
+    assert r.status_code == 500
+    assert "contract load failed" in r.json()["detail"]
 
 
 def test_healthz_returns_ok():
