@@ -4,7 +4,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    # extra="ignore" so .env files can carry unrelated keys (notes, sibling-tool
+    # config, alternate names for the same value like GEMINI_API_KEY vs the
+    # canonical GOOGLE_API_KEY) without crashing Settings on boot. Default in
+    # pydantic-settings 2.x is "forbid", which is unfriendly for shared .env
+    # files. We pay the silent-typo cost here intentionally.
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     dry_run: bool = True
     gcp_project: str = ""
