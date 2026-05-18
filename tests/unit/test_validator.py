@@ -120,6 +120,15 @@ def test_validator_allows_no_op_with_empty_env_diffs():
     )
     validate(p, _contract())  # must not raise
 
+def test_validator_rejects_target_docs_file_not_matching_contract():
+    # LLM could try to redirect a sanctioned change into README.md or elsewhere
+    p = _proposal(DecisionAction.DOCS_PR, "FEATURE_X", "false", "true",
+                   ContractStatus.PRESENT_ALLOW_MANUAL)
+    p.target_docs_file = "README.md"  # contract says demo/docs/runbook.md
+    p.target_docs_section = "Feature Flags"
+    with pytest.raises(ValidationError, match="target_docs_file"):
+        validate(p, _contract())
+
 def test_validator_rejects_bearer_token_var_name():
     # Defense-in-depth: BEARER is a secret-name pattern
     p = _proposal(DecisionAction.DOCS_PR, "API_BEARER", "x", "y",
