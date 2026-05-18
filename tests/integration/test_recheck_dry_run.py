@@ -21,7 +21,9 @@ def test_recheck_no_op_when_live_matches_contract():
         m.return_value = {"PAYMENT_MODE": "mock", "FEATURE_NEW_CHECKOUT": "false"}
         client = TestClient(app)
         r = client.post("/recheck")
-    assert r.json()["action"] == "no_op"
+    body = r.json()
+    assert body["action"] == "no_op"
+    assert body["github"]["action"] == "no_op"
 
 
 def test_recheck_escalation_for_unknown_var():
@@ -30,6 +32,46 @@ def test_recheck_escalation_for_unknown_var():
         client = TestClient(app)
         r = client.post("/recheck")
     assert r.json()["action"] == "escalation"
+
+
+def test_recheck_dry_run_returns_github_preview_for_docs_pr():
+    with patch("agent.main.read_live_env") as m:
+        m.return_value = {"PAYMENT_MODE": "mock", "FEATURE_NEW_CHECKOUT": "true"}
+        client = TestClient(app)
+        r = client.post("/recheck")
+    body = r.json()
+    assert body["action"] == "docs_pr"
+    assert body["github"]["dry_run"] is True
+    # Preview must reflect the patched runbook content (FEATURE_NEW_CHECKOUT=true)
+    assert "FEATURE_NEW_CHECKOUT=true" in body["github"]["preview"]
+    assert body["github"]["branch"].startswith("driftscribe/feature_new_checkout-")
+
+
+def test_recheck_dry_run_returns_github_result_for_drift_issue():
+    with patch("agent.main.read_live_env") as m:
+        m.return_value = {"PAYMENT_MODE": "live", "FEATURE_NEW_CHECKOUT": "false"}
+        client = TestClient(app)
+        r = client.post("/recheck")
+    body = r.json()
+    assert body["action"] == "drift_issue"
+    assert body["github"]["dry_run"] is True
+    assert body["github"]["url"] is None
+    assert "Drift:" in body["github"]["title"]
+
+
+def test_recheck_dry_run_returns_github_result_for_escalation():
+    with patch("agent.main.read_live_env") as m:
+        m.return_value = {
+            "PAYMENT_MODE": "mock",
+            "FEATURE_NEW_CHECKOUT": "false",
+            "NEW_THING": "x",
+        }
+        client = TestClient(app)
+        r = client.post("/recheck")
+    body = r.json()
+    assert body["action"] == "escalation"
+    assert body["github"]["dry_run"] is True
+    assert "Review:" in body["github"]["title"]
 
 
 def test_recheck_returns_502_on_cloud_run_read_failure():
