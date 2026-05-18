@@ -1,0 +1,17 @@
+FROM python:3.12-slim
+WORKDIR /app
+RUN pip install --no-cache-dir uv
+COPY pyproject.toml ./
+RUN uv pip install --system -e .
+COPY agent/ ./agent/
+COPY checker/ ./checker/
+# Preserve the contract-relative path so DOCS_ROOT=/contract resolves
+# `demo/docs/runbook.md` to `/contract/demo/docs/runbook.md`.
+COPY demo/ /contract/demo/
+ENV PORT=8080
+ENV DOCS_ROOT=/contract
+ENV CONTRACT_PATH=/contract/demo/ops-contract.yaml
+# Shell form so $PORT expands at runtime. Cloud Run injects PORT and expects
+# the container to listen on its chosen value; hardcoding --port 8080 would
+# break health checks the moment Cloud Run picked a different port.
+CMD ["sh", "-c", "uvicorn agent.main:app --host 0.0.0.0 --port ${PORT:-8080}"]

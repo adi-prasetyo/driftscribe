@@ -6,7 +6,7 @@
 
 **Architecture:** Three-layer system. (1) ADK agent shell with four tools (Cloud Run reader, debug-config caller, GitHub history search, contract loader) emits a structured `DecisionProposal`. (2) Deterministic validator gates that proposal against contract rules + path allowlist + secret-leak guard. (3) Action layer creates the GitHub PR/issue. State + idempotency in Firestore. Triggered manually via `POST /recheck` (primary demo path) and by Audit Log → Eventarc → `/eventarc` (production path, final phase).
 
-**Tech Stack:** Python 3.12, FastAPI, Google ADK (`google-adk`), Gemini 2.5 Flash, `google-cloud-run` admin client, `google-cloud-firestore`, PyGithub, pydantic v2, pydantic-settings, uv for dependency management, `gcloud` scripts for infra, GitHub Actions for CI. Private repo: `github.com/theghostsquad00/driftscribe`.
+**Tech Stack:** Python 3.12, FastAPI, Google ADK (`google-adk`), Gemini 2.5 Flash, `google-cloud-run` admin client, `google-cloud-firestore`, PyGithub, pydantic v2, pydantic-settings, uv for dependency management, `gcloud` scripts for infra, GitHub Actions for CI. Private repo: `github.com/adi-prasetyo/driftscribe`.
 
 **Hackathon constraints:** ~6 dev days, 1 person. Total Phase 0–10. Demo flow is 5 beats (bootstrap → sanctioned → unsanctioned → uncertain → CI gate). Eventarc is Phase 9, NOT critical-path. Submission deliverables are Phase 10.
 
@@ -178,7 +178,7 @@ GCP_PROJECT=your-project
 TARGET_SERVICE=payment-demo
 TARGET_REGION=asia-northeast1
 CONTRACT_PATH=demo/ops-contract.yaml
-GITHUB_REPO=theghostsquad00/driftscribe
+GITHUB_REPO=adi-prasetyo/driftscribe
 GITHUB_TOKEN=
 GOOGLE_API_KEY=
 DEBUG_CONFIG_URL=
@@ -209,7 +209,7 @@ service: payment-demo
 environment: production
 cloud_run_service: payment-demo
 region: asia-northeast1
-github_repo: theghostsquad00/driftscribe
+github_repo: adi-prasetyo/driftscribe
 expected_env:
   PAYMENT_MODE:
     value: "mock"
@@ -377,7 +377,7 @@ service: payment-demo
 environment: production
 cloud_run_service: payment-demo
 region: asia-northeast1
-github_repo: theghostsquad00/driftscribe
+github_repo: adi-prasetyo/driftscribe
 expected_env:
   PAYMENT_MODE:
     value: "mock"
@@ -570,7 +570,7 @@ def _contract(env_rules):
         environment="production",
         cloud_run_service="payment-demo",
         region="asia-northeast1",
-        github_repo="theghostsquad00/driftscribe",
+        github_repo="adi-prasetyo/driftscribe",
         expected_env=env_rules,
     )
 
@@ -803,7 +803,7 @@ def _contract():
         environment="production",
         cloud_run_service="payment-demo",
         region="asia-northeast1",
-        github_repo="theghostsquad00/driftscribe",
+        github_repo="adi-prasetyo/driftscribe",
         expected_env={
             "PAYMENT_MODE": EnvVarRule(
                 value="mock",
@@ -982,7 +982,7 @@ service: payment-demo
 environment: production
 cloud_run_service: payment-demo
 region: asia-northeast1
-github_repo: theghostsquad00/driftscribe
+github_repo: adi-prasetyo/driftscribe
 expected_env:
   PAYMENT_MODE:
     value: "mock"
@@ -1568,7 +1568,7 @@ def _contract():
     return OpsContract(
         service="payment-demo", environment="production",
         cloud_run_service="payment-demo", region="asia-northeast1",
-        github_repo="theghostsquad00/driftscribe",
+        github_repo="adi-prasetyo/driftscribe",
         expected_env={
             "FEATURE_NEW_CHECKOUT": EnvVarRule(
                 value="false",
@@ -2103,7 +2103,7 @@ def test_init_writes_contract_with_conservative_defaults(tmp_path):
             "--service", "payment-demo",
             "--region", "asia-northeast1",
             "--project", "my-proj",
-            "--github-repo", "theghostsquad00/driftscribe",
+            "--github-repo", "adi-prasetyo/driftscribe",
             "--output", str(tmp_path / "ops-contract.yaml"),
         ])
     assert result.exit_code == 0, result.output
@@ -2660,13 +2660,13 @@ for role in \
 done
 
 # Create secrets (idempotent)
-for secret in driftscribe-github-token driftscribe-google-api-key; do
+for secret in github-pat gemini-api-key; do
   gcloud secrets describe "$secret" --project "$PROJECT" >/dev/null 2>&1 || \
     gcloud secrets create "$secret" --project "$PROJECT" --replication-policy=automatic
 done
 
-echo -n "$GITHUB_TOKEN"   | gcloud secrets versions add driftscribe-github-token   --project "$PROJECT" --data-file=-
-echo -n "$GOOGLE_API_KEY" | gcloud secrets versions add driftscribe-google-api-key --project "$PROJECT" --data-file=-
+echo -n "$GITHUB_TOKEN"   | gcloud secrets versions add github-pat   --project "$PROJECT" --data-file=-
+echo -n "$GOOGLE_API_KEY" | gcloud secrets versions add gemini-api-key --project "$PROJECT" --data-file=-
 
 # Firestore (idempotent)
 gcloud firestore databases describe --project "$PROJECT" >/dev/null 2>&1 || \
@@ -2724,8 +2724,8 @@ steps:
       - --min-instances=0
       - --max-instances=1
       - --concurrency=1
-      - --set-env-vars=DRY_RUN=true,GCP_PROJECT=$PROJECT_ID,TARGET_SERVICE=payment-demo,TARGET_REGION=asia-northeast1,GITHUB_REPO=theghostsquad00/driftscribe,USE_ADK=true
-      - --set-secrets=GITHUB_TOKEN=driftscribe-github-token:latest,GOOGLE_API_KEY=driftscribe-google-api-key:latest
+      - --set-env-vars=DRY_RUN=true,GCP_PROJECT=$PROJECT_ID,TARGET_SERVICE=payment-demo,TARGET_REGION=asia-northeast1,GITHUB_REPO=adi-prasetyo/driftscribe,USE_ADK=true
+      - --set-secrets=GITHUB_TOKEN=github-pat:latest,GOOGLE_API_KEY=gemini-api-key:latest
 ```
 
 **Step 4: Manual deploy**
@@ -2997,7 +2997,7 @@ The 5-beat demo with exact gcloud commands and what to point at on screen:
 
 | Beat | Command | What to show |
 |---|---|---|
-| 0. Bootstrap | `driftscribe init --service payment-demo --region asia-northeast1 --project $GCP_PROJECT --github-repo theghostsquad00/driftscribe --output demo/ops-contract.yaml --docs-file demo/docs/runbook.md` | The generated YAML + a manually-opened PR. |
+| 0. Bootstrap | `driftscribe init --service payment-demo --region asia-northeast1 --project $GCP_PROJECT --github-repo adi-prasetyo/driftscribe --output demo/ops-contract.yaml --docs-file demo/docs/runbook.md` | The generated YAML + a manually-opened PR. |
 | A. Sanctioned | `gcloud run services update payment-demo --update-env-vars FEATURE_NEW_CHECKOUT=true` then `curl -s -X POST $AGENT_URL/recheck` | The docs PR DriftScribe opens. |
 | B. Unsanctioned | `gcloud run services update payment-demo --update-env-vars PAYMENT_MODE=live` then `curl /recheck` | The drift issue. |
 | C. Uncertain | `gcloud run services update payment-demo --update-env-vars NEW_THING=x` then `curl /recheck` | The escalation issue with evidence table. |
@@ -3025,7 +3025,7 @@ Capture and commit under `docs/screenshots/`: docs PR diff, drift issue, escalat
 
 ### Task 10.6: Public-repo cleanup checklist
 
-Before flipping `theghostsquad00/driftscribe` to public:
+Before flipping `adi-prasetyo/driftscribe` to public:
 - Revoke any GitHub tokens used during build (Settings → Developer settings → Personal access tokens).
 - Verify `.env` is gitignored and never committed (`git log --all --full-history -- .env`).
 - Verify no `GOOGLE_API_KEY` ended up in commit history.

@@ -5,7 +5,7 @@ Each operation accepts a `dry_run` flag — when true, no API calls are made
 and a structured preview dict is returned instead.
 
 Note: file commits are authored by the identity behind the configured
-GITHUB_TOKEN. For the demo deploy that token is owned by ``theghostsquad00``;
+GITHUB_TOKEN. For the hackathon deploy that token is owned by ``adi-prasetyo``;
 downstream users should bind a bot identity if they want commits authored
 under a service account name.
 """
