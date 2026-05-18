@@ -89,6 +89,25 @@ expected_env:
     with pytest.raises(Exception, match="operator_note"):
         load_contract(p)
 
+def test_operator_note_with_newline_rejected(tmp_path):
+    p = tmp_path / "c.yaml"
+    p.write_text("""
+service: x
+environment: production
+cloud_run_service: x
+region: asia-northeast1
+github_repo: x/x
+expected_env:
+  FLAG:
+    value: "false"
+    docs: { file: docs/r.md, section: S }
+    allow_manual_change: true
+    operator_note: "line one\\nline two"
+""")
+    with pytest.raises(Exception, match="single line"):
+        load_contract(p)
+
+
 def test_yaml_null_value_rejected(tmp_path):
     # ~ in YAML is null; must not silently become the string "None"
     p = tmp_path / "c.yaml"

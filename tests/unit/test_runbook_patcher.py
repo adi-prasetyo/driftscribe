@@ -175,3 +175,87 @@ def test_patch_refuses_to_write_secret_named_var():
     )
     with pytest.raises(ValueError, match="secret"):
         patch_runbook(STARTING_RUNBOOK, [diff], _contract(extra))
+
+
+def test_patch_does_not_treat_fenced_code_as_section_header():
+    # A literal "## Feature Flags" inside a fenced example must not be
+    # mistaken for the real section
+    runbook = """\
+# Runbook
+
+## Examples
+
+```markdown
+## Feature Flags
+- this is just an example
+```
+
+## Feature Flags
+
+- `FEATURE_NEW_CHECKOUT=false` — **Operator note:** Operator-toggleable.
+"""
+    diff = EnvDiff(name="FEATURE_NEW_CHECKOUT", expected="false", live="true",
+                   contract_status=ContractStatus.PRESENT_ALLOW_MANUAL)
+    new = patch_runbook(runbook, [diff], _contract())
+    # Real section was patched
+    assert "FEATURE_NEW_CHECKOUT=true" in new
+    # Fenced example is intact
+    assert "```markdown" in new
+    assert "this is just an example" in new
+    # Fence wasn't broken open
+    assert new.count("```") == 2
+
+
+def test_patch_is_atomic_on_secret_failure():
+    # If diffs[1] is a secret-named var, diffs[0] must NOT be partially applied.
+    # The atomic pre-check raises BEFORE any diff is applied.
+    extra = {
+        "API_TOKEN": EnvVarRule(
+            value="placeholder",
+            docs=DocsRef(file="demo/docs/runbook.md", section="Runtime Configuration"),
+            allow_manual_change=True,
+            operator_note="rotate quarterly",
+        ),
+    }
+    diffs = [
+        EnvDiff(name="FEATURE_NEW_CHECKOUT", expected="false", live="true",
+                contract_status=ContractStatus.PRESENT_ALLOW_MANUAL),
+        EnvDiff(name="API_TOKEN", expected="placeholder", live="oops",
+                contract_status=ContractStatus.PRESENT_ALLOW_MANUAL),
+    ]
+    with pytest.raises(ValueError, match="secret"):
+        patch_runbook(STARTING_RUNBOOK, diffs, _contract(extra))
+
+
+def test_sanitize_operator_note_collapses_newlines():
+    # Defense-in-depth: if a multiline operator_note somehow gets past the
+    # contract validator (e.g. older serialized contract loaded by other tooling),
+    # the patcher must collapse it to one line before rendering.
+    # Tests the private helper directly since the contract layer now blocks
+    # multiline notes at construction time.
+    from agent.runbook_patcher import _sanitize_operator_note
+    out = _sanitize_operator_note("line one\nline two\n  - looks like a bullet")
+    assert "\n" not in out
+    assert "\r" not in out
+    assert "line one" in out
+    assert "line two" in out
+    assert "looks like a bullet" in out
+    assert not out.startswith("-")
+
+
+def test_patch_no_trailing_em_dash_when_no_operator_note():
+    # A var without operator_note (allow_manual=False) shouldn't render a
+    # dangling em-dash at the end of the bullet
+    extra = {
+        "DEBUG_PORT": EnvVarRule(
+            value="9090",
+            docs=DocsRef(file="demo/docs/runbook.md", section="Runtime Configuration"),
+            allow_manual_change=False,
+        ),
+    }
+    diff = EnvDiff(name="DEBUG_PORT", expected="9090", live="9999",
+                   contract_status=ContractStatus.PRESENT_DISALLOW_MANUAL)
+    new = patch_runbook(STARTING_RUNBOOK, [diff], _contract(extra))
+    matching = [ln for ln in new.splitlines() if "DEBUG_PORT" in ln]
+    assert len(matching) == 1
+    assert not matching[0].rstrip().endswith("—")

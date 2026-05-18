@@ -40,6 +40,11 @@ class EnvVarRule(BaseModel):
                 "operator_note is required when allow_manual_change=true "
                 "(operators need to know what flipping this does)"
             )
+        if self.operator_note and ("\n" in self.operator_note or "\r" in self.operator_note):
+            raise ValueError(
+                "operator_note must be a single line (no embedded newlines); "
+                "the patcher renders it inline in a markdown bullet"
+            )
         return self
 
 class OpsContract(BaseModel):
