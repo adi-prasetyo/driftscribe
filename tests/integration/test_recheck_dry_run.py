@@ -44,7 +44,33 @@ def test_recheck_dry_run_returns_github_preview_for_docs_pr():
     assert body["github"]["dry_run"] is True
     # Preview must reflect the patched runbook content (FEATURE_NEW_CHECKOUT=true)
     assert "FEATURE_NEW_CHECKOUT=true" in body["github"]["preview"]
+    # Branch includes slug + timestamp + random suffix; assert the slug prefix.
     assert body["github"]["branch"].startswith("driftscribe/feature_new_checkout-")
+
+
+def test_recheck_returns_500_when_docs_root_missing_runbook(monkeypatch):
+    # Deploy misconfig: contract points at demo/docs/runbook.md but DOCS_ROOT
+    # is set to a directory that doesn't contain it. Must refuse (500), NOT
+    # silently overwrite with a stub.
+    monkeypatch.setenv("DOCS_ROOT", "/tmp/does-not-exist-driftscribe")
+    from agent.config import get_settings
+    get_settings.cache_clear()
+    with patch("agent.main.read_live_env") as m:
+        m.return_value = {"PAYMENT_MODE": "mock", "FEATURE_NEW_CHECKOUT": "true"}
+        client = TestClient(app)
+        r = client.post("/recheck")
+    assert r.status_code == 500
+    assert "runbook not found" in r.json()["detail"]
+
+
+def test_branch_slug_sanitizes_unsafe_chars():
+    # Defensive: branch slug must reject git-refspec-forbidden chars
+    from agent.main import _branch_slug
+    assert _branch_slug("PAYMENT_MODE") == "payment_mode"
+    assert _branch_slug("Has/Slash") == "has-slash"
+    assert _branch_slug("..bad..") == "bad"
+    assert _branch_slug("@{weird}") == "weird"
+    assert _branch_slug("---") == "var"
 
 
 def test_recheck_dry_run_returns_github_result_for_drift_issue():

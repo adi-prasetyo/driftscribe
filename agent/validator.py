@@ -35,6 +35,13 @@ def validate(proposal: DecisionProposal, contract: OpsContract) -> None:
 
     # 5. Docs PR semantics
     if proposal.action == DecisionAction.DOCS_PR:
+        # target_docs_file and target_docs_section must be set (else the patcher
+        # would produce literal "None" headings, and we wouldn't know what file
+        # to update)
+        if not proposal.target_docs_file:
+            raise ValidationError("docs_pr requires target_docs_file")
+        if not proposal.target_docs_section:
+            raise ValidationError("docs_pr requires target_docs_section")
         for diff in proposal.env_diffs:
             # Secret-leak guard runs first — never document a secret-like name,
             # regardless of contract presence.

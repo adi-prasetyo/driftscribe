@@ -11,6 +11,10 @@ class Settings(BaseSettings):
     target_region: str = "asia-northeast1"
     target_service: str = "payment-demo"
     contract_path: str = "demo/ops-contract.yaml"
+    # Filesystem root for resolving contract docs.file paths. In dev this is "."
+    # (the repo working copy); in the deployed container Phase 8 bakes the docs
+    # into /contract and sets DOCS_ROOT=/contract so the agent finds them.
+    docs_root: str = "."
     github_repo: str = ""
     github_token: str = ""
     debug_config_url: str = ""

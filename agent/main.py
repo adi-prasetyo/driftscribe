@@ -1,21 +1,39 @@
 # agent/main.py
+import re
+import secrets
 import time
 from pathlib import Path
+
 from fastapi import FastAPI, HTTPException
 
-from agent.classifier import classify, ClassificationInput
+from agent.classifier import ClassificationInput, classify
 from agent.cloud_run_client import read_live_env
-from agent.config import get_settings
-from agent.contract import load_contract
+from agent.config import Settings, get_settings
+from agent.contract import OpsContract, load_contract
 from agent.github_actions import (
-    get_repo, open_docs_pr, open_drift_issue, open_escalation_issue,
+    get_repo,
+    open_docs_pr,
+    open_drift_issue,
+    open_escalation_issue,
 )
 from agent.models import DecisionAction, DecisionProposal
 from agent.renderer import (
-    render_docs_pr_body, render_drift_issue_body, render_escalation_issue_body,
+    render_docs_pr_body,
+    render_drift_issue_body,
+    render_escalation_issue_body,
 )
 from agent.runbook_patcher import patch_runbook
 from agent.validator import validate
+
+# Match git refspec rules (https://git-scm.com/docs/git-check-ref-format):
+# allow ASCII letters/digits/`_`/`-`; collapse runs of disallowed chars to `-`.
+_BRANCH_SLUG = re.compile(r"[^a-z0-9_-]+")
+
+
+def _branch_slug(name: str) -> str:
+    """Sanitize an env-var name for use inside a git branch name."""
+    slug = _BRANCH_SLUG.sub("-", name.lower()).strip("-")
+    return slug or "var"
 
 app = FastAPI(title="DriftScribe Agent")
 
@@ -37,7 +55,9 @@ def _render_for(action: DecisionAction, proposal: DecisionProposal) -> str:
     raise ValueError(f"no renderer for action {action!r}")
 
 
-def _perform_action(s, contract, proposal, rendered: str) -> dict:
+def _perform_action(
+    s: Settings, contract: OpsContract, proposal: DecisionProposal, rendered: str
+) -> dict:
     """Execute the side effect for ``proposal.action``.
 
     Honors ``s.dry_run`` — when true, no GitHub calls are made and a preview
@@ -66,27 +86,38 @@ def _perform_action(s, contract, proposal, rendered: str) -> dict:
             dry_run=s.dry_run,
         )
 
-    # DOCS_PR: read the current runbook from the local working copy, patch it,
-    # and open a PR. The local file is the dev-side source of truth before
-    # deploy; once Phase 9 wires Eventarc the agent will fetch the file from
-    # the base branch via the GitHub API instead.
-    target = proposal.target_docs_file or "demo/docs/runbook.md"
-    target_path = Path(target)
-    current = (
-        target_path.read_text()
-        if target_path.exists()
-        else f"# Runbook\n\n## {proposal.target_docs_section}\n\n"
-    )
+    # DOCS_PR. The validator has already guaranteed target_docs_file +
+    # target_docs_section are set, so we can read them confidently.
+    assert proposal.target_docs_file is not None  # validator-enforced
+    assert proposal.target_docs_section is not None
+    target_in_repo = proposal.target_docs_file
+    target_path = Path(s.docs_root) / target_in_repo
+    if not target_path.exists():
+        # Refuse rather than silently writing a stub — a missing runbook means
+        # our deploy is misconfigured (Phase 9 will switch to fetching from
+        # the base branch via GitHub Contents API instead of the local FS).
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"runbook not found at {target_path} "
+                f"(check DOCS_ROOT and the contract's docs.file)"
+            ),
+        )
+    current = target_path.read_text()
     new_content = patch_runbook(current, proposal.env_diffs, contract)
 
-    branch = f"driftscribe/{proposal.env_diffs[0].name.lower()}-{int(time.time())}"
+    # Timestamp + random suffix so retries / parallel deliveries don't collide
+    branch = (
+        f"driftscribe/{_branch_slug(proposal.env_diffs[0].name)}"
+        f"-{int(time.time())}-{secrets.token_hex(2)}"
+    )
     return open_docs_pr(
         repo=repo,  # type: ignore[arg-type]
         branch=branch,
         base="main",
         title=f"docs(driftscribe): update {proposal.env_diffs[0].name}",
         body=rendered,
-        file_path=target,
+        file_path=target_in_repo,
         new_content=new_content,
         dry_run=s.dry_run,
     )
