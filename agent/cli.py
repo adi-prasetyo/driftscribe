@@ -23,6 +23,7 @@ import typer
 import yaml
 
 from agent.cloud_run_client import read_live_env
+from agent.secret_guard import is_secret_name, value_looks_credentialed
 
 app = typer.Typer(help="DriftScribe CLI")
 
@@ -80,6 +81,25 @@ def init(
 ):
     """Bootstrap ops-contract.yaml from current live Cloud Run state."""
     live = read_live_env(service, region, project)
+
+    # Partition live env into "safe to write" vs "skip because the value would
+    # leak a credential into a public contract / PR". We delegate to
+    # agent.secret_guard so the same heuristic that gates renderer redaction
+    # and validator refusal also gates contract bootstrap — single source of
+    # truth for "what counts as a secret". Skipped vars are NOT written with a
+    # placeholder value: placeholders are landmines, because if the operator
+    # forgets to replace them DriftScribe will fire drift issues forever
+    # comparing the placeholder against the real live value.
+    kept: dict[str, str] = {}
+    skipped: list[tuple[str, str]] = []  # (name, reason)
+    for name, value in live.items():
+        if is_secret_name(name):
+            skipped.append((name, "secret-named name"))
+        elif value_looks_credentialed(value):
+            skipped.append((name, "value looks like a credential URL"))
+        else:
+            kept[name] = value
+
     contract = {
         "service": service,
         "environment": "production",
@@ -92,12 +112,23 @@ def init(
                 "docs": {"file": docs_file, "section": docs_section},
                 "allow_manual_change": False,
             }
-            for name, value in live.items()
+            for name, value in kept.items()
         },
     }
+    # _QuotedDumper subclasses SafeDumper — do not drop the Dumper= kwarg here,
+    # or yaml.dump silently switches to the unsafe Dumper.
     output.write_text(
         yaml.dump(contract, Dumper=_QuotedDumper, sort_keys=False, default_flow_style=False)
     )
+    if skipped:
+        typer.echo("")
+        typer.echo("⚠ Skipped (not written to contract — would leak a secret):")
+        for name, reason in skipped:
+            typer.echo(f"  - {name}: {reason}")
+        typer.echo(
+            "  Bind these via Secret Manager (value_source) and re-run, or add "
+            "them to the contract by hand with a redacted value."
+        )
     typer.echo(f"✓ Wrote {output}")
     typer.echo("")
     typer.echo("Next steps (review before opening the PR):")
