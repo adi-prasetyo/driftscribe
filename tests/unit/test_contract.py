@@ -89,6 +89,35 @@ expected_env:
     with pytest.raises(Exception, match="operator_note"):
         load_contract(p)
 
+def test_yaml_null_value_rejected(tmp_path):
+    # ~ in YAML is null; must not silently become the string "None"
+    p = tmp_path / "c.yaml"
+    p.write_text("""
+service: x
+environment: production
+cloud_run_service: x
+region: asia-northeast1
+github_repo: x/x
+expected_env:
+  FLAG:
+    value: ~
+    docs: { file: docs/r.md, section: S }
+    allow_manual_change: false
+""")
+    with pytest.raises(Exception, match="string"):
+        load_contract(p)
+
+def test_load_contract_wraps_yaml_parse_error_with_path(tmp_path):
+    p = tmp_path / "broken.yaml"
+    p.write_text("service: [unbalanced\n")
+    with pytest.raises(ValueError, match="broken.yaml"):
+        load_contract(p)
+
+def test_load_contract_wraps_missing_file_with_path(tmp_path):
+    missing = tmp_path / "does-not-exist.yaml"
+    with pytest.raises(FileNotFoundError, match="does-not-exist.yaml"):
+        load_contract(missing)
+
 def test_docs_path_traversal_rejected(tmp_path):
     p = tmp_path / "c.yaml"
     p.write_text("""
