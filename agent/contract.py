@@ -26,7 +26,12 @@ class EnvVarRule(BaseModel):
     def normalise_scalar(cls, v: Any) -> str:
         if isinstance(v, bool):
             return "true" if v else "false"
-        return str(v)
+        if isinstance(v, (int, float, str)):
+            return str(v)
+        raise ValueError(
+            f"value must be a string, bool, or number (got {type(v).__name__}); "
+            "Cloud Run env values are always strings — quote your YAML scalar"
+        )
 
     @model_validator(mode="after")
     def operator_note_required_when_manual(self) -> "EnvVarRule":
@@ -46,5 +51,12 @@ class OpsContract(BaseModel):
     expected_env: Dict[str, EnvVarRule] = Field(default_factory=dict)
 
 def load_contract(path: Path) -> OpsContract:
-    raw = yaml.safe_load(Path(path).read_text())
+    try:
+        text = Path(path).read_text()
+    except FileNotFoundError as e:
+        raise FileNotFoundError(f"contract not found: {path}") from e
+    try:
+        raw = yaml.safe_load(text)
+    except yaml.YAMLError as e:
+        raise ValueError(f"failed to parse contract {path}: {e}") from e
     return OpsContract.model_validate(raw)
