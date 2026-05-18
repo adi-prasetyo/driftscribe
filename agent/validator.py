@@ -7,7 +7,7 @@ class ValidationError(Exception):
     pass
 
 _SECRET_NAME_PATTERN = re.compile(
-    r"(SECRET|TOKEN|KEY|PASSWORD|PASSWD|CRED|PRIVATE)",
+    r"(SECRET|TOKEN|KEY|PASSWORD|PASSWD|CRED|PRIVATE|AUTH|BEARER|JWT|SIGNATURE|SALT|DSN|OAUTH)",
     re.IGNORECASE,
 )
 
@@ -27,10 +27,18 @@ def validate(proposal: DecisionProposal, contract: OpsContract) -> None:
         except ValueError as e:
             raise ValidationError(f"unknown action: {proposal.action!r}") from e
 
-    # 2. Path guards
+    # 2. Confidence must be in [0, 1] — guards against LLM hallucinations like 1.5
+    if not 0.0 <= proposal.confidence <= 1.0:
+        raise ValidationError(f"confidence out of range [0,1]: {proposal.confidence}")
+
+    # 3. Non-NO_OP actions require at least one diff (no empty PRs/issues)
+    if proposal.action != DecisionAction.NO_OP and not proposal.env_diffs:
+        raise ValidationError(f"action {proposal.action.value} requires at least one env_diff")
+
+    # 4. Path guards
     _validate_path(proposal.target_docs_file)
 
-    # 3. Docs PR semantics
+    # 5. Docs PR semantics
     if proposal.action == DecisionAction.DOCS_PR:
         for diff in proposal.env_diffs:
             # Secret-leak guard runs first — never document a secret-like name,

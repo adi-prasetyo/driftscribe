@@ -86,3 +86,43 @@ def test_validator_rejects_target_section_not_in_contract_for_known_var():
     p.target_docs_section = "Hallucinated Section"
     with pytest.raises(ValidationError, match="section"):
         validate(p, _contract())
+
+def test_validator_rejects_confidence_above_one():
+    p = _proposal(DecisionAction.DOCS_PR, "FEATURE_X", "false", "true",
+                   ContractStatus.PRESENT_ALLOW_MANUAL)
+    p.target_docs_section = "Feature Flags"
+    p.confidence = 1.5
+    with pytest.raises(ValidationError, match="confidence"):
+        validate(p, _contract())
+
+def test_validator_rejects_confidence_below_zero():
+    p = _proposal(DecisionAction.DOCS_PR, "FEATURE_X", "false", "true",
+                   ContractStatus.PRESENT_ALLOW_MANUAL)
+    p.target_docs_section = "Feature Flags"
+    p.confidence = -0.1
+    with pytest.raises(ValidationError, match="confidence"):
+        validate(p, _contract())
+
+def test_validator_rejects_drift_issue_with_empty_env_diffs():
+    p = DecisionProposal(
+        action=DecisionAction.DRIFT_ISSUE,
+        env_diffs=[],
+        rationale="bogus", confidence=0.9,
+    )
+    with pytest.raises(ValidationError, match="env_diff"):
+        validate(p, _contract())
+
+def test_validator_allows_no_op_with_empty_env_diffs():
+    p = DecisionProposal(
+        action=DecisionAction.NO_OP,
+        env_diffs=[],
+        rationale="all good", confidence=1.0,
+    )
+    validate(p, _contract())  # must not raise
+
+def test_validator_rejects_bearer_token_var_name():
+    # Defense-in-depth: BEARER is a secret-name pattern
+    p = _proposal(DecisionAction.DOCS_PR, "API_BEARER", "x", "y",
+                   ContractStatus.PRESENT_ALLOW_MANUAL)
+    with pytest.raises(ValidationError, match="secret"):
+        validate(p, _contract())
