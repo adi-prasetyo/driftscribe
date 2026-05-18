@@ -20,6 +20,7 @@ from typing import Any, Protocol
 
 class StateStore(Protocol):
     def record_event(self, event_key: str, payload: dict[str, Any]) -> bool: ...
+    def release_event(self, event_key: str) -> None: ...
     def find_decision_for_event(self, event_key: str) -> dict[str, Any] | None: ...
     def record_decision(
         self, decision_id: str, event_key: str, decision: dict[str, Any]
@@ -39,6 +40,11 @@ class InMemoryStateStore:
             return False
         self._events[event_key] = {"payload": payload, "decision_id": None}
         return True
+
+    def release_event(self, event_key: str) -> None:
+        """Drop a claim. Used by ``_do_recheck`` when side effects fail so
+        retries can proceed. No-op if the event isn't claimed."""
+        self._events.pop(event_key, None)
 
     def find_decision_for_event(self, event_key: str) -> dict[str, Any] | None:
         record = self._events.get(event_key)
@@ -72,15 +78,27 @@ class FirestoreStateStore:
 
     def record_event(self, event_key: str, payload: dict[str, Any]) -> bool:
         # Create-if-absent: succeed only when the doc didn't already exist.
+        # We narrow to AlreadyExists so genuine infra failures (permissions,
+        # network) propagate as exceptions rather than being misread as "claim
+        # refused" — Codex review #4 of Phase 4.
+        from google.api_core.exceptions import AlreadyExists
+
         doc = self._events.document(event_key)
         try:
             doc.create({"payload": payload, "decision_id": None})
             return True
-        except Exception:
-            # google.api_core.exceptions.AlreadyExists — treat as claim refused.
-            # Broad catch is intentional: any failure to claim must NOT proceed
-            # to side effects.
+        except AlreadyExists:
             return False
+
+    def release_event(self, event_key: str) -> None:
+        """Drop a claim so retries can proceed after a side-effect failure.
+        No-op if the document doesn't exist."""
+        from google.api_core.exceptions import NotFound
+
+        try:
+            self._events.document(event_key).delete()
+        except NotFound:
+            pass
 
     def find_decision_for_event(self, event_key: str) -> dict[str, Any] | None:
         snap = self._events.document(event_key).get()

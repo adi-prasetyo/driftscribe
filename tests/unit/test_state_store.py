@@ -40,3 +40,15 @@ def test_get_decision_for_unknown_id_returns_none():
 def test_find_decision_for_unknown_event_returns_none():
     s = InMemoryStateStore()
     assert s.find_decision_for_event("missing") is None
+
+
+def test_release_event_allows_re_claim():
+    s = InMemoryStateStore()
+    assert s.record_event("ev-1", {}) is True
+    s.release_event("ev-1")
+    assert s.record_event("ev-1", {}) is True
+
+
+def test_release_event_is_noop_for_unknown_key():
+    s = InMemoryStateStore()
+    s.release_event("never-claimed")  # must not raise

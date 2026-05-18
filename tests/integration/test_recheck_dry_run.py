@@ -176,6 +176,81 @@ def test_runs_endpoint_returns_404_for_unknown_decision():
     assert r.status_code == 404
 
 
+def test_side_effect_failure_releases_claim_so_retry_can_proceed():
+    """If _perform_action raises (e.g. transient GitHub error), the event claim
+    must be released so a retry doesn't perma-409."""
+    client = TestClient(app)
+    call_count = {"n": 0}
+
+    def flaky_perform(s, contract, proposal, rendered):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise RuntimeError("transient github failure")
+        return {"dry_run": True, "url": None, "action": "drift_issue"}
+
+    with patch("agent.main.read_live_env") as m, patch("agent.main._perform_action", side_effect=flaky_perform):
+        m.return_value = {"PAYMENT_MODE": "live", "FEATURE_NEW_CHECKOUT": "false"}
+        # First call → side effect raises → 502 + claim released
+        r1 = client.post("/recheck")
+        assert r1.status_code == 502
+        # Second call (same env, no force) → claim is free, succeeds fresh
+        r2 = client.post("/recheck")
+        assert r2.status_code == 200
+        assert r2.json()["action"] == "drift_issue"
+    assert call_count["n"] == 2
+
+
+def test_contract_edit_invalidates_cached_decision(tmp_path, monkeypatch):
+    """Editing the contract content while live env is unchanged must produce
+    a new event_key (and therefore a fresh decision)."""
+    import shutil
+    contract_path = tmp_path / "ops-contract.yaml"
+    docs_dir = tmp_path / "demo" / "docs"
+    docs_dir.mkdir(parents=True)
+    shutil.copy("demo/docs/runbook.md", docs_dir / "runbook.md")
+
+    v1 = """\
+service: payment-demo
+environment: production
+cloud_run_service: payment-demo
+region: asia-northeast1
+github_repo: theghostsquad00/driftscribe
+expected_env:
+  PAYMENT_MODE:
+    value: "mock"
+    docs: { file: demo/docs/runbook.md, section: Runtime Configuration }
+    allow_manual_change: false
+  FEATURE_NEW_CHECKOUT:
+    value: "false"
+    docs: { file: demo/docs/runbook.md, section: Feature Flags }
+    allow_manual_change: true
+    operator_note: "op"
+"""
+    v2 = v1.replace('value: "mock"', 'value: "live"')
+
+    monkeypatch.setenv("CONTRACT_PATH", str(contract_path))
+    monkeypatch.setenv("DOCS_ROOT", str(tmp_path))
+    from agent.config import get_settings
+    from agent.main import _reset_state_for_tests
+    get_settings.cache_clear()
+    _reset_state_for_tests()
+
+    client = TestClient(app)
+    contract_path.write_text(v1)
+    with patch("agent.main.read_live_env") as m:
+        m.return_value = {"PAYMENT_MODE": "mock", "FEATURE_NEW_CHECKOUT": "false"}
+        r1 = client.post("/recheck").json()
+
+    contract_path.write_text(v2)
+    get_settings.cache_clear()  # contract path unchanged but content differs
+    with patch("agent.main.read_live_env") as m:
+        m.return_value = {"PAYMENT_MODE": "mock", "FEATURE_NEW_CHECKOUT": "false"}
+        r2 = client.post("/recheck").json()
+
+    # Live env unchanged but contract content changed → fresh event_key
+    assert r1["event_key"] != r2["event_key"]
+
+
 def test_force_param_bypasses_idempotency_cache():
     client = TestClient(app)
     with patch("agent.main.read_live_env") as m:
