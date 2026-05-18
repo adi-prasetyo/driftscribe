@@ -1,0 +1,439 @@
+# DriftScribe v3 — Multi-Agent Implementation Plan (revised after Codex review)
+
+> **For Claude:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` to implement this plan task-by-task. Per-phase Codex review on thread `019e3af3-f679-7d20-bff1-328295c8f5df` after each phase commits.
+
+**Submission deadline:** 2026-07-10. Today: 2026-05-19. **Budget: ~52 calendar days, working evenings/weekends.**
+
+**Revision history:** v3.0 (initial plan, 2026-05-19) had a confused-deputy hole and several wrong assumptions about Cloud Run/Eventarc auth. Codex flagged them on thread `019e3af3-f679-7d20-bff1-328295c8f5df`. This v3.1 incorporates the fixes and cuts to fit the part-time calendar.
+
+**Goal:** Promote DriftScribe from "single-agent classifier-with-LLM-polish" to a **multi-agent system with layered safety** — IAM-scoped service accounts *plus* per-worker payload-intent policies *plus* HITL approval gates for destructive actions. Add a natural-language operator interface, Eventarc auto-trigger, and submission-quality polish.
+
+---
+
+## Architecture Summary
+
+**Coordinator Agent** (ADK + Gemini, public Cloud Run with X-DriftScribe-Token guard). Receives:
+- `POST /chat` — natural-language operator prompts (with token header)
+- `POST /recheck` — direct API trigger (with token header)
+- `POST /eventarc` — CloudEvents from Eventarc, authenticated via Google-signed ID token (bearer auth)
+- `GET /approvals/{id}`, `POST /approvals/{id}` — HITL approval UI for rollback decisions
+
+Coordinator has **read-only** access to: its own Firestore session/state, recent PRs on the configured repo (via read-only GitHub token), its own secrets (token guard, approval HMAC key, GitHub read token). It has **NO** ability to mutate GCP or GitHub directly; it can only request work from a worker.
+
+**Four worker agents** as separate Cloud Run services with `--no-allow-unauthenticated`. Each has its own service account, minimal scoped IAM, AND a hardcoded payload-intent policy that enforces what arguments it'll accept regardless of who's calling.
+
+| Worker | IAM scope | Hardcoded payload policy (defense against confused-deputy) | Secrets |
+|---|---|---|---|
+| Reader | `roles/run.viewer` on project | Reads ONLY `{project: $PROJECT, region: asia-northeast1, service: payment-demo}`. All other params 403. | none |
+| Docs | none (uses GitHub PAT) | Writes ONLY to `adi-prasetyo/driftscribe`, ONLY paths matching `demo/docs/*.md`. Refuses `ops-contract.yaml`, `.github/**`, `infra/**`, `Dockerfile*`, `*.py`. | fine-grained PAT scoped to single repo, `contents:write` + `pull-requests:write` only |
+| Rollback | `roles/run.developer` on `payment-demo` service ONLY (resource-scoped binding, not project) | Acts ONLY on `payment-demo`. Target revision MUST be in the service's current revision list AND not the active revision. HITL token required. | HMAC key for approval tokens |
+| Notifier | none | Posts ONLY to `$NOTIFY_WEBHOOK_URL` (loaded from Secret Manager). Caller-supplied URLs ignored. | webhook URL |
+
+**Why this is stronger than IAM alone:** Even if a prompt-injected coordinator successfully asks Docs to "patch ops-contract.yaml to set allow_manual_change=true everywhere," Docs refuses because the payload policy rejects that path. Even if it asks Rollback to roll a *different* service, Rollback refuses because the policy hardcodes `payment-demo`. The IAM scope is the *outer* boundary; the policy is the *inner* boundary. The HITL gate is the *third* layer for destructive ops.
+
+**Inter-service auth:** Cloud Run IAM (`roles/run.invoker` granted only to the coordinator's SA on each worker). Coordinator mints audience-bound Google ID tokens via `google.oauth2.id_token.fetch_id_token(audience=<worker_root_url>)` from the metadata server. Workers verify via `google.oauth2.id_token.verify_oauth2_token` (audience match + caller email match against allowlist of `coordinator-sa@$PROJECT.iam.gserviceaccount.com`).
+
+**Tech stack additions:** ADK sub-agent delegation pattern, Cloud Run-to-Cloud Run ID token auth, fine-grained GitHub PAT, Eventarc Cloud Run audit-log trigger, HMAC-signed transactional HITL approval, structured JSON logging w/ trace IDs.
+
+---
+
+## Critical Path
+
+```
+Phase 11 (multi-agent + policies + token guard, 6-8d)
+                                       │
+                                       ├─ Phase 13 (HITL rollback, 2-3d)
+                                       ├─ Phase 14 (Eventarc bonus, 1-2d)
+                                       ├─ Phase 15 (hardening: CI + logs, 1-2d)
+                                       │
+                                       └─ Phase 16 (submission artifacts, 4d)
+                                                  │
+                                                  └─ Phase 18 (final submission, 1d)
+```
+
+**Estimated effort: 14–20 working days.** Calendar with evenings/weekends only: realistic in 5–7 weeks. ~10 days of slack before deadline.
+
+**Cut from v3.0** (per Codex review):
+- ~~Phase 12.2: Firestore-backed ADK Sessions~~ — sessions stay in-memory. Cross-session memory doesn't move the demo needle for judges in a 90s video. Phase 12.1 (the NL `/chat` endpoint) folds into Phase 11.6 since coordinator already does intent classification via ADK.
+- ~~Phase 17: Multi-service contract support~~ — out of scope.
+- ~~Phase 15.3 deployed e2e in CI~~ — keep the test file as a manual smoke harness; don't gate CI on it.
+- ~~Phase 16.3 full benchmark page~~ — replaced with a 3-number "Cost & Latency" section in the README.
+
+---
+
+## Phase 11 — Multi-Agent Skeleton with Layered Safety (6–8 days)
+
+Make the architecture real. Five Cloud Run services, four service accounts, IAM-bounded inter-service calls, payload-policy validation in every worker, token guard on coordinator.
+
+### Task 11.0: Spike — Cloud Run-to-Cloud Run auth (½ day)
+
+**Before writing the design doc, prove the assumption.**
+
+**Files:**
+- Create: `spikes/cloud_run_auth/caller/main.py`, `spikes/cloud_run_auth/callee/main.py`, `spikes/cloud_run_auth/README.md`
+
+**Steps:**
+1. Deploy two minimal FastAPI services. Caller has SA `spike-caller-sa@...`. Callee has SA `spike-callee-sa@...`, `--no-allow-unauthenticated`, with `roles/run.invoker` granted to `spike-caller-sa`.
+2. Caller mints an ID token via `google.oauth2.id_token.fetch_id_token(Request(), audience=callee_root_url)` and calls `POST $CALLEE_URL/work` with `Authorization: Bearer <token>`.
+3. Callee uses `google.oauth2.id_token.verify_oauth2_token(token, request=Request(), audience=callee_root_url)` and asserts the `email` claim is in an allowlist.
+4. Verify: caller → 200. gcloud-as-user → 403. Caller with no token → 401. Caller with token for wrong audience → 401.
+5. Document any gotchas in `spikes/cloud_run_auth/README.md` (e.g., metadata server delays, audience must be root service URL not path, caching behavior).
+
+**Step 6: Commit.** Then optionally delete the spike services to keep costs zero; the README is the artifact.
+
+### Task 11.1: Token guard on coordinator + design docs
+
+**Files:**
+- Modify: `agent/main.py` (add auth dependency for `/recheck` and `/chat`)
+- Create: `agent/auth.py` (token verification dep)
+- Create: `tests/integration/test_token_guard.py`
+- Create: `docs/architecture/multi-agent-design.md`
+- Create: `docs/architecture/iam-matrix.md`
+
+**Steps:**
+1. **TDD** `test_token_guard.py`: requests without `X-DriftScribe-Token` return 401; with wrong token return 403 (constant-time comparison via `secrets.compare_digest`); with correct token (loaded from Secret Manager `coordinator-shared-token`) succeed. `/eventarc` and `/approvals/*` are exempt.
+2. Implement `auth.py` and wire as FastAPI dependency on `/recheck` and `/chat`.
+3. **Add the secret to Secret Manager:** `gcloud secrets create coordinator-shared-token`, generate a random token, store as version 1. Update `cloudbuild.yaml`'s `--set-secrets`.
+4. Write `multi-agent-design.md` (interfaces) and `iam-matrix.md` (per-SA grants, including negative-space documentation: "Coordinator SA does NOT have `run.developer`, `datastore.user`, project-level Secret Manager access").
+5. **Commit.**
+
+### Task 11.2: Shared library — `driftscribe_lib`
+
+**Files:**
+- Create: `driftscribe_lib/__init__.py`, `driftscribe_lib/cloud_run.py`, `driftscribe_lib/github.py`, `driftscribe_lib/auth.py`, `driftscribe_lib/logging.py`
+- Create: `driftscribe_lib/pyproject.toml`
+- Modify: root `pyproject.toml` to include `driftscribe_lib` as a workspace member
+- Modify: `agent/cloud_run_client.py`, `agent/github_actions.py` — import from `driftscribe_lib` and become thin wrappers
+
+**Steps:**
+1. Extract shared functions: Cloud Run admin client, GitHub client setup, Google ID token verification helpers, structured logger setup.
+2. **All Dockerfiles** (agent + workers) build from repo root with `COPY driftscribe_lib/ ./driftscribe_lib/` and `pip install ./driftscribe_lib/` (or include in pyproject as a path dependency).
+3. **TDD:** existing tests must still pass after the refactor (no behavior change). Add `tests/unit/test_driftscribe_lib_smoke.py` that imports each module.
+4. **Commit.**
+
+### Task 11.3: Reader Agent
+
+**Files:**
+- Create: `workers/reader/main.py`, `workers/reader/pyproject.toml`, `workers/reader/Dockerfile`
+- Create: `workers/reader/tests/test_read.py`
+
+**Hardcoded policy:** target service = `payment-demo`, region = `asia-northeast1`, project = `$PROJECT_ID`. All three are loaded from env at boot; the request body has NO service/region/project fields — they're not negotiable.
+
+**Steps:**
+1. **TDD** `test_read.py`: `POST /read` with empty body returns env+revision for the configured target. With any extra fields → 400. Missing bearer token → 401. Wrong-audience token → 401. Caller email not in allowlist → 403.
+2. Implement using `driftscribe_lib.cloud_run.read_live_env`.
+3. **Add to cloudbuild.yaml:** new build step + deploy step with `--service-account=reader-agent-sa@...`, `--no-allow-unauthenticated`. SA gets `roles/run.viewer` on the project.
+4. Deploy. Smoke test from coordinator's SA → 200; gcloud as user → 403.
+5. **Commit.**
+
+### Task 11.4: Docs Agent
+
+**Files:**
+- Create: `workers/docs/main.py`, `workers/docs/pyproject.toml`, `workers/docs/Dockerfile`
+- Create: `workers/docs/tests/test_patch.py`
+- Create: `workers/docs/tests/test_path_allowlist.py`
+
+**Hardcoded policy:** repo = `adi-prasetyo/driftscribe` (env), path allowlist matches regex `^demo/docs/[^/]+\.md$`, refuses `ops-contract.yaml`, `.github/`, `infra/`, `Dockerfile`, `*.py`, anything outside the allowlist.
+
+**Steps:**
+1. **TDD** `test_path_allowlist.py` — comprehensive negative tests: `ops-contract.yaml` → 403, `demo/docs/../infra/foo.md` → 403 (normalize-and-check), `.github/workflows/x.yml` → 403, `demo/docs/runbook.md` → 200.
+2. **TDD** `test_patch.py` — happy path: patches runbook, opens PR.
+3. Implement using `driftscribe_lib.github`.
+4. **Add a fine-grained GitHub PAT** scoped to single repo: instruct user to create at https://github.com/settings/personal-access-tokens with `Repository access: Only select repositories: adi-prasetyo/driftscribe`, `Repository permissions: Contents: Read & write`, `Pull requests: Read & write`. Store as Secret Manager `docs-agent-github-pat`.
+5. Deploy with own SA (`docs-agent-sa@...`), no project-level IAM grants, `--no-allow-unauthenticated`, `docs-agent-github-pat` injected via `--set-secrets`.
+6. **Commit.**
+
+### Task 11.5: Rollback Agent (execute-only, no UI)
+
+**Files:**
+- Create: `workers/rollback/main.py`, `workers/rollback/pyproject.toml`, `workers/rollback/Dockerfile`
+- Create: `workers/rollback/tests/test_rollback.py`
+
+**Hardcoded policy:** target service = `payment-demo` (env), target revision must currently exist in the service's revision list AND not be the active revision. Approval token mandatory, single-use, transaction-backed.
+
+**Approval UI lives on the Coordinator, NOT the Rollback Agent** (per Codex review — Rollback is private, can't host a public approval page).
+
+**Steps:**
+1. **TDD** `test_rollback.py`:
+   - `POST /propose` with `{target_revision, reason}` creates Firestore `approvals/{id}` doc with status=`pending`, returns `{approval_id, approval_url}` where `approval_url` is the coordinator's URL.
+   - `POST /execute` requires `{approval_id, approval_token}`. Token must HMAC-verify against `approval-hmac-key` from Secret Manager and match the stored doc. Token has 15-min TTL. Firestore transaction flips status `pending → used` atomically — replay returns 403.
+   - Execution calls Cloud Run admin API to update traffic to target revision.
+   - Negative tests: missing token, wrong-revision token, expired token, replayed token, target revision == active revision, target revision not in service.
+2. Implement.
+3. Deploy with `rollback-agent-sa@...`, resource-scoped IAM: `gcloud run services add-iam-policy-binding payment-demo --member=serviceAccount:rollback-agent-sa@... --role=roles/run.developer`. NO project-wide run.developer. `--no-allow-unauthenticated`.
+4. SA also needs `roles/datastore.user` for the `approvals` collection (per-collection IAM not available; project-level grant accepted but documented as a known constraint).
+5. **Commit.**
+
+### Task 11.6: Notifier Agent
+
+**Files:**
+- Create: `workers/notifier/main.py`, `workers/notifier/pyproject.toml`, `workers/notifier/Dockerfile`
+- Create: `workers/notifier/tests/test_notify.py`
+
+**Hardcoded policy:** outbound URL = `$NOTIFY_WEBHOOK_URL` from Secret Manager. Caller cannot supply or override.
+
+**Steps:**
+1. **TDD** `test_notify.py`: `POST /notify` with `{channel, severity, body}` posts to the env-configured URL with normalized payload. Caller-supplied `url` field is ignored. Channel values constrained to `info|alert|approval`.
+2. Implement.
+3. Deploy with `notifier-agent-sa@...`. **No GCP roles needed** — service account only used for inter-service auth identity. The Notifier *does* receive a webhook URL secret via `--set-secrets`, which means it needs `roles/secretmanager.secretAccessor` on **that specific secret only** (resource-scoped binding via `gcloud secrets add-iam-policy-binding driftscribe-webhook-url --member=...`).
+4. For the demo, use a free webhook test endpoint (e.g., webhook.site) so judges can see the notification fire.
+5. **Commit.**
+
+### Task 11.7: Coordinator rewrite — ADK delegation + approval UI
+
+**Files:**
+- Modify: `agent/main.py`, `agent/adk_agent.py`, `agent/adk_tools.py`
+- Create: `agent/worker_client.py`, `agent/approvals.py`, `agent/templates/approval.html`
+- Create: `tests/unit/test_worker_client.py`, `tests/integration/test_approvals.py`
+
+**Steps:**
+1. **TDD `test_worker_client.py`:** `WorkerClient.call(worker_name, payload)` fetches an audience-bound ID token (mock metadata server), includes correct headers, parses response, surfaces errors.
+2. **TDD `test_approvals.py`:**
+   - `GET /approvals/{id}` returns HTML page with the approval details, Approve and Reject buttons, no external assets, `Cache-Control: no-store`, `Referrer-Policy: no-referrer`.
+   - `POST /approvals/{id}` requires HMAC-signed token in body (not URL — avoids referrer leaks). On approve: verify token, flip Firestore `pending → approved` in transaction, then call Rollback Agent's `/execute` with the *stored canonical request* (not browser-supplied data).
+   - Replay attempt: returns 403.
+3. **Replace ADK tools** in `adk_tools.py`:
+   - `read_live_env_tool` → `worker_client.call("reader", {})`
+   - `propose_rollback_tool(target_revision, reason)` → `worker_client.call("rollback", {...})` returns approval URL
+   - `patch_docs_tool(file, section, new_value, rationale)` → `worker_client.call("docs", {...})` (replaces direct PR creation)
+   - `notify_tool(severity, body)` → `worker_client.call("notifier", {...})`
+   - Keep: `search_recent_prs_tool` (coordinator-internal, uses read-only GitHub token, no worker needed), `load_contract_tool` (coordinator reads its baked-in contract).
+4. **Update `SYSTEM_PROMPT`** — teach the new tool set. Key line: "You cannot mutate any system directly. You can ONLY call worker tools. Rollbacks require human approval — propose, then the human decides."
+5. **Reduce coordinator's IAM:**
+   - Keep: `roles/secretmanager.secretAccessor` (scoped to coordinator-only secrets via per-secret IAM), `roles/run.invoker` on each worker, `roles/datastore.user` (for own session + approval state).
+   - Remove: `roles/run.viewer`, `roles/datastore.user` project-wide → scope to `approvals` and `sessions` collections only (Firestore doesn't support collection-scope IAM, so accept project-wide datastore.user and document).
+6. **Add `/chat` endpoint** to `main.py`: thin wrapper that packages prompt + optional session_id and invokes the ADK runner. In-memory sessions only (cross-call memory deferred / out of scope).
+7. **Commit.**
+
+### Task 11.8: First multi-agent deploy + end-to-end smoke
+
+**Files:**
+- Modify: `infra/cloudbuild.yaml` (now builds + deploys 5 services with per-SA flags)
+- Modify: `infra/scripts/setup_secrets.sh` (creates 4 worker SAs, applies per-SA IAM, creates per-worker secrets)
+
+**Steps:**
+1. Update cloudbuild.yaml — new build + push + deploy steps for each worker. Each deploy gets `--service-account=<worker>-agent-sa@...`, `--no-allow-unauthenticated` (except coordinator), and worker-specific env+secrets.
+2. Update setup_secrets.sh — creates Reader/Docs/Rollback/Notifier SAs idempotently, applies per-SA IAM (including the resource-scoped Rollback grant on `payment-demo` only).
+3. Deploy.
+4. **End-to-end smoke:**
+   - `curl -X POST $COORDINATOR/chat -H "X-DriftScribe-Token: ..." -d '{"prompt":"recheck payment-demo"}'` → coordinator delegates to Reader → response includes worker call trace.
+   - Negative test: `curl -X POST $COORDINATOR/recheck` without token → 401.
+   - Negative test: `curl -X POST $READER_URL/read` (no token) → 401.
+   - Negative test: `gcloud auth print-identity-token` (as user) → call worker → 403.
+   - Try to prompt-inject coordinator to call `worker_client.call("docs", {"file": "ops-contract.yaml", ...})` → Docs Agent returns 403 (path allowlist).
+5. **Commit.**
+
+### Phase 11 Codex review
+
+Send Phase 11 diff + IAM matrix + 4 negative-test results to Codex thread. Apply findings before Phase 13.
+
+---
+
+## Phase 13 — Self-Healing Rollback Decision Path (2–3 days)
+
+The Rollback Agent (11.5) executes; this phase wires the coordinator's *decision* to propose rollback when appropriate.
+
+### Task 13.1: `DecisionAction.ROLLBACK` + validator policy
+
+**Files:**
+- Modify: `agent/models.py`, `agent/validator.py`
+- Create: `tests/unit/test_validator_rollback.py`
+
+**Validator policy:**
+- Accept `rollback` for diffs where `contract_status == present_disallow_manual` AND a previous revision exists.
+- Reject `rollback` if `contract_status == present_allow_manual` (use `docs_pr` there instead).
+- Reject `rollback` without `requires_human_review=true`.
+
+**Steps:** TDD-style, implement, commit.
+
+### Task 13.2: Renderer outputs approval URL for rollback
+
+**Files:** Modify `agent/renderer.py`, create `tests/unit/test_renderer_rollback.py`.
+
+Rendered body for a rollback decision includes the approval URL pointing at the coordinator's `/approvals/{id}` (NOT the Rollback Agent — it's private), a clear CTA, the canonical rollback details (service, target_revision, reason), and a 15-minute expiry note.
+
+### Task 13.3: End-to-end rollback flow
+
+**Files:** Create `tests/integration/test_rollback_e2e.py`.
+
+Mock Reader → drift on `present_disallow_manual` → coordinator's ADK proposes `rollback` → validator accepts → renderer produces approval URL → Notifier called with severity=`approval` and the URL. Then: human POSTs to `/approvals/{id}` with valid token → coordinator calls Rollback Agent's `/execute` → assert Rollback Agent's execute was called with the canonical stored payload.
+
+### Phase 13 Codex review
+
+---
+
+## Phase 14 — Eventarc Auto-Trigger (1–2 days, bonus)
+
+**Important per Codex review:** Eventarc audit-log triggers can be delayed, deduplicated, or filtered wrong. Manual `/chat` stays the primary demo path; Eventarc is a **bonus proof** shown second.
+
+### Task 14.1: Discover the real Eventarc audit-log shape
+
+**Steps:**
+1. Manually update payment-demo's env: `gcloud run services update payment-demo --update-env-vars=DEMO=1`.
+2. Pull the corresponding audit log entry: `gcloud logging read 'resource.type=cloud_run_revision AND protoPayload.methodName=~"Services\.UpdateService"' --limit 1 --format=json`.
+3. Inspect the actual `methodName` (it may be `google.cloud.run.v2.Services.UpdateService` or `google.cloud.run.v1.Services.ReplaceService` depending on which API path the CLI used). Record the exact value in the plan and code.
+
+### Task 14.2: `/eventarc` endpoint with bearer auth
+
+**Files:**
+- Modify: `agent/main.py`
+- Create: `tests/integration/test_eventarc.py`
+
+**Auth model:** `/eventarc` requires `Authorization: Bearer <id-token>`. The token is verified via `google.oauth2.id_token.verify_oauth2_token`. The email claim must match `eventarc-trigger-sa@$PROJECT.iam.gserviceaccount.com`. Anything else → 401/403. This works EVEN THOUGH coordinator is `--allow-unauthenticated`, because the auth is enforced at the application layer.
+
+**Steps:** TDD, implement, deploy.
+
+### Task 14.3: Create the trigger
+
+```bash
+# Add to setup_secrets.sh
+gcloud iam service-accounts create eventarc-trigger-sa --project "$PROJECT"
+gcloud run services add-iam-policy-binding driftscribe-agent \
+  --member=serviceAccount:eventarc-trigger-sa@$PROJECT.iam.gserviceaccount.com \
+  --role=roles/run.invoker \
+  --region=asia-northeast1
+
+gcloud eventarc triggers create driftscribe-cloudrun-changes \
+  --project "$PROJECT" \
+  --location=asia-northeast1 \
+  --destination-run-service=driftscribe-agent \
+  --destination-run-path=/eventarc \
+  --event-filters="type=google.cloud.audit.log.v1.written" \
+  --event-filters="serviceName=run.googleapis.com" \
+  --event-filters="methodName=<DISCOVERED-IN-14.1>" \
+  --service-account=eventarc-trigger-sa@$PROJECT.iam.gserviceaccount.com
+```
+
+### Task 14.4: E2E smoke
+
+`gcloud run services update payment-demo --update-env-vars=NEW_THING=test` → wait ≤30s → check Firestore for new decision document with `trigger="eventarc"`. Document observed latency in `docs/benchmarks.md`.
+
+### Phase 14 Codex review
+
+---
+
+## Phase 15 — Hardening (1–2 days)
+
+### Task 15.1: GitHub Actions CI
+
+**Files:** `.github/workflows/ci.yml`
+
+Runs on PR + push to main. Steps: checkout, setup Python 3.12, `uv sync`, `uv run ruff check`, `uv run pytest -q`. Add status badge to README.
+
+### Task 15.2: Structured JSON logging with trace IDs
+
+**Files:** Modify `driftscribe_lib/logging.py`, modify every `main.py`.
+
+- Each `/chat`, `/recheck`, `/eventarc`, worker request gets a unique `trace_id` (UUIDv4).
+- Trace ID propagates to worker calls via `X-Trace-Id` header.
+- Worker logs adopt the inbound trace_id (or generate one if absent).
+- Output is JSON (one event per line) with `trace_id`, `service`, `level`, `msg`, plus structured fields.
+
+### Phase 15 Codex review
+
+---
+
+## Phase 16 — Submission Polish (4 days)
+
+### Task 16.1: HTML architecture diagram
+
+**Files:** Create `docs/architecture/architecture.html`.
+
+Single self-contained HTML file. Inline SVG. Two diagrams:
+1. **Trigger fan-in** — boxes for Eventarc, NL `/chat`, manual `/recheck` arrows into Coordinator → fan-out to four workers → outcomes (Firestore, GitHub PR, Cloud Run rollback, webhook).
+2. **Layered safety boundary** — for each worker: dotted IAM-scope box outside, hardcoded-policy box inside, plus an "HITL gate" diamond between Coordinator and Rollback for destructive ops. Coordinator drawn with an *empty* mutation-permission box to highlight the negative space.
+
+Style: minimalist, two-color, no animation, mobile-friendly. Linked from README.
+
+### Task 16.2: Scenario runner CLI + English demo-script
+
+**Files:** Create `scripts/demo.sh`, `docs/demo-script.md`.
+
+`scripts/demo.sh` Bash, well-commented, demoable line-by-line:
+- `beat-a` — baseline check (expect `no_op`)
+- `beat-b` — flip `PAYMENT_MODE=live` (expect `drift_issue`)
+- `beat-c` — flip an unknown var like `NEW_THING=test` (Beat C, expect either ADK reasoning or escalation depending on USE_ADK)
+- `beat-d` — flip `FEATURE_NEW_CHECKOUT=true` (expect `docs_pr` with preview)
+- `beat-e` — combo: drift on `present_disallow_manual` AND request rollback via `/chat` (expect `rollback` with approval URL)
+- `cleanup` — restore baseline
+
+`docs/demo-script.md` — written for the operator at the keyboard. Screen layout (left: terminal, right: browser with `architecture.html` open). Second-level timing. Exact commands. What the audience sees on each transition.
+
+### Task 16.3: Japanese README + demo-script
+
+**Files:** `README.ja.md`, `docs/demo-script.ja.md`.
+
+Translate. Cross-link top-of-file.
+
+### Task 16.4: Cost & Latency micro-section in README
+
+**Steps:** Run 20 `/chat` calls back-to-back; record p50/p95 latency. Pull GCP cost-per-call from the billing breakdown. Add a 4-line section to README:
+
+> **Cost & Latency** — Per /chat call: ~$0.0002 GCP + ~$0.0001 Gemini = ~$0.0003. p50 latency: <Xms classifier-path, <Yms ADK-path. p95: <Z. Idle cost at min-instances=0: $0. Demo total spend over hackathon: $<actual>.
+
+### Task 16.5: Comparison table in README
+
+**Steps:** Add a section to README comparing DriftScribe with Drift (CloudPosse), Steampipe, Cloud Custodian, AWS Config Rules. Honest axes: AI-driven, HITL gates, OS-enforced + policy-enforced safety, multi-cloud, open source, deployment surface, target user. DriftScribe wins on AI + layered safety; loses on multi-cloud + maturity.
+
+### Task 16.6: ProtoPedia submission text (Japanese + English)
+
+**Files:** `docs/submission/protopedia.ja.md`, `docs/submission/protopedia.en.md`.
+
+Standard ProtoPedia sections: タイトル / Title, 概要 / Summary, ハイライト / Highlights (multi-agent layered safety, HITL, ADK), 技術スタック / Stack, デモ / Demo, リポジトリ / Repo URL, デプロイ済みURL / Deployed URLs.
+
+### Task 16.7: 90-second video script + recording plan
+
+**Files:** `docs/submission/video-script.md`.
+
+Beat-by-beat script:
+- 0:00–0:10 — opening hook ("operators have a config-drift problem; here's an AI agent that fixes it safely")
+- 0:10–0:30 — show `/chat` and the multi-agent architecture diagram side-by-side
+- 0:30–0:50 — Beat B (drift_issue) + Beat D (docs_pr)
+- 0:50–1:15 — Beat E (rollback) — show the approval link → human approval → execution
+- 1:15–1:30 — the "jailbreak fails" beat: try to prompt-inject coordinator into deleting payment-demo. Show it fail. Roll credits.
+
+Narration in English; Japanese subtitles. Tools: OBS Studio + DaVinci Resolve.
+
+**This is the explicit hand-off point — I cannot record. Hand off to user with clear instructions.**
+
+### Phase 16 Codex review
+
+---
+
+## Phase 18 — Final Submission (1 day, ~July 7)
+
+### Task 18.1: Verify everything still works
+- Top up Gemini credits if depleted (the v2 demo path).
+- Run `scripts/demo.sh` through all beats.
+- Confirm `architecture.html` renders on mobile + desktop.
+
+### Task 18.2: Record video (USER ACTION)
+
+Per the script.
+
+### Task 18.3: Submit to ProtoPedia + Findy (USER ACTION)
+
+Paste prepared text. Attach video. Cross-link the deployed URLs + architecture diagram + repo.
+
+---
+
+## Out of Scope (Deliberately)
+
+- ~~Firestore-backed ADK Sessions~~ — in-memory only.
+- ~~Multi-service contract support~~ — `payment-demo` only.
+- ~~Real Slack/Discord integration~~ — generic webhook to webhook.site is enough.
+- ~~Multi-cloud (AWS/Azure adapters)~~ — Google Cloud Japan hackathon.
+- ~~`DRY_RUN=false` as default~~ — stays true; the path to flip safely is documented but not shipped.
+- ~~Production hardening (rate limits, retries, circuit breakers)~~ — architectural points are judged, not production-readiness.
+
+## Risks + Mitigations
+
+| Risk | Likelihood | Impact | Mitigation |
+|---|---|---|---|
+| Gemini quota runs out during demo | Med | High | User must top up + set budget alert. Beat C smoke test before recording. |
+| Cloud Run-to-Cloud Run auth spike reveals incompatibility | Low | High | **Spike is Task 11.0.** Falls back to shared HMAC headers if it fails — design is unchanged but signature different. |
+| Eventarc latency >30s ruins live demo | Med | Low | Manual `/chat` is primary; Eventarc is bonus. |
+| HITL approval UI feels clunky on video | Low | Low | Page is intentionally single-button, no external assets, pre-opened browser tab. |
+| Phase 11 overruns the 6–8 day estimate | Med | Med | Cut Phase 13.3 e2e test or Phase 14 entirely if blocked past 12 days on Phase 11. |
+| Confused-deputy attacks slip through worker policy validation | Med | High | Each worker has exhaustive negative tests (Task 11.3–11.6). Codex reviews per phase catch design omissions. |
+| Approval token replay or CSRF | Low | High | Transactional one-time HMAC tokens, POST not GET, no-store cache, no-referrer policy. |
