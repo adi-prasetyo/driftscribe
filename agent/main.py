@@ -27,6 +27,7 @@ from agent.renderer import (
 )
 from agent.runbook_patcher import patch_runbook
 from agent.state_store import FirestoreStateStore, InMemoryStateStore, StateStore
+from agent.validator import ValidationError as ProposalValidationError
 from agent.validator import validate
 
 # Match git refspec rules (https://git-scm.com/docs/git-check-ref-format):
@@ -201,7 +202,20 @@ def _perform_action(
     )
 
 
-def _do_recheck(trigger: str, force: bool = False) -> dict:
+async def _run_adk_agent(user_msg: str) -> DecisionProposal:
+    """Thin wrapper so integration tests have a stable patch target.
+
+    Lazy-imports `agent.adk_agent` so the Google ADK SDK doesn't load on the
+    non-ADK code path. Patching `agent.main._run_adk_agent` (rather than
+    `agent.adk_agent.run_agent`) preserves the lazy-load benefit AND keeps
+    the test patch site stable across spec evolution.
+    """
+    from agent.adk_agent import run_agent
+
+    return await run_agent(user_msg)
+
+
+async def _do_recheck(trigger: str, force: bool = False) -> dict:
     """Run a recheck under the trigger label, with idempotency.
 
     Idempotency contract:
@@ -221,6 +235,9 @@ def _do_recheck(trigger: str, force: bool = False) -> dict:
       unforced retries still compute the base key and find the prior base-key
       decision if one exists; the forced decision is only retrievable via its
       own decision_id.
+
+    Async on the outer frame only — the ADK agent's `run_agent` is async, but
+    `classify`, `validate`, `_render_for`, and `_perform_action` stay sync.
     """
     s = get_settings()
     try:
@@ -228,10 +245,43 @@ def _do_recheck(trigger: str, force: bool = False) -> dict:
     except Exception as e:
         # Bad contract = our deploy is broken, not GCP. 500, not 502.
         raise HTTPException(status_code=500, detail=f"contract load failed: {e}")
-    try:
-        live_env = read_live_env(s.target_service, s.target_region, s.gcp_project)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"cloud run read failed: {e}")
+
+    if s.use_adk:
+        # ADK path: the agent's own tool calls do the Cloud Run read, so we
+        # don't pre-fetch live_env. We still need a live_env-shaped dict for
+        # the idempotency hash, so we attempt one read here and fall back to
+        # deriving it from the proposal's diffs if Cloud Run refuses us.
+        user_msg = (
+            f"Detect drift for Cloud Run service `{s.target_service}` in "
+            f"region `{s.target_region}` (GCP project `{s.gcp_project}`). "
+            f"The contract path is `{s.contract_path}`. "
+            f"GitHub repo for PR history is `{s.github_repo}`. "
+            f"/debug/config URL: `{s.debug_config_url or 'not provided'}`."
+        )
+        try:
+            proposal = await _run_adk_agent(user_msg)
+        except Exception as e:
+            # LLM produced no parseable JSON, or schema-validation failed.
+            # Distinct from a side-effect failure — surface as upstream-dep
+            # failure (502) so the caller knows to retry rather than fix.
+            raise HTTPException(status_code=502, detail=f"adk agent failed: {e}")
+        try:
+            live_env = read_live_env(s.target_service, s.target_region, s.gcp_project)
+        except Exception:
+            # Trade-off: when the Cloud Run read fails on the ADK path we
+            # hash the diffs the LLM reported instead of the actual live env.
+            # That's weaker idempotency (the LLM's tool call already saw the
+            # live state, but we can't observe that here), but it lets the
+            # demo proceed even when /run.services.get permission is missing.
+            live_env = {d.name: d.live or "" for d in proposal.env_diffs}
+    else:
+        try:
+            live_env = read_live_env(s.target_service, s.target_region, s.gcp_project)
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"cloud run read failed: {e}")
+        proposal = classify(
+            ClassificationInput(contract=contract, live_env=live_env, recent_prs=[])
+        )
 
     contract_hash = _hash_contract(contract)
     event_key = _event_key(
@@ -248,10 +298,19 @@ def _do_recheck(trigger: str, force: bool = False) -> dict:
         if existing:
             return existing
 
-    proposal = classify(
-        ClassificationInput(contract=contract, live_env=live_env, recent_prs=[])
-    )
-    validate(proposal, contract)
+    try:
+        validate(proposal, contract)
+    except ProposalValidationError as e:
+        # ADK path: the LLM produced a proposal that violates the safety
+        # rules (e.g. docs_pr for a SECRET-named var, allow_manual_change
+        # violation). Surface as 502 with a distinguishable detail so logs
+        # disambiguate from a Cloud Run / ADK transport failure.
+        # Deterministic-classifier path: this should never happen — the
+        # classifier and validator are co-designed. If it does, the deploy
+        # is broken (500).
+        if s.use_adk:
+            raise HTTPException(status_code=502, detail=f"adk proposal rejected: {e}")
+        raise HTTPException(status_code=500, detail=f"validator rejected proposal: {e}")
     rendered = _render_for(proposal.action, proposal)
 
     # Claim the event BEFORE any side effects so retries don't spawn duplicate
@@ -296,12 +355,24 @@ def _do_recheck(trigger: str, force: bool = False) -> dict:
 
 
 @app.post("/recheck")
-def recheck(force: bool = False):
-    return _do_recheck("manual_recheck", force=force)
+async def recheck(force: bool = False):
+    return await _do_recheck("manual_recheck", force=force)
+
+
+@app.post("/eventarc")
+async def eventarc():
+    """Stub for Phase 9 (Cloud Run Audit Logs → Eventarc → /eventarc).
+
+    Wired now so deployment manifests can target the route; the handler
+    itself ships in the Eventarc phase.
+    """
+    raise HTTPException(status_code=501, detail="Phase 9")
 
 
 @app.get("/runs/{decision_id}")
 def get_run(decision_id: str):
+    # Sync on purpose — this only reads from the StateStore singleton, no
+    # I/O that benefits from async.
     d = get_state().get_decision(decision_id)
     if not d:
         raise HTTPException(status_code=404, detail="decision not found")
