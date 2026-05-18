@@ -2577,9 +2577,12 @@ COPY pyproject.toml ./
 RUN uv pip install --system -e .
 COPY agent/ ./agent/
 COPY checker/ ./checker/
-COPY demo/ops-contract.yaml /contract/ops-contract.yaml
-COPY demo/docs/ /contract/docs/
+# Preserve the contract-relative path so DOCS_ROOT=/contract resolves
+# `demo/docs/runbook.md` to `/contract/demo/docs/runbook.md`.
+COPY demo/ /contract/demo/
 ENV PORT=8080
+ENV DOCS_ROOT=/contract
+ENV CONTRACT_PATH=/contract/demo/ops-contract.yaml
 CMD ["uvicorn", "agent.main:app", "--host", "0.0.0.0", "--port", "8080"]
 ```
 
@@ -2650,7 +2653,7 @@ steps:
       - --image=gcr.io/$PROJECT_ID/driftscribe-agent:$SHORT_SHA
       - --region=asia-northeast1
       - --allow-unauthenticated
-      - --set-env-vars=DRY_RUN=false,GCP_PROJECT=$PROJECT_ID,TARGET_SERVICE=payment-demo,TARGET_REGION=asia-northeast1,GITHUB_REPO=theghostsquad00/driftscribe,CONTRACT_PATH=/contract/ops-contract.yaml,USE_ADK=true
+      - --set-env-vars=DRY_RUN=false,GCP_PROJECT=$PROJECT_ID,TARGET_SERVICE=payment-demo,TARGET_REGION=asia-northeast1,GITHUB_REPO=theghostsquad00/driftscribe,USE_ADK=true
       - --set-secrets=GITHUB_TOKEN=driftscribe-github-token:latest,GOOGLE_API_KEY=driftscribe-google-api-key:latest
 ```
 
