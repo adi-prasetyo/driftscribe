@@ -7,6 +7,7 @@ RUN pip install --no-cache-dir uv
 COPY pyproject.toml ./
 COPY agent/ ./agent/
 COPY checker/ ./checker/
+COPY driftscribe_lib/ ./driftscribe_lib/
 RUN uv pip install --system -e .
 # Preserve the contract-relative path so DOCS_ROOT=/contract resolves
 # `demo/docs/runbook.md` to `/contract/demo/docs/runbook.md`.

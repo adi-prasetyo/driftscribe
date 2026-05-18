@@ -35,7 +35,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["agent", "checker"]
+packages = ["agent", "checker", "driftscribe_lib"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
