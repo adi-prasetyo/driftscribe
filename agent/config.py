@@ -1,4 +1,5 @@
-# agent/config.py
+from functools import lru_cache
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,5 +18,12 @@ class Settings(BaseSettings):
     use_adk: bool = False
 
 
+@lru_cache(maxsize=1)
 def get_settings() -> Settings:
+    """Cached so /recheck doesn't re-parse .env on every request.
+
+    Tests that need to vary settings should call ``get_settings.cache_clear()``
+    after mutating env (a conftest fixture handles this for the integration
+    test suite).
+    """
     return Settings()
