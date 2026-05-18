@@ -1,0 +1,51 @@
+# Image refs use ${_AR_PATH} so the AR coordinates live in one place — flip
+# region or repo name once and the rest follows.
+substitutions:
+  _AR_PATH: 'asia-northeast1-docker.pkg.dev/${PROJECT_ID}/driftscribe'
+
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ['build', '-t', '${_AR_PATH}/driftscribe-agent:${SHORT_SHA}', '-f', 'Dockerfile.agent', '.']
+  - name: gcr.io/cloud-builders/docker
+    args: ['build', '-t', '${_AR_PATH}/payment-demo:${SHORT_SHA}', '-f', 'demo/Dockerfile', 'demo']
+  - name: gcr.io/cloud-builders/docker
+    args: ['push', '${_AR_PATH}/driftscribe-agent:${SHORT_SHA}']
+  - name: gcr.io/cloud-builders/docker
+    args: ['push', '${_AR_PATH}/payment-demo:${SHORT_SHA}']
+
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - payment-demo
+      - --image=${_AR_PATH}/payment-demo:${SHORT_SHA}
+      - --region=asia-northeast1
+      - --allow-unauthenticated
+      - --min-instances=0
+      - --max-instances=1
+      - --concurrency=1
+      - --set-env-vars=PAYMENT_MODE=mock,FEATURE_NEW_CHECKOUT=false
+
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - driftscribe-agent
+      - --image=${_AR_PATH}/driftscribe-agent:${SHORT_SHA}
+      - --region=asia-northeast1
+      # SECURITY: live demo runs DRY_RUN=true + --allow-unauthenticated (Option C
+      # from Phase 8 plan). Flip to DRY_RUN=false ONLY after adding the
+      # X-DriftScribe-Token guard (Option A) or removing --allow-unauthenticated
+      # in favor of IAM-authenticated invocation (Option B).
+      - --allow-unauthenticated
+      - --min-instances=0
+      - --max-instances=1
+      - --concurrency=1
+      - --set-env-vars=DRY_RUN=true,GCP_PROJECT=$PROJECT_ID,TARGET_SERVICE=payment-demo,TARGET_REGION=asia-northeast1,GITHUB_REPO=adi-prasetyo/driftscribe,USE_ADK=true
+      - --set-secrets=GITHUB_TOKEN=github-pat:latest,GOOGLE_API_KEY=gemini-api-key:latest
+
+images:
+  - '${_AR_PATH}/driftscribe-agent:${SHORT_SHA}'
+  - '${_AR_PATH}/payment-demo:${SHORT_SHA}'
