@@ -35,12 +35,18 @@ def _load_demo_main():
 
 @pytest.fixture
 def demo_app(monkeypatch):
-    """Provide a fresh TestClient against demo.main:app with a clean env baseline."""
-    # Clear all keys the app cares about so each test starts from a known state.
+    """Provide a fresh TestClient against demo.main:app with a clean env baseline.
+
+    Entering TestClient as a context manager triggers the ASGI lifespan, so the
+    boot-time secret-name guard runs in every test (rather than only when
+    uvicorn boots the app for real). Without the `with` block the lifespan is
+    skipped and the guard becomes dead code in CI.
+    """
     for key in ("PAYMENT_MODE", "FEATURE_NEW_CHECKOUT", "FEATURE_BETA_UI", "NEW_THING", "K_REVISION"):
         monkeypatch.delenv(key, raising=False)
     module = _load_demo_main()
-    return module, TestClient(module.app)
+    with TestClient(module.app) as client:
+        yield module, client
 
 
 def test_root_returns_ok(demo_app):
@@ -96,3 +102,30 @@ def test_debug_config_revision_falls_back_to_local(demo_app):
     resp = client.get("/debug/config")
     assert resp.status_code == 200
     assert resp.json()["revision"] == "local"
+
+
+def test_boot_guard_refuses_secret_named_safe_key(monkeypatch):
+    """Sabotage SAFE_KEYS to include a secret-named entry; entering the ASGI
+    lifespan must raise so the app refuses to serve. This is the test that
+    actually justifies the inline-regex duplication — without it, the guard
+    is dead code.
+    """
+    module = _load_demo_main()
+    module.SAFE_KEYS = {"PAYMENT_MODE", "STRIPE_API_KEY"}
+    with pytest.raises(RuntimeError, match="secret-named entries"):
+        with TestClient(module.app):
+            pass
+
+
+def test_demo_secret_regex_matches_agent_canonical():
+    """Pin literal equivalence between the demo's inline copy of the secret-
+    name regex and the canonical one in agent.secret_guard. If the canonical
+    regex changes and someone forgets to update the demo, this test breaks
+    loudly — the runtime-time decoupling is preserved, the test-time check
+    catches drift.
+    """
+    from agent.secret_guard import SECRET_NAME_PATTERN
+
+    module = _load_demo_main()
+    assert module._SECRET_NAME_PATTERN.pattern == SECRET_NAME_PATTERN.pattern
+    assert module._SECRET_NAME_PATTERN.flags == SECRET_NAME_PATTERN.flags
