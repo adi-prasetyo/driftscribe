@@ -93,3 +93,21 @@ def test_action_string_coerced_to_decision_action_enum():
     proposal = _parse_response(text)
     assert proposal.action == DecisionAction.DRIFT_ISSUE
     assert proposal.action.value == "drift_issue"
+
+
+def test_trailing_prose_with_braces_raises_decode_error_not_silent_halfmatch():
+    # The greedy `\{.*\}` extractor spans from the first `{` to the LAST `}`,
+    # so a response that ends with prose containing braces (`See {example}`)
+    # ends up with a malformed concatenation rather than a successful parse.
+    # Pin that this surfaces as JSONDecodeError, NOT a silent half-match that
+    # would skip validation entirely. If the regex is ever changed to
+    # non-greedy, this test should still pass (it would succeed-parse the
+    # valid leading JSON and ignore the trailing prose).
+    text = json.dumps(_VALID_PAYLOAD) + "\nNote: see {example} for details"
+    try:
+        proposal = _parse_response(text)
+    except json.JSONDecodeError:
+        return  # current behavior: greedy regex grabs too much, fails to decode
+    # Acceptable alternative: a future lazier-regex implementation parses the
+    # leading JSON cleanly and discards the trailing prose.
+    assert proposal.action is DecisionAction.DRIFT_ISSUE

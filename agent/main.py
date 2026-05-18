@@ -258,6 +258,14 @@ async def _do_recheck(trigger: str, force: bool = False) -> dict:
             f"GitHub repo for PR history is `{s.github_repo}`. "
             f"/debug/config URL: `{s.debug_config_url or 'not provided'}`."
         )
+        # COST NOTE: on USE_ADK=true we run the agent BEFORE the idempotency-
+        # cache lookup further down — every retry pays the Gemini cost even if
+        # the prior decision was already cached. This is because the cache key
+        # includes live_env, which the agent itself produces. Two cheaper
+        # designs — (a) cache on (trigger, service, contract_hash) only and
+        # accept weaker idempotency, or (b) pre-call read_live_env even on the
+        # ADK path to compute the key first — are deferred to Phase 9 along
+        # with the Eventarc handler so retry storms don't break the bank.
         try:
             proposal = await _run_adk_agent(user_msg)
         except Exception as e:
