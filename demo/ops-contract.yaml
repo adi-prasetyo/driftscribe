@@ -2,7 +2,7 @@ service: payment-demo
 environment: production
 cloud_run_service: payment-demo
 region: asia-northeast1
-github_repo: theghostsquad00/driftscribe
+github_repo: adi-prasetyo/driftscribe
 expected_env:
   PAYMENT_MODE:
     value: "mock"
