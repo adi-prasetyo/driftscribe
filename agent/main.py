@@ -7,8 +7,9 @@ import time
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 
+from agent.auth import verify_token
 from agent.classifier import ClassificationInput, classify
 from agent.cloud_run_client import read_live_env
 from agent.config import Settings, get_settings
@@ -379,7 +380,10 @@ async def _do_recheck(trigger: str, force: bool = False) -> dict:
 
 
 @app.post("/recheck")
-async def recheck(force: bool = False):
+async def recheck(force: bool = False, _: None = Depends(verify_token)):
+    # ``verify_token`` runs first and raises 401/403/503 before _do_recheck.
+    # The unused-parameter underscore is the standard FastAPI convention for
+    # auth deps that only matter for their side effect (raising on failure).
     return await _do_recheck("manual_recheck", force=force)
 
 

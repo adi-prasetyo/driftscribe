@@ -67,7 +67,13 @@ steps:
       # ...after verifying https://ai.studio/projects credit balance, then run
       # the Beat C smoke test before recording the demo video.
       - --set-env-vars=DRY_RUN=true,GCP_PROJECT=$PROJECT_ID,TARGET_SERVICE=payment-demo,TARGET_REGION=asia-northeast1,GITHUB_REPO=adi-prasetyo/driftscribe,USE_ADK=false,DEBUG_CONFIG_URL=https://payment-demo-u272wv52kq-an.a.run.app/debug/config
-      - --set-secrets=GITHUB_TOKEN=github-pat:latest,GOOGLE_API_KEY=gemini-api-key:latest
+      # DRIFTSCRIBE_TOKEN (Phase 11.1) gates /recheck via the X-DriftScribe-Token
+      # header. Generate + create the secret manually before the first deploy
+      # that includes this line — see docs/architecture/multi-agent-design.md
+      # §2 and the Phase 11.1 implementation report. If the secret is missing,
+      # the deploy still succeeds (no value injected) and /recheck fail-closes
+      # with 503 ("auth not configured") rather than silently exposing itself.
+      - --set-secrets=GITHUB_TOKEN=github-pat:latest,GOOGLE_API_KEY=gemini-api-key:latest,DRIFTSCRIBE_TOKEN=coordinator-shared-token:latest
 
 images:
   - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-agent:${_TAG}

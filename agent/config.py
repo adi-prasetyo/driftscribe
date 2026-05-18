@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     debug_config_url: str = ""
     google_api_key: str = ""
     use_adk: bool = False
+    # Operator-facing shared token guarding /recheck (and future /chat in
+    # Phase 11.7). Cloud Run injects this from Secret Manager secret
+    # ``coordinator-shared-token`` via cloudbuild.yaml's --set-secrets. Empty
+    # default means the guard fails closed (503) — see agent/auth.py.
+    driftscribe_token: str = ""
 
 
 @lru_cache(maxsize=1)

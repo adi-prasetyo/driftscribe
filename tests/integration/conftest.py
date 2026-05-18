@@ -6,26 +6,54 @@ which polluted the pytest session and risked leaking into Phase 3+ tests.
 
 import pytest
 
+from agent.auth import verify_token
 from agent.config import get_settings
-from agent.main import _reset_state_for_tests
+from agent.main import _reset_state_for_tests, app
 
 
 @pytest.fixture(autouse=True)
-def _agent_settings(monkeypatch):
+def _agent_settings(monkeypatch, request):
     """Set DriftScribe settings for every integration test, then reset cache.
 
     autouse so individual tests don't have to opt in. monkeypatch undoes the
     env mutations at test teardown; we additionally clear the lru_cache on
     ``get_settings`` and drop the StateStore singleton so each test gets a
     fresh Settings() and an empty InMemoryStateStore.
+
+    Also disables the /recheck token guard by default via
+    ``app.dependency_overrides[verify_token]``. The token guard's own tests
+    (``test_token_guard.py``) opt OUT via the ``no_auth_override`` marker so
+    they exercise the real ``verify_token`` dependency end-to-end.
     """
     monkeypatch.setenv("DRY_RUN", "true")
     monkeypatch.setenv("GCP_PROJECT", "test-proj")
     monkeypatch.setenv("CONTRACT_PATH", "demo/ops-contract.yaml")
     monkeypatch.setenv("GITHUB_REPO", "theghostsquad00/driftscribe")
     monkeypatch.setenv("USE_ADK", "false")
+    # DRIFTSCRIBE_TOKEN (Phase 11.1) gates /recheck. A non-empty default
+    # avoids the fail-closed 503 in tests that don't care about auth and
+    # haven't explicitly disabled the dep override below.
+    monkeypatch.setenv("DRIFTSCRIBE_TOKEN", "test-token-integration")
     get_settings.cache_clear()
     _reset_state_for_tests()
+
+    # Bypass verify_token for tests that don't explicitly exercise the guard.
+    # test_token_guard.py marks its tests so we leave the real dep in place.
+    skip_override = request.node.get_closest_marker("no_auth_override") is not None
+    if not skip_override:
+        app.dependency_overrides[verify_token] = lambda: None
+
     yield
+
+    app.dependency_overrides.pop(verify_token, None)
     get_settings.cache_clear()
     _reset_state_for_tests()
+
+
+def pytest_configure(config):
+    """Register the ``no_auth_override`` marker so tests can opt out of the
+    autouse verify_token override (only test_token_guard.py uses it)."""
+    config.addinivalue_line(
+        "markers",
+        "no_auth_override: keep the real verify_token dependency wired",
+    )
