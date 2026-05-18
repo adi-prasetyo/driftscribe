@@ -104,10 +104,20 @@ def open_docs_pr(
 
     pr = repo.create_pull(title=title, body=body, head=branch, base=base)
     # Labels are best-effort: if labeling fails (e.g. label doesn't exist yet),
-    # the PR is still successfully created and we return its URL. Caller can
-    # add labels manually.
+    # the PR is still successfully created and we return its URL. The response
+    # exposes labeled + label_error so callers can surface partial success.
+    labeled = True
+    label_error: str | None = None
     try:
         pr.add_to_labels("driftscribe", "docs")
     except GithubException as e:
+        labeled = False
+        label_error = str(e)
         log.warning("failed to label PR #%s: %s", pr.number, e)
-    return {"dry_run": False, "url": pr.html_url, "number": pr.number}
+    return {
+        "dry_run": False,
+        "url": pr.html_url,
+        "number": pr.number,
+        "labeled": labeled,
+        "label_error": label_error,
+    }

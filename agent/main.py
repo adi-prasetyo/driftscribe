@@ -35,6 +35,27 @@ def _branch_slug(name: str) -> str:
     slug = _BRANCH_SLUG.sub("-", name.lower()).strip("-")
     return slug or "var"
 
+
+def _read_runbook_content(s: Settings, target_in_repo: str) -> str:
+    """Return the current runbook content.
+
+    Currently reads from the local filesystem under ``DOCS_ROOT``. Phase 9 will
+    swap this to fetch from the base branch via the GitHub Contents API so the
+    Eventarc handler doesn't depend on the deployed container's filesystem
+    being in sync with main. Keeping this as a function boundary so the swap
+    only touches one site.
+    """
+    target_path = Path(s.docs_root) / target_in_repo
+    if not target_path.exists():
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"runbook not found at {target_path} "
+                f"(check DOCS_ROOT and the contract's docs.file)"
+            ),
+        )
+    return target_path.read_text()
+
 app = FastAPI(title="DriftScribe Agent")
 
 
@@ -91,19 +112,7 @@ def _perform_action(
     assert proposal.target_docs_file is not None  # validator-enforced
     assert proposal.target_docs_section is not None
     target_in_repo = proposal.target_docs_file
-    target_path = Path(s.docs_root) / target_in_repo
-    if not target_path.exists():
-        # Refuse rather than silently writing a stub — a missing runbook means
-        # our deploy is misconfigured (Phase 9 will switch to fetching from
-        # the base branch via GitHub Contents API instead of the local FS).
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                f"runbook not found at {target_path} "
-                f"(check DOCS_ROOT and the contract's docs.file)"
-            ),
-        )
-    current = target_path.read_text()
+    current = _read_runbook_content(s, target_in_repo)
     new_content = patch_runbook(current, proposal.env_diffs, contract)
 
     # Timestamp + random suffix so retries / parallel deliveries don't collide

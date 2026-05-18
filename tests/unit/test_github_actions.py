@@ -123,6 +123,8 @@ def test_open_docs_pr_returns_url_even_when_labeling_fails():
     )
     assert res["url"].endswith("pull/99")
     assert res["number"] == 99
+    assert res["labeled"] is False
+    assert res["label_error"]  # non-empty
 
 
 def test_open_docs_pr_dry_run_returns_preview():
