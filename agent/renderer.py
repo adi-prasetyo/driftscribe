@@ -1,21 +1,34 @@
 from agent.models import DecisionProposal, EnvDiff
-from agent.secret_guard import is_secret_name
+from agent.secret_guard import should_redact, value_looks_credentialed
 
-_REDACTED = "`(value redacted: secret-like name)`"
+_REDACTED = "`(value redacted: secret-like)`"
 
 
 def _escape_markdown_cell(s: str) -> str:
-    """Escape characters that would break a markdown table cell."""
-    return s.replace("|", "\\|").replace("`", "\\`")
+    """Escape characters that would break a markdown table cell.
+
+    - `|` is escaped (column separator).
+    - Backticks are escaped (closes inline-code span).
+    - CR/LF are replaced with the literal text ``\\n`` so a multi-line value
+      doesn't shatter the row.
+    """
+    return (
+        s.replace("\r\n", "\\n")
+        .replace("\n", "\\n")
+        .replace("\r", "\\n")
+        .replace("|", "\\|")
+        .replace("`", "\\`")
+    )
 
 
 def _format_value_cell(name: str, value: str | None) -> str:
-    """Render a value cell. Redacts when var name matches the secret pattern.
+    """Render a value cell. Redacts when name is secret-like OR value looks
+    like a credential (e.g. URL with ``user:pass@`` authority).
 
     Empty string is NOT collapsed to "—" — an empty live value is a real drift
     signal (var was explicitly unset) and must be distinguishable from missing.
     """
-    if is_secret_name(name):
+    if should_redact(name, value):
         return _REDACTED if value is not None else "`—`"
     if value is None:
         return "`—`"
@@ -26,12 +39,12 @@ def _format_name_cell(name: str) -> str:
     return f"`{_escape_markdown_cell(name)}`"
 
 
-def _format_pr_cell(name: str, url: str | None) -> str:
+def _format_pr_cell(name: str, url: str | None, diff_values: tuple[str | None, ...]) -> str:
     if url is None:
         return "—"
-    # Even though merged-PR URLs are reviewed, defense in depth: hide them
-    # for secret-named vars in case a PR title/body quoted the value verbatim.
-    if is_secret_name(name):
+    # Redact if name is secret-like, value looks credentialed, or the URL itself
+    # carries credentials (e.g. ?token=...).
+    if should_redact(name, url) or any(value_looks_credentialed(v) for v in diff_values):
         return "(redacted)"
     return _escape_markdown_cell(url)
 
@@ -40,7 +53,8 @@ def _diff_row(d: EnvDiff) -> str:
     return (
         f"| {_format_name_cell(d.name)} | {_format_value_cell(d.name, d.expected)} | "
         f"{_format_value_cell(d.name, d.live)} | "
-        f"`{d.contract_status.value}` | {_format_pr_cell(d.name, d.recent_pr_match)} | "
+        f"`{d.contract_status.value}` | "
+        f"{_format_pr_cell(d.name, d.recent_pr_match, (d.expected, d.live, d.debug_config_value))} | "
         f"{_format_value_cell(d.name, d.debug_config_value)} |"
     )
 
@@ -52,19 +66,28 @@ def _evidence_table(proposal: DecisionProposal) -> str:
 
 
 def _scrub_secret_values_from_rationale(rationale: str, diffs: list[EnvDiff]) -> str:
-    """If the LLM rationale string contains a value for a secret-named var,
-    replace that substring with a redaction marker. Defense-in-depth against
-    the LLM quoting the actual secret in prose."""
+    """If the LLM rationale string contains any sensitive value, replace it
+    with a redaction marker. Sensitive = value from a secret-named var, or
+    a credentialed URL, or any recent_pr_match URL for a secret-named var.
+
+    Defense-in-depth against the LLM quoting the actual secret in prose.
+    """
     scrubbed = rationale
     seen: set[str] = set()
+
+    def _scrub(v: str | None) -> None:
+        nonlocal scrubbed
+        if v and v not in seen and len(v) >= 4:
+            scrubbed = scrubbed.replace(v, "(redacted)")
+            seen.add(v)
+
     for d in diffs:
-        if not is_secret_name(d.name):
-            continue
         for v in (d.expected, d.live, d.debug_config_value):
-            if v and v not in seen and len(v) >= 4:
-                # Only scrub values long enough that incidental collisions are unlikely
-                scrubbed = scrubbed.replace(v, "(redacted)")
-                seen.add(v)
+            if should_redact(d.name, v):
+                _scrub(v)
+        # PR URL for a secret-named var (it might appear in rationale prose too)
+        if should_redact(d.name, d.recent_pr_match):
+            _scrub(d.recent_pr_match)
     return scrubbed
 
 
