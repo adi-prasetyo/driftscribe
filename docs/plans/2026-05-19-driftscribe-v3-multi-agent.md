@@ -6,7 +6,20 @@
 
 **Revision history:** v3.0 (initial plan, 2026-05-19) had a confused-deputy hole and several wrong assumptions about Cloud Run/Eventarc auth. Codex flagged them on thread `019e3af3-f679-7d20-bff1-328295c8f5df`. This v3.1 incorporates the fixes and cuts to fit the part-time calendar.
 
-**Goal:** Promote DriftScribe from "single-agent classifier-with-LLM-polish" to a **multi-agent system with layered safety** — IAM-scoped service accounts *plus* per-worker payload-intent policies *plus* HITL approval gates for destructive actions. Add a natural-language operator interface, Eventarc auto-trigger, and submission-quality polish.
+**Goal:** Promote DriftScribe from "single-agent classifier-with-LLM-polish" to a **multi-agent system with four-layer safety** — capability-bounded tool registry on the coordinator *plus* IAM-scoped service accounts *plus* per-worker payload-intent policies *plus* HITL approval gates for destructive actions. Add a natural-language operator interface, Eventarc auto-trigger, and submission-quality polish.
+
+## The four layers of safety (the headline story)
+
+The threat model we're defending: **accidental damage from the LLM doing reasonable-looking-but-wrong things**, not full prompt-injection compromise (a fully jailbroken coordinator with infinite retries is cooked no matter what — but that's not the realistic failure mode). Each layer reduces the blast radius of an unintended action.
+
+| Layer | Where enforced | What it stops |
+|---|---|---|
+| **0. Tool inventory (capability-bounded registry)** | Coordinator process at startup | LLM cannot even *attempt* an action whose tool isn't registered. No `execute_shell`, no `arbitrary_http_request`, no direct GCP/GitHub SDK calls. Only `delegate_to_<worker>`, `load_contract`, `search_recent_prs` (read-only), session memory I/O. A test asserts the registered tool list is exactly this set and that no tool name matches dangerous patterns (`*shell*`, `*exec*`, `*delete*`, `*subprocess*`). |
+| **1. IAM scoping** | GCP control plane | Even if a tool *were* improperly added, the coordinator's Cloud Run SA lacks the IAM permission to do damage directly. |
+| **2. Per-worker payload-intent policy** | Worker app code | Confused-deputy attacks: a coordinator can call workers, but each worker hardcodes what arguments it'll accept. Docs Agent refuses paths outside `demo/docs/*.md`, Rollback hardcodes `payment-demo`, Reader ignores caller-supplied service/region. |
+| **3. HITL approval gate** | Firestore transaction (one-time HMAC token) | Destructive ops (rollback) require a human-clicked Approve button. Tokens are single-use and transaction-backed; replay returns 403. |
+
+This is the architectural property judges actually evaluate. Each layer is independently provable (Layer 0 is a unit test, Layer 1 is `gcloud projects get-iam-policy`, Layer 2 is per-worker negative tests, Layer 3 is the Firestore audit trail).
 
 ---
 
@@ -29,7 +42,7 @@ Coordinator has **read-only** access to: its own Firestore session/state, recent
 | Rollback | `roles/run.developer` on `payment-demo` service ONLY (resource-scoped binding, not project) | Acts ONLY on `payment-demo`. Target revision MUST be in the service's current revision list AND not the active revision. HITL token required. | HMAC key for approval tokens |
 | Notifier | none | Posts ONLY to `$NOTIFY_WEBHOOK_URL` (loaded from Secret Manager). Caller-supplied URLs ignored. | webhook URL |
 
-**Why this is stronger than IAM alone:** Even if a prompt-injected coordinator successfully asks Docs to "patch ops-contract.yaml to set allow_manual_change=true everywhere," Docs refuses because the payload policy rejects that path. Even if it asks Rollback to roll a *different* service, Rollback refuses because the policy hardcodes `payment-demo`. The IAM scope is the *outer* boundary; the policy is the *inner* boundary. The HITL gate is the *third* layer for destructive ops.
+**Why this is stronger than IAM alone:** Even if a prompt-injected coordinator successfully asks Docs to "patch ops-contract.yaml to set allow_manual_change=true everywhere," Docs refuses because the payload policy rejects that path. Even if it asks Rollback to roll a *different* service, Rollback refuses because the policy hardcodes `payment-demo`. The IAM scope is the *outer* boundary; the policy is the *inner* boundary. The HITL gate is the *third* layer for destructive ops. And before any of those layers even gets exercised, **the coordinator's tool registry (Layer 0) doesn't contain a path to most damaging actions in the first place** — the LLM literally has nothing to call.
 
 **Inter-service auth:** Cloud Run IAM (`roles/run.invoker` granted only to the coordinator's SA on each worker). Coordinator mints audience-bound Google ID tokens via `google.oauth2.id_token.fetch_id_token(audience=<worker_root_url>)` from the metadata server. Workers verify via `google.oauth2.id_token.verify_oauth2_token` (audience match + caller email match against allowlist of `coordinator-sa@$PROJECT.iam.gserviceaccount.com`).
 
@@ -142,6 +155,23 @@ Make the architecture real. Five Cloud Run services, four service accounts, IAM-
 4. **Add a fine-grained GitHub PAT** scoped to single repo: instruct user to create at https://github.com/settings/personal-access-tokens with `Repository access: Only select repositories: adi-prasetyo/driftscribe`, `Repository permissions: Contents: Read & write`, `Pull requests: Read & write`. Store as Secret Manager `docs-agent-github-pat`.
 5. Deploy with own SA (`docs-agent-sa@...`), no project-level IAM grants, `--no-allow-unauthenticated`, `docs-agent-github-pat` injected via `--set-secrets`.
 6. **Commit.**
+
+### Task 11.4b: Layer 0 — coordinator tool inventory test (½ day, can run in parallel with 11.5/11.6)
+
+**Files:**
+- Create: `tests/unit/test_coordinator_tool_inventory.py`
+- Modify: `agent/adk_agent.py` (export `COORDINATOR_TOOLS` as a module-level constant so the test imports the canonical list)
+
+**Why this task is separate:** Layer 0 (capability-bounded tool registry) needs explicit enforcement so a future "let me add a quick helper tool" PR fails CI. The test is the load-bearing artifact for the architectural property.
+
+**Steps:**
+1. **In `agent/adk_agent.py`**, factor the tool list into a module-level constant `COORDINATOR_TOOLS = [delegate_to_reader, delegate_to_docs, delegate_to_rollback, delegate_to_notifier, load_contract, search_recent_prs, get_session_state, set_session_state]`. The Agent constructor receives `tools=COORDINATOR_TOOLS`.
+2. **TDD `test_coordinator_tool_inventory.py`:**
+   - **Positive list assertion:** `{t.__name__ for t in COORDINATOR_TOOLS}` equals exactly the expected set. Hardcode the expected set in the test. New tools fail CI unless the expected set is updated *intentionally*.
+   - **Negative pattern assertion:** for every tool, `re.search(r"shell|exec|subprocess|os_command|delete|sudo|raw_http|arbitrary", t.__name__, re.I)` returns None. Catches "I added `delete_old_pr` and now coordinator has a delete tool" mistakes.
+   - **Module-import smoke:** `agent.adk_agent` imports cleanly; no top-level side effects that would pull in dangerous SDKs (e.g., assert `subprocess` is not in `sys.modules` after the import — flush + reimport pattern).
+3. **In `docs/architecture/multi-agent-design.md`**, add a section "Layer 0: capability-bounded tool registry" with the exhaustive list and a 2-line explanation. Cross-reference the test as the enforcement mechanism.
+4. **Commit.**
 
 ### Task 11.5: Rollback Agent (execute-only, no UI)
 
