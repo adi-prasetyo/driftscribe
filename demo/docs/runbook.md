@@ -6,4 +6,4 @@
 
 ## Feature Flags
 
-- `FEATURE_NEW_CHECKOUT=false` — operator-toggleable new checkout flow. Safe to flip without a redeploy.
+- `FEATURE_NEW_CHECKOUT=false` — **Operator note:** Operator-toggleable. Enables the new checkout flow. Safe to flip without a redeploy.
