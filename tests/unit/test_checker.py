@@ -104,3 +104,50 @@ expected_env:
     p.write_text(bad_contract)
     r = check_docs_cover_contract(p, tmp_path)
     assert not r.ok
+
+
+def test_fails_friendly_on_empty_contract(tmp_path):
+    p = tmp_path / "empty.yaml"
+    p.write_text("")
+    r = check_docs_cover_contract(p, tmp_path)
+    assert not r.ok
+    assert any("empty" in f or "mapping" in f for f in r.failures)
+
+
+def test_fails_friendly_on_entry_missing_docs(tmp_path):
+    contract = """
+service: x
+environment: production
+cloud_run_service: x
+region: asia-northeast1
+github_repo: x/x
+expected_env:
+  ORPHAN:
+    value: "1"
+    allow_manual_change: false
+"""
+    p = tmp_path / "ops-contract.yaml"
+    p.write_text(contract)
+    r = check_docs_cover_contract(p, tmp_path)
+    assert not r.ok
+    assert any("ORPHAN" in f and "docs" in f for f in r.failures)
+
+
+def test_fails_friendly_on_entry_missing_section(tmp_path):
+    contract = """
+service: x
+environment: production
+cloud_run_service: x
+region: asia-northeast1
+github_repo: x/x
+expected_env:
+  PARTIAL:
+    value: "1"
+    docs: { file: docs/r.md }
+    allow_manual_change: false
+"""
+    p = tmp_path / "ops-contract.yaml"
+    p.write_text(contract)
+    r = check_docs_cover_contract(p, tmp_path)
+    assert not r.ok
+    assert any("PARTIAL" in f and "section" in f for f in r.failures)

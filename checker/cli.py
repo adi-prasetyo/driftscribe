@@ -40,10 +40,28 @@ def _path_safe(p: str) -> bool:
 def check_docs_cover_contract(contract_path: Path, repo_root: Path) -> CheckResult:
     raw = yaml.safe_load(contract_path.read_text())
     failures: list[str] = []
+    if not isinstance(raw, dict):
+        failures.append(f"contract {contract_path} is empty or not a YAML mapping")
+        return CheckResult(ok=False, failures=failures)
     for var_name, rule in raw.get("expected_env", {}).items():
-        docs_file = rule.get("docs", {}).get("file", "")
+        if not isinstance(rule, dict):
+            failures.append(f"{var_name}: contract entry is not a mapping")
+            continue
+        docs = rule.get("docs")
+        if not isinstance(docs, dict):
+            failures.append(f"{var_name}: contract entry missing 'docs' mapping")
+            continue
+        docs_file = docs.get("file")
+        if not docs_file:
+            failures.append(f"{var_name}: contract entry missing 'docs.file'")
+            continue
         if not _path_safe(docs_file):
             failures.append(f"{var_name}: docs.file path rejected: {docs_file!r}")
+            continue
+
+        section_name = docs.get("section")
+        if not section_name:
+            failures.append(f"{var_name}: contract entry missing 'docs.section'")
             continue
 
         full_path = repo_root / docs_file
@@ -52,7 +70,6 @@ def check_docs_cover_contract(contract_path: Path, repo_root: Path) -> CheckResu
             continue
 
         sections = _split_sections(full_path.read_text())
-        section_name = rule["docs"]["section"]
         if section_name not in sections:
             failures.append(
                 f"{var_name}: docs section '{section_name}' not found in {docs_file}"
