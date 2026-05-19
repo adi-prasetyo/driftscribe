@@ -1,0 +1,11 @@
+PLACEHOLDER — populated in Phase 17.A.2.
+
+This file exists so the registry loader's path resolution succeeds for
+`load_workload("drift")` in Phase 17.A.1. The actual drift system
+prompt currently lives in `agent/adk_agent.py` as `SYSTEM_PROMPT_RECHECK`
+and `SYSTEM_PROMPT_CHAT`; 17.A.2 moves those constants here byte-for-byte
+(verified by golden tests) so prompt edits are workload-scoped instead
+of code-scoped.
+
+Until 17.A.2 lands, `main.py` and `adk_agent.py` continue to use the
+in-code constants — nothing reads this file at runtime yet.

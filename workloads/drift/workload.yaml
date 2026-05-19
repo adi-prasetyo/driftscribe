@@ -1,0 +1,58 @@
+# Drift workload manifest (Phase 17.A.1).
+#
+# Symbolic names only. The coordinator's central registry
+# (agent/workloads/registry.py) resolves each name to a real callable
+# or WorkerEndpoint. Real URLs / secrets / repos / audiences NEVER
+# appear in this file — they would be authority leaks. Flipping a
+# value here can choose from the allowlist but cannot widen capability.
+#
+# Anything referenced here that isn't in TOOL_REGISTRY / WORKER_REGISTRY
+# / ACTION_REGISTRY fails coordinator boot loudly.
+
+name: drift
+display_name: Cloud Run env drift
+description: >
+  Detect drift between a Cloud Run service's live env vars and the
+  team's declared ops-contract.yaml. Propose docs PRs (for sanctioned
+  changes) or HITL rollbacks (for unsanctioned drift on
+  allow_manual_change=false vars).
+
+# Relative to this workload's directory (workloads/drift/).
+system_prompt_file: system_prompt.txt
+
+# Path to the workload's declarative contract, relative to this
+# workload's directory. (demo/ops-contract.yaml lives at the repo root.)
+contract_file: ../../demo/ops-contract.yaml
+
+# Symbolic tool names — resolved to callables via TOOL_REGISTRY.
+# This list is the workload-scoped subset of the global registry; the
+# coordinator hands the LLM exactly these tools and nothing else.
+enabled_tool_names:
+  - drift_read_live_env
+  - drift_patch_docs
+  - drift_propose_rollback
+  - notify
+  - load_contract
+  - search_recent_prs
+
+# Symbolic worker names — resolved to WorkerEndpoint via WORKER_REGISTRY.
+# Each maps to a Cloud Run worker the coordinator may call (audience-
+# bound ID token, hardcoded endpoint path).
+worker_names:
+  - drift_reader
+  - drift_docs
+  - drift_rollback
+  - notifier
+
+# Tells the coordinator which observation type this workload ingests.
+# Constrained literal — adding a new kind requires a schema change.
+observation_kind: cloud_run_env
+
+# Symbolic action names — resolved to ActionSpec via ACTION_REGISTRY.
+# Gates which DecisionAction values the validator accepts.
+action_names:
+  - docs_pr
+  - drift_issue
+  - escalation
+  - no_op
+  - rollback
