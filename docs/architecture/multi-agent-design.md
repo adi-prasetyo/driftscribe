@@ -140,7 +140,7 @@ The 6 registered tools (as of Phase 11.7):
 | `search_recent_prs_tool` | Read-only PR history | Coordinator-internal (read-only GitHub token) |
 | `load_contract_tool` | Read the baked-in ops contract | Coordinator-internal (filesystem) |
 
-**Enforcement:** `tests/unit/test_coordinator_tool_inventory.py` (Phase 11.4b) pins this set. Adding or removing a tool requires updating the `EXPECTED_TOOL_NAMES` constant in that test. A second test asserts no tool name matches a dangerous-capability pattern (`shell|exec|subprocess|os_command|delete|drop|destroy|sudo|raw_http|arbitrary|run_command|eval`) so even an intentional addition can't slip an obviously-wrong name through. A third smoke test asserts that importing `agent.adk_agent` does not pull in remote-execution SDKs (`paramiko`, `fabric`, `pexpect`).
+**Enforcement:** `tests/unit/test_coordinator_tool_inventory.py` (Phase 11.4b) pins this set. Adding or removing a tool requires updating the `EXPECTED_TOOL_NAMES` constant in that test. A second test asserts no tool name matches a dangerous-capability pattern (`shell|exec|subprocess|os_command|delete|drop|destroy|sudo|raw_http|arbitrary|run_command|eval`) so even an intentional addition can't slip an obviously-wrong name through. A third test (Phase 13 carry-over) extends the same logic to parameter names — `inspect.signature` enumerates each tool's params and rejects any matching `cmd|command|shell_cmd|url|endpoint|raw_url|payload|raw_request|script|eval|expr`, so a safely-named tool can't smuggle a wider capability through its argument. A fourth smoke test asserts that importing `agent.adk_agent` does not pull in remote-execution SDKs (`paramiko`, `fabric`, `pexpect`).
 
 Cross-references:
 - `agent.adk_agent.COORDINATOR_TOOLS` — the canonical list
