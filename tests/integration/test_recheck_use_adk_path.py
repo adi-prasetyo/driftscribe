@@ -42,6 +42,23 @@ def _drift_issue_proposal() -> DecisionProposal:
     )
 
 
+def _reader_envelope(env: dict[str, str]) -> dict:
+    """Shape a Reader Worker /read response around the given ``env`` dict.
+
+    Mirrors the helper in ``test_recheck_dry_run.py``. Kept duplicated
+    (rather than pulled into a conftest) because the two test files
+    exercise distinct branches and a future refactor of one shouldn't
+    silently move the other.
+    """
+    return {
+        "service": "payment-demo",
+        "region": "asia-northeast1",
+        "project": "test-project",
+        "env": env,
+        "revision": "payment-demo-00001-abc",
+    }
+
+
 def test_use_adk_path_wires_through_to_perform_action(monkeypatch):
     """USE_ADK=true: agent proposes drift_issue → validate/render/perform run."""
     monkeypatch.setenv("USE_ADK", "true")
@@ -51,9 +68,11 @@ def test_use_adk_path_wires_through_to_perform_action(monkeypatch):
     mock_run_agent = AsyncMock(return_value=_drift_issue_proposal())
     with (
         patch("agent.main._run_adk_agent", mock_run_agent),
-        patch("agent.main.read_live_env") as m_env,
+        patch("agent.main.worker_client.call") as m_env,
     ):
-        m_env.return_value = {"PAYMENT_MODE": "live", "FEATURE_NEW_CHECKOUT": "false"}
+        m_env.return_value = _reader_envelope(
+            {"PAYMENT_MODE": "live", "FEATURE_NEW_CHECKOUT": "false"}
+        )
         client = TestClient(app)
         r = client.post("/recheck")
 
@@ -73,11 +92,13 @@ def test_use_adk_path_wires_through_to_perform_action(monkeypatch):
 
 
 def test_use_adk_path_tolerates_cloud_run_read_failure(monkeypatch):
-    """USE_ADK=true: read_live_env raising must NOT 502.
+    """USE_ADK=true: Reader Worker call raising must NOT 502.
 
     The ADK agent's own tool call already read live state; the failure here
     only affects the idempotency-hash backing store. Per spec the fallback
-    derives live_env from `proposal.env_diffs`.
+    derives live_env from `proposal.env_diffs`. (Test name kept stable for
+    git-blame continuity; the underlying call is now the Reader Worker, not
+    the direct read_live_env from pre-Phase-13.)
     """
     monkeypatch.setenv("USE_ADK", "true")
     get_settings.cache_clear()
@@ -86,9 +107,17 @@ def test_use_adk_path_tolerates_cloud_run_read_failure(monkeypatch):
     mock_run_agent = AsyncMock(return_value=_drift_issue_proposal())
     with (
         patch("agent.main._run_adk_agent", mock_run_agent),
-        patch("agent.main.read_live_env") as m_env,
+        patch("agent.main.worker_client.call") as m_env,
     ):
-        m_env.side_effect = RuntimeError("permission denied on run.services.get")
+        # The ADK path catches any exception from the worker call (the LLM's
+        # tool call already read live state via the Reader Worker; this read
+        # is purely for the idempotency hash). Raising WorkerClientError
+        # exercises the fallback path even though the post-Phase-13 control
+        # flow has the bare `except Exception` already broad enough.
+        from agent.worker_client import WorkerClientError
+        m_env.side_effect = WorkerClientError(
+            403, "permission denied on run.services.get", "reader"
+        )
         client = TestClient(app)
         r = client.post("/recheck")
 
@@ -132,9 +161,9 @@ def test_use_adk_path_rejects_unsafe_proposal_with_502(monkeypatch):
     mock_run_agent = AsyncMock(return_value=unsafe)
     with (
         patch("agent.main._run_adk_agent", mock_run_agent),
-        patch("agent.main.read_live_env") as m_env,
+        patch("agent.main.worker_client.call") as m_env,
     ):
-        m_env.return_value = {}
+        m_env.return_value = _reader_envelope({})
         client = TestClient(app)
         r = client.post("/recheck")
 

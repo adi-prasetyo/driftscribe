@@ -4,9 +4,29 @@ from unittest.mock import patch
 from agent.main import app
 
 
+def _reader_envelope(env: dict[str, str]) -> dict:
+    """Shape a Reader Worker /read response around the given ``env`` dict.
+
+    The classifier path only consumes ``result["env"]`` from the worker's
+    response; the surrounding fields (``service``, ``region``, ``project``,
+    ``revision``) are present so the mock's return value mirrors the real
+    worker envelope and a future test that asserts on them won't silently
+    pass against a minimal stub.
+    """
+    return {
+        "service": "payment-demo",
+        "region": "asia-northeast1",
+        "project": "test-project",
+        "env": env,
+        "revision": "payment-demo-00001-abc",
+    }
+
+
 def test_recheck_renders_drift_issue_when_live_violates_contract():
-    with patch("agent.main.read_live_env") as m:
-        m.return_value = {"PAYMENT_MODE": "live", "FEATURE_NEW_CHECKOUT": "false"}
+    with patch("agent.main.worker_client.call") as m:
+        m.return_value = _reader_envelope(
+            {"PAYMENT_MODE": "live", "FEATURE_NEW_CHECKOUT": "false"}
+        )
         client = TestClient(app)
         r = client.post("/recheck")
     assert r.status_code == 200
@@ -20,8 +40,10 @@ def test_recheck_renders_drift_issue_when_live_violates_contract():
 
 
 def test_recheck_no_op_when_live_matches_contract():
-    with patch("agent.main.read_live_env") as m:
-        m.return_value = {"PAYMENT_MODE": "mock", "FEATURE_NEW_CHECKOUT": "false"}
+    with patch("agent.main.worker_client.call") as m:
+        m.return_value = _reader_envelope(
+            {"PAYMENT_MODE": "mock", "FEATURE_NEW_CHECKOUT": "false"}
+        )
         client = TestClient(app)
         r = client.post("/recheck")
     body = r.json()
@@ -30,16 +52,20 @@ def test_recheck_no_op_when_live_matches_contract():
 
 
 def test_recheck_escalation_for_unknown_var():
-    with patch("agent.main.read_live_env") as m:
-        m.return_value = {"PAYMENT_MODE": "mock", "FEATURE_NEW_CHECKOUT": "false", "NEW_THING": "x"}
+    with patch("agent.main.worker_client.call") as m:
+        m.return_value = _reader_envelope(
+            {"PAYMENT_MODE": "mock", "FEATURE_NEW_CHECKOUT": "false", "NEW_THING": "x"}
+        )
         client = TestClient(app)
         r = client.post("/recheck")
     assert r.json()["action"] == "escalation"
 
 
 def test_recheck_dry_run_returns_github_preview_for_docs_pr():
-    with patch("agent.main.read_live_env") as m:
-        m.return_value = {"PAYMENT_MODE": "mock", "FEATURE_NEW_CHECKOUT": "true"}
+    with patch("agent.main.worker_client.call") as m:
+        m.return_value = _reader_envelope(
+            {"PAYMENT_MODE": "mock", "FEATURE_NEW_CHECKOUT": "true"}
+        )
         client = TestClient(app)
         r = client.post("/recheck")
     body = r.json()
@@ -58,8 +84,10 @@ def test_recheck_returns_500_when_docs_root_missing_runbook(monkeypatch):
     monkeypatch.setenv("DOCS_ROOT", "/tmp/does-not-exist-driftscribe")
     from agent.config import get_settings
     get_settings.cache_clear()
-    with patch("agent.main.read_live_env") as m:
-        m.return_value = {"PAYMENT_MODE": "mock", "FEATURE_NEW_CHECKOUT": "true"}
+    with patch("agent.main.worker_client.call") as m:
+        m.return_value = _reader_envelope(
+            {"PAYMENT_MODE": "mock", "FEATURE_NEW_CHECKOUT": "true"}
+        )
         client = TestClient(app)
         r = client.post("/recheck")
     assert r.status_code == 500
@@ -77,8 +105,10 @@ def test_branch_slug_sanitizes_unsafe_chars():
 
 
 def test_recheck_dry_run_returns_github_result_for_drift_issue():
-    with patch("agent.main.read_live_env") as m:
-        m.return_value = {"PAYMENT_MODE": "live", "FEATURE_NEW_CHECKOUT": "false"}
+    with patch("agent.main.worker_client.call") as m:
+        m.return_value = _reader_envelope(
+            {"PAYMENT_MODE": "live", "FEATURE_NEW_CHECKOUT": "false"}
+        )
         client = TestClient(app)
         r = client.post("/recheck")
     body = r.json()
@@ -89,12 +119,14 @@ def test_recheck_dry_run_returns_github_result_for_drift_issue():
 
 
 def test_recheck_dry_run_returns_github_result_for_escalation():
-    with patch("agent.main.read_live_env") as m:
-        m.return_value = {
-            "PAYMENT_MODE": "mock",
-            "FEATURE_NEW_CHECKOUT": "false",
-            "NEW_THING": "x",
-        }
+    with patch("agent.main.worker_client.call") as m:
+        m.return_value = _reader_envelope(
+            {
+                "PAYMENT_MODE": "mock",
+                "FEATURE_NEW_CHECKOUT": "false",
+                "NEW_THING": "x",
+            }
+        )
         client = TestClient(app)
         r = client.post("/recheck")
     body = r.json()
@@ -104,12 +136,17 @@ def test_recheck_dry_run_returns_github_result_for_escalation():
 
 
 def test_recheck_returns_502_on_cloud_run_read_failure():
-    with patch("agent.main.read_live_env") as m:
-        m.side_effect = RuntimeError("permission denied")
+    # Reader Worker failure on the classifier path still surfaces as 502 —
+    # same operator-facing semantics as the pre-Phase-13 direct-Cloud-Run
+    # path, just with a different detail prefix.
+    from agent.worker_client import WorkerClientError
+
+    with patch("agent.main.worker_client.call") as m:
+        m.side_effect = WorkerClientError(403, "permission denied", "reader")
         client = TestClient(app)
         r = client.post("/recheck")
     assert r.status_code == 502
-    assert "cloud run read failed" in r.json()["detail"]
+    assert "reader worker failed" in r.json()["detail"]
 
 
 def test_recheck_returns_500_on_contract_load_failure(monkeypatch):
@@ -117,8 +154,8 @@ def test_recheck_returns_500_on_contract_load_failure(monkeypatch):
     monkeypatch.setenv("CONTRACT_PATH", "demo/does-not-exist.yaml")
     from agent.config import get_settings
     get_settings.cache_clear()
-    with patch("agent.main.read_live_env") as m:
-        m.return_value = {}
+    with patch("agent.main.worker_client.call") as m:
+        m.return_value = _reader_envelope({})
         client = TestClient(app)
         r = client.post("/recheck")
     assert r.status_code == 500
@@ -135,15 +172,19 @@ def test_healthz_returns_ok():
 def test_recheck_with_changed_live_env_returns_fresh_decision():
     """Demo Beat B (PAYMENT_MODE=live) and Beat C (NEW_THING=x) must not collide."""
     client = TestClient(app)
-    with patch("agent.main.read_live_env") as m:
-        m.return_value = {"PAYMENT_MODE": "live", "FEATURE_NEW_CHECKOUT": "false"}
+    with patch("agent.main.worker_client.call") as m:
+        m.return_value = _reader_envelope(
+            {"PAYMENT_MODE": "live", "FEATURE_NEW_CHECKOUT": "false"}
+        )
         r1 = client.post("/recheck").json()
-    with patch("agent.main.read_live_env") as m:
-        m.return_value = {
-            "PAYMENT_MODE": "mock",
-            "FEATURE_NEW_CHECKOUT": "false",
-            "NEW_THING": "x",
-        }
+    with patch("agent.main.worker_client.call") as m:
+        m.return_value = _reader_envelope(
+            {
+                "PAYMENT_MODE": "mock",
+                "FEATURE_NEW_CHECKOUT": "false",
+                "NEW_THING": "x",
+            }
+        )
         r2 = client.post("/recheck").json()
     assert r1["action"] == "drift_issue"
     assert r2["action"] == "escalation"
@@ -154,8 +195,10 @@ def test_recheck_with_changed_live_env_returns_fresh_decision():
 def test_recheck_same_live_env_returns_cached_decision():
     """Same live state on second call -> cache hit returns the SAME decision_id."""
     client = TestClient(app)
-    with patch("agent.main.read_live_env") as m:
-        m.return_value = {"PAYMENT_MODE": "live", "FEATURE_NEW_CHECKOUT": "false"}
+    with patch("agent.main.worker_client.call") as m:
+        m.return_value = _reader_envelope(
+            {"PAYMENT_MODE": "live", "FEATURE_NEW_CHECKOUT": "false"}
+        )
         r1 = client.post("/recheck").json()
         r2 = client.post("/recheck").json()
     assert r1["decision_id"] == r2["decision_id"]
@@ -164,8 +207,10 @@ def test_recheck_same_live_env_returns_cached_decision():
 
 def test_runs_endpoint_returns_recorded_decision():
     client = TestClient(app)
-    with patch("agent.main.read_live_env") as m:
-        m.return_value = {"PAYMENT_MODE": "live", "FEATURE_NEW_CHECKOUT": "false"}
+    with patch("agent.main.worker_client.call") as m:
+        m.return_value = _reader_envelope(
+            {"PAYMENT_MODE": "live", "FEATURE_NEW_CHECKOUT": "false"}
+        )
         r1 = client.post("/recheck").json()
     r2 = client.get(f"/runs/{r1['decision_id']}")
     assert r2.status_code == 200
@@ -191,8 +236,10 @@ def test_side_effect_failure_releases_claim_so_retry_can_proceed():
             raise RuntimeError("transient github failure")
         return {"dry_run": True, "url": None, "action": "drift_issue"}
 
-    with patch("agent.main.read_live_env") as m, patch("agent.main._perform_action", side_effect=flaky_perform):
-        m.return_value = {"PAYMENT_MODE": "live", "FEATURE_NEW_CHECKOUT": "false"}
+    with patch("agent.main.worker_client.call") as m, patch("agent.main._perform_action", side_effect=flaky_perform):
+        m.return_value = _reader_envelope(
+            {"PAYMENT_MODE": "live", "FEATURE_NEW_CHECKOUT": "false"}
+        )
         # First call → side effect raises → 502 + claim released
         r1 = client.post("/recheck")
         assert r1.status_code == 502
@@ -240,14 +287,18 @@ expected_env:
 
     client = TestClient(app)
     contract_path.write_text(v1)
-    with patch("agent.main.read_live_env") as m:
-        m.return_value = {"PAYMENT_MODE": "mock", "FEATURE_NEW_CHECKOUT": "false"}
+    with patch("agent.main.worker_client.call") as m:
+        m.return_value = _reader_envelope(
+            {"PAYMENT_MODE": "mock", "FEATURE_NEW_CHECKOUT": "false"}
+        )
         r1 = client.post("/recheck").json()
 
     contract_path.write_text(v2)
     get_settings.cache_clear()  # contract path unchanged but content differs
-    with patch("agent.main.read_live_env") as m:
-        m.return_value = {"PAYMENT_MODE": "mock", "FEATURE_NEW_CHECKOUT": "false"}
+    with patch("agent.main.worker_client.call") as m:
+        m.return_value = _reader_envelope(
+            {"PAYMENT_MODE": "mock", "FEATURE_NEW_CHECKOUT": "false"}
+        )
         r2 = client.post("/recheck").json()
 
     # Live env unchanged but contract content changed → fresh event_key
@@ -256,8 +307,10 @@ expected_env:
 
 def test_force_param_bypasses_idempotency_cache():
     client = TestClient(app)
-    with patch("agent.main.read_live_env") as m:
-        m.return_value = {"PAYMENT_MODE": "live", "FEATURE_NEW_CHECKOUT": "false"}
+    with patch("agent.main.worker_client.call") as m:
+        m.return_value = _reader_envelope(
+            {"PAYMENT_MODE": "live", "FEATURE_NEW_CHECKOUT": "false"}
+        )
         r1 = client.post("/recheck").json()
         r2 = client.post("/recheck?force=true").json()
     # Same live state -> cache hit on r1; force=true -> fresh decision_id + event_key
