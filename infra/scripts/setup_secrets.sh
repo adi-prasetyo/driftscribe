@@ -355,7 +355,7 @@ fi
 
 echo
 echo "  next: confirm the trigger filter matches what your env emits —"
-echo "    see docs/runbooks/deploy.md Step 7 (mutate payment-demo, check audit log + handler logs)"
+echo "    see docs/runbooks/deploy.md → 'confirm Eventarc trigger fires' (mutate payment-demo, check audit log + handler logs)"
 
 echo
 echo "setup_secrets.sh: complete"
