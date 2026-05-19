@@ -31,6 +31,7 @@ from agent.renderer import (
     render_docs_pr_body,
     render_drift_issue_body,
     render_escalation_issue_body,
+    render_rollback_body,
 )
 from agent.runbook_patcher import patch_runbook
 from agent.state_store import FirestoreStateStore, InMemoryStateStore, StateStore
@@ -262,6 +263,161 @@ async def _run_adk_agent(user_msg: str) -> DecisionProposal:
     return await run_agent(user_msg)
 
 
+def _do_rollback(
+    s: Settings,
+    proposal: DecisionProposal,
+    event_key: str,
+    trigger: str,
+) -> dict:
+    """ROLLBACK control flow: propose-via-worker → render → notify-via-worker.
+
+    Returns the same shape as the other ``_do_recheck`` actions, EXCEPT the
+    ``github`` key is replaced with ``approval`` — rollback's side effect is
+    an HMAC-bound approval URL minted by the Rollback Worker, not a GitHub
+    object. The schema divergence is intentional: ``github`` would be a lie
+    here (no PR/issue was opened), and unioning it with ``approval`` would
+    invite "the github field is null but maybe set" branchy reader code.
+
+    Ordering vs. the non-rollback path:
+
+    - Other actions: ``render → claim_event → perform_action``. The render is
+      a pure function of the proposal, so it runs first to fail-fast on a
+      bad proposal without touching state.
+    - ROLLBACK: ``claim_event → propose → render → notify``. Render REQUIRES
+      the approval URL from the worker's response, so it cannot run until
+      the propose call has succeeded. Claiming the event BEFORE propose means
+      a concurrent retry can't double-mint approval docs. On any worker
+      failure the claim is released so retries can proceed.
+
+    Phase 13 HITL safety property (Phase 11.9 carry-over #3): there is NO
+    code path in this function that calls Cloud Run's admin API. The
+    coordinator only mints an approval doc + URL and asks the Notifier to
+    deliver it. Cloud Run traffic only shifts when the operator clicks
+    Approve and the existing ``/approvals/{id}`` POST handler routes through
+    ``worker_client.call_execute``. The integration test in
+    ``tests/integration/test_rollback_e2e.py`` pins this explicitly.
+
+    ``dry_run`` semantics (intentional, not a bug): even with ``DRY_RUN=true``
+    we still call the rollback worker's ``/propose`` so the approval URL
+    exists and the demo flow shows the operator-facing payoff. The actual
+    Cloud Run mutation lives behind the worker's ``/execute`` endpoint
+    (operator-triggered), so dry-run-ness at the coordinator can't gate it
+    from here; it's the rollback worker's responsibility to decide whether
+    ``/execute`` should be a no-op in a dry-run-target deployment. Out of
+    scope for Task 13.3 — worker code is not modified in this task.
+    """
+    # Defensive: the classifier never produces ROLLBACK (no rollback branch
+    # exists in agent/classifier.py); only the ADK path can emit it. If we
+    # ever reach this with USE_ADK=false, the deploy is broken — a 500 is
+    # the right surface so the on-call sees it as a coordinator bug, not an
+    # upstream failure.
+    if not s.use_adk:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "rollback action emitted on non-ADK path — only the ADK "
+                "agent should produce rollback decisions"
+            ),
+        )
+
+    state = get_state()
+    claimed = state.record_event(event_key, {"trigger": trigger})
+    if not claimed:
+        existing = state.find_decision_for_event(event_key)
+        if existing:
+            return existing
+        raise HTTPException(status_code=409, detail="event in-progress, retry")
+
+    # Side effect #1: mint the approval via the Rollback Worker. The worker
+    # owns the HMAC key, the Firestore approvals collection write, and the
+    # TTL; the coordinator only receives the resulting URL.
+    try:
+        propose_result = worker_client.call(
+            "rollback",
+            {
+                "target_revision": proposal.target_revision,
+                "reason": proposal.rationale,
+            },
+        )
+    except WorkerClientError as e:
+        # Worker propose failed (auth, schema, or transport). Release the
+        # claim so a retry can mint a fresh approval; the prior doc (if the
+        # worker partially wrote one before failing) is bounded by its 15-min
+        # TTL and was never surfaced to the operator (no notification sent).
+        state.release_event(event_key)
+        raise HTTPException(
+            status_code=502, detail=f"rollback propose failed: {e}"
+        ) from e
+
+    approval_url = propose_result.get("approval_url")
+    approval_id = propose_result.get("approval_id")
+    expires_at = propose_result.get("expires_at")
+    if not approval_url or not approval_id:
+        # Malformed worker response — bail rather than render a broken body.
+        # Release the claim so the operator can retry once the worker is fixed.
+        state.release_event(event_key)
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "rollback worker response missing approval_url/approval_id; "
+                "refusing to render incomplete approval body"
+            ),
+        )
+
+    rendered = render_rollback_body(proposal, approval_url)
+
+    # Side effect #2: ask the Notifier worker to deliver the rendered body
+    # to the operator-facing channel. severity="high" tracks the approval-
+    # required nature; channel="approval" routes to the operator inbox.
+    #
+    # On notifier failure we release the claim and 502. The orphan approval
+    # doc in Firestore (now invisible to the operator) is bounded by its
+    # 15-min TTL — at-least-once semantics, with the next retry minting a
+    # fresh approval. Operationally: an operator who already received the
+    # webhook before the worker reported failure could still see both the
+    # original and the retry approval as pending; that's HITL-safe (the
+    # operator can deny either) but worth knowing about.
+    try:
+        worker_client.call(
+            "notifier",
+            {"channel": "approval", "severity": "high", "body": rendered},
+        )
+    except WorkerClientError as e:
+        state.release_event(event_key)
+        raise HTTPException(
+            status_code=502, detail=f"rollback notify failed: {e}"
+        ) from e
+
+    decision_id = str(uuid.uuid4())
+    # Schema divergence vs. other actions: "approval" replaces "github". The
+    # ``approval_token`` is intentionally NOT echoed here — it's already
+    # embedded in approval_url as ``?t=<token>``, and exposing it as a
+    # separate field would double the leak surface. See Phase 13.3 task spec.
+    response = {
+        "decision_id": decision_id,
+        "event_key": event_key,
+        "action": "rollback",
+        # Hardcoded "adk" — the classifier doesn't emit rollback (see the
+        # defensive guard above). When we eventually add a classifier branch
+        # for rollback, swap to the same conditional as _do_recheck.
+        "decision_path": "adk",
+        "rendered_body": rendered,
+        "rationale": proposal.rationale,
+        "diffs": [d.model_dump(mode="json") for d in proposal.env_diffs],
+        "target_revision": proposal.target_revision,
+        "requires_human_review": True,
+        "dry_run": s.dry_run,
+        "approval": {
+            "approval_id": approval_id,
+            "approval_url": approval_url,
+            "expires_at": expires_at,
+        },
+        "trigger": trigger,
+    }
+    state.record_decision(decision_id, event_key, response)
+    return response
+
+
 async def _do_recheck(trigger: str, force: bool = False) -> dict:
     """Run a recheck under the trigger label, with idempotency.
 
@@ -386,6 +542,15 @@ async def _do_recheck(trigger: str, force: bool = False) -> dict:
                 detail=f"adk proposal rejected by safety gate: {e}",
             )
         raise HTTPException(status_code=500, detail=f"validator rejected proposal: {e}")
+
+    # ROLLBACK branches out before render because the render needs the
+    # approval URL minted by the Rollback Worker's /propose. The Phase 11.9
+    # carry-over #3 safety property — no rollback executes without operator
+    # approval — lives in _do_rollback: it only proposes + notifies, never
+    # mutates Cloud Run.
+    if proposal.action == DecisionAction.ROLLBACK:
+        return _do_rollback(s, proposal, event_key, trigger)
+
     rendered = _render_for(proposal.action, proposal)
 
     # Claim the event BEFORE any side effects so retries don't spawn duplicate
