@@ -2,18 +2,24 @@
 # Idempotent bootstrap for a fresh DriftScribe multi-agent deployment.
 #
 # Usage:
-#   setup_secrets.sh PROJECT GITHUB_TOKEN [DOCS_AGENT_PAT] [WEBHOOK_URL]
+#   setup_secrets.sh PROJECT GITHUB_TOKEN [DOCS_AGENT_PAT] [WEBHOOK_URL] [DEVELOPER_KNOWLEDGE_API_KEY]
 #
 # Arguments:
-#   PROJECT           GCP project ID (e.g. driftscribe-hack-2026)
-#   GITHUB_TOKEN      Classic PAT for the coordinator's read-only PR search
-#                     (repo: contents:read + pull_requests:read on the demo repo)
-#   DOCS_AGENT_PAT    (optional) Fine-grained PAT scoped to ONE repository, with
-#                     Contents: write + Pull requests: write. If omitted, the
-#                     script prints instructions and SKIPS creating the secret
-#                     so the operator can re-run with the value later.
-#   WEBHOOK_URL       (optional) Demo notifier webhook URL (e.g. webhook.site).
-#                     If omitted, skipped — re-run with the value later.
+#   PROJECT                       GCP project ID (e.g. driftscribe-hack-2026)
+#   GITHUB_TOKEN                  Classic PAT for the coordinator's read-only PR search
+#                                 (repo: contents:read + pull_requests:read on the demo repo)
+#   DOCS_AGENT_PAT                (optional) Fine-grained PAT scoped to ONE repository, with
+#                                 Contents: write + Pull requests: write. If omitted, the
+#                                 script prints instructions and SKIPS creating the secret
+#                                 so the operator can re-run with the value later.
+#   WEBHOOK_URL                   (optional) Demo notifier webhook URL (e.g. webhook.site).
+#                                 If omitted, skipped — re-run with the value later.
+#   DEVELOPER_KNOWLEDGE_API_KEY   (optional, Phase 17.B) GCP API key restricted to
+#                                 `developerknowledge.googleapis.com`. Operator MUST
+#                                 create this in the Console (see runbook Step 2b);
+#                                 paste here to populate Secret Manager. If omitted,
+#                                 the script prints instructions and skips creating
+#                                 the secret — re-run with the value later.
 #
 # Safe to re-run: every gcloud create is gated by a describe-check, every IAM
 # binding is idempotent server-side, and the two auto-generated secrets
@@ -31,20 +37,25 @@
 
 set -euo pipefail
 
-PROJECT="${1:?usage: $0 PROJECT GITHUB_TOKEN [DOCS_AGENT_PAT] [WEBHOOK_URL]}"
+PROJECT="${1:?usage: $0 PROJECT GITHUB_TOKEN [DOCS_AGENT_PAT] [WEBHOOK_URL] [DEVELOPER_KNOWLEDGE_API_KEY]}"
 GITHUB_TOKEN="${2:?}"
 DOCS_AGENT_PAT="${3:-}"
 WEBHOOK_URL="${4:-}"
+DEVELOPER_KNOWLEDGE_API_KEY="${5:-}"
 
 REGION="asia-northeast1"
 
 # --------------------------------------------------------------------------
 # 1. APIs
 # --------------------------------------------------------------------------
+# `developerknowledge.googleapis.com` (Phase 17.B) backs the Developer
+# Knowledge MCP server the coordinator's ADK agent queries for authoritative
+# Google docs grounding. `gcloud services enable` is idempotent.
 gcloud services enable --project "$PROJECT" \
   aiplatform.googleapis.com \
   artifactregistry.googleapis.com \
   cloudbuild.googleapis.com \
+  developerknowledge.googleapis.com \
   eventarc.googleapis.com \
   eventarcpublishing.googleapis.com \
   firestore.googleapis.com \
@@ -52,6 +63,17 @@ gcloud services enable --project "$PROJECT" \
   logging.googleapis.com \
   run.googleapis.com \
   secretmanager.googleapis.com
+
+# `gcloud beta services mcp enable` (Phase 17.B) explicitly opts the project
+# into the remote MCP server fronting the Developer Knowledge API. After
+# 2025-03-17 Google auto-enables this when the underlying API is enabled,
+# but the explicit call keeps fresh-project bootstrap deterministic and
+# survives older `gcloud` versions that haven't picked up the auto-enable
+# default. The call is idempotent server-side; `|| true` guards against
+# transient `beta` surface churn so a stale gcloud doesn't break bootstrap.
+gcloud beta services mcp enable developerknowledge.googleapis.com \
+  --project="$PROJECT" >/dev/null 2>&1 || \
+  echo "  note: 'gcloud beta services mcp enable' skipped (already enabled or beta surface unavailable in this gcloud version) — verify in Console if MCP requests 404"
 
 # --------------------------------------------------------------------------
 # 2. Artifact Registry
@@ -239,6 +261,43 @@ else
   fi
 fi
 
+# Developer Knowledge API key (Phase 17.B) — operator must supply. The key
+# itself MUST be created by the operator in the GCP Console with an
+# API-restriction binding it to `developerknowledge.googleapis.com` only
+# (see docs/runbooks/deploy.md Step 2b). Console flow is preferred over
+# `gcloud services api-keys create` because the Console UI enforces the
+# API-restriction selection inline; the gcloud equivalent is fragile across
+# versions. Same operator-supplied pattern as the GitHub PAT and webhook
+# URL above.
+if [ -n "$DEVELOPER_KNOWLEDGE_API_KEY" ]; then
+  gcloud secrets describe developer-knowledge-api-key --project "$PROJECT" >/dev/null 2>&1 || \
+    gcloud secrets create developer-knowledge-api-key \
+      --project "$PROJECT" --replication-policy=automatic
+  printf '%s' "$DEVELOPER_KNOWLEDGE_API_KEY" | gcloud secrets versions add developer-knowledge-api-key \
+    --project "$PROJECT" --data-file=-
+else
+  if gcloud secrets describe developer-knowledge-api-key --project "$PROJECT" >/dev/null 2>&1; then
+    echo "developer-knowledge-api-key already exists — leaving untouched (no arg supplied)"
+  else
+    echo
+    echo "----------------------------------------------------------------"
+    echo "DEVELOPER_KNOWLEDGE_API_KEY arg not supplied — developer-knowledge-api-key NOT created."
+    echo
+    echo "Create the API key in the GCP Console (recommended for correct"
+    echo "API restriction):"
+    echo "  1. https://console.cloud.google.com/apis/credentials?project=${PROJECT}"
+    echo "  2. + Create credentials → API key"
+    echo "  3. After creation, Edit API key → Restrict key → API restrictions"
+    echo "     → 'Restrict key' → select ONLY 'Developer Knowledge API'"
+    echo "  4. Optional: under Application restrictions, set 'None' (no IP /"
+    echo "     referrer pin is needed — Cloud Run's egress IPs aren't stable)"
+    echo "Then re-run:"
+    echo "  $0 $PROJECT <gh-pat> <docs-pat> <webhook-url> <dev-knowledge-key>"
+    echo "----------------------------------------------------------------"
+    echo
+  fi
+fi
+
 # --------------------------------------------------------------------------
 # 6b. Per-secret IAM bindings — every grant is scoped to a single secret
 # resource. NO project-wide secretmanager.secretAccessor anywhere.
@@ -255,10 +314,14 @@ bind_secret() {
   fi
 }
 
-# Coordinator: two secrets (Phase 14.5: gemini-api-key removed — Vertex
-# AI ADC replaces the API-key auth path).
-bind_secret coordinator-shared-token "$COORD_SA"
-bind_secret github-pat                "$COORD_SA"
+# Coordinator: three secrets (Phase 14.5: gemini-api-key removed — Vertex
+# AI ADC replaces the API-key auth path; Phase 17.B: developer-knowledge-api-key
+# added for the Developer Knowledge MCP toolset). Each binding is scoped to
+# the single secret resource — the coordinator has NO project-wide
+# secretmanager.secretAccessor grant.
+bind_secret coordinator-shared-token       "$COORD_SA"
+bind_secret github-pat                     "$COORD_SA"
+bind_secret developer-knowledge-api-key    "$COORD_SA"
 
 # Docs worker: one secret (its fine-grained PAT).
 bind_secret docs-agent-github-pat     "$DOCS_SA"

@@ -51,7 +51,12 @@ GH_PAT=github_pat_xxx    # FINE-GRAINED PAT (see below)
 > only literally true once this is done.
 
 The script will:
-- Enable required APIs.
+- Enable required APIs, including `developerknowledge.googleapis.com`
+  (Phase 17.B — backs the Developer Knowledge MCP server) and run
+  `gcloud beta services mcp enable developerknowledge.googleapis.com`
+  explicitly. The latter is auto-enabled by Google after 2025-03-17 when
+  the underlying API is enabled, but the explicit call keeps fresh-project
+  bootstrap deterministic.
 - Create the Artifact Registry repo.
 - Create 5 service accounts: `driftscribe-agent` (coordinator) +
   `reader-agent-sa` + `docs-agent-sa` + `rollback-agent-sa` + `notifier-agent-sa`.
@@ -60,9 +65,12 @@ The script will:
   for docs or notifier).
 - Auto-generate two secrets on first run only: `coordinator-shared-token`
   (the `X-DriftScribe-Token` header value) and `approval-hmac-key`.
-- Bind per-secret accessors so each worker reads only its own secret.
-- Skip the Docs Agent PAT secret + the notifier webhook secret (you'll
-  supply those in step 4).
+- Bind per-secret accessors so each worker reads only its own secret
+  (Phase 17.B: the coordinator also gets `secretAccessor` on
+  `developer-knowledge-api-key`, scoped to that single secret — no
+  project-wide grant).
+- Skip the Docs Agent PAT secret, the notifier webhook secret, and the
+  Developer Knowledge API key secret (you'll supply those in step 4).
 - Skip the per-worker `run.invoker` grants because workers don't exist
   yet — the script logs "service not deployed yet" and continues.
 
@@ -102,20 +110,62 @@ HTTPS endpoint you control. The notifier worker's `extra="forbid"` schema
 refuses any caller-supplied URL — the only outbound destination is the one
 in this secret.
 
+## Step 3b — create the Developer Knowledge API key (Phase 17.B)
+
+The coordinator's ADK agent grounds its reasoning in authoritative Google
+docs by calling the Developer Knowledge API via its remote MCP endpoint
+(`https://developerknowledge.googleapis.com/mcp`). Auth is a single
+`X-Goog-Api-Key` header sourced from Secret Manager.
+
+The API key MUST be restricted to **only** the Developer Knowledge API.
+Create it in the Console — the UI enforces the API-restriction selection
+inline, while the `gcloud services api-keys create` equivalent is fragile
+across gcloud versions:
+
+1. Open
+   `https://console.cloud.google.com/apis/credentials?project=<PROJECT>`
+2. **+ Create credentials → API key.** Copy the generated key string
+   immediately; you cannot view it later.
+3. Click **Edit API key** on the new key.
+4. **Name:** `driftscribe-developer-knowledge` (or similar).
+5. **API restrictions:** select **Restrict key**, then under "Select APIs"
+   pick **only** `Developer Knowledge API`. Do NOT leave it "Don't
+   restrict key" — an unrestricted key is far worse than the alternative
+   if it ever leaks.
+6. **Application restrictions:** leave at `None`. Cloud Run egress IPs are
+   not stable, and the coordinator does not run in a browser context, so
+   neither IP nor HTTP-referrer restrictions apply cleanly.
+7. **Save.**
+
+The Console will show a brief "Key updated" toast; the API restriction
+takes effect immediately. If a request slips out with `aiplatform` or any
+other API name in the URL while bound to this key, GCP will return
+`403 API_KEY_API_RESTRICTED` — defense in depth above the per-secret IAM
+binding.
+
 ## Step 4 — re-run the bootstrap with the optional args
 
 ```bash
 DOCS_PAT=github_pat_xxx                       # from step 2
 WEBHOOK_URL=https://webhook.site/<uuid>       # from step 3
+DK_API_KEY=AIza...                            # from step 3b
 
-./infra/scripts/setup_secrets.sh "$PROJECT" "$GH_PAT" "$DOCS_PAT" "$WEBHOOK_URL"
+./infra/scripts/setup_secrets.sh "$PROJECT" "$GH_PAT" "$DOCS_PAT" "$WEBHOOK_URL" "$DK_API_KEY"
 ```
 
-This creates `docs-agent-github-pat` and `driftscribe-webhook-url`, binds
-the per-secret accessors to the Docs and Notifier SAs respectively, and
-leaves everything else untouched. `coordinator-shared-token` and
-`approval-hmac-key` are detected as already-existing and NOT regenerated
-(regenerating them would invalidate every running revision).
+This creates `docs-agent-github-pat`, `driftscribe-webhook-url`, and
+`developer-knowledge-api-key`, binds the per-secret accessors to the Docs,
+Notifier, and coordinator SAs respectively, and leaves everything else
+untouched. `coordinator-shared-token` and `approval-hmac-key` are detected
+as already-existing and NOT regenerated (regenerating them would
+invalidate every running revision).
+
+> **Two-phase note:** if you ran step 1 without the optional args, the
+> coordinator SA (`driftscribe-agent@…`) already exists by this point, so
+> the per-secret IAM binding on `developer-knowledge-api-key` lands
+> immediately. If a SA were somehow missing the script logs a clear hint
+> — re-run after the missing SA is created (typically after the first
+> `gcloud builds submit`).
 
 ## Step 5 — first Cloud Build
 
@@ -143,7 +193,7 @@ finish. Re-run the bootstrap so it picks up the now-existing services and
 applies the per-worker bindings:
 
 ```bash
-./infra/scripts/setup_secrets.sh "$PROJECT" "$GH_PAT" "$DOCS_PAT" "$WEBHOOK_URL"
+./infra/scripts/setup_secrets.sh "$PROJECT" "$GH_PAT" "$DOCS_PAT" "$WEBHOOK_URL" "$DK_API_KEY"
 ```
 
 Look for these lines in the output:
@@ -230,7 +280,7 @@ with the new filters:
 ```bash
 gcloud eventarc triggers delete driftscribe-cloudrun-changes \
   --location=asia-northeast1 --project "$PROJECT"
-./infra/scripts/setup_secrets.sh "$PROJECT" "$GH_PAT" "$DOCS_PAT" "$WEBHOOK_URL"
+./infra/scripts/setup_secrets.sh "$PROJECT" "$GH_PAT" "$DOCS_PAT" "$WEBHOOK_URL" "$DK_API_KEY"
 ```
 
 Re-mutate `payment-demo` and re-check the coordinator logs.
@@ -287,7 +337,18 @@ re-bootstrapping unless you've added a new SA, secret, or service.
 
 - **Revision fails with `INVALID_ARGUMENT: Secret not found`**: a
   `--set-secrets` reference points at a secret that doesn't exist yet.
-  Re-run `setup_secrets.sh` with all four args.
+  Re-run `setup_secrets.sh` with all five args (PROJECT, GH_PAT, DOCS_PAT,
+  WEBHOOK_URL, DK_API_KEY).
+- **Coordinator logs `ConfigError: DEVELOPER_KNOWLEDGE_API_KEY missing`**:
+  the `--set-secrets=DEVELOPER_KNOWLEDGE_API_KEY=...` reference was
+  stripped from the coordinator deploy step, or the secret has no
+  versions. Restore the reference in `infra/cloudbuild.yaml`, confirm
+  `gcloud secrets versions list developer-knowledge-api-key` shows at
+  least one ENABLED version, then redeploy.
+- **MCP requests return `403 API_KEY_API_RESTRICTED`**: the API key
+  restriction was set to a different API (or no API). Re-edit the key
+  in the Console and restrict it to **only** the Developer Knowledge API
+  (Step 3b). No redeploy needed — Secret Manager value is unchanged.
 - **Worker returns 401 on every call from the coordinator**: the
   worker's `OWN_URL` env doesn't match what the coordinator uses as the
   audience. Look at the post-deploy `gcloud run services update` step

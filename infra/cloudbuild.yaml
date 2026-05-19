@@ -144,7 +144,15 @@ steps:
       # resource is missing. The 503 fail-closed in agent/auth.py only kicks in
       # if DRIFTSCRIBE_TOKEN is empty at runtime (e.g., an operator removed
       # this --set-secrets line). See docs/architecture/multi-agent-design.md §2.
-      - --set-secrets=GITHUB_TOKEN=github-pat:latest,DRIFTSCRIBE_TOKEN=coordinator-shared-token:latest
+      #
+      # DEVELOPER_KNOWLEDGE_API_KEY (Phase 17.B) feeds the X-Goog-Api-Key
+      # header on every MCP request to https://developerknowledge.googleapis.com/mcp
+      # from agent/mcp/developer_knowledge.py. Same Secret-Manager-must-exist-
+      # at-deploy rule as the two above: if developer-knowledge-api-key is
+      # missing in Secret Manager when this build runs, the coordinator
+      # revision fails INVALID_ARGUMENT. The MCP wrapper fail-closes with
+      # ConfigError at boot if the env is empty at runtime.
+      - --set-secrets=GITHUB_TOKEN=github-pat:latest,DRIFTSCRIBE_TOKEN=coordinator-shared-token:latest,DEVELOPER_KNOWLEDGE_API_KEY=developer-knowledge-api-key:latest
 
   # Reader Agent (Phase 11.3) — worker #1 of 4. Read-only state extraction.
   # Layer 1: reader-agent-sa has only roles/run.viewer at the project.
