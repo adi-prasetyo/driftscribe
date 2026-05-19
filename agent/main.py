@@ -832,12 +832,23 @@ async def eventarc(
     # Phase 15.3: constant-time comparison via hmac.compare_digest (Codex
     # carry-over from Phase 14). Threat model is mild — the expected SA
     # name isn't secret — but constant-time string comparison is correct
-    # hygiene for any auth-claim check. The ``or ""`` coerces a missing
-    # ``email`` claim (None) into a str so compare_digest's str+str type
-    # contract isn't violated.
+    # hygiene for any auth-claim check.
+    # Phase 15.4 (Codex review of Phase 15): the ``isinstance(..., str)``
+    # short-circuit BEFORE compare_digest is load-bearing. OIDC says
+    # ``email`` is a string, but a (verified) token whose ``email`` claim
+    # was an int or list — off-spec but technically possible if an
+    # upstream malformed the JWT and Google still signed it (or in test
+    # paths where the verifier is mocked) — would feed a non-str into
+    # compare_digest, which requires str+str and raises ``TypeError``
+    # on a mismatch. FastAPI would surface that as 500. The correct
+    # outcome is 403: same as any other principal mismatch, "this
+    # verified token's email claim isn't acceptable here". Empty-string
+    # emails still 403 because ``compare_digest("", expected)`` is False.
     expected_email = f"eventarc-trigger-sa@{s.gcp_project}.iam.gserviceaccount.com"
-    presented_email = claims.get("email") or ""
-    if not hmac.compare_digest(presented_email, expected_email):
+    presented_email = claims.get("email")
+    if not isinstance(presented_email, str) or not hmac.compare_digest(
+        presented_email, expected_email
+    ):
         raise HTTPException(
             status_code=403,
             detail="Eventarc token from unexpected service account principal",
@@ -862,9 +873,29 @@ async def eventarc(
     labels = resource.get("labels")
     if not isinstance(labels, dict):
         return {"ignored": "malformed-payload", "reason": "missing_labels"}
+    # Phase 15.4 (Codex review of Phase 15): isinstance(..., str) guards
+    # are intentional. ``labels.get("service_name")`` could be a truthy
+    # non-string like ``["payment-demo"]`` or ``{"name": "x"}`` (off-spec
+    # for Cloud Run audit logs, but technically possible if a future
+    # schema change or upstream bug wrapped the values). Without the
+    # type check, those values would pass the existence check below and
+    # flow into the ``non-target-service`` return — where they'd be
+    # echoed in the response body, partially defeating the "fixed short
+    # reason, no payload echo" intent of the 15.3 ignored-200 hardening.
+    # Falsy non-strings (``[]``, ``{}``) would be caught by the
+    # ``not service`` clause anyway, but only by accident of truthiness;
+    # the explicit isinstance pins the type contract against a future
+    # refactor that uses ``is None``. Both shapes share the same reason
+    # tag — they fail the same contract ("we can't safely whitelist-
+    # check this label").
     service = labels.get("service_name", "")
     region = labels.get("location", "")
-    if not service or not region:
+    if (
+        not isinstance(service, str)
+        or not isinstance(region, str)
+        or not service
+        or not region
+    ):
         return {
             "ignored": "malformed-payload",
             "reason": "missing_service_or_region",
