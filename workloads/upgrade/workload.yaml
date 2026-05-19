@@ -28,7 +28,7 @@ description: >
   parsing is deferred.
 
 # Relative to this workload's directory (workloads/upgrade/).
-system_prompt_file: system_prompt.txt
+system_prompt_file: system_prompt.md
 
 # Upgrade reads dependencies from a repo lockfile, not a YAML contract.
 # Schema permits contract_file=null for exactly this case.

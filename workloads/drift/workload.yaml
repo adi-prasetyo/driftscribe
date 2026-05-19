@@ -18,11 +18,16 @@ description: >
   allow_manual_change=false vars).
 
 # Relative to this workload's directory (workloads/drift/).
-system_prompt_file: system_prompt.txt
+system_prompt_file: system_prompt.md
 
 # Path to the workload's declarative contract, relative to this
-# workload's directory. (demo/ops-contract.yaml lives at the repo root.)
-contract_file: ../../demo/ops-contract.yaml
+# workload's directory. Phase 17.A.2 copied demo/ops-contract.yaml into
+# this directory so prompt + contract + tool inventory all live under
+# workloads/drift/. The repo-root copy (demo/ops-contract.yaml) is kept
+# for the demo scripts, cloudbuild deploy, and the checker CLI; a guard
+# test (tests/unit/test_drift_workload_loads.py::test_drift_contract_yaml_matches_demo_copy)
+# pins the two copies byte-equal so they can't silently diverge.
+contract_file: contract.yaml
 
 # Symbolic tool names — resolved to callables via TOOL_REGISTRY.
 # This list is the workload-scoped subset of the global registry; the

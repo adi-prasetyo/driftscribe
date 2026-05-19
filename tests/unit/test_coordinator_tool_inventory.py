@@ -6,6 +6,16 @@ that adding a new tool requires an intentional edit here — preventing
 a careless "let me add a quick helper" PR from silently widening the
 LLM's authority.
 
+Phase 17.A.2: a second assertion pins the *drift workload's* symbolic
+tool list (``workloads/drift/workload.yaml::enabled_tool_names``) so
+that adding a tool to the drift workload's YAML — or removing one —
+also requires an intentional edit here. The two assertions are paired:
+``COORDINATOR_TOOLS`` is the registry of Python callables the LLM may
+invoke; the drift workload's ``enabled_tool_names`` is the symbolic
+filter applied per workload (17.A.3 will hand the LLM only the tools
+intersecting both). Both must change in lockstep when capability
+genuinely widens.
+
 The test also enforces a negative-name pattern: no tool may have a name
 suggesting a dangerous capability (shell, exec, subprocess, delete, etc.),
 even if it would otherwise pass the positive list (defense-in-depth
@@ -40,6 +50,21 @@ EXPECTED_TOOL_NAMES = frozenset({
 })
 
 
+# Phase 17.A.2: the drift workload's symbolic-name tool list — the
+# subset of TOOL_REGISTRY entries the drift workload is allowed to wire
+# through to the LLM. Mirrors ``workloads/drift/workload.yaml``'s
+# ``enabled_tool_names`` field. Adding a tool to the drift YAML without
+# updating this set (or vice versa) fails CI.
+EXPECTED_DRIFT_WORKLOAD_TOOL_NAMES = frozenset({
+    "drift_read_live_env",
+    "drift_patch_docs",
+    "drift_propose_rollback",
+    "notify",
+    "load_contract",
+    "search_recent_prs",
+})
+
+
 # Negative-name pattern: catch names suggesting dangerous capabilities.
 # This is intentionally broad — false positives are fine (rename the tool)
 # but false negatives are a security gap.
@@ -68,6 +93,46 @@ def test_coordinator_tools_match_expected_set():
         f"If this change is intentional, update EXPECTED_TOOL_NAMES in "
         f"this test AND update the Layer 0 section in "
         f"docs/architecture/multi-agent-design.md."
+    )
+
+
+def test_drift_workload_enabled_tools_match_expected_set(monkeypatch):
+    """Phase 17.A.2: the drift workload's enabled_tool_names set must
+    equal the expected set, exactly.
+
+    Failure modes match :func:`test_coordinator_tools_match_expected_set`
+    one layer up: the symbolic-name list in ``workloads/drift/workload.yaml``
+    is the per-workload capability filter; ``COORDINATOR_TOOLS`` is the
+    Python callable registry. Both must change in lockstep when
+    capability genuinely widens.
+
+    Loading the drift workload reads four worker URL env vars; we set
+    test sentinels so ``load_workload`` succeeds without depending on
+    the deploy env. Cache clear ensures these monkeypatched vars are
+    actually picked up if a prior test populated the cache.
+    """
+    monkeypatch.setenv("READER_URL", "https://reader.test")
+    monkeypatch.setenv("DOCS_URL", "https://docs.test")
+    monkeypatch.setenv("ROLLBACK_URL", "https://rollback.test")
+    monkeypatch.setenv("NOTIFIER_URL", "https://notifier.test")
+    import agent.workloads.registry as registry_mod
+    registry_mod._WORKLOAD_CACHE.clear()
+    try:
+        from agent.workloads import load_workload
+        resolution = load_workload("drift")
+        actual = frozenset(resolution.spec.enabled_tool_names)
+    finally:
+        registry_mod._WORKLOAD_CACHE.clear()
+
+    assert actual == EXPECTED_DRIFT_WORKLOAD_TOOL_NAMES, (
+        f"Drift workload tool inventory drifted.\n"
+        f"  Expected: {sorted(EXPECTED_DRIFT_WORKLOAD_TOOL_NAMES)}\n"
+        f"  Actual:   {sorted(actual)}\n"
+        f"  Added:    {sorted(actual - EXPECTED_DRIFT_WORKLOAD_TOOL_NAMES)}\n"
+        f"  Removed:  {sorted(EXPECTED_DRIFT_WORKLOAD_TOOL_NAMES - actual)}\n"
+        f"If this change is intentional, update both the YAML at "
+        f"workloads/drift/workload.yaml AND EXPECTED_DRIFT_WORKLOAD_TOOL_NAMES "
+        f"in this test."
     )
 
 
