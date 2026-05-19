@@ -92,6 +92,13 @@ EXPECTED_TOOL_NAMES = frozenset({
 # is hardcoded: the test is the audit point. A future PR that adds a
 # tool to either set MUST update this constant, which means a reviewer
 # sees the change as part of capability widening.
+#
+# Note: the session-state tools (``get_session_state`` /
+# ``set_session_state``) were briefly listed in upgrade's enabled set
+# during the 17.A.1/17.B.3 prep but were never bound to a workload's
+# authority domain. The 17.B.4 follow-up removed them from upgrade's
+# YAML; they remain reserved in ``_TOOL_REGISTRY`` for the future
+# session-memory feature but are absent from both ``*_ONLY`` sets here.
 _DRIFT_ONLY_TOOL_NAMES = frozenset({
     "drift_read_live_env",
     "drift_patch_docs",
@@ -294,9 +301,12 @@ def test_drift_and_upgrade_only_tool_names_are_disjoint():
        cross-workload authority leak).
 
     Shared tools (``notify``, ``search_recent_prs``, the MCP doc-search
-    tools, the session-state tools) are intentionally NOT in either
-    "*_ONLY" set — they're allowed in both workloads by design, so the
-    disjointness pin doesn't penalize them.
+    tools) are intentionally NOT in either "*_ONLY" set — they're
+    allowed in both workloads by design, so the disjointness pin
+    doesn't penalize them. The session-state tools (``get_session_state``
+    / ``set_session_state``) remain reserved in ``_TOOL_REGISTRY`` but
+    no workload currently enables them, so they don't appear in
+    either ``*_WORKLOAD_TOOL_NAMES`` tuple either.
     """
     # Internal sanity: the two subsets don't overlap by construction.
     overlap = _DRIFT_ONLY_TOOL_NAMES & _UPGRADE_ONLY_TOOL_NAMES

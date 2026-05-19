@@ -47,6 +47,8 @@ from agent.workloads import (
     MissingWorkerEnvError,
     ReservedToolNotImplementedError,
     load_workload,
+    reset_workload,
+    set_workload,
 )
 from driftscribe_lib.logging import (
     install_trace_middleware,
@@ -615,8 +617,25 @@ async def _do_recheck(
         # accept weaker idempotency, or (b) pre-call read_live_env even on the
         # ADK path to compute the key first — are deferred to Phase 9 along
         # with the Eventarc handler so retry storms don't break the bank.
+        #
+        # Phase 17.B.4 follow-up: bind the *caller* workload identity to
+        # the ContextVar read by the Developer Knowledge MCP wrapper's
+        # structured log. Distinct from ``mcp_server`` (which MCP we
+        # called) — ``workload`` is who asked us to call it. Together
+        # they let the operator dashboards slice latency/failures by
+        # caller. The inner ``try/finally`` keeps the binding scoped to
+        # the agent call so a concurrent ``/recheck`` running another
+        # workload on the same event loop sees its own ContextVar
+        # snapshot per :pep:`567`. The outer ``try/except`` catches
+        # whatever propagates out of ``_run_adk_agent`` (the reset
+        # already ran in the finally). Pin in
+        # ``tests/integration/test_workload_contextvar_propagation.py``.
+        _workload_token = set_workload(workload)
         try:
-            proposal = await _run_adk_agent(user_msg, workload=workload)
+            try:
+                proposal = await _run_adk_agent(user_msg, workload=workload)
+            finally:
+                reset_workload(_workload_token)
         except (
             MissingWorkerEnvError,
             ReservedToolNotImplementedError,
@@ -1377,10 +1396,23 @@ async def chat(req: ChatRequest, _: None = Depends(verify_token)) -> dict:
 
     from agent.adk_agent import run_chat
 
+    # Phase 17.B.4 follow-up: bind the *caller* workload identity to the
+    # ContextVar read by the Developer Knowledge MCP wrapper's structured
+    # log. See the matching binding in ``_do_recheck``'s ADK path for the
+    # full rationale; the short version is that ``mcp_server`` (which
+    # MCP we called) is not enough — operator dashboards need to slice
+    # latency/failures by caller workload too, and that comes from this
+    # ContextVar. Reset in the inner ``finally`` so the outer ``try``
+    # can still translate downstream errors to HTTPException without
+    # leaking the binding into a sibling request.
+    _workload_token = set_workload(req.workload)
     try:
-        return await run_chat(
-            req.prompt, session_id=req.session_id, workload=req.workload
-        )
+        try:
+            return await run_chat(
+                req.prompt, session_id=req.session_id, workload=req.workload
+            )
+        finally:
+            reset_workload(_workload_token)
     except worker_client.WorkerClientError as e:
         # Worker upstream failed (could be transport, schema, or worker
         # policy). 502 — the coordinator itself is healthy; the

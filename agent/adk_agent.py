@@ -149,8 +149,16 @@ UPGRADE_WORKLOAD_TOOL_NAMES: tuple[str, ...] = (
     "search_recent_prs",
     "search_developer_docs",
     "retrieve_developer_doc",
-    "get_session_state",
-    "set_session_state",
+    # Session-state tools (``get_session_state`` / ``set_session_state``)
+    # were previously listed here as aspirational future work; the
+    # 17.B.4 follow-up review (Codex) removed them because they remain
+    # ``None`` in ``TOOL_REGISTRY`` and would otherwise keep
+    # ``load_workload("upgrade")`` failing with
+    # ``ReservedToolNotImplementedError`` even after 17.C wires the
+    # ``upgrade_*`` tools. They stay reserved in ``_TOOL_REGISTRY`` so
+    # the reserved-tool inventory test still pins their names — if ADK
+    # session-state becomes a real requirement, the same PR that flips
+    # their registry entries to callables can re-add them here.
 )
 
 
