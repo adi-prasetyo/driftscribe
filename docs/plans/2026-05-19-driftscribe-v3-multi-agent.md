@@ -395,7 +395,7 @@ gcloud eventarc triggers create driftscribe-cloudrun-changes \
 
 ### Task 14.4: E2E smoke
 
-`gcloud run services update payment-demo --update-env-vars=NEW_THING=test` → wait ≤30s → check Firestore for new decision document with `trigger="eventarc"`. Document observed latency in `docs/benchmarks.md`.
+`gcloud run services update payment-demo --update-env-vars=NEW_THING=test` → poll for up to 60s → check Firestore (or coordinator Cloud Run logs, since DRY_RUN=true demo deploys use InMemoryStateStore) for a new decision document with `trigger="eventarc"`. Document observed latency in `docs/benchmarks.md`. The poll budget is 60s (not 30s) because Eventarc cold-start + audit-log → trigger SA invocation latency is occasionally several seconds on top of `/eventarc` processing; 60s leaves head-room without making FAIL ambiguous.
 
 ### Phase 14 Codex review
 
