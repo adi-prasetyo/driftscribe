@@ -31,6 +31,7 @@ from agent.github_actions import (
     open_drift_issue,
     open_escalation_issue,
 )
+from agent.mcp.developer_knowledge import MissingDeveloperKnowledgeApiKeyError
 from agent.models import DecisionAction, DecisionProposal
 from agent.renderer import (
     render_docs_pr_body,
@@ -536,7 +537,20 @@ async def _do_recheck(
     # ``s.contract_path`` is still the source of truth.
     try:
         load_workload(workload)
-    except (MissingWorkerEnvError, ReservedToolNotImplementedError) as e:
+    except (
+        MissingWorkerEnvError,
+        ReservedToolNotImplementedError,
+        MissingDeveloperKnowledgeApiKeyError,
+    ) as e:
+        # ``MissingDeveloperKnowledgeApiKeyError`` is a "deploy not
+        # wired" condition (the Secret Manager binding for the
+        # Developer Knowledge API key is missing), structurally
+        # identical to the worker-env case above — same operator
+        # surface, same 503. Kept as an explicit tuple addition
+        # rather than inheriting from ``MissingWorkerEnvError``
+        # because the developer-knowledge key is NOT a worker env
+        # var; collapsing the hierarchies would muddy the exception
+        # taxonomy for one shared status code.
         raise HTTPException(
             status_code=503,
             detail=(
@@ -603,7 +617,11 @@ async def _do_recheck(
         # with the Eventarc handler so retry storms don't break the bank.
         try:
             proposal = await _run_adk_agent(user_msg, workload=workload)
-        except (MissingWorkerEnvError, ReservedToolNotImplementedError) as e:
+        except (
+            MissingWorkerEnvError,
+            ReservedToolNotImplementedError,
+            MissingDeveloperKnowledgeApiKeyError,
+        ) as e:
             # Workload's wiring isn't complete in this build (e.g.
             # upgrade before 17.B/17.C/17.E). The request is
             # structurally valid; the system isn't deployed for that
@@ -1339,7 +1357,15 @@ async def chat(req: ChatRequest, _: None = Depends(verify_token)) -> dict:
     # broader catch as collapsing two operationally distinct cases.
     try:
         load_workload(req.workload)
-    except (MissingWorkerEnvError, ReservedToolNotImplementedError) as e:
+    except (
+        MissingWorkerEnvError,
+        ReservedToolNotImplementedError,
+        MissingDeveloperKnowledgeApiKeyError,
+    ) as e:
+        # See the matching catch in ``/recheck`` for why
+        # ``MissingDeveloperKnowledgeApiKeyError`` is in this tuple
+        # (deploy-not-wired condition, same 503 surface) rather than
+        # inheriting from ``MissingWorkerEnvError``.
         raise HTTPException(
             status_code=503,
             detail=(

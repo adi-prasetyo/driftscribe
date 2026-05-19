@@ -158,6 +158,85 @@ def test_chat_upgrade_workload_returns_503_when_env_unset(monkeypatch) -> None:
     fake.assert_not_awaited()
 
 
+def test_chat_missing_developer_knowledge_api_key_returns_503(monkeypatch) -> None:
+    """Phase 17.B.2 (Codex review I-5): a missing
+    :envvar:`DEVELOPER_KNOWLEDGE_API_KEY` must surface as 503, not 500.
+
+    Structurally identical to ``test_chat_upgrade_workload_returns_503_when_env_unset``:
+    a missing API key is a "deploy not wired" condition (Secret Manager
+    binding for ``developer-knowledge-api-key`` absent), same operator
+    surface as a missing worker URL. Same 503, same self-diagnosable
+    error message.
+
+    NOTE: The Developer Knowledge MCP toolset is not yet wired into
+    ``build_agent`` (that lands in 17.B.3). We can't trigger the real
+    code path via a ``/chat`` request today, so we patch
+    ``load_workload`` to raise
+    :class:`MissingDeveloperKnowledgeApiKeyError` and verify the
+    handler's exception tuple includes it. This pins the 503 mapping
+    in advance of 17.B.3's wiring. When 17.B.3 lands, an integration
+    test exercising the real
+    :func:`build_developer_knowledge_toolset` path should replace
+    this stub.
+    """
+    from agent.mcp.developer_knowledge import (
+        MissingDeveloperKnowledgeApiKeyError,
+    )
+
+    def _raise_missing_key(_workload):
+        raise MissingDeveloperKnowledgeApiKeyError(
+            "DEVELOPER_KNOWLEDGE_API_KEY is unset"
+        )
+
+    fake_run_chat = AsyncMock()
+    with (
+        patch("agent.main.load_workload", side_effect=_raise_missing_key),
+        patch("agent.adk_agent.run_chat", fake_run_chat),
+    ):
+        client = TestClient(app)
+        r = client.post("/chat", json={"prompt": "hi"})
+
+    assert r.status_code == 503, r.text
+    detail = r.json()["detail"].lower()
+    # The handler echoes the original error message in the detail —
+    # makes the missing-key surface visible to the operator.
+    assert "developer_knowledge_api_key" in detail
+    # And the standard "not deployed" framing.
+    assert "not deployed" in detail
+    fake_run_chat.assert_not_awaited()
+
+
+def test_recheck_missing_developer_knowledge_api_key_returns_503(monkeypatch) -> None:
+    """Phase 17.B.2 (Codex review I-5): the same 503 mapping must hold
+    for ``/recheck``. Two exception tuples on the recheck path
+    (load_workload pre-resolve, _run_adk_agent body) both include
+    :class:`MissingDeveloperKnowledgeApiKeyError`. This test exercises
+    the pre-resolve tuple by stubbing ``load_workload``; the
+    _run_adk_agent tuple is verified by inspection in
+    ``test_main_exception_tuples_include_missing_dk_key`` below.
+    """
+    from agent.mcp.developer_knowledge import (
+        MissingDeveloperKnowledgeApiKeyError,
+    )
+
+    monkeypatch.setenv("USE_ADK", "true")
+    get_settings.cache_clear()
+
+    def _raise_missing_key(_workload):
+        raise MissingDeveloperKnowledgeApiKeyError(
+            "DEVELOPER_KNOWLEDGE_API_KEY is unset"
+        )
+
+    with patch("agent.main.load_workload", side_effect=_raise_missing_key):
+        client = TestClient(app)
+        r = client.post("/recheck", json={"workload": "drift"})
+
+    assert r.status_code == 503, r.text
+    detail = r.json()["detail"].lower()
+    assert "developer_knowledge_api_key" in detail
+    assert "not deployed" in detail
+
+
 def test_chat_unknown_workload_returns_422() -> None:
     """``POST /chat`` with ``workload="does_not_exist"`` → 422.
 
