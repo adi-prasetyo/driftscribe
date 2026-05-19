@@ -1,6 +1,6 @@
 # DriftScribe IAM matrix
 
-> **Status:** Phase 11.7 — coordinator IAM trim. With the multi-agent rewrite complete, the coordinator no longer holds direct GCP-mutation or GitHub-mutation surface; every such operation is delegated to one of the four workers. The matrix below is the *post-11.7* shape — the operator command block at the bottom of this file is what an operator runs to bring an existing deployment into compliance. The four worker SAs (reader/docs/rollback/notifier) are unchanged from 11.3–11.6.
+> **Status:** Phase 11.8 — multi-agent deploy + bootstrap automation. The coordinator runs under a dedicated `driftscribe-agent@…` SA (NOT the default compute SA) with its own per-secret bindings on `coordinator-shared-token`, `github-pat`, and `gemini-api-key`. The bootstrap script (`infra/scripts/setup_secrets.sh`) creates all 5 SAs, applies per-SA IAM (including the resource-scoped rollback grant on `payment-demo` only), and grants `run.invoker` to the coordinator on each worker after the first build. The operator runbook is [`docs/runbooks/deploy.md`](../runbooks/deploy.md).
 
 This document is the source of truth for **what each service account can do, and what it explicitly cannot do**. The "negative-space" column is load-bearing — it's not enough to enumerate the grants; reviewers and judges should be able to run `gcloud projects get-iam-policy driftscribe-hack-2026 --format=json` and verify nothing beyond the listed bindings is present.
 
@@ -64,7 +64,9 @@ The same SA does **not** appear in the project-level IAM policy for `roles/run.d
 
 The coordinator rewrite (Phase 11.7) is the point at which the legacy direct-GCP and direct-GitHub mutation surfaces on `driftscribe-agent@…` are *operationally* removed. The plan only adds the new per-worker `roles/run.invoker` bindings; the removals of older project-wide grants are done by hand via the commands below, because a `gcloud builds submit` cannot itself remove bindings it didn't add.
 
-**Idempotency note:** these are `|| true`-suffixed in production runbooks so re-running them on an already-trimmed deployment is a no-op. The negative-space audit script in `infra/scripts/audit_iam.sh` (Phase 11.8) is the canonical check that the trim has actually happened.
+**Phase 11.8 automation:** The per-worker `roles/run.invoker` grants and the rollback worker's resource-scoped `roles/run.developer` on `payment-demo` are now applied by `infra/scripts/setup_secrets.sh` automatically — gated on each service's existence, so the script is safe to run before the first build (the grants are no-ops) and re-run after the first build (the grants apply). The `roles/run.viewer` *removal* on the coordinator is deferred — see the inline comment in `setup_secrets.sh`.
+
+**Idempotency note:** these are `|| true`-suffixed in production runbooks so re-running them on an already-trimmed deployment is a no-op. The negative-space audit script in `infra/scripts/audit_iam.sh` (Phase 11.9+, TODO) is the canonical check that the trim has actually happened.
 
 ```bash
 PROJECT=driftscribe-hack-2026
