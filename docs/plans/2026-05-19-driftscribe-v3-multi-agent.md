@@ -536,11 +536,13 @@ Translate. Cross-link top-of-file.
 
 Standard ProtoPedia sections: タイトル / Title, 概要 / Summary, ハイライト / Highlights (multi-agent layered safety, HITL, ADK), 技術スタック / Stack, デモ / Demo, リポジトリ / Repo URL, デプロイ済みURL / Deployed URLs.
 
-### Task 16.7: 90-second video script + recording plan
+### ~~Task 16.7: 90-second video script + recording plan~~ (deferred)
 
-**Files:** `docs/submission/video-script.md`.
+**Status (2026-05-19):** Deferred — user expects more features to land before submission;
+writing a beat-by-beat video script now would go stale. The video script will be
+written closer to the actual recording (Phase 18.2), once feature scope is final.
+Beat structure preserved here for reference when the task is revived:
 
-Beat-by-beat script:
 - 0:00–0:10 — opening hook ("operators have a config-drift problem; here's an AI agent that fixes it safely")
 - 0:10–0:30 — show `/chat` and the multi-agent architecture diagram side-by-side
 - 0:30–0:50 — Beat B (drift_issue) + Beat D (docs_pr)
@@ -548,8 +550,6 @@ Beat-by-beat script:
 - 1:15–1:30 — the "jailbreak fails" beat: try to prompt-inject coordinator into deleting payment-demo. Show it fail. Roll credits.
 
 Narration in English; Japanese subtitles. Tools: OBS Studio + DaVinci Resolve.
-
-**This is the explicit hand-off point — I cannot record. Hand off to user with clear instructions.**
 
 ### Phase 16 Codex review
 
