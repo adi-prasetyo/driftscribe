@@ -137,7 +137,16 @@ def test_real_verify_caller_dep_wired_with_env(monkeypatch):
     """Layer 3 integration check (Codex review #4): without dependency_overrides
     the real ``_verify_caller_dep`` must call ``verify_caller`` with the
     OWN_URL and ALLOWED_CALLERS read from env at boot. Stub the lib function
-    and capture its kwargs so we don't need a real Google ID token."""
+    and capture its kwargs so we don't need a real Google ID token.
+
+    We monkeypatch the module-level constants rather than relying on the
+    import-time env read because, in a unified pytest run, another worker's
+    test module may have populated ``OWN_URL`` before this module was
+    imported (Python caches the import; ``os.environ.setdefault`` at the top
+    of this file would then be a no-op and the constant would carry the
+    other worker's value). Forcing the value here keeps the test honest no
+    matter what order pytest collects worker test modules.
+    """
     seen = {}
 
     def fake_verify(request, *, own_url, allowed_callers):
@@ -152,6 +161,12 @@ def test_real_verify_caller_dep_wired_with_env(monkeypatch):
         reader_main,
         "read_live_state",
         lambda s, r, p, **_: {"env": {}, "revision": "rev-x"},
+    )
+    monkeypatch.setattr(reader_main, "OWN_URL", "https://reader.example.com")
+    monkeypatch.setattr(
+        reader_main,
+        "ALLOWED_CALLERS",
+        frozenset({"coordinator@test-proj.iam.gserviceaccount.com"}),
     )
     # No dependency_overrides — exercise the real _verify_caller_dep.
     c = TestClient(app)
