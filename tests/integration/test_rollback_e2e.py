@@ -802,6 +802,110 @@ def test_concurrent_expired_rollback_evictions_only_one_re_proposes(
     assert r2.json()["approval"]["approval_url"] == _APPROVAL_URL
 
 
+def test_cas_loser_with_no_fresh_decision_returns_409(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Phase 15.3 (Codex carry-over from Phase 14): if the CAS-loser
+    re-reads state and finds NO fresh decision (the winner has already
+    evicted the old doc but its re-claim + new decision write hasn't
+    landed yet), the handler must NOT fall through to ``record_event``
+    and become the new proposer — that would duplicate-mint approval
+    docs the moment the winner finishes.
+
+    Surface 409 ``event in-progress, retry`` so Eventarc/the operator
+    retries cleanly. The winner's re-cache write will land on the next
+    attempt.
+
+    Setup: r1 writes a cached decision and then we manually clear the
+    event slot to simulate "winner has evicted but not re-cached"; r2
+    forces the "expired" branch via patched
+    ``_cached_rollback_is_expired``, gets a False from a stubbed
+    ``evict_cached_decision`` (CAS-loser). The fall-through path would
+    succeed at ``record_event`` (event slot is empty) and call a second
+    /propose — that's the bug. The fix short-circuits to 409 instead.
+    """
+    monkeypatch.setenv("USE_ADK", "true")
+    get_settings.cache_clear()
+    _reset_state_for_tests()
+
+    propose_call_count = {"n": 0}
+
+    def dispatch(worker: str, payload: dict, *args: Any, **kwargs: Any) -> Any:
+        if worker == "reader":
+            return _reader_envelope(
+                {"PAYMENT_MODE": "live", "FEATURE_NEW_CHECKOUT": "false"}
+            )
+        if worker == "rollback":
+            propose_call_count["n"] += 1
+            return _propose_envelope()
+        if worker == "notifier":
+            return _notifier_envelope()
+        raise AssertionError(f"unexpected worker call: {worker!r}")
+
+    mock_run_agent = AsyncMock(return_value=_rollback_proposal())
+    with (
+        patch("agent.main._run_adk_agent", mock_run_agent),
+        patch("agent.main.worker_client.call") as m_call,
+    ):
+        m_call.side_effect = dispatch
+        client = TestClient(app)
+        # Winner call: empty cache → propose runs → fresh decision cached.
+        r1 = client.post("/recheck")
+        assert r1.status_code == 200, r1.text
+        assert propose_call_count["n"] == 1
+
+        from agent import main as agent_main
+
+        state = agent_main.get_state()
+        event_key = r1.json()["event_key"]
+
+        # Snapshot the cached decision so the initial find returns it (and
+        # we enter the "expired" branch), but underneath, clear the event
+        # slot to simulate "winner has evicted but not re-cached". This is
+        # the precise race the fix targets: the fall-through path would
+        # succeed at record_event (event slot empty) and call a second
+        # /propose.
+        cached_snapshot = state.find_decision_for_event(event_key)
+        assert cached_snapshot is not None
+        # Clear the underlying state — fall-through code path would
+        # successfully claim the event again and run a second propose.
+        _reset_state_for_tests()
+
+        find_call_count = {"n": 0}
+
+        def stub_find(ek: str):
+            find_call_count["n"] += 1
+            if find_call_count["n"] == 1:
+                return cached_snapshot  # initial lookup → enter expired branch
+            return None  # post-CAS re-read → winner mid-flight, no fresh decision
+
+        def losing_evict(ek: str, decision_id: str) -> bool:
+            return False  # CAS-loser
+
+        # Force "expired" so we always enter the eviction branch.
+        def always_expired(cached_dict: dict) -> bool:
+            return True
+
+        # Re-fetch state since we reset, then patch on the new instance.
+        state = agent_main.get_state()
+        with (
+            patch.object(state, "find_decision_for_event", stub_find),
+            patch.object(state, "evict_cached_decision", losing_evict),
+            patch("agent.main._cached_rollback_is_expired", always_expired),
+        ):
+            r2 = client.post("/recheck")
+
+    # The CAS-loser short-circuits with 409 — does NOT re-propose.
+    assert r2.status_code == 409, r2.text
+    assert "in-progress" in r2.json()["detail"].lower()
+    # The rollback worker was called exactly once total (r1's propose).
+    # WITHOUT the fix, fall-through reaches _do_rollback and propose runs
+    # a second time (propose_call_count == 2).
+    assert propose_call_count["n"] == 1, (
+        "CAS-loser must NOT re-propose when no fresh decision is available"
+    )
+
+
 def test_rollback_on_non_adk_path_is_500(monkeypatch: pytest.MonkeyPatch) -> None:
     """Defensive: if a ROLLBACK proposal somehow appears on the
     classifier path (impossible in current code — the classifier has no
