@@ -1,0 +1,19 @@
+service: payment-demo
+environment: production
+cloud_run_service: payment-demo
+region: asia-northeast1
+github_repo: adi-prasetyo/driftscribe
+expected_env:
+  PAYMENT_MODE:
+    value: "mock"
+    docs:
+      file: demo/docs/runbook.md
+      section: Runtime Configuration
+    allow_manual_change: false
+  FEATURE_NEW_CHECKOUT:
+    value: "false"
+    docs:
+      file: demo/docs/runbook.md
+      section: Feature Flags
+    allow_manual_change: true
+    operator_note: "Operator-toggleable: enables the new checkout flow. Safe to flip without a redeploy."
