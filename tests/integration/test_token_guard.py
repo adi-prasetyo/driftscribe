@@ -102,14 +102,26 @@ def test_missing_token_config_returns_503(monkeypatch):
 
 
 def test_eventarc_does_not_require_token(monkeypatch):
-    """``/eventarc`` is exempt — it'll be auth'd via Google-signed ID tokens
-    from Eventarc in Phase 14. Currently returns 501.
+    """``/eventarc`` is exempt from the ``X-DriftScribe-Token`` guard — it
+    auths via Google-signed ID tokens from Eventarc (Phase 14.2).
+
+    The handler enforces ``Authorization: Bearer <id-token>`` instead, so a
+    POST without that header returns 401 from the Eventarc-auth path, not
+    from the X-DriftScribe-Token guard. We pin that the 401 is specifically
+    about Authorization (Bearer flow) rather than the operator token.
     """
     _set_token(monkeypatch, "test-token-value-123")
+    # EVENTARC_AUDIENCE must be set for the handler to reach the
+    # Authorization-header check (empty audience → 503 fail-closed).
+    monkeypatch.setenv("EVENTARC_AUDIENCE", "https://example.a.run.app")
+    get_settings.cache_clear()
     client = TestClient(app)
     r = client.post("/eventarc")
-    assert r.status_code == 501
-    assert r.status_code not in (401, 403)
+    assert r.status_code == 401
+    detail = r.json()["detail"].lower()
+    assert "authorization" in detail
+    # Not the operator-token guard's 401 (different header name).
+    assert "x-driftscribe-token" not in detail
 
 
 def test_runs_endpoint_does_not_require_token(monkeypatch):

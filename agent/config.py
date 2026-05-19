@@ -33,6 +33,13 @@ class Settings(BaseSettings):
     # at runtime: if --set-secrets is removed, the guard fail-closes with 503
     # rather than silently accepting anything — see agent/auth.py.
     driftscribe_token: str = ""
+    # Coordinator's own Cloud Run URL (e.g. ``https://driftscribe-agent-xyz.a.run.app``).
+    # The ``/eventarc`` handler verifies Eventarc-minted ID tokens against this
+    # audience via ``google.oauth2.id_token.verify_oauth2_token``. Set by the
+    # deploy step in Phase 14.3 after the service URL is known; empty default
+    # so test/dev boot doesn't crash. At request time, an empty value forces
+    # the handler to 503 (fail-closed) — see agent/main.py /eventarc.
+    eventarc_audience: str = ""
 
 
 @lru_cache(maxsize=1)
