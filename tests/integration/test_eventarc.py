@@ -183,6 +183,38 @@ def test_eventarc_rejects_wrong_email_claim(monkeypatch):
     assert "service account" in detail or "principal" in detail
 
 
+def test_eventarc_email_check_uses_hmac_compare_digest(monkeypatch):
+    """Phase 15.3: pin that the email-claim check goes through
+    ``hmac.compare_digest`` (Codex carry-over from Phase 14). Without
+    this test the implementation could silently regress to ``==`` and
+    only the (mild) timing-attack property would be lost — no other
+    test would catch it.
+
+    Same pattern as ``test_token_guard.py::test_constant_time_compare_is_used``.
+    """
+    _set_audience(monkeypatch)
+    with (
+        patch("agent.main.verify_oauth2_token") as m_verify,
+        patch("agent.main.hmac.compare_digest", return_value=False) as cmp_,
+    ):
+        m_verify.return_value = {"email": _EXPECTED_EMAIL, "aud": _VALID_AUDIENCE}
+        client = TestClient(app)
+        r = client.post(
+            "/eventarc",
+            json=_audit_log_body(),
+            headers={"Authorization": "Bearer fake-token"},
+        )
+    # compare_digest returned False (forced) → 403 even though the email
+    # actually matched. That's the proof the comparison routes through
+    # compare_digest and not ``==``.
+    assert r.status_code == 403
+    assert cmp_.called, "email check must use hmac.compare_digest, not =="
+    args, _kwargs = cmp_.call_args
+    assert all(isinstance(a, str) for a in args), (
+        "compare_digest args must be str+str (None must be coerced)"
+    )
+
+
 def test_eventarc_rejects_missing_email_claim(monkeypatch):
     """Token verifies but the ``email`` claim is absent → 403.
 
