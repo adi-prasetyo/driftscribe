@@ -45,6 +45,15 @@ steps:
       # Same build-context-at-repo-root rationale as the reader above.
       - .
   - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-rollback:${_TAG}
+      - -f
+      - workers/rollback/Dockerfile
+      # Same build-context-at-repo-root rationale as the reader above.
+      - .
+  - name: gcr.io/cloud-builders/docker
     args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-agent:${_TAG}']
   - name: gcr.io/cloud-builders/docker
     args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/payment-demo:${_TAG}']
@@ -52,6 +61,8 @@ steps:
     args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-reader:${_TAG}']
   - name: gcr.io/cloud-builders/docker
     args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-docs:${_TAG}']
+  - name: gcr.io/cloud-builders/docker
+    args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-rollback:${_TAG}']
 
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
     entrypoint: gcloud
@@ -206,8 +217,77 @@ steps:
           --region=asia-northeast1 \
           --update-env-vars=OWN_URL=$${URL}
 
+  # Rollback Agent (Phase 11.5) — worker #3 of 4. HITL-gated traffic rollback.
+  # Layer 1: rollback-agent-sa has resource-scoped roles/run.developer on
+  # payment-demo ONLY (NOT project-wide — granted via
+  # `gcloud run services add-iam-policy-binding payment-demo ...`).
+  # Project-level roles/datastore.user is an acknowledged constraint
+  # (Firestore lacks collection-scope IAM); bounded by the application
+  # only ever touching the `approvals/` collection.
+  # Layer 3: --no-allow-unauthenticated forces ID-token auth; the worker
+  # ALSO enforces an in-app caller email allowlist via verify_caller.
+  # Layer 4: HITL approval — single-use HMAC-bound token, 15-min TTL,
+  # transactional pending→used flip. See driftscribe_lib/approvals.py.
+  #
+  # Two URLs need to be re-synced after the first deploy:
+  #   - OWN_URL: this service's own assigned URL (audience claim).
+  #   - COORDINATOR_URL: the driftscribe-agent service's URL — used to
+  #     construct the approval_url returned in /propose responses. The
+  #     coordinator hosts the approval UI (Phase 11.7), not this worker.
+  # The approval-hmac-key secret MUST exist in Secret Manager BEFORE the
+  # first build that includes this line (same rationale as the other
+  # secret references above).
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - driftscribe-rollback
+      - --image=asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-rollback:${_TAG}
+      - --region=asia-northeast1
+      - --no-allow-unauthenticated
+      - --service-account=rollback-agent-sa@$PROJECT_ID.iam.gserviceaccount.com
+      - --min-instances=0
+      - --max-instances=1
+      - --concurrency=1
+      # OWN_URL + COORDINATOR_URL are placeholders — both are overwritten
+      # by the next step in this same build. If that step fails,
+      # verify_caller rejects every audience (fail-closed) AND
+      # approval_url in /propose responses points at the invalid host
+      # (operator sees a broken link rather than being routed to an
+      # attacker-controlled domain).
+      - --set-env-vars=GCP_PROJECT=$PROJECT_ID,TARGET_SERVICE=payment-demo,TARGET_REGION=asia-northeast1,OWN_URL=https://placeholder.invalid,COORDINATOR_URL=https://placeholder.invalid,ALLOWED_CALLERS=driftscribe-agent@$PROJECT_ID.iam.gserviceaccount.com
+      - --set-secrets=APPROVAL_HMAC_KEY=approval-hmac-key:latest
+
+  # Post-deploy: read this service's URL AND the coordinator's URL, write
+  # both back. The coordinator URL is the driftscribe-agent service's URL
+  # (which was set earlier in this same build by its own deploy step).
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        URL=$$(gcloud run services describe driftscribe-rollback \
+          --region=asia-northeast1 --format='value(status.url)')
+        if [ -z "$${URL}" ] || [ "$${URL}" = "https://placeholder.invalid" ]; then
+          echo "ERROR: Could not resolve driftscribe-rollback URL" >&2
+          exit 1
+        fi
+        COORD_URL=$$(gcloud run services describe driftscribe-agent \
+          --region=asia-northeast1 --format='value(status.url)')
+        if [ -z "$${COORD_URL}" ] || [ "$${COORD_URL}" = "https://placeholder.invalid" ]; then
+          echo "ERROR: Could not resolve driftscribe-agent (coordinator) URL" >&2
+          exit 1
+        fi
+        echo "Setting OWN_URL=$${URL} and COORDINATOR_URL=$${COORD_URL} on driftscribe-rollback"
+        gcloud run services update driftscribe-rollback \
+          --region=asia-northeast1 \
+          --update-env-vars=OWN_URL=$${URL},COORDINATOR_URL=$${COORD_URL}
+
 images:
   - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-agent:${_TAG}
   - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/payment-demo:${_TAG}
   - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-reader:${_TAG}
   - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-docs:${_TAG}
+  - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-rollback:${_TAG}
