@@ -297,6 +297,39 @@ def test_install_trace_middleware_is_idempotent_per_app() -> None:
     )
 
 
+def test_middleware_resets_contextvar_when_handler_raises() -> None:
+    """The try/finally in ``install_trace_middleware`` must reset the
+    ContextVar even when the handler raises. A future refactor that
+    silently drops the ``finally`` would otherwise leak the prior
+    request's trace id into the next request's context (and into any
+    background log lines emitted between requests).
+
+    Isolated FastAPI app so the assertion is not coupled to the
+    coordinator's healthz route or any other middleware.
+    """
+    from fastapi import FastAPI
+
+    test_app = FastAPI()
+    ds_logging.install_trace_middleware(test_app)
+
+    @test_app.get("/boom")
+    def _boom() -> dict:
+        raise RuntimeError("intentional")
+
+    # raise_server_exceptions=False so the TestClient surfaces the 500
+    # as a normal response instead of re-raising into our test process
+    # (Starlette's default would abort the test on the RuntimeError).
+    client = TestClient(test_app, raise_server_exceptions=False)
+    r = client.get("/boom", headers={"X-Trace-Id": "f" * 32})
+    assert r.status_code == 500
+
+    # The middleware's finally MUST have reset the ContextVar despite
+    # the handler raising. Without the finally, the binding would
+    # outlive the request and ``get_trace_id()`` would still return
+    # the inbound "fff...".
+    assert ds_logging.get_trace_id() == ""
+
+
 def test_coordinator_middleware_resets_contextvar_after_request() -> None:
     """A request handler that raises must NOT leak its trace id into
     subsequent requests' contexts (the try/finally in
