@@ -23,6 +23,9 @@ def _strict_pr_match(prs: list[dict], var_name: str) -> str | None:
     return None
 
 
+# DecisionAction.ROLLBACK is intentionally NOT in this vocabulary — rollback
+# is an ADK-only output that must flow through the HITL approval gate; the
+# deterministic classifier never proposes it.
 _ACTION_PRIORITY = [
     DecisionAction.DRIFT_ISSUE,
     DecisionAction.ESCALATION,

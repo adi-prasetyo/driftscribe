@@ -12,6 +12,7 @@ class DecisionAction(str, Enum):
     DRIFT_ISSUE = "drift_issue"
     ESCALATION = "escalation"
     NO_OP = "no_op"
+    ROLLBACK = "rollback"
 
 class EnvDiff(BaseModel):
     name: str
@@ -26,6 +27,9 @@ class DecisionProposal(BaseModel):
     env_diffs: list[EnvDiff]
     target_docs_file: str | None = None
     target_docs_section: str | None = None
+    # Revision to roll back TO (the last-known-good); required when
+    # action == ROLLBACK. None for all other actions.
+    target_revision: str | None = None
     rationale: str
     confidence: float
     requires_human_review: bool = False
