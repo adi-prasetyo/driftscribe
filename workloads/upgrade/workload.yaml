@@ -1,0 +1,65 @@
+# Upgrade workload manifest — STUB (Phase 17.A.1).
+#
+# This file is the scaffolding for the dependency-upgrade workload
+# landing in 17.C. It is intentionally complete enough to validate
+# against the WorkloadSpec schema, but the tools and workers it
+# references (upgrade_*, search_developer_docs, retrieve_developer_doc,
+# get_session_state, set_session_state) are reserved-but-not-yet-
+# implemented in the registry. Calling `load_workload("upgrade")` will
+# therefore raise `UnknownToolError` with a clear "not yet implemented"
+# message until 17.B and 17.C ship.
+#
+# That failure mode is deliberate: it pins the workload manifest's
+# shape now (so the YAML format doesn't churn during 17.C) without
+# letting the coordinator boot a half-wired workload.
+#
+# When 17.C lands:
+# - Replace `system_prompt.txt` content with the real upgrade prompt.
+# - Implement the upgrade_* tools and flip their TOOL_REGISTRY entries
+#   from None to the real callables.
+# - 17.E sets UPGRADE_READER_URL and UPGRADE_DOCS_URL in the deploy.
+
+name: upgrade
+display_name: Dependency upgrade
+description: >
+  Watch the repo's package.json for outdated dependencies (or
+  vulnerable versions per advisory feeds) and propose upgrade PRs.
+  Phase 17 scopes this to package.json only — Python/Rust/Go lockfile
+  parsing is deferred.
+
+# Relative to this workload's directory (workloads/upgrade/).
+system_prompt_file: system_prompt.txt
+
+# Upgrade reads dependencies from a repo lockfile, not a YAML contract.
+# Schema permits contract_file=null for exactly this case.
+contract_file: null
+
+# Symbolic tool names. Currently reserved (None in TOOL_REGISTRY);
+# load_workload("upgrade") will fail until 17.B/17.C implements them.
+enabled_tool_names:
+  - upgrade_read_dependencies
+  - upgrade_propose_pr
+  - notify
+  - search_recent_prs
+  - search_developer_docs
+  - retrieve_developer_doc
+  - get_session_state
+  - set_session_state
+
+# Symbolic worker names. Drift workers are excluded — upgrade has its
+# own reader/docs workers (different IAM, different repo path
+# allowlist). Notifier is shared.
+worker_names:
+  - upgrade_reader
+  - upgrade_docs
+  - notifier
+
+# Upgrade observes the repo's lockfile, not a Cloud Run env.
+observation_kind: repo_lockfile
+
+# Symbolic action names. Upgrade introduces upgrade_pr; no_op and
+# escalation are reused from the drift action vocabulary.
+action_names:
+  - upgrade_pr
+  - escalation
+  - no_op
