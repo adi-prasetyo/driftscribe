@@ -1,0 +1,31 @@
+# Canonical dependency documentation for the Reader Agent worker.
+#
+# The worker's container is NOT built by `pip install .` against this file —
+# the Dockerfile installs the listed deps directly via `uv pip install --system
+# <pinned list>` to avoid pulling in a build-system. `driftscribe_lib` is made
+# available inside the container via PYTHONPATH (see workers/reader/Dockerfile).
+#
+# Keep this file in sync with the Dockerfile install line. Future agents / the
+# spec reviewer should be able to read the worker's deps without parsing a
+# Dockerfile.
+[project]
+name = "driftscribe-reader"
+version = "0.1.0"
+description = "DriftScribe Reader Agent — read-only Cloud Run state worker"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "google-cloud-run>=0.10",
+    "google-auth>=2.35",
+    # google.auth.transport.requests imports `requests` at runtime; it is
+    # NOT pulled in transitively by google-auth. Spike 11.0 confirmed this.
+    "requests>=2.32",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.27",  # for fastapi.testclient.TestClient
+]
