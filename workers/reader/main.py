@@ -26,7 +26,7 @@ from pydantic import BaseModel, ConfigDict
 
 from driftscribe_lib.auth import verify_caller
 from driftscribe_lib.cloud_run import read_live_state
-from driftscribe_lib.logging import setup as setup_logging
+from driftscribe_lib.logging import install_trace_middleware, setup as setup_logging
 
 log = setup_logging("reader-agent")
 
@@ -62,6 +62,11 @@ class ReadRequest(BaseModel):
 
 
 app = FastAPI(title="DriftScribe Reader Agent")
+
+# Phase 15.2: per-request trace id from inbound ``X-Trace-Id`` (or
+# mint a fresh UUIDv4 hex). The id is bound to a ContextVar so every
+# ``log.*`` call inside the request carries it in its JSON output.
+install_trace_middleware(app)
 
 
 @app.get("/healthz")

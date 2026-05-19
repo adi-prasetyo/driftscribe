@@ -41,6 +41,16 @@ from agent.runbook_patcher import patch_runbook
 from agent.state_store import FirestoreStateStore, InMemoryStateStore, StateStore
 from agent.validator import ValidationError as ProposalValidationError
 from agent.validator import validate
+from driftscribe_lib.logging import (
+    install_trace_middleware,
+    setup as setup_logging,
+)
+
+# Configure structured JSON logging for this service. Module-level so the
+# root logger has its JSON handler before any per-module ``logging.getLogger()``
+# call (or import-time log emission) goes out. Idempotent — repeated imports
+# in a pytest session don't double-attach handlers.
+log = setup_logging("driftscribe-agent")
 
 # Match git refspec rules (https://git-scm.com/docs/git-check-ref-format):
 # allow ASCII letters/digits/`_`/`-`; collapse runs of disallowed chars to `-`.
@@ -74,6 +84,13 @@ def _read_runbook_content(s: Settings, target_in_repo: str) -> str:
     return target_path.read_text()
 
 app = FastAPI(title="DriftScribe Agent")
+
+# Phase 15.2: bind a per-request trace id (UUIDv4 hex) from inbound
+# ``X-Trace-Id`` (or mint one), echo on the response, and surface in
+# every log line via the ContextVar in ``driftscribe_lib.logging``.
+# Worker calls in ``agent.worker_client`` read the same ContextVar to
+# propagate the trace id downstream.
+install_trace_middleware(app)
 
 
 # Jinja2 templates for the HITL approval page (Phase 11.7). Mounted at
