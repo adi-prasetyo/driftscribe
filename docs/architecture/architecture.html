@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DriftScribe — Architecture</title>
+<!--
+  Phase 16.1 architecture diagram. Self-contained: no external CSS/JS/fonts/images.
+  Two-color palette: primary = ink (#1a1a1a + greys), accent = steel-blue (#3b6ea5).
+  Two stacked diagrams, inline SVG, no animation, no script.
+
+  ============================================================
+  Geometry plan
+  ============================================================
+
+  Diagram 1 — Trigger fan-in (viewBox 0 0 1000 520)
+    Triggers (x=20, w=140):
+      Eventarc       (20,  60, 140, 56)
+      /chat          (20, 150, 140, 56)
+      /recheck       (20, 240, 140, 56)
+    Coordinator (x=260, w=240, full-height box around 60..400):
+      box (260, 60, 240, 360)
+      title "Coordinator" + sub "Layer 0: 6-tool registry"
+      6 tool chips listed inside
+    HITL diamond between coordinator and rollback worker (Rollback row):
+      cx=580, cy=280 (aligned with Rollback row)
+    Workers (x=640, w=180, four rows):
+      Reader         (640,  60, 180, 56)
+      Docs           (640, 150, 180, 56)
+      Rollback       (640, 240, 180, 56)
+      Notifier       (640, 330, 180, 56)
+    Outcomes (x=860, w=120):
+      Firestore      (860,  60, 120, 56)  (from coordinator, decisions ledger)
+      GitHub PR      (860, 150, 120, 56)
+      Cloud Run flip (860, 240, 120, 56)
+      Webhook        (860, 330, 120, 56)
+    Arrows:
+      Triggers -> Coordinator (left edge of coordinator box)
+      Coordinator -> each worker (right edge of coord -> worker left)
+      Coordinator -> Rollback passes through HITL diamond
+      Coordinator -> Firestore (every decision recorded)
+      Each non-coord-outcome worker -> its outcome on the right
+    Legend strip at bottom y=460..500.
+
+  Diagram 2 — Layered safety boundary (viewBox 0 0 1000 720)
+    Five rows of nested boxes (Coordinator + 4 workers).
+    Each row 130 tall, gap 10:
+      Coordinator   y=  60..190
+      Reader        y= 200..330
+      Docs          y= 340..470
+      Rollback      y= 480..610
+      Notifier      y= 620..750
+    Per row:
+      Outer dashed rect (IAM scope)   x=40,  w=920, dashed stroke
+      Inner solid rect  (policy)      x=380, w=560, accent stroke
+      Service label on the left band (between x=40 and x=380)
+      IAM details listed top-of-row inside the dashed outer
+      Policy details inside the solid inner
+    HITL diamond on the Coordinator -> Rollback boundary:
+      Placed on the right edge of the Coordinator row OR sitting in
+      the gutter between row 1 and row 4 with a marker. Simplest:
+      draw a small diamond on the Coordinator row's right edge with
+      a label "HITL gate -> Rollback /execute" and a dashed connector
+      down to the Rollback row.
+    The Coordinator inner box is intentionally EMPTY and labelled
+    "no mutate caps on payment-demo" to highlight negative space.
+-->
+<style>
+  :root {
+    --ink: #1a1a1a;
+    --ink-soft: #555;
+    --ink-faint: #999;
+    --bg: #fdfdfc;
+    --line: #1a1a1a;
+    --accent: #3b6ea5;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 15px;
+    line-height: 1.5;
+  }
+  main {
+    max-width: 1040px;
+    margin: 0 auto;
+    padding: 32px 16px 64px;
+  }
+  header {
+    border-bottom: 1px solid var(--ink-faint);
+    padding-bottom: 16px;
+    margin-bottom: 32px;
+  }
+  header h1 {
+    margin: 0 0 4px;
+    font-size: 24px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  header p {
+    margin: 0;
+    color: var(--ink-soft);
+    font-size: 14px;
+  }
+  section {
+    margin-top: 40px;
+  }
+  section h2 {
+    margin: 0 0 4px;
+    font-size: 18px;
+    font-weight: 600;
+  }
+  section .caption {
+    margin: 0 0 16px;
+    color: var(--ink-soft);
+    font-size: 14px;
+    max-width: 80ch;
+  }
+  .figure {
+    border: 1px solid var(--ink-faint);
+    border-radius: 4px;
+    padding: 12px;
+    background: #fff;
+    overflow-x: auto;
+  }
+  svg.diagram {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-width: 100%;
+  }
+  /* SVG inherits these via attribute defaults set on the root <svg> */
+  svg text {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    fill: var(--ink);
+  }
+  footer {
+    margin-top: 56px;
+    padding-top: 16px;
+    border-top: 1px solid var(--ink-faint);
+    color: var(--ink-soft);
+    font-size: 13px;
+  }
+  footer a { color: var(--accent); }
+  @media (max-width: 520px) {
+    main { padding: 20px 10px 40px; }
+    header h1 { font-size: 20px; }
+    section h2 { font-size: 16px; }
+    section .caption { font-size: 13px; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>DriftScribe — Architecture</h1>
+    <p>Coordinator + four execute-only workers on Cloud Run. Layer-0 tool registry, per-worker hardcoded policies, HITL gate on destructive ops. See <code>docs/architecture/multi-agent-design.md</code> for the full prose.</p>
+  </header>
+
+  <!--
+    ================================================================
+    Diagram 1 — Trigger fan-in
+    ================================================================
+  -->
+  <section>
+    <h2>1. Trigger fan-in</h2>
+    <p class="caption">Three trigger sources fan in to the Coordinator, which delegates to four workers via audience-bound ID tokens. The HITL diamond gates the Coordinator&rarr;Rollback edge; rollback <code>/execute</code> only fires after an operator approves at <code>/approvals/{id}</code>.</p>
+    <div class="figure">
+      <svg class="diagram" viewBox="0 0 1000 520" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Trigger fan-in diagram: Eventarc, /chat and /recheck feed into the Coordinator, which fans out to four workers (Reader, Docs, Rollback, Notifier). The Rollback edge passes through a Human-In-The-Loop approval diamond.">
+        <defs>
+          <!-- Standard arrowhead (ink) -->
+          <marker id="arrow-ink" viewBox="0 0 10 10" refX="9" refY="5"
+                  markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#1a1a1a"/>
+          </marker>
+          <!-- Accent arrowhead for HITL-gated path -->
+          <marker id="arrow-accent" viewBox="0 0 10 10" refX="9" refY="5"
+                  markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#3b6ea5"/>
+          </marker>
+        </defs>
+
+        <!-- Column headers -->
+        <text x="90"  y="36" text-anchor="middle" font-size="12" fill="#555" font-weight="600">Triggers</text>
+        <text x="380" y="36" text-anchor="middle" font-size="12" fill="#555" font-weight="600">Coordinator (public)</text>
+        <text x="730" y="36" text-anchor="middle" font-size="12" fill="#555" font-weight="600">Workers (private)</text>
+        <text x="920" y="36" text-anchor="middle" font-size="12" fill="#555" font-weight="600">Outcomes</text>
+
+        <!-- ===== Triggers ===== -->
+        <!-- Eventarc -->
+        <rect x="20" y="60" width="140" height="56" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1.2"/>
+        <text x="90" y="83" text-anchor="middle" font-size="13" font-weight="600">Eventarc</text>
+        <text x="90" y="101" text-anchor="middle" font-size="11" fill="#555">audit-log on payment-demo</text>
+
+        <!-- /chat -->
+        <rect x="20" y="150" width="140" height="56" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1.2"/>
+        <text x="90" y="173" text-anchor="middle" font-size="13" font-weight="600">/chat</text>
+        <text x="90" y="191" text-anchor="middle" font-size="11" fill="#555">NL operator request</text>
+
+        <!-- /recheck -->
+        <rect x="20" y="240" width="140" height="56" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1.2"/>
+        <text x="90" y="263" text-anchor="middle" font-size="13" font-weight="600">/recheck</text>
+        <text x="90" y="281" text-anchor="middle" font-size="11" fill="#555">manual drift check</text>
+
+        <!-- Auth annotations on inbound arrows -->
+        <text x="210" y="80" font-size="10" fill="#555">Google-signed ID-token</text>
+        <text x="210" y="170" font-size="10" fill="#555">X-DriftScribe-Token</text>
+        <text x="210" y="260" font-size="10" fill="#555">X-DriftScribe-Token</text>
+
+        <!-- Arrows: Triggers -> Coordinator left edge (x=260) -->
+        <line x1="160" y1="88"  x2="258" y2="120" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
+        <line x1="160" y1="178" x2="258" y2="210" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
+        <line x1="160" y1="268" x2="258" y2="300" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
+
+        <!-- ===== Coordinator box ===== -->
+        <rect x="260" y="60" width="240" height="360" rx="4" fill="#fff" stroke="#1a1a1a" stroke-width="1.6"/>
+        <text x="380" y="86" text-anchor="middle" font-size="14" font-weight="700">driftscribe-agent</text>
+        <text x="380" y="104" text-anchor="middle" font-size="11" fill="#555">coordinator / public</text>
+
+        <!-- Layer 0 tool registry header -->
+        <line x1="276" y1="118" x2="484" y2="118" stroke="#999" stroke-width="0.7"/>
+        <text x="380" y="136" text-anchor="middle" font-size="11" font-weight="600" fill="#3b6ea5">Layer 0: 6-tool registry</text>
+
+        <!-- Tool chips (2 columns x 3 rows) -->
+        <g font-size="10" fill="#1a1a1a">
+          <rect x="278" y="148" width="98" height="22" rx="2" fill="#fff" stroke="#3b6ea5" stroke-width="1"/>
+          <text x="327" y="163" text-anchor="middle">read_live_env</text>
+
+          <rect x="384" y="148" width="98" height="22" rx="2" fill="#fff" stroke="#3b6ea5" stroke-width="1"/>
+          <text x="433" y="163" text-anchor="middle">patch_docs</text>
+
+          <rect x="278" y="176" width="98" height="22" rx="2" fill="#fff" stroke="#3b6ea5" stroke-width="1"/>
+          <text x="327" y="191" text-anchor="middle">propose_rollback</text>
+
+          <rect x="384" y="176" width="98" height="22" rx="2" fill="#fff" stroke="#3b6ea5" stroke-width="1"/>
+          <text x="433" y="191" text-anchor="middle">notify</text>
+
+          <rect x="278" y="204" width="98" height="22" rx="2" fill="#fff" stroke="#3b6ea5" stroke-width="1"/>
+          <text x="327" y="219" text-anchor="middle">search_recent_prs</text>
+
+          <rect x="384" y="204" width="98" height="22" rx="2" fill="#fff" stroke="#3b6ea5" stroke-width="1"/>
+          <text x="433" y="219" text-anchor="middle">load_contract</text>
+        </g>
+
+        <!-- Negative-space caption -->
+        <text x="380" y="252" text-anchor="middle" font-size="10" fill="#555" font-style="italic">no execute_shell, no arbitrary_http</text>
+
+        <!-- Approvals endpoint (HITL UI) -->
+        <line x1="276" y1="270" x2="484" y2="270" stroke="#999" stroke-width="0.7"/>
+        <text x="380" y="288" text-anchor="middle" font-size="11" font-weight="600">/approvals/{id}</text>
+        <text x="380" y="304" text-anchor="middle" font-size="10" fill="#555">renders HITL page,</text>
+        <text x="380" y="317" text-anchor="middle" font-size="10" fill="#555">verifies HMAC token</text>
+
+        <!-- Firestore ledger note -->
+        <line x1="276" y1="338" x2="484" y2="338" stroke="#999" stroke-width="0.7"/>
+        <text x="380" y="356" text-anchor="middle" font-size="11" font-weight="600">decisions ledger</text>
+        <text x="380" y="372" text-anchor="middle" font-size="10" fill="#555">every step -> Firestore</text>
+
+        <!-- ===== Workers ===== -->
+        <!-- Reader -->
+        <rect x="640" y="60" width="180" height="56" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1.2"/>
+        <text x="730" y="83" text-anchor="middle" font-size="13" font-weight="600">driftscribe-reader</text>
+        <text x="730" y="101" text-anchor="middle" font-size="11" fill="#555">POST /read</text>
+
+        <!-- Docs -->
+        <rect x="640" y="150" width="180" height="56" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1.2"/>
+        <text x="730" y="173" text-anchor="middle" font-size="13" font-weight="600">driftscribe-docs</text>
+        <text x="730" y="191" text-anchor="middle" font-size="11" fill="#555">POST /patch</text>
+
+        <!-- Rollback (accent border because gated path) -->
+        <rect x="640" y="240" width="180" height="56" rx="3" fill="#fff" stroke="#3b6ea5" stroke-width="1.6"/>
+        <text x="730" y="263" text-anchor="middle" font-size="13" font-weight="600">driftscribe-rollback</text>
+        <text x="730" y="281" text-anchor="middle" font-size="11" fill="#555">/propose &middot; /execute</text>
+
+        <!-- Notifier -->
+        <rect x="640" y="330" width="180" height="56" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1.2"/>
+        <text x="730" y="353" text-anchor="middle" font-size="13" font-weight="600">driftscribe-notifier</text>
+        <text x="730" y="371" text-anchor="middle" font-size="11" fill="#555">POST /notify</text>
+
+        <!-- Arrows: Coordinator right edge (x=500) -> workers left edge (x=640) -->
+        <!-- Reader -->
+        <line x1="500" y1="120" x2="638" y2="88" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
+        <text x="540" y="100" font-size="9" fill="#555">ID-token (aud=reader)</text>
+
+        <!-- Docs -->
+        <line x1="500" y1="180" x2="638" y2="178" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
+        <text x="540" y="173" font-size="9" fill="#555">ID-token (aud=docs)</text>
+
+        <!-- Rollback through HITL diamond -->
+        <!-- Diamond at cx=570, cy=268 -->
+        <polygon points="570,250 590,268 570,286 550,268" fill="#fff" stroke="#3b6ea5" stroke-width="1.6"/>
+        <text x="570" y="272" text-anchor="middle" font-size="10" font-weight="700" fill="#3b6ea5">HITL</text>
+        <text x="570" y="240" text-anchor="middle" font-size="9" fill="#3b6ea5">approval gate</text>
+
+        <!-- Coordinator -> HITL diamond -->
+        <line x1="500" y1="268" x2="548" y2="268" stroke="#3b6ea5" stroke-width="1.4" marker-end="url(#arrow-accent)"/>
+        <!-- HITL diamond -> Rollback -->
+        <line x1="592" y1="268" x2="638" y2="268" stroke="#3b6ea5" stroke-width="1.4" marker-end="url(#arrow-accent)"/>
+
+        <!-- Notifier -->
+        <line x1="500" y1="340" x2="638" y2="358" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
+        <text x="540" y="354" font-size="9" fill="#555">ID-token (aud=notifier)</text>
+
+        <!-- ===== Outcomes ===== -->
+        <!-- Firestore (driven from coordinator's decisions ledger) -->
+        <rect x="860" y="60" width="120" height="56" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="3 2"/>
+        <text x="920" y="83" text-anchor="middle" font-size="12" font-weight="600">Firestore</text>
+        <text x="920" y="101" text-anchor="middle" font-size="10" fill="#555">decisions, approvals</text>
+
+        <!-- GitHub PR -->
+        <rect x="860" y="150" width="120" height="56" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="3 2"/>
+        <text x="920" y="173" text-anchor="middle" font-size="12" font-weight="600">GitHub PR</text>
+        <text x="920" y="191" text-anchor="middle" font-size="10" fill="#555">demo/docs/*.md</text>
+
+        <!-- Cloud Run flip -->
+        <rect x="860" y="240" width="120" height="56" rx="3" fill="#fff" stroke="#3b6ea5" stroke-width="1.2" stroke-dasharray="3 2"/>
+        <text x="920" y="263" text-anchor="middle" font-size="12" font-weight="600">Cloud Run flip</text>
+        <text x="920" y="281" text-anchor="middle" font-size="10" fill="#555">payment-demo traffic</text>
+
+        <!-- Webhook -->
+        <rect x="860" y="330" width="120" height="56" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="3 2"/>
+        <text x="920" y="353" text-anchor="middle" font-size="12" font-weight="600">External webhook</text>
+        <text x="920" y="371" text-anchor="middle" font-size="10" fill="#555">webhook.site (demo)</text>
+
+        <!-- Worker -> outcome arrows -->
+        <!-- Coordinator (Firestore decisions) -->
+        <path d="M 380 60 Q 380 30 920 30 L 920 58" fill="none" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="3 3" marker-end="url(#arrow-ink)"/>
+        <text x="650" y="22" font-size="9" fill="#555">every decision persisted</text>
+
+        <line x1="820" y1="88"  x2="858" y2="88"  stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
+        <line x1="820" y1="178" x2="858" y2="178" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
+        <line x1="820" y1="268" x2="858" y2="268" stroke="#3b6ea5" stroke-width="1.4" marker-end="url(#arrow-accent)"/>
+        <line x1="820" y1="358" x2="858" y2="358" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
+
+        <!-- ===== Legend ===== -->
+        <g transform="translate(20,460)">
+          <text x="0" y="0" font-size="11" font-weight="600" fill="#555">Legend</text>
+
+          <line x1="0" y1="18" x2="40" y2="18" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
+          <text x="48" y="22" font-size="11">authenticated call</text>
+
+          <line x1="200" y1="18" x2="240" y2="18" stroke="#3b6ea5" stroke-width="1.4" marker-end="url(#arrow-accent)"/>
+          <text x="248" y="22" font-size="11">HITL-gated path</text>
+
+          <polygon points="420,12 432,18 420,24 408,18" fill="#fff" stroke="#3b6ea5" stroke-width="1.4"/>
+          <text x="440" y="22" font-size="11">approval diamond</text>
+
+          <rect x="600" y="10" width="40" height="16" fill="#fff" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="3 2"/>
+          <text x="648" y="22" font-size="11">external resource</text>
+        </g>
+      </svg>
+    </div>
+  </section>
+
+  <!--
+    ================================================================
+    Diagram 2 — Layered safety boundary
+    ================================================================
+  -->
+  <section>
+    <h2>2. Layered safety boundary</h2>
+    <p class="caption">For each service, an outer dashed box (Layer 1: IAM scope of its deploy-time service account) wraps an inner solid box (Layer 2: hardcoded payload-intent policy). The Coordinator's inner box is intentionally empty &mdash; it has <em>no</em> mutate caps on <code>payment-demo</code>. The HITL diamond intercepts the Coordinator&rarr;Rollback flow.</p>
+    <div class="figure">
+      <svg class="diagram" viewBox="0 0 1000 770" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Layered safety boundary diagram: for the coordinator and each of the four workers, an outer dashed box shows IAM scope and an inner solid box shows the hardcoded payload-intent policy. The coordinator's inner box is empty to highlight that it has no mutation permissions on payment-demo. A HITL approval diamond gates the coordinator-to-rollback path.">
+        <defs>
+          <marker id="arrow-ink-2" viewBox="0 0 10 10" refX="9" refY="5"
+                  markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#1a1a1a"/>
+          </marker>
+          <marker id="arrow-accent-2" viewBox="0 0 10 10" refX="9" refY="5"
+                  markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#3b6ea5"/>
+          </marker>
+        </defs>
+
+        <!-- Column headers -->
+        <text x="210" y="36" text-anchor="middle" font-size="12" fill="#555" font-weight="600">Layer 1 &mdash; IAM scope (deploy-time)</text>
+        <text x="660" y="36" text-anchor="middle" font-size="12" fill="#555" font-weight="600">Layer 2 &mdash; hardcoded payload-intent policy</text>
+
+        <!--
+          Row template per service. Geometry:
+            row top = ${rowTop}
+            outer dashed: (40, rowTop, 920, 120)
+            service label band: (40..380) inside outer
+            inner solid: (380, rowTop+15, 560, 90)
+        -->
+
+        <!-- ============ Coordinator row (rowTop=60) ============ -->
+        <rect x="40" y="60" width="920" height="120" rx="4" fill="#fff" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="5 3"/>
+        <!-- Service label -->
+        <text x="56" y="84" font-size="13" font-weight="700">Coordinator</text>
+        <text x="56" y="100" font-size="11" fill="#555">driftscribe-agent</text>
+        <!-- IAM list -->
+        <text x="56" y="124" font-size="10" fill="#1a1a1a">+ roles/datastore.user</text>
+        <text x="56" y="138" font-size="10" fill="#1a1a1a">+ roles/iam.serviceAccountTokenCreator</text>
+        <text x="56" y="152" font-size="10" fill="#1a1a1a">+ secret accessor (own secrets)</text>
+        <text x="56" y="168" font-size="10" font-weight="700" fill="#3b6ea5">&minus; NO roles on payment-demo</text>
+
+        <!-- Inner solid (empty, accent stroke) -->
+        <rect x="380" y="75" width="560" height="90" rx="3" fill="#fff" stroke="#3b6ea5" stroke-width="1.5"/>
+        <text x="660" y="98" text-anchor="middle" font-size="12" font-weight="700" fill="#3b6ea5">Layer 2 &mdash; no payload policy needed</text>
+        <text x="660" y="120" text-anchor="middle" font-size="11" fill="#555">Coordinator holds no mutate capabilities, so</text>
+        <text x="660" y="136" text-anchor="middle" font-size="11" fill="#555">it cannot directly act on payment-demo even</text>
+        <text x="660" y="152" text-anchor="middle" font-size="11" fill="#555">if the LLM is prompt-injected. (negative space)</text>
+
+        <!-- ============ Reader row (rowTop=200) ============ -->
+        <rect x="40" y="200" width="920" height="120" rx="4" fill="#fff" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="5 3"/>
+        <text x="56" y="224" font-size="13" font-weight="700">Reader</text>
+        <text x="56" y="240" font-size="11" fill="#555">driftscribe-reader</text>
+        <text x="56" y="264" font-size="10">+ roles/run.viewer on payment-demo</text>
+        <text x="56" y="278" font-size="10">+ Cloud Run invoker (callers: coordinator SA)</text>
+        <text x="56" y="292" font-size="10" fill="#555">no project-wide grants</text>
+
+        <rect x="380" y="215" width="560" height="90" rx="3" fill="#fff" stroke="#3b6ea5" stroke-width="1.5"/>
+        <text x="660" y="238" text-anchor="middle" font-size="12" font-weight="700" fill="#3b6ea5">policy: target_service = payment-demo</text>
+        <text x="660" y="258" text-anchor="middle" font-size="11" fill="#555">region = asia-northeast1 (env, not body)</text>
+        <text x="660" y="276" text-anchor="middle" font-size="11" fill="#555">request body must be empty &lbrace;&rbrace;; extra fields &rarr; 400</text>
+        <text x="660" y="294" text-anchor="middle" font-size="11" fill="#555">no service/region/project override accepted</text>
+
+        <!-- ============ Docs row (rowTop=340) ============ -->
+        <rect x="40" y="340" width="920" height="120" rx="4" fill="#fff" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="5 3"/>
+        <text x="56" y="364" font-size="13" font-weight="700">Docs</text>
+        <text x="56" y="380" font-size="11" fill="#555">driftscribe-docs</text>
+        <text x="56" y="404" font-size="10">+ secret accessor: docs-agent-github-pat</text>
+        <text x="56" y="418" font-size="10">+ Cloud Run invoker (callers: coordinator SA)</text>
+        <text x="56" y="432" font-size="10" fill="#555">PAT is fine-grained, single-repo, Contents+PR RW</text>
+
+        <rect x="380" y="355" width="560" height="90" rx="3" fill="#fff" stroke="#3b6ea5" stroke-width="1.5"/>
+        <text x="660" y="378" text-anchor="middle" font-size="12" font-weight="700" fill="#3b6ea5">policy: repo = adi-prasetyo/driftscribe</text>
+        <text x="660" y="398" text-anchor="middle" font-size="11" fill="#555">path allowlist regex: ^demo/docs/[^/]+\.md$</text>
+        <text x="660" y="416" text-anchor="middle" font-size="11" fill="#555">refuses ops-contract.yaml, .github/, infra/, *.py</text>
+        <text x="660" y="434" text-anchor="middle" font-size="11" fill="#555">path traversal (..) normalized-then-checked</text>
+
+        <!-- ============ Rollback row (rowTop=480) ============ -->
+        <rect x="40" y="480" width="920" height="120" rx="4" fill="#fff" stroke="#3b6ea5" stroke-width="1.2" stroke-dasharray="5 3"/>
+        <text x="56" y="504" font-size="13" font-weight="700">Rollback</text>
+        <text x="56" y="520" font-size="11" fill="#555">driftscribe-rollback</text>
+        <text x="56" y="544" font-size="10">+ roles/run.admin on payment-demo only</text>
+        <text x="56" y="558" font-size="10">+ roles/datastore.user (approval state)</text>
+        <text x="56" y="572" font-size="10">+ secret accessor: approval-hmac-key</text>
+        <text x="56" y="586" font-size="10" fill="#555">Cloud Run invoker (callers: coordinator SA)</text>
+
+        <rect x="380" y="495" width="560" height="90" rx="3" fill="#fff" stroke="#3b6ea5" stroke-width="1.5"/>
+        <text x="660" y="518" text-anchor="middle" font-size="12" font-weight="700" fill="#3b6ea5">policy: target_service = payment-demo</text>
+        <text x="660" y="536" text-anchor="middle" font-size="11" fill="#555">/execute requires HMAC token: single-use, 15-min TTL</text>
+        <text x="660" y="554" text-anchor="middle" font-size="11" fill="#555">target_revision must exist and NOT be active</text>
+        <text x="660" y="572" text-anchor="middle" font-size="11" fill="#555">Firestore txn flips pending &rarr; used; replay 403</text>
+
+        <!-- ============ Notifier row (rowTop=620) ============ -->
+        <rect x="40" y="620" width="920" height="120" rx="4" fill="#fff" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="5 3"/>
+        <text x="56" y="644" font-size="13" font-weight="700">Notifier</text>
+        <text x="56" y="660" font-size="11" fill="#555">driftscribe-notifier</text>
+        <text x="56" y="684" font-size="10">+ secret accessor: NOTIFY_WEBHOOK_URL</text>
+        <text x="56" y="698" font-size="10">+ Cloud Run invoker (callers: coordinator SA)</text>
+        <text x="56" y="712" font-size="10" fill="#555">no GCP write roles; egress only</text>
+
+        <rect x="380" y="635" width="560" height="90" rx="3" fill="#fff" stroke="#3b6ea5" stroke-width="1.5"/>
+        <text x="660" y="658" text-anchor="middle" font-size="12" font-weight="700" fill="#3b6ea5">policy: outbound url = $NOTIFY_WEBHOOK_URL</text>
+        <text x="660" y="678" text-anchor="middle" font-size="11" fill="#555">caller-supplied `url` is silently dropped</text>
+        <text x="660" y="696" text-anchor="middle" font-size="11" fill="#555">channel constrained to closed enum</text>
+        <text x="660" y="714" text-anchor="middle" font-size="11" fill="#555">the worker's identity IS the URL</text>
+
+        <!-- ============ HITL gate annotation ============ -->
+        <!--
+          Connector runs in the left gutter x=20 (between viewBox left=0 and
+          row outer frame at x=40), starting from below Coordinator row
+          (y=180) downward, passing the Reader and Docs row gutters, and
+          terminating with a HITL diamond in the gap between Docs (ends y=460)
+          and Rollback (starts y=480). That gap is 20px so we place a small
+          diamond there (y=462..478, 16px tall) directly above the Rollback
+          row's top edge. This puts the HITL gate visually adjacent to its
+          target, which is the semantically correct reading.
+        -->
+        <!-- Vertical dashed connector from below Coordinator row down to the diamond -->
+        <line x1="20" y1="180" x2="20" y2="462" stroke="#3b6ea5" stroke-width="1.2" stroke-dasharray="4 3"/>
+        <!-- Diamond at x=20, y=462..478 -->
+        <polygon points="20,462 32,470 20,478 8,470" fill="#fff" stroke="#3b6ea5" stroke-width="1.4"/>
+        <text x="20" y="473" text-anchor="middle" font-size="7" font-weight="700" fill="#3b6ea5">HITL</text>
+        <!-- From diamond into Rollback row top -->
+        <line x1="20" y1="478" x2="20" y2="480" stroke="#3b6ea5" stroke-width="1.4" marker-end="url(#arrow-accent-2)"/>
+        <!-- Caption: place to the right of the diamond, in the gap between Docs and Rollback rows (y=460..480, 20px high). 3 lines won't fit vertically here, so use one line and rely on the section caption below for detail. -->
+        <text x="40" y="475" font-size="10" fill="#3b6ea5" font-weight="700">HITL gate &mdash; operator approves via /approvals/{id} (HMAC, single-use, 15-min TTL)</text>
+
+        <!-- ============ Legend ============ -->
+        <!-- Legend overlap-safe: put inside top-right corner of header area, NOT body -->
+      </svg>
+    </div>
+    <p class="caption" style="margin-top:12px;">
+      <strong>Reading the rows:</strong> Layer 1 (left) is what the service account
+      <em>could</em> do at the Google Cloud IAM layer; Layer 2 (right) is what the
+      worker code <em>will</em> do regardless of request shape. Both must be
+      breached to mutate <code>payment-demo</code>, and the Rollback path additionally
+      requires a one-shot HMAC token minted by operator action.
+    </p>
+  </section>
+
+  <footer>
+    <p>DriftScribe &mdash; DevOps &times; AI Agent Hackathon 2026 (Google Cloud Japan / Findy). Static diagram, no external assets. Source of truth: <code>docs/architecture/multi-agent-design.md</code>.</p>
+  </footer>
+</main>
+</body>
+</html>
