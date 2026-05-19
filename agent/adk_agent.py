@@ -71,6 +71,62 @@ COORDINATOR_TOOLS = [
 
 
 # --------------------------------------------------------------------------- #
+# Per-workload tool inventories (Phase 17.A.4)
+# --------------------------------------------------------------------------- #
+#
+# These tuples mirror each workload YAML's ``enabled_tool_names`` field —
+# i.e. the *symbolic* names the workload references, NOT the Python
+# callable names. The two surfaces are deliberately distinct:
+#
+# - ``COORDINATOR_TOOLS`` above is the Python-callable registration
+#   manifest. Every callable ever wired to the agent factory lives here.
+# - ``DRIFT_WORKLOAD_TOOL_NAMES`` / ``UPGRADE_WORKLOAD_TOOL_NAMES`` below
+#   are the *per-workload symbolic filters* — the names the YAML uses to
+#   pick a subset of :data:`agent.workloads.registry.TOOL_REGISTRY`.
+#   Drift's six callables happen to coincide with the global registration
+#   (drift wires every tool the coordinator owns today); upgrade adds
+#   four reserved-not-yet symbols that 17.B/17.C will flip from ``None``
+#   to real callables.
+#
+# Why tuples (not frozensets):
+# - These constants double as the *tool-order pin* (M-6 from the 17.A.3
+#   Codex review): the order here equals the order ``Agent.tools``
+#   receives via ``list(workload.tools.values())``, which equals the
+#   order the LLM sees in its tool-list prompt. A silent YAML reorder
+#   that shuffled the prompt could degrade tool selection — the inventory
+#   test pins both inventory AND order against these tuples.
+# - The cross-workload disjointness test treats them as sets at the call
+#   site; the dual usage is fine because tuples preserve order while
+#   still supporting ``set(tuple)`` membership checks.
+#
+# Adding a tool to either workload's YAML without updating the matching
+# tuple here (or vice versa) fails the inventory test in
+# ``tests/unit/test_coordinator_tool_inventory.py``. That coupling is
+# the point — the test pins YAML ⇄ code constant ⇄ runtime resolution
+# as a three-way equality.
+
+DRIFT_WORKLOAD_TOOL_NAMES: tuple[str, ...] = (
+    "drift_read_live_env",
+    "drift_patch_docs",
+    "drift_propose_rollback",
+    "notify",
+    "load_contract",
+    "search_recent_prs",
+)
+
+UPGRADE_WORKLOAD_TOOL_NAMES: tuple[str, ...] = (
+    "upgrade_read_dependencies",
+    "upgrade_propose_pr",
+    "notify",
+    "search_recent_prs",
+    "search_developer_docs",
+    "retrieve_developer_doc",
+    "get_session_state",
+    "set_session_state",
+)
+
+
+# --------------------------------------------------------------------------- #
 # Structured drift-triage agent (/recheck)
 # --------------------------------------------------------------------------- #
 #
