@@ -1,6 +1,6 @@
 # DriftScribe multi-agent architecture
 
-> **Status:** Phase 11.1 — coordinator-only deploy with operator token guard in place. Workers (Reader, Docs, Rollback, Notifier) are designed below; their implementations land in Phase 11.3–11.6. See `docs/plans/2026-05-19-driftscribe-v3-multi-agent.md` for the per-phase task list.
+> **Status:** Phase 15 complete — coordinator + 4 workers (Reader, Docs, Rollback, Notifier) all deployed, HITL approval (HMAC-bound, single-use, 15-min TTL) live, Eventarc auto-trigger on `payment-demo` audit logs live, structured JSON logging with `X-Trace-Id` propagating end-to-end across all 5 services. Phase 16 (submission polish) in progress. See `docs/plans/2026-05-19-driftscribe-v3-multi-agent.md` for the per-phase task list.
 
 ---
 
@@ -95,7 +95,7 @@ Each worker has a tiny REST surface with a hardcoded "payload-intent policy" —
 - **Request:** `{}` (empty object). Any extra fields → 400.
 - **Response:** `{ "env": { "VAR": "value", ... }, "revision": "..." }`
 - **Hardcoded policy:** `target_service=payment-demo`, `region=asia-northeast1`, `project=$PROJECT_ID` — all loaded from env at boot, all rejected if present in the request body.
-- **Implementation:** Phase 11.3 (TODO).
+- **Implementation:** shipped (Phase 11.3).
 
 ### Docs — `driftscribe-docs`
 
@@ -104,7 +104,7 @@ Each worker has a tiny REST surface with a hardcoded "payload-intent policy" —
 - **Response:** `{ "pr_url": "..." }` (or `{ "dry_run": true, "preview": "..." }`)
 - **Hardcoded policy:** `repo=adi-prasetyo/driftscribe` (env). Path allowlist regex `^demo/docs/[^/]+\.md$`. Refuses `ops-contract.yaml`, `.github/`, `infra/`, `Dockerfile`, `*.py`. Path traversal (`..`) is normalized-then-checked.
 - **Auth to GitHub:** Fine-grained PAT scoped to single repo, `Contents: Read & write`, `Pull requests: Read & write`. Stored as Secret Manager `docs-agent-github-pat`.
-- **Implementation:** Phase 11.4 (TODO).
+- **Implementation:** shipped (Phase 11.4).
 
 ### Rollback — `driftscribe-rollback`
 
@@ -113,7 +113,7 @@ Each worker has a tiny REST surface with a hardcoded "payload-intent policy" —
 - **Execute request:** `{ "approval_id": "...", "approval_token": "<HMAC>" }`
 - **Hardcoded policy:** `target_service=payment-demo` (env). Target revision must exist on the service AND not be the active revision. Approval token is HMAC'd with `approval-hmac-key`, single-use (Firestore transaction flips `pending → used`), 15-min TTL.
 - **Approval UI:** Lives on the **coordinator** (`/approvals/{id}`). Rollback worker is private — it cannot host a public page.
-- **Implementation:** Phase 11.5 (TODO).
+- **Implementation:** shipped (Phase 11.5).
 
 ### Notifier — `driftscribe-notifier`
 
@@ -121,7 +121,7 @@ Each worker has a tiny REST surface with a hardcoded "payload-intent policy" —
 - **Request:** `{ "channel": "info|alert|approval", "severity": "...", "body": "..." }`
 - **Response:** `{ "delivered": true }` (or error envelope)
 - **Hardcoded policy:** Outbound URL = `$NOTIFY_WEBHOOK_URL` from Secret Manager. Caller-supplied `url` is silently dropped. Channel values are constrained to a closed enum.
-- **Implementation:** Phase 11.6 (TODO).
+- **Implementation:** shipped (Phase 11.6).
 
 ---
 
@@ -172,12 +172,14 @@ exercise either path through normal control flow.
    Phase 11.9 deploy runbook (`docs/runbooks/deploy.md`) now requires
    a fine-grained PAT — operators who deployed earlier should rotate.
 
-2. **`roles/run.viewer` on the coordinator is a temporary grant for
-   the legacy classifier path.** When `USE_ADK=false` the coordinator
-   calls `read_live_env` directly to feed the deterministic classifier.
-   Phase 13 will route the classifier through the Reader Worker (same
-   shape as Phase 11.7 did for the ADK path); at that point the
-   project-level `run.viewer` grant can be removed.
+2. **`roles/run.viewer` on the coordinator was a temporary grant for
+   the legacy classifier path** (now removed). When `USE_ADK=false` the
+   pre-13 coordinator called `read_live_env` directly to feed the
+   deterministic classifier. Phase 13 routed both classifier paths
+   through the Reader Worker (same shape as Phase 11.7 did for the ADK
+   path) and dropped the project-level `run.viewer` grant from the
+   coordinator's SA. The iam-matrix.md negative-space row now reads
+   "**NOT** `roles/run.viewer`".
 
 See `docs/architecture/iam-matrix.md` §"Phase 11.9 carry-overs" for
 the full statement, and Phase 13's "Carry-over from Phase 11 Codex
@@ -188,17 +190,20 @@ the planned closure.
 
 ## 5. HITL (human-in-the-loop) approval flow
 
-> **Status:** Implementation lands in Phase 13. Sketched here so the security model is reviewable in one place.
+> **Status:** Shipped (Phase 11.5 + Phase 11.9). The flow below matches what's live in `agent/main.py::approval_get` / `approval_post` and `agent/templates/approval.html`.
 
-1. Coordinator's ADK agent decides a rollback is warranted and calls `delegate_to_rollback(target_revision, reason)`.
-2. Rollback worker writes `approvals/{id}` to Firestore with `status=pending`, mints an HMAC-signed token, returns `{ approval_url, approval_token }`. The token is `HMAC(approval-hmac-key, approval_id || target_revision || expires_at)`.
-3. Coordinator sends the approval URL to the operator via the Notifier (or surfaces it in the `/chat` response).
-4. Operator opens `https://<coordinator>/approvals/<id>`, sees the rollback plan rendered server-side. Page has no external assets, `Cache-Control: no-store`, `Referrer-Policy: no-referrer`.
-5. Operator clicks **Approve** — browser POSTs to `/approvals/<id>` with the HMAC token in the body (not URL — avoids referrer/log leaks).
-6. Coordinator verifies the HMAC + TTL, flips Firestore `pending → approved` in a transaction, then calls Rollback worker's `/execute` with the *stored canonical request* (not browser-supplied data — defends against approval-page tampering).
-7. Rollback worker re-verifies the HMAC token against its stored copy in another transaction (`approved → used`), then calls Cloud Run admin to flip traffic. Replay returns 403.
+1. Coordinator's ADK agent decides a rollback is warranted and calls `propose_rollback_tool(target_revision, reason)`.
+2. Rollback worker writes `approvals/{id}` to Firestore with `status=pending`, mints an HMAC-signed token, returns `{ approval_id, approval_url }`. The approval URL is `https://<coordinator>/approvals/<id>?t=<HMAC>`. The HMAC is bound to `(approval_id, target_revision, expires_at)`.
+3. Coordinator surfaces the approval URL to the operator in the `/chat` response (and/or via the Notifier worker).
+4. Operator opens `https://<coordinator>/approvals/<id>?t=<token>`. Coordinator renders the rollback plan server-side. The page has no external assets, `Cache-Control: no-store`, `Referrer-Policy: no-referrer`, `X-Robots-Tag: noindex`.
+   - The token rides in the `?t=` query param so the operator only has to click one link; the no-referrer header keeps it from leaking via the `Referer` of any same-tab navigation, and the 15-min single-use TTL bounds the blast radius if the URL is captured in an access log. (Moving the token to a same-origin cookie + CSRF header on POST would be the production-grade alternative; out of scope for the hackathon.)
+5. Operator clicks **Approve** or **Reject** — browser POSTs to `/approvals/<id>` with the token in a hidden form field (`name="t"`) and a `decision=approve|reject` field.
+6. The **coordinator does NOT verify the HMAC itself** (Phase 11.9 split — only the Rollback worker holds the HMAC key). It forwards `(approval_id, t)` to the Rollback worker:
+   - approve → `worker_client.call_execute(approval_id, t)` → worker's `/execute`
+   - reject → `worker_client.call_deny(approval_id, t)` → worker's `/deny`
+7. Rollback worker verifies the HMAC + TTL, transactionally flips Firestore (`pending → used` on execute, `pending → denied` on deny), then — for execute only — calls Cloud Run admin to flip traffic to `target_revision`. Replay on either endpoint returns 403.
 
-The double transaction (coordinator and worker each flip state once) is the canonical fix for the "operator clicks twice / browser auto-retries" failure mode.
+The single-worker-side transaction is what makes the "compromised coordinator cannot mint OR silently deny executions" property hold: the coordinator can only initiate either action when an operator with a valid token-in-URL clicks the button, and the worker is the only service that can validate the HMAC.
 
 ---
 

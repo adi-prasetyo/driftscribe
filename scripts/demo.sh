@@ -190,6 +190,25 @@ wait_for_revision() {
   sleep 5
 }
 
+# Reset payment-demo env to the contract baseline before applying a
+# beat's own drift. Without this, beats compound (e.g. beat-c after
+# beat-b would still have PAYMENT_MODE=live), so beat-c would no longer
+# cleanly demonstrate "unknown variable only" and beat-d would no longer
+# cleanly demonstrate "operator-safe flip" — the prior PAYMENT_MODE
+# drift would dominate the decision.
+#
+# Idempotent: --update-env-vars overwrites existing values, and
+# --remove-env-vars is wrapped in `|| true` inside unset_env so an
+# already-absent var doesn't fail. Safe to call at the top of every
+# non-baseline beat — each beat becomes independent and re-runnable in
+# any order.
+reset_baseline() {
+  echo "  [reset] restoring baseline before applying beat drift"
+  set_env "PAYMENT_MODE=mock"
+  set_env "FEATURE_NEW_CHECKOUT=false"
+  unset_env "NEW_THING"
+}
+
 # --------------------------------------------------------------------------- #
 # Beats
 # --------------------------------------------------------------------------- #
@@ -211,14 +230,16 @@ beat_a() {
 beat_b() {
   banner "Beat B — PAYMENT_MODE=live (no-manual drift)"
   echo "Expectation: action=drift_issue (allow_manual_change=false)."
+  reset_baseline
   set_env "PAYMENT_MODE=live"
   wait_for_revision
   call_coordinator /recheck '{}'
 }
 
-# Beat C — unknown variable. PAYMENT_MODE is back to baseline (assuming
-# cleanup ran first, or beat-b already flipped it — for a clean
-# demonstration of "unknown var" specifically, run cleanup before this).
+# Beat C — unknown variable. reset_baseline at the top guarantees
+# PAYMENT_MODE=mock and FEATURE_NEW_CHECKOUT=false regardless of which
+# beat ran before, so this beat cleanly isolates "unknown variable" as
+# the only drift dimension.
 # Behavior depends on USE_ADK:
 #   - USE_ADK=true:  ADK may propose docs_pr if a corresponding doc
 #                    section is inferable, else escalate.
@@ -227,6 +248,7 @@ beat_b() {
 beat_c() {
   banner "Beat C — NEW_THING=test (unknown variable)"
   echo "Expectation: action=docs_pr (ADK) or escalate (classical)."
+  reset_baseline
   set_env "NEW_THING=test"
   wait_for_revision
   call_coordinator /recheck '{}'
@@ -240,6 +262,7 @@ beat_c() {
 beat_d() {
   banner "Beat D — FEATURE_NEW_CHECKOUT=true (manual-OK drift)"
   echo "Expectation: action=docs_pr (allow_manual_change=true)."
+  reset_baseline
   set_env "FEATURE_NEW_CHECKOUT=true"
   wait_for_revision
   call_coordinator /recheck '{}'
@@ -247,24 +270,55 @@ beat_d() {
 
 # Beat E — rollback via /chat. Requires USE_ADK=true on the coordinator
 # revision. Flow:
-#   1. We deliberately drift PAYMENT_MODE again (so the ADK has a real
-#      drift to act on — a "roll us back" prompt with the env already
-#      compliant would be a no-op).
-#   2. /chat receives a natural-language operator request.
+#   1. reset_baseline + then deliberately drift PAYMENT_MODE again (so
+#      the ADK has a real drift to act on — a "roll us back" prompt
+#      with the env already compliant would be a no-op).
+#   2. /chat receives a natural-language operator request that names a
+#      specific target revision (see below).
 #   3. ADK calls the rollback worker → coordinator returns an
 #      approval_url. The operator clicks the URL in a browser; that
 #      step is OUT OF SCOPE for this headless runner.
 # Expected: action=rollback, approval_url present in the response.
 # Fallback: with USE_ADK=false, /chat returns 503 — the script surfaces
 # the body so the audience sees it's an env-config issue.
+#
+# Why BEAT_E_TARGET_REVISION is required:
+#   propose_rollback_tool needs a concrete `target_revision` string.
+#   The Reader Worker's /read only returns the *active* revision; there
+#   is no tool that enumerates revisions. So the operator must discover
+#   a previous revision name via gcloud and pass it in via env before
+#   running this beat — otherwise the ADK has nothing concrete to act
+#   on and will most likely escalate or fail mid-demo.
 beat_e() {
   banner "Beat E — combo drift + /chat rollback"
+  if [ -z "${BEAT_E_TARGET_REVISION:-}" ]; then
+    cat >&2 <<EOF
+ERROR: BEAT_E_TARGET_REVISION is not set.
+
+beat-e needs a concrete previous revision name to roll back to. Pick
+one from the revisions list before running this beat:
+
+  gcloud run revisions list --service=payment-demo \\
+    --project="$PROJECT" --region="$REGION" \\
+    --format='value(metadata.name)'
+
+Then export it and re-run:
+
+  export BEAT_E_TARGET_REVISION=<revision-name-from-the-list>
+  ./scripts/demo.sh beat-e
+
+See docs/demo-script.md "beat-e" section for the full pre-flight.
+EOF
+    exit 2
+  fi
   echo "Expectation: action=rollback with approval_url (USE_ADK=true)."
   echo "             OR 503 'ADK not enabled' (USE_ADK=false)."
+  echo "  target revision: ${BEAT_E_TARGET_REVISION}"
+  reset_baseline
   set_env "PAYMENT_MODE=live"
   wait_for_revision
   call_coordinator /chat \
-    '{"prompt":"payment mode drifted. please propose a rollback."}'
+    "{\"prompt\":\"payment mode drifted. roll us back to revision ${BEAT_E_TARGET_REVISION}.\"}"
 }
 
 # Cleanup — restore the baseline declared in demo/ops-contract.yaml.

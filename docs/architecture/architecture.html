@@ -394,8 +394,8 @@
         <text x="56" y="100" font-size="11" fill="#555">driftscribe-agent</text>
         <!-- IAM list -->
         <text x="56" y="124" font-size="10" fill="#1a1a1a">+ roles/datastore.user</text>
-        <text x="56" y="138" font-size="10" fill="#1a1a1a">+ roles/iam.serviceAccountTokenCreator</text>
-        <text x="56" y="152" font-size="10" fill="#1a1a1a">+ secret accessor (own secrets)</text>
+        <text x="56" y="138" font-size="10" fill="#1a1a1a">+ secret accessor (own secrets)</text>
+        <text x="56" y="152" font-size="10" fill="#1a1a1a">+ roles/aiplatform.user (Vertex AI ADC)</text>
         <text x="56" y="168" font-size="10" font-weight="700" fill="#3b6ea5">&minus; NO roles on payment-demo</text>
 
         <!-- Inner solid (empty, accent stroke) -->
@@ -409,7 +409,7 @@
         <rect x="40" y="200" width="920" height="120" rx="4" fill="#fff" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="5 3"/>
         <text x="56" y="224" font-size="13" font-weight="700">Reader</text>
         <text x="56" y="240" font-size="11" fill="#555">driftscribe-reader</text>
-        <text x="56" y="264" font-size="10">+ roles/run.viewer on payment-demo</text>
+        <text x="56" y="264" font-size="10">+ roles/run.viewer (project &mdash; Cloud Run lacks per-service viewer)</text>
         <text x="56" y="278" font-size="10">+ Cloud Run invoker (callers: coordinator SA)</text>
         <text x="56" y="292" font-size="10" fill="#555">no project-wide grants</text>
 
@@ -437,7 +437,7 @@
         <rect x="40" y="480" width="920" height="120" rx="4" fill="#fff" stroke="#3b6ea5" stroke-width="1.2" stroke-dasharray="5 3"/>
         <text x="56" y="504" font-size="13" font-weight="700">Rollback</text>
         <text x="56" y="520" font-size="11" fill="#555">driftscribe-rollback</text>
-        <text x="56" y="544" font-size="10">+ roles/run.admin on payment-demo only</text>
+        <text x="56" y="544" font-size="10">+ roles/run.developer on payment-demo only</text>
         <text x="56" y="558" font-size="10">+ roles/datastore.user (approval state)</text>
         <text x="56" y="572" font-size="10">+ secret accessor: approval-hmac-key</text>
         <text x="56" y="586" font-size="10" fill="#555">Cloud Run invoker (callers: coordinator SA)</text>

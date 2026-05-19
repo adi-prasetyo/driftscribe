@@ -68,7 +68,7 @@ gcloud run services describe driftscribe-agent \
 | 0:25  | `./scripts/demo.sh beat-c`            | ADK 推論のボックスにホバー          | 「今度は未知の変数です。ADK の推論エージェントが docs を書くかエスカレーションするかを判断します」      |
 | 0:42  | `./scripts/demo.sh beat-d`            | Docs ワーカーのボックスにホバー     | 「オペレーター切替可能な変数。エージェントは新しい値のプレビュー付きで docs PR を提案します」          |
 | 0:58  | `./scripts/demo.sh beat-e`            | Rollback ワーカー + HITL にホバー   | 「コンボ: 実際のドリフト + 自然言語による rollback 要求。エージェントは承認 URL を返します — HITL です」 |
-| 1:15  | 承認 URL をクリック → Approve         | 承認ページを前面に                  | 「オペレーターが Approve をクリック。Rollback ワーカーがリビジョン pin を実行します。ドリフトは解消されました」 |
+| 1:15  | 承認 URL をクリック → Approve         | 承認ページを前面に                  | 「オペレーターが Approve をクリック。Rollback ワーカーがリビジョン固定 を実行します。ドリフトは解消されました」 |
 | 1:25  | `./scripts/demo.sh cleanup`           | アーキテクチャ図に戻る              | 「Cleanup でベースラインに復元。すべての beat が監査証跡用の X-Trace-Id を出力していました」          |
 
 時間を超過しそうな場合は beat-c を落としてください — これが最も切り捨てやすい beat です。Beat-e はクライマックス (HITL + rollback)、beat-b はコントラクト強制の最も明快な例なので、両方残します。

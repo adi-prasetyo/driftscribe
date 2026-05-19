@@ -10,7 +10,7 @@ DriftScribe — Cloud Run の構成ドリフトを検知する多層防御 AI De
 
 ## 概要
 
-DriftScribe はライブの Cloud Run サービス (`payment-demo`) を監視し、稼働中の環境を宣言された ops コントラクトと照合する AI エージェントです。ドリフトを検知すると、Google ADK で実装されたコーディネーターが `no_op` / `docs_pr` / `rollback` / `escalate` のいずれかを判断し、実行専用ワーカーへ処理を委譲します。破壊的な操作 (rollback) は HMAC 署名付きのワンショット URL による人手承認 (HITL) を必須とし、AI による提案と人による裁定を分離した「層状の安全性」を単一クラウド (GCP) 上で実現します。
+DriftScribe はライブの Cloud Run サービス (`payment-demo`) を監視し、稼働中の環境を宣言された ops コントラクトと照合する AI エージェントです。ドリフトを検知すると、Google ADK で実装されたコーディネーターが `no_op` / `docs_pr` / `rollback` / `escalate` のいずれかを判断し、実行専用ワーカーへ処理を委譲します。破壊的な操作 (rollback) は HMAC 署名付きのワンショット URL による人手承認 (HITL) を必須とし、AI による提案と人による裁定を分離した「多層防御」を単一クラウド (GCP) 上で実現します。
 
 ## ハイライト
 
