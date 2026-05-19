@@ -770,11 +770,13 @@ async def eventarc(
     # - ``google.auth.exceptions.TransportError`` (subclass of
     #   GoogleAuthError) if the JWKS fetch over HTTP fails — e.g. Google's
     #   certs endpoint is briefly unreachable. Strictly this is a 503-shaped
-    #   condition (upstream availability), but we collapse to 401 so:
-    #   (a) the auth-failure response is uniform (a probe cannot distinguish
-    #       "your token is bad" from "our cert cache is cold"), and
-    #   (b) Eventarc's at-least-once retry on 401 will hit a warm cache on
-    #       the second attempt.
+    #   condition (upstream availability), but we collapse to 401 so the
+    #   auth-failure response is uniform: a probe cannot distinguish "your
+    #   token is bad" from "the JWKS fetch transiently failed". Eventarc's
+    #   at-least-once retry will re-attempt on its own; we don't claim a
+    #   warmer cache on the retry — google-auth's default Request transport
+    #   does NOT cache JWKS responses across calls, so each verification
+    #   refetches the certs. (Adding CacheControl is out of scope here.)
     # Collapsing all three to 401 is intentional — a token-leak probe
     # shouldn't be able to distinguish "expired" from "wrong audience" from
     # "garbage" from "issuer mismatch".
