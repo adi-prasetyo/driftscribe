@@ -256,6 +256,63 @@ def test_recheck_classifier_path_refuses_non_drift_workload_even_when_resolvable
     m_worker.assert_not_called()
 
 
+def test_recheck_classifier_guard_fires_before_drift_contract_load(
+    monkeypatch, tmp_path,
+) -> None:
+    """Phase 17.A (Codex review, Fix Important #1): the non-drift
+    classifier refusal must fire BEFORE the drift contract load.
+
+    Pre-fix ordering on ``_do_recheck``:
+
+        1. ``load_workload(workload)`` pre-resolve
+        2. ``load_contract(s.contract_path)`` (drift-specific)
+        3. classifier non-drift refusal
+
+    In the future world where ``load_workload("upgrade")`` resolves
+    (17.B/17.C/17.E shipped) but the operator left ``USE_ADK=false``,
+    a broken drift contract would surface as 500 at step 2 — masking
+    the real diagnosis ("you're on the wrong path for this workload")
+    behind a misleading "contract load failed" message.
+
+    Post-fix: the non-drift refusal moves above the contract load, so
+    a broken drift contract + an upgrade-on-classifier-path request
+    surfaces the 503 first.
+
+    This test pins that ordering. ``CONTRACT_PATH`` is pointed at a
+    file that doesn't exist (would 500 the contract load), and
+    ``load_workload`` is stubbed so the pre-resolve passes. The
+    expected response is 503 ("classifier path is drift-only"), not
+    500 ("contract load failed").
+    """
+    monkeypatch.setenv("USE_ADK", "false")
+    # Point CONTRACT_PATH at a nonexistent file — load_contract would 500
+    # if we ever reach it.
+    bad_contract = tmp_path / "definitely_missing.yaml"
+    assert not bad_contract.exists()
+    monkeypatch.setenv("CONTRACT_PATH", str(bad_contract))
+    get_settings.cache_clear()
+
+    # Stub load_workload so the pre-resolve passes — simulating the
+    # post-17.E world where upgrade resolves cleanly.
+    with (
+        patch("agent.main.load_workload", return_value=object()),
+        patch("agent.main.worker_client.call") as m_worker,
+        patch("agent.main.load_contract") as m_load_contract,
+    ):
+        client = TestClient(app)
+        r = client.post("/recheck", json={"workload": "upgrade"})
+
+    # The classifier-path guard must fire — 503, not 500.
+    assert r.status_code == 503, r.text
+    detail = r.json()["detail"].lower()
+    assert "classifier path" in detail or "use_adk" in detail
+    # Pin the ordering: load_contract was NEVER called. If it had been
+    # called and raised, we'd have seen 500 above and this assertion
+    # would never be reached, but pin it explicitly for future-readers.
+    m_load_contract.assert_not_called()
+    m_worker.assert_not_called()
+
+
 def test_recheck_unknown_workload_returns_422() -> None:
     """``POST /recheck`` with ``workload="does_not_exist"`` → 422 from
     pydantic's Literal validation, same shape as the /chat version of

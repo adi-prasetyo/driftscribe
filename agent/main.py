@@ -546,21 +546,24 @@ async def _do_recheck(
             ),
         ) from e
 
-    try:
-        contract = load_contract(Path(s.contract_path))
-    except Exception as e:
-        # Bad contract = our deploy is broken, not GCP. 500, not 502.
-        raise HTTPException(status_code=500, detail=f"contract load failed: {e}")
-
-    # Phase 17.A.3 (Codex follow-up review): the classifier path is
-    # drift-specific by design — :func:`agent.classifier.classify`
-    # only knows about drift's contract+live-env shape. Once 17.B/17.C/
-    # 17.E land and ``load_workload("upgrade")`` succeeds, the previous
-    # code would have fallen through to the drift classifier even when
-    # the request said ``workload="upgrade"``. Refuse explicitly here
-    # so the leak can't recur. The 503 is the operator-facing
-    # equivalent of "feature not deployed on this path" — the matching
-    # ADK-path is the supported way to run non-drift workloads.
+    # Phase 17.A (Codex review, Fix Important #1): the classifier-path
+    # non-drift refusal must fire BEFORE the drift contract load below.
+    # The contract is drift-specific (``s.contract_path`` is co-designed
+    # with the drift classifier); reading it on a non-drift request that
+    # we're about to refuse anyway would 500 on a broken/missing contract
+    # before the 503 fires — masking the real "wrong path for this
+    # workload" diagnosis with a misleading "contract load failed".
+    #
+    # The previous ordering happened to be safe today because the drift
+    # contract is always present in the test/prod deploy, but the moment
+    # ``load_workload("upgrade")`` starts succeeding (17.E) a broken
+    # drift contract would surface as 500 here instead of the intended
+    # 503. See the matching test in
+    # tests/integration/test_workload_routing.py.
+    #
+    # The ADK path doesn't fire this guard — :func:`build_agent`/
+    # :func:`build_chat_agent` already select the workload-specific tool
+    # set, so an upgrade request on USE_ADK=true is routed correctly.
     if not s.use_adk and workload != "drift":
         raise HTTPException(
             status_code=503,
@@ -571,6 +574,12 @@ async def _do_recheck(
                 f"the drift contract+live-env shape."
             ),
         )
+
+    try:
+        contract = load_contract(Path(s.contract_path))
+    except Exception as e:
+        # Bad contract = our deploy is broken, not GCP. 500, not 502.
+        raise HTTPException(status_code=500, detail=f"contract load failed: {e}")
 
     if s.use_adk:
         # ADK path: the agent's own tool calls do the Cloud Run read, so we

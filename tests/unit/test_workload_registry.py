@@ -39,6 +39,8 @@ from agent.workloads.registry import (
     UnknownWorkerError,
     UnknownWorkloadError,
     WorkerEndpoint,
+    WorkloadManifestMismatchError,
+    WorkloadPathTraversalError,
     WorkloadResolution,
     load_workload,
 )
@@ -271,3 +273,112 @@ def test_missing_upgrade_worker_env_raises_when_resolved_directly(monkeypatch):
         monkeypatch.delenv(var, raising=False)
     with pytest.raises(MissingWorkerEnvError, match="UPGRADE_READER_URL"):
         registry_mod._resolve_worker("upgrade_reader")
+
+
+# --------------------------------------------------------------------------- #
+# Phase 17.A Codex review — Fix Important #2a: WorkloadResolution
+# tools/workers/actions are MappingProxyType (immutable views).
+# --------------------------------------------------------------------------- #
+
+
+def test_workload_resolution_maps_are_immutable_mapping_proxies(drift_env):
+    """``WorkloadResolution.tools/workers/actions`` are
+    :class:`types.MappingProxyType` views so a caller that grabs a
+    reference can't widen the workload's authority by in-place mutation.
+
+    ``dataclass(frozen=True)`` only blocks reassigning the *field* (e.g.
+    ``resolution.tools = {}`` raises); it does NOT block mutating the
+    underlying dict (``resolution.tools["x"] = ...`` would succeed for a
+    plain ``dict``). MappingProxyType blocks the mutation too, which is
+    what we actually want for a security allowlist. Same property pin as
+    the top-level :data:`TOOL_REGISTRY` / :data:`WORKER_REGISTRY` /
+    :data:`ACTION_REGISTRY` allowlists (see
+    test_registries_are_immutable_mapping_proxies above).
+
+    One assertion per field — matches the registry test pattern.
+    """
+    resolution = load_workload("drift")
+    with pytest.raises(TypeError):
+        resolution.tools["attacker_tool"] = lambda: None  # type: ignore[index]
+    with pytest.raises(TypeError):
+        resolution.workers["attacker_worker"] = None  # type: ignore[index]
+    with pytest.raises(TypeError):
+        resolution.actions["attacker_action"] = None  # type: ignore[index]
+
+
+# --------------------------------------------------------------------------- #
+# Phase 17.A Codex review — Fix Important #2b: manifest-name verification.
+# --------------------------------------------------------------------------- #
+
+
+def test_load_workload_rejects_manifest_with_mismatched_name(tmp_path, drift_env):
+    """``load_workload(name)`` must assert the parsed
+    :class:`WorkloadSpec.name` matches the requested ``name``. If an
+    operator typos the YAML's ``name:`` field, every other registry
+    lookup would silently route against the wrong manifest. We fail
+    loud at load time instead — see :class:`WorkloadManifestMismatchError`.
+
+    The fixture writes a YAML that declares ``name: drift`` under an
+    ``upgrade/`` directory; loading it as ``upgrade`` (via the
+    ``_load_from_path`` backend, which is what ``load_workload`` calls
+    after path resolution) must raise the mismatch error.
+    """
+    # The shared `_write_workload` helper uses "drift" as the dir name;
+    # we need a non-drift dir so the requested name differs from the
+    # YAML's declared name.
+    workload_dir = tmp_path / "weird_dir"
+    workload_dir.mkdir()
+    (workload_dir / "workload.yaml").write_text(_MINIMAL_DRIFT_YAML)
+    (workload_dir / "system_prompt.txt").write_text("test prompt")
+
+    with pytest.raises(WorkloadManifestMismatchError, match="drift"):
+        registry_mod._load_from_path(
+            workload_dir / "workload.yaml", expected_name="upgrade"
+        )
+
+
+def test_load_from_path_without_expected_name_skips_check(tmp_path, drift_env):
+    """``_load_from_path`` without ``expected_name`` (the test-only
+    call shape) must not raise the mismatch error — the verification
+    is opt-in for tests that exercise other branches. The public
+    :func:`load_workload` always passes ``expected_name``."""
+    workload_dir = tmp_path / "weird_dir"
+    workload_dir.mkdir()
+    (workload_dir / "workload.yaml").write_text(_MINIMAL_DRIFT_YAML)
+    (workload_dir / "system_prompt.txt").write_text("test prompt")
+
+    # Should succeed without raising.
+    resolution = registry_mod._load_from_path(workload_dir / "workload.yaml")
+    assert resolution.spec.name == "drift"
+
+
+# --------------------------------------------------------------------------- #
+# Phase 17.A Codex review — Fix Important #2c: path-traversal guard.
+# --------------------------------------------------------------------------- #
+
+
+def test_load_workload_rejects_path_traversal_in_name():
+    """``load_workload(name)`` must reject a ``name`` arg that resolves
+    to a path outside the ``workloads/`` root.
+
+    Today the pydantic ``Literal`` on request bodies protects callers
+    that come through ``/chat`` and ``/recheck``, but
+    :func:`load_workload` itself takes a bare ``str`` — defense in
+    depth so a future caller that forwards an unvalidated request body
+    field can't escape the workloads dir with ``name="../etc/passwd"``.
+
+    The guard raises :class:`WorkloadPathTraversalError` (subclass of
+    ``ValueError``) instead of ``FileNotFoundError`` — the latter would
+    leak the attempted path in its message, defeating the purpose.
+    """
+    with pytest.raises(WorkloadPathTraversalError):
+        load_workload("../etc/passwd")
+
+
+def test_load_workload_path_traversal_error_subclasses_value_error():
+    """``WorkloadPathTraversalError`` is a ``ValueError`` subclass so
+    callers using value-shaped catches pick it up with the same idiom.
+    Pinning the subclass relationship here so a future refactor that
+    swaps the base class doesn't silently break callers that catch
+    ``ValueError``."""
+    assert issubclass(WorkloadPathTraversalError, ValueError)
