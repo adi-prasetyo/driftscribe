@@ -218,27 +218,45 @@ echo
 # ----------------------------------------------------------------------
 echo "[6] Eventarc auto-trigger probe (mutate payment-demo, wait, verify)"
 EVENTARC_MUTATED=0
+# Returns 0 only if cleanup succeeded (or was unnecessary). On failure
+# we leave EVENTARC_MUTATED=1 so a subsequent trap fire will retry, AND
+# we propagate the failure so the explicit happy-path call can flip the
+# overall test result to FAIL — a green smoke run that leaves NEW_THING
+# on the live service is a worse outcome than a red one.
 cleanup_eventarc() {
-  if [ "$EVENTARC_MUTATED" = "1" ]; then
-    echo "  [cleanup] removing NEW_THING from payment-demo"
-    gcloud run services update payment-demo \
-      --project="$PROJECT" --region="$REGION" \
-      --remove-env-vars=NEW_THING >/dev/null 2>&1 || \
-      echo "  [cleanup] WARNING: --remove-env-vars failed; inspect manually"
-    EVENTARC_MUTATED=0
+  if [ "$EVENTARC_MUTATED" != "1" ]; then
+    return 0
   fi
+  echo "  [cleanup] removing NEW_THING from payment-demo"
+  if gcloud run services update payment-demo \
+       --project="$PROJECT" --region="$REGION" \
+       --remove-env-vars=NEW_THING >/dev/null 2>&1; then
+    EVENTARC_MUTATED=0
+    return 0
+  fi
+  echo "  [cleanup] WARNING: --remove-env-vars failed; inspect manually"
+  return 1
 }
-trap cleanup_eventarc EXIT INT TERM
+# Separate INT/TERM handlers exit explicitly. Otherwise Ctrl-C falls
+# back into the polling loop, and the cleanup mutation itself can
+# generate a /eventarc 200 log that satisfies the probe — a
+# false-positive.
+trap cleanup_eventarc EXIT
+trap 'cleanup_eventarc; exit 130' INT
+trap 'cleanup_eventarc; exit 143' TERM
 
 if [ "${RUN_EVENTARC_PROBE:-0}" = "1" ]; then
   # Preflight: don't run if payment-demo already has NEW_THING set —
-  # we'd silently clobber the operator's value on cleanup.
+  # we'd silently clobber the operator's value on cleanup. We project
+  # ``env[].name`` so gcloud emits one var name per line (the prior
+  # flat ``env`` projection rendered list-of-{name,value} objects in a
+  # format that wasn't reliably greppable).
   EXISTING_NEW_THING="$(gcloud run services describe payment-demo \
     --project="$PROJECT" --region="$REGION" \
-    --format='value(spec.template.spec.containers[0].env)' 2>/dev/null \
-    | grep -oE 'NEW_THING=[^;]*' || true)"
+    --format='value(spec.template.spec.containers[0].env[].name)' 2>/dev/null \
+    | tr ';' '\n' | grep -Fx 'NEW_THING' || true)"
   if [ -n "$EXISTING_NEW_THING" ]; then
-    echo "  [FAIL] payment-demo already has $EXISTING_NEW_THING set — refusing to clobber"
+    echo "  [FAIL] payment-demo already has NEW_THING set — refusing to clobber"
     fail=$((fail + 1))
   elif ! gcloud run services describe payment-demo \
          --project="$PROJECT" --region="$REGION" >/dev/null 2>&1; then
@@ -314,7 +332,11 @@ if [ "${RUN_EVENTARC_PROBE:-0}" = "1" ]; then
         sleep 2
       done
 
-      if [ -n "$observed_path" ]; then
+      # A gcloud command that started before the deadline may return
+      # after it. Refuse to call ≤60s a "hit" if the wall-clock latency
+      # we measured is actually >60. This is rare in practice but the
+      # difference between PASS and FAIL must be evidence-based.
+      if [ -n "$observed_path" ] && [ "$observed_latency" -le 60 ]; then
         check "eventarc auto-trigger (<=60s)" "hit" "hit"
         echo "  observed: path=$observed_path latency=${observed_latency}s"
         # Append a row to docs/benchmarks.md. The file is checked in
@@ -331,6 +353,9 @@ if [ "${RUN_EVENTARC_PROBE:-0}" = "1" ]; then
         else
           echo "  [WARN] $bench_path missing — row not appended (re-create from git)"
         fi
+      elif [ -n "$observed_path" ]; then
+        echo "  [FAIL] eventarc auto-trigger  expected=<=60s observed=path=$observed_path latency=${observed_latency}s"
+        fail=$((fail + 1))
       else
         echo "  [FAIL] eventarc auto-trigger  expected=hit observed=timeout-after-60s"
         fail=$((fail + 1))
@@ -340,11 +365,14 @@ if [ "${RUN_EVENTARC_PROBE:-0}" = "1" ]; then
 else
   echo "  [SKIP] set RUN_EVENTARC_PROBE=1 to exercise the eventarc auto-trigger (DESTRUCTIVE)"
 fi
-# Cleanup early on the happy path so the trap-on-EXIT is a no-op. We
-# keep the trap installed (rather than `trap - EXIT`) so an interruption
-# AFTER this point still triggers cleanup if any future test below
-# re-mutates the service.
-cleanup_eventarc
+# Cleanup early on the happy path. If cleanup itself fails we flip the
+# overall run to FAIL — a green smoke that leaves NEW_THING on the live
+# service is worse than a red one. The trap stays installed (no
+# `trap - EXIT`) so a later interrupt still attempts cleanup.
+if ! cleanup_eventarc; then
+  echo "  [FAIL] eventarc cleanup did not remove NEW_THING from payment-demo"
+  fail=$((fail + 1))
+fi
 echo
 
 echo "================================================================"
