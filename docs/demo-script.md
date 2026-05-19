@@ -1,6 +1,6 @@
 # DriftScribe demo script (English)
 
-> Japanese version: `docs/demo-script.ja.md` (Task 16.3 — TBD).
+> Japanese version: [`docs/demo-script.ja.md`](demo-script.ja.md).
 
 Operator runbook for the live ~90s hackathon demo. Audience is a single
 hackathon judge watching the screen recording. The driver of the demo

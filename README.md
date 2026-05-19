@@ -1,4 +1,5 @@
 # DriftScribe
+> [日本語版はこちら](README.ja.md)
 
 [![CI](https://github.com/adi-prasetyo/driftscribe/actions/workflows/ci.yml/badge.svg)](https://github.com/adi-prasetyo/driftscribe/actions/workflows/ci.yml)
 
