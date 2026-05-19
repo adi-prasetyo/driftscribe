@@ -101,8 +101,19 @@ steps:
       # (Option C from Phase 8 plan). Flip to DRY_RUN=false ONLY after adding
       # the X-DriftScribe-Token guard (Option A) or removing
       # --allow-unauthenticated in favor of IAM-authenticated invocation
-      # (Option B).
+      # (Option B). As of Phase 11.1 the X-DriftScribe-Token guard is in
+      # place on /recheck and /chat, so --allow-unauthenticated here means
+      # "Cloud Run accepts the TCP connection; the app rejects unauthorized
+      # requests at 401". The HMAC-signed approval URLs are accessible
+      # without the token by design (single-use, 15-min TTL, audience-
+      # bound — see /approve and /reject in agent/main.py).
       - --allow-unauthenticated
+      # Phase 11.8: coordinator runs under its own dedicated SA
+      # (NOT the default compute SA). This is the email every worker's
+      # ALLOWED_CALLERS env lists. Worker → coordinator invocation does
+      # not exist by design; coordinator → worker uses audience-bound
+      # ID tokens minted from this SA's identity.
+      - --service-account=driftscribe-agent@$PROJECT_ID.iam.gserviceaccount.com
       - --min-instances=0
       - --max-instances=1
       - --concurrency=1
