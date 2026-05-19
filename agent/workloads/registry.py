@@ -22,9 +22,16 @@ actually want for a security allowlist.
 Failure modes (all raised at *load* time, never at first agent call):
 
 - :class:`UnknownWorkloadError` — `load_workload("kubernetes")` etc.
-- :class:`UnknownToolError` — YAML names a tool not in the allowlist,
-  or names a tool that's been reserved but not yet implemented (e.g.
-  ``upgrade_read_dependencies`` before Phase 17.C ships).
+- :class:`UnknownToolError` — YAML names a tool not in the allowlist
+  at all (probably a typo or attempted capability widening). 500-shaped
+  at the handler layer: the deploy is broken.
+- :class:`ReservedToolNotImplementedError` — YAML names a tool that
+  IS in the allowlist but whose callable is still ``None`` (e.g.
+  ``upgrade_read_dependencies`` before Phase 17.C ships). Subclasses
+  :class:`UnknownToolError` for backward compat. 503-shaped at the
+  handler layer: wait for the next phase. Phase 17.A.3 (Codex review)
+  introduced the split so a drift YAML typo doesn't surface as the
+  same "workload not deployed" message as an upgrade-not-yet error.
 - :class:`UnknownWorkerError` — YAML names a worker not in the allowlist.
 - :class:`UnknownActionError` — YAML names an action not in the allowlist.
 - :class:`MissingWorkerEnvError` — a referenced worker's URL env var is
@@ -224,11 +231,15 @@ class WorkloadResolution:
 #
 # Tools deferred to future sub-phases are listed as ``None``. This is
 # intentional — keeping the slot reserved by name lets the registry
-# distinguish "I don't know that tool at all" (`UnknownToolError`,
+# distinguish "I don't know that tool at all" (:class:`UnknownToolError`,
 # probably a YAML typo or an attempt at capability widening) from "I
-# know that tool but it's not implemented yet" (`UnknownToolError` with
-# a clearer message pointing at the future sub-phase). The two outcomes
-# converge at the same exception class because both must fail load.
+# know that tool but it's not implemented yet"
+# (:class:`ReservedToolNotImplementedError`, a subclass of the above
+# pointing at the future sub-phase). Both fail load; the handler layer
+# in :mod:`agent.main` discriminates between them when picking 500 vs
+# 503. Phase 17.A.3 (Codex review) introduced the subclass split so a
+# drift YAML typo (500-shaped) doesn't collapse to the same response as
+# an upgrade-not-yet error (503-shaped).
 #
 # Sub-phase mapping for the placeholders:
 # - upgrade_read_dependencies, upgrade_propose_pr → 17.C
