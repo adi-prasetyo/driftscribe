@@ -704,6 +704,104 @@ def test_cached_rollback_with_expired_approval_re_proposes(
     assert propose_call_count["n"] == 2
 
 
+def test_concurrent_expired_rollback_evictions_only_one_re_proposes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Phase 14 (Codex Phase 13 second-pass W2): two concurrent /recheck
+    retries observing the same expired cached rollback must NOT both
+    re-propose. The compare-and-delete eviction (evict_cached_decision)
+    ensures exactly one caller wins; the loser returns the winner's fresh
+    decision instead of minting a parallel approval doc.
+
+    Simulating real Firestore concurrency in-process is impossible, so we
+    pin the eviction-CAS contract directly: the loser's
+    ``evict_cached_decision`` returns False (it lost the race). At that
+    point the cache lookup must re-read state and return the fresh
+    decision written by the winner, NOT issue a second /propose call
+    against the rollback worker.
+
+    Setup: r1 runs cleanly and writes a far-future cached decision. The
+    loser /recheck is then forced through the "stale cache" branch by
+    monkeypatching ``_cached_rollback_is_expired`` to lie once, while
+    ``evict_cached_decision`` is replaced with a stub that returns False
+    (the CAS-loser outcome on real Firestore).
+    """
+    monkeypatch.setenv("USE_ADK", "true")
+    get_settings.cache_clear()
+    _reset_state_for_tests()
+
+    propose_call_count = {"n": 0}
+
+    def dispatch(worker: str, payload: dict, *args: Any, **kwargs: Any) -> Any:
+        if worker == "reader":
+            return _reader_envelope(
+                {"PAYMENT_MODE": "live", "FEATURE_NEW_CHECKOUT": "false"}
+            )
+        if worker == "rollback":
+            propose_call_count["n"] += 1
+            return _propose_envelope()  # far-future expires_at
+        if worker == "notifier":
+            return _notifier_envelope()
+        raise AssertionError(f"unexpected worker call: {worker!r}")
+
+    mock_run_agent = AsyncMock(return_value=_rollback_proposal())
+    with (
+        patch("agent.main._run_adk_agent", mock_run_agent),
+        patch("agent.main.worker_client.call") as m_call,
+    ):
+        m_call.side_effect = dispatch
+        client = TestClient(app)
+        # Winner call: empty cache → propose runs → fresh decision cached.
+        r1 = client.post("/recheck")
+        assert r1.status_code == 200, r1.text
+        assert propose_call_count["n"] == 1
+
+        from agent import main as agent_main
+
+        state = agent_main.get_state()
+        cached = state.find_decision_for_event(r1.json()["event_key"])
+        assert cached is not None
+        assert cached["approval"]["expires_at"] == _EXPIRES_AT_ISO
+
+        evict_calls: list[tuple[str, str]] = []
+
+        def losing_evict(event_key: str, decision_id: str) -> bool:
+            evict_calls.append((event_key, decision_id))
+            return False  # CAS-loser
+
+        expired_calls = {"n": 0}
+        real_is_expired = agent_main._cached_rollback_is_expired
+
+        def flaky_is_expired(cached_dict: dict) -> bool:
+            expired_calls["n"] += 1
+            # First call (initial cache lookup): claim expired so we enter
+            # the eviction branch. Re-read after the failed CAS: defer to
+            # the real check (which returns False on the far-future doc).
+            if expired_calls["n"] == 1:
+                return True
+            return real_is_expired(cached_dict)
+
+        with (
+            patch.object(state, "evict_cached_decision", losing_evict),
+            patch(
+                "agent.main._cached_rollback_is_expired",
+                flaky_is_expired,
+            ),
+        ):
+            r2 = client.post("/recheck")
+
+    assert r2.status_code == 200, r2.text
+    # The CAS-loser must NOT issue a second /propose.
+    assert propose_call_count["n"] == 1, (
+        "loser must NOT re-propose after losing the eviction CAS"
+    )
+    assert len(evict_calls) == 1
+    assert evict_calls[0][1] == r1.json()["decision_id"]
+    # And the loser returns the winner's fresh decision verbatim.
+    assert r2.json()["decision_id"] == r1.json()["decision_id"]
+    assert r2.json()["approval"]["approval_url"] == _APPROVAL_URL
+
+
 def test_rollback_on_non_adk_path_is_500(monkeypatch: pytest.MonkeyPatch) -> None:
     """Defensive: if a ROLLBACK proposal somehow appears on the
     classifier path (impossible in current code — the classifier has no
