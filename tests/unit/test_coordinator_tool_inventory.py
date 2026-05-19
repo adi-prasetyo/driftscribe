@@ -96,7 +96,7 @@ def test_coordinator_tools_match_expected_set():
     )
 
 
-def test_drift_workload_enabled_tools_match_expected_set(monkeypatch):
+def test_drift_workload_enabled_tools_match_expected_set(drift_workload_env):
     """Phase 17.A.2: the drift workload's enabled_tool_names set must
     equal the expected set, exactly.
 
@@ -106,23 +106,14 @@ def test_drift_workload_enabled_tools_match_expected_set(monkeypatch):
     Python callable registry. Both must change in lockstep when
     capability genuinely widens.
 
-    Loading the drift workload reads four worker URL env vars; we set
-    test sentinels so ``load_workload`` succeeds without depending on
-    the deploy env. Cache clear ensures these monkeypatched vars are
-    actually picked up if a prior test populated the cache.
+    The ``drift_workload_env`` fixture (defined in ``tests/conftest.py``)
+    sets the four worker URL env vars so ``load_workload`` succeeds
+    without depending on the deploy env, and clears the workload cache
+    on both sides of the test.
     """
-    monkeypatch.setenv("READER_URL", "https://reader.test")
-    monkeypatch.setenv("DOCS_URL", "https://docs.test")
-    monkeypatch.setenv("ROLLBACK_URL", "https://rollback.test")
-    monkeypatch.setenv("NOTIFIER_URL", "https://notifier.test")
-    import agent.workloads.registry as registry_mod
-    registry_mod._WORKLOAD_CACHE.clear()
-    try:
-        from agent.workloads import load_workload
-        resolution = load_workload("drift")
-        actual = frozenset(resolution.spec.enabled_tool_names)
-    finally:
-        registry_mod._WORKLOAD_CACHE.clear()
+    from agent.workloads import load_workload
+    resolution = load_workload("drift")
+    actual = frozenset(resolution.spec.enabled_tool_names)
 
     assert actual == EXPECTED_DRIFT_WORKLOAD_TOOL_NAMES, (
         f"Drift workload tool inventory drifted.\n"

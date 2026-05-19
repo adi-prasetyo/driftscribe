@@ -145,7 +145,7 @@ The 6 registered tools (as of Phase 11.7):
 Cross-references:
 - `agent.adk_agent.COORDINATOR_TOOLS` — the canonical list
 - `agent.adk_tools` — the tool implementations
-- The system prompts in `agent.adk_agent.SYSTEM_PROMPT_RECHECK` and `SYSTEM_PROMPT_CHAT` explicitly tell the LLM "you can ONLY call worker tools; you cannot mutate any system directly."
+- The recheck system prompt lives in `workloads/drift/system_prompt.md` (loaded via `agent.workloads.load_workload('drift')`); the chat prompt remains inline at `agent.adk_agent.SYSTEM_PROMPT_CHAT` pending Phase 17.A.3. Both prompts explicitly tell the LLM "you can ONLY call worker tools; you cannot mutate any system directly."
 
 If you add a tool in a future PR:
 1. Implement it in `agent/adk_tools.py`

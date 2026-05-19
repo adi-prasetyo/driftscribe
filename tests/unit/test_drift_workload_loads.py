@@ -32,7 +32,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 import yaml
 
 
@@ -110,20 +109,6 @@ only outputs the JSON decision and never mints approval tokens directly.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.fixture
-def _drift_env(monkeypatch):
-    """Set worker URL env vars so ``load_workload('drift')`` resolves
-    without depending on the deploy environment."""
-    monkeypatch.setenv("READER_URL", "https://reader.test")
-    monkeypatch.setenv("DOCS_URL", "https://docs.test")
-    monkeypatch.setenv("ROLLBACK_URL", "https://rollback.test")
-    monkeypatch.setenv("NOTIFIER_URL", "https://notifier.test")
-    import agent.workloads.registry as registry_mod
-    registry_mod._WORKLOAD_CACHE.clear()
-    yield
-    registry_mod._WORKLOAD_CACHE.clear()
-
-
 def test_drift_system_prompt_file_matches_pre17_constant():
     """Byte-for-byte golden: workloads/drift/system_prompt.md equals
     the SYSTEM_PROMPT_RECHECK constant value as it was before 17.A.2.
@@ -165,7 +150,40 @@ def test_drift_contract_yaml_matches_demo_copy():
     )
 
 
-def test_load_workload_drift_exposes_prompt_byte_for_byte(_drift_env):
+def test_drift_recheck_uses_pre17_compatible_contract():
+    """The workload-local contract parses to the same dict as the
+    legacy ``demo/ops-contract.yaml`` copy.
+
+    Why both this and ``test_drift_contract_yaml_matches_demo_copy``
+    above: ``CONTRACT_PATH`` still points at the legacy
+    ``demo/ops-contract.yaml`` (integration conftest sets that), so the
+    coordinator's settings layer reads the demo copy. The workload
+    registry reads the new ``workloads/drift/contract.yaml`` copy. Both
+    must yield the same parsed dict — if they ever drift, the LLM and
+    the classifier would see different ground truths.
+
+    Reads via ``yaml.safe_load`` so this catches semantic drift (a
+    rewritten-but-equivalent YAML wouldn't be byte-equal but should
+    still parse to the same dict). The byte-equal guard lives in
+    ``test_drift_contract_yaml_matches_demo_copy`` above; this test is
+    the parse-equivalence companion. Pure file I/O — no FastAPI
+    plumbing — so it lives in the unit suite, not integration.
+    """
+    demo_parsed = yaml.safe_load(
+        (_REPO_ROOT / "demo" / "ops-contract.yaml").read_text(encoding="utf-8")
+    )
+    workload_parsed = yaml.safe_load(
+        (_REPO_ROOT / "workloads" / "drift" / "contract.yaml").read_text(encoding="utf-8")
+    )
+    assert demo_parsed == workload_parsed, (
+        "demo/ops-contract.yaml and workloads/drift/contract.yaml "
+        "parsed to different dicts. Reconcile before the next deploy — "
+        "the coordinator's settings layer reads the demo copy while the "
+        "workload registry reads the workload-local copy."
+    )
+
+
+def test_load_workload_drift_exposes_prompt_byte_for_byte(drift_workload_env):
     """End-to-end: ``load_workload('drift').system_prompt`` returns the
     golden text byte-for-byte.
 
@@ -180,7 +198,7 @@ def test_load_workload_drift_exposes_prompt_byte_for_byte(_drift_env):
     assert resolution.system_prompt == _DRIFT_SYSTEM_PROMPT_GOLDEN
 
 
-def test_load_workload_drift_exposes_contract_path(_drift_env):
+def test_load_workload_drift_exposes_contract_path(drift_workload_env):
     """``WorkloadResolution.contract_path`` resolves to the workload-
     local copy and the file parses as the expected ops-contract shape.
 
@@ -207,7 +225,7 @@ def test_load_workload_drift_exposes_contract_path(_drift_env):
     assert "PAYMENT_MODE" in parsed["expected_env"]
 
 
-def test_drift_workload_contract_yaml_parses_into_ops_contract(_drift_env):
+def test_drift_workload_contract_yaml_parses_into_ops_contract(drift_workload_env):
     """The workload-local contract.yaml parses cleanly through the
     existing :func:`agent.contract.load_contract` shape checker.
 

@@ -15,9 +15,7 @@ Two paths existed pre-17 inside ``/recheck``:
   * the decision body (action, decision_path, dry_run, rendered_body
     shape) matches the pre-17 baseline,
   * the worker call sequence (which workers, in what order, with what
-    payloads) matches the pre-17 baseline,
-  * the contract content read by the coordinator matches the workload-
-    local copy (workloads/drift/contract.yaml).
+    payloads) matches the pre-17 baseline.
 
 - **ADK path** (``USE_ADK=true``): non-deterministic because the LLM
   picks tool calls. We deliberately do NOT golden-test that here — the
@@ -31,6 +29,11 @@ path's wiring through ``agent/main.py`` is untouched, so the baseline
 should hold by construction. This test makes that construction-time
 property a CI-time gate.
 
+The parse-equivalence companion (workloads/drift/contract.yaml parses
+to the same dict as demo/ops-contract.yaml) lives in
+``tests/unit/test_drift_workload_loads.py`` — it does no FastAPI
+plumbing and so doesn't belong in the integration suite.
+
 If this test ever fails, the failure is one of:
 
 1. A genuine bug — a refactor accidentally added/removed a worker call
@@ -40,10 +43,8 @@ If this test ever fails, the failure is one of:
 """
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import patch
 
-import yaml
 from fastapi.testclient import TestClient
 
 from agent.main import app
@@ -200,33 +201,3 @@ def test_drift_recheck_escalation_pinned_worker_call_sequence(monkeypatch):
     )
 
 
-def test_drift_recheck_uses_pre17_compatible_contract(monkeypatch):
-    """The contract content the coordinator reads on the classifier path
-    matches the workload-local copy byte-for-byte after a shape parse.
-
-    Why both: ``CONTRACT_PATH`` still points at the legacy
-    ``demo/ops-contract.yaml`` (integration conftest sets that), so the
-    coordinator's settings layer reads the demo copy. The workload
-    registry reads the new ``workloads/drift/contract.yaml`` copy. Both
-    must yield the same parsed dict — if they ever drift, the LLM and
-    the classifier would see different ground truths.
-
-    Reads via ``yaml.safe_load`` so this catches semantic drift (a
-    rewritten-but-equivalent YAML wouldn't be byte-equal but should
-    still parse to the same dict). The byte-equal guard lives in
-    ``tests/unit/test_drift_workload_loads.py``; this test is the
-    parse-equivalence companion.
-    """
-    repo_root = Path(__file__).resolve().parents[2]
-    demo_parsed = yaml.safe_load(
-        (repo_root / "demo" / "ops-contract.yaml").read_text(encoding="utf-8")
-    )
-    workload_parsed = yaml.safe_load(
-        (repo_root / "workloads" / "drift" / "contract.yaml").read_text(encoding="utf-8")
-    )
-    assert demo_parsed == workload_parsed, (
-        "demo/ops-contract.yaml and workloads/drift/contract.yaml "
-        "parsed to different dicts. Reconcile before the next deploy — "
-        "the coordinator's settings layer reads the demo copy while the "
-        "workload registry reads the workload-local copy."
-    )

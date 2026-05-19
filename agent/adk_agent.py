@@ -91,11 +91,17 @@ COORDINATOR_TOOLS = [
 #   memoizes per workload name, so repeat callers pay the I/O once.
 #
 # 17.A.3 will introduce a per-request workload parameter on /chat and
-# /recheck; until then the agent factory hardcodes ``"drift"``. The
-# free-form /chat prompt (``SYSTEM_PROMPT_CHAT``) stays inline below
-# because :class:`WorkloadResolution.system_prompt` is a single field
-# and the recheck prompt is the canonical "drift" prompt; the chat
-# variant moves in 17.A.3 alongside the agent-factory refactor.
+# /recheck; until then the agent factory hardcodes ``"drift"``.
+#
+# ``SYSTEM_PROMPT_CHAT`` (below) remains inline pending 17.A.3. Moving
+# it now would require committing to a ``system_prompt_chat_file:``
+# field in the :class:`~agent.workloads.WorkloadSpec` YAML schema
+# before 17.A.3 has decided how per-workload chat-mode prompts work —
+# or whether a chat prompt is even a per-workload concern vs. a
+# coordinator-wide one. 17.A.3 owns the routing design and will make
+# the final call; locking the schema here would force a follow-up
+# migration if that call goes the other way.
+# TODO(17.A.3): resolve.
 
 
 def _drift_system_prompt() -> str:
