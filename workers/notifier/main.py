@@ -45,7 +45,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from driftscribe_lib.auth import verify_caller
-from driftscribe_lib.logging import setup as setup_logging
+from driftscribe_lib.logging import install_trace_middleware, setup as setup_logging
 
 log = setup_logging("notifier-agent")
 
@@ -109,6 +109,9 @@ class NotifyRequest(BaseModel):
 
 
 app = FastAPI(title="DriftScribe Notifier Agent")
+
+# Phase 15.2: per-request trace id propagation (see driftscribe_lib.logging).
+install_trace_middleware(app)
 
 
 @app.get("/healthz")

@@ -65,7 +65,7 @@ from driftscribe_lib.approvals import (
     compute_token_hmac,
 )
 from driftscribe_lib.auth import verify_caller
-from driftscribe_lib.logging import setup as setup_logging
+from driftscribe_lib.logging import install_trace_middleware, setup as setup_logging
 
 log = setup_logging("rollback-agent")
 
@@ -333,6 +333,9 @@ class ExecuteRequest(BaseModel):
 
 
 app = FastAPI(title="DriftScribe Rollback Agent")
+
+# Phase 15.2: per-request trace id propagation (see driftscribe_lib.logging).
+install_trace_middleware(app)
 
 
 @app.get("/healthz")
