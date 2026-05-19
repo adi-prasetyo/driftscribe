@@ -42,6 +42,11 @@ from agent.runbook_patcher import patch_runbook
 from agent.state_store import FirestoreStateStore, InMemoryStateStore, StateStore
 from agent.validator import ValidationError as ProposalValidationError
 from agent.validator import validate
+from agent.workloads import (
+    MissingWorkerEnvError,
+    UnknownToolError,
+    load_workload,
+)
 from driftscribe_lib.logging import (
     install_trace_middleware,
     setup as setup_logging,
@@ -297,17 +302,23 @@ def _perform_action(
     )
 
 
-async def _run_adk_agent(user_msg: str) -> DecisionProposal:
+async def _run_adk_agent(
+    user_msg: str, *, workload: str = "drift"
+) -> DecisionProposal:
     """Thin wrapper so integration tests have a stable patch target.
 
     Lazy-imports `agent.adk_agent` so the Google ADK SDK doesn't load on the
     non-ADK code path. Patching `agent.main._run_adk_agent` (rather than
     `agent.adk_agent.run_agent`) preserves the lazy-load benefit AND keeps
     the test patch site stable across spec evolution.
+
+    ``workload`` selects the workload-scoped agent. Defaults to ``"drift"``
+    so any pre-17.A.3 patch site that calls this with a positional
+    ``user_msg`` only still works.
     """
     from agent.adk_agent import run_agent
 
-    return await run_agent(user_msg)
+    return await run_agent(user_msg, workload=workload)
 
 
 def _do_rollback(
@@ -483,7 +494,9 @@ def _do_rollback(
     return response
 
 
-async def _do_recheck(trigger: str, force: bool = False) -> dict:
+async def _do_recheck(
+    trigger: str, force: bool = False, *, workload: str = "drift"
+) -> dict:
     """Run a recheck under the trigger label, with idempotency.
 
     Idempotency contract:
@@ -535,7 +548,22 @@ async def _do_recheck(trigger: str, force: bool = False) -> dict:
         # ADK path to compute the key first — are deferred to Phase 9 along
         # with the Eventarc handler so retry storms don't break the bank.
         try:
-            proposal = await _run_adk_agent(user_msg)
+            proposal = await _run_adk_agent(user_msg, workload=workload)
+        except (MissingWorkerEnvError, UnknownToolError) as e:
+            # Workload's wiring isn't complete in this build (e.g.
+            # upgrade before 17.B/17.C/17.E). The request is
+            # structurally valid; the system isn't deployed for that
+            # workload. 503 with a clear message so the operator can
+            # self-diagnose. See the matching catch on /chat above for
+            # the rationale on collapsing both exception classes.
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"workload {workload!r} is not deployed: {e}. "
+                    f"See Phase 17.B/17.C/17.E for the wiring that lands "
+                    f"upgrade's tools and worker URLs."
+                ),
+            ) from e
         except Exception as e:
             # LLM produced no parseable JSON, or schema-validation failed.
             # Distinct from a side-effect failure — surface as upstream-dep
@@ -693,12 +721,37 @@ async def _do_recheck(trigger: str, force: bool = False) -> dict:
     return response
 
 
+class RecheckRequest(BaseModel):
+    """Optional request body for /recheck.
+
+    Phase 17.A.3 adds a ``workload`` selector so an operator can target
+    drift vs. upgrade per call. Pre-17 callers (curl in the demo, every
+    existing integration test) POSTed without a body — the model is
+    fully optional via the ``RecheckRequest | None = None`` body
+    declaration on the route below. ``extra="forbid"`` so a typo'd
+    field surfaces as 422 rather than silently dropping to defaults.
+
+    ``force`` stays as a query param (its pre-17 location) to keep the
+    integration tests' ``client.post("/recheck?force=true")`` form
+    working without a body shape change.
+    """
+
+    workload: Literal["drift", "upgrade"] = "drift"
+
+    model_config = ConfigDict(extra="forbid")
+
+
 @app.post("/recheck")
-async def recheck(force: bool = False, _: None = Depends(verify_token)):
+async def recheck(
+    req: RecheckRequest | None = None,
+    force: bool = False,
+    _: None = Depends(verify_token),
+):
     # ``verify_token`` runs first and raises 401/403/503 before _do_recheck.
     # The unused-parameter underscore is the standard FastAPI convention for
     # auth deps that only matter for their side effect (raising on failure).
-    return await _do_recheck("manual_recheck", force=force)
+    workload = (req or RecheckRequest()).workload
+    return await _do_recheck("manual_recheck", force=force, workload=workload)
 
 
 # Module-level Google auth transport: verify_oauth2_token needs a transport
@@ -917,7 +970,15 @@ async def eventarc(
     # _do_recheck's HTTPExceptions (worker 502, contract-load 500, claim
     # 409) propagate unchanged — Eventarc will retry on those, which is
     # the correct behavior.
-    return await _do_recheck("eventarc")
+    #
+    # Phase 17.A.3 (Codex blocker): the workload is HARDCODED to "drift"
+    # server-side. Cloud Run audit-log events are drift's input source by
+    # definition. The caller-presented payload does NOT extend authority
+    # to workload selection — any ``workload`` field in the body is
+    # ignored. An event-triggered upgrade workload, if ever added, will
+    # get its own endpoint with its own server-side binding (e.g.
+    # ``/eventarc-upgrade`` against a dependabot-style trigger).
+    return await _do_recheck("eventarc", workload="drift")
 
 
 @app.get("/runs/{decision_id}")
@@ -1146,10 +1207,18 @@ class ChatRequest(BaseModel):
     in-memory session is recreated per call anyway (cross-call agent
     memory is out of scope for 11.7 — see ``docs/architecture/multi-agent-design.md``
     §"session memory").
+
+    Phase 17.A.3: ``workload`` selects the workload-scoped agent. The
+    Literal closes the set to ``{"drift", "upgrade"}`` — pydantic
+    rejects any other value with 422 before the handler body runs,
+    which prevents a malformed request from reaching the workload
+    loader's exception path. Defaults to ``"drift"`` so pre-17 callers
+    that omit the field route as they always did.
     """
 
     prompt: str
     session_id: str | None = None
+    workload: Literal["drift", "upgrade"] = "drift"
 
     model_config = ConfigDict(extra="forbid")
 
@@ -1183,10 +1252,43 @@ async def chat(req: ChatRequest, _: None = Depends(verify_token)) -> dict:
             status_code=503,
             detail="ADK not enabled (set USE_ADK=true to enable /chat)",
         )
+    # Phase 17.A.3: pre-resolve the workload so an "undeployed workload"
+    # failure (e.g. upgrade before Phase 17.B/17.C/17.E land the tools +
+    # worker URLs) surfaces as 503 BEFORE we boot the ADK runner. The
+    # result is cached inside ``agent.workloads.registry._WORKLOAD_CACHE``,
+    # so the inner ``run_chat`` re-resolution is a free dict lookup.
+    #
+    # Two exception classes mean "workload not deployed in this build":
+    #
+    # - :class:`MissingWorkerEnvError` — worker URL env var is unset. Hit
+    #   by upgrade today (UPGRADE_READER_URL etc. land in 17.E).
+    # - :class:`UnknownToolError` — symbolic tool name is reserved in the
+    #   registry but the callable is None. Hit by upgrade today
+    #   (``upgrade_read_dependencies`` etc. land in 17.B/17.C).
+    #
+    # Both collapse to 503 with a clear "not deployed" message. The
+    # alternative (separate 503 vs. 500) doesn't help the operator — in
+    # both cases the request is structurally valid and the fix is a
+    # deploy-side wiring change. The exception message in the detail
+    # carries the specific signal for debugging.
+    try:
+        load_workload(req.workload)
+    except (MissingWorkerEnvError, UnknownToolError) as e:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"workload {req.workload!r} is not deployed: {e}. "
+                f"See Phase 17.B/17.C/17.E for the wiring that lands "
+                f"upgrade's tools and worker URLs."
+            ),
+        ) from e
+
     from agent.adk_agent import run_chat
 
     try:
-        return await run_chat(req.prompt, session_id=req.session_id)
+        return await run_chat(
+            req.prompt, session_id=req.session_id, workload=req.workload
+        )
     except worker_client.WorkerClientError as e:
         # Worker upstream failed (could be transport, schema, or worker
         # policy). 502 — the coordinator itself is healthy; the

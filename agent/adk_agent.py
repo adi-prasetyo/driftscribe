@@ -54,6 +54,7 @@ from agent.adk_tools import (
     search_recent_prs_tool,
 )
 from agent.models import DecisionProposal
+from agent.workloads import WorkloadResolution, load_workload
 
 # --------------------------------------------------------------------------- #
 # Layer 0: Capability-bounded tool registry
@@ -90,31 +91,43 @@ COORDINATOR_TOOLS = [
 # - Caching lives one layer down — :func:`agent.workloads.load_workload`
 #   memoizes per workload name, so repeat callers pay the I/O once.
 #
-# 17.A.3 will introduce a per-request workload parameter on /chat and
-# /recheck; until then the agent factory hardcodes ``"drift"``.
+# 17.A.3: ``build_agent`` and ``build_chat_agent`` now take an explicit
+# :class:`~agent.workloads.WorkloadResolution`. The caller (``agent.main``)
+# decides which workload to load per request and passes the resolution
+# in; the factory no longer makes that choice itself. This is what makes
+# the per-request ``workload=`` field on /chat and /recheck meaningful —
+# the agent built for workload=X carries workload=X's system prompt and
+# (today) the coordinator's shared tool set.
 #
-# ``SYSTEM_PROMPT_CHAT`` (below) remains inline pending 17.A.3. Moving
-# it now would require committing to a ``system_prompt_chat_file:``
-# field in the :class:`~agent.workloads.WorkloadSpec` YAML schema
-# before 17.A.3 has decided how per-workload chat-mode prompts work —
-# or whether a chat prompt is even a per-workload concern vs. a
-# coordinator-wide one. 17.A.3 owns the routing design and will make
-# the final call; locking the schema here would force a follow-up
-# migration if that call goes the other way.
-# TODO(17.A.3): resolve.
-
-
-def _drift_system_prompt() -> str:
-    """Return the drift workload's system prompt.
-
-    Lazy because the underlying :func:`load_workload` resolves worker URL
-    env vars; tests that set those via ``monkeypatch.setenv`` need the
-    resolution to happen *after* the patch applies. The
-    ``WorkloadResolution`` itself is memoized inside ``load_workload``,
-    so per-call cost is a dict lookup once the first call has succeeded.
-    """
-    from agent.workloads import load_workload
-    return load_workload("drift").system_prompt
+# Tool set: Phase 17.A.3 keeps :data:`COORDINATOR_TOOLS` as the union
+# Python-callable surface. The workload's ``enabled_tool_names`` symbolic
+# list is the per-workload *capability filter* and is enforced one layer
+# down: the resolution's ``tools`` dict only contains callables for the
+# workload's allowed symbolic names, and the registry refuses to resolve
+# names outside that workload's manifest. 17.A.4 / 17.C will wire that
+# per-workload filtered tool list directly into the ``Agent(tools=...)``
+# argument so the LLM is never even handed a cross-workload tool — see
+# the TODO in :func:`build_agent` below.
+#
+# ``SYSTEM_PROMPT_CHAT`` (below) is intentionally NOT moved into the
+# workload manifest in 17.A.3. Rationale:
+#
+# - The /chat free-form prompt is currently coordinator-wide, not
+#   workload-specific (it explains the four worker tools, none of which
+#   are upgrade-flavored yet).
+# - Moving it into ``workloads/drift/`` now would force a parallel
+#   move into ``workloads/upgrade/`` before 17.C had decided whether
+#   /chat is even a meaningful surface for upgrade.
+# - Schema commitment punted: no ``chat_system_prompt_file`` field
+#   added to :class:`~agent.workloads.WorkloadSpec` yet.
+#
+# Follow-up: when 17.C introduces an upgrade-flavored chat prompt,
+# either (a) add ``chat_system_prompt_file: str | None`` to the
+# WorkloadSpec and migrate both drift's and upgrade's prompts, or
+# (b) keep SYSTEM_PROMPT_CHAT coordinator-wide if upgrade's chat mode
+# turns out to want the same wording. The decision is small enough to
+# defer.
+# TODO(17.C): revisit when upgrade's chat behavior is concrete.
 
 
 # --------------------------------------------------------------------------- #
@@ -173,38 +186,72 @@ def _parse_response(text: str) -> DecisionProposal:
     return DecisionProposal.model_validate(payload)
 
 
-def build_agent() -> Agent:
-    """Construct the /recheck-flavored ADK Agent with the full coordinator
-    tool set wired in. Uses the drift workload's structured-JSON system
-    prompt loaded from ``workloads/drift/system_prompt.md``."""
+def build_agent(workload: WorkloadResolution) -> Agent:
+    """Construct the /recheck-flavored ADK Agent for the given workload.
+
+    Takes an already-loaded :class:`~agent.workloads.WorkloadResolution`
+    so the caller (``agent.main``) controls workload selection per
+    request. The factory itself is a pure function over the resolution —
+    no env reads, no module-level state — so the same resolution always
+    yields an agent with the same prompt and tools.
+
+    Tool set today: :data:`COORDINATOR_TOOLS`. The per-workload symbolic
+    filter (``workload.spec.enabled_tool_names``) is enforced one layer
+    up — the registry's resolution refuses to surface upgrade-only
+    callables under the drift manifest and vice versa. 17.A.4/17.C will
+    swap this to ``workload.tools.values()`` so the ADK runner is
+    handed exactly the per-workload tool list.
+    """
+    # TODO(17.A.4): replace COORDINATOR_TOOLS with `list(workload.tools.values())`
+    # once the upgrade-only tools are real callables. Currently the two
+    # surfaces are equivalent for drift (every drift callable is in
+    # COORDINATOR_TOOLS) but the per-workload list is what makes the
+    # invariant "the LLM was never even shown a cross-workload tool" hold
+    # rigorously.
+    # ADK requires agent names to be valid Python identifiers (letters,
+    # digits, underscores; no hyphens). The workload name is from the
+    # closed Literal ``{"drift", "upgrade"}``, both identifier-safe.
     return Agent(
-        name="driftscribe",
+        name=f"driftscribe_{workload.spec.name}",
         model="gemini-2.5-flash",
-        instruction=_drift_system_prompt(),
+        instruction=workload.system_prompt,
         tools=COORDINATOR_TOOLS,
     )
 
 
-def build_chat_agent() -> Agent:
-    """Construct the /chat-flavored ADK Agent — same tool set, different
-    system prompt that allows free-form natural-language responses and
-    tool chaining within a single turn."""
+def build_chat_agent(workload: WorkloadResolution) -> Agent:
+    """Construct the /chat-flavored ADK Agent for the given workload.
+
+    Same workload parameter as :func:`build_agent`. The system prompt
+    here is the coordinator-wide :data:`SYSTEM_PROMPT_CHAT` (see the
+    block-comment above for the rationale on NOT moving it into the
+    workload manifest in 17.A.3). The workload still flows through in
+    the agent name so log lines distinguish ``driftscribe_chat-drift``
+    from a future ``driftscribe_chat-upgrade``.
+    """
     return Agent(
-        name="driftscribe_chat",
+        name=f"driftscribe_chat_{workload.spec.name}",
         model="gemini-2.5-flash",
         instruction=SYSTEM_PROMPT_CHAT,
         tools=COORDINATOR_TOOLS,
     )
 
 
-async def run_agent(user_msg: str) -> DecisionProposal:
+async def run_agent(
+    user_msg: str, *, workload: str = "drift"
+) -> DecisionProposal:
     """Run the ADK agent against `user_msg` and parse the final response.
 
     Builds a fresh `InMemorySessionService` per call — DriftScribe is
     stateless across recheck invocations (idempotency lives at the
     StateStore layer, not in agent memory).
+
+    ``workload`` selects the workload-scoped agent. Defaults to ``"drift"``
+    for backward compatibility with pre-17.A.3 callers; new callers pass
+    it explicitly via :func:`agent.main._run_adk_agent`.
     """
-    agent = build_agent()
+    resolution = load_workload(workload)
+    agent = build_agent(resolution)
     session_service = InMemorySessionService()
     session_id = str(uuid.uuid4())
     await session_service.create_session(
@@ -237,7 +284,12 @@ async def run_agent(user_msg: str) -> DecisionProposal:
     return _parse_response(final_text)
 
 
-async def run_chat(prompt: str, session_id: str | None = None) -> dict:
+async def run_chat(
+    prompt: str,
+    session_id: str | None = None,
+    *,
+    workload: str = "drift",
+) -> dict:
     """Run the free-form chat agent against `prompt`.
 
     Returns ``{"reply": <text>, "tool_calls": [<name>, ...]}``. The
@@ -251,8 +303,13 @@ async def run_chat(prompt: str, session_id: str | None = None) -> dict:
     forward compatibility (and so the /chat schema doesn't break when
     we eventually add it) but is currently used only as a label for
     the in-memory session.
+
+    ``workload`` selects the workload-scoped agent — drift today,
+    upgrade once 17.E wires it. Defaults to ``"drift"`` for backward
+    compatibility with pre-17.A.3 callers.
     """
-    agent = build_chat_agent()
+    resolution = load_workload(workload)
+    agent = build_chat_agent(resolution)
     session_service = InMemorySessionService()
     sid = session_id or str(uuid.uuid4())
     await session_service.create_session(
