@@ -259,6 +259,44 @@ def test_worker_mints_trace_id_when_inbound_absent(monkeypatch) -> None:
 # --------------------------------------------------------------------------- #
 
 
+def test_install_trace_middleware_is_idempotent_per_app() -> None:
+    """A second ``install_trace_middleware(app)`` call must NOT stack a
+    second middleware layer. Two layers would each mint their own id on
+    the empty-inbound path, producing mismatched response-header vs
+    log-line ids (Codex review of 15.2: caught before merge)."""
+    from fastapi import FastAPI
+
+    test_app = FastAPI()
+
+    @test_app.get("/ping")
+    def _ping() -> dict:
+        return {"ok": True}
+
+    ds_logging.install_trace_middleware(test_app)
+    ds_logging.install_trace_middleware(test_app)  # second call is a no-op
+    ds_logging.install_trace_middleware(test_app)  # belt and suspenders
+
+    # If multiple middlewares were stacked, the response and the
+    # bound-during-handler id would diverge. We capture both: the
+    # response header (outer layer) and the in-handler ContextVar
+    # (innermost layer).
+    captured: dict[str, str] = {}
+
+    @test_app.get("/capture")
+    def _capture() -> dict:
+        captured["in_handler"] = ds_logging.get_trace_id()
+        return {"ok": True}
+
+    client = TestClient(test_app)
+    r = client.get("/capture")
+    assert r.status_code == 200
+    response_header = r.headers["X-Trace-Id"]
+    assert captured["in_handler"] == response_header, (
+        f"middleware stacked: header={response_header!r} "
+        f"vs in-handler={captured['in_handler']!r}"
+    )
+
+
 def test_coordinator_middleware_resets_contextvar_after_request() -> None:
     """A request handler that raises must NOT leak its trace id into
     subsequent requests' contexts (the try/finally in
