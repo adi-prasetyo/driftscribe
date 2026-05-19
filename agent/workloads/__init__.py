@@ -28,6 +28,7 @@ from agent.workloads.registry import (
     UnknownWorkerError,
     UnknownWorkloadError,
     WorkerEndpoint,
+    WorkerSpec,
     WorkloadResolution,
     load_workload,
 )
@@ -40,6 +41,7 @@ __all__ = [
     "UnknownWorkerError",
     "UnknownWorkloadError",
     "WorkerEndpoint",
+    "WorkerSpec",
     "WorkloadResolution",
     "WorkloadSpec",
     "load_workload",
