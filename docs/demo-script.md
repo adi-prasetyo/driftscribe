@@ -41,6 +41,13 @@ gcloud run services describe driftscribe-agent \
 
 # 6. Operator token works. (call_coordinator inside the script
 #    already exercised it on step 5; no separate check needed.)
+
+# 7. Pick a target revision for beat-e and export it.
+#    Beat-e fails fast without this; see "HITL flow during beat-e".
+gcloud run revisions list --service=payment-demo \
+  --project="$PROJECT" --region="$REGION" \
+  --format='value(metadata.name)'
+export BEAT_E_TARGET_REVISION=<pick-a-previous-revision-from-the-list>
 ```
 
 If any of those steps fail, fix the underlying issue before recording.
@@ -88,6 +95,13 @@ is the climax (HITL + rollback) and beat-b is the clearest example of
 contract enforcement; keep both.
 
 ## Per-beat expected output
+
+Each beat first resets baseline (`PAYMENT_MODE=mock`,
+`FEATURE_NEW_CHECKOUT=false`, removes any stray `NEW_THING`), then
+applies its own drift, so beats are independent and re-runnable in any
+order. The `reset_baseline` helper in `scripts/demo.sh` is idempotent
+and is called at the top of beat-b, beat-c, beat-d, beat-e. (Beat-a
+doesn't mutate env and so doesn't need it; `cleanup` *is* the reset.)
 
 The script does not assert these — eyeball them against the terminal.
 
@@ -165,6 +179,29 @@ paste the beat-e trace ID into the filter at the end — it's the
 strongest visual hit for "I can audit what the AI did."
 
 ## HITL flow during beat-e
+
+beat-e requires the operator to nominate a concrete previous Cloud Run
+revision to roll back to. `propose_rollback_tool` takes a
+`target_revision` string, and no ADK-callable tool enumerates revisions
+— the Reader Worker only returns the *active* one. So the runner
+fails-fast if `BEAT_E_TARGET_REVISION` is not set, with a message
+pointing here.
+
+Pre-flight (do this once before recording):
+
+```bash
+gcloud run revisions list --service=payment-demo \
+  --project="$PROJECT" --region="$REGION" \
+  --format='value(metadata.name)'
+```
+
+Pick a revision name from the list — typically the most-recent one
+that pre-dates the current active revision (the goal is "roll back to
+the version before the drift was introduced"). Then export it:
+
+```bash
+export BEAT_E_TARGET_REVISION=<revision-name-from-the-list>
+```
 
 beat-e returns an `approval_url`. The runner CANNOT click it
 headlessly — that's the human-in-the-loop point of the design.

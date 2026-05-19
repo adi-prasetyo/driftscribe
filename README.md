@@ -75,10 +75,12 @@ resolution.
 DriftScribe trades multi-cloud breadth for layered safety on a single
 platform; it's hackathon-stage, the others are production-mature. The wager
 is that AI + HITL is the missing axis — existing tools detect drift well but
-either stop at the report (Drift, Steampipe) or auto-remediate without a
-human in the loop (Custodian, Config Rules). DriftScribe sits in the middle:
-the agent proposes, the operator disposes, and the worker boundary makes
-"propose" safe to expose.
+either stop at the report (Drift, Steampipe) or — when remediation is
+enabled — apply changes without HITL as the default product centerline
+(Custodian, Config Rules can be composed with approval workflows; it just
+isn't the default). DriftScribe sits in the middle: the agent proposes,
+the operator disposes, and the worker boundary makes "propose" safe to
+expose.
 
 ## Repository layout
 
