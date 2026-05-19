@@ -434,7 +434,7 @@ Codex review of the full Phase 14 commit set (`58e2957` → `85203d3`, 13 commit
 - **Trigger filter empirical confirmation (operator action):** `setup_secrets.sh` §10 hardcodes v2 `UpdateService` + exact `resourceName=payment-demo`. The audit-log filter shape was committed to per `docs/architecture/eventarc-payload.md` but not yet empirically validated against a real `gcloud logging read` from the deployed project. `docs/runbooks/deploy.md` Step 7 captures this as an operator-side verification step with the v1 `ReplaceService` fallback diff. Treat 14.3 as provisional until the operator confirms.
 - Carry-overs unchanged: **W1 rollback validator re-derive**, **email-claim `==` (timing)**, **JSON parse error string leak**, **W2-malformed-expires** all remain Phase 15 polish.
 
-**Operator action (post-14.5):** delete the orphaned `gemini-api-key` Secret Manager entry; the leaked AI Studio key is now inert (coordinator no longer reads it), but revoke it at https://aistudio.google.com for hygiene. Task 14.5 supersedes the older "Top up Gemini credits" and "Revoke leaked Gemini API key" operator chores — both surfaces are gone now that the coordinator uses Vertex AI ADC.
+**Operator action (post-14.5):** revoke the leaked AI Studio API key at https://aistudio.google.com — it's no longer read by DriftScribe but remains valid anywhere else it was used until revoked. Then delete the orphaned `gemini-api-key` Secret Manager entry, and remove its IAM binding from `driftscribe-agent-sa` (`gcloud secrets remove-iam-policy-binding gemini-api-key …`) so the SA's negative-space claim is enforced at the IAM layer, not just by the missing env var. Task 14.5 supersedes the older "Top up Gemini credits" and "Revoke leaked Gemini API key" operator chores — both surfaces are gone now that the coordinator uses Vertex AI ADC.
 
 ---
 
@@ -454,6 +454,19 @@ Runs on PR + push to main. Steps: checkout, setup Python 3.12, `uv sync`, `uv ru
 - Trace ID propagates to worker calls via `X-Trace-Id` header.
 - Worker logs adopt the inbound trace_id (or generate one if absent).
 - Output is JSON (one event per line) with `trace_id`, `service`, `level`, `msg`, plus structured fields.
+
+### Task 15.3: Phase 14 + 14.5 follow-up watch list
+
+Codex's Phase 14.5 post-impl review surfaced four items worth a Phase 15 pass:
+
+- **Deployed positive smoke for Vertex AI `/chat`:** unit tests mock `_run_adk_agent` and so don't actually exercise Vertex AI auth. Add a `RUN_POSITIVE=1` step in the E2E harness that captures the first end-to-end `/chat` round-trip post-Vertex-migration. (The smoke step already exists at `e2e_smoke.sh:85` as `[1] /chat with token`; operator just needs to run it once with `RUN_POSITIVE=1` after deploy. Documenting here so it doesn't fall off the radar.)
+- **Confirm no `GOOGLE_API_KEY` env or secret mapping** on the active revision via `gcloud run services describe driftscribe-agent`. If it still appears (e.g., from a stale revision pinned by traffic split), force-deploy a new revision.
+- **Delete or unbind `gemini-api-key`:** `gcloud secrets remove-iam-policy-binding gemini-api-key --member=serviceAccount:driftscribe-agent-sa@... --role=roles/secretmanager.secretAccessor` and then `gcloud secrets delete gemini-api-key`. Closes the IAM-layer enforcement of the no-LLM-key claim.
+- **Vertex AI quota in `asia-northeast1`:** track GCP Console's Vertex AI Quotas dashboard for `generate-content` requests/minute. Not necessarily larger than AI Studio's free tier; surprises before the demo would be bad.
+- **(Carry-over from Phase 14 review)** Tighten `/eventarc` post-auth malformed payload handling: flip 400 → 200 with `{"ignored":"malformed-payload"}` to avoid the Eventarc retry-storm risk if Google ever ships an audit-log schema change.
+- **(Carry-over from Phase 14 review)** W2 CAS-loser: on `evict_cached_decision` returning `False` + no fresh decision, return `409 event in-progress, retry` instead of falling through to become the new proposer.
+- **(Carry-over)** `/eventarc` email-claim timing-attack `==` → `hmac.compare_digest`. Plus the JSON parse error string leak hardening.
+- **(Carry-over)** W1 rollback validator re-derive `contract_status` from `contract.expected_env` instead of trusting the LLM proposal's label.
 
 ### Phase 15 Codex review
 
