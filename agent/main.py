@@ -416,7 +416,15 @@ def _do_rollback(
         "diffs": [d.model_dump(mode="json") for d in proposal.env_diffs],
         "target_revision": proposal.target_revision,
         "requires_human_review": True,
+        # ``dry_run`` reflects the coordinator setting, BUT for the rollback
+        # action it does NOT suppress the worker calls — propose + notify
+        # both run so the demo can show the approval URL. The actual Cloud
+        # Run mutation is gated by the operator clicking /approvals/{id}.
+        # ``dry_run_effective`` is the unambiguous "did any side effect
+        # happen?" answer: False because workers were called and a real
+        # approval doc was minted in Firestore.
         "dry_run": s.dry_run,
+        "dry_run_effective": False,
         "approval": {
             "approval_id": approval_id,
             "approval_url": approval_url,
