@@ -470,6 +470,22 @@ Codex's Phase 14.5 post-impl review surfaced four items worth a Phase 15 pass:
 
 ### Phase 15 Codex review
 
+Codex thread `019e4013-46d6-7571-845e-8d4312bfe816` (2026-05-19, post Phase 15.3). All four code-side carry-overs from 14/14.5 confirmed in place; cross-task integration (trace middleware × early-return 200s) holds. Findings to act on:
+
+**Bugs (real, cheap):**
+- `/eventarc` `claims.get("email") or ""` passes truthy non-string (e.g. `123`, `[]` would be `""` post-coerce but `["x"]` slips through) into `hmac.compare_digest` and 500s. If `email` is missing or not a string, return 403 instead. (`agent/main.py:838-840`.)
+- `/eventarc` truthy non-string `service_name` / `location` labels (e.g. `["payment-demo"]`, `{"name": "x"}`) currently fall to the `non-target-service` 200-ignored branch and are echoed back in the response body — partially defeating the 15.3 "fixed short reason, no payload echo" intent. Falsy non-strings (`[]`, `{}`) happened to be caught by the `not service` truthiness check, but only by accident — type contract isn't pinned. Normalize with `isinstance(..., str)` up front so both shapes land in the `missing_service_or_region` malformed-payload reason. (`agent/main.py:870-878`.)
+
+**Watch-list tests (3):**
+- Cross-task integration: `/eventarc` ignored paths preserve inbound `X-Trace-Id` and reset the ContextVar afterward.
+- Targeted malformed-label test: `service_name=[]` → `malformed-payload` (not `non-target-service`).
+- Optional: verified claims with `email=123` should not 500 (folded into the bug fix above).
+
+**Promoted to later phases:**
+- Phase 18: optional startup canary that fails loudly if `USE_ADK=true` AND `GOOGLE_API_KEY` is set OR Vertex env vars are absent. Operator-side `gcloud run services describe` check covers the hackathon path; canary is for post-submission survivability.
+- Phase 16.2 scenario runner should print the `X-Trace-Id` response header on each beat — turns Phase 15 logging into a demoable asset.
+- Phase 16.x README polish: remove the stale "Under construction" pointer to the May 18 MVP plan so the new CI badge doesn't sit above outdated project-status copy.
+
 ---
 
 ## Phase 16 — Submission Polish (4 days)

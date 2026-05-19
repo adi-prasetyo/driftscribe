@@ -21,12 +21,14 @@ monkeypatch.setenv so the new value is observed.
 
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from google.auth import exceptions as google_auth_exceptions
 
 from agent.config import get_settings
 from agent.main import app
+from driftscribe_lib import logging as ds_logging
 
 
 _VALID_AUDIENCE = "https://driftscribe-agent-xyz.a.run.app"
@@ -220,8 +222,16 @@ def test_eventarc_rejects_missing_email_claim(monkeypatch):
 
     Phase 15.3 hardening: the comparison uses ``hmac.compare_digest`` for
     constant-time semantics, which requires str+str inputs. A claims dict
-    without ``email`` must not crash; ``None`` is coerced to ``""`` and
-    compared, surfacing the same 403 as any other principal mismatch.
+    without ``email`` must not crash; the principal check must still
+    surface the same 403 as any other principal mismatch.
+
+    Phase 15.4 update: the absent-key case is now caught by the
+    ``isinstance(presented_email, str)`` short-circuit (None is not a
+    str) BEFORE compare_digest. The previous code coerced None to ``""``
+    via ``or ""`` and compared against the expected email — which also
+    yielded False/403 — but the new path is type-safe against non-str
+    non-None values (123, [], {}) too. Either way the externally
+    observable behavior pinned here is the same: 403, no crash.
     """
     _set_audience(monkeypatch)
     with patch("agent.main.verify_oauth2_token") as m_verify:
@@ -536,3 +546,237 @@ def test_eventarc_propagates_recheck_502(monkeypatch):
         )
     assert r.status_code == 502
     assert "cloud run read failed" in r.json()["detail"]
+
+
+# --------------------------------------------------------------------------- #
+# Phase 15.4: Codex review cleanup — non-string claim/label hardening.
+#
+# Two carry-over bugs from the Phase 15 phase-level Codex review:
+#
+# - Bug A: ``claims.get("email")`` could (off-spec) return a non-str like
+#   an int or list. The previous ``... or ""`` only coerced None — not
+#   123 — so ``hmac.compare_digest(123, "...")`` raised ``TypeError``
+#   inside the handler and FastAPI surfaced 500. Correct outcome is 403
+#   (same as wrong-principal): "this verified token's email claim isn't
+#   acceptable". Fix: ``isinstance(presented_email, str)`` short-circuit
+#   BEFORE compare_digest.
+#
+# - Bug B: ``labels.get("service_name")`` could be a non-string. The
+#   truthy non-string cases — ``["payment-demo"]``, ``{"name": "x"}`` —
+#   would slip past the ``if not service`` existence check and flow into
+#   the ``non-target-service`` response, where they'd be echoed back in
+#   the body. That partially defeats the "fixed short reason, no payload
+#   echo" intent of the 15.3 ignored-200 hardening. The falsy non-string
+#   cases (``[]``, ``{}``) happened to be caught by the existing
+#   ``not service`` truthiness check and routed to ``malformed-payload``
+#   — but only by accident of Python truthiness, not by type contract.
+#   Fix: ``isinstance(..., str)`` up front in the same combined check.
+#   That pins the type contract (so a future refactor to ``is None``
+#   doesn't silently break the falsy-non-string case) AND closes the
+#   echo-leak from truthy non-strings.
+# --------------------------------------------------------------------------- #
+
+
+def test_eventarc_non_string_email_claim_returns_403_not_500(monkeypatch):
+    """Phase 15.4 (Bug A): an off-spec ``email`` claim that isn't a
+    string must surface as 403, NOT 500.
+
+    Background: ``hmac.compare_digest`` requires str+str (or bytes+bytes)
+    and raises ``TypeError`` on a type mismatch. The previous code did
+    ``claims.get("email") or ""`` which coerces None but not 123 or
+    ``["x"]`` — so a malformed verified token could crash the handler
+    into a 500. The right code is the same as any other wrong-principal
+    case: 403. We pin this with an int because it's the smallest example
+    of a non-str-but-truthy value (so the ``or ""`` fallback wouldn't
+    even fire).
+
+    Note: OIDC spec says ``email`` is a string. A verified Google id_token
+    SHOULD never present a non-string email. But over a long enough
+    horizon, "should never" is not "cannot", and the cost of being wrong
+    here is 500-pages in production. The isinstance guard is cheap.
+    """
+    _set_audience(monkeypatch)
+    with patch("agent.main.verify_oauth2_token") as m_verify:
+        # Non-string email claim — would have crashed compare_digest.
+        m_verify.return_value = {"email": 123, "aud": _VALID_AUDIENCE}
+        client = TestClient(app)
+        r = client.post(
+            "/eventarc",
+            json=_audit_log_body(),
+            headers={"Authorization": "Bearer fake-token"},
+        )
+    # Must be 403 (the unified principal-mismatch outcome), NOT 500.
+    assert r.status_code == 403, (
+        f"non-string email must surface as 403, got {r.status_code}: {r.text}"
+    )
+    detail = r.json()["detail"].lower()
+    assert "service account" in detail or "principal" in detail
+    # And of course the offending int must not appear in the detail
+    # (defense-in-depth against a future refactor that decides to echo).
+    assert "123" not in detail
+
+
+@pytest.mark.parametrize(
+    "service_name, location",
+    [
+        ([], "asia-northeast1"),         # service_name is list
+        ({}, "asia-northeast1"),         # service_name is dict
+        (["payment-demo"], "asia-northeast1"),  # truthy non-string list
+        ("payment-demo", []),            # location is list
+        ("payment-demo", {}),            # location is dict
+        ({"name": "x"}, "asia-northeast1"),  # truthy non-string dict
+    ],
+)
+def test_eventarc_non_string_labels_return_malformed_payload(
+    monkeypatch, service_name, location
+):
+    """Phase 15.4 (Bug B): non-string ``service_name`` / ``location``
+    labels must route to ``malformed-payload`` (the fixed-reason ignored
+    200), NOT ``non-target-service`` (which echoes the offending value
+    back in the response body).
+
+    Both truthy (``["payment-demo"]``, ``{"name": "x"}``) and falsy
+    (``[]``, ``{}``) non-string values are tested:
+
+    - Falsy non-strings would previously be caught by ``if not service``
+      and routed to ``malformed-payload`` — but only by accident of
+      Python's truthiness rules, not by type. A future refactor that
+      changed the check to ``if service is None`` would silently break
+      that. The isinstance check pins the type contract.
+    - Truthy non-strings (``["payment-demo"]``) would previously slip
+      past the existence check and reach the whitelist comparison, where
+      they'd be echoed in the ``non-target-service`` response body. That
+      defeats the "fixed short reason, no payload echo" intent of the
+      15.3 hardening.
+
+    Both shapes share the same ``reason: missing_service_or_region``
+    because they fail the same contract ("we can't safely whitelist-check
+    this label"). Operators reading the response don't need a finer-
+    grained tag; the log lines have the structured detail.
+    """
+    _set_audience(monkeypatch)
+    mock_recheck = AsyncMock()
+    with (
+        patch("agent.main.verify_oauth2_token") as m_verify,
+        patch("agent.main._do_recheck", mock_recheck),
+    ):
+        m_verify.return_value = {"email": _EXPECTED_EMAIL, "aud": _VALID_AUDIENCE}
+        client = TestClient(app)
+        r = client.post(
+            "/eventarc",
+            json={
+                "resource": {
+                    "labels": {
+                        "service_name": service_name,
+                        "location": location,
+                    }
+                }
+            },
+            headers={"Authorization": "Bearer fake-token"},
+        )
+    assert r.status_code == 200
+    body = r.json()
+    assert body == {
+        "ignored": "malformed-payload",
+        "reason": "missing_service_or_region",
+    }, (
+        f"non-string labels must route to malformed-payload, not "
+        f"non-target-service (which would echo the value): {body!r}"
+    )
+    # And in particular, the non-target-service code path MUST NOT have
+    # been taken — the offending value must not be echoed back.
+    assert "service" not in body, body
+    assert "region" not in body, body
+    mock_recheck.assert_not_awaited()
+
+
+def test_eventarc_ignored_path_preserves_inbound_trace_id_and_resets_contextvar(
+    monkeypatch,
+):
+    """Phase 15.4 (cross-task integration): an ignored 200 path on
+    ``/eventarc`` must (a) preserve a well-formed inbound ``X-Trace-Id``,
+    (b) NOT call ``_do_recheck``, and (c) reset the ContextVar after the
+    response so the binding doesn't leak across requests.
+
+    This is the seam between the Phase 14.2 ignored-200 hardening and
+    the Phase 15.2 trace-id middleware. If a future refactor added an
+    early-return without going through the middleware's finally — or if
+    the middleware were ever removed from this app — the assertion on
+    ``get_trace_id() == ""`` would catch it.
+
+    Inbound trace id is 32-char lowercase hex (the format the middleware
+    adopts unmodified per ``test_trace_propagation.py``).
+    """
+    _set_audience(monkeypatch)
+    inbound_trace = "9" * 32  # well-formed 32-char hex
+    mock_recheck = AsyncMock()
+    # Use a malformed-payload trigger (resource.labels missing) — exercises
+    # the same early-return shape as non-target-service but is also
+    # representative of the broader "ignored" path family.
+    with (
+        patch("agent.main.verify_oauth2_token") as m_verify,
+        patch("agent.main._do_recheck", mock_recheck),
+    ):
+        m_verify.return_value = {"email": _EXPECTED_EMAIL, "aud": _VALID_AUDIENCE}
+        client = TestClient(app)
+        r = client.post(
+            "/eventarc",
+            json={"protoPayload": {"methodName": "x"}},  # no resource.labels
+            headers={
+                "Authorization": "Bearer fake-token",
+                "X-Trace-Id": inbound_trace,
+            },
+        )
+
+    # (a) Ignored path returned 200.
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ignored"] == "malformed-payload"
+
+    # (b) Inbound trace id was adopted unchanged by the middleware.
+    assert r.headers.get("X-Trace-Id") == inbound_trace, (
+        f"middleware must preserve well-formed inbound trace id, "
+        f"got {r.headers.get('X-Trace-Id')!r}"
+    )
+
+    # (c) _do_recheck was NOT called on this ignored path.
+    mock_recheck.assert_not_awaited()
+
+    # (d) ContextVar was reset by the middleware's finally — the binding
+    # must not outlive the request.
+    assert ds_logging.get_trace_id() == "", (
+        "trace-id ContextVar leaked past the request boundary"
+    )
+
+
+def test_eventarc_non_target_service_path_also_preserves_trace_id(monkeypatch):
+    """Companion to the previous test: the OTHER ignored path
+    (non-target-service, which still echoes service+region for operator
+    diagnostics — that part is intentional and unchanged in 15.4) must
+    also preserve the inbound trace id and reset the ContextVar.
+
+    Pins that BOTH families of ignored-200 returns go through the
+    middleware's response cycle.
+    """
+    _set_audience(monkeypatch)
+    inbound_trace = "8" * 32
+    mock_recheck = AsyncMock()
+    with (
+        patch("agent.main.verify_oauth2_token") as m_verify,
+        patch("agent.main._do_recheck", mock_recheck),
+    ):
+        m_verify.return_value = {"email": _EXPECTED_EMAIL, "aud": _VALID_AUDIENCE}
+        client = TestClient(app)
+        r = client.post(
+            "/eventarc",
+            json=_audit_log_body(service_name="other-service"),
+            headers={
+                "Authorization": "Bearer fake-token",
+                "X-Trace-Id": inbound_trace,
+            },
+        )
+    assert r.status_code == 200
+    assert r.json()["ignored"] == "non-target-service"
+    assert r.headers.get("X-Trace-Id") == inbound_trace
+    mock_recheck.assert_not_awaited()
+    assert ds_logging.get_trace_id() == ""
