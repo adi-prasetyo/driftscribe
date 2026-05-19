@@ -264,7 +264,7 @@ fi
 # Developer Knowledge API key (Phase 17.B) — operator must supply. The key
 # itself MUST be created by the operator in the GCP Console with an
 # API-restriction binding it to `developerknowledge.googleapis.com` only
-# (see docs/runbooks/deploy.md Step 2b). Console flow is preferred over
+# (see docs/runbooks/deploy.md Step 3b). Console flow is preferred over
 # `gcloud services api-keys create` because the Console UI enforces the
 # API-restriction selection inline; the gcloud equivalent is fragile across
 # versions. Same operator-supplied pattern as the GitHub PAT and webhook

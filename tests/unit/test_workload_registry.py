@@ -93,15 +93,20 @@ def test_tool_registry_has_drift_symbolic_names():
 
 
 def test_tool_registry_reserves_future_tool_names_as_none():
-    """Upgrade-workload and MCP-only tools are reserved by name but
-    not yet implemented (17.B/17.C). They appear as None so the
-    registry can detect 'reserved but not yet ready' separately from
-    'unknown name entirely'."""
+    """Upgrade-workload tools and the coordinator session-memory tools
+    are reserved by name but not yet implemented (17.B.5 wires session
+    memory; 17.C wires upgrade). They appear as None so the registry
+    can detect 'reserved but not yet ready' separately from 'unknown
+    name entirely'.
+
+    The MCP tools ``search_developer_docs`` / ``retrieve_developer_doc``
+    were reserved in 17.A.1 and got real callables in 17.B.2 — they're
+    now exercised by :mod:`tests.unit.test_mcp_developer_knowledge`'s
+    registry-resolution check, not here.
+    """
     for name in (
         "upgrade_read_dependencies",
         "upgrade_propose_pr",
-        "search_developer_docs",
-        "retrieve_developer_doc",
         "get_session_state",
         "set_session_state",
     ):
