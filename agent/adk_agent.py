@@ -34,6 +34,15 @@ Coordinator-internal read-only tools (2):
 That's 6 tools, period. Anything else the model wants to do is denied
 by capability — there is no general "execute shell" or "make HTTP
 request" surface.
+
+**Per-workload tool inventories (Phase 17.A.4):**
+:data:`DRIFT_WORKLOAD_TOOL_NAMES` and :data:`UPGRADE_WORKLOAD_TOOL_NAMES`
+mirror each workload YAML's ``enabled_tool_names`` field — the symbolic
+filter applied per workload over the global registry. They are distinct
+from :data:`COORDINATOR_TOOLS` (the Python-callable registration manifest);
+see the block comment around the constants below for the rationale, the
+tuple-vs-frozenset choice, and the three-way YAML ⇄ code ⇄ runtime
+equality enforced by ``tests/unit/test_coordinator_tool_inventory.py``.
 """
 
 import json

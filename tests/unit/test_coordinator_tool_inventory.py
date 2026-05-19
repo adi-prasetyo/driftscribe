@@ -59,6 +59,7 @@ from agent.adk_agent import (
     UPGRADE_WORKLOAD_TOOL_NAMES,
     build_agent,
 )
+from agent.workloads.spec import WorkloadSpec
 
 
 # Hardcode the expected set. Updates to this set MUST be intentional —
@@ -199,8 +200,6 @@ def test_upgrade_workload_enabled_tools_match_expected_set():
     keeps working unchanged — :data:`UPGRADE_WORKLOAD_TOOL_NAMES` is the
     audit point either way.
     """
-    from agent.workloads.spec import WorkloadSpec
-
     yaml_path = (
         Path(__file__).resolve().parents[2]
         / "workloads"
