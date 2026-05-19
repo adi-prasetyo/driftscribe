@@ -60,12 +60,26 @@ def validate(proposal: DecisionProposal, contract: OpsContract) -> None:
             )
         if not proposal.requires_human_review:
             raise ValidationError("rollback requires requires_human_review=true")
+        # Phase 15.3: re-derive contract_status from contract.expected_env
+        # rather than trusting diff.contract_status (Codex carry-over from
+        # Phase 14). In USE_ADK mode the diff is constructed by Gemini; a
+        # hallucinated or prompt-injected label could otherwise bypass the
+        # gate by claiming an operator-safe var is present_disallow_manual.
+        # The contract YAML is the source of truth — re-derive from it.
         for diff in proposal.env_diffs:
-            if diff.contract_status != ContractStatus.PRESENT_DISALLOW_MANUAL:
+            rule = contract.expected_env.get(diff.name)
+            if rule is None:
+                derived_status = ContractStatus.ABSENT
+            elif rule.allow_manual_change:
+                derived_status = ContractStatus.PRESENT_ALLOW_MANUAL
+            else:
+                derived_status = ContractStatus.PRESENT_DISALLOW_MANUAL
+            if derived_status != ContractStatus.PRESENT_DISALLOW_MANUAL:
                 raise ValidationError(
-                    f"rollback rejected: diff {diff.name!r} has "
-                    f"contract_status={diff.contract_status.value} "
-                    f"(rollback only for present_disallow_manual)"
+                    f"rollback rejected: diff {diff.name!r} contract-derived "
+                    f"status is {derived_status.value} (rollback only for "
+                    f"present_disallow_manual; ignoring LLM-proposed "
+                    f"contract_status={diff.contract_status.value})"
                 )
 
     # 6. Docs PR semantics
