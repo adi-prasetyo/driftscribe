@@ -1,10 +1,20 @@
+import re
 from pathlib import Path
-from agent.models import DecisionProposal, DecisionAction
+from agent.models import ContractStatus, DecisionProposal, DecisionAction
 from agent.contract import OpsContract
 from agent.secret_guard import is_secret_name
 
 class ValidationError(Exception):
     pass
+
+# Cloud Run revision-name regex. Mirrors the canonical definition in
+# ``workers/rollback/main.py`` (``_REVISION_NAME``). Inlined rather than
+# imported because the rollback worker is a separate deployable package
+# (own pyproject.toml, separate container) and the agent must not take a
+# build-time dependency on a worker. If the worker's regex ever loosens
+# or tightens, update this constant in lockstep.
+_REVISION_NAME = re.compile(r"^[a-z][a-z0-9-]{0,62}[a-z0-9]$")
+
 
 def _validate_path(p: str | None) -> None:
     if p is None:
@@ -33,7 +43,32 @@ def validate(proposal: DecisionProposal, contract: OpsContract) -> None:
     # 4. Path guards
     _validate_path(proposal.target_docs_file)
 
-    # 5. Docs PR semantics
+    # 5. Rollback semantics — HITL is mandatory and the action only applies
+    #    to hard contract violations (vars marked allow_manual_change=False,
+    #    surfaced as ContractStatus.PRESENT_DISALLOW_MANUAL). The rollback
+    #    worker's `/propose` schema validates target_revision a second time
+    #    at the API boundary; rejecting it here gives a faster, more
+    #    explanatory failure.
+    if proposal.action == DecisionAction.ROLLBACK:
+        rev = proposal.target_revision
+        if rev is None or not rev.strip():
+            raise ValidationError("rollback requires target_revision")
+        if not _REVISION_NAME.match(rev):
+            raise ValidationError(
+                f"rollback target_revision {rev!r} does not match Cloud Run "
+                f"revision-name regex (see workers/rollback/main.py::_REVISION_NAME)"
+            )
+        if not proposal.requires_human_review:
+            raise ValidationError("rollback requires requires_human_review=true")
+        for diff in proposal.env_diffs:
+            if diff.contract_status != ContractStatus.PRESENT_DISALLOW_MANUAL:
+                raise ValidationError(
+                    f"rollback rejected: diff {diff.name!r} has "
+                    f"contract_status={diff.contract_status.value} "
+                    f"(rollback only for present_disallow_manual)"
+                )
+
+    # 6. Docs PR semantics
     if proposal.action == DecisionAction.DOCS_PR:
         # target_docs_file and target_docs_section must be set (else the patcher
         # would produce literal "None" headings, and we wouldn't know what file
