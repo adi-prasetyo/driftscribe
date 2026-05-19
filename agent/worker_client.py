@@ -39,7 +39,7 @@ from typing import Final
 import httpx
 
 from driftscribe_lib.auth import mint_id_token
-from driftscribe_lib.logging import get_trace_id, new_trace_id
+from driftscribe_lib.logging import current_trace_id_or_new
 
 
 # Per-worker env var name → fixed at boot for the deployed service via
@@ -157,11 +157,14 @@ def call(worker: str, payload: dict, *, endpoint: str | None = None) -> dict:
     # chain. The ContextVar is set by the trace middleware in
     # ``driftscribe_lib.logging``; on the rare path where worker_client
     # is invoked outside a request scope (e.g. a CLI smoke test) the
-    # ContextVar is empty — mint a fresh id rather than send empty.
+    # ContextVar is empty — ``current_trace_id_or_new`` mints a fresh
+    # one. It also validates the ContextVar value matches our 32-char
+    # hex format, so a stray ``set_trace_id("not-a-uuid")`` somewhere
+    # in the codebase cannot leak a malformed id downstream.
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
-        "X-Trace-Id": get_trace_id() or new_trace_id(),
+        "X-Trace-Id": current_trace_id_or_new(),
     }
     try:
         with httpx.Client(timeout=_HTTPX_TIMEOUT) as client:

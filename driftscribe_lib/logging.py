@@ -49,6 +49,7 @@ from typing import Any
 __all__ = [
     "JSONFormatter",
     "TraceIdFilter",
+    "current_trace_id_or_new",
     "get_trace_id",
     "install_trace_middleware",
     "new_trace_id",
@@ -104,6 +105,23 @@ def reset_trace_id(token: Token[str]) -> None:
     _TRACE_ID.reset(token)
 
 
+def current_trace_id_or_new() -> str:
+    """Return a wire-safe trace id for outbound HTTP propagation.
+
+    Reads the ContextVar and returns it if it matches our 32-char hex
+    format; otherwise mints a fresh one. The validation step is what
+    distinguishes this from ``get_trace_id() or new_trace_id()`` —
+    :func:`set_trace_id` is public and could in principle be called
+    with a non-conformant value somewhere outside the request
+    middleware, and we'd rather replace garbage with a fresh id than
+    propagate it downstream as the wire correlation key.
+    """
+    current = _TRACE_ID.get()
+    if current and _HEX32_RE.match(current):
+        return current
+    return new_trace_id()
+
+
 class TraceIdFilter(logging.Filter):
     """Inject the current ContextVar value as ``record.trace_id``.
 
@@ -157,8 +175,13 @@ class JSONFormatter(logging.Formatter):
             if key in payload or key == "trace_id":
                 continue
             payload[key] = value
-        # ``default=str`` keeps logging crash-proof against domain
-        # objects (Path, datetime, etc.) in extras.
+        # ``default=str`` handles the common case of unknown-but-stringable
+        # values in extras (Path, datetime, custom domain objects) without
+        # crashing. It does NOT recursively sanitize nested containers, so
+        # an extra like ``{"foo": {1: "a"}}`` (non-string dict key) still
+        # raises TypeError. We accept that — every call site we control
+        # passes flat extras; if a future site needs deep sanitization,
+        # widen here rather than catching at every caller.
         return json.dumps(payload, default=str)
 
 
@@ -238,7 +261,17 @@ def install_trace_middleware(app: Any) -> None:
 
     Called once per FastAPI app, typically right after
     ``app = FastAPI(...)``. Safe to import at module load time.
+
+    Idempotent on the same app: a repeat call is a no-op. Without this
+    guard, two middleware layers would stack — each layer's mint-on-
+    absent-header path would generate a different id, and (depending
+    on order) the inner layer's id would appear in log lines while
+    the outer layer would overwrite the response header with its own
+    id, breaking correlation.
     """
+    if getattr(app.state, "driftscribe_trace_middleware_installed", False):
+        return
+    app.state.driftscribe_trace_middleware_installed = True
 
     @app.middleware("http")
     async def trace_id_middleware(request, call_next):

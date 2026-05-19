@@ -23,6 +23,7 @@ from driftscribe_lib import logging as ds_logging
 from driftscribe_lib.logging import (
     JSONFormatter,
     TraceIdFilter,
+    current_trace_id_or_new,
     get_trace_id,
     new_trace_id,
     reset_trace_id,
@@ -345,3 +346,54 @@ def test_install_trace_middleware_is_exposed() -> None:
     covered by ``tests/integration/test_trace_propagation.py`` against
     real FastAPI apps."""
     assert callable(ds_logging.install_trace_middleware)
+
+
+# --------------------------------------------------------------------------- #
+# current_trace_id_or_new — outbound-safe accessor
+# --------------------------------------------------------------------------- #
+
+
+def test_current_trace_id_or_new_returns_bound_value_when_valid(
+    _clean_trace_id,
+) -> None:
+    """A well-formed bound id is returned unchanged (no fresh mint)."""
+    tid = "f" * 32
+    token = set_trace_id(tid)
+    try:
+        assert current_trace_id_or_new() == tid
+    finally:
+        reset_trace_id(token)
+
+
+def test_current_trace_id_or_new_mints_when_unset(_clean_trace_id) -> None:
+    out = current_trace_id_or_new()
+    assert re.fullmatch(r"[0-9a-f]{32}", out)
+
+
+def test_current_trace_id_or_new_mints_when_bound_value_is_malformed(
+    _clean_trace_id,
+) -> None:
+    """A non-conformant value (somehow bound outside the middleware) is
+    replaced with a freshly minted id rather than propagated."""
+    token = set_trace_id("not-a-uuid")
+    try:
+        out = current_trace_id_or_new()
+        assert out != "not-a-uuid"
+        assert re.fullmatch(r"[0-9a-f]{32}", out)
+    finally:
+        reset_trace_id(token)
+
+
+def test_current_trace_id_or_new_mints_when_bound_value_is_uppercase(
+    _clean_trace_id,
+) -> None:
+    """Uppercase 32-hex is rejected by the validating accessor — the
+    middleware normalizes inbound, but if something else bound an
+    uppercase value we still hand a lowercase fresh id outbound."""
+    token = set_trace_id("A" * 32)
+    try:
+        out = current_trace_id_or_new()
+        assert out != "A" * 32
+        assert re.fullmatch(r"[0-9a-f]{32}", out)
+    finally:
+        reset_trace_id(token)
