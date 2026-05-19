@@ -13,14 +13,21 @@ are bootstrap-only.
   mint the operator token + HMAC key).
 - A clean `git` working tree at the commit you want to deploy.
 
+> **Local-dev ADC (Phase 14.5):** running the coordinator locally with
+> `USE_ADK=true` needs Application Default Credentials. Run
+> `gcloud auth application-default login` once on your workstation; the
+> `google-genai` SDK picks the credentials up via
+> `GOOGLE_GENAI_USE_VERTEXAI=true` + `GOOGLE_CLOUD_PROJECT` +
+> `GOOGLE_CLOUD_LOCATION`. In production, Cloud Run injects ADC from the
+> `driftscribe-agent` service account automatically — no extra step.
+
 ## Step 1 — bootstrap APIs, SAs, IAM, secrets (without optional secrets)
 
 ```bash
 PROJECT=driftscribe-hack-2026
 GH_PAT=github_pat_xxx    # FINE-GRAINED PAT (see below)
-GEMINI_KEY=AIza...       # from https://aistudio.google.com
 
-./infra/scripts/setup_secrets.sh "$PROJECT" "$GH_PAT" "$GEMINI_KEY"
+./infra/scripts/setup_secrets.sh "$PROJECT" "$GH_PAT"
 ```
 
 > **IMPORTANT (Phase 11.9 / Codex review of 11.7):** `GH_PAT` MUST be a
@@ -101,7 +108,7 @@ in this secret.
 DOCS_PAT=github_pat_xxx                       # from step 2
 WEBHOOK_URL=https://webhook.site/<uuid>       # from step 3
 
-./infra/scripts/setup_secrets.sh "$PROJECT" "$GH_PAT" "$GEMINI_KEY" "$DOCS_PAT" "$WEBHOOK_URL"
+./infra/scripts/setup_secrets.sh "$PROJECT" "$GH_PAT" "$DOCS_PAT" "$WEBHOOK_URL"
 ```
 
 This creates `docs-agent-github-pat` and `driftscribe-webhook-url`, binds
@@ -136,7 +143,7 @@ finish. Re-run the bootstrap so it picks up the now-existing services and
 applies the per-worker bindings:
 
 ```bash
-./infra/scripts/setup_secrets.sh "$PROJECT" "$GH_PAT" "$GEMINI_KEY" "$DOCS_PAT" "$WEBHOOK_URL"
+./infra/scripts/setup_secrets.sh "$PROJECT" "$GH_PAT" "$DOCS_PAT" "$WEBHOOK_URL"
 ```
 
 Look for these lines in the output:
@@ -223,17 +230,21 @@ with the new filters:
 ```bash
 gcloud eventarc triggers delete driftscribe-cloudrun-changes \
   --location=asia-northeast1 --project "$PROJECT"
-./infra/scripts/setup_secrets.sh "$PROJECT" "$GH_PAT" "$GEMINI_KEY" "$DOCS_PAT" "$WEBHOOK_URL"
+./infra/scripts/setup_secrets.sh "$PROJECT" "$GH_PAT" "$DOCS_PAT" "$WEBHOOK_URL"
 ```
 
 Re-mutate `payment-demo` and re-check the coordinator logs.
 
 ## Step 8 — enable the ADK delegation path
 
-Before flipping `USE_ADK=true`, confirm your Gemini API key has credit
-remaining at https://aistudio.google.com. The coordinator falls back to a
-deterministic classifier when `USE_ADK=false`; the ADK path is what
-demonstrates the multi-agent delegation.
+Before flipping `USE_ADK=true`, confirm your project's Vertex AI quota for
+`generate-content` on `gemini-2.5-flash` in `asia-northeast1` is healthy
+(GCP Console → Vertex AI → Quotas). Phase 14.5 moved Gemini auth from the
+AI Studio API key to Vertex AI ADC, so quota is now per-project /
+per-region / per-model — separate from any AI Studio credit balance and
+shared with all other Vertex AI usage in this project. The coordinator
+falls back to a deterministic classifier when `USE_ADK=false`; the ADK
+path is what demonstrates the multi-agent delegation.
 
 ```bash
 gcloud run services update driftscribe-agent \
@@ -253,7 +264,7 @@ The default mode runs the three negative tests:
 3. `/read` on the reader with a user ID token (wrong audience) → 401/403
 
 To also exercise the positive `/chat` path AND the prompt-injection probe
-(which need Gemini credit), set `RUN_POSITIVE=1`:
+(which consume Vertex AI Gemini quota), set `RUN_POSITIVE=1`:
 
 ```bash
 RUN_POSITIVE=1 PROJECT="$PROJECT" ./infra/scripts/e2e_smoke.sh
@@ -276,7 +287,7 @@ re-bootstrapping unless you've added a new SA, secret, or service.
 
 - **Revision fails with `INVALID_ARGUMENT: Secret not found`**: a
   `--set-secrets` reference points at a secret that doesn't exist yet.
-  Re-run `setup_secrets.sh` with all five args.
+  Re-run `setup_secrets.sh` with all four args.
 - **Worker returns 401 on every call from the coordinator**: the
   worker's `OWN_URL` env doesn't match what the coordinator uses as the
   audience. Look at the post-deploy `gcloud run services update` step

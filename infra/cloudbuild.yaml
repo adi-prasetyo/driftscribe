@@ -118,11 +118,12 @@ steps:
       - --max-instances=1
       - --concurrency=1
       # USE_ADK is FALSE by default so a fresh `gcloud builds submit` doesn't
-      # silently restore the ADK path before the operator has confirmed Gemini
-      # quota. Flip on a running revision with:
+      # silently restore the ADK path before the operator has confirmed Vertex
+      # AI quota. Flip on a running revision with:
       #   gcloud run services update driftscribe-agent --update-env-vars=USE_ADK=true
-      # ...after verifying https://ai.studio/projects credit balance, then run
-      # the Beat C smoke test before recording the demo video.
+      # ...after verifying Vertex AI `generate-content` quota for
+      # gemini-2.5-flash in asia-northeast1 (GCP Console → Vertex AI → Quotas),
+      # then run the Beat C smoke test before recording the demo video.
       #
       # READER_URL / DOCS_URL / ROLLBACK_URL / NOTIFIER_URL are placeholders;
       # the post-deploy step at the END of this build reads each worker's
@@ -130,7 +131,11 @@ steps:
       # via --update-env-vars. The placeholder ensures the coordinator's
       # worker_client._worker_url() fails-closed at 503 if the post-deploy
       # never runs (rather than silently hitting placeholder.invalid).
-      - --set-env-vars=DRY_RUN=true,GCP_PROJECT=$PROJECT_ID,TARGET_SERVICE=payment-demo,TARGET_REGION=asia-northeast1,GITHUB_REPO=adi-prasetyo/driftscribe,USE_ADK=false,DEBUG_CONFIG_URL=https://payment-demo-u272wv52kq-an.a.run.app/debug/config,READER_URL=https://placeholder.invalid,DOCS_URL=https://placeholder.invalid,ROLLBACK_URL=https://placeholder.invalid,NOTIFIER_URL=https://placeholder.invalid
+      # GOOGLE_GENAI_USE_VERTEXAI / GOOGLE_CLOUD_PROJECT / GOOGLE_CLOUD_LOCATION
+      # (Phase 14.5) flip the google-genai SDK from AI Studio (API-key auth)
+      # to Vertex AI (ADC via the coordinator's runtime SA). These are stamped
+      # at deploy time, not post-deploy — they don't depend on any worker URL.
+      - --set-env-vars=DRY_RUN=true,GCP_PROJECT=$PROJECT_ID,TARGET_SERVICE=payment-demo,TARGET_REGION=asia-northeast1,GITHUB_REPO=adi-prasetyo/driftscribe,USE_ADK=false,DEBUG_CONFIG_URL=https://payment-demo-u272wv52kq-an.a.run.app/debug/config,READER_URL=https://placeholder.invalid,DOCS_URL=https://placeholder.invalid,ROLLBACK_URL=https://placeholder.invalid,NOTIFIER_URL=https://placeholder.invalid,GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=asia-northeast1
       # DRIFTSCRIBE_TOKEN (Phase 11.1) gates /recheck via the X-DriftScribe-Token
       # header. The `coordinator-shared-token` secret MUST exist in Secret
       # Manager BEFORE the first build that includes this line — Cloud Run
@@ -139,7 +144,7 @@ steps:
       # resource is missing. The 503 fail-closed in agent/auth.py only kicks in
       # if DRIFTSCRIBE_TOKEN is empty at runtime (e.g., an operator removed
       # this --set-secrets line). See docs/architecture/multi-agent-design.md §2.
-      - --set-secrets=GITHUB_TOKEN=github-pat:latest,GOOGLE_API_KEY=gemini-api-key:latest,DRIFTSCRIBE_TOKEN=coordinator-shared-token:latest
+      - --set-secrets=GITHUB_TOKEN=github-pat:latest,DRIFTSCRIBE_TOKEN=coordinator-shared-token:latest
 
   # Reader Agent (Phase 11.3) — worker #1 of 4. Read-only state extraction.
   # Layer 1: reader-agent-sa has only roles/run.viewer at the project.

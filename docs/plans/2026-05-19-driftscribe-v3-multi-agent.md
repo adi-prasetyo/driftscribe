@@ -397,6 +397,24 @@ gcloud eventarc triggers create driftscribe-cloudrun-changes \
 
 `gcloud run services update payment-demo --update-env-vars=NEW_THING=test` → poll for up to 60s → check Firestore (or coordinator Cloud Run logs, since DRY_RUN=true demo deploys use InMemoryStateStore) for a new decision document with `trigger="eventarc"`. Document observed latency in `docs/benchmarks.md`. The poll budget is 60s (not 30s) because Eventarc cold-start + audit-log → trigger SA invocation latency is occasionally several seconds on top of `/eventarc` processing; 60s leaves head-room without making FAIL ambiguous.
 
+### Task 14.5: Migrate coordinator LLM auth from AI Studio API key to Vertex AI ADC
+
+**Why:** The coordinator currently reads `GOOGLE_API_KEY` and `google-genai` routes through AI Studio — separate billing/quota/revocation surface from GCP. Switching to Vertex AI consolidates everything under the project's existing billing and the `driftscribe-agent-sa` ADC. Removes the AI Studio top-up + leaked-key-revocation chores from the operator action list.
+
+**Mechanism:** `google-genai` auto-detects the path via env: setting `GOOGLE_GENAI_USE_VERTEXAI=true` + `GOOGLE_CLOUD_PROJECT` + `GOOGLE_CLOUD_LOCATION` flips it to Vertex AI. **No Python code changes** — `agent/adk_agent.py`'s `Agent(model="gemini-2.5-flash", ...)` calls route through the SDK's env-driven provider selection.
+
+**Files (10):** `agent/config.py` (drop `google_api_key` field), `infra/cloudbuild.yaml` (drop secret mapping, add three env vars), `infra/scripts/setup_secrets.sh` (drop positional arg + secret create + bind; add `aiplatform.googleapis.com` API enable + `roles/aiplatform.user` to COORD_SA), `.env.example` (drop `GOOGLE_API_KEY`, add ADC hint), `docs/runbooks/deploy.md` (drop `GEMINI_KEY` prereq, add local ADC note, update quota wording), `docs/architecture/iam-matrix.md` (drop secret, add role), `agent/main.py` and `infra/scripts/e2e_smoke.sh` (wording fixes Codex caught), this plan doc.
+
+**Verification:**
+- Test suite: 424 still passing (no Python touched).
+- `bash -n infra/scripts/setup_secrets.sh` parses clean.
+- Post-deploy: `gcloud run services describe driftscribe-agent` shows no `GOOGLE_API_KEY` and the three new `GOOGLE_GENAI_*` env vars.
+- Post-deploy: `RUN_POSITIVE=1 ./infra/scripts/e2e_smoke.sh` exercises the Vertex AI path end-to-end (single `/chat` call).
+
+**Operator cleanup (manual):** orphaned `gemini-api-key` secret in Secret Manager can be deleted via `gcloud secrets delete gemini-api-key --project=$PROJECT` after the Vertex AI deploy is verified. The script intentionally does NOT auto-delete (rollback safety).
+
+**Quota note:** Vertex AI Gemini quota is per-project/region/model — separate from AI Studio. Not necessarily larger. Check the GCP Console's Vertex AI quota dashboard for `generate-content` in `asia-northeast1` before relying on heavy use.
+
 ### Phase 14 Codex review ~~~~ **DONE in Phase 14**
 
 Codex review of the full Phase 14 commit set (`58e2957` → `85203d3`, 13 commits, 393 → 424 tests) on thread `019e3af3-f679-7d20-bff1-328295c8f5df`.
@@ -415,6 +433,8 @@ Codex review of the full Phase 14 commit set (`58e2957` → `85203d3`, 13 commit
 - **Smoke harness probe specificity (acknowledged limitation):** the log-based PASS path proves `/eventarc` returned 200 after `record_iso`, not that the decision corresponds to the exact `NEW_THING` mutation. Acceptable for a one-shot smoke probe; tighten only if false positives surface.
 - **Trigger filter empirical confirmation (operator action):** `setup_secrets.sh` §10 hardcodes v2 `UpdateService` + exact `resourceName=payment-demo`. The audit-log filter shape was committed to per `docs/architecture/eventarc-payload.md` but not yet empirically validated against a real `gcloud logging read` from the deployed project. `docs/runbooks/deploy.md` Step 7 captures this as an operator-side verification step with the v1 `ReplaceService` fallback diff. Treat 14.3 as provisional until the operator confirms.
 - Carry-overs unchanged: **W1 rollback validator re-derive**, **email-claim `==` (timing)**, **JSON parse error string leak**, **W2-malformed-expires** all remain Phase 15 polish.
+
+**Operator action (post-14.5):** delete the orphaned `gemini-api-key` Secret Manager entry; the leaked AI Studio key is now inert (coordinator no longer reads it), but revoke it at https://aistudio.google.com for hygiene. Task 14.5 supersedes the older "Top up Gemini credits" and "Revoke leaked Gemini API key" operator chores — both surfaces are gone now that the coordinator uses Vertex AI ADC.
 
 ---
 
@@ -509,7 +529,7 @@ Narration in English; Japanese subtitles. Tools: OBS Studio + DaVinci Resolve.
 ## Phase 18 — Final Submission (1 day, ~July 7)
 
 ### Task 18.1: Verify everything still works
-- Top up Gemini credits if depleted (the v2 demo path).
+- Confirm Vertex AI Gemini quota for `generate-content` on `gemini-2.5-flash` in `asia-northeast1` is healthy (Phase 14.5 replaced the AI Studio top-up chore with a per-project Vertex AI quota check — see GCP Console → Vertex AI → Quotas).
 - Run `scripts/demo.sh` through all beats.
 - Confirm `architecture.html` renders on mobile + desktop.
 
@@ -536,7 +556,7 @@ Paste prepared text. Attach video. Cross-link the deployed URLs + architecture d
 
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
-| Gemini quota runs out during demo | Med | High | User must top up + set budget alert. Beat C smoke test before recording. |
+| Vertex AI Gemini quota throttles during demo | Med | High | Phase 14.5 routes auth through Vertex AI ADC, so quota is per-project/region/model — check GCP Console → Vertex AI → Quotas for `generate-content` on `gemini-2.5-flash` in `asia-northeast1` and request an increase if the demo will burst. Set a budget alert on the project. Beat C smoke test before recording. |
 | Cloud Run-to-Cloud Run auth spike reveals incompatibility | Low | High | **Spike is Task 11.0.** Falls back to shared HMAC headers if it fails — design is unchanged but signature different. |
 | Eventarc latency >30s ruins live demo | Med | Low | Manual `/chat` is primary; Eventarc is bonus. |
 | HITL approval UI feels clunky on video | Low | Low | Page is intentionally single-button, no external assets, pre-opened browser tab. |

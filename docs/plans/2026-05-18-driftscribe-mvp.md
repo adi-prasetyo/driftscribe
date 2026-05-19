@@ -1,3 +1,5 @@
+> **HISTORICAL — superseded by Phase 14.5 (Vertex AI migration):** references to `GOOGLE_API_KEY`, `gemini-api-key` secret, and `aistudio.google.com` in this document reflect the pre-Phase-14.5 architecture. Current state: coordinator reads no LLM API key; Vertex AI ADC handles auth.
+
 # DriftScribe MVP Implementation Plan
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Apply @superpowers:test-driven-development for every code task and @superpowers:verification-before-completion before claiming any task done.

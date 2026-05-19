@@ -2,13 +2,12 @@
 # Idempotent bootstrap for a fresh DriftScribe multi-agent deployment.
 #
 # Usage:
-#   setup_secrets.sh PROJECT GITHUB_TOKEN GOOGLE_API_KEY [DOCS_AGENT_PAT] [WEBHOOK_URL]
+#   setup_secrets.sh PROJECT GITHUB_TOKEN [DOCS_AGENT_PAT] [WEBHOOK_URL]
 #
 # Arguments:
 #   PROJECT           GCP project ID (e.g. driftscribe-hack-2026)
 #   GITHUB_TOKEN      Classic PAT for the coordinator's read-only PR search
 #                     (repo: contents:read + pull_requests:read on the demo repo)
-#   GOOGLE_API_KEY    Gemini API key (https://aistudio.google.com)
 #   DOCS_AGENT_PAT    (optional) Fine-grained PAT scoped to ONE repository, with
 #                     Contents: write + Pull requests: write. If omitted, the
 #                     script prints instructions and SKIPS creating the secret
@@ -32,11 +31,10 @@
 
 set -euo pipefail
 
-PROJECT="${1:?usage: $0 PROJECT GITHUB_TOKEN GOOGLE_API_KEY [DOCS_AGENT_PAT] [WEBHOOK_URL]}"
+PROJECT="${1:?usage: $0 PROJECT GITHUB_TOKEN [DOCS_AGENT_PAT] [WEBHOOK_URL]}"
 GITHUB_TOKEN="${2:?}"
-GOOGLE_API_KEY="${3:?}"
-DOCS_AGENT_PAT="${4:-}"
-WEBHOOK_URL="${5:-}"
+DOCS_AGENT_PAT="${3:-}"
+WEBHOOK_URL="${4:-}"
 
 REGION="asia-northeast1"
 
@@ -44,15 +42,16 @@ REGION="asia-northeast1"
 # 1. APIs
 # --------------------------------------------------------------------------
 gcloud services enable --project "$PROJECT" \
-  run.googleapis.com \
+  aiplatform.googleapis.com \
+  artifactregistry.googleapis.com \
+  cloudbuild.googleapis.com \
   eventarc.googleapis.com \
   eventarcpublishing.googleapis.com \
-  logging.googleapis.com \
   firestore.googleapis.com \
-  secretmanager.googleapis.com \
-  cloudbuild.googleapis.com \
-  artifactregistry.googleapis.com \
-  iamcredentials.googleapis.com
+  iamcredentials.googleapis.com \
+  logging.googleapis.com \
+  run.googleapis.com \
+  secretmanager.googleapis.com
 
 # --------------------------------------------------------------------------
 # 2. Artifact Registry
@@ -108,10 +107,13 @@ done
 # --------------------------------------------------------------------------
 # 5. Per-SA project-level IAM grants
 # --------------------------------------------------------------------------
-# Coordinator: Firestore only (sessions/, approvals/ pending→denied flip).
+# Coordinator: Firestore (sessions/, approvals/ pending→denied flip) +
+# Vertex AI (Phase 14.5 — the ADK path calls gemini-2.5-flash via Vertex
+# AI's generate-content endpoint; ADC routes through this SA).
 # Phase 13: run.viewer removed — classifier path migrated to Reader Worker.
 for role in \
   roles/datastore.user \
+  roles/aiplatform.user \
 ; do
   gcloud projects add-iam-policy-binding "$PROJECT" \
     --member="serviceAccount:${COORD_SA}" --role="$role" >/dev/null
@@ -141,13 +143,18 @@ gcloud projects add-iam-policy-binding "$PROJECT" \
 # --------------------------------------------------------------------------
 # 6. Secrets — create resources (idempotent) then bind per-SA accessors
 # --------------------------------------------------------------------------
-# Operator-supplied secrets (always present): github-pat, gemini-api-key
-for secret in github-pat gemini-api-key; do
+# Operator-supplied secrets (always present): github-pat
+# Phase 14.5: gemini-api-key removed — the coordinator now reaches Gemini
+# via Vertex AI ADC (no API key on either path). If an orphaned
+# gemini-api-key secret exists from a pre-14.5 deploy, the operator can
+# delete it manually:
+#   gcloud secrets delete gemini-api-key --project=$PROJECT
+# The script intentionally does NOT auto-delete it (rollback safety).
+for secret in github-pat; do
   gcloud secrets describe "$secret" --project "$PROJECT" >/dev/null 2>&1 || \
     gcloud secrets create "$secret" --project "$PROJECT" --replication-policy=automatic
 done
 printf '%s' "$GITHUB_TOKEN"   | gcloud secrets versions add github-pat     --project "$PROJECT" --data-file=-
-printf '%s' "$GOOGLE_API_KEY" | gcloud secrets versions add gemini-api-key --project "$PROJECT" --data-file=-
 
 # Auto-generated secrets — first-run only. Regenerating these would
 # invalidate every running revision (coordinator-shared-token is the
@@ -203,7 +210,7 @@ else
     echo "    Contents:      Read and write"
     echo "    Pull requests: Read and write"
     echo "Then re-run:"
-    echo "  $0 $PROJECT <gh-pat> <gemini-key> <docs-pat> [webhook-url]"
+    echo "  $0 $PROJECT <gh-pat> <docs-pat> [webhook-url]"
     echo "----------------------------------------------------------------"
     echo
   fi
@@ -226,7 +233,7 @@ else
     echo
     echo "Create a demo webhook URL at https://webhook.site (or any HTTPS"
     echo "endpoint you control), then re-run:"
-    echo "  $0 $PROJECT <gh-pat> <gemini-key> <docs-pat> <webhook-url>"
+    echo "  $0 $PROJECT <gh-pat> <docs-pat> <webhook-url>"
     echo "----------------------------------------------------------------"
     echo
   fi
@@ -248,10 +255,10 @@ bind_secret() {
   fi
 }
 
-# Coordinator: three secrets.
+# Coordinator: two secrets (Phase 14.5: gemini-api-key removed — Vertex
+# AI ADC replaces the API-key auth path).
 bind_secret coordinator-shared-token "$COORD_SA"
 bind_secret github-pat                "$COORD_SA"
-bind_secret gemini-api-key            "$COORD_SA"
 
 # Docs worker: one secret (its fine-grained PAT).
 bind_secret docs-agent-github-pat     "$DOCS_SA"
