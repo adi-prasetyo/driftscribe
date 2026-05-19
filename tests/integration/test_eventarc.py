@@ -183,6 +183,29 @@ def test_eventarc_rejects_wrong_email_claim(monkeypatch):
     assert "service account" in detail or "principal" in detail
 
 
+def test_eventarc_rejects_missing_email_claim(monkeypatch):
+    """Token verifies but the ``email`` claim is absent → 403.
+
+    Phase 15.3 hardening: the comparison uses ``hmac.compare_digest`` for
+    constant-time semantics, which requires str+str inputs. A claims dict
+    without ``email`` must not crash; ``None`` is coerced to ``""`` and
+    compared, surfacing the same 403 as any other principal mismatch.
+    """
+    _set_audience(monkeypatch)
+    with patch("agent.main.verify_oauth2_token") as m_verify:
+        # No 'email' key in claims — verifier returned a degenerate dict.
+        m_verify.return_value = {"aud": _VALID_AUDIENCE}
+        client = TestClient(app)
+        r = client.post(
+            "/eventarc",
+            json=_audit_log_body(),
+            headers={"Authorization": "Bearer fake-token"},
+        )
+    assert r.status_code == 403
+    detail = r.json()["detail"].lower()
+    assert "service account" in detail or "principal" in detail
+
+
 def test_eventarc_accepts_correct_email_and_dispatches_recheck(monkeypatch):
     """Full valid path: bearer verifies, email matches, recheck dispatched.
 

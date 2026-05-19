@@ -1,6 +1,7 @@
 # agent/main.py
 import datetime as dt
 import hashlib
+import hmac
 import json
 import re
 import secrets
@@ -828,8 +829,15 @@ async def eventarc(
     # 403: principal check. Defense-in-depth: even if IAM widened, only
     # the dedicated trigger SA is honored here. Detail deliberately does
     # NOT echo the presented email.
+    # Phase 15.3: constant-time comparison via hmac.compare_digest (Codex
+    # carry-over from Phase 14). Threat model is mild — the expected SA
+    # name isn't secret — but constant-time string comparison is correct
+    # hygiene for any auth-claim check. The ``or ""`` coerces a missing
+    # ``email`` claim (None) into a str so compare_digest's str+str type
+    # contract isn't violated.
     expected_email = f"eventarc-trigger-sa@{s.gcp_project}.iam.gserviceaccount.com"
-    if claims.get("email") != expected_email:
+    presented_email = claims.get("email") or ""
+    if not hmac.compare_digest(presented_email, expected_email):
         raise HTTPException(
             status_code=403,
             detail="Eventarc token from unexpected service account principal",
