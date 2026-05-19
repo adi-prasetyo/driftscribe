@@ -158,6 +158,58 @@ def test_validator_rejects_rollback_with_shell_metachar_target_revision():
         validate(p, _contract())
 
 
+def test_validator_rejects_rollback_when_llm_lies_about_contract_status():
+    """Phase 15.3 (Codex carry-over from Phase 14): the rollback gate
+    must re-derive ``contract_status`` from ``contract.expected_env``,
+    NOT trust the value the LLM placed on the diff.
+
+    In USE_ADK mode the proposal is constructed by Gemini. If the model
+    labels an allow_manual_change=True var as ``present_disallow_manual``
+    (either by hallucination or by deliberate jailbreak prompt), the gate
+    must still reject it — because the actual contract says it's
+    operator-safe, and rolling back operator-safe vars defeats the
+    contract's own flexibility.
+
+    Setup: FEATURE_X is configured with allow_manual_change=True in
+    ``_contract()``. The proposal carries an EnvDiff for FEATURE_X with
+    contract_status=PRESENT_DISALLOW_MANUAL (the lie). Without the fix,
+    the validator's ``diff.contract_status != PRESENT_DISALLOW_MANUAL``
+    check passes (because the LLM lied) and the rollback proceeds. With
+    the fix, the validator re-derives status from the contract rule
+    (PRESENT_ALLOW_MANUAL) and rejects.
+    """
+    diffs = [
+        EnvDiff(
+            name="FEATURE_X",  # contract says allow_manual_change=True
+            expected="false",
+            live="true",
+            contract_status=ContractStatus.PRESENT_DISALLOW_MANUAL,  # LLM lies
+        )
+    ]
+    p = _rollback_proposal(diffs=diffs)
+    with pytest.raises(ValidationError, match="present_allow_manual"):
+        validate(p, _contract())
+
+
+def test_validator_rejects_rollback_when_llm_lies_about_status_for_unknown_var():
+    """Companion to the previous test: if the LLM labels an UNKNOWN var
+    (not in contract.expected_env) as ``present_disallow_manual``, the
+    re-derivation produces ABSENT and the rollback is rejected. Pins the
+    "unknown var" branch of the contract-derived status lookup.
+    """
+    diffs = [
+        EnvDiff(
+            name="UNDECLARED_VAR",  # not in contract
+            expected=None,
+            live="x",
+            contract_status=ContractStatus.PRESENT_DISALLOW_MANUAL,  # LLM lies
+        )
+    ]
+    p = _rollback_proposal(diffs=diffs)
+    with pytest.raises(ValidationError, match="absent"):
+        validate(p, _contract())
+
+
 def test_validator_docs_pr_unaffected_by_new_target_revision_field():
     # Smoke test: docs_pr with target_revision=None (the new field's default)
     # still passes — the field is optional for non-rollback actions.
