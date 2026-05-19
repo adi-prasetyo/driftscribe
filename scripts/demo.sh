@@ -119,6 +119,13 @@ call_coordinator() {
   local tmp http_code trace_id
 
   tmp="$(mktemp)"
+  # RETURN trap cleans up the tempfile on every exit path from this
+  # function — including Ctrl-C during the curl, which docs/demo-script.md
+  # tells operators to use on a hang. Without it the tempfile leaks into
+  # /tmp on every interrupted beat. Function-local scope (RETURN, not EXIT)
+  # so it doesn't interfere with any global trap a caller might install.
+  # shellcheck disable=SC2064  # intentional expansion at trap-define time
+  trap "rm -f '$tmp'" RETURN
   # -i emits headers + blank line + body. -w '%{http_code}' captures the
   # status separately so we don't have to parse the HTTP/1.1 status line
   # out of the response.
@@ -146,9 +153,8 @@ call_coordinator() {
 
   # Strip the headers + blank line; awk turns on `p` after the first
   # blank line (allowing optional CR for CRLF-terminated headers).
+  # Tempfile cleanup is handled by the RETURN trap above.
   awk '/^\r?$/{p=1;next}p' "$tmp" | print_body
-
-  rm -f "$tmp"
 }
 
 # Set or update env vars on the target Cloud Run service. The
