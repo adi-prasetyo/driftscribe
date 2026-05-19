@@ -169,6 +169,31 @@ class ApprovalStore:
         for a given doc version; the others retry, observe the new
         status, and return ``None``.
         """
+        return self._claim(approval_id, new_status="used")
+
+    def claim_denied(self, approval_id: str) -> Approval | None:
+        """Transactionally flip ``status: pending → denied``.
+
+        Mirrors :meth:`claim_pending` but for the coordinator-owned deny
+        path (Phase 11.7). Used when the operator presses "Reject" on
+        the approval page — the coordinator owns this state transition
+        because the rollback worker only knows the ``pending → used``
+        flip. A subsequent ``/execute`` against a denied approval will
+        see ``status != "pending"`` and bounce out at the worker's
+        explicit status check.
+
+        Concurrency story matches ``claim_pending``: at most one
+        transaction wins, others observe the new status and return
+        ``None``. This makes the deny path replay-safe.
+        """
+        return self._claim(approval_id, new_status="denied")
+
+    def _claim(self, approval_id: str, *, new_status: str) -> Approval | None:
+        """Shared transactional flip helper for the two ``pending → X``
+        transitions. Kept private — callers MUST go through
+        :meth:`claim_pending` or :meth:`claim_denied` so the set of
+        target statuses stays closed (no caller can flip to an arbitrary
+        string)."""
         ref = self._ref(approval_id)
 
         @firestore.transactional
@@ -179,8 +204,8 @@ class ApprovalStore:
             data = snap.to_dict() or {}
             if data.get("status") != "pending":
                 return None
-            transaction.update(ref, {"status": "used"})
-            data["status"] = "used"
+            transaction.update(ref, {"status": new_status})
+            data["status"] = new_status
             return Approval(approval_id=approval_id, **data)
 
         return txn(self._client.transaction(), ref)

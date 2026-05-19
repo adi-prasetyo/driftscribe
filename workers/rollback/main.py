@@ -399,7 +399,26 @@ def propose(
     return {
         "approval_id": approval.approval_id,
         "approval_token": raw_token,
-        "approval_url": f"{COORDINATOR_URL}/approvals/{approval.approval_id}",
+        # Phase 11.7: the raw token rides as a query param so the
+        # coordinator's approval page can pre-populate the hidden form
+        # field without making the operator paste anything. Defense in
+        # depth that justifies a credential-in-URL:
+        #   - 15-min TTL on the approval doc
+        #   - single-use HMAC binding (revision-bound, see
+        #     compute_token_hmac docstring)
+        #   - the approval page sends Referrer-Policy: no-referrer +
+        #     Cache-Control: no-store + X-Frame-Options: DENY (Phase
+        #     11.7), so a same-tab navigation cannot exfiltrate the
+        #     token via Referer and the page is not cached by any
+        #     proxy that respects the directive
+        # Caveat: query strings often appear in Cloud Run / LB request
+        # logs. The 15-min TTL plus single-use HMAC means a log-leak
+        # within the window still requires the attacker to act before
+        # the legitimate operator does (or after, but on an already-used
+        # approval, /execute returns 403).
+        "approval_url": (
+            f"{COORDINATOR_URL}/approvals/{approval.approval_id}?t={raw_token}"
+        ),
         "expires_at": approval.expires_at.isoformat(),
     }
 

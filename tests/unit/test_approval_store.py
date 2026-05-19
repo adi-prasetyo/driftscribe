@@ -268,3 +268,65 @@ def test_claim_pending_returns_none_when_status_already_revoked() -> None:
     # Simulate the coordinator denying the approval.
     fake.raw(f"approvals/{created.approval_id}")["status"] = "denied"
     assert store.claim_pending(created.approval_id) is None
+
+
+# --------------------------------------------------------------------------- #
+# claim_denied (Phase 11.7 — coordinator-owned deny path)
+# --------------------------------------------------------------------------- #
+
+
+def test_claim_denied_flips_status_once() -> None:
+    """Operator presses Reject on the approval page → coordinator flips
+    pending → denied. A subsequent /execute against this approval will
+    see status != "pending" and bounce out at the worker's status check."""
+    store, fake = _make_store()
+    created, _ = store.create(
+        target_revision="r", reason="x", hmac_key="k", created_by="u"
+    )
+    denied = store.claim_denied(created.approval_id)
+    assert denied is not None
+    assert denied.status == "denied"
+    raw = fake.raw(f"approvals/{created.approval_id}")
+    assert raw["status"] == "denied"
+
+
+def test_claim_denied_returns_none_on_second_call() -> None:
+    """Replay defense: once denied, the doc stays denied — a second Reject
+    submission can't reach the worker or re-flip the doc."""
+    store, _ = _make_store()
+    created, _ = store.create(
+        target_revision="r", reason="x", hmac_key="k", created_by="u"
+    )
+    first = store.claim_denied(created.approval_id)
+    assert first is not None
+    second = store.claim_denied(created.approval_id)
+    assert second is None
+
+
+def test_claim_denied_returns_none_for_missing_doc() -> None:
+    store, _ = _make_store()
+    assert store.claim_denied("ghost-id") is None
+
+
+def test_claim_denied_returns_none_when_status_used() -> None:
+    """If the worker already executed the rollback (status=used), a later
+    deny attempt must be refused — the action is no longer pending."""
+    store, _ = _make_store()
+    created, _ = store.create(
+        target_revision="r", reason="x", hmac_key="k", created_by="u"
+    )
+    store.claim_pending(created.approval_id)  # status -> used
+    assert store.claim_denied(created.approval_id) is None
+
+
+def test_claim_denied_then_claim_pending_both_refuse() -> None:
+    """End-to-end state machine sanity: deny first, then a malicious
+    /execute attempt against the same approval ID must observe status=denied
+    and bounce out."""
+    store, _ = _make_store()
+    created, _ = store.create(
+        target_revision="r", reason="x", hmac_key="k", created_by="u"
+    )
+    assert store.claim_denied(created.approval_id) is not None
+    # Worker's transactional claim sees status=denied and refuses.
+    assert store.claim_pending(created.approval_id) is None

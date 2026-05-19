@@ -197,7 +197,14 @@ def test_propose_happy_path(client, store) -> None:
     assert len(body["approval_token"]) == 43
     # The approval URL lives on the coordinator, not this worker.
     assert body["approval_url"].startswith("https://coord.example.com/approvals/")
-    assert body["approval_url"].endswith(body["approval_id"])
+    # Phase 11.7: the raw token rides on the URL as ``?t=<raw_token>``
+    # so the coordinator's approval page can pre-populate the hidden
+    # form field without operator copy-paste. Bound by 15-min TTL +
+    # single-use HMAC + Referrer-Policy: no-referrer on the page.
+    assert f"?t={body['approval_token']}" in body["approval_url"]
+    # The approval_id still appears in the path (before the query).
+    path_part = body["approval_url"].split("?", 1)[0]
+    assert path_part.endswith(body["approval_id"])
     assert "expires_at" in body
 
     # The approval was actually persisted in the store.
