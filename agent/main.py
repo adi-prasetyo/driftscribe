@@ -1283,10 +1283,14 @@ async def chat(req: ChatRequest, _: None = Depends(verify_token)) -> dict:
     - /chat returns free-form text — the LLM picks tools, may call
       multiple workers, and produces a natural-language response.
 
-    The ADK runner picks tools from ``COORDINATOR_TOOLS`` in
-    :mod:`agent.adk_agent`; the LLM CANNOT call anything outside that
-    set (Layer 0 capability-bounded tool registry — enforced by the
-    inventory test in Phase 11.4b).
+    The ADK runner picks tools from ``workload.tools`` — the
+    per-workload filtered subset of ``COORDINATOR_TOOLS`` — so the LLM
+    is never shown a cross-workload tool (Phase 17.A.3 capability-bound
+    invariant). The full registration manifest lives in
+    ``COORDINATOR_TOOLS`` in :mod:`agent.adk_agent` (pinned by the
+    inventory test in ``tests/unit/test_coordinator_tool_inventory.py``);
+    per-workload filtering happens at ``Agent`` construction in
+    :func:`agent.adk_agent.build_agent`.
     """
     s = get_settings()
     if not s.use_adk:
