@@ -14,6 +14,10 @@
 #   4. /read on reader with user ID token (wrong audience) → 401/403
 #   5. Prompt-injection probe: ask coordinator to make docs touch a path
 #      outside its allowlist → 403 from docs path-allowlist check.
+#   6. (optional, RUN_EVENTARC_PROBE=1) Eventarc auto-trigger probe:
+#      mutate payment-demo env → wait ≤60s → confirm via Firestore
+#      decision (DRY_RUN=false) OR Cloud Run access log (DRY_RUN=true).
+#      Latency appended to docs/benchmarks.md. DESTRUCTIVE: opt-in only.
 #
 # Exits 0 if every test prints OK, 1 if any fail. Tests print
 #   expected=<code> observed=<code> [OK|FAIL]
@@ -186,6 +190,161 @@ if [ "${RUN_POSITIVE:-0}" = "1" ]; then
 else
   echo "  [SKIP] set RUN_POSITIVE=1 to exercise the injection path"
 fi
+echo
+
+# ----------------------------------------------------------------------
+# Test 6: Eventarc auto-trigger probe (Phase 14.4).
+#
+# DESTRUCTIVE — mutates the live `payment-demo` Cloud Run service. Gated
+# behind RUN_EVENTARC_PROBE=1 (NOT RUN_POSITIVE — different cost profile;
+# this one consumes a Cloud Run revision rollout, not Gemini quota).
+#
+# Flow:
+#   1. Preflight: refuse to run if `payment-demo` already has NEW_THING
+#      set (we'd clobber it on cleanup).
+#   2. Record t0 + ISO timestamp. Apply `--update-env-vars=NEW_THING=test`.
+#   3. Install a cleanup trap that calls `--remove-env-vars=NEW_THING`.
+#   4. Poll (every 2s, wall-clock deadline t0+60s) for either:
+#        (a) Firestore: a `decisions` doc with trigger=eventarc AND
+#            createTime >= record_iso. Skipped if jq is missing — the
+#            REST response uses typed fields (fields.trigger.stringValue)
+#            which is not safely greppable in combination with createTime.
+#        (b) Logs: an access log on driftscribe-agent for POST /eventarc
+#            returning 200 since record_iso. Works in DRY_RUN=true mode
+#            where Firestore is bypassed (InMemoryStateStore).
+#      First hit wins; record the path that proved it.
+#   5. On pass, append a row to docs/benchmarks.md.
+#   6. Cleanup runs whether we pass or fail (trap).
+# ----------------------------------------------------------------------
+echo "[6] Eventarc auto-trigger probe (mutate payment-demo, wait, verify)"
+EVENTARC_MUTATED=0
+cleanup_eventarc() {
+  if [ "$EVENTARC_MUTATED" = "1" ]; then
+    echo "  [cleanup] removing NEW_THING from payment-demo"
+    gcloud run services update payment-demo \
+      --project="$PROJECT" --region="$REGION" \
+      --remove-env-vars=NEW_THING >/dev/null 2>&1 || \
+      echo "  [cleanup] WARNING: --remove-env-vars failed; inspect manually"
+    EVENTARC_MUTATED=0
+  fi
+}
+trap cleanup_eventarc EXIT INT TERM
+
+if [ "${RUN_EVENTARC_PROBE:-0}" = "1" ]; then
+  # Preflight: don't run if payment-demo already has NEW_THING set —
+  # we'd silently clobber the operator's value on cleanup.
+  EXISTING_NEW_THING="$(gcloud run services describe payment-demo \
+    --project="$PROJECT" --region="$REGION" \
+    --format='value(spec.template.spec.containers[0].env)' 2>/dev/null \
+    | grep -oE 'NEW_THING=[^;]*' || true)"
+  if [ -n "$EXISTING_NEW_THING" ]; then
+    echo "  [FAIL] payment-demo already has $EXISTING_NEW_THING set — refusing to clobber"
+    fail=$((fail + 1))
+  elif ! gcloud run services describe payment-demo \
+         --project="$PROJECT" --region="$REGION" >/dev/null 2>&1; then
+    echo "  [FAIL] payment-demo not deployed — cannot exercise eventarc trigger"
+    fail=$((fail + 1))
+  else
+    record_iso="$(date -u +%FT%TZ)"
+    t0="$(date +%s)"
+    deadline=$((t0 + 60))
+    echo "  applying mutation NEW_THING=test at $record_iso (deadline t0+60s)"
+    if gcloud run services update payment-demo \
+         --project="$PROJECT" --region="$REGION" \
+         --update-env-vars=NEW_THING=test >/dev/null 2>&1; then
+      EVENTARC_MUTATED=1
+    else
+      echo "  [FAIL] gcloud run services update returned non-zero"
+      fail=$((fail + 1))
+    fi
+
+    if [ "$EVENTARC_MUTATED" = "1" ]; then
+      have_jq=0
+      command -v jq >/dev/null 2>&1 && have_jq=1
+      if [ "$have_jq" = "0" ]; then
+        echo "  [note] jq not installed — Firestore probe path skipped; relying on logs"
+      fi
+
+      observed_path=""
+      observed_latency=""
+      while [ "$(date +%s)" -lt "$deadline" ]; do
+        # (a) Firestore probe — only if jq is present. DRY_RUN=true demo
+        # deploys won't have any docs here; that's fine, we fall through.
+        if [ "$have_jq" = "1" ]; then
+          ACCESS_TOKEN="$(gcloud auth print-access-token 2>/dev/null || true)"
+          if [ -n "$ACCESS_TOKEN" ]; then
+            FS_BODY="$(curl -sS \
+              -H "Authorization: Bearer $ACCESS_TOKEN" \
+              -H 'Content-Type: application/json' \
+              -X POST \
+              "https://firestore.googleapis.com/v1/projects/${PROJECT}/databases/(default)/documents:runQuery" \
+              -d '{"structuredQuery":{"from":[{"collectionId":"decisions"}],"where":{"fieldFilter":{"field":{"fieldPath":"trigger"},"op":"EQUAL","value":{"stringValue":"eventarc"}}}}}' \
+              2>/dev/null || true)"
+            # Each result element is {"document": {...}, "readTime": ...}.
+            # We accept any document whose createTime is >= record_iso.
+            FS_HIT="$(printf '%s' "$FS_BODY" | jq -r --arg since "$record_iso" \
+              '[.[] | select(.document.createTime != null) | select(.document.createTime >= $since)] | length' \
+              2>/dev/null || echo 0)"
+            # Normalize to a numeric token; jq may return "null" or empty.
+            case "$FS_HIT" in ''|*[!0-9]*) FS_HIT=0 ;; esac
+            if [ "$FS_HIT" -gt 0 ]; then
+              observed_path="firestore"
+              observed_latency=$(($(date +%s) - t0))
+              break
+            fi
+          fi
+        fi
+
+        # (b) Cloud Run access-log probe. --freshness=5m guards against
+        # the deadline drifting past the default log freshness window
+        # while we poll. We require status=200; a 4xx /eventarc means
+        # the trigger reached the handler but auth/whitelist rejected
+        # it — that's not a success signal for this probe.
+        LOG_HIT="$(gcloud logging read \
+          'resource.type=cloud_run_revision AND resource.labels.service_name="driftscribe-agent" AND httpRequest.requestUrl=~"/eventarc" AND httpRequest.status=200 AND timestamp>="'"$record_iso"'"' \
+          --limit=1 --freshness=5m \
+          --format='value(timestamp)' \
+          --project="$PROJECT" 2>/dev/null || true)"
+        if [ -n "$LOG_HIT" ]; then
+          observed_path="logs"
+          observed_latency=$(($(date +%s) - t0))
+          break
+        fi
+
+        sleep 2
+      done
+
+      if [ -n "$observed_path" ]; then
+        check "eventarc auto-trigger (<=60s)" "hit" "hit"
+        echo "  observed: path=$observed_path latency=${observed_latency}s"
+        # Append a row to docs/benchmarks.md. The file is checked in
+        # with a header + empty table; this just appends a row. Path is
+        # resolved from the script's own location so it lands at
+        # <repo>/docs/benchmarks.md regardless of cwd at invocation.
+        script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        bench_path="$script_dir/../../docs/benchmarks.md"
+        commit_sha="$(git -C "$script_dir" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+        row_iso="$(date -Iseconds)"
+        if [ -f "$bench_path" ]; then
+          echo "| $row_iso | $observed_latency | $observed_path | $commit_sha |" >> "$bench_path"
+          echo "  recorded in $bench_path"
+        else
+          echo "  [WARN] $bench_path missing — row not appended (re-create from git)"
+        fi
+      else
+        echo "  [FAIL] eventarc auto-trigger  expected=hit observed=timeout-after-60s"
+        fail=$((fail + 1))
+      fi
+    fi
+  fi
+else
+  echo "  [SKIP] set RUN_EVENTARC_PROBE=1 to exercise the eventarc auto-trigger (DESTRUCTIVE)"
+fi
+# Cleanup early on the happy path so the trap-on-EXIT is a no-op. We
+# keep the trap installed (rather than `trap - EXIT`) so an interruption
+# AFTER this point still triggers cleanup if any future test below
+# re-mutates the service.
+cleanup_eventarc
 echo
 
 echo "================================================================"
