@@ -19,35 +19,18 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
-import pytest
 from fastapi.testclient import TestClient
 
 from agent.config import get_settings
 from agent.main import app
 
-
-@pytest.fixture
-def _chat_drift_env(monkeypatch):
-    """Wire the drift worker URLs and clear the workload cache.
-
-    Phase 17.A.3 made /chat pre-resolve the workload (so an undeployed
-    workload surfaces as 503 before the ADK runner boots). The
-    ``run_chat`` mock in these tests still works, but the pre-resolve
-    step needs the four worker URL env vars set or it fails its own
-    503 check. The fixture isolates that wiring from the test bodies.
-
-    Cache cleared on setup AND teardown so a prior test's cached
-    resolution doesn't shadow this test's env, and this test's
-    placeholder URLs don't leak into a downstream test.
-    """
-    monkeypatch.setenv("READER_URL", "https://reader.test")
-    monkeypatch.setenv("DOCS_URL", "https://docs.test")
-    monkeypatch.setenv("ROLLBACK_URL", "https://rollback.test")
-    monkeypatch.setenv("NOTIFIER_URL", "https://notifier.test")
-    import agent.workloads.registry as registry_mod
-    registry_mod._WORKLOAD_CACHE.clear()
-    yield
-    registry_mod._WORKLOAD_CACHE.clear()
+# Phase 17.A.3: the four drift worker URL env vars (READER_URL etc.)
+# AND the workload cache are wired by the autouse fixture in
+# ``tests/integration/conftest.py``. /chat's workload pre-resolve step
+# needs those env vars; without them the handler returns 503 before
+# any ``run_chat`` mock fires. The conftest-level setup keeps each test
+# body uncluttered. Tests that specifically exercise the missing-env
+# 503 path (test_workload_routing.py) clear those vars on entry.
 
 
 def test_chat_returns_503_when_use_adk_false(monkeypatch) -> None:
@@ -61,9 +44,7 @@ def test_chat_returns_503_when_use_adk_false(monkeypatch) -> None:
     assert "adk" in r.json()["detail"].lower()
 
 
-def test_chat_happy_path_returns_reply_and_tool_calls(
-    monkeypatch, _chat_drift_env
-) -> None:
+def test_chat_happy_path_returns_reply_and_tool_calls(monkeypatch) -> None:
     """USE_ADK=true: /chat invokes run_chat and surfaces the result.
 
     We mock at agent.adk_agent.run_chat so we don't need a live LLM.
@@ -96,7 +77,7 @@ def test_chat_happy_path_returns_reply_and_tool_calls(
     )
 
 
-def test_chat_passes_session_id_through(monkeypatch, _chat_drift_env) -> None:
+def test_chat_passes_session_id_through(monkeypatch) -> None:
     """A caller-supplied session_id is forwarded to run_chat unchanged.
     In-memory sessions only in 11.7 — the session_id is currently used
     as a label but is accepted for forward compatibility."""
@@ -113,7 +94,7 @@ def test_chat_passes_session_id_through(monkeypatch, _chat_drift_env) -> None:
     fake.assert_awaited_once_with("hi", session_id="s1", workload="drift")
 
 
-def test_chat_surfaces_runtime_error_as_502(monkeypatch, _chat_drift_env) -> None:
+def test_chat_surfaces_runtime_error_as_502(monkeypatch) -> None:
     """If run_chat raises (LLM failure, worker error, parse failure),
     /chat surfaces it as 502 with an informative detail. 502 (not 500)
     so operator can distinguish "model misbehaved" from "coordinator
@@ -135,9 +116,7 @@ def test_chat_surfaces_runtime_error_as_502(monkeypatch, _chat_drift_env) -> Non
     assert "agent failed" in r.json()["detail"]
 
 
-def test_chat_surfaces_worker_client_error_as_502(
-    monkeypatch, _chat_drift_env
-) -> None:
+def test_chat_surfaces_worker_client_error_as_502(monkeypatch) -> None:
     """A WorkerClientError from inside run_chat (the LLM's tool call hit
     a worker error) surfaces as 502 with a "worker call failed" detail.
     The worker's status code is NOT echoed — a worker's 422 (schema

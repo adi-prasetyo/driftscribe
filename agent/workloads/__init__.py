@@ -23,6 +23,7 @@ from agent.workloads.spec import WorkloadSpec
 from agent.workloads.registry import (
     ActionSpec,
     MissingWorkerEnvError,
+    ReservedToolNotImplementedError,
     UnknownActionError,
     UnknownToolError,
     UnknownWorkerError,
@@ -36,6 +37,7 @@ from agent.workloads.registry import (
 __all__ = [
     "ActionSpec",
     "MissingWorkerEnvError",
+    "ReservedToolNotImplementedError",
     "UnknownActionError",
     "UnknownToolError",
     "UnknownWorkerError",

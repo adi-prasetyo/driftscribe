@@ -80,11 +80,34 @@ class UnknownWorkloadError(KeyError):
 
 class UnknownToolError(KeyError):
     """Raised when a workload YAML names a tool that's not in
-    :data:`TOOL_REGISTRY`, OR that's reserved but not yet implemented
-    (the entry exists with value ``None``). Both cases must fail loudly
-    at load time — the second case especially, because letting the
-    coordinator boot with a ``None`` callable in its tool set would
-    crash at first LLM call rather than at deploy time."""
+    :data:`TOOL_REGISTRY` at all. This is a deploy bug — a typo or an
+    attempted capability widening that should have been caught at code
+    review. The coordinator must fail loudly at load time rather than
+    letting the LLM see an undefined symbol.
+
+    Distinct from :class:`ReservedToolNotImplementedError`: that's the
+    "we know about this tool, but its callable hasn't shipped yet"
+    case. Both fail load, but the operator response differs — a typo
+    is 500-shaped (broken deploy), a reserved-not-yet is 503-shaped
+    (this build of the system isn't wired for that workload yet).
+    Phase 17.A.3 (Codex review): the split lets the coordinator
+    surface those two cases distinctly without collapsing every drift
+    YAML typo into a misleading "not deployed" message.
+    """
+
+
+class ReservedToolNotImplementedError(UnknownToolError):
+    """Raised when a workload YAML names a tool that's reserved in
+    :data:`TOOL_REGISTRY` but whose callable is still ``None``. This
+    is the "we know about this tool, but its implementation lands in a
+    later sub-phase" case — e.g. ``upgrade_read_dependencies`` before
+    17.C, ``search_developer_docs`` before 17.B.
+
+    Subclasses :class:`UnknownToolError` for backward compatibility:
+    callers that catch the parent still catch this. The distinct class
+    lets handlers (in :mod:`agent.main`) map this to 503 ("workload
+    not deployed in this build") while still letting bare
+    :class:`UnknownToolError` map to 500 (deploy bug / typo)."""
 
 
 class UnknownWorkerError(KeyError):
@@ -332,7 +355,10 @@ def _resolve_tool(name: str) -> Callable:
         )
     callable_obj = TOOL_REGISTRY[name]
     if callable_obj is None:
-        raise UnknownToolError(
+        # Phase 17.A.3 (Codex review): distinct subclass so handlers can
+        # map "reserved but not yet shipped" to 503 while still letting
+        # genuine unknown-name typos surface as 500.
+        raise ReservedToolNotImplementedError(
             f"tool {name!r} is reserved but not yet implemented "
             f"(see Phase 17 plan: search_developer_docs/retrieve_developer_doc "
             f"land in 17.B; upgrade_* in 17.C; get/set_session_state in 17.B)"
