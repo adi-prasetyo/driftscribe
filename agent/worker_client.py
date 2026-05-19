@@ -39,6 +39,7 @@ from typing import Final
 import httpx
 
 from driftscribe_lib.auth import mint_id_token
+from driftscribe_lib.logging import get_trace_id, new_trace_id
 
 
 # Per-worker env var name → fixed at boot for the deployed service via
@@ -151,9 +152,16 @@ def call(worker: str, payload: dict, *, endpoint: str | None = None) -> dict:
     path = endpoint or WORKER_ENDPOINTS[worker]
     # Audience is the *root* URL, not base+path — see the docstring.
     token = mint_id_token(base)
+    # Phase 15.2: propagate the coordinator's per-request trace id to
+    # the worker so a single trace id correlates logs across the call
+    # chain. The ContextVar is set by the trace middleware in
+    # ``driftscribe_lib.logging``; on the rare path where worker_client
+    # is invoked outside a request scope (e.g. a CLI smoke test) the
+    # ContextVar is empty — mint a fresh id rather than send empty.
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
+        "X-Trace-Id": get_trace_id() or new_trace_id(),
     }
     try:
         with httpx.Client(timeout=_HTTPX_TIMEOUT) as client:
