@@ -1,0 +1,34 @@
+# Canonical dependency documentation for the Upgrade Reader worker.
+#
+# The worker's container is NOT built by `pip install .` against this file —
+# the Dockerfile installs the listed deps directly via `uv pip install --system
+# <pinned list>` to avoid pulling in a build-system. `driftscribe_lib` is made
+# available inside the container via PYTHONPATH (see
+# workers/upgrade_reader/Dockerfile).
+#
+# Keep this file in sync with the Dockerfile install line. Future agents / the
+# spec reviewer should be able to read the worker's deps without parsing a
+# Dockerfile.
+[project]
+name = "driftscribe-upgrade-reader"
+version = "0.1.0"
+description = "DriftScribe Upgrade Reader Worker — npm lockfile + advisory reader"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "google-auth>=2.35",
+    # google.auth.transport.requests imports `requests` at runtime; it is
+    # NOT pulled in transitively by google-auth. Spike 11.0 confirmed this.
+    # We also use `requests` directly for the GitHub Advisory REST call.
+    "requests>=2.32",
+    # `driftscribe_lib.github` uses PyGithub for the lockfile read.
+    "PyGithub>=2.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.27",  # for fastapi.testclient.TestClient
+]
