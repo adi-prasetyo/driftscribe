@@ -127,22 +127,32 @@ Each worker has a tiny REST surface with a hardcoded "payload-intent policy" —
 
 ## 4. Layer 0 — capability-bounded tool registry
 
-The coordinator's ADK agent does not have a shell, an arbitrary HTTP client, or any tool whose name implies execution. It has exactly the following tools, exported as a module-level constant `agent.adk_agent.COORDINATOR_TOOLS` and enforced by a unit test:
+The coordinator's ADK agent operates against an explicit, hardcoded list of tools — `agent.adk_agent.COORDINATOR_TOOLS`. The LLM cannot invoke anything outside this list; no `execute_shell`, no `arbitrary_http_request`, no direct GCP/GitHub SDK calls.
 
-- `delegate_to_reader(...)` → calls Reader worker (Phase 11.7)
-- `delegate_to_docs(...)` → calls Docs worker
-- `delegate_to_rollback(...)` → calls Rollback worker (returns approval URL — never auto-executes)
-- `delegate_to_notifier(...)` → calls Notifier worker
-- `load_contract()` → reads the baked-in `ops-contract.yaml`
-- `search_recent_prs(...)` → read-only GitHub search via the coordinator's PAT
-- `get_session_state(...)` / `set_session_state(...)` → in-memory session helpers
+The 6 registered tools (as of Phase 11.7):
 
-> If you add/remove a tool in Phase 11.7, update this list AND `tests/integration/test_coordinator_tool_inventory.py` in the same commit — Phase 11.4b is the enforcement gate.
+| Tool | Purpose | Routes to |
+|---|---|---|
+| `read_live_env_tool` | Read Cloud Run service env + revision | Reader Agent (`/read`) |
+| `propose_rollback_tool` | Create an approval doc for a rollback | Rollback Agent (`/propose`) |
+| `patch_docs_tool` | Open a docs PR | Docs Agent (`/patch`) |
+| `notify_tool` | Post to webhook | Notifier Agent (`/notify`) |
+| `search_recent_prs_tool` | Read-only PR history | Coordinator-internal (read-only GitHub token) |
+| `load_contract_tool` | Read the baked-in ops contract | Coordinator-internal (filesystem) |
 
-Nothing else. The enforcement test (`tests/unit/test_coordinator_tool_inventory.py`, Phase 11.4b) asserts two properties:
+**Enforcement:** `tests/unit/test_coordinator_tool_inventory.py` (Phase 11.4b) pins this set. Adding or removing a tool requires updating the `EXPECTED_TOOL_NAMES` constant in that test. A second test asserts no tool name matches a dangerous-capability pattern (`shell|exec|subprocess|os_command|delete|drop|destroy|sudo|raw_http|arbitrary|run_command|eval`) so even an intentional addition can't slip an obviously-wrong name through. A third smoke test asserts that importing `agent.adk_agent` does not pull in remote-execution SDKs (`paramiko`, `fabric`, `pexpect`).
 
-1. **Positive list:** the set of tool names is *exactly* the expected set. New tools fail CI unless the expected set is updated intentionally.
-2. **Negative pattern:** no tool name matches `r"shell|exec|subprocess|os_command|delete|sudo|raw_http|arbitrary"`. Catches "I added `delete_old_pr` and now the coordinator has a delete tool" mistakes.
+Cross-references:
+- `agent.adk_agent.COORDINATOR_TOOLS` — the canonical list
+- `agent.adk_tools` — the tool implementations
+- The system prompts in `agent.adk_agent.SYSTEM_PROMPT_RECHECK` and `SYSTEM_PROMPT_CHAT` explicitly tell the LLM "you can ONLY call worker tools; you cannot mutate any system directly."
+
+If you add a tool in a future PR:
+1. Implement it in `agent/adk_tools.py`
+2. Add it to `COORDINATOR_TOOLS` in `agent/adk_agent.py`
+3. Update `EXPECTED_TOOL_NAMES` in `tests/unit/test_coordinator_tool_inventory.py`
+4. Update this section of `multi-agent-design.md`
+5. Justify the addition in the PR description against Layer 0's threat model (accidental damage from the LLM doing reasonable-looking-but-wrong things)
 
 Layer 0 is the *first* safety net. Even if a prompt-injection attack convinces the agent to "rm -rf /", the agent simply does not have a tool that can. Layers 1 (per-SA IAM, see `iam-matrix.md`), 2 (worker payload-intent policies, see §3), and 3 (the deterministic validator that already existed in v1) sit underneath.
 
