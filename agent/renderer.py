@@ -132,6 +132,59 @@ def render_drift_issue_body(p: DecisionProposal) -> str:
 """
 
 
+def render_rollback_body(p: DecisionProposal, approval_url: str) -> str:
+    """Render the operator-facing approval body for a ROLLBACK decision.
+
+    Delivered by the Notifier worker (severity="approval"). The body surfaces
+    the approval URL minted by the Rollback Worker's ``/propose`` response so
+    the operator can click through to ``{COORDINATOR_URL}/approvals/{id}`` and
+    Approve / Reject the proposed traffic shift.
+
+    ``approval_url`` is passed in (not derived) because the renderer is a pure
+    function — it has no access to Firestore or the HMAC key, and the worker
+    response is the only place the URL is minted. The caller (Task 13.3) reads
+    ``result["approval_url"]`` from the worker response and threads it here.
+
+    Markdown discipline:
+    - The approval URL is wrapped in ``<...>`` (markdown autolink form) so
+      long URLs don't line-break in some renderers.
+    - ``target_revision`` is shown inside an inline code span — Cloud Run
+      revision names are alphanumeric + hyphens, so they don't break tables.
+    - The rationale is scrubbed via :func:`_scrub_secret_values_from_rationale`
+      so an LLM that quoted a secret value in prose doesn't leak it here.
+    """
+    rationale = _scrub_secret_values_from_rationale(p.rationale, p.env_diffs)
+    return f"""\
+## DriftScribe — rollback proposed (approval required)
+
+{rationale}
+
+### Rollback details
+
+- **Service:** `payment-demo`
+- **Target revision:** `{p.target_revision}`
+- **Reason:** hard contract violation — see rationale above and the evidence
+  table below.
+
+### Evidence
+
+{_evidence_table(p)}
+
+### Operator approval required
+
+Click to review and approve / reject the rollback:
+
+<{approval_url}>
+
+This approval link expires in 15 minutes. After expiry, DriftScribe must
+re-propose to mint a fresh token.
+
+> Approving this rollback will swing **100% of traffic** on `payment-demo`
+> to revision `{p.target_revision}`. Rejecting leaves traffic on the current
+> revision and DriftScribe will not retry automatically.
+"""
+
+
 def render_escalation_issue_body(p: DecisionProposal) -> str:
     rationale = _scrub_secret_values_from_rationale(p.rationale, p.env_diffs)
     return f"""\
