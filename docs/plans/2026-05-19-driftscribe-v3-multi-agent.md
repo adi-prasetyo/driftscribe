@@ -331,16 +331,23 @@ Implementation notes:
 
 ### Phase 13 Codex review ~~~~ **DONE in Phase 13**
 
-Codex review of the full Phase 13 commit set (`9e7dd37` → `bd05097`) verified all three Phase 11.9 carry-overs as genuinely closed and surfaced four follow-up findings:
+Codex review of the full Phase 13 commit set (`9e7dd37` → `bd05097`) verified all three Phase 11.9 carry-overs as genuinely closed and surfaced four follow-up findings. A second-pass review of the applied fixes flagged one more (W2-concurrency) for Phase 14.
 
-- **W2 (real correctness bug, applied immediately):** cached rollback decisions outlived their 15-min TTL — a `/recheck` retried after expiry returned the dead approval URL from cache. Fixed in commit `<W2-commit>`: `_cached_rollback_is_expired()` helper drops the cache hit (releases the event claim) for expired rollback decisions so the next `/recheck` re-proposes a fresh approval. Pinned by `test_cached_rollback_with_expired_approval_re_proposes`.
-- **W4 (test hardening, applied immediately):** the HITL-boundary test only checked worker NAMES (`{"reader","rollback","notifier"}`), so a future `worker_client.call("rollback", payload, endpoint="/execute")` would have silently passed. Added an explicit assertion in `test_rollback_decision_does_not_execute_the_rollback` that no `m_call.call_args_list` entry has `kwargs["endpoint"]` set to `/execute` or `/deny`.
+Applied immediately (commit `32203fa`):
 
-Carried over to Phase 14 / Phase 15:
+- **W2 (correctness, applied):** cached rollback decisions outlived their 15-min TTL — a `/recheck` retried after expiry returned the dead approval URL from cache. `_cached_rollback_is_expired()` helper drops the cache hit (releases the event claim) for expired rollback decisions so the next `/recheck` re-proposes a fresh approval. Pinned by `test_cached_rollback_with_expired_approval_re_proposes`.
+- **W4 (test hardening, applied):** the HITL-boundary test only checked worker NAMES (`{"reader","rollback","notifier"}`), so a future `worker_client.call("rollback", payload, endpoint="/execute")` would have silently passed. Added an explicit assertion in `test_rollback_decision_does_not_execute_the_rollback` that no `m_call.call_args_list` entry has `kwargs["endpoint"]` set to `/execute` or `/deny`.
 
-- **W1 (defense-in-depth, deferred):** the rollback validator only checks that all `EnvDiff.contract_status` fields say `PRESENT_DISALLOW_MANUAL`; it does NOT re-derive that from `contract.expected_env`. An ADK proposal could mislabel a var and pass the validator. HITL still prevents automatic mutation, but the deterministic safety gate is weaker than advertised. Fix: pass `contract` to the rollback-validation block and re-derive contract_status server-side. Tracked for Phase 14.
-- **W3 (correctness, scope-deferred):** the Reader Worker returns `latest_ready_revision`, not the actual traffic-serving revision. After a successful rollback, `/recheck` can keep reporting drift because it sees the newer-but-not-serving revision. Matters for Phase 14 Eventarc loops. Fix: Reader Worker reads `service.traffic[].revision` (the serving revision) instead of `latest_ready_revision`.
-- **Nit (hardening, deferred):** `_do_rollback`'s malformed-propose-response handling rejects missing `approval_url`/`approval_id` but a non-dict JSON response would raise before releasing the claim. Easy to harden; low probability with the current worker.
+Promoted to **Phase 14 blockers** by Codex's second-pass review:
+
+- **W2-concurrency (Phase 14 blocker):** my W2 fix calls `state.release_event(event_key)` unconditionally before re-claiming. Safe on `InMemoryStateStore` (single-process tests), but on real Firestore two concurrent retries can race: A deletes and re-claims; B (holding a stale read) then deletes A's fresh claim. Could double-mint approvals or corrupt the event→decision pointer. HITL-safe (operator still gates `/execute`), but weakens idempotency exactly under retry pressure. **Fix before Phase 14:** add a compare-and-delete `evict_cached_decision(event_key, decision_id)` method to the StateStore protocol, implemented as a Firestore transaction that deletes the event doc only if its `decision_id` still equals the expired cached decision's id. Concurrent losers will then either get a 409 or see the fresh decision.
+- **W3 (Phase 14 blocker — promoted from "deferred"):** the Reader Worker returns `latest_ready_revision`, not the actual traffic-serving revision. After a successful rollback, `/recheck` can keep reporting drift because it sees the newer-but-not-serving revision. For manual `/chat` flows this is documentation-only; for **Eventarc auto-trigger** loops it's a real risk of re-proposing rollback against a revision already not-serving. **Fix before Phase 14:** read `service.traffic[].revision` (the serving revision) in `driftscribe_lib/cloud_run.py::read_live_state`.
+
+Deferred to Phase 15:
+
+- **W1 (defense-in-depth, deferred):** the rollback validator only checks that all `EnvDiff.contract_status` fields say `PRESENT_DISALLOW_MANUAL`; it does NOT re-derive that from `contract.expected_env`. An ADK proposal could mislabel a var and pass the validator. HITL still prevents automatic mutation; small fix worth doing when Phase 14 validation work happens.
+- **W2-malformed-expires (Phase 15 polish):** `_cached_rollback_is_expired` returns False (treats as still-valid) for malformed/missing `expires_at`. Codex suggests inverting this in Phase 15: treat malformed as expired so a corrupted cache entry can't strand the operator on a dead URL.
+- **Nit (Phase 15 polish):** `_do_rollback`'s malformed-propose-response handling rejects missing `approval_url`/`approval_id` but a non-dict JSON response would raise before releasing the claim. Easy to harden; low probability with the current worker.
 
 ---
 
