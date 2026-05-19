@@ -397,7 +397,24 @@ gcloud eventarc triggers create driftscribe-cloudrun-changes \
 
 `gcloud run services update payment-demo --update-env-vars=NEW_THING=test` → poll for up to 60s → check Firestore (or coordinator Cloud Run logs, since DRY_RUN=true demo deploys use InMemoryStateStore) for a new decision document with `trigger="eventarc"`. Document observed latency in `docs/benchmarks.md`. The poll budget is 60s (not 30s) because Eventarc cold-start + audit-log → trigger SA invocation latency is occasionally several seconds on top of `/eventarc` processing; 60s leaves head-room without making FAIL ambiguous.
 
-### Phase 14 Codex review
+### Phase 14 Codex review ~~~~ **DONE in Phase 14**
+
+Codex review of the full Phase 14 commit set (`58e2957` → `85203d3`, 13 commits, 393 → 424 tests) on thread `019e3af3-f679-7d20-bff1-328295c8f5df`.
+
+**Verified clean:**
+
+- **W3 traffic-serving fix** (commit `96b58cb`): `traffic_statuses → traffic → latest_ready_revision → template` priority is correct; empty `traffic_statuses` doesn't crash; `_highest_percent_entry` is deterministic on ties.
+- **/eventarc auth surface**: missing/malformed bearer → 401 with no oracle, wrong principal → 403 without echoing the email, target service/region mismatch → 200 ignored (Eventarc-friendly), valid path dispatches `_do_recheck("eventarc")`.
+- **`EVENTARC_AUDIENCE` per-request resolution**: pragmatic choice (startup enforcement would fight the post-deploy URL stamping in `cloudbuild.yaml`); 503 fail-closed at request time is acceptable.
+- **Smoke harness `a503040` fixes**: cleanup-failure no longer swallowed, exact-name match, INT/TERM exits after cleanup, latency assertion is real.
+
+**Deferred to Phase 15:**
+
+- **W2 CAS-loser fallthrough (Phase 15 polish):** when `evict_cached_decision` returns `False` (we lost the race) and the immediate re-read finds no fresh decision yet, the request currently falls through and may become the new proposer. `record_event` still serializes claims so this does NOT double-mint approvals, but the documented intent ("loser sees fresh decision") is weaker than the code delivers. Cleaner shape: on CAS-False + no non-expired hit, return `409 event in-progress, retry`. Low-stakes because HITL still gates `/execute`; defer.
+- **/eventarc post-auth 400 retry storm (Phase 15 polish):** post-auth malformed-payload responses return 400, but Eventarc retries non-2xx for up to ~24h. If Google ever ships an audit-log schema change, our endpoint becomes a retry-loop sink. Fix: change post-auth malformed-body responses from `400` → `200 {"ignored":"malformed-payload"}` with structured logging. Low-probability today (Eventarc never sends malformed audit logs in normal operation); defer.
+- **Smoke harness probe specificity (acknowledged limitation):** the log-based PASS path proves `/eventarc` returned 200 after `record_iso`, not that the decision corresponds to the exact `NEW_THING` mutation. Acceptable for a one-shot smoke probe; tighten only if false positives surface.
+- **Trigger filter empirical confirmation (operator action):** `setup_secrets.sh` §10 hardcodes v2 `UpdateService` + exact `resourceName=payment-demo`. The audit-log filter shape was committed to per `docs/architecture/eventarc-payload.md` but not yet empirically validated against a real `gcloud logging read` from the deployed project. `docs/runbooks/deploy.md` Step 7 captures this as an operator-side verification step with the v1 `ReplaceService` fallback diff. Treat 14.3 as provisional until the operator confirms.
+- Carry-overs unchanged: **W1 rollback validator re-derive**, **email-claim `==` (timing)**, **JSON parse error string leak**, **W2-malformed-expires** all remain Phase 15 polish.
 
 ---
 
