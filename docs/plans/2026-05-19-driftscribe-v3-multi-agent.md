@@ -329,7 +329,18 @@ Implementation notes:
 - `SYSTEM_PROMPT_RECHECK` (`agent/adk_agent.py`) gained `rollback` as a valid action with `target_revision` field. The prompt explicitly forbids the LLM from inferring a revision name — only propose rollback when a concrete previous revision came back from tool output. (Phase 13 limitation: Reader Worker doesn't yet return previous revisions; future phase will extend it.)
 - 9 integration tests in `tests/integration/test_rollback_e2e.py`: happy path, HITL boundary safety property (carry-over #3 closure), operator approve POST, operator reject POST, notifier-failure claim release, propose-failure claim release, malformed-propose-response 502, idempotent retry, and a defensive 500 for ROLLBACK on the non-ADK path.
 
-### Phase 13 Codex review
+### Phase 13 Codex review ~~~~ **DONE in Phase 13**
+
+Codex review of the full Phase 13 commit set (`9e7dd37` → `bd05097`) verified all three Phase 11.9 carry-overs as genuinely closed and surfaced four follow-up findings:
+
+- **W2 (real correctness bug, applied immediately):** cached rollback decisions outlived their 15-min TTL — a `/recheck` retried after expiry returned the dead approval URL from cache. Fixed in commit `<W2-commit>`: `_cached_rollback_is_expired()` helper drops the cache hit (releases the event claim) for expired rollback decisions so the next `/recheck` re-proposes a fresh approval. Pinned by `test_cached_rollback_with_expired_approval_re_proposes`.
+- **W4 (test hardening, applied immediately):** the HITL-boundary test only checked worker NAMES (`{"reader","rollback","notifier"}`), so a future `worker_client.call("rollback", payload, endpoint="/execute")` would have silently passed. Added an explicit assertion in `test_rollback_decision_does_not_execute_the_rollback` that no `m_call.call_args_list` entry has `kwargs["endpoint"]` set to `/execute` or `/deny`.
+
+Carried over to Phase 14 / Phase 15:
+
+- **W1 (defense-in-depth, deferred):** the rollback validator only checks that all `EnvDiff.contract_status` fields say `PRESENT_DISALLOW_MANUAL`; it does NOT re-derive that from `contract.expected_env`. An ADK proposal could mislabel a var and pass the validator. HITL still prevents automatic mutation, but the deterministic safety gate is weaker than advertised. Fix: pass `contract` to the rollback-validation block and re-derive contract_status server-side. Tracked for Phase 14.
+- **W3 (correctness, scope-deferred):** the Reader Worker returns `latest_ready_revision`, not the actual traffic-serving revision. After a successful rollback, `/recheck` can keep reporting drift because it sees the newer-but-not-serving revision. Matters for Phase 14 Eventarc loops. Fix: Reader Worker reads `service.traffic[].revision` (the serving revision) instead of `latest_ready_revision`.
+- **Nit (hardening, deferred):** `_do_rollback`'s malformed-propose-response handling rejects missing `approval_url`/`approval_id` but a non-dict JSON response would raise before releasing the claim. Easy to harden; low probability with the current worker.
 
 ---
 

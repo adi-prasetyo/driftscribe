@@ -57,7 +57,11 @@ _APPROVAL_TOKEN = "tok-xyz-43chars-aaaaaaaaaaaaaaaaaaaaaaaaa"
 _APPROVAL_URL = (
     f"https://coordinator.example/approvals/{_APPROVAL_ID}?t={_APPROVAL_TOKEN}"
 )
-_EXPIRES_AT_ISO = "2026-05-19T13:45:00+00:00"
+# Far-future expiry so the existing idempotency / cache-hit tests aren't
+# accidentally time-sensitive after the Phase 13 Codex W2 fix (cached
+# rollback decisions whose expires_at is past now-UTC are now treated as
+# cache misses). A specific test below pins the past-expiry behavior.
+_EXPIRES_AT_ISO = "2099-01-01T00:00:00+00:00"
 
 
 def _rollback_proposal() -> DecisionProposal:
@@ -294,6 +298,18 @@ def test_rollback_decision_does_not_execute_the_rollback(
     # worker's /execute (the only Cloud Run mutation surface).
     workers_called = {c.args[0] for c in m_call.call_args_list}
     assert workers_called <= {"reader", "rollback", "notifier"}
+
+    # Phase 13 Codex W4: also defend against an endpoint override. A future
+    # ``worker_client.call("rollback", payload, endpoint="/execute")`` would
+    # bypass the worker-name allowlist above but is still a HITL violation.
+    # Pin that no call site overrode endpoint to a mutation surface.
+    for call in m_call.call_args_list:
+        endpoint = call.kwargs.get("endpoint")
+        assert endpoint not in ("/execute", "/deny"), (
+            f"worker_client.call invoked with endpoint={endpoint!r} — that "
+            f"is a mutation surface and must only be reached via "
+            f"call_execute/call_deny on the operator-POST path."
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -619,6 +635,73 @@ def test_idempotent_retry_returns_cached_approval(
     # — the cached decision was returned without re-proposing.
     rollback_calls = [c for c in m_call.call_args_list if c.args[0] == "rollback"]
     assert len(rollback_calls) == 1
+
+
+def test_cached_rollback_with_expired_approval_re_proposes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Phase 13 Codex W2: a cached rollback decision past its 15-min TTL
+    must NOT be returned as a cache hit.
+
+    Without this guard, an operator who re-runs ``/recheck`` 16+ minutes
+    after the first rollback proposal would receive the dead approval URL
+    from the cache, with no way to recover short of ``force=true``. With
+    the guard, the expired cached decision is treated as a cache miss and
+    a fresh approval is minted.
+
+    The first call uses a deliberately stale ``expires_at`` (10 minutes in
+    the past); the second call uses the default far-future fixture.
+    """
+    monkeypatch.setenv("USE_ADK", "true")
+    get_settings.cache_clear()
+    _reset_state_for_tests()
+
+    stale_propose = {
+        "approval_id": _APPROVAL_ID,
+        "approval_token": _APPROVAL_TOKEN,
+        "approval_url": _APPROVAL_URL,
+        "expires_at": (
+            dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=10)
+        ).isoformat(),
+    }
+    fresh_propose = _propose_envelope()  # uses _EXPIRES_AT_ISO (far future)
+
+    propose_results = [stale_propose, fresh_propose]
+    propose_call_count = {"n": 0}
+
+    def dispatch(worker: str, payload: dict, *args: Any, **kwargs: Any) -> Any:
+        if worker == "reader":
+            return _reader_envelope(
+                {"PAYMENT_MODE": "live", "FEATURE_NEW_CHECKOUT": "false"}
+            )
+        if worker == "rollback":
+            i = propose_call_count["n"]
+            propose_call_count["n"] += 1
+            return propose_results[i]
+        if worker == "notifier":
+            return _notifier_envelope()
+        raise AssertionError(f"unexpected worker call: {worker!r}")
+
+    mock_run_agent = AsyncMock(return_value=_rollback_proposal())
+    with (
+        patch("agent.main._run_adk_agent", mock_run_agent),
+        patch("agent.main.worker_client.call") as m_call,
+    ):
+        m_call.side_effect = dispatch
+        client = TestClient(app)
+        r1 = client.post("/recheck")
+        r2 = client.post("/recheck")
+
+    assert r1.status_code == 200, r1.text
+    assert r2.status_code == 200, r2.text
+    # First response carries the now-stale expires_at.
+    assert r1.json()["approval"]["expires_at"] == stale_propose["expires_at"]
+    # Second response: cache hit was DROPPED (expired), so a fresh propose
+    # ran — operator gets the new far-future expires_at.
+    assert r2.json()["approval"]["expires_at"] == _EXPIRES_AT_ISO
+    # Rollback worker was called TWICE total — once per /recheck, because
+    # the first cache entry was treated as a miss.
+    assert propose_call_count["n"] == 2
 
 
 def test_rollback_on_non_adk_path_is_500(monkeypatch: pytest.MonkeyPatch) -> None:
