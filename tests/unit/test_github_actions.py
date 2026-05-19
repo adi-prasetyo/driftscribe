@@ -90,7 +90,8 @@ def test_open_docs_pr_creates_file_if_not_existing():
 def test_open_docs_pr_propagates_non_404_errors_from_get_contents():
     # A rate-limit or 5xx must NOT silently fall through to create_file
     repo = MagicMock()
-    base = MagicMock(); base.commit.sha = "sha-1"
+    base = MagicMock()
+    base.commit.sha = "sha-1"
     repo.get_branch.return_value = base
     repo.get_contents.side_effect = GithubException(403, "rate limit", {})
 
@@ -107,9 +108,11 @@ def test_open_docs_pr_returns_url_even_when_labeling_fails():
     # Labeling is best-effort — a label that doesn't exist yet shouldn't lose
     # the PR URL.
     repo = MagicMock()
-    base = MagicMock(); base.commit.sha = "sha-1"
+    base = MagicMock()
+    base.commit.sha = "sha-1"
     repo.get_branch.return_value = base
-    existing = MagicMock(); existing.sha = "file-sha"
+    existing = MagicMock()
+    existing.sha = "file-sha"
     repo.get_contents.return_value = existing
     pr = MagicMock()
     pr.html_url = "https://x/pull/99"

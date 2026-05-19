@@ -1,5 +1,5 @@
 import pytest
-from agent.contract import OpsContract, load_contract
+from agent.contract import load_contract
 
 QUOTED = """
 service: payment-demo

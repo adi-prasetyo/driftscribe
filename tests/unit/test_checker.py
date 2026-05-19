@@ -1,4 +1,3 @@
-from pathlib import Path
 from checker.cli import check_docs_cover_contract
 
 CONTRACT = """
@@ -163,7 +162,8 @@ expected_env:
 - `FEATURE_B=false` no note here.
 """
     (tmp_path / "ops-contract.yaml").write_text(contract)
-    docs = tmp_path / "docs"; docs.mkdir()
+    docs = tmp_path / "docs"
+    docs.mkdir()
     (docs / "runbook.md").write_text(runbook)
     r = check_docs_cover_contract(tmp_path / "ops-contract.yaml", tmp_path)
     assert not r.ok
