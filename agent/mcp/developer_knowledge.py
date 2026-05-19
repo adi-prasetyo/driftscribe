@@ -69,12 +69,14 @@ Wrapper guardrails layered on top of the raw MCP calls:
   ``... [truncated 4000/<original>]`` so the LLM knows the content was
   clipped.
 - Structured log emitted every call with the fields ``{trace_id,
-  mcp_server, mcp_tool, query_or_names, doc_count, latency_ms}``.
-  ``mcp_server`` carries the MCP target identity
-  (``"developer_knowledge"`` here); a future ``workload`` field
-  (carrying the calling workload — drift/upgrade — via ContextVar)
-  lands in 17.B.3/17.B.4 when the toolset is wired into a
-  workload-aware agent. The trace id is read from the same
+  workload, mcp_server, mcp_tool, query_or_names, doc_count,
+  latency_ms}``. ``mcp_server`` carries the MCP target identity
+  (``"developer_knowledge"`` here); ``workload`` carries the *caller*
+  identity (``"drift"`` / ``"upgrade"`` / ``"unknown"``) read from
+  the :func:`agent.workloads.current_workload` ContextVar bound by
+  the request handlers in :mod:`agent.main`. ``"unknown"`` covers
+  background calls and any test that exercises the wrapper outside
+  a request scope. The trace id is read from the same
   ``driftscribe_lib.logging`` ContextVar that
   :mod:`agent.worker_client` uses to propagate the per-request trace
   id to workers — log lines on the agent and outbound MCP calls
@@ -97,6 +99,17 @@ from typing import Any
 from google.adk.tools.mcp_tool import McpToolset
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 
+# Import the workload ContextVar from the package-root
+# :mod:`agent.workload_context` module, NOT from ``agent.workloads`` —
+# the ``agent.workloads`` package ``__init__.py`` imports
+# ``agent.workloads.registry``, which in turn imports the MCP wrappers
+# from this module. Going through the package would create a circular
+# import (the registry would re-enter this partially-initialized
+# module). ``agent.workload_context`` is a sibling module to
+# ``agent.workloads`` rather than a submodule, so importing it doesn't
+# trigger the workloads package ``__init__.py`` and the cycle is
+# avoided. See that module's docstring for the full rationale.
+from agent.workload_context import current_workload
 from driftscribe_lib.logging import current_trace_id_or_new
 
 
@@ -403,17 +416,20 @@ def _log_call(
     :class:`driftscribe_lib.logging.JSONFormatter` (which walks
     ``record.__dict__`` for caller-supplied extras). ``trace_id`` is
     read from the ContextVar set by the request middleware — same
-    source as :mod:`agent.worker_client`.
+    source as :mod:`agent.worker_client`. ``workload`` is read from
+    the :func:`agent.workloads.current_workload` ContextVar set by
+    the request handler before invoking the agent
+    (:func:`agent.main.chat`, :func:`agent.main._do_recheck`). It
+    defaults to ``"unknown"`` when no binding is in scope (background
+    tasks, unit tests not inside a request frame). Separating the two
+    fields — ``mcp_server`` (which MCP we called) vs ``workload`` (who
+    asked us to call it) — lets the observability dashboards slice
+    latency / failures / quota by caller, which is the whole point of
+    the per-workload routing in 17.A.3.
     """
-    # TODO(17.B.3): add ``workload`` field carrying the calling
-    # workload (drift/upgrade) via a ContextVar set by the coordinator
-    # before invoking the MCP wrapper. ``mcp_server`` here is the MCP
-    # target identity (which server we called); ``workload`` will be
-    # the caller identity (who asked us to call it). Both fields are
-    # load-bearing for observability dashboards once 17.B.3 wires the
-    # toolset into a workload-aware agent.
     extras = {
         "trace_id": current_trace_id_or_new(),
+        "workload": current_workload(),
         "mcp_server": "developer_knowledge",
         "mcp_tool": mcp_tool,
         "query_or_names": query_or_names,

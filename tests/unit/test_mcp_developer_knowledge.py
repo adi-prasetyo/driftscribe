@@ -395,19 +395,22 @@ def test_search_emits_structured_log_with_required_fields(caplog):
     # target identity (renamed from ``workload`` in 17.B.2 follow-up
     # — the previous name was confusing because ``workload`` reads
     # as "the caller's workload" (drift/upgrade), not "which MCP
-    # server we called". 17.B.3 will ADD a separate ``workload``
-    # field carrying the actual caller.
+    # server we called"). The 17.B.4 follow-up adds the separate
+    # ``workload`` field carrying the actual caller identity — see
+    # :func:`test_log_workload_defaults_to_unknown_when_no_scope_is_set`
+    # for the default and
+    # :func:`test_log_workload_reflects_set_workload_scope` for the
+    # scoped case.
     assert hasattr(rec, "trace_id")
     assert getattr(rec, "mcp_server", None) == "developer_knowledge"
     assert getattr(rec, "mcp_tool", None) == "search_documents"
     assert getattr(rec, "query_or_names", None) == "hello"
     assert getattr(rec, "doc_count", None) == 2
     assert isinstance(getattr(rec, "latency_ms", None), (int, float))
-    # ``workload`` field must NOT be present yet — 17.B.3 will add it
-    # carrying drift/upgrade. Pinning its absence here prevents a
-    # confusing dual-meaning during the gap between rename and the
-    # workload-aware wiring landing.
-    assert not hasattr(rec, "workload")
+    # ``workload`` defaults to ``"unknown"`` outside a request scope
+    # (this test sets no ContextVar). The scoped/default split is
+    # exercised more rigorously in the two dedicated tests below.
+    assert getattr(rec, "workload", None) == "unknown"
 
 
 def test_retrieve_emits_structured_log_with_required_fields(caplog):
@@ -442,6 +445,54 @@ def test_log_includes_real_trace_id_when_request_scoped(caplog):
 
     records = [r for r in caplog.records if getattr(r, "mcp_tool", None) == "search_documents"]
     assert records[0].trace_id == "a" * 32
+
+
+def test_log_workload_defaults_to_unknown_when_no_scope_is_set(caplog):
+    """Phase 17.B.4 follow-up: when no caller has bound the workload
+    ContextVar (background task, unit test, etc.), the structured log
+    must carry ``workload="unknown"`` rather than an empty string or a
+    missing field. Mirrors the trace-id default-of-``-`` pattern in
+    :class:`driftscribe_lib.logging.TraceIdFilter`: a sentinel is much
+    clearer in dashboards than blank/missing data.
+
+    The ContextVar default is set in :mod:`agent.workloads._context`
+    to ``"unknown"``; this test pins that the default flows through
+    the wrapper's ``_log_call`` unchanged.
+    """
+    mock_call = AsyncMock(return_value=_make_search_result(count=1, content_len=10))
+    with patch.object(dk, "_call_mcp_tool", mock_call):
+        with caplog.at_level(logging.INFO, logger="agent.mcp.developer_knowledge"):
+            asyncio.run(search_developer_docs("default-scope-q"))
+
+    records = [r for r in caplog.records if getattr(r, "mcp_tool", None) == "search_documents"]
+    assert len(records) == 1
+    assert getattr(records[0], "workload", None) == "unknown"
+
+
+def test_log_workload_reflects_set_workload_scope(caplog):
+    """Phase 17.B.4 follow-up: when the request handler binds the
+    workload ContextVar (the canonical binding points are
+    :func:`agent.main.chat` and :func:`agent.main._do_recheck` on
+    the ADK path), the wrapper's structured log must carry that
+    workload identity. Pins the contract between the binding and the
+    consumer at the unit-test layer — the matching integration test
+    (in :mod:`tests.integration.test_workload_contextvar_propagation`)
+    verifies the binding actually happens on the request path.
+    """
+    from agent.workloads import reset_workload, set_workload
+
+    token = set_workload("drift")
+    try:
+        mock_call = AsyncMock(return_value=_make_search_result(count=1, content_len=10))
+        with patch.object(dk, "_call_mcp_tool", mock_call):
+            with caplog.at_level(logging.INFO, logger="agent.mcp.developer_knowledge"):
+                asyncio.run(search_developer_docs("scoped-q"))
+    finally:
+        reset_workload(token)
+
+    records = [r for r in caplog.records if getattr(r, "mcp_tool", None) == "search_documents"]
+    assert len(records) == 1
+    assert getattr(records[0], "workload", None) == "drift"
 
 
 # --------------------------------------------------------------------------- #

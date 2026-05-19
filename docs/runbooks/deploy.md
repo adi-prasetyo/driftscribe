@@ -339,12 +339,14 @@ re-bootstrapping unless you've added a new SA, secret, or service.
   `--set-secrets` reference points at a secret that doesn't exist yet.
   Re-run `setup_secrets.sh` with all five args (PROJECT, GH_PAT, DOCS_PAT,
   WEBHOOK_URL, DK_API_KEY).
-- **Coordinator logs `ConfigError: DEVELOPER_KNOWLEDGE_API_KEY missing`**:
+- **Coordinator logs `MissingDeveloperKnowledgeApiKeyError`**:
   the `--set-secrets=DEVELOPER_KNOWLEDGE_API_KEY=...` reference was
   stripped from the coordinator deploy step, or the secret has no
   versions. Restore the reference in `infra/cloudbuild.yaml`, confirm
   `gcloud secrets versions list developer-knowledge-api-key` shows at
-  least one ENABLED version, then redeploy.
+  least one ENABLED version, then redeploy. The exception class is
+  defined in `agent/mcp/developer_knowledge.py` and surfaces as 503
+  on both `/chat` and `/recheck`.
 - **MCP requests return `403 API_KEY_API_RESTRICTED`**: the API key
   restriction was set to a different API (or no API). Re-edit the key
   in the Console and restrict it to **only** the Developer Knowledge API

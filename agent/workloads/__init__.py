@@ -19,6 +19,14 @@ boundary called out in the Phase 17 plan:
 This is a Codex-flagged design property — see the Phase 17 plan header
 for the threat model.
 """
+# Re-export the workload ContextVar helpers from the package-root
+# :mod:`agent.workload_context` module (NOT a submodule here — see
+# that module's docstring for the circular-import rationale that
+# forced the unusual location). The re-export keeps the public API
+# surface intuitive: callers import ``set_workload`` etc. from
+# ``agent.workloads``, the obvious home, without knowing about the
+# physical-location workaround.
+from agent.workload_context import current_workload, reset_workload, set_workload
 from agent.workloads.spec import WorkloadSpec
 from agent.workloads.registry import (
     ActionSpec,
@@ -50,5 +58,8 @@ __all__ = [
     "WorkloadPathTraversalError",
     "WorkloadResolution",
     "WorkloadSpec",
+    "current_workload",
     "load_workload",
+    "reset_workload",
+    "set_workload",
 ]

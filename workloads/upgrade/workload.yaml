@@ -3,16 +3,24 @@
 #
 # This file is the scaffolding for the dependency-upgrade workload
 # landing in 17.C. It is intentionally complete enough to validate
-# against the WorkloadSpec schema. As of 17.B.3, the Developer
-# Knowledge MCP tools (`search_developer_docs`,
-# `retrieve_developer_doc`) ARE implemented; the upgrade_* tools and
-# session-state tools (`upgrade_read_dependencies`, `upgrade_propose_pr`,
-# `get_session_state`, `set_session_state`) are still
-# reserved-but-not-yet-implemented in the registry. Calling
-# `load_workload("upgrade")` will therefore raise
+# against the WorkloadSpec schema. As of 17.B.4 follow-up, the Developer
+# Knowledge MCP tools (`search_developer_docs`, `retrieve_developer_doc`)
+# ARE implemented; the upgrade_* tools (`upgrade_read_dependencies`,
+# `upgrade_propose_pr`) are still reserved-but-not-yet-implemented in
+# the registry. Calling `load_workload("upgrade")` will therefore raise
 # `ReservedToolNotImplementedError` (subclass of `UnknownToolError`)
-# with a clear "not yet implemented" message until 17.B/17.C ship the
-# remaining four tools.
+# with a clear "not yet implemented" message until 17.C ships the
+# remaining two tools.
+#
+# Session-state tools (`get_session_state` / `set_session_state`) were
+# previously listed here as aspirational future work; the 17.B.4 review
+# (Codex) flagged that they remain `None` in `TOOL_REGISTRY` and would
+# therefore make `load_workload("upgrade")` fail with
+# `ReservedToolNotImplementedError` even AFTER 17.C wires the upgrade_*
+# tools. Removed from this enabled list now; they stay reserved in
+# `_TOOL_REGISTRY` so the reserved-tool inventory test still pins their
+# names. If ADK session-state becomes a real requirement, re-add them
+# here in the same PR that flips their registry entries to callables.
 #
 # That failure mode is deliberate: it pins the workload manifest's
 # shape now (so the YAML format doesn't churn during 17.C) without
@@ -22,6 +30,9 @@
 # - Replace `system_prompt.md` content with the real upgrade prompt.
 # - Implement the upgrade_* tools and flip their TOOL_REGISTRY entries
 #   from None to the real callables.
+# - `load_workload("upgrade")` should then succeed end-to-end (the
+#   session-state tools were removed from this list in the 17.B.4
+#   follow-up, so 17.C's tool implementations close the last gap).
 # - 17.E sets UPGRADE_READER_URL and UPGRADE_DOCS_URL in the deploy.
 
 name: upgrade
@@ -39,13 +50,17 @@ system_prompt_file: system_prompt.md
 # Schema permits contract_file=null for exactly this case.
 contract_file: null
 
-# Symbolic tool names. As of 17.B.3: `search_developer_docs` and
-# `retrieve_developer_doc` are real callables (wired via the Developer
-# Knowledge MCP); `notify` and `search_recent_prs` have always been
-# real; `upgrade_*` and `get/set_session_state` are still reserved
-# (None in TOOL_REGISTRY) and `load_workload("upgrade")` will fail
-# with `ReservedToolNotImplementedError` for those four until 17.B/17.C
-# implements them.
+# Symbolic tool names. As of the 17.B.4 follow-up:
+# `search_developer_docs` and `retrieve_developer_doc` are real
+# callables (wired via the Developer Knowledge MCP); `notify` and
+# `search_recent_prs` have always been real; the two `upgrade_*` tools
+# are still reserved (None in TOOL_REGISTRY) and
+# `load_workload("upgrade")` will fail with
+# `ReservedToolNotImplementedError` for those until 17.C ships them.
+#
+# Session-state tools are intentionally NOT listed (see header
+# comment): they remain reserved in `_TOOL_REGISTRY` but no workload
+# enables them today.
 enabled_tool_names:
   - upgrade_read_dependencies
   - upgrade_propose_pr
@@ -53,8 +68,6 @@ enabled_tool_names:
   - search_recent_prs
   - search_developer_docs
   - retrieve_developer_doc
-  - get_session_state
-  - set_session_state
 
 # Symbolic worker names. Drift workers are excluded — upgrade has its
 # own reader/docs workers (different IAM, different repo path
