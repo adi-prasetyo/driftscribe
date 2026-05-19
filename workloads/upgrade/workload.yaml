@@ -46,9 +46,15 @@ description: >
 # Relative to this workload's directory (workloads/upgrade/).
 system_prompt_file: system_prompt.md
 
-# Upgrade reads dependencies from a repo lockfile, not a YAML contract.
-# Schema permits contract_file=null for exactly this case.
-contract_file: null
+# Upgrade reads dependencies from a repo lockfile (the *observation*
+# source), but the workload still has a YAML *contract* — the
+# decision-rules file at workloads/upgrade/contract.yaml (Phase 17.C.1).
+# The contract file carries decision thresholds (severity, version
+# jump, requires_approval); authority fields (target_repo, lockfile_path,
+# advisory_source) live in agent/workloads/registry.py::UPGRADE_TARGET_REGISTRY.
+# See workloads/upgrade/contract.yaml header for the Codex 2026-05-20
+# split rationale.
+contract_file: contract.yaml
 
 # Symbolic tool names. As of the 17.B.4 follow-up:
 # `search_developer_docs` and `retrieve_developer_doc` are real
@@ -80,9 +86,12 @@ worker_names:
 # Upgrade observes the repo's lockfile, not a Cloud Run env.
 observation_kind: repo_lockfile
 
-# Symbolic action names. Upgrade introduces upgrade_pr; no_op and
-# escalation are reused from the drift action vocabulary.
+# Symbolic action names. Upgrade introduces upgrade_pr; docs_pr,
+# escalation, and no_op are reused from the drift action vocabulary
+# (the contract uses docs_pr for the "advisory exists but caller
+# upgrades manually" path — see workloads/upgrade/contract.yaml).
 action_names:
   - upgrade_pr
+  - docs_pr
   - escalation
   - no_op

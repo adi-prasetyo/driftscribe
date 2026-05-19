@@ -29,29 +29,36 @@ for the threat model.
 from agent.workload_context import current_workload, reset_workload, set_workload
 from agent.workloads.spec import WorkloadSpec
 from agent.workloads.registry import (
+    UPGRADE_TARGET_REGISTRY,
     ActionSpec,
     MissingWorkerEnvError,
     ReservedToolNotImplementedError,
     UnknownActionError,
     UnknownToolError,
+    UnknownUpgradeTargetError,
     UnknownWorkerError,
     UnknownWorkloadError,
+    UpgradeTarget,
     WorkerEndpoint,
     WorkerSpec,
     WorkloadManifestMismatchError,
     WorkloadPathTraversalError,
     WorkloadResolution,
     load_workload,
+    resolve_upgrade_target,
 )
 
 __all__ = [
     "ActionSpec",
     "MissingWorkerEnvError",
     "ReservedToolNotImplementedError",
+    "UPGRADE_TARGET_REGISTRY",
     "UnknownActionError",
     "UnknownToolError",
+    "UnknownUpgradeTargetError",
     "UnknownWorkerError",
     "UnknownWorkloadError",
+    "UpgradeTarget",
     "WorkerEndpoint",
     "WorkerSpec",
     "WorkloadManifestMismatchError",
@@ -60,6 +67,7 @@ __all__ = [
     "WorkloadSpec",
     "current_workload",
     "load_workload",
+    "resolve_upgrade_target",
     "reset_workload",
     "set_workload",
 ]
