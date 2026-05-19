@@ -36,11 +36,22 @@ steps:
       # depends on driftscribe_lib/ at the project root.
       - .
   - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-docs:${_TAG}
+      - -f
+      - workers/docs/Dockerfile
+      # Same build-context-at-repo-root rationale as the reader above.
+      - .
+  - name: gcr.io/cloud-builders/docker
     args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-agent:${_TAG}']
   - name: gcr.io/cloud-builders/docker
     args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/payment-demo:${_TAG}']
   - name: gcr.io/cloud-builders/docker
     args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-reader:${_TAG}']
+  - name: gcr.io/cloud-builders/docker
+    args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-docs:${_TAG}']
 
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
     entrypoint: gcloud
@@ -145,7 +156,58 @@ steps:
           --region=asia-northeast1 \
           --update-env-vars=OWN_URL=$${URL}
 
+  # Docs Agent (Phase 11.4) — worker #2 of 4. Scoped GitHub PR creator.
+  # Layer 1: docs-agent-sa has NO project-level GCP grants. Its only
+  # privilege is access to the docs-agent-github-pat Secret Manager secret
+  # (per-secret binding). The PAT itself is a fine-grained GitHub token
+  # scoped to a single repository (adi-prasetyo/driftscribe) with
+  # Contents+PR write only — no org / admin / other-repo access.
+  # Layer 3: --no-allow-unauthenticated forces ID-token auth; the worker
+  # ALSO enforces an in-app caller email allowlist via verify_caller.
+  #
+  # Same two-step OWN_URL pattern as the reader (see note above).
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - driftscribe-docs
+      - --image=asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-docs:${_TAG}
+      - --region=asia-northeast1
+      - --no-allow-unauthenticated
+      - --service-account=docs-agent-sa@$PROJECT_ID.iam.gserviceaccount.com
+      - --min-instances=0
+      - --max-instances=1
+      - --concurrency=1
+      # OWN_URL placeholder — overwritten by the next step in this same
+      # build. If the next step fails, verify_caller rejects every audience
+      # (fail-closed). TARGET_REPO is the hardcoded repo for Layer 2 policy
+      # — the worker refuses any caller-supplied repo field.
+      - --set-env-vars=GCP_PROJECT=$PROJECT_ID,TARGET_REPO=adi-prasetyo/driftscribe,OWN_URL=https://placeholder.invalid,ALLOWED_CALLERS=driftscribe-agent@$PROJECT_ID.iam.gserviceaccount.com
+      # The docs-agent-github-pat secret MUST exist in Secret Manager BEFORE
+      # the first build that includes this line (same rationale as the
+      # coordinator-shared-token in the coordinator deploy step above).
+      - --set-secrets=GITHUB_TOKEN=docs-agent-github-pat:latest
+
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        URL=$$(gcloud run services describe driftscribe-docs \
+          --region=asia-northeast1 --format='value(status.url)')
+        if [ -z "$${URL}" ] || [ "$${URL}" = "https://placeholder.invalid" ]; then
+          echo "ERROR: Could not resolve driftscribe-docs URL" >&2
+          exit 1
+        fi
+        echo "Setting OWN_URL=$${URL} on driftscribe-docs"
+        gcloud run services update driftscribe-docs \
+          --region=asia-northeast1 \
+          --update-env-vars=OWN_URL=$${URL}
+
 images:
   - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-agent:${_TAG}
   - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/payment-demo:${_TAG}
   - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-reader:${_TAG}
+  - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-docs:${_TAG}
