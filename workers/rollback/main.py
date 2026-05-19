@@ -468,7 +468,10 @@ def execute(
         raise HTTPException(status_code=403, detail="approval expired")
 
     expected_hmac = compute_token_hmac(
-        req.approval_token, approval.target_revision, APPROVAL_HMAC_KEY
+        req.approval_token,
+        approval.approval_id,
+        approval.target_revision,
+        APPROVAL_HMAC_KEY,
     )
     if not hmac_mod.compare_digest(expected_hmac, approval.token_hmac):
         log.warning(
@@ -505,4 +508,91 @@ def execute(
         "target_revision": approval.target_revision,
         "status": "executed",
         "operation_name": operation_name,
+    }
+
+
+@app.post("/deny")
+def deny(
+    req: ExecuteRequest,
+    caller: str = Depends(_verify_caller_dep),
+) -> dict:
+    """Verify the approval token and transactionally flip status to denied.
+
+    Phase 11.9 fix (Codex review of 11.7, critical finding #1): the
+    coordinator's reject path used to call ``ApprovalStore.claim_denied``
+    directly without validating the approval token. That meant anyone
+    holding only the ``approval_id`` could deny a pending rollback — a
+    HITL availability bug (operator can be locked out of the rollback
+    they intended to approve).
+
+    The fix mirrors ``/execute`` exactly. The rollback worker is the only
+    service holding ``APPROVAL_HMAC_KEY``, so it is the only service that
+    can verify the operator's intent on the deny path too. Splitting the
+    deny authority this way preserves the "compromised coordinator can
+    refuse executions but cannot mint them" property AND adds "cannot
+    silently deny them" — the operator's token is now required for BOTH
+    decision paths.
+
+    Verification order mirrors ``/execute``:
+
+    1. Look up the doc (404 if missing).
+    2. Status pre-check (403 if not pending) — replay defense.
+    3. Expiry check (403 if past TTL).
+    4. Constant-time HMAC compare against the stored ``token_hmac``.
+    5. Transactional ``pending → denied`` flip. Race-safe.
+
+    Unlike ``/execute``, the deny path does NOT touch Cloud Run admin or
+    mutate traffic. The Firestore status flip is the entire side effect.
+
+    Status codes:
+
+    - **200**: approval transactionally moved to denied. Body:
+      ``{approval_id, status: "denied"}``.
+    - **404**: approval doc not found.
+    - **403**: status not pending / expired / wrong token / lost race.
+    - **401/403**: auth failure (delegated to ``verify_caller``).
+    """
+    store = _get_approval_store()
+
+    approval = store.get(req.approval_id)
+    if approval is None:
+        raise HTTPException(status_code=404, detail="approval not found")
+    if approval.status != "pending":
+        raise HTTPException(
+            status_code=403,
+            detail=f"approval status is {approval.status!r}, not 'pending'",
+        )
+    if approval.expires_at < dt.datetime.now(dt.timezone.utc):
+        raise HTTPException(status_code=403, detail="approval expired")
+
+    expected_hmac = compute_token_hmac(
+        req.approval_token,
+        approval.approval_id,
+        approval.target_revision,
+        APPROVAL_HMAC_KEY,
+    )
+    if not hmac_mod.compare_digest(expected_hmac, approval.token_hmac):
+        log.warning(
+            "deny: HMAC mismatch id=%s caller=%s",
+            req.approval_id, caller,
+        )
+        raise HTTPException(status_code=403, detail="invalid approval token")
+
+    claimed = store.claim_denied(req.approval_id)
+    if claimed is None:
+        # Pre-check said pending; transactional claim lost — concurrent
+        # /deny or /execute, or a coordinator-side state change. Either
+        # way, refuse.
+        raise HTTPException(
+            status_code=403,
+            detail="approval already used or revoked",
+        )
+
+    log.info(
+        "deny: id=%s rev=%s caller=%s",
+        req.approval_id, approval.target_revision, caller,
+    )
+    return {
+        "approval_id": req.approval_id,
+        "status": "denied",
     }

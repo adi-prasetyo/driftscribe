@@ -443,6 +443,50 @@ def get_run(decision_id: str):
     return d
 
 
+def _map_worker_error(
+    e: "worker_client.WorkerClientError", *, action: str
+) -> HTTPException:
+    """Map a rollback worker error to a coordinator-facing HTTPException.
+
+    Phase 11.9 (Codex review of 11.7, watch item #2): the prior code
+    collapsed every worker error into a 403. That over-collapses two
+    operationally important signals:
+
+    - 409 (tag preflight): operator can clear the tag and retry the
+      same approval. Surfacing this as 403 would tell the operator
+      "your approval is bad" and they'd re-propose unnecessarily.
+    - 5xx (worker outage / transport): distinct failure mode from "your
+      approval is bad". Mapping to 502 lets retries and observability
+      treat it as an upstream availability problem.
+
+    Other 4xx (403 bad token, 403 expired, 403 already used, 422 schema,
+    404 missing) still collapse to 403 so the response code cannot be
+    used by an unauthenticated probe to enumerate approval state.
+
+    The HTTPException detail deliberately does NOT echo the worker's
+    body for the 403 case — that's what made Codex flag the original.
+    For 409 / 502 the operator NEEDS the detail to act, so we include
+    a short prefix indicating the action and surface the worker's
+    truncated body.
+    """
+    if e.status_code == 409:
+        return HTTPException(
+            status_code=409,
+            detail=f"rollback worker conflict on {action}: {e}",
+        )
+    if 500 <= e.status_code < 600:
+        return HTTPException(
+            status_code=502,
+            detail=f"rollback worker unavailable on {action}: {e}",
+        )
+    # All other 4xx — collapse to 403 without echoing which specific
+    # worker-side check failed.
+    return HTTPException(
+        status_code=403,
+        detail=f"rollback {action} failed",
+    )
+
+
 # --------------------------------------------------------------------------- #
 # HITL approval endpoints (Phase 11.7)
 # --------------------------------------------------------------------------- #
@@ -524,51 +568,63 @@ def approval_post(
 ) -> Response:
     """Process the operator's Approve / Reject decision.
 
-    Token validation strategy (key design choice):
+    Token validation strategy (key design choice, Phase 11.9):
 
     - **Approve**: the coordinator does NOT verify the HMAC itself. It
       hands ``(approval_id, t)`` to the Rollback worker's ``/execute``
       via :func:`worker_client.call_execute`, and the worker (which is
       the only service holding the HMAC key) does the verify +
       transactional pending→used flip + Cloud Run traffic update.
-      Confused-deputy defense: a compromised coordinator can refuse
-      executions (by denying) but cannot mint them.
-    - **Reject**: the coordinator transactionally flips
-      pending→denied via :func:`approval_helpers.deny`. Replay → 403.
+    - **Reject**: the coordinator likewise hands ``(approval_id, t)``
+      to the Rollback worker's ``/deny`` via
+      :func:`worker_client.call_deny`. The worker verifies the HMAC
+      AND transactionally flips pending→denied. Same authority split as
+      approve — the coordinator can only initiate either action with
+      a valid operator-presented token.
 
-    Status codes:
+    The pre-11.9 design called :func:`approval_helpers.deny` directly
+    from the coordinator without token validation. Codex review of 11.7
+    flagged that as a HITL availability bug (anyone with just the
+    ``approval_id`` could deny a pending rollback). Both decision paths
+    now go through the worker so the "compromised coordinator cannot
+    mint OR silently deny executions" property holds end-to-end.
+
+    Status code mapping for worker errors (BOTH paths):
+
+    - **409**: passed through — tag-preflight or similar operational
+      conflict that the operator can resolve. Distinct from "your
+      approval is bad".
+    - **5xx → 502**: worker outage. Distinct from "your approval is bad".
+    - **other 4xx → 403**: collapsed. Bad token, expired, already used
+      — all surface as 403 so an unauthenticated probe cannot enumerate
+      approval state from the response code.
+
+    Status codes returned by this endpoint:
 
     - **200**: page re-rendered showing the new state.
     - **403**: replay / already-resolved / wrong token / worker
-      rejected the execute. Surface as a 403 with a generic message
-      so probing cannot distinguish "wrong token" from
-      "already used".
+      rejected the action with another 4xx. Generic message so probing
+      cannot distinguish "wrong token" from "already used".
+    - **409**: tag-preflight conflict or similar.
+    - **502**: rollback worker unreachable or returned 5xx.
     """
     store = approval_helpers.get_approval_store()
     execute_result: dict | None = None
 
     if decision == "reject":
-        denied = approval_helpers.deny(store, approval_id)
-        if denied is None:
-            # The doc was missing or no longer pending — replay-safe
-            # by design. Collapse to a single 403 so the response
-            # doesn't distinguish "not found" from "already resolved".
-            raise HTTPException(
-                status_code=403,
-                detail="approval cannot be rejected (already resolved or missing)",
-            )
+        try:
+            execute_result = worker_client.call_deny(approval_id, t)
+        except worker_client.WorkerClientError as e:
+            # Worker rejected the deny: bad token, expired, missing,
+            # already used/denied, etc. Pass through 409 + map 5xx to
+            # 502 (see docstring); everything else collapses to 403.
+            raise _map_worker_error(e, action="deny") from e
     else:  # approve
         try:
             execute_result = worker_client.call_execute(approval_id, t)
         except worker_client.WorkerClientError as e:
-            # Worker rejected: bad token, expired, already used, tag
-            # preflight, etc. Surface a 403 with a short detail —
-            # echoing the worker's full body could leak internal URLs
-            # or stack traces into the operator's browser.
-            raise HTTPException(
-                status_code=403,
-                detail=f"rollback execute failed: {e}",
-            ) from e
+            # Same mapping as the reject path — see :func:`_map_worker_error`.
+            raise _map_worker_error(e, action="execute") from e
 
     # Re-fetch the doc so the page reflects the new status.
     approval = store.get(approval_id)

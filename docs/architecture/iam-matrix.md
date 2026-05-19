@@ -8,7 +8,7 @@ This document is the source of truth for **what each service account can do, and
 
 | Service Account | Cloud Run service it backs | IAM bindings (positive) | Negative-space (explicit non-grants) | Phase |
 | --- | --- | --- | --- | --- |
-| `driftscribe-agent@…` (coordinator) | `driftscribe-agent` | `roles/run.invoker` on each worker service (per-service binding, not project-wide); `roles/secretmanager.secretAccessor` on the *specific named secrets* the coordinator needs (`coordinator-shared-token`, `github-pat`, `gemini-api-key`); `roles/datastore.user` (project-wide — accepted constraint; Firestore doesn't offer collection-scope IAM, and the coordinator owns `approvals/` and `sessions/` writes — specifically the `pending → denied` flip on the approvals collection, see Phase 11.7 design notes). **Note:** the coordinator does NOT hold `approval-hmac-key` — only the rollback worker does, which is what makes the approve/deny authority split meaningful (a compromised coordinator can refuse executions but cannot mint them). | **NOT** `roles/run.developer` (cannot deploy/modify Cloud Run — Phase 11.7 delegated this entirely to the rollback worker, resource-scoped to `payment-demo`); **NOT** `roles/run.viewer` at project scope (Phase 11.7 delegated to the reader worker); **NOT** `roles/secretmanager.secretAccessor` at project scope (only the named secrets above); **NOT** `roles/iam.serviceAccountTokenCreator` (cannot impersonate any other SA); **NOT** GitHub admin scope (the coordinator's read-only PAT is scoped to PR list/read on the demo repo; the docs worker holds a *separate* fine-grained PAT for `Contents: write` + `Pull requests: write`); **NOT** the rollback HMAC key | 8 (initial); IAM trimmed in 11.7 |
+| `driftscribe-agent@…` (coordinator) | `driftscribe-agent` | `roles/run.invoker` on each worker service (per-service binding, not project-wide); `roles/secretmanager.secretAccessor` on the *specific named secrets* the coordinator needs (`coordinator-shared-token`, `github-pat`, `gemini-api-key`); `roles/datastore.user` (project-wide — accepted constraint; Firestore doesn't offer collection-scope IAM, the coordinator writes to `sessions/` for the state store and READS `approvals/` to render the operator-facing approval page — the `pending → denied` flip itself moved to the rollback worker in Phase 11.9, see [the carry-over note](#phase-119-carry-overs-from-codex-11-7-review)). `roles/run.viewer` (project — see acknowledged constraint below: the legacy classifier path still calls `read_live_env` directly; closing this is a Phase 13 carry-over). **Note:** the coordinator does NOT hold `approval-hmac-key` — only the rollback worker does, which is what makes the approve/deny authority split meaningful (a compromised coordinator can refuse executions but cannot mint OR silently deny them after Phase 11.9). | **NOT** `roles/run.developer` (cannot deploy/modify Cloud Run — Phase 11.7 delegated this entirely to the rollback worker, resource-scoped to `payment-demo`); **NOT** `roles/secretmanager.secretAccessor` at project scope (only the named secrets above); **NOT** `roles/iam.serviceAccountTokenCreator` (cannot impersonate any other SA); **NOT** GitHub admin scope. The coordinator's `github-pat` MUST be a **read-only fine-grained PAT** scoped to `adi-prasetyo/driftscribe` with only `Pull requests: Read` — feeding `search_recent_prs_tool` (read-only PR metadata). The docs worker holds a *separate* fine-grained PAT for `Contents: write` + `Pull requests: write`. If the operator deployed prior to the Phase 11.9 runbook update (`docs/runbooks/deploy.md`) with a classic PAT, the negative-space claim "no GitHub write capability" is weakened until rotation — Codex review of 11.7 surfaced this gap. **NOT** the rollback HMAC key. | 8 (initial); IAM trimmed in 11.7; further doc-corrections in 11.9 |
 | `reader-agent-sa@…` | `driftscribe-reader` | `roles/run.viewer` on the project (lets it call Cloud Run admin to read service env + revision lists) | **NOT** `roles/run.developer` (cannot deploy or modify any service); **NOT** `roles/iam.serviceAccountTokenCreator`; **NOT** any Secret Manager access; **NOT** any GitHub credentials | 11.3 |
 | `docs-agent-sa@…` | `driftscribe-docs` | `roles/secretmanager.secretAccessor` on **one** secret only: `docs-agent-github-pat` (per-secret binding); `roles/run.invoker` granted *to the coordinator on this service* (per-service binding, set after first deploy) | **NOT** any project-level GCP role; **NOT** able to read or write Cloud Run state; **NOT** Firestore; **NOT** any other secret; **NOT** any GCP-level GitHub credential. The GitHub PAT injected as `GITHUB_TOKEN` is fine-grained: `Contents: Read & write` + `Pull requests: Read & write` on `adi-prasetyo/driftscribe` *only* — no org admin, no other repos, no account-level scopes. The worker's Layer 2 policy additionally hardcodes the target repo via env (caller cannot override), enforces a `^demo/docs/[^/]+\.md$` path allowlist with `normpath`-based traversal defense, refuses hidden files, requires the branch to start with `driftscribe/`, and refuses any base other than `main` | 11.4 |
 | `rollback-agent-sa@…` | `driftscribe-rollback` | `roles/run.developer` **on `payment-demo` service only** via a resource-scoped binding (`gcloud run services add-iam-policy-binding payment-demo --member=… --role=roles/run.developer`); `roles/datastore.user` (project-wide — same [acknowledged constraint](#acknowledged-constraints) as coordinator: Firestore lacks collection-scope IAM); `roles/secretmanager.secretAccessor` on `approval-hmac-key` only; `roles/run.invoker` granted *to the coordinator on this service* (per-service binding, set after first deploy). The worker's Layer 2 policy hardcodes `TARGET_SERVICE=payment-demo` via env, refuses any caller-supplied service field (`extra="forbid"` schema), refuses rollback targets that aren't in the service's revision list, and refuses rollback targets equal to the currently-active revision. Layer 4 enforces a single-use HMAC-bound approval token with a 15-min TTL and transactional `pending→used` flip — see [`driftscribe_lib/approvals.py`](../../driftscribe_lib/approvals.py) | **NOT** project-wide `roles/run.developer` (cannot touch the coordinator, the reader, the docs worker, or itself); **NOT** any other Cloud Run service (resource-scoped binding only on `payment-demo`); **NOT** any other Secret Manager secret; **NOT** GitHub access of any kind; **NOT** `roles/iam.serviceAccountTokenCreator` | 11.5 |
@@ -105,6 +105,44 @@ gcloud projects remove-iam-policy-binding ${PROJECT} \
 ```
 
 **Critical:** do NOT remove `roles/datastore.user` from the coordinator. The coordinator still owns the `pending → denied` flip on the approvals collection (Phase 11.7 design) and writes to the `sessions/` collection for the state store. Removing this grant would break both /recheck idempotency and the approval reject path.
+
+## Phase 11.9 carry-overs from Codex 11.7 review
+
+Codex review of Phase 11 surfaced two Layer 1 weaknesses that the 11.9
+follow-up commit chose to document rather than close immediately. Both
+are explicitly slated for Phase 13:
+
+- **`roles/run.viewer` on the coordinator is still present.** The
+  legacy classifier path (`USE_ADK=false`) calls
+  `agent.cloud_run_client.read_live_env` directly to fetch the live
+  Cloud Run env before delegating to the deterministic classifier.
+  Closing this requires routing the classifier through the Reader
+  Worker too — same change shape as Phase 11.7 did for the ADK path.
+  Until that lands, the coordinator can read Cloud Run state on every
+  service in the project, not just `payment-demo`. The Layer 1 claim
+  "coordinator cannot read other services' state" is therefore weaker
+  than the negative-space column would otherwise suggest.
+
+- **`github-pat` blast radius depends on operator hygiene.** The
+  coordinator's `search_recent_prs_tool` only ever calls GitHub's PR
+  list/read APIs, so a properly-scoped fine-grained PAT (`Pull
+  requests: Read`, single repo) has the same effective capability as a
+  no-write IAM grant would. But Secret Manager does not enforce the
+  PAT's scope — if the operator stores a classic PAT in the
+  `github-pat` secret, the coordinator effectively has GitHub write
+  capability even though the application code never exercises it. The
+  Phase 11.9 deploy runbook (`docs/runbooks/deploy.md`) now requires a
+  fine-grained PAT; Phase 13 should follow up with an audit script or
+  startup-time scope check.
+
+The application-level Layer 0 (tool registry, see
+[`multi-agent-design.md`](./multi-agent-design.md) §4) means the LLM
+cannot exercise either of these weaknesses through normal control
+flow — the only tools that can read Cloud Run or call GitHub at all
+are `read_live_env_tool` (delegates to Reader worker) and
+`search_recent_prs_tool` (read-only PR list). The Layer 1 weakening
+is what would manifest if the coordinator's own code were exploited
+(e.g., the classifier path) or if the SA were directly impersonated.
 
 ## Cross-references
 

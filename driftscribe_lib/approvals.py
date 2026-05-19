@@ -15,17 +15,22 @@ The "approval token" is a single-use credential the operator presents to
 
 1. **Server-side storage is HMAC, not plaintext.** The raw token is
    returned exactly once (from :meth:`ApprovalStore.create`) and never
-   persisted anywhere. Only ``hmac(hmac_key, f"{token}|{revision}")`` is
-   written to Firestore. A Firestore exfiltration alone cannot mint an
+   persisted anywhere. Only
+   ``hmac(hmac_key, f"{token}|{approval_id}|{revision}")`` is written
+   to Firestore. A Firestore exfiltration alone cannot mint an
    ``/execute`` request — the attacker would also need the HMAC key from
    Secret Manager.
 
-2. **The HMAC binds the target revision.** Mixing the revision into the
-   HMAC input means a stolen-and-replayed approval for revision A cannot
-   be redirected to roll back to revision B — the HMACs differ, and the
-   constant-time comparison in the worker's ``/execute`` handler will
-   fail. (See the negative test
+2. **The HMAC binds both the approval_id and the target revision.**
+   Mixing the revision into the HMAC input means a stolen-and-replayed
+   approval for revision A cannot be redirected to roll back to revision
+   B — the HMACs differ, and the constant-time comparison in the
+   worker's ``/execute`` handler will fail. (See the negative test
    ``test_rollback.py::test_execute_rejects_wrong_revision_token``.)
+   Mixing the ``approval_id`` in additionally forecloses cross-approval
+   replay — token issued for approval A cannot be presented against
+   approval B even if both share the same target revision. (Phase 11.9
+   defense-in-depth, from Codex review of 11.7.)
 
 3. **Transactional pending → used flip.** :meth:`ApprovalStore.claim_pending`
    uses a Firestore transaction so concurrent ``/execute`` calls race
@@ -68,20 +73,37 @@ class Approval:
     status: str  # "pending" | "approved" | "denied" | "used"
 
 
-def compute_token_hmac(token: str, target_revision: str, hmac_key: str) -> str:
-    """Return the HMAC-SHA-256 hex digest binding ``token`` to ``target_revision``.
+def compute_token_hmac(
+    token: str, approval_id: str, target_revision: str, hmac_key: str
+) -> str:
+    """Return the HMAC-SHA-256 hex digest binding ``token`` to ``(approval_id,
+    target_revision)``.
 
-    The HMAC input is ``f"{token}|{target_revision}"`` (UTF-8). The ``|``
-    delimiter is a U+007C ASCII pipe — neither :func:`secrets.token_urlsafe`
-    nor Cloud Run revision names emit U+007C, so the parse is unambiguous
-    and there's no concatenation-ambiguity vector (e.g., ``"ab" + "cd" ==
-    "a" + "bcd"`` style attacks).
+    Defense in depth (Phase 11.9 / Codex review of 11.7):
 
-    Used both at ``create`` time (to store the HMAC) and at ``execute``
-    time (to verify a presented token). Deterministic — same inputs
-    produce the same output.
+    1. **Revision-binding** — the original property. A stolen approval for
+       revision A cannot be redirected to roll back to revision B; the
+       HMACs differ and the constant-time compare in ``/execute`` fails.
+    2. **Approval-ID binding** — added in 11.9. Even if an attacker
+       correlates two approvals (say, via timing or out-of-band info),
+       they cannot use approval A's token on approval B — different
+       ``approval_id`` produces a different HMAC. This forecloses a
+       theoretical cross-approval replay we did not previously close.
+
+    The HMAC input is ``f"{token}|{approval_id}|{target_revision}"`` (UTF-8).
+    The ``|`` delimiter is a U+007C ASCII pipe — neither
+    :func:`secrets.token_urlsafe` nor UUID4 hex nor Cloud Run revision names
+    emit U+007C, so the parse is unambiguous and there's no concatenation-
+    ambiguity vector (e.g., ``"ab" + "cd" == "a" + "bcd"`` style attacks).
+
+    Used both at ``create`` time (to store the HMAC) and at ``execute`` /
+    ``deny`` time (to verify a presented token). Deterministic — same
+    inputs produce the same output.
+
+    Wire-breaking change in 11.9: in-flight approvals issued before this
+    commit are invalidated. Acceptable pre-deploy (no real users yet).
     """
-    msg = f"{token}|{target_revision}".encode("utf-8")
+    msg = f"{token}|{approval_id}|{target_revision}".encode("utf-8")
     return hmac.new(hmac_key.encode("utf-8"), msg, hashlib.sha256).hexdigest()
 
 
@@ -127,7 +149,9 @@ class ApprovalStore:
         raw_token = secrets.token_urlsafe(32)
         now = dt.datetime.now(dt.timezone.utc)
         expires_at = now + dt.timedelta(minutes=ttl_minutes)
-        token_hmac = compute_token_hmac(raw_token, target_revision, hmac_key)
+        token_hmac = compute_token_hmac(
+            raw_token, approval_id, target_revision, hmac_key
+        )
 
         data = {
             "status": "pending",

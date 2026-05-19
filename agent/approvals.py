@@ -1,20 +1,26 @@
-"""Coordinator-side approval helpers (Phase 11.7).
+"""Coordinator-side approval helpers (Phase 11.7, revised in 11.9).
 
 This module is the coordinator's narrow window into the shared
-``approvals/`` Firestore collection. The rollback worker owns the
-``pending → used`` transition; the coordinator owns ``pending → denied``.
-Both transitions go through transactional ``_claim`` helpers on
-:class:`driftscribe_lib.approvals.ApprovalStore` so the state machine
-stays closed:
+``approvals/`` Firestore collection. As of Phase 11.9, the rollback
+worker owns BOTH terminal transitions:
 
     pending --[rollback worker /execute, HMAC-verified]--> used
-    pending --[coordinator deny button]------------------> denied
+    pending --[rollback worker /deny,    HMAC-verified]--> denied
     {used, denied, expired-by-time, missing} -----------> 403 from any side
 
-The coordinator NEVER flips to ``used``. That's the rollback worker's
-job — and the only reason the worker can do it is because it (and only
-it) holds the HMAC key. Splitting authority this way means a compromised
-coordinator cannot mint executions; it can only refuse them.
+The coordinator is reduced to a read-only consumer of this collection
+for rendering the approval page — it never flips status directly. The
+pre-11.9 design had the coordinator owning the ``pending → denied``
+flip without HMAC verification; Codex review of 11.7 flagged this as a
+HITL availability bug (anyone with just an ``approval_id`` could deny a
+pending rollback). See the module docstring of
+``driftscribe_lib.approvals`` and the ``/deny`` handler in
+``workers/rollback/main.py`` for the fix.
+
+The ``ApprovalStore.claim_denied`` method is still used — but only from
+the rollback worker, behind the same HMAC + token check that gates
+``/execute``. The coordinator's previous ``deny()`` helper has been
+deleted because it bypassed that check.
 """
 from __future__ import annotations
 
@@ -47,23 +53,6 @@ def get_approval_store() -> ApprovalStore:
 def _reset_for_tests() -> None:
     """Test helper — drop the cached store singleton."""
     _store_singleton.cache_clear()
-
-
-def deny(store: ApprovalStore, approval_id: str) -> Approval | None:
-    """Transactionally flip the approval to ``denied``.
-
-    Returns the updated :class:`Approval` on success, or ``None`` if:
-
-    - the doc doesn't exist, OR
-    - the doc's status was not ``"pending"``.
-
-    The ``None`` cases collapse to a 403 at the HTTP layer — the
-    operator gets the same response whether they replayed an
-    already-denied request or tried to deny something that never
-    existed. Distinguishing these would leak doc presence to an
-    unauthenticated probe.
-    """
-    return store.claim_denied(approval_id)
 
 
 def is_expired(approval: Approval, *, now: dt.datetime | None = None) -> bool:
