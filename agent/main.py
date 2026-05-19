@@ -6,9 +6,15 @@ import secrets
 import time
 import uuid
 from pathlib import Path
+from typing import Literal
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel, ConfigDict
 
+from agent import approvals as approval_helpers
+from agent import worker_client
 from agent.auth import verify_token
 from agent.classifier import ClassificationInput, classify
 from agent.cloud_run_client import read_live_env
@@ -63,6 +69,36 @@ def _read_runbook_content(s: Settings, target_in_repo: str) -> str:
     return target_path.read_text()
 
 app = FastAPI(title="DriftScribe Agent")
+
+
+# Jinja2 templates for the HITL approval page (Phase 11.7). Mounted at
+# import time so a typo in the directory path fails fast at boot rather
+# than on the first /approvals GET. The template directory lives inside
+# the agent package so a single ``pip install -e .`` or Cloud Build
+# COPY ships it alongside the Python sources.
+_TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+
+
+# Endpoints that handle the HITL approval token MUST set these headers
+# on every response (GET render + POST decision). The token may appear
+# in the URL (?t=<raw_token>) and in the form body; the headers below
+# minimize the surfaces where it could leak.
+#
+# - ``Cache-Control: no-store``: no proxy / browser cache holds a
+#   response that contained the token in the URL.
+# - ``Referrer-Policy: no-referrer``: a link followed from this page
+#   does NOT include the token-bearing URL in the Referer header.
+# - ``X-Frame-Options: DENY``: prevents clickjacking — an attacker
+#   cannot iframe the approval page in a phishing site to trick the
+#   operator into clicking "Approve".
+#
+# Configured per-response (not as global middleware) so other routes
+# (/healthz, /chat, /recheck) get FastAPI's default header set unchanged.
+def _apply_approval_security_headers(response: Response) -> Response:
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["X-Frame-Options"] = "DENY"
+    return response
 
 
 _state_singleton: StateStore | None = None
@@ -405,3 +441,222 @@ def get_run(decision_id: str):
     if not d:
         raise HTTPException(status_code=404, detail="decision not found")
     return d
+
+
+# --------------------------------------------------------------------------- #
+# HITL approval endpoints (Phase 11.7)
+# --------------------------------------------------------------------------- #
+#
+# Flow recap:
+#
+#   1. ADK calls ``propose_rollback_tool`` → coordinator hits Rollback
+#      worker's ``/propose`` → worker writes a pending approval doc and
+#      returns ``approval_url = f"{COORDINATOR_URL}/approvals/{id}?t=<token>"``.
+#   2. Operator opens that URL → ``GET /approvals/{id}`` renders the
+#      approval page with a hidden token-bearing form.
+#   3. Operator clicks Approve → ``POST /approvals/{id}`` calls
+#      ``worker_client.call_execute(approval_id, token)``; the Rollback
+#      worker verifies the HMAC, transactionally claims the doc, and
+#      shifts traffic.
+#   4. Operator clicks Reject → ``POST /approvals/{id}`` transactionally
+#      flips status pending→denied via ``ApprovalStore.claim_denied``.
+#      A subsequent /execute attempt against the same approval ID will
+#      see status="denied" and bounce out with 403 at the worker.
+#
+# The approval pages do NOT have the X-DriftScribe-Token guard — they're
+# the operator-facing UI by design, and the approval_token (plus 15-min
+# TTL plus HMAC-binds-revision plus single-use flip) IS the auth model
+# for this route. Adding the token guard on top would either require
+# operators to keep a separate header in their browser (operationally
+# painful) or be wired in a way that defeats the no-referrer headers.
+
+
+@app.get("/approvals/{approval_id}", response_class=HTMLResponse)
+def approval_get(request: Request, approval_id: str, t: str = "") -> Response:
+    """Render the HITL approval decision page.
+
+    The ``t`` query param carries the raw approval token. The page
+    embeds it in a hidden form field so the operator's Approve / Reject
+    click POSTs the token back without copy-paste.
+
+    Token-in-URL caveats — pinning the safety story so a future refactor
+    doesn't lose the context:
+
+    - Referrer-Policy: no-referrer prevents the token from leaking via
+      the Referer header on any same-tab navigation.
+    - Cache-Control: no-store stops shared HTTP caches from holding the
+      URL.
+    - The token is bound to the specific approval doc's HMAC + 15-min
+      TTL + single-use transactional flip; a leaked URL outside the
+      TTL is dead.
+    - Cloud Run / load balancer access logs may still capture ``?t=``.
+      Operationally we accept this for the hackathon — for a real
+      deployment the token would move to a same-origin cookie + CSRF
+      header on the POST, but that's larger surgery than 11.7 is
+      scoped for.
+
+    Status: always 200 — the page renders itself for missing /
+    already-resolved / expired approvals so a probing GET cannot use
+    the response code to enumerate doc presence.
+    """
+    store = approval_helpers.get_approval_store()
+    approval = store.get(approval_id)
+    expired = bool(approval) and approval_helpers.is_expired(approval)
+    response = _TEMPLATES.TemplateResponse(
+        request,
+        "approval.html",
+        {
+            "approval_id": approval_id,
+            "approval": approval,
+            "token": t,
+            "expired": expired,
+        },
+    )
+    return _apply_approval_security_headers(response)
+
+
+@app.post("/approvals/{approval_id}", response_class=HTMLResponse)
+def approval_post(
+    request: Request,
+    approval_id: str,
+    t: str = Form(...),
+    decision: Literal["approve", "reject"] = Form(...),
+) -> Response:
+    """Process the operator's Approve / Reject decision.
+
+    Token validation strategy (key design choice):
+
+    - **Approve**: the coordinator does NOT verify the HMAC itself. It
+      hands ``(approval_id, t)`` to the Rollback worker's ``/execute``
+      via :func:`worker_client.call_execute`, and the worker (which is
+      the only service holding the HMAC key) does the verify +
+      transactional pending→used flip + Cloud Run traffic update.
+      Confused-deputy defense: a compromised coordinator can refuse
+      executions (by denying) but cannot mint them.
+    - **Reject**: the coordinator transactionally flips
+      pending→denied via :func:`approval_helpers.deny`. Replay → 403.
+
+    Status codes:
+
+    - **200**: page re-rendered showing the new state.
+    - **403**: replay / already-resolved / wrong token / worker
+      rejected the execute. Surface as a 403 with a generic message
+      so probing cannot distinguish "wrong token" from
+      "already used".
+    """
+    store = approval_helpers.get_approval_store()
+    execute_result: dict | None = None
+
+    if decision == "reject":
+        denied = approval_helpers.deny(store, approval_id)
+        if denied is None:
+            # The doc was missing or no longer pending — replay-safe
+            # by design. Collapse to a single 403 so the response
+            # doesn't distinguish "not found" from "already resolved".
+            raise HTTPException(
+                status_code=403,
+                detail="approval cannot be rejected (already resolved or missing)",
+            )
+    else:  # approve
+        try:
+            execute_result = worker_client.call_execute(approval_id, t)
+        except worker_client.WorkerClientError as e:
+            # Worker rejected: bad token, expired, already used, tag
+            # preflight, etc. Surface a 403 with a short detail —
+            # echoing the worker's full body could leak internal URLs
+            # or stack traces into the operator's browser.
+            raise HTTPException(
+                status_code=403,
+                detail=f"rollback execute failed: {e}",
+            ) from e
+
+    # Re-fetch the doc so the page reflects the new status.
+    approval = store.get(approval_id)
+    response = _TEMPLATES.TemplateResponse(
+        request,
+        "approval.html",
+        {
+            "approval_id": approval_id,
+            "approval": approval,
+            # Don't echo the token back into the rendered form. The
+            # decision has been processed; subsequent submits should
+            # come from a fresh URL with its own ``?t=``.
+            "token": "",
+            "expired": False,
+            "decision": decision,
+            "decision_result": execute_result,
+        },
+    )
+    return _apply_approval_security_headers(response)
+
+
+# --------------------------------------------------------------------------- #
+# /chat — natural-language operator interface (Phase 11.7)
+# --------------------------------------------------------------------------- #
+
+
+class ChatRequest(BaseModel):
+    """Closed schema for the /chat endpoint.
+
+    ``extra="forbid"`` so a typo'd field surfaces as 422, not a silent
+    fallback to default behavior. ``session_id`` is optional because the
+    in-memory session is recreated per call anyway (cross-call agent
+    memory is out of scope for 11.7 — see ``docs/architecture/multi-agent-design.md``
+    §"session memory").
+    """
+
+    prompt: str
+    session_id: str | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+@app.post("/chat")
+async def chat(req: ChatRequest, _: None = Depends(verify_token)) -> dict:
+    """Free-form operator interface to the coordinator.
+
+    Routes through the SAME X-DriftScribe-Token guard as /recheck
+    (Phase 11.1). Distinct from /recheck:
+
+    - /recheck returns a structured DecisionProposal — the LLM is
+      constrained to produce JSON of a fixed schema.
+    - /chat returns free-form text — the LLM picks tools, may call
+      multiple workers, and produces a natural-language response.
+
+    The ADK runner picks tools from ``COORDINATOR_TOOLS`` in
+    :mod:`agent.adk_agent`; the LLM CANNOT call anything outside that
+    set (Layer 0 capability-bounded tool registry — enforced by the
+    inventory test in Phase 11.4b).
+    """
+    s = get_settings()
+    if not s.use_adk:
+        # /chat without ADK enabled has no engine to invoke. 503 (not
+        # 501) because the feature exists at this revision; it's just
+        # disabled. Operator flips USE_ADK=true after verifying Gemini
+        # quota.
+        raise HTTPException(
+            status_code=503,
+            detail="ADK not enabled (set USE_ADK=true to enable /chat)",
+        )
+    from agent.adk_agent import run_chat
+
+    try:
+        return await run_chat(req.prompt, session_id=req.session_id)
+    except worker_client.WorkerClientError as e:
+        # Worker upstream failed (could be transport, schema, or worker
+        # policy). 502 — the coordinator itself is healthy; the
+        # downstream isn't. Status code from the worker is NOT echoed —
+        # a worker's 422 (schema rejection from the LLM's tool call)
+        # shouldn't surface as 422 here (that would tell the caller
+        # "your /chat request was malformed" which is wrong).
+        raise HTTPException(
+            status_code=502,
+            detail=f"chat worker call failed: {e}",
+        ) from e
+    except RuntimeError as e:
+        # ADK parse / response failures live here. 502 (model
+        # misbehaved), not 500 (coordinator deploy broken).
+        raise HTTPException(
+            status_code=502,
+            detail=f"chat agent failed: {e}",
+        ) from e

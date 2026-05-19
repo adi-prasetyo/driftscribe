@@ -112,7 +112,14 @@ steps:
       #   gcloud run services update driftscribe-agent --update-env-vars=USE_ADK=true
       # ...after verifying https://ai.studio/projects credit balance, then run
       # the Beat C smoke test before recording the demo video.
-      - --set-env-vars=DRY_RUN=true,GCP_PROJECT=$PROJECT_ID,TARGET_SERVICE=payment-demo,TARGET_REGION=asia-northeast1,GITHUB_REPO=adi-prasetyo/driftscribe,USE_ADK=false,DEBUG_CONFIG_URL=https://payment-demo-u272wv52kq-an.a.run.app/debug/config
+      #
+      # READER_URL / DOCS_URL / ROLLBACK_URL / NOTIFIER_URL are placeholders;
+      # the post-deploy step at the END of this build reads each worker's
+      # assigned URL (via gcloud run services describe) and writes them back
+      # via --update-env-vars. The placeholder ensures the coordinator's
+      # worker_client._worker_url() fails-closed at 503 if the post-deploy
+      # never runs (rather than silently hitting placeholder.invalid).
+      - --set-env-vars=DRY_RUN=true,GCP_PROJECT=$PROJECT_ID,TARGET_SERVICE=payment-demo,TARGET_REGION=asia-northeast1,GITHUB_REPO=adi-prasetyo/driftscribe,USE_ADK=false,DEBUG_CONFIG_URL=https://payment-demo-u272wv52kq-an.a.run.app/debug/config,READER_URL=https://placeholder.invalid,DOCS_URL=https://placeholder.invalid,ROLLBACK_URL=https://placeholder.invalid,NOTIFIER_URL=https://placeholder.invalid
       # DRIFTSCRIBE_TOKEN (Phase 11.1) gates /recheck via the X-DriftScribe-Token
       # header. The `coordinator-shared-token` secret MUST exist in Secret
       # Manager BEFORE the first build that includes this line — Cloud Run
@@ -348,6 +355,48 @@ steps:
         gcloud run services update driftscribe-notifier \
           --region=asia-northeast1 \
           --update-env-vars=OWN_URL=$${URL}
+
+  # Final post-deploy: sync the four worker URLs onto the coordinator.
+  # The coordinator's worker_client uses these URLs as the audience claim
+  # when minting ID tokens — getting them wrong makes every worker call
+  # 401 at the worker's verify_caller dependency, which is the desired
+  # fail-closed behavior if this step is ever skipped.
+  #
+  # Runs LAST because each worker's URL must be known (i.e., its own
+  # deploy step must have completed) before we can resolve and stamp
+  # it onto the coordinator. The worker deploys above use a placeholder
+  # URL pattern that is itself patched by their respective post-deploy
+  # bash steps; this coordinator-side step is a third tier in that
+  # chain.
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        READER_URL=$$(gcloud run services describe driftscribe-reader \
+          --region=asia-northeast1 --format='value(status.url)')
+        DOCS_URL=$$(gcloud run services describe driftscribe-docs \
+          --region=asia-northeast1 --format='value(status.url)')
+        ROLLBACK_URL=$$(gcloud run services describe driftscribe-rollback \
+          --region=asia-northeast1 --format='value(status.url)')
+        NOTIFIER_URL=$$(gcloud run services describe driftscribe-notifier \
+          --region=asia-northeast1 --format='value(status.url)')
+        for var in READER_URL DOCS_URL ROLLBACK_URL NOTIFIER_URL; do
+          val=$$(eval echo "\$$$$var")
+          if [ -z "$${val}" ] || [ "$${val}" = "https://placeholder.invalid" ]; then
+            echo "ERROR: Could not resolve $${var}" >&2
+            exit 1
+          fi
+        done
+        echo "Setting worker URLs on driftscribe-agent:"
+        echo "  READER_URL=$${READER_URL}"
+        echo "  DOCS_URL=$${DOCS_URL}"
+        echo "  ROLLBACK_URL=$${ROLLBACK_URL}"
+        echo "  NOTIFIER_URL=$${NOTIFIER_URL}"
+        gcloud run services update driftscribe-agent \
+          --region=asia-northeast1 \
+          --update-env-vars=READER_URL=$${READER_URL},DOCS_URL=$${DOCS_URL},ROLLBACK_URL=$${ROLLBACK_URL},NOTIFIER_URL=$${NOTIFIER_URL}
 
 images:
   - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-agent:${_TAG}

@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex,nofollow">
+  <title>DriftScribe Approval</title>
+  <style>
+    body {
+      font-family: -apple-system, system-ui, "Segoe UI", sans-serif;
+      max-width: 640px;
+      margin: 2em auto;
+      padding: 0 1em;
+      color: #222;
+      line-height: 1.45;
+    }
+    h1 { font-size: 1.5em; margin-bottom: 0.5em; }
+    .subtle { color: #666; font-size: 0.9em; }
+    .approval-box {
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      padding: 1.25em 1.5em;
+      margin: 1.5em 0;
+      background: #fafafa;
+    }
+    .field { margin: 0.5em 0; }
+    .label {
+      color: #888;
+      display: inline-block;
+      min-width: 9em;
+    }
+    code { background: #eee; padding: 0 0.25em; border-radius: 3px; }
+    .action-buttons {
+      margin-top: 1.5em;
+      display: flex;
+      gap: 1em;
+    }
+    button {
+      padding: 0.75em 1.5em;
+      border: 0;
+      border-radius: 4px;
+      font-size: 1em;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    .approve { background: #2ea44f; color: white; }
+    .reject { background: #d73a49; color: white; }
+    .expired, .resolved { color: #d73a49; font-weight: 600; }
+    .status-pending { color: #b07d00; }
+    .status-used, .status-denied { color: #555; }
+    .result-block {
+      background: #f3f8ff;
+      border-left: 3px solid #2ea44f;
+      padding: 0.75em 1em;
+      margin: 1em 0;
+      font-family: ui-monospace, "Cascadia Code", Menlo, monospace;
+      font-size: 0.85em;
+      white-space: pre-wrap;
+    }
+    .result-block.deny { border-left-color: #d73a49; }
+  </style>
+</head>
+<body>
+  <h1>DriftScribe Approval</h1>
+  <p class="subtle">Human-in-the-loop gate for the rollback worker.</p>
+
+  {% if not approval %}
+    <div class="approval-box">
+      <p>Approval <code>{{ approval_id }}</code> not found.</p>
+      <p class="subtle">
+        Either the approval ID is wrong, or the approval was already
+        processed and garbage-collected.
+      </p>
+    </div>
+  {% else %}
+    <div class="approval-box">
+      <div class="field"><span class="label">Approval ID:</span> <code>{{ approval.approval_id }}</code></div>
+      <div class="field"><span class="label">Action:</span> Rollback Cloud Run service to revision</div>
+      <div class="field"><span class="label">Target revision:</span> <code>{{ approval.target_revision }}</code></div>
+      <div class="field"><span class="label">Reason:</span> {{ approval.reason }}</div>
+      <div class="field"><span class="label">Proposed by:</span> <code>{{ approval.created_by }}</code></div>
+      <div class="field"><span class="label">Expires at:</span> {{ approval.expires_at }}</div>
+      <div class="field">
+        <span class="label">Status:</span>
+        <strong class="status-{{ approval.status }}">{{ approval.status }}</strong>
+      </div>
+    </div>
+
+    {% if decision_result is defined and decision_result %}
+      <div class="result-block">Rollback dispatched. Operation: {{ decision_result.get("operation_name", "(unknown)") }}</div>
+    {% endif %}
+    {% if decision == "reject" %}
+      <div class="result-block deny">Approval was denied. The rollback worker will refuse this approval ID on any subsequent /execute attempt.</div>
+    {% endif %}
+
+    {% if approval.status == "pending" and not expired %}
+      <form method="post" action="/approvals/{{ approval.approval_id }}">
+        <input type="hidden" name="t" value="{{ token }}">
+        <div class="action-buttons">
+          <button class="approve" type="submit" name="decision" value="approve">Approve rollback</button>
+          <button class="reject" type="submit" name="decision" value="reject">Reject</button>
+        </div>
+      </form>
+    {% elif expired %}
+      <p class="expired">This approval has expired and can no longer be acted on.</p>
+    {% else %}
+      <p class="resolved">This approval has already been resolved.</p>
+    {% endif %}
+  {% endif %}
+</body>
+</html>

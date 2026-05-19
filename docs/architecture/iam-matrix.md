@@ -1,6 +1,6 @@
 # DriftScribe IAM matrix
 
-> **Status:** Phase 11.6 — all four worker SAs are now live: coordinator (`driftscribe-agent`, Phase 8), reader (`reader-agent-sa`, Phase 11.3), docs (`docs-agent-sa`, Phase 11.4), rollback (`rollback-agent-sa`, Phase 11.5), and notifier (`notifier-agent-sa`, this phase). The notifier SA is provisioned via the operator command block in the 11.6 commit message — its grants are the lightest of all four workers (one per-secret binding, nothing else).
+> **Status:** Phase 11.7 — coordinator IAM trim. With the multi-agent rewrite complete, the coordinator no longer holds direct GCP-mutation or GitHub-mutation surface; every such operation is delegated to one of the four workers. The matrix below is the *post-11.7* shape — the operator command block at the bottom of this file is what an operator runs to bring an existing deployment into compliance. The four worker SAs (reader/docs/rollback/notifier) are unchanged from 11.3–11.6.
 
 This document is the source of truth for **what each service account can do, and what it explicitly cannot do**. The "negative-space" column is load-bearing — it's not enough to enumerate the grants; reviewers and judges should be able to run `gcloud projects get-iam-policy driftscribe-hack-2026 --format=json` and verify nothing beyond the listed bindings is present.
 
@@ -8,7 +8,7 @@ This document is the source of truth for **what each service account can do, and
 
 | Service Account | Cloud Run service it backs | IAM bindings (positive) | Negative-space (explicit non-grants) | Phase |
 | --- | --- | --- | --- | --- |
-| `driftscribe-agent@…` (coordinator) | `driftscribe-agent` | `roles/run.invoker` on each worker service (per-service binding, not project-wide); `roles/secretmanager.secretAccessor` on the *specific named secrets* the coordinator needs (`coordinator-shared-token`, `github-pat`, `gemini-api-key`, future `approval-hmac-key`); `roles/datastore.user` (project-wide — accepted constraint; Firestore doesn't offer collection-scope IAM, and the coordinator owns `approvals/` and `sessions/`) | **NOT** `roles/run.developer` (cannot deploy/modify Cloud Run); **NOT** `roles/run.viewer` at project scope (cannot enumerate other services); **NOT** `roles/secretmanager.secretAccessor` at project scope (only the named secrets above); **NOT** `roles/iam.serviceAccountTokenCreator` (cannot impersonate any other SA); **NOT** GitHub admin scope (uses fine-grained PAT scoped to the demo repo) | 8 (already deployed); IAM trimmed in 11.7 |
+| `driftscribe-agent@…` (coordinator) | `driftscribe-agent` | `roles/run.invoker` on each worker service (per-service binding, not project-wide); `roles/secretmanager.secretAccessor` on the *specific named secrets* the coordinator needs (`coordinator-shared-token`, `github-pat`, `gemini-api-key`); `roles/datastore.user` (project-wide — accepted constraint; Firestore doesn't offer collection-scope IAM, and the coordinator owns `approvals/` and `sessions/` writes — specifically the `pending → denied` flip on the approvals collection, see Phase 11.7 design notes). **Note:** the coordinator does NOT hold `approval-hmac-key` — only the rollback worker does, which is what makes the approve/deny authority split meaningful (a compromised coordinator can refuse executions but cannot mint them). | **NOT** `roles/run.developer` (cannot deploy/modify Cloud Run — Phase 11.7 delegated this entirely to the rollback worker, resource-scoped to `payment-demo`); **NOT** `roles/run.viewer` at project scope (Phase 11.7 delegated to the reader worker); **NOT** `roles/secretmanager.secretAccessor` at project scope (only the named secrets above); **NOT** `roles/iam.serviceAccountTokenCreator` (cannot impersonate any other SA); **NOT** GitHub admin scope (the coordinator's read-only PAT is scoped to PR list/read on the demo repo; the docs worker holds a *separate* fine-grained PAT for `Contents: write` + `Pull requests: write`); **NOT** the rollback HMAC key | 8 (initial); IAM trimmed in 11.7 |
 | `reader-agent-sa@…` | `driftscribe-reader` | `roles/run.viewer` on the project (lets it call Cloud Run admin to read service env + revision lists) | **NOT** `roles/run.developer` (cannot deploy or modify any service); **NOT** `roles/iam.serviceAccountTokenCreator`; **NOT** any Secret Manager access; **NOT** any GitHub credentials | 11.3 |
 | `docs-agent-sa@…` | `driftscribe-docs` | `roles/secretmanager.secretAccessor` on **one** secret only: `docs-agent-github-pat` (per-secret binding); `roles/run.invoker` granted *to the coordinator on this service* (per-service binding, set after first deploy) | **NOT** any project-level GCP role; **NOT** able to read or write Cloud Run state; **NOT** Firestore; **NOT** any other secret; **NOT** any GCP-level GitHub credential. The GitHub PAT injected as `GITHUB_TOKEN` is fine-grained: `Contents: Read & write` + `Pull requests: Read & write` on `adi-prasetyo/driftscribe` *only* — no org admin, no other repos, no account-level scopes. The worker's Layer 2 policy additionally hardcodes the target repo via env (caller cannot override), enforces a `^demo/docs/[^/]+\.md$` path allowlist with `normpath`-based traversal defense, refuses hidden files, requires the branch to start with `driftscribe/`, and refuses any base other than `main` | 11.4 |
 | `rollback-agent-sa@…` | `driftscribe-rollback` | `roles/run.developer` **on `payment-demo` service only** via a resource-scoped binding (`gcloud run services add-iam-policy-binding payment-demo --member=… --role=roles/run.developer`); `roles/datastore.user` (project-wide — same [acknowledged constraint](#acknowledged-constraints) as coordinator: Firestore lacks collection-scope IAM); `roles/secretmanager.secretAccessor` on `approval-hmac-key` only; `roles/run.invoker` granted *to the coordinator on this service* (per-service binding, set after first deploy). The worker's Layer 2 policy hardcodes `TARGET_SERVICE=payment-demo` via env, refuses any caller-supplied service field (`extra="forbid"` schema), refuses rollback targets that aren't in the service's revision list, and refuses rollback targets equal to the currently-active revision. Layer 4 enforces a single-use HMAC-bound approval token with a 15-min TTL and transactional `pending→used` flip — see [`driftscribe_lib/approvals.py`](../../driftscribe_lib/approvals.py) | **NOT** project-wide `roles/run.developer` (cannot touch the coordinator, the reader, the docs worker, or itself); **NOT** any other Cloud Run service (resource-scoped binding only on `payment-demo`); **NOT** any other Secret Manager secret; **NOT** GitHub access of any kind; **NOT** `roles/iam.serviceAccountTokenCreator` | 11.5 |
@@ -59,6 +59,50 @@ The same SA does **not** appear in the project-level IAM policy for `roles/run.d
 
 - **Firestore lacks collection-scope IAM.** Both the coordinator and the rollback worker need `roles/datastore.user` at project scope. We accept this and rely on the application's transactional writes (which only touch `approvals/` and `sessions/`) plus the Layer 0 tool registry (the coordinator's ADK agent has no general-purpose Firestore tool) to bound the actual blast radius.
 - **Eventarc-to-Cloud-Run auth uses a Google-signed ID token verified by Cloud Run's own IAM check**, not by application code. That path bypasses Layer A (the operator token) and Layer B (audience-bound caller email allowlist) because Cloud Run validates Eventarc's identity before our `/eventarc` handler runs. This is by design — Eventarc is a trusted internal source.
+
+## Phase 11.7 IAM trim
+
+The coordinator rewrite (Phase 11.7) is the point at which the legacy direct-GCP and direct-GitHub mutation surfaces on `driftscribe-agent@…` are *operationally* removed. The plan only adds the new per-worker `roles/run.invoker` bindings; the removals of older project-wide grants are done by hand via the commands below, because a `gcloud builds submit` cannot itself remove bindings it didn't add.
+
+**Idempotency note:** these are `|| true`-suffixed in production runbooks so re-running them on an already-trimmed deployment is a no-op. The negative-space audit script in `infra/scripts/audit_iam.sh` (Phase 11.8) is the canonical check that the trim has actually happened.
+
+```bash
+PROJECT=driftscribe-hack-2026
+REGION=asia-northeast1
+
+# 1. Grant the coordinator roles/run.invoker on each of the four worker
+#    services (per-service binding, not project-wide). After 11.7 every
+#    coordinator → worker call mints an audience-bound ID token; the
+#    receiving worker's IAM check is what allows the call to land. The
+#    workers also enforce in-app email allowlists (Layer 3), so this is
+#    belt-and-suspenders.
+for worker in driftscribe-reader driftscribe-docs driftscribe-rollback driftscribe-notifier; do
+  gcloud run services add-iam-policy-binding ${worker} \
+    --project=${PROJECT} \
+    --region=${REGION} \
+    --member=serviceAccount:driftscribe-agent@${PROJECT}.iam.gserviceaccount.com \
+    --role=roles/run.invoker
+done
+
+# 2. Remove legacy project-wide grants the coordinator no longer needs.
+#    All four delegations are now in place — these bindings would just
+#    be unused privilege.
+#
+#    NOTE: only run these AFTER the multi-agent path is verified
+#    end-to-end via Phase 11.8's smoke test. The Phase 11.7 commit only
+#    adds the worker-routed code paths; the legacy /recheck flow still
+#    has a fallback (USE_ADK=false) that calls read_live_env directly,
+#    and may need roles/run.viewer temporarily.
+gcloud projects remove-iam-policy-binding ${PROJECT} \
+  --member=serviceAccount:driftscribe-agent@${PROJECT}.iam.gserviceaccount.com \
+  --role=roles/run.viewer || true
+
+# (No other project-wide GCP-mutation roles to remove — the coordinator
+#  never had roles/run.developer in the first place; that was always
+#  delegated to the rollback worker.)
+```
+
+**Critical:** do NOT remove `roles/datastore.user` from the coordinator. The coordinator still owns the `pending → denied` flip on the approvals collection (Phase 11.7 design) and writes to the `sessions/` collection for the state store. Removing this grant would break both /recheck idempotency and the approval reject path.
 
 ## Cross-references
 
