@@ -67,6 +67,10 @@ from agent.adk_tools import (
     read_live_env_tool,
     search_recent_prs_tool,
 )
+from agent.mcp.developer_knowledge import (
+    retrieve_developer_doc,
+    search_developer_docs,
+)
 from agent.workloads.spec import WorkloadSpec
 
 
@@ -301,9 +305,12 @@ _TOOL_REGISTRY: Final[dict[str, Callable | None]] = {
     # Upgrade workload — reserved, implemented in 17.C.
     "upgrade_read_dependencies": None,
     "upgrade_propose_pr":        None,
-    # Developer Knowledge MCP — reserved, implemented in 17.B.
-    "search_developer_docs":     None,
-    "retrieve_developer_doc":    None,
+    # Developer Knowledge MCP — wired in 17.B.2. The callables apply
+    # 10s wall-clock timeout, 60s response cache, 5-doc/4000-char
+    # truncation, and fail-closed translation of MCP timeouts to a
+    # structured error result — see ``agent.mcp.developer_knowledge``.
+    "search_developer_docs":     search_developer_docs,
+    "retrieve_developer_doc":    retrieve_developer_doc,
     # Coordinator session memory — reserved, implemented in 17.B.
     "get_session_state":         None,
     "set_session_state":         None,
