@@ -12,7 +12,9 @@ class Settings(BaseSettings):
     # auth flows through ADC (the Cloud Run service account in prod, or
     # `gcloud auth application-default login` locally), driven by the
     # GOOGLE_GENAI_USE_VERTEXAI / GOOGLE_CLOUD_PROJECT / GOOGLE_CLOUD_LOCATION
-    # env vars that google-genai picks up automatically.
+    # env vars that google-genai picks up automatically. These are
+    # SDK-consumed, NOT Settings-consumed — deliberately not declared as
+    # fields below (do not "fix" their absence; the SDK reads `os.environ`).
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     dry_run: bool = True
