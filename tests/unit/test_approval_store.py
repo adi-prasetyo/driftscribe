@@ -31,8 +31,8 @@ from driftscribe_lib.approvals import (
 
 
 def test_compute_token_hmac_deterministic() -> None:
-    a = compute_token_hmac("t-abc", "rev-1", "secret")
-    b = compute_token_hmac("t-abc", "rev-1", "secret")
+    a = compute_token_hmac("t-abc", "approval-1", "rev-1", "secret")
+    b = compute_token_hmac("t-abc", "approval-1", "rev-1", "secret")
     assert a == b
     # SHA-256 hex digest is 64 chars.
     assert len(a) == 64
@@ -40,22 +40,33 @@ def test_compute_token_hmac_deterministic() -> None:
 
 def test_compute_token_hmac_binds_revision() -> None:
     """A stolen approval for rev-A must not validate for rev-B."""
-    a = compute_token_hmac("token", "rev-A", "secret")
-    b = compute_token_hmac("token", "rev-B", "secret")
+    a = compute_token_hmac("token", "approval-1", "rev-A", "secret")
+    b = compute_token_hmac("token", "approval-1", "rev-B", "secret")
+    assert a != b
+
+
+def test_compute_token_hmac_binds_to_approval_id() -> None:
+    """Phase 11.9 defense-in-depth: same token + same revision but two
+    different ``approval_id`` values must produce different HMACs. Closes
+    the theoretical cross-approval replay where an attacker correlates
+    two pending approvals for the same target revision and tries to use
+    approval A's token on approval B."""
+    a = compute_token_hmac("token", "approval-A", "rev-1", "secret")
+    b = compute_token_hmac("token", "approval-B", "rev-1", "secret")
     assert a != b
 
 
 def test_compute_token_hmac_differs_per_token() -> None:
-    a = compute_token_hmac("token-1", "rev-1", "secret")
-    b = compute_token_hmac("token-2", "rev-1", "secret")
+    a = compute_token_hmac("token-1", "approval-1", "rev-1", "secret")
+    b = compute_token_hmac("token-2", "approval-1", "rev-1", "secret")
     assert a != b
 
 
 def test_compute_token_hmac_differs_per_key() -> None:
     """If the HMAC key is rotated, previously-issued tokens must stop
     validating — confirms the key is meaningfully mixed in."""
-    a = compute_token_hmac("token", "rev-1", "key-1")
-    b = compute_token_hmac("token", "rev-1", "key-2")
+    a = compute_token_hmac("token", "approval-1", "rev-1", "key-1")
+    b = compute_token_hmac("token", "approval-1", "rev-1", "key-2")
     assert a != b
 
 
@@ -192,7 +203,9 @@ def test_create_stores_hmac_not_raw_token() -> None:
     raw = fake.raw(f"approvals/{approval.approval_id}")
     assert raw is not None
     assert "token_hmac" in raw
-    assert raw["token_hmac"] == compute_token_hmac(raw_token, "rev-1", "k")
+    assert raw["token_hmac"] == compute_token_hmac(
+        raw_token, approval.approval_id, "rev-1", "k"
+    )
     # And the raw token itself must not appear in the document.
     assert raw_token not in raw.values()
     for v in raw.values():

@@ -17,11 +17,31 @@ are bootstrap-only.
 
 ```bash
 PROJECT=driftscribe-hack-2026
-GH_PAT=ghp_xxx           # classic PAT, repo: contents:read + pull_requests:read
+GH_PAT=github_pat_xxx    # FINE-GRAINED PAT (see below)
 GEMINI_KEY=AIza...       # from https://aistudio.google.com
 
 ./infra/scripts/setup_secrets.sh "$PROJECT" "$GH_PAT" "$GEMINI_KEY"
 ```
+
+> **IMPORTANT (Phase 11.9 / Codex review of 11.7):** `GH_PAT` MUST be a
+> **fine-grained** PAT, NOT a classic PAT. The coordinator's
+> `search_recent_prs_tool` only reads PR metadata, so the scope is small
+> and a leaked classic PAT (`repo` scope = write everywhere) would
+> meaningfully weaken the Layer 1 IAM claim in
+> [`../architecture/iam-matrix.md`](../architecture/iam-matrix.md). Create
+> it at https://github.com/settings/personal-access-tokens/new with:
+>
+> - **Repository access:** Only select repositories →
+>   `adi-prasetyo/driftscribe`
+> - **Repository permissions:**
+>   - `Pull requests: Read-only` (read-only — coordinator NEVER writes
+>     PRs; the docs worker holds a separate fine-grained PAT for that)
+>   - Nothing else
+>
+> If you have already deployed with a classic PAT, rotate to a
+> fine-grained one before doing any demo or making the deployment
+> public — the IAM matrix's coordinator-row negative-space claim is
+> only literally true once this is done.
 
 The script will:
 - Enable required APIs.

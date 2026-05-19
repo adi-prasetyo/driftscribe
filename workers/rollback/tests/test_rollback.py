@@ -84,7 +84,9 @@ class FakeApprovalStore:
         raw_token = secrets.token_urlsafe(32)
         now = dt.datetime.now(dt.timezone.utc)
         expires_at = now + dt.timedelta(minutes=ttl_minutes)
-        token_hmac = compute_token_hmac(raw_token, target_revision, hmac_key)
+        token_hmac = compute_token_hmac(
+            raw_token, approval_id, target_revision, hmac_key
+        )
         data = {
             "status": "pending",
             "target_revision": target_revision,
@@ -109,6 +111,15 @@ class FakeApprovalStore:
         if data.get("status") != "pending":
             return None
         data["status"] = "used"
+        return Approval(approval_id=approval_id, **data)
+
+    def claim_denied(self, approval_id: str) -> Approval | None:
+        if approval_id not in self.docs:
+            return None
+        data = self.docs[approval_id]
+        if data.get("status") != "pending":
+            return None
+        data["status"] = "denied"
         return Approval(approval_id=approval_id, **data)
 
 
@@ -602,6 +613,156 @@ def test_execute_rejects_already_denied_approval(client, store, traffic_calls) -
     )
     assert r.status_code == 403
     assert traffic_calls == []
+
+
+# --------------------------------------------------------------------------- #
+# /deny (Phase 11.9 — coordinator-initiated reject path)
+# --------------------------------------------------------------------------- #
+#
+# Codex review of 11.7 (critical finding #1): the pre-11.9 coordinator's
+# reject button transactionally flipped pending → denied without checking
+# the operator's approval token. That meant anyone holding only the
+# ``approval_id`` could deny a pending rollback — a HITL availability bug.
+# The fix moves the deny operation to this worker, mirroring /execute:
+# same HMAC verify + transactional flip + auth dep + schema. These tests
+# mirror the /execute tests' structure for that reason.
+
+
+def test_deny_happy_path(client, store, traffic_calls) -> None:
+    proposed = _propose(client)
+    r = client.post(
+        "/deny",
+        json={
+            "approval_id": proposed["approval_id"],
+            "approval_token": proposed["approval_token"],
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "denied"
+    assert body["approval_id"] == proposed["approval_id"]
+    # The status flipped in the store.
+    assert store.docs[proposed["approval_id"]]["status"] == "denied"
+    # The deny path MUST NOT touch Cloud Run traffic.
+    assert traffic_calls == []
+
+
+def test_deny_wrong_token_rejected(client, store, traffic_calls) -> None:
+    """HMAC mismatch → 403. Same surface as /execute's wrong-token case —
+    a leaked approval_id alone is not sufficient to deny."""
+    proposed = _propose(client)
+    r = client.post(
+        "/deny",
+        json={
+            "approval_id": proposed["approval_id"],
+            "approval_token": "x" * 43,  # well-formed length, wrong value
+        },
+    )
+    assert r.status_code == 403
+    assert "invalid" in r.json()["detail"].lower()
+    # The approval is still pending — a subsequent legitimate Approve or
+    # Deny with the real token must still work.
+    assert store.docs[proposed["approval_id"]]["status"] == "pending"
+    assert traffic_calls == []
+
+
+def test_deny_replay_rejected(client, store, traffic_calls) -> None:
+    """The transactional claim_denied makes a second /deny call refuse,
+    just like /execute's replay defense — only one transaction wins the
+    pending → denied flip."""
+    proposed = _propose(client)
+    payload = {
+        "approval_id": proposed["approval_id"],
+        "approval_token": proposed["approval_token"],
+    }
+    r1 = client.post("/deny", json=payload)
+    assert r1.status_code == 200, r1.text
+    r2 = client.post("/deny", json=payload)
+    assert r2.status_code == 403
+    assert store.docs[proposed["approval_id"]]["status"] == "denied"
+    assert traffic_calls == []
+
+
+def test_deny_after_execute_rejected(client, store, traffic_calls) -> None:
+    """If /execute already flipped the doc to ``used``, a follow-up
+    /deny must refuse — the pre-check status guard catches it before
+    the HMAC compare."""
+    proposed = _propose(client)
+    payload = {
+        "approval_id": proposed["approval_id"],
+        "approval_token": proposed["approval_token"],
+    }
+    r1 = client.post("/execute", json=payload)
+    assert r1.status_code == 200, r1.text
+    r2 = client.post("/deny", json=payload)
+    assert r2.status_code == 403
+    assert "used" in r2.json()["detail"].lower()
+
+
+def test_deny_expired_token_rejected(client, store, traffic_calls) -> None:
+    proposed = _propose(client)
+    store.docs[proposed["approval_id"]]["expires_at"] = (
+        dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=1)
+    )
+    r = client.post(
+        "/deny",
+        json={
+            "approval_id": proposed["approval_id"],
+            "approval_token": proposed["approval_token"],
+        },
+    )
+    assert r.status_code == 403
+    assert "expired" in r.json()["detail"].lower()
+    # Status untouched — expiry refusal does NOT flip the doc.
+    assert store.docs[proposed["approval_id"]]["status"] == "pending"
+
+
+def test_deny_unknown_approval_returns_404(client) -> None:
+    r = client.post(
+        "/deny",
+        json={
+            "approval_id": "00000000-0000-0000-0000-000000000000",
+            "approval_token": "x" * 43,
+        },
+    )
+    assert r.status_code == 404
+
+
+def test_deny_missing_bearer_returns_401(client) -> None:
+    """Auth still gates /deny exactly like /execute."""
+    def deny_401():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="missing bearer token",
+        )
+
+    app.dependency_overrides[_verify_caller_dep] = deny_401
+    r = client.post(
+        "/deny",
+        json={
+            "approval_id": "00000000-0000-0000-0000-000000000000",
+            "approval_token": "x" * 43,
+        },
+    )
+    assert r.status_code == 401
+
+
+def test_deny_caller_not_in_allowlist_returns_403(client) -> None:
+    def deny_caller():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="caller 'nope@example.com' not in allowed_callers",
+        )
+
+    app.dependency_overrides[_verify_caller_dep] = deny_caller
+    r = client.post(
+        "/deny",
+        json={
+            "approval_id": "00000000-0000-0000-0000-000000000000",
+            "approval_token": "x" * 43,
+        },
+    )
+    assert r.status_code == 403
 
 
 # --------------------------------------------------------------------------- #

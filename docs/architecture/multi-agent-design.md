@@ -52,7 +52,7 @@ flowchart LR
 | `driftscribe-agent` (coordinator) | Yes — `--allow-unauthenticated` + `X-DriftScribe-Token` | ADK agent loop, intent classification, approval HTML/HMAC, Firestore session + approval state | Single entrypoint for humans, Eventarc, and demo scripts. |
 | `driftscribe-reader` | No (`--no-allow-unauthenticated`) | Reading live Cloud Run env + revision of `payment-demo` | Hardcoded target — request body is rejected if it tries to override service/region/project. |
 | `driftscribe-docs` | No | Patching runbook files under `demo/docs/`, opening PRs against a single repo | Path allowlist regex `^demo/docs/[^/]+\.md$`. Refuses `ops-contract.yaml`, `.github/`, `infra/`, anything `.py`. |
-| `driftscribe-rollback` | No | Two-step `/propose` → `/execute` (HMAC-bound, single-use, 15-min TTL) on `payment-demo` only | Approval UI lives on the **coordinator** so the gated page can be reached by a human. |
+| `driftscribe-rollback` | No | Three endpoints: `/propose` → operator approval → `/execute` (HMAC-bound, single-use, 15-min TTL) on `payment-demo` only, OR `/deny` (Phase 11.9 — also HMAC-verified) | Approval UI lives on the **coordinator** so the gated page can be reached by a human. **Both decision paths** (approve and reject) verify the HMAC on this worker — the coordinator never validates the approval token itself, by design. |
 | `driftscribe-notifier` | No | Posting normalized payload to a single env-injected webhook URL | Caller-supplied `url` is ignored — the worker's identity *is* the URL. |
 
 ---
@@ -155,6 +155,34 @@ If you add a tool in a future PR:
 5. Justify the addition in the PR description against Layer 0's threat model (accidental damage from the LLM doing reasonable-looking-but-wrong things)
 
 Layer 0 is the *first* safety net. Even if a prompt-injection attack convinces the agent to "rm -rf /", the agent simply does not have a tool that can. Layers 1 (per-SA IAM, see `iam-matrix.md`), 2 (worker payload-intent policies, see §3), and 3 (the deterministic validator that already existed in v1) sit underneath.
+
+### Layer 1 caveats called out in Phase 11.9 (Codex 11.7 review)
+
+The coordinator's Layer 1 claim is overstated in two narrow ways that
+are documented as carry-overs into Phase 13 rather than closed in
+Phase 11. Both are bounded by Layer 0's tool registry — the LLM cannot
+exercise either path through normal control flow.
+
+1. **The coordinator's `github-pat` MUST be a read-only fine-grained
+   PAT.** The application code only ever calls GitHub's PR list/read
+   APIs (via `search_recent_prs_tool`), but the IAM scope of the secret
+   is whatever PAT the operator stored. If a classic PAT with `repo`
+   scope is stored, the coordinator has GitHub write capability in
+   practice, contradicting the iam-matrix.md negative-space claim. The
+   Phase 11.9 deploy runbook (`docs/runbooks/deploy.md`) now requires
+   a fine-grained PAT — operators who deployed earlier should rotate.
+
+2. **`roles/run.viewer` on the coordinator is a temporary grant for
+   the legacy classifier path.** When `USE_ADK=false` the coordinator
+   calls `read_live_env` directly to feed the deterministic classifier.
+   Phase 13 will route the classifier through the Reader Worker (same
+   shape as Phase 11.7 did for the ADK path); at that point the
+   project-level `run.viewer` grant can be removed.
+
+See `docs/architecture/iam-matrix.md` §"Phase 11.9 carry-overs" for
+the full statement, and Phase 13's "Carry-over from Phase 11 Codex
+review" in `docs/plans/2026-05-19-driftscribe-v3-multi-agent.md` for
+the planned closure.
 
 ---
 

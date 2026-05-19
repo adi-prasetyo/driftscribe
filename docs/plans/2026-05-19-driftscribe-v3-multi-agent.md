@@ -257,11 +257,46 @@ Make the architecture real. Five Cloud Run services, four service accounts, IAM-
 
 Send Phase 11 diff + IAM matrix + 4 negative-test results to Codex thread. Apply findings before Phase 13.
 
+### Task 11.9: Apply Codex Phase 11 review (critical + watch fixes)
+
+**Files modified:**
+- `driftscribe_lib/approvals.py` — `compute_token_hmac` now binds `approval_id` alongside `target_revision`
+- `workers/rollback/main.py` — add `POST /deny` mirroring `/execute` (HMAC verify + transactional flip; no Cloud Run traffic mutation)
+- `agent/worker_client.py` — add `call_deny()` wrapper
+- `agent/main.py` — reject path now calls `worker_client.call_deny`; add `_map_worker_error` so 409/5xx pass through instead of collapsing to 403
+- `agent/approvals.py` — delete `deny()` helper (security path moved to worker)
+- `docs/runbooks/deploy.md` — require fine-grained read-only PAT, not classic
+- `docs/architecture/iam-matrix.md` — coordinator-row negative-space note; "Phase 11.9 carry-overs" section
+- `docs/architecture/multi-agent-design.md` — rollback row notes `/deny`; "Layer 1 caveats" subsection
+- `tests/unit/test_approval_store.py`, `workers/rollback/tests/test_rollback.py`, `tests/integration/test_approvals.py` — HMAC signature update + new `/deny` tests + worker error-mapping tests
+
+**Critical fixes applied:**
+1. `POST /approvals/{id}` reject path no longer bypasses HMAC verification — the rollback worker's new `/deny` endpoint validates the operator's token before flipping `pending → denied`. Closes the HITL availability bug.
+2. Documented Layer 1 weakening: fine-grained PAT requirement, `run.viewer` carry-over.
+
+**Cheap watch-item fixes applied:**
+- HMAC binding now `token | approval_id | target_revision` (cross-approval replay defense in depth).
+- Coordinator's worker-error mapping splits 409 (passthrough) / 5xx (502) / other 4xx (403).
+
+**Deferred to Phase 13** — see the carry-over block below.
+
 ---
 
 ## Phase 13 — Self-Healing Rollback Decision Path (2–3 days)
 
 The Rollback Agent (11.5) executes; this phase wires the coordinator's *decision* to propose rollback when appropriate.
+
+### Carry-over from Phase 11 Codex review (apply in 13)
+
+Phase 11.9 applied the two critical Codex findings (reject-path token bypass + Layer 1 doc-overstatement) and two cheap watch-item fixes (HMAC binds `approval_id`; worker 409/5xx no longer collapse to 403). Three watch items were explicitly deferred to Phase 13 — these are the closures needed before the multi-agent claim is unconditionally true:
+
+1. **Migrate classifier `/recheck` to use the Reader Worker.** The legacy `USE_ADK=false` path still calls `agent.cloud_run_client.read_live_env` directly, which requires `roles/run.viewer` on the coordinator's SA. Phase 11.7 trimmed the ADK path; Phase 13 closes the classifier path so the coordinator's project-wide `run.viewer` grant can be removed. The work is the same shape as 11.7's ADK migration: replace the direct `read_live_env` call with a `worker_client.call("reader", {})`, audit-and-remove the import, then remove the IAM binding in `setup_secrets.sh` and the iam-matrix.md "temporary grant" caveat. Without this the Layer 1 negative-space claim ("coordinator cannot read other services' state") is doc-only — see `docs/architecture/iam-matrix.md` §"Phase 11.9 carry-overs".
+
+2. **Layer 0 tool-signature whitelist.** The inventory test in `tests/unit/test_coordinator_tool_inventory.py` (Phase 11.4b) catches dangerous tool *names* via a regex. Codex flagged a residual capability-escape: a safely-named tool that accepts a `cmd`, `url`, `endpoint`, `payload`, or `raw_request` parameter could let the LLM widen capability through the parameter rather than the tool name. Phase 13 should add a second inventory test that uses `inspect.signature` to enumerate each registered tool's parameter names and assert none match those patterns. This is purely defense-in-depth — the current tool surface (6 tools) has no such parameters, but the test pins the property as the registry grows.
+
+3. **`DecisionAction.ROLLBACK` must preserve the worker/HITL boundary.** Phase 13.1 introduces `DecisionAction.ROLLBACK` as an action the model can PROPOSE. Codex's watch is that the validator/classifier pipeline must NOT bypass the HITL gate — the model's "I think we should roll back" output should route through the rollback worker's `/propose` (HMAC-token-mint + approval URL) exactly like the ADK path's `propose_rollback_tool` does, and the operator approval gate must remain mandatory. The relevant test is the e2e flow in Task 13.3, which should explicitly assert that no code path in the rollback action skips the operator's approval URL.
+
+These are tracked in this carry-over block so the Phase 13 PR description can check them off.
 
 ### Task 13.1: `DecisionAction.ROLLBACK` + validator policy
 

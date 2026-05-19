@@ -195,3 +195,25 @@ def call_execute(approval_id: str, approval_token: str) -> dict:
         {"approval_id": approval_id, "approval_token": approval_token},
         endpoint="/execute",
     )
+
+
+def call_deny(approval_id: str, approval_token: str) -> dict:
+    """Special-case wrapper for the rollback worker's ``/deny`` endpoint.
+
+    Phase 11.9 (Codex review of 11.7, critical finding #1): the
+    coordinator no longer transactionally flips ``pending → denied``
+    itself, because doing so required no token validation and turned the
+    reject button into a HITL availability vector. The token verification
+    has to live on the worker (the only service with the HMAC key), so
+    the deny operation moves there too. Mirrors :func:`call_execute` in
+    shape — both decision paths now go through audience-bound ID-token
+    auth to the same worker.
+
+    The LLM never calls this directly; the operator's Reject click in
+    the coordinator's approval POST handler is what triggers it.
+    """
+    return call(
+        "rollback",
+        {"approval_id": approval_id, "approval_token": approval_token},
+        endpoint="/deny",
+    )
