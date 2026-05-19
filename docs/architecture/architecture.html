@@ -144,7 +144,6 @@
     color: var(--ink-soft);
     font-size: 13px;
   }
-  footer a { color: var(--accent); }
   @media (max-width: 520px) {
     main { padding: 20px 10px 40px; }
     header h1 { font-size: 20px; }
@@ -169,7 +168,7 @@
     <h2>1. Trigger fan-in</h2>
     <p class="caption">Three trigger sources fan in to the Coordinator, which delegates to four workers via audience-bound ID tokens. The HITL diamond gates the Coordinator&rarr;Rollback edge; rollback <code>/execute</code> only fires after an operator approves at <code>/approvals/{id}</code>.</p>
     <div class="figure">
-      <svg class="diagram" viewBox="0 0 1000 520" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Trigger fan-in diagram: Eventarc, /chat and /recheck feed into the Coordinator, which fans out to four workers (Reader, Docs, Rollback, Notifier). The Rollback edge passes through a Human-In-The-Loop approval diamond.">
+      <svg class="diagram" viewBox="0 -20 1000 540" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Trigger fan-in diagram: Eventarc, /chat and /recheck feed into the Coordinator, which fans out to four workers (Reader, Docs, Rollback, Notifier). The Rollback edge passes through a Human-In-The-Loop approval diamond.">
         <defs>
           <!-- Standard arrowhead (ink) -->
           <marker id="arrow-ink" viewBox="0 0 10 10" refX="9" refY="5"
@@ -478,7 +477,7 @@
         <line x1="20" y1="180" x2="20" y2="462" stroke="#3b6ea5" stroke-width="1.2" stroke-dasharray="4 3"/>
         <!-- Diamond at x=20, y=462..478 -->
         <polygon points="20,462 32,470 20,478 8,470" fill="#fff" stroke="#3b6ea5" stroke-width="1.4"/>
-        <text x="20" y="473" text-anchor="middle" font-size="7" font-weight="700" fill="#3b6ea5">HITL</text>
+        <text x="20" y="474" text-anchor="middle" font-size="9" font-weight="700" fill="#3b6ea5">HITL</text>
         <!-- From diamond into Rollback row top -->
         <line x1="20" y1="478" x2="20" y2="480" stroke="#3b6ea5" stroke-width="1.4" marker-end="url(#arrow-accent-2)"/>
         <!-- Caption: place to the right of the diamond, in the gap between Docs and Rollback rows (y=460..480, 20px high). 3 lines won't fit vertically here, so use one line and rely on the section caption below for detail. -->
