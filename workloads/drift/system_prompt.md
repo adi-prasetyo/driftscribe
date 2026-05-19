@@ -34,6 +34,14 @@ Output schema (JSON, no other text):
   "requires_human_review": true_or_false
 }
 
+When proposing a `docs_pr`, first call `search_developer_docs` to find
+authoritative Cloud Run env-variable guidance for the var(s) being
+documented. Cite the resulting document URL in the PR body's rationale
+so the reviewer can audit which canonical guidance the proposed wording
+references. If the search returns ``{"error": ...}`` or no relevant
+matches, proceed with the docs PR but note the absence of an
+authoritative citation in the rationale rather than inventing a URL.
+
 Rules:
 - If you cannot reach a tool, say so in `rationale`; do NOT invent values.
 - If any tool returns an object containing the key `_error`, treat it as a

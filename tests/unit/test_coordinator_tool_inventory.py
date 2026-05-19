@@ -71,6 +71,12 @@ EXPECTED_TOOL_NAMES = frozenset({
     "notify_tool",
     "search_recent_prs_tool",
     "load_contract_tool",
+    # Phase 17.B.3 — Developer Knowledge MCP wrappers (async callables
+    # in ``agent.mcp.developer_knowledge``). Their symbolic names in
+    # the workload YAML match the callable names 1:1 — no underscore_tool
+    # suffix because they're not drift-specific function-tool wrappers.
+    "search_developer_docs",
+    "retrieve_developer_doc",
 })
 
 
@@ -413,8 +419,9 @@ def test_no_tool_has_dangerous_parameter_name(tool):
     ``url`` parameter the LLM could in principle widen the capability
     through the argument. This test catches that at registration time.
 
-    Current 6-tool registry has no such parameters — the test pins the
-    property as the registry grows.
+    Current 8-tool registry (six pre-17.B.3 tools plus the two
+    Developer Knowledge MCP wrappers) has no such parameters — the
+    test pins the property as the registry grows.
     """
     sig = inspect.signature(tool)
     for param_name in sig.parameters:
@@ -468,6 +475,9 @@ def test_dangerous_param_regex_smoke_test():
         "severity",
         "keywords",
         "days",
+        # Phase 17.B.3 — Developer Knowledge MCP wrapper params.
+        "query",
+        "name",
     ):
         assert not _DANGEROUS_PARAM_RE.search(safe), (
             f"Regex unexpectedly matched safe parameter name {safe!r}. "

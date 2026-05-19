@@ -1392,6 +1392,36 @@ async def chat(req: ChatRequest, _: None = Depends(verify_token)) -> dict:
             status_code=502,
             detail=f"chat worker call failed: {e}",
         ) from e
+    except MissingDeveloperKnowledgeApiKeyError as e:
+        # Phase 17.B.3: ``MissingDeveloperKnowledgeApiKeyError`` subclasses
+        # ``RuntimeError``, so without this explicit handler it would
+        # fall through to the broader catch below and surface as 502
+        # ("model misbehaved"). That's the wrong operator surface: a
+        # missing :envvar:`DEVELOPER_KNOWLEDGE_API_KEY` is a deploy-
+        # not-wired condition — the same 503 shape as a missing worker
+        # URL, just surfaced during the LLM's first MCP tool call
+        # (the pre-resolve in ``load_workload`` above doesn't trip it
+        # because resolving the symbolic name to the wrapper callable
+        # doesn't read the env var; the env-var read happens lazily on
+        # the first ``build_developer_knowledge_toolset`` call inside
+        # the wrapper).
+        #
+        # Detail wording is specific to the Developer Knowledge MCP
+        # subsystem (Phase 17.B.1 provisioned the Secret Manager
+        # binding) — distinct from the pre-resolve catch above which
+        # has to cover multiple "not deployed" conditions (worker URLs,
+        # reserved-not-yet tools, AND missing DK key) so its wording is
+        # necessarily broader. Here the tuple is narrow enough to point
+        # the operator at the right wiring.
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"workload {req.workload!r} cannot reach the Developer "
+                f"Knowledge MCP: {e}. See Phase 17.B.1 for the Secret "
+                f"Manager binding that provisions "
+                f"DEVELOPER_KNOWLEDGE_API_KEY."
+            ),
+        ) from e
     except RuntimeError as e:
         # ADK parse / response failures live here. 502 (model
         # misbehaved), not 500 (coordinator deploy broken).

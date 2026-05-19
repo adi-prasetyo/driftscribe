@@ -39,6 +39,10 @@ enabled_tool_names:
   - notify
   - load_contract
   - search_recent_prs
+  # Developer Knowledge MCP (Phase 17.B.3). Drift uses these to ground
+  # docs PR body wording in authoritative Cloud Run env-variable docs.
+  - search_developer_docs
+  - retrieve_developer_doc
 
 # Symbolic worker names — resolved to WorkerEndpoint via WORKER_REGISTRY.
 # Each maps to a Cloud Run worker the coordinator may call (audience-

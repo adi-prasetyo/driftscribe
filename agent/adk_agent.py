@@ -31,7 +31,11 @@ Coordinator-internal read-only tools (2):
 - ``search_recent_prs_tool`` (read-only GitHub via coordinator PAT)
 - ``load_contract_tool`` (reads baked-in ops contract)
 
-That's 6 tools, period. Anything else the model wants to do is denied
+Developer Knowledge MCP wrappers (2, Phase 17.B.3):
+- ``search_developer_docs`` → Developer Knowledge MCP ``search_documents``
+- ``retrieve_developer_doc`` → Developer Knowledge MCP ``get_documents``
+
+That's 8 tools, period. Anything else the model wants to do is denied
 by capability — there is no general "execute shell" or "make HTTP
 request" surface.
 
@@ -62,6 +66,10 @@ from agent.adk_tools import (
     read_live_env_tool,
     search_recent_prs_tool,
 )
+from agent.mcp.developer_knowledge import (
+    retrieve_developer_doc,
+    search_developer_docs,
+)
 from agent.models import DecisionProposal
 from agent.workloads import WorkloadResolution, load_workload
 
@@ -76,6 +84,11 @@ COORDINATOR_TOOLS = [
     notify_tool,
     search_recent_prs_tool,
     load_contract_tool,
+    # Developer Knowledge MCP wrappers (Phase 17.B.3). Async callables
+    # wrapping the Streamable HTTP MCP server — see
+    # ``agent.mcp.developer_knowledge`` for cache + timeout + log details.
+    search_developer_docs,
+    retrieve_developer_doc,
 ]
 
 
@@ -92,10 +105,12 @@ COORDINATOR_TOOLS = [
 # - ``DRIFT_WORKLOAD_TOOL_NAMES`` / ``UPGRADE_WORKLOAD_TOOL_NAMES`` below
 #   are the *per-workload symbolic filters* — the names the YAML uses to
 #   pick a subset of :data:`agent.workloads.registry.TOOL_REGISTRY`.
-#   Drift's six callables happen to coincide with the global registration
-#   (drift wires every tool the coordinator owns today); upgrade adds
-#   four reserved-not-yet symbols that 17.B/17.C will flip from ``None``
-#   to real callables.
+#   Drift's eight callables (six pre-17.B.3 plus the two Developer
+#   Knowledge MCP wrappers added in 17.B.3) happen to coincide with the
+#   global registration today; upgrade adds two reserved-not-yet symbols
+#   (``upgrade_read_dependencies``, ``upgrade_propose_pr``) that 17.C
+#   will flip from ``None`` to real callables, plus two
+#   reserved-not-yet session-memory symbols slated for 17.B.
 #
 # Why tuples (not frozensets):
 # - These constants double as the *tool-order pin* (M-6 from the 17.A.3
@@ -121,6 +136,10 @@ DRIFT_WORKLOAD_TOOL_NAMES: tuple[str, ...] = (
     "notify",
     "load_contract",
     "search_recent_prs",
+    # Phase 17.B.3 — Developer Knowledge MCP. Drift cites authoritative
+    # Cloud Run env-variable guidance in its docs PR bodies.
+    "search_developer_docs",
+    "retrieve_developer_doc",
 )
 
 UPGRADE_WORKLOAD_TOOL_NAMES: tuple[str, ...] = (
@@ -227,11 +246,23 @@ Tools available to you:
   webhook. Channel: info|alert|approval. Severity: low|medium|high|critical.
 - search_recent_prs_tool(keywords, days=7) — read-only PR history
 - load_contract_tool() — read the baked-in ops contract
+- search_developer_docs(query) — search Google's Developer Knowledge
+  corpus (Cloud Run, GitHub Actions, etc.) for authoritative product
+  documentation. Returns up to 5 doc refs with parent/content/id.
+- retrieve_developer_doc(name) — fetch the full body of a single doc
+  by name (use the `parent` field from a search result as `name`).
 
 Rules:
 - If asked to do something destructive (rollback, redeploy, delete), use
   propose_rollback_tool and explain that human approval is required.
   NEVER attempt to bypass the approval gate.
+- When proposing a docs PR (via patch_docs_tool), first call
+  search_developer_docs to find authoritative Cloud Run env-variable
+  guidance for the var(s) being documented; cite the resulting document
+  URL in the PR body so the reviewer can audit which canonical guidance
+  the proposed wording references. If the search returns an `error` key
+  or no relevant matches, proceed but note the absence of an
+  authoritative citation rather than inventing a URL.
 - If a tool returns an error, surface it to the operator clearly. Do NOT
   pretend the action succeeded.
 - Be concise. The operator is on-call and wants the answer, not prose.
@@ -272,11 +303,11 @@ def build_agent(workload: WorkloadResolution) -> Agent:
     union surface). Switching to the per-workload filtered list makes
     the capability-bound invariant "the LLM is never even shown a
     cross-workload tool" hold today — not "once upgrade tools ship".
-    For drift the two surfaces are byte-identical (6 callables either
-    way); for upgrade the registry refuses to resolve until 17.B/17.C
-    flips the reserved ``None`` entries to real callables, so passing
-    ``workload.tools.values()`` to ADK can't accidentally hand the
-    LLM a partial upgrade surface.
+    For drift the two surfaces are byte-identical (8 callables either
+    way post-17.B.3); for upgrade the registry refuses to resolve until
+    17.B/17.C flips the reserved ``None`` entries to real callables, so
+    passing ``workload.tools.values()`` to ADK can't accidentally hand
+    the LLM a partial upgrade surface.
 
     ADK requires agent names to be valid Python identifiers (letters,
     digits, underscores; no hyphens). The workload name is from the

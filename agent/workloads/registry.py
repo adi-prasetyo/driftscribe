@@ -146,8 +146,11 @@ class ReservedToolNotImplementedError(UnknownToolError):
     """Raised when a workload YAML names a tool that's reserved in
     :data:`TOOL_REGISTRY` but whose callable is still ``None``. This
     is the "we know about this tool, but its implementation lands in a
-    later sub-phase" case — e.g. ``upgrade_read_dependencies`` before
-    17.C, ``search_developer_docs`` before 17.B.
+    later sub-phase" case — e.g. ``upgrade_read_dependencies`` and
+    ``upgrade_propose_pr`` before 17.C, ``get_session_state`` and
+    ``set_session_state`` before 17.B's coordinator-memory work.
+    (``search_developer_docs`` and ``retrieve_developer_doc`` were in
+    this category before 17.B.2; they're real callables now.)
 
     Subclasses :class:`UnknownToolError` for backward compatibility:
     callers that catch the parent still catch this. The distinct class
@@ -422,8 +425,11 @@ def _resolve_tool(name: str) -> Callable:
         # genuine unknown-name typos surface as 500.
         raise ReservedToolNotImplementedError(
             f"tool {name!r} is reserved but not yet implemented "
-            f"(see Phase 17 plan: search_developer_docs/retrieve_developer_doc "
-            f"land in 17.B; upgrade_* in 17.C; get/set_session_state in 17.B)"
+            f"(see Phase 17 plan: upgrade_* land in 17.C; "
+            f"get/set_session_state in 17.B's coordinator-memory work. "
+            f"search_developer_docs/retrieve_developer_doc shipped in "
+            f"17.B.2 — if this message is firing for those, the deploy "
+            f"is broken.)"
         )
     return callable_obj
 

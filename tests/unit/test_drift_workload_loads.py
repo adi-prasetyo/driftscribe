@@ -1,14 +1,15 @@
-"""Byte-for-byte golden tests for the drift workload (Phase 17.A.2).
+"""Byte-for-byte golden tests for the drift workload (Phase 17.A.2 /
+17.B.3).
 
 Pins:
 
-1. ``workloads/drift/system_prompt.md`` equals the pre-17 hardcoded
-   ``SYSTEM_PROMPT_RECHECK`` constant. The constant has been removed in
-   17.A.2, so this test captures the previous value as a string literal
-   in the test itself (not imported from production code) — that's the
-   point of a golden: production code is allowed to evolve, the literal
-   in the test is allowed to evolve only by an intentional human edit
-   that re-justifies prompt content.
+1. ``workloads/drift/system_prompt.md`` equals the Phase 17.B.3 golden
+   below. The literal in this test (NOT imported from production code)
+   is the audit point: production code is allowed to evolve, the
+   literal evolves only by an intentional human edit that re-justifies
+   prompt content. Phase 17.B.3 added an MCP-citation paragraph (the
+   ``search_developer_docs`` call instruction for ``docs_pr``); the
+   golden was bumped at the same time.
 
 2. ``workloads/drift/contract.yaml`` equals ``demo/ops-contract.yaml``
    byte-for-byte. The 17.A.2 move was a copy (not a symlink) for
@@ -35,9 +36,12 @@ from pathlib import Path
 import yaml
 
 
-# The drift system prompt as it existed prior to Phase 17.A.2 (the
-# ``SYSTEM_PROMPT_RECHECK`` constant in ``agent/adk_agent.py``). Byte-
-# equal pin — any change here must be intentional and reviewed.
+# The drift system prompt as it currently lives in
+# ``workloads/drift/system_prompt.md``. Byte-equal pin — any change
+# here must be intentional and reviewed. Phase 17.B.3 added the
+# ``search_developer_docs`` citation paragraph (between the output
+# schema block and the Rules block) so the LLM grounds docs PR
+# wording in authoritative Cloud Run env-variable guidance.
 _DRIFT_SYSTEM_PROMPT_GOLDEN = """\
 You are DriftScribe, an AI DevOps agent that detects and triages drift between
 a deployed Cloud Run service's live configuration and the team's declared
@@ -75,6 +79,14 @@ Output schema (JSON, no other text):
   "requires_human_review": true_or_false
 }
 
+When proposing a `docs_pr`, first call `search_developer_docs` to find
+authoritative Cloud Run env-variable guidance for the var(s) being
+documented. Cite the resulting document URL in the PR body's rationale
+so the reviewer can audit which canonical guidance the proposed wording
+references. If the search returns ``{"error": ...}`` or no relevant
+matches, proceed with the docs PR but note the absence of an
+authoritative citation in the rationale rather than inventing a URL.
+
 Rules:
 - If you cannot reach a tool, say so in `rationale`; do NOT invent values.
 - If any tool returns an object containing the key `_error`, treat it as a
@@ -110,8 +122,14 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_drift_system_prompt_file_matches_pre17_constant():
-    """Byte-for-byte golden: workloads/drift/system_prompt.md equals
-    the SYSTEM_PROMPT_RECHECK constant value as it was before 17.A.2.
+    """Byte-for-byte golden: ``workloads/drift/system_prompt.md`` equals
+    :data:`_DRIFT_SYSTEM_PROMPT_GOLDEN` above.
+
+    Test name is kept as ``..._pre17_constant`` for git-blame
+    continuity even though the literal has been bumped through 17.B.3
+    (the ``search_developer_docs`` citation paragraph). The function
+    still pins what it always has: a byte-equal contract between the
+    file on disk and the test's literal.
 
     Intentional edits must change BOTH the file and the literal in this
     test — the diff in PR review is exactly the prompt edit, with no
@@ -121,9 +139,10 @@ def test_drift_system_prompt_file_matches_pre17_constant():
         encoding="utf-8"
     )
     assert file_text == _DRIFT_SYSTEM_PROMPT_GOLDEN, (
-        "Drift system prompt diverged from the pre-17 golden. If this is "
-        "intentional (e.g. prompt evolution for a later phase), update the "
-        "golden literal in this test alongside the file change."
+        "Drift system prompt diverged from the test's golden literal. "
+        "If this is intentional (e.g. a prompt evolution for a later "
+        "phase), update the golden literal in this test alongside the "
+        "file change."
     )
 
 
