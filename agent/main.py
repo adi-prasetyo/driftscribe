@@ -566,11 +566,24 @@ async def _do_recheck(trigger: str, force: bool = False) -> dict:
         existing = state.find_decision_for_event(event_key)
         if existing:
             if _cached_rollback_is_expired(existing):
-                # Phase 13 Codex W2: drop the event claim so the rollback
-                # path below can re-propose a fresh approval. Without this,
-                # _do_rollback's record_event() would refuse the claim and
-                # fall back to returning the expired cached decision.
-                state.release_event(event_key)
+                # Phase 14 (Codex Phase 13 second-pass W2): compare-and-
+                # delete instead of unconditional release. Two concurrent
+                # retries seeing the same expired decision would otherwise
+                # both release+re-claim, double-minting approval docs.
+                # The CAS only deletes when the cached decision_id still
+                # matches; the loser re-reads and returns the winner's
+                # fresh decision rather than re-proposing.
+                cached_decision_id = existing.get("decision_id")
+                if cached_decision_id and state.evict_cached_decision(
+                    event_key, cached_decision_id
+                ):
+                    pass  # CAS won — fall through to re-propose
+                else:
+                    existing = state.find_decision_for_event(event_key)
+                    if existing and not _cached_rollback_is_expired(existing):
+                        return existing
+                    # Still stale or gone — fall through; record_event
+                    # below will refuse if another claim is in flight.
             else:
                 return existing
 
