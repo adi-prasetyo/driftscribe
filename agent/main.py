@@ -180,6 +180,16 @@ def _render_for(action: DecisionAction, proposal: DecisionProposal) -> str:
         return render_drift_issue_body(proposal)
     if action == DecisionAction.ESCALATION:
         return render_escalation_issue_body(proposal)
+    if action == DecisionAction.ROLLBACK:
+        # The ROLLBACK control flow is structurally different from the other
+        # actions: propose-worker → render → notify. The approval URL is
+        # minted by the worker's /propose response and is not derivable from
+        # the proposal alone, so the renderer is called out-of-band from
+        # _perform_action with the URL in hand (see Task 13.3).
+        raise ValueError(
+            "ROLLBACK is rendered out-of-band via render_rollback_body(p, "
+            "approval_url); _render_for has no access to the approval URL"
+        )
     raise ValueError(f"no renderer for action {action!r}")
 
 
