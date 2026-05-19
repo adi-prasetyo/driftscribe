@@ -85,6 +85,41 @@ class UnknownWorkloadError(KeyError):
     """
 
 
+class WorkloadManifestMismatchError(RuntimeError):
+    """Raised when the parsed ``WorkloadSpec.name`` in a YAML manifest
+    does not match the directory the manifest lives under.
+
+    Phase 17.A (Codex review, Fix Important #2b): the loader treats
+    ``workloads/<name>/workload.yaml`` as authoritative for *which*
+    workload is being loaded; the YAML's ``name:`` field must agree.
+    If an operator typos the YAML (e.g. ``workloads/drift/workload.yaml``
+    declares ``name: upgrade``), every other registry lookup would
+    silently route against the wrong manifest. We fail loud at load
+    time instead — a deploy bug, surfaced before first request.
+
+    Carries both names in the message so the operator can fix the
+    typo without grepping source.
+    """
+
+
+class WorkloadPathTraversalError(ValueError):
+    """Raised when the ``name`` argument to :func:`load_workload`
+    resolves to a path outside the ``workloads/`` root.
+
+    Phase 17.A (Codex review, Fix Important #2c): defense in depth.
+    The :class:`WorkloadSpec.name` ``Literal`` already constrains
+    callers that go through the typed API, but :func:`load_workload`
+    takes a bare ``str``. A future caller that forwards an unvalidated
+    request body field would otherwise be vulnerable to
+    ``name="../etc/passwd"``-style path escapes. We fail closed here
+    rather than relying on ``FileNotFoundError`` (which leaks the
+    attempted path).
+
+    Subclasses ``ValueError`` so callers using value-shaped catches
+    pick it up with the same idiom.
+    """
+
+
 class UnknownToolError(KeyError):
     """Raised when a workload YAML names a tool that's not in
     :data:`TOOL_REGISTRY` at all. This is a deploy bug — a typo or an
@@ -201,18 +236,27 @@ class WorkloadResolution:
     Holds:
 
     - the parsed :class:`WorkloadSpec`,
-    - a ``tools`` dict mapping symbolic tool name → real callable,
-    - a ``workers`` dict mapping symbolic worker name → :class:`WorkerEndpoint`,
-    - an ``actions`` dict mapping symbolic action name → :class:`ActionSpec`,
+    - a ``tools`` mapping symbolic tool name → real callable,
+    - a ``workers`` mapping symbolic worker name → :class:`WorkerEndpoint`,
+    - an ``actions`` mapping symbolic action name → :class:`ActionSpec`,
     - ``system_prompt`` — the loaded prompt text,
     - ``contract_path`` — absolute path to the contract YAML, if any,
     - ``workload_dir`` — absolute path to ``workloads/<name>/``.
+
+    Phase 17.A (Codex review, Fix Important #2a): the three name→object
+    fields are exposed as :class:`types.MappingProxyType` views so a
+    caller that grabs a reference cannot widen the workload's authority
+    by in-place mutation (``resolution.tools["x"] = ...``). ``frozen=True``
+    on the dataclass only blocks reassignment of the field itself; the
+    proxy blocks mutation through the field. Same property pin as the
+    top-level :data:`TOOL_REGISTRY` / :data:`WORKER_REGISTRY` /
+    :data:`ACTION_REGISTRY` allowlists.
     """
 
     spec: WorkloadSpec
-    tools: dict[str, Callable]
-    workers: dict[str, WorkerEndpoint]
-    actions: dict[str, ActionSpec]
+    tools: Mapping[str, Callable]
+    workers: Mapping[str, WorkerEndpoint]
+    actions: Mapping[str, ActionSpec]
     system_prompt: str
     contract_path: Path | None
     workload_dir: Path
@@ -407,16 +451,34 @@ def _resolve_action(name: str) -> ActionSpec:
     return ACTION_REGISTRY[name]
 
 
-def _load_from_path(yaml_path: Path) -> WorkloadResolution:
+def _load_from_path(
+    yaml_path: Path, *, expected_name: str | None = None
+) -> WorkloadResolution:
     """Load a workload from an explicit YAML path. Used by tests for
     targeted error-injection without touching the on-disk
     ``workloads/`` tree; also the implementation backend for the
     public :func:`load_workload`.
 
     Resolves every symbolic name and reads the system prompt + contract
-    path. Raises on the first failure (no partial state)."""
+    path. Raises on the first failure (no partial state).
+
+    If ``expected_name`` is provided, the parsed
+    :class:`WorkloadSpec.name` must match it — otherwise
+    :class:`WorkloadManifestMismatchError` is raised. The public
+    :func:`load_workload` always passes this so a typo in the YAML
+    ``name:`` field cannot silently mismatch its on-disk location.
+    Phase 17.A Codex review (Fix Important #2b)."""
     raw = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
     spec = WorkloadSpec.model_validate(raw)
+
+    if expected_name is not None and spec.name != expected_name:
+        raise WorkloadManifestMismatchError(
+            f"workload manifest at {yaml_path} declares "
+            f"name={spec.name!r} but was loaded as {expected_name!r}. "
+            f"The directory name and the YAML ``name:`` field must agree — "
+            f"this is a deploy bug (typo in the YAML, or the file is in "
+            f"the wrong directory)."
+        )
 
     workload_dir = yaml_path.parent
 
@@ -436,9 +498,12 @@ def _load_from_path(yaml_path: Path) -> WorkloadResolution:
     if spec.contract_file is not None:
         contract_path = (workload_dir / spec.contract_file).resolve()
 
-    tools = {n: _resolve_tool(n) for n in spec.enabled_tool_names}
-    workers = {n: _resolve_worker(n) for n in spec.worker_names}
-    actions = {n: _resolve_action(n) for n in spec.action_names}
+    # Build the resolution maps then freeze them with MappingProxyType so
+    # callers can't widen the workload's authority by in-place mutation.
+    # See WorkloadResolution docstring for the security rationale.
+    tools = MappingProxyType({n: _resolve_tool(n) for n in spec.enabled_tool_names})
+    workers = MappingProxyType({n: _resolve_worker(n) for n in spec.worker_names})
+    actions = MappingProxyType({n: _resolve_action(n) for n in spec.action_names})
 
     return WorkloadResolution(
         spec=spec,
@@ -460,9 +525,20 @@ def load_workload(name: str) -> WorkloadResolution:
     name, so two tests with different env states would otherwise share
     a stale cache entry.
 
+    Phase 17.A (Codex review, Fix Important #2c): the ``name`` arg is
+    validated to keep ``workloads/<name>/workload.yaml`` under the
+    ``workloads/`` root. Today ``WorkloadSpec.name: Literal["drift",
+    "upgrade"]`` protects callers that go through the typed pydantic
+    request models, but :func:`load_workload` itself takes a bare
+    ``str`` — defense-in-depth.
+
     Raises:
+        WorkloadPathTraversalError: ``name`` resolves to a path
+            outside the workloads root (e.g. ``"../etc/passwd"``).
         UnknownWorkloadError: no manifest under
             ``workloads/<name>/workload.yaml``.
+        WorkloadManifestMismatchError: the YAML's ``name:`` field
+            doesn't match ``name``.
         UnknownToolError / UnknownWorkerError / UnknownActionError:
             symbolic name not in the allowlist (or reserved/None for
             tools).
@@ -471,11 +547,23 @@ def load_workload(name: str) -> WorkloadResolution:
     if name in _WORKLOAD_CACHE:
         return _WORKLOAD_CACHE[name]
 
-    yaml_path = _repo_root() / "workloads" / name / "workload.yaml"
-    if not yaml_path.exists():
-        raise UnknownWorkloadError(
-            f"no workload manifest for {name!r}: expected {yaml_path}"
+    workloads_root = (_repo_root() / "workloads").resolve()
+    candidate = (workloads_root / name / "workload.yaml").resolve()
+    # ``is_relative_to`` requires Python 3.9+ — already pinned by
+    # pyproject.toml. The check fails closed: any ``name`` that
+    # resolves outside the workloads root raises, regardless of
+    # whether the target file exists. This denies path-traversal
+    # without leaking the attempted path through ``FileNotFoundError``.
+    if not candidate.is_relative_to(workloads_root):
+        raise WorkloadPathTraversalError(
+            f"workload {name!r} resolves outside the workloads root — "
+            f"refusing to load."
         )
-    resolution = _load_from_path(yaml_path)
+
+    if not candidate.exists():
+        raise UnknownWorkloadError(
+            f"no workload manifest for {name!r}: expected {candidate}"
+        )
+    resolution = _load_from_path(candidate, expected_name=name)
     _WORKLOAD_CACHE[name] = resolution
     return resolution

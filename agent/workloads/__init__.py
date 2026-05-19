@@ -30,6 +30,8 @@ from agent.workloads.registry import (
     UnknownWorkloadError,
     WorkerEndpoint,
     WorkerSpec,
+    WorkloadManifestMismatchError,
+    WorkloadPathTraversalError,
     WorkloadResolution,
     load_workload,
 )
@@ -44,6 +46,8 @@ __all__ = [
     "UnknownWorkloadError",
     "WorkerEndpoint",
     "WorkerSpec",
+    "WorkloadManifestMismatchError",
+    "WorkloadPathTraversalError",
     "WorkloadResolution",
     "WorkloadSpec",
     "load_workload",
