@@ -12,8 +12,14 @@ even if it would otherwise pass the positive list (defense-in-depth
 against a future PR that simultaneously updates the expected set AND
 adds something it shouldn't).
 
+A third test (Phase 13 carry-over from Codex 11.7 review) extends the
+same logic to *parameter names*: a safely-named tool that accepts a
+``cmd`` / ``url`` / ``payload`` / ``raw_request`` argument could let the
+LLM widen capability through the argument rather than the tool name.
+
 See ``docs/architecture/multi-agent-design.md`` §"Layer 0".
 """
+import inspect
 import re
 
 import pytest
@@ -81,6 +87,108 @@ def test_no_tool_has_dangerous_name(tool):
         f"Even if intentional, rename to something safer-sounding (or "
         f"reconsider whether the coordinator should have this capability)."
     )
+
+
+# Negative-parameter-name pattern: catch parameter names that hint at a
+# capability wider than the tool's stated purpose. Phase 13 carry-over
+# from the Phase 11.9 Codex review — a tool named ``read_live_env_tool``
+# is fine, but if it accepted a ``url`` argument the LLM could in
+# principle widen the capability through that argument.
+#
+# Boundary choice: we use ``(?<![a-z])token(?![a-z])`` (with IGNORECASE)
+# rather than ``\btoken\b`` because Python's ``\b`` doesn't fire on the
+# underscore-to-letter transition (``_`` is a word character). We DO want
+# ``shell_cmd``, ``target_url``, and ``raw_request`` to match — but we
+# do NOT want ``expression`` to match ``expr``, or ``formula`` to match
+# anything. The lookarounds-on-letters approach gives exactly that:
+# ``_`` is a non-letter so it acts as a separator, but adjacent letters
+# don't. See ``test_dangerous_param_regex_smoke_test`` below for the
+# positive/negative anchors.
+_DANGEROUS_PARAM_RE = re.compile(
+    r"(?<![a-z])(?:cmd|command|shell[_-]?cmd|url|endpoint|raw[_-]?url|"
+    r"payload|raw[_-]?request|script|eval|expr)(?![a-z])",
+    re.IGNORECASE,
+)
+
+
+@pytest.mark.parametrize("tool", COORDINATOR_TOOLS, ids=lambda t: t.__name__)
+def test_no_tool_has_dangerous_parameter_name(tool):
+    """No tool's parameter list may contain names that hint at a
+    capability wider than the tool's stated purpose.
+
+    Defense-in-depth: complements ``test_no_tool_has_dangerous_name``.
+    A tool named ``read_live_env_tool`` is fine, but if it accepted a
+    ``url`` parameter the LLM could in principle widen the capability
+    through the argument. This test catches that at registration time.
+
+    Current 6-tool registry has no such parameters — the test pins the
+    property as the registry grows.
+    """
+    sig = inspect.signature(tool)
+    for param_name in sig.parameters:
+        assert not _DANGEROUS_PARAM_RE.search(param_name), (
+            f"Tool {tool.__name__!r} has parameter {param_name!r} matching "
+            f"a dangerous-parameter pattern. Even if the tool is safe today, "
+            f"a parameter named this way invites future widening of "
+            f"capability through the argument. Rename, or reconsider "
+            f"whether this argument needs to exist."
+        )
+
+
+def test_dangerous_param_regex_smoke_test():
+    """Verify the regex actually catches the patterns it's designed for.
+
+    Without this, the parametrized test above could silently pass against
+    a regex bug (e.g., a missing alternation, an escaped metachar, or a
+    boundary that's too loose/too strict). The positive cases lock in
+    the patterns we mean to catch; the negative cases lock in the
+    safe parameter names the current registry actually uses, so a
+    future tightening of the regex can't silently break them.
+    """
+    # Dangerous patterns MUST match (bare and with prefix/suffix).
+    assert _DANGEROUS_PARAM_RE.search("cmd")
+    assert _DANGEROUS_PARAM_RE.search("command")
+    assert _DANGEROUS_PARAM_RE.search("shell_cmd")
+    assert _DANGEROUS_PARAM_RE.search("shell-cmd")
+    assert _DANGEROUS_PARAM_RE.search("url")
+    assert _DANGEROUS_PARAM_RE.search("target_url")
+    assert _DANGEROUS_PARAM_RE.search("raw_url")
+    assert _DANGEROUS_PARAM_RE.search("endpoint")
+    assert _DANGEROUS_PARAM_RE.search("payload")
+    assert _DANGEROUS_PARAM_RE.search("raw_request")
+    assert _DANGEROUS_PARAM_RE.search("script")
+    assert _DANGEROUS_PARAM_RE.search("eval")
+    assert _DANGEROUS_PARAM_RE.search("expr")
+    # Case-insensitivity.
+    assert _DANGEROUS_PARAM_RE.search("CMD")
+    assert _DANGEROUS_PARAM_RE.search("Target_URL")
+
+    # Safe params (every parameter name currently used by COORDINATOR_TOOLS)
+    # MUST NOT match. If this list grows, add the new name here.
+    for safe in (
+        "target_revision",
+        "reason",
+        "file_path",
+        "new_content",
+        "title",
+        "body",
+        "channel",
+        "severity",
+        "keywords",
+        "days",
+    ):
+        assert not _DANGEROUS_PARAM_RE.search(safe), (
+            f"Regex unexpectedly matched safe parameter name {safe!r}. "
+            f"Loosen the regex or rename the offending pattern."
+        )
+
+    # Adjacency check: don't false-match on words that merely contain
+    # a banned token as a letter-run substring.
+    for adjacent in ("expression", "evaluator", "scripted", "formula"):
+        assert not _DANGEROUS_PARAM_RE.search(adjacent), (
+            f"Regex false-matched on adjacent word {adjacent!r}; "
+            f"tighten the boundary."
+        )
 
 
 def test_adk_agent_imports_cleanly_without_pulling_dangerous_sdks():
