@@ -54,7 +54,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Final, Mapping
+from typing import Final, Literal, Mapping
 
 import yaml
 from pydantic import BaseModel, ConfigDict
@@ -171,6 +171,27 @@ class UnknownActionError(KeyError):
     :data:`ACTION_REGISTRY`. Actions name decision outcomes
     (``docs_pr``, ``rollback``, ``escalation``…) and gate the
     validator's accept-set for this workload."""
+
+
+class UnknownUpgradeTargetError(KeyError):
+    """Raised when an upgrade contract YAML references a ``target_name``
+    that has no entry in :data:`UPGRADE_TARGET_REGISTRY`.
+
+    Phase 17.C.1 (Codex 2026-05-20 blocker): the upgrade workload's
+    ``target_repo``, ``lockfile_path``, and ``advisory_source`` are
+    authority fields that must live in code, NOT in YAML. The
+    ``contract.yaml`` carries only the symbolic ``target_name`` —
+    flipping a YAML value can choose from this allowlist but cannot
+    redirect the agent at a different repository. An unknown name here
+    is exactly the failure mode that pin protects against, surfaced at
+    load time so the coordinator never boots a misrouted upgrade
+    workload.
+
+    Subclasses ``KeyError`` so callers using dict-shaped lookups catch
+    it with the same idiom — matches the existing
+    :class:`UnknownToolError` / :class:`UnknownWorkerError` /
+    :class:`UnknownActionError` convention.
+    """
 
 
 class MissingWorkerEnvError(RuntimeError):
@@ -380,6 +401,120 @@ _ACTION_REGISTRY: Final[dict[str, ActionSpec]] = {
 
 # Public, read-only view. See note on TOOL_REGISTRY above.
 ACTION_REGISTRY: Final[Mapping[str, ActionSpec]] = MappingProxyType(_ACTION_REGISTRY)
+
+
+# --------------------------------------------------------------------------- #
+# UPGRADE_TARGET_REGISTRY — the allowlist of upgrade-workload targets
+# --------------------------------------------------------------------------- #
+#
+# Codex 2026-05-20 blocker, Phase 17.C.1: the upgrade workload's
+# ``target_repo``, ``lockfile_path``, and ``advisory_source`` are
+# authority fields — they decide *which repository the agent reads
+# dependencies from and writes upgrade PRs to*. They must NOT live in
+# YAML for the same reason worker URLs don't (a YAML flip would
+# redirect the agent at a different repo). The workload's
+# ``contract.yaml`` references the entry via the symbolic
+# ``target_name`` field (Literal-constrained at the pydantic layer);
+# the real authority lives in the dict below.
+#
+# Phase 17 invariant pinned by ``test_upgrade_target_registry``:
+# ``UPGRADE_TARGET_REGISTRY["phase17_demo"].target_repo`` must agree
+# with ``Settings.github_repo`` when configured together —
+# ``search_recent_prs_tool`` reads the latter to detect duplicate
+# upgrade PRs, and the upgrade workers target the former. If they
+# diverge, the agent would search PRs in the wrong repo. Future
+# targets may legitimately diverge (customer-owned demo repos); revisit
+# the pin if 17.C grows more entries.
+#
+# Worker-side defense in depth (deferred to 17.C.2): the upgrade
+# workers must NOT import this module — they bundle ``driftscribe_lib/``
+# and the worker source only, and ``agent.workloads.registry`` drags
+# in coordinator-only deps via ``agent.adk_tools``. The pattern for
+# 17.C.2 will be: each worker reads its target_repo from an env var
+# pinned at deploy time (``UPGRADE_TARGET_REPO``); the worker
+# re-validates request payloads against that env value; and a CI
+# guard (separate test) compares the env-pinned worker value against
+# ``UPGRADE_TARGET_REGISTRY["phase17_demo"].target_repo`` so the two
+# can't silently drift. Codex 2026-05-20 review flagged the module
+# placement; the resolution stays here in the coordinator authority
+# layer because that's where the rest of the workload registry lives.
+
+
+@dataclass(frozen=True)
+class UpgradeTarget:
+    """Public record for an entry in :data:`UPGRADE_TARGET_REGISTRY`.
+
+    Holds the authority fields the upgrade workload uses to pick a
+    target repository, lockfile path, and vulnerability advisory feed.
+    Frozen so a caller that grabs a reference cannot mutate fields —
+    same security pin as the ``MappingProxyType`` on the registry
+    itself. Mirrors the ``@dataclass(frozen=True)`` style used for
+    :class:`ActionSpec` and :class:`WorkerSpec`.
+
+    Attributes:
+        target_repo: GitHub ``<owner>/<repo>`` slug the upgrade workers
+            read dependencies from and open PRs against. **Authority
+            field** — must agree with the worker's env-pinned
+            ``UPGRADE_TARGET_REPO`` (defense in depth: worker
+            re-validates at request time per 17.C.2).
+        lockfile_path: Repo-relative path to the lockfile the workers
+            parse. Phase 17 scope is npm ``package.json`` only — the
+            ``upgrade-reader`` worker enforces a regex on this value at
+            request time (17.C.2). Storing it here lets the coordinator
+            present the file to the LLM without an extra worker round
+            trip.
+        advisory_source: Which vulnerability advisory feed the workers
+            query. ``"github"`` only for Phase 17 v1; ``"osv"`` is
+            reserved for post-submission work. The pydantic-layer
+            ``Literal`` makes adding a third source require an explicit
+            code change.
+    """
+
+    target_repo: str
+    lockfile_path: str
+    advisory_source: Literal["github", "osv"]
+
+
+# Single source of truth for Phase 17. Add new entries here when
+# additional demo targets become real — and revisit the
+# ``target_repo == Settings.github_repo`` test pin if the new target
+# legitimately diverges from the drift repo (e.g. a customer-owned
+# demo).
+_UPGRADE_TARGET_REGISTRY: Final[dict[str, UpgradeTarget]] = {
+    "phase17_demo": UpgradeTarget(
+        # Same repo as drift — Phase 17 demos the upgrade workload
+        # against the bundled ``demo/upgrade-target/`` directory.
+        target_repo="adi-prasetyo/driftscribe",
+        lockfile_path="demo/upgrade-target/package.json",
+        advisory_source="github",
+    ),
+}
+
+# Public, read-only view. See note on TOOL_REGISTRY above for the
+# rationale — same security pin: ``MappingProxyType`` blocks the
+# in-place mutation that bare ``Final`` would still allow.
+UPGRADE_TARGET_REGISTRY: Final[Mapping[str, UpgradeTarget]] = MappingProxyType(
+    _UPGRADE_TARGET_REGISTRY
+)
+
+
+def resolve_upgrade_target(name: str) -> UpgradeTarget:
+    """Resolve a symbolic upgrade-target name to its
+    :class:`UpgradeTarget` record.
+
+    Raises:
+        UnknownUpgradeTargetError: ``name`` is not in
+            :data:`UPGRADE_TARGET_REGISTRY`. Mirrors the
+            :func:`_resolve_tool` / :func:`_resolve_worker` shape —
+            fail loud at load time, never at first agent call.
+    """
+    if name not in UPGRADE_TARGET_REGISTRY:
+        raise UnknownUpgradeTargetError(
+            f"upgrade target {name!r} is not in UPGRADE_TARGET_REGISTRY — "
+            f"workload contract YAML may only reference allowlisted "
+            f"target names. Known: {sorted(UPGRADE_TARGET_REGISTRY)}"
+        )
+    return UPGRADE_TARGET_REGISTRY[name]
 
 
 # --------------------------------------------------------------------------- #

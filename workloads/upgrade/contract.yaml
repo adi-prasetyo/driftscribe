@@ -1,0 +1,55 @@
+# Upgrade workload decision rules (Phase 17.C.1).
+#
+# Decision rules ONLY. NO authority fields.
+#
+# Codex 2026-05-20 blocker: the upgrade workload's `target_repo`,
+# `lockfile_path`, and `advisory_source` are authority fields — they
+# decide *which repository the agent reads and writes*. They live in
+# `agent/workloads/registry.py::UPGRADE_TARGET_REGISTRY`, NOT here.
+# The `target_name` field below references the registry entry by
+# symbolic name. A YAML flip can choose from the allowlist; it cannot
+# introduce a new repo, path, or advisory source.
+#
+# The schema (`agent/upgrade_contract.py::UpgradeContract`) uses
+# `extra="forbid"`, so a regression that re-adds `target_repo:` (or
+# any other authority field) here fails coordinator boot loudly.
+
+# Symbolic upgrade-target name. Resolves to the UpgradeTarget record
+# in UPGRADE_TARGET_REGISTRY. Today only "phase17_demo" is allowed
+# (constrained at the pydantic layer).
+target_name: phase17_demo
+
+# Decision-action → rule mapping. Keys mirror the upgrade workload's
+# action vocabulary (see workloads/upgrade/workload.yaml::action_names
+# and agent/workloads/registry.py::ACTION_REGISTRY).
+#
+# The validator (17.C.4) consults these rules to gate which decision
+# the LLM is allowed to return for a given advisory severity +
+# semver-jump combination.
+decisions:
+  # Low-severity advisories are noise; do nothing.
+  no_op:
+    severity_max: low
+
+  # Medium+ severity, patch/minor bump — propose a docs-only PR that
+  # cites the advisory. Caller still upgrades manually.
+  docs_pr:
+    severity_min: medium
+    version_jump: [patch, minor]
+
+  # Medium+ severity, patch/minor bump — propose the actual version
+  # bump as a PR. Reversible (close PR) so requires_approval is false;
+  # operator review happens on the PR itself.
+  upgrade_pr:
+    severity_min: medium
+    version_jump: [patch, minor]
+    requires_approval: false
+
+  # Major-version bumps are not auto-upgraded; escalate to a human.
+  # The post-LLM validator on upgrade-docs (17.C.3a) also refuses
+  # major-bump requests as defense in depth. Key matches the action
+  # name in ACTION_REGISTRY ("escalation"), not the verb form
+  # ("escalate") — the plan's draft example used "escalate" but the
+  # registry / DecisionAction vocabulary uses "escalation".
+  escalation:
+    version_jump: [major]
