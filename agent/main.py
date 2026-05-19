@@ -12,6 +12,7 @@ from typing import Literal
 from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
+from google.auth import exceptions as google_auth_exceptions
 from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2.id_token import verify_oauth2_token
 from pydantic import BaseModel, ConfigDict
@@ -761,15 +762,27 @@ async def eventarc(
             detail="Authorization Bearer token is empty",
         )
 
-    # 401: verify_oauth2_token raises ValueError on bad signature, wrong
-    # audience, expired, or malformed JWT. Collapsing all of those to 401
-    # is intentional — a token-leak probe shouldn't be able to distinguish
-    # "expired" from "wrong audience" from "garbage".
+    # 401: verify_oauth2_token raises:
+    # - ``ValueError`` on bad signature, wrong audience, expired, or
+    #   malformed JWT (documented in its docstring).
+    # - ``google.auth.exceptions.GoogleAuthError`` on wrong issuer
+    #   (also documented).
+    # - ``google.auth.exceptions.TransportError`` (subclass of
+    #   GoogleAuthError) if the JWKS fetch over HTTP fails — e.g. Google's
+    #   certs endpoint is briefly unreachable. Strictly this is a 503-shaped
+    #   condition (upstream availability), but we collapse to 401 so:
+    #   (a) the auth-failure response is uniform (a probe cannot distinguish
+    #       "your token is bad" from "our cert cache is cold"), and
+    #   (b) Eventarc's at-least-once retry on 401 will hit a warm cache on
+    #       the second attempt.
+    # Collapsing all three to 401 is intentional — a token-leak probe
+    # shouldn't be able to distinguish "expired" from "wrong audience" from
+    # "garbage" from "issuer mismatch".
     try:
         claims = verify_oauth2_token(
             token, _GOOGLE_AUTH_TRANSPORT, audience=s.eventarc_audience
         )
-    except ValueError:
+    except (ValueError, google_auth_exceptions.GoogleAuthError):
         # Don't echo the verifier's message — internal detail might
         # disclose which check failed.
         raise HTTPException(

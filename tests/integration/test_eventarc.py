@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from google.auth import exceptions as google_auth_exceptions
 
 from agent.config import get_settings
 from agent.main import app
@@ -105,6 +106,55 @@ def test_eventarc_rejects_invalid_token(monkeypatch):
         )
     assert r.status_code == 401
     assert "token" in r.json()["detail"].lower()
+
+
+def test_eventarc_rejects_wrong_issuer(monkeypatch):
+    """``verify_oauth2_token`` raising GoogleAuthError → 401 (wrong issuer).
+
+    Per the verifier's docstring, ``GoogleAuthError`` surfaces when the ``iss``
+    claim isn't one of Google's. Same collapse-to-401 policy as ValueError:
+    a probe should not distinguish "wrong issuer" from "expired token".
+    """
+    _set_audience(monkeypatch)
+    with patch("agent.main.verify_oauth2_token") as m_verify:
+        m_verify.side_effect = google_auth_exceptions.GoogleAuthError(
+            "Wrong issuer. 'iss' should be one of the following: ..."
+        )
+        client = TestClient(app)
+        r = client.post(
+            "/eventarc",
+            json=_audit_log_body(),
+            headers={"Authorization": "Bearer fake-token"},
+        )
+    assert r.status_code == 401
+    # Verifier's internal message must NOT leak through.
+    assert "iss" not in r.json()["detail"].lower()
+
+
+def test_eventarc_rejects_transport_error(monkeypatch):
+    """JWKS fetch failure (``TransportError``) → 401, NOT 500.
+
+    Strictly this is an upstream-availability condition, but we collapse to
+    401 so (a) the auth-failure response is uniform (a probe cannot tell
+    "your token is bad" from "our cert cache is cold"), and (b) Eventarc's
+    retry on 401 hits a warm cache on the next attempt.
+
+    ``TransportError`` is a subclass of ``GoogleAuthError``, so the same
+    except-clause handles it. Test explicitly to pin the behavior against a
+    future refactor that splits the catch.
+    """
+    _set_audience(monkeypatch)
+    with patch("agent.main.verify_oauth2_token") as m_verify:
+        m_verify.side_effect = google_auth_exceptions.TransportError(
+            "Could not fetch certificates at https://www.googleapis.com/..."
+        )
+        client = TestClient(app)
+        r = client.post(
+            "/eventarc",
+            json=_audit_log_body(),
+            headers={"Authorization": "Bearer fake-token"},
+        )
+    assert r.status_code == 401
 
 
 def test_eventarc_rejects_wrong_email_claim(monkeypatch):
@@ -238,6 +288,60 @@ def test_eventarc_returns_400_on_malformed_payload(monkeypatch):
         )
     assert r.status_code == 400
     assert "malformed" in r.json()["detail"].lower()
+    mock_recheck.assert_not_awaited()
+
+
+def test_eventarc_returns_400_on_invalid_json(monkeypatch):
+    """Body that isn't valid JSON → 400, NO recheck."""
+    _set_audience(monkeypatch)
+    mock_recheck = AsyncMock()
+    with (
+        patch("agent.main.verify_oauth2_token") as m_verify,
+        patch("agent.main._do_recheck", mock_recheck),
+    ):
+        m_verify.return_value = {"email": _EXPECTED_EMAIL, "aud": _VALID_AUDIENCE}
+        client = TestClient(app)
+        r = client.post(
+            "/eventarc",
+            content=b"not json at all { ] :",
+            headers={
+                "Authorization": "Bearer fake-token",
+                "Content-Type": "application/json",
+            },
+        )
+    assert r.status_code == 400
+    assert "malformed" in r.json()["detail"].lower()
+    mock_recheck.assert_not_awaited()
+
+
+def test_eventarc_returns_400_on_empty_service_label(monkeypatch):
+    """``resource.labels`` present but ``service_name`` empty → 400.
+
+    The shape check needs to catch ``{"resource": {"labels": {}}}`` (and
+    similar partial structures) — otherwise the whitelist comparison
+    would silently route every event off-target with empty ``service``.
+    """
+    _set_audience(monkeypatch)
+    mock_recheck = AsyncMock()
+    with (
+        patch("agent.main.verify_oauth2_token") as m_verify,
+        patch("agent.main._do_recheck", mock_recheck),
+    ):
+        m_verify.return_value = {"email": _EXPECTED_EMAIL, "aud": _VALID_AUDIENCE}
+        client = TestClient(app)
+        r = client.post(
+            "/eventarc",
+            json={
+                "resource": {
+                    "labels": {
+                        "service_name": "",  # empty
+                        "location": "asia-northeast1",
+                    }
+                }
+            },
+            headers={"Authorization": "Bearer fake-token"},
+        )
+    assert r.status_code == 400
     mock_recheck.assert_not_awaited()
 
 
