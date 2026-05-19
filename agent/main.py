@@ -364,7 +364,17 @@ def _do_rollback(
             ),
         )
 
-    rendered = render_rollback_body(proposal, approval_url)
+    # render_rollback_body is a pure function over the proposal + URL, so it
+    # *shouldn't* raise — but if a future renderer change introduces a code
+    # path that does, we must release the claim. Without this, a renderer
+    # exception would leave the event claimed and perma-409 subsequent retries.
+    try:
+        rendered = render_rollback_body(proposal, approval_url)
+    except Exception as e:
+        state.release_event(event_key)
+        raise HTTPException(
+            status_code=500, detail=f"rollback render failed: {e}"
+        ) from e
 
     # Side effect #2: ask the Notifier worker to deliver the rendered body
     # to the operator-facing channel. severity="high" tracks the approval-
