@@ -1,4 +1,5 @@
 # agent/main.py
+import datetime as dt
 import hashlib
 import json
 import re
@@ -165,6 +166,31 @@ def _hash_contract(contract: OpsContract) -> str:
     """
     blob = contract.model_dump_json()
     return hashlib.sha256(blob.encode()).hexdigest()[:16]
+
+
+def _cached_rollback_is_expired(cached: dict) -> bool:
+    """Phase 13 Codex W2: a cached rollback decision past its 15-min TTL
+    must be treated as a cache miss so ``/recheck`` re-proposes a fresh
+    approval. Returning the stale URL would surface a dead link to the
+    operator without any way to recover short of ``force=true``.
+
+    Returns False for non-rollback cached decisions (their cache contract
+    is unchanged) and for any malformed/missing ``expires_at`` (fail-safe
+    toward "return the cached decision"; the worker's own /execute will
+    refuse on its second-pass expiry check).
+    """
+    if cached.get("action") != "rollback":
+        return False
+    expires_at = cached.get("approval", {}).get("expires_at")
+    if not expires_at:
+        return False
+    try:
+        when = dt.datetime.fromisoformat(expires_at)
+    except (TypeError, ValueError):
+        return False
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=dt.timezone.utc)
+    return when < dt.datetime.now(dt.timezone.utc)
 
 
 @app.get("/healthz")
@@ -539,7 +565,14 @@ async def _do_recheck(trigger: str, force: bool = False) -> dict:
     if not force:
         existing = state.find_decision_for_event(event_key)
         if existing:
-            return existing
+            if _cached_rollback_is_expired(existing):
+                # Phase 13 Codex W2: drop the event claim so the rollback
+                # path below can re-propose a fresh approval. Without this,
+                # _do_rollback's record_event() would refuse the claim and
+                # fall back to returning the expired cached decision.
+                state.release_event(event_key)
+            else:
+                return existing
 
     try:
         validate(proposal, contract)
