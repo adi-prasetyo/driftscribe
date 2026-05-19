@@ -674,8 +674,8 @@ async def recheck(force: bool = False, _: None = Depends(verify_token)):
 
 
 # Module-level Google auth transport: verify_oauth2_token needs a transport
-# instance to fetch Google's signing-key JWKS. Reusing one instance across
-# requests lets google-auth's internal cache hit on subsequent calls.
+# instance to fetch Google's signing-key JWKS. Constructing it once at import
+# time avoids allocating a new ``requests.Session`` per /eventarc call.
 _GOOGLE_AUTH_TRANSPORT = GoogleAuthRequest()
 
 
