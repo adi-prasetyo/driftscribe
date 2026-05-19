@@ -21,7 +21,7 @@ env var be?"-style reference content. We pin these properties:
      - 10-second wall-clock timeout (wrapper-level, separate from the
        SDK's connection timeout)
      - structured log every call with the shape
-       ``{trace_id, workload, mcp_tool, query_or_names, doc_count,
+       ``{trace_id, mcp_server, mcp_tool, query_or_names, doc_count,
        latency_ms}``
      - fail-closed translation of timeouts to a structured tool result
        (so the agent sees a dict, never a raw exception)
@@ -206,6 +206,60 @@ def test_retrieve_truncates_long_content():
 
 
 # --------------------------------------------------------------------------- #
+# Cache bounding (17.B.2 review fix I-1)
+# --------------------------------------------------------------------------- #
+
+
+def test_cache_size_bounded_under_many_distinct_queries():
+    """Phase 17.B.2 (Codex review I-1): the response cache is FIFO-bounded
+    at ``_CACHE_MAX_ENTRIES`` (1024).
+
+    Lazy TTL eviction only removes entries on lookup, so a query that
+    misses once and is never repeated stays forever. A long-lived
+    coordinator instance issuing many distinct queries (or a
+    misbehaving LLM) could exhaust memory. The bound is enforced in
+    :func:`_cache_put`: when an insert would push over the cap, drop
+    expired entries first, then evict the oldest-inserted entries.
+
+    Insert 1100 distinct entries and assert the cache size stays at or
+    below the cap. The exact post-insert size depends on whether any
+    inserts triggered TTL-expired evictions, but the invariant
+    ``len(cache) <= _CACHE_MAX_ENTRIES`` must always hold.
+    """
+    mock_call = AsyncMock(return_value=_make_search_result(count=1, content_len=10))
+    with patch.object(dk, "_call_mcp_tool", mock_call):
+        for i in range(1100):
+            asyncio.run(search_developer_docs(f"unique-query-{i}"))
+
+    assert len(dk._RESPONSE_CACHE) <= dk._CACHE_MAX_ENTRIES
+    # And the cap is actually reached — if it weren't, the eviction
+    # code didn't run and we can't claim the bounded behavior was
+    # exercised.
+    assert len(dk._RESPONSE_CACHE) == dk._CACHE_MAX_ENTRIES
+
+
+def test_cache_evicts_oldest_inserted_on_overflow():
+    """FIFO eviction: when the cap is reached, the oldest-inserted
+    entry is the first dropped. Pin the order so a future refactor
+    that swaps to LRU surfaces here — the semantic is intentional
+    (see module docstring).
+    """
+    mock_call = AsyncMock(return_value=_make_search_result(count=1, content_len=10))
+    with patch.object(dk, "_call_mcp_tool", mock_call):
+        # Fill the cache to the cap.
+        for i in range(dk._CACHE_MAX_ENTRIES):
+            asyncio.run(search_developer_docs(f"q-{i}"))
+        # The first entry is "q-0".
+        assert ("search_documents", "q-0") in dk._RESPONSE_CACHE
+        # Inserting one more must evict the oldest.
+        asyncio.run(search_developer_docs("q-new"))
+
+    assert ("search_documents", "q-0") not in dk._RESPONSE_CACHE
+    assert ("search_documents", "q-new") in dk._RESPONSE_CACHE
+    assert len(dk._RESPONSE_CACHE) == dk._CACHE_MAX_ENTRIES
+
+
+# --------------------------------------------------------------------------- #
 # Cache behavior
 # --------------------------------------------------------------------------- #
 
@@ -337,13 +391,23 @@ def test_search_emits_structured_log_with_required_fields(caplog):
     records = [r for r in caplog.records if getattr(r, "mcp_tool", None) == "search_documents"]
     assert len(records) == 1
     rec = records[0]
-    # Required fields per the plan.
+    # Required fields per the plan. ``mcp_server`` carries the MCP
+    # target identity (renamed from ``workload`` in 17.B.2 follow-up
+    # — the previous name was confusing because ``workload`` reads
+    # as "the caller's workload" (drift/upgrade), not "which MCP
+    # server we called". 17.B.3 will ADD a separate ``workload``
+    # field carrying the actual caller.
     assert hasattr(rec, "trace_id")
-    assert getattr(rec, "workload", None) == "developer_knowledge"
+    assert getattr(rec, "mcp_server", None) == "developer_knowledge"
     assert getattr(rec, "mcp_tool", None) == "search_documents"
     assert getattr(rec, "query_or_names", None) == "hello"
     assert getattr(rec, "doc_count", None) == 2
     assert isinstance(getattr(rec, "latency_ms", None), (int, float))
+    # ``workload`` field must NOT be present yet — 17.B.3 will add it
+    # carrying drift/upgrade. Pinning its absence here prevents a
+    # confusing dual-meaning during the gap between rename and the
+    # workload-aware wiring landing.
+    assert not hasattr(rec, "workload")
 
 
 def test_retrieve_emits_structured_log_with_required_fields(caplog):
@@ -357,6 +421,7 @@ def test_retrieve_emits_structured_log_with_required_fields(caplog):
     records = [r for r in caplog.records if getattr(r, "mcp_tool", None) == "get_documents"]
     assert len(records) == 1
     rec = records[0]
+    assert getattr(rec, "mcp_server", None) == "developer_knowledge"
     assert getattr(rec, "query_or_names", None) == "documents/foo"
     assert getattr(rec, "doc_count", None) == 1
 
@@ -528,6 +593,25 @@ def test_generic_error_response_is_not_cached():
 # --------------------------------------------------------------------------- #
 # ADK get_tools() — filter excludes answer_query end-to-end
 # --------------------------------------------------------------------------- #
+
+
+def test_missing_dk_key_exception_inherits_from_runtime_error():
+    """Phase 17.B.2 (Codex review I-5): pin the exception's MRO.
+
+    :class:`MissingDeveloperKnowledgeApiKeyError` inherits from
+    ``RuntimeError`` (not from
+    :class:`agent.workloads.MissingWorkerEnvError`) because the
+    developer-knowledge API key is NOT a worker env var — collapsing
+    the hierarchies would muddy the exception taxonomy. The
+    handler-level 503 mapping is achieved by adding the class to each
+    exception tuple in ``agent/main.py``, not by inheritance. See
+    ``test_main_exception_tuples_include_missing_dk_key`` below for
+    the matching wiring assertion.
+    """
+    from agent.workloads import MissingWorkerEnvError
+
+    assert issubclass(MissingDeveloperKnowledgeApiKeyError, RuntimeError)
+    assert not issubclass(MissingDeveloperKnowledgeApiKeyError, MissingWorkerEnvError)
 
 
 def test_get_tools_filter_excludes_answer_query():

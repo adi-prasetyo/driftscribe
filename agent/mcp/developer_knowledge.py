@@ -41,17 +41,44 @@ Wrapper guardrails layered on top of the raw MCP calls:
   timeout — both apply).
 - 60s in-process response cache keyed by ``(tool_name, key)``. Saves
   cost + latency when the LLM searches the same term twice in one
-  turn. Cleared on coordinator restart.
+  turn. Cleared on coordinator restart. The cache is bounded at
+  ``_CACHE_MAX_ENTRIES`` (1024) with FIFO eviction on overflow so a
+  long-lived coordinator that sees many distinct queries can't
+  exhaust memory.
+
+  Concurrency note (single-writer assumption): the cache is a plain
+  ``OrderedDict`` with no per-key lock. Two concurrent ``/chat``
+  requests issuing the same query inside the TTL window may both
+  miss the cache and dispatch the MCP call twice — the loser
+  overwrites the winner's entry. This is harmless duplication
+  (identical results), not a correctness bug. If concurrent
+  duplication becomes operationally significant (e.g. it shows up as
+  spend on the Developer Knowledge API quota), switch to an
+  ``asyncio.Lock``-per-key pattern that lets the second caller
+  await the first's in-flight call. Out of scope for 17.B.2.
+
+  Trace correlation note: :func:`current_trace_id_or_new` mints a
+  fresh trace id when called outside a request scope (e.g. from a
+  background task, or during a unit test that doesn't set the
+  ContextVar). Correlating MCP calls made off the request hot path
+  with their originating request requires the caller to explicitly
+  propagate the trace id by setting the ContextVar before invoking
+  the wrapper.
 - Result truncation: at most 5 documents per response, at most 4000
   chars per document body. A truncated body gets a clear suffix
   ``... [truncated 4000/<original>]`` so the LLM knows the content was
   clipped.
 - Structured log emitted every call with the fields ``{trace_id,
-  workload, mcp_tool, query_or_names, doc_count, latency_ms}``. The
-  trace id is read from the same ``driftscribe_lib.logging``
-  ContextVar that :mod:`agent.worker_client` uses to propagate the
-  per-request trace id to workers — log lines on the agent and
-  outbound MCP calls share a single correlation key.
+  mcp_server, mcp_tool, query_or_names, doc_count, latency_ms}``.
+  ``mcp_server`` carries the MCP target identity
+  (``"developer_knowledge"`` here); a future ``workload`` field
+  (carrying the calling workload — drift/upgrade — via ContextVar)
+  lands in 17.B.3/17.B.4 when the toolset is wired into a
+  workload-aware agent. The trace id is read from the same
+  ``driftscribe_lib.logging`` ContextVar that
+  :mod:`agent.worker_client` uses to propagate the per-request trace
+  id to workers — log lines on the agent and outbound MCP calls
+  share a single correlation key.
 - Fail-closed error translation: timeouts and other MCP errors become
   ``{"error": "...", "tool": ...}`` tool results, never propagated
   exceptions. The agent's LLM sees a structured failure it can reason
@@ -64,6 +91,7 @@ import asyncio
 import logging
 import os
 import time
+from collections import OrderedDict
 from typing import Any
 
 from google.adk.tools.mcp_tool import McpToolset
@@ -99,6 +127,16 @@ _MAX_DOC_CONTENT_CHARS = 4000
 # short enough that a refreshed doc shows up on the operator's next
 # request (the coordinator is long-lived under Cloud Run idle warm-up).
 _CACHE_TTL_S = 60.0
+# Hard upper bound on cache entries. Lazy TTL eviction only removes
+# entries on lookup, so keys that miss the cache once and are never
+# searched again stay forever. A misbehaving LLM that issues many
+# distinct queries (or just steady-state operation over weeks of
+# Cloud Run uptime) could exhaust memory without this cap. 1024 is
+# generous for the expected query diversity per coordinator instance
+# and small enough that the OrderedDict overhead is negligible
+# (~100KB of metadata, plus the cached responses themselves which
+# are already bounded by the 5-doc / 4000-char-per-doc truncation).
+_CACHE_MAX_ENTRIES = 1024
 
 
 # --------------------------------------------------------------------------- #
@@ -111,7 +149,13 @@ _log = logging.getLogger(__name__)
 # ``(result_dict, expires_at_monotonic)``. Module-level so a long-lived
 # coordinator instance accumulates hits across requests; cleared by
 # tests via the fixture in ``test_mcp_developer_knowledge.py``.
-_RESPONSE_CACHE: dict[tuple[str, str], tuple[dict, float]] = {}
+#
+# ``OrderedDict`` (not ``dict``) so :func:`_cache_put` can evict the
+# oldest-inserted entry on overflow in O(1) — see ``_CACHE_MAX_ENTRIES``
+# and the bounding logic in ``_cache_put``. FIFO (not LRU) chosen for
+# simplicity: a stale-enough entry will expire on its own via the TTL
+# path, and FIFO eviction needs zero bookkeeping on the read path.
+_RESPONSE_CACHE: OrderedDict[tuple[str, str], tuple[dict, float]] = OrderedDict()
 
 # Shared toolset instance. Built lazily on first MCP call so module
 # import is free of network dependencies and the missing-API-key check
@@ -229,6 +273,14 @@ async def _call_mcp_tool(tool_name: str, payload: dict[str, Any]) -> dict[str, A
     never sees a raw exception.
     """
     toolset = _get_toolset()
+    # Session lifecycle is owned by :class:`MCPSessionManager` (the
+    # toolset's pool); we don't open or close it here. ADK 1.33.0
+    # contract: ``create_session()`` returns a session whose lifetime
+    # is bound to the session manager — calling ``session.close()``
+    # would yank it out of the pool and break the next caller. If
+    # ``google-adk`` 1.34+ flips this contract (i.e. callers must
+    # close), this comment needs to flip and we add a
+    # ``try/finally: await session.close()`` around the call.
     session = await toolset._mcp_session_manager.create_session()  # noqa: SLF001
     result = await session.call_tool(tool_name, payload)
     if result.isError:
@@ -270,7 +322,43 @@ def _cache_get(tool_name: str, key: str) -> dict[str, Any] | None:
 
 
 def _cache_put(tool_name: str, key: str, result: dict[str, Any]) -> None:
-    _RESPONSE_CACHE[(tool_name, key)] = (result, time.monotonic() + _CACHE_TTL_S)
+    """Store ``result`` in the response cache, evicting on overflow.
+
+    When inserting would push the cache over ``_CACHE_MAX_ENTRIES``,
+    we first drop any expired entries (cheap to identify, and they'd
+    be evicted on their next lookup anyway). If we're still over the
+    cap, drop the oldest-inserted entries until we fit. The first
+    pass usually clears enough room on its own; the FIFO fallback
+    only kicks in under steady-state load where the cap is reached
+    before the TTL expires anything.
+    """
+    cache_key = (tool_name, key)
+    # If the key already exists, ``__setitem__`` updates in place — no
+    # net growth, no eviction needed. Handle that fast path first so
+    # the eviction logic only runs on real inserts.
+    if cache_key in _RESPONSE_CACHE:
+        _RESPONSE_CACHE[cache_key] = (result, time.monotonic() + _CACHE_TTL_S)
+        # Move to end so the entry's "insertion order" matches the
+        # last write — keeps FIFO semantics intuitive on repeated
+        # writes (re-cached entries don't get evicted before truly
+        # older ones).
+        _RESPONSE_CACHE.move_to_end(cache_key)
+        return
+
+    if len(_RESPONSE_CACHE) >= _CACHE_MAX_ENTRIES:
+        # First pass: drop expired entries. Iterate over a snapshot of
+        # keys since we mutate during iteration.
+        now = time.monotonic()
+        for k in list(_RESPONSE_CACHE.keys()):
+            _, expires_at = _RESPONSE_CACHE[k]
+            if now >= expires_at:
+                del _RESPONSE_CACHE[k]
+        # Second pass: still over cap? Evict oldest-inserted until we
+        # have room for the new entry. Cap leaves room for one insert.
+        while len(_RESPONSE_CACHE) >= _CACHE_MAX_ENTRIES:
+            _RESPONSE_CACHE.popitem(last=False)
+
+    _RESPONSE_CACHE[cache_key] = (result, time.monotonic() + _CACHE_TTL_S)
 
 
 def _truncate_documents(raw: dict[str, Any]) -> dict[str, Any]:
@@ -317,9 +405,16 @@ def _log_call(
     read from the ContextVar set by the request middleware — same
     source as :mod:`agent.worker_client`.
     """
+    # TODO(17.B.3): add ``workload`` field carrying the calling
+    # workload (drift/upgrade) via a ContextVar set by the coordinator
+    # before invoking the MCP wrapper. ``mcp_server`` here is the MCP
+    # target identity (which server we called); ``workload`` will be
+    # the caller identity (who asked us to call it). Both fields are
+    # load-bearing for observability dashboards once 17.B.3 wires the
+    # toolset into a workload-aware agent.
     extras = {
         "trace_id": current_trace_id_or_new(),
-        "workload": "developer_knowledge",
+        "mcp_server": "developer_knowledge",
         "mcp_tool": mcp_tool,
         "query_or_names": query_or_names,
         "doc_count": doc_count,
