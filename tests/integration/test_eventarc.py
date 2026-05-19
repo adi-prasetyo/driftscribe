@@ -276,7 +276,11 @@ def test_eventarc_accepts_correct_email_and_dispatches_recheck(monkeypatch):
         )
     assert r.status_code == 200
     assert r.json() == recheck_result
-    mock_recheck.assert_awaited_once_with("eventarc")
+    # Phase 17.A.3 (Codex blocker): /eventarc hardcodes workload="drift"
+    # server-side. Pin the full call so a regression that drops the
+    # kwarg — or, worse, lets the payload smuggle a different workload
+    # in — would fail this assertion.
+    mock_recheck.assert_awaited_once_with("eventarc", workload="drift")
     # The verifier was called with the configured audience — pin that the
     # handler uses settings.eventarc_audience, not a hardcoded value.
     args, kwargs = m_verify.call_args

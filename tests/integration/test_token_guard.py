@@ -69,7 +69,7 @@ def test_recheck_correct_token_succeeds(monkeypatch):
     # If it returns this sentinel, the request reached the handler.
     sentinel = {"_token_guard_passed": True, "action": "no_op"}
 
-    async def _stub_do_recheck(trigger, force=False):
+    async def _stub_do_recheck(trigger, force=False, *, workload="drift"):
         return sentinel
 
     with patch("agent.main._do_recheck", side_effect=_stub_do_recheck):
