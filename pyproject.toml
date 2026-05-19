@@ -39,7 +39,10 @@ packages = ["agent", "checker", "driftscribe_lib"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["tests"]
+# `workers/` is included so per-worker tests (Phase 11.3+) run with the rest
+# of the suite. Each worker is its own deployable container but tests can be
+# executed together from the repo root for CI/dev parity.
+testpaths = ["tests", "workers"]
 
 [tool.ruff]
 line-length = 100

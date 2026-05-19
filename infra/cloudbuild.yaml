@@ -25,9 +25,22 @@ steps:
       - demo/Dockerfile
       - demo
   - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-reader:${_TAG}
+      - -f
+      - workers/reader/Dockerfile
+      # Build context is the repo root so COPY driftscribe_lib/ resolves —
+      # the worker's Dockerfile lives at workers/reader/Dockerfile but
+      # depends on driftscribe_lib/ at the project root.
+      - .
+  - name: gcr.io/cloud-builders/docker
     args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-agent:${_TAG}']
   - name: gcr.io/cloud-builders/docker
     args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/payment-demo:${_TAG}']
+  - name: gcr.io/cloud-builders/docker
+    args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-reader:${_TAG}']
 
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
     entrypoint: gcloud
@@ -77,6 +90,62 @@ steps:
       # this --set-secrets line). See docs/architecture/multi-agent-design.md §2.
       - --set-secrets=GITHUB_TOKEN=github-pat:latest,GOOGLE_API_KEY=gemini-api-key:latest,DRIFTSCRIBE_TOKEN=coordinator-shared-token:latest
 
+  # Reader Agent (Phase 11.3) — worker #1 of 4. Read-only state extraction.
+  # Layer 1: reader-agent-sa has only roles/run.viewer at the project.
+  # Layer 3: --no-allow-unauthenticated forces ID-token auth; the worker
+  # ALSO enforces an in-app allowlist via driftscribe_lib.auth.verify_caller.
+  #
+  # Two-step OWN_URL pattern: Cloud Run assigns the service URL during the
+  # first deploy, but verify_caller() needs to know it ahead of time to
+  # validate the audience claim. We bootstrap with a placeholder URL on the
+  # initial deploy step, then immediately follow up with a gcloud `services
+  # update` that reads the assigned URL and writes it back into OWN_URL.
+  # Both steps run in EVERY build, so subsequent redeploys keep OWN_URL in
+  # sync even if the URL ever rotates (e.g., region migration).
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - driftscribe-reader
+      - --image=asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-reader:${_TAG}
+      - --region=asia-northeast1
+      - --no-allow-unauthenticated
+      - --service-account=reader-agent-sa@$PROJECT_ID.iam.gserviceaccount.com
+      - --min-instances=0
+      - --max-instances=1
+      - --concurrency=1
+      # OWN_URL placeholder — overwritten by the next step in this same
+      # build. If the next step fails, the revision will not serve requests
+      # successfully (verify_caller rejects every audience), which is the
+      # desired fail-closed behavior.
+      - --set-env-vars=GCP_PROJECT=$PROJECT_ID,TARGET_SERVICE=payment-demo,TARGET_REGION=asia-northeast1,OWN_URL=https://placeholder.invalid,ALLOWED_CALLERS=driftscribe-agent@$PROJECT_ID.iam.gserviceaccount.com
+
+  # Post-deploy: read the assigned URL and write it back into OWN_URL.
+  # `gcloud run services update --update-env-vars` patches the env block
+  # without re-rolling the image, so it's cheap and atomic.
+  #
+  # Shell `$` references are doubled (`$$`) so Cloud Build's pre-processor
+  # leaves them alone — Cloud Build expands `$VAR` and `${VAR}` against its
+  # own substitutions namespace before the bash script runs.
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        URL=$$(gcloud run services describe driftscribe-reader \
+          --region=asia-northeast1 --format='value(status.url)')
+        if [ -z "$${URL}" ] || [ "$${URL}" = "https://placeholder.invalid" ]; then
+          echo "ERROR: Could not resolve driftscribe-reader URL" >&2
+          exit 1
+        fi
+        echo "Setting OWN_URL=$${URL} on driftscribe-reader"
+        gcloud run services update driftscribe-reader \
+          --region=asia-northeast1 \
+          --update-env-vars=OWN_URL=$${URL}
+
 images:
   - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-agent:${_TAG}
   - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/payment-demo:${_TAG}
+  - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-reader:${_TAG}

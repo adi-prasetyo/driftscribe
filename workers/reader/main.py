@@ -1,0 +1,92 @@
+"""Reader Agent — read-only Cloud Run state worker (Phase 11.3).
+
+Worker #1 of 4 in the DriftScribe v3.1 multi-agent architecture. Returns the
+live env block + active revision name for the *hardcoded* target service.
+
+Safety layers in play here:
+
+- **Layer 1 (IAM scoping):** ``reader-agent-sa`` has only ``roles/run.viewer``
+  at the project — it cannot mutate anything, even if this code were buggy.
+- **Layer 2 (payload-intent policy):** the request body is a closed schema
+  (:class:`ReadRequest` with ``extra="forbid"``). The Reader's target service /
+  region / project come from environment variables loaded at boot; the caller
+  cannot influence them. Any extra field → 4xx from FastAPI's pydantic
+  validation before our handler runs.
+- **Layer 3 (inter-service auth):** :func:`driftscribe_lib.auth.verify_caller`
+  validates the inbound Google ID token's audience claim and checks the
+  caller's email against ``ALLOWED_CALLERS``.
+
+Layers 0 (tool registry) and 3 (HITL approval) live in the coordinator and
+are out of scope for this worker.
+"""
+import os
+
+from fastapi import Depends, FastAPI, Request
+from pydantic import BaseModel, ConfigDict
+
+from driftscribe_lib.auth import verify_caller
+from driftscribe_lib.cloud_run import read_live_state
+from driftscribe_lib.logging import setup as setup_logging
+
+log = setup_logging("reader-agent")
+
+# Boot-time env resolution. ``TARGET_SERVICE`` / ``TARGET_REGION`` have sane
+# defaults for the hackathon demo, but ``GCP_PROJECT`` / ``OWN_URL`` /
+# ``ALLOWED_CALLERS`` MUST be set explicitly — KeyError here causes Cloud Run
+# to fail the revision at startup, surfacing the misconfig immediately.
+TARGET_SERVICE = os.environ.get("TARGET_SERVICE", "payment-demo")
+TARGET_REGION = os.environ.get("TARGET_REGION", "asia-northeast1")
+GCP_PROJECT = os.environ["GCP_PROJECT"]
+OWN_URL = os.environ["OWN_URL"].rstrip("/")
+ALLOWED_CALLERS = frozenset(
+    e.strip() for e in os.environ["ALLOWED_CALLERS"].split(",") if e.strip()
+)
+
+
+def _verify_caller_dep(request: Request) -> str:
+    """Thin wrapper around :func:`driftscribe_lib.auth.verify_caller` so tests
+    can swap it via ``app.dependency_overrides`` without monkey-patching the
+    shared library module."""
+    return verify_caller(request, own_url=OWN_URL, allowed_callers=ALLOWED_CALLERS)
+
+
+class ReadRequest(BaseModel):
+    """Empty by design — see module docstring, Layer 2.
+
+    ``extra="forbid"`` makes pydantic raise ``ValidationError`` on any
+    unexpected field; FastAPI converts that to HTTP 422 (which the tests
+    accept as part of the 4xx class).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+
+app = FastAPI(title="DriftScribe Reader Agent")
+
+
+@app.get("/healthz")
+def healthz() -> dict[str, bool]:
+    """Liveness probe — intentionally unauthenticated so Cloud Run's built-in
+    health checks (and operator curl from outside the VPC) work without
+    minting an ID token."""
+    return {"ok": True}
+
+
+@app.post("/read")
+def read(
+    _body: ReadRequest,
+    caller: str = Depends(_verify_caller_dep),
+) -> dict:
+    """Return live env + active revision for the configured target service."""
+    log.info(
+        "read request from %s target=%s/%s/%s",
+        caller, TARGET_SERVICE, TARGET_REGION, GCP_PROJECT,
+    )
+    state = read_live_state(TARGET_SERVICE, TARGET_REGION, GCP_PROJECT)
+    return {
+        "service": TARGET_SERVICE,
+        "region": TARGET_REGION,
+        "project": GCP_PROJECT,
+        "env": state["env"],
+        "revision": state["revision"],
+    }
