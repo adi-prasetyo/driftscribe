@@ -599,11 +599,21 @@ async def _do_recheck(trigger: str, force: bool = False) -> dict:
                 ):
                     pass  # CAS won — fall through to re-propose
                 else:
+                    # Phase 15.3: CAS-loser short-circuit (Codex carry-over
+                    # from Phase 14). If the re-read finds the winner's
+                    # fresh decision, return it. Otherwise the winner is
+                    # mid-flight: do NOT fall through to record_event —
+                    # that path could succeed (event slot transiently
+                    # empty between winner's evict and re-claim) and
+                    # mint a duplicate /propose. Surface 409 so the
+                    # caller retries cleanly.
                     existing = state.find_decision_for_event(event_key)
                     if existing and not _cached_rollback_is_expired(existing):
                         return existing
-                    # Still stale or gone — fall through; record_event
-                    # below will refuse if another claim is in flight.
+                    raise HTTPException(
+                        status_code=409,
+                        detail="event in-progress, retry",
+                    )
             else:
                 return existing
 
