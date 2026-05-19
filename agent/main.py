@@ -727,12 +727,18 @@ async def eventarc(
     - **503** — server-side config missing (``EVENTARC_AUDIENCE`` or
       ``GCP_PROJECT`` unset). Fail-closed canary, same pattern as
       ``agent/auth.py``'s ``DRIFTSCRIBE_TOKEN`` check.
-    - **400** — body cannot be parsed, or ``resource.labels`` is missing /
-      empty. 400 (not 500) so Eventarc treats it as terminal-fail rather
-      than retrying a payload we can't parse.
-    - **200 ignored** — body parses but ``(service, region)`` is off-target.
-      Eventarc retries on non-2xx, so we explicitly 200 here to acknowledge
-      delivery; the body carries ``{"ignored": "non-target-service", ...}``.
+    - **200 ignored (malformed-payload)** — body cannot be parsed, or
+      ``resource.labels`` is missing / empty. Phase 15.3 (Codex carry-over
+      from Phase 14): we previously returned 400 here, but Eventarc retries
+      on 4xx in some paths and a future audit-log schema change could
+      trigger a retry storm. Acknowledge delivery with 200 + a short
+      ``{"ignored": "malformed-payload", "reason": "<tag>"}`` body. The
+      reason tag is a fixed short string (no echo of attacker-controlled
+      payload content), so the response body stays bounded and leak-free.
+    - **200 ignored (non-target-service)** — body parses but
+      ``(service, region)`` is off-target. Eventarc retries on non-2xx,
+      so we explicitly 200 here to acknowledge delivery; the body carries
+      ``{"ignored": "non-target-service", ...}``.
     - **200** — recheck dispatched; body is the standard ``_do_recheck``
       response with ``trigger="eventarc"``.
     - **5xx from _do_recheck** — propagated unchanged (worker outage = 502,
@@ -819,44 +825,32 @@ async def eventarc(
             detail="Eventarc token from unexpected service account principal",
         )
 
-    # 400: body shape. Eventarc's CloudEvent body is the audit LogEntry
-    # JSON; we read ``resource.labels.{service_name,location}``. Anything
-    # else → 400 (terminal-fail) so Eventarc doesn't retry an unparseable
-    # payload forever.
+    # Phase 15.3: post-auth malformed payloads → 200 ignored, not 400
+    # (Codex carry-over from Phase 14). Avoids the Eventarc retry-storm
+    # risk if Google ever ships an audit-log schema change. Reason tags
+    # are short fixed strings — the exception message (which may embed
+    # attacker-controlled JSON fragments) is intentionally NOT echoed.
     try:
         data = await request.json()
-    except Exception as e:
-        raise HTTPException(
-            status_code=400,
-            detail=f"malformed eventarc payload: invalid JSON ({e})",
-        )
+    except Exception:
+        # Do NOT include the exception message: it can quote raw bytes
+        # from the request body (info leak / response inflation).
+        return {"ignored": "malformed-payload", "reason": "invalid_json"}
     if not isinstance(data, dict):
-        raise HTTPException(
-            status_code=400,
-            detail="malformed eventarc payload: body is not a JSON object",
-        )
+        return {"ignored": "malformed-payload", "reason": "body_not_object"}
     resource = data.get("resource")
     if not isinstance(resource, dict):
-        raise HTTPException(
-            status_code=400,
-            detail="malformed eventarc payload: missing 'resource' object",
-        )
+        return {"ignored": "malformed-payload", "reason": "missing_resource"}
     labels = resource.get("labels")
     if not isinstance(labels, dict):
-        raise HTTPException(
-            status_code=400,
-            detail="malformed eventarc payload: missing 'resource.labels' object",
-        )
+        return {"ignored": "malformed-payload", "reason": "missing_labels"}
     service = labels.get("service_name", "")
     region = labels.get("location", "")
     if not service or not region:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "malformed eventarc payload: 'resource.labels.service_name' "
-                "and 'resource.labels.location' must both be non-empty"
-            ),
-        )
+        return {
+            "ignored": "malformed-payload",
+            "reason": "missing_service_or_region",
+        }
 
     # Service/region whitelist. 200 (not 4xx) so Eventarc doesn't retry the
     # off-target event indefinitely. Body carries the observed values so the

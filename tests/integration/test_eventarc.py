@@ -266,12 +266,13 @@ def test_eventarc_ignores_non_target_region(monkeypatch):
     mock_recheck.assert_not_awaited()
 
 
-def test_eventarc_returns_400_on_malformed_payload(monkeypatch):
-    """Body without ``resource.labels`` → 400, NO recheck.
+def test_eventarc_returns_200_ignored_on_missing_resource_labels(monkeypatch):
+    """Body without ``resource.labels`` → 200 ignored, NO recheck.
 
-    400 (not 500) so Eventarc treats the event as terminal-fail rather than
-    retrying a payload we can't parse. The trigger filter should keep these
-    out of scope in production; the test pins the defensive guard anyway.
+    Phase 15.3 (Codex carry-over from Phase 14): we previously returned 400
+    here, but Eventarc retries on 4xx in some paths, and a future audit-log
+    schema change could trigger a retry storm. Acknowledge delivery with
+    200 + ``{"ignored": "malformed-payload"}`` instead.
     """
     _set_audience(monkeypatch)
     mock_recheck = AsyncMock()
@@ -286,13 +287,15 @@ def test_eventarc_returns_400_on_malformed_payload(monkeypatch):
             json={"protoPayload": {"methodName": "x"}},  # no resource.labels
             headers={"Authorization": "Bearer fake-token"},
         )
-    assert r.status_code == 400
-    assert "malformed" in r.json()["detail"].lower()
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ignored"] == "malformed-payload"
+    assert body["reason"] == "missing_resource"
     mock_recheck.assert_not_awaited()
 
 
-def test_eventarc_returns_400_on_invalid_json(monkeypatch):
-    """Body that isn't valid JSON → 400, NO recheck."""
+def test_eventarc_returns_200_ignored_on_invalid_json(monkeypatch):
+    """Body that isn't valid JSON → 200 ignored, NO recheck."""
     _set_audience(monkeypatch)
     mock_recheck = AsyncMock()
     with (
@@ -309,13 +312,47 @@ def test_eventarc_returns_400_on_invalid_json(monkeypatch):
                 "Content-Type": "application/json",
             },
         )
-    assert r.status_code == 400
-    assert "malformed" in r.json()["detail"].lower()
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ignored"] == "malformed-payload"
+    assert body["reason"] == "invalid_json"
     mock_recheck.assert_not_awaited()
 
 
-def test_eventarc_returns_400_on_empty_service_label(monkeypatch):
-    """``resource.labels`` present but ``service_name`` empty → 400.
+def test_eventarc_invalid_json_response_does_not_echo_payload(monkeypatch):
+    """Phase 15.3 hardening: the invalid_json 200 response MUST NOT echo
+    raw bytes from the request body. The previous 400 detail string
+    embedded ``str(e)`` from the JSON parser, which contains a fragment of
+    the offending input — a small info-leak / response-inflation vector
+    against an unauthenticated-from-the-internet endpoint (the auth gate
+    runs first, but defense-in-depth).
+    """
+    _set_audience(monkeypatch)
+    # An attacker-controlled marker we'll search for in the response body
+    # to confirm it isn't being reflected back.
+    leak_marker = "SECRET_CANARY_zzz_should_not_appear"
+    mock_recheck = AsyncMock()
+    with (
+        patch("agent.main.verify_oauth2_token") as m_verify,
+        patch("agent.main._do_recheck", mock_recheck),
+    ):
+        m_verify.return_value = {"email": _EXPECTED_EMAIL, "aud": _VALID_AUDIENCE}
+        client = TestClient(app)
+        r = client.post(
+            "/eventarc",
+            content=f'{{"oops": "{leak_marker}'.encode(),  # missing closing brace+quote
+            headers={
+                "Authorization": "Bearer fake-token",
+                "Content-Type": "application/json",
+            },
+        )
+    assert r.status_code == 200
+    assert leak_marker not in r.text
+    mock_recheck.assert_not_awaited()
+
+
+def test_eventarc_returns_200_ignored_on_empty_service_label(monkeypatch):
+    """``resource.labels`` present but ``service_name`` empty → 200 ignored.
 
     The shape check needs to catch ``{"resource": {"labels": {}}}`` (and
     similar partial structures) — otherwise the whitelist comparison
@@ -341,7 +378,54 @@ def test_eventarc_returns_400_on_empty_service_label(monkeypatch):
             },
             headers={"Authorization": "Bearer fake-token"},
         )
-    assert r.status_code == 400
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ignored"] == "malformed-payload"
+    assert body["reason"] == "missing_service_or_region"
+    mock_recheck.assert_not_awaited()
+
+
+def test_eventarc_returns_200_ignored_when_body_is_not_object(monkeypatch):
+    """Body parses as JSON but is a list, not a dict → 200 ignored."""
+    _set_audience(monkeypatch)
+    mock_recheck = AsyncMock()
+    with (
+        patch("agent.main.verify_oauth2_token") as m_verify,
+        patch("agent.main._do_recheck", mock_recheck),
+    ):
+        m_verify.return_value = {"email": _EXPECTED_EMAIL, "aud": _VALID_AUDIENCE}
+        client = TestClient(app)
+        r = client.post(
+            "/eventarc",
+            json=["not", "an", "object"],
+            headers={"Authorization": "Bearer fake-token"},
+        )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ignored"] == "malformed-payload"
+    assert body["reason"] == "body_not_object"
+    mock_recheck.assert_not_awaited()
+
+
+def test_eventarc_returns_200_ignored_when_labels_not_object(monkeypatch):
+    """``resource`` present but ``resource.labels`` missing → 200 ignored."""
+    _set_audience(monkeypatch)
+    mock_recheck = AsyncMock()
+    with (
+        patch("agent.main.verify_oauth2_token") as m_verify,
+        patch("agent.main._do_recheck", mock_recheck),
+    ):
+        m_verify.return_value = {"email": _EXPECTED_EMAIL, "aud": _VALID_AUDIENCE}
+        client = TestClient(app)
+        r = client.post(
+            "/eventarc",
+            json={"resource": {"type": "cloud_run_revision"}},  # no labels
+            headers={"Authorization": "Bearer fake-token"},
+        )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ignored"] == "malformed-payload"
+    assert body["reason"] == "missing_labels"
     mock_recheck.assert_not_awaited()
 
 
