@@ -9,9 +9,11 @@ import uuid
 from pathlib import Path
 from typing import Literal
 
-from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
+from google.auth.transport.requests import Request as GoogleAuthRequest
+from google.oauth2.id_token import verify_oauth2_token
 from pydantic import BaseModel, ConfigDict
 
 from agent import approvals as approval_helpers
@@ -670,14 +672,177 @@ async def recheck(force: bool = False, _: None = Depends(verify_token)):
     return await _do_recheck("manual_recheck", force=force)
 
 
-@app.post("/eventarc")
-async def eventarc():
-    """Stub for Phase 9 (Cloud Run Audit Logs → Eventarc → /eventarc).
+# Module-level Google auth transport: verify_oauth2_token needs a transport
+# instance to fetch Google's signing-key JWKS. Reusing one instance across
+# requests lets google-auth's internal cache hit on subsequent calls.
+_GOOGLE_AUTH_TRANSPORT = GoogleAuthRequest()
 
-    Wired now so deployment manifests can target the route; the handler
-    itself ships in the Eventarc phase.
+
+@app.post("/eventarc")
+async def eventarc(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict:
+    """Eventarc auto-trigger entrypoint (Phase 14.2).
+
+    Cloud Run audit logs flow:
+    ``audit log → Eventarc trigger → POST /eventarc with CloudEvent body``.
+
+    Auth model (Layer 1, per ``docs/architecture/multi-agent-design.md``):
+    Eventarc mints an ID token against
+    ``eventarc-trigger-sa@<gcp_project>.iam.gserviceaccount.com``, audience-
+    bound to this Cloud Run service's URL. We verify the token via
+    ``google.oauth2.id_token.verify_oauth2_token`` and require the verified
+    ``email`` claim to match the expected trigger SA. This is defense-in-depth
+    on top of the IAM ``roles/run.invoker`` binding: even if the binding
+    accidentally widened, only Eventarc-trigger-SA-signed tokens get past
+    this handler.
+
+    Status-code contract:
+
+    - **401** — Authorization header missing, not Bearer-shaped, or
+      ``verify_oauth2_token`` raises (bad signature, wrong audience,
+      expired). Eventarc will retry on 401, which is the right behavior
+      for a transient JWKS / clock-skew issue.
+    - **403** — token verifies but the ``email`` claim is not the
+      eventarc-trigger SA. Detail does NOT echo the presented email.
+    - **503** — server-side config missing (``EVENTARC_AUDIENCE`` or
+      ``GCP_PROJECT`` unset). Fail-closed canary, same pattern as
+      ``agent/auth.py``'s ``DRIFTSCRIBE_TOKEN`` check.
+    - **400** — body cannot be parsed, or ``resource.labels`` is missing /
+      empty. 400 (not 500) so Eventarc treats it as terminal-fail rather
+      than retrying a payload we can't parse.
+    - **200 ignored** — body parses but ``(service, region)`` is off-target.
+      Eventarc retries on non-2xx, so we explicitly 200 here to acknowledge
+      delivery; the body carries ``{"ignored": "non-target-service", ...}``.
+    - **200** — recheck dispatched; body is the standard ``_do_recheck``
+      response with ``trigger="eventarc"``.
+    - **5xx from _do_recheck** — propagated unchanged (worker outage = 502,
+      contract-load failure = 500, etc.). The handler does NOT swallow
+      these — Eventarc retries them, which is the correct behavior.
+
+    Payload-blindness: the handler only reads ``(service, region)`` from
+    ``resource.labels`` and intentionally does NOT branch on the audit log's
+    methodName or actor. The audit log doesn't carry the post-mutation env
+    anyway; the Reader Worker is what reads it. See
+    ``docs/architecture/eventarc-payload.md`` for the full contract.
     """
-    raise HTTPException(status_code=501, detail="Phase 9")
+    s = get_settings()
+
+    # 503 canaries — fail-closed if the deploy didn't wire these.
+    if not s.eventarc_audience:
+        raise HTTPException(
+            status_code=503,
+            detail="auth not configured: EVENTARC_AUDIENCE unset",
+        )
+    if not s.gcp_project:
+        raise HTTPException(
+            status_code=503,
+            detail="auth not configured: GCP_PROJECT unset (cannot build expected SA email)",
+        )
+
+    # 401: Authorization header presence + Bearer shape. We check both
+    # before token verification so a missing/malformed header returns
+    # without ever invoking the JWKS fetch.
+    if not authorization:
+        raise HTTPException(
+            status_code=401,
+            detail="missing Authorization header",
+        )
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=401,
+            detail="Authorization header must be Bearer-shaped",
+        )
+    token = authorization[len("Bearer ") :].strip()
+    if not token:
+        raise HTTPException(
+            status_code=401,
+            detail="Authorization Bearer token is empty",
+        )
+
+    # 401: verify_oauth2_token raises ValueError on bad signature, wrong
+    # audience, expired, or malformed JWT. Collapsing all of those to 401
+    # is intentional — a token-leak probe shouldn't be able to distinguish
+    # "expired" from "wrong audience" from "garbage".
+    try:
+        claims = verify_oauth2_token(
+            token, _GOOGLE_AUTH_TRANSPORT, audience=s.eventarc_audience
+        )
+    except ValueError:
+        # Don't echo the verifier's message — internal detail might
+        # disclose which check failed.
+        raise HTTPException(
+            status_code=401,
+            detail="invalid Eventarc token",
+        )
+
+    # 403: principal check. Defense-in-depth: even if IAM widened, only
+    # the dedicated trigger SA is honored here. Detail deliberately does
+    # NOT echo the presented email.
+    expected_email = f"eventarc-trigger-sa@{s.gcp_project}.iam.gserviceaccount.com"
+    if claims.get("email") != expected_email:
+        raise HTTPException(
+            status_code=403,
+            detail="Eventarc token from unexpected service account principal",
+        )
+
+    # 400: body shape. Eventarc's CloudEvent body is the audit LogEntry
+    # JSON; we read ``resource.labels.{service_name,location}``. Anything
+    # else → 400 (terminal-fail) so Eventarc doesn't retry an unparseable
+    # payload forever.
+    try:
+        data = await request.json()
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"malformed eventarc payload: invalid JSON ({e})",
+        )
+    if not isinstance(data, dict):
+        raise HTTPException(
+            status_code=400,
+            detail="malformed eventarc payload: body is not a JSON object",
+        )
+    resource = data.get("resource")
+    if not isinstance(resource, dict):
+        raise HTTPException(
+            status_code=400,
+            detail="malformed eventarc payload: missing 'resource' object",
+        )
+    labels = resource.get("labels")
+    if not isinstance(labels, dict):
+        raise HTTPException(
+            status_code=400,
+            detail="malformed eventarc payload: missing 'resource.labels' object",
+        )
+    service = labels.get("service_name", "")
+    region = labels.get("location", "")
+    if not service or not region:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "malformed eventarc payload: 'resource.labels.service_name' "
+                "and 'resource.labels.location' must both be non-empty"
+            ),
+        )
+
+    # Service/region whitelist. 200 (not 4xx) so Eventarc doesn't retry the
+    # off-target event indefinitely. Body carries the observed values so the
+    # operator can see what was filtered in logs.
+    if service != s.target_service or region != s.target_region:
+        return {
+            "ignored": "non-target-service",
+            "service": service,
+            "region": region,
+        }
+
+    # In-scope event: dispatch through the same recheck pipeline as the
+    # manual /recheck path. ``trigger="eventarc"`` lets ``/runs/{id}`` and
+    # the e2e smoke test identify decisions produced by the auto-trigger.
+    # _do_recheck's HTTPExceptions (worker 502, contract-load 500, claim
+    # 409) propagate unchanged — Eventarc will retry on those, which is
+    # the correct behavior.
+    return await _do_recheck("eventarc")
 
 
 @app.get("/runs/{decision_id}")
