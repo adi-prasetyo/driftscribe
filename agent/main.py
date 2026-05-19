@@ -44,7 +44,7 @@ from agent.validator import ValidationError as ProposalValidationError
 from agent.validator import validate
 from agent.workloads import (
     MissingWorkerEnvError,
-    UnknownToolError,
+    ReservedToolNotImplementedError,
     load_workload,
 )
 from driftscribe_lib.logging import (
@@ -521,6 +521,31 @@ async def _do_recheck(
     `classify`, `validate`, `_render_for`, and `_perform_action` stay sync.
     """
     s = get_settings()
+
+    # Phase 17.A.3 (Codex review): workload pre-resolve runs BEFORE
+    # contract load, BEFORE the USE_ADK branch, BEFORE any worker
+    # call. The earlier Codex review caught a leak where
+    # ``/recheck`` with ``workload=upgrade`` while ``USE_ADK=false``
+    # silently fell through to the classifier path and ran drift's
+    # logic. Pre-resolving here means BOTH paths surface 503 on an
+    # undeployed workload, with a single uniform message.
+    #
+    # The resolution is also useful for surfacing "this workload's
+    # contract file lives at X" once 17.C wires non-drift contracts
+    # — out of scope for 17.A.3, but the seam is here. For drift,
+    # ``s.contract_path`` is still the source of truth.
+    try:
+        load_workload(workload)
+    except (MissingWorkerEnvError, ReservedToolNotImplementedError) as e:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"workload {workload!r} is not deployed: {e}. "
+                f"See Phase 17.B/17.C/17.E for the wiring that lands "
+                f"upgrade's tools and worker URLs."
+            ),
+        ) from e
+
     try:
         contract = load_contract(Path(s.contract_path))
     except Exception as e:
@@ -549,13 +574,16 @@ async def _do_recheck(
         # with the Eventarc handler so retry storms don't break the bank.
         try:
             proposal = await _run_adk_agent(user_msg, workload=workload)
-        except (MissingWorkerEnvError, UnknownToolError) as e:
+        except (MissingWorkerEnvError, ReservedToolNotImplementedError) as e:
             # Workload's wiring isn't complete in this build (e.g.
             # upgrade before 17.B/17.C/17.E). The request is
             # structurally valid; the system isn't deployed for that
             # workload. 503 with a clear message so the operator can
-            # self-diagnose. See the matching catch on /chat above for
-            # the rationale on collapsing both exception classes.
+            # self-diagnose. See the matching catch on /chat below for
+            # the rationale on the split between this and
+            # :class:`UnknownToolError` (which stays 500-shaped: a
+            # drift YAML typo is a deploy bug, not a deploy ordering
+            # issue).
             raise HTTPException(
                 status_code=503,
                 detail=(
@@ -1262,18 +1290,23 @@ async def chat(req: ChatRequest, _: None = Depends(verify_token)) -> dict:
     #
     # - :class:`MissingWorkerEnvError` — worker URL env var is unset. Hit
     #   by upgrade today (UPGRADE_READER_URL etc. land in 17.E).
-    # - :class:`UnknownToolError` — symbolic tool name is reserved in the
-    #   registry but the callable is None. Hit by upgrade today
-    #   (``upgrade_read_dependencies`` etc. land in 17.B/17.C).
+    # - :class:`ReservedToolNotImplementedError` — symbolic tool name is
+    #   reserved in the registry but the callable is None. Hit by
+    #   upgrade today (``upgrade_read_dependencies`` etc. land in
+    #   17.B/17.C).
     #
-    # Both collapse to 503 with a clear "not deployed" message. The
-    # alternative (separate 503 vs. 500) doesn't help the operator — in
-    # both cases the request is structurally valid and the fix is a
-    # deploy-side wiring change. The exception message in the detail
-    # carries the specific signal for debugging.
+    # Both collapse to 503 with a clear "not deployed" message. NOT
+    # caught here: bare :class:`UnknownToolError` (unknown name in the
+    # registry — a YAML typo or attempted capability widening). That
+    # bubbles out as a 500, which is the right operator surface: it's a
+    # broken deploy / control-plane bug, not a deploy-ordering issue.
+    # The 503-vs-500 split lets operators distinguish "wait for the
+    # next phase" from "the current deploy is broken, file a bug".
+    # Codex review of the initial 17.A.3 implementation flagged the
+    # broader catch as collapsing two operationally distinct cases.
     try:
         load_workload(req.workload)
-    except (MissingWorkerEnvError, UnknownToolError) as e:
+    except (MissingWorkerEnvError, ReservedToolNotImplementedError) as e:
         raise HTTPException(
             status_code=503,
             detail=(

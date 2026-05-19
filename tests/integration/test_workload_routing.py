@@ -46,28 +46,21 @@ from agent.models import ContractStatus, DecisionAction, DecisionProposal, EnvDi
 
 
 @pytest.fixture(autouse=True)
-def _drift_workload_env(monkeypatch):
-    """Set drift worker URL env vars + clear the workload cache.
+def _use_adk_on(monkeypatch):
+    """Force USE_ADK=true for /chat routing tests.
 
-    The routing handlers transitively call :func:`agent.workloads.load_workload`,
-    which reads ``READER_URL`` / ``DOCS_URL`` / ``ROLLBACK_URL`` /
-    ``NOTIFIER_URL`` at resolve time. We do NOT set the upgrade worker
-    URLs so the upgrade-503 test naturally fails its env check.
+    The four drift worker URL env vars AND the workload cache lifecycle
+    are owned by the autouse fixture in ``tests/integration/conftest.py``
+    (set on every integration test). This fixture only adds the
+    ``USE_ADK=true`` flip that /chat needs, plus the matching
+    ``get_settings`` cache bust.
 
-    Cache cleared on setup AND teardown so tests don't leak resolutions
-    into one another (different env states must yield different
-    resolutions; a stale cached entry would mask a routing bug).
+    Tests in this file that exercise the classifier path of /recheck
+    flip ``USE_ADK=false`` locally — that override stacks on top of
+    this autouse, matching the convention in other test files.
     """
-    monkeypatch.setenv("READER_URL", "https://reader.test")
-    monkeypatch.setenv("DOCS_URL", "https://docs.test")
-    monkeypatch.setenv("ROLLBACK_URL", "https://rollback.test")
-    monkeypatch.setenv("NOTIFIER_URL", "https://notifier.test")
     monkeypatch.setenv("USE_ADK", "true")
     get_settings.cache_clear()
-    import agent.workloads.registry as registry_mod
-    registry_mod._WORKLOAD_CACHE.clear()
-    yield
-    registry_mod._WORKLOAD_CACHE.clear()
 
 
 def _ok_chat_return(workload_label: str) -> dict:
@@ -182,6 +175,87 @@ def test_chat_unknown_workload_returns_422() -> None:
 
     assert r.status_code == 422, r.text
     fake.assert_not_awaited()
+
+
+# --------------------------------------------------------------------------- #
+# /recheck workload selection — both ADK and classifier paths
+# --------------------------------------------------------------------------- #
+
+
+def test_recheck_upgrade_workload_returns_503_on_classifier_path(monkeypatch) -> None:
+    """``POST /recheck`` with ``{"workload": "upgrade"}`` while
+    ``USE_ADK=false`` (the classifier path) → 503.
+
+    Codex review of the initial 17.A.3 implementation flagged this as a
+    routing leak: pre-fix, ``_do_recheck`` only consulted the
+    ``workload`` kwarg inside the ``if s.use_adk`` branch, so the
+    classifier path silently ran drift's logic regardless of the
+    requested workload. The fix pre-resolves the workload at the top of
+    ``_do_recheck`` so BOTH the ADK and classifier paths surface 503 on
+    an undeployed workload — with a single uniform message.
+
+    The classifier path is the default in tests (``USE_ADK=false`` from
+    the autouse conftest), so this test exercises it without any extra
+    setup. The drift worker URLs are wired by the autouse fixture; the
+    upgrade URLs are unset, so resolution fails at the tool-resolution
+    step (upgrade tools are reserved ``None`` placeholders) — same
+    503-shaped outcome as the /chat upgrade test above.
+    """
+    monkeypatch.setenv("USE_ADK", "false")
+    monkeypatch.delenv("UPGRADE_READER_URL", raising=False)
+    monkeypatch.delenv("UPGRADE_DOCS_URL", raising=False)
+    get_settings.cache_clear()
+
+    client = TestClient(app)
+    r = client.post("/recheck", json={"workload": "upgrade"})
+
+    assert r.status_code == 503, r.text
+    detail = r.json()["detail"].lower()
+    assert "upgrade" in detail
+    assert "not deployed" in detail or "not configured" in detail
+
+
+def test_recheck_unknown_workload_returns_422() -> None:
+    """``POST /recheck`` with ``workload="does_not_exist"`` → 422 from
+    pydantic's Literal validation, same shape as the /chat version of
+    this test."""
+    client = TestClient(app)
+    r = client.post("/recheck", json={"workload": "does_not_exist"})
+    assert r.status_code == 422, r.text
+
+
+def test_recheck_default_body_keeps_drift_workload(monkeypatch) -> None:
+    """Backward-compat: ``POST /recheck`` with no body works as it did
+    pre-17 — defaults to ``workload="drift"`` and runs the classifier
+    path. Every pre-17 integration test (28+ in test_recheck_dry_run.py
+    alone) calls ``client.post("/recheck")`` with no body; this test
+    pins that path explicitly so a future refactor can't silently break
+    them all at once.
+
+    Forces ``USE_ADK=false`` because the test_workload_routing autouse
+    fixture defaults to ``USE_ADK=true`` (the routing tests around
+    /chat need it). For the classifier path we want the deterministic
+    branch.
+    """
+    monkeypatch.setenv("USE_ADK", "false")
+    get_settings.cache_clear()
+
+    with patch("agent.main.worker_client.call") as m:
+        # Reader Worker envelope with a contract-matching env → no_op.
+        m.return_value = {
+            "service": "payment-demo",
+            "region": "asia-northeast1",
+            "project": "test-proj",
+            "env": {"PAYMENT_MODE": "mock", "FEATURE_NEW_CHECKOUT": "false"},
+            "revision": "payment-demo-00001-abc",
+        }
+        client = TestClient(app)
+        r = client.post("/recheck")
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["action"] == "no_op"
+    assert body["decision_path"] == "classifier"
 
 
 # --------------------------------------------------------------------------- #

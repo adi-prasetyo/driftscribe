@@ -99,15 +99,21 @@ COORDINATOR_TOOLS = [
 # the agent built for workload=X carries workload=X's system prompt and
 # (today) the coordinator's shared tool set.
 #
-# Tool set: Phase 17.A.3 keeps :data:`COORDINATOR_TOOLS` as the union
-# Python-callable surface. The workload's ``enabled_tool_names`` symbolic
-# list is the per-workload *capability filter* and is enforced one layer
-# down: the resolution's ``tools`` dict only contains callables for the
-# workload's allowed symbolic names, and the registry refuses to resolve
-# names outside that workload's manifest. 17.A.4 / 17.C will wire that
-# per-workload filtered tool list directly into the ``Agent(tools=...)``
-# argument so the LLM is never even handed a cross-workload tool — see
-# the TODO in :func:`build_agent` below.
+# Tool set: Phase 17.A.3 hands the ADK ``Agent(tools=...)`` argument
+# the workload's filtered tool list (``list(workload.tools.values())``),
+# NOT the union :data:`COORDINATOR_TOOLS`. This means the LLM is never
+# even shown a cross-workload tool — the capability-bound invariant
+# holds at the runner layer, not just at the registry layer. The Codex
+# review of 17.A.3 flagged the initial implementation (which still
+# passed the union) as leaving the runner-layer invariant unfinished;
+# the swap to per-workload tools closes that gap today.
+#
+# :data:`COORDINATOR_TOOLS` is kept as the *registration manifest* —
+# the place the inventory test
+# (``tests/unit/test_coordinator_tool_inventory.py``) pins the set of
+# Python callables that the coordinator may ever wire to ANY workload.
+# That's still a meaningful Layer 0 surface: a PR can't sneak a new
+# tool in without updating that constant.
 #
 # ``SYSTEM_PROMPT_CHAT`` (below) is intentionally NOT moved into the
 # workload manifest in 17.A.3. Rationale:
@@ -195,27 +201,27 @@ def build_agent(workload: WorkloadResolution) -> Agent:
     no env reads, no module-level state — so the same resolution always
     yields an agent with the same prompt and tools.
 
-    Tool set today: :data:`COORDINATOR_TOOLS`. The per-workload symbolic
-    filter (``workload.spec.enabled_tool_names``) is enforced one layer
-    up — the registry's resolution refuses to surface upgrade-only
-    callables under the drift manifest and vice versa. 17.A.4/17.C will
-    swap this to ``workload.tools.values()`` so the ADK runner is
-    handed exactly the per-workload tool list.
+    Tool set: ``workload.tools.values()`` — the workload-specific list
+    resolved by :func:`agent.workloads.load_workload`. Phase 17.A.3
+    (Codex review): this used to be :data:`COORDINATOR_TOOLS` (the
+    union surface). Switching to the per-workload filtered list makes
+    the capability-bound invariant "the LLM is never even shown a
+    cross-workload tool" hold today — not "once upgrade tools ship".
+    For drift the two surfaces are byte-identical (6 callables either
+    way); for upgrade the registry refuses to resolve until 17.B/17.C
+    flips the reserved ``None`` entries to real callables, so passing
+    ``workload.tools.values()`` to ADK can't accidentally hand the
+    LLM a partial upgrade surface.
+
+    ADK requires agent names to be valid Python identifiers (letters,
+    digits, underscores; no hyphens). The workload name is from the
+    closed Literal ``{"drift", "upgrade"}``, both identifier-safe.
     """
-    # TODO(17.A.4): replace COORDINATOR_TOOLS with `list(workload.tools.values())`
-    # once the upgrade-only tools are real callables. Currently the two
-    # surfaces are equivalent for drift (every drift callable is in
-    # COORDINATOR_TOOLS) but the per-workload list is what makes the
-    # invariant "the LLM was never even shown a cross-workload tool" hold
-    # rigorously.
-    # ADK requires agent names to be valid Python identifiers (letters,
-    # digits, underscores; no hyphens). The workload name is from the
-    # closed Literal ``{"drift", "upgrade"}``, both identifier-safe.
     return Agent(
         name=f"driftscribe_{workload.spec.name}",
         model="gemini-2.5-flash",
         instruction=workload.system_prompt,
-        tools=COORDINATOR_TOOLS,
+        tools=list(workload.tools.values()),
     )
 
 
@@ -225,15 +231,14 @@ def build_chat_agent(workload: WorkloadResolution) -> Agent:
     Same workload parameter as :func:`build_agent`. The system prompt
     here is the coordinator-wide :data:`SYSTEM_PROMPT_CHAT` (see the
     block-comment above for the rationale on NOT moving it into the
-    workload manifest in 17.A.3). The workload still flows through in
-    the agent name so log lines distinguish ``driftscribe_chat-drift``
-    from a future ``driftscribe_chat-upgrade``.
+    workload manifest in 17.A.3). Tool list is per-workload — same
+    Phase 17.A.3 rationale as :func:`build_agent`.
     """
     return Agent(
         name=f"driftscribe_chat_{workload.spec.name}",
         model="gemini-2.5-flash",
         instruction=SYSTEM_PROMPT_CHAT,
-        tools=COORDINATOR_TOOLS,
+        tools=list(workload.tools.values()),
     )
 
 

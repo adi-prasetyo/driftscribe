@@ -30,6 +30,19 @@ def _agent_settings(monkeypatch, request):
     monkeypatch.setenv("CONTRACT_PATH", "demo/ops-contract.yaml")
     monkeypatch.setenv("GITHUB_REPO", "theghostsquad00/driftscribe")
     monkeypatch.setenv("USE_ADK", "false")
+    # Phase 17.A.3: drift worker URLs are read at first ``load_workload("drift")``
+    # call. The ``/recheck`` and ``/eventarc`` paths now pre-resolve the
+    # workload (Codex review fix — previously the classifier path would
+    # silently fall through to drift even when the request named a
+    # different workload). Setting placeholder URLs autouse-wide is the
+    # cleanest way to keep every existing recheck test green without
+    # forcing each one to opt in. Tests that specifically exercise the
+    # missing-env-var 503 path (test_workload_routing.py) clear these on
+    # entry via ``monkeypatch.delenv`` and clear the workload cache.
+    monkeypatch.setenv("READER_URL", "https://reader.test")
+    monkeypatch.setenv("DOCS_URL", "https://docs.test")
+    monkeypatch.setenv("ROLLBACK_URL", "https://rollback.test")
+    monkeypatch.setenv("NOTIFIER_URL", "https://notifier.test")
     # DRIFTSCRIBE_TOKEN intentionally NOT set here. Tests that don't care
     # about auth get the dependency_overrides[verify_token] bypass below, so
     # the env var is never consulted. The token-guard tests in
@@ -37,6 +50,11 @@ def _agent_settings(monkeypatch, request):
     # _set_token() — a stale autouse env value would shadow that and hide bugs.
     get_settings.cache_clear()
     _reset_state_for_tests()
+    # Clear the workload cache so each test gets a fresh resolution
+    # against the env state above. Without this, a test that delenv'd a
+    # worker URL would still get the previously-cached resolution.
+    import agent.workloads.registry as _registry_mod
+    _registry_mod._WORKLOAD_CACHE.clear()
 
     # Bypass verify_token for tests that don't explicitly exercise the guard.
     # test_token_guard.py marks its tests so we leave the real dep in place.
@@ -49,6 +67,7 @@ def _agent_settings(monkeypatch, request):
     app.dependency_overrides.pop(verify_token, None)
     get_settings.cache_clear()
     _reset_state_for_tests()
+    _registry_mod._WORKLOAD_CACHE.clear()
 
 
 def pytest_configure(config):
