@@ -168,16 +168,18 @@ def test_chat_missing_developer_knowledge_api_key_returns_503(monkeypatch) -> No
     surface as a missing worker URL. Same 503, same self-diagnosable
     error message.
 
-    NOTE: The Developer Knowledge MCP toolset is not yet wired into
-    ``build_agent`` (that lands in 17.B.3). We can't trigger the real
-    code path via a ``/chat`` request today, so we patch
-    ``load_workload`` to raise
-    :class:`MissingDeveloperKnowledgeApiKeyError` and verify the
-    handler's exception tuple includes it. This pins the 503 mapping
-    in advance of 17.B.3's wiring. When 17.B.3 lands, an integration
-    test exercising the real
-    :func:`build_developer_knowledge_toolset` path should replace
-    this stub.
+    NOTE: This test pins the pre-resolve seam — the handler's
+    :func:`load_workload` catch tuple includes
+    :class:`MissingDeveloperKnowledgeApiKeyError`. As of Phase 17.B.3
+    the wrapper callables ARE wired into ``build_agent`` via the
+    drift workload's ``enabled_tool_names``, so an in-flight
+    ``run_chat`` can also raise the missing-key error on first MCP
+    tool call. The run_chat-side seam is pinned by
+    :func:`test_chat_run_chat_missing_developer_knowledge_api_key_returns_503`
+    above. A 17.B.4 integration test will exercise the full path
+    against a mock MCP server (real
+    :func:`build_developer_knowledge_toolset`); both seams' 503
+    mapping must hold there too.
     """
     from agent.mcp.developer_knowledge import (
         MissingDeveloperKnowledgeApiKeyError,
@@ -204,6 +206,54 @@ def test_chat_missing_developer_knowledge_api_key_returns_503(monkeypatch) -> No
     # And the standard "not deployed" framing.
     assert "not deployed" in detail
     fake_run_chat.assert_not_awaited()
+
+
+def test_chat_run_chat_missing_developer_knowledge_api_key_returns_503() -> None:
+    """Phase 17.B.3: ``MissingDeveloperKnowledgeApiKeyError`` raised
+    from INSIDE ``run_chat`` (i.e. the LLM's first MCP tool call hit
+    the env-var miss) must surface as 503, not 502.
+
+    Distinct from ``test_chat_missing_developer_knowledge_api_key_returns_503``
+    above (which patches ``load_workload`` to simulate the pre-resolve
+    seam). The pre-resolve seam doesn't trip the MCP env-var check —
+    resolving the symbolic tool name ``search_developer_docs`` to the
+    wrapper callable is a pure dict lookup that doesn't read
+    :envvar:`DEVELOPER_KNOWLEDGE_API_KEY`. The env-var read happens
+    lazily on first ``build_developer_knowledge_toolset()`` call inside
+    the wrapper — which is reached from inside ``run_chat`` once the
+    LLM picks the MCP tool.
+
+    Without an explicit handler ordered BEFORE the broader
+    ``RuntimeError`` catch in ``/chat``, the missing-key exception
+    (which subclasses ``RuntimeError``) would collapse to 502
+    ("chat agent failed") — the wrong operator surface. This test pins
+    the 503 mapping by simulating the run_chat-side raise via an
+    ``AsyncMock`` side_effect.
+    """
+    from agent.mcp.developer_knowledge import (
+        MissingDeveloperKnowledgeApiKeyError,
+    )
+
+    fake = AsyncMock(
+        side_effect=MissingDeveloperKnowledgeApiKeyError(
+            "DEVELOPER_KNOWLEDGE_API_KEY is unset"
+        )
+    )
+    with patch("agent.adk_agent.run_chat", fake):
+        client = TestClient(app)
+        r = client.post("/chat", json={"prompt": "hi"})
+
+    assert r.status_code == 503, r.text
+    detail = r.json()["detail"].lower()
+    # The run_chat-side handler narrows its detail to the Developer
+    # Knowledge subsystem (Phase 17.B.1's Secret Manager binding) —
+    # distinct from the pre-resolve seam's broader "not deployed"
+    # framing because this catch is reached only via the DK error path.
+    assert "developer_knowledge_api_key" in detail
+    assert "developer knowledge mcp" in detail
+    # Pin that the model-misbehaved 502 path was NOT taken (which would
+    # have surfaced "chat agent failed" instead).
+    assert "chat agent failed" not in detail
 
 
 def test_recheck_missing_developer_knowledge_api_key_returns_503(monkeypatch) -> None:
@@ -569,7 +619,10 @@ def test_chat_drift_workload_agent_has_drift_tools_not_upgrade_tools() -> None:
         getattr(t, "__name__", repr(t)) for t in agent.tools
     }
 
-    # Positive: every drift callable is present.
+    # Positive: every drift callable is present (six original drift
+    # callables plus the two Developer Knowledge MCP wrappers added in
+    # 17.B.3 — drift uses these to ground docs PR bodies in
+    # authoritative Cloud Run env-variable guidance).
     expected_drift = {
         "read_live_env_tool",
         "propose_rollback_tool",
@@ -577,6 +630,8 @@ def test_chat_drift_workload_agent_has_drift_tools_not_upgrade_tools() -> None:
         "notify_tool",
         "search_recent_prs_tool",
         "load_contract_tool",
+        "search_developer_docs",
+        "retrieve_developer_doc",
     }
     assert expected_drift.issubset(tool_names), (
         f"drift workload agent missing tools: {expected_drift - tool_names}"
