@@ -31,6 +31,7 @@ import agent.workloads.registry as registry_mod
 from agent.workloads.registry import (
     ACTION_REGISTRY,
     TOOL_REGISTRY,
+    WORKER_REGISTRY,
     ActionSpec,
     MissingWorkerEnvError,
     UnknownActionError,
@@ -115,6 +116,19 @@ def test_action_registry_covers_existing_drift_actions():
     # Rollback requires approval; no_op and friends do not.
     assert ACTION_REGISTRY["rollback"].requires_approval is True
     assert ACTION_REGISTRY["no_op"].requires_approval is False
+
+
+def test_registries_are_immutable_mapping_proxies():
+    """The three allowlists are the central security surface. They are
+    exposed as :class:`types.MappingProxyType` views so any caller that
+    grabs a reference cannot widen the surface by in-place mutation
+    (which is what ``Final`` alone allows). One assertion per registry."""
+    with pytest.raises(TypeError):
+        TOOL_REGISTRY["attacker_tool"] = lambda: None  # type: ignore[index]
+    with pytest.raises(TypeError):
+        WORKER_REGISTRY["attacker_worker"] = None  # type: ignore[index]
+    with pytest.raises(TypeError):
+        ACTION_REGISTRY["attacker_action"] = None  # type: ignore[index]
 
 
 # --------------------------------------------------------------------------- #

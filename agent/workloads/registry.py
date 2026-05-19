@@ -14,6 +14,11 @@ The security property is the inverse of "YAML drives behavior":
 introduce a new URL, secret, repo, or callable.* Codex-flagged blocker
 — see Phase 17 plan header §"Architecture".
 
+The three registries are exposed as :class:`types.MappingProxyType`
+views over private mutable dicts. ``Final`` only blocks rebinding;
+``MappingProxyType`` blocks in-place mutation too, which is what we
+actually want for a security allowlist.
+
 Failure modes (all raised at *load* time, never at first agent call):
 
 - :class:`UnknownWorkloadError` — `load_workload("kubernetes")` etc.
@@ -38,9 +43,11 @@ Why lazy resolution (not module-load resolution):
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Final
+from types import MappingProxyType
+from typing import Final, Mapping
 
 import yaml
 from pydantic import BaseModel, ConfigDict
@@ -109,8 +116,8 @@ class MissingWorkerEnvError(RuntimeError):
 
 
 class WorkerEndpoint(BaseModel):
-    """A worker's authority record: URL, service-account identity, and
-    audience the coordinator must mint ID tokens against.
+    """A worker's authority record: URL and audience the coordinator
+    must mint ID tokens against.
 
     ``audience`` is the ID-token ``aud`` claim — for Cloud Run this
     equals the worker's root URL (no trailing slash, no endpoint path).
@@ -118,16 +125,11 @@ class WorkerEndpoint(BaseModel):
     we surface it here so the workload manifest's resolution makes the
     audience explicit and inspectable, which matters for audit and for
     the 17.A.3 coordinator wiring.
-
-    ``sa_email`` is the worker's runtime service account — informational
-    here (audit, logging) since the actual IAM check happens server-side
-    on the worker when it validates the inbound ID token.
     """
 
     model_config = ConfigDict(frozen=True)
 
     url: str
-    sa_email: str
     audience: str
 
 
@@ -149,6 +151,17 @@ class ActionSpec:
     name: str
     display_name: str
     requires_approval: bool = False
+
+
+@dataclass(frozen=True)
+class WorkerSpec:
+    """Public record for an entry in :data:`WORKER_REGISTRY`.
+
+    Holds the env-var name that carries the worker's URL. Materialized
+    into a :class:`WorkerEndpoint` by :func:`_resolve_worker` at load
+    time, when the env var is actually read.
+    """
+    url_env: str
 
 
 @dataclass(frozen=True)
@@ -199,7 +212,7 @@ class WorkloadResolution:
 # - search_developer_docs, retrieve_developer_doc → 17.B (MCP attach)
 # - get_session_state, set_session_state → 17.B (coordinator memory)
 
-TOOL_REGISTRY: Final[dict[str, Callable | None]] = {
+_TOOL_REGISTRY: Final[dict[str, Callable | None]] = {
     # Drift workload — Phase 11.7 callables, wired today.
     "drift_read_live_env":     read_live_env_tool,
     "drift_patch_docs":        patch_docs_tool,
@@ -218,16 +231,21 @@ TOOL_REGISTRY: Final[dict[str, Callable | None]] = {
     "set_session_state":         None,
 }
 
+# Public, read-only view. MappingProxyType blocks in-place mutation
+# (`TOOL_REGISTRY["x"] = ...` raises TypeError) so the allowlist
+# property survives any caller that grabs a reference.
+TOOL_REGISTRY: Final[Mapping[str, Callable | None]] = MappingProxyType(_TOOL_REGISTRY)
+
 
 # --------------------------------------------------------------------------- #
 # WORKER_REGISTRY — the allowlist of callable workers
 # --------------------------------------------------------------------------- #
 #
-# Each entry maps a symbolic worker name to the env-var name carrying
-# its URL plus the service-account identity it runs as. We don't build
-# the :class:`WorkerEndpoint` here at module load — env vars are read
-# lazily inside `_resolve_worker` so test monkeypatching and Cloud Run
-# late-binding (the cloudbuild.yaml two-step OWN_URL pattern) both work.
+# Each entry maps a symbolic worker name to a :class:`WorkerSpec` carrying
+# the env-var name for its URL. We don't build the :class:`WorkerEndpoint`
+# here at module load — env vars are read lazily inside `_resolve_worker`
+# so test monkeypatching and Cloud Run late-binding (the cloudbuild.yaml
+# two-step OWN_URL pattern) both work.
 #
 # Drift worker URL env names match the Phase 11.7
 # :data:`agent.worker_client._WORKER_URL_ENV` table — we're not
@@ -236,39 +254,21 @@ TOOL_REGISTRY: Final[dict[str, Callable | None]] = {
 # (UPGRADE_READER_URL, UPGRADE_DOCS_URL); they'll be exported by the
 # 17.E deploy infra.
 
-
-@dataclass(frozen=True)
-class _WorkerSpec:
-    """Internal record: how to materialize a `WorkerEndpoint` from env."""
-    url_env: str
-    sa_email: str
-
-
-_WORKER_SPECS: Final[dict[str, _WorkerSpec]] = {
+_WORKER_REGISTRY: Final[dict[str, WorkerSpec]] = {
     # Drift workers — must be set for the coordinator to function.
-    "drift_reader":   _WorkerSpec(url_env="READER_URL",
-                                  sa_email="reader-worker-sa"),
-    "drift_docs":     _WorkerSpec(url_env="DOCS_URL",
-                                  sa_email="docs-worker-sa"),
-    "drift_rollback": _WorkerSpec(url_env="ROLLBACK_URL",
-                                  sa_email="rollback-worker-sa"),
+    "drift_reader":   WorkerSpec(url_env="READER_URL"),
+    "drift_docs":     WorkerSpec(url_env="DOCS_URL"),
+    "drift_rollback": WorkerSpec(url_env="ROLLBACK_URL"),
     # Shared across workloads.
-    "notifier":       _WorkerSpec(url_env="NOTIFIER_URL",
-                                  sa_email="notifier-worker-sa"),
+    "notifier":       WorkerSpec(url_env="NOTIFIER_URL"),
     # Upgrade workers — optional at module import. Required at
     # `load_workload("upgrade")` time (17.E wires the env vars).
-    "upgrade_reader": _WorkerSpec(url_env="UPGRADE_READER_URL",
-                                  sa_email="upgrade-reader-worker-sa"),
-    "upgrade_docs":   _WorkerSpec(url_env="UPGRADE_DOCS_URL",
-                                  sa_email="upgrade-docs-worker-sa"),
+    "upgrade_reader": WorkerSpec(url_env="UPGRADE_READER_URL"),
+    "upgrade_docs":   WorkerSpec(url_env="UPGRADE_DOCS_URL"),
 }
 
-
-# Exposed for tests / external introspection. We surface the *spec*
-# table here rather than a frozen dict of materialized
-# :class:`WorkerEndpoint`s because the actual values need env vars that
-# may not be set at import time.
-WORKER_REGISTRY: Final[dict[str, _WorkerSpec]] = _WORKER_SPECS
+# Public, read-only view. See note on TOOL_REGISTRY above.
+WORKER_REGISTRY: Final[Mapping[str, WorkerSpec]] = MappingProxyType(_WORKER_REGISTRY)
 
 
 # --------------------------------------------------------------------------- #
@@ -279,7 +279,7 @@ WORKER_REGISTRY: Final[dict[str, _WorkerSpec]] = _WORKER_SPECS
 # actions added by future workloads (e.g. upgrade's ``upgrade_pr``)
 # get added here.
 
-ACTION_REGISTRY: Final[dict[str, ActionSpec]] = {
+_ACTION_REGISTRY: Final[dict[str, ActionSpec]] = {
     "docs_pr":      ActionSpec("docs_pr",      "Docs PR",            requires_approval=False),
     "drift_issue":  ActionSpec("drift_issue",  "Drift issue",        requires_approval=False),
     "escalation":   ActionSpec("escalation",   "Escalate to human",  requires_approval=False),
@@ -289,6 +289,9 @@ ACTION_REGISTRY: Final[dict[str, ActionSpec]] = {
     "upgrade_pr":   ActionSpec("upgrade_pr",   "Dependency upgrade PR",
                                requires_approval=False),
 }
+
+# Public, read-only view. See note on TOOL_REGISTRY above.
+ACTION_REGISTRY: Final[Mapping[str, ActionSpec]] = MappingProxyType(_ACTION_REGISTRY)
 
 
 # --------------------------------------------------------------------------- #
@@ -340,12 +343,12 @@ def _resolve_tool(name: str) -> Callable:
 def _resolve_worker(name: str) -> WorkerEndpoint:
     """Resolve a symbolic worker name to a `WorkerEndpoint`. Reads the
     URL from the worker spec's env var and raises if unset."""
-    spec = _WORKER_SPECS.get(name)
+    spec = WORKER_REGISTRY.get(name)
     if spec is None:
         raise UnknownWorkerError(
             f"worker {name!r} is not in WORKER_REGISTRY — "
             f"workload YAML may only reference allowlisted worker names. "
-            f"Known: {sorted(_WORKER_SPECS)}"
+            f"Known: {sorted(WORKER_REGISTRY)}"
         )
     url = os.environ.get(spec.url_env, "").rstrip("/")
     if not url:
@@ -355,7 +358,7 @@ def _resolve_worker(name: str) -> WorkerEndpoint:
             f"For drift this should be set by the coordinator's deploy "
             f"step; for upgrade this will be set by Phase 17.E."
         )
-    return WorkerEndpoint(url=url, sa_email=spec.sa_email, audience=url)
+    return WorkerEndpoint(url=url, audience=url)
 
 
 def _resolve_action(name: str) -> ActionSpec:
@@ -375,7 +378,7 @@ def _load_from_path(yaml_path: Path) -> WorkloadResolution:
 
     Resolves every symbolic name and reads the system prompt + contract
     path. Raises on the first failure (no partial state)."""
-    raw = yaml.safe_load(yaml_path.read_text())
+    raw = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
     spec = WorkloadSpec.model_validate(raw)
 
     workload_dir = yaml_path.parent
@@ -386,7 +389,7 @@ def _load_from_path(yaml_path: Path) -> WorkloadResolution:
         raise FileNotFoundError(
             f"system prompt for workload {spec.name!r} not found: {prompt_path}"
         )
-    system_prompt = prompt_path.read_text()
+    system_prompt = prompt_path.read_text(encoding="utf-8")
 
     # Contract path is resolved relative to the workload dir, but only
     # the path is checked — actual contract parsing stays in
