@@ -107,15 +107,20 @@ done
 # 5. Per-SA project-level IAM grants
 # --------------------------------------------------------------------------
 # Coordinator: Firestore only (sessions/, approvals/ pending→denied flip).
-# Legacy roles/run.viewer kept for now — the USE_ADK=false classifier path
-# still calls Cloud Run admin directly. See iam-matrix.md §Phase 11.7 trim.
+# Phase 13: run.viewer removed — classifier path migrated to Reader Worker.
 for role in \
   roles/datastore.user \
-  roles/run.viewer \
 ; do
   gcloud projects add-iam-policy-binding "$PROJECT" \
     --member="serviceAccount:${COORD_SA}" --role="$role" >/dev/null
 done
+
+# Idempotent cleanup for pre-Phase-13 deploys: remove the legacy
+# project-wide run.viewer grant that the classifier path no longer
+# needs. The `|| true` makes this safe on a fresh project where the
+# binding never existed.
+gcloud projects remove-iam-policy-binding "$PROJECT" \
+  --member="serviceAccount:${COORD_SA}" --role="roles/run.viewer" >/dev/null 2>&1 || true
 
 # Reader: project-wide run.viewer (reads any service's revision+env).
 gcloud projects add-iam-policy-binding "$PROJECT" \

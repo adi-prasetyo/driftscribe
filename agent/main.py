@@ -17,8 +17,8 @@ from agent import approvals as approval_helpers
 from agent import worker_client
 from agent.auth import verify_token
 from agent.classifier import ClassificationInput, classify
-from agent.cloud_run_client import read_live_env
 from agent.config import Settings, get_settings
+from agent.worker_client import WorkerClientError
 from agent.contract import OpsContract, load_contract
 from agent.github_actions import (
     get_repo,
@@ -311,9 +311,11 @@ async def _do_recheck(trigger: str, force: bool = False) -> dict:
             # failure (502) so the caller knows to retry rather than fix.
             raise HTTPException(status_code=502, detail=f"adk agent failed: {e}")
         try:
-            live_env = read_live_env(s.target_service, s.target_region, s.gcp_project)
+            # Reader Worker enforces TARGET_SERVICE/region/project via its own
+            # boot config (Layer 2); the coordinator no longer passes them.
+            live_env = worker_client.call("reader", {})["env"]
         except Exception:
-            # Trade-off: when the Cloud Run read fails on the ADK path we
+            # Trade-off: when the Reader Worker read fails on the ADK path we
             # hash the diffs the LLM reported instead of the actual live env.
             # That's weaker idempotency (the LLM's tool call already saw the
             # live state, but we can't observe that here), but it lets the
@@ -327,9 +329,15 @@ async def _do_recheck(trigger: str, force: bool = False) -> dict:
             }
     else:
         try:
-            live_env = read_live_env(s.target_service, s.target_region, s.gcp_project)
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"cloud run read failed: {e}")
+            # Reader Worker enforces TARGET_SERVICE/region/project via its own
+            # boot config (Layer 2); the coordinator no longer passes them and
+            # no longer holds project-wide roles/run.viewer (Phase 13 trim).
+            live_env = worker_client.call("reader", {})["env"]
+        except WorkerClientError as e:
+            # Same 502 semantics as before — a Reader Worker failure is still
+            # an upstream-dep failure from the operator's POV. The classifier
+            # path has no fallback; without live_env we cannot classify.
+            raise HTTPException(status_code=502, detail=f"reader worker failed: {e}")
         proposal = classify(
             ClassificationInput(contract=contract, live_env=live_env, recent_prs=[])
         )
