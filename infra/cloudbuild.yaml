@@ -54,6 +54,15 @@ steps:
       # Same build-context-at-repo-root rationale as the reader above.
       - .
   - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-notifier:${_TAG}
+      - -f
+      - workers/notifier/Dockerfile
+      # Same build-context-at-repo-root rationale as the reader above.
+      - .
+  - name: gcr.io/cloud-builders/docker
     args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-agent:${_TAG}']
   - name: gcr.io/cloud-builders/docker
     args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/payment-demo:${_TAG}']
@@ -63,6 +72,8 @@ steps:
     args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-docs:${_TAG}']
   - name: gcr.io/cloud-builders/docker
     args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-rollback:${_TAG}']
+  - name: gcr.io/cloud-builders/docker
+    args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-notifier:${_TAG}']
 
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
     entrypoint: gcloud
@@ -285,9 +296,63 @@ steps:
           --region=asia-northeast1 \
           --update-env-vars=OWN_URL=$${URL},COORDINATOR_URL=$${COORD_URL}
 
+  # Notifier Agent (Phase 11.6) — worker #4 of 4. URL-locked webhook poster.
+  # Layer 1: notifier-agent-sa has NO project-level GCP role grants. Its
+  # ONLY privilege is roles/secretmanager.secretAccessor on the
+  # driftscribe-webhook-url secret (per-secret binding). It cannot read
+  # Cloud Run state, Firestore, GitHub, or any other secret. See
+  # docs/architecture/iam-matrix.md for the full negative-space audit.
+  # Layer 2: caller cannot supply or override the outbound URL — it comes
+  # from the env-injected secret at boot. NotifyRequest's extra="forbid"
+  # rejects any caller-supplied url field at 422 before httpx is touched.
+  # Layer 3: --no-allow-unauthenticated forces ID-token auth; the worker
+  # ALSO enforces an in-app caller email allowlist via verify_caller.
+  #
+  # Same two-step OWN_URL pattern as the reader/docs/rollback (see notes
+  # above). The driftscribe-webhook-url secret MUST exist in Secret
+  # Manager BEFORE the first build that includes this line — Cloud Run
+  # validates the --set-secrets reference at deploy time and fails the
+  # revision with INVALID_ARGUMENT if the resource is missing.
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - driftscribe-notifier
+      - --image=asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-notifier:${_TAG}
+      - --region=asia-northeast1
+      - --no-allow-unauthenticated
+      - --service-account=notifier-agent-sa@$PROJECT_ID.iam.gserviceaccount.com
+      - --min-instances=0
+      - --max-instances=1
+      - --concurrency=1
+      # OWN_URL placeholder — overwritten by the next step in this same
+      # build. If the next step fails, verify_caller rejects every
+      # audience (fail-closed).
+      - --set-env-vars=GCP_PROJECT=$PROJECT_ID,OWN_URL=https://placeholder.invalid,ALLOWED_CALLERS=driftscribe-agent@$PROJECT_ID.iam.gserviceaccount.com
+      - --set-secrets=NOTIFY_WEBHOOK_URL=driftscribe-webhook-url:latest
+
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        URL=$$(gcloud run services describe driftscribe-notifier \
+          --region=asia-northeast1 --format='value(status.url)')
+        if [ -z "$${URL}" ] || [ "$${URL}" = "https://placeholder.invalid" ]; then
+          echo "ERROR: Could not resolve driftscribe-notifier URL" >&2
+          exit 1
+        fi
+        echo "Setting OWN_URL=$${URL} on driftscribe-notifier"
+        gcloud run services update driftscribe-notifier \
+          --region=asia-northeast1 \
+          --update-env-vars=OWN_URL=$${URL}
+
 images:
   - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-agent:${_TAG}
   - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/payment-demo:${_TAG}
   - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-reader:${_TAG}
   - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-docs:${_TAG}
   - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-rollback:${_TAG}
+  - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-notifier:${_TAG}
