@@ -46,6 +46,8 @@ REGION="asia-northeast1"
 gcloud services enable --project "$PROJECT" \
   run.googleapis.com \
   eventarc.googleapis.com \
+  eventarcpublishing.googleapis.com \
+  logging.googleapis.com \
   firestore.googleapis.com \
   secretmanager.googleapis.com \
   cloudbuild.googleapis.com \
@@ -306,6 +308,54 @@ done
 # --------------------------------------------------------------------------
 gcloud firestore databases describe --project "$PROJECT" >/dev/null 2>&1 || \
   gcloud firestore databases create --project "$PROJECT" --location="$REGION" --type=firestore-native
+
+# --------------------------------------------------------------------------
+# 10. Eventarc trigger SA + driftscribe-cloudrun-changes trigger
+# --------------------------------------------------------------------------
+# Both `eventarc triggers describe` and the trigger create are regional —
+# the gates below pass --location=$REGION explicitly.
+EVENTARC_SA="eventarc-trigger-sa@${PROJECT}.iam.gserviceaccount.com"
+gcloud iam service-accounts describe "$EVENTARC_SA" --project "$PROJECT" >/dev/null 2>&1 || \
+  gcloud iam service-accounts create eventarc-trigger-sa \
+    --project "$PROJECT" --display-name="DriftScribe Eventarc trigger SA"
+
+gcloud projects add-iam-policy-binding "$PROJECT" \
+  --member="serviceAccount:${EVENTARC_SA}" \
+  --role="roles/eventarc.eventReceiver" >/dev/null
+
+# run.invoker grant AND trigger create both depend on the coordinator
+# existing. On first-ever run (before Cloud Build) both are no-ops; re-run
+# after the build to apply.
+if gcloud run services describe driftscribe-agent \
+   --region="$REGION" --project="$PROJECT" >/dev/null 2>&1; then
+  gcloud run services add-iam-policy-binding driftscribe-agent \
+    --project="$PROJECT" --region="$REGION" \
+    --member="serviceAccount:${EVENTARC_SA}" --role="roles/run.invoker" >/dev/null
+  echo "driftscribe-agent: granted run.invoker on eventarc-trigger-sa"
+
+  if gcloud eventarc triggers describe driftscribe-cloudrun-changes \
+       --location="$REGION" --project="$PROJECT" >/dev/null 2>&1; then
+    echo "eventarc trigger driftscribe-cloudrun-changes already exists — skipping create"
+  else
+    gcloud eventarc triggers create driftscribe-cloudrun-changes \
+      --project="$PROJECT" --location="$REGION" \
+      --destination-run-service=driftscribe-agent \
+      --destination-run-region="$REGION" \
+      --destination-run-path=/eventarc \
+      --event-filters="type=google.cloud.audit.log.v1.written" \
+      --event-filters="serviceName=run.googleapis.com" \
+      --event-filters="methodName=google.cloud.run.v2.Services.UpdateService" \
+      --event-filters="resourceName=projects/${PROJECT}/locations/${REGION}/services/payment-demo" \
+      --service-account="${EVENTARC_SA}"
+    echo "eventarc trigger driftscribe-cloudrun-changes: created"
+  fi
+else
+  echo "driftscribe-agent not deployed yet — skipping run.invoker grant + trigger create"
+fi
+
+echo
+echo "  next: confirm the trigger filter matches what your env emits —"
+echo "    see docs/runbooks/deploy.md Step 7 (mutate payment-demo, check audit log + handler logs)"
 
 echo
 echo "setup_secrets.sh: complete"
