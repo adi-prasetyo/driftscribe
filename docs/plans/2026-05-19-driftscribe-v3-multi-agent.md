@@ -294,11 +294,11 @@ Phase 11.9 applied the two critical Codex findings (reject-path token bypass + L
 
 2. ~~**Layer 0 tool-signature whitelist.**~~ **DONE in Phase 13** (commit `test(13): pin coordinator tool param signatures — Layer 0 carry-over`). The inventory test in `tests/unit/test_coordinator_tool_inventory.py` (Phase 11.4b) catches dangerous tool *names* via a regex. Codex flagged a residual capability-escape: a safely-named tool that accepts a `cmd`, `url`, `endpoint`, `payload`, or `raw_request` parameter could let the LLM widen capability through the parameter rather than the tool name. Phase 13 added `test_no_tool_has_dangerous_parameter_name` (parametrized over `COORDINATOR_TOOLS`) plus a regex smoke test pinning the positive/negative cases. The current 6-tool registry passes cleanly; the test pins the property as the registry grows.
 
-3. **`DecisionAction.ROLLBACK` must preserve the worker/HITL boundary.** Phase 13.1 introduces `DecisionAction.ROLLBACK` as an action the model can PROPOSE. Codex's watch is that the validator/classifier pipeline must NOT bypass the HITL gate — the model's "I think we should roll back" output should route through the rollback worker's `/propose` (HMAC-token-mint + approval URL) exactly like the ADK path's `propose_rollback_tool` does, and the operator approval gate must remain mandatory. The relevant test is the e2e flow in Task 13.3, which should explicitly assert that no code path in the rollback action skips the operator's approval URL.
+3. ~~**`DecisionAction.ROLLBACK` must preserve the worker/HITL boundary.**~~ **DONE in Phase 13** (commit `feat(13.3): end-to-end rollback control flow + HITL boundary test`). `_do_recheck` branches to `_do_rollback` after validation — the LLM emits the decision JSON, the coordinator routes through Rollback Worker `/propose` (HMAC-token mint + approval URL) and Notifier `/notify` with channel=approval, and the response carries `approval_url` (token embedded as `?t=`) but NOT `approval_token` as a separate field. The integration test `tests/integration/test_rollback_e2e.py::test_rollback_decision_does_not_execute_the_rollback` explicitly asserts that `call_execute` and `call_deny` are never invoked on the recheck path — Cloud Run mutation lives behind the operator's `/approvals/{id}` POST, which the existing 11.9 handler routes to `call_execute` / `call_deny`. The HITL gate is now structurally mandatory: no code path in `agent/main.py` reaches `call_execute` without an operator-initiated POST with the token.
 
 These are tracked in this carry-over block so the Phase 13 PR description can check them off.
 
-### Task 13.1: `DecisionAction.ROLLBACK` + validator policy
+### Task 13.1: `DecisionAction.ROLLBACK` + validator policy ~~~~ **DONE in Phase 13**
 
 **Files:**
 - Modify: `agent/models.py`, `agent/validator.py`
@@ -311,17 +311,23 @@ These are tracked in this carry-over block so the Phase 13 PR description can ch
 
 **Steps:** TDD-style, implement, commit.
 
-### Task 13.2: Renderer outputs approval URL for rollback
+### Task 13.2: Renderer outputs approval URL for rollback ~~~~ **DONE in Phase 13**
 
 **Files:** Modify `agent/renderer.py`, create `tests/unit/test_renderer_rollback.py`.
 
 Rendered body for a rollback decision includes the approval URL pointing at the coordinator's `/approvals/{id}` (NOT the Rollback Agent — it's private), a clear CTA, the canonical rollback details (service, target_revision, reason), and a 15-minute expiry note.
 
-### Task 13.3: End-to-end rollback flow
+### Task 13.3: End-to-end rollback flow ~~~~ **DONE in Phase 13**
 
 **Files:** Create `tests/integration/test_rollback_e2e.py`.
 
 Mock Reader → drift on `present_disallow_manual` → coordinator's ADK proposes `rollback` → validator accepts → renderer produces approval URL → Notifier called with severity=`approval` and the URL. Then: human POSTs to `/approvals/{id}` with valid token → coordinator calls Rollback Agent's `/execute` → assert Rollback Agent's execute was called with the canonical stored payload.
+
+Implementation notes:
+- `_do_recheck` in `agent/main.py` branches to `_do_rollback` after `validate()`. The ROLLBACK control flow is structurally different from the other actions: `claim_event → propose → render → notify` (instead of `render → claim_event → perform_action`), because render needs the approval URL minted by the worker's response.
+- Response schema diverges: rollback returns an `"approval": {approval_id, approval_url, expires_at}` block in place of the `"github"` block. `approval_token` is deliberately NOT echoed — it's already embedded in `approval_url` as `?t=<token>`, and exposing it separately would double the leak surface.
+- `SYSTEM_PROMPT_RECHECK` (`agent/adk_agent.py`) gained `rollback` as a valid action with `target_revision` field. The prompt explicitly forbids the LLM from inferring a revision name — only propose rollback when a concrete previous revision came back from tool output. (Phase 13 limitation: Reader Worker doesn't yet return previous revisions; future phase will extend it.)
+- 9 integration tests in `tests/integration/test_rollback_e2e.py`: happy path, HITL boundary safety property (carry-over #3 closure), operator approve POST, operator reject POST, notifier-failure claim release, propose-failure claim release, malformed-propose-response 502, idempotent retry, and a defensive 500 for ROLLBACK on the non-ADK path.
 
 ### Phase 13 Codex review
 
