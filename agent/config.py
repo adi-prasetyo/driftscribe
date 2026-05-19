@@ -5,10 +5,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     # extra="ignore" so .env files can carry unrelated keys (notes, sibling-tool
-    # config, alternate names for the same value like GEMINI_API_KEY vs the
-    # canonical GOOGLE_API_KEY) without crashing Settings on boot. Default in
-    # pydantic-settings 2.x is "forbid", which is unfriendly for shared .env
-    # files. We pay the silent-typo cost here intentionally.
+    # config, stale entries from earlier phases) without crashing Settings on
+    # boot. Default in pydantic-settings 2.x is "forbid", which is unfriendly
+    # for shared .env files. We pay the silent-typo cost here intentionally.
+    # Phase 14.5: the coordinator no longer reads any LLM API key — Vertex AI
+    # auth flows through ADC (the Cloud Run service account in prod, or
+    # `gcloud auth application-default login` locally), driven by the
+    # GOOGLE_GENAI_USE_VERTEXAI / GOOGLE_CLOUD_PROJECT / GOOGLE_CLOUD_LOCATION
+    # env vars that google-genai picks up automatically.
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     dry_run: bool = True
@@ -23,7 +27,6 @@ class Settings(BaseSettings):
     github_repo: str = ""
     github_token: str = ""
     debug_config_url: str = ""
-    google_api_key: str = ""
     use_adk: bool = False
     # Operator-facing shared token guarding /recheck (and future /chat in
     # Phase 11.7). Cloud Run injects this from Secret Manager secret

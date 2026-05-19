@@ -1115,8 +1115,10 @@ async def chat(req: ChatRequest, _: None = Depends(verify_token)) -> dict:
     if not s.use_adk:
         # /chat without ADK enabled has no engine to invoke. 503 (not
         # 501) because the feature exists at this revision; it's just
-        # disabled. Operator flips USE_ADK=true after verifying Gemini
-        # quota.
+        # disabled. Operator flips USE_ADK=true after verifying Vertex
+        # AI Gemini quota for `gemini-2.5-flash` in the deploy region
+        # (asia-northeast1) — Phase 14.5 moved auth to Vertex AI ADC so
+        # quota is per-project/region, not per-API-key.
         raise HTTPException(
             status_code=503,
             detail="ADK not enabled (set USE_ADK=true to enable /chat)",

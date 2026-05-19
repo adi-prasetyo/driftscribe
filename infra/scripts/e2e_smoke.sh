@@ -82,9 +82,10 @@ check() {
 
 # ----------------------------------------------------------------------
 # Test 1 (optional): /chat with valid token returns 200.
-# Requires USE_ADK=true on the coordinator + a working Gemini API key.
-# Gemini credits ran out last session — keep this test off by default.
-# Set RUN_POSITIVE=1 in the environment to enable.
+# Requires USE_ADK=true on the coordinator + Vertex AI ADC reachable.
+# Vertex AI Gemini quota in asia-northeast1 is per-project — set
+# RUN_POSITIVE=1 to exercise the ADK delegation path against your
+# project's quota.
 # ----------------------------------------------------------------------
 echo "[1] /chat with token (positive path)"
 if [ "${RUN_POSITIVE:-0}" = "1" ]; then
