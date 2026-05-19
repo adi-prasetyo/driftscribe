@@ -215,6 +215,47 @@ def test_recheck_upgrade_workload_returns_503_on_classifier_path(monkeypatch) ->
     assert "not deployed" in detail or "not configured" in detail
 
 
+def test_recheck_classifier_path_refuses_non_drift_workload_even_when_resolvable(
+    monkeypatch,
+) -> None:
+    """Phase 17.A.3 (Codex follow-up review): a latent leak guard.
+
+    Today ``load_workload("upgrade")`` fails because the upgrade tools
+    are reserved ``None`` placeholders. But once 17.B/17.C/17.E ship,
+    the resolution will succeed — and without an explicit guard the
+    classifier path would happily run drift's classifier on an upgrade
+    request (drift's ``classify`` function is co-designed with drift's
+    contract+live-env shape; it has no idea what upgrade is).
+
+    This test simulates the post-17.E world by patching
+    ``load_workload`` to return a stub resolution (any non-raising
+    value will do — the handler only uses the return path to decide
+    whether to proceed, not its contents on the classifier branch).
+    The pin: with ``USE_ADK=false`` and ``workload="upgrade"``, the
+    handler returns 503 BEFORE invoking the classifier or any
+    worker call.
+    """
+    monkeypatch.setenv("USE_ADK", "false")
+    get_settings.cache_clear()
+
+    # Stub load_workload so the pre-resolve check passes regardless of
+    # env state. We don't care what it returns — the classifier-path
+    # guard refuses non-drift before consulting the resolution.
+    with (
+        patch("agent.main.load_workload", return_value=object()),
+        patch("agent.main.worker_client.call") as m_worker,
+    ):
+        client = TestClient(app)
+        r = client.post("/recheck", json={"workload": "upgrade"})
+
+    assert r.status_code == 503, r.text
+    detail = r.json()["detail"].lower()
+    assert "classifier path" in detail or "use_adk" in detail.lower()
+    # The guard fires BEFORE any worker call — pin that the Reader
+    # Worker is never touched in this branch.
+    m_worker.assert_not_called()
+
+
 def test_recheck_unknown_workload_returns_422() -> None:
     """``POST /recheck`` with ``workload="does_not_exist"`` → 422 from
     pydantic's Literal validation, same shape as the /chat version of

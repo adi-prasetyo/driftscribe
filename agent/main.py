@@ -552,6 +552,26 @@ async def _do_recheck(
         # Bad contract = our deploy is broken, not GCP. 500, not 502.
         raise HTTPException(status_code=500, detail=f"contract load failed: {e}")
 
+    # Phase 17.A.3 (Codex follow-up review): the classifier path is
+    # drift-specific by design — :func:`agent.classifier.classify`
+    # only knows about drift's contract+live-env shape. Once 17.B/17.C/
+    # 17.E land and ``load_workload("upgrade")`` succeeds, the previous
+    # code would have fallen through to the drift classifier even when
+    # the request said ``workload="upgrade"``. Refuse explicitly here
+    # so the leak can't recur. The 503 is the operator-facing
+    # equivalent of "feature not deployed on this path" — the matching
+    # ADK-path is the supported way to run non-drift workloads.
+    if not s.use_adk and workload != "drift":
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"workload {workload!r} requires the ADK path (USE_ADK=true). "
+                f"The classifier path is drift-only by design — see "
+                f"agent.classifier.classify, which is co-designed with "
+                f"the drift contract+live-env shape."
+            ),
+        )
+
     if s.use_adk:
         # ADK path: the agent's own tool calls do the Cloud Run read, so we
         # don't pre-fetch live_env. We still need a live_env-shaped dict for
