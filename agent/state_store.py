@@ -26,6 +26,7 @@ class StateStore(Protocol):
         self, decision_id: str, event_key: str, decision: dict[str, Any]
     ) -> None: ...
     def get_decision(self, decision_id: str) -> dict[str, Any] | None: ...
+    def evict_cached_decision(self, event_key: str, decision_id: str) -> bool: ...
 
 
 class InMemoryStateStore:
@@ -61,6 +62,14 @@ class InMemoryStateStore:
 
     def get_decision(self, decision_id: str) -> dict[str, Any] | None:
         return self._decisions.get(decision_id)
+
+    def evict_cached_decision(self, event_key: str, decision_id: str) -> bool:
+        """Compare-and-delete the event doc; True iff decision_id matched."""
+        record = self._events.get(event_key)
+        if not record or record.get("decision_id") != decision_id:
+            return False
+        self._events.pop(event_key, None)
+        return True
 
 
 class FirestoreStateStore:
@@ -119,3 +128,28 @@ class FirestoreStateStore:
     def get_decision(self, decision_id: str) -> dict[str, Any] | None:
         snap = self._decisions.document(decision_id).get()
         return snap.to_dict() if snap.exists else None
+
+    def evict_cached_decision(self, event_key: str, decision_id: str) -> bool:
+        """Compare-and-delete the event doc transactionally; True iff
+        decision_id matched. Closes Phase 13 Codex W2 carry-over — two
+        concurrent /recheck retries observing the same expired cached
+        rollback would both call release_event under the prior code,
+        letting one re-claim and the other delete that fresh claim. The
+        CAS keeps the loser from clobbering the winner."""
+        from google.cloud import firestore
+
+        doc_ref = self._events.document(event_key)
+
+        @firestore.transactional
+        def _txn(transaction, expected_decision_id):
+            snap = doc_ref.get(transaction=transaction)
+            if not snap.exists:
+                return False
+            data = snap.to_dict() or {}
+            if data.get("decision_id") != expected_decision_id:
+                return False
+            transaction.delete(doc_ref)
+            return True
+
+        transaction = self._db.transaction()
+        return _txn(transaction, decision_id)
