@@ -405,9 +405,23 @@ steps:
         echo "  DOCS_URL=$${DOCS_URL}"
         echo "  ROLLBACK_URL=$${ROLLBACK_URL}"
         echo "  NOTIFIER_URL=$${NOTIFIER_URL}"
+        # Phase 14.3: the coordinator's own URL is the audience claim
+        # /eventarc verifies Eventarc-minted ID tokens against. Resolve
+        # it here and stamp it as EVENTARC_AUDIENCE in the same update
+        # call. If the describe returns empty, fail-closed (the /eventarc
+        # handler's 503-on-empty canary already covers the missing-env
+        # case at runtime; this exits 1 at build time so the operator
+        # sees the problem before Eventarc starts delivering events).
+        COORD_URL=$$(gcloud run services describe driftscribe-agent \
+          --region=asia-northeast1 --format='value(status.url)')
+        if [ -z "$${COORD_URL}" ]; then
+          echo "ERROR: Could not resolve driftscribe-agent URL for EVENTARC_AUDIENCE" >&2
+          exit 1
+        fi
+        echo "  EVENTARC_AUDIENCE=$${COORD_URL}"
         gcloud run services update driftscribe-agent \
           --region=asia-northeast1 \
-          --update-env-vars=READER_URL=$${READER_URL},DOCS_URL=$${DOCS_URL},ROLLBACK_URL=$${ROLLBACK_URL},NOTIFIER_URL=$${NOTIFIER_URL}
+          --update-env-vars=READER_URL=$${READER_URL},DOCS_URL=$${DOCS_URL},ROLLBACK_URL=$${ROLLBACK_URL},NOTIFIER_URL=$${NOTIFIER_URL},EVENTARC_AUDIENCE=$${COORD_URL}
 
 images:
   - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-agent:${_TAG}

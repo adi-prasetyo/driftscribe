@@ -126,7 +126,7 @@ steps that wire each worker's `OWN_URL` and the coordinator's four
 `*_URL` env vars to the actual Cloud Run-assigned URLs.
 
 The coordinator deploys with `USE_ADK=false` by default — `/chat` returns
-"ADK disabled" until you flip it in step 7.
+"ADK disabled" until you flip it in step 8.
 
 ## Step 6 — apply per-worker `run.invoker` grants
 
@@ -152,7 +152,83 @@ rollback-agent-sa: granted run.developer on payment-demo (resource-scoped)
 If any worker still says "not deployed yet", that worker's deploy step in
 step 5 failed — check the Cloud Build logs before continuing.
 
-## Step 7 — enable the ADK delegation path
+## Step 7 — confirm Eventarc trigger fires
+
+The Step 6 re-run of `setup_secrets.sh` also:
+
+- Created `eventarc-trigger-sa@…`.
+- Granted it `roles/run.invoker` on `driftscribe-agent` plus
+  `roles/eventarc.eventReceiver` project-wide.
+- Created the `driftscribe-cloudrun-changes` trigger filtering on
+  `payment-demo` mutations (resourceName exact match,
+  `methodName=google.cloud.run.v2.Services.UpdateService`).
+
+The Step 5 build also stamps `EVENTARC_AUDIENCE` on the coordinator (the
+coordinator's own assigned URL) in the same `gcloud run services update`
+call as the four worker URLs — see the final post-deploy step in
+`infra/cloudbuild.yaml`. Without that env, the `/eventarc` handler
+fail-closes with 503.
+
+Manually mutate `payment-demo` once. Then check both halves of the path:
+the audit log emitted the expected method name (trigger-side), AND the
+coordinator's Cloud Run logs show `/eventarc` ran `_do_recheck` to
+completion (handler-side). The audit-log shape alone only proves the
+trigger *would* match — it doesn't prove Eventarc delivered or that the
+handler completed.
+
+> **State-store note (DRY_RUN=true demo deploy):** the default
+> `cloudbuild.yaml` deploys the coordinator with `DRY_RUN=true`, which
+> swaps `FirestoreStateStore` for `InMemoryStateStore`. That means
+> decisions produced by `/eventarc` are NOT persisted to Firestore on
+> the default demo deploy — verifying via Firestore only works after
+> flipping `DRY_RUN=false`. For the default deploy, verify via Cloud
+> Run logs as shown below.
+
+```bash
+gcloud run services update payment-demo --update-env-vars=DEMO_PROBE=1 --project "$PROJECT" --region asia-northeast1
+sleep 10
+
+# 1) Trigger-side: audit log methodName check.
+gcloud logging read \
+  'resource.type=cloud_run_revision AND protoPayload.methodName=~"Services\."' \
+  --limit 1 --format='value(protoPayload.methodName)' \
+  --project "$PROJECT"
+
+# 2) Handler-side: /eventarc invocation in coordinator logs (~30s later).
+gcloud logging read \
+  'resource.type=cloud_run_revision AND resource.labels.service_name="driftscribe-agent" AND httpRequest.requestUrl=~"/eventarc"' \
+  --limit 5 --format='value(httpRequest.status,httpRequest.requestUrl)' \
+  --project "$PROJECT"
+```
+
+If the audit log output is `google.cloud.run.v2.Services.UpdateService`
+AND the coordinator logs show a `200` on `/eventarc`, you're done.
+
+If the audit log emits `google.cloud.run.v1.Services.ReplaceService`
+instead, the v1 path uses a **different resourceName format** as well —
+not just the methodName. v1 uses `namespaces/{project}/services/{name}`,
+not `projects/{project}/locations/{region}/services/{name}`. Edit BOTH
+filter lines in section 10 of `infra/scripts/setup_secrets.sh`:
+
+```diff
+- --event-filters="methodName=google.cloud.run.v2.Services.UpdateService"
+- --event-filters="resourceName=projects/${PROJECT}/locations/${REGION}/services/payment-demo"
++ --event-filters="methodName=google.cloud.run.v1.Services.ReplaceService"
++ --event-filters="resourceName=namespaces/${PROJECT}/services/payment-demo"
+```
+
+Then delete the existing trigger and re-run the script to recreate it
+with the new filters:
+
+```bash
+gcloud eventarc triggers delete driftscribe-cloudrun-changes \
+  --location=asia-northeast1 --project "$PROJECT"
+./infra/scripts/setup_secrets.sh "$PROJECT" "$GH_PAT" "$GEMINI_KEY" "$DOCS_PAT" "$WEBHOOK_URL"
+```
+
+Re-mutate `payment-demo` and re-check the coordinator logs.
+
+## Step 8 — enable the ADK delegation path
 
 Before flipping `USE_ADK=true`, confirm your Gemini API key has credit
 remaining at https://aistudio.google.com. The coordinator falls back to a
@@ -165,7 +241,7 @@ gcloud run services update driftscribe-agent \
   --update-env-vars=USE_ADK=true
 ```
 
-## Step 8 — run the E2E smoke test
+## Step 9 — run the E2E smoke test
 
 ```bash
 PROJECT="$PROJECT" ./infra/scripts/e2e_smoke.sh
@@ -185,7 +261,7 @@ RUN_POSITIVE=1 PROJECT="$PROJECT" ./infra/scripts/e2e_smoke.sh
 
 A clean run prints `PASS: <n>    FAIL: 0` and exits 0.
 
-## Step 9 — record the demo
+## Step 10 — record the demo
 
 With the smoke test green, hit `$COORD_URL/recheck?force=true` and
 `/chat` with the token, screen-record the approval flow, and you have
@@ -210,7 +286,7 @@ re-bootstrapping unless you've added a new SA, secret, or service.
   coordinator's SA email is missing from the worker's `ALLOWED_CALLERS`
   env. Confirm `cloudbuild.yaml` lists `driftscribe-agent@…` (the
   dedicated coordinator SA, NOT the default compute SA).
-- **`/chat` returns 503 "ADK disabled"**: you forgot step 7.
+- **`/chat` returns 503 "ADK disabled"**: you forgot step 8.
 - **`/chat` returns 503 "auth not configured: DRIFTSCRIBE_TOKEN unset"**:
   the `coordinator-shared-token` secret reference was removed from the
   coordinator's `--set-secrets` line — fail-closed by design. Restore the
