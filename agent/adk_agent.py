@@ -59,9 +59,11 @@ import re
 import uuid
 
 from google.adk import Agent
+from google.adk.planners.built_in_planner import BuiltInPlanner
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
+from google.genai.types import ThinkingConfig
 
 from agent.adk_tools import (
     load_contract_tool,
@@ -289,6 +291,12 @@ def build_agent(workload: WorkloadResolution) -> Agent:
         model="gemini-2.5-flash",
         instruction=workload.system_prompt,
         tools=list(workload.tools.values()),
+        # 18.B.1: surface Gemini 2.5 Flash's thought summaries. The model
+        # already spends thinking tokens at default-dynamic budget; this
+        # only changes whether the summaries are *returned*.
+        planner=BuiltInPlanner(
+            thinking_config=ThinkingConfig(include_thoughts=True),
+        ),
     )
 
 
@@ -312,6 +320,12 @@ def build_chat_agent(workload: WorkloadResolution) -> Agent:
         model="gemini-2.5-flash",
         instruction=workload.chat_system_prompt,
         tools=list(workload.tools.values()),
+        # 18.B.1: surface Gemini 2.5 Flash's thought summaries. The model
+        # already spends thinking tokens at default-dynamic budget; this
+        # only changes whether the summaries are *returned*.
+        planner=BuiltInPlanner(
+            thinking_config=ThinkingConfig(include_thoughts=True),
+        ),
     )
 
 
@@ -352,7 +366,12 @@ async def run_agent(
     ):
         if event.is_final_response() and event.content and event.content.parts:
             parts_text = [
-                part.text for part in event.content.parts if getattr(part, "text", None)
+                part.text
+                for part in event.content.parts
+                # 18.B.1: skip thought parts. With include_thoughts=True the
+                # final event interleaves a thought-summary part alongside
+                # the response JSON; collecting both corrupts the parse.
+                if getattr(part, "text", None) and not getattr(part, "thought", False)
             ]
             if parts_text:
                 final_text = "".join(parts_text)
@@ -419,6 +438,9 @@ async def run_chat(
         # Collect the final natural-language response.
         if event.is_final_response() and event.content and event.content.parts:
             for part in event.content.parts:
+                # 18.B.1: skip thought parts (same rationale as run_agent).
+                if getattr(part, "thought", False):
+                    continue
                 if getattr(part, "text", None):
                     reply_chunks.append(part.text)
 
