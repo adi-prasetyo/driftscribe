@@ -319,6 +319,41 @@
       font-style: italic;
       padding: 0.25em 0;
     }
+    /* ----------------------------------------------------------------- */
+    /*  19.B.5: inline HITL approval CTA. Rendered ABOVE the result_      */
+    /*  preview <pre> inside a tool_result <details> when the result      */
+    /*  carries an ``approval_url`` starting with ``/approvals/`` (same-  */
+    /*  origin guard). Warning-yellow card so it visually pops from the   */
+    /*  monochrome JSON receipt below it.                                 */
+    /* ----------------------------------------------------------------- */
+    .approval-cta {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75em;
+      margin: 0.4em 0 0.5em 0;
+      padding: 0.6em 0.85em;
+      border: 1px solid #ebd9a3;
+      border-radius: 4px;
+      background: #fff4d6;
+      color: var(--warn);
+      font-size: 0.92em;
+    }
+    .approval-cta strong { color: var(--warn); }
+    .approval-btn {
+      display: inline-block;
+      padding: 0.45em 1.1em;
+      border-radius: 4px;
+      background: var(--accent);
+      color: #fff;
+      text-decoration: none;
+      font-weight: 600;
+      font-size: 0.95em;
+      border: 1px solid #259443;
+      white-space: nowrap;
+    }
+    .approval-btn:hover { background: #259443; }
+    .approval-btn:focus { outline: 2px solid #1f6feb; outline-offset: 2px; }
     .pair-row {
       padding: 0.2em 0;
     }
@@ -780,6 +815,54 @@
         return pairs;
       }
 
+      // --------------------------------------------------------------- //
+      //  19.B.5: inline HITL approval CTA renderer.                     //
+      //                                                                 //
+      //  When a tool_result for ``propose_rollback_tool`` carries an    //
+      //  ``approval_url`` in its result_preview JSON, this helper       //
+      //  builds a small bordered card with an "Approve →" button that  //
+      //  opens the same-origin approval page in a new tab.              //
+      //                                                                 //
+      //  Security posture:                                              //
+      //    * result_preview is a JSON STRING (≤2000 chars) — may be    //
+      //      truncated mid-string. We catch JSON.parse errors and       //
+      //      render nothing in that case.                               //
+      //    * Only ``approval_url`` values starting with "/approvals/"  //
+      //      are accepted. Any other shape (http://…, javascript:,    //
+      //      data:, relative path) returns null — protects against an  //
+      //      open-redirect/XSS surface in a redacted-but-attacker-     //
+      //      shaped result.                                             //
+      //    * No innerHTML of derived text — all node content is set    //
+      //      via textContent (button label is a static literal).       //
+      // --------------------------------------------------------------- //
+      function _renderApprovalCta(result_preview_string) {
+        try {
+          const obj = JSON.parse(result_preview_string);
+          const url = obj && obj.approval_url;
+          if (typeof url !== "string" || !url.startsWith("/approvals/")) {
+            return null; // wrong shape; render nothing
+          }
+          const card = document.createElement("div");
+          card.className = "approval-cta";
+
+          const headline = document.createElement("strong");
+          headline.textContent = "HITL approval required";
+          card.appendChild(headline);
+
+          const ctaBtn = document.createElement("a");
+          ctaBtn.className = "approval-btn";
+          ctaBtn.href = url;
+          ctaBtn.target = "_blank";
+          ctaBtn.rel = "noopener";
+          ctaBtn.textContent = "Approve →";
+          card.appendChild(ctaBtn);
+
+          return card;
+        } catch (e) {
+          return null; // unparseable (likely truncated) preview; render nothing
+        }
+      }
+
       function _renderToolPair(pair, expandedIds) {
         // Container per call+result pair. Use the call's insert_id as
         // the stable key so expand-state survives re-render. If the
@@ -831,6 +914,18 @@
           lbl.style.color = "var(--muted)";
           lbl.textContent = "result_preview:";
           det.appendChild(lbl);
+          // 19.B.5: HITL approval CTA goes ABOVE the JSON receipt — the
+          // CTA is the action, the <pre> is the proof. Only fires when
+          // the tool is propose_rollback_tool AND the result_preview
+          // parses cleanly AND carries a same-origin approval_url. Any
+          // other shape (truncated JSON, missing field, off-origin URL)
+          // → null, and the <pre> renders alone as before.
+          if (pair.result.tool_name === "propose_rollback_tool") {
+            const cta = _renderApprovalCta(
+              String(pair.result.result_preview || "")
+            );
+            if (cta) det.appendChild(cta);
+          }
           const pre = document.createElement("pre");
           pre.textContent = String(pair.result.result_preview || "(empty)");
           det.appendChild(pre);
