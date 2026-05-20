@@ -89,7 +89,7 @@ Verify:
 
 ```bash
 gcloud logging buckets describe _Default \
-  --project=$PROJECT \
+  --project="$PROJECT" \
   --location=global \
   --format='value(retentionDays)'
 ```
