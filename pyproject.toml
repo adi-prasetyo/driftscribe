@@ -11,6 +11,11 @@ dependencies = [
     "google-adk>=0.4",
     "google-cloud-run>=0.10",
     "google-cloud-firestore>=2.19",
+    # Already pulled in transitively via opentelemetry-exporter-gcp-logging,
+    # but the /trace endpoint (Phase 19.A.5+) reads from Cloud Logging
+    # directly. Promote to a direct dep so a future ADK / OTEL exporter
+    # version dropping it doesn't silently break /trace.
+    "google-cloud-logging>=3.11",
     "google-genai>=0.5",
     "pygithub>=2.5",
     "httpx>=0.27",

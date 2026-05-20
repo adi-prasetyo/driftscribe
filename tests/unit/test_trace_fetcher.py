@@ -1,0 +1,273 @@
+"""Tests for the TraceFetcher abstraction (Phase 19.A.5).
+
+Three test classes:
+
+* StubTraceFetcher exercises the in-memory shape used by integration tests.
+* CloudLoggingFetcher's hex32 trace_id guard fails closed against
+  filter-string injection — verified without touching network by patching
+  ``google.cloud.logging.Client`` at import time inside the test.
+* The exact filter string built for a known trace_id is snapshot-tested so a
+  future refactor can't silently regress to ``labels.*`` or
+  ``textPayload``-based filtering — both would return zero hits in
+  production despite the test that produced them still "working".
+"""
+
+from __future__ import annotations
+
+import sys
+import types
+from datetime import datetime, timezone
+from unittest.mock import MagicMock
+
+import pytest
+
+from agent.trace_fetcher import (
+    CloudLoggingFetcher,
+    StubTraceFetcher,
+    _entry_to_dict,
+)
+
+
+# ---------------------------------------------------------------------------
+# StubTraceFetcher
+# ---------------------------------------------------------------------------
+
+
+def test_stub_filters_by_trace_id():
+    a = "a" * 32
+    b = "b" * 32
+    f = StubTraceFetcher(
+        entries=[
+            {"trace_id": a, "event": "llm_thought", "timestamp": "2026-05-21T00:00:00Z"},
+            {"trace_id": b, "event": "llm_thought", "timestamp": "2026-05-21T00:00:01Z"},
+        ]
+    )
+    out = f.fetch(a)
+    assert len(out) == 1
+    assert out[0]["trace_id"] == a
+
+
+def test_stub_respects_limit():
+    a = "a" * 32
+    f = StubTraceFetcher(entries=[{"trace_id": a, "i": i} for i in range(5)])
+    out = f.fetch(a, limit=2)
+    assert len(out) == 2
+
+
+def test_stub_counts_calls():
+    f = StubTraceFetcher(entries=[])
+    assert f.calls == 0
+    f.fetch("a" * 32)
+    f.fetch("a" * 32)
+    assert f.calls == 2
+
+
+def test_stub_returns_empty_for_unknown_trace_id():
+    f = StubTraceFetcher(entries=[{"trace_id": "a" * 32}])
+    assert f.fetch("b" * 32) == []
+
+
+# ---------------------------------------------------------------------------
+# Test scaffolding for CloudLoggingFetcher
+# ---------------------------------------------------------------------------
+
+
+def _install_fake_cloud_logging(monkeypatch, list_entries_impl):
+    """Patch ``google.cloud.logging.Client`` so we never touch network.
+
+    Returns a MagicMock that tests can inspect (e.g. to read the captured
+    ``filter_=`` kwarg). ``list_entries_impl`` is invoked with the same
+    kwargs the production code would have passed.
+    """
+    fake_client = MagicMock()
+    fake_client.list_entries.side_effect = list_entries_impl
+
+    fake_module = types.ModuleType("google.cloud.logging")
+    fake_module.Client = MagicMock(return_value=fake_client)
+    # Also stub the parent ``google.cloud`` package to be safe — pytest's
+    # import system may not have google.cloud.logging loaded yet in a unit
+    # test environment.
+    monkeypatch.setitem(sys.modules, "google.cloud.logging", fake_module)
+    return fake_client, fake_module.Client
+
+
+# ---------------------------------------------------------------------------
+# CloudLoggingFetcher — trace_id guard
+# ---------------------------------------------------------------------------
+
+
+def test_cloud_logging_fetcher_rejects_bad_trace_id(monkeypatch):
+    """Non-hex32 trace_ids must short-circuit BEFORE hitting the client.
+
+    This is the filter-string injection guard. If a caller could pass
+    arbitrary text, they could break out of the trace_id="..." quoted
+    string in the Cloud Logging filter language and broaden the query.
+    """
+    fake_client, _ = _install_fake_cloud_logging(monkeypatch, lambda **_: iter([]))
+    f = CloudLoggingFetcher(project="test-proj")
+    # Replace the lazily-constructed client with the fake one.
+    f._client = fake_client
+
+    # Various malformed trace_ids must all return [] without calling
+    # list_entries.
+    assert f.fetch("") == []
+    assert f.fetch("not-a-hex") == []
+    assert f.fetch("A" * 32) == []  # uppercase hex rejected (regex is lowercase only)
+    assert f.fetch("a" * 31) == []
+    assert f.fetch("a" * 33) == []
+    assert f.fetch('a" OR resource.type="gce_instance" AND "') == []
+    assert fake_client.list_entries.call_count == 0
+
+
+def test_cloud_logging_fetcher_accepts_valid_trace_id(monkeypatch):
+    fake_client, _ = _install_fake_cloud_logging(monkeypatch, lambda **_: iter([]))
+    f = CloudLoggingFetcher(project="test-proj")
+    f._client = fake_client
+
+    assert f.fetch("a" * 32) == []
+    assert fake_client.list_entries.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# CloudLoggingFetcher — filter string snapshot
+# ---------------------------------------------------------------------------
+
+
+def test_cloud_logging_fetcher_filter_string_shape(monkeypatch):
+    """Snapshot the filter string built for a known trace_id.
+
+    Protects against accidentally regressing to ``labels.*`` or
+    ``textPayload``-based filtering — both would compile fine but match
+    zero entries in production because Phase 18's JSONFormatter writes our
+    extras under ``jsonPayload.*``.
+    """
+    captured: dict = {}
+
+    def _capture(**kwargs):
+        captured.update(kwargs)
+        return iter([])
+
+    fake_client, _ = _install_fake_cloud_logging(monkeypatch, _capture)
+    f = CloudLoggingFetcher(project="test-proj")
+    f._client = fake_client
+
+    trace = "0123456789abcdef0123456789abcdef"
+    f.fetch(trace, limit=250)
+
+    assert captured["filter_"] == (
+        'resource.type="cloud_run_revision" '
+        'AND resource.labels.service_name="driftscribe-agent" '
+        f'AND jsonPayload.trace_id="{trace}"'
+    )
+    assert captured["order_by"] == "timestamp asc"
+    assert captured["page_size"] == 250
+    assert captured["max_results"] == 250
+
+
+def test_cloud_logging_fetcher_filter_uses_custom_service_name(monkeypatch):
+    """A non-default service_name flows into the filter unchanged."""
+    captured: dict = {}
+
+    def _capture(**kwargs):
+        captured.update(kwargs)
+        return iter([])
+
+    fake_client, _ = _install_fake_cloud_logging(monkeypatch, _capture)
+    f = CloudLoggingFetcher(project="test-proj", service_name="some-other-service")
+    f._client = fake_client
+
+    f.fetch("a" * 32)
+    assert 'resource.labels.service_name="some-other-service"' in captured["filter_"]
+
+
+# ---------------------------------------------------------------------------
+# _entry_to_dict
+# ---------------------------------------------------------------------------
+
+
+def test_entry_to_dict_dict_payload_passthrough():
+    ts = datetime(2026, 5, 21, 1, 0, 0, tzinfo=timezone.utc)
+    entry = MagicMock()
+    entry.payload = {"trace_id": "a" * 32, "event": "llm_thought", "msg": "hi"}
+    entry.timestamp = ts
+    entry.insert_id = "ins-1"
+
+    d = _entry_to_dict(entry)
+    assert d["trace_id"] == "a" * 32
+    assert d["event"] == "llm_thought"
+    assert d["msg"] == "hi"
+    assert d["timestamp"] == "2026-05-21T01:00:00+00:00"
+    assert d["insert_id"] == "ins-1"
+
+
+def test_entry_to_dict_text_payload_wraps_in_text_key():
+    """Non-dict payloads (textPayload entries) get wrapped under ``text``.
+
+    Shouldn't happen for our own logs (JSONFormatter always emits dicts),
+    but a stray textPayload entry from a startup log or external library
+    should still flow through without crashing.
+    """
+    entry = MagicMock()
+    entry.payload = "raw text payload"
+    entry.timestamp = datetime(2026, 5, 21, 0, 0, 0, tzinfo=timezone.utc)
+    entry.insert_id = "ins-2"
+
+    d = _entry_to_dict(entry)
+    assert d == {
+        "text": "raw text payload",
+        "timestamp": "2026-05-21T00:00:00+00:00",
+        "insert_id": "ins-2",
+    }
+
+
+def test_entry_to_dict_handles_missing_timestamp_and_insert_id():
+    entry = MagicMock()
+    entry.payload = {"event": "x"}
+    entry.timestamp = None
+    entry.insert_id = None
+
+    d = _entry_to_dict(entry)
+    assert d["timestamp"] == ""
+    assert d["insert_id"] == ""
+
+
+def test_entry_to_dict_does_not_overwrite_existing_keys():
+    """If the payload already carries timestamp/insert_id, prefer it.
+
+    Defensive — JSONFormatter writes its own ``timestamp`` ISO string and
+    a trace_id but never an insert_id. If a future change adds either,
+    don't silently overwrite with the LogEntry-level value.
+    """
+    entry = MagicMock()
+    entry.payload = {
+        "event": "x",
+        "timestamp": "2026-01-01T00:00:00Z",
+        "insert_id": "payload-supplied",
+    }
+    entry.timestamp = datetime(2099, 1, 1, tzinfo=timezone.utc)
+    entry.insert_id = "log-entry-supplied"
+
+    d = _entry_to_dict(entry)
+    assert d["timestamp"] == "2026-01-01T00:00:00Z"
+    assert d["insert_id"] == "payload-supplied"
+
+
+# ---------------------------------------------------------------------------
+# Smoke: Protocol compatibility
+# ---------------------------------------------------------------------------
+
+
+def test_stub_satisfies_trace_fetcher_protocol():
+    """StubTraceFetcher must be usable wherever TraceFetcher is expected.
+
+    Protocols are structural, so this is a compile-time check at best.
+    Confirm at runtime by calling ``fetch`` through the Protocol.
+    """
+    from agent.trace_fetcher import TraceFetcher  # noqa: F401
+
+    f: TraceFetcher = StubTraceFetcher()
+    assert f.fetch("a" * 32) == []
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])
