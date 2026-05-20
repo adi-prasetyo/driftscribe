@@ -34,3 +34,33 @@ def drift_workload_env(monkeypatch):
     registry_mod._WORKLOAD_CACHE.clear()
     yield
     registry_mod._WORKLOAD_CACHE.clear()
+
+
+@pytest.fixture
+def upgrade_workload_env(monkeypatch):
+    """Set the three upgrade-relevant worker URL env vars and reset caches.
+
+    The upgrade workload's :class:`~agent.workloads.WorkloadResolution`
+    reads ``UPGRADE_READER_URL`` / ``UPGRADE_DOCS_URL`` /
+    ``NOTIFIER_URL`` at resolve time (the upgrade workload reuses the
+    shared notifier). Mirrors :func:`drift_workload_env` in shape; both
+    fixtures clear ``_WORKLOAD_CACHE`` on setup AND teardown so a test
+    that exercises one workload doesn't poison subsequent tests that
+    exercise the other.
+
+    The upgrade tool wrappers in :mod:`agent.adk_tools` also cache the
+    resolved :class:`~agent.workloads.UpgradeTarget` via
+    :func:`functools.lru_cache` on the helper ``_get_upgrade_target``;
+    clear that cache too so a test that exercises the LLM-facing tools
+    sees the current contract+registry state.
+    """
+    monkeypatch.setenv("UPGRADE_READER_URL", "https://upgrade-reader.test")
+    monkeypatch.setenv("UPGRADE_DOCS_URL", "https://upgrade-docs.test")
+    monkeypatch.setenv("NOTIFIER_URL", "https://notifier.test")
+    import agent.adk_tools as adk_tools_mod
+    import agent.workloads.registry as registry_mod
+    registry_mod._WORKLOAD_CACHE.clear()
+    adk_tools_mod._get_upgrade_target.cache_clear()
+    yield
+    registry_mod._WORKLOAD_CACHE.clear()
+    adk_tools_mod._get_upgrade_target.cache_clear()

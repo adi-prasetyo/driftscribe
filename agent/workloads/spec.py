@@ -29,6 +29,18 @@ class WorkloadSpec(BaseModel):
             ``workloads/<name>/system_prompt.txt``. Resolved by the
             registry, not by the schema, so the schema stays a pure
             data-shape check.
+        chat_system_prompt_file: optional path *relative to this
+            workload's directory* for the ``/chat`` (free-form
+            operator interface) system prompt. Phase 17.C.4 (Option A
+            from the plan) — distinct from ``system_prompt_file``
+            because the two surfaces want different wording: the
+            ``/recheck`` prompt instructs the LLM to emit a structured
+            DecisionProposal JSON, while the ``/chat`` prompt
+            describes the workload's tool surface in operator-facing
+            terms. ``None`` (the default) tells the registry to fall
+            back to ``system_prompt`` for ``/chat`` — workloads that
+            want the same prompt for both surfaces don't need to
+            duplicate the file.
         contract_file: optional path to the workload's declarative
             contract (e.g. drift's ``ops-contract.yaml``). May be
             ``None`` for workloads whose ground truth comes from a
@@ -55,6 +67,7 @@ class WorkloadSpec(BaseModel):
     display_name: str
     description: str
     system_prompt_file: str
+    chat_system_prompt_file: str | None = None
     contract_file: str | None = None
     enabled_tool_names: list[str]
     worker_names: list[str]

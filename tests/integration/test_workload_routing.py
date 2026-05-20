@@ -368,10 +368,15 @@ def test_recheck_classifier_path_refuses_non_drift_workload_even_when_resolvable
     get_settings.cache_clear()
 
     # Stub load_workload so the pre-resolve check passes regardless of
-    # env state. We don't care what it returns — the classifier-path
-    # guard refuses non-drift before consulting the resolution.
+    # env state. The Phase 17.C.4 follow-up added an eager upgrade-
+    # contract resolve after the load_workload step that reads
+    # ``resolution.spec.name`` — give the stub a usable shape via
+    # SimpleNamespace so the eager resolve treats it as drift (no-op)
+    # and falls through to the classifier-path guard.
+    from types import SimpleNamespace
+    drift_stub = SimpleNamespace(spec=SimpleNamespace(name="drift"))
     with (
-        patch("agent.main.load_workload", return_value=object()),
+        patch("agent.main.load_workload", return_value=drift_stub),
         patch("agent.main.worker_client.call") as m_worker,
     ):
         client = TestClient(app)
@@ -422,9 +427,15 @@ def test_recheck_classifier_guard_fires_before_drift_contract_load(
     get_settings.cache_clear()
 
     # Stub load_workload so the pre-resolve passes — simulating the
-    # post-17.E world where upgrade resolves cleanly.
+    # post-17.E world where upgrade resolves cleanly. Phase 17.C.4
+    # follow-up: the eager upgrade-contract resolve reads
+    # ``resolution.spec.name`` — give it a drift-shaped stub so the
+    # resolve is a no-op and the classifier-path guard remains the
+    # load-bearing rejection.
+    from types import SimpleNamespace
+    drift_stub = SimpleNamespace(spec=SimpleNamespace(name="drift"))
     with (
-        patch("agent.main.load_workload", return_value=object()),
+        patch("agent.main.load_workload", return_value=drift_stub),
         patch("agent.main.worker_client.call") as m_worker,
         patch("agent.main.load_contract") as m_load_contract,
     ):

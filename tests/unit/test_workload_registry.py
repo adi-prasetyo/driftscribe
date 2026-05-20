@@ -93,23 +93,23 @@ def test_tool_registry_has_drift_symbolic_names():
 
 
 def test_tool_registry_reserves_future_tool_names_as_none():
-    """Upgrade-workload tools and the coordinator session-memory tools
-    are reserved by name but not yet implemented (17.B.5 wires session
-    memory; 17.C wires upgrade). They appear as None so the registry
-    can detect 'reserved but not yet ready' separately from 'unknown
-    name entirely'.
+    """Coordinator session-memory tools are reserved by name but not
+    yet implemented (17.B.5 wires session memory). They appear as None
+    so the registry can detect 'reserved but not yet ready' separately
+    from 'unknown name entirely'.
 
-    The MCP tools ``search_developer_docs`` / ``retrieve_developer_doc``
-    were reserved in 17.A.1 and got real callables in 17.B.2 — they're
-    now exercised by :mod:`tests.unit.test_mcp_developer_knowledge`'s
-    registry-resolution check, not here.
+    Wiring history for the names this test used to cover:
+
+    - ``search_developer_docs`` / ``retrieve_developer_doc`` were
+      reserved in 17.A.1 and got real callables in 17.B.2 — exercised
+      by :mod:`tests.unit.test_mcp_developer_knowledge`'s registry-
+      resolution check.
+    - ``upgrade_read_dependencies`` / ``upgrade_propose_pr`` were
+      reserved in 17.A.1 and got real callables in 17.C.4 — exercised
+      by :mod:`tests.unit.test_upgrade_tools` and the resolution path
+      in :mod:`tests.unit.test_upgrade_workload_loads`.
     """
-    for name in (
-        "upgrade_read_dependencies",
-        "upgrade_propose_pr",
-        "get_session_state",
-        "set_session_state",
-    ):
+    for name in ("get_session_state", "set_session_state"):
         assert name in TOOL_REGISTRY, f"missing reserved tool slot: {name}"
         assert TOOL_REGISTRY[name] is None
 
@@ -225,12 +225,22 @@ def test_unknown_action_name_raises_at_load(tmp_path, drift_env):
 
 
 def test_tool_reserved_but_not_yet_implemented_raises(tmp_path, drift_env):
-    """A YAML referencing an upgrade tool today (before 17.B/17.C ships
-    the callables) must fail with a clear error, not a NoneType crash
-    when the LLM calls it."""
+    """A YAML referencing a still-reserved tool (e.g. coordinator
+    session-memory tools, slated for 17.B's coordinator-memory work)
+    must fail with a clear error, not a NoneType crash when the LLM
+    calls it.
+
+    Phase 17.C.4 updated the example tool from
+    ``upgrade_read_dependencies`` (now a real callable post-17.C.4) to
+    ``get_session_state`` (still reserved as ``None`` in
+    ``TOOL_REGISTRY`` for the planned session-memory feature). The
+    invariant under test is the same — referencing a name whose
+    registry entry is ``None`` must surface as
+    :class:`ReservedToolNotImplementedError` at load time.
+    """
     bad = _MINIMAL_DRIFT_YAML.replace(
         "  - drift_read_live_env",
-        "  - drift_read_live_env\n  - upgrade_read_dependencies",
+        "  - drift_read_live_env\n  - get_session_state",
     )
     yaml_path = _write_workload(tmp_path, bad)
     with pytest.raises(UnknownToolError, match="not yet implemented"):
@@ -253,16 +263,18 @@ def test_missing_drift_worker_env_raises_at_load(monkeypatch):
 def test_load_workload_upgrade_fails_clearly_until_dependencies_ship(monkeypatch, drift_env):
     """Upgrade env vars are optional at module-load time (won't fail
     boot of the coordinator) — instead, `load_workload("upgrade")` must
-    raise a clear error until 17.B/17.C/17.E ship the tools and env
-    vars it depends on.
+    raise a clear error until 17.E ships the worker URL env vars it
+    depends on.
 
-    Today the failure surfaces at the tool-resolution step because
-    upgrade tools are reserved-but-not-implemented (None in
-    TOOL_REGISTRY). When those land in 17.C the failure will move to
-    the worker-resolution step (MissingWorkerEnvError for
-    UPGRADE_READER_URL) until 17.E sets those env vars. Either way the
-    coordinator must NEVER silently boot a half-wired upgrade
-    workload."""
+    Pre-17.C.4 the failure surfaced at the tool-resolution step
+    (upgrade_* tools were reserved as ``None``). 17.C.4 flipped both
+    upgrade tools to real callables, so the failure now moves to the
+    worker-resolution step:
+    :class:`MissingWorkerEnvError` for ``UPGRADE_READER_URL`` until
+    17.E sets it. The coordinator must NEVER silently boot a half-wired
+    upgrade workload — pin the predictable failure mode either way
+    (tuple match for forward-compat with the move).
+    """
     for var in ("UPGRADE_READER_URL", "UPGRADE_DOCS_URL"):
         monkeypatch.delenv(var, raising=False)
     with pytest.raises((UnknownToolError, MissingWorkerEnvError)):

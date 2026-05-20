@@ -66,6 +66,8 @@ from agent.adk_tools import (
     propose_rollback_tool,
     read_live_env_tool,
     search_recent_prs_tool,
+    upgrade_propose_pr_tool,
+    upgrade_read_dependencies_tool,
 )
 from agent.mcp.developer_knowledge import (
     retrieve_developer_doc,
@@ -267,7 +269,11 @@ class WorkloadResolution:
     - a ``tools`` mapping symbolic tool name → real callable,
     - a ``workers`` mapping symbolic worker name → :class:`WorkerEndpoint`,
     - an ``actions`` mapping symbolic action name → :class:`ActionSpec`,
-    - ``system_prompt`` — the loaded prompt text,
+    - ``system_prompt`` — the loaded ``/recheck`` prompt text,
+    - ``chat_system_prompt`` — the loaded ``/chat`` prompt text (falls
+      back to ``system_prompt`` when ``WorkloadSpec.chat_system_prompt_file``
+      is ``None``; see Phase 17.C.4 plan §"Resolve SYSTEM_PROMPT_CHAT
+      deferral" for the Option A rationale),
     - ``contract_path`` — absolute path to the contract YAML, if any,
     - ``workload_dir`` — absolute path to ``workloads/<name>/``.
 
@@ -286,6 +292,7 @@ class WorkloadResolution:
     workers: Mapping[str, WorkerEndpoint]
     actions: Mapping[str, ActionSpec]
     system_prompt: str
+    chat_system_prompt: str
     contract_path: Path | None
     workload_dir: Path
 
@@ -313,10 +320,21 @@ class WorkloadResolution:
 # drift YAML typo (500-shaped) doesn't collapse to the same response as
 # an upgrade-not-yet error (503-shaped).
 #
-# Sub-phase mapping for the placeholders:
-# - upgrade_read_dependencies, upgrade_propose_pr → 17.C
-# - search_developer_docs, retrieve_developer_doc → 17.B (MCP attach)
-# - get_session_state, set_session_state → 17.B (coordinator memory)
+# Sub-phase mapping for the placeholders (historical — kept for the
+# next person walking the registry top-to-bottom):
+# - upgrade_read_dependencies, upgrade_propose_pr → wired in 17.C.4
+#   (this PR). The callables live in :mod:`agent.adk_tools`; their
+#   authority-clean tool surface derives ``target_repo`` /
+#   ``lockfile_path`` / ``branch`` / ``base`` / ``title`` server-side
+#   from ``UPGRADE_TARGET_REGISTRY`` rather than letting the LLM pick
+#   them — see the callables' docstrings for the Codex 2026-05-20
+#   follow-up rationale.
+# - search_developer_docs, retrieve_developer_doc → wired in 17.B.2
+#   (MCP attach).
+# - get_session_state, set_session_state → reserved for 17.B's
+#   coordinator-memory work; remain ``None`` so the
+#   :class:`ReservedToolNotImplementedError` distinction stays meaningful
+#   if a future workload YAML enables them.
 
 _TOOL_REGISTRY: Final[dict[str, Callable | None]] = {
     # Drift workload — Phase 11.7 callables, wired today.
@@ -326,9 +344,15 @@ _TOOL_REGISTRY: Final[dict[str, Callable | None]] = {
     "notify":                  notify_tool,
     "load_contract":           load_contract_tool,
     "search_recent_prs":       search_recent_prs_tool,
-    # Upgrade workload — reserved, implemented in 17.C.
-    "upgrade_read_dependencies": None,
-    "upgrade_propose_pr":        None,
+    # Upgrade workload — implemented in 17.C.4. Both callables are
+    # authority-clean: their LLM-facing signatures expose only the
+    # decision content (package_name / target_version / advisory_url /
+    # body) and never the routing fields. See
+    # :func:`agent.adk_tools.upgrade_read_dependencies_tool` and
+    # :func:`agent.adk_tools.upgrade_propose_pr_tool` for the full
+    # rationale.
+    "upgrade_read_dependencies": upgrade_read_dependencies_tool,
+    "upgrade_propose_pr":        upgrade_propose_pr_tool,
     # Developer Knowledge MCP — wired in 17.B.2. The callables apply
     # 10s wall-clock timeout, 60s response cache, 5-doc/4000-char
     # truncation, and fail-closed translation of MCP timeouts to a
@@ -638,6 +662,25 @@ def _load_from_path(
         )
     system_prompt = prompt_path.read_text(encoding="utf-8")
 
+    # Chat system prompt (Phase 17.C.4 — Option A): optional override
+    # for the ``/chat`` surface. When the YAML pins
+    # ``chat_system_prompt_file:`` the file must exist on disk
+    # (RuntimeError otherwise — a deploy bug, same shape as a missing
+    # ``system_prompt_file``). When unset, we fall back to
+    # ``system_prompt`` so a workload that wants the same prompt on
+    # both surfaces doesn't need a duplicate file.
+    if spec.chat_system_prompt_file is not None:
+        chat_prompt_path = workload_dir / spec.chat_system_prompt_file
+        if not chat_prompt_path.exists():
+            raise RuntimeError(
+                f"chat system prompt for workload {spec.name!r} not found: "
+                f"{chat_prompt_path} (declared via chat_system_prompt_file "
+                f"in {yaml_path})"
+            )
+        chat_system_prompt = chat_prompt_path.read_text(encoding="utf-8")
+    else:
+        chat_system_prompt = system_prompt
+
     # Contract path is resolved relative to the workload dir, but only
     # the path is checked — actual contract parsing stays in
     # :func:`agent.contract.load_contract` where the existing tests
@@ -659,6 +702,7 @@ def _load_from_path(
         workers=workers,
         actions=actions,
         system_prompt=system_prompt,
+        chat_system_prompt=chat_system_prompt,
         contract_path=contract_path,
         workload_dir=workload_dir.resolve(),
     )

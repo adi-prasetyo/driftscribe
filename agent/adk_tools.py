@@ -24,6 +24,7 @@ inventory test is the safety net.
 """
 from __future__ import annotations
 
+import functools
 import re
 import secrets
 import time
@@ -198,3 +199,150 @@ def load_contract_tool() -> dict[str, Any]:
     s = get_settings()
     contract = load_contract(Path(s.contract_path))
     return contract.model_dump(mode="json")
+
+
+# --------------------------------------------------------------------------- #
+# Upgrade workload tools (Phase 17.C.4)
+# --------------------------------------------------------------------------- #
+#
+# The LLM-facing tool surface for upgrade is deliberately authority-clean
+# (Codex 2026-05-20 follow-up — task 17.C.4 step 3):
+#
+# - ``upgrade_read_dependencies_tool`` takes NO arguments. Repo + lockfile
+#   path are derived from :data:`agent.workloads.registry.UPGRADE_TARGET_REGISTRY`
+#   via :func:`agent.upgrade_contract.load_upgrade_contract`.
+# - ``upgrade_propose_pr_tool`` accepts only the LLM-decision content
+#   (``package_name``, ``target_version``, ``advisory_url``, ``body``).
+#   Repo, lockfile path, branch, base, and title are derived server-side.
+#
+# The worker re-validates ``target_repo`` / ``lockfile_path`` / ``branch``
+# / ``base`` / ``title`` at request time (Layer 2 defense in depth) — but
+# that defense MUST NOT be the primary authority boundary. Letting the
+# LLM pick the branch name (for example) would invite ``branch="main"``
+# / ``branch="../../.."`` style foot-guns; pre-binding the values here
+# is what makes the worker's recheck genuinely defense-in-depth.
+
+
+@functools.lru_cache(maxsize=1)
+def _get_upgrade_target():
+    """Resolve and cache the upgrade workload's authoritative target.
+
+    Loads the workload's ``contract.yaml`` via
+    :func:`agent.upgrade_contract.load_upgrade_contract` and returns the
+    resolved :class:`~agent.workloads.UpgradeTarget` record (``target_repo``
+    + ``lockfile_path`` + ``advisory_source``). Cached process-wide so
+    the tool callable doesn't redo the YAML parse on every LLM
+    invocation. Tests that need a clean state call
+    ``_get_upgrade_target.cache_clear()`` (analogous to
+    :func:`get_settings.cache_clear`).
+
+    The resolution loads ``workloads/upgrade/workload.yaml`` first to
+    locate the contract file, then loads that contract — the same path
+    the coordinator's ``/chat`` and ``/recheck`` handlers walk during
+    request pre-resolve. By the time this tool is called via the LLM,
+    the contract has already been validated end-to-end at request
+    entry, so a parse failure here would indicate a mid-request env
+    change; we still allow the load to surface its own error class so
+    the failure stays diagnosable.
+    """
+    # Lazy imports — these modules pull pydantic + yaml validation; the
+    # tool callable only needs them on the upgrade workload path.
+    from agent.upgrade_contract import load_upgrade_contract
+    from agent.workloads import load_workload
+
+    resolution = load_workload("upgrade")
+    if resolution.contract_path is None:
+        # Defense in depth: the upgrade workload's YAML pins
+        # ``contract_file: contract.yaml`` so this branch is unreachable
+        # in a well-formed deploy. Surface a clear error so a future
+        # YAML refactor that drops the field fails loud instead of
+        # producing a confusing ``None`` deref downstream.
+        raise RuntimeError(
+            "upgrade workload manifest is missing contract_file — "
+            "cannot derive target_repo / lockfile_path for the LLM "
+            "tool surface"
+        )
+    contract = load_upgrade_contract(resolution.contract_path)
+    return contract.resolve_target()
+
+
+def upgrade_read_dependencies_tool() -> dict:
+    """Ask the Upgrade Reader Agent for the demo target's deps + advisories.
+
+    No arguments by design — ``target_repo`` and ``lockfile_path`` are
+    authority fields and live in
+    :data:`agent.workloads.registry.UPGRADE_TARGET_REGISTRY`. The LLM
+    never sees a way to redirect this call at a different repo or path.
+
+    The worker re-validates both fields against its env-pinned
+    ``UPGRADE_TARGET_REPO`` allowlist (Layer 2 defense in depth — see
+    :mod:`workers.upgrade_reader.main`); the coordinator surface here
+    is what keeps that re-validation genuinely defensive instead of
+    primary.
+    """
+    target = _get_upgrade_target()
+    return worker_client.call(
+        "upgrade_reader",
+        {
+            "target_repo": target.target_repo,
+            "lockfile_path": target.lockfile_path,
+        },
+    )
+
+
+def upgrade_propose_pr_tool(
+    package_name: str,
+    target_version: str,
+    advisory_url: str,
+    body: str,
+) -> dict:
+    """Ask the Upgrade Docs Agent to open a dependency-upgrade PR.
+
+    The LLM only picks the *decision content* — which package, which
+    target version, which advisory URL, and the prose body. Every
+    authority field is derived server-side:
+
+    - ``target_repo`` / ``lockfile_path``: from
+      :data:`agent.workloads.registry.UPGRADE_TARGET_REGISTRY` via the
+      cached upgrade contract.
+    - ``branch``: ``upgrade/{package_name}-{ver_dashed}`` so all PRs from
+      this worker are observability-scoped to the upgrade workload.
+      Matches the worker's :data:`ALLOWED_BRANCH_PREFIX` (``upgrade/``).
+    - ``base``: hardcoded to ``"main"``. The worker's
+      :func:`_check_base` re-asserts this.
+    - ``title``: ``upgrade({package_name}): {target_version}``. The
+      worker's :data:`ALLOWED_TITLE_PREFIX` enforces the ``upgrade``
+      prefix.
+
+    Layer 2 (payload-intent policy): the worker's ``PatchRequest``
+    schema has ``extra="forbid"`` and the post-LLM validator
+    (:mod:`workers.upgrade_docs.validator`) re-checks semver no-downgrade,
+    patch/minor-only jumps, GHSA URL shape, and package_name existence
+    in the lockfile. The validator is the authority for those rules;
+    this tool's job is just to keep the LLM out of the routing fields.
+    """
+    target = _get_upgrade_target()
+    # Branch slug: replace every ``.`` in the semver triple with ``-`` so
+    # ``4.17.21`` becomes ``4-17-21``. Keeps the branch ref Git-safe and
+    # matches the convention pinned in the Phase 17 plan §17.C.4 step 3.
+    ver_dashed = target_version.replace(".", "-")
+    branch = f"upgrade/{package_name}-{ver_dashed}"
+    # Title: deliberately omits the current version. The current version
+    # isn't visible without re-reading the lockfile, and the worker only
+    # requires the ``upgrade`` prefix — keeping the title simple is
+    # preferable to threading the lockfile read through this tool.
+    title = f"upgrade({package_name}): {target_version}"
+    return worker_client.call(
+        "upgrade_docs",
+        {
+            "target_repo": target.target_repo,
+            "lockfile_path": target.lockfile_path,
+            "package_name": package_name,
+            "target_version": target_version,
+            "advisory_url": advisory_url,
+            "branch": branch,
+            "base": "main",
+            "title": title,
+            "body": body,
+        },
+    )
