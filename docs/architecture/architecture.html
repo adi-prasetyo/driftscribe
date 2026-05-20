@@ -61,7 +61,10 @@
     Arrows:
       Triggers -> Workload routing
         Eventarc -> Drift (solid; "workload=drift (server-pinned)")
-        /chat, /recheck -> Drift AND Upgrade (each one solid line per pair)
+        /chat -> Drift AND Upgrade (one solid line per workload)
+        /recheck -> Drift ONLY in this build (workload=upgrade returns
+          503 from agent/main.py; workload-specific /recheck pipeline
+          for upgrade is post-Phase-17 work)
       Workload routing -> Coordinator left edge (POST /chat workload=<name>)
       Coordinator drift compartment -> drift workers (R/D/RB) + Notifier
       Coordinator upgrade compartment -> upgrade workers (UR/UD) + Notifier
