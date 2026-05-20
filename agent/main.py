@@ -672,23 +672,24 @@ async def _do_recheck(
         )
 
     # Phase 17.C.4 (Codex post-merge review — blocker): explicit 503 on
-    # ``/recheck workload=upgrade`` until the upgrade /recheck execution
-    # path lands in Task 17.C.5. Today's _do_recheck post-agent plumbing
-    # below (drift OpsContract load, drift validator with its
-    # env_diffs-required rule, drift _render_for / _perform_action with
-    # no UPGRADE_PR branch, drift reader for live_env hashing) would
-    # reject or crash on any upgrade DecisionProposal even though /chat
-    # already routes upgrade cleanly via the ADK runner. Failing fast
-    # here keeps the routing invariant "upgrade excludes drift reader /
-    # rollback surfaces" honest — without this guard, /recheck would
-    # build a drift-shaped user_msg, call the drift Reader Worker, and
-    # then bounce inside the drift validator with a misleading message.
-    # /chat is the supported upgrade surface in this build.
+    # ``/recheck workload=upgrade``. The upgrade /recheck execution
+    # path is intentionally NOT implemented in Phase 17: today's
+    # _do_recheck post-agent plumbing below (drift OpsContract load,
+    # drift validator with its env_diffs-required rule, drift
+    # _render_for / _perform_action with no UPGRADE_PR branch, drift
+    # reader for live_env hashing) would reject or crash on any upgrade
+    # DecisionProposal even though /chat already routes upgrade cleanly
+    # via the ADK runner. Failing fast here keeps the routing invariant
+    # "upgrade excludes drift reader / rollback surfaces" honest —
+    # without this guard, /recheck would build a drift-shaped user_msg,
+    # call the drift Reader Worker, and then bounce inside the drift
+    # validator with a misleading message. /chat is the supported
+    # upgrade surface in this build; a workload-specific /recheck (with
+    # an upgrade-shaped DecisionProposal renderer and an upgrade-side
+    # observation pipeline) is post-Phase-17 work.
     #
     # Ordered AFTER the classifier-path refusal above so the more-
-    # specific "use ADK" message still fires for USE_ADK=false. The
-    # /chat surface for upgrade is fully wired in this task; this
-    # guard only blocks the /recheck post-agent plumbing.
+    # specific "use ADK" message still fires for USE_ADK=false.
     if workload == "upgrade":
         raise HTTPException(
             status_code=503,
@@ -696,8 +697,8 @@ async def _do_recheck(
                 "/recheck workload='upgrade' is not implemented in this "
                 "build: the post-agent plumbing (contract load, validator, "
                 "renderer, perform_action) is drift-specific. Use /chat "
-                "for upgrade today; Task 17.C.5 wires the upgrade-specific "
-                "/recheck path."
+                "for upgrade; a workload-specific /recheck pipeline is "
+                "post-Phase-17 work."
             ),
         )
 
