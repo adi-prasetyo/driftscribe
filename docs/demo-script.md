@@ -157,6 +157,173 @@ With USE_ADK=false beat-e returns:
 { "detail": "ADK not enabled (set USE_ADK=true to enable /chat)" }
 ```
 
+## Upgrade workload beats
+
+Phase 17.C.6 adds three beats that exercise the `upgrade` workload via
+`/chat workload=upgrade`. Unlike drift beats, these do NOT mutate the
+`payment-demo` Cloud Run env — the upgrade workers read
+`demo/upgrade-target/package.json` from GitHub via the Contents API,
+so the "baseline" is the repo state on `main`, not a Cloud Run env.
+
+### Pre-flight (upgrade beats)
+
+```bash
+# 1. Coordinator must have USE_ADK=true (same requirement as beat-c/e).
+gcloud run services describe driftscribe-agent \
+  --project="$PROJECT" --region="$REGION" \
+  --format='value(spec.template.spec.containers[0].env)' \
+  | grep -oE 'USE_ADK=[a-z]+'
+
+# 2. Coordinator must have UPGRADE_READER_URL + UPGRADE_DOCS_URL set
+#    (17.E deploy infra wires these). Until 17.E ships, the upgrade
+#    beats return HTTP 503 with body
+#    `{"detail":"workload 'upgrade' is not deployed: ..."}` — which is
+#    itself a reasonable demonstration of the Phase 17.A.3 workload
+#    pre-resolve guard. The script surfaces that body rather than
+#    swallowing it.
+gcloud run services describe driftscribe-agent \
+  --project="$PROJECT" --region="$REGION" \
+  --format='value(spec.template.spec.containers[0].env)' \
+  | grep -oE 'UPGRADE_(READER|DOCS)_URL=[^,]+'
+
+# 3. demo/upgrade-target/package.json on `main` must be at the
+#    demonstration baseline (lodash@4.17.20). The pin is intentional
+#    — DO NOT bump it. See demo/upgrade-target/README.md.
+git show main:demo/upgrade-target/package.json | grep '"lodash"'
+# Expect: "lodash": "4.17.20"
+```
+
+### upgrade-a — discover dependencies (read-only)
+
+```bash
+./scripts/demo.sh upgrade-a
+```
+
+Expected agent tool sequence:
+- `upgrade_read_dependencies` (no args; target_repo + lockfile_path
+  derived server-side from `UPGRADE_TARGET_REGISTRY["phase17_demo"]`).
+
+Expected response body: free-form text summarizing the dependencies
+in `demo/upgrade-target/package.json`, naming `lodash@4.17.20` and the
+matched advisory `GHSA-35jh-r3h4-6jhm` (CVE-2021-23337). The prompt
+asks the agent NOT to propose action — so no PR is opened, no notify
+is fired. Action label in the response should be `no_op` or a
+descriptive summary; eyeball it.
+
+Showcase point: the LLM never sees `target_repo` / `lockfile_path` —
+those are pinned in `agent/workloads/registry.py::UPGRADE_TARGET_REGISTRY`
+(authority lives in code, not YAML, not the prompt).
+
+### upgrade-b — propose upgrade PR (LIVE)
+
+```bash
+./scripts/demo.sh upgrade-b
+```
+
+**Warning: this opens a REAL pull request on `$GITHUB_REPO`** (default
+`adi-prasetyo/driftscribe`). The script prints a prominent warning
+banner before the curl; the operator should read it before hitting
+Enter on a real demo recording.
+
+Expected agent tool sequence:
+1. `upgrade_read_dependencies` — confirm the advisory.
+2. `search_developer_docs` — per the chat prompt's citation rule
+   (`workloads/upgrade/chat_system_prompt.md`).
+3. `upgrade_propose_pr` with:
+   - `package_name="lodash"`,
+   - `target_version="4.17.21"`,
+   - `advisory_url="https://github.com/advisories/GHSA-35jh-r3h4-6jhm"`,
+   - `body=<prose citing the advisory + the developer-docs result>`.
+   The upgrade-docs worker's post-LLM validator (Phase 17.C.3a) checks
+   the bump is patch- or minor-level and that the lockfile path is the
+   pinned `demo/upgrade-target/package.json`; both pass.
+4. `notify` on the alert channel.
+
+Expected response body (free-form text): mentions the PR URL on
+`$GITHUB_REPO` and confirms the notify call.
+
+Showcase point: `upgrade_propose_pr` is authority-clean — the LLM
+chose ONLY the package name, target version, advisory URL, and body
+prose. The repo / lockfile path / branch / base / PR title are
+derived server-side. A prompt-injection that tries to redirect the PR
+at a different repo cannot succeed because those fields never leave
+the registry.
+
+#### Cleanup after upgrade-b
+
+The opened PR is a real GitHub PR. After recording, clean up:
+
+```bash
+# 1. Close the PR (replace <N> with the PR number from the agent's response).
+gh pr close <N> --delete-branch --repo "$GITHUB_REPO"
+```
+
+If `gh` isn't authenticated locally, close + delete the branch via the
+GitHub web UI on the PR page. The branch name follows the pattern
+`upgrade/<package>-<version-with-dots-as-dashes>` — for upgrade-b
+specifically that's `upgrade/lodash-4-17-21` (see
+`agent/adk_tools.py::upgrade_propose_pr_tool` for the derivation rule).
+Safe to delete without affecting `main`.
+
+Note: re-running `upgrade-b` before closing the PR will collide on
+the same branch name (`upgrade/lodash-4-17-21` is deterministic from
+`package_name` + `target_version`). The worker surfaces the
+PyGithub error in the agent's response — that's a legitimate failure
+mode to demonstrate during Q&A if needed, but in normal demo flow
+close the prior PR first.
+
+### upgrade-c — major-bump escalation (layered safety)
+
+```bash
+./scripts/demo.sh upgrade-c
+```
+
+Two valid outcomes — both are good teaching moments:
+
+1. **LLM follows the prompt** (the common path): calls `notify` with
+   `channel=alert`, `severity=high`, and an escalation body
+   explaining that a major-version bump is required and the validator
+   refuses major bumps. Does NOT call `upgrade_propose_pr`. Action
+   label `escalation`.
+2. **LLM tries `upgrade_propose_pr` anyway**: the upgrade-docs
+   worker's post-LLM validator returns 403 with reason
+   `"major version bump refused at validator ... agent should have
+   routed this to the 'escalation' action"`. (If the LLM passes a
+   non-triple like `"5.x"` instead of `5.0.0`, the validator returns
+   422 on the unparseable semver before the major-bump rule fires;
+   that's still a refusal, just via the schema gate rather than the
+   policy gate.) The agent surfaces the refusal in its response.
+
+Both demonstrate the **layered safety property**: even if the prompt
+(or a prompt-injection) convinces the LLM to attempt a major bump,
+the worker-side validator is the real safety gate. The chat prompt
+documents the policy; the worker enforces it.
+
+Showcase point: the validator is a code-side allowlist (patch/minor
+only). It cannot be overridden by YAML, by the system prompt, or by
+prompt-injection.
+
+### Recording-time variant
+
+If you're recording the demo end-to-end, run upgrade beats in this
+order after the drift beats finish:
+
+```bash
+./scripts/demo.sh upgrade-a   # discovery; sets the stage
+./scripts/demo.sh upgrade-b   # the climax — real PR opens
+./scripts/demo.sh upgrade-c   # the safety story — validator refuses major
+```
+
+Or fire them as a batch (no `cleanup` step — upgrade has no Cloud Run
+env to reset):
+
+```bash
+./scripts/demo.sh all-upgrade
+```
+
+`all-upgrade` is intentionally separate from `all` so a drift-only
+recording doesn't accidentally open an upgrade PR.
+
 ## Trace ID lookup
 
 Every response carries an `X-Trace-Id` header (Phase 15.2 middleware).

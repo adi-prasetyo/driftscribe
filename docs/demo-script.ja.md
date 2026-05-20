@@ -129,6 +129,119 @@ USE_ADK=false では beat-e は次を返します:
 { "detail": "ADK not enabled (set USE_ADK=true to enable /chat)" }
 ```
 
+## アップグレード ワークロードの beat
+
+Phase 17.C.6 は `upgrade` ワークロードを `/chat workload=upgrade` 経由で実行する 3 つの beat を追加します。ドリフト beat と異なり、これらは `payment-demo` の Cloud Run env を変更しません — upgrade ワーカーは Contents API 経由で `demo/upgrade-target/package.json` を GitHub から読み取るため、「ベースライン」は `main` 上のリポジトリ状態であり Cloud Run env ではありません。
+
+### 事前準備 (アップグレード beat)
+
+```bash
+# 1. コーディネーターは USE_ADK=true である必要があります (beat-c/e と同じ要件)。
+gcloud run services describe driftscribe-agent \
+  --project="$PROJECT" --region="$REGION" \
+  --format='value(spec.template.spec.containers[0].env)' \
+  | grep -oE 'USE_ADK=[a-z]+'
+
+# 2. コーディネーターは UPGRADE_READER_URL と UPGRADE_DOCS_URL が設定されている
+#    必要があります (17.E のデプロイインフラがこれらを配線します)。17.E が
+#    リリースされるまでは、アップグレード beat は HTTP 503 を返し、ボディは
+#    `{"detail":"workload 'upgrade' is not deployed: ..."}` となります —
+#    これは Phase 17.A.3 のワークロード事前解決ガードの妥当なデモンストレーション
+#    でもあります。スクリプトはそのボディを呑み込まずに表面化します。
+gcloud run services describe driftscribe-agent \
+  --project="$PROJECT" --region="$REGION" \
+  --format='value(spec.template.spec.containers[0].env)' \
+  | grep -oE 'UPGRADE_(READER|DOCS)_URL=[^,]+'
+
+# 3. `main` 上の demo/upgrade-target/package.json はデモのベースライン
+#    (lodash@4.17.20) である必要があります。このピンは意図的なものです —
+#    バージョンを上げないでください。demo/upgrade-target/README.md を参照。
+git show main:demo/upgrade-target/package.json | grep '"lodash"'
+# 期待値: "lodash": "4.17.20"
+```
+
+### upgrade-a — 依存関係の発見 (読み取り専用)
+
+```bash
+./scripts/demo.sh upgrade-a
+```
+
+期待されるエージェントのツール呼び出し:
+- `upgrade_read_dependencies` (引数なし; `target_repo` と `lockfile_path` は `UPGRADE_TARGET_REGISTRY["phase17_demo"]` からサーバー側で導出)。
+
+期待されるレスポンスボディ: `demo/upgrade-target/package.json` の依存関係を要約する自由形式のテキスト。`lodash@4.17.20` と一致するアドバイザリ `GHSA-35jh-r3h4-6jhm` (CVE-2021-23337) を明示します。プロンプトはアクションを提案しないようにエージェントに指示する — そのため PR は開かれず、notify も発火しません。レスポンス中のアクションラベルは `no_op` または記述的な要約のいずれかになります。目視で確認してください。
+
+見せ場: LLM は `target_repo` や `lockfile_path` を一切目にしません — これらは `agent/workloads/registry.py::UPGRADE_TARGET_REGISTRY` でピンされています (権限はコードにあり、YAML やプロンプトには存在しない)。
+
+### upgrade-b — アップグレード PR の提案 (LIVE)
+
+```bash
+./scripts/demo.sh upgrade-b
+```
+
+**警告: これは `$GITHUB_REPO` (デフォルト `adi-prasetyo/driftscribe`) に実際の pull request を開きます。** スクリプトは curl の前に目立つ警告バナーを出力します。本番の録画中は、Enter を押す前にこれを読んでください。
+
+期待されるエージェントのツール呼び出しシーケンス:
+1. `upgrade_read_dependencies` — アドバイザリの確認。
+2. `search_developer_docs` — chat プロンプトの引用ルール (`workloads/upgrade/chat_system_prompt.md`) に従う。
+3. `upgrade_propose_pr` 引数:
+   - `package_name="lodash"`,
+   - `target_version="4.17.21"`,
+   - `advisory_url="https://github.com/advisories/GHSA-35jh-r3h4-6jhm"`,
+   - `body=<アドバイザリ + developer-docs 結果を引用した本文>`。
+   upgrade-docs ワーカーの post-LLM バリデーター (Phase 17.C.3a) は、バンプが patch/minor レベルかつ lockfile パスがピンされた `demo/upgrade-target/package.json` であることを確認します。両方とも通過します。
+4. `notify` (alert チャンネル)。
+
+期待されるレスポンスボディ (自由形式のテキスト): `$GITHUB_REPO` 上の PR URL を含み、notify 呼び出しを確認するもの。
+
+見せ場: `upgrade_propose_pr` は authority-clean です — LLM はパッケージ名、ターゲットバージョン、アドバイザリ URL、本文の散文のみを選びました。リポジトリ / lockfile パス / ブランチ / base / PR タイトルはサーバー側で導出されます。PR を別のリポジトリにリダイレクトしようとするプロンプトインジェクションは、それらのフィールドがレジストリから出ないため成功しません。
+
+#### upgrade-b の後処理
+
+開かれた PR は実際の GitHub PR です。録画後にクリーンアップしてください:
+
+```bash
+# 1. PR をクローズします (<N> をエージェントのレスポンスの PR 番号に置き換える)。
+gh pr close <N> --delete-branch --repo "$GITHUB_REPO"
+```
+
+`gh` のローカル認証が切れている場合は、PR ページの GitHub Web UI からクローズ + ブランチ削除を行います。ブランチ名は `upgrade/<package>-<バージョンのドットをハイフンに置換>` のパターンに従います — upgrade-b では具体的に `upgrade/lodash-4-17-21` となります (導出ルールは `agent/adk_tools.py::upgrade_propose_pr_tool` を参照)。`main` に影響せず安全に削除できます。
+
+注意: PR をクローズせずに `upgrade-b` を再実行すると、同じブランチ名で衝突します (`upgrade/lodash-4-17-21` は `package_name` + `target_version` から決定論的に導出される)。ワーカーは PyGithub のエラーをエージェントのレスポンスに表面化します — これは Q&A 中にデモンストレーションする価値のある正当な失敗モードですが、通常のデモフローでは先に直前の PR をクローズしてください。
+
+### upgrade-c — major-bump によるエスカレーション (layered safety)
+
+```bash
+./scripts/demo.sh upgrade-c
+```
+
+2 つの有効な結果 — どちらも良い見せ場です:
+
+1. **LLM がプロンプトに従う** (一般的な経路): `notify` を `channel=alert`、`severity=high`、メジャーバージョンバンプが必要でバリデーターが major bump を拒否することを説明するエスカレーション本文で呼び出します。`upgrade_propose_pr` は呼び出しません。アクションラベルは `escalation`。
+2. **LLM がそれでも `upgrade_propose_pr` を試みる**: upgrade-docs ワーカーの post-LLM バリデーターが 403 を返し、reason は `"major version bump refused at validator ... agent should have routed this to the 'escalation' action"` となります。(LLM が `5.0.0` のような semver triple ではなく `"5.x"` のような形式を渡した場合、バリデーターは major-bump ルールが発火する前に parse 不能な semver で 422 を返します — これも拒否ですが、ポリシーゲートではなくスキーマゲート経由です。) エージェントは拒否をレスポンスに表面化します。
+
+両方とも **layered safety プロパティ** をデモンストレーションします: プロンプト (またはプロンプトインジェクション) が LLM にメジャーバンプを試みるよう説得しても、ワーカー側のバリデーターが真の安全ゲートです。chat プロンプトはポリシーを文書化し、ワーカーはそれを強制します。
+
+見せ場: バリデーターはコード側のアロウリスト (patch/minor のみ) です。YAML、システムプロンプト、プロンプトインジェクションで上書きできません。
+
+### 録画時のバリエーション
+
+デモをエンドツーエンドで録画する場合、ドリフト beat の後に以下の順序でアップグレード beat を実行してください:
+
+```bash
+./scripts/demo.sh upgrade-a   # 発見; 舞台を整える
+./scripts/demo.sh upgrade-b   # クライマックス — 実際の PR が開く
+./scripts/demo.sh upgrade-c   # 安全性の物語 — バリデーターが major を拒否
+```
+
+または一括で実行します (`cleanup` ステップなし — アップグレードにはリセット対象の Cloud Run env がありません):
+
+```bash
+./scripts/demo.sh all-upgrade
+```
+
+`all-upgrade` は意図的に `all` と分離されています — ドリフト専用の録画でアップグレード PR を誤って開くことを防ぐためです。
+
 ## Trace ID によるログ検索
 
 すべてのレスポンスは `X-Trace-Id` ヘッダーを保持しています (Phase 15.2 のミドルウェア)。スクリプトはボディの前の専用行に出力するので、Q&A 中に Cloud Logging へコピーできます:

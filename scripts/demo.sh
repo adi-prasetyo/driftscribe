@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
-# DriftScribe live-demo scenario runner (Phase 16.2).
+# DriftScribe live-demo scenario runner (Phase 16.2; upgrade beats added 17.C.6).
 #
 # Purpose:
-#   Drives the six "beats" of the hackathon demo against a deployed
-#   coordinator (Cloud Run `driftscribe-agent`). Each beat mutates the
-#   `payment-demo` Cloud Run env, then invokes /recheck or /chat on the
-#   coordinator and prints the result alongside the response's
-#   X-Trace-Id header — the operator pastes that ID into Cloud Logging
-#   to follow the agent's reasoning chain.
+#   Drives the demo "beats" against a deployed coordinator (Cloud Run
+#   `driftscribe-agent`). Drift beats (a-e) mutate the `payment-demo`
+#   Cloud Run env, then invoke /recheck or /chat. Upgrade beats (a-c)
+#   exercise the `workload=upgrade` /chat path against the
+#   `demo/upgrade-target/package.json` already committed to GitHub.
+#
+#   Each beat prints the response alongside the X-Trace-Id header —
+#   the operator pastes that ID into Cloud Logging to follow the
+#   agent's reasoning chain.
 #
 #   This is a DEMO runner, not a CI smoke test (that's
 #   infra/scripts/e2e_smoke.sh). There are no pass/fail assertions —
@@ -19,14 +22,23 @@
 #   PROJECT=driftscribe-hack-2026 ./scripts/demo.sh beat-c
 #   PROJECT=driftscribe-hack-2026 ./scripts/demo.sh beat-d
 #   PROJECT=driftscribe-hack-2026 ./scripts/demo.sh beat-e
+#   PROJECT=driftscribe-hack-2026 ./scripts/demo.sh upgrade-a
+#   PROJECT=driftscribe-hack-2026 ./scripts/demo.sh upgrade-b
+#   PROJECT=driftscribe-hack-2026 ./scripts/demo.sh upgrade-c
 #   PROJECT=driftscribe-hack-2026 ./scripts/demo.sh cleanup
 #   PROJECT=driftscribe-hack-2026 ./scripts/demo.sh all
+#   PROJECT=driftscribe-hack-2026 ./scripts/demo.sh all-upgrade
 #
 # Required env:
 #   PROJECT          GCP project ID hosting the deployed services.
 # Optional env:
 #   REGION           Cloud Run region (default: asia-northeast1).
 #   TARGET_SERVICE   The drift target service (default: payment-demo).
+#   GITHUB_REPO      Repo slug used in upgrade-b's warning banner
+#                    (default: adi-prasetyo/driftscribe — matches the
+#                    coordinator's GITHUB_REPO env var; the agent will
+#                    open the PR against whichever repo the deployed
+#                    coordinator was configured with, not this var).
 #
 # Requirements (assumed available on the operator's box):
 #   - bash, curl, gcloud
@@ -43,12 +55,25 @@
 #     classical classification (returns `escalate`) and beat-e returns
 #     503 from /chat. Both are intentional teaching moments — the
 #     script surfaces the 503 body rather than swallowing it.
+#   - Upgrade beats (a/b/c) require USE_ADK=true AND
+#     UPGRADE_READER_URL + UPGRADE_DOCS_URL set on the coordinator
+#     (the 17.E deploy infra wires these). Against a pre-17.E
+#     coordinator the /chat call returns 503 "workload 'upgrade' is
+#     not deployed" — itself a clean demonstration of the workload
+#     pre-resolve guard added in Phase 17.A.3.
+#   - Unlike the drift beats, upgrade beats do NOT mutate Cloud Run
+#     env. The "baseline" for upgrade is the current GitHub state of
+#     `demo/upgrade-target/package.json` on `main`. To change it the
+#     operator must commit and push — see docs/demo-script.md.
+#   - upgrade-b opens a REAL pull request on $GITHUB_REPO when the
+#     coordinator is fully wired. Close/delete the PR after recording.
 
 set -uo pipefail
 
 PROJECT="${PROJECT:?set PROJECT to your GCP project ID}"
 REGION="${REGION:-asia-northeast1}"
 TARGET_SERVICE="${TARGET_SERVICE:-payment-demo}"
+GITHUB_REPO="${GITHUB_REPO:-adi-prasetyo/driftscribe}"
 
 # --------------------------------------------------------------------------- #
 # Startup: resolve coordinator URL + operator token, probe for jq.
@@ -209,6 +234,24 @@ reset_baseline() {
   unset_env "NEW_THING"
 }
 
+# Upgrade workload "reset" — documentation-as-code analog of
+# reset_baseline. The upgrade workload reads dependencies from the
+# repo's package.json on GitHub via the Contents API (PyGithub), NOT
+# from a Cloud Run env. There is no gcloud knob to flip mid-demo.
+# This function is intentionally a no-op that echoes a reminder so
+# the operator does not expect the upgrade beats to "reset" anything
+# via this script.
+#
+# To change the upgrade baseline, edit
+# demo/upgrade-target/package.json on `main` and push — that is the
+# observation source. Phase 17.C.6 documents the pre-stage in
+# docs/demo-script.md.
+reset_baseline_upgrade() {
+  echo "  [reset] upgrade baseline = current GitHub state of"
+  echo "          demo/upgrade-target/package.json on \`main\`."
+  echo "          Change it by committing + pushing, not by this script."
+}
+
 # --------------------------------------------------------------------------- #
 # Beats
 # --------------------------------------------------------------------------- #
@@ -321,10 +364,103 @@ EOF
     "{\"prompt\":\"payment mode drifted. roll us back to revision ${BEAT_E_TARGET_REVISION}.\"}"
 }
 
+# --------------------------------------------------------------------------- #
+# Upgrade-workload beats (Phase 17.C.6)
+#
+# All three use /chat with workload="upgrade". The deployed coordinator
+# must have USE_ADK=true and UPGRADE_READER_URL + UPGRADE_DOCS_URL set
+# (17.E deploy infra). Against an earlier coordinator the /chat call
+# returns 503 "workload 'upgrade' is not deployed" — the script surfaces
+# that body rather than swallowing it (same pattern as beat-e on
+# USE_ADK=false).
+#
+# Pre-stage requirement: demo/upgrade-target/package.json on `main`
+# must be at the demonstration baseline (lodash@4.17.20). Confirm with:
+#   git show main:demo/upgrade-target/package.json
+# See docs/demo-script.md "Upgrade workload beats" for the full
+# pre-flight.
+# --------------------------------------------------------------------------- #
+
+# Upgrade-A — discovery / read-only. Asks the agent to enumerate the
+# demo target's dependencies and any matched advisories WITHOUT
+# proposing action. Exercises the upgrade_read_dependencies tool path
+# end-to-end (coordinator → upgrade-reader worker → GitHub Contents
+# API + Advisory query).
+# Expected: a human-readable summary mentioning lodash@4.17.20 and
+# GHSA-35jh-r3h4-6jhm. The LLM may pick `no_op` or describe the
+# advisory inline; either is fine — the beat showcases the READ path.
+upgrade_a() {
+  banner "Upgrade-A — discover dependencies (read-only)"
+  echo "Expectation: agent describes lodash@4.17.20 + GHSA-35jh-r3h4-6jhm."
+  echo "             No PR is opened, no mutation occurs."
+  reset_baseline_upgrade
+  call_coordinator /chat \
+    '{"prompt":"Read the dependencies in the upgrade demo target. Summarize what you find, including any matched advisories. Do NOT propose any action yet — just report.","workload":"upgrade"}'
+}
+
+# Upgrade-B — patch bump → upgrade_pr. Asks the agent to act on the
+# known patch-level advisory (lodash 4.17.20 → 4.17.21, CVE-2021-23337).
+#
+# Expected agent tool sequence:
+#   1. upgrade_read_dependencies (confirms the advisory + version)
+#   2. search_developer_docs (per the chat prompt's citation rule)
+#   3. upgrade_propose_pr (package_name="lodash", target_version="4.17.21",
+#      advisory_url="https://github.com/advisories/GHSA-35jh-r3h4-6jhm")
+#   4. notify (alert channel)
+#
+# This beat OPENS A REAL PR. The warning banner makes that loud so the
+# operator can decide before hitting Enter. Cleanup steps after the
+# demo: close the PR and delete the branch (see docs/demo-script.md).
+upgrade_b() {
+  banner "Upgrade-B — propose upgrade PR (lodash 4.17.20 -> 4.17.21)"
+  echo "Expectation: action=upgrade_pr with a PR URL in the response."
+  echo
+  echo "  !!! LIVE DEMO WARNING !!!"
+  echo "  This beat will open a REAL pull request on ${GITHUB_REPO}."
+  echo "  Close + delete the PR after the demo. See docs/demo-script.md"
+  echo "  ('Upgrade workload beats' -> 'Cleanup after upgrade-b') for the"
+  echo "  recommended cleanup sequence."
+  echo
+  reset_baseline_upgrade
+  call_coordinator /chat \
+    '{"prompt":"lodash 4.17.20 in demo/upgrade-target has CVE-2021-23337 (GHSA-35jh-r3h4-6jhm, prototype pollution). Please propose an upgrade PR to 4.17.21, citing the advisory in the PR body. Then notify the alert channel that the PR is open.","workload":"upgrade"}'
+}
+
+# Upgrade-C — major-bump → escalation. Demonstrates the layered safety
+# property: the chat system prompt instructs the LLM that major
+# bumps must route to `escalation` rather than `upgrade_pr`, AND the
+# upgrade-docs worker's post-LLM validator independently refuses any
+# bump that isn't patch- or minor-level (returns 403).
+#
+# Two valid outcomes (both are good teaching moments — note both in
+# the runbook):
+#   1. LLM follows the prompt: calls notify_tool with channel=alert,
+#      severity=high, escalation body. Does NOT call upgrade_propose_pr.
+#   2. LLM nevertheless tries upgrade_propose_pr with a major bump:
+#      worker validator returns 403 and the agent surfaces the
+#      refusal. This proves the post-LLM validator is the real safety
+#      gate, not the prompt.
+upgrade_c() {
+  banner "Upgrade-C — major-bump escalation (layered safety)"
+  echo "Expectation: action=escalation via notify_tool (alert channel)."
+  echo "             OR worker 403 if the LLM attempts upgrade_propose_pr"
+  echo "             with a major bump (validator refuses; either"
+  echo "             outcome demonstrates layered safety)."
+  reset_baseline_upgrade
+  call_coordinator /chat \
+    '{"prompt":"Hypothetical: a critical advisory affects lodash 4.x and the fix is only in lodash 5.x (a major version bump). The validator refuses major bumps. Please escalate via notify_tool (channel=alert, severity=high) instead of attempting an upgrade PR — explain the major-version constraint in the message body.","workload":"upgrade"}'
+}
+
 # Cleanup — restore the baseline declared in demo/ops-contract.yaml.
 # Idempotent: unset_env swallows the "not currently set" error so
 # running cleanup twice in a row is fine. Useful as a pre-flight step
 # before the live demo.
+#
+# Note: cleanup is drift-only. The upgrade workload's baseline is the
+# repo state of demo/upgrade-target/package.json on `main` — restoring
+# that is a git operation, not a Cloud Run env reset, so it is out of
+# scope for this script. See docs/demo-script.md for the manual
+# cleanup steps after upgrade-b.
 cleanup() {
   banner "Cleanup — restore baseline env"
   set_env "PAYMENT_MODE=mock"
@@ -341,42 +477,71 @@ usage() {
   cat <<EOF
 Usage: $0 <beat>
 
-Beats:
+Drift beats (mutate ${TARGET_SERVICE} Cloud Run env):
   beat-a    baseline check (expect no_op)
   beat-b    flip PAYMENT_MODE=live (expect drift_issue)
   beat-c    flip NEW_THING=test (expect docs_pr or escalate)
   beat-d    flip FEATURE_NEW_CHECKOUT=true (expect docs_pr)
   beat-e    combo drift + /chat rollback (expect rollback w/ approval URL)
-  cleanup   restore baseline env on $TARGET_SERVICE
+
+Upgrade beats (read GitHub state; require coordinator USE_ADK=true
+and UPGRADE_READER_URL + UPGRADE_DOCS_URL set — 17.E deploy infra):
+  upgrade-a discover dependencies in demo/upgrade-target (read-only)
+  upgrade-b propose upgrade PR (lodash 4.17.20 -> 4.17.21).
+            !! WILL OPEN A REAL PR ON ${GITHUB_REPO} !!
+  upgrade-c major-bump escalation (layered safety; no PR opened)
+
+Lifecycle:
+  cleanup   restore baseline env on ${TARGET_SERVICE} (drift only)
   all       run beat-a..beat-e then cleanup, sequentially
+  all-upgrade   run upgrade-a..upgrade-c (separate from \`all\` so a
+                drift-only run does not accidentally open an upgrade PR)
 
 Environment:
   PROJECT          GCP project (required)
   REGION           Cloud Run region (default: asia-northeast1)
   TARGET_SERVICE   drift target (default: payment-demo)
+  GITHUB_REPO      repo for the upgrade-b warning banner
+                   (default: adi-prasetyo/driftscribe)
 
 Currently resolved:
   coordinator: $COORD_URL
   target:      $TARGET_SERVICE (region=$REGION)
+  github_repo: $GITHUB_REPO (upgrade beats display only)
 EOF
 }
 
 case "${1:-}" in
-  beat-a)   beat_a ;;
-  beat-b)   beat_b ;;
-  beat-c)   beat_c ;;
-  beat-d)   beat_d ;;
-  beat-e)   beat_e ;;
-  cleanup)  cleanup ;;
+  beat-a)      beat_a ;;
+  beat-b)      beat_b ;;
+  beat-c)      beat_c ;;
+  beat-d)      beat_d ;;
+  beat-e)      beat_e ;;
+  upgrade-a)   upgrade_a ;;
+  upgrade-b)   upgrade_b ;;
+  upgrade-c)   upgrade_c ;;
+  cleanup)     cleanup ;;
   all)
     # `all` is for dry-runs and recording the demo end-to-end. Each
     # beat is independent; if one fails the rest still run.
+    #
+    # Intentionally drift-only — upgrade-b opens a real GitHub PR and
+    # must not be fired by accident from a plain `all` run. Use
+    # `all-upgrade` to exercise the upgrade beats end-to-end.
     beat_a
     beat_b
     beat_c
     beat_d
     beat_e
     cleanup
+    ;;
+  all-upgrade)
+    # Same shape as `all` but for the upgrade workload. Sequential so
+    # the operator can read each beat's output before the next fires;
+    # upgrade-b opens a real PR so any failure earlier is loud.
+    upgrade_a
+    upgrade_b
+    upgrade_c
     ;;
   ""|-h|--help)
     usage
