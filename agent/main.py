@@ -1679,6 +1679,26 @@ def _map_worker_error(
 # painful) or be wired in a way that defeats the no-referrer headers.
 
 
+@app.get("/ui/transparency", response_class=HTMLResponse)
+def transparency_ui(request: Request) -> Response:
+    """Serve the transparency UI (Phase 19.B.1 scaffolding).
+
+    No auth on the HTML itself — the markup is harmless. Every API
+    call the page makes (``/chat``, ``/decisions``, ``/trace/{id}``)
+    carries the ``X-DriftScribe-Token`` header, which the operator
+    sets via the prompt wired up in 19.B.2. The token is held in
+    ``sessionStorage`` so it does not survive a tab close.
+
+    ``Cache-Control: no-store`` because this is an operator surface
+    — a stale cached copy of the shell would confuse the
+    fetch-flow tasks (19.B.3/19.B.4) and could surface yesterday's
+    decisions in the rail.
+    """
+    resp = _TEMPLATES.TemplateResponse(request, "transparency.html", {})
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
 @app.get("/approvals/{approval_id}", response_class=HTMLResponse)
 def approval_get(request: Request, approval_id: str, t: str = "") -> Response:
     """Render the HITL approval decision page.
