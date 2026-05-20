@@ -27,6 +27,9 @@ class StateStore(Protocol):
     ) -> None: ...
     def get_decision(self, decision_id: str) -> dict[str, Any] | None: ...
     def evict_cached_decision(self, event_key: str, decision_id: str) -> bool: ...
+    def find_decision_by_trace_id(
+        self, trace_id: str
+    ) -> dict[str, Any] | None: ...
 
 
 class InMemoryStateStore:
@@ -70,6 +73,20 @@ class InMemoryStateStore:
             return False
         self._events.pop(event_key, None)
         return True
+
+    def find_decision_by_trace_id(self, trace_id: str) -> dict[str, Any] | None:
+        """Linear scan over decisions for the matching ``trace_id``.
+
+        Phase 19.A.6: the ``/trace/{trace_id}`` endpoint enriches the
+        reasoning timeline with the persisted decision document so the
+        UI can show the final action alongside the events. Linear scan
+        is fine for InMemoryStateStore — used only in tests / DRY_RUN —
+        where the decision dict is at most a few entries deep.
+        """
+        for d in self._decisions.values():
+            if d.get("trace_id") == trace_id:
+                return d
+        return None
 
 
 class FirestoreStateStore:
@@ -153,3 +170,23 @@ class FirestoreStateStore:
 
         transaction = self._db.transaction()
         return _txn(transaction, decision_id)
+
+    def find_decision_by_trace_id(self, trace_id: str) -> dict[str, Any] | None:
+        """Index lookup on ``trace_id`` over the decisions collection.
+
+        Phase 19.A.6: the ``/trace/{trace_id}`` endpoint enriches the
+        reasoning timeline with the persisted decision so the UI can
+        show the final action alongside the events. ``.limit(1)``
+        bounds the read; the field is set on every decision since
+        19.A.4 (``record_decision`` persists the request's trace_id).
+
+        Returns ``None`` if no decision matches (e.g. /trace was called
+        before /recheck finished, or the trace_id was for a /chat call
+        that doesn't write a decision document at all).
+        """
+        snaps = (
+            self._decisions.where("trace_id", "==", trace_id).limit(1).stream()
+        )
+        for s in snaps:
+            return s.to_dict()
+        return None
