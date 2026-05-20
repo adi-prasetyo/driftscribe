@@ -149,16 +149,22 @@ binding.
 DOCS_PAT=github_pat_xxx                       # from step 2
 WEBHOOK_URL=https://webhook.site/<uuid>       # from step 3
 DK_API_KEY=AIza...                            # from step 3b
+# Phase 17.E.2: two additional fine-grained PATs for the upgrade workload
+# (same repo as DOCS_PAT, different scopes — see setup_secrets.sh prompt
+# for the exact permissions to select):
+UPGRADE_READER_PAT=github_pat_xxx             # READ-ONLY (Contents:read + Pull requests:read)
+UPGRADE_DOCS_PAT=github_pat_xxx               # READ+WRITE (Contents:read+write + Pull requests:read+write)
 
-./infra/scripts/setup_secrets.sh "$PROJECT" "$GH_PAT" "$DOCS_PAT" "$WEBHOOK_URL" "$DK_API_KEY"
+./infra/scripts/setup_secrets.sh "$PROJECT" "$GH_PAT" "$DOCS_PAT" "$WEBHOOK_URL" "$DK_API_KEY" "$UPGRADE_READER_PAT" "$UPGRADE_DOCS_PAT"
 ```
 
-This creates `docs-agent-github-pat`, `driftscribe-webhook-url`, and
-`developer-knowledge-api-key`, binds the per-secret accessors to the Docs,
-Notifier, and coordinator SAs respectively, and leaves everything else
-untouched. `coordinator-shared-token` and `approval-hmac-key` are detected
-as already-existing and NOT regenerated (regenerating them would
-invalidate every running revision).
+This creates `docs-agent-github-pat`, `driftscribe-webhook-url`,
+`developer-knowledge-api-key`, `upgrade-reader-github-pat`, and
+`upgrade-docs-github-pat`, binds the per-secret accessors to the Docs,
+Notifier, coordinator, upgrade-reader, and upgrade-docs SAs respectively,
+and leaves everything else untouched. `coordinator-shared-token` and
+`approval-hmac-key` are detected as already-existing and NOT regenerated
+(regenerating them would invalidate every running revision).
 
 > **Two-phase note:** if you ran step 1 without the optional args, the
 > coordinator SA (`driftscribe-agent@…`) already exists by this point, so
@@ -177,10 +183,11 @@ gcloud builds submit \
   .
 ```
 
-This builds + pushes all 6 images, deploys all 6 services (`payment-demo`,
-`driftscribe-agent`, and the 4 workers), and runs the URL-sync post-deploy
-steps that wire each worker's `OWN_URL` and the coordinator's four
-`*_URL` env vars to the actual Cloud Run-assigned URLs.
+This builds + pushes all 8 images, deploys all 8 services (`payment-demo`,
+`driftscribe-agent`, the 4 drift workers, and the 2 upgrade workers), and
+runs the URL-sync post-deploy steps that wire each worker's `OWN_URL` and
+the coordinator's six `*_URL` env vars (READER, DOCS, ROLLBACK, NOTIFIER,
+UPGRADE_READER, UPGRADE_DOCS) to the actual Cloud Run-assigned URLs.
 
 The coordinator deploys with `USE_ADK=false` by default — `/chat` returns
 "ADK disabled" until you flip it in step 8.
@@ -193,7 +200,7 @@ finish. Re-run the bootstrap so it picks up the now-existing services and
 applies the per-worker bindings:
 
 ```bash
-./infra/scripts/setup_secrets.sh "$PROJECT" "$GH_PAT" "$DOCS_PAT" "$WEBHOOK_URL" "$DK_API_KEY"
+./infra/scripts/setup_secrets.sh "$PROJECT" "$GH_PAT" "$DOCS_PAT" "$WEBHOOK_URL" "$DK_API_KEY" "$UPGRADE_READER_PAT" "$UPGRADE_DOCS_PAT"
 ```
 
 Look for these lines in the output:
@@ -203,6 +210,8 @@ driftscribe-agent: granted run.invoker on driftscribe-reader
 driftscribe-agent: granted run.invoker on driftscribe-docs
 driftscribe-agent: granted run.invoker on driftscribe-rollback
 driftscribe-agent: granted run.invoker on driftscribe-notifier
+driftscribe-agent: granted run.invoker on driftscribe-upgrade-reader
+driftscribe-agent: granted run.invoker on driftscribe-upgrade-docs
 rollback-agent-sa: granted run.developer on payment-demo (resource-scoped)
 ```
 
@@ -280,7 +289,7 @@ with the new filters:
 ```bash
 gcloud eventarc triggers delete driftscribe-cloudrun-changes \
   --location=asia-northeast1 --project "$PROJECT"
-./infra/scripts/setup_secrets.sh "$PROJECT" "$GH_PAT" "$DOCS_PAT" "$WEBHOOK_URL" "$DK_API_KEY"
+./infra/scripts/setup_secrets.sh "$PROJECT" "$GH_PAT" "$DOCS_PAT" "$WEBHOOK_URL" "$DK_API_KEY" "$UPGRADE_READER_PAT" "$UPGRADE_DOCS_PAT"
 ```
 
 Re-mutate `payment-demo` and re-check the coordinator logs.
@@ -337,8 +346,9 @@ re-bootstrapping unless you've added a new SA, secret, or service.
 
 - **Revision fails with `INVALID_ARGUMENT: Secret not found`**: a
   `--set-secrets` reference points at a secret that doesn't exist yet.
-  Re-run `setup_secrets.sh` with all five args (PROJECT, GH_PAT, DOCS_PAT,
-  WEBHOOK_URL, DK_API_KEY).
+  Re-run `setup_secrets.sh` with all seven args (PROJECT, GH_PAT,
+  DOCS_PAT, WEBHOOK_URL, DK_API_KEY, UPGRADE_READER_PAT,
+  UPGRADE_DOCS_PAT).
 - **Coordinator logs `MissingDeveloperKnowledgeApiKeyError`**:
   the `--set-secrets=DEVELOPER_KNOWLEDGE_API_KEY=...` reference was
   stripped from the coordinator deploy step, or the secret has no

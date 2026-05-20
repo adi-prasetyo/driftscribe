@@ -2,7 +2,7 @@
 # Idempotent bootstrap for a fresh DriftScribe multi-agent deployment.
 #
 # Usage:
-#   setup_secrets.sh PROJECT GITHUB_TOKEN [DOCS_AGENT_PAT] [WEBHOOK_URL] [DEVELOPER_KNOWLEDGE_API_KEY]
+#   setup_secrets.sh PROJECT GITHUB_TOKEN [DOCS_AGENT_PAT] [WEBHOOK_URL] [DEVELOPER_KNOWLEDGE_API_KEY] [UPGRADE_READER_PAT] [UPGRADE_DOCS_PAT]
 #
 # Arguments:
 #   PROJECT                       GCP project ID (e.g. driftscribe-hack-2026)
@@ -20,6 +20,16 @@
 #                                 paste here to populate Secret Manager. If omitted,
 #                                 the script prints instructions and skips creating
 #                                 the secret — re-run with the value later.
+#   UPGRADE_READER_PAT            (optional, Phase 17.E.2) Fine-grained PAT scoped to ONE
+#                                 repository (adi-prasetyo/driftscribe) with
+#                                 Contents: read + Pull requests: read ONLY. NO write.
+#                                 Backs the upgrade-reader worker's GitHub API calls.
+#                                 If omitted, skipped — re-run with the value later.
+#   UPGRADE_DOCS_PAT              (optional, Phase 17.E.2) Fine-grained PAT scoped to ONE
+#                                 repository (adi-prasetyo/driftscribe) with
+#                                 Contents: read + write AND Pull requests: read + write.
+#                                 Backs the upgrade-docs worker's PR-opening flow.
+#                                 If omitted, skipped — re-run with the value later.
 #
 # Safe to re-run: every gcloud create is gated by a describe-check, every IAM
 # binding is idempotent server-side, and the two auto-generated secrets
@@ -37,11 +47,13 @@
 
 set -euo pipefail
 
-PROJECT="${1:?usage: $0 PROJECT GITHUB_TOKEN [DOCS_AGENT_PAT] [WEBHOOK_URL] [DEVELOPER_KNOWLEDGE_API_KEY]}"
+PROJECT="${1:?usage: $0 PROJECT GITHUB_TOKEN [DOCS_AGENT_PAT] [WEBHOOK_URL] [DEVELOPER_KNOWLEDGE_API_KEY] [UPGRADE_READER_PAT] [UPGRADE_DOCS_PAT]}"
 GITHUB_TOKEN="${2:?}"
 DOCS_AGENT_PAT="${3:-}"
 WEBHOOK_URL="${4:-}"
 DEVELOPER_KNOWLEDGE_API_KEY="${5:-}"
+UPGRADE_READER_PAT="${6:-}"
+UPGRADE_DOCS_PAT="${7:-}"
 
 REGION="asia-northeast1"
 
@@ -104,7 +116,9 @@ done
 # --------------------------------------------------------------------------
 # driftscribe-agent replaces the default compute SA as the coordinator's
 # runtime identity. Workers' ALLOWED_CALLERS env lists this SA's email.
-for sa in driftscribe-agent reader-agent-sa docs-agent-sa rollback-agent-sa notifier-agent-sa; do
+# Phase 17.E.2: upgrade-reader-sa and upgrade-docs-sa added for the
+# upgrade workload (one SA per worker, distinct from the drift workers).
+for sa in driftscribe-agent reader-agent-sa docs-agent-sa rollback-agent-sa notifier-agent-sa upgrade-reader-sa upgrade-docs-sa; do
   gcloud iam service-accounts describe "${sa}@${PROJECT}.iam.gserviceaccount.com" \
     --project="$PROJECT" >/dev/null 2>&1 \
     || gcloud iam service-accounts create "$sa" \
@@ -117,6 +131,8 @@ READER_SA="reader-agent-sa@${PROJECT}.iam.gserviceaccount.com"
 DOCS_SA="docs-agent-sa@${PROJECT}.iam.gserviceaccount.com"
 ROLLBACK_SA="rollback-agent-sa@${PROJECT}.iam.gserviceaccount.com"
 NOTIFIER_SA="notifier-agent-sa@${PROJECT}.iam.gserviceaccount.com"
+UPGRADE_READER_SA="upgrade-reader-sa@${PROJECT}.iam.gserviceaccount.com"
+UPGRADE_DOCS_SA="upgrade-docs-sa@${PROJECT}.iam.gserviceaccount.com"
 
 # Cloud Build acts-as each runtime SA during `gcloud run deploy`.
 for sa in "$COORD_SA" "$READER_SA" "$DOCS_SA" "$ROLLBACK_SA" "$NOTIFIER_SA"; do
@@ -261,6 +277,69 @@ else
   fi
 fi
 
+# Upgrade workload's PATs (Phase 17.E.2) — operator must supply. Both are
+# distinct from the drift docs-agent-github-pat: the upgrade-reader holds
+# a READ-ONLY fine-grained PAT (Contents:read + Pull requests:read), the
+# upgrade-docs holds a READ+WRITE fine-grained PAT (Contents:read+write +
+# Pull requests:read+write). Same operator-supplied pattern as the docs
+# PAT above: if omitted, the script prints instructions and SKIPS creating
+# the secret so the operator can re-run with the value later.
+if [ -n "$UPGRADE_READER_PAT" ]; then
+  gcloud secrets describe upgrade-reader-github-pat --project "$PROJECT" >/dev/null 2>&1 || \
+    gcloud secrets create upgrade-reader-github-pat \
+      --project "$PROJECT" --replication-policy=automatic
+  printf '%s' "$UPGRADE_READER_PAT" | gcloud secrets versions add upgrade-reader-github-pat \
+    --project "$PROJECT" --data-file=-
+else
+  if gcloud secrets describe upgrade-reader-github-pat --project "$PROJECT" >/dev/null 2>&1; then
+    echo "upgrade-reader-github-pat already exists — leaving untouched (no arg supplied)"
+  else
+    echo
+    echo "----------------------------------------------------------------"
+    echo "UPGRADE_READER_PAT arg not supplied — upgrade-reader-github-pat NOT created."
+    echo
+    echo "Create a READ-ONLY fine-grained GitHub PAT:"
+    echo "  https://github.com/settings/personal-access-tokens/new"
+    echo "  Repository access: select ONE repo (adi-prasetyo/driftscribe)"
+    echo "  Permissions:"
+    echo "    Contents:      Read"
+    echo "    Pull requests: Read"
+    echo "  NO write scopes — defense in depth (upgrade-reader is read-only)."
+    echo "Then re-run with the value as the 6th positional arg:"
+    echo "  $0 \$PROJECT \$GH_TOKEN \$DOCS_PAT \$WEBHOOK_URL \$DEV_KEY <upgrade-reader-pat> [upgrade-docs-pat]"
+    echo "----------------------------------------------------------------"
+    echo
+  fi
+fi
+
+if [ -n "$UPGRADE_DOCS_PAT" ]; then
+  gcloud secrets describe upgrade-docs-github-pat --project "$PROJECT" >/dev/null 2>&1 || \
+    gcloud secrets create upgrade-docs-github-pat \
+      --project "$PROJECT" --replication-policy=automatic
+  printf '%s' "$UPGRADE_DOCS_PAT" | gcloud secrets versions add upgrade-docs-github-pat \
+    --project "$PROJECT" --data-file=-
+else
+  if gcloud secrets describe upgrade-docs-github-pat --project "$PROJECT" >/dev/null 2>&1; then
+    echo "upgrade-docs-github-pat already exists — leaving untouched (no arg supplied)"
+  else
+    echo
+    echo "----------------------------------------------------------------"
+    echo "UPGRADE_DOCS_PAT arg not supplied — upgrade-docs-github-pat NOT created."
+    echo
+    echo "Create a READ+WRITE fine-grained GitHub PAT (separate from"
+    echo "docs-agent-github-pat — same repo, different scopes):"
+    echo "  https://github.com/settings/personal-access-tokens/new"
+    echo "  Repository access: select ONE repo (adi-prasetyo/driftscribe)"
+    echo "  Permissions:"
+    echo "    Contents:      Read and write"
+    echo "    Pull requests: Read and write"
+    echo "Then re-run with the value as the 7th positional arg:"
+    echo "  $0 \$PROJECT \$GH_TOKEN \$DOCS_PAT \$WEBHOOK_URL \$DEV_KEY \$UPGRADE_READER_PAT <upgrade-docs-pat>"
+    echo "----------------------------------------------------------------"
+    echo
+  fi
+fi
+
 # Developer Knowledge API key (Phase 17.B) — operator must supply. The key
 # itself MUST be created by the operator in the GCP Console with an
 # API-restriction binding it to `developerknowledge.googleapis.com` only
@@ -332,6 +411,13 @@ bind_secret approval-hmac-key         "$ROLLBACK_SA"
 # Notifier worker: one secret (the outbound webhook URL).
 bind_secret driftscribe-webhook-url   "$NOTIFIER_SA"
 
+# Upgrade workers (Phase 17.E.2): one secret each, distinct fine-grained
+# PATs. The upgrade-reader's PAT is read-only; the upgrade-docs' PAT is
+# read+write. Defense in depth: neither SA can read the other's PAT, so
+# a compromise of the read-only worker cannot escalate to PR creation.
+bind_secret upgrade-reader-github-pat "$UPGRADE_READER_SA"
+bind_secret upgrade-docs-github-pat   "$UPGRADE_DOCS_SA"
+
 # --------------------------------------------------------------------------
 # 7. Rollback worker — resource-scoped run.developer on payment-demo ONLY
 # --------------------------------------------------------------------------
@@ -360,7 +446,12 @@ fi
 # Gated on service existence: on first run (before any `gcloud builds
 # submit`) the workers don't exist and this loop is a no-op. After the
 # first build, re-running this script applies the grants.
-for worker in driftscribe-reader driftscribe-docs driftscribe-rollback driftscribe-notifier; do
+# Phase 17.E.2: upgrade workers (driftscribe-upgrade-reader,
+# driftscribe-upgrade-docs) added to the loop. The grants stay per-service
+# — the coordinator's run.invoker on a drift worker does NOT extend to
+# an upgrade worker (workload-scoped IAM invariant, pinned in
+# docs/architecture/iam-matrix.md).
+for worker in driftscribe-reader driftscribe-docs driftscribe-rollback driftscribe-notifier driftscribe-upgrade-reader driftscribe-upgrade-docs; do
   if gcloud run services describe "$worker" \
      --region="$REGION" --project="$PROJECT" >/dev/null 2>&1; then
     gcloud run services add-iam-policy-binding "$worker" \
