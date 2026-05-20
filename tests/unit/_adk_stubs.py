@@ -17,14 +17,21 @@ from types import SimpleNamespace
 class StubPart:
     """Minimal stand-in for ``google.genai.types.Part``.
 
-    The production code only reads ``text``, ``function_call``, and
-    ``thought``. Other attributes are intentionally absent — production
-    uses ``getattr(part, "...", default)`` so missing attrs are safe.
+    The production code reads ``text``, ``function_call``,
+    ``function_response``, and ``thought``. Other attributes are
+    intentionally absent — production uses ``getattr(part, "...",
+    default)`` so missing attrs are safe.
+
+    Phase 19.A.3 added the ``function_response`` slot so tests can
+    feed the new ``tool_result`` emit site (mirrors the
+    ``function_call`` shape — a ``SimpleNamespace(name=..., response=...)``
+    matching ``google.genai.types.FunctionResponse``).
     """
 
-    def __init__(self, *, text=None, function_call=None, thought=False):
+    def __init__(self, *, text=None, function_call=None, function_response=None, thought=False):
         self.text = text
         self.function_call = function_call
+        self.function_response = function_response
         self.thought = thought
 
 
