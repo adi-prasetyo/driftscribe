@@ -547,6 +547,48 @@ else
   echo "  log retention: _Default bucket already at 365 days — skipping"
 fi
 
+# --------------------------------------------------------------------------
+# 12. Cloud Logging read access for /trace endpoint (Phase 19.A.0)
+# --------------------------------------------------------------------------
+# The coordinator's `/trace` endpoint calls `logEntries.list` to replay
+# thought-summary, tool-call, and llm-usage events out of the `_Default`
+# bucket extended above (§11). On a developer workstation this works
+# under ADC because the operator already holds project-wide read access;
+# on Cloud Run the runtime SA has no logging read role by default, so
+# every `/trace` request 403s with `PERMISSION_DENIED`.
+#
+# `roles/logging.viewer` is the smallest role that grants
+# `logging.logEntries.list` + `logging.logs.list` project-wide. It is
+# strictly read-only — no write, no admin, no sink management — and
+# scoped to the coordinator SA only (NO project-wide grant to humans
+# or to worker SAs).
+#
+# Describe-then-act, matching §11 (log retention) and the rest of the
+# script: the filter pulls the existing binding (if any) for this exact
+# (role, member) pair. If the lookup returns empty, we add the binding
+# with `--condition=None` (explicit no-condition to avoid the unbound-
+# condition warning gcloud emits on conditional-policy projects) and
+# `--quiet` so a re-run prints a deterministic single-line skip instead
+# of a y/N prompt. The `add-iam-policy-binding` call is also idempotent
+# server-side, so the guard is purely a UX win — re-runs on an already-
+# bound project print "skipping" instead of falsely claiming a fresh
+# grant.
+sa_email="${COORD_SA}"
+role="roles/logging.viewer"
+existing="$(gcloud projects get-iam-policy "$PROJECT" \
+  --flatten='bindings[].members' \
+  --format="value(bindings.members)" \
+  --filter="bindings.role=${role} AND bindings.members=serviceAccount:${sa_email}" \
+  2>/dev/null || true)"
+if [[ -z "$existing" ]]; then
+  gcloud projects add-iam-policy-binding "$PROJECT" \
+    --member="serviceAccount:${sa_email}" \
+    --role="${role}" --condition=None --quiet >/dev/null
+  echo "  logging.viewer: granted to ${sa_email}"
+else
+  echo "  logging.viewer: already bound to ${sa_email} — skipping"
+fi
+
 echo
 echo "setup_secrets.sh: complete"
 echo "  next: docs/runbooks/deploy.md (steps 2+)"
