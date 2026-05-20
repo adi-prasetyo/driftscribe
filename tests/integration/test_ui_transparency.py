@@ -91,6 +91,14 @@ def test_ui_transparency_contains_three_group_renderer():
     Pin the renderer's public surface so subsequent refactors don't quietly
     regress the worker-friendly labels (Codex v3 MINOR) or drop one of the
     three group anchors that the polling glue writes into.
+
+    Phase-19 follow-up (Codex final review MINOR): pin the upgrade-
+    workload friendly labels AND the correct tool names — the previous
+    mapping had ``upgrade_read_dependencies`` / ``upgrade_patch_docs_tool``
+    which never matched the actual exposed surface
+    (``upgrade_read_dependencies_tool`` / ``upgrade_propose_pr_tool``
+    in ``agent/adk_tools.py``), so upgrade traces silently showed the
+    raw function names instead of the friendly labels.
     """
     body = client.get("/ui/transparency").text
     assert "_WORKER_LABELS" in body or "WORKER_LABELS" in body
@@ -99,6 +107,11 @@ def test_ui_transparency_contains_three_group_renderer():
     assert "group-coordinator" in body
     assert "group-tools" in body
     assert "group-mcp" in body
+    # Upgrade workload labels — friendly text + correct tool keys.
+    assert "Upgrade Reader" in body
+    assert "Upgrade Docs" in body
+    assert "upgrade_read_dependencies_tool" in body
+    assert "upgrade_propose_pr_tool" in body
 
 
 def test_ui_transparency_contains_approval_cta_renderer():
@@ -108,6 +121,16 @@ def test_ui_transparency_contains_approval_cta_renderer():
     with a same-origin ``/approvals/`` URL. If a future refactor drops the
     helper or relaxes the URL guard, this test fails before judges (or an
     attacker probing for an open redirect) ever see the regression.
+
+    Phase-19 follow-up (Codex final review IMPORTANT): the helper must
+    accept BOTH relative (``/approvals/...``) AND absolute
+    (``https://<coordinator>/approvals/...``) URLs — the rollback
+    worker emits the absolute form (see ``workers/rollback/main.py``),
+    so the prior literal ``startsWith("/approvals/")`` guard NEVER
+    rendered the CTA in real demos. The fix uses ``new URL(raw,
+    window.location.origin)`` and rejects off-origin / non-http
+    schemes, so both shapes are accepted with the same-origin
+    invariant preserved.
     """
     body = client.get("/ui/transparency").text
     # Pin: the renderer exists and only fires for propose_rollback_tool.
@@ -115,8 +138,19 @@ def test_ui_transparency_contains_approval_cta_renderer():
     assert "approval_url" in body
     assert "Approve" in body  # button text
     assert "approval-cta" in body or "approval-btn" in body
-    # Same-origin guard — must NOT have been relaxed to accept arbitrary URLs.
+    # Path-prefix guard still load-bearing (the literal "/approvals/"
+    # appears in BOTH the URL.pathname.startsWith check and the
+    # block comments — neither should regress).
     assert '"/approvals/"' in body or "'/approvals/'" in body
+    # Shared same-origin helper — pin its name so a refactor that
+    # inlines or renames it shows up here.
+    assert "_safeApprovalHref" in body
+    # URL-parse-based acceptance: pins that the implementation uses
+    # ``new URL(raw, window.location.origin)`` and compares against
+    # ``window.location.origin`` (NOT a literal startsWith). If a
+    # future refactor reverts to the prefix-only guard, this fails.
+    assert "new URL(" in body
+    assert "window.location.origin" in body
 
 
 def test_ui_transparency_contains_decisions_pane():

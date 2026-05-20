@@ -483,6 +483,54 @@ def _emit_llm_usage(event) -> None:
     )
 
 
+def _redact_final_response(accepted_text: str) -> tuple[str, str]:
+    """Return ``(response_preview, response_kind)`` for ``final_response``.
+
+    For JSON-shaped final responses, parse → recursive
+    :func:`agent.secret_guard.redact_event` → re-serialize → truncate.
+    This catches NAME-keyed secrets nested anywhere in the structure
+    (e.g. ``{"PASSWORD": "abc"}`` or ``{"wrapped": {"DATABASE_URL":
+    "postgres://u:p@host/db"}}``) — not just credentialed URLs.
+
+    Falls back to :func:`redact_text` on parse failure (non-JSON text,
+    truncated mid-string, or malformed JSON). The fallback path can
+    only catch credentialed URLs, not name-keyed secrets — but the
+    fallback fires only for genuinely non-JSON content, where
+    structural redaction has no schema to walk. The 365-day-durable
+    Cloud Logging emit therefore covers BOTH shapes the agent might
+    produce.
+
+    Truncation is applied AFTER redaction (redact-then-truncate)
+    regardless of which branch fires — preserving the v3 invariant
+    that a credentialed URL straddling the 2000-char boundary still
+    gets userinfo stripped, never cut mid-segment.
+
+    Returns a 2-tuple so call sites stay symmetric:
+    ``response_preview`` is the ≤2000-char string to log;
+    ``response_kind`` is ``"json"`` when structural redaction fired,
+    ``"text"`` otherwise.
+    """
+    stripped = accepted_text.lstrip()
+    if stripped.startswith("{") or stripped.startswith("["):
+        try:
+            parsed = json.loads(accepted_text)
+            safe = redact_event(parsed)
+            # ``default=str`` keeps the dump total: a future schema
+            # that nests datetimes / UUIDs / Path objects shouldn't
+            # crash the log emit path. The structural redaction has
+            # already replaced any secret-keyed values with the
+            # ``<redacted>`` sentinel, so ``default=str`` only acts
+            # on benign non-secret types.
+            return (json.dumps(safe, default=str)[:2000], "json")
+        except (json.JSONDecodeError, ValueError):
+            # Looked like JSON (leading "{" / "[") but didn't parse —
+            # likely a truncated stream or a malformed emit. Fall
+            # through to the text path, which still strips
+            # credentialed URLs via the regex.
+            pass
+    return ((redact_text(accepted_text) or "")[:2000], "text")
+
+
 async def run_agent(
     user_msg: str, *, workload: str = "drift"
 ) -> DecisionProposal:
@@ -555,17 +603,21 @@ async def run_agent(
                 if accepted_text.strip():
                     final_text = accepted_text
                     if not final_response_logged:
-                        # Redact BEFORE truncating: if a credentialed URL
-                        # straddles the 2000-char boundary, truncating
-                        # first could cut the userinfo mid-segment and
-                        # leak a partial credential (the regex wouldn't
-                        # match anymore). Redact-then-truncate keeps the
-                        # invariant; the outer ``redact_event(extra)`` is
-                        # defense-in-depth.
-                        safe_text = redact_text(accepted_text) or ""
-                        response_preview = safe_text[:2000]
-                        response_kind = (
-                            "json" if accepted_text.lstrip().startswith("{") else "text"
+                        # Redact BEFORE truncating: if a credentialed
+                        # URL straddles the 2000-char boundary,
+                        # truncating first could cut the userinfo
+                        # mid-segment and leak a partial credential
+                        # (the regex wouldn't match anymore). The
+                        # helper also handles the structured-JSON
+                        # path — name-keyed nested secrets
+                        # (``{"PASSWORD": ...}``) get masked via
+                        # :func:`redact_event` before serialize, so
+                        # non-URL secrets don't leak into the durable
+                        # 365-day Cloud Logging preview. The outer
+                        # ``redact_event(extra)`` remains as defense
+                        # in depth.
+                        response_preview, response_kind = (
+                            _redact_final_response(accepted_text)
                         )
                         _log.info(
                             "final_response",
@@ -674,14 +726,17 @@ async def run_chat(
             if accepted_text.strip() and not final_response_logged:
                 # Redact BEFORE truncating: if a credentialed URL
                 # straddles the 2000-char boundary, truncating first
-                # could cut the userinfo mid-segment and leak a partial
-                # credential (the regex wouldn't match anymore).
-                # Redact-then-truncate keeps the invariant; the outer
-                # ``redact_event(extra)`` is defense-in-depth.
-                safe_text = redact_text(accepted_text) or ""
-                response_preview = safe_text[:2000]
-                response_kind = (
-                    "json" if accepted_text.lstrip().startswith("{") else "text"
+                # could cut the userinfo mid-segment and leak a
+                # partial credential (the regex wouldn't match
+                # anymore). The helper also handles the structured-
+                # JSON path — name-keyed nested secrets
+                # (``{"PASSWORD": ...}``) get masked via
+                # :func:`redact_event` before serialize, so non-URL
+                # secrets don't leak into the durable 365-day Cloud
+                # Logging preview. The outer ``redact_event(extra)``
+                # remains as defense in depth.
+                response_preview, response_kind = (
+                    _redact_final_response(accepted_text)
                 )
                 _log.info(
                     "final_response",
