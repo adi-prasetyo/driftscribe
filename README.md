@@ -131,6 +131,10 @@ the worker boundary makes "propose" safe to expose.
 
 ## Status
 
-Phase 17 (multi-agent framework + Developer Knowledge MCP) complete.
-Hackathon submission deadline 2026-07-10. Implementation plan:
-[`docs/plans/2026-05-19-driftscribe-phase17-framework-mcp.md`](docs/plans/2026-05-19-driftscribe-phase17-framework-mcp.md).
+Phase 19.B (operator-facing reasoning timeline UI) complete on top of
+Phase 18.A (365-day Cloud Logging retention) and Phase 17 (multi-agent
+framework + Developer Knowledge MCP). Hackathon submission deadline
+2026-07-10. Latest implementation plan:
+[`docs/plans/2026-05-21-driftscribe-phase19-transparency-ui.md`](docs/plans/2026-05-21-driftscribe-phase19-transparency-ui.md).
+
+Transparency UI: `/ui/transparency` on the coordinator (operator token required). See [`docs/demo-script.md`](docs/demo-script.md#transparency-ui-walkthrough) for the walkthrough.

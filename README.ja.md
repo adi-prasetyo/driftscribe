@@ -124,6 +124,9 @@ DriftScribe はその中間に位置します: エージェントが提案し、
 
 ## ステータス
 
-Phase 17 (マルチエージェントフレームワーク + Developer Knowledge MCP) 完了。
-ハッカソンの提出締切は 2026-07-10。現在の実装計画:
-[`docs/plans/2026-05-19-driftscribe-phase17-framework-mcp.md`](docs/plans/2026-05-19-driftscribe-phase17-framework-mcp.md)。
+Phase 19.B (オペレーター向け推論タイムライン UI) 完了。Phase 18.A
+(Cloud Logging 365 日保持) と Phase 17 (マルチエージェントフレームワーク + Developer Knowledge MCP) の上に積まれています。
+ハッカソンの提出締切は 2026-07-10。最新の実装計画:
+[`docs/plans/2026-05-21-driftscribe-phase19-transparency-ui.md`](docs/plans/2026-05-21-driftscribe-phase19-transparency-ui.md)。
+
+透明性 UI: コーディネーターの `/ui/transparency` (オペレータートークンが必要)。ウォークスルーは [`docs/demo-script.ja.md`](docs/demo-script.ja.md#透明性-ui-ウォークスルー) を参照。
