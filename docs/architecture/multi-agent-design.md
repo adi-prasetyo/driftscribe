@@ -256,6 +256,38 @@ Wrapper guardrails on top of the raw MCP calls:
 
 The coordinator's reasoning step is where doc citations matter; workers execute already-decided actions and don't need to reason about docs. Drift cites authoritative Cloud Run env-variable guidance in docs PR bodies; upgrade cites migration guides for the package being bumped. Both per the workload's system prompt rule.
 
+### Reasoning observability (Phase 18.B)
+
+Every `/chat` and `/recheck` invocation emits four structured JSON
+log-line shapes, all keyed by `trace_id` (bound by the request
+middleware) and `workload` (bound by the request handler before the
+agent runs):
+
+| event           | additional fields                                        |
+| --------------- | -------------------------------------------------------- |
+| `llm_thought`   | `thought_text` — Gemini's own summary of its reasoning   |
+| `tool_call`     | `tool_name`                                              |
+| `llm_usage`     | `prompt_token_count`, `candidates_token_count`, `thoughts_token_count`, `total_token_count` |
+| `mcp_call`      | (pre-existing, Phase 17.B.4) `mcp_tool`, `query_or_names`, `doc_count`, `latency_ms`, `error?` |
+
+Thought summaries come from Gemini 2.5 Flash's built-in thinking,
+surfaced via ADK's `BuiltInPlanner(ThinkingConfig(include_thoughts=True))`.
+The model already spent thinking tokens at the SDK-default dynamic
+budget before Phase 18 — `include_thoughts=True` only changes whether
+the summaries are returned. `thoughts_token_count` on each `llm_usage`
+line is what lets the operator confirm cost behaviour empirically
+rather than from documentation.
+
+Streaming dedup: ADK emits partial events as a thought summary is
+generated, then re-emits the merged summary as a non-partial event.
+`agent/adk_agent.py` filters on `event.partial` so a single thought
+summary maps to a single log line.
+
+Retention: all of the above ride Cloud Logging's `_Default` bucket,
+extended to 365 days by `infra/scripts/setup_secrets.sh` (Phase 18.A).
+Logs Explorer queries can replay a full agent trace by filtering on
+`jsonPayload.trace_id`.
+
 ---
 
 ## 7. HITL (human-in-the-loop) approval flow
