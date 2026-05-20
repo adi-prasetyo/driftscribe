@@ -55,6 +55,37 @@
     .pill.ok { background: #e6f4ea; color: var(--accent); }
     .pill.warn { background: #fff4d6; color: var(--warn); }
     .pill.err { background: #fde7e9; color: var(--danger); }
+    /* ----------------------------------------------------------------- */
+    /*  19.B.2: token-status pill states. Mirrors the .pill palette but   */
+    /*  scoped to #token-status so the JS can set className without       */
+    /*  stomping the base .pill class — class is rewritten wholesale in   */
+    /*  updateTokenStatus(), so each state needs its own background/color */
+    /*  baked in here.                                                    */
+    /* ----------------------------------------------------------------- */
+    .token-status {
+      display: inline-block;
+      padding: 0.2em 0.7em;
+      border-radius: 999px;
+      font-size: 0.8em;
+      font-weight: 600;
+      background: #eee;
+      color: var(--muted);
+    }
+    .token-status.ok { background: #e6f4ea; color: var(--accent); }
+    .token-status.missing { background: #eee; color: var(--muted); }
+    .token-status.invalid { background: #fde7e9; color: var(--danger); }
+    #change-token-btn {
+      margin-left: 0.6em;
+      background: none;
+      border: 0;
+      color: var(--muted);
+      font-size: 0.8em;
+      text-decoration: underline;
+      cursor: pointer;
+      padding: 0;
+      font-family: inherit;
+    }
+    #change-token-btn:hover { color: var(--fg); }
     main {
       display: grid;
       grid-template-columns: 260px 1fr;
@@ -172,7 +203,10 @@
 <body>
   <header>
     <h1>DriftScribe — Reasoning Timeline</h1>
-    <span id="token-status" class="pill" aria-live="polite">token: not set</span>
+    <div>
+      <span id="token-status" class="token-status missing" aria-live="polite">no token</span>
+      <button id="change-token-btn" type="button" title="Clear stored token and re-prompt">change token</button>
+    </div>
   </header>
 
   <main>
@@ -232,7 +266,90 @@
     // append handlers without restructuring the document.
     (function () {
       "use strict";
-      // intentionally empty — wired up in 19.B.2 through 19.B.4
+
+      // ------------------------------------------------------------- //
+      //  19.B.2: token prompt + sessionStorage helper.                 //
+      //                                                                //
+      //  The HTML route itself is unauthenticated (so a judge can     //
+      //  view the page), but every JSON endpoint the page calls       //
+      //  (/chat, /trace/{id}, /decisions, /recheck) requires the      //
+      //  X-DriftScribe-Token header. We prompt() once per session     //
+      //  and cache in sessionStorage — survives reloads but not a     //
+      //  tab close, which is the right ttl for a shared demo token.   //
+      // ------------------------------------------------------------- //
+      const TOKEN_KEY = "driftscribe_token";
+
+      function updateTokenStatus(state) {
+        const el = document.getElementById("token-status");
+        if (!el) return;
+        // Wholesale className rewrite — see CSS comment above.
+        el.className = "token-status " + state;
+        el.textContent = ({
+          ok: "token ok",
+          missing: "no token",
+          invalid: "token rejected",
+        })[state];
+      }
+
+      function getToken() {
+        let t = sessionStorage.getItem(TOKEN_KEY);
+        while (!t) {
+          // prompt() returns null on Cancel; loop until the operator
+          // either pastes a token or accepts that the UI is non-functional.
+          t = window.prompt("Enter DriftScribe operator token:");
+          if (t === null) {
+            // User cancelled. Leave token unset; subsequent api() calls
+            // will re-prompt. UI shows token-status pill as "missing".
+            updateTokenStatus("missing");
+            return null;
+          }
+          t = t.trim();
+          if (t) sessionStorage.setItem(TOKEN_KEY, t);
+        }
+        updateTokenStatus("ok");
+        return t;
+      }
+
+      async function api(path, init = {}) {
+        const token = getToken();
+        if (!token) {
+          throw new Error("no token");
+        }
+        const headers = new Headers(init.headers || {});
+        headers.set("X-DriftScribe-Token", token);
+        const resp = await fetch(path, { ...init, headers });
+        if (resp.status === 401 || resp.status === 403) {
+          // Token was rejected — clear so the next call re-prompts.
+          sessionStorage.removeItem(TOKEN_KEY);
+          updateTokenStatus("invalid");
+        }
+        return resp;
+      }
+
+      // Wire the "change token" link in the header so operators can swap
+      // tokens mid-session (e.g. demo operator hands the laptop to a judge).
+      const changeBtn = document.getElementById("change-token-btn");
+      if (changeBtn) {
+        changeBtn.addEventListener("click", () => {
+          sessionStorage.removeItem(TOKEN_KEY);
+          updateTokenStatus("missing");
+          getToken();
+        });
+      }
+
+      // Reflect the initial pill state from sessionStorage WITHOUT
+      // prompting — page load shouldn't pop a dialog before the user
+      // has done anything. The first api() call will prompt as needed.
+      updateTokenStatus(sessionStorage.getItem(TOKEN_KEY) ? "ok" : "missing");
+
+      // Expose to subsequent IIFEs (19.B.3/4) without polluting window
+      // beyond a single namespaced handle.
+      window.driftscribe = Object.assign(window.driftscribe || {}, {
+        api,
+        getToken,
+        updateTokenStatus,
+        TOKEN_KEY,
+      });
     })();
   </script>
 </body>
