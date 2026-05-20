@@ -96,7 +96,7 @@ not compared here.
 | Layered safety (OS + policy) | ✓ | ✗ | ✗ | partial | partial |
 | Multi-cloud | ✗ (GCP only) | ✓ (Terraform-aware, multi) | ✓ | ✓ (AWS-primary) | ✗ (AWS) |
 | Open source | ✓ | ✓ | ✓ | ✓ | ✗ |
-| Deployment surface | Cloud Run (5+ svcs) | Terraform | Plugin host | Lambda | Managed service |
+| Deployment surface | Cloud Run (7 svcs after Phase 17) | Terraform | Plugin host | Lambda | Managed service |
 | Target user | DevOps + SRE on GCP | IaC platform teams | SQL-fluent ops | AWS ops | AWS compliance teams |
 
 DriftScribe trades multi-cloud breadth for layered safety on a single platform;
@@ -112,7 +112,7 @@ the worker boundary makes "propose" safe to expose.
 
 - [`agent/`](agent/) — coordinator service (ADK agent, classifier, approvals, auth, MCP attach)
 - [`workloads/`](workloads/) — per-workload manifests (drift, upgrade): system prompts, contracts, action lists
-- [`workers/`](workers/) — execute-only worker services: two workload-specific pairs (drift `reader` / `docs` / `rollback`, upgrade `upgrade-reader` / `upgrade-docs`) plus the shared `notifier`
+- [`workers/`](workers/) — execute-only worker services: per-workload worker sets (drift `reader` / `docs` / `rollback`, upgrade `upgrade-reader` / `upgrade-docs`) plus the shared `notifier`
 - [`demo/`](demo/) — `payment-demo` drift target + ops contract, `upgrade-target` pinned npm lockfile
 - [`docs/architecture/`](docs/architecture/) — diagram, multi-agent design, IAM matrix
 - [`docs/runbooks/`](docs/runbooks/) — deploy + operate
