@@ -321,6 +321,17 @@ _TRACE_CACHE_TTL_S = 300.0
 _STABILITY_GRACE_S = 30.0
 _TRACE_OBSERVATIONS: dict[str, tuple[float, str]] = {}
 
+# Soft cap on observation state. A trace polled once with
+# ``final_response`` but never polled again leaves an observation
+# entry forever — under operator-burst patterns (many traces, each
+# observed exactly once) this is an unbounded slow leak. FIFO
+# eviction by insertion order (dict iteration order is insertion
+# order since Python 3.7) keeps the dict bounded with negligible
+# per-insert cost. Sizing: 1024 entries × ~1 KiB/entry ≈ 1 MiB
+# ceiling, well below any realistic operator burst the coordinator
+# would see in a single Cloud Run process lifetime.
+_OBSERVATIONS_SOFT_CAP = 1024
+
 
 def _signature_of(events: list[dict]) -> str:
     """Hash over every event's identity tuple.
@@ -384,6 +395,18 @@ def _observe_and_check_stability(trace_id: str, events: list[dict]) -> bool:
     if obs is None or obs[1] != sig:
         # First observation of this signature. Record and refuse to
         # mark complete — the next poll will measure elapsed grace.
+        #
+        # FIFO eviction at the soft cap: a trace polled once with
+        # ``final_response`` but never polled again would otherwise
+        # leak an observation entry forever. dict iteration order is
+        # insertion order (3.7+), so ``next(iter(...))`` is the
+        # oldest. Eviction is best-effort under concurrency (two
+        # racing inserts may both observe ``len < cap`` and push the
+        # dict one over the cap for a moment) — acceptable, the cap
+        # is a soft ceiling, not a security boundary.
+        if len(_TRACE_OBSERVATIONS) >= _OBSERVATIONS_SOFT_CAP:
+            oldest_key = next(iter(_TRACE_OBSERVATIONS))
+            _TRACE_OBSERVATIONS.pop(oldest_key, None)
         _TRACE_OBSERVATIONS[trace_id] = (time.monotonic(), sig)
         return False
 
@@ -392,6 +415,16 @@ def _observe_and_check_stability(trace_id: str, events: list[dict]) -> bool:
 
 
 def _cache_get(trace_id: str) -> dict | None:
+    """Return the cached payload for ``trace_id`` or None.
+
+    Best-effort under concurrent expiry: two concurrent requests on
+    the same expired entry will both pop, both refetch, and both may
+    ``_cache_put`` the resulting payload. Not a correctness boundary
+    — last writer wins and the cached payload is a deterministic
+    function of the trace_id once the timeline is stable. Documenting
+    so a future reader doesn't mistake this for an atomicity
+    guarantee.
+    """
     hit = _TRACE_CACHE.get(trace_id)
     if hit is None:
         return None
@@ -403,6 +436,13 @@ def _cache_get(trace_id: str) -> dict | None:
 
 
 def _cache_put(trace_id: str, payload: dict) -> None:
+    """Write a completed-AND-stable payload into the in-process cache.
+
+    Best-effort under concurrent inserts: two concurrent requests
+    that both observed the same expired/missing entry will both
+    write; last writer wins. See :func:`_cache_get` for the full
+    concurrency note.
+    """
     _TRACE_CACHE[trace_id] = (time.monotonic(), payload)
 
 
