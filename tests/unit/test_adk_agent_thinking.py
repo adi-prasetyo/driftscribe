@@ -8,7 +8,6 @@ of the invariant.
 """
 from __future__ import annotations
 
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -17,6 +16,7 @@ from google.genai.types import ThinkingConfig
 
 from agent import adk_agent
 from agent.workloads import load_workload
+from tests.unit._adk_stubs import StubEvent as _Ev, StubPart as _P
 
 
 # --- half 1: planner is wired -----------------------------------------------
@@ -45,24 +45,6 @@ def test_upgrade_workload_agents_also_have_thoughts_enabled(upgrade_workload_env
 
 
 # --- half 2: final-text collection skips thought parts ----------------------
-
-
-class _P:
-    def __init__(self, *, text=None, function_call=None, thought=False):
-        self.text = text
-        self.function_call = function_call
-        self.thought = thought
-
-
-class _Ev:
-    def __init__(self, parts, *, partial=False, final=False):
-        self.content = SimpleNamespace(parts=parts)
-        self.partial = partial
-        self._final = final
-        self.usage_metadata = None
-
-    def is_final_response(self):
-        return self._final
 
 
 async def _stub_run(*args, **kwargs):

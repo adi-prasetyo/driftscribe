@@ -19,24 +19,7 @@ import pytest
 
 from agent import adk_agent
 from agent.workload_context import reset_workload, set_workload
-
-
-class _P:
-    def __init__(self, *, text=None, function_call=None, thought=False):
-        self.text = text
-        self.function_call = function_call
-        self.thought = thought
-
-
-class _Ev:
-    def __init__(self, parts, *, partial=False, final=False):
-        self.content = SimpleNamespace(parts=parts)
-        self.partial = partial
-        self._final = final
-        self.usage_metadata = None
-
-    def is_final_response(self):
-        return self._final
+from tests.unit._adk_stubs import StubEvent as _Ev, StubPart as _P
 
 
 async def _stub_run(*args, **kwargs):

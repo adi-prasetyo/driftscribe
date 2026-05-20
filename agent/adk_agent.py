@@ -415,6 +415,24 @@ async def run_agent(
             ]
             if parts_text:
                 final_text = "".join(parts_text)
+        # 18.B.3: emit one log line per LLM call's usage payload so
+        # post-deploy dashboards can graph thoughts_token_count vs the
+        # pre-Phase-18 baseline. Each Gemini call typically surfaces
+        # usage_metadata on its final (non-partial) event.
+        usage = getattr(event, "usage_metadata", None)
+        if usage is not None:
+            _log.info(
+                "llm_usage",
+                extra={
+                    "event": "llm_usage",
+                    "trace_id": current_trace_id_or_new(),
+                    "workload": current_workload(),
+                    "prompt_token_count": getattr(usage, "prompt_token_count", None),
+                    "candidates_token_count": getattr(usage, "candidates_token_count", None),
+                    "thoughts_token_count": getattr(usage, "thoughts_token_count", None),
+                    "total_token_count": getattr(usage, "total_token_count", None),
+                },
+            )
 
     if not final_text:
         raise RuntimeError("ADK agent produced no final response")
@@ -509,6 +527,24 @@ async def run_chat(
                     continue
                 if getattr(part, "text", None):
                     reply_chunks.append(part.text)
+        # 18.B.3: emit one log line per LLM call's usage payload so
+        # post-deploy dashboards can graph thoughts_token_count vs the
+        # pre-Phase-18 baseline. Each Gemini call typically surfaces
+        # usage_metadata on its final (non-partial) event.
+        usage = getattr(event, "usage_metadata", None)
+        if usage is not None:
+            _log.info(
+                "llm_usage",
+                extra={
+                    "event": "llm_usage",
+                    "trace_id": current_trace_id_or_new(),
+                    "workload": current_workload(),
+                    "prompt_token_count": getattr(usage, "prompt_token_count", None),
+                    "candidates_token_count": getattr(usage, "candidates_token_count", None),
+                    "thoughts_token_count": getattr(usage, "thoughts_token_count", None),
+                    "total_token_count": getattr(usage, "total_token_count", None),
+                },
+            )
 
     reply = "".join(reply_chunks).strip()
     if not reply:
