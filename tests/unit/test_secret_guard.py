@@ -51,3 +51,36 @@ def test_redact_event_secret_named_container_redacts_whole_value():
     assert redact_event({"PASSWORD": {"raw": "abc"}}) == {"PASSWORD": "<redacted>"}
     assert redact_event({"AUTH": {"header": "Bearer abc"}}) == {"AUTH": "<redacted>"}
     assert redact_event({"API_KEY": ["k1", "k2"]}) == {"API_KEY": "<redacted>"}
+
+
+def test_redact_event_allowlist_string_still_userinfo_stripped():
+    # Defense-in-depth: even allowlisted metadata keys get credentialed
+    # URLs stripped — the allowlist promises "no secrets," but a future
+    # caller could violate that and we don't want a silent leak.
+    assert redact_event({"tool_name": "postgres://u:p@h/d"}) == {
+        "tool_name": "postgres://<redacted>@h/d"
+    }
+
+
+def test_redact_event_depth_limit_returns_sentinel():
+    # Build a 70-deep nested dict. Plain dict recursion would otherwise
+    # be fine, but this exercises the depth-guard sentinel so a 200+
+    # pathological MCP response never throws RecursionError inside the
+    # logging framework.
+    deep: dict = {"leaf": "bottom"}
+    for _ in range(70):
+        deep = {"n": deep}
+    out = redact_event(deep)
+    # Walk down ``out`` and confirm the sentinel string appears before
+    # we hit the leaf — i.e. the guard fired.
+    cur: object = out
+    hit_sentinel = False
+    for _ in range(200):
+        if cur == "<redacted:depth>":
+            hit_sentinel = True
+            break
+        if isinstance(cur, dict) and "n" in cur:
+            cur = cur["n"]
+            continue
+        break
+    assert hit_sentinel, f"depth guard did not fire; final cur={cur!r}"

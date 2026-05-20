@@ -81,6 +81,15 @@ def redact_dict(payload: dict | None) -> dict:
     return out
 
 
+# Maximum recursion depth for ``redact_event``. A pathological MCP response
+# (or any caller passing a deeply self-referential structure) would otherwise
+# hit Python's default 1000-deep ``RecursionError`` inside the logging
+# framework — a very bad place for an exception. 64 levels comfortably
+# exceeds any realistic structured log payload.
+_REDACT_MAX_DEPTH = 64
+_DEPTH_SENTINEL = "<redacted:depth>"
+
+
 def redact_event(payload: object) -> object:
     """Recursively redact every string in a structured log payload.
 
@@ -94,15 +103,32 @@ def redact_event(payload: object) -> object:
     `{"PASSWORD": {"raw": "abc"}}` leak through.) Lists recurse.
     Non-string scalars (int, float, bool, None) pass through.
 
+    Allowlisted metadata-key strings still get userinfo-stripped via
+    :func:`redact_text` (defense-in-depth: a future caller stuffing
+    ``postgres://u:p@h/d`` into ``tool_name`` won't leak the password).
+
+    Recursion is bounded by ``_REDACT_MAX_DEPTH`` — beyond that, the
+    sentinel ``"<redacted:depth>"`` is returned instead of recursing,
+    so a pathological payload never throws ``RecursionError`` inside
+    a ``_log.info(..., extra=redact_event(...))`` call.
+
     Call this BEFORE `_log.info(..., extra=...)` in the ADK event
     loop. Also call again at render time as defense-in-depth in case
     a future emit site forgets.
     """
+    return _redact_event(payload, depth=0)
+
+
+def _redact_event(payload: object, depth: int) -> object:
+    if depth > _REDACT_MAX_DEPTH:
+        return _DEPTH_SENTINEL
     if isinstance(payload, dict):
         out: dict = {}
         for k, v in payload.items():
             if k in _SAFE_METADATA_KEYS:
-                out[k] = v
+                # Allowlist still defense-in-depth strips credentialed
+                # URLs from string values — non-strings pass through.
+                out[k] = redact_text(v) if isinstance(v, str) else v
                 continue
             # KEY-name check FIRST — applies regardless of value type.
             # If the key looks secret-like, the value is gone, even
@@ -110,10 +136,10 @@ def redact_event(payload: object) -> object:
             if is_secret_name(str(k)):
                 out[k] = "<redacted>"
                 continue
-            out[k] = redact_event(v)
+            out[k] = _redact_event(v, depth + 1)
         return out
     if isinstance(payload, list):
-        return [redact_event(v) for v in payload]
+        return [_redact_event(v, depth + 1) for v in payload]
     if isinstance(payload, str):
         # Free-form string: strip credentialed-URL userinfo but keep
         # the rest. Full-mask happens only via the key-name check
