@@ -85,11 +85,11 @@ resolution.
 
 **Log retention:** Cloud Logging's `_Default` bucket is extended to 365 days
 by `infra/scripts/setup_secrets.sh`. All DriftScribe logs (including the
-agent's thought summaries and tool-call events) are preserved and queryable
-via Logs Explorer for a year. Storage beyond day 30 is billed at
-$0.01/GiB-month; hackathon volume is well under the threshold where this
-matters. See [`docs/runbooks/deploy.md`](docs/runbooks/deploy.md) for the
-verification step and a sample query.
+agent's thought summaries, tool-call events, and per-call LLM-usage records)
+are preserved and queryable via Logs Explorer for a year. Storage beyond day
+30 is billed at $0.01/GiB-month; hackathon volume is well under the threshold
+where this matters. See [`docs/runbooks/deploy.md`](docs/runbooks/deploy.md)
+for the verification step and a sample query.
 
 ## How DriftScribe's drift workload compares to other drift tools
 
