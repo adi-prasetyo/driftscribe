@@ -222,18 +222,14 @@ def _get_repo():
     return ds_github.get_repo(GITHUB_TOKEN, TARGET_REPO)
 
 
-def _read_lockfile(repo, lockfile_path: str) -> tuple[dict, str]:
+def _read_lockfile(repo, lockfile_path: str) -> dict:
     """Fetch ``lockfile_path`` from ``repo`` and parse it as JSON.
-
-    Returns the parsed lockfile dict and the raw decoded string (the latter
-    is kept for diagnostic logging if a future caller needs it).
 
     Wrapped for the same reason as :func:`_get_repo` — single monkey-patch
     surface for tests.
     """
     contents = repo.get_contents(lockfile_path)
-    raw = contents.decoded_content.decode("utf-8")
-    return json.loads(raw), raw
+    return json.loads(contents.decoded_content.decode("utf-8"))
 
 
 class PatchRequest(BaseModel):
@@ -315,7 +311,7 @@ def patch(
     )
 
     repo = _get_repo()
-    lockfile, _raw = _read_lockfile(repo, req.lockfile_path)
+    lockfile = _read_lockfile(repo, req.lockfile_path)
 
     # Minimal safety net: the post-LLM validator (17.C.3a) does the full
     # semver / no-downgrade / range checks. Here we only enforce that the
