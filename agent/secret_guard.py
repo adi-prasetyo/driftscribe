@@ -36,3 +36,20 @@ def value_looks_credentialed(value: str | None) -> bool:
 def should_redact(name: str, value: str | None) -> bool:
     """Combined check: redact if name is secret-like OR value looks credentialed."""
     return is_secret_name(name) or value_looks_credentialed(value)
+
+
+def redact_text(text: str) -> str:
+    """Return ``text`` with credentialed URLs replaced.
+
+    Targets the same pattern as :func:`value_looks_credentialed` —
+    URLs of the form ``scheme://user:pass@host`` — but operates on
+    arbitrary free-form strings (thought summaries, tool-result
+    previews, MCP errors). Replaces only the userinfo segment so the
+    URL stays parseable for the reader (host + path remain) but the
+    secret is gone.
+    """
+    if not text:
+        return text
+    return _CREDENTIALED_URL.sub(
+        lambda m: m.group(0).split(":", 1)[0] + "://<redacted>@", text
+    )
