@@ -341,6 +341,142 @@ def build_chat_agent(workload: WorkloadResolution) -> Agent:
     )
 
 
+# --------------------------------------------------------------------------- #
+# Shared per-event log emitters — used by both ``run_agent`` and ``run_chat``.
+# --------------------------------------------------------------------------- #
+#
+# Phase 19.A.3 code-review follow-up: the ~45-line block that emits
+# ``llm_thought`` / ``tool_call`` / ``tool_result`` from a single event's
+# part list was byte-identical between the two event loops; same for the
+# ~12-line ``llm_usage`` tail. Extracting both into module-private helpers
+# closes the future-drift risk where a new field on (e.g.) ``tool_result``
+# would have to be added in two places in lock-step. The ``final_response``
+# emit deliberately stays inline in each loop because it depends on
+# per-loop text accumulators (``parts_text`` in :func:`run_agent`,
+# ``reply_chunks`` in :func:`run_chat`) plus the per-loop
+# ``final_response_logged`` flag — extracting it would require passing too
+# much state and lose clarity.
+#
+# Asymmetry: :func:`run_chat` appends each ``function_call.name`` to its
+# ``tool_calls`` list (a public-contract response field, surfaced in the
+# ``/chat`` JSON body since Phase 11.7). :func:`run_agent` has no such
+# list. The helper threads an optional ``tool_calls`` list — ``None`` for
+# the recheck path, the real list for the chat path. Byte-identical log
+# emission either way.
+
+
+def _emit_event_logs(event, *, tool_calls: list[str] | None = None) -> None:
+    """Emit ``llm_thought`` / ``tool_call`` / ``tool_result`` log lines
+    for one ADK event's part list.
+
+    Callers must apply the partial-event dedup gate (``event.partial is
+    not True``) before invoking this — the helper assumes the event is
+    a merged non-partial event whose parts are eligible to log.
+
+    18.B.2: only ``thought`` parts that carry ``text`` emit
+    ``llm_thought`` (a thought without text has nothing to log; the
+    function_call/function_response checks below still run for parts
+    that happen to have both).
+
+    19.A.3: every emit goes through :func:`redact_event` at the
+    boundary so the durable Cloud Logging copy never carries
+    credentials.
+    """
+    for part in event.content.parts:
+        if getattr(part, "thought", False) and getattr(part, "text", None):
+            # A thought part without text has nothing to log; the
+            # falls-through path below still handles function_call.
+            _log.info(
+                "llm_thought",
+                extra=redact_event({
+                    "event": "llm_thought",
+                    "trace_id": current_trace_id_or_new(),
+                    "workload": current_workload(),
+                    "thought_text": part.text,
+                }),
+            )
+            continue
+        fc = getattr(part, "function_call", None)
+        if fc and getattr(fc, "name", None):
+            # 19.A.3: tool_call now carries a redacted ``tool_args``
+            # dict so the transparency UI can show "what did the
+            # model ask the tool to do." Key-aware redaction via
+            # :func:`redact_dict` runs at the boundary; the
+            # outer :func:`redact_event` is defense-in-depth for
+            # the rest of the structured log payload.
+            args = getattr(fc, "args", None) or {}
+            if tool_calls is not None:
+                tool_calls.append(fc.name)
+            _log.info(
+                "tool_call",
+                extra=redact_event({
+                    "event": "tool_call",
+                    "trace_id": current_trace_id_or_new(),
+                    "workload": current_workload(),
+                    "tool_name": fc.name,
+                    "tool_args": redact_dict(args),
+                }),
+            )
+            continue
+        fr = getattr(part, "function_response", None)
+        if fr and getattr(fr, "name", None):
+            # 19.A.3: brand-new ``tool_result`` event emitted on
+            # every ``function_response`` part. CRITICAL (Codex
+            # v2 review): redact the STRUCTURED response BEFORE
+            # serializing — otherwise ``should_redact("PASSWORD",
+            # ...)`` never fires on nested secret-keyed values
+            # because ``json.dumps`` flattens the dict context
+            # away. The double-redact-after-dumps approach only
+            # catches credentialed URLs by regex.
+            response = getattr(fr, "response", None) or {}
+            safe_response = redact_event(response)
+            preview = json.dumps(safe_response, default=str)[:2000]
+            result_ok = not (
+                isinstance(response, dict)
+                and ("error" in response or "errors" in response)
+            )
+            _log.info(
+                "tool_result",
+                extra=redact_event({
+                    "event": "tool_result",
+                    "trace_id": current_trace_id_or_new(),
+                    "workload": current_workload(),
+                    "tool_name": fr.name,
+                    "result_preview": preview,
+                    "result_ok": result_ok,
+                }),
+            )
+            continue
+
+
+def _emit_llm_usage(event) -> None:
+    """Emit one ``llm_usage`` log line if the event carries usage metadata.
+
+    18.B.3: each Gemini call typically surfaces ``usage_metadata`` on
+    its final (non-partial) event. Multi-turn runs surface it on each
+    turn's final event — so the dashboards graph per-turn cost. The
+    redact_event wrapper holds the 19.A.3 redact-at-source invariant
+    uniformly; for plain numeric token counts it's a no-op, but a
+    future caller stuffing free-form text into the usage payload would
+    still be safe.
+    """
+    usage = getattr(event, "usage_metadata", None)
+    if usage is None:
+        return
+    _log.info(
+        "llm_usage",
+        extra=redact_event({
+            "event": "llm_usage",
+            "trace_id": current_trace_id_or_new(),
+            "workload": current_workload(),
+            "prompt_token_count": getattr(usage, "prompt_token_count", None),
+            "candidates_token_count": getattr(usage, "candidates_token_count", None),
+            "thoughts_token_count": getattr(usage, "thoughts_token_count", None),
+            "total_token_count": getattr(usage, "total_token_count", None),
+        }),
+    )
+
+
 async def run_agent(
     user_msg: str, *, workload: str = "drift"
 ) -> DecisionProposal:
@@ -382,71 +518,11 @@ async def run_agent(
     ):
         # 18.B.2: emit structured logs for thought summaries + tool calls.
         # Same dedup gate as run_chat — partial events carry incomplete
-        # thought chunks; we want one log line per merged summary.
+        # thought chunks; we want one log line per merged summary. The
+        # actual emit shape lives in :func:`_emit_event_logs` and is
+        # shared with :func:`run_chat`.
         if event.content and event.content.parts and getattr(event, "partial", None) is not True:
-            for part in event.content.parts:
-                if getattr(part, "thought", False) and getattr(part, "text", None):
-                    # A thought part without text has nothing to log; the
-                    # falls-through path below still handles function_call.
-                    _log.info(
-                        "llm_thought",
-                        extra=redact_event({
-                            "event": "llm_thought",
-                            "trace_id": current_trace_id_or_new(),
-                            "workload": current_workload(),
-                            "thought_text": part.text,
-                        }),
-                    )
-                    continue
-                fc = getattr(part, "function_call", None)
-                if fc and getattr(fc, "name", None):
-                    # 19.A.3: tool_call now carries a redacted ``tool_args``
-                    # dict so the transparency UI can show "what did the
-                    # model ask the tool to do." Key-aware redaction via
-                    # :func:`redact_dict` runs at the boundary; the
-                    # outer :func:`redact_event` is defense-in-depth for
-                    # the rest of the structured log payload.
-                    args = getattr(fc, "args", None) or {}
-                    _log.info(
-                        "tool_call",
-                        extra=redact_event({
-                            "event": "tool_call",
-                            "trace_id": current_trace_id_or_new(),
-                            "workload": current_workload(),
-                            "tool_name": fc.name,
-                            "tool_args": redact_dict(args),
-                        }),
-                    )
-                    continue
-                fr = getattr(part, "function_response", None)
-                if fr and getattr(fr, "name", None):
-                    # 19.A.3: brand-new ``tool_result`` event emitted on
-                    # every ``function_response`` part. CRITICAL (Codex
-                    # v2 review): redact the STRUCTURED response BEFORE
-                    # serializing — otherwise ``should_redact("PASSWORD",
-                    # ...)`` never fires on nested secret-keyed values
-                    # because ``json.dumps`` flattens the dict context
-                    # away. The double-redact-after-dumps approach only
-                    # catches credentialed URLs by regex.
-                    response = getattr(fr, "response", None) or {}
-                    safe_response = redact_event(response)
-                    preview = json.dumps(safe_response, default=str)[:2000]
-                    result_ok = not (
-                        isinstance(response, dict)
-                        and ("error" in response or "errors" in response)
-                    )
-                    _log.info(
-                        "tool_result",
-                        extra=redact_event({
-                            "event": "tool_result",
-                            "trace_id": current_trace_id_or_new(),
-                            "workload": current_workload(),
-                            "tool_name": fr.name,
-                            "result_preview": preview,
-                            "result_ok": result_ok,
-                        }),
-                    )
-                    continue
+            _emit_event_logs(event)
         if event.is_final_response() and event.content and event.content.parts:
             parts_text = [
                 part.text
@@ -499,21 +575,9 @@ async def run_agent(
         # 18.B.3: emit one log line per LLM call's usage payload so
         # post-deploy dashboards can graph thoughts_token_count vs the
         # pre-Phase-18 baseline. Each Gemini call typically surfaces
-        # usage_metadata on its final (non-partial) event.
-        usage = getattr(event, "usage_metadata", None)
-        if usage is not None:
-            _log.info(
-                "llm_usage",
-                extra=redact_event({
-                    "event": "llm_usage",
-                    "trace_id": current_trace_id_or_new(),
-                    "workload": current_workload(),
-                    "prompt_token_count": getattr(usage, "prompt_token_count", None),
-                    "candidates_token_count": getattr(usage, "candidates_token_count", None),
-                    "thoughts_token_count": getattr(usage, "thoughts_token_count", None),
-                    "total_token_count": getattr(usage, "total_token_count", None),
-                }),
-            )
+        # usage_metadata on its final (non-partial) event. Shared with
+        # :func:`run_chat` via :func:`_emit_llm_usage`.
+        _emit_llm_usage(event)
 
     if not final_text:
         raise RuntimeError("ADK agent produced no final response")
@@ -576,72 +640,12 @@ async def run_chat(
         # partials — only the merged non-partial event carries the
         # complete thought summary. function_calls don't arrive as
         # partials in practice, but applying the same guard uniformly
-        # keeps the loop shape consistent.
+        # keeps the loop shape consistent. ``tool_calls`` is the public-
+        # contract list surfaced in the /chat response — the helper
+        # appends each ``function_call.name`` to it as a side effect;
+        # :func:`run_agent` (which has no such list) passes ``None``.
         if event.content and event.content.parts and getattr(event, "partial", None) is not True:
-            for part in event.content.parts:
-                if getattr(part, "thought", False) and getattr(part, "text", None):
-                    # A thought part without text has nothing to log; the
-                    # falls-through path below still handles function_call.
-                    _log.info(
-                        "llm_thought",
-                        extra=redact_event({
-                            "event": "llm_thought",
-                            "trace_id": current_trace_id_or_new(),
-                            "workload": current_workload(),
-                            "thought_text": part.text,
-                        }),
-                    )
-                    continue
-                fc = getattr(part, "function_call", None)
-                if fc and getattr(fc, "name", None):
-                    # 19.A.3: tool_call now carries a redacted ``tool_args``
-                    # dict so the transparency UI can show "what did the
-                    # model ask the tool to do." Key-aware redaction via
-                    # :func:`redact_dict` runs at the boundary; the
-                    # outer :func:`redact_event` is defense-in-depth for
-                    # the rest of the structured log payload.
-                    args = getattr(fc, "args", None) or {}
-                    tool_calls.append(fc.name)
-                    _log.info(
-                        "tool_call",
-                        extra=redact_event({
-                            "event": "tool_call",
-                            "trace_id": current_trace_id_or_new(),
-                            "workload": current_workload(),
-                            "tool_name": fc.name,
-                            "tool_args": redact_dict(args),
-                        }),
-                    )
-                    continue
-                fr = getattr(part, "function_response", None)
-                if fr and getattr(fr, "name", None):
-                    # 19.A.3: brand-new ``tool_result`` event emitted on
-                    # every ``function_response`` part. CRITICAL (Codex
-                    # v2 review): redact the STRUCTURED response BEFORE
-                    # serializing — otherwise ``should_redact("PASSWORD",
-                    # ...)`` never fires on nested secret-keyed values
-                    # because ``json.dumps`` flattens the dict context
-                    # away. The double-redact-after-dumps approach only
-                    # catches credentialed URLs by regex.
-                    response = getattr(fr, "response", None) or {}
-                    safe_response = redact_event(response)
-                    preview = json.dumps(safe_response, default=str)[:2000]
-                    result_ok = not (
-                        isinstance(response, dict)
-                        and ("error" in response or "errors" in response)
-                    )
-                    _log.info(
-                        "tool_result",
-                        extra=redact_event({
-                            "event": "tool_result",
-                            "trace_id": current_trace_id_or_new(),
-                            "workload": current_workload(),
-                            "tool_name": fr.name,
-                            "result_preview": preview,
-                            "result_ok": result_ok,
-                        }),
-                    )
-                    continue
+            _emit_event_logs(event, tool_calls=tool_calls)
         # Collect the final natural-language response.
         if event.is_final_response() and event.content and event.content.parts:
             for part in event.content.parts:
@@ -687,21 +691,9 @@ async def run_chat(
         # 18.B.3: emit one log line per LLM call's usage payload so
         # post-deploy dashboards can graph thoughts_token_count vs the
         # pre-Phase-18 baseline. Each Gemini call typically surfaces
-        # usage_metadata on its final (non-partial) event.
-        usage = getattr(event, "usage_metadata", None)
-        if usage is not None:
-            _log.info(
-                "llm_usage",
-                extra=redact_event({
-                    "event": "llm_usage",
-                    "trace_id": current_trace_id_or_new(),
-                    "workload": current_workload(),
-                    "prompt_token_count": getattr(usage, "prompt_token_count", None),
-                    "candidates_token_count": getattr(usage, "candidates_token_count", None),
-                    "thoughts_token_count": getattr(usage, "thoughts_token_count", None),
-                    "total_token_count": getattr(usage, "total_token_count", None),
-                }),
-            )
+        # usage_metadata on its final (non-partial) event. Shared with
+        # :func:`run_agent` via :func:`_emit_llm_usage`.
+        _emit_llm_usage(event)
 
     reply = "".join(reply_chunks).strip()
     if not reply:
