@@ -244,7 +244,7 @@ Wrapper guardrails on top of the raw MCP calls:
 - **60s in-process response cache** keyed by `(tool_name, query|name)`. Bounded at 1024 entries with FIFO eviction; expired entries swept on lookup. Saves cost and latency when the LLM searches the same term twice in one turn.
 - **Result truncation**: 5 documents per response, 4000 chars per document body. Truncated content gets a clear `... [truncated N/M]` suffix so the LLM sees the clip.
 - **Fail-closed error translation**: timeouts return `{"error": "mcp_timeout", ...}`; other MCP errors return `{"error": "mcp_error", ...}`. The agent's LLM sees a structured failure result it can reason about — never a raw exception bubbling out of a tool call and crashing the chat handler.
-- **Structured log per call**: `{trace_id, workload, mcp_server, mcp_tool, query_or_names, doc_count, latency_ms}`. `trace_id` from `driftscribe_lib.logging`'s ContextVar (same source as worker calls), `workload` from `agent.workload_context.current_workload()`.
+- **Structured log per call**: `{event, trace_id, workload, mcp_server, mcp_tool, query_or_names, doc_count, latency_ms}` (`event="mcp_call"` is the family tag added in 18.B.2 so this line joins the same `jsonPayload.event` query family as `llm_thought` / `tool_call` / `llm_usage`). `trace_id` from `driftscribe_lib.logging`'s ContextVar (same source as worker calls), `workload` from `agent.workload_context.current_workload()`.
 
 **Configuration error mode.** Missing `DEVELOPER_KNOWLEDGE_API_KEY` raises `MissingDeveloperKnowledgeApiKeyError(RuntimeError)`. `agent/main.py` traps this explicitly *before* the broader `RuntimeError → 502` mapping and returns **503** with a clear "API key not configured" detail. Operators see the missing-config message immediately in Cloud Run logs.
 
@@ -258,8 +258,8 @@ The coordinator's reasoning step is where doc citations matter; workers execute 
 
 ### Reasoning observability (Phase 18.B)
 
-Every `/chat` and `/recheck` invocation emits four structured JSON
-log-line shapes, all keyed by `trace_id` (bound by the request
+Every `/chat` and `/recheck` invocation can emit up to four structured
+JSON log-line shapes, all keyed by `trace_id` (bound by the request
 middleware) and `workload` (bound by the request handler before the
 agent runs):
 
@@ -285,8 +285,9 @@ summary maps to a single log line.
 
 Retention: all of the above ride Cloud Logging's `_Default` bucket,
 extended to 365 days by `infra/scripts/setup_secrets.sh` (Phase 18.A).
-Logs Explorer queries can replay a full agent trace by filtering on
-`jsonPayload.trace_id`.
+Storage past day 30 is billed at `$0.01/GiB-month`. Operators replay
+full agent traces with Logs Explorer queries like
+`jsonPayload.event=("llm_thought" OR "tool_call" OR "llm_usage" OR "mcp_call") AND jsonPayload.trace_id="<id>"`.
 
 ---
 
