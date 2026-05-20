@@ -7,6 +7,8 @@ import re
 import secrets
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as _FutureTimeout
 from pathlib import Path
 from typing import Literal
 
@@ -40,8 +42,14 @@ from agent.renderer import (
     render_rollback_body,
 )
 from agent.runbook_patcher import patch_runbook
+from agent.secret_guard import redact_event
 from agent.state_store import FirestoreStateStore, InMemoryStateStore, StateStore
-from agent.trace_fetcher import CloudLoggingFetcher, StubTraceFetcher, TraceFetcher
+from agent.trace_fetcher import (
+    CloudLoggingFetcher,
+    StubTraceFetcher,
+    TraceFetcher,
+    _HEX32_RE,
+)
 from agent.validator import ValidationError as ProposalValidationError
 from agent.validator import validate
 from agent.workloads import (
@@ -269,6 +277,142 @@ def _reset_trace_fetcher_for_tests() -> None:
     """
     global _trace_fetcher_singleton
     _trace_fetcher_singleton = None
+
+
+# --------------------------------------------------------------------------- #
+# /trace/{trace_id} — completion-aware caching + redact-at-render
+# --------------------------------------------------------------------------- #
+#
+# Module-level — NOT per-request — so threads are reused. Single worker
+# would suffice (each ``get_trace`` runs on FastAPI's own threadpool
+# because the route is ``def``, not ``async def``), but ``max_workers=4``
+# lets a small burst of concurrent operator polls each get their own
+# fetch in flight rather than serializing through one worker. The only
+# reason this nested executor exists is to provide a real
+# ``Future.result(timeout=...)`` boundary that the sync
+# google-cloud-logging client lacks natively (its ``list_entries`` has
+# no timeout kwarg in 3.15.x — see CloudLoggingFetcher's docstring).
+#
+# Lifetime: created at import time, never shut down. Acceptable for
+# Cloud Run process-lifetime — the container exits when the request
+# stops flowing and the OS reclaims the threads. Avoiding ``atexit``
+# keeps pytest from hanging on an executor that thinks a slow fetch
+# is still in progress at test teardown.
+_TRACE_FETCH_EXECUTOR = ThreadPoolExecutor(
+    max_workers=4, thread_name_prefix="trace-fetch"
+)
+_TRACE_FETCH_TIMEOUT_S = 5.0
+
+# In-process completion cache. Keyed by trace_id; value is (written_at,
+# payload). Only completed-AND-stable timelines are cached (see
+# ``_observe_and_check_stability`` below) — in-flight traces refetch
+# every poll so the UI sees fresh events.
+_TRACE_CACHE: dict[str, tuple[float, dict]] = {}
+_TRACE_CACHE_TTL_S = 300.0
+
+# Observed-stability: how long the SAME timeline signature has held in
+# our own observations. Required because Cloud Logging documents a
+# 0-60s live-tail buffer where entries can arrive out of order — using
+# log-event timestamps to decide "the timeline has settled" fails when
+# a late-arriving ``final_response`` carries a 30-second-old timestamp
+# and we'd otherwise return ``complete=True`` on the first poll
+# (Codex v2 review CRITICAL). Tracking stability in PROCESS state
+# (monotonic clock + signature of the events) closes that hole.
+_STABILITY_GRACE_S = 30.0
+_TRACE_OBSERVATIONS: dict[str, tuple[float, str]] = {}
+
+
+def _signature_of(events: list[dict]) -> str:
+    """Hash over every event's identity tuple.
+
+    Codex v3 IMPORTANT: a previous cheap signature of
+    ``(count, last_(timestamp, insert_id))`` missed rare same-count
+    replacement cases (e.g. ``max_results`` clipping the tail or a
+    re-ordering of same-count results that swaps two entries without
+    changing the count). Hashing every event's
+    ``(timestamp, insert_id, event)`` tuple catches any reordering or
+    swap without growing the count.
+
+    Codex v3.1 MINOR: JSON-encoded tuples eliminate delimiter
+    ambiguity — a timestamp containing ``|`` could otherwise produce
+    the same digest as two adjacent shifted fields if we used a
+    sentinel separator. ``json.dumps`` with
+    ``separators=(",", ":")`` produces a stable, unambiguous encoding.
+    """
+    h = hashlib.sha256()
+    for e in events:
+        h.update(
+            json.dumps(
+                [
+                    e.get("timestamp", ""),
+                    e.get("insert_id", ""),
+                    e.get("event", ""),
+                ],
+                separators=(",", ":"),
+            ).encode()
+        )
+    return h.hexdigest()
+
+
+def _observe_and_check_stability(trace_id: str, events: list[dict]) -> bool:
+    """Decide whether the timeline is complete via OBSERVED stability.
+
+    Two conditions both required for ``complete=True``:
+
+    1. A ``final_response`` event is present. The agent emits this as
+       the last structured log of any run; without it we know more
+       events may still ship.
+    2. The signature (over every event) has been the SAME for at
+       least :data:`_STABILITY_GRACE_S` of WALL-CLOCK time in OUR
+       observations. NOT the log entry timestamps — those can arrive
+       out of order from Cloud Logging.
+
+    On a signature change, the observation resets — the new timeline
+    has to hold steady for another full grace window before we'd cache
+    it. On a "no final_response" poll, the observation is dropped
+    entirely so a transient empty fetch doesn't pollute the next
+    poll's stability check.
+    """
+    if not any(e.get("event") == "final_response" for e in events):
+        _TRACE_OBSERVATIONS.pop(trace_id, None)
+        return False
+
+    sig = _signature_of(events)
+    obs = _TRACE_OBSERVATIONS.get(trace_id)
+    if obs is None or obs[1] != sig:
+        # First observation of this signature. Record and refuse to
+        # mark complete — the next poll will measure elapsed grace.
+        _TRACE_OBSERVATIONS[trace_id] = (time.monotonic(), sig)
+        return False
+
+    first_seen_at, _sig = obs
+    return (time.monotonic() - first_seen_at) >= _STABILITY_GRACE_S
+
+
+def _cache_get(trace_id: str) -> dict | None:
+    hit = _TRACE_CACHE.get(trace_id)
+    if hit is None:
+        return None
+    written_at, payload = hit
+    if time.monotonic() - written_at > _TRACE_CACHE_TTL_S:
+        _TRACE_CACHE.pop(trace_id, None)
+        return None
+    return payload
+
+
+def _cache_put(trace_id: str, payload: dict) -> None:
+    _TRACE_CACHE[trace_id] = (time.monotonic(), payload)
+
+
+def _reset_trace_state_for_tests() -> None:
+    """Test helper — drop the /trace cache + observation state.
+
+    Wired into the integration conftest's autouse fixture alongside the
+    other reset hooks so each test gets a clean slate (no stability
+    history carrying over from a sibling test).
+    """
+    _TRACE_CACHE.clear()
+    _TRACE_OBSERVATIONS.clear()
 
 
 def _event_key(
@@ -1245,6 +1389,109 @@ def get_run(decision_id: str):
     if not d:
         raise HTTPException(status_code=404, detail="decision not found")
     return d
+
+
+@app.get("/trace/{trace_id}")
+def get_trace(
+    trace_id: str,
+    response: Response,
+    _: None = Depends(verify_token),
+    fetcher: TraceFetcher = Depends(get_trace_fetcher),
+    state: StateStore = Depends(get_state),
+) -> dict:
+    """Return the redacted reasoning timeline for a trace.
+
+    Sync ``def`` on purpose — FastAPI runs sync routes on a threadpool
+    (anyio's ``run_in_threadpool``), which is the right shape for the
+    SYNC google-cloud-logging client used by
+    :class:`CloudLoggingFetcher`. An ``async def`` here would block the
+    event loop on every fetch.
+
+    Response shape::
+
+        { "trace_id": "<hex32>",
+          "events": [<redacted event dicts, sorted ascending>],
+          "decision": { ... } | None,
+          "complete": bool,
+          "fetched_from_cache": bool }
+
+    Errors:
+
+    * **400** on a non-hex32 ``trace_id`` (fail-closed before any
+      Cloud Logging filter is built — same defense-in-depth as
+      :class:`CloudLoggingFetcher.fetch`).
+    * **401 / 403** from :func:`verify_token` (token guard, Phase 11.1).
+    * **503** if the Cloud Logging fetch exceeds
+      :data:`_TRACE_FETCH_TIMEOUT_S` — surfaced via a real
+      ``Future.result(timeout=...)`` boundary because the
+      google-cloud-logging client has no native timeout kwarg.
+
+    Caching: only completed-AND-stable timelines land in the in-process
+    cache (see :func:`_observe_and_check_stability`). In-flight traces
+    refetch on every poll so the operator UI sees fresh events; the
+    cache exists purely to short-circuit repeat polls AFTER the agent
+    has finished reasoning.
+    """
+    # ``fullmatch`` (not ``match``) so a trailing-newline injection
+    # can't slip past the guard — see CloudLoggingFetcher's docstring
+    # for the full story. Carried forward from 19.A.5.
+    if not _HEX32_RE.fullmatch(trace_id):
+        raise HTTPException(
+            status_code=400,
+            detail="trace_id must be 32-char lowercase hex",
+        )
+
+    # Operator surface — never cache in the browser. The in-process
+    # cache above is server-side only; a browser cache would defeat
+    # the "refetch in-flight traces" property and let a stale view
+    # outlive its server-side TTL.
+    response.headers["Cache-Control"] = "no-store"
+
+    cached = _cache_get(trace_id)
+    if cached is not None:
+        return {**cached, "fetched_from_cache": True}
+
+    # Real timeout via a Future boundary. The google-cloud-logging
+    # client's ``list_entries`` has no timeout parameter in 3.15.x —
+    # without this wrapper, a hung fetch would tie up the request
+    # threadpool slot indefinitely. ``fut.cancel()`` on timeout is
+    # best-effort (Python can't kill a thread mid-call) but it at
+    # least prevents the Future from being awaited again.
+    fut = _TRACE_FETCH_EXECUTOR.submit(fetcher.fetch, trace_id, limit=500)
+    try:
+        events = fut.result(timeout=_TRACE_FETCH_TIMEOUT_S)
+    except _FutureTimeout:
+        fut.cancel()
+        raise HTTPException(
+            status_code=503, detail="trace fetch timed out"
+        ) from None
+
+    # Stable tie-breaker: same-millisecond events would otherwise
+    # shuffle without ``insert_id`` to disambiguate. The fetcher
+    # already orders by ``timestamp asc`` (Cloud Logging) but doesn't
+    # break ties.
+    events.sort(key=lambda e: (e.get("timestamp", ""), e.get("insert_id", "")))
+
+    # Defense-in-depth: redact again at render. Phase 19.A.3 already
+    # redacts at emit, but historical entries (pre-Phase-19) and any
+    # future emit site that forgets ``redact_event`` are caught here.
+    # ``redact_event`` returns ``object`` per signature but yields a
+    # dict for dict inputs — every entry is a dict from
+    # ``_entry_to_dict``, so the cast is sound.
+    events = [redact_event(e) for e in events]  # type: ignore[misc]
+
+    decision = state.find_decision_by_trace_id(trace_id)
+    complete = _observe_and_check_stability(trace_id, events)
+    payload = {
+        "trace_id": trace_id,
+        "events": events,
+        "decision": decision,
+        "complete": complete,
+        "fetched_from_cache": False,
+    }
+    if complete:
+        _cache_put(trace_id, payload)
+    return payload
 
 
 def _map_worker_error(

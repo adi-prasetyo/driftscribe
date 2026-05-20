@@ -8,7 +8,13 @@ import pytest
 
 from agent.auth import verify_token
 from agent.config import get_settings
-from agent.main import _reset_state_for_tests, _reset_trace_fetcher_for_tests, app
+from agent.main import (
+    _reset_state_for_tests,
+    _reset_trace_fetcher_for_tests,
+    _reset_trace_state_for_tests,
+    app,
+    get_trace_fetcher,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -51,6 +57,7 @@ def _agent_settings(monkeypatch, request):
     get_settings.cache_clear()
     _reset_state_for_tests()
     _reset_trace_fetcher_for_tests()
+    _reset_trace_state_for_tests()
     # Clear the workload cache so each test gets a fresh resolution
     # against the env state above. Without this, a test that delenv'd a
     # worker URL would still get the previously-cached resolution.
@@ -66,9 +73,15 @@ def _agent_settings(monkeypatch, request):
     yield
 
     app.dependency_overrides.pop(verify_token, None)
+    # Phase 19.A.6: tests that exercise /trace/{trace_id} install a
+    # StubTraceFetcher via app.dependency_overrides[get_trace_fetcher].
+    # Pop it so the override doesn't leak into the next test's
+    # _reset_trace_fetcher_for_tests-cleared singleton.
+    app.dependency_overrides.pop(get_trace_fetcher, None)
     get_settings.cache_clear()
     _reset_state_for_tests()
     _reset_trace_fetcher_for_tests()
+    _reset_trace_state_for_tests()
     _registry_mod._WORKLOAD_CACHE.clear()
 
 
