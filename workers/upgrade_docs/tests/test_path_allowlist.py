@@ -218,3 +218,14 @@ def test_base_must_be_main_returns_403(client) -> None:
     r = tc.post("/patch", json=body)
     assert r.status_code == 403
     assert captured == {}
+
+
+def test_title_must_start_with_upgrade_prefix_returns_403(client) -> None:
+    # Defense-in-depth observability check: every PR opened by this
+    # worker must carry an "upgrade" prefix so the upgrade workload's PRs
+    # are scoped on the GitHub side too, not just the branch namespace.
+    tc, captured = client
+    body = _valid_body() | {"title": "feat: do something else"}
+    r = tc.post("/patch", json=body)
+    assert r.status_code == 403
+    assert captured == {}
