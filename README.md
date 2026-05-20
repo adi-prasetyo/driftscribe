@@ -96,7 +96,7 @@ not compared here.
 | Layered safety (OS + policy) | ✓ | ✗ | ✗ | partial | partial |
 | Multi-cloud | ✗ (GCP only) | ✓ (Terraform-aware, multi) | ✓ | ✓ (AWS-primary) | ✗ (AWS) |
 | Open source | ✓ | ✓ | ✓ | ✓ | ✗ |
-| Deployment surface | Cloud Run (7 svcs after Phase 17) | Terraform | Plugin host | Lambda | Managed service |
+| Deployment surface | Cloud Run (7 DriftScribe services + 1 demo target after Phase 17) | Terraform | Plugin host | Lambda | Managed service |
 | Target user | DevOps + SRE on GCP | IaC platform teams | SQL-fluent ops | AWS ops | AWS compliance teams |
 
 DriftScribe trades multi-cloud breadth for layered safety on a single platform;
@@ -123,6 +123,6 @@ the worker boundary makes "propose" safe to expose.
 
 ## Status
 
-Phase 17 (multi-agent framework + Developer Knowledge MCP) in progress.
-Hackathon submission deadline 2026-07-10. Current implementation plan:
+Phase 17 (multi-agent framework + Developer Knowledge MCP) complete.
+Hackathon submission deadline 2026-07-10. Implementation plan:
 [`docs/plans/2026-05-19-driftscribe-phase17-framework-mcp.md`](docs/plans/2026-05-19-driftscribe-phase17-framework-mcp.md).

@@ -28,7 +28,11 @@
       Drift          (210, 160, 150, 64)
       Upgrade        (210, 250, 150, 64)
       Eventarc -> Drift only (server-pinned).
-      /chat and /recheck -> EITHER Drift OR Upgrade (workload= field).
+      /chat -> EITHER Drift OR Upgrade (workload= field).
+      /recheck -> Drift ONLY in this build; workload=upgrade returns
+        503 from agent/main.py (the drift /recheck post-agent plumbing
+        is drift-specific; workload-specific /recheck for upgrade is
+        post-Phase-17 work).
     Coordinator (x=400, w=440, y=115, h=580):
       box (400, 115, 440, 580)
       title "driftscribe-agent" + sub "coordinator / public"
@@ -196,7 +200,7 @@
   -->
   <section>
     <h2>1. Multi-workload trigger fan-in</h2>
-    <p class="caption">Three trigger sources fan in to a workload routing layer (Drift / Upgrade), which selects the workload-scoped agent inside the Coordinator. Each workload sees only its own per-workload tool inventory (Layer 0 capability bound). The Developer Knowledge MCP attaches at the Coordinator only &mdash; workers never reason and never query docs. The HITL diamond gates the Coordinator&rarr;Rollback edge (drift only); rollback <code>/execute</code> only fires after an operator approves at <code>/approvals/{id}</code>. <code>Eventarc</code> hardcodes <code>workload=drift</code> server-side; <code>/chat</code> and <code>/recheck</code> route by the request's <code>workload</code> field.</p>
+    <p class="caption">Three trigger sources fan in to a workload routing layer (Drift / Upgrade), which selects the workload-scoped agent inside the Coordinator. Each workload sees only its own per-workload tool inventory (Layer 0 capability bound). The Developer Knowledge MCP attaches at the Coordinator only &mdash; workers never reason and never query docs. The HITL diamond gates the Coordinator&rarr;Rollback edge (drift only); rollback <code>/execute</code> only fires after an operator approves at <code>/approvals/{id}</code>. <code>Eventarc</code> hardcodes <code>workload=drift</code> server-side; <code>/chat</code> routes by the request's <code>workload</code> field (drift or upgrade); <code>/recheck</code> serves drift only in this build (<code>workload=upgrade</code> returns 503 &mdash; a workload-specific <code>/recheck</code> pipeline for upgrade is post-Phase-17).</p>
     <div class="figure">
       <svg class="diagram" viewBox="0 0 1240 780" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Multi-workload trigger fan-in diagram: Eventarc, /chat and /recheck feed a workload routing layer (Drift / Upgrade) which routes to the Coordinator. The Coordinator hosts two per-workload tool inventories and an attached Developer Knowledge MCP. Drift workers (Reader, Docs, Rollback) sit alongside upgrade workers (Upgrade Reader, Upgrade Docs) and a shared Notifier. The Rollback edge passes through a Human-In-The-Loop approval diamond.">
         <defs>
@@ -266,9 +270,11 @@
         <line x1="160" y1="222" x2="208" y2="200" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
         <line x1="160" y1="232" x2="208" y2="270" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
 
-        <!-- /recheck -> Drift + Upgrade -->
-        <line x1="160" y1="300" x2="208" y2="218" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
-        <line x1="160" y1="308" x2="208" y2="290" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
+        <!-- /recheck -> Drift ONLY in this build.
+             workload=upgrade returns 503 from agent/main.py — the
+             drift /recheck post-agent plumbing is drift-specific.
+             Workload-specific /recheck for upgrade is post-Phase-17. -->
+        <line x1="160" y1="304" x2="208" y2="218" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
 
         <!-- Arrows: Workload routing -> Coordinator left edge (x=400) -->
         <line x1="360" y1="192" x2="398" y2="220" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
