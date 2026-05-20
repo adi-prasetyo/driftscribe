@@ -66,7 +66,12 @@ class CloudLoggingFetcher:
         self._service = service_name
 
     def fetch(self, trace_id: str, *, limit: int = 500) -> list[dict]:
-        if not _HEX32_RE.match(trace_id):
+        # ``fullmatch`` (not ``match``) is load-bearing here: Python's ``$``
+        # in ``re.match`` mode also matches just-before-a-final ``\n``, so
+        # ``"a"*32 + "\n"`` would slip past a ``match`` call and get
+        # interpolated literally into the filter string. The guard's job is
+        # fail-closed at the security boundary — no corner exemptions.
+        if not _HEX32_RE.fullmatch(trace_id):
             # Fail-closed against filter-string injection — the trace_id flows
             # straight into the Cloud Logging filter language, so anything that
             # doesn't look like our 32-hex format gets refused at the door.

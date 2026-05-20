@@ -116,6 +116,14 @@ def test_cloud_logging_fetcher_rejects_bad_trace_id(monkeypatch):
     assert f.fetch("a" * 31) == []
     assert f.fetch("a" * 33) == []
     assert f.fetch('a" OR resource.type="gce_instance" AND "') == []
+    # Trailing-newline regression: Python's ``$`` in ``re.match`` mode also
+    # matches just-before-a-final ``\n``, so ``"a"*32 + "\n"`` would slip
+    # past a ``match`` call and get interpolated literally into the Cloud
+    # Logging filter string. ``fullmatch`` closes that hole.
+    assert f.fetch("a" * 32 + "\n") == []
+    # Belt-and-braces variations on the same theme.
+    assert f.fetch("a" * 32 + "\r\n") == []
+    assert f.fetch("\n" + "a" * 32) == []
     assert fake_client.list_entries.call_count == 0
 
 
