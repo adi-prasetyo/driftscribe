@@ -24,14 +24,23 @@ def test_record_decision_cross_references_event():
     s = InMemoryStateStore()
     s.record_event("ev-1", {})
     s.record_decision("dec-1", "ev-1", {"action": "drift_issue"})
-    assert s.find_decision_for_event("ev-1") == {"action": "drift_issue"}
+    # Phase 19.A.7: record_decision now backfills ``created_at`` for
+    # the /decisions listing — assert the caller-supplied fields and
+    # the presence of the timestamp without pinning its exact value.
+    out = s.find_decision_for_event("ev-1")
+    assert out is not None
+    assert out["action"] == "drift_issue"
+    assert "created_at" in out
 
 
 def test_get_decision_returns_recorded_decision():
     s = InMemoryStateStore()
     s.record_event("ev-1", {})
     s.record_decision("dec-1", "ev-1", {"action": "drift_issue"})
-    assert s.get_decision("dec-1") == {"action": "drift_issue"}
+    out = s.get_decision("dec-1")
+    assert out is not None
+    assert out["action"] == "drift_issue"
+    assert "created_at" in out
 
 
 def test_get_decision_for_unknown_id_returns_none():
@@ -90,7 +99,12 @@ def test_evict_cached_decision_refuses_when_decision_id_differs():
     # The fresh claim is preserved — record_event still refuses.
     assert s.record_event("ev-1", {}) is False
     # And find_decision_for_event still returns the fresh decision.
-    assert s.find_decision_for_event("ev-1") == {"action": "rollback"}
+    # Phase 19.A.7: record_decision backfills ``created_at`` for the
+    # /decisions listing — assert the action without pinning the
+    # auto-generated timestamp.
+    fresh = s.find_decision_for_event("ev-1")
+    assert fresh is not None
+    assert fresh["action"] == "rollback"
 
 
 def test_evict_cached_decision_returns_false_when_event_missing():
