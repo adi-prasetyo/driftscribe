@@ -51,12 +51,38 @@ silently ignored.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import Final, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from agent.workloads.registry import UpgradeTarget, resolve_upgrade_target
+
+
+# The decision keys this contract is allowed to carry. A strict subset
+# of :data:`agent.workloads.registry.ACTION_REGISTRY` — drift-only
+# actions (``drift_issue``, ``rollback``) are not valid upgrade
+# decisions and including one in ``contract.yaml`` would silently
+# bypass the action allowlist this contract is supposed to enforce.
+#
+# Hardcoded here (rather than imported from the registry) for two
+# reasons:
+#
+# 1. The upgrade contract has its own opinion of which actions are
+#    valid decisions — a subset of ACTION_REGISTRY. Importing the full
+#    set would lose that intent.
+# 2. The test ``test_known_action_keys_constant_is_subset_of_action_registry``
+#    in ``tests/unit/test_upgrade_contract.py`` cross-checks this
+#    constant against ``ACTION_REGISTRY`` so a future addition to the
+#    registry (e.g. a new upgrade action) is a deliberate code change
+#    on both sides — not an automatic widening.
+#
+# Public for testability (underscored module-private would force tests
+# to import-via-private-name and the convention is to keep things
+# explicit). Mark Final so a downstream import doesn't mutate it.
+KNOWN_ACTION_KEYS: Final[frozenset[str]] = frozenset(
+    {"no_op", "docs_pr", "upgrade_pr", "escalation"}
+)
 
 
 # Severity vocabulary mirrors the GitHub Advisory severity enum so the
@@ -137,6 +163,35 @@ class UpgradeContract(BaseModel):
     # widen the surface by editing only YAML.
     target_name: Literal["phase17_demo"]
     decisions: dict[str, UpgradeDecisionRule]
+
+    @model_validator(mode="after")
+    def _check_decision_keys(self) -> "UpgradeContract":
+        """Reject any decision key that isn't in :data:`KNOWN_ACTION_KEYS`.
+
+        Task 17.C.3a (Codex 2026-05-20 follow-up). Previously the
+        bundled contract was pinned by cross-check tests in
+        ``tests/unit/test_upgrade_contract.py``, but those run at test
+        time only. This validator hardens the same property at *load*
+        time: a hand-edited ``contract.yaml`` that introduces a
+        ``made_up_action`` key now fails at
+        :func:`load_upgrade_contract` rather than silently bypassing
+        the action allowlist downstream.
+
+        The check intentionally fires on the contract's own
+        :data:`KNOWN_ACTION_KEYS` allowlist (a subset of
+        ``ACTION_REGISTRY``) — drift-only actions like ``drift_issue``
+        and ``rollback`` are also rejected here, because they are not
+        valid decisions for the upgrade contract even though they live
+        in the global registry.
+        """
+        unknown = set(self.decisions) - KNOWN_ACTION_KEYS
+        if unknown:
+            raise ValueError(
+                f"unknown decision keys in upgrade contract: "
+                f"{sorted(unknown)}; expected subset of "
+                f"{sorted(KNOWN_ACTION_KEYS)}"
+            )
+        return self
 
     def resolve_target(self) -> UpgradeTarget:
         """Resolve the contract's symbolic target name to its

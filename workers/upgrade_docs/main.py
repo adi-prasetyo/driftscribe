@@ -43,13 +43,14 @@ Safety layers in play here:
       production" confused-deputy scenarios.
     - The patch is scoped to a single key: ``dependencies[package_name]``
       is overwritten with ``target_version``; every other key in the
-      lockfile (and every other file in the repo) is preserved as-is. If
-      ``package_name`` is not already present in ``dependencies`` the
-      worker refuses with 422 — adding new deps is out of scope and
-      this is a minimal safety net so a malformed request cannot
-      silently insert a new dependency. (Fuller semantic validation —
-      semver no-downgrade, patch/minor only, GHSA URL shape — is the
-      post-LLM validator's job, Task 17.C.3a.)
+      lockfile (and every other file in the repo) is preserved as-is.
+      Semantic validation — package existence in dependencies, semver
+      no-downgrade, patch/minor only, GHSA URL shape — runs in
+      :mod:`workers.upgrade_docs.validator` (Task 17.C.3a) after the
+      lockfile read and before the JSON mutation. The validator's
+      ``UpgradeValidationError`` is converted to ``HTTPException`` at
+      the handler boundary (403 for policy violations, 422 for
+      schema-shaped failures).
 
 - **Layer 3 (inter-service auth):**
   :func:`driftscribe_lib.auth.verify_caller` validates the inbound Google
@@ -73,6 +74,8 @@ from pydantic import BaseModel, ConfigDict
 from driftscribe_lib import github as ds_github
 from driftscribe_lib.auth import verify_caller
 from driftscribe_lib.logging import install_trace_middleware, setup as setup_logging
+
+from workers.upgrade_docs import validator
 
 log = setup_logging("upgrade-docs")
 
@@ -284,13 +287,15 @@ def patch(
       :func:`driftscribe_lib.github.open_docs_pr` (``url``, ``number``,
       ``labeled``, ``label_error``).
     - **403** on policy violation: ``target_repo`` mismatch, refused
-      ``lockfile_path`` / ``branch`` / ``base``.
+      ``lockfile_path`` / ``branch`` / ``base``, or any validator rule
+      that maps to a policy bounce (downgrade, major bump, bad
+      ``advisory_url``, validator-side ``lockfile_path`` mismatch).
     - **401/403** on auth failure (raised by ``verify_caller`` upstream).
     - **422** on schema violation (extra field, missing field, bad type)
-      OR when ``package_name`` is not present in the current lockfile's
-      ``dependencies`` block. The latter is a minimal safety net — the
-      full semver/existence/range checks are the post-LLM validator
-      (Task 17.C.3a).
+      or on a validator rule that maps to a schema-shaped failure
+      (``package_name`` not in current lockfile, unparseable
+      ``current_version`` / ``target_version``). See
+      :mod:`workers.upgrade_docs.validator` for the full rule list.
     """
     # Re-validate request-body target_repo against the env-pinned allowlist
     # BEFORE any GitHub call. Defense in depth: a misconfigured coordinator
@@ -313,21 +318,27 @@ def patch(
     repo = _get_repo()
     lockfile = _read_lockfile(repo, req.lockfile_path)
 
-    # Minimal safety net: the post-LLM validator (17.C.3a) does the full
-    # semver / no-downgrade / range checks. Here we only enforce that the
-    # package already exists in ``dependencies`` so a malformed request
-    # cannot silently *add* a new dependency — that's not in scope for
-    # this worker's action surface.
-    deps = lockfile.get("dependencies") or {}
-    if req.package_name not in deps:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"package_name {req.package_name!r} not present in "
-                f"lockfile dependencies (cannot add new deps; worker "
-                f"only bumps existing ones)"
-            ),
+    # Post-LLM deterministic validator (Task 17.C.3a). Runs AFTER the
+    # lockfile read (so rule 2 can verify ``package_name`` existence)
+    # and BEFORE the JSON mutation / GitHub write. The validator covers:
+    # lockfile_path regex (defense-in-depth duplicate of the
+    # _check_lockfile_path guard above), package_name existence (rule 2
+    # supersedes the prior inline safety net which has been removed),
+    # semver no-downgrade (rule 3), patch/minor-only version jump
+    # (rule 4 — major bumps route to ``escalation``), and GHSA-shaped
+    # advisory_url (rule 5). Errors raise an UpgradeValidationError
+    # carrying the status_code (403/422) and reason; we convert to
+    # HTTPException here so the validator stays transport-agnostic.
+    try:
+        validator.validate_upgrade_request(
+            lockfile_path=req.lockfile_path,
+            package_name=req.package_name,
+            target_version=req.target_version,
+            advisory_url=req.advisory_url,
+            current_lockfile=lockfile,
         )
+    except validator.UpgradeValidationError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.reason) from e
 
     # Mutate ONLY dependencies[package_name]. Every other key is preserved
     # as-is — top-level metadata (name, version, scripts, …) and other

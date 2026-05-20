@@ -32,6 +32,7 @@ COPY driftscribe_lib/ ./driftscribe_lib/
 COPY workers/__init__.py ./workers/__init__.py
 COPY workers/upgrade_docs/__init__.py ./workers/upgrade_docs/__init__.py
 COPY workers/upgrade_docs/main.py ./workers/upgrade_docs/main.py
+COPY workers/upgrade_docs/validator.py ./workers/upgrade_docs/validator.py
 
 ENV PYTHONPATH=/app
 ENV PORT=8080
