@@ -236,6 +236,125 @@
       font-size: 0.9em;
       font-style: italic;
     }
+    /* ----------------------------------------------------------------- */
+    /*  19.B.4: nested <details> for sub-groups (per-tool) inside the     */
+    /*  top-level Coordinator / Tools / MCP groups, plus the per-event    */
+    /*  <details> rendered inside each sub-group. Visually distinct from  */
+    /*  the top-level groups (smaller, lighter borders) so a judge can    */
+    /*  parse the hierarchy at a glance.                                  */
+    /* ----------------------------------------------------------------- */
+    details.subgroup {
+      border: 1px solid #e5e5e5;
+      border-radius: 3px;
+      margin: 0.35em 0;
+      background: #fff;
+    }
+    details.subgroup > summary {
+      cursor: pointer;
+      padding: 0.4em 0.7em;
+      font-weight: 600;
+      font-size: 0.92em;
+      list-style: none;
+      user-select: none;
+    }
+    details.subgroup > summary::-webkit-details-marker { display: none; }
+    details.subgroup > summary::before {
+      content: "▸";
+      display: inline-block;
+      width: 1em;
+      color: var(--muted);
+    }
+    details.subgroup[open] > summary::before { content: "▾"; }
+    details.subgroup .summary-meta {
+      color: var(--muted);
+      font-weight: 400;
+      font-size: 0.85em;
+      margin-left: 0.5em;
+    }
+    details.subgroup .sub-events {
+      padding: 0.25em 0.8em 0.6em 1.7em;
+      border-top: 1px solid #eee;
+    }
+    details.event {
+      border-bottom: 1px dotted var(--border);
+      padding: 0.3em 0;
+    }
+    details.event:last-child { border-bottom: 0; }
+    details.event > summary {
+      cursor: pointer;
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-size: 0.85em;
+      list-style: none;
+      user-select: none;
+    }
+    details.event > summary::-webkit-details-marker { display: none; }
+    details.event > summary::before {
+      content: "▸";
+      display: inline-block;
+      width: 1em;
+      color: var(--muted);
+    }
+    details.event[open] > summary::before { content: "▾"; }
+    details.event .event-meta {
+      color: var(--muted);
+      margin-right: 0.5em;
+    }
+    details.event .summary-text {
+      font-style: italic;
+      color: var(--fg);
+    }
+    details.event pre {
+      background: var(--bg-card);
+      padding: 0.5em 0.7em;
+      border-radius: 3px;
+      font-size: 0.82em;
+      white-space: pre-wrap;
+      word-break: break-word;
+      margin: 0.3em 0 0.1em 0;
+      overflow-x: auto;
+    }
+    .group-empty {
+      color: var(--muted);
+      font-size: 0.9em;
+      font-style: italic;
+      padding: 0.25em 0;
+    }
+    .pair-row {
+      padding: 0.2em 0;
+    }
+    .pair-result-ok { color: var(--accent); }
+    .pair-result-err { color: var(--danger); }
+    .usage-block {
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-size: 0.85em;
+      color: var(--fg);
+      padding: 0.3em 0;
+    }
+    .usage-block .usage-meta { color: var(--muted); margin-right: 0.5em; }
+    footer.legend {
+      margin: 2em 0 1em 0;
+      padding: 0.75em 1em;
+      border-top: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 0.82em;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1.2em;
+      align-items: center;
+    }
+    footer.legend .legend-item { display: inline-flex; align-items: center; gap: 0.35em; }
+    footer.legend .swatch {
+      display: inline-block;
+      width: 0.9em;
+      height: 0.9em;
+      border-radius: 2px;
+      vertical-align: middle;
+    }
+    footer.legend .swatch.coord { background: #e6f0fb; border: 1px solid #c7dcf3; }
+    footer.legend .swatch.tools { background: #fff4d6; border: 1px solid #ebd9a3; }
+    footer.legend .swatch.mcp { background: #ece6fb; border: 1px solid #d2c8f0; }
+    footer.legend .swatch.ok { background: #e6f4ea; border: 1px solid #b6dabb; }
+    footer.legend .swatch.err { background: #fde7e9; border: 1px solid #f0b8bd; }
     code { background: #eee; padding: 0 0.25em; border-radius: 3px; font-size: 0.9em; }
   </style>
 </head>
@@ -294,6 +413,16 @@
         <summary>MCP traffic</summary>
         <div class="events" data-group="mcp"></div>
       </details>
+
+      <!-- 19.B.4: color/icon legend so a judge can read the page cold. -->
+      <footer class="legend" aria-label="Legend">
+        <span class="legend-item"><span class="swatch coord"></span>Coordinator reasoning (llm_thought, llm_usage)</span>
+        <span class="legend-item"><span class="swatch tools"></span>Tools &amp; workers (tool_call / tool_result)</span>
+        <span class="legend-item"><span class="swatch mcp"></span>MCP (Developer Knowledge)</span>
+        <span class="legend-item"><span class="swatch ok"></span>ok</span>
+        <span class="legend-item"><span class="swatch err"></span>error</span>
+        <span class="legend-item">▸ collapsed · ▾ expanded</span>
+      </footer>
     </section>
   </main>
 
@@ -430,12 +559,46 @@
       const sendBtn = document.getElementById("send-btn");
       const traceBadge = document.getElementById("trace-badge");
       const finalCard = document.getElementById("final-response-card");
-      // Event timeline target. 19.B.4 will fan out into three groups; until
-      // then we render the flat list into the coordinator group's .events
-      // div (the most natural single-group fallback) so the polling
-      // contract is end-to-end testable on a real /trace/{id} response.
-      const timelineRoot =
+      // 19.B.4: timeline fans out into three top-level groups. The
+      // coordinator events div remains the "primary" landmark (kept for
+      // historical compatibility with 19.B.3's empty-state hint), but the
+      // grouped renderer writes into all three .events divs below.
+      const coordinatorEvents =
         document.querySelector("#group-coordinator .events");
+      const toolsEvents = document.querySelector("#group-tools .events");
+      const mcpEvents = document.querySelector("#group-mcp .events");
+      // Single root used by the polling glue to clear "stale" state. We
+      // wipe all three when a fresh Send starts, but the empty-state
+      // "waiting…" hint is only injected into the coordinator pane so the
+      // page doesn't sprout three identical hints.
+      const timelineRoot = coordinatorEvents;
+
+      // -------- 19.B.4: worker-friendly label mapping ----------------- //
+      //                                                                 //
+      // Codex v3 review MINOR: judges read "Reader (drift)" not          //
+      // ``read_live_env_tool``. Mapping is intentionally inline (not a   //
+      // separate module) so a maintainer reading this template sees the  //
+      // full mapping without jumping files. Add new tools here as the    //
+      // workload graph grows.                                            //
+      // --------------------------------------------------------------- //
+      const _WORKER_LABELS = {
+        // Drift workload
+        "read_live_env_tool":        "Reader (drift)",
+        "patch_docs_tool":           "Docs (drift)",
+        "propose_rollback_tool":     "Rollback (drift) — HITL",
+        // Upgrade workload
+        "upgrade_read_dependencies": "Upgrade Reader",
+        "upgrade_patch_docs_tool":   "Upgrade Docs",
+        // Shared
+        "notify_tool":               "Notifier",
+        // MCP
+        "answer_query":              "Developer Knowledge MCP — answer",
+        "search_documents":          "Developer Knowledge MCP — search",
+        "get_documents":             "Developer Knowledge MCP — get",
+      };
+      function workerLabel(toolName) {
+        return _WORKER_LABELS[toolName] || toolName;
+      }
 
       // Monotonic id stamped onto every polling iteration. A fresh Send
       // increments it; in-flight loops abort when their captured id no
@@ -480,52 +643,450 @@
         finalCard.textContent = text;
       }
 
-      function renderTimeline(events) {
-        if (!timelineRoot) return;
-        // Capture which <details> the user had expanded BEFORE blowing
-        // away the DOM, anchored on insert_id (stable per Cloud Logging
-        // entry). After re-render we re-expand those same insert_ids if
-        // they're still present. Best-effort: out-of-order delivery may
-        // remove a previously-seen entry (rare but possible if the
-        // server's view changes), in which case we silently lose that
-        // expansion state — better than thrashing scroll position.
-        const expandedIds = new Set();
-        timelineRoot
+      // --------------------------------------------------------------- //
+      //  19.B.4: three-group timeline renderer.                          //
+      //                                                                 //
+      //  Walks the flat events array (chronological order from the      //
+      //  server) and bins each event into one of three groups:           //
+      //                                                                 //
+      //    1. Coordinator: llm_thought, llm_usage                        //
+      //    2. Tools:       tool_call, tool_result (paired by tool_name)  //
+      //    3. MCP:          mcp_call (sub-grouped by mcp_tool/mcp_server) //
+      //                                                                 //
+      //  final_response sentinel events are skipped — the immediate     //
+      //  /chat response already populated #final-response-card, so       //
+      //  re-rendering them in the timeline would just be noise.          //
+      //                                                                 //
+      //  Expansion state is preserved across re-renders by capturing     //
+      //  every open <details data-insert-id> before wiping, then         //
+      //  re-opening any element with a matching insert_id post-render.   //
+      //  Sub-group <details> (per-tool) use a synthetic                  //
+      //  data-insert-id="sub:<group>:<key>" so their open/closed state   //
+      //  also survives re-render.                                        //
+      // --------------------------------------------------------------- //
+      function _captureExpanded(root) {
+        const ids = new Set();
+        if (!root) return ids;
+        root
           .querySelectorAll("details[open][data-insert-id]")
-          .forEach((d) => expandedIds.add(d.getAttribute("data-insert-id")));
+          .forEach((d) => ids.add(d.getAttribute("data-insert-id")));
+        return ids;
+      }
 
-        timelineRoot.innerHTML = "";
+      function _renderEmptyPlaceholder(container, label) {
+        const ph = document.createElement("div");
+        ph.className = "group-empty";
+        ph.textContent = label || "(no events)";
+        container.appendChild(ph);
+      }
+
+      function _renderThoughtEvent(e, expandedIds) {
+        // llm_thought: italicized 80-char summary, full text in body.
+        const insertId = e.insert_id || "";
+        const det = document.createElement("details");
+        det.className = "event";
+        if (insertId) det.setAttribute("data-insert-id", insertId);
+        if (insertId && expandedIds.has(insertId)) det.open = true;
+
+        const sum = document.createElement("summary");
+        const meta = document.createElement("span");
+        meta.className = "event-meta";
+        meta.textContent = (e.timestamp || "") + " · thought";
+        sum.appendChild(meta);
+        const text = String(e.thought_text || "");
+        const head = text.slice(0, 80) + (text.length > 80 ? "…" : "");
+        const span = document.createElement("span");
+        span.className = "summary-text";
+        span.textContent = head || "(empty)";
+        sum.appendChild(span);
+        if (e.latency_ms != null) {
+          const lat = document.createElement("span");
+          lat.className = "event-meta";
+          lat.style.marginLeft = "0.5em";
+          lat.textContent = " · " + e.latency_ms + "ms";
+          sum.appendChild(lat);
+        }
+        det.appendChild(sum);
+
+        const pre = document.createElement("pre");
+        pre.textContent = text || "(empty thought_text)";
+        det.appendChild(pre);
+        return det;
+      }
+
+      function _renderUsageEvent(e) {
+        // llm_usage: token-count breakdown, single inline row.
+        const row = document.createElement("div");
+        row.className = "usage-block";
+        if (e.insert_id) row.setAttribute("data-insert-id", e.insert_id);
+        const meta = document.createElement("span");
+        meta.className = "usage-meta";
+        meta.textContent = (e.timestamp || "") + " · usage";
+        row.appendChild(meta);
+        const parts = [];
+        if (e.prompt_token_count != null) parts.push("prompt=" + e.prompt_token_count);
+        if (e.candidates_token_count != null) parts.push("candidates=" + e.candidates_token_count);
+        if (e.thoughts_token_count != null) parts.push("thoughts=" + e.thoughts_token_count);
+        if (e.total_token_count != null) parts.push("total=" + e.total_token_count);
+        row.appendChild(document.createTextNode(parts.join(" · ") || "(no counts)"));
+        return row;
+      }
+
+      function _pairToolEvents(events) {
+        // Pair tool_call → next tool_result with the SAME tool_name.
+        // Both events are already chronological from the server, so a
+        // single forward pass with a per-tool "open call" queue suffices.
+        // Unmatched calls/results are still emitted (as singletons) so
+        // an in-flight call doesn't disappear from the UI.
+        const pending = new Map(); // tool_name → array of call indexes awaiting a result
+        const pairs = []; // {call, result, tool_name, ts}
+        for (const e of events) {
+          if (e.event === "tool_call") {
+            const q = pending.get(e.tool_name) || [];
+            q.push({ call: e, result: null });
+            pending.set(e.tool_name, q);
+          } else if (e.event === "tool_result") {
+            const q = pending.get(e.tool_name) || [];
+            if (q.length > 0) {
+              const head = q.shift();
+              head.result = e;
+              pairs.push(head);
+              pending.set(e.tool_name, q);
+            } else {
+              // Orphan result (call presumably out of window). Still
+              // render so judges don't see it vanish.
+              pairs.push({ call: null, result: e });
+            }
+          }
+        }
+        // Flush remaining un-resulted calls (in-flight at poll time).
+        for (const q of pending.values()) {
+          for (const p of q) pairs.push(p);
+        }
+        return pairs;
+      }
+
+      function _renderToolPair(pair, expandedIds) {
+        // Container per call+result pair. Use the call's insert_id as
+        // the stable key so expand-state survives re-render. If the
+        // pair only has a result, fall back to result's insert_id.
+        const key =
+          (pair.call && pair.call.insert_id) ||
+          (pair.result && pair.result.insert_id) ||
+          "";
+        const det = document.createElement("details");
+        det.className = "event";
+        if (key) det.setAttribute("data-insert-id", key);
+        if (key && expandedIds.has(key)) det.open = true;
+
+        const ok = pair.result ? pair.result.result_ok !== false : null;
+        const sum = document.createElement("summary");
+        const meta = document.createElement("span");
+        meta.className = "event-meta";
+        const ts =
+          (pair.call && pair.call.timestamp) ||
+          (pair.result && pair.result.timestamp) ||
+          "";
+        meta.textContent = ts + " · ";
+        sum.appendChild(meta);
+        const status = document.createElement("span");
+        if (ok === true) status.className = "pair-result-ok";
+        else if (ok === false) status.className = "pair-result-err";
+        status.textContent =
+          ok === true ? "ok" : ok === false ? "error" : "(pending)";
+        sum.appendChild(status);
+        det.appendChild(sum);
+
+        if (pair.call) {
+          const lbl = document.createElement("div");
+          lbl.className = "pair-row";
+          lbl.style.fontSize = "0.85em";
+          lbl.style.color = "var(--muted)";
+          lbl.textContent = "tool_args:";
+          det.appendChild(lbl);
+          const pre = document.createElement("pre");
+          pre.textContent = JSON.stringify(pair.call.tool_args || {}, null, 2);
+          det.appendChild(pre);
+        }
+        if (pair.result) {
+          const lbl = document.createElement("div");
+          lbl.className = "pair-row";
+          lbl.style.fontSize = "0.85em";
+          lbl.style.color = "var(--muted)";
+          lbl.textContent = "result_preview:";
+          det.appendChild(lbl);
+          const pre = document.createElement("pre");
+          pre.textContent = String(pair.result.result_preview || "(empty)");
+          det.appendChild(pre);
+        } else if (pair.call) {
+          // In-flight call, no result yet.
+          const inflight = document.createElement("div");
+          inflight.className = "pair-row";
+          inflight.style.fontStyle = "italic";
+          inflight.style.color = "var(--muted)";
+          inflight.textContent = "(awaiting tool_result…)";
+          det.appendChild(inflight);
+        }
+        return det;
+      }
+
+      function _renderMcpEvent(e, expandedIds) {
+        const insertId = e.insert_id || "";
+        const det = document.createElement("details");
+        det.className = "event";
+        if (insertId) det.setAttribute("data-insert-id", insertId);
+        if (insertId && expandedIds.has(insertId)) det.open = true;
+
+        const sum = document.createElement("summary");
+        const meta = document.createElement("span");
+        meta.className = "event-meta";
+        const ok = !e.error;
+        meta.textContent = (e.timestamp || "") + " · ";
+        sum.appendChild(meta);
+        const status = document.createElement("span");
+        status.className = ok ? "pair-result-ok" : "pair-result-err";
+        status.textContent = ok ? "ok" : "error";
+        sum.appendChild(status);
+        if (e.latency_ms != null) {
+          const lat = document.createElement("span");
+          lat.className = "event-meta";
+          lat.style.marginLeft = "0.5em";
+          lat.textContent = " · " + e.latency_ms + "ms";
+          sum.appendChild(lat);
+        }
+        if (e.doc_count != null) {
+          const dc = document.createElement("span");
+          dc.className = "event-meta";
+          dc.style.marginLeft = "0.5em";
+          dc.textContent = " · " + e.doc_count + " docs";
+          sum.appendChild(dc);
+        }
+        det.appendChild(sum);
+
+        const qlbl = document.createElement("div");
+        qlbl.className = "pair-row";
+        qlbl.style.fontSize = "0.85em";
+        qlbl.style.color = "var(--muted)";
+        qlbl.textContent = "query_or_names:";
+        det.appendChild(qlbl);
+        const qpre = document.createElement("pre");
+        qpre.textContent = String(e.query_or_names || "(empty)");
+        det.appendChild(qpre);
+        if (e.error) {
+          const elbl = document.createElement("div");
+          elbl.className = "pair-row pair-result-err";
+          elbl.style.fontSize = "0.85em";
+          elbl.textContent = "error: " + String(e.error);
+          det.appendChild(elbl);
+        }
+        return det;
+      }
+
+      function _latencySpan(values) {
+        // Returns "<min>-<max>ms" or "<n>ms" for single-value lists.
+        // Filters out null/undefined defensively — some events may omit
+        // latency_ms (e.g. an in-flight tool_call before its result).
+        const nums = values.filter((v) => typeof v === "number" && !isNaN(v));
+        if (nums.length === 0) return "";
+        const lo = Math.min(...nums);
+        const hi = Math.max(...nums);
+        return lo === hi ? lo + "ms" : lo + "-" + hi + "ms";
+      }
+
+      function _renderSubgroup(opts) {
+        // opts: { label, callCount, latencyValues, extraSummary, key, expandedIds, body }
+        const det = document.createElement("details");
+        det.className = "subgroup";
+        const synthId = "sub:" + opts.key;
+        det.setAttribute("data-insert-id", synthId);
+        // Default sub-groups to open for visibility; preserve user's
+        // collapse choice across polls via the synthetic insert_id.
+        // (We use a "collapsed set" derived from previously-rendered
+        // sub-groups that were CLOSED, not open — but expandedIds only
+        // tracks open. So: open by default, then collapse if the user
+        // explicitly collapsed before. Track via a sibling closed-set.)
+        det.open = true;
+        if (opts.collapsedIds && opts.collapsedIds.has(synthId)) det.open = false;
+
+        const sum = document.createElement("summary");
+        sum.appendChild(document.createTextNode(opts.label));
+        const meta = document.createElement("span");
+        meta.className = "summary-meta";
+        const span = _latencySpan(opts.latencyValues || []);
+        const parts = [opts.callCount + " call" + (opts.callCount === 1 ? "" : "s")];
+        if (opts.extraSummary) parts.push(opts.extraSummary);
+        if (span) parts.push(span);
+        meta.textContent = " · " + parts.join(" · ");
+        sum.appendChild(meta);
+        det.appendChild(sum);
+
+        const body = document.createElement("div");
+        body.className = "sub-events";
+        opts.body.forEach((node) => body.appendChild(node));
+        det.appendChild(body);
+        return det;
+      }
+
+      function _captureCollapsed(root) {
+        // Mirror of _captureExpanded but for CLOSED sub-groups so we can
+        // preserve a user's explicit collapse across re-renders.
+        const ids = new Set();
+        if (!root) return ids;
+        root
+          .querySelectorAll("details.subgroup[data-insert-id]")
+          .forEach((d) => {
+            if (!d.open) ids.add(d.getAttribute("data-insert-id"));
+          });
+        return ids;
+      }
+
+      function renderTimeline(events) {
+        if (!coordinatorEvents || !toolsEvents || !mcpEvents) return;
+
+        // Capture per-element expansion state BEFORE wiping the DOM.
+        const expandedIds = new Set([
+          ..._captureExpanded(coordinatorEvents),
+          ..._captureExpanded(toolsEvents),
+          ..._captureExpanded(mcpEvents),
+        ]);
+        const collapsedIds = new Set([
+          ..._captureCollapsed(coordinatorEvents),
+          ..._captureCollapsed(toolsEvents),
+          ..._captureCollapsed(mcpEvents),
+        ]);
+
+        coordinatorEvents.innerHTML = "";
+        toolsEvents.innerHTML = "";
+        mcpEvents.innerHTML = "";
+
+        // Empty timeline — same "waiting…" hint as 19.B.3, dropped into
+        // the coordinator pane only (other panes show the standard
+        // "(no events)" placeholder via the empty-group branches below).
         if (!events || events.length === 0) {
           const hint = document.createElement("div");
           hint.className = "timeline-hint";
-          hint.textContent =
-            "waiting for reasoning logs (typical lag ~15s)…";
-          timelineRoot.appendChild(hint);
+          hint.textContent = "waiting for reasoning logs (typical lag ~15s)…";
+          coordinatorEvents.appendChild(hint);
+          _renderEmptyPlaceholder(toolsEvents);
+          _renderEmptyPlaceholder(mcpEvents);
           return;
         }
 
-        // 19.B.4 will split into coordinator/tools/mcp groups. For now
-        // emit a flat list — terse enough to verify the polling contract
-        // without prejudging the grouping rules.
+        // Classify events into the three groups.
+        const coord = []; // llm_thought + llm_usage
+        const toolEvents = []; // tool_call + tool_result
+        const mcpEvts = []; // mcp_call
         for (const e of events) {
-          const insertId = e.insert_id || "";
-          const det = document.createElement("details");
-          det.className = "event-row";
-          if (insertId) det.setAttribute("data-insert-id", insertId);
-          if (insertId && expandedIds.has(insertId)) det.open = true;
-          const sum = document.createElement("summary");
-          const meta = document.createElement("span");
-          meta.className = "event-meta";
-          meta.textContent = (e.timestamp || "") + " ";
-          sum.appendChild(meta);
-          sum.appendChild(
-            document.createTextNode(e.event || e.severity || "(event)")
-          );
-          det.appendChild(sum);
-          const pre = document.createElement("pre");
-          pre.textContent = JSON.stringify(e, null, 2);
-          det.appendChild(pre);
-          timelineRoot.appendChild(det);
+          const kind = e.event;
+          if (kind === "llm_thought" || kind === "llm_usage") {
+            coord.push(e);
+          } else if (kind === "tool_call" || kind === "tool_result") {
+            toolEvents.push(e);
+          } else if (kind === "mcp_call") {
+            mcpEvts.push(e);
+          } else if (kind === "final_response") {
+            // Sentinel — already rendered in #final-response-card. Skip.
+            continue;
+          }
+          // Unknown event kinds are silently dropped; the server side is
+          // authoritative about what kinds exist (see Phase 19.A schemas).
+        }
+
+        // -------- Coordinator group ---------------------------------- //
+        if (coord.length === 0) {
+          _renderEmptyPlaceholder(coordinatorEvents);
+        } else {
+          for (const e of coord) {
+            if (e.event === "llm_thought") {
+              coordinatorEvents.appendChild(_renderThoughtEvent(e, expandedIds));
+            } else if (e.event === "llm_usage") {
+              coordinatorEvents.appendChild(_renderUsageEvent(e));
+            }
+          }
+        }
+
+        // -------- Tools & workers group ------------------------------ //
+        if (toolEvents.length === 0) {
+          _renderEmptyPlaceholder(toolsEvents);
+        } else {
+          // Sub-group by tool_name, preserving first-seen order so the
+          // visual order matches the chronological tool-call sequence.
+          const subgroups = new Map(); // tool_name → events[]
+          const order = [];
+          for (const e of toolEvents) {
+            const tn = e.tool_name || "(unknown)";
+            if (!subgroups.has(tn)) {
+              subgroups.set(tn, []);
+              order.push(tn);
+            }
+            subgroups.get(tn).push(e);
+          }
+          for (const tn of order) {
+            const evs = subgroups.get(tn);
+            const pairs = _pairToolEvents(evs);
+            // Latency span across this tool's results (tool_result events
+            // carry the wall-clock latency_ms when the executor measures
+            // it; absent on tool_call). Fall back to call's own latency
+            // field where present so an in-flight call still contributes.
+            const latencies = [];
+            for (const p of pairs) {
+              if (p.result && p.result.latency_ms != null) latencies.push(p.result.latency_ms);
+              else if (p.call && p.call.latency_ms != null) latencies.push(p.call.latency_ms);
+            }
+            const body = pairs.map((p) => _renderToolPair(p, expandedIds));
+            toolsEvents.appendChild(
+              _renderSubgroup({
+                label: workerLabel(tn),
+                callCount: pairs.length,
+                latencyValues: latencies,
+                key: "tools:" + tn,
+                expandedIds,
+                collapsedIds,
+                body,
+              })
+            );
+          }
+        }
+
+        // -------- MCP group ------------------------------------------ //
+        if (mcpEvts.length === 0) {
+          _renderEmptyPlaceholder(mcpEvents);
+        } else {
+          // Sub-group by mcp_tool (falling back to mcp_server when the
+          // tool name isn't carried — older event shapes).
+          const subgroups = new Map();
+          const order = [];
+          for (const e of mcpEvts) {
+            const key = e.mcp_tool || e.mcp_server || "(unknown)";
+            if (!subgroups.has(key)) {
+              subgroups.set(key, []);
+              order.push(key);
+            }
+            subgroups.get(key).push(e);
+          }
+          for (const key of order) {
+            const evs = subgroups.get(key);
+            const latencies = evs
+              .map((e) => e.latency_ms)
+              .filter((v) => v != null);
+            const docCount = evs.reduce(
+              (acc, e) => acc + (typeof e.doc_count === "number" ? e.doc_count : 0),
+              0
+            );
+            const body = evs.map((e) => _renderMcpEvent(e, expandedIds));
+            mcpEvents.appendChild(
+              _renderSubgroup({
+                label: workerLabel(key),
+                callCount: evs.length,
+                latencyValues: latencies,
+                extraSummary: docCount + " docs",
+                key: "mcp:" + key,
+                expandedIds,
+                collapsedIds,
+                body,
+              })
+            );
+          }
         }
       }
 
@@ -616,11 +1177,15 @@
 
         sendBtn.disabled = true;
         // Clear prior render so the operator isn't staring at a stale
-        // trace_id / response while the new /chat is in flight.
+        // trace_id / response while the new /chat is in flight. 19.B.4
+        // fans this clear across all three group panes — leaving any one
+        // populated would mix old-trace events into the new timeline.
         traceBadge.innerHTML = "";
         finalCard.hidden = true;
         finalCard.classList.remove("error");
-        if (timelineRoot) timelineRoot.innerHTML = "";
+        if (coordinatorEvents) coordinatorEvents.innerHTML = "";
+        if (toolsEvents) toolsEvents.innerHTML = "";
+        if (mcpEvents) mcpEvents.innerHTML = "";
 
         let resp;
         try {
