@@ -663,8 +663,18 @@
       //  Sub-group <details> (per-tool) use a synthetic                  //
       //  data-insert-id="sub:<group>:<key>" so their open/closed state   //
       //  also survives re-render.                                        //
+      //                                                                 //
+      //  ID namespacing (review fix): _captureExpanded queries the      //
+      //  entire timeline, so synthetic sub-group ids and per-event ids   //
+      //  MUST be in disjoint namespaces. Per-event ids are wrapped as    //
+      //  ``"evt:" + insert_id`` at write time; sub-groups use            //
+      //  ``"sub:<group>:<key>"``. That way even a Cloud Logging          //
+      //  insert_id beginning with ``sub:`` can never cross-map.          //
       // --------------------------------------------------------------- //
       function _captureExpanded(root) {
+        // Returns raw `data-insert-id` values (already namespaced with
+        // "evt:" / "sub:" at write time). Callers check membership using
+        // the same prefix they wrote, so the two id spaces stay disjoint.
         const ids = new Set();
         if (!root) return ids;
         root
@@ -683,10 +693,13 @@
       function _renderThoughtEvent(e, expandedIds) {
         // llm_thought: italicized 80-char summary, full text in body.
         const insertId = e.insert_id || "";
+        // Namespace per-event ids with "evt:" so they can never collide
+        // with sub-group synthetic ids ("sub:…"). See _captureExpanded.
+        const domId = insertId ? "evt:" + insertId : "";
         const det = document.createElement("details");
         det.className = "event";
-        if (insertId) det.setAttribute("data-insert-id", insertId);
-        if (insertId && expandedIds.has(insertId)) det.open = true;
+        if (domId) det.setAttribute("data-insert-id", domId);
+        if (domId && expandedIds.has(domId)) det.open = true;
 
         const sum = document.createElement("summary");
         const meta = document.createElement("span");
@@ -718,7 +731,8 @@
         // llm_usage: token-count breakdown, single inline row.
         const row = document.createElement("div");
         row.className = "usage-block";
-        if (e.insert_id) row.setAttribute("data-insert-id", e.insert_id);
+        // Namespace per-event ids with "evt:" (see _captureExpanded).
+        if (e.insert_id) row.setAttribute("data-insert-id", "evt:" + e.insert_id);
         const meta = document.createElement("span");
         meta.className = "usage-meta";
         meta.textContent = (e.timestamp || "") + " · usage";
@@ -774,10 +788,12 @@
           (pair.call && pair.call.insert_id) ||
           (pair.result && pair.result.insert_id) ||
           "";
+        // Namespace per-event ids with "evt:" (see _captureExpanded).
+        const domId = key ? "evt:" + key : "";
         const det = document.createElement("details");
         det.className = "event";
-        if (key) det.setAttribute("data-insert-id", key);
-        if (key && expandedIds.has(key)) det.open = true;
+        if (domId) det.setAttribute("data-insert-id", domId);
+        if (domId && expandedIds.has(domId)) det.open = true;
 
         const ok = pair.result ? pair.result.result_ok !== false : null;
         const sum = document.createElement("summary");
@@ -832,10 +848,12 @@
 
       function _renderMcpEvent(e, expandedIds) {
         const insertId = e.insert_id || "";
+        // Namespace per-event ids with "evt:" (see _captureExpanded).
+        const domId = insertId ? "evt:" + insertId : "";
         const det = document.createElement("details");
         det.className = "event";
-        if (insertId) det.setAttribute("data-insert-id", insertId);
-        if (insertId && expandedIds.has(insertId)) det.open = true;
+        if (domId) det.setAttribute("data-insert-id", domId);
+        if (domId && expandedIds.has(domId)) det.open = true;
 
         const sum = document.createElement("summary");
         const meta = document.createElement("span");
@@ -897,6 +915,10 @@
         // opts: { label, callCount, latencyValues, extraSummary, key, expandedIds, body }
         const det = document.createElement("details");
         det.className = "subgroup";
+        // Synthetic id space: "sub:<group>:<key>". Disjoint from the
+        // "evt:<insert_id>" namespace used by per-event <details> (see
+        // _captureExpanded). Do not change this prefix without updating
+        // the per-event prefix to maintain disjointness.
         const synthId = "sub:" + opts.key;
         det.setAttribute("data-insert-id", synthId);
         // Default sub-groups to open for visibility; preserve user's
