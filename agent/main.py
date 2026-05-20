@@ -359,9 +359,11 @@ def _observe_and_check_stability(trace_id: str, events: list[dict]) -> bool:
 
     Two conditions both required for ``complete=True``:
 
-    1. A ``final_response`` event is present. The agent emits this as
-       the last structured log of any run; without it we know more
-       events may still ship.
+    1. A ``final_response`` event is present. The agent emits this
+       near the end of every run (``_emit_llm_usage`` follows it for
+       token accounting, so ``final_response`` is not strictly the
+       very last entry — the 30-second grace window catches the
+       usage emit and any other tail events).
     2. The signature (over every event) has been the SAME for at
        least :data:`_STABILITY_GRACE_S` of WALL-CLOCK time in OUR
        observations. NOT the log entry timestamps — those can arrive
@@ -1435,10 +1437,17 @@ def get_trace(
     # ``fullmatch`` (not ``match``) so a trailing-newline injection
     # can't slip past the guard — see CloudLoggingFetcher's docstring
     # for the full story. Carried forward from 19.A.5.
+    #
+    # ``no-store`` is set on the same HTTPException so the 400 response
+    # carries the header too — see ``_HTTPException_no_store`` for why
+    # we can't rely on the route-level ``response.headers[...]`` assign
+    # on the exception path (FastAPI builds a fresh response for raised
+    # HTTPExceptions and doesn't inherit our mutations to ``response``).
     if not _HEX32_RE.fullmatch(trace_id):
         raise HTTPException(
             status_code=400,
             detail="trace_id must be 32-char lowercase hex",
+            headers={"Cache-Control": "no-store"},
         )
 
     # Operator surface — never cache in the browser. The in-process
@@ -1447,9 +1456,21 @@ def get_trace(
     # outlive its server-side TTL.
     response.headers["Cache-Control"] = "no-store"
 
+    # Decision is ALWAYS re-read from StateStore — not pulled from the
+    # cache. Codex 19.A.6 review MEDIUM: ``_observe_and_check_stability``
+    # can return True (and we'd cache the payload) before
+    # ``record_decision`` lands in Firestore, because the ADK's
+    # ``final_response`` event is emitted during execution but the
+    # decision document is persisted later in ``_do_recheck``/
+    # ``_do_rollback``. Caching a payload with ``decision: None`` would
+    # freeze the null for the full 300s TTL. Re-reading on every
+    # request — including cache hits — is cheap (single doc lookup) and
+    # closes the staleness window.
+    decision = state.find_decision_by_trace_id(trace_id)
+
     cached = _cache_get(trace_id)
     if cached is not None:
-        return {**cached, "fetched_from_cache": True}
+        return {**cached, "decision": decision, "fetched_from_cache": True}
 
     # Real timeout via a Future boundary. The google-cloud-logging
     # client's ``list_entries`` has no timeout parameter in 3.15.x —
@@ -1462,8 +1483,13 @@ def get_trace(
         events = fut.result(timeout=_TRACE_FETCH_TIMEOUT_S)
     except _FutureTimeout:
         fut.cancel()
+        # Same as the 400 path: carry ``no-store`` on the exception
+        # response so the operator's browser doesn't cache a transient
+        # timeout view.
         raise HTTPException(
-            status_code=503, detail="trace fetch timed out"
+            status_code=503,
+            detail="trace fetch timed out",
+            headers={"Cache-Control": "no-store"},
         ) from None
 
     # Stable tie-breaker: same-millisecond events would otherwise
@@ -1480,18 +1506,26 @@ def get_trace(
     # ``_entry_to_dict``, so the cast is sound.
     events = [redact_event(e) for e in events]  # type: ignore[misc]
 
-    decision = state.find_decision_by_trace_id(trace_id)
     complete = _observe_and_check_stability(trace_id, events)
-    payload = {
+    if complete:
+        # Cache the timeline-only view; the decision is re-read on
+        # every response above. Drop the observation entry — once the
+        # timeline is cached, future polls hit the cache and never
+        # call ``_observe_and_check_stability`` again, so leaving the
+        # observation around would just be unbounded growth.
+        _cache_put(
+            trace_id,
+            {"trace_id": trace_id, "events": events, "complete": True},
+        )
+        _TRACE_OBSERVATIONS.pop(trace_id, None)
+
+    return {
         "trace_id": trace_id,
         "events": events,
         "decision": decision,
         "complete": complete,
         "fetched_from_cache": False,
     }
-    if complete:
-        _cache_put(trace_id, payload)
-    return payload
 
 
 def _map_worker_error(
