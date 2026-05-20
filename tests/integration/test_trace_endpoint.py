@@ -87,6 +87,12 @@ def test_trace_endpoint_400_on_bad_trace_id():
     ]:
         resp = client.get(f"/trace/{bad}")
         assert resp.status_code == 400, (bad, resp.status_code, resp.text)
+        # Codex 19.A.6 review MEDIUM: the 400 exception path must
+        # ALSO carry ``Cache-Control: no-store``. The route-level
+        # ``response.headers[...]`` assign is dropped when an
+        # HTTPException is raised; we have to pass ``headers=`` on
+        # the exception itself.
+        assert resp.headers.get("cache-control") == "no-store"
 
     # Fetcher was never invoked — guard short-circuits at the URL layer.
     assert stub.calls == 0
@@ -333,6 +339,9 @@ def test_trace_endpoint_503_on_fetch_timeout(monkeypatch):
     resp = client.get(f"/trace/{_TRACE_A}")
     assert resp.status_code == 503
     assert "timed out" in resp.json()["detail"]
+    # The 503 exception path also carries ``no-store`` — operator
+    # browsers must not cache a transient timeout view.
+    assert resp.headers.get("cache-control") == "no-store"
 
 
 # --------------------------------------------------------------------------- #
@@ -400,6 +409,85 @@ def test_trace_endpoint_orders_by_timestamp_then_insert_id():
 # --------------------------------------------------------------------------- #
 # 8. Enrichment with the persisted decision document
 # --------------------------------------------------------------------------- #
+
+
+def test_trace_endpoint_cache_hit_rereads_decision_so_it_doesnt_freeze_null(
+    monkeypatch,
+):
+    """Codex 19.A.6 review MEDIUM: the cache must not freeze a stale
+    ``decision: null``.
+
+    Scenario: ``_observe_and_check_stability`` can return True (and we
+    cache the payload) BEFORE ``record_decision`` lands in Firestore,
+    because ``final_response`` is emitted during ADK execution but the
+    decision document is persisted later in ``_do_recheck`` /
+    ``_do_rollback``. If the cached payload carried ``decision: None``
+    we'd freeze that null for the full 300s TTL. The fix re-reads the
+    decision from StateStore on EVERY response, including cache hits.
+
+    Pin: poll 1 caches (no decision yet). Decision is then written.
+    Poll 2 (cache hit) must surface the decision."""
+    entries = [
+        {
+            "trace_id": _TRACE_A,
+            "event": "llm_thought",
+            "thought_text": "thinking",
+            "timestamp": "2026-05-21T00:00:00Z",
+            "insert_id": "ins-1",
+        },
+        {
+            "trace_id": _TRACE_A,
+            "event": "final_response",
+            "text": "done",
+            "timestamp": "2026-05-21T00:00:01Z",
+            "insert_id": "ins-2",
+        },
+    ]
+    stub = _stub_with(entries)
+    _install_fetcher(stub)
+
+    fake_now = [1000.0]
+
+    def fake_monotonic() -> float:
+        return fake_now[0]
+
+    monkeypatch.setattr("agent.main.time.monotonic", fake_monotonic)
+
+    client = TestClient(app)
+
+    # Poll 1: records the observation. complete=False.
+    r1 = client.get(f"/trace/{_TRACE_A}")
+    assert r1.status_code == 200
+    assert r1.json()["complete"] is False
+    assert r1.json()["decision"] is None
+
+    # Poll 2: grace window has elapsed; signature unchanged. cached
+    # with complete=True. No decision yet.
+    fake_now[0] += _STABILITY_GRACE_S + 1.0
+    r2 = client.get(f"/trace/{_TRACE_A}")
+    assert r2.status_code == 200
+    assert r2.json()["complete"] is True
+    assert r2.json()["decision"] is None
+
+    # Now the side-effect path lands and the decision is persisted.
+    state = get_state()
+    state.record_event("ev-late", {})
+    state.record_decision(
+        "dec-late",
+        "ev-late",
+        {"action": "drift_issue", "trace_id": _TRACE_A, "rationale": "x"},
+    )
+
+    # Poll 3: cache HIT (fetcher.calls unchanged), but decision is
+    # surfaced because we re-read on every response.
+    fetch_calls_before = stub.calls
+    r3 = client.get(f"/trace/{_TRACE_A}")
+    assert r3.status_code == 200
+    body3 = r3.json()
+    assert body3["fetched_from_cache"] is True
+    assert stub.calls == fetch_calls_before  # cache hit, no refetch
+    assert body3["decision"] is not None
+    assert body3["decision"]["action"] == "drift_issue"
 
 
 def test_trace_endpoint_enriches_with_decision_when_present():
