@@ -214,7 +214,7 @@ def validate_upgrade_request(
 
     # Rule 5: advisory_url shape. Hardcoded to GHSA only — a caller-
     # supplied arbitrary URL cannot be cited in the PR body.
-    if not _GHSA_ADVISORY_RE.match(advisory_url):
+    if not _GHSA_ADVISORY_RE.fullmatch(advisory_url):
         raise UpgradeValidationError(
             status_code=403,
             reason=(
