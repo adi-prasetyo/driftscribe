@@ -85,6 +85,12 @@ from agent.workload_context import current_workload
 from agent.workloads import WorkloadResolution, load_workload
 from driftscribe_lib.logging import current_trace_id_or_new
 
+# Log convention: every structured log record emits its event name in
+# BOTH `msg` (human-readable, stdlib-logging-ergonomic) AND
+# `extra={"event": ...}` (machine-filterable as a Cloud Logging top-level
+# field — see the `jsonPayload.event=...` query in
+# docs/runbooks/deploy.md Step 1b).
+# `agent/mcp/developer_knowledge.py:_log_call` follows the same pattern.
 _log = logging.getLogger("driftscribe.agent.adk_agent")
 
 # --------------------------------------------------------------------------- #
@@ -375,6 +381,8 @@ async def run_agent(
         if event.content and event.content.parts and getattr(event, "partial", None) is not True:
             for part in event.content.parts:
                 if getattr(part, "thought", False) and getattr(part, "text", None):
+                    # A thought part without text has nothing to log; the
+                    # falls-through path below still handles function_call.
                     _log.info(
                         "llm_thought",
                         extra={
@@ -469,6 +477,8 @@ async def run_chat(
         if event.content and event.content.parts and getattr(event, "partial", None) is not True:
             for part in event.content.parts:
                 if getattr(part, "thought", False) and getattr(part, "text", None):
+                    # A thought part without text has nothing to log; the
+                    # falls-through path below still handles function_call.
                     _log.info(
                         "llm_thought",
                         extra={

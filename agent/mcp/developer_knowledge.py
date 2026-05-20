@@ -428,6 +428,7 @@ def _log_call(
     the per-workload routing in 17.A.3.
     """
     extras = {
+        "event": "mcp_call",
         "trace_id": current_trace_id_or_new(),
         "workload": current_workload(),
         "mcp_server": "developer_knowledge",
