@@ -8,7 +8,7 @@ import pytest
 
 from agent.auth import verify_token
 from agent.config import get_settings
-from agent.main import _reset_state_for_tests, app
+from agent.main import _reset_state_for_tests, _reset_trace_fetcher_for_tests, app
 
 
 @pytest.fixture(autouse=True)
@@ -50,6 +50,7 @@ def _agent_settings(monkeypatch, request):
     # _set_token() — a stale autouse env value would shadow that and hide bugs.
     get_settings.cache_clear()
     _reset_state_for_tests()
+    _reset_trace_fetcher_for_tests()
     # Clear the workload cache so each test gets a fresh resolution
     # against the env state above. Without this, a test that delenv'd a
     # worker URL would still get the previously-cached resolution.
@@ -67,6 +68,7 @@ def _agent_settings(monkeypatch, request):
     app.dependency_overrides.pop(verify_token, None)
     get_settings.cache_clear()
     _reset_state_for_tests()
+    _reset_trace_fetcher_for_tests()
     _registry_mod._WORKLOAD_CACHE.clear()
 
 

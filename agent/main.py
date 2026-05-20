@@ -41,6 +41,7 @@ from agent.renderer import (
 )
 from agent.runbook_patcher import patch_runbook
 from agent.state_store import FirestoreStateStore, InMemoryStateStore, StateStore
+from agent.trace_fetcher import CloudLoggingFetcher, StubTraceFetcher, TraceFetcher
 from agent.validator import ValidationError as ProposalValidationError
 from agent.validator import validate
 from agent.workloads import (
@@ -233,6 +234,41 @@ def _reset_state_for_tests() -> None:
     """
     global _state_singleton
     _state_singleton = None
+
+
+_trace_fetcher_singleton: TraceFetcher | None = None
+
+
+def get_trace_fetcher() -> TraceFetcher:
+    """Return the process-wide TraceFetcher singleton.
+
+    Picks StubTraceFetcher in DRY_RUN / no-project mode so tests and demos
+    don't touch GCP; otherwise CloudLoggingFetcher backed by
+    google-cloud-logging.
+
+    NOTE: per-process, best-effort. Not a correctness boundary —
+    multi-process workers each have their own singleton. Acceptable because
+    /trace's source of truth is Cloud Logging; the singleton just amortizes
+    client construction.
+    """
+    global _trace_fetcher_singleton
+    if _trace_fetcher_singleton is None:
+        s = get_settings()
+        if s.dry_run or not s.gcp_project:
+            _trace_fetcher_singleton = StubTraceFetcher()
+        else:
+            _trace_fetcher_singleton = CloudLoggingFetcher(project=s.gcp_project)
+    return _trace_fetcher_singleton
+
+
+def _reset_trace_fetcher_for_tests() -> None:
+    """Test helper — drop the cached TraceFetcher singleton.
+
+    Mirrors ``_reset_state_for_tests``. The integration conftest calls this
+    on setup and teardown so each test gets a fresh StubTraceFetcher.
+    """
+    global _trace_fetcher_singleton
+    _trace_fetcher_singleton = None
 
 
 def _event_key(
