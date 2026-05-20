@@ -45,11 +45,20 @@ from driftscribe_lib.logging import current_trace_id_or_new
 # Per-worker env var name → fixed at boot for the deployed service via
 # cloudbuild.yaml's two-step OWN_URL pattern (deploy with placeholder, then
 # gcloud services update with the real URL after every worker is up).
+#
+# Phase 17.C.4: ``upgrade_reader`` / ``upgrade_docs`` join the table for
+# the upgrade workload's coordinator wiring. The two new env vars
+# (``UPGRADE_READER_URL`` / ``UPGRADE_DOCS_URL``) match the env var
+# names already registered in :data:`agent.workloads.registry._WORKER_REGISTRY`
+# — the worker_client and the workload registry are two consumers of
+# the same source of truth.
 _WORKER_URL_ENV: Final[dict[str, str]] = {
     "reader": "READER_URL",
     "docs": "DOCS_URL",
     "rollback": "ROLLBACK_URL",
     "notifier": "NOTIFIER_URL",
+    "upgrade_reader": "UPGRADE_READER_URL",
+    "upgrade_docs": "UPGRADE_DOCS_URL",
 }
 
 
@@ -57,11 +66,19 @@ _WORKER_URL_ENV: Final[dict[str, str]] = {
 # special-case for rollback is wrapped in :func:`call_execute` below —
 # we never let the caller (and especially never let the LLM) pick the
 # endpoint path freely, which would be a Layer 0 capability escape.
+#
+# Phase 17.C.4: the upgrade workers' canonical endpoints are ``/read``
+# (matching :func:`workers.upgrade_reader.main.read`) and ``/patch``
+# (matching :func:`workers.upgrade_docs.main.patch`). Keep these
+# hardcoded — exposing endpoint-path selection to the LLM would be a
+# Layer 0 violation, same as for the drift workers above.
 WORKER_ENDPOINTS: Final[dict[str, str]] = {
     "reader": "/read",
     "docs": "/patch",
     "rollback": "/propose",
     "notifier": "/notify",
+    "upgrade_reader": "/read",
+    "upgrade_docs": "/patch",
 }
 
 

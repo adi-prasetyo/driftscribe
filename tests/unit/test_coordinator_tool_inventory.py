@@ -77,6 +77,16 @@ EXPECTED_TOOL_NAMES = frozenset({
     # suffix because they're not drift-specific function-tool wrappers.
     "search_developer_docs",
     "retrieve_developer_doc",
+    # Phase 17.C.4 — Upgrade workload tools. Authority-clean LLM-facing
+    # surface: ``upgrade_read_dependencies_tool`` takes no args, and
+    # ``upgrade_propose_pr_tool`` derives ``target_repo`` /
+    # ``lockfile_path`` / ``branch`` / ``base`` / ``title`` server-side
+    # from ``UPGRADE_TARGET_REGISTRY``. See
+    # ``agent.adk_tools.upgrade_read_dependencies_tool`` /
+    # ``agent.adk_tools.upgrade_propose_pr_tool`` for the
+    # routing-fields-server-side rationale.
+    "upgrade_read_dependencies_tool",
+    "upgrade_propose_pr_tool",
 })
 
 
@@ -199,19 +209,16 @@ def test_upgrade_workload_enabled_tools_match_expected_set():
     """Phase 17.A.4: the upgrade workload's enabled_tool_names must equal
     :data:`UPGRADE_WORKLOAD_TOOL_NAMES` exactly — same names, same order.
 
-    Why parse the YAML directly here instead of calling
-    :func:`agent.workloads.load_workload`: upgrade's tools are still
-    reserved-but-not-implemented (``None`` in ``TOOL_REGISTRY`` until
-    17.B/17.C). A ``load_workload("upgrade")`` call today raises
-    :class:`ReservedToolNotImplementedError` before producing a spec.
-    Reading and validating the YAML through
-    :class:`WorkloadSpec.model_validate` exercises the same schema the
-    loader uses, without the tool-resolution step that fails on
-    reserved-None entries.
-
-    When 17.C flips the reserved entries to real callables, this test
-    keeps working unchanged — :data:`UPGRADE_WORKLOAD_TOOL_NAMES` is the
-    audit point either way.
+    Phase 17.C.4 follow-up: the previous version of this test parsed
+    the YAML directly because upgrade's tools were reserved
+    (``None`` in TOOL_REGISTRY). 17.C.4 flipped both
+    ``upgrade_read_dependencies`` and ``upgrade_propose_pr`` to real
+    callables, so ``load_workload("upgrade")`` now succeeds — but we
+    still parse the YAML directly here because this test's audit point
+    is the YAML ⇄ constant equality, and that doesn't depend on the
+    UPGRADE_READER_URL / UPGRADE_DOCS_URL env vars being set. The
+    full-resolution path is covered by
+    ``tests/unit/test_upgrade_workload_loads.py``.
     """
     yaml_path = (
         Path(__file__).resolve().parents[2]
@@ -419,6 +426,19 @@ _DANGEROUS_PARAM_RE = re.compile(
 )
 
 
+# Phase 17.C.4: ``upgrade_propose_pr_tool.advisory_url`` is a deliberate
+# exception. The LLM picks the URL (it's the decision content — which
+# GHSA advisory the bump addresses); the Upgrade Docs Worker's
+# :data:`workers.upgrade_docs.validator._GHSA_ADVISORY_RE` validator
+# enforces the URL shape (``^https://github.com/advisories/GHSA-...$``)
+# at request time, so the LLM cannot use this parameter to redirect the
+# coordinator at an arbitrary URL. The exemption is narrow on purpose —
+# any other URL-shaped param must rename to avoid the regex.
+_DANGEROUS_PARAM_NAME_EXCEPTIONS: frozenset[tuple[str, str]] = frozenset({
+    ("upgrade_propose_pr_tool", "advisory_url"),
+})
+
+
 @pytest.mark.parametrize("tool", COORDINATOR_TOOLS, ids=lambda t: t.__name__)
 def test_no_tool_has_dangerous_parameter_name(tool):
     """No tool's parameter list may contain names that hint at a
@@ -429,18 +449,28 @@ def test_no_tool_has_dangerous_parameter_name(tool):
     ``url`` parameter the LLM could in principle widen the capability
     through the argument. This test catches that at registration time.
 
-    Current 8-tool registry (six pre-17.B.3 tools plus the two
-    Developer Knowledge MCP wrappers) has no such parameters — the
-    test pins the property as the registry grows.
+    Phase 17.C.4 exemption: ``upgrade_propose_pr_tool.advisory_url`` is
+    the only URL-shaped param in the registry. It's allowed because the
+    Upgrade Docs Worker enforces a strict GHSA URL regex on the value
+    (see :data:`workers.upgrade_docs.validator._GHSA_ADVISORY_RE`) — the
+    LLM cannot widen capability through that argument because the
+    worker rejects anything that isn't a github.com/advisories/GHSA-…
+    URL. Any new URL-shaped param MUST come with a similar worker-side
+    validator AND a new entry in
+    :data:`_DANGEROUS_PARAM_NAME_EXCEPTIONS` above.
     """
     sig = inspect.signature(tool)
     for param_name in sig.parameters:
+        if (tool.__name__, param_name) in _DANGEROUS_PARAM_NAME_EXCEPTIONS:
+            continue
         assert not _DANGEROUS_PARAM_RE.search(param_name), (
             f"Tool {tool.__name__!r} has parameter {param_name!r} matching "
             f"a dangerous-parameter pattern. Even if the tool is safe today, "
             f"a parameter named this way invites future widening of "
             f"capability through the argument. Rename, or reconsider "
-            f"whether this argument needs to exist."
+            f"whether this argument needs to exist. (If the worker enforces "
+            f"a strict regex on the value, add an entry to "
+            f"_DANGEROUS_PARAM_NAME_EXCEPTIONS with that justification.)"
         )
 
 
@@ -472,8 +502,11 @@ def test_dangerous_param_regex_smoke_test():
     assert _DANGEROUS_PARAM_RE.search("CMD")
     assert _DANGEROUS_PARAM_RE.search("Target_URL")
 
-    # Safe params (every parameter name currently used by COORDINATOR_TOOLS)
-    # MUST NOT match. If this list grows, add the new name here.
+    # Safe params (every parameter name currently used by COORDINATOR_TOOLS
+    # MUST NOT match — except ``advisory_url``, which is the Phase 17.C.4
+    # GHSA-validated exception covered by
+    # :data:`_DANGEROUS_PARAM_NAME_EXCEPTIONS`). If this list grows, add
+    # the new name here.
     for safe in (
         "target_revision",
         "reason",
@@ -488,6 +521,9 @@ def test_dangerous_param_regex_smoke_test():
         # Phase 17.B.3 — Developer Knowledge MCP wrapper params.
         "query",
         "name",
+        # Phase 17.C.4 — Upgrade workload tool params (safe-named ones).
+        "package_name",
+        "target_version",
     ):
         assert not _DANGEROUS_PARAM_RE.search(safe), (
             f"Regex unexpectedly matched safe parameter name {safe!r}. "

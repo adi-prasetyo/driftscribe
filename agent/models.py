@@ -13,6 +13,13 @@ class DecisionAction(str, Enum):
     ESCALATION = "escalation"
     NO_OP = "no_op"
     ROLLBACK = "rollback"
+    # Phase 17.C.4: dependency-upgrade PR. Emitted by the upgrade
+    # workload's /recheck path when a patch/minor bump is appropriate
+    # in response to a medium+ severity advisory. The orchestrator
+    # routes the decision through the Upgrade Docs Agent
+    # (``upgrade_propose_pr_tool``); the LLM never calls that tool
+    # from /recheck — see ``workloads/upgrade/system_prompt.md``.
+    UPGRADE_PR = "upgrade_pr"
 
 class EnvDiff(BaseModel):
     name: str

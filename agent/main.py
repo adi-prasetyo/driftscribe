@@ -46,10 +46,13 @@ from agent.validator import validate
 from agent.workloads import (
     MissingWorkerEnvError,
     ReservedToolNotImplementedError,
+    UnknownUpgradeTargetError,
+    WorkloadResolution,
     load_workload,
     reset_workload,
     set_workload,
 )
+from pydantic import ValidationError as PydanticValidationError
 from driftscribe_lib.logging import (
     install_trace_middleware,
     setup as setup_logging,
@@ -70,6 +73,69 @@ def _branch_slug(name: str) -> str:
     """Sanitize an env-var name for use inside a git branch name."""
     slug = _BRANCH_SLUG.sub("-", name.lower()).strip("-")
     return slug or "var"
+
+
+def _eager_resolve_upgrade_contract(resolution: WorkloadResolution) -> None:
+    """Eagerly parse the upgrade workload's ``contract.yaml`` at request entry.
+
+    Phase 17.C.4 (Codex 2026-05-20 follow-up — step 4 of task 17.C.4):
+    ``load_workload("upgrade")`` already resolves the manifest's
+    ``contract_file`` *path* but does NOT parse the contract YAML. The
+    contract parser (:func:`agent.upgrade_contract.load_upgrade_contract`)
+    is what surfaces :class:`UnknownUpgradeTargetError` for an unknown
+    ``target_name``, and pydantic ValidationError for any schema
+    violation. We invoke it here so a bad contract becomes a clean 503
+    at request entry, not a mid-conversation runtime error after the
+    LLM has already started reasoning.
+
+    No-op for non-upgrade workloads — drift's contract is parsed by
+    :func:`agent.contract.load_contract` later in :func:`_do_recheck`.
+
+    Maps the parser's failure modes to a single 503 with the original
+    error message preserved so the operator can self-diagnose:
+
+    - :class:`UnknownUpgradeTargetError`: contract's ``target_name``
+      isn't in :data:`UPGRADE_TARGET_REGISTRY` — a deploy bug, but
+      structurally the same "workload not deployed" condition as a
+      missing worker URL from the operator's POV.
+    - :class:`pydantic.ValidationError`: schema violation (unknown
+      decision key, missing field, bad type). Same 503 surface.
+    - :class:`FileNotFoundError`: ``contract_file`` declared in the
+      manifest but the file is missing on disk. Deploy bug, 503.
+    """
+    if resolution.spec.name != "upgrade":
+        return
+    if resolution.contract_path is None:
+        # The upgrade workload's manifest declares
+        # ``contract_file: contract.yaml`` (pinned by 17.C.1 tests), so
+        # this branch is unreachable in a well-formed deploy. Belt-and-
+        # suspenders for a future YAML refactor that drops the field.
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "upgrade workload manifest is missing contract_file; "
+                "cannot validate upgrade contract"
+            ),
+        )
+    # Lazy import — keeps the upgrade-contract module out of the drift
+    # request path's import graph.
+    from agent.upgrade_contract import load_upgrade_contract
+
+    try:
+        load_upgrade_contract(resolution.contract_path)
+    except (
+        UnknownUpgradeTargetError,
+        PydanticValidationError,
+        FileNotFoundError,
+    ) as e:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"upgrade contract not loadable: {e}. See Phase 17.C.1 "
+                f"for the contract schema and UPGRADE_TARGET_REGISTRY "
+                f"for the allowed target names."
+            ),
+        ) from e
 
 
 def _read_runbook_content(s: Settings, target_in_repo: str) -> str:
@@ -538,7 +604,7 @@ async def _do_recheck(
     # — out of scope for 17.A.3, but the seam is here. For drift,
     # ``s.contract_path`` is still the source of truth.
     try:
-        load_workload(workload)
+        resolution = load_workload(workload)
     except (
         MissingWorkerEnvError,
         ReservedToolNotImplementedError,
@@ -561,6 +627,13 @@ async def _do_recheck(
                 f"upgrade's tools and worker URLs."
             ),
         ) from e
+
+    # Phase 17.C.4 (Codex 2026-05-20 follow-up): eagerly parse the
+    # upgrade contract on every request so a bad contract surfaces as
+    # a clean 503 at request entry rather than a mid-conversation
+    # runtime error after the LLM has begun reasoning. No-op for
+    # drift; see :func:`_eager_resolve_upgrade_contract`.
+    _eager_resolve_upgrade_contract(resolution)
 
     # Phase 17.A (Codex review, Fix Important #1): the classifier-path
     # non-drift refusal must fire BEFORE the drift contract load below.
@@ -1375,7 +1448,7 @@ async def chat(req: ChatRequest, _: None = Depends(verify_token)) -> dict:
     # Codex review of the initial 17.A.3 implementation flagged the
     # broader catch as collapsing two operationally distinct cases.
     try:
-        load_workload(req.workload)
+        resolution = load_workload(req.workload)
     except (
         MissingWorkerEnvError,
         ReservedToolNotImplementedError,
@@ -1393,6 +1466,13 @@ async def chat(req: ChatRequest, _: None = Depends(verify_token)) -> dict:
                 f"upgrade's tools and worker URLs."
             ),
         ) from e
+
+    # Phase 17.C.4 (Codex 2026-05-20 follow-up): eagerly parse the
+    # upgrade contract on every /chat request so a bad contract
+    # surfaces as a clean 503 at request entry rather than a mid-
+    # conversation runtime error inside ``run_chat``. No-op for drift;
+    # see :func:`_eager_resolve_upgrade_contract`.
+    _eager_resolve_upgrade_contract(resolution)
 
     from agent.adk_agent import run_chat
 

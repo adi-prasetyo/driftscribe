@@ -21,11 +21,16 @@ not in this commit) triggers a CI failure. The list is intentionally
 flat — no submodule grouping, no dynamic registration — so the
 inventory test can do a 1:1 set comparison.
 
-Worker-delegating tools (4):
+Worker-delegating tools (4 drift + 2 upgrade = 6):
 - ``read_live_env_tool`` → Reader Agent ``/read``
 - ``propose_rollback_tool`` → Rollback Agent ``/propose`` (HITL-gated)
 - ``patch_docs_tool`` → Docs Agent ``/patch``
 - ``notify_tool`` → Notifier Agent ``/notify``
+- ``upgrade_read_dependencies_tool`` → Upgrade Reader Agent ``/read``
+  (Phase 17.C.4). Authority-clean: no LLM-controllable args.
+- ``upgrade_propose_pr_tool`` → Upgrade Docs Agent ``/patch``
+  (Phase 17.C.4). Authority-clean: LLM picks decision content only;
+  repo / lockfile path / branch / base / title derived server-side.
 
 Coordinator-internal read-only tools (2):
 - ``search_recent_prs_tool`` (read-only GitHub via coordinator PAT)
@@ -35,9 +40,9 @@ Developer Knowledge MCP wrappers (2, Phase 17.B.3):
 - ``search_developer_docs`` → Developer Knowledge MCP ``search_documents``
 - ``retrieve_developer_doc`` → Developer Knowledge MCP ``get_documents``
 
-That's 8 tools, period. Anything else the model wants to do is denied
-by capability — there is no general "execute shell" or "make HTTP
-request" surface.
+That's 10 tools, period (Phase 17.C.4 grew it from 8 → 10). Anything
+else the model wants to do is denied by capability — there is no
+general "execute shell" or "make HTTP request" surface.
 
 **Per-workload tool inventories (Phase 17.A.4):**
 :data:`DRIFT_WORKLOAD_TOOL_NAMES` and :data:`UPGRADE_WORKLOAD_TOOL_NAMES`
@@ -65,6 +70,8 @@ from agent.adk_tools import (
     propose_rollback_tool,
     read_live_env_tool,
     search_recent_prs_tool,
+    upgrade_propose_pr_tool,
+    upgrade_read_dependencies_tool,
 )
 from agent.mcp.developer_knowledge import (
     retrieve_developer_doc,
@@ -89,6 +96,12 @@ COORDINATOR_TOOLS = [
     # ``agent.mcp.developer_knowledge`` for cache + timeout + log details.
     search_developer_docs,
     retrieve_developer_doc,
+    # Upgrade workload tools (Phase 17.C.4). Authority-clean LLM-facing
+    # surface — see ``agent.adk_tools.upgrade_read_dependencies_tool``
+    # and ``agent.adk_tools.upgrade_propose_pr_tool`` for the
+    # routing-fields-server-side rationale.
+    upgrade_read_dependencies_tool,
+    upgrade_propose_pr_tool,
 ]
 
 
@@ -207,74 +220,24 @@ UPGRADE_WORKLOAD_TOOL_NAMES: tuple[str, ...] = (
 # That's still a meaningful Layer 0 surface: a PR can't sneak a new
 # tool in without updating that constant.
 #
-# ``SYSTEM_PROMPT_CHAT`` (below) is intentionally NOT moved into the
-# workload manifest in 17.A.3. Rationale:
-#
-# - The /chat free-form prompt is currently coordinator-wide, not
-#   workload-specific (it explains the four worker tools, none of which
-#   are upgrade-flavored yet).
-# - Moving it into ``workloads/drift/`` now would force a parallel
-#   move into ``workloads/upgrade/`` before 17.C had decided whether
-#   /chat is even a meaningful surface for upgrade.
-# - Schema commitment punted: no ``chat_system_prompt_file`` field
-#   added to :class:`~agent.workloads.WorkloadSpec` yet.
-#
-# Follow-up: when 17.C introduces an upgrade-flavored chat prompt,
-# either (a) add ``chat_system_prompt_file: str | None`` to the
-# WorkloadSpec and migrate both drift's and upgrade's prompts, or
-# (b) keep SYSTEM_PROMPT_CHAT coordinator-wide if upgrade's chat mode
-# turns out to want the same wording. The decision is small enough to
-# defer.
-# TODO(17.C): revisit when upgrade's chat behavior is concrete.
+# Phase 17.C.4 (Option A from the plan): the ``/chat`` system prompt is
+# now per-workload. Drift's prompt lives in
+# ``workloads/drift/chat_system_prompt.md`` (byte-identical to the
+# pre-17.C.4 ``SYSTEM_PROMPT_CHAT`` constant — pinned by
+# ``tests/unit/test_drift_workload_loads.py::test_drift_chat_system_prompt_file_matches_pre17c4_constant``);
+# upgrade's lives in ``workloads/upgrade/chat_system_prompt.md`` and
+# describes the upgrade tool surface in operator-facing terms. The
+# loader (:func:`agent.workloads.registry._load_from_path`) populates
+# :class:`~agent.workloads.WorkloadResolution.chat_system_prompt`;
+# :func:`build_chat_agent` reads that field. Workloads that want the
+# same prompt on both ``/chat`` and ``/recheck`` can leave
+# ``chat_system_prompt_file`` unset in YAML — the registry falls back
+# to ``system_prompt``.
 
 
 # --------------------------------------------------------------------------- #
 # Free-form chat agent (/chat)
 # --------------------------------------------------------------------------- #
-
-SYSTEM_PROMPT_CHAT = """\
-You are DriftScribe's coordinator agent. Your job is to help an on-call
-operator detect, triage, and respond to drift between a Cloud Run service's
-live state and its declared operations contract.
-
-CRITICAL constraint: You cannot mutate any system directly. You can ONLY
-call worker tools. Each tool is delegated to a separate worker service with
-its own scoped IAM and payload-intent policy. You are deliberately built
-without direct GCP or GitHub mutation access.
-
-Tools available to you:
-- read_live_env_tool() — ask the Reader Agent for the live env + revision
-- propose_rollback_tool(target_revision, reason) — ask Rollback Agent to
-  create an approval. Rollbacks REQUIRE human approval; you do NOT execute
-  them. Return the approval URL to the operator and explain that they must
-  click it and press Approve.
-- patch_docs_tool(file_path, new_content, title, body) — ask Docs Agent to
-  open a docs PR. Path must be under demo/docs/*.md.
-- notify_tool(channel, severity, body) — ask Notifier Agent to post a
-  webhook. Channel: info|alert|approval. Severity: low|medium|high|critical.
-- search_recent_prs_tool(keywords, days=7) — read-only PR history
-- load_contract_tool() — read the baked-in ops contract
-- search_developer_docs(query) — search Google's Developer Knowledge
-  corpus (Cloud Run, GitHub Actions, etc.) for authoritative product
-  documentation. Returns up to 5 doc refs with parent/content/id.
-- retrieve_developer_doc(name) — fetch the full body of a single doc
-  by name (use the `parent` field from a search result as `name`).
-
-Rules:
-- If asked to do something destructive (rollback, redeploy, delete), use
-  propose_rollback_tool and explain that human approval is required.
-  NEVER attempt to bypass the approval gate.
-- When proposing a docs PR (via patch_docs_tool), first call
-  search_developer_docs to find authoritative Cloud Run env-variable
-  guidance for the var(s) being documented; cite the resulting document
-  URL in the PR body so the reviewer can audit which canonical guidance
-  the proposed wording references. If the search returns an `error` key
-  or no relevant matches, proceed but note the absence of an
-  authoritative citation rather than inventing a URL.
-- If a tool returns an error, surface it to the operator clearly. Do NOT
-  pretend the action succeeded.
-- Be concise. The operator is on-call and wants the answer, not prose.
-"""
 
 # Greedy + DOTALL on purpose: when the model wraps JSON in a ```json fence
 # (or leads with prose), we want from the first `{` to the last `}`.
@@ -333,15 +296,21 @@ def build_chat_agent(workload: WorkloadResolution) -> Agent:
     """Construct the /chat-flavored ADK Agent for the given workload.
 
     Same workload parameter as :func:`build_agent`. The system prompt
-    here is the coordinator-wide :data:`SYSTEM_PROMPT_CHAT` (see the
-    block-comment above for the rationale on NOT moving it into the
-    workload manifest in 17.A.3). Tool list is per-workload — same
-    Phase 17.A.3 rationale as :func:`build_agent`.
+    here is :attr:`~agent.workloads.WorkloadResolution.chat_system_prompt`
+    — Phase 17.C.4 (Option A from the plan) moved the previously
+    coordinator-wide ``SYSTEM_PROMPT_CHAT`` constant into per-workload
+    files (``workloads/drift/chat_system_prompt.md`` and
+    ``workloads/upgrade/chat_system_prompt.md``) so the upgrade chat
+    surface gets upgrade-flavored instructions, not drift's. Workloads
+    that want the same prompt on both surfaces leave
+    ``chat_system_prompt_file`` unset in YAML — the registry falls back
+    to ``system_prompt``. Tool list is per-workload — same Phase 17.A.3
+    rationale as :func:`build_agent`.
     """
     return Agent(
         name=f"driftscribe_chat_{workload.spec.name}",
         model="gemini-2.5-flash",
-        instruction=SYSTEM_PROMPT_CHAT,
+        instruction=workload.chat_system_prompt,
         tools=list(workload.tools.values()),
     )
 
