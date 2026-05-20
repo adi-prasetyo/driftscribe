@@ -34,6 +34,7 @@ import yaml
 from pydantic import ValidationError
 
 from agent.upgrade_contract import (
+    KNOWN_ACTION_KEYS,
     UpgradeContract,
     UpgradeDecisionRule,
     load_upgrade_contract,
@@ -290,6 +291,62 @@ def test_bundled_contract_decisions_subset_of_action_registry():
         f"contract.yaml decisions {sorted(missing)} are not in "
         f"ACTION_REGISTRY {sorted(registry_actions)} — add the action "
         "to the registry first."
+    )
+
+
+def test_load_upgrade_contract_rejects_unknown_decision_key(tmp_path):
+    """Task 17.C.3a (rule 6 — contract integrity). The loader must
+    reject any decision key outside :data:`KNOWN_ACTION_KEYS` at load
+    time, not at decision time. Previously the bundled contract was
+    pinned only by the cross-check tests below; this hardens the same
+    property in production by adding a pydantic ``model_validator`` to
+    :class:`UpgradeContract` itself. A future hand-edit of
+    ``contract.yaml`` that introduces a ``made_up_action`` key now
+    fails immediately at :func:`load_upgrade_contract`.
+    """
+    p = tmp_path / "c.yaml"
+    p.write_text(
+        "target_name: phase17_demo\n"
+        "decisions:\n"
+        "  made_up_action: {}\n"
+    )
+    with pytest.raises(ValidationError, match="made_up_action"):
+        load_upgrade_contract(p)
+
+
+def test_known_action_keys_constant_is_subset_of_action_registry():
+    """``KNOWN_ACTION_KEYS`` is the upgrade contract's own opinion of
+    which decision actions are valid — a strict subset of
+    ``ACTION_REGISTRY``. (Drift-only actions like ``drift_issue`` and
+    ``rollback`` live in the global registry but are not valid
+    upgrade decisions.)
+
+    Deviation note vs the plan: the plan suggested asserting
+    ``KNOWN_ACTION_KEYS == set(ACTION_REGISTRY)``, but those sets are
+    intentionally different — ``ACTION_REGISTRY`` carries drift
+    actions too. The correct invariant is **subset**: a key in
+    ``KNOWN_ACTION_KEYS`` must always be a real action the registry
+    knows about, so a typo in the contract module that referenced
+    e.g. ``"escalate"`` (verb) instead of ``"escalation"`` (noun) is
+    caught here.
+    """
+    from agent.workloads.registry import ACTION_REGISTRY
+
+    assert KNOWN_ACTION_KEYS <= set(ACTION_REGISTRY), (
+        f"KNOWN_ACTION_KEYS {sorted(KNOWN_ACTION_KEYS)} has entries "
+        f"not in ACTION_REGISTRY {sorted(ACTION_REGISTRY)} — add the "
+        "action to the registry or fix the constant."
+    )
+
+
+def test_known_action_keys_constant_matches_documented_set():
+    """Pin the exact contents of ``KNOWN_ACTION_KEYS`` so a future
+    accidental widening (e.g. adding ``"rollback"`` to the constant)
+    is caught here. The documented allowlist is
+    {no_op, docs_pr, upgrade_pr, escalation}.
+    """
+    assert KNOWN_ACTION_KEYS == frozenset(
+        {"no_op", "docs_pr", "upgrade_pr", "escalation"}
     )
 
 
