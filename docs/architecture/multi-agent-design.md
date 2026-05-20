@@ -1,6 +1,6 @@
 # DriftScribe multi-agent architecture
 
-> **Status:** Phase 17 in progress — multi-agent framework + Developer Knowledge MCP. Two workloads ship: **drift** (Cloud Run env vs ops contract) and **upgrade** (npm `package.json` vs GitHub Advisory DB). The coordinator routes per `workload=<name>` and only ever shows the LLM that workload's tool subset. The MCP attaches at the coordinator only. See `docs/plans/2026-05-19-driftscribe-phase17-framework-mcp.md` for the per-task list.
+> **Status:** Phase 17 complete — multi-agent framework + Developer Knowledge MCP. Two workloads ship: **drift** (Cloud Run env vs ops contract) and **upgrade** (npm `package.json` vs GitHub Advisory DB). The coordinator routes per `workload=<name>` and only ever shows the LLM that workload's tool subset. The MCP attaches at the coordinator only. See `docs/plans/2026-05-19-driftscribe-phase17-framework-mcp.md` for the per-task list.
 
 ---
 
@@ -31,8 +31,11 @@ flowchart LR
         Chat --> ADKd
         Chat --> ADKu
         Recheck --> ADKd
-        Recheck --> ADKu
         Eventarc --> ADKd
+        %% /recheck workload=upgrade returns 503 in this build — the
+        %% drift /recheck path's post-agent plumbing (classifier ->
+        %% validator -> renderer -> action) is drift-specific.
+        %% Workload-specific /recheck for upgrade is post-Phase-17.
     end
 
     subgraph DriftWorkers["Drift workers (--no-allow-unauthenticated)"]

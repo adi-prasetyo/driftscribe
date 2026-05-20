@@ -1,6 +1,6 @@
 # DriftScribe IAM matrix
 
-> **Status:** Phase 17.D — multi-agent framework + Developer Knowledge MCP. Two workloads (drift, upgrade) share the coordinator + notifier and each have their own worker pair (drift: reader/docs/rollback; upgrade: upgrade-reader/upgrade-docs). The coordinator runs under a dedicated `driftscribe-agent@…` SA with per-secret bindings on `coordinator-shared-token`, `github-pat`, and `developer-knowledge-api-key`. The bootstrap script (`infra/scripts/setup_secrets.sh`) creates all 7 SAs, applies per-SA IAM (including the resource-scoped rollback grant on `payment-demo` only, the project-wide `roles/aiplatform.user` on the coordinator for Vertex AI, and per-worker `run.invoker` grants for the coordinator on both workload's worker sets), and is idempotent. The operator runbook is [`docs/runbooks/deploy.md`](../runbooks/deploy.md).
+> **Status:** Phase 17 complete — multi-agent framework + Developer Knowledge MCP. Two workloads (drift, upgrade) share the coordinator + notifier and each have their own worker pair (drift: reader/docs/rollback; upgrade: upgrade-reader/upgrade-docs). The coordinator runs under a dedicated `driftscribe-agent@…` SA with per-secret bindings on `coordinator-shared-token`, `github-pat`, and `developer-knowledge-api-key`. The bootstrap script (`infra/scripts/setup_secrets.sh`) creates all 7 SAs, applies per-SA IAM (including the resource-scoped rollback grant on `payment-demo` only, the project-wide `roles/aiplatform.user` on the coordinator for Vertex AI, and per-worker `run.invoker` grants for the coordinator on both workload's worker sets), and is idempotent. The operator runbook is [`docs/runbooks/deploy.md`](../runbooks/deploy.md).
 
 This document is the source of truth for **what each service account can do, and what it explicitly cannot do**. The "negative-space" column is load-bearing — it's not enough to enumerate the grants; reviewers and judges should be able to run `gcloud projects get-iam-policy driftscribe-hack-2026 --format=json` and verify nothing beyond the listed bindings is present.
 
@@ -109,7 +109,7 @@ gcloud projects remove-iam-policy-binding ${PROJECT} \
 #  delegated to the rollback worker.)
 ```
 
-**Critical:** do NOT remove `roles/datastore.user` from the coordinator. The coordinator still owns the `pending → denied` flip on the approvals collection (Phase 11.7 design) and writes to the `sessions/` collection for the state store. Removing this grant would break both /recheck idempotency and the approval reject path.
+**Critical:** do NOT remove `roles/datastore.user` from the coordinator. The coordinator writes to the `sessions/` collection for the state store and READS `approvals/` to render the operator-facing approval page. Removing this grant would break `/recheck` idempotency. The `pending → denied` flip itself moved to the rollback worker in Phase 11.9 (see `worker_client.call_deny` in `agent/main.py` → `/deny` in `workers/rollback/main.py` — the rollback worker is the only service that holds the HMAC key needed to verify the deny token), so the deny path no longer requires Firestore writes from the coordinator. Sessions + reads remain the load-bearing reasons.
 
 ## Phase 11.9 carry-overs from Codex 11.7 review
 
