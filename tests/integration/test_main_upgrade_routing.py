@@ -163,3 +163,81 @@ def test_recheck_upgrade_workload_with_bad_contract_returns_503(monkeypatch):
     # the agent dispatch.
     m_load_contract.assert_not_called()
     fake_run_agent.assert_not_awaited()
+
+
+def test_chat_upgrade_workload_with_malformed_yaml_returns_503():
+    """Phase 17.C.4 follow-up (Codex post-merge review — Important #1):
+    ``load_upgrade_contract`` re-raises ``yaml.YAMLError`` as
+    ``ValueError`` (see ``agent.upgrade_contract.load_upgrade_contract``).
+    The eager-resolve handler MUST catch ``ValueError`` too; otherwise a
+    malformed YAML would 500 instead of the intended 503.
+
+    Pins the catch-tuple shape so a future refactor that drops
+    ``ValueError`` from the eager-resolve catch fails CI loudly.
+    """
+    fake_run_chat = AsyncMock()
+    with (
+        patch(
+            "agent.upgrade_contract.load_upgrade_contract",
+            side_effect=ValueError(
+                "failed to parse upgrade contract /tmp/contract.yaml: "
+                "mapping values are not allowed here"
+            ),
+        ),
+        patch("agent.adk_agent.run_chat", fake_run_chat),
+    ):
+        client = TestClient(app)
+        r = client.post(
+            "/chat",
+            json={"prompt": "triage", "workload": "upgrade"},
+        )
+
+    assert r.status_code == 503, r.text
+    detail = r.json()["detail"].lower()
+    assert "upgrade contract not loadable" in detail
+    fake_run_chat.assert_not_awaited()
+
+
+def test_recheck_upgrade_workload_returns_503_unimplemented(monkeypatch):
+    """Phase 17.C.4 follow-up (Codex post-merge review — Blocker):
+    ``/recheck workload=upgrade`` returns 503 with an explicit
+    "not implemented in this build" message BEFORE invoking the
+    drift-specific post-agent plumbing.
+
+    The downstream ``_do_recheck`` flow loads the drift ``OpsContract``,
+    validates with the drift validator (which requires ``env_diffs`` for
+    non-NO_OP actions), and renders/performs through drift-only branches
+    with no UPGRADE_PR support. Letting an upgrade /recheck reach that
+    code path would either crash on missing branches or produce a
+    misleading "validator rejected proposal" error. We fail fast at
+    request entry instead; Task 17.C.5 will wire the upgrade-specific
+    /recheck execution path.
+
+    Asserts the 503 fires BEFORE the drift contract load AND BEFORE the
+    ADK agent dispatch — pins the order so a future "tidy" can't move
+    the guard later. ``USE_ADK=true`` is required because the existing
+    classifier-non-drift refusal would otherwise short-circuit with a
+    different (still 503) message; the unimplemented guard is what's
+    under test here.
+    """
+    # USE_ADK=true and the upgrade worker URLs come from the autouse
+    # fixture at the top of this file; this test only needs to assert
+    # that the unimplemented guard fires.
+    fake_run_agent = AsyncMock()
+    with (
+        patch("agent.main._run_adk_agent", fake_run_agent),
+        patch("agent.main.load_contract") as m_load_contract,
+    ):
+        client = TestClient(app)
+        r = client.post("/recheck", json={"workload": "upgrade"})
+
+    assert r.status_code == 503, r.text
+    detail = r.json()["detail"].lower()
+    assert "not implemented" in detail
+    assert "/recheck" in detail or "recheck" in detail
+    # The guard fires BEFORE both the drift contract load and the agent
+    # dispatch. If the post-agent plumbing ever ran on an upgrade
+    # request, m_load_contract would be called and these assertions
+    # would catch it.
+    m_load_contract.assert_not_called()
+    fake_run_agent.assert_not_awaited()
