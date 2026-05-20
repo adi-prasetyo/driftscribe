@@ -59,3 +59,14 @@ def test_ui_transparency_route_has_hook_landmarks():
     assert 'id="group-coordinator"' in body
     assert 'id="group-tools"' in body
     assert 'id="group-mcp"' in body
+
+
+def test_ui_transparency_contains_token_prompt_helpers():
+    # Pin the API shape that 19.B.3 will rely on.
+    resp = client.get("/ui/transparency")
+    body = resp.text
+    assert "getToken" in body
+    assert "api(" in body or "function api" in body
+    assert "X-DriftScribe-Token" in body
+    assert "driftscribe_token" in body  # sessionStorage key
+    assert "401" in body and "403" in body  # cleared on auth failures
