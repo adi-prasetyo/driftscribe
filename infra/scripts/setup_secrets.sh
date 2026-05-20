@@ -518,6 +518,27 @@ echo
 echo "  next: confirm the trigger filter matches what your env emits —"
 echo "    see docs/runbooks/deploy.md → 'confirm Eventarc trigger fires' (mutate payment-demo, check audit log + handler logs)"
 
+# --------------------------------------------------------------------------
+# 11. Log retention — extend `_Default` bucket to 365 days (Phase 18.A)
+# --------------------------------------------------------------------------
+# Default Cloud Logging `_Default` bucket retention is 30 days. After that,
+# every DriftScribe log line (including the thought-summary, tool-call,
+# and LLM-usage records emitted by Phase 18.B) ages out and is unrecoverable.
+#
+# Extending retention is the cheapest, simplest durable-copy option for the
+# hackathon's volume profile (<1 GiB/month): no sink, no BigQuery dataset,
+# no GCS bucket, no IAM grants. Storage beyond the first 30 days is billed
+# at $0.01/GiB-month. The Logs Explorer query surface stays identical.
+#
+# Idempotent server-side — re-running this on a project that already has
+# 365-day retention is a no-op. `--location=global` is explicit so gcloud
+# does not prompt for it on a fresh shell.
+gcloud logging buckets update _Default \
+  --project="$PROJECT" \
+  --location=global \
+  --retention-days=365 >/dev/null
+echo "  log retention: _Default bucket extended to 365 days"
+
 echo
 echo "setup_secrets.sh: complete"
 echo "  next: docs/runbooks/deploy.md (steps 2+)"
