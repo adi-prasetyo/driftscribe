@@ -77,6 +77,37 @@ The script will:
 **Save the operator token** printed in this step. You'll need it to call
 `/chat` and `/recheck` later.
 
+## Step 1b — verify the `_Default` log-bucket retention extension
+
+`setup_secrets.sh` extends Cloud Logging's `_Default` bucket retention
+from 30 days to 365 days. This holds every DriftScribe log line —
+including the thought-summary, tool-call, and LLM-usage events from
+Phase 18.B — for a full year. Storage beyond the first 30 days is
+billed at $0.01/GiB-month; hackathon volume is well under 1 GiB/month.
+
+Verify:
+
+```bash
+gcloud logging buckets describe _Default \
+  --project=$PROJECT \
+  --location=global \
+  --format='value(retentionDays)'
+```
+
+Expected: `365`. If the value is still `30`, re-run `setup_secrets.sh`.
+
+Querying example for thought-summary + tool-call replay (after Phase 18.B
+is also deployed):
+
+```text
+resource.type="cloud_run_revision"
+resource.labels.service_name="driftscribe-agent"
+jsonPayload.event=("llm_thought" OR "tool_call" OR "llm_usage")
+jsonPayload.trace_id="<the trace id you want to replay>"
+```
+
+Paste into Logs Explorer; sort ascending by timestamp.
+
 ## Step 2 — create the fine-grained Docs Agent PAT
 
 The Docs Agent uses a separate, more-restricted PAT than the coordinator:
