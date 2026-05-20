@@ -65,7 +65,8 @@
       Coordinator -> Firestore (top-curved path, "every decision persisted")
       Each worker -> its outcome on the right
       MCP <- -> Coordinator (annotated arrow at top)
-    Legend strip at bottom y=715..760.
+    Legend strip at bottom y=715..775 (includes the coordinator&rarr;worker
+    auth-pattern note line at y=762).
 
   Diagram 2 — Layered safety boundary (viewBox 0 0 1000 1080)
     Seven rows of nested boxes (Coordinator + 6 workers).
@@ -404,12 +405,12 @@
         <text x="995" y="566" text-anchor="middle" font-size="11" fill="#555">POST /notify (drift + upgrade)</text>
 
         <!-- Arrows: Coordinator right edge (x=840) -> workers left edge (x=900) -->
-        <!-- Drift compartment -> drift workers + notifier -->
+        <!-- Drift compartment -> drift workers + notifier.
+             Per-arrow labels intentionally minimal — the legend at the
+             bottom of the figure documents that every coordinator->worker
+             call carries a Google ID token with aud=<worker hostname>. -->
         <line x1="840" y1="230" x2="898" y2="143" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
-        <text x="848" y="180" font-size="9" fill="#555">ID-token (aud=reader)</text>
-
         <line x1="840" y1="260" x2="898" y2="213" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
-        <text x="848" y="208" font-size="9" fill="#555">ID-token (aud=docs)</text>
 
         <!-- HITL diamond between coordinator drift compartment and Rollback -->
         <polygon points="870,265 890,283 870,301 850,283" fill="#fff" stroke="#3b6ea5" stroke-width="1.6"/>
@@ -423,15 +424,11 @@
 
         <!-- Upgrade compartment -> upgrade workers -->
         <line x1="840" y1="406" x2="898" y2="383" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
-        <text x="848" y="378" font-size="9" fill="#555">ID-token (aud=upgrade-reader)</text>
-
         <line x1="840" y1="434" x2="898" y2="453" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
-        <text x="848" y="448" font-size="9" fill="#555">ID-token (aud=upgrade-docs)</text>
 
-        <!-- Both compartments -> Notifier (shared) -->
+        <!-- Both compartments -> Notifier (shared, dashed to call out sharing) -->
         <line x1="840" y1="265" x2="898" y2="540" stroke="#1a1a1a" stroke-width="1" marker-end="url(#arrow-ink)" stroke-dasharray="4 3"/>
         <line x1="840" y1="438" x2="898" y2="556" stroke="#1a1a1a" stroke-width="1" marker-end="url(#arrow-ink)" stroke-dasharray="4 3"/>
-        <text x="848" y="608" font-size="9" fill="#555">both compartments &rarr; notifier (dashed)</text>
 
         <!-- ===== Outcomes ===== -->
         <!-- Firestore (driven from coordinator's decisions ledger) -->
@@ -488,6 +485,10 @@
 
           <rect x="840" y="10" width="40" height="16" fill="#fff" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="3 2"/>
           <text x="888" y="22" font-size="11">external resource</text>
+
+          <!-- Authentication-pattern note (covers all coordinator->worker arrows
+               without per-arrow labels overflowing the gutter). -->
+          <text x="0" y="42" font-size="10" fill="#555">All coordinator&rarr;worker calls carry a Google ID token with aud = the worker's hostname (verified at the worker; mismatch &rarr; 401).</text>
         </g>
       </svg>
     </div>
