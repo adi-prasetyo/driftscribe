@@ -217,13 +217,15 @@ those are pinned in `agent/workloads/registry.py::UPGRADE_TARGET_REGISTRY`
 ### upgrade-b — propose upgrade PR (LIVE)
 
 ```bash
-./scripts/demo.sh upgrade-b
+CONFIRM_UPGRADE_PR=1 ./scripts/demo.sh upgrade-b
 ```
 
 **Warning: this opens a REAL pull request on `$GITHUB_REPO`** (default
-`adi-prasetyo/driftscribe`). The script prints a prominent warning
-banner before the curl; the operator should read it before hitting
-Enter on a real demo recording.
+`adi-prasetyo/driftscribe`). The script REQUIRES `CONFIRM_UPGRADE_PR=1`
+on every invocation — without it the beat refuses to fire and exits
+with status 2 + a message explaining how to re-arm. Pasting the
+command from shell history alone cannot re-fire the beat unless the
+env var is still in the operator's shell, by design.
 
 Expected agent tool sequence:
 1. `upgrade_read_dependencies` — confirm the advisory.
@@ -309,17 +311,21 @@ If you're recording the demo end-to-end, run upgrade beats in this
 order after the drift beats finish:
 
 ```bash
-./scripts/demo.sh upgrade-a   # discovery; sets the stage
-./scripts/demo.sh upgrade-b   # the climax — real PR opens
-./scripts/demo.sh upgrade-c   # the safety story — validator refuses major
+./scripts/demo.sh upgrade-a                              # discovery; sets the stage
+CONFIRM_UPGRADE_PR=1 ./scripts/demo.sh upgrade-b         # the climax — real PR opens
+./scripts/demo.sh upgrade-c                              # the safety story — validator refuses major
 ```
 
 Or fire them as a batch (no `cleanup` step — upgrade has no Cloud Run
 env to reset):
 
 ```bash
-./scripts/demo.sh all-upgrade
+CONFIRM_UPGRADE_PR=1 ./scripts/demo.sh all-upgrade
 ```
+
+`CONFIRM_UPGRADE_PR=1` is required for `upgrade-b` AND for `all-upgrade`
+because `all-upgrade` runs `upgrade-b`. Without it, `upgrade-b` refuses
+to fire (exits 2) and the batch halts before opening any PR.
 
 `all-upgrade` is intentionally separate from `all` so a drift-only
 recording doesn't accidentally open an upgrade PR.

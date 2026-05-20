@@ -416,11 +416,34 @@ upgrade_b() {
   echo "Expectation: action=upgrade_pr with a PR URL in the response."
   echo
   echo "  !!! LIVE DEMO WARNING !!!"
-  echo "  This beat will open a REAL pull request on ${GITHUB_REPO}."
+  echo "  This beat will open a REAL pull request on ${GITHUB_REPO:-the demo target repo}."
   echo "  Close + delete the PR after the demo. See docs/demo-script.md"
   echo "  ('Upgrade workload beats' -> 'Cleanup after upgrade-b') for the"
   echo "  recommended cleanup sequence."
   echo
+  # Confirmation gate: must be re-armed each call. Without CONFIRM_UPGRADE_PR=1
+  # the beat refuses to fire — Codex 2026-05-20 follow-up. The echo above
+  # is operator-facing, but echoing alone doesn't pause a script; the
+  # original implementation would fire the curl immediately on `upgrade-b`
+  # or `all-upgrade`. The env-var gate forces an explicit opt-in.
+  if [ "${CONFIRM_UPGRADE_PR:-}" != "1" ]; then
+    cat >&2 <<'EOF'
+
+ERROR: upgrade-b refuses to fire without explicit confirmation.
+
+This beat opens a REAL pull request. To run it, re-invoke with:
+
+  CONFIRM_UPGRADE_PR=1 ./scripts/demo.sh upgrade-b
+
+Or for the bundled all-upgrade target:
+
+  CONFIRM_UPGRADE_PR=1 ./scripts/demo.sh all-upgrade
+
+The gate is required EACH time so an operator can't accidentally
+re-fire the PR-creating beat from shell history.
+EOF
+    return 2
+  fi
   reset_baseline_upgrade
   call_coordinator /chat \
     '{"prompt":"lodash 4.17.20 in demo/upgrade-target has CVE-2021-23337 (GHSA-35jh-r3h4-6jhm, prototype pollution). Please propose an upgrade PR to 4.17.21, citing the advisory in the PR body. Then notify the alert channel that the PR is open.","workload":"upgrade"}'

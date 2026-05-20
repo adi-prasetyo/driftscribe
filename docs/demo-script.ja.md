@@ -176,10 +176,10 @@ git show main:demo/upgrade-target/package.json | grep '"lodash"'
 ### upgrade-b — アップグレード PR の提案 (LIVE)
 
 ```bash
-./scripts/demo.sh upgrade-b
+CONFIRM_UPGRADE_PR=1 ./scripts/demo.sh upgrade-b
 ```
 
-**警告: これは `$GITHUB_REPO` (デフォルト `adi-prasetyo/driftscribe`) に実際の pull request を開きます。** スクリプトは curl の前に目立つ警告バナーを出力します。本番の録画中は、Enter を押す前にこれを読んでください。
+**警告: これは `$GITHUB_REPO` (デフォルト `adi-prasetyo/driftscribe`) に実際の pull request を開きます。** スクリプトは毎回の呼び出しで `CONFIRM_UPGRADE_PR=1` を必須にしています — 設定しないと beat は発火を拒否し、ステータス 2 と再アームの方法を説明するメッセージを表示して終了します。設計上、env var がオペレータのシェルに残っていない限り、シェル履歴からコマンドを貼り付けるだけでは beat を再実行できません。
 
 期待されるエージェントのツール呼び出しシーケンス:
 1. `upgrade_read_dependencies` — アドバイザリの確認。
@@ -229,16 +229,18 @@ gh pr close <N> --delete-branch --repo "$GITHUB_REPO"
 デモをエンドツーエンドで録画する場合、ドリフト beat の後に以下の順序でアップグレード beat を実行してください:
 
 ```bash
-./scripts/demo.sh upgrade-a   # 発見; 舞台を整える
-./scripts/demo.sh upgrade-b   # クライマックス — 実際の PR が開く
-./scripts/demo.sh upgrade-c   # 安全性の物語 — バリデーターが major を拒否
+./scripts/demo.sh upgrade-a                              # 発見; 舞台を整える
+CONFIRM_UPGRADE_PR=1 ./scripts/demo.sh upgrade-b         # クライマックス — 実際の PR が開く
+./scripts/demo.sh upgrade-c                              # 安全性の物語 — バリデーターが major を拒否
 ```
 
 または一括で実行します (`cleanup` ステップなし — アップグレードにはリセット対象の Cloud Run env がありません):
 
 ```bash
-./scripts/demo.sh all-upgrade
+CONFIRM_UPGRADE_PR=1 ./scripts/demo.sh all-upgrade
 ```
+
+`CONFIRM_UPGRADE_PR=1` は `upgrade-b` と `all-upgrade` の両方に必須です (`all-upgrade` は内部で `upgrade-b` を実行するため)。設定なしで実行すると `upgrade-b` が発火を拒否 (exit 2) し、一括実行はそこで停止 — PR は開かれません。
 
 `all-upgrade` は意図的に `all` と分離されています — ドリフト専用の録画でアップグレード PR を誤って開くことを防ぐためです。
 

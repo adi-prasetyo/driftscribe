@@ -161,3 +161,18 @@ def test_validator_rejects_bearer_token_var_name():
                    ContractStatus.PRESENT_ALLOW_MANUAL)
     with pytest.raises(ValidationError, match="secret"):
         validate(p, _contract())
+
+
+def test_validator_rejects_upgrade_pr_action_in_drift_workload():
+    # Codex 2026-05-20 follow-up (sub-phase 17.C wrap): the drift
+    # validator must reject upgrade-flavored actions even though they
+    # are valid DecisionAction enum members. Without this guard, an LLM
+    # under workload=drift that returns ``upgrade_pr`` would pass the
+    # bare-enum check at step 1, then crash at the renderer because
+    # there is no docs/rollback/issue renderer for upgrade_pr.
+    p = _proposal(
+        DecisionAction.UPGRADE_PR, "PAYMENT_MODE", "mock", "live",
+        ContractStatus.PRESENT_DISALLOW_MANUAL,
+    )
+    with pytest.raises(ValidationError, match="drift workload"):
+        validate(p, _contract())

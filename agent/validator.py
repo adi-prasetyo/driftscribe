@@ -15,6 +15,21 @@ class ValidationError(Exception):
 # or tightens, update this constant in lockstep.
 _REVISION_NAME = re.compile(r"^[a-z][a-z0-9-]{0,62}[a-z0-9]$")
 
+# Actions the drift workload may emit. Pinned here (not derived from
+# ACTION_REGISTRY) so a future upgrade-only action added to the registry
+# cannot silently widen drift's surface. Codex 2026-05-20 follow-up:
+# without this allowlist, an LLM under workload=drift that returns
+# ``upgrade_pr`` would pass the bare-enum check at step 1, then hit
+# ``_render_for()`` with no renderer and produce a 500-shaped failure.
+# The fix is a hard "wrong workload" rejection at the validator.
+_DRIFT_ACTIONS: frozenset[DecisionAction] = frozenset({
+    DecisionAction.NO_OP,
+    DecisionAction.DOCS_PR,
+    DecisionAction.DRIFT_ISSUE,
+    DecisionAction.ROLLBACK,
+    DecisionAction.ESCALATION,
+})
+
 
 def _validate_path(p: str | None) -> None:
     if p is None:
@@ -31,6 +46,20 @@ def validate(proposal: DecisionProposal, contract: OpsContract) -> None:
             DecisionAction(proposal.action)
         except ValueError as e:
             raise ValidationError(f"unknown action: {proposal.action!r}") from e
+
+    # 1a. Action must belong to the drift action allowlist. This validator
+    #     is drift-only — an upgrade-flavored action arriving here means
+    #     either (a) the wrong workload reached this code path, or (b) the
+    #     LLM under workload=drift hallucinated an upgrade action. Either
+    #     way the failure mode without this guard is a 500 at the renderer
+    #     (no docs/rollback/issue renderer for upgrade_pr). Codex
+    #     2026-05-20 follow-up.
+    if proposal.action not in _DRIFT_ACTIONS:
+        raise ValidationError(
+            f"action {proposal.action.value!r} is not in the drift "
+            f"workload's action set; got from drift validator. Expected "
+            f"one of: {sorted(a.value for a in _DRIFT_ACTIONS)}"
+        )
 
     # 2. Confidence must be in [0, 1] — guards against LLM hallucinations like 1.5
     if not 0.0 <= proposal.confidence <= 1.0:
