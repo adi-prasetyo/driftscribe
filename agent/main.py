@@ -1433,6 +1433,45 @@ def get_run(decision_id: str):
     return d
 
 
+@app.get("/decisions")
+def list_decisions_endpoint(
+    response: Response,
+    limit: int = 50,
+    _: None = Depends(verify_token),
+    state: StateStore = Depends(get_state),
+) -> dict:
+    """List past decisions, newest first, for the operator transparency UI.
+
+    Phase 19.A.7 — backs the ``/ui/transparency`` decision history
+    panel. Bounded by the ``limit`` query parameter (1..200) so a
+    misconfigured caller can't pull the entire collection in one
+    request. Token-guarded via :func:`verify_token` like /recheck.
+
+    Implementation notes (delegated to ``StateStore.list_decisions``):
+
+    * **Client-side sort** on ``DocumentSnapshot.create_time`` — a
+      server-side ``order_by("created_at")`` would EXCLUDE pre-Phase-19
+      docs that lack the field. (Codex review IMPORTANT.)
+    * **Fetch-all-then-trim** — ``.limit(N)`` on the unordered
+      stream would pick an arbitrary subset by doc ID, possibly
+      missing the newest. (Codex review IMPORTANT.)
+
+    ``headers={"Cache-Control": "no-store"}`` on the 400 HTTPException
+    mirrors 19.A.6's pattern: FastAPI builds a fresh response for raised
+    HTTPExceptions and does NOT inherit mutations made to the injected
+    ``response`` argument, so an operator-surface no-cache guarantee
+    requires the header on both the success and error paths.
+    """
+    if limit < 1 or limit > 200:
+        raise HTTPException(
+            status_code=400,
+            detail="limit must be 1..200",
+            headers={"Cache-Control": "no-store"},
+        )
+    response.headers["Cache-Control"] = "no-store"
+    return {"decisions": state.list_decisions(limit=limit)}
+
+
 @app.get("/trace/{trace_id}")
 def get_trace(
     trace_id: str,
