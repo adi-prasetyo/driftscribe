@@ -81,6 +81,7 @@ from agent.mcp.developer_knowledge import (
     search_developer_docs,
 )
 from agent.models import DecisionProposal
+from agent.secret_guard import redact_dict, redact_event, redact_text
 from agent.workload_context import current_workload
 from agent.workloads import WorkloadResolution, load_workload
 from driftscribe_lib.logging import current_trace_id_or_new
@@ -370,6 +371,10 @@ async def run_agent(
     msg = types.Content(role="user", parts=[types.Part(text=user_msg)])
 
     final_text: str | None = None
+    # 19.A.3: ``final_response_logged`` guards against a malformed ADK
+    # runner that yields more than one ``is_final_response()`` event —
+    # the transparency-UI completion gate relies on exactly-one emit.
+    final_response_logged = False
     async for event in runner.run_async(
         user_id="driftscribe-runtime",
         session_id=session_id,
@@ -385,25 +390,63 @@ async def run_agent(
                     # falls-through path below still handles function_call.
                     _log.info(
                         "llm_thought",
-                        extra={
+                        extra=redact_event({
                             "event": "llm_thought",
                             "trace_id": current_trace_id_or_new(),
                             "workload": current_workload(),
                             "thought_text": part.text,
-                        },
+                        }),
                     )
                     continue
                 fc = getattr(part, "function_call", None)
                 if fc and getattr(fc, "name", None):
+                    # 19.A.3: tool_call now carries a redacted ``tool_args``
+                    # dict so the transparency UI can show "what did the
+                    # model ask the tool to do." Key-aware redaction via
+                    # :func:`redact_dict` runs at the boundary; the
+                    # outer :func:`redact_event` is defense-in-depth for
+                    # the rest of the structured log payload.
+                    args = getattr(fc, "args", None) or {}
                     _log.info(
                         "tool_call",
-                        extra={
+                        extra=redact_event({
                             "event": "tool_call",
                             "trace_id": current_trace_id_or_new(),
                             "workload": current_workload(),
                             "tool_name": fc.name,
-                        },
+                            "tool_args": redact_dict(args),
+                        }),
                     )
+                    continue
+                fr = getattr(part, "function_response", None)
+                if fr and getattr(fr, "name", None):
+                    # 19.A.3: brand-new ``tool_result`` event emitted on
+                    # every ``function_response`` part. CRITICAL (Codex
+                    # v2 review): redact the STRUCTURED response BEFORE
+                    # serializing — otherwise ``should_redact("PASSWORD",
+                    # ...)`` never fires on nested secret-keyed values
+                    # because ``json.dumps`` flattens the dict context
+                    # away. The double-redact-after-dumps approach only
+                    # catches credentialed URLs by regex.
+                    response = getattr(fr, "response", None) or {}
+                    safe_response = redact_event(response)
+                    preview = json.dumps(safe_response, default=str)[:2000]
+                    result_ok = not (
+                        isinstance(response, dict)
+                        and ("error" in response or "errors" in response)
+                    )
+                    _log.info(
+                        "tool_result",
+                        extra=redact_event({
+                            "event": "tool_result",
+                            "trace_id": current_trace_id_or_new(),
+                            "workload": current_workload(),
+                            "tool_name": fr.name,
+                            "result_preview": preview,
+                            "result_ok": result_ok,
+                        }),
+                    )
+                    continue
         if event.is_final_response() and event.content and event.content.parts:
             parts_text = [
                 part.text
@@ -414,7 +457,45 @@ async def run_agent(
                 if getattr(part, "text", None) and not getattr(part, "thought", False)
             ]
             if parts_text:
-                final_text = "".join(parts_text)
+                accepted_text = "".join(parts_text)
+                # 19.A.3: emit ``final_response`` exactly once, gated on
+                # non-empty accepted text. The flag prevents a second
+                # emit if a malformed runner yields multiple final
+                # events; the ``strip()`` precondition guards against
+                # the v2 bug of emitting ``response_preview=""`` on the
+                # no-text edge case (where the loop raises immediately
+                # after). ``.strip()`` also keeps a whitespace-only
+                # final-event from reaching the parse path below — the
+                # `not final_text` guard alone would let `"\n  \t"`
+                # through to ``_parse_response`` and surface as a
+                # confusing "did not contain a JSON object" error
+                # instead of the documented "no final response".
+                if accepted_text.strip():
+                    final_text = accepted_text
+                    if not final_response_logged:
+                        # Redact BEFORE truncating: if a credentialed URL
+                        # straddles the 2000-char boundary, truncating
+                        # first could cut the userinfo mid-segment and
+                        # leak a partial credential (the regex wouldn't
+                        # match anymore). Redact-then-truncate keeps the
+                        # invariant; the outer ``redact_event(extra)`` is
+                        # defense-in-depth.
+                        safe_text = redact_text(accepted_text) or ""
+                        response_preview = safe_text[:2000]
+                        response_kind = (
+                            "json" if accepted_text.lstrip().startswith("{") else "text"
+                        )
+                        _log.info(
+                            "final_response",
+                            extra=redact_event({
+                                "event": "final_response",
+                                "trace_id": current_trace_id_or_new(),
+                                "workload": current_workload(),
+                                "response_preview": response_preview,
+                                "response_kind": response_kind,
+                            }),
+                        )
+                        final_response_logged = True
         # 18.B.3: emit one log line per LLM call's usage payload so
         # post-deploy dashboards can graph thoughts_token_count vs the
         # pre-Phase-18 baseline. Each Gemini call typically surfaces
@@ -423,7 +504,7 @@ async def run_agent(
         if usage is not None:
             _log.info(
                 "llm_usage",
-                extra={
+                extra=redact_event({
                     "event": "llm_usage",
                     "trace_id": current_trace_id_or_new(),
                     "workload": current_workload(),
@@ -431,7 +512,7 @@ async def run_agent(
                     "candidates_token_count": getattr(usage, "candidates_token_count", None),
                     "thoughts_token_count": getattr(usage, "thoughts_token_count", None),
                     "total_token_count": getattr(usage, "total_token_count", None),
-                },
+                }),
             )
 
     if not final_text:
@@ -481,6 +562,10 @@ async def run_chat(
 
     reply_chunks: list[str] = []
     tool_calls: list[str] = []
+    # 19.A.3: ``final_response_logged`` guards against a malformed ADK
+    # runner that yields more than one ``is_final_response()`` event —
+    # the transparency-UI completion gate relies on exactly-one emit.
+    final_response_logged = False
     async for event in runner.run_async(
         user_id="driftscribe-runtime",
         session_id=sid,
@@ -499,26 +584,64 @@ async def run_chat(
                     # falls-through path below still handles function_call.
                     _log.info(
                         "llm_thought",
-                        extra={
+                        extra=redact_event({
                             "event": "llm_thought",
                             "trace_id": current_trace_id_or_new(),
                             "workload": current_workload(),
                             "thought_text": part.text,
-                        },
+                        }),
                     )
                     continue
                 fc = getattr(part, "function_call", None)
                 if fc and getattr(fc, "name", None):
+                    # 19.A.3: tool_call now carries a redacted ``tool_args``
+                    # dict so the transparency UI can show "what did the
+                    # model ask the tool to do." Key-aware redaction via
+                    # :func:`redact_dict` runs at the boundary; the
+                    # outer :func:`redact_event` is defense-in-depth for
+                    # the rest of the structured log payload.
+                    args = getattr(fc, "args", None) or {}
                     tool_calls.append(fc.name)
                     _log.info(
                         "tool_call",
-                        extra={
+                        extra=redact_event({
                             "event": "tool_call",
                             "trace_id": current_trace_id_or_new(),
                             "workload": current_workload(),
                             "tool_name": fc.name,
-                        },
+                            "tool_args": redact_dict(args),
+                        }),
                     )
+                    continue
+                fr = getattr(part, "function_response", None)
+                if fr and getattr(fr, "name", None):
+                    # 19.A.3: brand-new ``tool_result`` event emitted on
+                    # every ``function_response`` part. CRITICAL (Codex
+                    # v2 review): redact the STRUCTURED response BEFORE
+                    # serializing — otherwise ``should_redact("PASSWORD",
+                    # ...)`` never fires on nested secret-keyed values
+                    # because ``json.dumps`` flattens the dict context
+                    # away. The double-redact-after-dumps approach only
+                    # catches credentialed URLs by regex.
+                    response = getattr(fr, "response", None) or {}
+                    safe_response = redact_event(response)
+                    preview = json.dumps(safe_response, default=str)[:2000]
+                    result_ok = not (
+                        isinstance(response, dict)
+                        and ("error" in response or "errors" in response)
+                    )
+                    _log.info(
+                        "tool_result",
+                        extra=redact_event({
+                            "event": "tool_result",
+                            "trace_id": current_trace_id_or_new(),
+                            "workload": current_workload(),
+                            "tool_name": fr.name,
+                            "result_preview": preview,
+                            "result_ok": result_ok,
+                        }),
+                    )
+                    continue
         # Collect the final natural-language response.
         if event.is_final_response() and event.content and event.content.parts:
             for part in event.content.parts:
@@ -527,6 +650,40 @@ async def run_chat(
                     continue
                 if getattr(part, "text", None):
                     reply_chunks.append(part.text)
+            # 19.A.3: emit ``final_response`` exactly once, gated on
+            # non-empty accepted text. The flag prevents a second emit
+            # if a malformed runner yields multiple final events; the
+            # ``strip()`` precondition guards against the v2 bug of
+            # emitting ``response_preview=""`` on the no-text edge case
+            # (where the loop raises immediately after). The emit lives
+            # inside the same ``is_final_response()`` branch so
+            # ``reply_chunks`` reflects only the run's accumulated text
+            # at this point — the flag ensures we emit only the first
+            # time the gate fires.
+            accepted_text = "".join(reply_chunks)
+            if accepted_text.strip() and not final_response_logged:
+                # Redact BEFORE truncating: if a credentialed URL
+                # straddles the 2000-char boundary, truncating first
+                # could cut the userinfo mid-segment and leak a partial
+                # credential (the regex wouldn't match anymore).
+                # Redact-then-truncate keeps the invariant; the outer
+                # ``redact_event(extra)`` is defense-in-depth.
+                safe_text = redact_text(accepted_text) or ""
+                response_preview = safe_text[:2000]
+                response_kind = (
+                    "json" if accepted_text.lstrip().startswith("{") else "text"
+                )
+                _log.info(
+                    "final_response",
+                    extra=redact_event({
+                        "event": "final_response",
+                        "trace_id": current_trace_id_or_new(),
+                        "workload": current_workload(),
+                        "response_preview": response_preview,
+                        "response_kind": response_kind,
+                    }),
+                )
+                final_response_logged = True
         # 18.B.3: emit one log line per LLM call's usage payload so
         # post-deploy dashboards can graph thoughts_token_count vs the
         # pre-Phase-18 baseline. Each Gemini call typically surfaces
@@ -535,7 +692,7 @@ async def run_chat(
         if usage is not None:
             _log.info(
                 "llm_usage",
-                extra={
+                extra=redact_event({
                     "event": "llm_usage",
                     "trace_id": current_trace_id_or_new(),
                     "workload": current_workload(),
@@ -543,7 +700,7 @@ async def run_chat(
                     "candidates_token_count": getattr(usage, "candidates_token_count", None),
                     "thoughts_token_count": getattr(usage, "thoughts_token_count", None),
                     "total_token_count": getattr(usage, "total_token_count", None),
-                },
+                }),
             )
 
     reply = "".join(reply_chunks).strip()

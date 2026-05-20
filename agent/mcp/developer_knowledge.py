@@ -109,6 +109,7 @@ from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnecti
 # ``agent.workloads`` rather than a submodule, so importing it doesn't
 # trigger the workloads package ``__init__.py`` and the cycle is
 # avoided. See that module's docstring for the full rationale.
+from agent.secret_guard import redact_event
 from agent.workload_context import current_workload
 from driftscribe_lib.logging import current_trace_id_or_new
 
@@ -439,7 +440,11 @@ def _log_call(
     }
     if error is not None:
         extras["error"] = error
-    _log.info("mcp_call", extra=extras)
+    # 19.A.3: redact-at-emit (defense-in-depth — ``query_or_names`` is
+    # operator-provided free text; an operator who pastes a credentialed
+    # URL into a search must not leak it into the durable Cloud Logging
+    # copy). Same boundary as the ADK event-loop emits.
+    _log.info("mcp_call", extra=redact_event(extras))
 
 
 # --------------------------------------------------------------------------- #
