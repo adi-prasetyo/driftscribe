@@ -1,6 +1,6 @@
 """Shared ADK event/part test doubles for `agent.adk_agent` unit tests.
 
-Three tests files (`test_adk_agent_thinking.py`, `test_adk_agent_event_logging.py`,
+Three test files (`test_adk_agent_thinking.py`, `test_adk_agent_event_logging.py`,
 `test_adk_agent_usage_logging.py`) all stub the same shape of
 ``google.adk.events.Event`` + ``google.genai.types.Part``: just enough
 to drive the event-loop in :mod:`agent.adk_agent`. The classes are
