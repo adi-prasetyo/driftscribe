@@ -108,6 +108,33 @@ jsonPayload.trace_id="<the trace id you want to replay>"
 
 Paste into Logs Explorer; sort ascending by timestamp.
 
+## Step 1c — verify the Cloud Logging viewer role on the coordinator SA
+
+`setup_secrets.sh` (§12) grants `roles/logging.viewer` to the
+coordinator runtime SA (`driftscribe-agent@$PROJECT.iam.gserviceaccount.com`)
+so the `/trace` endpoint can call `logEntries.list` against the
+`_Default` bucket extended in Step 1b. Locally `/trace` works under
+ADC (the operator already has read access); without this grant the
+same endpoint 403s from Cloud Run with `PERMISSION_DENIED`.
+
+The role is strictly read-only — no write, no admin, no sink
+management — and is scoped only to the coordinator SA. Workers and
+humans get no project-wide logging read role from this script.
+
+Verify:
+
+```bash
+gcloud projects get-iam-policy "$PROJECT" \
+  --flatten='bindings[].members' \
+  --format='value(bindings.role)' \
+  --filter="bindings.role=roles/logging.viewer AND bindings.members=serviceAccount:driftscribe-agent@${PROJECT}.iam.gserviceaccount.com"
+```
+
+Expected: a single line, `roles/logging.viewer`. If the output is
+empty, re-run `setup_secrets.sh` — the §12 block is idempotent and
+will print `logging.viewer: granted to …` on the run that lands the
+binding (subsequent re-runs print `already bound … — skipping`).
+
 ## Step 2 — create the fine-grained Docs Agent PAT
 
 The Docs Agent uses a separate, more-restricted PAT than the coordinator:
