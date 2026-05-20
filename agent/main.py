@@ -1438,11 +1438,11 @@ def get_trace(
     # can't slip past the guard — see CloudLoggingFetcher's docstring
     # for the full story. Carried forward from 19.A.5.
     #
-    # ``no-store`` is set on the same HTTPException so the 400 response
-    # carries the header too — see ``_HTTPException_no_store`` for why
-    # we can't rely on the route-level ``response.headers[...]`` assign
-    # on the exception path (FastAPI builds a fresh response for raised
-    # HTTPExceptions and doesn't inherit our mutations to ``response``).
+    # ``headers={"Cache-Control": "no-store"}`` on the HTTPException
+    # because FastAPI builds a fresh response for raised
+    # HTTPExceptions and does NOT inherit any mutations we made to
+    # the injected ``response`` argument. The same pattern repeats on
+    # the 503 timeout path below.
     if not _HEX32_RE.fullmatch(trace_id):
         raise HTTPException(
             status_code=400,
