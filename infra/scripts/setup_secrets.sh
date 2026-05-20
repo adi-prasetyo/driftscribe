@@ -530,14 +530,22 @@ echo "    see docs/runbooks/deploy.md → 'confirm Eventarc trigger fires' (muta
 # no GCS bucket, no IAM grants. Storage beyond the first 30 days is billed
 # at $0.01/GiB-month. The Logs Explorer query surface stays identical.
 #
-# Idempotent server-side — re-running this on a project that already has
-# 365-day retention is a no-op. `--location=global` is explicit so gcloud
-# does not prompt for it on a fresh shell.
-gcloud logging buckets update _Default \
-  --project="$PROJECT" \
-  --location=global \
-  --retention-days=365 >/dev/null
-echo "  log retention: _Default bucket extended to 365 days"
+# Describe-then-act, matching the rest of the script: re-runs on a
+# project already at 365 days print a "skipping" line instead of falsely
+# claiming the bucket was just extended. `--location=global` is explicit
+# so gcloud does not prompt for it on a fresh shell. The update itself
+# is also idempotent server-side, so the guard is purely a UX win.
+current="$(gcloud logging buckets describe _Default \
+  --project="$PROJECT" --location=global \
+  --format='value(retentionDays)' 2>/dev/null || echo 0)"
+if [[ "$current" != "365" ]]; then
+  gcloud logging buckets update _Default \
+    --project="$PROJECT" --location=global \
+    --retention-days=365 >/dev/null
+  echo "  log retention: _Default bucket extended from ${current} to 365 days"
+else
+  echo "  log retention: _Default bucket already at 365 days — skipping"
+fi
 
 echo
 echo "setup_secrets.sh: complete"
