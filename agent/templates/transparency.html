@@ -56,6 +56,45 @@
     .pill.warn { background: #fff4d6; color: var(--warn); }
     .pill.err { background: #fde7e9; color: var(--danger); }
     /* ----------------------------------------------------------------- */
+    /*  19.B.3: trace + status pills in #trace-badge. Class is rewritten  */
+    /*  wholesale by updateStatusPill() / setTracePill(), so each state   */
+    /*  needs its own background/color baked in (same pattern as the      */
+    /*  .token-status block below).                                        */
+    /* ----------------------------------------------------------------- */
+    .status-pill, .trace-pill {
+      display: inline-block;
+      padding: 0.2em 0.7em;
+      border-radius: 999px;
+      font-size: 0.8em;
+      font-weight: 600;
+      background: #eee;
+      color: var(--muted);
+    }
+    .trace-pill { cursor: pointer; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+    .status-pill.pending { background: #eee; color: var(--muted); }
+    .status-pill.streaming { background: #e6f0fb; color: #1f6feb; }
+    .status-pill.complete { background: #e6f4ea; color: var(--accent); }
+    .status-pill.stalled { background: #fff4d6; color: var(--warn); }
+    .status-pill.error { background: #fde7e9; color: var(--danger); }
+    .timeline-hint {
+      color: var(--muted);
+      font-size: 0.9em;
+      font-style: italic;
+      padding: 0.4em 0;
+    }
+    .event-row {
+      padding: 0.35em 0;
+      border-bottom: 1px dotted var(--border);
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-size: 0.85em;
+    }
+    .event-row:last-child { border-bottom: 0; }
+    .event-row .event-meta { color: var(--muted); margin-right: 0.5em; }
+    #final-response-card.error {
+      border-left-color: var(--danger);
+      background: #fdf2f3;
+    }
+    /* ----------------------------------------------------------------- */
     /*  19.B.2: token-status pill states. Mirrors the .pill palette but   */
     /*  scoped to #token-status so the JS can set className without       */
     /*  stomping the base .pill class — class is rewritten wholesale in   */
@@ -349,6 +388,324 @@
         getToken,
         updateTokenStatus,
         TOKEN_KEY,
+      });
+    })();
+
+    // ----------------------------------------------------------------- //
+    //  19.B.3: chat submit → immediate final-response card → /trace/{id} //
+    //  polling loop. Reuses window.driftscribe.api() from 19.B.2 so the  //
+    //  X-DriftScribe-Token plumbing is centralized.                       //
+    //                                                                    //
+    //  Data flow per Send:                                                //
+    //    1. POST /chat → render reply IMMEDIATELY in #final-response-card //
+    //       and stash X-Trace-Id from the response header.                //
+    //    2. Start a 2s poll loop on /trace/{trace_id}. Each poll RE-      //
+    //       RENDERS the event list (Cloud Logging can deliver events out  //
+    //       of order during the ~10-30s ingestion lag, so append-only is  //
+    //       wrong — we re-render from the authoritative server view).    //
+    //    3. Status pill: pending → streaming → complete (or stalled).    //
+    //                                                                    //
+    //  Polling lifecycle is owned by a monotonically-incrementing token   //
+    //  (``activePollingId``). Any in-flight loop checks the token at      //
+    //  every await boundary and bails if it no longer matches — that's   //
+    //  how a fresh Send cancels the prior loop without needing            //
+    //  AbortController plumbing through fetch.                            //
+    //                                                                    //
+    //  19.B.4 will split the flat event list into the three group        //
+    //  <details> blocks; for now everything is rendered into the         //
+    //  ``coordinator`` group's .events div so the polling contract is    //
+    //  verifiable end-to-end.                                            //
+    // ----------------------------------------------------------------- //
+    (function () {
+      "use strict";
+      const api = window.driftscribe.api;
+
+      const POLL_INTERVAL_MS = 2000;
+      const POLL_BACKOFF_MS = 3000; // used after a 503 trace fetch
+      const STALL_THRESHOLD = 10; // consecutive identical event-counts → stalled
+
+      const form = document.getElementById("chat-form");
+      const promptInput = document.getElementById("prompt-input");
+      const workloadSelect = document.getElementById("workload-select");
+      const sendBtn = document.getElementById("send-btn");
+      const traceBadge = document.getElementById("trace-badge");
+      const finalCard = document.getElementById("final-response-card");
+      // Event timeline target. 19.B.4 will fan out into three groups; until
+      // then we render the flat list into the coordinator group's .events
+      // div (the most natural single-group fallback) so the polling
+      // contract is end-to-end testable on a real /trace/{id} response.
+      const timelineRoot =
+        document.querySelector("#group-coordinator .events");
+
+      // Monotonic id stamped onto every polling iteration. A fresh Send
+      // increments it; in-flight loops abort when their captured id no
+      // longer matches the current value. Avoids tangled abort plumbing
+      // and is robust against the polling fetch itself being mid-flight.
+      let activePollingId = 0;
+
+      function setTracePill(traceId) {
+        // Trace pill = short form (first 8 hex chars). Click copies the
+        // full 32-char trace_id so an operator can paste it into a Cloud
+        // Logging query without hunting through DOM.
+        traceBadge.innerHTML = "";
+        if (traceId) {
+          const tracePill = document.createElement("span");
+          tracePill.className = "trace-pill";
+          tracePill.title = "click to copy full trace_id";
+          tracePill.textContent = "trace " + traceId.slice(0, 8);
+          tracePill.addEventListener("click", () => {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              navigator.clipboard.writeText(traceId).catch(() => {});
+            }
+          });
+          traceBadge.appendChild(tracePill);
+        }
+        const statusPill = document.createElement("span");
+        statusPill.id = "status-pill";
+        statusPill.className = "status-pill pending";
+        statusPill.textContent = "pending";
+        traceBadge.appendChild(statusPill);
+      }
+
+      function updateStatusPill(state, label) {
+        const el = document.getElementById("status-pill");
+        if (!el) return;
+        el.className = "status-pill " + state;
+        el.textContent = label || state;
+      }
+
+      function showFinalResponse(text, opts = {}) {
+        finalCard.hidden = false;
+        finalCard.classList.toggle("error", Boolean(opts.error));
+        finalCard.textContent = text;
+      }
+
+      function renderTimeline(events) {
+        if (!timelineRoot) return;
+        // Capture which <details> the user had expanded BEFORE blowing
+        // away the DOM, anchored on insert_id (stable per Cloud Logging
+        // entry). After re-render we re-expand those same insert_ids if
+        // they're still present. Best-effort: out-of-order delivery may
+        // remove a previously-seen entry (rare but possible if the
+        // server's view changes), in which case we silently lose that
+        // expansion state — better than thrashing scroll position.
+        const expandedIds = new Set();
+        timelineRoot
+          .querySelectorAll("details[open][data-insert-id]")
+          .forEach((d) => expandedIds.add(d.getAttribute("data-insert-id")));
+
+        timelineRoot.innerHTML = "";
+        if (!events || events.length === 0) {
+          const hint = document.createElement("div");
+          hint.className = "timeline-hint";
+          hint.textContent =
+            "waiting for reasoning logs (typical lag ~15s)…";
+          timelineRoot.appendChild(hint);
+          return;
+        }
+
+        // 19.B.4 will split into coordinator/tools/mcp groups. For now
+        // emit a flat list — terse enough to verify the polling contract
+        // without prejudging the grouping rules.
+        for (const e of events) {
+          const insertId = e.insert_id || "";
+          const det = document.createElement("details");
+          det.className = "event-row";
+          if (insertId) det.setAttribute("data-insert-id", insertId);
+          if (insertId && expandedIds.has(insertId)) det.open = true;
+          const sum = document.createElement("summary");
+          const meta = document.createElement("span");
+          meta.className = "event-meta";
+          meta.textContent = (e.timestamp || "") + " ";
+          sum.appendChild(meta);
+          sum.appendChild(
+            document.createTextNode(e.event || e.severity || "(event)")
+          );
+          det.appendChild(sum);
+          const pre = document.createElement("pre");
+          pre.textContent = JSON.stringify(e, null, 2);
+          det.appendChild(pre);
+          timelineRoot.appendChild(det);
+        }
+      }
+
+      async function pollTrace(traceId, pollingId) {
+        let consecutiveSameCount = 0;
+        let lastCount = -1;
+        let nextDelay = POLL_INTERVAL_MS;
+
+        // First poll fires immediately so the operator doesn't stare at
+        // an empty timeline for 2s when logs HAVE landed already.
+        while (pollingId === activePollingId) {
+          let resp;
+          try {
+            resp = await api("/trace/" + encodeURIComponent(traceId));
+          } catch (err) {
+            // api() throws "no token" if the operator cancelled the prompt
+            // mid-poll. Reflect on the token pill and stop — getToken()
+            // already set the pill to "missing". Bail without crashing.
+            updateStatusPill("error", "no token");
+            return;
+          }
+          // Re-check the polling id AFTER the await: a fresh Send may
+          // have arrived while we were awaiting the network. Without
+          // this guard, a slow response from the prior trace could stomp
+          // the new trace's timeline.
+          if (pollingId !== activePollingId) return;
+
+          if (resp.status === 503) {
+            // Trace endpoint times out (e.g. Cloud Logging slow). Soft
+            // signal — keep polling at the backoff cadence.
+            updateStatusPill("stalled", "stalled (logs slow)");
+            nextDelay = POLL_BACKOFF_MS;
+          } else if (!resp.ok) {
+            updateStatusPill("error", "trace " + resp.status);
+            return;
+          } else {
+            let payload;
+            try {
+              payload = await resp.json();
+            } catch (err) {
+              updateStatusPill("error", "bad trace payload");
+              return;
+            }
+            if (pollingId !== activePollingId) return;
+            const events = Array.isArray(payload.events) ? payload.events : [];
+            renderTimeline(events);
+
+            if (payload.complete === true) {
+              updateStatusPill("complete", "complete");
+              return;
+            }
+            // Stall detection: same event count for N polls AND not
+            // complete. Soft warning — polling continues; the operator
+            // can decide whether to refresh or wait.
+            if (events.length === lastCount) {
+              consecutiveSameCount += 1;
+            } else {
+              consecutiveSameCount = 0;
+              lastCount = events.length;
+            }
+            if (consecutiveSameCount >= STALL_THRESHOLD) {
+              updateStatusPill("stalled", "stalled (no new events)");
+            } else if (events.length > 0) {
+              updateStatusPill("streaming", "streaming");
+            } else {
+              updateStatusPill("pending", "pending");
+            }
+            nextDelay = POLL_INTERVAL_MS;
+          }
+
+          // Sleep with cancellation: re-check activePollingId after the
+          // timer fires. A setTimeout-based sleep is the simplest way to
+          // get a cancellable delay without AbortController gymnastics.
+          await new Promise((r) => setTimeout(r, nextDelay));
+        }
+      }
+
+      async function onSubmit(e) {
+        e.preventDefault();
+        const prompt = (promptInput.value || "").trim();
+        if (!prompt) return; // empty prompt → no-op
+        const workload = workloadSelect.value || "drift";
+
+        // Bump the polling id — any in-flight loop from a prior Send
+        // will see the mismatch on its next await boundary and exit.
+        activePollingId += 1;
+        const myPollingId = activePollingId;
+
+        sendBtn.disabled = true;
+        // Clear prior render so the operator isn't staring at a stale
+        // trace_id / response while the new /chat is in flight.
+        traceBadge.innerHTML = "";
+        finalCard.hidden = true;
+        finalCard.classList.remove("error");
+        if (timelineRoot) timelineRoot.innerHTML = "";
+
+        let resp;
+        try {
+          resp = await api("/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ prompt, workload }),
+          });
+        } catch (err) {
+          // api() throws "no token" if the operator cancelled the prompt.
+          // Token pill is already "missing"; surface in the response card
+          // so the form doesn't appear dead.
+          if (myPollingId === activePollingId) {
+            showFinalResponse(
+              "Cannot send: operator token missing. Click \"change token\" to set one.",
+              { error: true }
+            );
+            sendBtn.disabled = false;
+          }
+          return;
+        }
+        // Race guard: a fresh Send may have incremented activePollingId
+        // while /chat was in flight (e.g. button re-enabled by a previous
+        // error branch). If so, drop this response — the newer Send owns
+        // the UI state.
+        if (myPollingId !== activePollingId) return;
+
+        const traceId = resp.headers.get("X-Trace-Id") || "";
+        let body;
+        try {
+          body = await resp.json();
+        } catch (err) {
+          body = null;
+        }
+
+        if (!resp.ok) {
+          const detail =
+            (body && (body.detail || body.error)) ||
+            "chat request failed (" + resp.status + ")";
+          showFinalResponse(String(detail), { error: true });
+          // Still show the trace pill if we got one — operator can grep
+          // the trace_id in Cloud Logging to diagnose the 5xx upstream.
+          if (traceId) setTracePill(traceId);
+          sendBtn.disabled = false;
+          return;
+        }
+
+        // Success path: surface the reply immediately, then start polling
+        // for the reasoning timeline.
+        const reply =
+          (body && (body.reply || body.response || body.text)) ||
+          (typeof body === "string" ? body : JSON.stringify(body, null, 2));
+        showFinalResponse(reply || "(empty reply)");
+        setTracePill(traceId);
+        if (timelineRoot) {
+          const hint = document.createElement("div");
+          hint.className = "timeline-hint";
+          hint.textContent =
+            "waiting for reasoning logs (typical lag ~15s)…";
+          timelineRoot.appendChild(hint);
+        }
+        sendBtn.disabled = false;
+
+        if (traceId) {
+          // Fire and forget — pollTrace owns its own lifecycle via
+          // activePollingId / myPollingId. Any exception inside pollTrace
+          // updates the status pill; nothing here needs to await it.
+          pollTrace(traceId, myPollingId).catch((err) => {
+            updateStatusPill("error", "poll error");
+          });
+        } else {
+          // No trace id on the response — degenerate path (middleware
+          // misconfigured or test stub). Mark complete so the pill isn't
+          // stuck on "pending" forever.
+          updateStatusPill("complete", "complete (no trace_id)");
+        }
+      }
+
+      if (form) form.addEventListener("submit", onSubmit);
+
+      // Expose for 19.B.4's three-group renderer to swap in without
+      // restructuring the form/polling glue.
+      window.driftscribe = Object.assign(window.driftscribe || {}, {
+        pollTrace,
+        renderTimeline,
       });
     })();
   </script>

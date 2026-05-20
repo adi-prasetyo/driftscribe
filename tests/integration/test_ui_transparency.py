@@ -70,3 +70,16 @@ def test_ui_transparency_contains_token_prompt_helpers():
     assert "X-DriftScribe-Token" in body
     assert "driftscribe_token" in body  # sessionStorage key
     assert "401" in body and "403" in body  # cleared on auth failures
+
+
+def test_ui_transparency_contains_chat_polling_logic():
+    resp = client.get("/ui/transparency")
+    body = resp.text
+    # Pin the public JS contract that 19.B.4 will rely on.
+    assert "/chat" in body
+    assert "/trace/" in body  # polling endpoint
+    assert "X-Trace-Id" in body  # header read on /chat response
+    assert "final-response-card" in body  # element written to
+    assert "2000" in body or "2_000" in body  # 2-second poll cadence
+    # Status pill states — at least 'complete' must be referenced.
+    assert "complete" in body.lower()
