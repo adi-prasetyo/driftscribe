@@ -117,3 +117,23 @@ def test_ui_transparency_contains_approval_cta_renderer():
     assert "approval-cta" in body or "approval-btn" in body
     # Same-origin guard — must NOT have been relaxed to accept arbitrary URLs.
     assert '"/approvals/"' in body or "'/approvals/'" in body
+
+
+def test_ui_transparency_contains_decisions_pane():
+    """19.B.6: past-decisions pane + historical-trace navigation.
+
+    Pin the rail's contract: it must reference /decisions, render an
+    "open trace" affordance backed by a /trace/{id} fetch, dim the form
+    when a historical trace is active ("← new chat" to return), and
+    surface expired approval URLs (expires_at timestamp comparison) so a
+    judge clicking a stale rollback gets a strikethrough + badge instead
+    of a dead "Approve →".
+    """
+    body = client.get("/ui/transparency").text
+    assert "decisions-rail" in body
+    assert "/decisions" in body
+    assert "/trace/" in body  # historical fetch
+    assert "open trace" in body.lower() or "open-trace" in body.lower()
+    assert "← new chat" in body or "new chat" in body.lower()
+    # expired badge / past-decision approval CTA
+    assert "expires_at" in body or "expired" in body

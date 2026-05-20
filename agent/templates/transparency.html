@@ -148,6 +148,124 @@
       padding: 0;
       margin: 0;
     }
+    /* ----------------------------------------------------------------- */
+    /*  19.B.6: past-decisions rail row + historical-trace mode.          */
+    /*                                                                    */
+    /*  Each <li.decision-row> is a single decision summary line + an     */
+    /*  optional [open trace →] / [Approve →] button row beneath it.      */
+    /*  Rows are clickable as a whole (opens trace) but the button is     */
+    /*  kept explicit so a judge sees the affordance without hovering.    */
+    /* ----------------------------------------------------------------- */
+    li.decision-row {
+      padding: 0.5em 0.6em;
+      margin-bottom: 0.4em;
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      font-size: 0.82em;
+    }
+    li.decision-row.active {
+      border-color: #1f6feb;
+      background: #eaf2fb;
+    }
+    li.decision-row .row-summary {
+      color: var(--fg);
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      word-break: break-word;
+    }
+    li.decision-row .row-meta {
+      color: var(--muted);
+      margin-right: 0.4em;
+    }
+    li.decision-row .row-actions {
+      margin-top: 0.4em;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4em;
+    }
+    li.decision-row .open-trace-btn {
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      padding: 0.25em 0.6em;
+      font: inherit;
+      font-size: 0.85em;
+      cursor: pointer;
+      color: #1f6feb;
+    }
+    li.decision-row .open-trace-btn:hover { background: #eaf2fb; }
+    li.decision-row .past-approve-btn {
+      display: inline-block;
+      padding: 0.25em 0.7em;
+      border-radius: 3px;
+      background: var(--accent);
+      color: #fff;
+      text-decoration: none;
+      font-weight: 600;
+      font-size: 0.85em;
+      border: 1px solid #259443;
+    }
+    li.decision-row .past-approve-btn:hover { background: #259443; }
+    li.decision-row .past-approve-btn.expired {
+      background: #eee;
+      color: var(--muted);
+      border-color: var(--border);
+      text-decoration: line-through;
+      pointer-events: none;
+      cursor: not-allowed;
+    }
+    li.decision-row .expired-badge {
+      display: inline-block;
+      padding: 0.05em 0.5em;
+      border-radius: 999px;
+      background: #fde7e9;
+      color: var(--danger);
+      font-size: 0.75em;
+      font-weight: 600;
+      margin-left: 0.3em;
+    }
+    .decisions-empty {
+      color: var(--muted);
+      font-size: 0.85em;
+      font-style: italic;
+      padding: 0.2em 0;
+    }
+    /* Historical-trace mode: dim the form, show a banner, allow exit. */
+    #historical-badge {
+      display: none;
+      align-items: center;
+      gap: 0.6em;
+      padding: 0.55em 0.85em;
+      margin: 0 0 0.85em 0;
+      border: 1px solid #c7dcf3;
+      border-radius: 4px;
+      background: #eaf2fb;
+      color: #1f6feb;
+      font-size: 0.9em;
+    }
+    #historical-badge[data-active="1"] { display: flex; }
+    #historical-badge code {
+      background: #d6e6fa;
+      padding: 0 0.3em;
+      border-radius: 3px;
+      font-size: 0.9em;
+    }
+    #new-chat-btn {
+      margin-left: auto;
+      background: #fff;
+      border: 1px solid #c7dcf3;
+      border-radius: 3px;
+      padding: 0.25em 0.7em;
+      font: inherit;
+      font-size: 0.85em;
+      cursor: pointer;
+      color: #1f6feb;
+    }
+    #new-chat-btn:hover { background: #d6e6fa; }
+    #chat-form.historical {
+      opacity: 0.45;
+      pointer-events: none;
+    }
     section#chat-area {
       padding: 1.5em 2em;
       max-width: 900px;
@@ -425,6 +543,14 @@
         </select>
         <button id="send-btn" type="submit">Send</button>
       </form>
+
+      <!-- 19.B.6: historical-trace banner. Shown only when a past decision
+           is opened from the left rail; the form above is dimmed via the
+           ``.historical`` class. "← new chat" button restores live mode. -->
+      <div id="historical-badge" aria-live="polite">
+        <span>viewing historical trace <code id="historical-trace-id"></code></span>
+        <button id="new-chat-btn" type="button">← new chat</button>
+      </div>
 
       <section id="trace-badge" aria-live="polite">
         <!-- trace_id pill + status pill populated after /chat returns (19.B.3) -->
@@ -1366,6 +1492,15 @@
         }
         sendBtn.disabled = false;
 
+        // 19.B.6: refresh the past-decisions rail so a fresh proposal
+        // (especially a rollback that minted an approval_url) shows up
+        // without a page reload. The hook is intentionally optional —
+        // the rail's IIFE registers it on load, but 19.B.3 must not
+        // crash if it ever runs before 19.B.6 is wired in.
+        if (typeof window.driftscribe.reloadDecisions === "function") {
+          window.driftscribe.reloadDecisions();
+        }
+
         if (traceId) {
           // Fire and forget — pollTrace owns its own lifecycle via
           // activePollingId / myPollingId. Any exception inside pollTrace
@@ -1383,11 +1518,456 @@
 
       if (form) form.addEventListener("submit", onSubmit);
 
+      // 19.B.6: cancel the in-flight polling loop by bumping the monotonic
+      // id. The loop checks ``pollingId === activePollingId`` at every await
+      // boundary, so a single increment is enough to make every in-flight
+      // iteration bail on its next tick. Used when entering historical-trace
+      // mode (we don't want the prior live trace to keep stomping the
+      // timeline behind a historical render).
+      function cancelPolling() {
+        activePollingId += 1;
+      }
+
       // Expose for 19.B.4's three-group renderer to swap in without
       // restructuring the form/polling glue.
       window.driftscribe = Object.assign(window.driftscribe || {}, {
         pollTrace,
         renderTimeline,
+        cancelPolling,
+        // 19.B.6: surface the timeline-clear primitive so the historical
+        // <-> live mode toggle can wipe state without duplicating the
+        // three-group reset logic.
+        clearTimeline: () => {
+          if (coordinatorEvents) coordinatorEvents.innerHTML = "";
+          if (toolsEvents) toolsEvents.innerHTML = "";
+          if (mcpEvents) mcpEvents.innerHTML = "";
+        },
+        setStatusPill: updateStatusPill,
+        setTracePill,
+        showFinalResponse,
+        hideFinalResponse: () => {
+          finalCard.hidden = true;
+          finalCard.classList.remove("error");
+          finalCard.textContent = "";
+        },
+        clearTraceBadge: () => {
+          traceBadge.innerHTML = "";
+        },
+      });
+    })();
+
+    // ----------------------------------------------------------------- //
+    //  19.B.6: past-decisions pane + historical-trace navigation.        //
+    //                                                                    //
+    //  Two responsibilities:                                              //
+    //                                                                    //
+    //    1. Left rail: fetch /decisions?limit=50 on mount and after       //
+    //       every successful /chat (19.B.3 fires reloadDecisions()).      //
+    //       Each row shows ``<time> · <workload> · <action> · <trigger>`` //
+    //       plus an [open trace →] button when ``decision.trace_id`` is   //
+    //       present (pre-Phase-19 decisions lack the field — the button   //
+    //       is hidden but the row still renders so the operator sees the  //
+    //       historical action).                                            //
+    //                                                                    //
+    //    2. Historical-trace mode: clicking [open trace] fetches          //
+    //       /trace/{trace_id} ONCE (no polling — historical traces are    //
+    //       immutable) and hands events to renderTimeline. The form is    //
+    //       dimmed and a "viewing historical trace <prefix>" banner is    //
+    //       shown; "← new chat" restores live mode by clearing the        //
+    //       timeline, hiding the banner, re-enabling the form.            //
+    //                                                                    //
+    //  Past-decision approval CTA (deferred from 19.B.5):                  //
+    //    A rollback decision carries ``decision.approval = {               //
+    //      approval_url, expires_at, ... }``. When ``approval_url``        //
+    //    starts with "/approvals/" we render an inline "Approve →"        //
+    //    button next to [open trace]. ``expires_at`` is parsed via        //
+    //    new Date(...) — accepts ISO-8601 strings and Firestore           //
+    //    DatetimeWithNanoseconds (serialized as ISO). If the parsed       //
+    //    instant is in the past relative to ``Date.now()`` we strike      //
+    //    the button through and append an "expired" badge — same          //
+    //    same-origin guard as the in-timeline CTA from 19.B.5.            //
+    //                                                                    //
+    //  Mode-toggle invariants:                                            //
+    //    * Entering historical mode: cancelPolling() + clearTimeline() +  //
+    //      hideFinalResponse() + clearTraceBadge() so the live trace's    //
+    //      pills don't leak into the historical view.                     //
+    //    * Exiting historical mode: same wipe; the form re-enables and    //
+    //      the operator can submit a fresh prompt.                         //
+    //    * The decisions rail itself is preserved across mode toggles     //
+    //      so the operator can hop between historical traces freely.      //
+    // ----------------------------------------------------------------- //
+    (function () {
+      "use strict";
+      const api = window.driftscribe.api;
+      const renderTimeline = window.driftscribe.renderTimeline;
+      const cancelPolling = window.driftscribe.cancelPolling;
+      const clearTimeline = window.driftscribe.clearTimeline;
+      const setStatusPill = window.driftscribe.setStatusPill;
+      const setTracePill = window.driftscribe.setTracePill;
+      const showFinalResponse = window.driftscribe.showFinalResponse;
+      const hideFinalResponse = window.driftscribe.hideFinalResponse;
+      const clearTraceBadge = window.driftscribe.clearTraceBadge;
+
+      const decisionsList = document.getElementById("decisions-list");
+      const historicalBadge = document.getElementById("historical-badge");
+      const historicalTraceIdEl = document.getElementById("historical-trace-id");
+      const newChatBtn = document.getElementById("new-chat-btn");
+      const chatForm = document.getElementById("chat-form");
+      const sendBtn = document.getElementById("send-btn");
+      const promptInput = document.getElementById("prompt-input");
+      const workloadSelect = document.getElementById("workload-select");
+
+      // The id of the currently-displayed historical trace (or null when
+      // the operator is in live/interactive mode). Used to toggle the
+      // ``.active`` highlight on the corresponding rail row when the rail
+      // re-renders after a chat.
+      let activeHistoricalTraceId = null;
+
+      function _fmtTime(value) {
+        // ``created_at`` from /decisions is one of:
+        //   * ISO-8601 string (FastAPI's default datetime serializer)
+        //   * { seconds, nanoseconds } shape (Firestore DatetimeWith-
+        //     Nanoseconds, serialized as a dict by some firestore SDK
+        //     paths — we accept it defensively)
+        //   * null / undefined (pre-Phase-19 docs that lack the field)
+        if (!value) return "(no timestamp)";
+        let d;
+        if (typeof value === "string") {
+          d = new Date(value);
+        } else if (typeof value === "object" && value.seconds != null) {
+          d = new Date(value.seconds * 1000);
+        } else {
+          d = new Date(value);
+        }
+        if (isNaN(d.getTime())) return "(bad timestamp)";
+        // toLocaleString picks up the browser's locale + timezone — operator
+        // sees decisions in their local time, which is what they want for a
+        // chronological scan. UTC normalization is the BACKEND's job
+        // (created_at is stored as UTC; the display side intentionally
+        // localizes).
+        return d.toLocaleString();
+      }
+
+      function _deriveWorkload(decision) {
+        // ``workload`` is NOT a persisted field on the decision document
+        // (see agent/main.py — only ``trigger`` and ``action`` are stored).
+        // Derive a best-effort label from action prefixes so the rail row
+        // matches the spec format "<time> · <workload> · <action> · <trigger>".
+        // Upgrade-workload decisions use the ``upgrade_*`` action prefix
+        // (see agent/upgrade_contract.py + DecisionAction enum).
+        const a = String(decision.action || "");
+        if (a.startsWith("upgrade_")) return "upgrade";
+        return "drift";
+      }
+
+      function _isExpired(expires_at) {
+        // ``expires_at`` formats mirror ``created_at``. A missing field is
+        // treated as NOT expired (some older rollback decisions may omit
+        // it; we'd rather show the button than spuriously gray it out).
+        if (!expires_at) return false;
+        let d;
+        if (typeof expires_at === "string") {
+          d = new Date(expires_at);
+        } else if (typeof expires_at === "object" && expires_at.seconds != null) {
+          d = new Date(expires_at.seconds * 1000);
+        } else {
+          d = new Date(expires_at);
+        }
+        if (isNaN(d.getTime())) return false;
+        // Comparison is done in epoch-ms (UTC anchor) — completely
+        // immune to the browser's display timezone. Only the display
+        // side localizes.
+        return d.getTime() < Date.now();
+      }
+
+      function _renderPastApprovalCta(approval) {
+        // Defensive checks: ``approval`` is the decision's ``approval``
+        // sub-object as returned by /decisions. Same same-origin guard
+        // as 19.B.5's _renderApprovalCta — the URL must start with the
+        // literal "/approvals/" prefix to be accepted. Anything else
+        // (off-origin, javascript:, data:, missing) returns null.
+        if (!approval || typeof approval !== "object") return null;
+        const url = approval.approval_url;
+        if (typeof url !== "string" || !url.startsWith("/approvals/")) {
+          return null;
+        }
+        const expired = _isExpired(approval.expires_at);
+        const a = document.createElement("a");
+        a.className = "past-approve-btn" + (expired ? " expired" : "");
+        a.href = url;
+        a.target = "_blank";
+        a.rel = "noopener";
+        a.textContent = "Approve →";
+        if (expired) {
+          // Defense in depth: ``pointer-events: none`` is in the CSS,
+          // but a keyboard-focused activation could still reach href.
+          // Drop the href so even a Tab+Enter does nothing.
+          a.removeAttribute("href");
+          a.setAttribute("aria-disabled", "true");
+        }
+        return { node: a, expired };
+      }
+
+      function _renderRow(decision) {
+        const li = document.createElement("li");
+        li.className = "decision-row";
+        const traceId = decision.trace_id || "";
+        if (traceId && traceId === activeHistoricalTraceId) {
+          li.classList.add("active");
+        }
+
+        // Summary line: time · workload · action · trigger.
+        const summary = document.createElement("div");
+        summary.className = "row-summary";
+        const meta = document.createElement("span");
+        meta.className = "row-meta";
+        meta.textContent = _fmtTime(decision.created_at);
+        summary.appendChild(meta);
+        // textContent (never innerHTML) for the user-derived bits — the
+        // decision dict is server-trusted but the secret_guard redact
+        // walker may leave through unusual UTF-8 in trigger strings.
+        const rest = document.createTextNode(
+          " · " +
+            _deriveWorkload(decision) +
+            " · " +
+            String(decision.action || "(unknown)") +
+            " · " +
+            String(decision.trigger || "(no trigger)")
+        );
+        summary.appendChild(rest);
+        li.appendChild(summary);
+
+        // Action row: [open trace →] + optional [Approve →].
+        const actions = document.createElement("div");
+        actions.className = "row-actions";
+
+        if (traceId) {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "open-trace-btn";
+          btn.textContent = "open trace →";
+          btn.addEventListener("click", () => {
+            openHistoricalTrace(traceId);
+          });
+          actions.appendChild(btn);
+        }
+        // (No button row entry when trace_id is absent — pre-Phase-19
+        // decisions still show their summary line so the operator sees
+        // the historical action, just without a deep-link.)
+
+        const cta = _renderPastApprovalCta(decision.approval);
+        if (cta) {
+          actions.appendChild(cta.node);
+          if (cta.expired) {
+            const badge = document.createElement("span");
+            badge.className = "expired-badge";
+            badge.textContent = "expired";
+            // ``title`` carries the raw expires_at for an operator who
+            // hovers — useful when triaging a stale approval.
+            const ea = decision.approval && decision.approval.expires_at;
+            if (ea) badge.title = "expires_at: " + String(ea);
+            actions.appendChild(badge);
+          }
+        }
+
+        if (actions.childNodes.length > 0) {
+          li.appendChild(actions);
+        }
+        return li;
+      }
+
+      async function loadDecisions() {
+        if (!decisionsList) return;
+        let resp;
+        try {
+          resp = await api("/decisions?limit=50");
+        } catch (err) {
+          // ``no token`` — the api() helper already reflected on the
+          // token pill. Leave the rail untouched so the operator's last
+          // good view persists across a token-rotation flow.
+          return;
+        }
+        if (!resp.ok) {
+          // Don't wipe the rail on a transient 5xx; surface a soft
+          // placeholder only if we have NO rows to fall back to.
+          if (decisionsList.children.length === 0) {
+            decisionsList.innerHTML = "";
+            const empty = document.createElement("li");
+            empty.className = "decisions-empty";
+            empty.textContent = "(failed to load decisions: " + resp.status + ")";
+            decisionsList.appendChild(empty);
+          }
+          return;
+        }
+        let payload;
+        try {
+          payload = await resp.json();
+        } catch (err) {
+          return;
+        }
+        const decisions = (payload && Array.isArray(payload.decisions))
+          ? payload.decisions
+          : [];
+        decisionsList.innerHTML = "";
+        if (decisions.length === 0) {
+          const empty = document.createElement("li");
+          empty.className = "decisions-empty";
+          empty.textContent = "(no decisions yet)";
+          decisionsList.appendChild(empty);
+          return;
+        }
+        for (const d of decisions) {
+          decisionsList.appendChild(_renderRow(d));
+        }
+      }
+
+      function _enterHistoricalMode(traceId) {
+        // Step 1: cancel any in-flight live polling so it can't stomp the
+        // historical render after it lands.
+        if (typeof cancelPolling === "function") cancelPolling();
+        // Step 2: wipe the live UI surfaces — final-response card, trace
+        // pill, status pill, and the three timeline group panes. The rail
+        // itself stays so the operator can hop between historical traces.
+        if (typeof clearTraceBadge === "function") clearTraceBadge();
+        if (typeof hideFinalResponse === "function") hideFinalResponse();
+        if (typeof clearTimeline === "function") clearTimeline();
+        // Step 3: dim the form and show the banner.
+        if (chatForm) chatForm.classList.add("historical");
+        if (sendBtn) sendBtn.disabled = true;
+        if (promptInput) promptInput.disabled = true;
+        if (workloadSelect) workloadSelect.disabled = true;
+        if (historicalBadge) historicalBadge.setAttribute("data-active", "1");
+        if (historicalTraceIdEl) {
+          historicalTraceIdEl.textContent = traceId.slice(0, 8);
+        }
+        activeHistoricalTraceId = traceId;
+      }
+
+      function _exitHistoricalMode() {
+        // Re-enable form + hide banner. The timeline + trace pill + final
+        // card are wiped so a stale historical render doesn't bleed into
+        // the next live Send.
+        if (typeof clearTraceBadge === "function") clearTraceBadge();
+        if (typeof hideFinalResponse === "function") hideFinalResponse();
+        if (typeof clearTimeline === "function") clearTimeline();
+        if (chatForm) chatForm.classList.remove("historical");
+        if (sendBtn) sendBtn.disabled = false;
+        if (promptInput) promptInput.disabled = false;
+        if (workloadSelect) workloadSelect.disabled = false;
+        if (historicalBadge) historicalBadge.removeAttribute("data-active");
+        if (historicalTraceIdEl) historicalTraceIdEl.textContent = "";
+        activeHistoricalTraceId = null;
+        // Re-render the rail so the previously-highlighted row drops its
+        // ``.active`` class. Fire-and-forget — the rail will catch up on
+        // its next /decisions refresh anyway.
+        loadDecisions();
+      }
+
+      async function openHistoricalTrace(traceId) {
+        if (!traceId) return;
+        _enterHistoricalMode(traceId);
+        // Show the trace pill + a stable "historical" status so the
+        // operator can copy the full trace_id (same affordance as live
+        // mode) and isn't staring at a blank trace-badge row.
+        if (typeof setTracePill === "function") setTracePill(traceId);
+        if (typeof setStatusPill === "function") {
+          setStatusPill("complete", "historical");
+        }
+        let resp;
+        try {
+          resp = await api("/trace/" + encodeURIComponent(traceId));
+        } catch (err) {
+          if (typeof showFinalResponse === "function") {
+            showFinalResponse(
+              "Cannot load historical trace: operator token missing.",
+              { error: true }
+            );
+          }
+          return;
+        }
+        if (!resp.ok) {
+          if (typeof showFinalResponse === "function") {
+            showFinalResponse(
+              "Failed to load historical trace " +
+                traceId.slice(0, 8) +
+                " (" +
+                resp.status +
+                ")",
+              { error: true }
+            );
+          }
+          if (typeof setStatusPill === "function") {
+            setStatusPill("error", "trace " + resp.status);
+          }
+          return;
+        }
+        let payload;
+        try {
+          payload = await resp.json();
+        } catch (err) {
+          if (typeof setStatusPill === "function") {
+            setStatusPill("error", "bad trace payload");
+          }
+          return;
+        }
+        const events = Array.isArray(payload.events) ? payload.events : [];
+        if (typeof renderTimeline === "function") {
+          renderTimeline(events);
+        }
+        // Surface the linked decision's final_response / rationale in the
+        // top card — judges expect SOME affordance above the timeline,
+        // not just the bare event list. Use the decision dict for context;
+        // a final_response event would have rendered into the timeline.
+        const decision = payload && payload.decision;
+        if (decision && typeof showFinalResponse === "function") {
+          const ratio =
+            decision.rationale ||
+            decision.rendered_body ||
+            "(historical decision — see timeline for details)";
+          showFinalResponse(String(ratio));
+        }
+        // Re-highlight the active row in the rail (no full reload — the
+        // rail's current snapshot already has this row, we just need to
+        // toggle the class). We re-render the full rail instead so the
+        // ``.active`` class is applied via the row builder's own check
+        // against ``activeHistoricalTraceId`` — keeps the source of truth
+        // in one place (the row builder) rather than spreading the
+        // class-toggle logic across two call sites.
+        loadDecisions();
+      }
+
+      if (newChatBtn) {
+        newChatBtn.addEventListener("click", _exitHistoricalMode);
+      }
+
+      // Initial load: only if a token is already in sessionStorage. The
+      // 19.B.2 design is explicit that page load must NOT pop a token
+      // prompt — getToken() would block on a window.prompt() if no token
+      // is cached. Once the operator submits their first Send, the chat
+      // path's getToken() pops the prompt, then reloadDecisions() fires
+      // and the rail catches up.
+      try {
+        if (sessionStorage.getItem("driftscribe_token")) {
+          loadDecisions();
+        } else {
+          // Surface the placeholder so the rail isn't visually empty pre-
+          // first-Send; loadDecisions() will replace it once a token lands.
+          if (decisionsList) {
+            decisionsList.innerHTML = "";
+            const empty = document.createElement("li");
+            empty.className = "decisions-empty";
+            empty.textContent = "(set token to load decisions)";
+            decisionsList.appendChild(empty);
+          }
+        }
+      } catch (err) {
+        // sessionStorage may throw in privacy modes — best-effort.
+      }
+
+      window.driftscribe = Object.assign(window.driftscribe || {}, {
+        reloadDecisions: loadDecisions,
+        openHistoricalTrace,
+        exitHistoricalMode: _exitHistoricalMode,
       });
     })();
   </script>
