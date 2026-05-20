@@ -55,10 +55,45 @@ async def test_run_chat_emits_llm_usage_log(caplog, drift_workload_env):
         r for r in caplog.records
         if getattr(r, "event", None) == "llm_usage"
     ]
-    assert len(usage) >= 1
-    r = usage[-1]
+    # In RunConfig(streaming_mode=NONE), usage_metadata is yielded exactly
+    # once per call — tighten the assertion to catch accidental duplication.
+    assert len(usage) == 1, f"expected exactly 1 llm_usage record, got {len(usage)}"
+    r = usage[0]
     assert getattr(r, "prompt_token_count") == 120
     assert getattr(r, "candidates_token_count") == 80
     assert getattr(r, "thoughts_token_count") == 64
     assert getattr(r, "total_token_count") == 264
+    assert getattr(r, "workload") == "drift"
+
+
+@pytest.mark.asyncio
+async def test_run_agent_emits_llm_usage_log(caplog, drift_workload_env):
+    """Parallel coverage for run_agent (the /recheck path). The
+    llm_usage block in run_agent is identical to run_chat's today; this
+    test pins it so a future edit can't drop one without breaking
+    the suite. Reuses the same _stub_run because run_agent and
+    run_chat consume the event stream identically up to the
+    final-text branch."""
+    caplog.set_level(logging.INFO, logger="driftscribe.agent.adk_agent")
+    workload_token = set_workload("drift")
+    try:
+        with patch.object(adk_agent, "Runner") as runner_cls:
+            runner_cls.return_value.run_async = _stub_run
+            proposal = await adk_agent.run_agent("hi", workload="drift")
+    finally:
+        reset_workload(workload_token)
+
+    # Sanity: run_agent's parse path didn't break despite the thought
+    # part being interleaved with the JSON.
+    assert proposal is not None
+    assert getattr(proposal, "action", None) is not None
+
+    usage = [
+        r for r in caplog.records
+        if getattr(r, "event", None) == "llm_usage"
+    ]
+    assert len(usage) == 1, f"expected exactly 1 llm_usage record, got {len(usage)}"
+    r = usage[0]
+    assert getattr(r, "prompt_token_count") == 120
+    assert getattr(r, "thoughts_token_count") == 64
     assert getattr(r, "workload") == "drift"
