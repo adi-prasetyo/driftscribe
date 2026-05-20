@@ -30,16 +30,11 @@ This file pins three properties:
    two regexes to diverge, the test is the right place to encode that
    intent — comment explaining why before relaxing the assertion.)
 
-TODO(17.E): when ``infra/cloudbuild.yaml`` grows ``UPGRADE_TARGET_REPO``
-and (if introduced) ``UPGRADE_TARGET_LOCKFILE_PATH`` env entries for the
-upgrade workers, extend this test to parse cloudbuild and assert
-registry agreement. The plan §17.C.5 step 4 specified parsing cloudbuild
-here too, but as of 17.C.5 the upgrade workers don't yet have deploy
-infra entries — that lands in 17.E along with the env-pin half of this
-guard. Today the workers read ``UPGRADE_TARGET_REPO`` from environment
-at boot (see ``workers/upgrade_reader/main.py:76``), so a future deploy
-env mismatch would still be caught at worker boot (KeyError on the
-env read); CI just can't see it ahead of deploy yet.
+Phase 17.E.1 closed the deferred half of this guard: cloudbuild.yaml
+now has UPGRADE_TARGET_REPO env entries on both upgrade workers, and
+``test_cloudbuild_upgrade_target_repo_matches_registry`` below parses
+the file and asserts agreement with
+``UPGRADE_TARGET_REGISTRY["phase17_demo"].target_repo``.
 
 Why this lives in tests/integration not tests/unit
 --------------------------------------------------
@@ -266,3 +261,102 @@ def test_upgrade_workers_expose_lockfile_path_regex_constant():
     # debugging convenience.
     assert isinstance(reader_mod._LOCKFILE_PATH_RE, re.Pattern)
     assert isinstance(docs_mod._LOCKFILE_PATH_RE, re.Pattern)
+
+
+# --------------------------------------------------------------------------- #
+# Phase 17.E.1 — close the deferred cloudbuild env-pin half of this guard.
+#
+# infra/cloudbuild.yaml carries the deploy-time UPGRADE_TARGET_REPO value
+# for both upgrade workers (--set-env-vars line on each deploy step).
+# That value must match the coordinator-side authority in
+# UPGRADE_TARGET_REGISTRY["phase17_demo"].target_repo. Without this
+# guard, an operator could edit the registry to point at a new repo
+# without updating the cloudbuild value — the next deploy would put
+# the workers out of sync with the coordinator, and every upgrade
+# request would 400 at the worker's repo-allowlist re-validation step.
+# --------------------------------------------------------------------------- #
+
+
+def _read_cloudbuild_upgrade_target_repo_envs() -> dict[str, str]:
+    """Return a {worker_service_name: target_repo_value} mapping by
+    parsing infra/cloudbuild.yaml as plain text.
+
+    We deliberately avoid loading the YAML through a yaml parser: the
+    file uses ``${_TAG}`` and ``$PROJECT_ID`` substitution syntax that
+    Cloud Build evaluates at submit time, and yaml.safe_load would
+    either fail or load those as opaque strings. Plain-text regex
+    parsing is more robust here and the format (gcloud
+    ``--set-env-vars=...`` flag inside an ``args`` list) is stable.
+    """
+    from pathlib import Path
+
+    cloudbuild = (
+        Path(__file__).resolve().parents[2] / "infra" / "cloudbuild.yaml"
+    )
+    text = cloudbuild.read_text()
+
+    out: dict[str, str] = {}
+    # Find each `gcloud run deploy <service>` block + its `--set-env-vars=...`
+    # line. Both upgrade workers' deploy steps share the same UPGRADE_TARGET_REPO=
+    # value today, but we extract per-service so a future divergence is caught
+    # explicitly per worker.
+    for service in ("driftscribe-upgrade-reader", "driftscribe-upgrade-docs"):
+        # Block-find: from the `- <service>` deploy arg to the next blank line.
+        m = re.search(
+            rf"-\s+{re.escape(service)}\b.*?--set-env-vars=([^\n]+)",
+            text,
+            re.DOTALL,
+        )
+        assert m, (
+            f"Could not locate UPGRADE_TARGET_REPO in cloudbuild.yaml for "
+            f"service {service!r}. If the deploy step was moved/renamed, "
+            f"update this parser. If the env var was removed, the worker "
+            f"will KeyError at boot — restore it."
+        )
+        env_line = m.group(1)
+        # env_line looks like
+        # GCP_PROJECT=$PROJECT_ID,UPGRADE_TARGET_REPO=adi-prasetyo/driftscribe,OWN_URL=...
+        kv = re.search(r"UPGRADE_TARGET_REPO=([^,\s]+)", env_line)
+        assert kv, (
+            f"Could not extract UPGRADE_TARGET_REPO=... from the "
+            f"--set-env-vars line for {service!r}. Got: {env_line!r}"
+        )
+        out[service] = kv.group(1)
+    return out
+
+
+def test_cloudbuild_upgrade_target_repo_matches_registry():
+    """The deploy-time UPGRADE_TARGET_REPO on both upgrade workers must
+    equal UPGRADE_TARGET_REGISTRY["phase17_demo"].target_repo. Otherwise
+    the workers are deployed pointing at a different repo than the
+    coordinator authority, and every upgrade request bounces at the
+    worker's repo allowlist check.
+
+    Closes the TODO(17.E) from the original 17.C.5 deferral.
+    """
+    from agent.workloads.registry import UPGRADE_TARGET_REGISTRY
+
+    expected = UPGRADE_TARGET_REGISTRY["phase17_demo"].target_repo
+    cloudbuild_envs = _read_cloudbuild_upgrade_target_repo_envs()
+
+    for service, deployed_value in cloudbuild_envs.items():
+        assert deployed_value == expected, (
+            f"cloudbuild.yaml deploys {service} with "
+            f"UPGRADE_TARGET_REPO={deployed_value!r}, but the "
+            f"coordinator-side authority "
+            f'UPGRADE_TARGET_REGISTRY["phase17_demo"].target_repo is '
+            f"{expected!r}. Either update cloudbuild.yaml to match the "
+            f"registry, or update the registry to match the deploy "
+            f"intent (and double-check that's actually what you want)."
+        )
+
+
+def test_cloudbuild_upgrade_workers_present():
+    """Phase 17.E.1 should have added both upgrade-worker deploy steps.
+    A future PR that accidentally drops one of them would otherwise
+    leave the coordinator routing to a missing service and only
+    surface as a runtime 503 — surface it at CI instead.
+    """
+    cloudbuild_envs = _read_cloudbuild_upgrade_target_repo_envs()
+    assert "driftscribe-upgrade-reader" in cloudbuild_envs
+    assert "driftscribe-upgrade-docs" in cloudbuild_envs

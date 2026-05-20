@@ -62,6 +62,25 @@ steps:
       - workers/notifier/Dockerfile
       # Same build-context-at-repo-root rationale as the reader above.
       - .
+  # Upgrade workers (Phase 17.C.2 + 17.C.3). Same build-context-at-repo-root
+  # rationale as the drift workers above; both upgrade workers also depend
+  # on driftscribe_lib/ at the project root for auth/logging.
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-upgrade-reader:${_TAG}
+      - -f
+      - workers/upgrade_reader/Dockerfile
+      - .
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-upgrade-docs:${_TAG}
+      - -f
+      - workers/upgrade_docs/Dockerfile
+      - .
   - name: gcr.io/cloud-builders/docker
     args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-agent:${_TAG}']
   - name: gcr.io/cloud-builders/docker
@@ -74,6 +93,10 @@ steps:
     args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-rollback:${_TAG}']
   - name: gcr.io/cloud-builders/docker
     args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-notifier:${_TAG}']
+  - name: gcr.io/cloud-builders/docker
+    args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-upgrade-reader:${_TAG}']
+  - name: gcr.io/cloud-builders/docker
+    args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-upgrade-docs:${_TAG}']
 
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
     entrypoint: gcloud
@@ -135,7 +158,7 @@ steps:
       # (Phase 14.5) flip the google-genai SDK from AI Studio (API-key auth)
       # to Vertex AI (ADC via the coordinator's runtime SA). These are stamped
       # at deploy time, not post-deploy — they don't depend on any worker URL.
-      - --set-env-vars=DRY_RUN=true,GCP_PROJECT=$PROJECT_ID,TARGET_SERVICE=payment-demo,TARGET_REGION=asia-northeast1,GITHUB_REPO=adi-prasetyo/driftscribe,USE_ADK=false,DEBUG_CONFIG_URL=https://payment-demo-u272wv52kq-an.a.run.app/debug/config,READER_URL=https://placeholder.invalid,DOCS_URL=https://placeholder.invalid,ROLLBACK_URL=https://placeholder.invalid,NOTIFIER_URL=https://placeholder.invalid,GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=asia-northeast1
+      - --set-env-vars=DRY_RUN=true,GCP_PROJECT=$PROJECT_ID,TARGET_SERVICE=payment-demo,TARGET_REGION=asia-northeast1,GITHUB_REPO=adi-prasetyo/driftscribe,USE_ADK=false,DEBUG_CONFIG_URL=https://payment-demo-u272wv52kq-an.a.run.app/debug/config,READER_URL=https://placeholder.invalid,DOCS_URL=https://placeholder.invalid,ROLLBACK_URL=https://placeholder.invalid,NOTIFIER_URL=https://placeholder.invalid,UPGRADE_READER_URL=https://placeholder.invalid,UPGRADE_DOCS_URL=https://placeholder.invalid,GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=asia-northeast1
       # DRIFTSCRIBE_TOKEN (Phase 11.1) gates /recheck via the X-DriftScribe-Token
       # header. The `coordinator-shared-token` secret MUST exist in Secret
       # Manager BEFORE the first build that includes this line — Cloud Run
@@ -380,7 +403,109 @@ steps:
           --region=asia-northeast1 \
           --update-env-vars=OWN_URL=$${URL}
 
-  # Final post-deploy: sync the four worker URLs onto the coordinator.
+  # Upgrade Reader (Phase 17.C.2) — upgrade workload's read-side worker.
+  # Layer 1: upgrade-reader-sa has no project-level GCP role grants. Its
+  # ONLY privilege is roles/secretmanager.secretAccessor on the
+  # upgrade-reader-github-pat secret (per-secret binding). Cannot read
+  # Cloud Run, Firestore, MCP, or any other secret.
+  # Layer 2: UPGRADE_TARGET_REPO env-pinned at boot — request body's
+  # target_repo is re-validated against this value BEFORE any GitHub call.
+  # lockfile_path matches the strict regex demo/upgrade-target/package.json
+  # with a dual traversal guard. Worker isolation invariant: workers MUST
+  # NOT import agent.* modules — enforced by subprocess-based test.
+  # Layer 3: --no-allow-unauthenticated + in-app verify_caller (audience +
+  # caller email allowlist).
+  #
+  # Same two-step OWN_URL pattern as the drift workers. The
+  # upgrade-reader-github-pat secret MUST exist in Secret Manager before
+  # the first build that includes this step.
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - driftscribe-upgrade-reader
+      - --image=asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-upgrade-reader:${_TAG}
+      - --region=asia-northeast1
+      - --no-allow-unauthenticated
+      - --service-account=upgrade-reader-sa@$PROJECT_ID.iam.gserviceaccount.com
+      - --min-instances=0
+      - --max-instances=1
+      - --concurrency=1
+      # UPGRADE_TARGET_REPO is the env-pinned authority for the upgrade
+      # workload (Phase 17.C.2). The CI guard test
+      # tests/integration/test_upgrade_deploy_pin.py asserts the registry
+      # value matches both upgrade workers' lockfile regex. The hardcoded
+      # value here MUST match
+      # UPGRADE_TARGET_REGISTRY["phase17_demo"].target_repo in
+      # agent/workloads/registry.py.
+      - --set-env-vars=GCP_PROJECT=$PROJECT_ID,UPGRADE_TARGET_REPO=adi-prasetyo/driftscribe,OWN_URL=https://placeholder.invalid,ALLOWED_CALLERS=driftscribe-agent@$PROJECT_ID.iam.gserviceaccount.com
+      - --set-secrets=GITHUB_TOKEN=upgrade-reader-github-pat:latest
+
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        URL=$$(gcloud run services describe driftscribe-upgrade-reader \
+          --region=asia-northeast1 --format='value(status.url)')
+        if [ -z "$${URL}" ] || [ "$${URL}" = "https://placeholder.invalid" ]; then
+          echo "ERROR: Could not resolve driftscribe-upgrade-reader URL" >&2
+          exit 1
+        fi
+        echo "Setting OWN_URL=$${URL} on driftscribe-upgrade-reader"
+        gcloud run services update driftscribe-upgrade-reader \
+          --region=asia-northeast1 \
+          --update-env-vars=OWN_URL=$${URL}
+
+  # Upgrade Docs (Phase 17.C.3 + 17.C.3a) — upgrade workload's write-side
+  # worker. Bumps a named npm dep's version in the pinned lockfile and
+  # opens a PR.
+  # Layer 1: upgrade-docs-sa has only roles/secretmanager.secretAccessor
+  # on upgrade-docs-github-pat. PAT is fine-grained: Contents: Read & write
+  # + Pull requests: Read & write on adi-prasetyo/driftscribe ONLY.
+  # Layer 2: same UPGRADE_TARGET_REPO env pin as the upgrade reader, plus
+  # branch must start with "upgrade/", base hardcoded to "main", title
+  # must start with "upgrade", mutation surface restricted to
+  # dependencies[package_name].
+  # Layer 3 (post-LLM validator, Phase 17.C.3a): semver no-downgrade,
+  # patch/minor only (major bumps refused with 403 → escalation), GHSA
+  # URL shape, package existence in current lockfile.
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - driftscribe-upgrade-docs
+      - --image=asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-upgrade-docs:${_TAG}
+      - --region=asia-northeast1
+      - --no-allow-unauthenticated
+      - --service-account=upgrade-docs-sa@$PROJECT_ID.iam.gserviceaccount.com
+      - --min-instances=0
+      - --max-instances=1
+      - --concurrency=1
+      - --set-env-vars=GCP_PROJECT=$PROJECT_ID,UPGRADE_TARGET_REPO=adi-prasetyo/driftscribe,OWN_URL=https://placeholder.invalid,ALLOWED_CALLERS=driftscribe-agent@$PROJECT_ID.iam.gserviceaccount.com
+      - --set-secrets=GITHUB_TOKEN=upgrade-docs-github-pat:latest
+
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        URL=$$(gcloud run services describe driftscribe-upgrade-docs \
+          --region=asia-northeast1 --format='value(status.url)')
+        if [ -z "$${URL}" ] || [ "$${URL}" = "https://placeholder.invalid" ]; then
+          echo "ERROR: Could not resolve driftscribe-upgrade-docs URL" >&2
+          exit 1
+        fi
+        echo "Setting OWN_URL=$${URL} on driftscribe-upgrade-docs"
+        gcloud run services update driftscribe-upgrade-docs \
+          --region=asia-northeast1 \
+          --update-env-vars=OWN_URL=$${URL}
+
+  # Final post-deploy: sync the six worker URLs onto the coordinator.
   # The coordinator's worker_client uses these URLs as the audience claim
   # when minting ID tokens — getting them wrong makes every worker call
   # 401 at the worker's verify_caller dependency, which is the desired
@@ -406,7 +531,11 @@ steps:
           --region=asia-northeast1 --format='value(status.url)')
         NOTIFIER_URL=$$(gcloud run services describe driftscribe-notifier \
           --region=asia-northeast1 --format='value(status.url)')
-        for var in READER_URL DOCS_URL ROLLBACK_URL NOTIFIER_URL; do
+        UPGRADE_READER_URL=$$(gcloud run services describe driftscribe-upgrade-reader \
+          --region=asia-northeast1 --format='value(status.url)')
+        UPGRADE_DOCS_URL=$$(gcloud run services describe driftscribe-upgrade-docs \
+          --region=asia-northeast1 --format='value(status.url)')
+        for var in READER_URL DOCS_URL ROLLBACK_URL NOTIFIER_URL UPGRADE_READER_URL UPGRADE_DOCS_URL; do
           val=$$(eval echo "\$$$$var")
           if [ -z "$${val}" ] || [ "$${val}" = "https://placeholder.invalid" ]; then
             echo "ERROR: Could not resolve $${var}" >&2
@@ -418,6 +547,8 @@ steps:
         echo "  DOCS_URL=$${DOCS_URL}"
         echo "  ROLLBACK_URL=$${ROLLBACK_URL}"
         echo "  NOTIFIER_URL=$${NOTIFIER_URL}"
+        echo "  UPGRADE_READER_URL=$${UPGRADE_READER_URL}"
+        echo "  UPGRADE_DOCS_URL=$${UPGRADE_DOCS_URL}"
         # Phase 14.3: the coordinator's own URL is the audience claim
         # /eventarc verifies Eventarc-minted ID tokens against. Resolve
         # it here and stamp it as EVENTARC_AUDIENCE in the same update
@@ -434,7 +565,7 @@ steps:
         echo "  EVENTARC_AUDIENCE=$${COORD_URL}"
         gcloud run services update driftscribe-agent \
           --region=asia-northeast1 \
-          --update-env-vars=READER_URL=$${READER_URL},DOCS_URL=$${DOCS_URL},ROLLBACK_URL=$${ROLLBACK_URL},NOTIFIER_URL=$${NOTIFIER_URL},EVENTARC_AUDIENCE=$${COORD_URL}
+          --update-env-vars=READER_URL=$${READER_URL},DOCS_URL=$${DOCS_URL},ROLLBACK_URL=$${ROLLBACK_URL},NOTIFIER_URL=$${NOTIFIER_URL},UPGRADE_READER_URL=$${UPGRADE_READER_URL},UPGRADE_DOCS_URL=$${UPGRADE_DOCS_URL},EVENTARC_AUDIENCE=$${COORD_URL}
 
 images:
   - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-agent:${_TAG}
@@ -443,3 +574,5 @@ images:
   - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-docs:${_TAG}
   - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-rollback:${_TAG}
   - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-notifier:${_TAG}
+  - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-upgrade-reader:${_TAG}
+  - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-upgrade-docs:${_TAG}
