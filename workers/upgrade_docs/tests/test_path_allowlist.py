@@ -61,14 +61,11 @@ def client(monkeypatch):
     monkeypatch.setattr(
         upgrade_docs_main,
         "_read_lockfile",
-        lambda _repo, _path: (
-            {
-                "name": "phase17-upgrade-demo",
-                "version": "1.0.0",
-                "dependencies": {"lodash": "4.17.20"},
-            },
-            "",
-        ),
+        lambda _repo, _path: {
+            "name": "phase17-upgrade-demo",
+            "version": "1.0.0",
+            "dependencies": {"lodash": "4.17.20"},
+        },
     )
 
     app.dependency_overrides[_verify_caller_dep] = (

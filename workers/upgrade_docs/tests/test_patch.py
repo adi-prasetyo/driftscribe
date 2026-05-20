@@ -76,7 +76,7 @@ def client(monkeypatch):
         # Return a deep copy so the handler's mutation does not modify the
         # fixture's reference copy — tests that assert "other deps
         # untouched" should compare against a pristine baseline.
-        return json.loads(json.dumps(lockfile_holder["value"])), ""
+        return json.loads(json.dumps(lockfile_holder["value"]))
 
     monkeypatch.setattr(
         upgrade_docs_main.ds_github, "open_docs_pr", fake_open_docs_pr
@@ -297,10 +297,7 @@ def test_real_verify_caller_dep_wired_with_env(monkeypatch) -> None:
     monkeypatch.setattr(
         upgrade_docs_main,
         "_read_lockfile",
-        lambda _repo, _path: (
-            {"dependencies": {"lodash": "4.17.20"}},
-            "",
-        ),
+        lambda _repo, _path: {"dependencies": {"lodash": "4.17.20"}},
     )
     monkeypatch.setattr(
         upgrade_docs_main, "OWN_URL", "https://upgrade-docs.example.com"
