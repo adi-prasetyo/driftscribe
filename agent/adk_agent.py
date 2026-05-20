@@ -371,12 +371,17 @@ def _emit_event_logs(event, *, tool_calls: list[str] | None = None) -> None:
 
     Callers must apply the partial-event dedup gate (``event.partial is
     not True``) before invoking this — the helper assumes the event is
-    a merged non-partial event whose parts are eligible to log.
+    a merged non-partial event whose parts are eligible to log. The
+    gate stays at the call site (rather than being absorbed in here)
+    so each loop's intent — "log only on merged events" — is visible
+    at the loop body level without a hop into a helper.
 
-    18.B.2: only ``thought`` parts that carry ``text`` emit
-    ``llm_thought`` (a thought without text has nothing to log; the
-    function_call/function_response checks below still run for parts
-    that happen to have both).
+    18.B.2: a ``thought=True`` part with non-empty ``text`` emits
+    ``llm_thought`` and then ``continue``s to the next part — the
+    helper does NOT also check ``function_call`` / ``function_response``
+    on the same part. In practice ADK never sets both on one part, so
+    this matches the pre-refactor behavior byte-for-byte; the order
+    pins which slot wins if a future ADK release ever conflates them.
 
     19.A.3: every emit goes through :func:`redact_event` at the
     boundary so the durable Cloud Logging copy never carries
@@ -384,8 +389,9 @@ def _emit_event_logs(event, *, tool_calls: list[str] | None = None) -> None:
     """
     for part in event.content.parts:
         if getattr(part, "thought", False) and getattr(part, "text", None):
-            # A thought part without text has nothing to log; the
-            # falls-through path below still handles function_call.
+            # Thought-with-text wins this part — see docstring for the
+            # ordering rationale. function_call / function_response on
+            # the same part (not seen in practice) would be skipped.
             _log.info(
                 "llm_thought",
                 extra=redact_event({
