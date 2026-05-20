@@ -175,9 +175,13 @@ def _lookup_advisories(package_name: str, version: str) -> list[dict]:
 
     Returns a list of ``{ghsa_id, severity, url, summary}`` dicts — the
     minimum surface the coordinator needs to render its decision context.
-    Advisories whose ``vulnerable_version_range`` does not affect
-    ``version`` are filtered out client-side (the API's ``affects=...``
-    query param doesn't always do strict range matching, so we re-check).
+    For Phase 17 we trust GitHub's ``affects=name@version`` filter as
+    authoritative; no client-side range parsing is done. Caveat: the
+    GitHub API parameter expects a bare semver triple, so npm range
+    expressions like ``^4.17.20`` will not match. The demo target
+    (``demo/upgrade-target/package.json``) is hand-crafted with bare
+    triples for this reason. Adding real range verification would
+    require an npm-semver library and is post-submission work.
     """
     headers = {
         "Accept": "application/vnd.github+json",

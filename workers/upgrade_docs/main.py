@@ -106,6 +106,14 @@ ALLOWED_CALLERS = frozenset(
 _LOCKFILE_PATH_RE = re.compile(r"demo/upgrade-target/package\.json\Z")
 
 ALLOWED_BRANCH_PREFIX = "upgrade/"
+# PR titles from this worker must start with this prefix so the upgrade
+# workload's PRs are observability-scoped (matches the branch prefix).
+# Permissive on what follows ``upgrade`` so conventional-commit forms like
+# ``upgrade(lodash): 4.17.20 -> 4.17.21`` work without a scope-aware
+# parser. Defense in depth: the coordinator tool will generate titles with
+# this prefix (see Task 17.C.4); enforcing here keeps the worker
+# independent of coordinator correctness.
+ALLOWED_TITLE_PREFIX = "upgrade"
 # Branch refs after the prefix may contain ASCII letters, digits, hyphen,
 # underscore, dot, and slash. Excludes whitespace, control characters,
 # ``..``, and characters Git itself rejects per ``git-check-ref-format(1)``.
@@ -308,6 +316,11 @@ def patch(
     _check_lockfile_path(req.lockfile_path)
     _check_branch(req.branch)
     _check_base(req.base)
+    if not req.title.startswith(ALLOWED_TITLE_PREFIX):
+        raise HTTPException(
+            status_code=403,
+            detail=f"title must start with {ALLOWED_TITLE_PREFIX!r}",
+        )
 
     log.info(
         "patch request: caller=%s repo=%s lockfile=%s pkg=%s ver=%s branch=%s",

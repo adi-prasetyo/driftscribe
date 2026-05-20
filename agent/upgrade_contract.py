@@ -54,7 +54,7 @@ from pathlib import Path
 from typing import Final, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from agent.workloads.registry import UpgradeTarget, resolve_upgrade_target
 
@@ -126,7 +126,7 @@ class UpgradeDecisionRule(BaseModel):
 
     severity_max: SeverityLevel | None = None
     severity_min: SeverityLevel | None = None
-    version_jump: list[VersionJump] = []
+    version_jump: list[VersionJump] = Field(default_factory=list)
     requires_approval: bool = False
 
 
