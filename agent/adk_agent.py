@@ -55,6 +55,7 @@ equality enforced by ``tests/unit/test_coordinator_tool_inventory.py``.
 """
 
 import json
+import logging
 import re
 import uuid
 
@@ -80,7 +81,11 @@ from agent.mcp.developer_knowledge import (
     search_developer_docs,
 )
 from agent.models import DecisionProposal
+from agent.workload_context import current_workload
 from agent.workloads import WorkloadResolution, load_workload
+from driftscribe_lib.logging import current_trace_id_or_new
+
+_log = logging.getLogger("driftscribe.agent.adk_agent")
 
 # --------------------------------------------------------------------------- #
 # Layer 0: Capability-bounded tool registry
@@ -364,6 +369,33 @@ async def run_agent(
         session_id=session_id,
         new_message=msg,
     ):
+        # 18.B.2: emit structured logs for thought summaries + tool calls.
+        # Same dedup gate as run_chat — partial events carry incomplete
+        # thought chunks; we want one log line per merged summary.
+        if event.content and event.content.parts and getattr(event, "partial", None) is not True:
+            for part in event.content.parts:
+                if getattr(part, "thought", False) and getattr(part, "text", None):
+                    _log.info(
+                        "llm_thought",
+                        extra={
+                            "event": "llm_thought",
+                            "trace_id": current_trace_id_or_new(),
+                            "workload": current_workload(),
+                            "thought_text": part.text,
+                        },
+                    )
+                    continue
+                fc = getattr(part, "function_call", None)
+                if fc and getattr(fc, "name", None):
+                    _log.info(
+                        "tool_call",
+                        extra={
+                            "event": "tool_call",
+                            "trace_id": current_trace_id_or_new(),
+                            "workload": current_workload(),
+                            "tool_name": fc.name,
+                        },
+                    )
         if event.is_final_response() and event.content and event.content.parts:
             parts_text = [
                 part.text
@@ -428,13 +460,37 @@ async def run_chat(
         session_id=sid,
         new_message=msg,
     ):
-        # Record any function (tool) calls the agent made. ADK exposes
-        # these on event.content.parts as function_call entries.
-        if event.content and event.content.parts:
+        # 18.B.2: emit structured logs for thought summaries + tool calls.
+        # Gate on event.partial is not True to dedup ADK's streaming
+        # partials — only the merged non-partial event carries the
+        # complete thought summary. function_calls don't arrive as
+        # partials in practice, but applying the same guard uniformly
+        # keeps the loop shape consistent.
+        if event.content and event.content.parts and getattr(event, "partial", None) is not True:
             for part in event.content.parts:
+                if getattr(part, "thought", False) and getattr(part, "text", None):
+                    _log.info(
+                        "llm_thought",
+                        extra={
+                            "event": "llm_thought",
+                            "trace_id": current_trace_id_or_new(),
+                            "workload": current_workload(),
+                            "thought_text": part.text,
+                        },
+                    )
+                    continue
                 fc = getattr(part, "function_call", None)
                 if fc and getattr(fc, "name", None):
                     tool_calls.append(fc.name)
+                    _log.info(
+                        "tool_call",
+                        extra={
+                            "event": "tool_call",
+                            "trace_id": current_trace_id_or_new(),
+                            "workload": current_workload(),
+                            "tool_name": fc.name,
+                        },
+                    )
         # Collect the final natural-language response.
         if event.is_final_response() and event.content and event.content.parts:
             for part in event.content.parts:
