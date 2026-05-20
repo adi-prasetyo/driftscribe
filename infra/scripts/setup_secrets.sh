@@ -575,6 +575,13 @@ fi
 # grant.
 sa_email="${COORD_SA}"
 role="roles/logging.viewer"
+# Note: `|| true` collapses lookup-failed and lookup-empty into the same
+# "treat as missing" branch. Under transient `get-iam-policy` failure
+# (network blip, 5xx, missing read perm) a re-run that *should* print
+# `already bound … — skipping` will print `granted to …` instead. The
+# `add-iam-policy-binding` call is server-side idempotent, so this is a
+# logging-truthfulness regression, not a correctness bug. Matches the
+# `|| true` pattern in §11 above.
 existing="$(gcloud projects get-iam-policy "$PROJECT" \
   --flatten='bindings[].members' \
   --format="value(bindings.members)" \
