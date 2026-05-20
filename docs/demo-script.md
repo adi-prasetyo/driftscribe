@@ -330,6 +330,96 @@ to fire (exits 2) and the batch halts before opening any PR.
 `all-upgrade` is intentionally separate from `all` so a drift-only
 recording doesn't accidentally open an upgrade PR.
 
+## Transparency UI walkthrough
+
+Phase 19.B adds an operator-facing reasoning timeline at
+`/ui/transparency` on the coordinator. The page surfaces every
+`/chat` call's final response immediately, then fills in the three
+reasoning groups (Coordinator / Tools & workers / MCP) as Cloud
+Logging ingests the events (~15s lag). It also surfaces past
+decisions in the right rail and lets you click straight through to
+the approval page for any pending rollback.
+
+This section is a standalone walkthrough — it does NOT replace the
+beat sequence above. Run it after the recording, or as a separate
+Q&A demo for the judge.
+
+### Pre-flight (one-time)
+
+```bash
+# 1. Coordinator must be deployed with USE_ADK=true (same requirement
+#    as beat-c/e). Plus the runtime SA needs roles/logging.viewer to
+#    fetch traces (wired by infra/scripts/setup_secrets.sh).
+gcloud run services describe driftscribe-agent \
+  --project="$PROJECT" --region="$REGION" \
+  --format='value(status.url)'
+
+# 2. You'll need the operator token (same one beats use). Have it on
+#    the clipboard before opening the UI.
+gcloud secrets versions access latest \
+  --secret=driftscribe-operator-token \
+  --project="$PROJECT"
+```
+
+For local verification without Cloud Run, boot a coordinator with the
+stub trace fetcher:
+
+```bash
+USE_ADK=false DRIFTSCRIBE_TOKEN=test GCP_PROJECT=test-proj \
+  uvicorn agent.main:app --port 8080
+# Then open http://localhost:8080/ui/transparency
+```
+
+The stub fetcher (`agent/trace_fetcher.py`) returns a synthetic
+timeline so you can exercise the rendering paths without GCP creds.
+The `Cache-Control: no-store` header is set on every operator
+surface (`/ui/transparency`, `/trace`, `/decisions`) — confirm with
+`curl -i http://localhost:8080/ui/transparency | grep -i cache-control`.
+
+### Walkthrough beats
+
+| Step | Action                                                                                      | Expected (≤ timing)                                                                                                       |
+| ---- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| 1    | Open `https://<coordinator-url>/ui/transparency` in a browser.                              | Page loads. Token-prompt modal appears (no token in `sessionStorage` yet).                                                |
+| 2    | Paste the operator token; click **Save**.                                                   | Modal closes. Header shows `token: set` pill (green).                                                                     |
+| 3    | Type `what is the current drift?` in the chat input. Workload dropdown stays on **drift**. Click **Send**. | Within ≤2s: top "Final response" card populates with the agent's reply. Trace-ID pill in the header shows `trace abcd1234…`. |
+| 4    | Wait ~15s (Cloud Logging ingestion lag).                                                    | Within ≤30s: the three reasoning groups fill in. Click each `<details>` to expand.                                        |
+| 5    | Observe the three groups render with distinct visual treatment.                             | Coordinator reasoning (`llm_thought`, `llm_usage`) — green swatch. Tools & workers (`tool_call` / `tool_result`) — amber swatch. MCP (Developer Knowledge) — purple swatch. The legend at the page bottom labels the swatches. |
+| 6    | In the right rail, find a past rollback decision (`action=rollback`). Click **open trace →**. | Page enters historical mode: badge `viewing historical trace <id>` shows at the top, chat form is dimmed, polling stops. Three groups re-render from the historical `/trace` response. |
+| 7    | Click the inline **Approve →** button on a rollback row whose `expires_at` is still future. | Browser navigates to `/approvals/{id}?t=…`. This is the existing HITL approval page (unchanged).                          |
+| 8    | Click **← new chat** in the historical badge.                                               | Returns to live mode. Chat form re-enables; polling for new traces resumes when you next click Send.                      |
+
+The friendly worker labels (Reader (drift), Notifier, Developer
+Knowledge MCP — answer, etc.) are mapped client-side from raw tool
+function names — see `_WORKER_LABELS` in `transparency.html`. Add new
+entries there when wiring a new tool so the timeline doesn't surface
+raw function names like `read_live_env_tool` to the judge.
+
+### Expected timings (acceptance)
+
+- **Final-response card** populates within **≤2s** of clicking Send
+  (bounded by the LLM call + the round-trip; the UI does NOT wait on
+  Cloud Logging for this).
+- **Reasoning groups** fill within **≤30s** of the response landing
+  (bounded by Cloud Logging ingestion, typically 10–15s in practice).
+- **Past decisions rail** loads within **≤2s** of page load.
+
+If the reasoning groups stay empty past 30s, check that
+`roles/logging.viewer` is bound to the coordinator runtime SA (the
+sanity-check checklist in the Phase 19 plan calls this out) and that
+the trace_id from the response actually appears in Logs Explorer
+with `jsonPayload.trace_id="<id>"`.
+
+### Screenshot
+
+To be added by the maintainer once the UI is deployed against a
+non-stub coordinator — the subagent that wrote this walkthrough had
+no headless-browser tool available. The screenshot should capture:
+the final-response card populated, the three reasoning groups
+expanded, the trace-ID pill green, and at least one decision row in
+the right rail. Save as `docs/submission/transparency-ui.png` and
+reference from this section.
+
 ## Trace ID lookup
 
 Every response carries an `X-Trace-Id` header (Phase 15.2 middleware).

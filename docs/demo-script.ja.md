@@ -244,6 +244,67 @@ CONFIRM_UPGRADE_PR=1 ./scripts/demo.sh all-upgrade
 
 `all-upgrade` は意図的に `all` と分離されています — ドリフト専用の録画でアップグレード PR を誤って開くことを防ぐためです。
 
+## 透明性 UI ウォークスルー
+
+Phase 19.B はコーディネーターに `/ui/transparency` でオペレーター向けの推論タイムライン UI を追加します。各 `/chat` 呼び出しの最終応答は即座に表示され、その後 3 つの推論グループ (Coordinator / Tools & workers / MCP) が Cloud Logging のインジェスト (約 15 秒のラグ) に合わせて埋まっていきます。右ペインには過去の判断履歴が並び、pending な rollback はインラインで承認ページへ飛べます。
+
+このセクションは上記の beat シーケンスを置き換えるものではなく、独立したウォークスルーです。録画の後、または審査員向けの Q&A セッション用のデモとして実行してください。
+
+### 事前準備 (1 回だけ)
+
+```bash
+# 1. コーディネーターは USE_ADK=true でデプロイされている必要があります
+#    (beat-c/e と同じ要件)。加えて、ランタイム SA に
+#    roles/logging.viewer がバインドされている必要があります
+#    (infra/scripts/setup_secrets.sh が配線)。
+gcloud run services describe driftscribe-agent \
+  --project="$PROJECT" --region="$REGION" \
+  --format='value(status.url)'
+
+# 2. オペレータートークン (beat と同じもの) が必要です。UI を開く前に
+#    クリップボードに入れておきます。
+gcloud secrets versions access latest \
+  --secret=driftscribe-operator-token \
+  --project="$PROJECT"
+```
+
+Cloud Run 無しでローカル検証するには、スタブの trace fetcher を使ってコーディネーターを起動します:
+
+```bash
+USE_ADK=false DRIFTSCRIBE_TOKEN=test GCP_PROJECT=test-proj \
+  uvicorn agent.main:app --port 8080
+# http://localhost:8080/ui/transparency を開く
+```
+
+スタブ fetcher (`agent/trace_fetcher.py`) は合成タイムラインを返すので、GCP 認証なしで描画経路を検証できます。`Cache-Control: no-store` ヘッダはすべてのオペレーターサーフェス (`/ui/transparency`、`/trace`、`/decisions`) に設定されています — `curl -i http://localhost:8080/ui/transparency | grep -i cache-control` で確認できます。
+
+### ウォークスルー beat
+
+| ステップ | 操作                                                                                                | 期待結果 (タイミング上限つき)                                                                                                                |
+| -------- | --------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1        | ブラウザで `https://<coordinator-url>/ui/transparency` を開く。                                     | ページが読み込まれ、トークン入力モーダルが表示される (`sessionStorage` にトークンがまだない)。                                              |
+| 2        | オペレータートークンを貼り付け、**Save** をクリック。                                               | モーダルが閉じ、ヘッダーに `token: set` ピル (緑) が表示される。                                                                             |
+| 3        | チャット入力欄に `what is the current drift?` と入力。Workload ドロップダウンは **drift** のまま。**Send** をクリック。 | 2 秒以内に、上部の "Final response" カードがエージェントの応答で埋まる。ヘッダーの Trace-ID ピルに `trace abcd1234…` が表示される。           |
+| 4        | 約 15 秒待つ (Cloud Logging のインジェストラグ)。                                                   | 30 秒以内に 3 つの推論グループが埋まる。各 `<details>` をクリックして展開できる。                                                            |
+| 5        | 3 つのグループがそれぞれ異なる視覚的扱いで描画されることを確認。                                    | Coordinator reasoning (`llm_thought`, `llm_usage`) — 緑のスウォッチ。Tools & workers (`tool_call` / `tool_result`) — 琥珀色のスウォッチ。MCP (Developer Knowledge) — 紫のスウォッチ。ページ下部の凡例がスウォッチをラベリング。 |
+| 6        | 右ペインで過去の rollback 判断 (`action=rollback`) を探し、**open trace →** をクリック。            | ページが historical モードに入る: 上部に `viewing historical trace <id>` バッジが表示され、チャットフォームはディムされ、ポーリングが停止する。3 つのグループが historical `/trace` のレスポンスから再描画される。 |
+| 7        | `expires_at` がまだ未来である rollback 行の **Approve →** ボタンをクリック。                         | ブラウザが `/approvals/{id}?t=…` に遷移。これは既存の HITL 承認ページ (変更なし)。                                                            |
+| 8        | historical バッジ内の **← new chat** をクリック。                                                   | ライブモードに戻る。チャットフォームが再有効化され、次に Send を押した時に新規 trace のポーリングが再開する。                                |
+
+フレンドリーなワーカーラベル (Reader (drift)、Notifier、Developer Knowledge MCP — answer など) は、生のツール関数名からクライアント側でマッピングされます — `transparency.html` の `_WORKER_LABELS` を参照。新しいツールを配線する際は、`read_live_env_tool` のような生の関数名がタイムラインに出ないよう、ここにエントリを追加してください。
+
+### 期待されるタイミング (Acceptance)
+
+- **Final-response カード**: Send クリックから **≤2 秒** で埋まる (LLM 呼び出し + ラウンドトリップで律速。UI はこの段階で Cloud Logging を待たない)。
+- **推論グループ**: 応答到着から **≤30 秒** で埋まる (Cloud Logging のインジェストで律速、実測 10〜15 秒程度)。
+- **過去の判断ペイン**: ページ読み込みから **≤2 秒** でロード。
+
+30 秒経っても推論グループが空のままなら、コーディネーターランタイム SA に `roles/logging.viewer` がバインドされているか (Phase 19 プランのサニティチェックリストで明示) を確認し、応答の trace_id が Logs Explorer の `jsonPayload.trace_id="<id>"` で実際に出てくるか確認してください。
+
+### スクリーンショット
+
+スタブではない実コーディネーターに対してデプロイしてから、メンテナが追加する予定です — このウォークスルーを書いたサブエージェントはヘッドレスブラウザツールを持っていませんでした。スクリーンショットでは、Final-response カードが埋まった状態、3 つの推論グループが展開された状態、Trace-ID ピルが緑、右ペインに少なくとも 1 件の決定行が並んでいる状態を収めてください。`docs/submission/transparency-ui.png` として保存し、このセクションから参照します。
+
 ## Trace ID によるログ検索
 
 すべてのレスポンスは `X-Trace-Id` ヘッダーを保持しています (Phase 15.2 のミドルウェア)。スクリプトはボディの前の専用行に出力するので、Q&A 中に Cloud Logging へコピーできます:
