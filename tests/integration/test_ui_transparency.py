@@ -83,3 +83,19 @@ def test_ui_transparency_contains_chat_polling_logic():
     assert "2000" in body or "2_000" in body  # 2-second poll cadence
     # Status pill states — at least 'complete' must be referenced.
     assert "complete" in body.lower()
+
+
+def test_ui_transparency_contains_three_group_renderer():
+    """19.B.4: three-group timeline render (coordinator / tools / MCP).
+
+    Pin the renderer's public surface so subsequent refactors don't quietly
+    regress the worker-friendly labels (Codex v3 MINOR) or drop one of the
+    three group anchors that the polling glue writes into.
+    """
+    body = client.get("/ui/transparency").text
+    assert "_WORKER_LABELS" in body or "WORKER_LABELS" in body
+    assert "Reader (drift)" in body
+    assert "Developer Knowledge MCP" in body
+    assert "group-coordinator" in body
+    assert "group-tools" in body
+    assert "group-mcp" in body
