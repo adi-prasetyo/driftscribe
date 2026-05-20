@@ -160,3 +160,67 @@ def test_signature_missing_fields_default_to_empty_string():
     digest = _signature_of(events)
     assert isinstance(digest, str)
     assert len(digest) == 64  # SHA-256 hex
+
+
+# --------------------------------------------------------------------------- #
+# Soft cap on _TRACE_OBSERVATIONS — bounded growth under operator burst
+# --------------------------------------------------------------------------- #
+
+
+def test_observations_dict_respects_soft_cap():
+    """Pin the FIFO soft-cap on ``_TRACE_OBSERVATIONS``.
+
+    A trace polled once with ``final_response`` but never polled
+    again leaves an observation entry forever. Under operator-burst
+    patterns (many traces, each observed exactly once) this would be
+    a slow unbounded leak. The fix is FIFO eviction at
+    :data:`_OBSERVATIONS_SOFT_CAP`: when the dict is full, the
+    oldest entry by insertion order is dropped before the new one
+    lands.
+
+    Test: insert ``_OBSERVATIONS_SOFT_CAP + 10`` distinct
+    observations and assert the dict never exceeds the cap. Also
+    assert the OLDEST inserts (the first 10) are the ones evicted,
+    pinning the FIFO discipline."""
+    from agent.main import (
+        _OBSERVATIONS_SOFT_CAP,
+        _TRACE_OBSERVATIONS,
+        _observe_and_check_stability,
+        _reset_trace_state_for_tests,
+    )
+
+    _reset_trace_state_for_tests()
+    # Each call uses a unique trace_id with a one-entry timeline
+    # containing ``final_response`` — enough to exercise the "first
+    # observation, record + return False" path where the eviction
+    # lives.
+    n_inserts = _OBSERVATIONS_SOFT_CAP + 10
+    for i in range(n_inserts):
+        trace_id = f"{i:032x}"  # 32-hex-char unique trace_id
+        events = [
+            {
+                "timestamp": "2026-05-21T00:00:00Z",
+                "insert_id": f"ins-{i}",
+                "event": "final_response",
+            }
+        ]
+        complete = _observe_and_check_stability(trace_id, events)
+        # First observation of any signature always returns False
+        # regardless of grace window.
+        assert complete is False
+
+    # Cap respected.
+    assert len(_TRACE_OBSERVATIONS) <= _OBSERVATIONS_SOFT_CAP
+
+    # FIFO discipline: the FIRST 10 trace_ids were evicted; the
+    # newest _OBSERVATIONS_SOFT_CAP remain.
+    surviving = set(_TRACE_OBSERVATIONS.keys())
+    for i in range(10):
+        assert (
+            f"{i:032x}" not in surviving
+        ), f"oldest entry {i} should have been evicted"
+    # And the most-recently inserted is definitely still there.
+    assert f"{n_inserts - 1:032x}" in surviving
+
+    # Cleanup for the next test.
+    _reset_trace_state_for_tests()
