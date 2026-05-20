@@ -467,3 +467,148 @@ async def test_run_agent_two_final_events_emit_only_once(caplog, drift_workload_
     finals = [r for r in caplog.records if getattr(r, "event", None) == "final_response"]
     assert len(finals) == 1
     assert "first" in getattr(finals[0], "response_preview")
+
+
+# --------------------------------------------------------------------------- #
+# Phase-19 follow-up (Codex final review IMPORTANT): the JSON path through
+# ``_redact_final_response`` must mask name-keyed nested secrets via
+# :func:`agent.secret_guard.redact_event` — not just credentialed URLs. The
+# prior implementation only ran ``redact_text``, which has no schema to walk
+# and therefore leaked structured secrets like ``{"PASSWORD": "abc"}`` into
+# the 365-day-durable Cloud Logging ``final_response.response_preview``.
+#
+# Pins exercised:
+#   * key-aware masking of ``DATABASE_URL``, ``PASSWORD`` (NAME-based heuristic)
+#   * nested-dict containment: ``{"wrapped": {"PASSWORD": ...}}`` still masks
+#   * non-JSON final text falls back to ``redact_text`` (URL userinfo only)
+#   * ``response_kind`` is correctly tagged for each branch
+# --------------------------------------------------------------------------- #
+
+
+async def _stub_final_with_secret_keyed_nested_field(*args, **kwargs):
+    """A JSON final response whose top-level AND nested fields are
+    name-keyed secrets. ``redact_text`` alone would NOT mask these
+    (no credentialed-URL pattern, no name-aware behaviour) — only
+    ``redact_event`` walking the parsed structure can."""
+    body = (
+        '{"DATABASE_URL": "anything-not-a-url", '
+        '"wrapped": {"PASSWORD": "abc", "ok": "kept"}, '
+        '"trace_hint": "no_op"}'
+    )
+    yield _Ev([_P(text=body)], partial=False, final=True, usage=_usage())
+
+
+@pytest.mark.asyncio
+async def test_final_response_json_with_secret_keyed_nested_field_redacts_via_redact_event(
+    caplog, drift_workload_env
+):
+    """Pin structural redaction on the JSON path.
+
+    Both the top-level ``DATABASE_URL`` and the nested ``PASSWORD`` must
+    surface as ``<redacted>`` in ``response_preview``. The non-secret
+    sibling field (``ok``) must pass through unmodified — the redaction
+    is targeted, not blanket. ``response_kind`` is ``"json"`` because
+    the JSON path fired.
+    """
+    caplog.set_level(logging.INFO, logger="driftscribe.agent.adk_agent")
+    token = set_workload("drift")
+    try:
+        with patch.object(adk_agent, "Runner") as runner_cls:
+            runner_cls.return_value.run_async = _stub_final_with_secret_keyed_nested_field
+            await adk_agent.run_chat("hi", workload="drift")
+    finally:
+        reset_workload(token)
+
+    finals = [r for r in caplog.records if getattr(r, "event", None) == "final_response"]
+    assert len(finals) == 1
+    preview = getattr(finals[0], "response_preview")
+    assert getattr(finals[0], "response_kind") == "json"
+    # Both secret values masked — the raw values must NOT appear.
+    assert "anything-not-a-url" not in preview, (
+        "DATABASE_URL value leaked — redact_event did not fire on the JSON path"
+    )
+    assert "abc" not in preview, (
+        "nested PASSWORD value leaked — redact_event did not recurse"
+    )
+    # The redaction sentinel must appear in the preview (defense
+    # against a future refactor that simply drops secret-keyed fields,
+    # leaving no audit trail of "something was here").
+    assert "<redacted>" in preview
+    # Non-secret sibling preserved (targeted, not blanket, redaction).
+    assert '"ok": "kept"' in preview or '"ok":"kept"' in preview
+
+
+async def _stub_final_non_json_with_credentialed_url(*args, **kwargs):
+    """A plain-text final response (not JSON) carrying a credentialed
+    URL. The fallback path must still strip the userinfo via
+    ``redact_text`` — the JSON branch never fires, so structural
+    redaction is unavailable, but URL userinfo still gets masked."""
+    body = "All set — postgres://user:secret@db.example/prod is healthy."
+    yield _Ev([_P(text=body)], partial=False, final=True, usage=_usage())
+
+
+@pytest.mark.asyncio
+async def test_final_response_non_json_falls_back_to_redact_text(
+    caplog, drift_workload_env
+):
+    """Pin the fallback path: non-JSON final responses still get URL
+    userinfo redaction. ``response_kind`` is ``"text"`` because the
+    JSON parse branch was skipped (leading char is "A", not "{" / "[").
+    """
+    caplog.set_level(logging.INFO, logger="driftscribe.agent.adk_agent")
+    token = set_workload("drift")
+    try:
+        with patch.object(adk_agent, "Runner") as runner_cls:
+            runner_cls.return_value.run_async = _stub_final_non_json_with_credentialed_url
+            await adk_agent.run_chat("hi", workload="drift")
+    finally:
+        reset_workload(token)
+
+    finals = [r for r in caplog.records if getattr(r, "event", None) == "final_response"]
+    assert len(finals) == 1
+    preview = getattr(finals[0], "response_preview")
+    assert getattr(finals[0], "response_kind") == "text"
+    # URL userinfo must be stripped — but the host + path remain so
+    # the operator still sees which connection was being discussed.
+    assert "user:secret" not in preview
+    assert "<redacted>" in preview
+    assert "db.example/prod" in preview
+
+
+async def _stub_final_json_shaped_but_unparseable(*args, **kwargs):
+    """A final response that LOOKS like JSON (leading "{") but doesn't
+    parse — e.g. a streaming truncation. The helper must catch the
+    parse error and fall through to the text path, NOT crash the log
+    emit. The text path can't mask name-keyed secrets, but it still
+    masks credentialed URLs (defense in depth)."""
+    body = '{"DATABASE_URL": "postgres://u:p@host/db'  # no closing brace
+    yield _Ev([_P(text=body)], partial=False, final=True, usage=_usage())
+
+
+@pytest.mark.asyncio
+async def test_final_response_malformed_json_falls_back_to_redact_text(
+    caplog, drift_workload_env
+):
+    """Pin the parse-error → text-path graceful degradation.
+
+    A truncated JSON-shaped final response must NOT raise — it must
+    fall through to ``redact_text``. The URL userinfo still gets
+    masked even though the structural redactor never ran.
+    """
+    caplog.set_level(logging.INFO, logger="driftscribe.agent.adk_agent")
+    token = set_workload("drift")
+    try:
+        with patch.object(adk_agent, "Runner") as runner_cls:
+            runner_cls.return_value.run_async = _stub_final_json_shaped_but_unparseable
+            await adk_agent.run_chat("hi", workload="drift")
+    finally:
+        reset_workload(token)
+
+    finals = [r for r in caplog.records if getattr(r, "event", None) == "final_response"]
+    assert len(finals) == 1
+    preview = getattr(finals[0], "response_preview")
+    # Parse failed → text path → response_kind="text".
+    assert getattr(finals[0], "response_kind") == "text"
+    # URL userinfo still stripped via the fallback regex.
+    assert "u:p@" not in preview
+    assert "<redacted>" in preview

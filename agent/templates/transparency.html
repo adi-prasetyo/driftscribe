@@ -747,9 +747,13 @@
         "read_live_env_tool":        "Reader (drift)",
         "patch_docs_tool":           "Docs (drift)",
         "propose_rollback_tool":     "Rollback (drift) — HITL",
-        // Upgrade workload
-        "upgrade_read_dependencies": "Upgrade Reader",
-        "upgrade_patch_docs_tool":   "Upgrade Docs",
+        // Upgrade workload — tool names must match the exposed surface
+        // in ``agent/adk_tools.py`` (the ``_tool`` suffix is part of the
+        // function name the ADK runner sees; misalignment here surfaces
+        // raw ``upgrade_read_dependencies_tool`` strings in the timeline
+        // instead of the friendly label).
+        "upgrade_read_dependencies_tool": "Upgrade Reader",
+        "upgrade_propose_pr_tool":        "Upgrade Docs",
         // Shared
         "notify_tool":               "Notifier",
         // MCP
@@ -953,20 +957,50 @@
       //    * result_preview is a JSON STRING (≤2000 chars) — may be    //
       //      truncated mid-string. We catch JSON.parse errors and       //
       //      render nothing in that case.                               //
-      //    * Only ``approval_url`` values starting with "/approvals/"  //
-      //      are accepted. Any other shape (http://…, javascript:,    //
-      //      data:, relative path) returns null — protects against an  //
-      //      open-redirect/XSS surface in a redacted-but-attacker-     //
-      //      shaped result.                                             //
+      //    * ``approval_url`` is parsed via ``new URL(raw, origin)``    //
+      //      so both shapes are accepted:                               //
+      //         - relative:   ``/approvals/<id>?t=<token>``             //
+      //         - absolute:   ``https://<coordinator>/approvals/<id>``  //
+      //      …but only when the resolved origin matches the current     //
+      //      page's origin AND the pathname starts with                 //
+      //      ``/approvals/``. The rollback worker emits ABSOLUTE URLs   //
+      //      (see ``workers/rollback/main.py``) — without parse-based   //
+      //      acceptance the CTA never renders in real demos. Off-       //
+      //      origin URLs (``https://evil.example/...``), non-http       //
+      //      schemes (``javascript:``, ``data:``), and malformed URLs   //
+      //      degrade to null (no CTA), so an attacker-shaped result     //
+      //      can't open-redirect the operator.                          //
+      //    * We assign only the resolved RELATIVE href (pathname +     //
+      //      search + hash) — never the raw absolute URL — so the      //
+      //      DOM never carries an off-origin attacker-controlled       //
+      //      string even as inert text.                                 //
       //    * No innerHTML of derived text — all node content is set    //
       //      via textContent (button label is a static literal).       //
       // --------------------------------------------------------------- //
+      function _safeApprovalHref(raw) {
+        // Resolve ``raw`` against the current page origin and accept
+        // ONLY URLs whose resolved origin matches this page's origin
+        // AND whose pathname starts with ``/approvals/``. Returns the
+        // relative href (pathname + search + hash) on accept, null on
+        // reject. See the block comment above ``_renderApprovalCta``
+        // for the security rationale.
+        try {
+          const u = new URL(raw, window.location.origin);
+          if (u.origin !== window.location.origin) return null;
+          if (!u.pathname.startsWith("/approvals/")) return null;
+          return u.pathname + u.search + u.hash;
+        } catch (e) {
+          return null;
+        }
+      }
+
       function _renderApprovalCta(result_preview_string) {
         try {
           const obj = JSON.parse(result_preview_string);
           const url = obj && obj.approval_url;
-          if (typeof url !== "string" || !url.startsWith("/approvals/")) {
-            return null; // wrong shape; render nothing
+          const href = (typeof url === "string") ? _safeApprovalHref(url) : null;
+          if (!href) {
+            return null; // wrong shape / off-origin; render nothing
           }
           const card = document.createElement("div");
           card.className = "approval-cta";
@@ -977,7 +1011,7 @@
 
           const ctaBtn = document.createElement("a");
           ctaBtn.className = "approval-btn";
-          ctaBtn.href = url;
+          ctaBtn.href = href;
           ctaBtn.target = "_blank";
           ctaBtn.rel = "noopener";
           ctaBtn.textContent = "Approve →";
@@ -1683,18 +1717,22 @@
       function _renderPastApprovalCta(approval) {
         // Defensive checks: ``approval`` is the decision's ``approval``
         // sub-object as returned by /decisions. Same same-origin guard
-        // as 19.B.5's _renderApprovalCta — the URL must start with the
-        // literal "/approvals/" prefix to be accepted. Anything else
-        // (off-origin, javascript:, data:, missing) returns null.
+        // as 19.B.5's ``_renderApprovalCta`` — delegated to
+        // :func:`_safeApprovalHref` which accepts BOTH relative
+        // (``/approvals/<id>``) AND absolute coordinator URLs
+        // (``https://<coordinator>/approvals/<id>``) — the rollback
+        // worker emits the absolute form. Off-origin, javascript:,
+        // data:, malformed, or missing → null (no CTA).
         if (!approval || typeof approval !== "object") return null;
         const url = approval.approval_url;
-        if (typeof url !== "string" || !url.startsWith("/approvals/")) {
+        const href = (typeof url === "string") ? _safeApprovalHref(url) : null;
+        if (!href) {
           return null;
         }
         const expired = _isExpired(approval.expires_at);
         const a = document.createElement("a");
         a.className = "past-approve-btn" + (expired ? " expired" : "");
-        a.href = url;
+        a.href = href;
         a.target = "_blank";
         a.rel = "noopener";
         a.textContent = "Approve →";
