@@ -54,6 +54,7 @@ from agent.workloads import (
 )
 from pydantic import ValidationError as PydanticValidationError
 from driftscribe_lib.logging import (
+    current_trace_id_or_new,
     install_trace_middleware,
     setup as setup_logging,
 )
@@ -540,6 +541,13 @@ def _do_rollback(
     response = {
         "decision_id": decision_id,
         "event_key": event_key,
+        # 19.A.4: stamp the inbound (or freshly-minted) trace_id onto the
+        # decision document so the past-decisions UI (19.B.6) can deep-link
+        # to ``/trace/{trace_id}``. Read from the ContextVar bound by the
+        # FastAPI middleware on this request; ``current_trace_id_or_new``
+        # mints a fresh hex32 if for any reason the binding is missing or
+        # malformed, so the field is never empty in the persisted doc.
+        "trace_id": current_trace_id_or_new(),
         "action": "rollback",
         # Hardcoded "adk" — the classifier doesn't emit rollback (see the
         # defensive guard above). When we eventually add a classifier branch
@@ -907,6 +915,13 @@ async def _do_recheck(
     response = {
         "decision_id": decision_id,
         "event_key": event_key,
+        # 19.A.4: stamp the inbound (or freshly-minted) trace_id onto the
+        # decision document so the past-decisions UI (19.B.6) can deep-link
+        # to ``/trace/{trace_id}``. Read from the ContextVar bound by the
+        # FastAPI middleware on this request; ``current_trace_id_or_new``
+        # mints a fresh hex32 if for any reason the binding is missing or
+        # malformed, so the field is never empty in the persisted doc.
+        "trace_id": current_trace_id_or_new(),
         "action": proposal.action.value,
         # Tells demo viewers / on-call which engine produced this proposal.
         # The deterministic validator gates BOTH paths the same way, so this
