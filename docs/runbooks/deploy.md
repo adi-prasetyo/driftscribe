@@ -102,7 +102,7 @@ is also deployed):
 ```text
 resource.type="cloud_run_revision"
 resource.labels.service_name="driftscribe-agent"
-jsonPayload.event=("llm_thought" OR "tool_call" OR "llm_usage")
+jsonPayload.event=("llm_thought" OR "tool_call" OR "llm_usage" OR "mcp_call")
 jsonPayload.trace_id="<the trace id you want to replay>"
 ```
 
