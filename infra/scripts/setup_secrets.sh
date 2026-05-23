@@ -47,6 +47,16 @@
 
 set -euo pipefail
 
+# Phase 20: shared idempotent helpers (create_secret_idempotent,
+# grant_role_idempotent, bind_secret_accessor, ...) live in _setup_lib.sh
+# so both this script and the new infra/scripts/setup_e2e_project.sh can
+# call them. Sourcing is a no-op for behavior — the original inline
+# gcloud calls below are unchanged — but the helpers are available for
+# any future site that wants to deduplicate.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=infra/scripts/_setup_lib.sh
+source "${SCRIPT_DIR}/_setup_lib.sh"
+
 PROJECT="${1:?usage: $0 PROJECT GITHUB_TOKEN [DOCS_AGENT_PAT] [WEBHOOK_URL] [DEVELOPER_KNOWLEDGE_API_KEY] [UPGRADE_READER_PAT] [UPGRADE_DOCS_PAT]}"
 GITHUB_TOKEN="${2:?}"
 DOCS_AGENT_PAT="${3:-}"

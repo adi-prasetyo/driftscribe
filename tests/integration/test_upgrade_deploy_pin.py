@@ -277,6 +277,26 @@ def test_upgrade_workers_expose_lockfile_path_regex_constant():
 # --------------------------------------------------------------------------- #
 
 
+def _resolve_substitution(body: str, name: str) -> str:
+    """Read the default value of a Cloud Build substitution from the
+    ``substitutions:`` block at the top of ``infra/cloudbuild.yaml``.
+
+    Phase 20: the file now declares user-defined substitutions like
+    ``_UPGRADE_TARGET_REPO`` whose default doubles as the prod-deploy
+    value. Resolving the default lets the deploy-vs-registry guard
+    continue to pin the prod invariant even after the env-var line
+    started referencing ``$_UPGRADE_TARGET_REPO`` instead of the
+    literal slug.
+    """
+    m = re.search(
+        rf"^\s*{re.escape(name)}:\s*['\"]?([^'\"\n]+)['\"]?\s*$",
+        body,
+        flags=re.MULTILINE,
+    )
+    assert m, f"could not find substitution default for {name!r}"
+    return m.group(1).strip()
+
+
 def _read_cloudbuild_upgrade_target_repo_envs() -> dict[str, str]:
     """Return a {worker_service_name: target_repo_value} mapping by
     parsing infra/cloudbuild.yaml as plain text.
@@ -287,6 +307,12 @@ def _read_cloudbuild_upgrade_target_repo_envs() -> dict[str, str]:
     either fail or load those as opaque strings. Plain-text regex
     parsing is more robust here and the format (gcloud
     ``--set-env-vars=...`` flag inside an ``args`` list) is stable.
+
+    Phase 20: the captured value may be a substitution reference (e.g.
+    ``$_UPGRADE_TARGET_REPO``) rather than the literal slug. The helper
+    dereferences against the file's ``substitutions:`` block default
+    so the deploy-vs-registry equality invariant holds in the prod
+    (no-substitution-override) case.
     """
     from pathlib import Path
 
@@ -315,13 +341,22 @@ def _read_cloudbuild_upgrade_target_repo_envs() -> dict[str, str]:
         )
         env_line = m.group(1)
         # env_line looks like
-        # GCP_PROJECT=$PROJECT_ID,UPGRADE_TARGET_REPO=adi-prasetyo/driftscribe,OWN_URL=...
+        # GCP_PROJECT=$PROJECT_ID,UPGRADE_TARGET_REPO=$_UPGRADE_TARGET_REPO,OWN_URL=...
         kv = re.search(r"UPGRADE_TARGET_REPO=([^,\s]+)", env_line)
         assert kv, (
             f"Could not extract UPGRADE_TARGET_REPO=... from the "
             f"--set-env-vars line for {service!r}. Got: {env_line!r}"
         )
-        out[service] = kv.group(1)
+        raw = kv.group(1)
+        # Phase 20: dereference substitution references like
+        # `$_UPGRADE_TARGET_REPO` / `${_UPGRADE_TARGET_REPO}` against
+        # the substitutions: block default. If the value is already a
+        # literal slug (pre-Phase-20 shape), the startswith("$") guard
+        # leaves it alone.
+        if raw.startswith("$"):
+            sub_name = raw.lstrip("$").strip("{}")
+            raw = _resolve_substitution(text, sub_name)
+        out[service] = raw
     return out
 
 

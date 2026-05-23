@@ -526,6 +526,21 @@ def resolve_upgrade_target(name: str) -> UpgradeTarget:
     """Resolve a symbolic upgrade-target name to its
     :class:`UpgradeTarget` record.
 
+    Phase 20: consults ``UPGRADE_TARGET_REPO_OVERRIDE`` at resolution
+    time so the agent-side ``target_repo`` agrees with the worker-side
+    ``UPGRADE_TARGET_REPO`` env pin when the E2E build redirects both
+    to ``driftscribe-e2e-target``. The override never affects
+    ``lockfile_path`` / ``advisory_source`` — those still come from
+    the registry, on the assumption that the E2E target repo's
+    lockfile lives at the same path. On prod, the coordinator's
+    cloudbuild env stamps ``UPGRADE_TARGET_REPO_OVERRIDE`` with the
+    same value as the registry default (the substitution default
+    equals the registry singleton's ``target_repo``); the override
+    branch fires but returns a freshly-constructed UpgradeTarget
+    whose fields equal the singleton's. Frozen-dataclass equality is
+    field-based, so callers comparing with ``==`` see identical
+    results — only ``is`` would diverge.
+
     Raises:
         UnknownUpgradeTargetError: ``name`` is not in
             :data:`UPGRADE_TARGET_REGISTRY`. Mirrors the
@@ -538,7 +553,19 @@ def resolve_upgrade_target(name: str) -> UpgradeTarget:
             f"workload contract YAML may only reference allowlisted "
             f"target names. Known: {sorted(UPGRADE_TARGET_REGISTRY)}"
         )
-    return UPGRADE_TARGET_REGISTRY[name]
+    base = UPGRADE_TARGET_REGISTRY[name]
+    override = os.environ.get("UPGRADE_TARGET_REPO_OVERRIDE")
+    if override:
+        # Parity with the worker-side UPGRADE_TARGET_REPO env pin —
+        # required so the agent's tool args match what the worker
+        # accepts. See infra/cloudbuild.yaml's coordinator deploy step
+        # (UPGRADE_TARGET_REPO_OVERRIDE=$_UPGRADE_TARGET_REPO).
+        return UpgradeTarget(
+            target_repo=override,
+            lockfile_path=base.lockfile_path,
+            advisory_source=base.advisory_source,
+        )
+    return base
 
 
 # --------------------------------------------------------------------------- #
