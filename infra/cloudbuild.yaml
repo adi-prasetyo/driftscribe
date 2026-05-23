@@ -6,6 +6,26 @@ substitutions:
   # Default `manual` keeps the file valid when running from a local context
   # without a commit (e.g., uncommitted experiments).
   _TAG: 'manual'
+  # Phase 20: deploy-target parameters. Defaults preserve prod behavior so
+  # `gcloud builds submit --config infra/cloudbuild.yaml` (no
+  # substitutions) still deploys the original `payment-demo` against the
+  # production GitHub repo. The E2E build (driftscribe-e2e project)
+  # overrides ALL four:
+  #   --substitutions=_TARGET_SERVICE=payment-demo-e2e,
+  #                   _TARGET_GITHUB_REPO=adi-prasetyo/driftscribe-e2e-target,
+  #                   _UPGRADE_TARGET_REPO=adi-prasetyo/driftscribe-e2e-target,
+  #                   _USE_ADK=true
+  _TARGET_SERVICE: payment-demo
+  _TARGET_GITHUB_REPO: adi-prasetyo/driftscribe
+  _UPGRADE_TARGET_REPO: adi-prasetyo/driftscribe
+  # _USE_ADK gates the coordinator's /chat path. Prod default is 'false'
+  # so a fresh `gcloud builds submit` doesn't silently re-enable the ADK
+  # path before the operator has confirmed Vertex AI quota. The E2E
+  # build pins this to 'true' — every E2E test that hits /chat depends
+  # on it (drift-chat, HITL, upgrade, UI). Flip on a running prod
+  # revision with:
+  #   gcloud run services update driftscribe-agent --update-env-vars=USE_ADK=true
+  _USE_ADK: 'false'
 
 steps:
   - name: gcr.io/cloud-builders/docker
@@ -20,7 +40,7 @@ steps:
     args:
       - build
       - -t
-      - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/payment-demo:${_TAG}
+      - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/${_TARGET_SERVICE}:${_TAG}
       - -f
       - demo/Dockerfile
       - demo
@@ -84,7 +104,7 @@ steps:
   - name: gcr.io/cloud-builders/docker
     args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-agent:${_TAG}']
   - name: gcr.io/cloud-builders/docker
-    args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/payment-demo:${_TAG}']
+    args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/${_TARGET_SERVICE}:${_TAG}']
   - name: gcr.io/cloud-builders/docker
     args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-reader:${_TAG}']
   - name: gcr.io/cloud-builders/docker
@@ -103,8 +123,8 @@ steps:
     args:
       - run
       - deploy
-      - payment-demo
-      - --image=asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/payment-demo:${_TAG}
+      - ${_TARGET_SERVICE}
+      - --image=asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/${_TARGET_SERVICE}:${_TAG}
       - --region=asia-northeast1
       - --allow-unauthenticated
       - --min-instances=0
@@ -158,7 +178,22 @@ steps:
       # (Phase 14.5) flip the google-genai SDK from AI Studio (API-key auth)
       # to Vertex AI (ADC via the coordinator's runtime SA). These are stamped
       # at deploy time, not post-deploy — they don't depend on any worker URL.
-      - --set-env-vars=DRY_RUN=true,GCP_PROJECT=$PROJECT_ID,TARGET_SERVICE=payment-demo,TARGET_REGION=asia-northeast1,GITHUB_REPO=adi-prasetyo/driftscribe,USE_ADK=false,DEBUG_CONFIG_URL=https://payment-demo-u272wv52kq-an.a.run.app/debug/config,READER_URL=https://placeholder.invalid,DOCS_URL=https://placeholder.invalid,ROLLBACK_URL=https://placeholder.invalid,NOTIFIER_URL=https://placeholder.invalid,UPGRADE_READER_URL=https://placeholder.invalid,UPGRADE_DOCS_URL=https://placeholder.invalid,GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=asia-northeast1
+      # Phase 20: TARGET_SERVICE / GITHUB_REPO / USE_ADK are substituted
+      # so the E2E build can flip them without forking this file. The
+      # new UPGRADE_TARGET_REPO_OVERRIDE pins the coordinator-side
+      # registry resolution (agent/workloads/registry.py:resolve_upgrade_target)
+      # to the same value the upgrade workers carry on their
+      # UPGRADE_TARGET_REPO env, so an E2E redirect to
+      # driftscribe-e2e-target stays consistent across the agent and
+      # both workers. On a prod deploy (no --substitutions overrides),
+      # the substitution default equals
+      # UPGRADE_TARGET_REGISTRY["phase17_demo"].target_repo, so the
+      # override branch in resolve_upgrade_target returns a freshly-
+      # constructed UpgradeTarget that compares equal to the registry
+      # singleton (frozen dataclass equality is field-based). Prod
+      # behavior is unchanged in observable terms — only the in-process
+      # object identity differs.
+      - --set-env-vars=DRY_RUN=true,GCP_PROJECT=$PROJECT_ID,TARGET_SERVICE=$_TARGET_SERVICE,TARGET_REGION=asia-northeast1,GITHUB_REPO=$_TARGET_GITHUB_REPO,USE_ADK=$_USE_ADK,UPGRADE_TARGET_REPO_OVERRIDE=$_UPGRADE_TARGET_REPO,DEBUG_CONFIG_URL=https://payment-demo-u272wv52kq-an.a.run.app/debug/config,READER_URL=https://placeholder.invalid,DOCS_URL=https://placeholder.invalid,ROLLBACK_URL=https://placeholder.invalid,NOTIFIER_URL=https://placeholder.invalid,UPGRADE_READER_URL=https://placeholder.invalid,UPGRADE_DOCS_URL=https://placeholder.invalid,GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=asia-northeast1
       # DRIFTSCRIBE_TOKEN (Phase 11.1) gates /recheck via the X-DriftScribe-Token
       # header. The `coordinator-shared-token` secret MUST exist in Secret
       # Manager BEFORE the first build that includes this line — Cloud Run
@@ -206,7 +241,7 @@ steps:
       # build. If the next step fails, the revision will not serve requests
       # successfully (verify_caller rejects every audience), which is the
       # desired fail-closed behavior.
-      - --set-env-vars=GCP_PROJECT=$PROJECT_ID,TARGET_SERVICE=payment-demo,TARGET_REGION=asia-northeast1,OWN_URL=https://placeholder.invalid,ALLOWED_CALLERS=driftscribe-agent@$PROJECT_ID.iam.gserviceaccount.com
+      - --set-env-vars=GCP_PROJECT=$PROJECT_ID,TARGET_SERVICE=$_TARGET_SERVICE,TARGET_REGION=asia-northeast1,OWN_URL=https://placeholder.invalid,ALLOWED_CALLERS=driftscribe-agent@$PROJECT_ID.iam.gserviceaccount.com
 
   # Post-deploy: read the assigned URL and write it back into OWN_URL.
   # `gcloud run services update --update-env-vars` patches the env block
@@ -259,7 +294,7 @@ steps:
       # build. If the next step fails, verify_caller rejects every audience
       # (fail-closed). TARGET_REPO is the hardcoded repo for Layer 2 policy
       # — the worker refuses any caller-supplied repo field.
-      - --set-env-vars=GCP_PROJECT=$PROJECT_ID,TARGET_REPO=adi-prasetyo/driftscribe,OWN_URL=https://placeholder.invalid,ALLOWED_CALLERS=driftscribe-agent@$PROJECT_ID.iam.gserviceaccount.com
+      - --set-env-vars=GCP_PROJECT=$PROJECT_ID,TARGET_REPO=$_TARGET_GITHUB_REPO,OWN_URL=https://placeholder.invalid,ALLOWED_CALLERS=driftscribe-agent@$PROJECT_ID.iam.gserviceaccount.com
       # The docs-agent-github-pat secret MUST exist in Secret Manager BEFORE
       # the first build that includes this line (same rationale as the
       # coordinator-shared-token in the coordinator deploy step above).
@@ -321,7 +356,7 @@ steps:
       # approval_url in /propose responses points at the invalid host
       # (operator sees a broken link rather than being routed to an
       # attacker-controlled domain).
-      - --set-env-vars=GCP_PROJECT=$PROJECT_ID,TARGET_SERVICE=payment-demo,TARGET_REGION=asia-northeast1,OWN_URL=https://placeholder.invalid,COORDINATOR_URL=https://placeholder.invalid,ALLOWED_CALLERS=driftscribe-agent@$PROJECT_ID.iam.gserviceaccount.com
+      - --set-env-vars=GCP_PROJECT=$PROJECT_ID,TARGET_SERVICE=$_TARGET_SERVICE,TARGET_REGION=asia-northeast1,OWN_URL=https://placeholder.invalid,COORDINATOR_URL=https://placeholder.invalid,ALLOWED_CALLERS=driftscribe-agent@$PROJECT_ID.iam.gserviceaccount.com
       - --set-secrets=APPROVAL_HMAC_KEY=approval-hmac-key:latest
 
   # Post-deploy: read this service's URL AND the coordinator's URL, write
@@ -439,7 +474,7 @@ steps:
       # value here MUST match
       # UPGRADE_TARGET_REGISTRY["phase17_demo"].target_repo in
       # agent/workloads/registry.py.
-      - --set-env-vars=GCP_PROJECT=$PROJECT_ID,UPGRADE_TARGET_REPO=adi-prasetyo/driftscribe,OWN_URL=https://placeholder.invalid,ALLOWED_CALLERS=driftscribe-agent@$PROJECT_ID.iam.gserviceaccount.com
+      - --set-env-vars=GCP_PROJECT=$PROJECT_ID,UPGRADE_TARGET_REPO=$_UPGRADE_TARGET_REPO,OWN_URL=https://placeholder.invalid,ALLOWED_CALLERS=driftscribe-agent@$PROJECT_ID.iam.gserviceaccount.com
       - --set-secrets=GITHUB_TOKEN=upgrade-reader-github-pat:latest
 
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
@@ -485,7 +520,7 @@ steps:
       - --min-instances=0
       - --max-instances=1
       - --concurrency=1
-      - --set-env-vars=GCP_PROJECT=$PROJECT_ID,UPGRADE_TARGET_REPO=adi-prasetyo/driftscribe,OWN_URL=https://placeholder.invalid,ALLOWED_CALLERS=driftscribe-agent@$PROJECT_ID.iam.gserviceaccount.com
+      - --set-env-vars=GCP_PROJECT=$PROJECT_ID,UPGRADE_TARGET_REPO=$_UPGRADE_TARGET_REPO,OWN_URL=https://placeholder.invalid,ALLOWED_CALLERS=driftscribe-agent@$PROJECT_ID.iam.gserviceaccount.com
       - --set-secrets=GITHUB_TOKEN=upgrade-docs-github-pat:latest
 
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
@@ -569,7 +604,7 @@ steps:
 
 images:
   - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-agent:${_TAG}
-  - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/payment-demo:${_TAG}
+  - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/${_TARGET_SERVICE}:${_TAG}
   - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-reader:${_TAG}
   - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-docs:${_TAG}
   - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-rollback:${_TAG}
