@@ -1,0 +1,107 @@
+name: e2e
+
+on:
+  workflow_dispatch:
+    inputs:
+      python_e2e:
+        description: "Run Python E2E tests"
+        type: boolean
+        default: true
+      ui_e2e:
+        description: "Run Playwright UI tests"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  python-e2e:
+    if: ${{ github.event.inputs.python_e2e == 'true' }}
+    runs-on: ubuntu-latest
+    environment: e2e
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_E2E_RUNNER_SA }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Install deps
+        run: |
+          pip install uv
+          uv sync --all-extras
+      - name: Resolve coordinator URL + tokens
+        id: env
+        run: |
+          URL=$(gcloud run services describe driftscribe-agent \
+            --project driftscribe-e2e --region asia-northeast1 \
+            --format='value(status.url)')
+          TOKEN=$(gcloud secrets versions access latest \
+            --secret=coordinator-shared-token --project driftscribe-e2e)
+          GH_TOKEN=$(gcloud secrets versions access latest \
+            --secret=upgrade-docs-github-pat --project driftscribe-e2e)
+          echo "::add-mask::$TOKEN"
+          echo "::add-mask::$GH_TOKEN"
+          echo "url=$URL"             >> "$GITHUB_OUTPUT"
+          echo "token=$TOKEN"         >> "$GITHUB_OUTPUT"
+          echo "gh_token=$GH_TOKEN"   >> "$GITHUB_OUTPUT"
+      - name: Run Python E2E
+        env:
+          DRIFTSCRIBE_E2E_URL: ${{ steps.env.outputs.url }}
+          DRIFTSCRIBE_E2E_TOKEN: ${{ steps.env.outputs.token }}
+          DRIFTSCRIBE_E2E_GITHUB_TOKEN: ${{ steps.env.outputs.gh_token }}
+          DRIFTSCRIBE_E2E_PROJECT: driftscribe-e2e
+        run: uv run pytest tests/e2e -m e2e -v --junitxml=e2e-results.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: e2e-python-results, path: e2e-results.xml }
+
+  ui-e2e:
+    if: ${{ always() && github.event.inputs.ui_e2e == 'true' }}
+    needs: python-e2e
+    runs-on: ubuntu-latest
+    environment: e2e
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-v1
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_E2E_RUNNER_SA }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Install Playwright
+        working-directory: tests/e2e/ui
+        run: |
+          npm install
+          npx playwright install --with-deps chromium
+      - name: Resolve env
+        id: env
+        run: |
+          URL=$(gcloud run services describe driftscribe-agent \
+            --project driftscribe-e2e --region asia-northeast1 \
+            --format='value(status.url)')
+          TOKEN=$(gcloud secrets versions access latest \
+            --secret=coordinator-shared-token --project driftscribe-e2e)
+          echo "::add-mask::$TOKEN"
+          echo "url=$URL"     >> "$GITHUB_OUTPUT"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+      - name: Run UI E2E
+        working-directory: tests/e2e/ui
+        env:
+          DRIFTSCRIBE_E2E_URL: ${{ steps.env.outputs.url }}
+          DRIFTSCRIBE_E2E_TOKEN: ${{ steps.env.outputs.token }}
+        run: npm test
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-ui-results
+          path: tests/e2e/ui/playwright-report/
