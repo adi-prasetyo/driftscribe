@@ -337,3 +337,11 @@ window in GCP lets you reverse it via the Console if needed.
 The Workload Identity Federation setup that lets GitHub Actions
 impersonate `e2e-runner-sa@driftscribe-e2e.iam.gserviceaccount.com`
 is documented in `docs/runbooks/e2e-ci.md` (coming in Task 20.7a).
+
+---
+
+## CI
+
+For the GitHub Actions / Workload Identity Federation setup, see
+[`e2e-ci.md`](e2e-ci.md). The `e2e.yml` workflow (added in Task 20.7b)
+requires reviewer approval on the `e2e` environment before each run.
