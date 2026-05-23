@@ -2,6 +2,7 @@
 > [English version](README.md)
 
 [![CI](https://github.com/adi-prasetyo/driftscribe/actions/workflows/ci.yml/badge.svg)](https://github.com/adi-prasetyo/driftscribe/actions/workflows/ci.yml)
+[![E2E](https://github.com/adi-prasetyo/driftscribe/actions/workflows/e2e.yml/badge.svg?event=workflow_dispatch)](https://github.com/adi-prasetyo/driftscribe/actions/workflows/e2e.yml)
 
 Cloud Run 上で安全に AI 駆動 DevOps を行うための、マルチエージェント
 コーディネーター/ワーカーパターンです。デモワークロードは現在 2 つ:
@@ -124,9 +125,19 @@ DriftScribe はその中間に位置します: エージェントが提案し、
 
 ## ステータス
 
-Phase 19.B (オペレーター向け推論タイムライン UI) 完了。Phase 18.A
-(Cloud Logging 365 日保持) と Phase 17 (マルチエージェントフレームワーク + Developer Knowledge MCP) の上に積まれています。
-ハッカソンの提出締切は 2026-07-10。最新の実装計画:
-[`docs/plans/2026-05-21-driftscribe-phase19-transparency-ui.md`](docs/plans/2026-05-21-driftscribe-phase19-transparency-ui.md)。
+Phase 20 (アサーション付き E2E スイート — ドリフトは `/recheck` 経由、
+アップグレードは GitHub ブランチ観測経由、HITL は明示的なリビジョン
+キャプチャを伴う form-POST フロー、UI は安定した `data-testid` セレクタ上の
+Playwright — 専用の `driftscribe-e2e` GCP プロジェクトで WIF +
+Required-reviewer ゲートのもとに実行) 完了。Phase 19.B (透明性 UI)、
+Phase 18.A (Cloud Logging 365 日保持)、Phase 17 (マルチエージェント
+フレームワーク) の上に積まれています。ハッカソンの提出締切は 2026-07-10。
+最新の実装計画:
+[`docs/plans/2026-05-24-driftscribe-phase20-e2e-testing.md`](docs/plans/2026-05-24-driftscribe-phase20-e2e-testing.md)。
+
+E2E ランブック: [`docs/runbooks/e2e-environment.md`](docs/runbooks/e2e-environment.md)
+(プロジェクト + シークレット + cloudbuild) と
+[`docs/runbooks/e2e-ci.md`](docs/runbooks/e2e-ci.md)
+(WIF + GitHub Environment)。
 
 透明性 UI: コーディネーターの `/ui/transparency` (オペレータートークンが必要)。ウォークスルーは [`docs/demo-script.ja.md`](docs/demo-script.ja.md#透明性-ui-ウォークスルー) を参照。
