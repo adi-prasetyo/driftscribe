@@ -12,9 +12,8 @@ from unittest.mock import patch
 from agent.workloads.registry import resolve_upgrade_target
 
 
-def test_resolve_uses_registry_default_without_override():
-    if "UPGRADE_TARGET_REPO_OVERRIDE" in os.environ:
-        del os.environ["UPGRADE_TARGET_REPO_OVERRIDE"]
+def test_resolve_uses_registry_default_without_override(monkeypatch):
+    monkeypatch.delenv("UPGRADE_TARGET_REPO_OVERRIDE", raising=False)
     target = resolve_upgrade_target("phase17_demo")
     assert target.target_repo == "adi-prasetyo/driftscribe"
 

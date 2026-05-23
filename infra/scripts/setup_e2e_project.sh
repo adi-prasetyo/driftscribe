@@ -176,14 +176,16 @@ for sa in "$COORD_SA" "$READER_SA" "$DOCS_SA" "$ROLLBACK_SA" "$NOTIFIER_SA" "$UP
   gcloud iam service-accounts add-iam-policy-binding "$sa" \
     --project="$PROJECT" \
     --member="serviceAccount:${CLOUDBUILD_SA}" \
-    --role="roles/iam.serviceAccountUser" >/dev/null
+    --role="roles/iam.serviceAccountUser" \
+    --condition=None --quiet >/dev/null
   if [ "$CLOUDBUILD_SA" != "$LEGACY_CLOUDBUILD_SA" ] && \
      gcloud iam service-accounts describe "$LEGACY_CLOUDBUILD_SA" \
        --project="$PROJECT" >/dev/null 2>&1; then
     gcloud iam service-accounts add-iam-policy-binding "$sa" \
       --project="$PROJECT" \
       --member="serviceAccount:${LEGACY_CLOUDBUILD_SA}" \
-      --role="roles/iam.serviceAccountUser" >/dev/null
+      --role="roles/iam.serviceAccountUser" \
+      --condition=None --quiet >/dev/null
   fi
 done
 
