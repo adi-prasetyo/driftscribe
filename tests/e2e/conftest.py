@@ -156,3 +156,19 @@ def drift_e2e_target(e2e_gcp_project, _payment_demo_e2e_baseline_guard):
     target = _Target()
     yield target
     target.restore_baseline()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _github_target_pre_run_sweep(e2e_github_repo):
+    """Close any leftover upgrade PRs at session start.
+
+    The upgrade-docs worker creates branches matching ^upgrade/ — that
+    prefix is the sweep filter. Production never targets the e2e repo
+    (parameterized via _UPGRADE_TARGET_REPO), so this filter is safe.
+    """
+    try:
+        from tests.e2e._github_helpers import sweep_upgrade_prs
+    except ImportError:
+        return
+    sweep_upgrade_prs(e2e_github_repo)
+    yield
