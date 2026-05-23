@@ -75,6 +75,13 @@ REGION="${REGION:-asia-northeast1}"
 TARGET_SERVICE="${TARGET_SERVICE:-payment-demo}"
 GITHUB_REPO="${GITHUB_REPO:-adi-prasetyo/driftscribe}"
 
+# Opt-in smoke assertions (Phase 20.2). When ASSERT=1, each beat verifies
+# the response shape of its endpoint (/recheck vs /chat) and exits non-zero
+# on mismatch. Default ASSERT=0 is a silent no-op so the operator's normal
+# demo output is byte-for-byte unchanged. See assert_recheck_action and
+# assert_chat_reply below.
+ASSERT="${ASSERT:-0}"
+
 # --------------------------------------------------------------------------- #
 # Startup: resolve coordinator URL + operator token, probe for jq.
 # --------------------------------------------------------------------------- #
@@ -253,6 +260,76 @@ reset_baseline_upgrade() {
 }
 
 # --------------------------------------------------------------------------- #
+# Opt-in smoke assertions (Phase 20.2)
+#
+# Both helpers are silent no-ops when ASSERT != "1" so default operator
+# runs are byte-for-byte identical to the pre-20.2 behavior. They also
+# bail out gracefully (warn-only) if jq is missing — failing the demo on
+# a missing tooling dep is louder than what an operator wants mid-record.
+#
+# The helpers receive the FULL captured stdout of call_coordinator,
+# which includes preamble lines ("POST /recheck", "body: ...", "<- HTTP
+# ..." and a blank line) followed by the JSON body. The `_extract_json`
+# inner helper finds the first line that starts with `{` or `[` and
+# emits everything from there, isolating the JSON payload from the
+# preamble so jq sees clean input.
+#
+# Outputs (pass/fail summary) go to stderr so the demo's stdout flow
+# stays clean — the operator's recording still shows just the response.
+# --------------------------------------------------------------------------- #
+
+# Strip call_coordinator's preamble (banner + POST/body/HTTP lines + blank
+# line) from a captured response and emit only the JSON body. Stdin in,
+# stdout out. Safe to call on a non-JSON body (e.g. a 503 plaintext
+# detail) — it just emits whatever follows the first `{`/`[`.
+_assert_extract_json() {
+  awk '/^[{[]/{found=1} found{print}'
+}
+
+assert_recheck_action() {
+  # Usage: assert_recheck_action <expected|ANY> <response_body>
+  # Verifies the /recheck DecisionProposal has the expected .action.
+  # Pass "ANY" to assert only that .action exists (for non-deterministic
+  # ADK paths like beat-c).
+  local expected="$1"
+  local body="$2"
+  if [ "$ASSERT" != "1" ]; then return 0; fi
+  if ! command -v jq >/dev/null; then
+    echo "ASSERT=1 requires jq; skipping" >&2
+    return 0
+  fi
+  local got
+  got="$(echo "$body" | _assert_extract_json | jq -r '.action // empty' 2>/dev/null)"
+  if [ -z "$got" ]; then
+    echo "ASSERT FAIL: /recheck response missing .action. Body: $body" >&2
+    exit 1
+  fi
+  if [ "$expected" != "ANY" ] && [ "$got" != "$expected" ]; then
+    echo "ASSERT FAIL: expected action=$expected, got action=$got" >&2
+    exit 1
+  fi
+  echo "ASSERT OK: action=$got" >&2
+}
+
+assert_chat_reply() {
+  # Usage: assert_chat_reply <response_body>
+  # Verifies the /chat response has a non-empty .reply field.
+  local body="$1"
+  if [ "$ASSERT" != "1" ]; then return 0; fi
+  if ! command -v jq >/dev/null; then
+    echo "ASSERT=1 requires jq; skipping" >&2
+    return 0
+  fi
+  local reply
+  reply="$(echo "$body" | _assert_extract_json | jq -r '.reply // empty' 2>/dev/null)"
+  if [ -z "$reply" ]; then
+    echo "ASSERT FAIL: /chat response missing .reply. Body: $body" >&2
+    exit 1
+  fi
+  echo "ASSERT OK: .reply present (${#reply} chars)" >&2
+}
+
+# --------------------------------------------------------------------------- #
 # Beats
 # --------------------------------------------------------------------------- #
 
@@ -262,7 +339,9 @@ reset_baseline_upgrade() {
 beat_a() {
   banner "Beat A — baseline check"
   echo "Expectation: action=no_op (target env matches contract)."
-  call_coordinator /recheck '{}'
+  RESPONSE_BODY="$(call_coordinator /recheck '{}')"
+  echo "$RESPONSE_BODY"
+  assert_recheck_action no_op "$RESPONSE_BODY"
 }
 
 # Beat B — drift on a no-manual variable (PAYMENT_MODE).
@@ -276,7 +355,9 @@ beat_b() {
   reset_baseline
   set_env "PAYMENT_MODE=live"
   wait_for_revision
-  call_coordinator /recheck '{}'
+  RESPONSE_BODY="$(call_coordinator /recheck '{}')"
+  echo "$RESPONSE_BODY"
+  assert_recheck_action drift_issue "$RESPONSE_BODY"
 }
 
 # Beat C — unknown variable. reset_baseline at the top guarantees
@@ -294,7 +375,11 @@ beat_c() {
   reset_baseline
   set_env "NEW_THING=test"
   wait_for_revision
-  call_coordinator /recheck '{}'
+  RESPONSE_BODY="$(call_coordinator /recheck '{}')"
+  echo "$RESPONSE_BODY"
+  # ADK-non-deterministic: docs_pr OR escalate are both valid. Use ANY
+  # to assert only that an action came back at all.
+  assert_recheck_action ANY "$RESPONSE_BODY"
 }
 
 # Beat D — drift on an operator-toggleable variable.
@@ -308,7 +393,9 @@ beat_d() {
   reset_baseline
   set_env "FEATURE_NEW_CHECKOUT=true"
   wait_for_revision
-  call_coordinator /recheck '{}'
+  RESPONSE_BODY="$(call_coordinator /recheck '{}')"
+  echo "$RESPONSE_BODY"
+  assert_recheck_action docs_pr "$RESPONSE_BODY"
 }
 
 # Beat E — rollback via /chat. Requires USE_ADK=true on the coordinator
@@ -360,8 +447,10 @@ EOF
   reset_baseline
   set_env "PAYMENT_MODE=live"
   wait_for_revision
-  call_coordinator /chat \
-    "{\"prompt\":\"payment mode drifted. roll us back to revision ${BEAT_E_TARGET_REVISION}.\"}"
+  RESPONSE_BODY="$(call_coordinator /chat \
+    "{\"prompt\":\"payment mode drifted. roll us back to revision ${BEAT_E_TARGET_REVISION}.\"}")"
+  echo "$RESPONSE_BODY"
+  assert_chat_reply "$RESPONSE_BODY"
 }
 
 # --------------------------------------------------------------------------- #
@@ -394,8 +483,10 @@ upgrade_a() {
   echo "Expectation: agent describes lodash@4.17.20 + GHSA-35jh-r3h4-6jhm."
   echo "             No PR is opened, no mutation occurs."
   reset_baseline_upgrade
-  call_coordinator /chat \
-    '{"prompt":"Read the dependencies in the upgrade demo target. Summarize what you find, including any matched advisories. Do NOT propose any action yet — just report.","workload":"upgrade"}'
+  RESPONSE_BODY="$(call_coordinator /chat \
+    '{"prompt":"Read the dependencies in the upgrade demo target. Summarize what you find, including any matched advisories. Do NOT propose any action yet — just report.","workload":"upgrade"}')"
+  echo "$RESPONSE_BODY"
+  assert_chat_reply "$RESPONSE_BODY"
 }
 
 # Upgrade-B — patch bump → upgrade_pr. Asks the agent to act on the
@@ -445,8 +536,10 @@ EOF
     return 2
   fi
   reset_baseline_upgrade
-  call_coordinator /chat \
-    '{"prompt":"lodash 4.17.20 in demo/upgrade-target has CVE-2021-23337 (GHSA-35jh-r3h4-6jhm, prototype pollution). Please propose an upgrade PR to 4.17.21, citing the advisory in the PR body. Then notify the alert channel that the PR is open.","workload":"upgrade"}'
+  RESPONSE_BODY="$(call_coordinator /chat \
+    '{"prompt":"lodash 4.17.20 in demo/upgrade-target has CVE-2021-23337 (GHSA-35jh-r3h4-6jhm, prototype pollution). Please propose an upgrade PR to 4.17.21, citing the advisory in the PR body. Then notify the alert channel that the PR is open.","workload":"upgrade"}')"
+  echo "$RESPONSE_BODY"
+  assert_chat_reply "$RESPONSE_BODY"
 }
 
 # Upgrade-C — major-bump → escalation. Demonstrates the layered safety
@@ -470,8 +563,10 @@ upgrade_c() {
   echo "             with a major bump (validator refuses; either"
   echo "             outcome demonstrates layered safety)."
   reset_baseline_upgrade
-  call_coordinator /chat \
-    '{"prompt":"Hypothetical: a critical advisory affects lodash 4.x and the fix is only in lodash 5.x (a major version bump). The validator refuses major bumps. Please escalate via notify_tool (channel=alert, severity=high) instead of attempting an upgrade PR — explain the major-version constraint in the message body.","workload":"upgrade"}'
+  RESPONSE_BODY="$(call_coordinator /chat \
+    '{"prompt":"Hypothetical: a critical advisory affects lodash 4.x and the fix is only in lodash 5.x (a major version bump). The validator refuses major bumps. Please escalate via notify_tool (channel=alert, severity=high) instead of attempting an upgrade PR — explain the major-version constraint in the message body.","workload":"upgrade"}')"
+  echo "$RESPONSE_BODY"
+  assert_chat_reply "$RESPONSE_BODY"
 }
 
 # Cleanup — restore the baseline declared in demo/ops-contract.yaml.
