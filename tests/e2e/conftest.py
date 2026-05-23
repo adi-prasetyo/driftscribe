@@ -9,6 +9,8 @@ import os
 
 import httpx
 import pytest
+from google.cloud import run_v2
+from google.protobuf.field_mask_pb2 import FieldMask
 
 from driftscribe_lib.cloud_run import read_live_state
 
@@ -55,9 +57,6 @@ def _payment_demo_e2e_baseline_guard(e2e_gcp_project):
     traffic is actually being served, not what the next deploy would be.
     Restore uses google.cloud.run_v2 with update_mask + LRO wait.
     """
-    from google.cloud import run_v2
-    from google.protobuf.field_mask_pb2 import FieldMask
-
     service = "payment-demo-e2e"
     region = "asia-northeast1"
     try:
@@ -97,3 +96,63 @@ def _firestore_cleanup_tracker(e2e_gcp_project):
                 db.collection(collection).document(doc_id).delete()
             except Exception:
                 pass
+
+
+@pytest.fixture
+def drift_e2e_target(e2e_gcp_project, _payment_demo_e2e_baseline_guard):
+    """Per-test env mutator with proper update_mask + LRO wait + serving-state polling."""
+    service = "payment-demo-e2e"
+    region = "asia-northeast1"
+    baseline = _payment_demo_e2e_baseline_guard  # {"env": {...}, "revision": "..."}
+
+    class _Target:
+        def __init__(self) -> None:
+            self.client = run_v2.ServicesClient()
+            self.name = f"projects/{e2e_gcp_project}/locations/{region}/services/{service}"
+
+        def baseline_revision(self) -> str:
+            return baseline["revision"]
+
+        def _update_env(self, env_dict: dict[str, str]) -> None:
+            svc = self.client.get_service(name=self.name)
+            container = svc.template.containers[0]
+            while len(container.env):
+                container.env.pop()
+            for k, v in env_dict.items():
+                container.env.append(run_v2.EnvVar(name=k, value=v))
+            op = self.client.update_service(
+                service=svc, update_mask=FieldMask(paths=["template"])
+            )
+            op.result(timeout=180.0)
+            # Wait for serving revision to actually pick up the new env.
+            self._wait_for_serving_env(env_dict)
+
+        def _wait_for_serving_env(self, expected: dict[str, str], timeout: float = 120.0) -> None:
+            import time
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                live = read_live_state(service, region, e2e_gcp_project)
+                # Compare only the keys we care about; other env may be present.
+                if all(live["env"].get(k) == v for k, v in expected.items()):
+                    return
+                time.sleep(3.0)
+            raise AssertionError(f"serving env did not converge to {expected} within {timeout}s")
+
+        def set_env(self, key: str, value: str) -> None:
+            live = read_live_state(service, region, e2e_gcp_project)
+            new_env = dict(live["env"])
+            new_env[key] = value
+            self._update_env(new_env)
+
+        def restore_baseline(self) -> None:
+            self._update_env(baseline["env"])
+
+        def read_serving_env(self) -> dict[str, str]:
+            return read_live_state(service, region, e2e_gcp_project)["env"]
+
+        def is_at_baseline(self) -> bool:
+            return self.read_serving_env() == baseline["env"]
+
+    target = _Target()
+    yield target
+    target.restore_baseline()

@@ -21,11 +21,16 @@ def test_default_pytest_does_not_collect_e2e_dir():
 def test_e2e_conftest_skips_without_env(monkeypatch):
     monkeypatch.delenv("DRIFTSCRIBE_E2E_URL", raising=False)
     monkeypatch.delenv("DRIFTSCRIBE_E2E_TOKEN", raising=False)
+    # Run (not --collect-only) so fixture-level pytest.skip actually fires;
+    # --collect-only doesn't invoke fixtures, so skips never trigger there.
     result = subprocess.run(
-        [sys.executable, "-m", "pytest", "tests/e2e", "-m", "e2e", "--collect-only"],
+        [sys.executable, "-m", "pytest", "tests/e2e", "-m", "e2e"],
         capture_output=True, text=True,
     )
     combined = (result.stdout + result.stderr).lower()
+    assert result.returncode == 0, f"e2e harness should exit clean when env is missing; got {result.returncode}\n{combined}"
     assert ("0 tests collected" in combined
-            or "skipping" in combined
-            or result.returncode == 5)
+            or "skipped" in combined
+            or result.returncode == 5), (
+        f"expected all e2e tests to skip without env vars; combined output:\n{combined}"
+    )
