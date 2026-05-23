@@ -521,7 +521,7 @@
   </header>
 
   <main>
-    <aside id="decisions-rail" aria-label="Past decisions">
+    <aside id="decisions-rail" data-testid="past-decisions-pane" aria-label="Past decisions">
       <h2>Past decisions</h2>
       <ul id="decisions-list">
         <!-- Populated by /decisions fetch (Phase 19.B.3+) -->
@@ -532,6 +532,7 @@
       <form id="chat-form" autocomplete="off">
         <input
           id="prompt-input"
+          data-testid="chat-prompt"
           name="prompt"
           type="text"
           placeholder="Ask the coordinator…"
@@ -541,13 +542,13 @@
           <option value="drift">drift</option>
           <option value="upgrade">upgrade</option>
         </select>
-        <button id="send-btn" type="submit">Send</button>
+        <button id="send-btn" data-testid="chat-submit" type="submit">Send</button>
       </form>
 
       <!-- 19.B.6: historical-trace banner. Shown only when a past decision
            is opened from the left rail; the form above is dimmed via the
            ``.historical`` class. "← new chat" button restores live mode. -->
-      <div id="historical-badge" aria-live="polite">
+      <div id="historical-badge" data-testid="historical-banner" aria-live="polite">
         <span>viewing historical trace <code id="historical-trace-id"></code></span>
         <button id="new-chat-btn" type="button">← new chat</button>
       </div>
@@ -556,7 +557,7 @@
         <!-- trace_id pill + status pill populated after /chat returns (19.B.3) -->
       </section>
 
-      <section id="final-response-card" aria-live="polite" hidden>
+      <section id="final-response-card" data-testid="final-response" aria-live="polite" hidden>
         <!-- Filled directly from the /chat response body (19.B.3) -->
       </section>
 
@@ -1749,6 +1750,9 @@
       function _renderRow(decision) {
         const li = document.createElement("li");
         li.className = "decision-row";
+        // Phase 20.6.0: stable Playwright hook — renders as
+        //   <li class="decision-row" data-testid="past-decision-item">
+        li.setAttribute("data-testid", "past-decision-item");
         const traceId = decision.trace_id || "";
         if (traceId && traceId === activeHistoricalTraceId) {
           li.classList.add("active");
@@ -1783,6 +1787,9 @@
           const btn = document.createElement("button");
           btn.type = "button";
           btn.className = "open-trace-btn";
+          // Phase 20.6.0: stable Playwright hook — renders as
+          //   <button class="open-trace-btn" data-testid="open-trace-button">
+          btn.setAttribute("data-testid", "open-trace-button");
           btn.textContent = "open trace →";
           btn.addEventListener("click", () => {
             openHistoricalTrace(traceId);

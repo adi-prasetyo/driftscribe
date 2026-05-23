@@ -95,10 +95,10 @@
 
     {% if approval.status == "pending" and not expired %}
       <form method="post" action="/approvals/{{ approval.approval_id }}">
-        <input type="hidden" name="t" value="{{ token }}">
+        <input type="hidden" name="t" data-testid="token-field" value="{{ token }}">
         <div class="action-buttons">
-          <button class="approve" type="submit" name="decision" value="approve">Approve rollback</button>
-          <button class="reject" type="submit" name="decision" value="reject">Reject</button>
+          <button class="approve" data-testid="approve-button" type="submit" name="decision" value="approve">Approve rollback</button>
+          <button class="reject" data-testid="reject-button" type="submit" name="decision" value="reject">Reject</button>
         </div>
       </form>
     {% elif expired %}
