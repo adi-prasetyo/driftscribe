@@ -48,7 +48,16 @@ asyncio_mode = "auto"
 # `workers/` is included so per-worker tests (Phase 11.3+) run with the rest
 # of the suite. Each worker is its own deployable container but tests can be
 # executed together from the repo root for CI/dev parity.
-testpaths = ["tests", "workers"]
+#
+# `tests/e2e/` is intentionally omitted from the default collection set
+# (Phase 20.1+) — those tests touch live Cloud Run + Firestore and must be
+# invoked explicitly via `pytest tests/e2e -m e2e` with the appropriate
+# `DRIFTSCRIBE_E2E_*` env vars set.
+testpaths = ["tests/unit", "tests/integration", "workers"]
+markers = [
+    "e2e: end-to-end tests requiring a deployed coordinator (skip by default)",
+]
+addopts = "--strict-markers"
 
 [tool.ruff]
 line-length = 100
