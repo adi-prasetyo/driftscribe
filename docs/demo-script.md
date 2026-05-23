@@ -53,6 +53,12 @@ export BEAT_E_TARGET_REVISION=<pick-a-previous-revision-from-the-list>
 If any of those steps fail, fix the underlying issue before recording.
 The live demo is not the right time to debug coordinator deployment.
 
+> **Before recording:** trigger the manual-dispatch E2E workflow and wait for green.
+> `gh workflow run e2e.yml` then `gh run watch`. Requires reviewer approval on
+> the `e2e` GitHub Environment. The E2E run is the fail-fast signal that the
+> demo path is intact — running it before each recording catches IAM / MCP /
+> worker-boundary regressions that would otherwise surface on camera.
+
 ## Screen layout
 
 ```

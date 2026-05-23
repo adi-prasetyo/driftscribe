@@ -2,6 +2,7 @@
 > [日本語版はこちら](README.ja.md)
 
 [![CI](https://github.com/adi-prasetyo/driftscribe/actions/workflows/ci.yml/badge.svg)](https://github.com/adi-prasetyo/driftscribe/actions/workflows/ci.yml)
+[![E2E](https://github.com/adi-prasetyo/driftscribe/actions/workflows/e2e.yml/badge.svg?event=workflow_dispatch)](https://github.com/adi-prasetyo/driftscribe/actions/workflows/e2e.yml)
 
 A multi-agent coordinator/worker pattern for safe AI-driven DevOps on Cloud Run.
 Two demo workloads ship today: live drift detection (`payment-demo` Cloud Run
@@ -131,10 +132,16 @@ the worker boundary makes "propose" safe to expose.
 
 ## Status
 
-Phase 19.B (operator-facing reasoning timeline UI) complete on top of
-Phase 18.A (365-day Cloud Logging retention) and Phase 17 (multi-agent
-framework + Developer Knowledge MCP). Hackathon submission deadline
-2026-07-10. Latest implementation plan:
-[`docs/plans/2026-05-21-driftscribe-phase19-transparency-ui.md`](docs/plans/2026-05-21-driftscribe-phase19-transparency-ui.md).
+Phase 20 (assertive E2E suite — drift via `/recheck`, upgrade via GitHub branch
+observation, HITL form-POST flow with explicit revision capture, Playwright UI
+on stable `data-testid` selectors — running in a dedicated `driftscribe-e2e`
+GCP project under WIF + Required-reviewer gate) complete on top of Phase 19.B
+(transparency UI), Phase 18.A (365-day logging), and Phase 17 (multi-agent
+framework). Hackathon submission deadline 2026-07-10. Latest implementation
+plan: [`docs/plans/2026-05-24-driftscribe-phase20-e2e-testing.md`](docs/plans/2026-05-24-driftscribe-phase20-e2e-testing.md).
+
+E2E runbooks: [`docs/runbooks/e2e-environment.md`](docs/runbooks/e2e-environment.md)
+(project + secrets + cloudbuild) and [`docs/runbooks/e2e-ci.md`](docs/runbooks/e2e-ci.md)
+(WIF + GitHub Environment).
 
 Transparency UI: `/ui/transparency` on the coordinator (operator token required). See [`docs/demo-script.md`](docs/demo-script.md#transparency-ui-walkthrough) for the walkthrough.
