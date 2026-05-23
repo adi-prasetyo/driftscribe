@@ -11,3 +11,9 @@ dist/
 build/
 .DS_Store
 *:Zone.Identifier
+
+# Node (tests/e2e/ui/ Playwright suite)
+node_modules/
+package-lock.json
+playwright-report/
+test-results/
