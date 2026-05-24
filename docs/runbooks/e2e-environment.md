@@ -182,13 +182,13 @@ printf '%s' "https://webhook.site/<your-uuid>" \
 ## 4. Deploy via the parameterized cloudbuild
 
 The same `infra/cloudbuild.yaml` that deploys prod also deploys E2E.
-The four substitutions below redirect the deploy at the E2E target,
-flip `USE_ADK` on, and pin the upgrade-target redirect.
+The five substitutions below redirect the deploy at the E2E target,
+flip `USE_ADK` on, flip `DRY_RUN` off, and pin the upgrade-target redirect.
 
 ```bash
 gcloud builds submit --config infra/cloudbuild.yaml \
   --project=driftscribe-e2e \
-  --substitutions=_TARGET_SERVICE=payment-demo-e2e,_TARGET_GITHUB_REPO=adi-prasetyo/driftscribe-e2e-target,_UPGRADE_TARGET_REPO=adi-prasetyo/driftscribe-e2e-target,_USE_ADK=true
+  --substitutions=_TARGET_SERVICE=payment-demo-e2e,_TARGET_GITHUB_REPO=adi-prasetyo/driftscribe-e2e-target,_UPGRADE_TARGET_REPO=adi-prasetyo/driftscribe-e2e-target,_USE_ADK=true,_DRY_RUN=false
 ```
 
 `_USE_ADK=true` is mandatory for E2E — every `/chat` test depends on
@@ -197,6 +197,14 @@ default (`false`) keeps the coordinator's chat endpoint hard-503ing
 until the operator explicitly opts in via
 `gcloud run services update driftscribe-agent --update-env-vars=USE_ADK=true`
 on prod.
+
+`_DRY_RUN=false` is also mandatory for E2E — the test suite asserts
+on real `/trace/{id}` events sourced from Cloud Logging. With the prod
+default `DRY_RUN=true`, `agent/main.py` picks `StubTraceFetcher`
+(canned events) and `/recheck` returns `{"action": "no_op"}`, which
+the drift / HITL / upgrade tests all reject. Prod deploys omit this
+substitution so the default keeps the live demo's "Option C" safety
+stance (no GitHub side effects on /recheck).
 
 ---
 
