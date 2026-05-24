@@ -17,25 +17,42 @@ test.describe('transparency UI', () => {
     await page.locator('[data-testid="chat-prompt"]').fill('Check payment-demo-e2e for drift');
     await page.locator('[data-testid="chat-submit"]').click();
 
-    // Phase 19.B data-group attrs (unchanged in 20.6.0).
-    await expect(page.locator('[data-group="coordinator"]')).toBeVisible({ timeout: 45_000 });
+    // The three reasoning panels are <details> elements (transparency.html:564-577).
+    // Only #group-coordinator opens by default; #group-tools and #group-mcp are
+    // collapsed. Their inner `<div data-group="...">` reports hidden under a
+    // collapsed parent even after tool_call events are appended — so we assert
+    // the outer panel exists, then programmatically open it, then verify the
+    // inner event row is visible. This preserves the "events rendered" intent
+    // without coupling the test to the UI's default-collapsed presentation.
+    await expect(page.locator('#group-coordinator')).toBeVisible({ timeout: 45_000 });
+    await expect(page.locator('#group-tools')).toBeVisible();
+    await expect(page.locator('#group-mcp')).toBeVisible();
+
+    await page.locator('#group-tools').evaluate((el) => { (el as HTMLDetailsElement).open = true; });
     await expect(page.locator('[data-group="tools"]')).toBeVisible();
-    await expect(page.locator('[data-group="mcp"]')).toBeVisible();
 
     await expect(page.locator('[data-testid="final-response"]')).toBeVisible({ timeout: 60_000 });
   });
 
   test('past-decisions pane renders with at least one item (seeded)', async ({ page, request }) => {
     // Seed a decision via /recheck so the pane is non-empty independent of
-    // whether the Python E2E job ran. Avoids order-dependence between jobs.
-    // NOTE: this seeded decision lands in Firestore outside the Python
-    // _firestore_cleanup_tracker. For the manual-dispatch cadence this is
-    // acceptable (few extra docs per run); for a future nightly cadence,
-    // add a periodic sweep — see "Risks & open questions" below.
-    await request.post(`${process.env.DRIFTSCRIBE_E2E_URL}/recheck`, {
-      headers: { 'X-DriftScribe-Token': TOKEN, 'Content-Type': 'application/json' },
-      data: { workload: 'drift' },
-    });
+    // whether the Python E2E job ran. `?force=true` derives a brand-new
+    // event_key (agent/main.py:1049-1052) so the seed cannot collide with a
+    // stale event_key left over from the Python session's deterministic
+    // /recheck call. The seeded decision lands in Firestore outside the
+    // Python _firestore_cleanup_tracker — acceptable for manual-dispatch
+    // cadence; nightly cadence would need a UI-side sweep.
+    const seed = await request.post(
+      `${process.env.DRIFTSCRIBE_E2E_URL}/recheck?force=true`,
+      {
+        headers: { 'X-DriftScribe-Token': TOKEN, 'Content-Type': 'application/json' },
+        data: { workload: 'drift' },
+      },
+    );
+    expect(seed.ok()).toBeTruthy();
+    const seedBody = await seed.json();
+    expect(seedBody.decision_id).toBeTruthy();
+
     await page.reload();
 
     await expect(page.locator('[data-testid="past-decisions-pane"]')).toBeVisible();
@@ -44,11 +61,18 @@ test.describe('transparency UI', () => {
   });
 
   test('open-trace button opens historical mode', async ({ page, request }) => {
-    // Seed (same reason as above — ensure ≥1 past-decision-item exists).
-    await request.post(`${process.env.DRIFTSCRIBE_E2E_URL}/recheck`, {
-      headers: { 'X-DriftScribe-Token': TOKEN, 'Content-Type': 'application/json' },
-      data: { workload: 'drift' },
-    });
+    // Seed (same reason + force=true rationale as the previous test).
+    const seed = await request.post(
+      `${process.env.DRIFTSCRIBE_E2E_URL}/recheck?force=true`,
+      {
+        headers: { 'X-DriftScribe-Token': TOKEN, 'Content-Type': 'application/json' },
+        data: { workload: 'drift' },
+      },
+    );
+    expect(seed.ok()).toBeTruthy();
+    const seedBody = await seed.json();
+    expect(seedBody.decision_id).toBeTruthy();
+
     await page.reload();
 
     // Click the explicit button — the row itself may also be clickable, but the

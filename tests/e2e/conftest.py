@@ -84,18 +84,60 @@ def _payment_demo_e2e_baseline_guard(e2e_gcp_project):
 
 @pytest.fixture(scope="session", autouse=True)
 def _firestore_cleanup_tracker(e2e_gcp_project):
-    """Track-and-delete E2E-created Firestore docs at session end."""
+    """Track-and-delete E2E-created Firestore docs at session end.
+
+    Events sweep: the coordinator's `events` collection is content-keyed
+    on (trigger, service, contract_path, contract_hash, live_env) — so a
+    deterministic call like baseline-recheck produces the same event_key
+    across runs. If we only delete decisions, the next session's first
+    /recheck hits `record_event` → AlreadyExists → looks up decision_id
+    → decision was deleted → 409 "event in-progress, retry" (see
+    agent/main.py:687-692 + agent/state_store.py:135-147). We address
+    this on two sides:
+
+    - Session START: sweep events whose `decision_id` points to a
+      non-existent decision doc (orphan claim from a cancelled prior
+      run that never reached teardown). Defense-in-depth: tracker-based
+      teardown only covers sessions that ran to completion AND the test
+      called _track_decision before failing.
+    - Session END: after deleting tracked decisions, walk events and
+      drop any whose decision_id is in the deleted set.
+    """
+    from google.cloud import firestore
+    db = firestore.Client(project=e2e_gcp_project)
+
+    for event_doc in db.collection("events").stream():
+        data = event_doc.to_dict() or {}
+        decision_id = data.get("decision_id")
+        if not decision_id:
+            continue  # Genuinely in-flight claim from a concurrent run — leave it.
+        if not db.collection("decisions").document(decision_id).get().exists:
+            try:
+                event_doc.reference.delete()
+            except Exception:
+                pass
+
     tracked: dict[str, list[str]] = {"decisions": [], "approvals": []}
     yield tracked
 
-    from google.cloud import firestore
-    db = firestore.Client(project=e2e_gcp_project)
+    deleted_decision_ids: set[str] = set()
     for collection, ids in tracked.items():
         for doc_id in ids:
             try:
                 db.collection(collection).document(doc_id).delete()
+                if collection == "decisions":
+                    deleted_decision_ids.add(doc_id)
             except Exception:
                 pass
+
+    if deleted_decision_ids:
+        for event_doc in db.collection("events").stream():
+            data = event_doc.to_dict() or {}
+            if data.get("decision_id") in deleted_decision_ids:
+                try:
+                    event_doc.reference.delete()
+                except Exception:
+                    pass
 
 
 @pytest.fixture
