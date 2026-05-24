@@ -1,3 +1,25 @@
+# ─── Status: aspirational ──────────────────────────────────────────────────
+# This file describes the FULL multi-worker topology (coordinator + 6 workers,
+# custom runtime SAs, audience-bound IAM). It is NOT the canonical deploy path
+# for the live coordinator on driftscribe-hack-2026 (which runs in a narrower
+# "Option C" mode: default compute SA, no worker URLs, no /chat). A fresh
+# `gcloud builds submit --config infra/cloudbuild.yaml` on hack-2026 would:
+#   1. Try to deploy with a runtime SA (driftscribe-agent@...) that doesn't
+#      exist in this project — fails with PERMISSION_DENIED on actAs.
+#   2. Even if step 1 is fixed, set the coordinator's READER_URL / DOCS_URL
+#      / ROLLBACK_URL / NOTIFIER_URL to placeholder.invalid — there's no
+#      follow-up step that resolves real worker URLs back into the coordinator.
+# It IS the canonical path for the driftscribe-e2e project (which has the
+# full multi-worker setup wired up via --substitutions).
+#
+# For routine incremental deploys to hack-2026, use:
+#   infra/cloudbuild.coordinator-update.yaml
+# A future reconciliation can either bring this file's assumptions in line
+# with hack-2026's reality (create the SA, deploy the missing workers, fix
+# the worker-URL injection step) OR rename this file to make its
+# e2e-or-multiworker-only scope explicit.
+# ───────────────────────────────────────────────────────────────────────────
+#
 # Cloud Build does NOT recursively expand substitutions inside other
 # substitutions' values — built-ins like $PROJECT_ID stay literal if nested
 # inside a user-defined sub. Inline $PROJECT_ID directly instead.

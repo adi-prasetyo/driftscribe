@@ -1,0 +1,85 @@
+# Canonical incremental-update deploy path for the LIVE coordinator on
+# driftscribe-hack-2026 (single-user portfolio).
+#
+# WHY THIS FILE EXISTS:
+#   infra/cloudbuild.yaml describes the older aspirational multi-worker
+#   topology (4-6 workers, custom runtime SA, audience-bound IAM) which
+#   was never fully wired up in this project. The live coordinator runs
+#   on the default compute SA in a simpler "Option C" mode (DRY_RUN=true,
+#   no worker URLs set). A fresh `gcloud builds submit --config
+#   infra/cloudbuild.yaml` would rewrite the running config in ways that
+#   break /recheck (placeholder.invalid worker URLs).
+#
+#   This file is the narrow deploy path that ACTUALLY matches the running
+#   service: build the new coordinator image, then update the existing
+#   revision template in place (image + env vars only). No worker
+#   touches, no SA changes, no IAM dance. Preserves everything the live
+#   coordinator already has.
+#
+# USAGE (operator runs by hand, no CI integration):
+#
+#   gcloud builds submit \
+#     --config=infra/cloudbuild.coordinator-update.yaml \
+#     --substitutions=_TAG=$(git rev-parse --short HEAD) \
+#     --project=driftscribe-hack-2026
+#
+# To deploy with no traffic first (smoke-test before shifting):
+#
+#   gcloud builds submit \
+#     --config=infra/cloudbuild.coordinator-update.yaml \
+#     --substitutions=_TAG=$(git rev-parse --short HEAD),_NO_TRAFFIC=--no-traffic
+#
+#   gcloud run revisions list --service=driftscribe-agent ...
+#   gcloud run services update-traffic driftscribe-agent --to-revisions=<rev>=100 ...
+
+substitutions:
+  _TAG: 'manual'
+  # Region kept here (not hardcoded) so a future region migration is one
+  # substitution rather than a search/replace.
+  _REGION: asia-northeast1
+  _SERVICE: driftscribe-agent
+  # Empty default = deploy with traffic. Pass `_NO_TRAFFIC=--no-traffic`
+  # to create the revision without serving it; then shift traffic
+  # manually after smoke-testing.
+  _NO_TRAFFIC: ''
+  # Cloudflare Access integration (Phase 21). These are PUBLIC identifiers
+  # (the AUD tag is the per-Application identifier shown in the CF
+  # dashboard, the team domain is the hostname users see at sign-in) —
+  # not secrets. See agent/cf_access.py and infra/cloudflare/.
+  _CF_ACCESS_TEAM_DOMAIN: adp-app.cloudflareaccess.com
+  _CF_ACCESS_AUD_TAG: 5e6a20fe63e5fb03a742eeb0623e216ad4c837413d2afa9885a79b1091016262
+
+steps:
+  # 1. Build the new coordinator image. Same Dockerfile + tag pattern as
+  #    cloudbuild.yaml — only the image is rebuilt, no workers.
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-agent:${_TAG}
+      - -f
+      - infra/Dockerfile.agent
+      - .
+
+  - name: gcr.io/cloud-builders/docker
+    args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-agent:${_TAG}']
+
+  # 2. Incremental update of the existing service. --update-env-vars (NOT
+  #    --set-env-vars) adds the CF Access vars without clobbering DRY_RUN,
+  #    GITHUB_REPO, TARGET_SERVICE, GITHUB_TOKEN secret refs, etc. The
+  #    SA, ingress, scaling, and traffic policy all stay as they were.
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - services
+      - update
+      - ${_SERVICE}
+      - --image=asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-agent:${_TAG}
+      - --update-env-vars=CF_ACCESS_TEAM_DOMAIN=${_CF_ACCESS_TEAM_DOMAIN},CF_ACCESS_AUD_TAG=${_CF_ACCESS_AUD_TAG}
+      - --region=${_REGION}
+      - --project=$PROJECT_ID
+      - ${_NO_TRAFFIC}
+
+images:
+  - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-agent:${_TAG}
