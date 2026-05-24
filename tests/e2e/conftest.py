@@ -169,7 +169,13 @@ def drift_e2e_target(e2e_gcp_project, _payment_demo_e2e_baseline_guard):
             # Wait for serving revision to actually pick up the new env.
             self._wait_for_serving_env(env_dict)
 
-        def _wait_for_serving_env(self, expected: dict[str, str], timeout: float = 120.0) -> None:
+        def _wait_for_serving_env(self, expected: dict[str, str], timeout: float = 240.0) -> None:
+            # 240s (was 120s): Cloud Run rollouts in asia-northeast1 cold-start
+            # cycles can take 90-150s end-to-end (new revision build + image
+            # pull + health-check + traffic shift). Run 26359833215 hit the
+            # 120s wall on 2/9 mutating tests while prior runs converged in
+            # <60s — the variance argues for a generous ceiling rather than a
+            # tight target. update_service's LRO already caps at 180s.
             import time
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:
