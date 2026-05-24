@@ -12,6 +12,12 @@ RUN uv pip install --system -e .
 # Preserve the contract-relative path so DOCS_ROOT=/contract resolves
 # `demo/docs/runbook.md` to `/contract/demo/docs/runbook.md`.
 COPY demo/ /contract/demo/
+# Workload manifests (Phase 17+) are loaded at runtime by
+# agent/workloads/registry.py via Path(__file__).parents[2]/"workloads",
+# which resolves to /app/workloads inside the container. Not a Python
+# package (pyproject `[tool.setuptools] packages` doesn't include it),
+# so it must be copied as plain data after the editable install.
+COPY workloads/ ./workloads/
 ENV PORT=8080
 ENV DOCS_ROOT=/contract
 ENV CONTRACT_PATH=/contract/demo/ops-contract.yaml

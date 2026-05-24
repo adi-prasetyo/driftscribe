@@ -46,7 +46,7 @@ These are the steps **before** `setup_e2e_project.sh` can run.
 
    | Token name                 | Repository access     | Permissions                                             |
    |----------------------------|-----------------------|---------------------------------------------------------|
-   | `e2e-coordinator-pat`      | driftscribe-e2e-target | Contents: read, Pull requests: read (coordinator-side read-only PR search — mirrors prod `github-pat`) |
+   | `e2e-coordinator-pat`      | driftscribe-e2e-target | Issues: read/write, Contents: read/write, Pull requests: read/write — coordinator `_perform_action` creates drift/escalation issues + docs PRs directly when `_DRY_RUN=false` (see `agent/main.py:560`, `driftscribe_lib/github.py:34/46/58`) |
    | `e2e-docs-pat`             | driftscribe-e2e-target | Contents: read/write, Pull requests: read/write          |
    | `e2e-upgrade-reader-pat`   | driftscribe-e2e-target | Contents: read, Pull requests: read                      |
    | `e2e-upgrade-docs-pat`     | driftscribe-e2e-target | Contents: read/write, Pull requests: read/write          |
@@ -136,7 +136,7 @@ printf '%s' "$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')" \
 ```
 
 ```bash
-# 3. github-pat — coordinator-side read-only PAT (e2e-coordinator-pat)
+# 3. github-pat — coordinator write-capable PAT (e2e-coordinator-pat) — issues + docs PRs when _DRY_RUN=false
 printf '%s' "<e2e-coordinator-pat>" \
   | gcloud secrets versions add github-pat \
     --project driftscribe-e2e --data-file=-
@@ -324,6 +324,27 @@ gcloud run services update payment-demo-e2e \
 
 `PAYMENT_MODE=mock` + `FEATURE_NEW_CHECKOUT=false` are the
 contract-declared baseline values from `demo/ops-contract.yaml`.
+
+---
+
+## 8.5 Known accumulation: GitHub issues in the target repo
+
+E2E drift runs with `_DRY_RUN=false` produce real artifacts in
+`adi-prasetyo/driftscribe-e2e-target`:
+
+- **Pull requests** — `tests/e2e/_github_helpers.py:sweep_open_upgrade_prs`
+  closes/deletes open upgrade PRs at the start of each run. No action
+  needed.
+- **Issues** — created by the coordinator's `_perform_action` for drift
+  and escalation flows (`driftscribe_lib/github.py:34/46`). **Not swept
+  by helpers.** They accumulate in the target repo until manually closed.
+
+This is intentionally undocumented automation for now — the E2E suite is
+manual-dispatch only (Required reviewer on the `e2e` environment), so
+accumulation is paced by how often you actually fire the workflow. If/when
+that becomes painful, add an `Issues.search → close` sweep in
+`_github_helpers.py` mirroring the existing PR sweep. Until then, expect
+the target repo's issue tracker to grow.
 
 ---
 

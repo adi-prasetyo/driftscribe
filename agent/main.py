@@ -519,7 +519,13 @@ def _cached_rollback_is_expired(cached: dict) -> bool:
 
 
 @app.get("/healthz")
+@app.get("/health")
 def healthz():
+    # `/health` is the externally reachable alias. Cloud Run's GFE reserves
+    # paths ending in `z` (Cloud Run "Known issues") and intercepts `/healthz`
+    # with its own 404 before the request reaches FastAPI — so any external
+    # uptime check or runbook smoke must hit `/health` instead. Keep
+    # `/healthz` for in-cluster / unit-test callers that already wired to it.
     return {"ok": True}
 
 

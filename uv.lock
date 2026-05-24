@@ -462,7 +462,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
-    { name = "google-adk", specifier = ">=0.4" },
+    { name = "google-adk", specifier = "==1.33.0" },
     { name = "google-cloud-firestore", specifier = ">=2.19" },
     { name = "google-cloud-logging", specifier = ">=3.11" },
     { name = "google-cloud-run", specifier = ">=0.10" },
