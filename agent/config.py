@@ -45,6 +45,14 @@ class Settings(BaseSettings):
     # so test/dev boot doesn't crash. At request time, an empty value forces
     # the handler to 503 (fail-closed) — see agent/main.py /eventarc.
     eventarc_audience: str = ""
+    # Cloudflare Access integration: when both values are non-empty, the
+    # ``verify_token`` dependency will accept a valid ``Cf-Access-Jwt-Assertion``
+    # header as proof of authentication in lieu of ``X-DriftScribe-Token``.
+    # See agent/cf_access.py for the verification details and trust boundary.
+    # Empty defaults so local dev + unit tests behave exactly like the
+    # pre-CF-Access build (CF Access path is disabled).
+    cf_access_team_domain: str = ""
+    cf_access_aud_tag: str = ""
 
 
 @lru_cache(maxsize=1)

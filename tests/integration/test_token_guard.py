@@ -24,6 +24,7 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
+from agent import cf_access
 from agent.config import get_settings
 from agent.main import app
 
@@ -141,6 +142,132 @@ def test_healthz_does_not_require_token(monkeypatch):
     client = TestClient(app)
     r = client.get("/healthz")
     assert r.status_code == 200
+
+
+# --- Phase 21: Cloudflare Access integration --------------------------------
+# The verify_token dependency accepts EITHER X-DriftScribe-Token OR a valid
+# Cf-Access-Jwt-Assertion (when CF Access settings are configured). These
+# tests pin the combined behavior. The CF JWT verification itself is tested
+# in tests/unit/test_cf_access.py — here we just stub verify_cf_access_jwt
+# and assert verify_token honors the two-credential contract.
+
+
+def _configure_cf_access(monkeypatch, team="adp-app.cloudflareaccess.com", aud="aud-tag-123"):
+    monkeypatch.setenv("CF_ACCESS_TEAM_DOMAIN", team)
+    monkeypatch.setenv("CF_ACCESS_AUD_TAG", aud)
+    get_settings.cache_clear()
+
+
+def _stub_do_recheck_sentinel():
+    sentinel = {"_token_guard_passed": True, "action": "no_op"}
+
+    async def _stub(trigger, force=False, *, workload="drift"):
+        return sentinel
+
+    return sentinel, _stub
+
+
+def test_recheck_accepts_valid_cf_access_jwt_without_token(monkeypatch):
+    """Signed-in CF Access user — no X-DriftScribe-Token needed."""
+    _set_token(monkeypatch, "test-token-value-123")
+    _configure_cf_access(monkeypatch)
+    sentinel, stub = _stub_do_recheck_sentinel()
+
+    with patch("agent.auth.verify_cf_access_jwt", return_value={"email": "ok@example.com"}) as v, \
+         patch("agent.main._do_recheck", side_effect=stub):
+        client = TestClient(app)
+        r = client.post("/recheck", headers={"Cf-Access-Jwt-Assertion": "valid.jwt.value"})
+
+    assert r.status_code == 200
+    assert r.json() == sentinel
+    v.assert_called_once()
+
+
+def test_recheck_rejects_invalid_cf_jwt_when_no_token_present(monkeypatch):
+    """Bad CF JWT alone → falls back to token check → 401 (no header)."""
+    _set_token(monkeypatch, "test-token-value-123")
+    _configure_cf_access(monkeypatch)
+
+    with patch(
+        "agent.auth.verify_cf_access_jwt",
+        side_effect=cf_access.CfAccessJwtError("expired"),
+    ):
+        client = TestClient(app)
+        r = client.post("/recheck", headers={"Cf-Access-Jwt-Assertion": "stale.jwt"})
+
+    assert r.status_code == 401
+    assert "X-DriftScribe-Token" in r.json()["detail"]
+
+
+def test_recheck_falls_back_when_cf_jwt_invalid_but_token_valid(monkeypatch):
+    """Bad CF JWT + valid X-DriftScribe-Token → succeed via token path.
+
+    Codex review: silent fallback is desirable so a stale CF cookie can't
+    poison a request that ALSO carries the strictly-stronger shared token.
+    """
+    _set_token(monkeypatch, "test-token-value-123")
+    _configure_cf_access(monkeypatch)
+    sentinel, stub = _stub_do_recheck_sentinel()
+
+    with patch(
+        "agent.auth.verify_cf_access_jwt",
+        side_effect=cf_access.CfAccessJwtError("kid not found"),
+    ), patch("agent.main._do_recheck", side_effect=stub):
+        client = TestClient(app)
+        r = client.post(
+            "/recheck",
+            headers={
+                "Cf-Access-Jwt-Assertion": "bad.jwt",
+                "X-DriftScribe-Token": "test-token-value-123",
+            },
+        )
+
+    assert r.status_code == 200
+    assert r.json() == sentinel
+
+
+def test_cf_access_path_disabled_when_settings_empty(monkeypatch):
+    """Empty CF Access config → the JWT header is ignored entirely.
+
+    Verifies the on/off semantics: if the operator hasn't set CF_ACCESS_*
+    env vars, sending a Cf-Access-Jwt-Assertion header should not be a
+    backdoor — the request must still satisfy the token check.
+    """
+    _set_token(monkeypatch, "test-token-value-123")
+    # NOTE: CF Access settings deliberately NOT set here.
+    monkeypatch.delenv("CF_ACCESS_TEAM_DOMAIN", raising=False)
+    monkeypatch.delenv("CF_ACCESS_AUD_TAG", raising=False)
+    get_settings.cache_clear()
+
+    with patch("agent.auth.verify_cf_access_jwt") as v:
+        client = TestClient(app)
+        r = client.post("/recheck", headers={"Cf-Access-Jwt-Assertion": "would.have.worked"})
+
+    assert r.status_code == 401  # token missing → reject; CF JWT was ignored
+    v.assert_not_called()  # critical: never even reached the verifier
+
+
+def test_cf_access_jwt_failure_is_logged(monkeypatch, caplog):
+    """Codex review: bad/stale JWT should produce an INFO log line so an
+    operator can distinguish 'JWT rejected' from 'no JWT sent' when
+    debugging 401s.
+    """
+    import logging
+    _set_token(monkeypatch, "test-token-value-123")
+    _configure_cf_access(monkeypatch)
+    caplog.set_level(logging.INFO, logger="driftscribe.agent.auth")
+
+    with patch(
+        "agent.auth.verify_cf_access_jwt",
+        side_effect=cf_access.CfAccessJwtError("kid-X not in JWKS"),
+    ):
+        client = TestClient(app)
+        client.post("/recheck", headers={"Cf-Access-Jwt-Assertion": "stale"})
+
+    rejected = [r for r in caplog.records if r.message == "cf_access_jwt_rejected"]
+    assert rejected, "expected a cf_access_jwt_rejected log line"
+    # Reason is in the extra dict; pin the field for downstream log-search.
+    assert "kid-X" in getattr(rejected[0], "reason", "")
 
 
 def test_constant_time_compare_is_used(monkeypatch):
