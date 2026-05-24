@@ -16,6 +16,17 @@ permissions:
   contents: read
   id-token: write
 
+# Concurrency guard: the suite mutates shared Cloud Run + Firestore state
+# in driftscribe-e2e (env vars on payment-demo-e2e, decisions/events
+# collections). Allowing parallel dispatches would race the per-test
+# baseline guard fixture and corrupt other-in-flight runs' results.
+# cancel-in-progress=false: a second dispatch queues until the first
+# finishes rather than terminating it mid-run (cancelling mid-run can
+# leave Cloud Run revisions or Firestore claims in a stuck state).
+concurrency:
+  group: driftscribe-e2e
+  cancel-in-progress: false
+
 jobs:
   python-e2e:
     if: ${{ github.event.inputs.python_e2e == 'true' }}

@@ -5,21 +5,32 @@ E2E workflow (`.github/workflows/e2e.yml`, added in Task 20.7b) via
 Workload Identity Federation — no long-lived service-account keys ever
 leave the GCP project boundary.
 
-The security model layers three independent gates. All three must hold
-for a workflow run to successfully mint a GCP access token:
+The security model layers two independent gates. Both must hold for a
+workflow run to successfully mint a GCP access token:
 
 1. **WIF attribute-condition** on the provider pins the trust to the
    exact `(repository, environment)` pair
    `('adi-prasetyo/driftscribe', 'e2e')`. A workflow run with any other
-   claim cannot complete the OIDC exchange.
-2. **GitHub Environment `e2e`** requires reviewer approval before any
-   workflow run — from any branch — can read the environment's secrets
-   (`GCP_WIF_PROVIDER`, `GCP_E2E_RUNNER_SA`). Without those secrets the
-   `google-github-actions/auth` step cannot run.
-3. **Per-resource IAM** on `e2e-runner-sa` is scoped narrowly:
+   claim cannot complete the OIDC exchange. Combined with
+   `workflow_dispatch`-only trigger on the workflow, this means only an
+   actor with `workflow` scope on the repo can produce a token-eligible
+   run.
+2. **Per-resource IAM** on `e2e-runner-sa` is scoped narrowly:
    `roles/run.viewer` project-wide, per-secret `secretAccessor`, and
    `roles/run.developer` ONLY on `payment-demo-e2e` (resource-scoped).
-   Even with a token, the SA cannot mutate the coordinator or workers.
+   The two project-wide grants (`run.viewer`, `artifactregistry.reader`)
+   are read-only on this isolated E2E project — even with a token, the
+   SA cannot mutate the coordinator or workers.
+
+The `e2e` GitHub Environment still exists and still holds the two
+secrets (`GCP_WIF_PROVIDER`, `GCP_E2E_RUNNER_SA`) — the environment
+binding is what produces the `environment: e2e` OIDC claim the
+attribute-condition checks against. **No protection rules are
+configured** (cleared 2026-05-24 — the per-job approval prompt added
+2× friction per dispatch on a solo-maintainer workflow). Add a
+"Required reviewers" rule via repo Settings → Environments if a future
+maintainer wants the human gate back; the rest of this runbook works
+either way.
 
 Cross-references:
 
@@ -120,6 +131,14 @@ binding set from this single file.
   `<PROJECT_NUMBER>-compute@developer.gserviceaccount.com`, unless the
   deploy step pinned `--service-account=...`). Required so the runner
   can `act-as` the service identity during `update_service` calls.
+- `roles/artifactregistry.reader` (project-wide) — Cloud Run's admin
+  API validates the *caller* can pull the image referenced by a
+  service when `update_service` is called (security: prevents image-
+  existence leaks via deploy probing). Without this the per-test env
+  mutator teardown 403s on `artifactregistry.repositories.downloadArtifacts`
+  even though the runtime SA can pull fine. Project-wide is acceptable
+  for this isolated E2E project (single AR repo `driftscribe`); a
+  prod equivalent should bind on the specific repo instead.
 - `roles/datastore.user` — Firestore writes for the cleanup tracker
   fixture.
 
@@ -136,22 +155,21 @@ succeeds.
 ## 4. Configure the GitHub Environment
 
 In the repo settings → **Environments** → "New environment" →
-name `e2e`:
+name `e2e`. Set the two environment secrets the workflow's
+`google-github-actions/auth` step needs:
 
-1. **Required reviewers**: add your GitHub username. Single-reviewer
-   is fine for the hackathon; expand the reviewer list if more
-   maintainers join.
-2. **Environment secrets** (two — both required by the workflow's
-   `google-github-actions/auth` step):
-   - `GCP_WIF_PROVIDER` =
-     `projects/<PROJECT_NUMBER>/locations/global/workloadIdentityPools/gha-pool/providers/gha-provider`
-   - `GCP_E2E_RUNNER_SA` =
-     `e2e-runner-sa@driftscribe-e2e.iam.gserviceaccount.com`
+- `GCP_WIF_PROVIDER` =
+  `projects/<PROJECT_NUMBER>/locations/global/workloadIdentityPools/gha-pool/providers/gha-provider`
+- `GCP_E2E_RUNNER_SA` =
+  `e2e-runner-sa@driftscribe-e2e.iam.gserviceaccount.com`
 
-The attribute-condition pinning `environment=='e2e'` plus the Required
-reviewer gate means: even if someone pushes a malicious workflow
-change to a feature branch, the run cannot mint a GCP token without
-explicit human approval on this environment.
+**No protection rules are required.** The environment exists so the
+OIDC token carries the `environment: e2e` claim the WIF
+attribute-condition checks against — that, combined with
+`workflow_dispatch`-only triggering, is the trust boundary. Adding a
+"Required reviewers" rule is optional; if you do, every job that
+declares `environment: e2e` produces a separate approval prompt, so
+multi-job workflows multiply the friction.
 
 ---
 
@@ -164,10 +182,11 @@ UI or:
 gh workflow run e2e.yml --ref main
 ```
 
-The run will pause at the "waiting for review" gate on the `e2e`
-environment. Approve it; the `google-github-actions/auth` step should
-successfully exchange the OIDC token for a GCP access token and the
-suite should execute.
+The run starts immediately (no protection rules — see §4). The
+`google-github-actions/auth` step should successfully exchange the
+OIDC token for a GCP access token and the suite should execute. If
+you re-added the "Required reviewers" rule from §4, the run pauses
+at the "waiting for review" gate first; approve to proceed.
 
 If the auth step fails, the common causes are:
 
