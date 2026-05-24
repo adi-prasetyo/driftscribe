@@ -4,7 +4,6 @@ import pytest
 
 from tests.e2e._helpers import (
     find_approval_url_in_trace_events,
-    parse_approval_url,
     wait_for,
     wait_for_trace_complete,
 )
