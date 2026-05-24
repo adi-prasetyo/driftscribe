@@ -13,17 +13,20 @@ test.describe('transparency UI', () => {
     await page.reload();
   });
 
-  test('renders three reasoning groups after /chat fires', async ({ page }) => {
+  test('renders three reasoning panels and tools events after /chat', async ({ page }) => {
     await page.locator('[data-testid="chat-prompt"]').fill('Check payment-demo-e2e for drift');
     await page.locator('[data-testid="chat-submit"]').click();
 
     // The three reasoning panels are <details> elements (transparency.html:564-577).
     // Only #group-coordinator opens by default; #group-tools and #group-mcp are
-    // collapsed. Their inner `<div data-group="...">` reports hidden under a
-    // collapsed parent even after tool_call events are appended — so we assert
-    // the outer panel exists, then programmatically open it, then verify the
-    // inner event row is visible. This preserves the "events rendered" intent
-    // without coupling the test to the UI's default-collapsed presentation.
+    // collapsed. The outer panels always render; the inner `data-group` divs
+    // are hidden under a collapsed parent until the user expands them.
+    //
+    // We assert the three outer panels render. For tools we additionally open
+    // the <details> and verify the inner event row — a drift-check chat
+    // reliably calls read_live_env_tool. We do NOT open MCP because the chat
+    // path is not guaranteed to emit MCP traffic for this prompt; asserting
+    // its inner content would be flaky.
     await expect(page.locator('#group-coordinator')).toBeVisible({ timeout: 45_000 });
     await expect(page.locator('#group-tools')).toBeVisible();
     await expect(page.locator('#group-mcp')).toBeVisible();
