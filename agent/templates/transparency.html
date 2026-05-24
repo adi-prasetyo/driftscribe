@@ -641,17 +641,38 @@
       }
 
       async function api(path, init = {}) {
-        const token = getToken();
-        if (!token) {
-          throw new Error("no token");
-        }
+        // Phase 21: try-then-prompt. CF Access users sign in via Google;
+        // the coordinator accepts the resulting Cf-Access-Jwt-Assertion
+        // header (auto-injected by CF) in lieu of X-DriftScribe-Token.
+        // Sending no token first lets that path succeed silently — only
+        // if the server explicitly says "I need a token" (401/403) do we
+        // prompt. Token-required users see one extra failed request per
+        // session before the prompt; CF Access users never see it.
         const headers = new Headers(init.headers || {});
-        headers.set("X-DriftScribe-Token", token);
-        const resp = await fetch(path, { ...init, headers });
+        const stored = sessionStorage.getItem(TOKEN_KEY);
+        if (stored) headers.set("X-DriftScribe-Token", stored);
+
+        let resp = await fetch(path, { ...init, headers });
+
         if (resp.status === 401 || resp.status === 403) {
-          // Token was rejected — clear so the next call re-prompts.
+          // Server demands a token (CF Access auth either disabled or
+          // failed). Clear any stale value and prompt.
           sessionStorage.removeItem(TOKEN_KEY);
           updateTokenStatus("invalid");
+          const token = getToken();
+          if (!token) {
+            return resp;  // user cancelled prompt — surface the 401/403
+          }
+          headers.set("X-DriftScribe-Token", token);
+          resp = await fetch(path, { ...init, headers });
+          if (resp.status === 401 || resp.status === 403) {
+            sessionStorage.removeItem(TOKEN_KEY);
+            updateTokenStatus("invalid");
+          } else {
+            updateTokenStatus("ok");
+          }
+        } else if (resp.ok && stored) {
+          updateTokenStatus("ok");
         }
         return resp;
       }
