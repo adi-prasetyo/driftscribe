@@ -68,18 +68,21 @@ steps:
   #    --set-env-vars) adds the CF Access vars without clobbering DRY_RUN,
   #    GITHUB_REPO, TARGET_SERVICE, GITHUB_TOKEN secret refs, etc. The
   #    SA, ingress, scaling, and traffic policy all stay as they were.
+  # bash entrypoint so we can conditionally append --no-traffic. An empty
+  # substitution passed as a positional gcloud arg fails with
+  # "unrecognized arguments: <empty>", so we can't just inline ${_NO_TRAFFIC}.
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
-    entrypoint: gcloud
+    entrypoint: bash
     args:
-      - run
-      - services
-      - update
-      - ${_SERVICE}
-      - --image=asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-agent:${_TAG}
-      - --update-env-vars=CF_ACCESS_TEAM_DOMAIN=${_CF_ACCESS_TEAM_DOMAIN},CF_ACCESS_AUD_TAG=${_CF_ACCESS_AUD_TAG}
-      - --region=${_REGION}
-      - --project=$PROJECT_ID
-      - ${_NO_TRAFFIC}
+      - -c
+      - |
+        set -euo pipefail
+        gcloud run services update ${_SERVICE} \
+          --image=asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-agent:${_TAG} \
+          --update-env-vars=CF_ACCESS_TEAM_DOMAIN=${_CF_ACCESS_TEAM_DOMAIN},CF_ACCESS_AUD_TAG=${_CF_ACCESS_AUD_TAG} \
+          --region=${_REGION} \
+          --project=$PROJECT_ID \
+          ${_NO_TRAFFIC}
 
 images:
   - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-agent:${_TAG}
