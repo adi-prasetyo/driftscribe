@@ -288,7 +288,7 @@ Next steps (operator action required):
   For each of:
     coordinator-shared-token       (auto-generate: python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
     approval-hmac-key              (auto-generate: same as above)
-    github-pat                     (classic PAT, repo:read on driftscribe-e2e-target)
+    github-pat                     (fine-grained PAT, Issues+Contents+PR write on driftscribe-e2e-target — coordinator side effects when _DRY_RUN=false)
     docs-agent-github-pat          (fine-grained PAT: Contents+PR write on driftscribe-e2e-target)
     upgrade-reader-github-pat      (fine-grained PAT: Contents+PR read on driftscribe-e2e-target)
     upgrade-docs-github-pat        (fine-grained PAT: Contents+PR write on driftscribe-e2e-target)
@@ -299,7 +299,7 @@ Next steps (operator action required):
 
     gcloud builds submit --config infra/cloudbuild.yaml \\
       --project=$PROJECT \\
-      --substitutions=_TARGET_SERVICE=payment-demo-e2e,_TARGET_GITHUB_REPO=adi-prasetyo/driftscribe-e2e-target,_UPGRADE_TARGET_REPO=adi-prasetyo/driftscribe-e2e-target,_USE_ADK=true
+      --substitutions=_TARGET_SERVICE=payment-demo-e2e,_TARGET_GITHUB_REPO=adi-prasetyo/driftscribe-e2e-target,_UPGRADE_TARGET_REPO=adi-prasetyo/driftscribe-e2e-target,_USE_ADK=true,_DRY_RUN=false
 
 (3) Apply post-deploy IAM bindings (run these AFTER the build succeeds):
 

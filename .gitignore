@@ -17,3 +17,6 @@ node_modules/
 package-lock.json
 playwright-report/
 test-results/
+
+# Local-only operator notes (gcloud account, billing, secrets recipes — never commit)
+.claude/
