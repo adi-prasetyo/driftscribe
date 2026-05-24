@@ -8,7 +8,13 @@ dependencies = [
     "uvicorn[standard]>=0.32",
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
-    "google-adk>=0.4",
+    # Pinned to lockfile version. Dockerfile.agent installs from pyproject
+    # floors (not uv.lock), so a >= floor lets Cloud Build pull a newer ADK
+    # that drops the `from google.adk.tools.mcp_tool import McpToolset`
+    # re-export — `developer_knowledge.py:99` breaks on import and the
+    # coordinator container can't start. Exact pin until Dockerfile.agent
+    # switches to lockfile-based install (deferred follow-up).
+    "google-adk==1.33.0",
     "google-cloud-run>=0.10",
     "google-cloud-firestore>=2.19",
     # Already pulled in transitively via opentelemetry-exporter-gcp-logging,
