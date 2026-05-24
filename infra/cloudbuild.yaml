@@ -203,7 +203,17 @@ steps:
       # singleton (frozen dataclass equality is field-based). Prod
       # behavior is unchanged in observable terms — only the in-process
       # object identity differs.
-      - --set-env-vars=DRY_RUN=$_DRY_RUN,GCP_PROJECT=$PROJECT_ID,TARGET_SERVICE=$_TARGET_SERVICE,TARGET_REGION=asia-northeast1,GITHUB_REPO=$_TARGET_GITHUB_REPO,USE_ADK=$_USE_ADK,UPGRADE_TARGET_REPO_OVERRIDE=$_UPGRADE_TARGET_REPO,READER_URL=https://placeholder.invalid,DOCS_URL=https://placeholder.invalid,ROLLBACK_URL=https://placeholder.invalid,NOTIFIER_URL=https://placeholder.invalid,UPGRADE_READER_URL=https://placeholder.invalid,UPGRADE_DOCS_URL=https://placeholder.invalid,GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=asia-northeast1
+      # Phase 21 — Cloudflare Access integration: CF_ACCESS_TEAM_DOMAIN +
+      # CF_ACCESS_AUD_TAG let signed-in CF Access users skip the
+      # X-DriftScribe-Token header on /chat /decisions /trace /recheck.
+      # Both values are inlined (not via Secret Manager) because they're
+      # public identifiers, not secrets — the AUD tag is the per-Access-App
+      # identifier shown in CF dashboard, and the team domain is the
+      # hostname users see at sign-in. The verify_token shim safely
+      # ignores stray Cf-Access-Jwt-Assertion headers when these values
+      # don't match a real CF Access deployment (e.g. on the E2E project,
+      # which doesn't have CF Access in front of it) — see agent/auth.py.
+      - --set-env-vars=DRY_RUN=$_DRY_RUN,GCP_PROJECT=$PROJECT_ID,TARGET_SERVICE=$_TARGET_SERVICE,TARGET_REGION=asia-northeast1,GITHUB_REPO=$_TARGET_GITHUB_REPO,USE_ADK=$_USE_ADK,UPGRADE_TARGET_REPO_OVERRIDE=$_UPGRADE_TARGET_REPO,READER_URL=https://placeholder.invalid,DOCS_URL=https://placeholder.invalid,ROLLBACK_URL=https://placeholder.invalid,NOTIFIER_URL=https://placeholder.invalid,UPGRADE_READER_URL=https://placeholder.invalid,UPGRADE_DOCS_URL=https://placeholder.invalid,GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=asia-northeast1,CF_ACCESS_TEAM_DOMAIN=adp-app.cloudflareaccess.com,CF_ACCESS_AUD_TAG=5e6a20fe63e5fb03a742eeb0623e216ad4c837413d2afa9885a79b1091016262
       # DRIFTSCRIBE_TOKEN (Phase 11.1) gates /recheck via the X-DriftScribe-Token
       # header. The `coordinator-shared-token` secret MUST exist in Secret
       # Manager BEFORE the first build that includes this line — Cloud Run
