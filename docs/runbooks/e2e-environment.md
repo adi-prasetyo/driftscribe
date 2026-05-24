@@ -332,14 +332,14 @@ contract-declared baseline values from `demo/ops-contract.yaml`.
 E2E drift runs with `_DRY_RUN=false` produce real artifacts in
 `adi-prasetyo/driftscribe-e2e-target`:
 
-- **Pull requests** — `tests/e2e/_github_helpers.py:sweep_open_upgrade_prs`
+- **Pull requests** — `tests/e2e/_github_helpers.py:sweep_upgrade_prs`
   closes/deletes open upgrade PRs at the start of each run. No action
   needed.
 - **Issues** — created by the coordinator's `_perform_action` for drift
   and escalation flows (`driftscribe_lib/github.py:34/46`). **Not swept
   by helpers.** They accumulate in the target repo until manually closed.
 
-This is intentionally undocumented automation for now — the E2E suite is
+This is intentionally unautomated cleanup for now — the E2E suite is
 manual-dispatch only (Required reviewer on the `e2e` environment), so
 accumulation is paced by how often you actually fire the workflow. If/when
 that becomes painful, add an `Issues.search → close` sweep in
