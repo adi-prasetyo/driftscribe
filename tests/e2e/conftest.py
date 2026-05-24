@@ -67,6 +67,12 @@ def _payment_demo_e2e_baseline_guard(e2e_gcp_project):
     yield baseline
 
     # Teardown — force-restore the serving env via Cloud Run SDK with mask + wait.
+    # Also resets traffic to LATEST: the rollback worker (when /approve fires)
+    # pins traffic to a specific older revision, which breaks every subsequent
+    # session's read_live_state (the new revisions created by per-test mutations
+    # never get traffic). Including "traffic" in the update_mask + setting
+    # type=LATEST ensures the project leaves a session in a state where new
+    # deploys auto-route.
     services_client = run_v2.ServicesClient()
     name = f"projects/{e2e_gcp_project}/locations/{region}/services/{service}"
     svc = services_client.get_service(name=name)
@@ -75,9 +81,17 @@ def _payment_demo_e2e_baseline_guard(e2e_gcp_project):
         container.env.pop()
     for k, v in baseline["env"].items():
         container.env.append(run_v2.EnvVar(name=k, value=v))
+    while len(svc.traffic):
+        svc.traffic.pop()
+    svc.traffic.append(
+        run_v2.TrafficTarget(
+            type_=run_v2.TrafficTargetAllocationType.TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST,
+            percent=100,
+        )
+    )
     op = services_client.update_service(
         service=svc,
-        update_mask=FieldMask(paths=["template"]),
+        update_mask=FieldMask(paths=["template", "traffic"]),
     )
     op.result(timeout=180.0)
 
@@ -156,14 +170,29 @@ def drift_e2e_target(e2e_gcp_project, _payment_demo_e2e_baseline_guard):
             return baseline["revision"]
 
         def _update_env(self, env_dict: dict[str, str]) -> None:
+            # Always reset traffic to LATEST alongside the template update. The
+            # rollback worker's /approve handler pins traffic to a specific
+            # prior revision; without this reset, subsequent set_env calls in
+            # the same OR a later session create new revisions that traffic
+            # never reaches — read_live_state then forever reports the pinned
+            # revision's env. See _payment_demo_e2e_baseline_guard teardown for
+            # the matching session-end recovery.
             svc = self.client.get_service(name=self.name)
             container = svc.template.containers[0]
             while len(container.env):
                 container.env.pop()
             for k, v in env_dict.items():
                 container.env.append(run_v2.EnvVar(name=k, value=v))
+            while len(svc.traffic):
+                svc.traffic.pop()
+            svc.traffic.append(
+                run_v2.TrafficTarget(
+                    type_=run_v2.TrafficTargetAllocationType.TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST,
+                    percent=100,
+                )
+            )
             op = self.client.update_service(
-                service=svc, update_mask=FieldMask(paths=["template"])
+                service=svc, update_mask=FieldMask(paths=["template", "traffic"])
             )
             op.result(timeout=180.0)
             # Wait for serving revision to actually pick up the new env.
