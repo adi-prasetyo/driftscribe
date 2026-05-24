@@ -101,7 +101,10 @@ The script:
   accessor anywhere);
 - grants the per-SA project-level roles (Firestore, Vertex AI,
   `logging.viewer` on the coordinator, `run.viewer` on the reader and
-  e2e-runner, `datastore.user` on rollback + e2e-runner);
+  e2e-runner, `datastore.user` on rollback + e2e-runner,
+  `artifactregistry.reader` on e2e-runner — needed because Cloud Run's
+  admin API validates the caller can pull the referenced image during
+  `update_service`, and the per-test env mutator calls `update_service`);
 - initializes Firestore Native in `asia-northeast1`;
 - extends the `_Default` Cloud Logging bucket retention to 365 days.
 
@@ -222,22 +225,49 @@ PROJECT_NUMBER=$(gcloud projects describe $PROJECT --format='value(projectNumber
 gcloud run services add-iam-policy-binding payment-demo-e2e \
   --project=$PROJECT --region=$REGION \
   --member="serviceAccount:rollback-agent-sa@$PROJECT.iam.gserviceaccount.com" \
-  --role="roles/run.developer"
+  --role="roles/run.developer" \
+  --condition=None
 
 # E2E runner — resource-scoped run.developer on payment-demo-e2e
 gcloud run services add-iam-policy-binding payment-demo-e2e \
   --project=$PROJECT --region=$REGION \
   --member="serviceAccount:e2e-runner-sa@$PROJECT.iam.gserviceaccount.com" \
-  --role="roles/run.developer"
+  --role="roles/run.developer" \
+  --condition=None
 
-# E2E runner — actAs the payment-demo-e2e runtime SA. If the deploy
-# step pinned --service-account on payment-demo-e2e, target THAT SA.
-# Default is the project's Compute Engine default SA:
+# E2E runner AND rollback worker — actAs the payment-demo-e2e runtime SA.
+# The E2E runner needs it to drive update_service env mutations during
+# baseline fixtures. The rollback worker needs it to call update_service
+# when applying traffic shifts on payment-demo-e2e (Cloud Run requires
+# the caller to actAs the service's runtime SA). Without the
+# rollback-agent-sa binding, /approve 5xxs with
+# "Permission 'iam.serviceaccounts.actAs' denied".
+#
+# If the deploy step pinned --service-account on payment-demo-e2e,
+# target THAT SA. Default is the project's Compute Engine default SA:
 RUNTIME_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
-gcloud iam service-accounts add-iam-policy-binding "$RUNTIME_SA" \
-  --project=$PROJECT \
+for member in \
+  "e2e-runner-sa@$PROJECT.iam.gserviceaccount.com" \
+  "rollback-agent-sa@$PROJECT.iam.gserviceaccount.com"; do
+  gcloud iam service-accounts add-iam-policy-binding "$RUNTIME_SA" \
+    --project=$PROJECT \
+    --member="serviceAccount:$member" \
+    --role="roles/iam.serviceAccountUser" \
+    --condition=None
+done
+
+# E2E runner — artifactregistry.reader. Cloud Run's admin API validates
+# the *caller* can pull the image referenced by a service when
+# update_service is called (security: prevents image-existence leaks via
+# deploy probing). Without this, the per-test env-mutator teardown 403s
+# with "Permission 'artifactregistry.repositories.downloadArtifacts'
+# denied" even though the runtime SA can pull fine — the failure is on
+# the admin call, not the container pull. Project-wide is fine here:
+# the project only has one AR repo (`driftscribe`).
+gcloud projects add-iam-policy-binding $PROJECT \
   --member="serviceAccount:e2e-runner-sa@$PROJECT.iam.gserviceaccount.com" \
-  --role="roles/iam.serviceAccountUser"
+  --role="roles/artifactregistry.reader" \
+  --condition=None
 
 # Coordinator <-> worker run.invoker grants (each worker, per-service)
 for worker in driftscribe-reader driftscribe-docs driftscribe-rollback \
@@ -246,7 +276,8 @@ for worker in driftscribe-reader driftscribe-docs driftscribe-rollback \
   gcloud run services add-iam-policy-binding "$worker" \
     --project=$PROJECT --region=$REGION \
     --member="serviceAccount:driftscribe-agent@$PROJECT.iam.gserviceaccount.com" \
-    --role="roles/run.invoker"
+    --role="roles/run.invoker" \
+    --condition=None
 done
 ```
 
@@ -340,11 +371,12 @@ E2E drift runs with `_DRY_RUN=false` produce real artifacts in
   by helpers.** They accumulate in the target repo until manually closed.
 
 This is intentionally unautomated cleanup for now — the E2E suite is
-manual-dispatch only (Required reviewer on the `e2e` environment), so
-accumulation is paced by how often you actually fire the workflow. If/when
-that becomes painful, add an `Issues.search → close` sweep in
-`_github_helpers.py` mirroring the existing PR sweep. Until then, expect
-the target repo's issue tracker to grow.
+manual-dispatch only (`workflow_dispatch` trigger; the `e2e` environment
+has no protection rules, but only a maintainer with `workflow` scope can
+fire it), so accumulation is paced by how often you actually fire the
+workflow. If/when that becomes painful, add an `Issues.search → close`
+sweep in `_github_helpers.py` mirroring the existing PR sweep. Until
+then, expect the target repo's issue tracker to grow.
 
 ---
 
@@ -373,4 +405,7 @@ is documented in `docs/runbooks/e2e-ci.md` (coming in Task 20.7a).
 
 For the GitHub Actions / Workload Identity Federation setup, see
 [`e2e-ci.md`](e2e-ci.md). The `e2e.yml` workflow (added in Task 20.7b)
-requires reviewer approval on the `e2e` environment before each run.
+runs immediately on dispatch — the `e2e` environment's protection rules
+were cleared 2026-05-24 (the per-job approval prompt fired twice per
+dispatch on a solo-maintainer workflow). Re-add "Required reviewers" via
+repo Settings → Environments if a future maintainer wants the human gate.

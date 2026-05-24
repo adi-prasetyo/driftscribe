@@ -210,11 +210,21 @@ grant_role_idempotent "$PROJECT" "serviceAccount:${READER_SA}" "roles/run.viewer
 grant_role_idempotent "$PROJECT" "serviceAccount:${ROLLBACK_SA}" "roles/datastore.user"
 
 # e2e-runner-sa: read service URLs, write Firestore cleanup-tracker
-# docs. The per-secret accessor bindings come after secrets are
-# created below. roles/run.developer + roles/iam.serviceAccountUser
-# are post-deploy bindings (need payment-demo-e2e to exist first).
+# docs, and read AR images. The per-secret accessor bindings come
+# after secrets are created below. roles/run.developer +
+# roles/iam.serviceAccountUser are post-deploy bindings (need
+# payment-demo-e2e to exist first).
+#
+# artifactregistry.reader: Cloud Run admin API validates the *caller*
+# can pull the image referenced by a service when update_service is
+# called (security: prevents image-existence leaks via deploy probing).
+# Without this, the per-test env-mutator teardown 403s with
+# "Permission 'artifactregistry.repositories.downloadArtifacts' denied"
+# even though the runtime SA can pull fine — the failure is on the
+# admin call, not the container pull.
 grant_role_idempotent "$PROJECT" "serviceAccount:${E2E_RUNNER_SA}" "roles/run.viewer"
 grant_role_idempotent "$PROJECT" "serviceAccount:${E2E_RUNNER_SA}" "roles/datastore.user"
+grant_role_idempotent "$PROJECT" "serviceAccount:${E2E_RUNNER_SA}" "roles/artifactregistry.reader"
 
 # --------------------------------------------------------------------------
 # 6. Secrets — create resources (operator populates values via
@@ -307,24 +317,39 @@ Next steps (operator action required):
     gcloud run services add-iam-policy-binding payment-demo-e2e \\
       --project=$PROJECT --region=$REGION \\
       --member="serviceAccount:${ROLLBACK_SA}" \\
-      --role="roles/run.developer"
+      --role="roles/run.developer" --condition=None
 
     # E2E runner — resource-scoped run.developer on payment-demo-e2e:
     gcloud run services add-iam-policy-binding payment-demo-e2e \\
       --project=$PROJECT --region=$REGION \\
       --member="serviceAccount:${E2E_RUNNER_SA}" \\
-      --role="roles/run.developer"
+      --role="roles/run.developer" --condition=None
 
-    # E2E runner — actAs on payment-demo-e2e's runtime SA so the runner
-    # can drive update_service env mutations during baseline fixtures.
+    # E2E runner AND rollback worker — actAs on payment-demo-e2e's
+    # runtime SA. The E2E runner needs it to drive update_service env
+    # mutations during baseline fixtures. The rollback worker needs it
+    # to call update_service when applying traffic shifts (the demo
+    # rollback path mutates traffic on payment-demo-e2e, and Cloud Run
+    # requires the caller to actAs the service's runtime SA). Without
+    # the rollback-agent-sa binding, /approve 5xxs with
+    # "Permission 'iam.serviceaccounts.actAs' denied".
     # If the deploy step pinned --service-account on payment-demo-e2e
     # (Phase 20+), target that SA. Otherwise the default is the project's
     # Compute Engine default SA (PROJECT_NUMBER-compute@developer.gserviceaccount.com):
     RUNTIME_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
-    gcloud iam service-accounts add-iam-policy-binding "\$RUNTIME_SA" \\
-      --project=$PROJECT \\
+    for member in "${E2E_RUNNER_SA}" "${ROLLBACK_SA}"; do
+      gcloud iam service-accounts add-iam-policy-binding "\$RUNTIME_SA" \\
+        --project=$PROJECT \\
+        --member="serviceAccount:\$member" \\
+        --role="roles/iam.serviceAccountUser" --condition=None
+    done
+
+    # E2E runner — artifactregistry.reader (project-wide). Cloud Run admin
+    # API validates the *caller* can pull the image during update_service.
+    # Without this, env-mutator teardown 403s. See e2e-environment.md §5.
+    gcloud projects add-iam-policy-binding $PROJECT \\
       --member="serviceAccount:${E2E_RUNNER_SA}" \\
-      --role="roles/iam.serviceAccountUser"
+      --role="roles/artifactregistry.reader" --condition=None
 
     # Coordinator <-> worker run.invoker grants. These are NOT applied by
     # Cloud Build — they are printed here in the next-steps for the operator
@@ -336,7 +361,7 @@ Next steps (operator action required):
       gcloud run services add-iam-policy-binding "\$worker" \\
         --project=$PROJECT --region=$REGION \\
         --member="serviceAccount:${COORD_SA}" \\
-        --role="roles/run.invoker"
+        --role="roles/run.invoker" --condition=None
     done
 
 (4) Seed driftscribe-e2e-target with the lodash 4.17.20 lockfile
