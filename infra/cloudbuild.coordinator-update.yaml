@@ -58,7 +58,7 @@ steps:
       - -t
       - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-agent:${_TAG}
       - -f
-      - infra/Dockerfile.agent
+      - Dockerfile.agent
       - .
 
   - name: gcr.io/cloud-builders/docker
