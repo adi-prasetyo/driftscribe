@@ -548,19 +548,29 @@ def test_adk_agent_imports_cleanly_without_pulling_dangerous_sdks():
     just verify the LLM-relevant tool surface stays clean.
     """
     import sys
-    # Force re-import in a clean module cache subset
-    for mod_name in [
-        "agent.adk_agent",
-        "agent.adk_tools",
-        "agent.worker_client",
-    ]:
-        sys.modules.pop(mod_name, None)
-    import agent.adk_agent  # noqa: F401  - reimport for the side-effect check
+    # Save original module objects so we can restore them after the
+    # re-import probe. Other tests (e.g. integration tests that do
+    # `from agent import adk_agent` at collection time and then
+    # `patch.object(adk_agent, "Runner")`) hold references to the
+    # ORIGINAL module object — and `agent/main.py:chat` lazy-imports
+    # `from agent.adk_agent import run_chat` at request time, which
+    # would resolve to the NEW module's globals (unpatched Runner) and
+    # try to spin up a real Gemini client without an API key. Restoring
+    # sys.modules at the end of this test keeps those references valid.
+    target_mods = ("agent.adk_agent", "agent.adk_tools", "agent.worker_client")
+    saved = {m: sys.modules[m] for m in target_mods if m in sys.modules}
+    try:
+        for mod_name in target_mods:
+            sys.modules.pop(mod_name, None)
+        import agent.adk_agent  # noqa: F401  - reimport for the side-effect check
 
-    # subprocess is everywhere in the stdlib; just check we didn't yank
-    # in something more obviously dangerous (paramiko, fabric, etc.).
-    for forbidden in ("paramiko", "fabric", "pexpect"):
-        assert forbidden not in sys.modules, (
-            f"Importing agent.adk_agent pulled in {forbidden!r}, which "
-            f"suggests a tool was added that shells out to remote hosts."
-        )
+        # subprocess is everywhere in the stdlib; just check we didn't yank
+        # in something more obviously dangerous (paramiko, fabric, etc.).
+        for forbidden in ("paramiko", "fabric", "pexpect"):
+            assert forbidden not in sys.modules, (
+                f"Importing agent.adk_agent pulled in {forbidden!r}, which "
+                f"suggests a tool was added that shells out to remote hosts."
+            )
+    finally:
+        for mod_name, mod_obj in saved.items():
+            sys.modules[mod_name] = mod_obj
