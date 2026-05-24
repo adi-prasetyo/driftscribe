@@ -326,10 +326,10 @@ Next steps (operator action required):
       --member="serviceAccount:${E2E_RUNNER_SA}" \\
       --role="roles/iam.serviceAccountUser"
 
-    # Coordinator <-> worker run.invoker grants (re-run setup_secrets.sh-
-    # equivalent loop is folded into the cloudbuild's post-deploy steps
-    # for the E2E project; if you see 401s from /chat -> worker hop,
-    # apply manually per-service):
+    # Coordinator <-> worker run.invoker grants. These are NOT applied by
+    # Cloud Build — they are printed here in the next-steps for the operator
+    # to run manually after the first deploy (the worker services must exist
+    # first). If you see 401s from /chat -> worker hop, apply per-service:
     for worker in driftscribe-reader driftscribe-docs driftscribe-rollback \\
                   driftscribe-notifier driftscribe-upgrade-reader \\
                   driftscribe-upgrade-docs; do
