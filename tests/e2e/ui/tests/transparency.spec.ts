@@ -14,6 +14,12 @@ test.describe('transparency UI', () => {
   });
 
   test('renders three reasoning panels and tools events after /chat', async ({ page }) => {
+    // Phase 22: the UI now sends `Accept: text/event-stream`, so this
+    // exercises the SSE streaming path against the live agent — timeline
+    // rows populate live as the agent emits them (no ~15s Cloud Logging
+    // poll lag), and the final-response card lands on the stream's `done`
+    // frame. The assertions below are transport-agnostic: they hold for
+    // both the streaming path and the legacy JSON+poll fallback.
     await page.locator('[data-testid="chat-prompt"]').fill('Check payment-demo-e2e for drift');
     await page.locator('[data-testid="chat-submit"]').click();
 

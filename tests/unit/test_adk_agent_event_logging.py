@@ -85,3 +85,38 @@ async def test_run_chat_dedups_partial_thoughts(caplog, drift_workload_env):
     # /chat response body still includes tool_calls for back-compat with
     # the operator UI (this is a public contract from Phase 11.7).
     assert result["tool_calls"] == ["read_drift"]
+
+
+def test_emit_event_logs_returns_redacted_dicts():
+    """_emit_event_logs returns the same redacted dicts it logs, in order.
+
+    Phase 22 (streaming prep): the helper still logs byte-identically, but
+    now returns the redacted payloads so run_chat_stream can yield the
+    SAME dict it logged (single source of truth for redaction).
+    """
+    ev = _Ev(
+        [
+            _P(text="thinking about it", thought=True),
+            _P(function_call=SimpleNamespace(
+                name="read_drift", args={"PASSWORD": "hunter2", "ok": "v"})),
+        ],
+        partial=False,
+    )
+    out = adk_agent._emit_event_logs(ev, tool_calls=[])
+    assert [d["event"] for d in out] == ["llm_thought", "tool_call"]
+    assert out[0]["thought_text"] == "thinking about it"
+    # redaction applied to tool_args (PASSWORD masked, plain value kept)
+    assert out[1]["tool_args"]["PASSWORD"] != "hunter2"
+    assert out[1]["tool_args"]["ok"] == "v"
+
+
+def test_emit_llm_usage_returns_dict_or_none():
+    no_usage = _Ev([], partial=False)
+    assert adk_agent._emit_llm_usage(no_usage) is None
+
+    with_usage = _Ev([], partial=False, usage=SimpleNamespace(
+        prompt_token_count=10, candidates_token_count=5,
+        thoughts_token_count=2, total_token_count=17))
+    d = adk_agent._emit_llm_usage(with_usage)
+    assert d["event"] == "llm_usage"
+    assert d["total_token_count"] == 17
