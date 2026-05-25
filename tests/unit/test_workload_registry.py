@@ -43,6 +43,7 @@ from agent.workloads.registry import (
     WorkloadPathTraversalError,
     WorkloadResolution,
     load_workload,
+    workload_contract_path,
 )
 
 
@@ -399,3 +400,40 @@ def test_load_workload_path_traversal_error_subclasses_value_error():
     swaps the base class doesn't silently break callers that catch
     ``ValueError``."""
     assert issubclass(WorkloadPathTraversalError, ValueError)
+
+
+# --------------------------------------------------------------------------- #
+# workload_contract_path: worker-free contract resolution (Codex 2026-05-25).
+# Public API used by agent.adk_tools._get_upgrade_target to derive the
+# upgrade target WITHOUT resolving the upgrade workload's mutation workers.
+# These pin parity with load_workload's name guards plus the contract-path /
+# no-contract returns.
+# --------------------------------------------------------------------------- #
+
+
+def test_workload_contract_path_returns_upgrade_contract_without_worker_env():
+    """``workload_contract_path("upgrade")`` resolves the real upgrade
+    contract path with NO worker URL env set — the whole point of the
+    helper (it must not resolve upgrade_docs / notifier)."""
+    path = workload_contract_path("upgrade")
+    assert path is not None
+    assert path.is_absolute()
+    assert path.name == "contract.yaml"
+    assert path.parent.name == "upgrade"
+
+
+def test_workload_contract_path_returns_none_for_explore():
+    """Explore declares no contract_file, so the helper returns None."""
+    assert workload_contract_path("explore") is None
+
+
+def test_workload_contract_path_unknown_name_raises():
+    """Parity with load_workload: unknown workload → UnknownWorkloadError."""
+    with pytest.raises(UnknownWorkloadError, match="kubernetes"):
+        workload_contract_path("kubernetes")
+
+
+def test_workload_contract_path_rejects_path_traversal():
+    """Parity with load_workload: the same traversal guard applies."""
+    with pytest.raises(WorkloadPathTraversalError):
+        workload_contract_path("../etc/passwd")

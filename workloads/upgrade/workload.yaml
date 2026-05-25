@@ -24,7 +24,7 @@
 #   17.E owns UPGRADE_READER_URL / UPGRADE_DOCS_URL deploy wiring.
 
 name: upgrade
-display_name: Dependency upgrade
+display_name: Dependencies
 description: >
   Watch the repo's package.json for outdated dependencies (or
   vulnerable versions per advisory feeds) and propose upgrade PRs.

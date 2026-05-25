@@ -64,3 +64,27 @@ def upgrade_workload_env(monkeypatch):
     yield
     registry_mod._WORKLOAD_CACHE.clear()
     adk_tools_mod._get_upgrade_target.cache_clear()
+
+
+@pytest.fixture
+def explore_workload_env(monkeypatch):
+    """Set the two read-worker URL env vars the explore workload needs.
+
+    The explore workload is chat-only and strictly read-only; its
+    ``worker_names`` lists exactly the two READ workers — ``drift_reader``
+    (``READER_URL``) and ``upgrade_reader`` (``UPGRADE_READER_URL``) — so
+    those are the only env vars its :class:`WorkloadResolution` reads at
+    resolve time. It deliberately lists NO mutation workers
+    (``drift_docs`` / ``drift_rollback`` / ``upgrade_docs``) and NOT the
+    notifier, so ``DOCS_URL`` / ``ROLLBACK_URL`` / ``UPGRADE_DOCS_URL`` /
+    ``NOTIFIER_URL`` are intentionally absent here — if a future edit adds
+    a mutation worker to the manifest, ``load_workload("explore")`` would
+    fail for a missing env var, surfacing the regression. Mirrors the
+    other workload fixtures' cache-clear discipline on setup and teardown.
+    """
+    monkeypatch.setenv("READER_URL", "https://reader.test")
+    monkeypatch.setenv("UPGRADE_READER_URL", "https://upgrade-reader.test")
+    import agent.workloads.registry as registry_mod
+    registry_mod._WORKLOAD_CACHE.clear()
+    yield
+    registry_mod._WORKLOAD_CACHE.clear()

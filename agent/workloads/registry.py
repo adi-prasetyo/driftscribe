@@ -758,9 +758,9 @@ def load_workload(name: str) -> WorkloadResolution:
     Phase 17.A (Codex review, Fix Important #2c): the ``name`` arg is
     validated to keep ``workloads/<name>/workload.yaml`` under the
     ``workloads/`` root. Today ``WorkloadSpec.name: Literal["drift",
-    "upgrade"]`` protects callers that go through the typed pydantic
-    request models, but :func:`load_workload` itself takes a bare
-    ``str`` — defense-in-depth.
+    "upgrade", "explore"]`` protects callers that go through the typed
+    pydantic request models, but :func:`load_workload` itself takes a
+    bare ``str`` — defense-in-depth.
 
     Raises:
         WorkloadPathTraversalError: ``name`` resolves to a path
@@ -777,6 +777,22 @@ def load_workload(name: str) -> WorkloadResolution:
     if name in _WORKLOAD_CACHE:
         return _WORKLOAD_CACHE[name]
 
+    candidate = _workload_yaml_path(name)
+    resolution = _load_from_path(candidate, expected_name=name)
+    _WORKLOAD_CACHE[name] = resolution
+    return resolution
+
+
+def _workload_yaml_path(name: str) -> Path:
+    """Resolve ``workloads/<name>/workload.yaml`` with the path-traversal
+    guard, returning the path. Shared by :func:`load_workload` and
+    :func:`workload_contract_path` so the traversal/existence checks have
+    a single source of truth.
+
+    Raises:
+        WorkloadPathTraversalError: ``name`` resolves outside the root.
+        UnknownWorkloadError: no manifest at the expected location.
+    """
     workloads_root = (_repo_root() / "workloads").resolve()
     candidate = (workloads_root / name / "workload.yaml").resolve()
     # ``is_relative_to`` requires Python 3.9+ — already pinned by
@@ -789,11 +805,41 @@ def load_workload(name: str) -> WorkloadResolution:
             f"workload {name!r} resolves outside the workloads root — "
             f"refusing to load."
         )
-
     if not candidate.exists():
         raise UnknownWorkloadError(
             f"no workload manifest for {name!r}: expected {candidate}"
         )
-    resolution = _load_from_path(candidate, expected_name=name)
-    _WORKLOAD_CACHE[name] = resolution
-    return resolution
+    return candidate
+
+
+def workload_contract_path(name: str) -> Path | None:
+    """Resolve a workload's contract path WITHOUT resolving its workers.
+
+    Same path-traversal safety and name-match check as
+    :func:`load_workload`, but it parses only the manifest and returns
+    the resolved ``contract_file`` path (or ``None`` if the workload
+    declares no contract). It deliberately skips tool/worker/action
+    resolution.
+
+    Why this exists: a read-only consumer must be able to obtain the
+    upgrade workload's contract path (to derive the dependency-read
+    target repo/lockfile) WITHOUT triggering resolution of the upgrade
+    workload's mutation workers (``upgrade_docs``) or the notifier —
+    whose URL env vars may be unset in a deploy that only runs the
+    chat-only ``explore`` workload. Going through full
+    ``load_workload("upgrade")`` would couple a read tool to those write
+    workers' env, breaking read-only/partial-deploy isolation
+    (Codex review 2026-05-25). See
+    :func:`agent.adk_tools._get_upgrade_target`.
+    """
+    yaml_path = _workload_yaml_path(name)
+    raw = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+    spec = WorkloadSpec.model_validate(raw)
+    if spec.name != name:
+        raise WorkloadManifestMismatchError(
+            f"workload manifest at {yaml_path} declares name={spec.name!r} "
+            f"but was requested as {name!r}."
+        )
+    if spec.contract_file is None:
+        return None
+    return (yaml_path.parent / spec.contract_file).resolve()
