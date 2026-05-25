@@ -1,0 +1,70 @@
+# Canonical incremental-update deploy path for the LIVE upgrade-docs worker
+# on driftscribe-hack-2026 (single-user portfolio).
+#
+# WHY THIS FILE EXISTS:
+#   Mirrors infra/cloudbuild.coordinator-update.yaml. The full
+#   infra/cloudbuild.yaml rebuilds and redeploys ALL 8 services and re-runs
+#   the OWN_URL / worker-URL sync dance; running it just to ship one worker
+#   churns the whole fleet and risks resetting URLs to placeholder.invalid
+#   on a transient failure. This file is the narrow path that touches ONLY
+#   the upgrade-docs worker: build its image, then update the existing
+#   revision template in place (image + additive env vars). SA, secrets,
+#   ingress, OWN_URL, ALLOWED_CALLERS, scaling all stay as they were.
+#
+#   Added Phase 17.E.x (upgrade chat can merge its own PRs). The /merge
+#   green-gate reads check-runs via the worker's existing GITHUB_TOKEN
+#   (upgrade-docs-github-pat). In prod that secret reuses the broad classic
+#   github-pat value, which already has check-run read + merge write — no
+#   PAT scope change needed (the worker-side label/head/base/green gate is
+#   the real guard, not the token).
+#
+# USAGE (operator runs by hand, no CI integration):
+#
+#   gcloud builds submit \
+#     --config=infra/cloudbuild.upgrade-docs-update.yaml \
+#     --substitutions=_TAG=$(git rev-parse --short HEAD) \
+#     --project=driftscribe-hack-2026
+#
+# The two env vars below are also the worker's in-code defaults
+# (UPGRADE_MERGE_METHOD=squash, UPGRADE_REQUIRED_CHECKS=lint-test); setting
+# them explicitly makes the live config self-documenting and survives a
+# future default change.
+
+substitutions:
+  _TAG: 'manual'
+  _REGION: asia-northeast1
+  _SERVICE: driftscribe-upgrade-docs
+  _MERGE_METHOD: squash
+  _REQUIRED_CHECKS: lint-test
+
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-upgrade-docs:${_TAG}
+      - -f
+      - workers/upgrade_docs/Dockerfile
+      - .
+
+  - name: gcr.io/cloud-builders/docker
+    args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-upgrade-docs:${_TAG}']
+
+  # Incremental update of the existing service. --update-env-vars (NOT
+  # --set-env-vars) adds the merge config without clobbering GCP_PROJECT,
+  # UPGRADE_TARGET_REPO, OWN_URL, ALLOWED_CALLERS, or the GITHUB_TOKEN
+  # secret ref. SA, ingress, and scaling stay as they were.
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - services
+      - update
+      - ${_SERVICE}
+      - --image=asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-upgrade-docs:${_TAG}
+      - --update-env-vars=UPGRADE_MERGE_METHOD=${_MERGE_METHOD},UPGRADE_REQUIRED_CHECKS=${_REQUIRED_CHECKS}
+      - --region=${_REGION}
+      - --project=$PROJECT_ID
+
+images:
+  - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-upgrade-docs:${_TAG}

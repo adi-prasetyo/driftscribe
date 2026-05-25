@@ -21,7 +21,7 @@ not in this commit) triggers a CI failure. The list is intentionally
 flat — no submodule grouping, no dynamic registration — so the
 inventory test can do a 1:1 set comparison.
 
-Worker-delegating tools (4 drift + 2 upgrade = 6):
+Worker-delegating tools (4 drift + 4 upgrade = 8):
 - ``read_live_env_tool`` → Reader Agent ``/read``
 - ``propose_rollback_tool`` → Rollback Agent ``/propose`` (HITL-gated)
 - ``patch_docs_tool`` → Docs Agent ``/patch``
@@ -31,6 +31,11 @@ Worker-delegating tools (4 drift + 2 upgrade = 6):
 - ``upgrade_propose_pr_tool`` → Upgrade Docs Agent ``/patch``
   (Phase 17.C.4). Authority-clean: LLM picks decision content only;
   repo / lockfile path / branch / base / title derived server-side.
+- ``upgrade_close_pr_tool`` → Upgrade Docs Agent ``/close``. Chat-only
+  (CHAT_ONLY_TOOL_NAMES). Authority-clean: pr_number + reason only.
+- ``upgrade_merge_pr_tool`` → Upgrade Docs Agent ``/merge`` (Phase 20.9).
+  Chat-only. Authority-clean: pr_number only; squash + required-check
+  allowlist pinned server-side. The one tool that mutates ``main``.
 
 Coordinator-internal read-only tools (2):
 - ``search_recent_prs_tool`` (read-only GitHub via coordinator PAT)
@@ -40,9 +45,10 @@ Developer Knowledge MCP wrappers (2, Phase 17.B.3):
 - ``search_developer_docs`` → Developer Knowledge MCP ``search_documents``
 - ``retrieve_developer_doc`` → Developer Knowledge MCP ``get_documents``
 
-That's 10 tools, period (Phase 17.C.4 grew it from 8 → 10). Anything
-else the model wants to do is denied by capability — there is no
-general "execute shell" or "make HTTP request" surface.
+That's 12 tools, period (8 → 10 in 17.C.4 with the upgrade reader/proposer;
+→ 11 with close; → 12 in 20.9 with merge). Anything else the model wants
+to do is denied by capability — there is no general "execute shell" or
+"make HTTP request" surface.
 
 **Per-workload tool inventories (Phase 17.A.4):**
 :data:`DRIFT_WORKLOAD_TOOL_NAMES` and :data:`UPGRADE_WORKLOAD_TOOL_NAMES`
@@ -74,6 +80,7 @@ from agent.adk_tools import (
     read_live_env_tool,
     search_recent_prs_tool,
     upgrade_close_pr_tool,
+    upgrade_merge_pr_tool,
     upgrade_propose_pr_tool,
     upgrade_read_dependencies_tool,
 )
@@ -121,19 +128,29 @@ COORDINATOR_TOOLS = [
     # the LLM picks only pr_number + reason; the worker gates the close
     # on driftscribe-label + upgrade/ branch + main base.
     upgrade_close_pr_tool,
+    # Upgrade PR merge (operator-driven). Authority-clean: the LLM picks
+    # only pr_number; the worker gates on the same provenance triple PLUS
+    # fail-closed CI (required check green on head + no conflict) and
+    # merges with a deploy-pinned squash.
+    upgrade_merge_pr_tool,
 ]
 
 
 # Tools exposed ONLY on the interactive /chat surface — never handed to
-# the autonomous /recheck agent. Closing a PR is an operator-driven,
-# destructive/availability action; giving it to the autonomous classifier
-# would make it a mutation surface gated only by prompt discipline (Codex
-# review 2026-05-25). :func:`build_agent` (/recheck) filters these out by
-# symbolic name; :func:`build_chat_agent` keeps them. The worker-side
-# eligibility gate (label + branch + base) still applies either way — this
-# is defense in depth at the routing layer, matching the per-workload
-# capability-bound pattern.
-CHAT_ONLY_TOOL_NAMES: frozenset[str] = frozenset({"upgrade_close_pr"})
+# the autonomous /recheck agent. Closing AND merging a PR are
+# operator-driven, destructive/availability actions; giving either to the
+# autonomous classifier would make it a mutation surface gated only by
+# prompt discipline (Codex review 2026-05-25). Merge is the more
+# dangerous of the two — it writes to ``main`` — so it is even more
+# important that the unattended classifier can't reach it.
+# :func:`build_agent` (/recheck) filters these out by symbolic name;
+# :func:`build_chat_agent` keeps them. The worker-side gate (provenance +
+# fail-closed CI for merge) still applies either way — this is defense in
+# depth at the routing layer, matching the per-workload capability-bound
+# pattern.
+CHAT_ONLY_TOOL_NAMES: frozenset[str] = frozenset(
+    {"upgrade_close_pr", "upgrade_merge_pr"}
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -190,6 +207,7 @@ UPGRADE_WORKLOAD_TOOL_NAMES: tuple[str, ...] = (
     "upgrade_read_dependencies",
     "upgrade_propose_pr",
     "upgrade_close_pr",
+    "upgrade_merge_pr",
     "notify",
     "search_recent_prs",
     "search_developer_docs",

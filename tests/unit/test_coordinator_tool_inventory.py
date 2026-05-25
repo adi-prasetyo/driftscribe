@@ -93,6 +93,11 @@ EXPECTED_TOOL_NAMES = frozenset({
     # Authority-clean (pr_number + reason only); the worker gates on
     # driftscribe-label + upgrade/ branch + main base.
     "upgrade_close_pr_tool",
+    # Upgrade PR merge — merge an upgrade PR this workload opened.
+    # Authority-clean (pr_number only); the worker gates on the same
+    # provenance triple PLUS fail-closed CI (required check green + no
+    # conflict) and merges with a deploy-pinned squash.
+    "upgrade_merge_pr_tool",
 })
 
 
@@ -124,6 +129,7 @@ _UPGRADE_ONLY_TOOL_NAMES = frozenset({
     "upgrade_read_dependencies",
     "upgrade_propose_pr",
     "upgrade_close_pr",
+    "upgrade_merge_pr",
 })
 
 
@@ -393,36 +399,40 @@ def test_drift_workload_tool_order_pin(drift_workload_env):
     )
 
 
-def test_close_pr_is_chat_only_not_exposed_to_autonomous_recheck(
+def test_close_and_merge_pr_are_chat_only_not_exposed_to_autonomous_recheck(
     upgrade_workload_env,
 ):
-    """``upgrade_close_pr`` must reach the interactive /chat agent but NOT
-    the autonomous /recheck agent.
+    """``upgrade_close_pr`` and ``upgrade_merge_pr`` must reach the
+    interactive /chat agent but NOT the autonomous /recheck agent.
 
-    Closing a PR is an operator-driven, availability-affecting mutation.
-    The /recheck path runs without a human in the loop, so handing it the
-    close tool would make destructive PR closure gated only by prompt
+    Closing AND merging a PR are operator-driven, availability-affecting
+    mutations — merge especially, since it writes to ``main``. The
+    /recheck path runs without a human in the loop, so handing it either
+    tool would make a destructive PR mutation gated only by prompt
     discipline (Codex review 2026-05-25). ``build_agent`` (/recheck)
     filters :data:`CHAT_ONLY_TOOL_NAMES` out by symbolic name;
-    ``build_chat_agent`` keeps them. The worker-side label/branch/base
-    gate is the other half of the defense — this test pins the routing
-    half so a future refactor can't silently widen the autonomous surface.
+    ``build_chat_agent`` keeps them. The worker-side gate (provenance +
+    fail-closed CI for merge) is the other half of the defense — this
+    test pins the routing half so a future refactor can't silently widen
+    the autonomous surface.
     """
     from agent.workloads import load_workload
 
     assert "upgrade_close_pr" in CHAT_ONLY_TOOL_NAMES
+    assert "upgrade_merge_pr" in CHAT_ONLY_TOOL_NAMES
 
     resolution = load_workload("upgrade")
     chat_tools = {t.__name__ for t in build_chat_agent(resolution).tools}
     recheck_tools = {t.__name__ for t in build_agent(resolution).tools}
 
-    assert "upgrade_close_pr_tool" in chat_tools, (
-        "the interactive /chat agent must carry the close tool"
-    )
-    assert "upgrade_close_pr_tool" not in recheck_tools, (
-        "the autonomous /recheck agent must NOT carry the close tool — "
-        "it's chat-only (CHAT_ONLY_TOOL_NAMES)."
-    )
+    for chat_only in ("upgrade_close_pr_tool", "upgrade_merge_pr_tool"):
+        assert chat_only in chat_tools, (
+            f"the interactive /chat agent must carry {chat_only}"
+        )
+        assert chat_only not in recheck_tools, (
+            f"the autonomous /recheck agent must NOT carry {chat_only} — "
+            "it's chat-only (CHAT_ONLY_TOOL_NAMES)."
+        )
     # The non-chat-only upgrade tools are still present on /recheck.
     assert "upgrade_propose_pr_tool" in recheck_tools
 

@@ -6,9 +6,12 @@ version inside a *pinned* GitHub repo's ``package.json`` and opens a PR
 against ``main``.
 
 Tight blast radius by design: even if the coordinator is fully compromised,
-the only side effect this worker can produce is a PR on
-``adi-prasetyo/driftscribe`` that updates ``demo/upgrade-target/package.json``
-on a branch prefixed ``upgrade/`` and targets ``main``.
+this worker's side effects are bounded to ``adi-prasetyo/driftscribe`` and
+to PRs on an ``upgrade/`` head branch targeting ``main`` — ``/patch`` opens
+such a PR (editing ``demo/upgrade-target/package.json``), ``/close``
+withdraws one, and ``/merge`` squash-merges one *only* when its required CI
+check is green (Phase 20.9). ``/merge`` is the one endpoint that writes to
+``main``; every other state change is confined to the PR itself.
 
 Safety layers in play here:
 
@@ -16,8 +19,9 @@ Safety layers in play here:
   its only privilege is access to the ``upgrade-docs-github-pat`` Secret
   Manager secret (per-secret binding). The PAT itself is a fine-grained
   GitHub token scoped to a single repo with ``Contents: Read & write`` +
-  ``Pull requests: Read & write`` only — even if the worker were tricked
-  into calling other endpoints, the token has no other surface.
+  ``Pull requests: Read & write`` + ``Checks: Read`` (the last added in
+  20.9 so ``/merge`` can read check-run status) — even if the worker were
+  tricked into calling other endpoints, the token has no other surface.
 
 - **Layer 2 (payload-intent policy):**
 
@@ -123,6 +127,40 @@ ALLOWED_TITLE_PREFIX = "upgrade"
 # PyGithub as 500s. Same shape as the Docs Agent's _BRANCH_TAIL.
 _BRANCH_TAIL = re.compile(r"[A-Za-z0-9._/-]{1,200}\Z")
 ALLOWED_BASE = "main"
+
+# Merge policy (Phase 20.9). Both are deploy-time policy, never
+# request-controlled — the LLM-facing ``/merge`` schema carries no merge
+# method or check overrides (see ``MergePrRequest``).
+#
+# ``UPGRADE_MERGE_METHOD`` — fixed merge strategy. Squash by default: an
+# upgrade branch is one logical change, so a squash keeps ``main`` linear
+# and drops any retry-commit noise. Validated against GitHub's accepted
+# values at boot so a typo fails the revision instead of every merge.
+_VALID_MERGE_METHODS = frozenset({"merge", "squash", "rebase"})
+MERGE_METHOD = os.environ.get("UPGRADE_MERGE_METHOD", "squash").strip().lower()
+if MERGE_METHOD not in _VALID_MERGE_METHODS:
+    raise RuntimeError(
+        f"UPGRADE_MERGE_METHOD={MERGE_METHOD!r} invalid; "
+        f"must be one of {sorted(_VALID_MERGE_METHODS)}"
+    )
+
+# ``UPGRADE_REQUIRED_CHECKS`` — comma-separated GitHub Actions *check-run
+# names* (NOT legacy commit-status contexts; the worker reads check runs
+# only, so the PAT needs ``Checks: Read``) that must all be green on a
+# PR's head commit before ``merge_pr`` will merge it. Defaults to the
+# repo's sole PR check, ``lint-test`` (job name in ``.github/workflows/
+# ci.yml``). An empty set means "nothing proves green" — fail fast at
+# boot rather than silently disabling the green-gate.
+REQUIRED_CHECKS = frozenset(
+    c.strip()
+    for c in os.environ.get("UPGRADE_REQUIRED_CHECKS", "lint-test").split(",")
+    if c.strip()
+)
+if not REQUIRED_CHECKS:
+    raise RuntimeError(
+        "UPGRADE_REQUIRED_CHECKS resolved to an empty set — refusing to "
+        "boot with the merge green-gate disabled"
+    )
 
 
 def _check_lockfile_path(file_path: str) -> None:
@@ -280,6 +318,24 @@ class ClosePrRequest(BaseModel):
     target_repo: str
     pr_number: int = Field(gt=0)
     reason: str = Field(min_length=1, max_length=1000)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class MergePrRequest(BaseModel):
+    """Closed schema for ``/merge`` — minimal by design.
+
+    Only ``target_repo`` (re-validated against env-pinned
+    :data:`TARGET_REPO`) and ``pr_number`` (``Field(gt=0)`` → 422
+    otherwise). NO merge-method, NO check overrides, NO reason: merge
+    strategy and the required-check allowlist are deploy policy
+    (:data:`MERGE_METHOD` / :data:`REQUIRED_CHECKS`), not request inputs.
+    ``extra="forbid"`` rejects any other field (→ HTTP 422), so a caller
+    cannot smuggle in ``merge_method`` or ``required_checks``.
+    """
+
+    target_repo: str
+    pr_number: int = Field(gt=0)
 
     model_config = ConfigDict(extra="forbid")
 
@@ -453,4 +509,63 @@ def close(
             required_base=ALLOWED_BASE,
         )
     except ds_github.PrNotEligibleError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.reason) from e
+
+
+@app.post("/merge")
+def merge(
+    req: MergePrRequest,
+    caller: str = Depends(_verify_caller_dep),
+) -> dict:
+    """Merge an upgrade PR this workload opened — fail-closed on CI.
+
+    Shares the same PAT / repo / authority domain as ``/patch`` and
+    ``/close``, but mutates ``main`` (the squash merge), so it gates
+    harder. The eligibility *and* readiness logic live in
+    :func:`driftscribe_lib.github.merge_pr`: the PR must be a DriftScribe
+    upgrade PR (``driftscribe`` label, ``upgrade/`` head, ``main`` base),
+    open, non-draft, conflict-free, and every check in the deploy-pinned
+    :data:`REQUIRED_CHECKS` allowlist must have completed successfully on
+    its head commit. The merge method is the deploy-pinned
+    :data:`MERGE_METHOD`. Neither is request-controlled.
+
+    Status codes:
+
+    - **200** on success — ``{merged, already_merged, url, number, sha,
+      merge_method, ...}``.
+    - **403** on policy violation: ``target_repo`` mismatch, or the
+      provenance gate (missing label / wrong head branch / wrong base).
+    - **404** when the PR number doesn't exist.
+    - **409** when the PR isn't merge-ready: checks pending / failed /
+      missing, merge conflict, ``behind`` / ``blocked`` state, draft,
+      closed-unmerged, mergeability still computing, or a head-SHA race.
+    - **401/403** on auth failure (raised by ``verify_caller`` upstream).
+    - **422** on schema violation (extra/missing field, ``pr_number<=0``).
+    """
+    if req.target_repo != TARGET_REPO:
+        raise HTTPException(
+            status_code=403,
+            detail="target_repo does not match deployed allowlist",
+        )
+
+    log.info(
+        "merge request: caller=%s repo=%s pr=%s method=%s checks=%s",
+        caller, TARGET_REPO, req.pr_number, MERGE_METHOD, sorted(REQUIRED_CHECKS),
+    )
+
+    repo = _get_repo()
+    try:
+        return ds_github.merge_pr(
+            repo,
+            pr_number=req.pr_number,
+            dry_run=False,
+            merge_method=MERGE_METHOD,
+            required_checks=REQUIRED_CHECKS,
+            required_label="driftscribe",
+            required_head_prefix=ALLOWED_BRANCH_PREFIX,
+            required_base=ALLOWED_BASE,
+        )
+    except ds_github.PrNotEligibleError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.reason) from e
+    except ds_github.PrMergeBlockedError as e:
         raise HTTPException(status_code=e.status_code, detail=e.reason) from e
