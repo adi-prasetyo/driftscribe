@@ -852,103 +852,23 @@ async def run_chat(
     ``workload`` selects the workload-scoped agent — drift today,
     upgrade once 17.E wires it. Defaults to ``"drift"`` for backward
     compatibility with pre-17.A.3 callers.
+
+    Phase 22: this is now a thin drain of :func:`run_chat_stream` — the
+    loop body (event logging, ``final_response`` emit, the
+    ``final_response_logged`` guard, usage emission, and the empty-reply
+    ``RuntimeError``) all live in the generator. Draining it here keeps
+    the JSON contract byte-identical while giving the SSE path the same
+    single source of truth.
     """
-    resolution = load_workload(workload)
-    agent = build_chat_agent(resolution)
-    session_service = InMemorySessionService()
-    sid = session_id or str(uuid.uuid4())
-    await session_service.create_session(
-        app_name="driftscribe",
-        user_id="driftscribe-runtime",
-        session_id=sid,
-    )
-    runner = Runner(
-        agent=agent,
-        app_name="driftscribe",
-        session_service=session_service,
-    )
-    msg = types.Content(role="user", parts=[types.Part(text=prompt)])
-
-    reply_chunks: list[str] = []
-    tool_calls: list[str] = []
-    # 19.A.3: ``final_response_logged`` guards against a malformed ADK
-    # runner that yields more than one ``is_final_response()`` event —
-    # the transparency-UI completion gate relies on exactly-one emit.
-    final_response_logged = False
-    async for event in runner.run_async(
-        user_id="driftscribe-runtime",
-        session_id=sid,
-        new_message=msg,
+    async for item in run_chat_stream(
+        prompt, session_id=session_id, workload=workload
     ):
-        # 18.B.2: emit structured logs for thought summaries + tool calls.
-        # Gate on event.partial is not True to dedup ADK's streaming
-        # partials — only the merged non-partial event carries the
-        # complete thought summary. function_calls don't arrive as
-        # partials in practice, but applying the same guard uniformly
-        # keeps the loop shape consistent. ``tool_calls`` is the public-
-        # contract list surfaced in the /chat response — the helper
-        # appends each ``function_call.name`` to it as a side effect;
-        # :func:`run_agent` (which has no such list) passes ``None``.
-        if event.content and event.content.parts and getattr(event, "partial", None) is not True:
-            _emit_event_logs(event, tool_calls=tool_calls)
-        # Collect the final natural-language response.
-        if event.is_final_response() and event.content and event.content.parts:
-            for part in event.content.parts:
-                # 18.B.1: skip thought parts (same rationale as run_agent).
-                if getattr(part, "thought", False):
-                    continue
-                if getattr(part, "text", None):
-                    reply_chunks.append(part.text)
-            # 19.A.3: emit ``final_response`` exactly once, gated on
-            # non-empty accepted text. The flag prevents a second emit
-            # if a malformed runner yields multiple final events; the
-            # ``strip()`` precondition guards against the v2 bug of
-            # emitting ``response_preview=""`` on the no-text edge case
-            # (where the loop raises immediately after). The emit lives
-            # inside the same ``is_final_response()`` branch so
-            # ``reply_chunks`` reflects only the run's accumulated text
-            # at this point — the flag ensures we emit only the first
-            # time the gate fires.
-            accepted_text = "".join(reply_chunks)
-            if accepted_text.strip() and not final_response_logged:
-                # Redact BEFORE truncating: if a credentialed URL
-                # straddles the 2000-char boundary, truncating first
-                # could cut the userinfo mid-segment and leak a
-                # partial credential (the regex wouldn't match
-                # anymore). The helper also handles the structured-
-                # JSON path — name-keyed nested secrets
-                # (``{"PASSWORD": ...}``) get masked via
-                # :func:`redact_event` before serialize, so non-URL
-                # secrets don't leak into the durable 365-day Cloud
-                # Logging preview. The outer ``redact_event(extra)``
-                # remains as defense in depth.
-                response_preview, response_kind = (
-                    _redact_final_response(accepted_text)
-                )
-                _log.info(
-                    "final_response",
-                    extra=redact_event({
-                        "event": "final_response",
-                        "trace_id": current_trace_id_or_new(),
-                        "workload": current_workload(),
-                        "response_preview": response_preview,
-                        "response_kind": response_kind,
-                    }),
-                )
-                final_response_logged = True
-        # 18.B.3: emit one log line per LLM call's usage payload so
-        # post-deploy dashboards can graph thoughts_token_count vs the
-        # pre-Phase-18 baseline. Each Gemini call typically surfaces
-        # usage_metadata on its final (non-partial) event. Shared with
-        # :func:`run_agent` via :func:`_emit_llm_usage`.
-        _emit_llm_usage(event)
-
-    reply = "".join(reply_chunks).strip()
-    if not reply:
-        # Surface as RuntimeError so /chat's outer try/except maps to 502.
-        raise RuntimeError("ADK chat agent produced no final response")
-    return {
-        "reply": reply,
-        "tool_calls": tool_calls,
-        "session_id": sid,
-    }
+        if item["type"] == "result":
+            return {
+                "reply": item["reply"],
+                "tool_calls": item["tool_calls"],
+                "session_id": item["session_id"],
+            }
+    # run_chat_stream always ends in a "result" item or raises; this
+    # guards a malformed generator that exhausts without either.
+    raise RuntimeError("ADK chat agent produced no final response")
