@@ -431,9 +431,16 @@ def build_chat_agent(workload: WorkloadResolution) -> Agent:
 # emission either way.
 
 
-def _emit_event_logs(event, *, tool_calls: list[str] | None = None) -> None:
+def _emit_event_logs(event, *, tool_calls: list[str] | None = None) -> list[dict]:
     """Emit ``llm_thought`` / ``tool_call`` / ``tool_result`` log lines
     for one ADK event's part list.
+
+    Phase 22: returns the list of redacted payloads it logged, in emit
+    order (0..N). The durable Cloud Logging copy is byte-identical to the
+    pre-Phase-22 behavior — the return value is purely additive so
+    :func:`run_chat_stream` can yield the SAME redacted dict it logged
+    (single source of truth for redaction). :func:`run_agent` ignores the
+    return value.
 
     Callers must apply the partial-event dedup gate (``event.partial is
     not True``) before invoking this — the helper assumes the event is
@@ -453,20 +460,20 @@ def _emit_event_logs(event, *, tool_calls: list[str] | None = None) -> None:
     boundary so the durable Cloud Logging copy never carries
     credentials.
     """
+    emitted: list[dict] = []
     for part in event.content.parts:
         if getattr(part, "thought", False) and getattr(part, "text", None):
             # Thought-with-text wins this part — see docstring for the
             # ordering rationale. function_call / function_response on
             # the same part (not seen in practice) would be skipped.
-            _log.info(
-                "llm_thought",
-                extra=redact_event({
-                    "event": "llm_thought",
-                    "trace_id": current_trace_id_or_new(),
-                    "workload": current_workload(),
-                    "thought_text": part.text,
-                }),
-            )
+            payload = redact_event({
+                "event": "llm_thought",
+                "trace_id": current_trace_id_or_new(),
+                "workload": current_workload(),
+                "thought_text": part.text,
+            })
+            _log.info("llm_thought", extra=payload)
+            emitted.append(payload)
             continue
         fc = getattr(part, "function_call", None)
         if fc and getattr(fc, "name", None):
@@ -479,16 +486,15 @@ def _emit_event_logs(event, *, tool_calls: list[str] | None = None) -> None:
             args = getattr(fc, "args", None) or {}
             if tool_calls is not None:
                 tool_calls.append(fc.name)
-            _log.info(
-                "tool_call",
-                extra=redact_event({
-                    "event": "tool_call",
-                    "trace_id": current_trace_id_or_new(),
-                    "workload": current_workload(),
-                    "tool_name": fc.name,
-                    "tool_args": redact_dict(args),
-                }),
-            )
+            payload = redact_event({
+                "event": "tool_call",
+                "trace_id": current_trace_id_or_new(),
+                "workload": current_workload(),
+                "tool_name": fc.name,
+                "tool_args": redact_dict(args),
+            })
+            _log.info("tool_call", extra=payload)
+            emitted.append(payload)
             continue
         fr = getattr(part, "function_response", None)
         if fr and getattr(fr, "name", None):
@@ -507,22 +513,26 @@ def _emit_event_logs(event, *, tool_calls: list[str] | None = None) -> None:
                 isinstance(response, dict)
                 and ("error" in response or "errors" in response)
             )
-            _log.info(
-                "tool_result",
-                extra=redact_event({
-                    "event": "tool_result",
-                    "trace_id": current_trace_id_or_new(),
-                    "workload": current_workload(),
-                    "tool_name": fr.name,
-                    "result_preview": preview,
-                    "result_ok": result_ok,
-                }),
-            )
+            payload = redact_event({
+                "event": "tool_result",
+                "trace_id": current_trace_id_or_new(),
+                "workload": current_workload(),
+                "tool_name": fr.name,
+                "result_preview": preview,
+                "result_ok": result_ok,
+            })
+            _log.info("tool_result", extra=payload)
+            emitted.append(payload)
             continue
+    return emitted
 
 
-def _emit_llm_usage(event) -> None:
+def _emit_llm_usage(event) -> dict | None:
     """Emit one ``llm_usage`` log line if the event carries usage metadata.
+
+    Phase 22: returns the redacted payload it logged (or ``None`` when the
+    event has no ``usage_metadata``) so :func:`run_chat_stream` can yield
+    the same dict. Logging behavior is unchanged.
 
     18.B.3: each Gemini call typically surfaces ``usage_metadata`` on
     its final (non-partial) event. Multi-turn runs surface it on each
@@ -534,19 +544,18 @@ def _emit_llm_usage(event) -> None:
     """
     usage = getattr(event, "usage_metadata", None)
     if usage is None:
-        return
-    _log.info(
-        "llm_usage",
-        extra=redact_event({
-            "event": "llm_usage",
-            "trace_id": current_trace_id_or_new(),
-            "workload": current_workload(),
-            "prompt_token_count": getattr(usage, "prompt_token_count", None),
-            "candidates_token_count": getattr(usage, "candidates_token_count", None),
-            "thoughts_token_count": getattr(usage, "thoughts_token_count", None),
-            "total_token_count": getattr(usage, "total_token_count", None),
-        }),
-    )
+        return None
+    payload = redact_event({
+        "event": "llm_usage",
+        "trace_id": current_trace_id_or_new(),
+        "workload": current_workload(),
+        "prompt_token_count": getattr(usage, "prompt_token_count", None),
+        "candidates_token_count": getattr(usage, "candidates_token_count", None),
+        "thoughts_token_count": getattr(usage, "thoughts_token_count", None),
+        "total_token_count": getattr(usage, "total_token_count", None),
+    })
+    _log.info("llm_usage", extra=payload)
+    return payload
 
 
 def _redact_final_response(accepted_text: str) -> tuple[str, str]:
