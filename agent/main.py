@@ -1,4 +1,6 @@
 # agent/main.py
+import asyncio
+import contextlib
 import datetime as dt
 import hashlib
 import hmac
@@ -13,7 +15,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request, Response
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from google.auth import exceptions as google_auth_exceptions
 from google.auth.transport.requests import Request as GoogleAuthRequest
@@ -65,6 +67,8 @@ from pydantic import ValidationError as PydanticValidationError
 from driftscribe_lib.logging import (
     current_trace_id_or_new,
     install_trace_middleware,
+    reset_trace_id,
+    set_trace_id,
     setup as setup_logging,
 )
 
@@ -1893,8 +1897,114 @@ class ChatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-@app.post("/chat")
-async def chat(req: ChatRequest, _: None = Depends(verify_token)) -> dict:
+def _chat_error_payload(e: Exception, *, workload: str) -> tuple[int, str]:
+    """Map a ``run_chat`` / ``run_chat_stream`` exception to (status, detail).
+
+    Phase 22: shared by the JSON path (raised as :class:`HTTPException`)
+    and the SSE path (surfaced as an ``event: error`` frame's
+    ``status_hint``). The status/detail wording mirrors the pre-streaming
+    exception ladder exactly so existing callers/tests see no change.
+    """
+    if isinstance(e, WorkerClientError):
+        return 502, f"chat worker call failed: {e}"
+    if isinstance(e, MissingDeveloperKnowledgeApiKeyError):
+        return 503, (
+            f"workload {workload!r} cannot reach the Developer "
+            f"Knowledge MCP: {e}. See Phase 17.B.1 for the Secret "
+            f"Manager binding that provisions DEVELOPER_KNOWLEDGE_API_KEY."
+        )
+    if isinstance(e, RuntimeError):
+        return 502, f"chat agent failed: {e}"
+    return 500, f"chat agent failed unexpectedly: {e}"
+
+
+def _sse_frame(*, event: str | None = None, data: dict) -> str:
+    """Serialize one Server-Sent Event frame."""
+    head = f"event: {event}\n" if event else ""
+    return f"{head}data: {json.dumps(data, default=str)}\n\n"
+
+
+# Heartbeat cadence: emit an SSE comment if no event arrives within this
+# window. Keeps the Cloudflare read-idle timeout (~120s) from dropping the
+# connection during a long worker tool call. Does NOT extend Cloud Run's
+# total request timeout (see infra/cloudbuild.yaml --timeout).
+_SSE_HEARTBEAT_S = 15
+
+
+async def _chat_sse(prompt: str, session_id: str | None, workload: str,
+                    trace_id: str):
+    """SSE generator for the /chat streaming path.
+
+    Re-binds the trace_id + workload ContextVars INSIDE the generator
+    body: by the time Starlette iterates this generator the trace-id
+    middleware's ``finally`` and ``/chat``'s own workload ``finally`` have
+    already reset them (``call_next`` returned as soon as the
+    ``StreamingResponse`` was constructed). Without re-binding, every event
+    logged/streamed during the run would carry a fresh, uncorrelated
+    trace_id — corrupting both the live stream and the durable logs. The
+    ``set_*`` calls happen before ``create_task`` so the producer task
+    inherits the bindings (``create_task`` copies the current context).
+    """
+    from agent.adk_agent import run_chat_stream
+
+    t_tok = set_trace_id(trace_id)
+    w_tok = set_workload(workload)
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def _produce():
+        try:
+            async for item in run_chat_stream(
+                prompt, session_id=session_id, workload=workload
+            ):
+                await queue.put(("item", item))
+        except Exception as e:  # noqa: BLE001 - mapped to a status hint
+            await queue.put(("error", _chat_error_payload(e, workload=workload)))
+        finally:
+            await queue.put(("end", None))
+
+    producer = asyncio.create_task(_produce())
+    try:
+        yield _sse_frame(event="meta", data={"trace_id": trace_id})
+        while True:
+            try:
+                kind, payload = await asyncio.wait_for(
+                    queue.get(), timeout=_SSE_HEARTBEAT_S
+                )
+            except asyncio.TimeoutError:
+                yield ": keepalive\n\n"
+                continue
+            if kind == "item":
+                item = payload
+                if item["type"] == "event":
+                    yield _sse_frame(data=item["event"])
+                else:  # "result"
+                    yield _sse_frame(event="done", data={
+                        "reply": item["reply"],
+                        "tool_calls": item["tool_calls"],
+                        "session_id": item["session_id"],
+                    })
+            elif kind == "error":
+                status, detail = payload
+                yield _sse_frame(
+                    event="error",
+                    data={"detail": detail, "status_hint": status},
+                )
+            else:  # "end"
+                break
+    finally:
+        producer.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await producer
+        reset_workload(w_tok)
+        reset_trace_id(t_tok)
+
+
+@app.post("/chat", response_model=None)
+async def chat(
+    req: ChatRequest,
+    request: Request,
+    _: None = Depends(verify_token),
+) -> dict | StreamingResponse:
     """Free-form operator interface to the coordinator.
 
     Routes through the SAME X-DriftScribe-Token guard as /recheck
@@ -1977,6 +2087,26 @@ async def chat(req: ChatRequest, _: None = Depends(verify_token)) -> dict:
     # see :func:`_eager_resolve_upgrade_contract`.
     _eager_resolve_upgrade_contract(resolution)
 
+    # Phase 22: SSE streaming path. Content-negotiated on Accept — the
+    # operator UI sends ``text/event-stream``; tests, /recheck, and API
+    # callers that don't get the unchanged JSON dict below. Capture the
+    # trace_id NOW (before returning the StreamingResponse) and re-bind it
+    # inside the generator — see :func:`_chat_sse` for why. Streaming is
+    # ADDITIVE: ``run_chat_stream`` still logs every event to Cloud
+    # Logging exactly as the JSON path does.
+    wants_sse = "text/event-stream" in request.headers.get("accept", "")
+    if wants_sse:
+        trace_id = current_trace_id_or_new()
+        return StreamingResponse(
+            _chat_sse(req.prompt, req.session_id, req.workload, trace_id),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "X-Trace-Id": trace_id,
+            },
+        )
+
     from agent.adk_agent import run_chat
 
     # Phase 17.B.4 follow-up: bind the *caller* workload identity to the
@@ -1996,51 +2126,19 @@ async def chat(req: ChatRequest, _: None = Depends(verify_token)) -> dict:
             )
         finally:
             reset_workload(_workload_token)
-    except worker_client.WorkerClientError as e:
-        # Worker upstream failed (could be transport, schema, or worker
-        # policy). 502 — the coordinator itself is healthy; the
-        # downstream isn't. Status code from the worker is NOT echoed —
-        # a worker's 422 (schema rejection from the LLM's tool call)
-        # shouldn't surface as 422 here (that would tell the caller
-        # "your /chat request was malformed" which is wrong).
-        raise HTTPException(
-            status_code=502,
-            detail=f"chat worker call failed: {e}",
-        ) from e
-    except MissingDeveloperKnowledgeApiKeyError as e:
-        # Phase 17.B.3: ``MissingDeveloperKnowledgeApiKeyError`` subclasses
-        # ``RuntimeError``, so without this explicit handler it would
-        # fall through to the broader catch below and surface as 502
-        # ("model misbehaved"). That's the wrong operator surface: a
-        # missing :envvar:`DEVELOPER_KNOWLEDGE_API_KEY` is a deploy-
-        # not-wired condition — the same 503 shape as a missing worker
-        # URL, just surfaced during the LLM's first MCP tool call
-        # (the pre-resolve in ``load_workload`` above doesn't trip it
-        # because resolving the symbolic name to the wrapper callable
-        # doesn't read the env var; the env-var read happens lazily on
-        # the first ``build_developer_knowledge_toolset`` call inside
-        # the wrapper).
-        #
-        # Detail wording is specific to the Developer Knowledge MCP
-        # subsystem (Phase 17.B.1 provisioned the Secret Manager
-        # binding) — distinct from the pre-resolve catch above which
-        # has to cover multiple "not deployed" conditions (worker URLs,
-        # reserved-not-yet tools, AND missing DK key) so its wording is
-        # necessarily broader. Here the tuple is narrow enough to point
-        # the operator at the right wiring.
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                f"workload {req.workload!r} cannot reach the Developer "
-                f"Knowledge MCP: {e}. See Phase 17.B.1 for the Secret "
-                f"Manager binding that provisions "
-                f"DEVELOPER_KNOWLEDGE_API_KEY."
-            ),
-        ) from e
-    except RuntimeError as e:
-        # ADK parse / response failures live here. 502 (model
-        # misbehaved), not 500 (coordinator deploy broken).
-        raise HTTPException(
-            status_code=502,
-            detail=f"chat agent failed: {e}",
-        ) from e
+    except (
+        worker_client.WorkerClientError,
+        MissingDeveloperKnowledgeApiKeyError,
+        RuntimeError,
+    ) as e:
+        # Phase 22: the exception→(status, detail) mapping moved into the
+        # shared :func:`_chat_error_payload` so the SSE path's ``error``
+        # frame and this JSON path stay identical. The status split is the
+        # same as before: WorkerClientError→502 (downstream unhealthy),
+        # MissingDeveloperKnowledgeApiKeyError→503 (DK MCP not wired — a
+        # deploy condition, NOT "model misbehaved"; it subclasses
+        # RuntimeError so it must precede the bare RuntimeError in the
+        # tuple's isinstance ladder inside the helper), bare RuntimeError→
+        # 502 (ADK parse/response failure).
+        status, detail = _chat_error_payload(e, workload=req.workload)
+        raise HTTPException(status_code=status, detail=detail) from e
