@@ -195,3 +195,59 @@ def test_upgrade_propose_pr_tool_branch_slug_handles_version_dots(
         f"branch slug must replace each version dot with a dash; "
         f"got {payload['branch']!r}"
     )
+
+
+# --------------------------------------------------------------------------- #
+# upgrade_close_pr_tool — authority-clean + best-effort
+# --------------------------------------------------------------------------- #
+
+
+def test_upgrade_close_pr_tool_signature_excludes_authority_fields():
+    """The close tool's LLM-facing signature carries ONLY pr_number +
+    reason. target_repo is derived server-side, same authority-clean
+    invariant as upgrade_propose_pr_tool."""
+    from agent.adk_tools import upgrade_close_pr_tool
+
+    params = set(inspect.signature(upgrade_close_pr_tool).parameters)
+    assert params == {"pr_number", "reason"}, (
+        f"upgrade_close_pr_tool signature drifted: {sorted(params)}. "
+        f"target_repo (and any other routing field) must stay server-side."
+    )
+
+
+def test_upgrade_close_pr_tool_passes_resolved_target_repo(upgrade_workload_env):
+    """The tool resolves target_repo from UPGRADE_TARGET_REGISTRY and
+    forwards (target_repo, pr_number, reason) to call_close_pr — the LLM
+    never supplies the repo."""
+    from agent.adk_tools import upgrade_close_pr_tool
+    from agent.workloads import UPGRADE_TARGET_REGISTRY
+
+    expected = UPGRADE_TARGET_REGISTRY["phase17_demo"]
+
+    with patch("agent.adk_tools.worker_client.call_close_pr") as m:
+        m.return_value = {"closed": True, "number": 7}
+        out = upgrade_close_pr_tool(pr_number=7, reason="superseded")
+
+    m.assert_called_once_with(expected.target_repo, 7, "superseded")
+    assert out == {"closed": True, "number": 7}
+
+
+def test_upgrade_close_pr_tool_is_best_effort_on_worker_error(upgrade_workload_env):
+    """A WorkerClientError (e.g. the worker's 403 label-gate bounce) is
+    returned as a soft dict, NOT raised — so /chat reports the refusal
+    reason instead of mapping it to a 502. The worker's response body is
+    surfaced so the operator sees *why* the close was refused."""
+    from agent.adk_tools import upgrade_close_pr_tool
+    from agent.worker_client import WorkerClientError
+
+    with patch("agent.adk_tools.worker_client.call_close_pr") as m:
+        m.side_effect = WorkerClientError(
+            403, "PR #7 is not a DriftScribe PR (missing 'driftscribe' label)",
+            "upgrade_docs",
+        )
+        out = upgrade_close_pr_tool(pr_number=7, reason="superseded")
+
+    assert out["closed"] is False
+    assert out["worker"] == "upgrade_docs"
+    assert out["status_code"] == 403
+    assert "driftscribe" in out["error"]

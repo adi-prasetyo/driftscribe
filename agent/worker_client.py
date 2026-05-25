@@ -62,10 +62,13 @@ _WORKER_URL_ENV: Final[dict[str, str]] = {
 }
 
 
-# Each worker has exactly ONE coordinator-facing endpoint. The /execute
-# special-case for rollback is wrapped in :func:`call_execute` below —
-# we never let the caller (and especially never let the LLM) pick the
-# endpoint path freely, which would be a Layer 0 capability escape.
+# Each worker has exactly ONE *canonical* coordinator-facing endpoint.
+# A few workers expose extra endpoints reached via named wrappers that
+# hardcode the path — :func:`call_execute` / :func:`call_deny` for the
+# rollback worker's /execute & /deny, and :func:`call_close_pr` for the
+# upgrade_docs worker's /close. We never let the caller (and especially
+# never let the LLM) pick the endpoint path *freely* — the path is fixed
+# inside each wrapper, which is what keeps this a Layer 0-safe surface.
 #
 # Phase 17.C.4: the upgrade workers' canonical endpoints are ``/read``
 # (matching :func:`workers.upgrade_reader.main.read`) and ``/patch``
@@ -157,9 +160,11 @@ def call(worker: str, payload: dict, *, endpoint: str | None = None) -> dict:
         payload: JSON-serializable dict matching the worker's request
             schema. The worker's pydantic model enforces
             ``extra="forbid"`` so a typo here surfaces as a 422.
-        endpoint: override the default endpoint. Only used internally
-            by :func:`call_execute` to reach the rollback worker's
-            ``/execute`` route. NOT exposed to ADK tools.
+        endpoint: override the default endpoint. Only set by the named
+            wrappers below (:func:`call_execute`, :func:`call_deny`,
+            :func:`call_close_pr`), each of which hardcodes a fixed path.
+            ADK tools never pass this argument directly — they go through
+            a wrapper, so the LLM can't pick an arbitrary endpoint.
 
     Raises:
         WorkerClientError: with status_code preserved from the worker
@@ -244,4 +249,22 @@ def call_deny(approval_id: str, approval_token: str) -> dict:
         "rollback",
         {"approval_id": approval_id, "approval_token": approval_token},
         endpoint="/deny",
+    )
+
+
+def call_close_pr(target_repo: str, pr_number: int, reason: str) -> dict:
+    """Wrapper for the upgrade_docs worker's ``/close`` endpoint.
+
+    Unlike :func:`call_execute` / :func:`call_deny` (operator-triggered),
+    this one IS reachable from an ADK tool
+    (:func:`agent.adk_tools.upgrade_close_pr_tool`). Keeping the endpoint
+    fixed here — rather than letting the tool pass ``endpoint=`` — means
+    the LLM-facing surface never gets a way to pick the worker path. The
+    worker re-validates ``target_repo`` and the PR's eligibility (label /
+    branch / base) defensively; this wrapper just routes.
+    """
+    return call(
+        "upgrade_docs",
+        {"target_repo": target_repo, "pr_number": pr_number, "reason": reason},
+        endpoint="/close",
     )

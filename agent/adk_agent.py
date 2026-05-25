@@ -73,6 +73,7 @@ from agent.adk_tools import (
     propose_rollback_tool,
     read_live_env_tool,
     search_recent_prs_tool,
+    upgrade_close_pr_tool,
     upgrade_propose_pr_tool,
     upgrade_read_dependencies_tool,
 )
@@ -116,7 +117,23 @@ COORDINATOR_TOOLS = [
     # routing-fields-server-side rationale.
     upgrade_read_dependencies_tool,
     upgrade_propose_pr_tool,
+    # Upgrade PR close (operator-driven withdrawal). Authority-clean:
+    # the LLM picks only pr_number + reason; the worker gates the close
+    # on driftscribe-label + upgrade/ branch + main base.
+    upgrade_close_pr_tool,
 ]
+
+
+# Tools exposed ONLY on the interactive /chat surface — never handed to
+# the autonomous /recheck agent. Closing a PR is an operator-driven,
+# destructive/availability action; giving it to the autonomous classifier
+# would make it a mutation surface gated only by prompt discipline (Codex
+# review 2026-05-25). :func:`build_agent` (/recheck) filters these out by
+# symbolic name; :func:`build_chat_agent` keeps them. The worker-side
+# eligibility gate (label + branch + base) still applies either way — this
+# is defense in depth at the routing layer, matching the per-workload
+# capability-bound pattern.
+CHAT_ONLY_TOOL_NAMES: frozenset[str] = frozenset({"upgrade_close_pr"})
 
 
 # --------------------------------------------------------------------------- #
@@ -172,6 +189,7 @@ DRIFT_WORKLOAD_TOOL_NAMES: tuple[str, ...] = (
 UPGRADE_WORKLOAD_TOOL_NAMES: tuple[str, ...] = (
     "upgrade_read_dependencies",
     "upgrade_propose_pr",
+    "upgrade_close_pr",
     "notify",
     "search_recent_prs",
     "search_developer_docs",
@@ -302,7 +320,13 @@ def build_agent(workload: WorkloadResolution) -> Agent:
         name=f"driftscribe_{workload.spec.name}",
         model="gemini-2.5-flash",
         instruction=workload.system_prompt,
-        tools=list(workload.tools.values()),
+        # /recheck is autonomous — drop chat-only tools (see
+        # CHAT_ONLY_TOOL_NAMES). Order is otherwise preserved.
+        tools=[
+            fn
+            for name, fn in workload.tools.items()
+            if name not in CHAT_ONLY_TOOL_NAMES
+        ],
         # 18.B.1: surface Gemini 2.5 Flash's thought summaries. The model
         # already spends thinking tokens at default-dynamic budget; this
         # only changes whether the summaries are *returned*.
@@ -331,6 +355,8 @@ def build_chat_agent(workload: WorkloadResolution) -> Agent:
         name=f"driftscribe_chat_{workload.spec.name}",
         model="gemini-2.5-flash",
         instruction=workload.chat_system_prompt,
+        # /chat is the interactive operator surface — it keeps the full
+        # workload tool set, including CHAT_ONLY_TOOL_NAMES (e.g. close PR).
         tools=list(workload.tools.values()),
         # 18.B.1: surface Gemini 2.5 Flash's thought summaries. The model
         # already spends thinking tokens at default-dynamic budget; this
