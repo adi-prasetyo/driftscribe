@@ -22,6 +22,8 @@ import re
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 # --------------------------------------------------------------------------- #
 # Worker-delegating tools
@@ -132,6 +134,25 @@ def test_notify_tool_calls_notifier_with_full_payload():
         {"channel": "alert", "severity": "high", "body": "drift detected"},
     )
     assert out["status"] == "sent"
+
+
+@pytest.mark.parametrize("status_code", [502, 503, 422])
+def test_notify_tool_is_best_effort_on_worker_error(status_code):
+    """A failing/unreachable notifier must NOT propagate — notification is
+    the last, least-critical step, so the tool returns a soft error dict
+    (any failure status) instead of raising and 502-ing the whole /chat.
+    The ``error`` key makes the tool_result log line record result_ok=false."""
+    from agent.adk_tools import notify_tool
+    from agent.worker_client import WorkerClientError
+
+    with patch("agent.adk_tools.worker_client.call") as m:
+        m.side_effect = WorkerClientError(status_code, "webhook unavailable", "notifier")
+        out = notify_tool(channel="info", severity="medium", body="PR opened")
+
+    assert out["delivered"] is False
+    assert "error" in out
+    assert out["worker"] == "notifier"
+    assert out["status_code"] == status_code
 
 
 # --------------------------------------------------------------------------- #
