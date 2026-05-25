@@ -68,6 +68,7 @@ import json
 import logging
 import re
 import uuid
+from datetime import datetime, timezone
 
 from google.adk import Agent
 from google.adk.planners.built_in_planner import BuiltInPlanner
@@ -431,9 +432,16 @@ def build_chat_agent(workload: WorkloadResolution) -> Agent:
 # emission either way.
 
 
-def _emit_event_logs(event, *, tool_calls: list[str] | None = None) -> None:
+def _emit_event_logs(event, *, tool_calls: list[str] | None = None) -> list[dict]:
     """Emit ``llm_thought`` / ``tool_call`` / ``tool_result`` log lines
     for one ADK event's part list.
+
+    Phase 22: returns the list of redacted payloads it logged, in emit
+    order (0..N). The durable Cloud Logging copy is byte-identical to the
+    pre-Phase-22 behavior — the return value is purely additive so
+    :func:`run_chat_stream` can yield the SAME redacted dict it logged
+    (single source of truth for redaction). :func:`run_agent` ignores the
+    return value.
 
     Callers must apply the partial-event dedup gate (``event.partial is
     not True``) before invoking this — the helper assumes the event is
@@ -453,20 +461,20 @@ def _emit_event_logs(event, *, tool_calls: list[str] | None = None) -> None:
     boundary so the durable Cloud Logging copy never carries
     credentials.
     """
+    emitted: list[dict] = []
     for part in event.content.parts:
         if getattr(part, "thought", False) and getattr(part, "text", None):
             # Thought-with-text wins this part — see docstring for the
             # ordering rationale. function_call / function_response on
             # the same part (not seen in practice) would be skipped.
-            _log.info(
-                "llm_thought",
-                extra=redact_event({
-                    "event": "llm_thought",
-                    "trace_id": current_trace_id_or_new(),
-                    "workload": current_workload(),
-                    "thought_text": part.text,
-                }),
-            )
+            payload = redact_event({
+                "event": "llm_thought",
+                "trace_id": current_trace_id_or_new(),
+                "workload": current_workload(),
+                "thought_text": part.text,
+            })
+            _log.info("llm_thought", extra=payload)
+            emitted.append(payload)
             continue
         fc = getattr(part, "function_call", None)
         if fc and getattr(fc, "name", None):
@@ -479,16 +487,15 @@ def _emit_event_logs(event, *, tool_calls: list[str] | None = None) -> None:
             args = getattr(fc, "args", None) or {}
             if tool_calls is not None:
                 tool_calls.append(fc.name)
-            _log.info(
-                "tool_call",
-                extra=redact_event({
-                    "event": "tool_call",
-                    "trace_id": current_trace_id_or_new(),
-                    "workload": current_workload(),
-                    "tool_name": fc.name,
-                    "tool_args": redact_dict(args),
-                }),
-            )
+            payload = redact_event({
+                "event": "tool_call",
+                "trace_id": current_trace_id_or_new(),
+                "workload": current_workload(),
+                "tool_name": fc.name,
+                "tool_args": redact_dict(args),
+            })
+            _log.info("tool_call", extra=payload)
+            emitted.append(payload)
             continue
         fr = getattr(part, "function_response", None)
         if fr and getattr(fr, "name", None):
@@ -507,22 +514,26 @@ def _emit_event_logs(event, *, tool_calls: list[str] | None = None) -> None:
                 isinstance(response, dict)
                 and ("error" in response or "errors" in response)
             )
-            _log.info(
-                "tool_result",
-                extra=redact_event({
-                    "event": "tool_result",
-                    "trace_id": current_trace_id_or_new(),
-                    "workload": current_workload(),
-                    "tool_name": fr.name,
-                    "result_preview": preview,
-                    "result_ok": result_ok,
-                }),
-            )
+            payload = redact_event({
+                "event": "tool_result",
+                "trace_id": current_trace_id_or_new(),
+                "workload": current_workload(),
+                "tool_name": fr.name,
+                "result_preview": preview,
+                "result_ok": result_ok,
+            })
+            _log.info("tool_result", extra=payload)
+            emitted.append(payload)
             continue
+    return emitted
 
 
-def _emit_llm_usage(event) -> None:
+def _emit_llm_usage(event) -> dict | None:
     """Emit one ``llm_usage`` log line if the event carries usage metadata.
+
+    Phase 22: returns the redacted payload it logged (or ``None`` when the
+    event has no ``usage_metadata``) so :func:`run_chat_stream` can yield
+    the same dict. Logging behavior is unchanged.
 
     18.B.3: each Gemini call typically surfaces ``usage_metadata`` on
     its final (non-partial) event. Multi-turn runs surface it on each
@@ -534,19 +545,18 @@ def _emit_llm_usage(event) -> None:
     """
     usage = getattr(event, "usage_metadata", None)
     if usage is None:
-        return
-    _log.info(
-        "llm_usage",
-        extra=redact_event({
-            "event": "llm_usage",
-            "trace_id": current_trace_id_or_new(),
-            "workload": current_workload(),
-            "prompt_token_count": getattr(usage, "prompt_token_count", None),
-            "candidates_token_count": getattr(usage, "candidates_token_count", None),
-            "thoughts_token_count": getattr(usage, "thoughts_token_count", None),
-            "total_token_count": getattr(usage, "total_token_count", None),
-        }),
-    )
+        return None
+    payload = redact_event({
+        "event": "llm_usage",
+        "trace_id": current_trace_id_or_new(),
+        "workload": current_workload(),
+        "prompt_token_count": getattr(usage, "prompt_token_count", None),
+        "candidates_token_count": getattr(usage, "candidates_token_count", None),
+        "thoughts_token_count": getattr(usage, "thoughts_token_count", None),
+        "total_token_count": getattr(usage, "total_token_count", None),
+    })
+    _log.info("llm_usage", extra=payload)
+    return payload
 
 
 def _redact_final_response(accepted_text: str) -> tuple[str, str]:
@@ -708,6 +718,117 @@ async def run_agent(
     return _parse_response(final_text)
 
 
+async def run_chat_stream(
+    prompt: str,
+    session_id: str | None = None,
+    *,
+    workload: str = "drift",
+):
+    """Core streaming generator for the chat agent.
+
+    Yields, in the SAME order the events are logged today:
+
+      {"type": "event",  "event": <redacted dict + seq/insert_id/timestamp>}
+      ...and finally...
+      {"type": "result", "reply": str, "tool_calls": list, "session_id": str}
+
+    Raises ``RuntimeError`` on an empty reply — identical to
+    :func:`run_chat`, which is now a thin drain of this generator (so the
+    JSON and SSE paths share one implementation).
+
+    Cloud Logging emission is unchanged: :func:`_emit_event_logs` /
+    :func:`_emit_llm_usage` and the inline ``final_response`` emit still
+    log the redacted payload; this generator yields a COPY of that same
+    redacted dict augmented with synthetic ``seq``/``insert_id``/
+    ``timestamp`` fields (Cloud Logging supplies those for the ``/trace``
+    polling path; SSE has to synthesize them so ``renderTimeline`` keeps
+    stable expansion keys + timestamps). The yielded view is therefore
+    never less-redacted than the durable log.
+    """
+    resolution = load_workload(workload)
+    agent = build_chat_agent(resolution)
+    session_service = InMemorySessionService()
+    sid = session_id or str(uuid.uuid4())
+    await session_service.create_session(
+        app_name="driftscribe",
+        user_id="driftscribe-runtime",
+        session_id=sid,
+    )
+    runner = Runner(
+        agent=agent,
+        app_name="driftscribe",
+        session_service=session_service,
+    )
+    msg = types.Content(role="user", parts=[types.Part(text=prompt)])
+
+    reply_chunks: list[str] = []
+    tool_calls: list[str] = []
+    final_response_logged = False
+    seq = 0
+
+    def _stream(payload: dict) -> dict:
+        # Augment the already-redacted, already-logged payload with
+        # SSE-only ordering metadata. Shallow copy so the durable log
+        # copy (already emitted) is untouched.
+        nonlocal seq
+        seq += 1
+        return {
+            **payload,
+            "seq": seq,
+            "insert_id": f"stream-{seq}",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+    async for event in runner.run_async(
+        user_id="driftscribe-runtime",
+        session_id=sid,
+        new_message=msg,
+    ):
+        # Same partial-event dedup gate as run_chat (18.B.2): only merged
+        # non-partial events are eligible to log/stream.
+        if event.content and event.content.parts and getattr(event, "partial", None) is not True:
+            for payload in _emit_event_logs(event, tool_calls=tool_calls):
+                yield {"type": "event", "event": _stream(payload)}
+        # Collect + emit the final natural-language response. This is the
+        # SAME emit that lived in run_chat pre-Phase-22 — moved here so the
+        # drain path stays byte-identical. run_agent keeps its own emit.
+        if event.is_final_response() and event.content and event.content.parts:
+            for part in event.content.parts:
+                if getattr(part, "thought", False):
+                    continue
+                if getattr(part, "text", None):
+                    reply_chunks.append(part.text)
+            accepted_text = "".join(reply_chunks)
+            if accepted_text.strip() and not final_response_logged:
+                response_preview, response_kind = (
+                    _redact_final_response(accepted_text)
+                )
+                fr_payload = redact_event({
+                    "event": "final_response",
+                    "trace_id": current_trace_id_or_new(),
+                    "workload": current_workload(),
+                    "response_preview": response_preview,
+                    "response_kind": response_kind,
+                })
+                _log.info("final_response", extra=fr_payload)
+                final_response_logged = True
+                yield {"type": "event", "event": _stream(fr_payload)}
+        usage_payload = _emit_llm_usage(event)
+        if usage_payload is not None:
+            yield {"type": "event", "event": _stream(usage_payload)}
+
+    reply = "".join(reply_chunks).strip()
+    if not reply:
+        # Surface as RuntimeError so /chat's outer try/except maps to 502.
+        raise RuntimeError("ADK chat agent produced no final response")
+    yield {
+        "type": "result",
+        "reply": reply,
+        "tool_calls": tool_calls,
+        "session_id": sid,
+    }
+
+
 async def run_chat(
     prompt: str,
     session_id: str | None = None,
@@ -731,103 +852,23 @@ async def run_chat(
     ``workload`` selects the workload-scoped agent — drift today,
     upgrade once 17.E wires it. Defaults to ``"drift"`` for backward
     compatibility with pre-17.A.3 callers.
+
+    Phase 22: this is now a thin drain of :func:`run_chat_stream` — the
+    loop body (event logging, ``final_response`` emit, the
+    ``final_response_logged`` guard, usage emission, and the empty-reply
+    ``RuntimeError``) all live in the generator. Draining it here keeps
+    the JSON contract byte-identical while giving the SSE path the same
+    single source of truth.
     """
-    resolution = load_workload(workload)
-    agent = build_chat_agent(resolution)
-    session_service = InMemorySessionService()
-    sid = session_id or str(uuid.uuid4())
-    await session_service.create_session(
-        app_name="driftscribe",
-        user_id="driftscribe-runtime",
-        session_id=sid,
-    )
-    runner = Runner(
-        agent=agent,
-        app_name="driftscribe",
-        session_service=session_service,
-    )
-    msg = types.Content(role="user", parts=[types.Part(text=prompt)])
-
-    reply_chunks: list[str] = []
-    tool_calls: list[str] = []
-    # 19.A.3: ``final_response_logged`` guards against a malformed ADK
-    # runner that yields more than one ``is_final_response()`` event —
-    # the transparency-UI completion gate relies on exactly-one emit.
-    final_response_logged = False
-    async for event in runner.run_async(
-        user_id="driftscribe-runtime",
-        session_id=sid,
-        new_message=msg,
+    async for item in run_chat_stream(
+        prompt, session_id=session_id, workload=workload
     ):
-        # 18.B.2: emit structured logs for thought summaries + tool calls.
-        # Gate on event.partial is not True to dedup ADK's streaming
-        # partials — only the merged non-partial event carries the
-        # complete thought summary. function_calls don't arrive as
-        # partials in practice, but applying the same guard uniformly
-        # keeps the loop shape consistent. ``tool_calls`` is the public-
-        # contract list surfaced in the /chat response — the helper
-        # appends each ``function_call.name`` to it as a side effect;
-        # :func:`run_agent` (which has no such list) passes ``None``.
-        if event.content and event.content.parts and getattr(event, "partial", None) is not True:
-            _emit_event_logs(event, tool_calls=tool_calls)
-        # Collect the final natural-language response.
-        if event.is_final_response() and event.content and event.content.parts:
-            for part in event.content.parts:
-                # 18.B.1: skip thought parts (same rationale as run_agent).
-                if getattr(part, "thought", False):
-                    continue
-                if getattr(part, "text", None):
-                    reply_chunks.append(part.text)
-            # 19.A.3: emit ``final_response`` exactly once, gated on
-            # non-empty accepted text. The flag prevents a second emit
-            # if a malformed runner yields multiple final events; the
-            # ``strip()`` precondition guards against the v2 bug of
-            # emitting ``response_preview=""`` on the no-text edge case
-            # (where the loop raises immediately after). The emit lives
-            # inside the same ``is_final_response()`` branch so
-            # ``reply_chunks`` reflects only the run's accumulated text
-            # at this point — the flag ensures we emit only the first
-            # time the gate fires.
-            accepted_text = "".join(reply_chunks)
-            if accepted_text.strip() and not final_response_logged:
-                # Redact BEFORE truncating: if a credentialed URL
-                # straddles the 2000-char boundary, truncating first
-                # could cut the userinfo mid-segment and leak a
-                # partial credential (the regex wouldn't match
-                # anymore). The helper also handles the structured-
-                # JSON path — name-keyed nested secrets
-                # (``{"PASSWORD": ...}``) get masked via
-                # :func:`redact_event` before serialize, so non-URL
-                # secrets don't leak into the durable 365-day Cloud
-                # Logging preview. The outer ``redact_event(extra)``
-                # remains as defense in depth.
-                response_preview, response_kind = (
-                    _redact_final_response(accepted_text)
-                )
-                _log.info(
-                    "final_response",
-                    extra=redact_event({
-                        "event": "final_response",
-                        "trace_id": current_trace_id_or_new(),
-                        "workload": current_workload(),
-                        "response_preview": response_preview,
-                        "response_kind": response_kind,
-                    }),
-                )
-                final_response_logged = True
-        # 18.B.3: emit one log line per LLM call's usage payload so
-        # post-deploy dashboards can graph thoughts_token_count vs the
-        # pre-Phase-18 baseline. Each Gemini call typically surfaces
-        # usage_metadata on its final (non-partial) event. Shared with
-        # :func:`run_agent` via :func:`_emit_llm_usage`.
-        _emit_llm_usage(event)
-
-    reply = "".join(reply_chunks).strip()
-    if not reply:
-        # Surface as RuntimeError so /chat's outer try/except maps to 502.
-        raise RuntimeError("ADK chat agent produced no final response")
-    return {
-        "reply": reply,
-        "tool_calls": tool_calls,
-        "session_id": sid,
-    }
+        if item["type"] == "result":
+            return {
+                "reply": item["reply"],
+                "tool_calls": item["tool_calls"],
+                "session_id": item["session_id"],
+            }
+    # run_chat_stream always ends in a "result" item or raises; this
+    # guards a malformed generator that exhausts without either.
+    raise RuntimeError("ADK chat agent produced no final response")

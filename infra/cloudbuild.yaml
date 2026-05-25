@@ -191,7 +191,15 @@ steps:
       - --service-account=driftscribe-agent@$PROJECT_ID.iam.gserviceaccount.com
       - --min-instances=0
       - --max-instances=1
-      - --concurrency=1
+      # Phase 22 (SSE /chat streaming): concurrency=2 so a fallback
+      # /trace, the post-`done` /decisions reload, or a second tab does
+      # not deadlock behind the single live stream slot (a streaming
+      # /chat holds its slot for the whole agent run). --timeout=300
+      # covers long agent runs; the SSE heartbeat keeps Cloudflare's
+      # ~120s read-idle timeout from dropping the connection (it does NOT
+      # extend this total-request cap).
+      - --concurrency=2
+      - --timeout=300
       # USE_ADK is FALSE by default so a fresh `gcloud builds submit` doesn't
       # silently restore the ADK path before the operator has confirmed Vertex
       # AI quota. Flip on a running revision with:

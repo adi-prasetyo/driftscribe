@@ -1466,6 +1466,75 @@
         }
       }
 
+      // Phase 22: consume the SSE stream from POST /chat. Accumulates
+      // timeline events into a local array (the same shape renderTimeline
+      // consumes) and re-renders on each frame so tool_call / tool_result /
+      // llm_thought rows appear live instead of after the ~15s Cloud
+      // Logging poll lag. Resolves with {reply, traceId} on the `done`
+      // frame; throws on an `error` frame or transport failure so the
+      // caller can fall back to pollTrace (Cloud Logging recovery).
+      async function consumeChatStream(resp, pollingId) {
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        const events = [];
+        let traceId = "";
+        let reply = null;
+        let streamError = null;
+
+        function handleFrame(block) {
+          let ev = null;
+          let dataLine = null;
+          for (const line of block.split("\n")) {
+            if (line.startsWith(":")) return; // heartbeat comment — ignore
+            if (line.startsWith("event:")) ev = line.slice(6).trim();
+            else if (line.startsWith("data:")) dataLine = line.slice(5).trim();
+          }
+          if (dataLine == null) return;
+          let data;
+          try {
+            data = JSON.parse(dataLine);
+          } catch (_) {
+            return; // malformed frame — skip defensively
+          }
+          if (ev === "meta") {
+            traceId = data.trace_id || "";
+            if (traceId) setTracePill(traceId);
+          } else if (ev === "done") {
+            reply = data.reply;
+          } else if (ev === "error") {
+            streamError = data;
+          } else {
+            // Default (unnamed) frame = one timeline event.
+            events.push(data);
+            if (pollingId === activePollingId) renderTimeline(events);
+          }
+        }
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          let idx;
+          while ((idx = buf.indexOf("\n\n")) !== -1) {
+            const block = buf.slice(0, idx);
+            buf = buf.slice(idx + 2);
+            if (block.trim()) handleFrame(block);
+          }
+        }
+        // Flush any decoder tail / trailing frame missing its delimiter.
+        buf += decoder.decode();
+        if (buf.trim()) handleFrame(buf);
+
+        if (streamError) {
+          const e = new Error(streamError.detail || "stream error");
+          e.statusHint = streamError.status_hint;
+          e.traceId = traceId;
+          throw e;
+        }
+        return { reply, traceId, events };
+      }
+
       async function onSubmit(e) {
         e.preventDefault();
         const prompt = (promptInput.value || "").trim();
@@ -1493,7 +1562,12 @@
         try {
           resp = await api("/chat", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: {
+              "Content-Type": "application/json",
+              // Phase 22: opt into the SSE timeline stream. The server
+              // falls back to JSON for callers that don't send this.
+              Accept: "text/event-stream",
+            },
             body: JSON.stringify({ prompt, workload }),
           });
         } catch (err) {
@@ -1516,6 +1590,64 @@
         if (myPollingId !== activePollingId) return;
 
         const traceId = resp.headers.get("X-Trace-Id") || "";
+        const ctype = resp.headers.get("Content-Type") || "";
+
+        // Phase 22: streaming path. MUST branch BEFORE reading resp.json()
+        // — calling resp.json() here would consume the stream body and
+        // leave nothing for consumeChatStream to read.
+        if (resp.ok && ctype.includes("text/event-stream")) {
+          updateStatusPill("pending", "streaming…");
+          try {
+            const out = await consumeChatStream(resp, myPollingId);
+            if (myPollingId !== activePollingId) return;
+            showFinalResponse(out.reply || "(empty reply)");
+            updateStatusPill("complete", "complete");
+            // Refresh the past-decisions rail AFTER the stream ends (a GET
+            // mid-stream would queue behind the live stream under Cloud
+            // Run concurrency).
+            if (typeof window.driftscribe.reloadDecisions === "function") {
+              window.driftscribe.reloadDecisions();
+            }
+            // One backfill /trace fetch: reconciles ordering and pulls
+            // side-channel mcp_call events not carried on the stream.
+            const tid = out.traceId || traceId;
+            if (tid) {
+              try {
+                const tr = await api("/trace/" + encodeURIComponent(tid));
+                if (tr.ok) {
+                  const payload = await tr.json();
+                  if (myPollingId === activePollingId &&
+                      Array.isArray(payload.events)) {
+                    renderTimeline(payload.events);
+                  }
+                }
+              } catch (_) {
+                /* backfill is best-effort — the live stream already
+                   rendered the timeline */
+              }
+            }
+          } catch (err) {
+            if (myPollingId !== activePollingId) return;
+            // Transport failure or error frame mid-stream. If the server
+            // sent an error frame, surface its detail; then fall back to
+            // Cloud Logging polling to recover whatever did land.
+            if (err && err.statusHint) {
+              showFinalResponse(String(err.message), { error: true });
+            }
+            const tid = (err && err.traceId) || traceId;
+            if (tid) {
+              setTracePill(tid);
+              pollTrace(tid, myPollingId).catch(() =>
+                updateStatusPill("error", "poll error"));
+            } else {
+              updateStatusPill("error", "stream error");
+            }
+          } finally {
+            sendBtn.disabled = false;
+          }
+          return;
+        }
+
         let body;
         try {
           body = await resp.json();
