@@ -69,7 +69,7 @@ import re
 from os.path import normpath
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from driftscribe_lib import github as ds_github
 from driftscribe_lib.auth import verify_caller
@@ -267,6 +267,23 @@ class PatchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class ClosePrRequest(BaseModel):
+    """Closed schema for ``/close`` — same Layer 2 model as PatchRequest.
+
+    ``target_repo`` is re-validated against the env-pinned
+    :data:`TARGET_REPO`. ``pr_number`` must be a positive int
+    (``Field(gt=0)`` → 422 otherwise). ``reason`` is bounded so the audit
+    comment can't be empty or unboundedly large. ``extra="forbid"`` makes
+    pydantic raise on any unexpected field (→ HTTP 422).
+    """
+
+    target_repo: str
+    pr_number: int = Field(gt=0)
+    reason: str = Field(min_length=1, max_length=1000)
+
+    model_config = ConfigDict(extra="forbid")
+
+
 app = FastAPI(title="DriftScribe Upgrade Docs Agent")
 
 # Phase 15.2: per-request trace id propagation (see driftscribe_lib.logging).
@@ -383,3 +400,57 @@ def patch(
         new_content=new_content,
         dry_run=False,
     )
+
+
+@app.post("/close")
+def close(
+    req: ClosePrRequest,
+    caller: str = Depends(_verify_caller_dep),
+) -> dict:
+    """Close an upgrade PR this workload opened.
+
+    Strictly less privileged than ``/patch`` (no branch/file write — only
+    flips an existing PR to ``closed`` and leaves an audit comment), but
+    routed through the same worker because it shares the same PAT, repo,
+    and authority domain. The eligibility gate lives in
+    :func:`driftscribe_lib.github.close_pr`: the PR must carry the
+    ``driftscribe`` label, sit on an ``upgrade/`` head branch, and target
+    ``main`` — proving it's a DriftScribe upgrade PR, not an arbitrary
+    collaborator's PR in the same repo.
+
+    Status codes:
+
+    - **200** on success — ``{closed, already_closed, url, number, ...}``.
+    - **403** on policy violation: ``target_repo`` mismatch, or the
+      eligibility gate (missing label / wrong head branch / wrong base).
+    - **404** when the PR number doesn't exist.
+    - **401/403** on auth failure (raised by ``verify_caller`` upstream).
+    - **422** on schema violation (extra/missing field, ``pr_number<=0``,
+      empty/oversized ``reason``).
+    """
+    if req.target_repo != TARGET_REPO:
+        raise HTTPException(
+            status_code=403,
+            detail="target_repo does not match deployed allowlist",
+        )
+    if not req.reason.strip():
+        raise HTTPException(status_code=422, detail="reason must not be blank")
+
+    log.info(
+        "close request: caller=%s repo=%s pr=%s",
+        caller, TARGET_REPO, req.pr_number,
+    )
+
+    repo = _get_repo()
+    try:
+        return ds_github.close_pr(
+            repo,
+            pr_number=req.pr_number,
+            reason=req.reason,
+            dry_run=False,
+            required_label="driftscribe",
+            required_head_prefix=ALLOWED_BRANCH_PREFIX,
+            required_base=ALLOWED_BASE,
+        )
+    except ds_github.PrNotEligibleError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.reason) from e

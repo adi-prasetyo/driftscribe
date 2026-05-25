@@ -20,6 +20,22 @@ _PREVIEW_CHARS = 4000
 log = logging.getLogger(__name__)
 
 
+class PrNotEligibleError(Exception):
+    """A PR cannot be closed under the caller's eligibility policy.
+
+    Carries a ``status_code`` so the worker boundary can map it to the
+    right HTTP status (403 for a policy bounce — missing label / wrong
+    branch / wrong base; 404 when the PR doesn't exist). Mirrors the
+    transport-agnostic ``UpgradeValidationError`` pattern: the library
+    stays framework-free and the worker converts to ``HTTPException``.
+    """
+
+    def __init__(self, reason: str, *, status_code: int = 403):
+        super().__init__(reason)
+        self.reason = reason
+        self.status_code = status_code
+
+
 def get_repo(token: str, repo_full_name: str) -> Repository:
     """Return a PyGithub `Repository` for the given full name (e.g. ``owner/repo``)."""
     return Github(token).get_repo(repo_full_name)
@@ -188,3 +204,93 @@ def open_docs_pr(
 
     # Labels are best-effort (see _finalize_pr) and run for new + reused PRs.
     return _finalize_pr(pr, reused=reused)
+
+
+def close_pr(
+    repo: Repository,
+    *,
+    pr_number: int,
+    reason: str,
+    dry_run: bool,
+    required_label: str = "driftscribe",
+    required_head_prefix: str | None = None,
+    required_base: str | None = None,
+) -> dict[str, Any]:
+    """Close an open PR after proving it was opened by this system.
+
+    Provenance gate (ALL must hold before any mutation): the PR must
+    carry ``required_label``, its head ref must start with
+    ``required_head_prefix`` (when given), and its base ref must equal
+    ``required_base`` (when given). The single-repo PAT already bounds
+    the blast radius to one repository; these checks add that the PR is
+    one *this workload* produced, not an arbitrary collaborator's PR that
+    happens to live in the same repo. A failing gate raises
+    :class:`PrNotEligibleError` (403) and performs no write.
+
+    Idempotent: an already-closed PR (that passes the gate) returns a
+    success result without re-editing or commenting. The audit comment is
+    posted *after* the close succeeds (best-effort) so a failed
+    ``edit(state="closed")`` can't leave a misleading "Closed by …"
+    comment behind.
+    """
+    if dry_run:
+        return {"dry_run": True, "number": pr_number, "would_close": True}
+
+    try:
+        pr = repo.get_pull(pr_number)
+    except UnknownObjectException as e:
+        raise PrNotEligibleError(
+            f"PR #{pr_number} not found", status_code=404
+        ) from e
+
+    labels = {lbl.name for lbl in pr.get_labels()}
+    if required_label not in labels:
+        raise PrNotEligibleError(
+            f"PR #{pr_number} is not a DriftScribe PR "
+            f"(missing {required_label!r} label)"
+        )
+    head_ref = pr.head.ref
+    if required_head_prefix is not None and not head_ref.startswith(
+        required_head_prefix
+    ):
+        raise PrNotEligibleError(
+            f"PR #{pr_number} head {head_ref!r} is not a DriftScribe "
+            f"branch (expected prefix {required_head_prefix!r})"
+        )
+    base_ref = pr.base.ref
+    if required_base is not None and base_ref != required_base:
+        raise PrNotEligibleError(
+            f"PR #{pr_number} base {base_ref!r} is not {required_base!r}"
+        )
+
+    if pr.state == "closed":
+        return {
+            "dry_run": False,
+            "closed": True,
+            "already_closed": True,
+            "url": pr.html_url,
+            "number": pr.number,
+            "comment_posted": False,
+        }
+
+    pr.edit(state="closed")
+
+    comment_posted = True
+    comment_error: str | None = None
+    try:
+        pr.create_issue_comment(f"Closed by DriftScribe: {reason}")
+    except GithubException as e:
+        comment_posted = False
+        comment_error = str(e)
+        log.warning("failed to comment on closed PR #%s: %s", pr.number, e)
+
+    return {
+        "dry_run": False,
+        "closed": True,
+        "already_closed": False,
+        "url": pr.html_url,
+        "number": pr.number,
+        "reason": reason,
+        "comment_posted": comment_posted,
+        "comment_error": comment_error,
+    }

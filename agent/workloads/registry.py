@@ -66,6 +66,7 @@ from agent.adk_tools import (
     propose_rollback_tool,
     read_live_env_tool,
     search_recent_prs_tool,
+    upgrade_close_pr_tool,
     upgrade_propose_pr_tool,
     upgrade_read_dependencies_tool,
 )
@@ -353,6 +354,10 @@ _TOOL_REGISTRY: Final[dict[str, Callable | None]] = {
     # rationale.
     "upgrade_read_dependencies": upgrade_read_dependencies_tool,
     "upgrade_propose_pr":        upgrade_propose_pr_tool,
+    # Close an upgrade PR this workload opened. Authority-clean: the
+    # LLM picks pr_number + reason; the worker re-validates the PR's
+    # eligibility (driftscribe label + upgrade/ branch + main base).
+    "upgrade_close_pr":          upgrade_close_pr_tool,
     # Developer Knowledge MCP — wired in 17.B.2. The callables apply
     # 10s wall-clock timeout, 60s response cache, 5-doc/4000-char
     # truncation, and fail-closed translation of MCP timeouts to a

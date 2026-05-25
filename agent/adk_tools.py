@@ -362,3 +362,33 @@ def upgrade_propose_pr_tool(
             "body": body,
         },
     )
+
+
+def upgrade_close_pr_tool(pr_number: int, reason: str) -> dict:
+    """Ask the Upgrade Docs Agent to close an existing upgrade PR.
+
+    Use when the operator wants to withdraw/abandon an upgrade PR this
+    workload opened (superseded, no longer wanted, opened in error). You
+    pick ONLY the PR number and a short human ``reason``; ``target_repo``
+    is derived server-side. The worker refuses to close anything that
+    isn't a DriftScribe upgrade PR — it must carry the ``driftscribe``
+    label, sit on an ``upgrade/`` head branch, and target ``main`` — so
+    this tool can never close an unrelated collaborator's PR.
+
+    **Best-effort, non-fatal.** A policy refusal (missing label, wrong
+    branch, PR not found) or transport error is returned as a soft
+    ``{"closed": False, "error": ...}`` dict rather than raised — so the
+    operator sees *why* the close was refused instead of the chat turn
+    failing with a 502. Report the outcome; do not retry within the same
+    turn.
+    """
+    target = _get_upgrade_target()
+    try:
+        return worker_client.call_close_pr(target.target_repo, pr_number, reason)
+    except worker_client.WorkerClientError as e:
+        return {
+            "closed": False,
+            "error": f"could not close PR #{pr_number}: {e.body or e.status_code}",
+            "worker": e.worker,
+            "status_code": e.status_code,
+        }

@@ -22,6 +22,8 @@ without standing up a server.
 """
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 import respx
@@ -34,6 +36,7 @@ READER_URL = "https://reader.example.com"
 DOCS_URL = "https://docs.example.com"
 ROLLBACK_URL = "https://rollback.example.com"
 NOTIFIER_URL = "https://notifier.example.com"
+UPGRADE_DOCS_URL = "https://upgrade-docs.example.com"
 
 
 @pytest.fixture(autouse=True)
@@ -45,6 +48,7 @@ def _stub_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DOCS_URL", DOCS_URL)
     monkeypatch.setenv("ROLLBACK_URL", ROLLBACK_URL)
     monkeypatch.setenv("NOTIFIER_URL", NOTIFIER_URL)
+    monkeypatch.setenv("UPGRADE_DOCS_URL", UPGRADE_DOCS_URL)
 
 
 @pytest.fixture(autouse=True)
@@ -296,3 +300,41 @@ def test_call_strips_trailing_slash_from_worker_url(monkeypatch) -> None:
     route = respx.post(f"{READER_URL}/read").respond(200, json={"ok": True})
     worker_client.call("reader", {})
     assert route.called
+
+
+# --------------------------------------------------------------------------- #
+# call_close_pr: must hit upgrade_docs /close, not /patch
+# --------------------------------------------------------------------------- #
+
+
+@respx.mock
+def test_call_close_pr_hits_close_endpoint_with_exact_payload() -> None:
+    """``call_close_pr`` routes to the upgrade_docs worker's /close
+    endpoint (not its canonical /patch) and sends exactly the three
+    fields the worker's ClosePrRequest schema expects."""
+    route_patch = respx.post(f"{UPGRADE_DOCS_URL}/patch").respond(
+        200, json={"should": "not be called"}
+    )
+    route_close = respx.post(f"{UPGRADE_DOCS_URL}/close").respond(
+        200, json={"closed": True, "number": 1}
+    )
+    out = worker_client.call_close_pr("owner/repo", 1, "superseded")
+    assert out == {"closed": True, "number": 1}
+    assert route_close.called
+    assert not route_patch.called
+    sent = json.loads(route_close.calls.last.request.content)
+    assert sent == {
+        "target_repo": "owner/repo",
+        "pr_number": 1,
+        "reason": "superseded",
+    }
+
+
+@respx.mock
+def test_call_close_pr_audience_is_root_url(_stub_mint_id_token) -> None:
+    """Audience binding holds for the /close wrapper too — the minted
+    token's ``aud`` is the worker ROOT url, never the /close path."""
+    respx.post(f"{UPGRADE_DOCS_URL}/close").respond(200, json={"closed": True})
+    worker_client.call_close_pr("owner/repo", 1, "r")
+    assert _stub_mint_id_token == [UPGRADE_DOCS_URL]
+    assert all(not aud.endswith("/close") for aud in _stub_mint_id_token)

@@ -1,8 +1,10 @@
 from unittest.mock import MagicMock
 
+import pytest
 from github import GithubException, UnknownObjectException
 
 from agent.github_actions import open_docs_pr, open_drift_issue, open_escalation_issue
+from driftscribe_lib.github import PrNotEligibleError, close_pr
 
 
 def test_open_drift_issue_creates_labeled_issue():
@@ -259,3 +261,137 @@ def test_open_docs_pr_propagates_unrelated_422_from_create_git_ref():
             file_path="x.md", new_content="y", dry_run=False,
         )
     repo.create_pull.assert_not_called()
+
+
+# close_pr -------------------------------------------------------------- #
+
+
+def _label(name: str) -> MagicMock:
+    # MagicMock(name=...) sets the mock's *repr* name, not a .name attr —
+    # set it explicitly so {lbl.name for lbl in ...} works.
+    m = MagicMock()
+    m.name = name
+    return m
+
+
+def _eligible_pr(state: str = "open") -> MagicMock:
+    """An open PR that passes the default upgrade-workload gate:
+    driftscribe label + upgrade/ head + main base."""
+    pr = MagicMock()
+    pr.get_labels.return_value = [_label("driftscribe"), _label("docs")]
+    pr.head.ref = "upgrade/lodash-4-17-21"
+    pr.base.ref = "main"
+    pr.state = state
+    pr.html_url = "https://github.com/owner/repo/pull/1"
+    pr.number = 1
+    return pr
+
+
+def _close_kwargs(**overrides):
+    base = dict(
+        pr_number=1,
+        reason="superseded by manual bump",
+        dry_run=False,
+        required_label="driftscribe",
+        required_head_prefix="upgrade/",
+        required_base="main",
+    )
+    base.update(overrides)
+    return base
+
+
+def test_close_pr_dry_run_returns_preview_without_api_calls():
+    repo = MagicMock()
+    res = close_pr(repo, **_close_kwargs(dry_run=True))
+    repo.get_pull.assert_not_called()
+    assert res == {"dry_run": True, "number": 1, "would_close": True}
+
+
+def test_close_pr_closes_eligible_open_pr_and_comments():
+    repo = MagicMock()
+    pr = _eligible_pr()
+    repo.get_pull.return_value = pr
+
+    res = close_pr(repo, **_close_kwargs())
+
+    pr.edit.assert_called_once_with(state="closed")
+    pr.create_issue_comment.assert_called_once()
+    assert "superseded by manual bump" in pr.create_issue_comment.call_args.args[0]
+    assert res["closed"] is True
+    assert res["already_closed"] is False
+    assert res["comment_posted"] is True
+    assert res["url"].endswith("pull/1")
+    assert res["number"] == 1
+
+
+def test_close_pr_refuses_pr_missing_required_label():
+    repo = MagicMock()
+    pr = _eligible_pr()
+    pr.get_labels.return_value = [_label("docs")]  # no driftscribe label
+    repo.get_pull.return_value = pr
+
+    with pytest.raises(PrNotEligibleError) as exc:
+        close_pr(repo, **_close_kwargs())
+    assert exc.value.status_code == 403
+    pr.edit.assert_not_called()
+
+
+def test_close_pr_refuses_wrong_head_prefix():
+    repo = MagicMock()
+    pr = _eligible_pr()
+    pr.head.ref = "feature/random"  # not an upgrade/ branch
+    repo.get_pull.return_value = pr
+
+    with pytest.raises(PrNotEligibleError) as exc:
+        close_pr(repo, **_close_kwargs())
+    assert exc.value.status_code == 403
+    pr.edit.assert_not_called()
+
+
+def test_close_pr_refuses_wrong_base():
+    repo = MagicMock()
+    pr = _eligible_pr()
+    pr.base.ref = "production"  # not main
+    repo.get_pull.return_value = pr
+
+    with pytest.raises(PrNotEligibleError) as exc:
+        close_pr(repo, **_close_kwargs())
+    assert exc.value.status_code == 403
+    pr.edit.assert_not_called()
+
+
+def test_close_pr_raises_404_when_pr_not_found():
+    repo = MagicMock()
+    repo.get_pull.side_effect = UnknownObjectException(404, "not found", {})
+
+    with pytest.raises(PrNotEligibleError) as exc:
+        close_pr(repo, **_close_kwargs(pr_number=999))
+    assert exc.value.status_code == 404
+
+
+def test_close_pr_idempotent_when_already_closed():
+    repo = MagicMock()
+    pr = _eligible_pr(state="closed")
+    repo.get_pull.return_value = pr
+
+    res = close_pr(repo, **_close_kwargs())
+
+    pr.edit.assert_not_called()
+    pr.create_issue_comment.assert_not_called()
+    assert res["closed"] is True
+    assert res["already_closed"] is True
+
+
+def test_close_pr_comment_failure_is_best_effort():
+    repo = MagicMock()
+    pr = _eligible_pr()
+    pr.create_issue_comment.side_effect = GithubException(403, "no perms", {})
+    repo.get_pull.return_value = pr
+
+    res = close_pr(repo, **_close_kwargs())
+
+    # The close itself still succeeded; only the audit comment failed.
+    pr.edit.assert_called_once_with(state="closed")
+    assert res["closed"] is True
+    assert res["comment_posted"] is False
+    assert res["comment_error"]

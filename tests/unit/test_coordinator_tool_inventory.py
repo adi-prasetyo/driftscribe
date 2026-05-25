@@ -54,10 +54,12 @@ import yaml
 
 # Read the canonical lists from the source of truth.
 from agent.adk_agent import (
+    CHAT_ONLY_TOOL_NAMES,
     COORDINATOR_TOOLS,
     DRIFT_WORKLOAD_TOOL_NAMES,
     UPGRADE_WORKLOAD_TOOL_NAMES,
     build_agent,
+    build_chat_agent,
 )
 from agent.workloads.spec import WorkloadSpec
 
@@ -87,6 +89,10 @@ EXPECTED_TOOL_NAMES = frozenset({
     # routing-fields-server-side rationale.
     "upgrade_read_dependencies_tool",
     "upgrade_propose_pr_tool",
+    # Upgrade PR close — withdraw an upgrade PR this workload opened.
+    # Authority-clean (pr_number + reason only); the worker gates on
+    # driftscribe-label + upgrade/ branch + main base.
+    "upgrade_close_pr_tool",
 })
 
 
@@ -117,6 +123,7 @@ _DRIFT_ONLY_TOOL_NAMES = frozenset({
 _UPGRADE_ONLY_TOOL_NAMES = frozenset({
     "upgrade_read_dependencies",
     "upgrade_propose_pr",
+    "upgrade_close_pr",
 })
 
 
@@ -386,6 +393,40 @@ def test_drift_workload_tool_order_pin(drift_workload_env):
     )
 
 
+def test_close_pr_is_chat_only_not_exposed_to_autonomous_recheck(
+    upgrade_workload_env,
+):
+    """``upgrade_close_pr`` must reach the interactive /chat agent but NOT
+    the autonomous /recheck agent.
+
+    Closing a PR is an operator-driven, availability-affecting mutation.
+    The /recheck path runs without a human in the loop, so handing it the
+    close tool would make destructive PR closure gated only by prompt
+    discipline (Codex review 2026-05-25). ``build_agent`` (/recheck)
+    filters :data:`CHAT_ONLY_TOOL_NAMES` out by symbolic name;
+    ``build_chat_agent`` keeps them. The worker-side label/branch/base
+    gate is the other half of the defense — this test pins the routing
+    half so a future refactor can't silently widen the autonomous surface.
+    """
+    from agent.workloads import load_workload
+
+    assert "upgrade_close_pr" in CHAT_ONLY_TOOL_NAMES
+
+    resolution = load_workload("upgrade")
+    chat_tools = {t.__name__ for t in build_chat_agent(resolution).tools}
+    recheck_tools = {t.__name__ for t in build_agent(resolution).tools}
+
+    assert "upgrade_close_pr_tool" in chat_tools, (
+        "the interactive /chat agent must carry the close tool"
+    )
+    assert "upgrade_close_pr_tool" not in recheck_tools, (
+        "the autonomous /recheck agent must NOT carry the close tool — "
+        "it's chat-only (CHAT_ONLY_TOOL_NAMES)."
+    )
+    # The non-chat-only upgrade tools are still present on /recheck.
+    assert "upgrade_propose_pr_tool" in recheck_tools
+
+
 @pytest.mark.parametrize("tool", COORDINATOR_TOOLS, ids=lambda t: t.__name__)
 def test_no_tool_has_dangerous_name(tool):
     """No tool name may match a dangerous-capability pattern.
@@ -524,6 +565,8 @@ def test_dangerous_param_regex_smoke_test():
         # Phase 17.C.4 — Upgrade workload tool params (safe-named ones).
         "package_name",
         "target_version",
+        # Upgrade PR close tool param.
+        "pr_number",
     ):
         assert not _DANGEROUS_PARAM_RE.search(safe), (
             f"Regex unexpectedly matched safe parameter name {safe!r}. "
