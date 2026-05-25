@@ -68,6 +68,7 @@ import json
 import logging
 import re
 import uuid
+from datetime import datetime, timezone
 
 from google.adk import Agent
 from google.adk.planners.built_in_planner import BuiltInPlanner
@@ -715,6 +716,117 @@ async def run_agent(
     if not final_text:
         raise RuntimeError("ADK agent produced no final response")
     return _parse_response(final_text)
+
+
+async def run_chat_stream(
+    prompt: str,
+    session_id: str | None = None,
+    *,
+    workload: str = "drift",
+):
+    """Core streaming generator for the chat agent.
+
+    Yields, in the SAME order the events are logged today:
+
+      {"type": "event",  "event": <redacted dict + seq/insert_id/timestamp>}
+      ...and finally...
+      {"type": "result", "reply": str, "tool_calls": list, "session_id": str}
+
+    Raises ``RuntimeError`` on an empty reply — identical to
+    :func:`run_chat`, which is now a thin drain of this generator (so the
+    JSON and SSE paths share one implementation).
+
+    Cloud Logging emission is unchanged: :func:`_emit_event_logs` /
+    :func:`_emit_llm_usage` and the inline ``final_response`` emit still
+    log the redacted payload; this generator yields a COPY of that same
+    redacted dict augmented with synthetic ``seq``/``insert_id``/
+    ``timestamp`` fields (Cloud Logging supplies those for the ``/trace``
+    polling path; SSE has to synthesize them so ``renderTimeline`` keeps
+    stable expansion keys + timestamps). The yielded view is therefore
+    never less-redacted than the durable log.
+    """
+    resolution = load_workload(workload)
+    agent = build_chat_agent(resolution)
+    session_service = InMemorySessionService()
+    sid = session_id or str(uuid.uuid4())
+    await session_service.create_session(
+        app_name="driftscribe",
+        user_id="driftscribe-runtime",
+        session_id=sid,
+    )
+    runner = Runner(
+        agent=agent,
+        app_name="driftscribe",
+        session_service=session_service,
+    )
+    msg = types.Content(role="user", parts=[types.Part(text=prompt)])
+
+    reply_chunks: list[str] = []
+    tool_calls: list[str] = []
+    final_response_logged = False
+    seq = 0
+
+    def _stream(payload: dict) -> dict:
+        # Augment the already-redacted, already-logged payload with
+        # SSE-only ordering metadata. Shallow copy so the durable log
+        # copy (already emitted) is untouched.
+        nonlocal seq
+        seq += 1
+        return {
+            **payload,
+            "seq": seq,
+            "insert_id": f"stream-{seq}",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+    async for event in runner.run_async(
+        user_id="driftscribe-runtime",
+        session_id=sid,
+        new_message=msg,
+    ):
+        # Same partial-event dedup gate as run_chat (18.B.2): only merged
+        # non-partial events are eligible to log/stream.
+        if event.content and event.content.parts and getattr(event, "partial", None) is not True:
+            for payload in _emit_event_logs(event, tool_calls=tool_calls):
+                yield {"type": "event", "event": _stream(payload)}
+        # Collect + emit the final natural-language response. This is the
+        # SAME emit that lived in run_chat pre-Phase-22 — moved here so the
+        # drain path stays byte-identical. run_agent keeps its own emit.
+        if event.is_final_response() and event.content and event.content.parts:
+            for part in event.content.parts:
+                if getattr(part, "thought", False):
+                    continue
+                if getattr(part, "text", None):
+                    reply_chunks.append(part.text)
+            accepted_text = "".join(reply_chunks)
+            if accepted_text.strip() and not final_response_logged:
+                response_preview, response_kind = (
+                    _redact_final_response(accepted_text)
+                )
+                fr_payload = redact_event({
+                    "event": "final_response",
+                    "trace_id": current_trace_id_or_new(),
+                    "workload": current_workload(),
+                    "response_preview": response_preview,
+                    "response_kind": response_kind,
+                })
+                _log.info("final_response", extra=fr_payload)
+                final_response_logged = True
+                yield {"type": "event", "event": _stream(fr_payload)}
+        usage_payload = _emit_llm_usage(event)
+        if usage_payload is not None:
+            yield {"type": "event", "event": _stream(usage_payload)}
+
+    reply = "".join(reply_chunks).strip()
+    if not reply:
+        # Surface as RuntimeError so /chat's outer try/except maps to 502.
+        raise RuntimeError("ADK chat agent produced no final response")
+    yield {
+        "type": "result",
+        "reply": reply,
+        "tool_calls": tool_calls,
+        "session_id": sid,
+    }
 
 
 async def run_chat(
