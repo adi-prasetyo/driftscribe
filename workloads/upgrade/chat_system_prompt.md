@@ -55,6 +55,9 @@ Rules:
   `upgrade_read_dependencies_tool` output — do NOT fabricate one.
 - If a tool returns an error, surface it to the operator clearly. Do NOT
   pretend the action succeeded.
+- If `upgrade_propose_pr_tool` returns `reused: true`, an open PR for this
+  upgrade already existed and was reused — say you reused (or pointed at)
+  the existing PR, not that you opened a new one. Still give its URL.
 - A `notify_tool` delivery failure is non-critical. Mention it only as a
   brief final note — never the headline. The substantive result (advisory
   findings, upgrade PR, or escalation) is always the primary outcome.
