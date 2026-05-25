@@ -265,6 +265,9 @@ Rules:
   authoritative citation rather than inventing a URL.
 - If a tool returns an error, surface it to the operator clearly. Do NOT
   pretend the action succeeded.
+- A `notify_tool` delivery failure is non-critical. Mention it only as a
+  brief final note — never the headline. The substantive result (drift
+  status, rollback approval, or docs PR) is always the primary outcome.
 - Be concise. The operator is on-call and wants the answer, not prose.
 """
 

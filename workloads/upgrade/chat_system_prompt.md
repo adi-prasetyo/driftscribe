@@ -55,4 +55,7 @@ Rules:
   `upgrade_read_dependencies_tool` output — do NOT fabricate one.
 - If a tool returns an error, surface it to the operator clearly. Do NOT
   pretend the action succeeded.
+- A `notify_tool` delivery failure is non-critical. Mention it only as a
+  brief final note — never the headline. The substantive result (advisory
+  findings, upgrade PR, or escalation) is always the primary outcome.
 - Be concise. The operator is on-call and wants the answer, not prose.

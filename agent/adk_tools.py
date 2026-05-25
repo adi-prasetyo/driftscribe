@@ -127,11 +127,27 @@ def notify_tool(channel: str, severity: str, body: str) -> dict:
     enforced by the worker's ``NotifyRequest`` schema. The webhook URL
     is hardcoded on the worker (Layer 2 — "URL is the capability")
     and cannot be influenced from here.
+
+    **Best-effort, non-fatal.** Notification is the last and least-critical
+    step of any workflow — the substantive work (PR opened, rollback
+    proposed) has already completed by the time the agent notifies. A
+    failing or unreachable webhook must NOT fail the whole /chat turn, so
+    a worker error is swallowed and returned as a soft
+    ``{"delivered": False, "error": ...}`` result. Report it to the user
+    but do not retry the notification within the same turn.
     """
-    return worker_client.call(
-        "notifier",
-        {"channel": channel, "severity": severity, "body": body},
-    )
+    try:
+        return worker_client.call(
+            "notifier",
+            {"channel": channel, "severity": severity, "body": body},
+        )
+    except worker_client.WorkerClientError as e:
+        return {
+            "delivered": False,
+            "error": f"notification not delivered ({e.worker} returned {e.status_code})",
+            "worker": e.worker,
+            "status_code": e.status_code,
+        }
 
 
 # --------------------------------------------------------------------------- #
