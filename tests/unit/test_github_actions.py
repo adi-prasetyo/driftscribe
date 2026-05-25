@@ -147,3 +147,115 @@ def test_open_docs_pr_dry_run_returns_preview():
     assert res["url"] is None
     assert res["branch"] == "driftscribe/x"
     assert "the patched runbook content" in res["preview"]
+
+
+def _ref_exists_exc() -> GithubException:
+    # Shape of GitHub's create_git_ref 422 when the branch already exists.
+    return GithubException(422, {"message": "Reference already exists"}, {})
+
+
+def test_open_docs_pr_reuses_existing_pr_when_branch_exists():
+    # Deterministic upgrade branch + open PR already present: a re-run must
+    # return the existing PR (idempotent), NOT 422/500. The file is left
+    # untouched and create_pull is never called.
+    repo = MagicMock()
+    repo.full_name = "owner/repo"
+    base = MagicMock()
+    base.commit.sha = "sha-1"
+    repo.get_branch.return_value = base
+    repo.create_git_ref.side_effect = _ref_exists_exc()
+    existing_pr = MagicMock()
+    existing_pr.html_url = "https://x/pull/1"
+    existing_pr.number = 1
+    repo.get_pulls.return_value = [existing_pr]
+
+    res = open_docs_pr(
+        repo=repo, branch="upgrade/lodash-4-17-21", base="main",
+        title="t", body="b", file_path="demo/upgrade-target/package.json",
+        new_content="{}", dry_run=False,
+    )
+
+    repo.create_pull.assert_not_called()
+    repo.create_file.assert_not_called()
+    repo.update_file.assert_not_called()
+    existing_pr.add_to_labels.assert_called_once()  # labels run for reused PRs too
+    assert res["url"].endswith("pull/1")
+    assert res["number"] == 1
+    assert res["reused"] is True
+
+
+def test_open_docs_pr_create_pull_backstop_returns_existing_pr():
+    # Branch creation succeeds but a PR already exists for the head (race or
+    # dangling state) — create_pull's 422 backstop returns the existing PR.
+    repo = MagicMock()
+    repo.full_name = "owner/repo"
+    base = MagicMock()
+    base.commit.sha = "sha-1"
+    repo.get_branch.return_value = base
+    existing = MagicMock()
+    existing.sha = "file-sha"
+    repo.get_contents.return_value = existing
+    repo.create_pull.side_effect = GithubException(
+        422, {"message": "A pull request already exists for owner:branch."}, {}
+    )
+    existing_pr = MagicMock()
+    existing_pr.html_url = "https://x/pull/5"
+    existing_pr.number = 5
+    repo.get_pulls.return_value = [existing_pr]
+
+    res = open_docs_pr(
+        repo=repo, branch="upgrade/lodash-4-17-21", base="main",
+        title="t", body="b", file_path="p.json", new_content="{}", dry_run=False,
+    )
+
+    assert res["reused"] is True
+    assert res["url"].endswith("pull/5")
+
+
+def test_open_docs_pr_dangling_branch_opens_fresh_pr():
+    # Branch exists but NO open PR (dangling) — fall through, update the file,
+    # and open a new PR (reused=False).
+    repo = MagicMock()
+    repo.full_name = "owner/repo"
+    base = MagicMock()
+    base.commit.sha = "sha-1"
+    repo.get_branch.return_value = base
+    repo.create_git_ref.side_effect = _ref_exists_exc()
+    repo.get_pulls.return_value = []  # no existing PR
+    existing = MagicMock()
+    existing.sha = "file-sha"
+    repo.get_contents.return_value = existing
+    pr = MagicMock()
+    pr.html_url = "https://x/pull/8"
+    pr.number = 8
+    repo.create_pull.return_value = pr
+
+    res = open_docs_pr(
+        repo=repo, branch="upgrade/lodash-4-17-21", base="main",
+        title="t", body="b", file_path="p.json", new_content="{}", dry_run=False,
+    )
+
+    repo.update_file.assert_called_once()
+    repo.create_pull.assert_called_once()
+    assert res["reused"] is False
+    assert res["url"].endswith("pull/8")
+
+
+def test_open_docs_pr_propagates_unrelated_422_from_create_git_ref():
+    # A 422 that is NOT "already exists" (e.g. invalid sha) must propagate,
+    # not be mistaken for the idempotent path.
+    import pytest
+    repo = MagicMock()
+    base = MagicMock()
+    base.commit.sha = "sha-1"
+    repo.get_branch.return_value = base
+    repo.create_git_ref.side_effect = GithubException(
+        422, {"message": "Invalid request. sha is not a valid SHA."}, {}
+    )
+
+    with pytest.raises(GithubException):
+        open_docs_pr(
+            repo=repo, branch="b", base="main", title="t", body="b",
+            file_path="x.md", new_content="y", dry_run=False,
+        )
+    repo.create_pull.assert_not_called()

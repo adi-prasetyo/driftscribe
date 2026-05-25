@@ -55,6 +55,60 @@ def open_escalation_issue(
     return _issue_result(False, issue=issue)
 
 
+def _is_already_exists(e: GithubException) -> bool:
+    """True if a GithubException is GitHub's "already exists" 422.
+
+    Scoped narrowly (status 422 AND an "already exists" message) so it only
+    matches the two idempotent cases we care about — ``create_git_ref``
+    ("Reference already exists") and ``create_pull`` ("A pull request already
+    exists for …") — and never swallows an unrelated 422 (e.g. a validation
+    error on the PR body).
+    """
+    if e.status != 422:
+        return False
+    data = e.data if isinstance(e.data, dict) else {}
+    blob = f"{data.get('message', '')} {data.get('errors', '')}".lower()
+    return "already exists" in blob
+
+
+def _find_open_pr_for_head(repo: Repository, branch: str) -> Any:
+    """Return the first open PR whose head is ``branch``, or ``None``.
+
+    ``get_pulls`` wants the head as ``owner:ref``; the owner comes from
+    ``repo.full_name`` (already loaded) rather than ``repo.owner`` (a possible
+    lazy API fetch). Works for both user- and org-owned repos.
+    """
+    owner = repo.full_name.split("/")[0]
+    for pr in repo.get_pulls(state="open", head=f"{owner}:{branch}"):
+        return pr
+    return None
+
+
+def _finalize_pr(pr: Any, reused: bool) -> dict[str, Any]:
+    """Best-effort label, then build the standard PR result dict.
+
+    Run for BOTH freshly-created and reused PRs (``add_to_labels`` is
+    idempotent), so a reused PR's ``labeled`` reflects a real attempt rather
+    than an optimistic assumption.
+    """
+    labeled = True
+    label_error: str | None = None
+    try:
+        pr.add_to_labels("driftscribe", "docs")
+    except GithubException as e:
+        labeled = False
+        label_error = str(e)
+        log.warning("failed to label PR #%s: %s", pr.number, e)
+    return {
+        "dry_run": False,
+        "url": pr.html_url,
+        "number": pr.number,
+        "labeled": labeled,
+        "label_error": label_error,
+        "reused": reused,
+    }
+
+
 def open_docs_pr(
     repo: Repository,
     branch: str,
@@ -81,7 +135,23 @@ def open_docs_pr(
         }
 
     base_ref = repo.get_branch(base)
-    repo.create_git_ref(ref=f"refs/heads/{branch}", sha=base_ref.commit.sha)
+    try:
+        repo.create_git_ref(ref=f"refs/heads/{branch}", sha=base_ref.commit.sha)
+    except GithubException as e:
+        # Idempotency: the upgrade workload derives a DETERMINISTIC branch
+        # name (``upgrade/{pkg}-{ver}``), so re-running the same upgrade hits
+        # an already-created branch and GitHub answers create_git_ref with
+        # 422 "Reference already exists". Treat that as "already proposed":
+        # if an open PR exists for the branch, return it unchanged rather than
+        # 500-ing the worker (which the coordinator maps to a 502 on /chat).
+        # We deliberately do NOT rewrite the open PR's branch on a retry.
+        if not _is_already_exists(e):
+            raise
+        existing_pr = _find_open_pr_for_head(repo, branch)
+        if existing_pr is not None:
+            return _finalize_pr(existing_pr, reused=True)
+        # Branch exists but no open PR (a dangling branch from a prior failed
+        # run) — fall through to update the file and open a fresh PR.
 
     try:
         existing = repo.get_contents(file_path, ref=branch)
@@ -102,22 +172,19 @@ def open_docs_pr(
             branch=branch,
         )
 
-    pr = repo.create_pull(title=title, body=body, head=branch, base=base)
-    # Labels are best-effort: if labeling fails (e.g. label doesn't exist yet),
-    # the PR is still successfully created and we return its URL. The response
-    # exposes labeled + label_error so callers can surface partial success.
-    labeled = True
-    label_error: str | None = None
     try:
-        pr.add_to_labels("driftscribe", "docs")
+        pr = repo.create_pull(title=title, body=body, head=branch, base=base)
+        reused = False
     except GithubException as e:
-        labeled = False
-        label_error = str(e)
-        log.warning("failed to label PR #%s: %s", pr.number, e)
-    return {
-        "dry_run": False,
-        "url": pr.html_url,
-        "number": pr.number,
-        "labeled": labeled,
-        "label_error": label_error,
-    }
+        # Backstop for the dangling-branch path above (and any create race):
+        # GitHub rejects a duplicate PR for the same head with 422 "A pull
+        # request already exists". Return the existing one rather than failing.
+        if not _is_already_exists(e):
+            raise
+        pr = _find_open_pr_for_head(repo, branch)
+        if pr is None:
+            raise
+        reused = True
+
+    # Labels are best-effort (see _finalize_pr) and run for new + reused PRs.
+    return _finalize_pr(pr, reused=reused)
