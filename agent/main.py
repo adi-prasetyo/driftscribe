@@ -806,6 +806,15 @@ def _do_rollback(
     return response
 
 
+# Workloads with no autonomous /recheck pipeline — chat-only by design.
+# ``explore`` is strictly read-only and exists only as a free-form /chat
+# surface; it has no DecisionProposal renderer / observation pass, so
+# /recheck refuses it early (see the guard at the top of _do_recheck).
+# Kept as an explicit set (not a schema flag) to mirror the inline
+# upgrade /recheck refusal below — both are routing facts owned here.
+CHAT_ONLY_WORKLOAD_NAMES: frozenset[str] = frozenset({"explore"})
+
+
 async def _do_recheck(
     trigger: str, force: bool = False, *, workload: str = "drift"
 ) -> dict:
@@ -832,6 +841,25 @@ async def _do_recheck(
     Async on the outer frame only — the ADK agent's `run_agent` is async, but
     `classify`, `validate`, `_render_for`, and `_perform_action` stay sync.
     """
+    # Chat-only workloads have NO autonomous /recheck path. This guard
+    # fires FIRST — before settings load and before load_workload — on
+    # purpose: explore's manifest lists read workers whose URL env vars
+    # may be unset in a given deploy, so resolving it first would surface
+    # a misleading "workload not deployed" 503 instead of the honest
+    # "chat-only, no autonomous path" reason. The invariant is "no
+    # /recheck for chat-only, regardless of deploy wiring" — so it must
+    # not depend on settings or resolution. (Codex review 2026-05-25.)
+    # /chat is the only surface for these.
+    if workload in CHAT_ONLY_WORKLOAD_NAMES:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"/recheck workload={workload!r} is not available: it is a "
+                f"chat-only workload with no autonomous /recheck path. "
+                f"Use /chat for {workload}."
+            ),
+        )
+
     s = get_settings()
 
     # Phase 17.A.3 (Codex review): workload pre-resolve runs BEFORE
@@ -1184,7 +1212,7 @@ class RecheckRequest(BaseModel):
     working without a body shape change.
     """
 
-    workload: Literal["drift", "upgrade"] = "drift"
+    workload: Literal["drift", "upgrade", "explore"] = "drift"
 
     model_config = ConfigDict(extra="forbid")
 
@@ -1851,16 +1879,16 @@ class ChatRequest(BaseModel):
     §"session memory").
 
     Phase 17.A.3: ``workload`` selects the workload-scoped agent. The
-    Literal closes the set to ``{"drift", "upgrade"}`` — pydantic
-    rejects any other value with 422 before the handler body runs,
-    which prevents a malformed request from reaching the workload
+    Literal closes the set to ``{"drift", "upgrade", "explore"}`` —
+    pydantic rejects any other value with 422 before the handler body
+    runs, which prevents a malformed request from reaching the workload
     loader's exception path. Defaults to ``"drift"`` so pre-17 callers
     that omit the field route as they always did.
     """
 
     prompt: str
     session_id: str | None = None
-    workload: Literal["drift", "upgrade"] = "drift"
+    workload: Literal["drift", "upgrade", "explore"] = "drift"
 
     model_config = ConfigDict(extra="forbid")
 

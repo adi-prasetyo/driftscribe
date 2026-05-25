@@ -290,9 +290,10 @@ def test_recheck_missing_developer_knowledge_api_key_returns_503(monkeypatch) ->
 def test_chat_unknown_workload_returns_422() -> None:
     """``POST /chat`` with ``workload="does_not_exist"`` → 422.
 
-    The ChatRequest's ``workload`` field is ``Literal["drift", "upgrade"]``;
-    pydantic rejects unknown values before the handler body runs. The
-    response shape is FastAPI's standard validation error envelope.
+    The ChatRequest's ``workload`` field is
+    ``Literal["drift", "upgrade", "explore"]``; pydantic rejects unknown
+    values before the handler body runs. The response shape is FastAPI's
+    standard validation error envelope.
     """
     fake = AsyncMock()
     with patch("agent.adk_agent.run_chat", fake):
@@ -342,6 +343,34 @@ def test_recheck_upgrade_workload_returns_503_on_classifier_path(monkeypatch) ->
     detail = r.json()["detail"].lower()
     assert "upgrade" in detail
     assert "not deployed" in detail or "not configured" in detail
+
+
+def test_recheck_explore_workload_returns_503_chat_only_before_resolution() -> None:
+    """``POST /recheck`` with ``{"workload": "explore"}`` → 503, and the
+    guard fires BEFORE ``load_workload`` runs.
+
+    Explore is a chat-only workload (no autonomous /recheck path). Its
+    refusal lives at the very top of ``_do_recheck``, ahead of the
+    workload pre-resolve — on purpose: explore's manifest lists read
+    workers whose URL env vars may be unset, so resolving first would
+    surface a misleading "not deployed" 503 instead of the honest
+    "chat-only" reason. We prove the ordering by patching
+    ``load_workload`` and asserting it is NEVER called.
+
+    No worker env is set and no auth header is sent (auth is permissive
+    in the test env, same as the upgrade /recheck tests above).
+    """
+    with patch("agent.main.load_workload") as m_load:
+        client = TestClient(app)
+        r = client.post("/recheck", json={"workload": "explore"})
+
+    assert r.status_code == 503, r.text
+    detail = r.json()["detail"].lower()
+    assert "explore" in detail
+    assert "chat-only" in detail or "chat only" in detail
+    assert "/chat" in detail
+    # The early guard short-circuits before any workload resolution.
+    m_load.assert_not_called()
 
 
 def test_recheck_classifier_path_refuses_non_drift_workload_even_when_resolvable(

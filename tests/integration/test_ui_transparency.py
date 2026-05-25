@@ -52,6 +52,13 @@ def test_ui_transparency_route_has_hook_landmarks():
     assert 'id="prompt-input"' in body
     assert 'id="workload-select"' in body
     assert 'id="send-btn"' in body
+    # Workload dropdown: three options with domain-led labels. The
+    # option VALUES (drift/upgrade/explore) are the API contract sent to
+    # /chat; the visible labels are operator-facing. Pin both so a label
+    # rename or a dropped option is a reviewed change.
+    assert '<option value="drift">Cloud Run config</option>' in body
+    assert '<option value="upgrade">Dependencies</option>' in body
+    assert '<option value="explore">Explore (read-only)</option>' in body
     # Trace badge + final-response card (19.B.3)
     assert 'id="trace-badge"' in body
     assert 'id="final-response-card"' in body

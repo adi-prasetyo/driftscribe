@@ -46,6 +46,7 @@ from agent.workloads.registry import (
     WorkloadResolution,
     load_workload,
     resolve_upgrade_target,
+    workload_contract_path,
 )
 
 __all__ = [
@@ -70,4 +71,5 @@ __all__ = [
     "resolve_upgrade_target",
     "reset_workload",
     "set_workload",
+    "workload_contract_path",
 ]

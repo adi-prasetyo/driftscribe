@@ -1,0 +1,71 @@
+# Explore workload manifest — chat-only, strictly read-only.
+#
+# Same security model as the drift/upgrade manifests: symbolic names
+# only. The central registry (agent/workloads/registry.py) resolves each
+# name to a real callable or WorkerEndpoint. URLs / secrets / repos /
+# audiences NEVER appear here. Anything referenced that isn't in
+# TOOL_REGISTRY / WORKER_REGISTRY fails coordinator boot loudly.
+#
+# What makes "explore" different from drift/upgrade:
+# - It NARROWS capability instead of widening it. Its enabled_tool_names
+#   are a read-only SUBSET of tools the other workloads already have; it
+#   lists ZERO mutation tools (no docs PR, no rollback, no PR
+#   open/close/merge) and not even ``notify``. The read-only guarantee is
+#   pinned by tests/unit/test_coordinator_tool_inventory.py (explore's
+#   tools must be disjoint from the mutation-tool set).
+# - It is CHAT-ONLY. There is no autonomous /recheck path: /recheck
+#   refuses ``explore`` early (agent/main.py::CHAT_ONLY_WORKLOAD_NAMES),
+#   so it needs no decision-rules contract and no action vocabulary.
+# - Every tool it lists is backed by a strictly read-only credential
+#   (drift_reader: Cloud Run read IAM; upgrade_reader: a fine-grained PAT
+#   with Contents:Read only; load_contract: local file; the MCP doc tools:
+#   read-only). ``search_recent_prs`` is deliberately EXCLUDED because it
+#   rides the coordinator's write-capable GitHub token — including it
+#   would put a write-capable credential in a "strictly read-only"
+#   workload (Codex review 2026-05-25).
+
+name: explore
+display_name: "Explore (read-only)"
+description: >
+  Read-only investigation across infra and code. Inspects a Cloud Run
+  service's live env vars, the repo's declared ops-contract, the
+  dependency lockfile, and authoritative developer docs — then reports.
+  It cannot change anything: no PR, no rollback, no notification.
+
+# The single prompt file. There is intentionally no chat_system_prompt_file:
+# explore is chat-only, so /chat falls back to system_prompt (the registry
+# resolves chat_system_prompt to system_prompt when the field is absent).
+# The /recheck-only framing other workloads use does not apply here.
+system_prompt_file: system_prompt.md
+
+# No contract_file: explore is read-only and makes no decisions, so it
+# has no decision-rules contract. (It can still READ drift's baked-in
+# ops-contract via the load_contract tool, which reads CONTRACT_PATH from
+# settings, independent of this field.)
+
+# Read-only tool subset. Every name resolves to a real callable in
+# TOOL_REGISTRY. NO mutation tools, NO notify, NO search_recent_prs.
+enabled_tool_names:
+  - drift_read_live_env
+  - upgrade_read_dependencies
+  - load_contract
+  - search_developer_docs
+  - retrieve_developer_doc
+
+# Only the two read workers. drift_docs / drift_rollback / upgrade_docs
+# (the mutation workers) and notifier are deliberately absent — explore
+# cannot reach a write surface. NOTE: worker_names is a manifest/audit
+# field validated at load time (the URL env vars must be set); the real
+# read-only guarantee is the enabled_tool_names subset above, since tools
+# call workers by hardcoded name through worker_client, not via this list.
+worker_names:
+  - drift_reader
+  - upgrade_reader
+
+# Chat-only: no autonomous observation source. "none" is a declarative
+# marker (nothing in code switches on observation_kind); /recheck is
+# route-refused for explore regardless.
+observation_kind: none
+
+# No decisions — explore never proposes an action.
+action_names: []

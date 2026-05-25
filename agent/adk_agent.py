@@ -51,13 +51,17 @@ to do is denied by capability — there is no general "execute shell" or
 "make HTTP request" surface.
 
 **Per-workload tool inventories (Phase 17.A.4):**
-:data:`DRIFT_WORKLOAD_TOOL_NAMES` and :data:`UPGRADE_WORKLOAD_TOOL_NAMES`
-mirror each workload YAML's ``enabled_tool_names`` field — the symbolic
-filter applied per workload over the global registry. They are distinct
-from :data:`COORDINATOR_TOOLS` (the Python-callable registration manifest);
-see the block comment around the constants below for the rationale, the
-tuple-vs-frozenset choice, and the three-way YAML ⇄ code ⇄ runtime
-equality enforced by ``tests/unit/test_coordinator_tool_inventory.py``.
+:data:`DRIFT_WORKLOAD_TOOL_NAMES`, :data:`UPGRADE_WORKLOAD_TOOL_NAMES`, and
+:data:`EXPLORE_WORKLOAD_TOOL_NAMES` mirror each workload YAML's
+``enabled_tool_names`` field — the symbolic filter applied per workload
+over the global registry. They are distinct from :data:`COORDINATOR_TOOLS`
+(the Python-callable registration manifest); see the block comment around
+the constants below for the rationale, the tuple-vs-frozenset choice, and
+the three-way YAML ⇄ code ⇄ runtime equality enforced by
+``tests/unit/test_coordinator_tool_inventory.py``. ``explore`` is the
+chat-only, strictly read-only workload: its inventory is a read-only
+SUBSET of the others and adds no new callable, so the "12 tools" count
+above is unchanged.
 """
 
 import json
@@ -224,6 +228,23 @@ UPGRADE_WORKLOAD_TOOL_NAMES: tuple[str, ...] = (
     # their registry entries to callables can re-add them here.
 )
 
+# The chat-only, strictly read-only workload. Its tools are a read-only
+# SUBSET of what drift/upgrade already expose — it adds NO new callable to
+# COORDINATOR_TOOLS. By construction it lists ZERO mutation tools (no
+# patch/rollback/PR-open/close/merge) and not even ``notify`` or
+# ``search_recent_prs`` (the latter rides the write-capable coordinator
+# PAT). The read-only guarantee is pinned in
+# ``tests/unit/test_coordinator_tool_inventory.py`` as a disjointness
+# assertion against the mutation-tool set — see ``_MUTATION_TOOL_NAMES``
+# there. Order mirrors ``workloads/explore/workload.yaml`` (tool-order pin).
+EXPLORE_WORKLOAD_TOOL_NAMES: tuple[str, ...] = (
+    "drift_read_live_env",
+    "upgrade_read_dependencies",
+    "load_contract",
+    "search_developer_docs",
+    "retrieve_developer_doc",
+)
+
 
 # --------------------------------------------------------------------------- #
 # Structured drift-triage agent (/recheck)
@@ -332,7 +353,8 @@ def build_agent(workload: WorkloadResolution) -> Agent:
 
     ADK requires agent names to be valid Python identifiers (letters,
     digits, underscores; no hyphens). The workload name is from the
-    closed Literal ``{"drift", "upgrade"}``, both identifier-safe.
+    closed Literal ``{"drift", "upgrade", "explore"}``, all
+    identifier-safe.
     """
     return Agent(
         name=f"driftscribe_{workload.spec.name}",

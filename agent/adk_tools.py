@@ -252,22 +252,25 @@ def _get_upgrade_target():
     ``_get_upgrade_target.cache_clear()`` (analogous to
     :func:`get_settings.cache_clear`).
 
-    The resolution loads ``workloads/upgrade/workload.yaml`` first to
-    locate the contract file, then loads that contract — the same path
-    the coordinator's ``/chat`` and ``/recheck`` handlers walk during
-    request pre-resolve. By the time this tool is called via the LLM,
-    the contract has already been validated end-to-end at request
-    entry, so a parse failure here would indicate a mid-request env
-    change; we still allow the load to surface its own error class so
-    the failure stays diagnosable.
+    It resolves ONLY the upgrade workload's contract path (via
+    :func:`agent.workloads.workload_contract_path`) and parses that
+    contract — it deliberately does NOT call ``load_workload("upgrade")``.
+    Full upgrade resolution would resolve the upgrade workload's mutation
+    workers (``upgrade_docs``) and the notifier, requiring their URL env
+    vars. This tool is also exposed by the chat-only, read-only
+    ``explore`` workload, which must function without those write-worker
+    env vars set; coupling a read tool to write-worker config would break
+    read-only/partial-deploy isolation (Codex review 2026-05-25). The
+    contract-path resolver keeps the same path-traversal + name-match
+    safety as ``load_workload``, minus the worker resolution.
     """
     # Lazy imports — these modules pull pydantic + yaml validation; the
     # tool callable only needs them on the upgrade workload path.
     from agent.upgrade_contract import load_upgrade_contract
-    from agent.workloads import load_workload
+    from agent.workloads import workload_contract_path
 
-    resolution = load_workload("upgrade")
-    if resolution.contract_path is None:
+    contract_path = workload_contract_path("upgrade")
+    if contract_path is None:
         # Defense in depth: the upgrade workload's YAML pins
         # ``contract_file: contract.yaml`` so this branch is unreachable
         # in a well-formed deploy. Surface a clear error so a future
@@ -278,7 +281,7 @@ def _get_upgrade_target():
             "cannot derive target_repo / lockfile_path for the LLM "
             "tool surface"
         )
-    contract = load_upgrade_contract(resolution.contract_path)
+    contract = load_upgrade_contract(contract_path)
     return contract.resolve_target()
 
 

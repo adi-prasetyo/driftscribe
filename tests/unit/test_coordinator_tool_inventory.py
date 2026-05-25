@@ -57,6 +57,7 @@ from agent.adk_agent import (
     CHAT_ONLY_TOOL_NAMES,
     COORDINATOR_TOOLS,
     DRIFT_WORKLOAD_TOOL_NAMES,
+    EXPLORE_WORKLOAD_TOOL_NAMES,
     UPGRADE_WORKLOAD_TOOL_NAMES,
     build_agent,
     build_chat_agent,
@@ -130,6 +131,38 @@ _UPGRADE_ONLY_TOOL_NAMES = frozenset({
     "upgrade_propose_pr",
     "upgrade_close_pr",
     "upgrade_merge_pr",
+})
+
+# The read-only invariant for the explore workload. Every symbolic tool
+# name that EITHER mutates a system OR rides a write-capable credential.
+# ``explore`` (chat-only, strictly read-only) MUST be disjoint from this
+# set — that is the load-bearing guarantee behind the "Explore (read-only)"
+# label. Note ``search_recent_prs`` is here NOT because it writes (its code
+# only reads) but because it rides the coordinator's write-capable GitHub
+# PAT; credential containment is part of "strictly read-only" (Codex review
+# 2026-05-25). ``notify`` is a side-effect (posts a webhook), so it counts
+# as a mutation for this purpose too. Hardcoded as the audit point, same as
+# the other constants here.
+_MUTATION_TOOL_NAMES = frozenset({
+    "drift_patch_docs",
+    "drift_propose_rollback",
+    "upgrade_propose_pr",
+    "upgrade_close_pr",
+    "upgrade_merge_pr",
+    "notify",
+    "search_recent_prs",
+})
+
+# Mutation WORKERS no read-only workload may wire in. This is a secondary,
+# manifest-level guard (the primary read-only guarantee is the tool-set
+# disjointness above, since tools call workers by hardcoded name through
+# worker_client, not via the manifest's worker_names). Still worth pinning:
+# a manifest that listed a mutation worker would at minimum be misleading,
+# and would fail-load loudly if its URL env var were unset.
+_MUTATION_WORKER_NAMES = frozenset({
+    "drift_docs",
+    "drift_rollback",
+    "upgrade_docs",
 })
 
 
@@ -255,10 +288,89 @@ def test_upgrade_workload_enabled_tools_match_expected_set():
     )
 
 
+def _load_explore_spec() -> WorkloadSpec:
+    """Parse ``workloads/explore/workload.yaml`` directly (no env needed).
+
+    Like the upgrade enabled-tools test, the audit point here is the
+    YAML ⇄ constant equality, which doesn't depend on the read-worker
+    URL env vars being set.
+    """
+    yaml_path = (
+        Path(__file__).resolve().parents[2]
+        / "workloads"
+        / "explore"
+        / "workload.yaml"
+    )
+    raw = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+    return WorkloadSpec.model_validate(raw)
+
+
+def test_explore_workload_enabled_tools_match_expected_set():
+    """The explore workload's enabled_tool_names must equal
+    :data:`EXPLORE_WORKLOAD_TOOL_NAMES` exactly — same names, same order.
+    Mirrors the drift/upgrade inventory pins (three-way YAML ⇄ code
+    constant ⇄ runtime equality)."""
+    actual = tuple(_load_explore_spec().enabled_tool_names)
+
+    assert actual == EXPLORE_WORKLOAD_TOOL_NAMES, (
+        f"Explore workload tool inventory drifted.\n"
+        f"  Expected (ordered): {list(EXPLORE_WORKLOAD_TOOL_NAMES)}\n"
+        f"  Actual   (ordered): {list(actual)}\n"
+        f"  Added:    {sorted(set(actual) - set(EXPLORE_WORKLOAD_TOOL_NAMES))}\n"
+        f"  Removed:  {sorted(set(EXPLORE_WORKLOAD_TOOL_NAMES) - set(actual))}\n"
+        f"If this change is intentional, update both the YAML at "
+        f"workloads/explore/workload.yaml AND EXPLORE_WORKLOAD_TOOL_NAMES "
+        f"in agent/adk_agent.py."
+    )
+
+
+def test_explore_workload_is_strictly_read_only():
+    """THE read-only guarantee behind the "Explore (read-only)" label:
+    the explore workload exposes ZERO mutation tools.
+
+    ``set(EXPLORE_WORKLOAD_TOOL_NAMES)`` must be disjoint from
+    :data:`_MUTATION_TOOL_NAMES` (every tool that writes OR rides a
+    write-capable credential). A future PR that slipped, say,
+    ``upgrade_merge_pr`` or ``notify`` or ``search_recent_prs`` into
+    explore's YAML — and dutifully updated EXPLORE_WORKLOAD_TOOL_NAMES to
+    match — would still fail HERE, which is the point: the inventory pin
+    catches the rename, this test catches the capability widening.
+    """
+    leaked = set(EXPLORE_WORKLOAD_TOOL_NAMES) & _MUTATION_TOOL_NAMES
+    assert not leaked, (
+        f"The explore workload (labelled read-only) enables mutation "
+        f"tool(s) {sorted(leaked)}. Explore must expose ONLY read tools. "
+        f"Remove them from workloads/explore/workload.yaml and "
+        f"EXPLORE_WORKLOAD_TOOL_NAMES, or reconsider whether 'explore' is "
+        f"still read-only."
+    )
+
+
+def test_explore_workload_wires_no_mutation_worker():
+    """Secondary manifest-level guard: explore lists no mutation worker.
+
+    The primary read-only guarantee is the tool-set disjointness above
+    (tools call workers by hardcoded name through worker_client, not via
+    the manifest's worker_names). But a manifest that listed
+    ``drift_docs`` / ``drift_rollback`` / ``upgrade_docs`` would be
+    misleading at best, so pin its absence too.
+    """
+    worker_names = set(_load_explore_spec().worker_names)
+    leaked = worker_names & _MUTATION_WORKER_NAMES
+    assert not leaked, (
+        f"The explore workload wires mutation worker(s) {sorted(leaked)} "
+        f"in its worker_names. A strictly read-only workload must list "
+        f"only read workers (drift_reader / upgrade_reader). Remove them "
+        f"from workloads/explore/workload.yaml."
+    )
+
+
 # Union of every symbolic tool name any workload references. Parametrize-id
 # uses the name itself so a failure points directly at the offender.
 _ALL_WORKLOAD_TOOL_NAMES = sorted(
-    set(DRIFT_WORKLOAD_TOOL_NAMES) | set(UPGRADE_WORKLOAD_TOOL_NAMES)
+    set(DRIFT_WORKLOAD_TOOL_NAMES)
+    | set(UPGRADE_WORKLOAD_TOOL_NAMES)
+    | set(EXPLORE_WORKLOAD_TOOL_NAMES)
 )
 
 
@@ -396,6 +508,35 @@ def test_drift_workload_tool_order_pin(drift_workload_env):
         f"  Actual:   {actual_callable_order}\n"
         f"Either the YAML order, the TOOL_REGISTRY resolution, or "
         f"build_agent's tool-list construction has reordered the tools."
+    )
+
+
+def test_explore_workload_tool_order_pin(explore_workload_env):
+    """The order of tools the explore chat agent receives must equal the
+    order in :data:`EXPLORE_WORKLOAD_TOOL_NAMES` (which mirrors the YAML).
+
+    Explore is chat-only, so it is served via :func:`build_chat_agent`
+    (not :func:`build_agent`) — this also confirms the chat builder
+    surfaces exactly the five read tools, in order, for a workload that
+    happens to list no CHAT_ONLY_TOOL_NAMES tools to filter.
+    """
+    from agent.workloads import load_workload
+    from agent.workloads.registry import TOOL_REGISTRY
+
+    resolution = load_workload("explore")
+    agent = build_chat_agent(resolution)
+    actual_callable_order = [t.__name__ for t in agent.tools]
+
+    expected_callable_order = [
+        TOOL_REGISTRY[symbolic].__name__
+        for symbolic in EXPLORE_WORKLOAD_TOOL_NAMES
+    ]
+
+    assert actual_callable_order == expected_callable_order, (
+        f"Explore chat agent tool order does not match "
+        f"EXPLORE_WORKLOAD_TOOL_NAMES.\n"
+        f"  Expected: {expected_callable_order}\n"
+        f"  Actual:   {actual_callable_order}"
     )
 
 

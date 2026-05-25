@@ -19,8 +19,11 @@ class WorkloadSpec(BaseModel):
 
     Attributes:
         name: workload identifier. Constrained to the closed set
-            ``{"drift", "upgrade"}`` so a YAML typo (``"drft"``) is
-            caught by pydantic, not by a later runtime branch.
+            ``{"drift", "upgrade", "explore"}`` so a YAML typo
+            (``"drft"``) is caught by pydantic, not by a later runtime
+            branch. ``"explore"`` is the chat-only, strictly read-only
+            workload (no autonomous ``/recheck`` path; see the
+            ``observation_kind="none"`` note below).
         display_name: short human-readable label (operator-facing).
         description: one-paragraph description of what this workload
             detects and acts on. Surfaces in operator UI / docs.
@@ -51,8 +54,12 @@ class WorkloadSpec(BaseModel):
         worker_names: list of *symbolic* worker names. Each must be a
             key in :data:`agent.workloads.registry.WORKER_REGISTRY`.
         observation_kind: the shape of input data this workload
-            ingests. Constrained to a closed set so adding a new
-            observation type requires an explicit schema change.
+            ingests for its autonomous ``/recheck`` pass. Constrained to
+            a closed set so adding a new observation type requires an
+            explicit schema change. ``"none"`` marks a chat-only
+            workload (``explore``) that has no autonomous observation
+            source — ``/recheck`` is route-refused for it, so this field
+            is declarative only.
         action_names: list of *symbolic* action names. Each must be a
             key in :data:`agent.workloads.registry.ACTION_REGISTRY`.
             Used to populate operator-facing pickers and to gate which
@@ -63,7 +70,7 @@ class WorkloadSpec(BaseModel):
     # point of the manifest schema is to keep the surface narrow.
     model_config = ConfigDict(extra="forbid")
 
-    name: Literal["drift", "upgrade"]
+    name: Literal["drift", "upgrade", "explore"]
     display_name: str
     description: str
     system_prompt_file: str
@@ -71,5 +78,5 @@ class WorkloadSpec(BaseModel):
     contract_file: str | None = None
     enabled_tool_names: list[str]
     worker_names: list[str]
-    observation_kind: Literal["cloud_run_env", "repo_lockfile"]
+    observation_kind: Literal["cloud_run_env", "repo_lockfile", "none"]
     action_names: list[str]
