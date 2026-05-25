@@ -65,10 +65,11 @@ _WORKER_URL_ENV: Final[dict[str, str]] = {
 # Each worker has exactly ONE *canonical* coordinator-facing endpoint.
 # A few workers expose extra endpoints reached via named wrappers that
 # hardcode the path — :func:`call_execute` / :func:`call_deny` for the
-# rollback worker's /execute & /deny, and :func:`call_close_pr` for the
-# upgrade_docs worker's /close. We never let the caller (and especially
-# never let the LLM) pick the endpoint path *freely* — the path is fixed
-# inside each wrapper, which is what keeps this a Layer 0-safe surface.
+# rollback worker's /execute & /deny, and :func:`call_close_pr` /
+# :func:`call_merge_pr` for the upgrade_docs worker's /close & /merge. We
+# never let the caller (and especially never let the LLM) pick the
+# endpoint path *freely* — the path is fixed inside each wrapper, which
+# is what keeps this a Layer 0-safe surface.
 #
 # Phase 17.C.4: the upgrade workers' canonical endpoints are ``/read``
 # (matching :func:`workers.upgrade_reader.main.read`) and ``/patch``
@@ -162,9 +163,10 @@ def call(worker: str, payload: dict, *, endpoint: str | None = None) -> dict:
             ``extra="forbid"`` so a typo here surfaces as a 422.
         endpoint: override the default endpoint. Only set by the named
             wrappers below (:func:`call_execute`, :func:`call_deny`,
-            :func:`call_close_pr`), each of which hardcodes a fixed path.
-            ADK tools never pass this argument directly — they go through
-            a wrapper, so the LLM can't pick an arbitrary endpoint.
+            :func:`call_close_pr`, :func:`call_merge_pr`), each of which
+            hardcodes a fixed path. ADK tools never pass this argument
+            directly — they go through a wrapper, so the LLM can't pick
+            an arbitrary endpoint.
 
     Raises:
         WorkerClientError: with status_code preserved from the worker
@@ -267,4 +269,23 @@ def call_close_pr(target_repo: str, pr_number: int, reason: str) -> dict:
         "upgrade_docs",
         {"target_repo": target_repo, "pr_number": pr_number, "reason": reason},
         endpoint="/close",
+    )
+
+
+def call_merge_pr(target_repo: str, pr_number: int) -> dict:
+    """Wrapper for the upgrade_docs worker's ``/merge`` endpoint.
+
+    Like :func:`call_close_pr`, this IS reachable from an ADK tool
+    (:func:`agent.adk_tools.upgrade_merge_pr_tool`) — keeping the endpoint
+    fixed here, rather than letting the tool pass ``endpoint=``, means the
+    LLM-facing surface never gets a way to pick the worker path. The
+    payload is intentionally minimal (no merge method, no check list): the
+    worker pins the merge strategy and the required-check allowlist as
+    deploy policy and re-validates ``target_repo`` + the PR's eligibility
+    and readiness defensively. This wrapper just routes.
+    """
+    return call(
+        "upgrade_docs",
+        {"target_repo": target_repo, "pr_number": pr_number},
+        endpoint="/merge",
     )

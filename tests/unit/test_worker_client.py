@@ -338,3 +338,38 @@ def test_call_close_pr_audience_is_root_url(_stub_mint_id_token) -> None:
     worker_client.call_close_pr("owner/repo", 1, "r")
     assert _stub_mint_id_token == [UPGRADE_DOCS_URL]
     assert all(not aud.endswith("/close") for aud in _stub_mint_id_token)
+
+
+# --------------------------------------------------------------------------- #
+# call_merge_pr: must hit upgrade_docs /merge, not /patch
+# --------------------------------------------------------------------------- #
+
+
+@respx.mock
+def test_call_merge_pr_hits_merge_endpoint_with_exact_payload() -> None:
+    """``call_merge_pr`` routes to the upgrade_docs worker's /merge
+    endpoint (not its canonical /patch) and sends exactly the two fields
+    the worker's MergePrRequest schema expects — no merge method, no
+    check list (both are deploy policy, never client-supplied)."""
+    route_patch = respx.post(f"{UPGRADE_DOCS_URL}/patch").respond(
+        200, json={"should": "not be called"}
+    )
+    route_merge = respx.post(f"{UPGRADE_DOCS_URL}/merge").respond(
+        200, json={"merged": True, "number": 1}
+    )
+    out = worker_client.call_merge_pr("owner/repo", 1)
+    assert out == {"merged": True, "number": 1}
+    assert route_merge.called
+    assert not route_patch.called
+    sent = json.loads(route_merge.calls.last.request.content)
+    assert sent == {"target_repo": "owner/repo", "pr_number": 1}
+
+
+@respx.mock
+def test_call_merge_pr_audience_is_root_url(_stub_mint_id_token) -> None:
+    """Audience binding holds for the /merge wrapper too — the minted
+    token's ``aud`` is the worker ROOT url, never the /merge path."""
+    respx.post(f"{UPGRADE_DOCS_URL}/merge").respond(200, json={"merged": True})
+    worker_client.call_merge_pr("owner/repo", 1)
+    assert _stub_mint_id_token == [UPGRADE_DOCS_URL]
+    assert all(not aud.endswith("/merge") for aud in _stub_mint_id_token)

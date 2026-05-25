@@ -67,6 +67,7 @@ enabled_tool_names:
   - upgrade_read_dependencies
   - upgrade_propose_pr
   - upgrade_close_pr
+  - upgrade_merge_pr
   - notify
   - search_recent_prs
   - search_developer_docs

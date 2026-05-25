@@ -1,10 +1,16 @@
+import datetime as dt
 from unittest.mock import MagicMock
 
 import pytest
 from github import GithubException, UnknownObjectException
 
 from agent.github_actions import open_docs_pr, open_drift_issue, open_escalation_issue
-from driftscribe_lib.github import PrNotEligibleError, close_pr
+from driftscribe_lib.github import (
+    PrMergeBlockedError,
+    PrNotEligibleError,
+    close_pr,
+    merge_pr,
+)
 
 
 def test_open_drift_issue_creates_labeled_issue():
@@ -393,5 +399,354 @@ def test_close_pr_comment_failure_is_best_effort():
     # The close itself still succeeded; only the audit comment failed.
     pr.edit.assert_called_once_with(state="closed")
     assert res["closed"] is True
+    assert res["comment_posted"] is False
+    assert res["comment_error"]
+
+
+# merge_pr -------------------------------------------------------------- #
+
+
+def _check_run(name, *, status="completed", conclusion="success", minute=0):
+    cr = MagicMock()
+    cr.name = name
+    cr.status = status
+    cr.conclusion = conclusion
+    cr.completed_at = dt.datetime(2026, 5, 25, 12, minute, tzinfo=dt.timezone.utc)
+    cr.started_at = cr.completed_at
+    return cr
+
+
+def _merge_pr_obj(
+    *,
+    merged=False,
+    state="open",
+    draft=False,
+    mergeable=True,
+    mergeable_state="clean",
+):
+    """A PR that, by default, passes the full merge gate.
+
+    MagicMock auto-creates truthy attributes, so the merge-relevant flags
+    (``merged`` / ``draft`` / ``mergeable`` / ``mergeable_state``) MUST be
+    set explicitly or every gate would misfire.
+    """
+    pr = MagicMock()
+    pr.get_labels.return_value = [_label("driftscribe"), _label("docs")]
+    pr.head.ref = "upgrade/lodash-4-17-21"
+    pr.head.sha = "headsha1234567"
+    pr.base.ref = "main"
+    pr.merged = merged
+    pr.state = state
+    pr.draft = draft
+    pr.mergeable = mergeable
+    pr.mergeable_state = mergeable_state
+    pr.html_url = "https://github.com/owner/repo/pull/1"
+    pr.number = 1
+    result = MagicMock()
+    result.merged = True
+    result.sha = "mergedsha999"
+    result.message = "Pull Request successfully merged"
+    pr.merge.return_value = result
+    return pr
+
+
+def _repo_with(pr, check_runs=None):
+    repo = MagicMock()
+    repo.get_pull.return_value = pr
+    commit = MagicMock()
+    commit.get_check_runs.return_value = (
+        check_runs if check_runs is not None else [_check_run("lint-test")]
+    )
+    repo.get_commit.return_value = commit
+    return repo
+
+
+def _merge_kwargs(**overrides):
+    base = dict(
+        pr_number=1,
+        dry_run=False,
+        merge_method="squash",
+        required_checks={"lint-test"},
+        required_label="driftscribe",
+        required_head_prefix="upgrade/",
+        required_base="main",
+    )
+    base.update(overrides)
+    return base
+
+
+@pytest.fixture(autouse=True)
+def _no_sleep(monkeypatch):
+    # The mergeability retry sleeps 1.5s × 3 — neutralize it so the
+    # "unknown after retries" test doesn't add ~4.5s to the suite.
+    monkeypatch.setattr("driftscribe_lib.github.time.sleep", lambda _s: None)
+
+
+def test_merge_pr_dry_run_returns_preview_without_api_calls():
+    repo = MagicMock()
+    res = merge_pr(repo, **_merge_kwargs(dry_run=True))
+    repo.get_pull.assert_not_called()
+    assert res == {"dry_run": True, "number": 1, "would_merge": True}
+
+
+def test_merge_pr_merges_eligible_green_pr_with_head_sha_and_squash():
+    pr = _merge_pr_obj()
+    repo = _repo_with(pr)
+
+    res = merge_pr(repo, **_merge_kwargs())
+
+    pr.merge.assert_called_once_with(merge_method="squash", sha="headsha1234567")
+    repo.get_commit.assert_called_once_with("headsha1234567")
+    pr.create_issue_comment.assert_called_once()
+    assert res["merged"] is True
+    assert res["already_merged"] is False
+    assert res["sha"] == "mergedsha999"
+    assert res["merge_method"] == "squash"
+    assert res["comment_posted"] is True
+
+
+def test_merge_pr_refuses_pr_missing_required_label():
+    pr = _merge_pr_obj()
+    pr.get_labels.return_value = [_label("docs")]
+    repo = _repo_with(pr)
+    with pytest.raises(PrNotEligibleError) as exc:
+        merge_pr(repo, **_merge_kwargs())
+    assert exc.value.status_code == 403
+    pr.merge.assert_not_called()
+
+
+def test_merge_pr_refuses_wrong_head_prefix():
+    pr = _merge_pr_obj()
+    pr.head.ref = "feature/random"
+    repo = _repo_with(pr)
+    with pytest.raises(PrNotEligibleError) as exc:
+        merge_pr(repo, **_merge_kwargs())
+    assert exc.value.status_code == 403
+    pr.merge.assert_not_called()
+
+
+def test_merge_pr_refuses_wrong_base():
+    pr = _merge_pr_obj()
+    pr.base.ref = "production"
+    repo = _repo_with(pr)
+    with pytest.raises(PrNotEligibleError) as exc:
+        merge_pr(repo, **_merge_kwargs())
+    assert exc.value.status_code == 403
+    pr.merge.assert_not_called()
+
+
+def test_merge_pr_raises_404_when_pr_not_found():
+    repo = MagicMock()
+    repo.get_pull.side_effect = UnknownObjectException(404, "not found", {})
+    with pytest.raises(PrNotEligibleError) as exc:
+        merge_pr(repo, **_merge_kwargs(pr_number=999))
+    assert exc.value.status_code == 404
+
+
+def test_merge_pr_idempotent_when_already_merged():
+    pr = _merge_pr_obj(merged=True, state="closed")
+    repo = _repo_with(pr)
+
+    res = merge_pr(repo, **_merge_kwargs())
+
+    pr.merge.assert_not_called()
+    pr.create_issue_comment.assert_not_called()
+    assert res["merged"] is True
+    assert res["already_merged"] is True
+
+
+def test_merge_pr_blocks_closed_unmerged_pr():
+    pr = _merge_pr_obj(merged=False, state="closed")
+    repo = _repo_with(pr)
+    with pytest.raises(PrMergeBlockedError) as exc:
+        merge_pr(repo, **_merge_kwargs())
+    assert exc.value.status_code == 409
+    pr.merge.assert_not_called()
+
+
+def test_merge_pr_blocks_draft_pr():
+    pr = _merge_pr_obj(draft=True)
+    repo = _repo_with(pr)
+    with pytest.raises(PrMergeBlockedError) as exc:
+        merge_pr(repo, **_merge_kwargs())
+    assert exc.value.status_code == 409
+    pr.merge.assert_not_called()
+
+
+def test_merge_pr_blocks_when_mergeability_unknown_after_retries():
+    pr = _merge_pr_obj(mergeable=None)
+    repo = _repo_with(pr)  # get_pull always returns the same None-mergeable PR
+    with pytest.raises(PrMergeBlockedError) as exc:
+        merge_pr(repo, **_merge_kwargs())
+    assert exc.value.status_code == 409
+    assert "computing" in exc.value.reason
+    pr.merge.assert_not_called()
+
+
+def test_merge_pr_blocks_when_not_mergeable():
+    pr = _merge_pr_obj(mergeable=False, mergeable_state="dirty")
+    repo = _repo_with(pr)
+    with pytest.raises(PrMergeBlockedError) as exc:
+        merge_pr(repo, **_merge_kwargs())
+    assert exc.value.status_code == 409
+    pr.merge.assert_not_called()
+
+
+def test_merge_pr_reauthorizes_after_retry_blocks_retargeted_base():
+    # The PR was eligible at first read (mergeable still computing → retry),
+    # but during our wait it was retargeted off main. The post-retry
+    # re-authorization must catch the base change — sha= alone wouldn't.
+    stale = _merge_pr_obj(mergeable=None)  # forces the retry path
+    retargeted = _merge_pr_obj(mergeable=True)
+    retargeted.base.ref = "production"
+    repo = MagicMock()
+    repo.get_pull.side_effect = [stale, retargeted]
+    commit = MagicMock()
+    commit.get_check_runs.return_value = [_check_run("lint-test")]
+    repo.get_commit.return_value = commit
+
+    with pytest.raises(PrNotEligibleError) as exc:
+        merge_pr(repo, **_merge_kwargs())
+    assert exc.value.status_code == 403
+    retargeted.merge.assert_not_called()
+
+
+def test_merge_pr_reauthorizes_after_retry_returns_already_merged():
+    # Someone merged the PR during our mergeability wait — the post-retry
+    # re-check returns the idempotent already-merged result, not a re-merge.
+    stale = _merge_pr_obj(mergeable=None)
+    just_merged = _merge_pr_obj(merged=True, state="closed", mergeable=True)
+    repo = MagicMock()
+    repo.get_pull.side_effect = [stale, just_merged]
+
+    res = merge_pr(repo, **_merge_kwargs())
+
+    assert res["already_merged"] is True
+    just_merged.merge.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "state",
+    # The first four are GitHub states we explicitly never merge; the last
+    # two pin the fail-closed allowlist — an unrecognized/future state and
+    # a None state must be refused, not merged blind into main.
+    ["dirty", "behind", "blocked", "unknown", "has_hooks", None],
+)
+def test_merge_pr_blocks_states_outside_allowlist(state):
+    pr = _merge_pr_obj(mergeable=True, mergeable_state=state)
+    repo = _repo_with(pr)
+    with pytest.raises(PrMergeBlockedError) as exc:
+        merge_pr(repo, **_merge_kwargs())
+    assert exc.value.status_code == 409
+    pr.merge.assert_not_called()
+
+
+def test_merge_pr_allows_unstable_state_when_required_checks_green():
+    # ``unstable`` = mergeable but a NON-required check is non-green. Our
+    # explicit required-check allowlist governs this — a green ``lint-test``
+    # must still merge despite the unstable rollup. This is the whole point
+    # of the allowlist vs. requiring ``mergeable_state == "clean"``.
+    pr = _merge_pr_obj(mergeable=True, mergeable_state="unstable")
+    repo = _repo_with(pr, check_runs=[_check_run("lint-test")])
+
+    res = merge_pr(repo, **_merge_kwargs())
+
+    pr.merge.assert_called_once()
+    assert res["merged"] is True
+
+
+def test_merge_pr_blocks_when_required_check_pending():
+    pr = _merge_pr_obj()
+    repo = _repo_with(
+        pr, check_runs=[_check_run("lint-test", status="in_progress", conclusion=None)]
+    )
+    with pytest.raises(PrMergeBlockedError) as exc:
+        merge_pr(repo, **_merge_kwargs())
+    assert exc.value.status_code == 409
+    pr.merge.assert_not_called()
+
+
+def test_merge_pr_blocks_when_required_check_failed():
+    pr = _merge_pr_obj()
+    repo = _repo_with(
+        pr, check_runs=[_check_run("lint-test", conclusion="failure")]
+    )
+    with pytest.raises(PrMergeBlockedError) as exc:
+        merge_pr(repo, **_merge_kwargs())
+    assert exc.value.status_code == 409
+    pr.merge.assert_not_called()
+
+
+def test_merge_pr_blocks_when_required_check_missing():
+    pr = _merge_pr_obj()
+    repo = _repo_with(pr, check_runs=[_check_run("some-other-check")])
+    with pytest.raises(PrMergeBlockedError) as exc:
+        merge_pr(repo, **_merge_kwargs())
+    assert exc.value.status_code == 409
+    assert "has not reported" in exc.value.reason
+    pr.merge.assert_not_called()
+
+
+def test_merge_pr_uses_latest_check_run_per_name():
+    # A re-run flips the result: the OLDER run passed, the NEWER failed.
+    # We must honor the latest (failure) and block, not pick "any success".
+    pr = _merge_pr_obj()
+    repo = _repo_with(
+        pr,
+        check_runs=[
+            _check_run("lint-test", conclusion="success", minute=0),
+            _check_run("lint-test", conclusion="failure", minute=5),
+        ],
+    )
+    with pytest.raises(PrMergeBlockedError) as exc:
+        merge_pr(repo, **_merge_kwargs())
+    assert exc.value.status_code == 409
+    pr.merge.assert_not_called()
+
+
+def test_merge_pr_blocks_when_no_required_checks_configured():
+    pr = _merge_pr_obj()
+    repo = _repo_with(pr)
+    with pytest.raises(PrMergeBlockedError) as exc:
+        merge_pr(repo, **_merge_kwargs(required_checks=set()))
+    assert exc.value.status_code == 409
+    assert "no required checks" in exc.value.reason
+    pr.merge.assert_not_called()
+
+
+def test_merge_pr_maps_github_merge_exception_to_409():
+    # Head-SHA race / disallowed method / state change at merge time.
+    pr = _merge_pr_obj()
+    pr.merge.side_effect = GithubException(
+        409, {"message": "Head branch was modified. Review and try the merge again."}, {}
+    )
+    repo = _repo_with(pr)
+    with pytest.raises(PrMergeBlockedError) as exc:
+        merge_pr(repo, **_merge_kwargs())
+    assert exc.value.status_code == 409
+
+
+def test_merge_pr_blocks_when_api_reports_not_merged():
+    pr = _merge_pr_obj()
+    result = MagicMock()
+    result.merged = False
+    result.message = "Base branch was modified"
+    pr.merge.return_value = result
+    repo = _repo_with(pr)
+    with pytest.raises(PrMergeBlockedError) as exc:
+        merge_pr(repo, **_merge_kwargs())
+    assert exc.value.status_code == 409
+
+
+def test_merge_pr_comment_failure_is_best_effort():
+    pr = _merge_pr_obj()
+    pr.create_issue_comment.side_effect = GithubException(403, "no perms", {})
+    repo = _repo_with(pr)
+
+    res = merge_pr(repo, **_merge_kwargs())
+
+    # The merge itself still succeeded; only the audit comment failed.
+    pr.merge.assert_called_once()
+    assert res["merged"] is True
     assert res["comment_posted"] is False
     assert res["comment_error"]

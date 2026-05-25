@@ -392,3 +392,34 @@ def upgrade_close_pr_tool(pr_number: int, reason: str) -> dict:
             "worker": e.worker,
             "status_code": e.status_code,
         }
+
+
+def upgrade_merge_pr_tool(pr_number: int) -> dict:
+    """Ask the Upgrade Docs Agent to merge an existing upgrade PR.
+
+    Use ONLY when the operator explicitly asks to merge an upgrade PR this
+    workload opened — never auto-merge after proposing one. You pick ONLY
+    the PR number; ``target_repo``, the squash merge strategy, and the
+    required-check allowlist are all pinned server-side. The worker
+    merges fail-closed: it refuses unless the PR is a DriftScribe upgrade
+    PR (``driftscribe`` label, ``upgrade/`` head, ``main`` base), open,
+    conflict-free, and its required CI check (``lint-test``) has passed on
+    the head commit.
+
+    **Best-effort, non-fatal.** A provenance refusal, a not-ready refusal
+    (checks pending/failed, merge conflict, draft), a not-found, or a
+    transport error is returned as a soft ``{"merged": False, "error":
+    ...}`` dict rather than raised — so the operator sees *why* the merge
+    was refused instead of the chat turn failing with a 502. Report the
+    outcome verbatim; do not retry within the same turn.
+    """
+    target = _get_upgrade_target()
+    try:
+        return worker_client.call_merge_pr(target.target_repo, pr_number)
+    except worker_client.WorkerClientError as e:
+        return {
+            "merged": False,
+            "error": f"could not merge PR #{pr_number}: {e.body or e.status_code}",
+            "worker": e.worker,
+            "status_code": e.status_code,
+        }

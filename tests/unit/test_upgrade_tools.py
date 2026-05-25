@@ -251,3 +251,59 @@ def test_upgrade_close_pr_tool_is_best_effort_on_worker_error(upgrade_workload_e
     assert out["worker"] == "upgrade_docs"
     assert out["status_code"] == 403
     assert "driftscribe" in out["error"]
+
+
+# --------------------------------------------------------------------------- #
+# upgrade_merge_pr_tool — authority-clean + best-effort
+# --------------------------------------------------------------------------- #
+
+
+def test_upgrade_merge_pr_tool_signature_excludes_authority_fields():
+    """The merge tool's LLM-facing signature carries ONLY pr_number. The
+    merge method, required-check allowlist, and target_repo are all
+    pinned server-side — even more important here than for close since
+    merge mutates main."""
+    from agent.adk_tools import upgrade_merge_pr_tool
+
+    params = set(inspect.signature(upgrade_merge_pr_tool).parameters)
+    assert params == {"pr_number"}, (
+        f"upgrade_merge_pr_tool signature drifted: {sorted(params)}. "
+        f"merge_method / required_checks / target_repo must stay server-side."
+    )
+
+
+def test_upgrade_merge_pr_tool_passes_resolved_target_repo(upgrade_workload_env):
+    """The tool resolves target_repo from UPGRADE_TARGET_REGISTRY and
+    forwards (target_repo, pr_number) to call_merge_pr — the LLM never
+    supplies the repo."""
+    from agent.adk_tools import upgrade_merge_pr_tool
+    from agent.workloads import UPGRADE_TARGET_REGISTRY
+
+    expected = UPGRADE_TARGET_REGISTRY["phase17_demo"]
+
+    with patch("agent.adk_tools.worker_client.call_merge_pr") as m:
+        m.return_value = {"merged": True, "number": 7}
+        out = upgrade_merge_pr_tool(pr_number=7)
+
+    m.assert_called_once_with(expected.target_repo, 7)
+    assert out == {"merged": True, "number": 7}
+
+
+def test_upgrade_merge_pr_tool_is_best_effort_on_worker_error(upgrade_workload_env):
+    """A WorkerClientError (e.g. the worker's 409 checks-not-green bounce)
+    is returned as a soft dict, NOT raised — so /chat reports the refusal
+    reason instead of mapping it to a 502."""
+    from agent.adk_tools import upgrade_merge_pr_tool
+    from agent.worker_client import WorkerClientError
+
+    with patch("agent.adk_tools.worker_client.call_merge_pr") as m:
+        m.side_effect = WorkerClientError(
+            409, "required check 'lint-test' concluded 'failure', not 'success'",
+            "upgrade_docs",
+        )
+        out = upgrade_merge_pr_tool(pr_number=7)
+
+    assert out["merged"] is False
+    assert out["worker"] == "upgrade_docs"
+    assert out["status_code"] == 409
+    assert "lint-test" in out["error"]
