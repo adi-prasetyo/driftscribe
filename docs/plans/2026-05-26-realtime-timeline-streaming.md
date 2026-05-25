@@ -444,7 +444,22 @@ def test_chat_sse_emits_error_frame_on_inloop_failure():
     assert err and err[0]["status_hint"] == 502
 ```
 
-> NOTE during implementation: the exact monkeypatching of `get_settings().use_adk` and the pre-flight stubs must match `agent/main.py`'s real names. Read the handler first and adjust the patch targets (e.g. `load_workload` may be imported into `agent.main`'s namespace). Fill the `...` placeholders with the same settings stub used in `test_chat_streams_sse_when_accept_header`. Keep the three assertions (SSE vs JSON, meta+done frames, error frame at 200) as the contract.
+> **Codex test-harness corrections — use these exact patterns:**
+> - **Auth:** `patch.object(agent_main, "verify_token")` does NOT work — `verify_token` is captured in the route's `Depends(...)` at decoration time (`main.py:1897`). Use dependency overrides (project pattern in `tests/integration/conftest.py:67`):
+>   ```python
+>   from agent.auth import verify_token
+>   agent_main.app.dependency_overrides[verify_token] = lambda: None
+>   try:
+>       ...  # make request
+>   finally:
+>       agent_main.app.dependency_overrides.pop(verify_token, None)
+>   ```
+> - **Settings:** `get_settings` is `@lru_cache` (`agent/config.py:58`). Enable ADK via env + cache-clear, and clear again in teardown:
+>   ```python
+>   monkeypatch.setenv("USE_ADK", "true")
+>   agent_main.get_settings.cache_clear()
+>   ```
+> - **Pre-flight stubs:** confirm whether `load_workload` / `_eager_resolve_upgrade_contract` are bound in `agent.main`'s namespace (read the imports at the top of `main.py`); patch wherever they actually resolve. Keep the three assertions (SSE vs JSON, meta+done frames, error frame at 200) as the contract.
 
 **Step 2: Run to verify it fails**
 
@@ -453,10 +468,11 @@ Expected: FAIL (no SSE branch).
 
 **Step 3: Implement**
 
-Add a shared mapper near `/chat`:
+Add a shared mapper near `/chat`. **Codex: keep the `workload` in the DK
+message** (existing tests assert substrings, but preserve the old shape):
 
 ```python
-def _chat_error_payload(e: Exception) -> tuple[int, str]:
+def _chat_error_payload(e: Exception, *, workload: str) -> tuple[int, str]:
     """Map a run_chat(_stream) exception to (status, detail).
 
     Shared by the JSON path (raised as HTTPException) and the SSE path
@@ -467,13 +483,16 @@ def _chat_error_payload(e: Exception) -> tuple[int, str]:
         return 502, f"chat worker call failed: {e}"
     if isinstance(e, MissingDeveloperKnowledgeApiKeyError):
         return 503, (
-            f"workload cannot reach the Developer Knowledge MCP: {e}. "
-            f"See Phase 17.B.1 for the Secret Manager binding that "
-            f"provisions DEVELOPER_KNOWLEDGE_API_KEY.")
+            f"workload {workload!r} cannot reach the Developer "
+            f"Knowledge MCP: {e}. See Phase 17.B.1 for the Secret "
+            f"Manager binding that provisions DEVELOPER_KNOWLEDGE_API_KEY.")
     if isinstance(e, RuntimeError):
         return 502, f"chat agent failed: {e}"
     return 500, f"chat agent failed unexpectedly: {e}"
 ```
+
+Pass `workload=workload` at both call sites (`_produce`'s except and the JSON
+path's except).
 
 Add the SSE helpers + generator (module-level):
 
@@ -500,7 +519,7 @@ async def _chat_sse(prompt: str, session_id: str | None, workload: str,
                 prompt, session_id=session_id, workload=workload):
                 await queue.put(("item", item))
         except Exception as e:  # noqa: BLE001 - mapped to a status hint
-            await queue.put(("error", _chat_error_payload(e)))
+            await queue.put(("error", _chat_error_payload(e, workload=workload)))
         finally:
             await queue.put(("end", None))
 
@@ -536,7 +555,19 @@ async def _chat_sse(prompt: str, session_id: str | None, workload: str,
         reset_trace_id(t_tok)
 ```
 
-In the `/chat` handler: add `request: Request` to the signature. Keep all pre-flight checks. After `_eager_resolve_upgrade_contract(resolution)` and before the JSON path, branch:
+**Imports (Codex):** `Request` and `json` are already imported in `agent/main.py`. Add only `asyncio`, `contextlib`, `StreamingResponse` (from `fastapi.responses`), and `get_trace_id`/`set_trace_id`/`reset_trace_id` (from `driftscribe_lib.logging`).
+
+In the `/chat` handler: change the signature to (param order matters — `req`, then `request`, then the dependency):
+
+```python
+async def chat(
+    req: ChatRequest,
+    request: Request,
+    _: None = Depends(verify_token),
+) -> dict | StreamingResponse:
+```
+
+Keep all pre-flight checks. After `_eager_resolve_upgrade_contract(resolution)` and before the JSON path, branch:
 
 ```python
     wants_sse = "text/event-stream" in request.headers.get("accept", "")
@@ -562,7 +593,7 @@ Refactor the JSON path's `except` ladder to use `_chat_error_payload` (preservin
             reset_workload(_workload_token)
     except (worker_client.WorkerClientError,
             MissingDeveloperKnowledgeApiKeyError, RuntimeError) as e:
-        status, detail = _chat_error_payload(e)
+        status, detail = _chat_error_payload(e, workload=req.workload)
         raise HTTPException(status_code=status, detail=detail) from e
 ```
 
@@ -638,6 +669,10 @@ async function consumeChatStream(resp, pollingId) {
       if (block.trim()) handleFrame(block);
     }
   }
+  // Codex hardening: flush any decoder tail + trailing frame missing its
+  // final delimiter (defensive — server emits complete \n\n frames).
+  buf += decoder.decode();
+  if (buf.trim()) handleFrame(buf);
   if (streamError) {
     const e = new Error(streamError.detail || "stream error");
     e.statusHint = streamError.status_hint;
@@ -648,9 +683,27 @@ async function consumeChatStream(resp, pollingId) {
 }
 ```
 
-**Step 2: Branch `onSubmit` on response content-type**
+**Step 2: Branch `onSubmit` on response content-type — BEFORE `resp.json()`**
 
-After the `if (!resp.ok)` block, before the existing "Success path", insert a streaming branch:
+> **Codex critical fix:** the current `onSubmit` calls `await resp.json()` at `transparency.html:1518-1521` *before* any branch — that consumes the SSE body so `consumeChatStream` can't read `resp.body`. The streaming branch MUST come *before* the `body = await resp.json()` line. Restructure as:
+>
+> ```javascript
+> if (myPollingId !== activePollingId) return;        // existing race guard
+> const traceId = resp.headers.get("X-Trace-Id") || "";
+> const ctype = resp.headers.get("Content-Type") || "";
+>
+> if (resp.ok && ctype.includes("text/event-stream")) {
+>   // ... streaming branch (below) ...
+>   return;
+> }
+>
+> let body = null;
+> try { body = await resp.json(); } catch (err) { body = null; }
+> if (!resp.ok) { /* existing error path */ }
+> // ... existing JSON success path ...
+> ```
+
+The streaming branch body:
 
 ```javascript
         const ctype = resp.headers.get("Content-Type") || "";
