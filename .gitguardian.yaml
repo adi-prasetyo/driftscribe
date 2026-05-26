@@ -1,0 +1,23 @@
+# GitGuardian / ggshield configuration.
+# Docs: https://docs.gitguardian.com/ggshield-docs/configuration
+#
+# These test files intentionally embed FAKE, credential-shaped fixtures to
+# prove the redaction layer masks secret-looking values before they are
+# logged or streamed (e.g. {"PASSWORD": "hunter2"}, {"PASSWORD": "s3cret"},
+# and a postgres:// URI pointing at db.example). None are real secrets.
+#
+# GitGuardian's generic "Generic Password" detector flags these as a false
+# positive. Excluding the fixture files from secret scanning silences it
+# without blunting detection anywhere else in the repo.
+#
+# SCOPE NOTE: this file is honored by ggshield (CLI / pre-commit hook /
+# GitHub Action). The "GitGuardian Security Checks" *GitHub App* scans
+# server-side and is driven by the GitGuardian dashboard — to clear its
+# check, also mark the incident as a false positive in the dashboard
+# (Incidents -> the finding -> Resolve -> False positive).
+version: 2
+secret:
+  ignored_paths:
+    - 'tests/unit/test_run_chat_stream.py'
+    - 'tests/unit/test_adk_agent_event_logging.py'
+    - 'tests/integration/test_trace_endpoint.py'
