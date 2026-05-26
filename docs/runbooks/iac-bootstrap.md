@@ -44,8 +44,10 @@ provisions:
 3. A **Cloud KMS** keyring + key for state/plan encryption; it prints the full
    key resource path for `var.tofu_state_kms_key`.
 4. The **Workload Identity Federation** pool + GitHub OIDC provider (attribute
-   conditions pinning repository + workflow + ref/base_ref + event_name) and a
-   least-privilege CI service account. **This half is Phase C** — see step 2.
+   conditions pinning repository + workflow + event, granting creds only on a
+   trusted trigger — push to the trusted branch or maintainer `workflow_dispatch`,
+   never the `pull_request` event) and a least-privilege CI service account.
+   **This half is Phase C** — see step 2.
 
 It also enables the required APIs (`cloudkms`, `iam`, `iamcredentials`, `run`,
 `storage`, `sts`).
@@ -61,7 +63,7 @@ against a throwaway project you own.
 | `REGION` | `asia-northeast1` | Region for the buckets; also the default KMS location. |
 | `GITHUB_REPO` | `adi-prasetyo/driftscribe` | Canonical repo the OIDC provider trusts (fork PRs are rejected). |
 | `GITHUB_WORKFLOW` | `.github/workflows/iac.yml` | The only workflow file allowed to mint GCP creds. |
-| `GITHUB_BRANCH` | `main` | Trusted branch (BARE name) — PRs targeting it (`base_ref`) and pushes to it (`ref`) may obtain creds. |
+| `GITHUB_BRANCH` | `main` | Trusted branch (BARE name) — only pushes to it (`ref`) may obtain creds; the `pull_request` event never does (fork PRs included). |
 | `KMS_LOCATION` | `${REGION}` (`asia-northeast1`) | KMS keyring location. **Immutable** once the keyring exists. |
 
 Other overridable knobs exist (`STATE_BUCKET`, `ARTIFACT_BUCKET`, `KMS_KEYRING`,
@@ -116,26 +118,26 @@ files, `tools/iac_static_gate.py`, `.github/`, and `infra/scripts/`). This is
 the **operator-mode foundation control** referenced by the static gate and
 design §5.1.
 
-**CODEOWNERS is only advisory until you turn on branch protection.** On
-GitHub → repo **Settings → Branches → Branch protection rules**, add (or edit)
-the rule for `main` and enable:
+**CODEOWNERS is only advisory until you turn on branch protection.** Use the
+GitHub UI — it is the **primary, non-destructive path**. On GitHub → repo
+**Settings → Branches → Branch protection rules**, add (or edit) the rule for
+`main` and enable:
 
 - **Require a pull request before merging**, and within it
 - **Require review from Code Owners**.
 
-(CLI equivalent, owner-only:)
+The UI merges these into any existing rule without clobbering other settings
+(required status checks, restrictions, etc.).
 
-```bash
-gh api -X PUT repos/adi-prasetyo/driftscribe/branches/main/protection \
-  --input - <<'JSON'
-{
-  "required_status_checks": null,
-  "enforce_admins": true,
-  "required_pull_request_reviews": { "require_code_owner_reviews": true, "required_approving_review_count": 1 },
-  "restrictions": null
-}
-JSON
-```
+> **Avoid a blind `gh api ... PUT`.** The branch-protection REST endpoint is a
+> full **replace**: a raw `PUT` with `"required_status_checks": null` and
+> `"restrictions": null` would **overwrite and DROP any existing protection**
+> (e.g. the `iac` required check, push restrictions). If you must script it,
+> do a **fetch-then-modify**: `GET` the current protection, merge in
+> `required_pull_request_reviews.require_code_owner_reviews=true` (preserving
+> every other field), then `PUT` the merged object back — and remember the `PUT`
+> still replaces the whole object, so the merged body must carry the existing
+> settings verbatim. When in doubt, use the UI above.
 
 > **Confirm the handle.** `.github/CODEOWNERS` uses `@adi-prasetyo` — the
 > canonical repo owner per `agent/workloads/registry.py`
