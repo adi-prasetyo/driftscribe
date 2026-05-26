@@ -59,3 +59,32 @@ def test_operator_mode_still_governs_only_iac():
     # path-outside-iac (CODEOWNERS governs that file).
     gi = GateInput(GateMode.OPERATOR, ("iac/versions.tf", ".github/workflows/iac.yml"), {})
     assert all(v.rule != "path-outside-iac" for v in evaluate(gi))
+
+
+# --- Task 3: provider allowlist + source pinning + fail-closed parse ---
+
+
+def test_disallowed_provider_required_providers_block():
+    hcl = 'terraform { required_providers { aws = { source = "hashicorp/aws" } } }'
+    gi = GateInput(GateMode.OPERATOR, ("iac/versions.tf",), {"iac/versions.tf": hcl})
+    assert any(v.rule == "disallowed-provider" for v in evaluate(gi))
+
+
+def test_spoofed_google_source_is_rejected():
+    hcl = 'terraform { required_providers { google = { source = "evil/google" } } }'
+    gi = GateInput(GateMode.OPERATOR, ("iac/versions.tf",), {"iac/versions.tf": hcl})
+    assert any(v.rule == "disallowed-provider-source" for v in evaluate(gi))
+
+
+def test_canonical_google_provider_is_allowed():
+    hcl = '''
+    terraform { required_providers { google = { source = "hashicorp/google" } } }
+    provider "google" { project = "p" }
+    '''
+    gi = GateInput(GateMode.OPERATOR, ("iac/versions.tf",), {"iac/versions.tf": hcl})
+    assert evaluate(gi) == []
+
+
+def test_unparseable_hcl_fails_closed():
+    gi = GateInput(GateMode.OPERATOR, ("iac/versions.tf",), {"iac/versions.tf": 'resource "x" { = = = }'})
+    assert any(v.rule == "hcl-parse-error" for v in evaluate(gi))
