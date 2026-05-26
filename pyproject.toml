@@ -34,6 +34,7 @@ dependencies = [
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
+    "python-hcl2>=4.3",
     "respx>=0.21",
     "ruff>=0.7",
 ]
