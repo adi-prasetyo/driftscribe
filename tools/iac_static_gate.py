@@ -350,20 +350,31 @@ def _git_diff_names(base: str, head: str, *, cwd: str | None = None) -> tuple[st
 
     Uses ``git diff --name-only base...head`` (three-dot: changes on the head
     side since the merge-base), matching how a PR diff is computed in CI.
+
+    ``-c core.quotePath=false`` disables git's default C-style quoting of
+    non-ASCII bytes — without it a path like ``iac/café.tf`` comes back as the
+    literal ``"iac/caf\303\251.tf"`` and the subsequent ``git show`` reads the
+    wrong path, leaving the file's content unscanned (a gate bypass). ``-z``
+    NUL-delimits names so paths containing spaces or newlines survive too.
     """
     out = subprocess.run(
-        ["git", "diff", "--name-only", f"{base}...{head}"],
+        ["git", "-c", "core.quotePath=false", "diff", "--name-only", "-z",
+         f"{base}...{head}"],
         cwd=cwd, check=True, capture_output=True, text=True,
     ).stdout
-    return tuple(line for line in out.splitlines() if line)
+    return tuple(name for name in out.split("\0") if name)
 
 
 def _git_show(head: str, path: str, *, cwd: str | None = None) -> str | None:
     """Return the content of ``path`` at ``head``, or ``None`` if it does not
     exist there (e.g. the change deleted it). Deleted files have no content
-    to gate, so they are simply omitted from ``hcl_files``."""
+    to gate, so they are simply omitted from ``hcl_files``.
+
+    ``-c core.quotePath=false`` keeps the pathspec interpretation consistent
+    with :func:`_git_diff_names` for non-ASCII names.
+    """
     proc = subprocess.run(
-        ["git", "show", f"{head}:{path}"],
+        ["git", "-c", "core.quotePath=false", "show", f"{head}:{path}"],
         cwd=cwd, capture_output=True, text=True,
     )
     if proc.returncode != 0:

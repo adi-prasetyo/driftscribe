@@ -64,3 +64,28 @@ def test_cli_clean_iac_change_exits_zero(tmp_path: Path):
 
     proc = _run_gate(repo, base, head, "agent")
     assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_cli_scans_content_of_unicode_named_file_in_operator_mode(tmp_path: Path):
+    # core.quotePath would otherwise return `"iac/caf\303\251.tf"`, so _git_show
+    # reads the wrong path and the CONTENT is never structurally scanned. In
+    # operator mode there is no path rule, so an unscanned provisioner would
+    # slip through. The gate must scan the content regardless of the name.
+    repo = tmp_path
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "t@t")
+    _git(repo, "config", "user.name", "t")
+    (repo / "iac").mkdir()
+    (repo / "iac" / "base.tf").write_text('resource "google_x" "y" {}\n')
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "base")
+    base = _rev_parse(repo)
+    (repo / "iac" / "café.tf").write_text(
+        'resource "google_x" "y" { provisioner "local-exec" { command = "id" } }\n')
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "unicode")
+    head = _rev_parse(repo)
+
+    proc = _run_gate(repo, base, head, "operator")
+    assert proc.returncode != 0, proc.stdout + proc.stderr
+    assert "arbitrary-execution" in (proc.stdout + proc.stderr)
