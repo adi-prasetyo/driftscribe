@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from tools import iac_static_gate  # noqa: F401
@@ -173,3 +175,46 @@ def test_required_providers_mix_flags_only_the_disallowed_one():
     violations = [v for v in evaluate(gi) if v.rule == "disallowed-provider"]
     assert len(violations) == 1
     assert "aws" in violations[0].detail
+
+
+# --- Regression: hcl2 dunder-metadata keys must not be read as semantic names ---
+
+
+def test_commented_required_providers_no_false_provider():
+    # hcl2 8.x injects metadata keys (e.g. __inline_comments__/__comments__)
+    # into a block ONLY when the HCL contains comments. Those keys must not be
+    # treated as provider names. A clean commented google block must pass.
+    hcl = (
+        "terraform {\n"
+        "  # backend + encryption are foundation\n"
+        "  required_providers {\n"
+        '    google = {\n'
+        '      source  = "hashicorp/google"  # canonical\n'
+        '      version = "~> 6.0"\n'
+        "    }\n"
+        "  }\n"
+        "}\n"
+    )
+    gi = GateInput(GateMode.OPERATOR, ("iac/versions.tf",), {"iac/versions.tf": hcl})
+    violations = evaluate(gi)
+    assert not any(v.rule == "disallowed-provider" for v in violations), violations
+    assert violations == []
+
+
+def _repo_root() -> Path:
+    # tests/unit/<this file> -> repo root is two parents up.
+    return Path(__file__).resolve().parents[2]
+
+
+def test_real_committed_iac_tf_files_pass_operator_mode():
+    # Pin "the real committed foundation files pass the gate" so the dunder-
+    # metadata class of bug can never regress silently again.
+    iac_dir = _repo_root() / "iac"
+    tf_paths = sorted(iac_dir.glob("*.tf"))
+    assert tf_paths, f"expected committed iac/*.tf files under {iac_dir}"
+    rel = tuple(str(p.relative_to(_repo_root())) for p in tf_paths)
+    hcl_files = {
+        str(p.relative_to(_repo_root())): p.read_text(encoding="utf-8") for p in tf_paths
+    }
+    gi = GateInput(GateMode.OPERATOR, rel, hcl_files)
+    assert evaluate(gi) == []

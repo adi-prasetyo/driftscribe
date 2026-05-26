@@ -29,10 +29,27 @@ BUILTIN_PROVIDERS = frozenset({"terraform", "tofu"})
 
 # hcl2 8.x is a lossy round-trip: block *labels* arrive as keys wrapped in
 # literal double-quotes (e.g. ``'"google_x"'``) and string *values* arrive
-# quote-wrapped too (e.g. ``'"hashicorp/google"'``). Each block body also gets
-# a synthetic ``__is_block__`` sentinel key. The helpers below normalize all of
-# that so the rule logic deals in bare identifiers/strings.
-_BLOCK_SENTINEL = "__is_block__"
+# quote-wrapped too (e.g. ``'"hashicorp/google"'``). It also injects synthetic
+# dunder-metadata keys into parsed blocks — ``__is_block__`` always, plus
+# ``__comments__``/``__inline_comments__`` (and ``__start_line__``/
+# ``__end_line__`` on some shapes) WHENEVER the source contains comments. None
+# of these are semantic names: iterating a block's keys as provider/resource/
+# module names must skip them all, or a commented foundation file yields false
+# positives (a provider literally named ``__inline_comments__``). The helpers
+# below normalize labels and filter every ``__dunder__`` meta key.
+
+
+def _is_meta_key(key: str) -> bool:
+    """True for an hcl2-injected dunder-metadata key (``__is_block__``,
+    ``__comments__``, ``__inline_comments__``, ``__start_line__``, …).
+
+    Scoped deliberately narrowly to the ``__...__`` shape: real HCL
+    identifiers (provider/resource/module/data names) cannot be a leading- and
+    trailing-double-underscore token, so this never masks a real disallowed
+    provider/module/resource — it only drops hcl2's own metadata.
+    """
+    return isinstance(key, str) and key.startswith("__") and key.endswith("__")
+
 
 IAC_PREFIX = "iac/"
 
@@ -173,7 +190,7 @@ def _collect_providers(parsed: dict) -> list[tuple[str, str | None]]:
     for tf_block in _iter_blocks(parsed, "terraform"):
         for rp in _iter_blocks(tf_block, "required_providers"):
             for name, body in rp.items():
-                if name == _BLOCK_SENTINEL:
+                if _is_meta_key(name):
                     continue
                 source = None
                 if isinstance(body, dict):
@@ -185,7 +202,7 @@ def _collect_providers(parsed: dict) -> list[tuple[str, str | None]]:
     # (b) top-level provider "<name>" { ... } — label is quote-wrapped, no source
     for prov_block in _iter_blocks(parsed, "provider"):
         for label in prov_block:
-            if label == _BLOCK_SENTINEL:
+            if _is_meta_key(label):
                 continue
             found.append((_block_label(label), None))
 
@@ -211,7 +228,7 @@ def _body_has_block(body: dict, key: str) -> bool:
     if key in body:
         return True
     for k, v in body.items():
-        if k == _BLOCK_SENTINEL:
+        if _is_meta_key(k):
             continue
         if isinstance(v, dict):
             if _body_has_block(v, key):
@@ -232,13 +249,13 @@ def _iter_typed_blocks(parsed: dict, kind: str):
     """
     for block in _iter_blocks(parsed, kind):
         for type_label, by_name in block.items():
-            if type_label == _BLOCK_SENTINEL:
+            if _is_meta_key(type_label):
                 continue
             rtype = _block_label(type_label)
             if not isinstance(by_name, dict):
                 continue
             for name_label, body in by_name.items():
-                if name_label == _BLOCK_SENTINEL:
+                if _is_meta_key(name_label):
                     continue
                 yield rtype, (body if isinstance(body, dict) else {})
 
@@ -306,7 +323,7 @@ def evaluate(gi: GateInput) -> list[Violation]:
         # enforce the same rules inside them (design §5.1); v1 bans all modules.
         for module_block in _iter_blocks(parsed, "module"):
             for label in module_block:
-                if label == _BLOCK_SENTINEL:
+                if _is_meta_key(label):
                     continue
                 violations.append(
                     Violation(
