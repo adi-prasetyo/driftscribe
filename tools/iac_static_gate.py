@@ -226,4 +226,18 @@ def evaluate(gi: GateInput) -> list[Violation]:
                     )
                 )
 
+        # Module ban (v1): any `module` block at all is forbidden. Banning only
+        # remote modules would force recursive parsing of local modules to
+        # enforce the same rules inside them (design §5.1); v1 bans all modules.
+        for module_block in _iter_blocks(parsed, "module"):
+            for label in module_block:
+                if label == _BLOCK_SENTINEL:
+                    continue
+                violations.append(
+                    Violation(
+                        "module-block-forbidden",
+                        f"{path}: module {_block_label(label)!r} (all modules forbidden in v1)",
+                    )
+                )
+
     return violations

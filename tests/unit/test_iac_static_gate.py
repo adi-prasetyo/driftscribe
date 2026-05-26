@@ -88,3 +88,17 @@ def test_canonical_google_provider_is_allowed():
 def test_unparseable_hcl_fails_closed():
     gi = GateInput(GateMode.OPERATOR, ("iac/versions.tf",), {"iac/versions.tf": 'resource "x" { = = = }'})
     assert any(v.rule == "hcl-parse-error" for v in evaluate(gi))
+
+
+# --- Task 4: module ban (all modules forbidden in v1) ---
+
+
+def test_any_module_block_is_rejected():
+    hcl = 'module "vpc" { source = "./vpc" }'
+    gi = GateInput(GateMode.AGENT, ("iac/x.tf",), {"iac/x.tf": hcl})
+    assert any(v.rule == "module-block-forbidden" for v in evaluate(gi))
+
+
+def test_no_module_block_passes():
+    gi = GateInput(GateMode.AGENT, ("iac/x.tf",), {"iac/x.tf": 'resource "google_x" "y" {}'})
+    assert all(v.rule != "module-block-forbidden" for v in evaluate(gi))
