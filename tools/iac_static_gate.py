@@ -8,7 +8,10 @@ other arbitrary-execution constructs. Pure functions here; the CLI wrapper
 """
 from __future__ import annotations
 
+import argparse
 import enum
+import subprocess
+import sys
 from dataclasses import dataclass
 from typing import Any
 
@@ -334,3 +337,85 @@ def evaluate(gi: GateInput) -> list[Violation]:
                 )
 
     return violations
+
+
+# Suffixes whose content the CLI reads + hands to evaluate for structural
+# checks. Only HCL OpenTofu would actually parse; .tfvars/.tofu.json etc. are
+# caught by the path/file-type rules without needing their content.
+_HCL_CONTENT_SUFFIXES = (".tf", ".tf.json")
+
+
+def _git_diff_names(base: str, head: str, *, cwd: str | None = None) -> tuple[str, ...]:
+    """Return changed repo-relative paths between two commits.
+
+    Uses ``git diff --name-only base...head`` (three-dot: changes on the head
+    side since the merge-base), matching how a PR diff is computed in CI.
+    """
+    out = subprocess.run(
+        ["git", "diff", "--name-only", f"{base}...{head}"],
+        cwd=cwd, check=True, capture_output=True, text=True,
+    ).stdout
+    return tuple(line for line in out.splitlines() if line)
+
+
+def _git_show(head: str, path: str, *, cwd: str | None = None) -> str | None:
+    """Return the content of ``path`` at ``head``, or ``None`` if it does not
+    exist there (e.g. the change deleted it). Deleted files have no content
+    to gate, so they are simply omitted from ``hcl_files``."""
+    proc = subprocess.run(
+        ["git", "show", f"{head}:{path}"],
+        cwd=cwd, capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        return None
+    return proc.stdout
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI entrypoint: git diff -> evaluate -> exit code.
+
+    ``--mode`` is taken explicitly (CI derives it from the PR label/branch);
+    passing it in keeps the gate testable. Reads the post-change content of
+    changed ``iac/`` HCL files at ``--head`` and runs :func:`evaluate`. Prints
+    each violation and returns ``1`` if any, else ``0``.
+    """
+    parser = argparse.ArgumentParser(
+        prog="python -m tools.iac_static_gate",
+        description="Static HCL gate for DriftScribe infra PRs (design doc §5.1).",
+    )
+    parser.add_argument("--base", required=True, help="base commit SHA (merge-base side)")
+    parser.add_argument("--head", required=True, help="head commit SHA (PR branch tip)")
+    parser.add_argument(
+        "--mode", required=True, choices=[m.value for m in GateMode],
+        help="agent (strict) or operator (foundation edits allowed)",
+    )
+    args = parser.parse_args(argv)
+
+    mode = GateMode(args.mode)
+    changed_paths = _git_diff_names(args.base, args.head)
+
+    # Read content only for changed iac/ HCL files that still exist at head.
+    hcl_files: dict[str, str] = {}
+    for p in changed_paths:
+        if not p.startswith(IAC_PREFIX):
+            continue
+        if not p.endswith(_HCL_CONTENT_SUFFIXES):
+            continue
+        content = _git_show(args.head, p)
+        if content is not None:
+            hcl_files[p] = content
+
+    violations = evaluate(GateInput(mode=mode, changed_paths=changed_paths, hcl_files=hcl_files))
+
+    if violations:
+        print(f"iac static gate: {len(violations)} violation(s) (mode={mode.value}):")
+        for v in violations:
+            print(f"  [{v.rule}] {v.detail}")
+        return 1
+
+    print(f"iac static gate: PASS (mode={mode.value}, {len(changed_paths)} changed path(s))")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
