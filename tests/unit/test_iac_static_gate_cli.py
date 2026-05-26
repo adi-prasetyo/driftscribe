@@ -89,3 +89,29 @@ def test_cli_scans_content_of_unicode_named_file_in_operator_mode(tmp_path: Path
     proc = _run_gate(repo, base, head, "operator")
     assert proc.returncode != 0, proc.stdout + proc.stderr
     assert "arbitrary-execution" in (proc.stdout + proc.stderr)
+
+
+def test_cli_operator_tf_json_not_falsely_parse_errored(tmp_path: Path):
+    # JSON-syntax HCL is not structurally analyzed in v1 (hcl2.loads can't
+    # parse it). It is hard-rejected in agent mode via disallowed-file-type;
+    # in operator mode it is governed by human review + CODEOWNERS. The CLI
+    # must NOT read its content (which would always yield a spurious
+    # hcl-parse-error), so a legit operator .tf.json change exits clean.
+    repo = tmp_path
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "t@t")
+    _git(repo, "config", "user.name", "t")
+    (repo / "iac").mkdir()
+    (repo / "iac" / "base.tf").write_text('resource "google_x" "y" {}\n')
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "base")
+    base = _rev_parse(repo)
+    (repo / "iac" / "config.tf.json").write_text(
+        '{"resource": {"google_x": {"y": {}}}}\n')
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "json")
+    head = _rev_parse(repo)
+
+    proc = _run_gate(repo, base, head, "operator")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "hcl-parse-error" not in (proc.stdout + proc.stderr)

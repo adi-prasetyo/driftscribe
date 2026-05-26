@@ -5,6 +5,12 @@ surface: agent-authored infra PRs may only touch ``iac/``, may not add
 providers, may not declare modules, and may not contain provisioners or
 other arbitrary-execution constructs. Pure functions here; the CLI wrapper
 (``python -m tools.iac_static_gate``) supplies the git diff in CI.
+
+JSON-syntax HCL (``.tf.json``/``.tofu.json``) is NOT structurally analyzed in
+v1 — ``hcl2.loads`` only parses native-syntax HCL. Such files remain
+hard-rejected in agent mode via the ``disallowed-file-type`` rule; in operator
+mode JSON config is governed by human review + CODEOWNERS (design §5.1). The
+CLI therefore reads only ``.tf`` content (see ``_HCL_CONTENT_SUFFIXES``).
 """
 from __future__ import annotations
 
@@ -84,7 +90,7 @@ class Violation:
 class GateInput:
     mode: GateMode
     changed_paths: tuple[str, ...]           # repo-relative, from `git diff --name-only`
-    hcl_files: dict[str, str]                # path -> file content, only iac/*.tf{,.json}
+    hcl_files: dict[str, str]                # path -> file content, native-syntax iac/*.tf
 
 
 def _is_disallowed_iac_suffix(path: str) -> bool:
@@ -340,9 +346,14 @@ def evaluate(gi: GateInput) -> list[Violation]:
 
 
 # Suffixes whose content the CLI reads + hands to evaluate for structural
-# checks. Only HCL OpenTofu would actually parse; .tfvars/.tofu.json etc. are
-# caught by the path/file-type rules without needing their content.
-_HCL_CONTENT_SUFFIXES = (".tf", ".tf.json")
+# checks. Only native-syntax HCL is parsed: hcl2.loads cannot parse JSON-syntax
+# HCL (.tf.json/.tofu.json), so reading those would only ever yield a spurious
+# hcl-parse-error. JSON-syntax HCL is out of scope for v1 structural analysis
+# (see module docstring) — it stays hard-rejected in agent mode via
+# disallowed-file-type, and operator-mode JSON config is governed by human
+# review + CODEOWNERS (design §5.1). .tfvars/.tofu.json etc. are likewise caught
+# by the path/file-type rules without needing their content.
+_HCL_CONTENT_SUFFIXES = (".tf",)
 
 
 def _git_diff_names(base: str, head: str, *, cwd: str | None = None) -> tuple[str, ...]:
