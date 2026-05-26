@@ -58,9 +58,48 @@ class GateInput:
     hcl_files: dict[str, str]                # path -> file content, only iac/*.tf{,.json}
 
 
+def _is_disallowed_iac_suffix(path: str) -> bool:
+    """True if an ``iac/`` path is a file type OpenTofu loads but the gate
+    bans in AGENT mode.
+
+    The longer compound suffixes (``.tofu.json``/``.tf.json``) and the
+    ``*.auto.tfvars`` glob are checked explicitly so they win over the
+    generic ``.tf``/``.json`` logic. Anything that is not a plain ``.tf``
+    or a ``.md`` README is rejected.
+    """
+    if path.endswith(".auto.tfvars"):
+        return True
+    if path.endswith(REJECTED_IAC_SUFFIXES):
+        return True
+    # Allowlist: only plain `.tf` and `.md` survive.
+    return not (path.endswith(ALLOWED_AGENT_SUFFIX) or path.endswith(ALLOWED_AGENT_DOC_SUFFIX))
+
+
 def evaluate(gi: GateInput) -> list[Violation]:
     """Return all violations (empty = pass).
 
     Fail-closed: a parse error is a Violation, not an exception.
     """
-    return []
+    violations: list[Violation] = []
+
+    for p in gi.changed_paths:
+        # The gate only governs `iac/`. In AGENT mode anything outside is a
+        # violation; in OPERATOR mode it's simply out of scope (CODEOWNERS
+        # governs e.g. `.github/`), so skip it entirely.
+        if not p.startswith(IAC_PREFIX):
+            if gi.mode is GateMode.AGENT:
+                violations.append(Violation("path-outside-iac", p))
+            continue
+
+        if gi.mode is GateMode.AGENT:
+            # Foundation files (lockfile/backend/encryption/provider/vars/
+            # imports) are operator-only. Checked before the file-type rule
+            # so the lockfile (not a `.tf`) reports as a foundation edit.
+            if p in PROTECTED_FOUNDATION:
+                violations.append(Violation("foundation-edit-agent-mode", p))
+                continue
+            if _is_disallowed_iac_suffix(p):
+                violations.append(Violation("disallowed-file-type", p))
+                continue
+
+    return violations
