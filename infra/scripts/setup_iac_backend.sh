@@ -35,10 +35,15 @@
 # on the STATE bucket only — never project-wide, never the artifact bucket's
 # admin (Phase C grants artifact write separately when the apply pipeline lands).
 #
-# Fork PRs get NO credentials: the OIDC provider's attribute-condition pins the
-# canonical repository, and the CI SA's WIF binding is further restricted by a
-# principalSet on repository + ref + event_name, so a fork's OIDC token cannot
-# impersonate the SA.
+# Authenticated planning runs only on a TRUSTED TRIGGER: a push to the trusted
+# branch, or a maintainer-initiated workflow_dispatch. Fork PRs — and the
+# `pull_request` event in general — are deliberately NOT granted credentials.
+# This is because `repository ==` cannot filter fork PRs: GitHub runs the
+# `pull_request` event in the BASE repo, so the `repository` OIDC claim is the
+# base repo (the canonical repo) even for a PR opened from a fork. The provider's
+# attribute-condition therefore pins repository + workflow_ref AND restricts the
+# event to push-to-trusted-branch or workflow_dispatch; the CI SA's WIF binding
+# is further restricted by a principalSet on the repository attribute.
 #
 # Usage:
 #   infra/scripts/setup_iac_backend.sh
@@ -87,13 +92,10 @@ GITHUB_REPO="${GITHUB_REPO:-adi-prasetyo/driftscribe}"
 # component). Pinning this means only THIS workflow can mint GCP creds, so a new
 # attacker-authored workflow in the same repo cannot impersonate the CI SA.
 GITHUB_WORKFLOW="${GITHUB_WORKFLOW:-.github/workflows/iac.yml}"
-# The trusted branch whose pushes — and PRs *targeting* it — may obtain creds.
-# Specified as the BARE branch name (e.g. "main"), because the two GitHub OIDC
-# claims we gate on use different formats (verified against GitHub's OIDC docs):
-#   - pull_request: gated on `base_ref`, which is the BARE branch name ("main").
-#   - push:         gated on `ref`, which is the FULL ref ("refs/heads/main").
-# A PR's `ref` is "refs/pull/<N>/merge" (never "refs/heads/main"), so PRs MUST
-# be gated on base_ref, not ref — see the CEL condition in §6.
+# The trusted branch whose PUSHES may obtain creds. Specified as the BARE branch
+# name (e.g. "main"); the push gate uses the FULL ref ("refs/heads/main"), built
+# below as GITHUB_PUSH_REF. PRs (incl. fork PRs) deliberately do NOT obtain
+# creds — see the CEL condition in §6 and the header banner above.
 GITHUB_BRANCH="${GITHUB_BRANCH:-main}"
 GITHUB_PUSH_REF="refs/heads/${GITHUB_BRANCH}"
 
@@ -165,12 +167,16 @@ else
   echo "  state bucket gs://${STATE_BUCKET}: created"
 fi
 # `buckets update` is idempotent server-side; apply unconditionally so an
-# adopted/legacy bucket converges to the required config on re-run.
+# adopted/legacy bucket converges to the required config on re-run. PAP
+# (enforced) is re-applied here too so a PRE-EXISTING bucket converges to the
+# public-access-prevention the runbook claims is enforced — not just newly
+# created ones.
 gcloud storage buckets update "gs://${STATE_BUCKET}" \
   --project="$PROJECT" \
   --versioning \
-  --uniform-bucket-level-access >/dev/null
-echo "  state bucket gs://${STATE_BUCKET}: versioning + UBLA enforced"
+  --uniform-bucket-level-access \
+  --public-access-prevention >/dev/null
+echo "  state bucket gs://${STATE_BUCKET}: versioning + UBLA + PAP enforced"
 
 # --------------------------------------------------------------------------
 # 3. Artifact bucket — versioned. Reserved for Phase C plan artifacts.
@@ -193,8 +199,9 @@ fi
 gcloud storage buckets update "gs://${ARTIFACT_BUCKET}" \
   --project="$PROJECT" \
   --versioning \
-  --uniform-bucket-level-access >/dev/null
-echo "  artifact bucket gs://${ARTIFACT_BUCKET}: versioning + UBLA enforced"
+  --uniform-bucket-level-access \
+  --public-access-prevention >/dev/null
+echo "  artifact bucket gs://${ARTIFACT_BUCKET}: versioning + UBLA + PAP enforced"
 
 # --------------------------------------------------------------------------
 # 4. Cloud KMS — keyring + key for OpenTofu state/plan encryption.
@@ -299,39 +306,39 @@ fi
 # Attribute MAPPING: surface the GitHub OIDC claims we condition on. google.subject
 # is mandatory; the rest are mapped so the attribute CONDITION below can reference
 # them and so the SA's principalSet binding can pin attribute.repository.
-# base_ref is mapped because the pull_request branch of the condition gates on it
-# (a PR's `ref` is "refs/pull/<N>/merge", so PRs cannot be gated on ref).
+# base_ref is intentionally NOT mapped: we no longer gate on the pull_request
+# event at all (see the condition below), so the PR target branch is unused.
 WIF_ATTR_MAPPING="google.subject=assertion.sub"
 WIF_ATTR_MAPPING+=",attribute.repository=assertion.repository"
 WIF_ATTR_MAPPING+=",attribute.ref=assertion.ref"
-WIF_ATTR_MAPPING+=",attribute.base_ref=assertion.base_ref"
 WIF_ATTR_MAPPING+=",attribute.event_name=assertion.event_name"
 WIF_ATTR_MAPPING+=",attribute.workflow_ref=assertion.workflow_ref"
 
 # Attribute CONDITION (CEL): tokens are accepted ONLY when ALL hold:
-#   - repository == the canonical repo             -> fork PRs (different repo) rejected
+#   - repository == the canonical repo             -> see fork note below
 #   - workflow_ref starts with "<repo>/<workflow>" -> only THIS workflow file mints creds
-#   - AND the event is one of:
-#       * pull_request targeting the trusted branch (base_ref == "<branch>"), OR
-#       * push to the trusted branch (ref == "refs/heads/<branch>")
-#     -> no workflow_dispatch/schedule abuse, and only the pinned base branch.
+#   - AND the event is a TRUSTED TRIGGER, one of:
+#       * push to the trusted branch (ref == "refs/heads/<branch>"), OR
+#       * workflow_dispatch (a maintainer manually running the workflow)
+#     -> the `pull_request` event is NOT granted creds at all.
 #
-# C-1 FIX: the two events carry the trusted branch in DIFFERENT claims (verified
-# against GitHub's OIDC docs, 2026-05-27):
-#   - pull_request: `ref` is "refs/pull/<N>/merge" (NOT refs/heads/main) and the
-#     target branch lives in `base_ref` as a BARE name ("main").
-#   - push:         `ref` is the FULL ref "refs/heads/main"; `base_ref` is empty.
-# The previous single `ref == 'refs/heads/main'` clause could therefore NEVER be
-# satisfied by a pull_request token — only a push-to-main — which broke the
-# documented Phase-C intent (plan-builder on same-repo PRs targeting main).
-# Gating push and pull_request separately, each on its correct claim, fixes it.
+# FORK-PR FIX (verified against GitHub's OIDC docs, 2026-05-27): `repository ==`
+# does NOT exclude fork PRs. For a PR opened from a fork, GitHub runs the
+# `pull_request` event in the BASE repo, so the `repository` claim ("the
+# repository from where the workflow is running") is the BASE repo — the
+# canonical repo — even for fork PRs. Gating `pull_request` on `repository ==`
+# would therefore admit fork PRs. The fix is to drop the `pull_request` clause
+# entirely and grant ONLY trusted triggers: a push to the trusted branch (whose
+# `ref` is the FULL "refs/heads/<branch>", verified against the docs) or a
+# maintainer-initiated workflow_dispatch (`event_name == 'workflow_dispatch'`).
+# The Phase C plan-builder must run from a trusted trigger, never fork-PR OIDC.
 # Enforced at the provider BEFORE any SA binding — a token failing the condition
 # never even maps to a principal. workflow_ref looks like
 # "owner/repo/.github/workflows/iac.yml@refs/heads/main"; we match its prefix.
 WIF_ATTR_CONDITION="assertion.repository == '${GITHUB_REPO}'"
 WIF_ATTR_CONDITION+=" && assertion.workflow_ref.startsWith('${GITHUB_REPO}/${GITHUB_WORKFLOW}@')"
-WIF_ATTR_CONDITION+=" && ((assertion.event_name == 'pull_request' && assertion.base_ref == '${GITHUB_BRANCH}')"
-WIF_ATTR_CONDITION+=" || (assertion.event_name == 'push' && assertion.ref == '${GITHUB_PUSH_REF}'))"
+WIF_ATTR_CONDITION+=" && ((assertion.event_name == 'push' && assertion.ref == '${GITHUB_PUSH_REF}')"
+WIF_ATTR_CONDITION+=" || assertion.event_name == 'workflow_dispatch')"
 
 if gcloud iam workload-identity-pools providers describe "$WIF_PROVIDER" \
      --project="$PROJECT" --location=global \
@@ -361,14 +368,16 @@ fi
 # attribute condition. The pool's full resource name is needed for the
 # principalSet member string.
 WIF_POOL_NAME="projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${WIF_POOL}"
-# principalSet pins attribute.repository: even if the provider condition were
-# ever loosened, only tokens carrying THIS repository claim can impersonate the
-# SA. Fork PRs carry the fork's repository and are excluded here too.
+# principalSet pins attribute.repository as defense in depth: even if the
+# provider condition were ever loosened, only tokens carrying THIS repository
+# claim can impersonate the SA. (Note this alone does NOT exclude fork PRs — the
+# fork-PR `repository` claim is the base repo; the real fork-PR exclusion lives
+# in the provider condition above, which grants only push/workflow_dispatch.)
 gcloud iam service-accounts add-iam-policy-binding "$CI_SA" \
   --project="$PROJECT" \
   --role="roles/iam.workloadIdentityUser" \
   --member="principalSet://iam.googleapis.com/${WIF_POOL_NAME}/attribute.repository/${GITHUB_REPO}" >/dev/null
-echo "  ${CI_SA}: workloadIdentityUser for principalSet repository=${GITHUB_REPO} (fork PRs excluded)"
+echo "  ${CI_SA}: workloadIdentityUser for principalSet repository=${GITHUB_REPO}"
 
 WIF_PROVIDER_NAME="${WIF_POOL_NAME}/providers/${WIF_PROVIDER}"
 
@@ -405,8 +414,10 @@ workflow + authenticated plan land in Phase C):
     ${CI_SA}
 
   The provider only accepts tokens from repo ${GITHUB_REPO}, workflow
-  ${GITHUB_WORKFLOW}, for either a pull_request targeting '${GITHUB_BRANCH}'
-  (base_ref) or a push to ${GITHUB_PUSH_REF} (ref). Fork PRs get NO credentials.
+  ${GITHUB_WORKFLOW}, on a TRUSTED TRIGGER: a push to ${GITHUB_PUSH_REF} (ref)
+  or a maintainer-initiated workflow_dispatch. The pull_request event gets NO
+  credentials -- fork PRs included -- because the repository OIDC claim cannot
+  distinguish a fork PR from a base-repo run on the pull_request event.
 
 Operator MUST customize before running if any default is wrong:
   - GITHUB_REPO     (currently ${GITHUB_REPO})

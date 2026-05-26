@@ -281,7 +281,12 @@ artifact's *provenance and transport* are defined. The diff in a PR comment is
    workflow code via Workload Identity Federation — no long-lived keys). Because
    the GCS backend's lock needs object write (§3.2), the plan-builder identity has
    **scoped write to the state bucket** (for locking) and write to the artifact
-   bucket — it is *not* a read-only identity, and we stop pretending it is.
+   bucket — it is *not* a read-only identity, and we stop pretending it is. The
+   authenticated plan-builder MUST run only on a **trusted trigger**
+   (trusted-branch push / maintainer `workflow_dispatch` / `workflow_run`), **NOT**
+   fork-PR OIDC: on the `pull_request` event the OIDC `repository` claim is the
+   base repo even for a fork PR, so `repository ==` cannot filter fork PRs — the
+   WIF condition must gate on `event_name`, not on `repository`/`base_ref` alone.
 2. **Artifact storage:** upload `plan.tfplan` (binary) **and** `plan.json` to a
    controlled, versioned GCS **artifact bucket** (separate from state; on the
    denylist). Store immutable metadata alongside: `repo`, `pr_number`, `head_sha`,
@@ -478,9 +483,13 @@ stands on it. Each phase ships something independently useful.
    (`agent/workloads/spec.py:73`). ✅ (noted for Phase D)
 8. **CI/WIF safety (Codex rev-2, Phase A):** do **not** use `pull_request_target`
    with PR-controlled code (that runs untrusted code with secrets). The WIF OIDC
-   provider must pin **attribute conditions** for repo + workflow + ref + event;
-   **fork PRs get NO GCP credentials** (plan-builder runs only on same-repo PRs).
-   No long-lived service-account keys anywhere. ✅
+   provider must pin **attribute conditions** for repo + workflow + ref + event.
+   The Phase C authenticated plan-builder MUST use a **trusted trigger**
+   (trusted-branch push / maintainer `workflow_dispatch` / `workflow_run`), **NOT**
+   fork-PR OIDC, because `repository ==` cannot filter fork PRs: on the
+   `pull_request` event the `repository` claim is the base repo even for a fork PR,
+   so the condition must gate on `event_name`. **The `pull_request` event gets NO
+   GCP credentials** at all. No long-lived service-account keys anywhere. ✅
 
 ---
 
