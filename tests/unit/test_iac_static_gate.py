@@ -102,3 +102,39 @@ def test_any_module_block_is_rejected():
 def test_no_module_block_passes():
     gi = GateInput(GateMode.AGENT, ("iac/x.tf",), {"iac/x.tf": 'resource "google_x" "y" {}'})
     assert all(v.rule != "module-block-forbidden" for v in evaluate(gi))
+
+
+# --- Task 5: provisioner / arbitrary-execution / forbidden-data-source / dynamic ---
+
+
+@pytest.mark.parametrize("hcl", [
+    'resource "google_x" "y" { provisioner "local-exec" { command = "echo hi" } }',
+    'resource "google_x" "y" { provisioner "remote-exec" { inline = ["id"] } }',
+    'resource "google_x" "y" { connection { host = "h" } }',
+    'resource "null_resource" "r" {}',
+    'resource "terraform_data" "r" {}',
+])
+def test_arbitrary_execution_constructs_rejected(hcl):
+    gi = GateInput(GateMode.AGENT, ("iac/x.tf",), {"iac/x.tf": hcl})
+    assert any(v.rule == "arbitrary-execution" for v in evaluate(gi)), hcl
+
+
+@pytest.mark.parametrize("hcl", [
+    'data "external" "e" { program = ["bash", "x.sh"] }',
+    'data "terraform_remote_state" "s" { backend = "gcs" }',
+])
+def test_forbidden_data_sources_rejected(hcl):
+    gi = GateInput(GateMode.AGENT, ("iac/x.tf",), {"iac/x.tf": hcl})
+    assert any(v.rule == "forbidden-data-source" for v in evaluate(gi)), hcl
+
+
+def test_dynamic_block_rejected():
+    hcl = 'resource "google_x" "y" { dynamic "provisioner" { for_each = [1] content {} } }'
+    gi = GateInput(GateMode.AGENT, ("iac/x.tf",), {"iac/x.tf": hcl})
+    assert any(v.rule == "dynamic-block-forbidden" for v in evaluate(gi))
+
+
+def test_plain_google_resource_has_no_execution_violation():
+    hcl = 'resource "google_cloud_run_v2_service" "s" { name = "payment-demo" }'
+    gi = GateInput(GateMode.AGENT, ("iac/x.tf",), {"iac/x.tf": hcl})
+    assert evaluate(gi) == []

@@ -53,6 +53,18 @@ ALLOWED_PROVIDERS = frozenset({"google"})  # + builtin (terraform/tofu) names
 # (Codex rev: name-only check lets `google = { source = "evil/google" }` pass).
 REQUIRED_PROVIDER_SOURCES = {"google": "hashicorp/google"}
 
+# Resource types whose entire purpose (paired with provisioners) is to run
+# arbitrary commands during apply — banned outright regardless of body.
+ARBITRARY_EXECUTION_RESOURCE_TYPES = frozenset({"null_resource", "terraform_data"})
+# Nested block keys inside a resource body that smuggle execution.
+ARBITRARY_EXECUTION_BLOCK_KEYS = frozenset({"provisioner", "connection"})
+# `data "<type>"` sources that read outside the declared config (command
+# execution / cross-state read).
+FORBIDDEN_DATA_SOURCE_TYPES = frozenset({"external", "terraform_remote_state"})
+# `dynamic` blocks are banned in v1: a `dynamic "provisioner"` would smuggle
+# execution past a naive key check (design §5.1).
+DYNAMIC_BLOCK_KEY = "dynamic"
+
 
 class GateMode(enum.Enum):
     AGENT = "agent"        # driftscribe-infra label + infra/ branch — strict rules
@@ -171,6 +183,52 @@ def _collect_providers(parsed: dict) -> list[tuple[str, str | None]]:
     return found
 
 
+def _body_has_block(body: dict, key: str) -> bool:
+    """True if a (possibly nested) block body contains a block of ``key`` at
+    any depth.
+
+    hcl2 nests block bodies as lists of dicts (e.g. ``dynamic`` content,
+    ``provisioner`` bodies). We recurse through every nested dict so a
+    forbidden construct hidden inside another block (e.g. a ``provisioner``
+    inside a ``dynamic ... content``) is still caught.
+    """
+    if not isinstance(body, dict):
+        return False
+    if key in body:
+        return True
+    for k, v in body.items():
+        if k == _BLOCK_SENTINEL:
+            continue
+        if isinstance(v, dict):
+            if _body_has_block(v, key):
+                return True
+        elif isinstance(v, list):
+            for item in v:
+                if isinstance(item, dict) and _body_has_block(item, key):
+                    return True
+    return False
+
+
+def _iter_typed_blocks(parsed: dict, kind: str):
+    """Yield ``(type, body)`` for each ``resource``/``data`` block.
+
+    Shape: ``kind: [ { '"type"': { '"name"': {body...} } } ]``. Labels are
+    quote-wrapped; the body is the innermost dict. A block may carry multiple
+    names under one type, and a file may repeat a type across blocks.
+    """
+    for block in _iter_blocks(parsed, kind):
+        for type_label, by_name in block.items():
+            if type_label == _BLOCK_SENTINEL:
+                continue
+            rtype = _block_label(type_label)
+            if not isinstance(by_name, dict):
+                continue
+            for name_label, body in by_name.items():
+                if name_label == _BLOCK_SENTINEL:
+                    continue
+                yield rtype, (body if isinstance(body, dict) else {})
+
+
 def evaluate(gi: GateInput) -> list[Violation]:
     """Return all violations (empty = pass).
 
@@ -237,6 +295,41 @@ def evaluate(gi: GateInput) -> list[Violation]:
                     Violation(
                         "module-block-forbidden",
                         f"{path}: module {_block_label(label)!r} (all modules forbidden in v1)",
+                    )
+                )
+
+        # Arbitrary-execution / dynamic-block ban on resource blocks.
+        for rtype, body in _iter_typed_blocks(parsed, "resource"):
+            if rtype in ARBITRARY_EXECUTION_RESOURCE_TYPES:
+                violations.append(
+                    Violation(
+                        "arbitrary-execution",
+                        f"{path}: resource type {rtype!r} (command-execution resource)",
+                    )
+                )
+            for key in ARBITRARY_EXECUTION_BLOCK_KEYS:
+                if _body_has_block(body, key):
+                    violations.append(
+                        Violation(
+                            "arbitrary-execution",
+                            f"{path}: resource {rtype!r} contains a {key!r} block",
+                        )
+                    )
+            if _body_has_block(body, DYNAMIC_BLOCK_KEY):
+                violations.append(
+                    Violation(
+                        "dynamic-block-forbidden",
+                        f"{path}: resource {rtype!r} contains a 'dynamic' block",
+                    )
+                )
+
+        # Forbidden data sources (command execution / cross-state read).
+        for dtype, _body in _iter_typed_blocks(parsed, "data"):
+            if dtype in FORBIDDEN_DATA_SOURCE_TYPES:
+                violations.append(
+                    Violation(
+                        "forbidden-data-source",
+                        f"{path}: data source {dtype!r} is forbidden",
                     )
                 )
 
