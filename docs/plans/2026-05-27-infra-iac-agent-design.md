@@ -287,6 +287,10 @@ artifact's *provenance and transport* are defined. The diff in a PR comment is
    fork-PR OIDC: on the `pull_request` event the OIDC `repository` claim is the
    base repo even for a fork PR, so `repository ==` cannot filter fork PRs — the
    WIF condition must gate on `event_name`, not on `repository`/`base_ref` alone.
+   Since a `workflow_dispatch`-triggered plan-builder runs against whatever ref it
+   is told, it MUST deliberately check out the *intended reviewed* PR head SHA and
+   record that exact SHA into the artifact metadata (§6.2) — so the human approves
+   the plan for the SHA that was actually planned, not whatever `main` drifted to.
 2. **Artifact storage:** upload `plan.tfplan` (binary) **and** `plan.json` to a
    controlled, versioned GCS **artifact bucket** (separate from state; on the
    denylist). Store immutable metadata alongside: `repo`, `pr_number`, `head_sha`,
