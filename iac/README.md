@@ -103,11 +103,13 @@ by two independent controls:
 
 1. The **static gate** in **agent mode** rejects any change to a foundation file
    (`foundation-edit-agent-mode`).
-2. **CODEOWNERS** is the intended GitHub review control requiring human review of
-   the same files (the gate is the pre-`tofu init` policy; CODEOWNERS is the
-   review-side control per design §5.1). NOTE: a `CODEOWNERS` file is not yet
-   committed in this repo — the gate's `foundation-edit-agent-mode` rule is the
-   only enforced control today; wiring CODEOWNERS is a remaining operator step.
+2. **CODEOWNERS** (`.github/CODEOWNERS`) is the operator-mode GitHub review
+   control requiring human review of the same files (the gate is the
+   pre-`tofu init` policy; CODEOWNERS is the review-side control per design
+   §5.1). NOTE: the CODEOWNERS file exists, but it is only **advisory** until the
+   operator enables branch protection on `main` with "Require review from Code
+   Owners" — see `docs/runbooks/iac-bootstrap.md`. Until then the gate's
+   `foundation-edit-agent-mode` rule is the only *enforced* control.
 
 The protected set is: `versions.tf`, `providers.tf`, `variables.tf`,
 `imports.tf`, and `.terraform.lock.hcl`.

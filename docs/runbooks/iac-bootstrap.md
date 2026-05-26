@@ -108,7 +108,45 @@ or keep it in a local `tofu.tfvars` that you do **not** commit (see
 
 ---
 
-## 3. `tofu init` against the real backend
+## 3. Enable branch protection so CODEOWNERS is enforced
+
+The repo ships `.github/CODEOWNERS`, which names `@adi-prasetyo` as the required
+reviewer for the foundation + security-critical paths (the `iac/` foundation
+files, `tools/iac_static_gate.py`, `.github/`, and `infra/scripts/`). This is
+the **operator-mode foundation control** referenced by the static gate and
+design §5.1.
+
+**CODEOWNERS is only advisory until you turn on branch protection.** On
+GitHub → repo **Settings → Branches → Branch protection rules**, add (or edit)
+the rule for `main` and enable:
+
+- **Require a pull request before merging**, and within it
+- **Require review from Code Owners**.
+
+(CLI equivalent, owner-only:)
+
+```bash
+gh api -X PUT repos/adi-prasetyo/driftscribe/branches/main/protection \
+  --input - <<'JSON'
+{
+  "required_status_checks": null,
+  "enforce_admins": true,
+  "required_pull_request_reviews": { "require_code_owner_reviews": true, "required_approving_review_count": 1 },
+  "restrictions": null
+}
+JSON
+```
+
+> **Confirm the handle.** `.github/CODEOWNERS` uses `@adi-prasetyo` — the
+> canonical repo owner per `agent/workloads/registry.py`
+> (`target_repo="adi-prasetyo/driftscribe"`) and the bootstrap script's
+> `GITHUB_REPO` default. If your GitHub handle differs, edit `.github/CODEOWNERS`
+> to your real handle before enabling the rule — an unknown owner makes the rule
+> unsatisfiable and blocks all PRs.
+
+---
+
+## 4. `tofu init` against the real backend
 
 With the buckets and KMS key now live, initialize against the **real** gcs
 backend. State and plan encryption is enforced from t=0 (`iac/versions.tf`
@@ -123,7 +161,7 @@ tofu init -var "tofu_state_kms_key=<KMS_KEY_PATH>"
 
 ---
 
-## 4. `tofu plan` — review the import, iterate to an EMPTY plan
+## 5. `tofu plan` — review the import, iterate to an EMPTY plan
 
 ```bash
 tofu plan -var "tofu_state_kms_key=<KMS_KEY_PATH>"
@@ -151,7 +189,7 @@ Do not guess undocumented values — let the plan reveal them and adjust.
 
 ---
 
-## 5. `tofu apply` the import
+## 6. `tofu apply` the import
 
 Once the plan is empty apart from the import itself:
 
@@ -166,7 +204,7 @@ foundation PR; it is harmless to leave.
 
 ---
 
-## 6. Confirm CI green on a no-op `iac/` PR
+## 7. Confirm CI green on a no-op `iac/` PR
 
 Open a trivial no-op PR touching `iac/` (e.g. a comment or whitespace change in
 `cloudrun.tf`, or a `README.md` tweak) and confirm the `iac` workflow
