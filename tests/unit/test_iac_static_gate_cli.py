@@ -115,3 +115,72 @@ def test_cli_operator_tf_json_not_falsely_parse_errored(tmp_path: Path):
     proc = _run_gate(repo, base, head, "operator")
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "hcl-parse-error" not in (proc.stdout + proc.stderr)
+
+
+def test_cli_tolerates_deleted_iac_file(tmp_path: Path):
+    # A change that DELETES an iac/.tf file: git show <head>:<path> fails, the
+    # file has no content to gate, so it must be skipped without crashing.
+    repo = tmp_path
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "t@t")
+    _git(repo, "config", "user.name", "t")
+    (repo / "iac").mkdir()
+    (repo / "iac" / "keep.tf").write_text('resource "google_x" "y" {}\n')
+    (repo / "iac" / "gone.tf").write_text('resource "google_x" "z" {}\n')
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "base")
+    base = _rev_parse(repo)
+    (repo / "iac" / "gone.tf").unlink()
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "delete")
+    head = _rev_parse(repo)
+
+    proc = _run_gate(repo, base, head, "agent")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "Traceback" not in (proc.stdout + proc.stderr)
+
+
+def test_cli_rejects_change_outside_iac_in_agent_mode(tmp_path: Path):
+    repo = tmp_path
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "t@t")
+    _git(repo, "config", "user.name", "t")
+    (repo / "iac").mkdir()
+    (repo / "iac" / "main.tf").write_text('resource "google_x" "y" {}\n')
+    (repo / ".github").mkdir()
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "base")
+    base = _rev_parse(repo)
+    (repo / ".github" / "ci.yml").write_text("on: push\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "outside")
+    head = _rev_parse(repo)
+
+    proc = _run_gate(repo, base, head, "agent")
+    assert proc.returncode != 0, proc.stdout + proc.stderr
+    assert "path-outside-iac" in (proc.stdout + proc.stderr)
+
+
+def test_cli_operator_foundation_edit_exits_zero(tmp_path: Path):
+    # Operator mode may touch foundation files (backend/encryption/providers).
+    repo = tmp_path
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "t@t")
+    _git(repo, "config", "user.name", "t")
+    (repo / "iac").mkdir()
+    (repo / "iac" / "versions.tf").write_text(
+        'terraform { required_providers { google = { source = "hashicorp/google" } } }\n')
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "base")
+    base = _rev_parse(repo)
+    (repo / "iac" / "versions.tf").write_text(
+        'terraform {\n'
+        '  required_providers { google = { source = "hashicorp/google" } }\n'
+        '  backend "gcs" { bucket = "b" }\n'
+        '}\n')
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "foundation")
+    head = _rev_parse(repo)
+
+    proc = _run_gate(repo, base, head, "operator")
+    assert proc.returncode == 0, proc.stdout + proc.stderr

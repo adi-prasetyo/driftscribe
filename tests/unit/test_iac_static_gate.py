@@ -138,3 +138,38 @@ def test_plain_google_resource_has_no_execution_violation():
     hcl = 'resource "google_cloud_run_v2_service" "s" { name = "payment-demo" }'
     gi = GateInput(GateMode.AGENT, ("iac/x.tf",), {"iac/x.tf": hcl})
     assert evaluate(gi) == []
+
+
+# --- Adversarial / regression lock-ins (security gate hardening) ---
+
+
+def test_provisioner_nested_two_blocks_deep_is_caught():
+    # provisioner buried inside dynamic -> content -> (another) dynamic content.
+    hcl = (
+        'resource "google_x" "y" { '
+        'dynamic "a" { content { dynamic "b" { content { '
+        'provisioner "local-exec" { command = "id" } } } } } }'
+    )
+    gi = GateInput(GateMode.AGENT, ("iac/x.tf",), {"iac/x.tf": hcl})
+    rules = {v.rule for v in evaluate(gi)}
+    assert "arbitrary-execution" in rules
+    assert "dynamic-block-forbidden" in rules
+
+
+def test_disallowed_provider_via_top_level_provider_block_only():
+    # No required_providers entry — only a bare `provider "aws" {}` block.
+    hcl = 'provider "aws" { region = "us-east-1" }'
+    gi = GateInput(GateMode.OPERATOR, ("iac/providers.tf",), {"iac/providers.tf": hcl})
+    assert any(v.rule == "disallowed-provider" for v in evaluate(gi))
+
+
+def test_required_providers_mix_flags_only_the_disallowed_one():
+    hcl = (
+        'terraform { required_providers { '
+        'google = { source = "hashicorp/google" } '
+        'aws = { source = "hashicorp/aws" } } }'
+    )
+    gi = GateInput(GateMode.OPERATOR, ("iac/versions.tf",), {"iac/versions.tf": hcl})
+    violations = [v for v in evaluate(gi) if v.rule == "disallowed-provider"]
+    assert len(violations) == 1
+    assert "aws" in violations[0].detail

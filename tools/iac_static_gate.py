@@ -200,6 +200,11 @@ def _body_has_block(body: dict, key: str) -> bool:
     ``provisioner`` bodies). We recurse through every nested dict so a
     forbidden construct hidden inside another block (e.g. a ``provisioner``
     inside a ``dynamic ... content``) is still caught.
+
+    Intentional over-approximation: this treats a scalar *attribute* named
+    ``provisioner``/``connection``/``dynamic`` as if it were a block. Those are
+    reserved block names in HCL, so a real config never uses them as plain
+    attributes; over-rejecting here is the safe direction for a security gate.
     """
     if not isinstance(body, dict):
         return False
@@ -283,7 +288,10 @@ def evaluate(gi: GateInput) -> list[Violation]:
                 )
                 continue
             # Allowed name: if it declares a source it must be the canonical one
-            # (a spoofed `google = { source = "evil/google" }` is rejected).
+            # (a spoofed `google = { source = "evil/google" }` is rejected). By
+            # design (v1), an allowed provider with NO source declared passes —
+            # `tofu init -lockfile=readonly` is the guard that an unpinned/new
+            # provider can't actually be resolved in CI.
             required = REQUIRED_PROVIDER_SOURCES.get(name)
             if source is not None and required is not None and source != required:
                 violations.append(
