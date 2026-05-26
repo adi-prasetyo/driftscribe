@@ -87,9 +87,15 @@ GITHUB_REPO="${GITHUB_REPO:-adi-prasetyo/driftscribe}"
 # component). Pinning this means only THIS workflow can mint GCP creds, so a new
 # attacker-authored workflow in the same repo cannot impersonate the CI SA.
 GITHUB_WORKFLOW="${GITHUB_WORKFLOW:-.github/workflows/iac.yml}"
-# The branch whose pushes/PR-base may obtain creds (the trusted base). Phase C
-# wires the plan-builder to run on same-repo PRs targeting this ref.
-GITHUB_REF="${GITHUB_REF:-refs/heads/main}"
+# The trusted branch whose pushes — and PRs *targeting* it — may obtain creds.
+# Specified as the BARE branch name (e.g. "main"), because the two GitHub OIDC
+# claims we gate on use different formats (verified against GitHub's OIDC docs):
+#   - pull_request: gated on `base_ref`, which is the BARE branch name ("main").
+#   - push:         gated on `ref`, which is the FULL ref ("refs/heads/main").
+# A PR's `ref` is "refs/pull/<N>/merge" (never "refs/heads/main"), so PRs MUST
+# be gated on base_ref, not ref — see the CEL condition in §6.
+GITHUB_BRANCH="${GITHUB_BRANCH:-main}"
+GITHUB_PUSH_REF="refs/heads/${GITHUB_BRANCH}"
 
 # CI plan-builder service account (Phase C identity).
 CI_SA_NAME="${CI_SA_NAME:-tofu-plan-builder}"
@@ -124,11 +130,15 @@ PROJECT_NUMBER="$(gcloud projects describe "$PROJECT" --format='value(projectNum
 # - iamcredentials:  WIF token exchange (STS -> short-lived SA access token).
 # - sts:             the WIF token-exchange endpoint itself.
 # - storage:         the gcs backend + artifact bucket APIs.
-# - run/compute:     read-only describe surface `tofu plan` walks for the
+# - run:             read-only describe surface `tofu plan` walks for the
 #                    payment-demo google_cloud_run_v2_service refresh.
+# (M-2) compute.googleapis.com is intentionally NOT enabled: the only plan
+# refresh target is google_cloud_run_v2_service (Cloud Run admin API), there are
+# no compute resources in iac/, and the google provider initializes without the
+# Compute API. Keeping the enabled-API surface minimal; add it later if/when a
+# compute resource is imported.
 enable_apis_idempotent "$PROJECT" \
   cloudkms.googleapis.com \
-  compute.googleapis.com \
   iam.googleapis.com \
   iamcredentials.googleapis.com \
   run.googleapis.com \
@@ -193,6 +203,14 @@ echo "  artifact bucket gs://${ARTIFACT_BUCKET}: versioning + UBLA enforced"
 # managing the encryption key inside the very state it encrypts. The key is a
 # symmetric encrypt/decrypt key; OpenTofu's gcp_kms provider derives a 32-byte
 # (AES-256) data key per the iac/versions.tf `key_length = 32`.
+#
+# REGION-CHANGE FOOTGUN (M-1): the describe-gate below keys on keyring
+# name + location. KMS keyring location is IMMUTABLE. If you ever re-run with a
+# different REGION/KMS_LOCATION after the keyring exists, this would silently
+# create a SECOND keyring in the new location while existing state stays
+# encrypted under the OLD key — `tofu init` would then fail to decrypt. Do NOT
+# change KMS_LOCATION once state exists; migrate deliberately (decrypt with the
+# old key, re-encrypt with the new) instead.
 if gcloud kms keyrings describe "$KMS_KEYRING" \
      --project="$PROJECT" --location="$KMS_LOCATION" >/dev/null 2>&1; then
   echo "  KMS keyring ${KMS_KEYRING} (${KMS_LOCATION}) already exists — skipping"
@@ -281,24 +299,39 @@ fi
 # Attribute MAPPING: surface the GitHub OIDC claims we condition on. google.subject
 # is mandatory; the rest are mapped so the attribute CONDITION below can reference
 # them and so the SA's principalSet binding can pin attribute.repository.
+# base_ref is mapped because the pull_request branch of the condition gates on it
+# (a PR's `ref` is "refs/pull/<N>/merge", so PRs cannot be gated on ref).
 WIF_ATTR_MAPPING="google.subject=assertion.sub"
 WIF_ATTR_MAPPING+=",attribute.repository=assertion.repository"
 WIF_ATTR_MAPPING+=",attribute.ref=assertion.ref"
+WIF_ATTR_MAPPING+=",attribute.base_ref=assertion.base_ref"
 WIF_ATTR_MAPPING+=",attribute.event_name=assertion.event_name"
 WIF_ATTR_MAPPING+=",attribute.workflow_ref=assertion.workflow_ref"
 
 # Attribute CONDITION (CEL): tokens are accepted ONLY when ALL hold:
-#   - repository == the canonical repo            -> fork PRs (different repo) rejected
+#   - repository == the canonical repo             -> fork PRs (different repo) rejected
 #   - workflow_ref starts with "<repo>/<workflow>" -> only THIS workflow file mints creds
-#   - ref == the trusted branch ref               -> only the pinned base branch
-#   - event_name in {push, pull_request}          -> no workflow_dispatch/schedule abuse
-# This is enforced at the provider, BEFORE any SA binding is consulted — a token
-# failing the condition never even maps to a principal. workflow_ref looks like
+#   - AND the event is one of:
+#       * pull_request targeting the trusted branch (base_ref == "<branch>"), OR
+#       * push to the trusted branch (ref == "refs/heads/<branch>")
+#     -> no workflow_dispatch/schedule abuse, and only the pinned base branch.
+#
+# C-1 FIX: the two events carry the trusted branch in DIFFERENT claims (verified
+# against GitHub's OIDC docs, 2026-05-27):
+#   - pull_request: `ref` is "refs/pull/<N>/merge" (NOT refs/heads/main) and the
+#     target branch lives in `base_ref` as a BARE name ("main").
+#   - push:         `ref` is the FULL ref "refs/heads/main"; `base_ref` is empty.
+# The previous single `ref == 'refs/heads/main'` clause could therefore NEVER be
+# satisfied by a pull_request token — only a push-to-main — which broke the
+# documented Phase-C intent (plan-builder on same-repo PRs targeting main).
+# Gating push and pull_request separately, each on its correct claim, fixes it.
+# Enforced at the provider BEFORE any SA binding — a token failing the condition
+# never even maps to a principal. workflow_ref looks like
 # "owner/repo/.github/workflows/iac.yml@refs/heads/main"; we match its prefix.
 WIF_ATTR_CONDITION="assertion.repository == '${GITHUB_REPO}'"
 WIF_ATTR_CONDITION+=" && assertion.workflow_ref.startsWith('${GITHUB_REPO}/${GITHUB_WORKFLOW}@')"
-WIF_ATTR_CONDITION+=" && assertion.ref == '${GITHUB_REF}'"
-WIF_ATTR_CONDITION+=" && assertion.event_name in ['push', 'pull_request']"
+WIF_ATTR_CONDITION+=" && ((assertion.event_name == 'pull_request' && assertion.base_ref == '${GITHUB_BRANCH}')"
+WIF_ATTR_CONDITION+=" || (assertion.event_name == 'push' && assertion.ref == '${GITHUB_PUSH_REF}'))"
 
 if gcloud iam workload-identity-pools providers describe "$WIF_PROVIDER" \
      --project="$PROJECT" --location=global \
@@ -372,13 +405,15 @@ workflow + authenticated plan land in Phase C):
     ${CI_SA}
 
   The provider only accepts tokens from repo ${GITHUB_REPO}, workflow
-  ${GITHUB_WORKFLOW}, ref ${GITHUB_REF}, event push|pull_request. Fork PRs get
-  NO credentials.
+  ${GITHUB_WORKFLOW}, for either a pull_request targeting '${GITHUB_BRANCH}'
+  (base_ref) or a push to ${GITHUB_PUSH_REF} (ref). Fork PRs get NO credentials.
 
 Operator MUST customize before running if any default is wrong:
   - GITHUB_REPO     (currently ${GITHUB_REPO})
   - GITHUB_WORKFLOW (currently ${GITHUB_WORKFLOW})
-  - GITHUB_REF      (currently ${GITHUB_REF})  <- the trusted base branch
-  - KMS_LOCATION    (currently ${KMS_LOCATION}) <- immutable once created
+  - GITHUB_BRANCH   (currently ${GITHUB_BRANCH})    <- trusted branch (BARE name)
+  - KMS_LOCATION    (currently ${KMS_LOCATION}) <- IMMUTABLE once the keyring
+                    exists; changing it after state exists strands the old key
+                    (see the KMS section's REGION-CHANGE FOOTGUN note)
 ================================================================
 EOF
