@@ -23,3 +23,13 @@ test-results/
 
 # Git worktrees (isolated workspaces for feature work)
 .worktrees/
+
+# OpenTofu / Terraform (iac/) — plugin cache + state/plan artifacts must never
+# be committed. The lockfile (iac/.terraform.lock.hcl) is intentionally tracked
+# and is NOT matched by `.terraform/`.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
