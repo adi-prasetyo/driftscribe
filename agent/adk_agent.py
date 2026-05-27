@@ -45,10 +45,15 @@ Developer Knowledge MCP wrappers (2, Phase 17.B.3):
 - ``search_developer_docs`` → Developer Knowledge MCP ``search_documents``
 - ``retrieve_developer_doc`` → Developer Knowledge MCP ``get_documents``
 
-That's 12 tools, period (8 → 10 in 17.C.4 with the upgrade reader/proposer;
-→ 11 with close; → 12 in 20.9 with merge). Anything else the model wants
-to do is denied by capability — there is no general "execute shell" or
-"make HTTP request" surface.
+Infra-IaC read-only inventory (1):
+- ``read_project_inventory_tool`` → Infra-Reader Agent ``/describe``.
+  Read-only (cloudasset.viewer only); exposed by the chat-only
+  ``explore`` workload. Authority-clean: takes no args.
+
+That's 13 tools, period (8 → 10 in 17.C.4 with the upgrade reader/proposer;
+→ 11 with close; → 12 in 20.9 with merge; → 13 with the infra-IaC inventory
+reader). Anything else the model wants to do is denied by capability —
+there is no general "execute shell" or "make HTTP request" surface.
 
 **Per-workload tool inventories (Phase 17.A.4):**
 :data:`DRIFT_WORKLOAD_TOOL_NAMES`, :data:`UPGRADE_WORKLOAD_TOOL_NAMES`, and
@@ -60,8 +65,11 @@ the constants below for the rationale, the tuple-vs-frozenset choice, and
 the three-way YAML ⇄ code ⇄ runtime equality enforced by
 ``tests/unit/test_coordinator_tool_inventory.py``. ``explore`` is the
 chat-only, strictly read-only workload: its inventory is a read-only
-SUBSET of the others and adds no new callable, so the "12 tools" count
-above is unchanged.
+SUBSET of the others PLUS the one read-only callable it introduces,
+``read_project_inventory`` (infra-IaC initiative) — backed by the
+infra_reader worker (cloudasset.viewer only), so the addition is
+strictly read-only and does not widen the mutation surface. That
+callable is what bumps the count above from 12 to 13.
 """
 
 import json
@@ -83,6 +91,7 @@ from agent.adk_tools import (
     patch_docs_tool,
     propose_rollback_tool,
     read_live_env_tool,
+    read_project_inventory_tool,
     search_recent_prs_tool,
     upgrade_close_pr_tool,
     upgrade_merge_pr_tool,
@@ -138,6 +147,12 @@ COORDINATOR_TOOLS = [
     # fail-closed CI (required check green on head + no conflict) and
     # merges with a deploy-pinned squash.
     upgrade_merge_pr_tool,
+    # Infra-IaC read-only inventory (whole-project resource describe).
+    # Backed by the infra_reader worker (cloudasset.viewer only) — no
+    # mutation surface. Exposed by the chat-only ``explore`` workload.
+    # Authority-clean: takes no args; the worker has the target project
+    # pinned via env.
+    read_project_inventory_tool,
 ]
 
 
@@ -230,20 +245,26 @@ UPGRADE_WORKLOAD_TOOL_NAMES: tuple[str, ...] = (
 )
 
 # The chat-only, strictly read-only workload. Its tools are a read-only
-# SUBSET of what drift/upgrade already expose — it adds NO new callable to
-# COORDINATOR_TOOLS. By construction it lists ZERO mutation tools (no
+# SUBSET of what drift/upgrade already expose, PLUS the one read-only
+# callable this workload introduces to COORDINATOR_TOOLS:
+# ``read_project_inventory`` (infra-IaC initiative). That callable is
+# itself strictly read-only — backed by the infra_reader worker which
+# holds only cloudasset.viewer — so adding it does NOT widen the mutation
+# surface. By construction this list lists ZERO mutation tools (no
 # patch/rollback/PR-open/close/merge) and not even ``notify`` or
 # ``search_recent_prs`` (the latter rides the write-capable coordinator
 # PAT). The read-only guarantee is pinned in
 # ``tests/unit/test_coordinator_tool_inventory.py`` as a disjointness
 # assertion against the mutation-tool set — see ``_MUTATION_TOOL_NAMES``
-# there. Order mirrors ``workloads/explore/workload.yaml`` (tool-order pin).
+# there. Order mirrors ``workloads/explore/workload.yaml`` (tool-order pin)
+# — ``read_project_inventory`` is appended LAST to match the YAML.
 EXPLORE_WORKLOAD_TOOL_NAMES: tuple[str, ...] = (
     "drift_read_live_env",
     "upgrade_read_dependencies",
     "load_contract",
     "search_developer_docs",
     "retrieve_developer_doc",
+    "read_project_inventory",
 )
 
 

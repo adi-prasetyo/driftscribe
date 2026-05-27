@@ -65,6 +65,7 @@ from agent.adk_tools import (
     patch_docs_tool,
     propose_rollback_tool,
     read_live_env_tool,
+    read_project_inventory_tool,
     search_recent_prs_tool,
     upgrade_close_pr_tool,
     upgrade_merge_pr_tool,
@@ -341,6 +342,12 @@ class WorkloadResolution:
 _TOOL_REGISTRY: Final[dict[str, Callable | None]] = {
     # Drift workload — Phase 11.7 callables, wired today.
     "drift_read_live_env":     read_live_env_tool,
+    # Read-only whole-project inventory (infra-IaC initiative). Backed by
+    # the infra_reader worker (cloudasset.viewer only) — see the
+    # ``read_project_inventory`` worker mapping below and
+    # :func:`agent.adk_tools.read_project_inventory_tool`. Strictly
+    # read-only: exposed by the explore workload, never a mutation set.
+    "read_project_inventory":  read_project_inventory_tool,
     "drift_patch_docs":        patch_docs_tool,
     "drift_propose_rollback":  propose_rollback_tool,
     "notify":                  notify_tool,
@@ -403,6 +410,10 @@ _WORKER_REGISTRY: Final[dict[str, WorkerSpec]] = {
     "drift_reader":   WorkerSpec(url_env="READER_URL"),
     "drift_docs":     WorkerSpec(url_env="DOCS_URL"),
     "drift_rollback": WorkerSpec(url_env="ROLLBACK_URL"),
+    # Infra-IaC read-only worker (whole-project inventory). Read-only by
+    # construction (cloudasset.viewer + serviceUsageConsumer only); wired
+    # into the chat-only ``explore`` workload, never a mutation surface.
+    "infra_reader":   WorkerSpec(url_env="INFRA_READER_URL"),
     # Shared across workloads.
     "notifier":       WorkerSpec(url_env="NOTIFIER_URL"),
     # Upgrade workers — optional at module import. Required at
