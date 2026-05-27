@@ -1,0 +1,136 @@
+# Canonical TARGETED deploy for the Phase B infra-reader worker on
+# driftscribe-hack-2026 (single-user portfolio). Operator runs by hand;
+# there is NO CI trigger.
+#
+# WHY THIS FILE EXISTS:
+#   The full infra/cloudbuild.yaml is a FULL-STACK build: it rebuilds and
+#   redeploys ALL ~9 images, INCLUDING payment-demo (the `${_TARGET_SERVICE}`
+#   step) at a fresh image tag. Phase A adopted payment-demo into OpenTofu
+#   state pinned to a specific serving image tag (see iac/cloudrun.tf). Running
+#   the full build moves payment-demo off that tag and BREAKS the Phase A
+#   zero-diff — a later `tofu apply` could then revert prod to the pinned tag.
+#   See docs/runbooks/iac-bootstrap.md and docs/runbooks/infra-reader.md.
+#
+#   This file deploys ONLY the infra-reader worker and wires its URL onto the
+#   already-running coordinator. It does NOT build or deploy payment-demo, the
+#   coordinator image, or any other worker.
+#
+# SCOPE BOUNDARY — this file ships the WORKER, not the coordinator:
+#   It does NOT rebuild the coordinator image. If the running coordinator does
+#   not yet contain the `read_project_inventory` tool (i.e. you are rolling out
+#   Phase B for the first time), deploy the coordinator FIRST via
+#   infra/cloudbuild.coordinator-update.yaml, THEN run this file.
+#
+# USAGE (operator runs by hand, no CI integration):
+#
+#   gcloud builds submit \
+#     --config=infra/cloudbuild.infra-reader.yaml \
+#     --substitutions=_TAG=$(git rev-parse --short HEAD),_IAC_SNAPSHOT_SHA=$(git rev-parse HEAD) \
+#     --project=driftscribe-hack-2026
+#
+# PREREQUISITES (operator-side — see docs/runbooks/infra-reader.md):
+#   1. cloudasset.googleapis.com enabled.
+#   2. infra-reader-sa created + granted the read-only role (custom role
+#      preferred; see runbook §2).
+#   3. AFTER this build: grant the COORDINATOR's SA roles/run.invoker on
+#      driftscribe-infra-reader. Workers are --no-allow-unauthenticated, so the
+#      app-level ALLOWED_CALLERS allowlist is NOT sufficient on its own — the
+#      caller also needs Cloud Run platform invoker IAM. The idempotent path is
+#      to (re-)run infra/scripts/setup_secrets.sh, whose per-service invoker
+#      loop now includes driftscribe-infra-reader. Because that grant is gated
+#      on the service existing, it is a no-op before this build and applies on
+#      re-run after it.
+
+substitutions:
+  _TAG: 'manual'
+  # Region kept as a substitution (not hardcoded) so a future region migration
+  # is one substitution change rather than a search/replace.
+  _REGION: asia-northeast1
+  # Provenance string the worker reports as `iac_snapshot_sha`. On a manual
+  # `gcloud builds submit` from a local source upload there is no built-in
+  # $COMMIT_SHA, and Cloud Build does NOT recursively expand user
+  # substitutions — so this must be passed explicitly. Defaults to 'manual';
+  # pass the full git SHA from the runbook for accurate provenance.
+  _IAC_SNAPSHOT_SHA: 'manual'
+
+steps:
+  # 1. Build + push ONLY the infra-reader image. Build context is the repo
+  #    root (the worker depends on driftscribe_lib/ for auth/logging); the
+  #    Dockerfile lives under workers/infra_reader/. Same context/Dockerfile
+  #    split as the infra-reader step in infra/cloudbuild.yaml.
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-infra-reader:${_TAG}
+      - -f
+      - workers/infra_reader/Dockerfile
+      - .
+  - name: gcr.io/cloud-builders/docker
+    args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-infra-reader:${_TAG}']
+
+  # 2. Deploy the worker. Mirrors the infra-reader deploy step in
+  #    infra/cloudbuild.yaml: --no-allow-unauthenticated (ID-token auth), the
+  #    read-only infra-reader-sa, and the in-app ALLOWED_CALLERS allowlist
+  #    naming the COORDINATOR's SA (driftscribe-agent@...). OWN_URL is a
+  #    placeholder overwritten by step 3 in this same build.
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - driftscribe-infra-reader
+      - --image=asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-infra-reader:${_TAG}
+      - --region=${_REGION}
+      - --no-allow-unauthenticated
+      - --service-account=infra-reader-sa@$PROJECT_ID.iam.gserviceaccount.com
+      - --min-instances=0
+      - --max-instances=1
+      - --concurrency=1
+      - --set-env-vars=GCP_PROJECT=$PROJECT_ID,OWN_URL=https://placeholder.invalid,ALLOWED_CALLERS=driftscribe-agent@$PROJECT_ID.iam.gserviceaccount.com,IAC_SNAPSHOT_SHA=${_IAC_SNAPSHOT_SHA}
+
+  # 3. Post-deploy: read the assigned URL and write it back into OWN_URL.
+  #    Fail-closed if the URL can't be resolved (verify_caller would then
+  #    reject every audience).
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        URL=$$(gcloud run services describe driftscribe-infra-reader \
+          --region=${_REGION} --format='value(status.url)')
+        if [ -z "$${URL}" ] || [ "$${URL}" = "https://placeholder.invalid" ]; then
+          echo "ERROR: Could not resolve driftscribe-infra-reader URL" >&2
+          exit 1
+        fi
+        echo "Setting OWN_URL=$${URL} on driftscribe-infra-reader"
+        gcloud run services update driftscribe-infra-reader \
+          --region=${_REGION} \
+          --update-env-vars=OWN_URL=$${URL}
+
+  # 4. Wire the worker URL onto the ALREADY-RUNNING coordinator. Incremental
+  #    --update-env-vars touches ONLY INFRA_READER_URL, preserving every other
+  #    coordinator env var, its mounted secrets, its SA, ingress, scaling, and
+  #    traffic policy. This does NOT rebuild or redeploy the coordinator image
+  #    (see SCOPE BOUNDARY in the header — the coordinator code update is owned
+  #    by infra/cloudbuild.coordinator-update.yaml).
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        INFRA_READER_URL=$$(gcloud run services describe driftscribe-infra-reader \
+          --region=${_REGION} --format='value(status.url)')
+        if [ -z "$${INFRA_READER_URL}" ] || [ "$${INFRA_READER_URL}" = "https://placeholder.invalid" ]; then
+          echo "ERROR: Could not resolve driftscribe-infra-reader URL for coordinator wiring" >&2
+          exit 1
+        fi
+        echo "Setting INFRA_READER_URL=$${INFRA_READER_URL} on driftscribe-agent"
+        gcloud run services update driftscribe-agent \
+          --region=${_REGION} \
+          --update-env-vars=INFRA_READER_URL=$${INFRA_READER_URL}
+
+images:
+  - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-infra-reader:${_TAG}

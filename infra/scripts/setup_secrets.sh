@@ -122,12 +122,15 @@ for role in \
 done
 
 # --------------------------------------------------------------------------
-# 4. Service Accounts — 1 coordinator + 4 workers (idempotent)
+# 4. Service Accounts — 1 coordinator + 6 workers (idempotent)
 # --------------------------------------------------------------------------
 # driftscribe-agent replaces the default compute SA as the coordinator's
 # runtime identity. Workers' ALLOWED_CALLERS env lists this SA's email.
 # Phase 17.E.2: upgrade-reader-sa and upgrade-docs-sa added for the
 # upgrade workload (one SA per worker, distinct from the drift workers).
+# Note: infra-reader-sa (the Phase infra-iac B explore worker) is NOT created
+# here — it is provisioned operator-side per docs/runbooks/infra-reader.md;
+# this script only grants the coordinator run.invoker on it once deployed.
 for sa in driftscribe-agent reader-agent-sa docs-agent-sa rollback-agent-sa notifier-agent-sa upgrade-reader-sa upgrade-docs-sa; do
   gcloud iam service-accounts describe "${sa}@${PROJECT}.iam.gserviceaccount.com" \
     --project="$PROJECT" >/dev/null 2>&1 \
@@ -451,7 +454,8 @@ fi
 # Cloud Run inter-service auth (Phase 11.0 spike) requires the calling SA
 # to hold run.invoker on the receiving service. These are PER-SERVICE
 # bindings, not project-wide — even a compromised coordinator can only
-# call the four services it has been granted access to.
+# call the specific worker services listed in the loop below (currently
+# seven, across the drift, upgrade, and explore workloads).
 #
 # Gated on service existence: on first run (before any `gcloud builds
 # submit`) the workers don't exist and this loop is a no-op. After the
@@ -461,7 +465,13 @@ fi
 # — the coordinator's run.invoker on a drift worker does NOT extend to
 # an upgrade worker (workload-scoped IAM invariant, pinned in
 # docs/architecture/iam-matrix.md).
-for worker in driftscribe-reader driftscribe-docs driftscribe-rollback driftscribe-notifier driftscribe-upgrade-reader driftscribe-upgrade-docs; do
+# Phase infra-iac B: driftscribe-infra-reader (the read-only explore-workload
+# inventory reader) added to the loop. It is --no-allow-unauthenticated like
+# the other workers, so the coordinator's in-app ALLOWED_CALLERS allowlist is
+# NOT sufficient on its own — the coordinator SA also needs this Cloud Run
+# platform invoker grant, or the call 403s at the admission layer. (This is the
+# grant that had to be applied by hand during the first Phase B deploy.)
+for worker in driftscribe-reader driftscribe-docs driftscribe-rollback driftscribe-notifier driftscribe-upgrade-reader driftscribe-upgrade-docs driftscribe-infra-reader; do
   if gcloud run services describe "$worker" \
      --region="$REGION" --project="$PROJECT" >/dev/null 2>&1; then
     gcloud run services add-iam-policy-binding "$worker" \

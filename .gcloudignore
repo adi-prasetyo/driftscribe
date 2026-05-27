@@ -1,0 +1,12 @@
+# Files NOT uploaded to Cloud Build by `gcloud builds submit`.
+#
+# WHY THIS EXISTS: without it, `gcloud builds submit` uploads the whole source
+# tree, which includes iac/.terraform/ — the OpenTofu provider plugin cache,
+# ~119M after `tofu init`. That bloats every build upload (full or targeted)
+# and is never needed in any image (the Dockerfiles bake in only what they
+# COPY). `#!include:.gitignore` pulls in the .gitignore patterns; the explicit
+# entries below are belt-and-suspenders so the exclusion does not depend on
+# .gitignore include semantics.
+.git
+iac/.terraform/
+#!include:.gitignore
