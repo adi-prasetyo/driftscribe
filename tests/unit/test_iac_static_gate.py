@@ -63,6 +63,17 @@ def test_operator_mode_still_governs_only_iac():
     assert all(v.rule != "path-outside-iac" for v in evaluate(gi))
 
 
+def test_empty_diff_passes_in_both_modes():
+    # The iac.yml workflow runs on EVERY PR (no paths filter) so it can be a
+    # required status check. A PR whose diff contains no in-scope files yields
+    # an empty changed_paths; with nothing to govern the gate must PASS in BOTH
+    # modes — there is no foundation edit, no out-of-scope path, no HCL to scan.
+    # (Contrast test_agent_pr_touching_outside_iac_is_rejected: a NON-empty
+    # non-iac diff is still correctly rejected in agent mode.)
+    for mode in (GateMode.OPERATOR, GateMode.AGENT):
+        assert evaluate(GateInput(mode, (), {})) == [], mode
+
+
 # --- Task 3: provider allowlist + source pinning + fail-closed parse ---
 
 
