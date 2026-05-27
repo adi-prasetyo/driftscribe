@@ -19,9 +19,14 @@ import enum
 import subprocess
 import sys
 from dataclasses import dataclass
-from typing import Any
 
-import hcl2
+from driftscribe_lib.iac_hcl import (
+    block_label as _block_label,
+    is_meta_key as _is_meta_key,
+    iter_blocks as _iter_blocks,
+    parse_hcl,
+    unwrap as _unwrap,
+)
 
 # Built-in pseudo-providers OpenTofu/Terraform resolve without a source — they
 # are not real external providers and must not trip the allowlist.
@@ -39,17 +44,10 @@ BUILTIN_PROVIDERS = frozenset({"terraform", "tofu"})
 # below normalize labels and filter every ``__dunder__`` meta key.
 
 
-def _is_meta_key(key: str) -> bool:
-    """True for an hcl2-injected dunder-metadata key (``__is_block__``,
-    ``__comments__``, ``__inline_comments__``, ``__start_line__``, …).
-
-    Scoped deliberately narrowly to the ``__...__`` shape: real HCL
-    identifiers (provider/resource/module/data names) cannot be a leading- and
-    trailing-double-underscore token, so this never masks a real disallowed
-    provider/module/resource — it only drops hcl2's own metadata.
-    """
-    return isinstance(key, str) and key.startswith("__") and key.endswith("__")
-
+# The label-normalization + meta-key primitives (``_is_meta_key``, ``_unwrap``,
+# ``_block_label``, ``parse_hcl``, ``_iter_blocks``) are imported from
+# driftscribe_lib.iac_hcl (Phase B). They are policy-free; ALL gate policy
+# (allowlists, rule constants, ``evaluate``) stays in this module.
 
 IAC_PREFIX = "iac/"
 
@@ -127,53 +125,15 @@ def _is_disallowed_iac_suffix(path: str) -> bool:
     return not (path.endswith(ALLOWED_AGENT_SUFFIX) or path.endswith(ALLOWED_AGENT_DOC_SUFFIX))
 
 
-def _unwrap(value: Any) -> Any:
-    """Strip the literal surrounding double-quotes hcl2 8.x leaves on string
-    scalars and block labels (``'"hashicorp/google"'`` -> ``hashicorp/google``).
-
-    Non-strings (and strings without the wrapping quotes) pass through
-    unchanged so the helper is safe to call on any label/value.
-    """
-    if isinstance(value, str) and len(value) >= 2 and value[0] == '"' and value[-1] == '"':
-        return value[1:-1]
-    return value
-
-
-def _block_label(key: str) -> str:
-    """Normalize a block-label dict key (a quote-wrapped string) to its bare
-    identifier."""
-    return _unwrap(key)
-
-
 def _parse(path: str, content: str) -> dict | None:
-    """Parse HCL via hcl2, returning the dict or ``None`` on any failure.
+    """Parse HCL via the shared parser, returning the dict or ``None`` on failure.
 
     Fail-closed: a parse error must surface as an ``hcl-parse-error``
     Violation, never an exception, so the caller records the violation and
-    skips structural checks for this file. We catch broadly (lark raises
-    several exception types) so no malformed input can crash the gate.
+    skips structural checks for this file. Delegates to
+    :func:`driftscribe_lib.iac_hcl.parse_hcl` (Phase B), which catches broadly.
     """
-    try:
-        return hcl2.loads(content)
-    except Exception:  # noqa: BLE001 - fail-closed: any parse failure is a violation
-        return None
-
-
-def _iter_blocks(parsed: dict, kind: str) -> list[dict]:
-    """Return the list of top-level blocks of a given kind (``resource``,
-    ``data``, ``provider``, ``module``, ``terraform``).
-
-    hcl2 represents repeated top-level blocks as a list of dicts; a missing
-    kind yields an empty list.
-    """
-    blocks = parsed.get(kind)
-    if blocks is None:
-        return []
-    if isinstance(blocks, list):
-        return [b for b in blocks if isinstance(b, dict)]
-    if isinstance(blocks, dict):
-        return [blocks]
-    return []
+    return parse_hcl(content)
 
 
 def _collect_providers(parsed: dict) -> list[tuple[str, str | None]]:
@@ -243,21 +203,14 @@ def _body_has_block(body: dict, key: str) -> bool:
 def _iter_typed_blocks(parsed: dict, kind: str):
     """Yield ``(type, body)`` for each ``resource``/``data`` block.
 
-    Shape: ``kind: [ { '"type"': { '"name"': {body...} } } ]``. Labels are
-    quote-wrapped; the body is the innermost dict. A block may carry multiple
-    names under one type, and a file may repeat a type across blocks.
+    The shared :func:`driftscribe_lib.iac_hcl.iter_typed_blocks` yields the
+    3-tuple ``(type, name, body)`` (the reader needs the local name); the
+    gate's internal callsites only use ``(type, body)``, so this adapter drops
+    the name to preserve the gate's existing 2-tuple contract.
     """
-    for block in _iter_blocks(parsed, kind):
-        for type_label, by_name in block.items():
-            if _is_meta_key(type_label):
-                continue
-            rtype = _block_label(type_label)
-            if not isinstance(by_name, dict):
-                continue
-            for name_label, body in by_name.items():
-                if _is_meta_key(name_label):
-                    continue
-                yield rtype, (body if isinstance(body, dict) else {})
+    from driftscribe_lib.iac_hcl import iter_typed_blocks
+    for rtype, _name, body in iter_typed_blocks(parsed, kind):
+        yield rtype, body
 
 
 def evaluate(gi: GateInput) -> list[Violation]:

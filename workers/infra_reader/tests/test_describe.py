@@ -1,0 +1,269 @@
+"""Tests for the Infra-Reader Agent worker (Phase B).
+
+Covers the contract laid out in the plan:
+
+- ``/healthz`` is unauthenticated → ``{"ok": True}``.
+- ``/describe`` happy path: a fake CAI iterator returns the payment-demo Cloud
+  Run service (declared in the baked-in ``iac/`` dir) + one unmanaged service →
+  ``declared_in_iac >= 1`` and the payment-demo sample is labeled ``iac=True``.
+- read_mask: the request handed to ``search_all_resources`` carries exactly the
+  ``["name", "asset_type", "location"]`` paths (verified against
+  google-cloud-asset==4.3.0: ``read_mask={"paths": [...]}`` dict-coercion yields
+  a ``FieldMask`` whose ``.paths`` is that list).
+- pagination: the client iterator yields results across two "pages"; the counts
+  aggregate over the whole iterator.
+- ``extra="forbid"``: POST with an unexpected field → 422.
+- auth: with NO dependency override + missing/invalid token → 401/403 (mirrors
+  ``workers/reader/tests/test_read.py``).
+- degradation (CAI): ``search_all_resources`` raising ``PermissionDenied`` or a
+  generic ``GoogleAPICallError`` subclass → HTTP 200 soft-fail body, NOT 5xx.
+- degradation (declared parse): a malformed ``*.tf`` in ``IAC_DIR`` → the live
+  inventory is still returned, carrying ``declared_set_status="parse_error"``.
+- ``iac_snapshot_sha`` is echoed from the ``IAC_SNAPSHOT_SHA`` env.
+
+We bypass auth in happy-path tests via ``app.dependency_overrides`` (same idiom
+as the Reader's tests) and monkeypatch ``asset_v1.AssetServiceClient`` so no real
+Google credentials / network are touched.
+"""
+import os
+from pathlib import Path
+
+import pytest
+from fastapi import HTTPException
+from fastapi.testclient import TestClient
+from google.api_core import exceptions as gax
+
+# Env MUST be set before importing workers.infra_reader.main — the module reads
+# GCP_PROJECT / OWN_URL / ALLOWED_CALLERS at import time and KeyErrors if
+# missing (mirrors the Reader's fail-fast boot). IAC_DIR points at the baked-in
+# repo iac/ dir so the happy-path declared set resolves the payment-demo import.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+os.environ.setdefault("GCP_PROJECT", "driftscribe-hack-2026")
+os.environ.setdefault("OWN_URL", "https://infra-reader.example.com")
+os.environ.setdefault(
+    "ALLOWED_CALLERS",
+    "coordinator@driftscribe-hack-2026.iam.gserviceaccount.com",
+)
+os.environ.setdefault("IAC_DIR", str(_REPO_ROOT / "iac"))
+os.environ.setdefault("IAC_SNAPSHOT_SHA", "test-sha-abc123")
+
+from workers.infra_reader import main as infra_main  # noqa: E402
+from workers.infra_reader.main import _verify_caller_dep, app  # noqa: E402
+
+_RUN_SERVICE = "run.googleapis.com/Service"
+_PAYMENT_DEMO_NAME = (
+    "//run.googleapis.com/projects/driftscribe-hack-2026/"
+    "locations/asia-northeast1/services/payment-demo"
+)
+_ALLOWED = "coordinator@driftscribe-hack-2026.iam.gserviceaccount.com"
+
+
+class _FakeResource:
+    """Minimal stand-in for a CAI ResourceSearchResult — only the masked fields."""
+
+    def __init__(self, name, asset_type, location):
+        self.name = name
+        self.asset_type = asset_type
+        self.location = location
+
+
+def _make_fake_client(results, *, raises=None, capture=None):
+    """Build a fake AssetServiceClient class returning ``results`` from search.
+
+    ``capture`` (a dict) records the ``request`` kwarg so tests can assert the
+    read_mask. ``raises`` (an exception instance) makes search_all_resources
+    raise instead of yielding.
+    """
+
+    class _FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        def search_all_resources(self, request=None, **kwargs):
+            if capture is not None:
+                capture["request"] = request
+                capture["kwargs"] = kwargs
+            if raises is not None:
+                raise raises
+            # Return an iterable (mimics the client's paging iterator, which
+            # transparently yields across pages).
+            return iter(results)
+
+    return _FakeClient
+
+
+@pytest.fixture(autouse=True)
+def _pin_module_constants(monkeypatch):
+    """Force the module-level env-derived constants to the known test values.
+
+    main.py reads GCP_PROJECT / IAC_DIR / IAC_SNAPSHOT_SHA at import time. In a
+    unified pytest run another worker's test module may have populated those env
+    vars (e.g. ``GCP_PROJECT=test-proj`` from the Reader's tests) *before* this
+    module was imported, so the ``os.environ.setdefault`` calls at the top of
+    this file become no-ops and the constants carry the other worker's values.
+    Pinning the constants here (the same rationale as the Reader's
+    ``test_real_verify_caller_dep_wired_with_env``) keeps these tests honest
+    regardless of pytest's worker-test collection order.
+    """
+    monkeypatch.setattr(infra_main, "GCP_PROJECT", "driftscribe-hack-2026")
+    monkeypatch.setattr(infra_main, "IAC_DIR", _REPO_ROOT / "iac")
+    monkeypatch.setattr(infra_main, "IAC_SNAPSHOT_SHA", "test-sha-abc123")
+
+
+@pytest.fixture
+def client():
+    """TestClient with auth bypassed; per-test CAI patching done in the test."""
+    app.dependency_overrides[_verify_caller_dep] = lambda: _ALLOWED
+    yield TestClient(app)
+    app.dependency_overrides.clear()
+
+
+def test_healthz_does_not_require_auth(client):
+    def boom():
+        raise HTTPException(status_code=401, detail="should not be called")
+
+    app.dependency_overrides[_verify_caller_dep] = boom
+    r = client.get("/healthz")
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+
+
+def test_describe_happy_path_labels_payment_demo_as_iac(client, monkeypatch):
+    results = [
+        _FakeResource(_PAYMENT_DEMO_NAME, _RUN_SERVICE, "asia-northeast1"),
+        _FakeResource(
+            "//run.googleapis.com/projects/driftscribe-hack-2026/"
+            "locations/asia-northeast1/services/unmanaged-svc",
+            _RUN_SERVICE,
+            "asia-northeast1",
+        ),
+    ]
+    monkeypatch.setattr(
+        infra_main.asset_v1, "AssetServiceClient", _make_fake_client(results)
+    )
+    r = client.post("/describe", json={})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["project"] == "driftscribe-hack-2026"
+    assert body["total_resources"] == 2
+    assert body["declared_in_iac"] >= 1
+    samples = body["by_type"][_RUN_SERVICE]["sample"]
+    by_name = {s["name"]: s for s in samples}
+    assert by_name["payment-demo"]["iac"] is True
+    assert by_name["unmanaged-svc"]["iac"] is False
+
+
+def test_describe_read_mask_is_exactly_name_asset_type_location(client, monkeypatch):
+    capture: dict = {}
+    monkeypatch.setattr(
+        infra_main.asset_v1,
+        "AssetServiceClient",
+        _make_fake_client([], capture=capture),
+    )
+    r = client.post("/describe", json={})
+    assert r.status_code == 200, r.text
+    req = capture["request"]
+    # google-cloud-asset 4.3.0 coerces read_mask={"paths": [...]} into a
+    # FieldMask whose .paths preserves order.
+    assert list(req.read_mask.paths) == ["name", "asset_type", "location"]
+    assert req.scope == "projects/driftscribe-hack-2026"
+
+
+def test_describe_pagination_aggregates_across_pages(client, monkeypatch):
+    # Two "pages" worth of results — the client iterator yields all of them.
+    page1 = [
+        _FakeResource(
+            f"//run.googleapis.com/projects/driftscribe-hack-2026/"
+            f"locations/asia-northeast1/services/svc-{i}",
+            _RUN_SERVICE,
+            "asia-northeast1",
+        )
+        for i in range(3)
+    ]
+    page2 = [
+        _FakeResource(
+            f"//run.googleapis.com/projects/driftscribe-hack-2026/"
+            f"locations/asia-northeast1/services/svc-{i}",
+            _RUN_SERVICE,
+            "asia-northeast1",
+        )
+        for i in range(3, 5)
+    ]
+    monkeypatch.setattr(
+        infra_main.asset_v1,
+        "AssetServiceClient",
+        _make_fake_client(page1 + page2),
+    )
+    r = client.post("/describe", json={})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["total_resources"] == 5
+    assert body["by_type"][_RUN_SERVICE]["count"] == 5
+
+
+def test_describe_iac_snapshot_sha_echoed(client, monkeypatch):
+    monkeypatch.setattr(
+        infra_main.asset_v1, "AssetServiceClient", _make_fake_client([])
+    )
+    r = client.post("/describe", json={})
+    assert r.status_code == 200, r.text
+    assert r.json()["iac_snapshot_sha"] == "test-sha-abc123"
+
+
+def test_describe_extra_fields_rejected(client):
+    r = client.post("/describe", json={"x": 1})
+    assert r.status_code == 422, r.text
+
+
+def test_missing_or_invalid_token_returns_401_or_403():
+    # No dependency override — exercise the real _verify_caller_dep, which
+    # delegates to verify_caller. A missing/invalid bearer token must be a real
+    # 401/403 (auth failures stay hard errors, unlike CAI degradation).
+    c = TestClient(app)
+    r = c.post("/describe", json={})
+    assert r.status_code in (401, 403), r.text
+
+
+def test_describe_permission_denied_soft_fails_200(client, monkeypatch):
+    monkeypatch.setattr(
+        infra_main.asset_v1,
+        "AssetServiceClient",
+        _make_fake_client([], raises=gax.PermissionDenied("no cloudasset.viewer")),
+    )
+    r = client.post("/describe", json={})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["error"] == "cloud_asset_unavailable"
+    assert body["project"] == "driftscribe-hack-2026"
+
+
+def test_describe_generic_api_error_soft_fails_200(client, monkeypatch):
+    # A generic GoogleAPICallError subclass (e.g. ServiceUnavailable) also
+    # soft-fails to a 200 so worker_client.call sees a 2xx and chat can narrate
+    # the partial degradation.
+    monkeypatch.setattr(
+        infra_main.asset_v1,
+        "AssetServiceClient",
+        _make_fake_client([], raises=gax.ServiceUnavailable("backend down")),
+    )
+    r = client.post("/describe", json={})
+    assert r.status_code == 200, r.text
+    assert r.json()["error"] == "cloud_asset_unavailable"
+
+
+def test_describe_malformed_iac_marks_parse_error(client, monkeypatch, tmp_path):
+    # Point IAC_DIR at a tmp dir with one malformed *.tf. The live inventory is
+    # still returned, but declared_set_status flags the degraded declared set.
+    (tmp_path / "broken.tf").write_text(
+        'resource "x" "y" { unterminated = ', encoding="utf-8"
+    )
+    monkeypatch.setattr(infra_main, "IAC_DIR", tmp_path)
+    results = [_FakeResource(_PAYMENT_DEMO_NAME, _RUN_SERVICE, "asia-northeast1")]
+    monkeypatch.setattr(
+        infra_main.asset_v1, "AssetServiceClient", _make_fake_client(results)
+    )
+    r = client.post("/describe", json={})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["total_resources"] == 1
+    assert body["declared_set_status"] == "parse_error"

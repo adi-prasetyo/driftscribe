@@ -53,6 +53,17 @@ def client(monkeypatch):
             "revision": "payment-demo-00001-abc",
         },
     )
+    # Pin the boot-time env-derived constants this test hard-asserts so the
+    # asserted values can't be polluted by import order. In a unified pytest
+    # run another worker's test module (e.g. infra_reader) may set GCP_PROJECT
+    # via os.environ.setdefault *before* reader.main imports, turning this
+    # module's own setdefault("GCP_PROJECT", "test-proj") into a no-op. Pinning
+    # here mirrors how test_real_verify_caller_dep_wired_with_env pins
+    # OWN_URL/ALLOWED_CALLERS, and keeps the test honest regardless of
+    # collection order.
+    monkeypatch.setattr(reader_main, "GCP_PROJECT", "test-proj")
+    monkeypatch.setattr(reader_main, "TARGET_SERVICE", "payment-demo")
+    monkeypatch.setattr(reader_main, "TARGET_REGION", "asia-northeast1")
     # Default to "auth passed" — failure tests override this again.
     app.dependency_overrides[_verify_caller_dep] = (
         lambda: "coordinator@test-proj.iam.gserviceaccount.com"

@@ -59,6 +59,7 @@ _WORKER_URL_ENV: Final[dict[str, str]] = {
     "notifier": "NOTIFIER_URL",
     "upgrade_reader": "UPGRADE_READER_URL",
     "upgrade_docs": "UPGRADE_DOCS_URL",
+    "infra_reader": "INFRA_READER_URL",
 }
 
 
@@ -83,6 +84,7 @@ WORKER_ENDPOINTS: Final[dict[str, str]] = {
     "notifier": "/notify",
     "upgrade_reader": "/read",
     "upgrade_docs": "/patch",
+    "infra_reader": "/describe",
 }
 
 

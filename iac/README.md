@@ -18,6 +18,7 @@ Cross-references:
 - Plan: `docs/plans/2026-05-27-infra-iac-phase-a.md`
 - Design: `docs/plans/2026-05-27-infra-iac-agent-design.md`
 - Operator bootstrap runbook: `docs/runbooks/iac-bootstrap.md`
+- Phase B infra-reader (read-only whole-project inventory; reads this `iac/` tree): `docs/runbooks/infra-reader.md`
 - Static gate: `tools/iac_static_gate.py`
 - CI workflow: `.github/workflows/iac.yml`
 - Operator bootstrap script: `infra/scripts/setup_iac_backend.sh`

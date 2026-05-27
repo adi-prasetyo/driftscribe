@@ -51,16 +51,20 @@ enabled_tool_names:
   - load_contract
   - search_developer_docs
   - retrieve_developer_doc
+  - read_project_inventory
 
-# Only the two read workers. drift_docs / drift_rollback / upgrade_docs
-# (the mutation workers) and notifier are deliberately absent — explore
-# cannot reach a write surface. NOTE: worker_names is a manifest/audit
-# field validated at load time (the URL env vars must be set); the real
-# read-only guarantee is the enabled_tool_names subset above, since tools
-# call workers by hardcoded name through worker_client, not via this list.
+# Only read workers. drift_docs / drift_rollback / upgrade_docs (the
+# mutation workers) and notifier are deliberately absent — explore cannot
+# reach a write surface. infra_reader is read-only (cloudasset.viewer +
+# serviceUsageConsumer — read-only metadata). NOTE: worker_names is a
+# manifest/audit field validated at load
+# time (the URL env vars must be set); the real read-only guarantee is the
+# enabled_tool_names subset above, since tools call workers by hardcoded
+# name through worker_client, not via this list.
 worker_names:
   - drift_reader
   - upgrade_reader
+  - infra_reader
 
 # Chat-only: no autonomous observation source. "none" is a declarative
 # marker (nothing in code switches on observation_kind); /recheck is

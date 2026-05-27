@@ -99,6 +99,11 @@ EXPECTED_TOOL_NAMES = frozenset({
     # provenance triple PLUS fail-closed CI (required check green + no
     # conflict) and merges with a deploy-pinned squash.
     "upgrade_merge_pr_tool",
+    # Infra-IaC read-only inventory — whole-project resource describe via
+    # the infra_reader worker (cloudasset.viewer only). Authority-clean
+    # (no args). Strictly read-only: exposed by the chat-only ``explore``
+    # workload and intentionally absent from ``_MUTATION_TOOL_NAMES``.
+    "read_project_inventory_tool",
 })
 
 
