@@ -54,6 +54,21 @@ def read_live_env_tool() -> dict:
     return worker_client.call("reader", {})
 
 
+def read_project_inventory_tool() -> dict:
+    """Ask the Infra-Reader Agent for the whole-project resource inventory.
+
+    No arguments — the worker has the target project pinned via env, and its
+    DescribeRequest schema is ``extra="forbid"`` (Layer 2). Returns a bounded
+    summary: counts by asset type, each resource labeled declared-in-IaC vs
+    not, plus declared_not_found with reason codes. Read-only: the worker holds
+    only cloudasset.viewer + serviceUsageConsumer — no mutation, no tofu state,
+    no KMS. The summary is CAI-sourced (eventually consistent, partial
+    coverage) — present it with its freshness_caveat, and present
+    declared_not_found entries as "things to check," never confirmed drift.
+    """
+    return worker_client.call("infra_reader", {})
+
+
 def propose_rollback_tool(target_revision: str, reason: str) -> dict:
     """Ask the Rollback Agent to create a HITL approval.
 

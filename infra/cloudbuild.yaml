@@ -133,6 +133,17 @@ steps:
       - -f
       - workers/upgrade_docs/Dockerfile
       - .
+  # Infra Reader (Phase infra-iac B) — whole-project OpenTofu reader. Same
+  # build-context-at-repo-root rationale as the drift/upgrade workers above;
+  # depends on driftscribe_lib/ at the project root for auth/logging.
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-infra-reader:${_TAG}
+      - -f
+      - workers/infra_reader/Dockerfile
+      - .
   - name: gcr.io/cloud-builders/docker
     args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-agent:${_TAG}']
   - name: gcr.io/cloud-builders/docker
@@ -149,6 +160,8 @@ steps:
     args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-upgrade-reader:${_TAG}']
   - name: gcr.io/cloud-builders/docker
     args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-upgrade-docs:${_TAG}']
+  - name: gcr.io/cloud-builders/docker
+    args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-infra-reader:${_TAG}']
 
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
     entrypoint: gcloud
@@ -243,7 +256,7 @@ steps:
       # ignores stray Cf-Access-Jwt-Assertion headers when these values
       # don't match a real CF Access deployment (e.g. on the E2E project,
       # which doesn't have CF Access in front of it) — see agent/auth.py.
-      - --set-env-vars=DRY_RUN=$_DRY_RUN,GCP_PROJECT=$PROJECT_ID,TARGET_SERVICE=$_TARGET_SERVICE,TARGET_REGION=asia-northeast1,GITHUB_REPO=$_TARGET_GITHUB_REPO,USE_ADK=$_USE_ADK,UPGRADE_TARGET_REPO_OVERRIDE=$_UPGRADE_TARGET_REPO,READER_URL=https://placeholder.invalid,DOCS_URL=https://placeholder.invalid,ROLLBACK_URL=https://placeholder.invalid,NOTIFIER_URL=https://placeholder.invalid,UPGRADE_READER_URL=https://placeholder.invalid,UPGRADE_DOCS_URL=https://placeholder.invalid,GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=asia-northeast1,CF_ACCESS_TEAM_DOMAIN=adp-app.cloudflareaccess.com,CF_ACCESS_AUD_TAG=5e6a20fe63e5fb03a742eeb0623e216ad4c837413d2afa9885a79b1091016262
+      - --set-env-vars=DRY_RUN=$_DRY_RUN,GCP_PROJECT=$PROJECT_ID,TARGET_SERVICE=$_TARGET_SERVICE,TARGET_REGION=asia-northeast1,GITHUB_REPO=$_TARGET_GITHUB_REPO,USE_ADK=$_USE_ADK,UPGRADE_TARGET_REPO_OVERRIDE=$_UPGRADE_TARGET_REPO,READER_URL=https://placeholder.invalid,DOCS_URL=https://placeholder.invalid,ROLLBACK_URL=https://placeholder.invalid,NOTIFIER_URL=https://placeholder.invalid,UPGRADE_READER_URL=https://placeholder.invalid,UPGRADE_DOCS_URL=https://placeholder.invalid,INFRA_READER_URL=https://placeholder.invalid,GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=asia-northeast1,CF_ACCESS_TEAM_DOMAIN=adp-app.cloudflareaccess.com,CF_ACCESS_AUD_TAG=5e6a20fe63e5fb03a742eeb0623e216ad4c837413d2afa9885a79b1091016262
       # DRIFTSCRIBE_TOKEN (Phase 11.1) gates /recheck via the X-DriftScribe-Token
       # header. The `coordinator-shared-token` secret MUST exist in Secret
       # Manager BEFORE the first build that includes this line — Cloud Run
@@ -590,7 +603,52 @@ steps:
           --region=asia-northeast1 \
           --update-env-vars=OWN_URL=$${URL}
 
-  # Final post-deploy: sync the six worker URLs onto the coordinator.
+  # Infra Reader (Phase infra-iac B) — whole-project OpenTofu read-side worker.
+  # Layer 1: infra-reader-sa is provisioned operator-side with read-only IaC
+  # grants. Layer 3: --no-allow-unauthenticated forces ID-token auth; the
+  # worker ALSO enforces an in-app caller email allowlist via verify_caller
+  # (ALLOWED_CALLERS lists the COORDINATOR's SA, driftscribe-agent@...).
+  #
+  # Same two-step OWN_URL pattern as the drift/upgrade workers (see notes
+  # above). IAC_SNAPSHOT_SHA is stamped to $COMMIT_SHA at DEPLOY time (via
+  # --set-env-vars, NOT a Docker --build-arg) so the worker reports which
+  # IaC tree this revision was deployed against.
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - driftscribe-infra-reader
+      - --image=asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-infra-reader:${_TAG}
+      - --region=asia-northeast1
+      - --no-allow-unauthenticated
+      - --service-account=infra-reader-sa@$PROJECT_ID.iam.gserviceaccount.com
+      - --min-instances=0
+      - --max-instances=1
+      - --concurrency=1
+      # OWN_URL placeholder — overwritten by the next step in this same
+      # build. If the next step fails, verify_caller rejects every audience
+      # (fail-closed).
+      - --set-env-vars=GCP_PROJECT=$PROJECT_ID,OWN_URL=https://placeholder.invalid,ALLOWED_CALLERS=driftscribe-agent@$PROJECT_ID.iam.gserviceaccount.com,IAC_SNAPSHOT_SHA=$COMMIT_SHA
+
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        URL=$$(gcloud run services describe driftscribe-infra-reader \
+          --region=asia-northeast1 --format='value(status.url)')
+        if [ -z "$${URL}" ] || [ "$${URL}" = "https://placeholder.invalid" ]; then
+          echo "ERROR: Could not resolve driftscribe-infra-reader URL" >&2
+          exit 1
+        fi
+        echo "Setting OWN_URL=$${URL} on driftscribe-infra-reader"
+        gcloud run services update driftscribe-infra-reader \
+          --region=asia-northeast1 \
+          --update-env-vars=OWN_URL=$${URL}
+
+  # Final post-deploy: sync the seven worker URLs onto the coordinator.
   # The coordinator's worker_client uses these URLs as the audience claim
   # when minting ID tokens — getting them wrong makes every worker call
   # 401 at the worker's verify_caller dependency, which is the desired
@@ -620,7 +678,9 @@ steps:
           --region=asia-northeast1 --format='value(status.url)')
         UPGRADE_DOCS_URL=$$(gcloud run services describe driftscribe-upgrade-docs \
           --region=asia-northeast1 --format='value(status.url)')
-        for var in READER_URL DOCS_URL ROLLBACK_URL NOTIFIER_URL UPGRADE_READER_URL UPGRADE_DOCS_URL; do
+        INFRA_READER_URL=$$(gcloud run services describe driftscribe-infra-reader \
+          --region=asia-northeast1 --format='value(status.url)')
+        for var in READER_URL DOCS_URL ROLLBACK_URL NOTIFIER_URL UPGRADE_READER_URL UPGRADE_DOCS_URL INFRA_READER_URL; do
           val=$$(eval echo "\$$$$var")
           if [ -z "$${val}" ] || [ "$${val}" = "https://placeholder.invalid" ]; then
             echo "ERROR: Could not resolve $${var}" >&2
@@ -634,6 +694,7 @@ steps:
         echo "  NOTIFIER_URL=$${NOTIFIER_URL}"
         echo "  UPGRADE_READER_URL=$${UPGRADE_READER_URL}"
         echo "  UPGRADE_DOCS_URL=$${UPGRADE_DOCS_URL}"
+        echo "  INFRA_READER_URL=$${INFRA_READER_URL}"
         # Phase 14.3: the coordinator's own URL is the audience claim
         # /eventarc verifies Eventarc-minted ID tokens against. Resolve
         # it here and stamp it as EVENTARC_AUDIENCE in the same update
@@ -650,7 +711,7 @@ steps:
         echo "  EVENTARC_AUDIENCE=$${COORD_URL}"
         gcloud run services update driftscribe-agent \
           --region=asia-northeast1 \
-          --update-env-vars=READER_URL=$${READER_URL},DOCS_URL=$${DOCS_URL},ROLLBACK_URL=$${ROLLBACK_URL},NOTIFIER_URL=$${NOTIFIER_URL},UPGRADE_READER_URL=$${UPGRADE_READER_URL},UPGRADE_DOCS_URL=$${UPGRADE_DOCS_URL},EVENTARC_AUDIENCE=$${COORD_URL}
+          --update-env-vars=READER_URL=$${READER_URL},DOCS_URL=$${DOCS_URL},ROLLBACK_URL=$${ROLLBACK_URL},NOTIFIER_URL=$${NOTIFIER_URL},UPGRADE_READER_URL=$${UPGRADE_READER_URL},UPGRADE_DOCS_URL=$${UPGRADE_DOCS_URL},INFRA_READER_URL=$${INFRA_READER_URL},EVENTARC_AUDIENCE=$${COORD_URL}
 
 images:
   - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-agent:${_TAG}
@@ -661,3 +722,4 @@ images:
   - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-notifier:${_TAG}
   - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-upgrade-reader:${_TAG}
   - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-upgrade-docs:${_TAG}
+  - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-infra-reader:${_TAG}

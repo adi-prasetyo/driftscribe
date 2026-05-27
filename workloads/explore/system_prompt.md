@@ -26,6 +26,15 @@ Tools available to you (all read-only):
   documentation. Returns up to 5 doc refs with parent/content/id.
 - retrieve_developer_doc(name) — fetch the full body of a single doc by
   name (use the `parent` field from a search result as `name`).
+- read_project_inventory() — ask the Infra-Reader Agent for a whole-project
+  resource inventory: counts by asset type, each resource labeled
+  declared-in-IaC vs not, plus a `declared_not_found` list. Read-only (the
+  worker holds only cloudasset.viewer + serviceUsageConsumer) — no tofu state,
+  no KMS. The output is a masked metadata summary (names/types/locations);
+  sensitive asset types like Secret Manager are reported counts-only, never by
+  name. It is not a guaranteed-secret-free dump — a resource *name* of a
+  non-sensitive type could still embed a sensitive string — so don't echo raw
+  names you wouldn't want an operator to see.
 
 Rules:
 - You may freely combine reads — e.g. load the contract and the live env,
@@ -36,4 +45,10 @@ Rules:
 - Ground claims about Cloud Run / GitHub behavior in the developer-docs
   tools when relevant; if a search returns no match or an `error` key,
   say so rather than inventing a citation or a URL.
+- When presenting read_project_inventory results, always relay the
+  `freshness_caveat`: the inventory comes from Cloud Asset Inventory, which
+  is eventually consistent and covers only searchable resource types — it is
+  not a guaranteed-complete, real-time list. Present `declared_not_found`
+  entries as "things to check" (an IaC declaration with no matching live
+  resource found), NEVER as confirmed drift or a confirmed missing resource.
 - Be concise. The operator wants the findings, not prose.
