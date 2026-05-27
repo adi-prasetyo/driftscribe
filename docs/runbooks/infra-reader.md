@@ -28,7 +28,7 @@ Cross-references:
 - Phase B design + decisions log: `docs/plans/2026-05-27-infra-iac-phase-b-design.md`
 - Phase B plan: `docs/plans/2026-05-27-infra-iac-phase-b.md`
 - Worker source: `workers/infra_reader/main.py`, `workers/infra_reader/Dockerfile`
-- Cloud Build steps: `infra/cloudbuild.yaml` (`driftscribe-infra-reader` blocks)
+- Cloud Build (canonical targeted deploy): `infra/cloudbuild.infra-reader.yaml` — use this. The full `infra/cloudbuild.yaml` also has `driftscribe-infra-reader` blocks but is a full-stack redeploy that touches payment-demo (see §3 warning).
 - IaC layer (the declared-set source, baked into the image): `iac/`, `iac/imports.tf`
 - Phase A backend bootstrap (separate, not required for the reader): `docs/runbooks/iac-bootstrap.md`
 
@@ -37,14 +37,18 @@ Cross-references:
 ## Trust-boundary invariant (read this first)
 
 The whole point of Phase B is that this worker reads the whole project while
-holding **only read-only metadata permissions**. Its two project-level grants —
-`roles/cloudasset.viewer` and `roles/serviceusage.serviceUsageConsumer` — are a
+holding **only read-only metadata permissions**. Its grant — the two-permission
+custom role `driftscribeInfraReader` (`cloudasset.assets.searchAllResources` +
+`serviceusage.services.use`), or the broader predefined pair
+`roles/cloudasset.viewer` + `roles/serviceusage.serviceUsageConsumer` — is a
 **documented, scoped exception** to the "workers hold the narrowest possible
-credential" rule. They grant read access to resource *metadata* (names, types,
-locations) and the ability to call the CAI API; they grant **no** write access,
+credential" rule. It grants read access to resource *metadata* (names, types,
+locations) and the ability to call the CAI API; it grants **no** write access,
 **no** resource-content access beyond what CAI exposes, and **no** ability to
-decrypt state. Do not add any other role. If you prefer least-privilege over the
-predefined roles, use the custom role in step 2b.
+decrypt state. Do not add any other role. The **custom role (step 2a) is the
+recommended default** — it is exactly the two permissions the worker calls,
+nothing more; the predefined pair (step 2b) is the simpler-but-broader
+alternative.
 
 ---
 
@@ -65,7 +69,9 @@ that window rather than 500, so chat narrates the degradation cleanly.)
 
 ## 2. Create the `infra-reader` service account + grant read-only roles
 
-### 2a. Predefined roles (simplest)
+First create the SA, then grant it the read-only role. **Use the custom role
+(2a) — it is the recommended default.** It is exactly the two permissions the
+worker calls; the predefined pair (2b) works but grants strictly more.
 
 ```bash
 PROJECT=driftscribe-hack-2026
@@ -74,23 +80,11 @@ SA="infra-reader-sa@${PROJECT}.iam.gserviceaccount.com"
 gcloud iam service-accounts create infra-reader-sa \
   --project="$PROJECT" \
   --display-name="DriftScribe infra-reader (read-only CAI inventory)"
-
-# Read-only resource metadata via Cloud Asset Inventory.
-gcloud projects add-iam-policy-binding "$PROJECT" \
-  --member="serviceAccount:${SA}" \
-  --role="roles/cloudasset.viewer"
-
-# REQUIRED in addition to cloudasset.viewer: every CAI call needs
-# serviceusage.services.use. viewer alone is insufficient (Phase B decision #11).
-gcloud projects add-iam-policy-binding "$PROJECT" \
-  --member="serviceAccount:${SA}" \
-  --role="roles/serviceusage.serviceUsageConsumer"
 ```
 
-### 2b. Custom role (least-privilege alternative)
+### 2a. Custom role (recommended — least privilege)
 
-If you'd rather not grant the predefined roles, the worker needs exactly two
-permissions:
+The worker calls exactly two permissions; the custom role grants exactly those:
 
 ```bash
 PROJECT=driftscribe-hack-2026
@@ -104,52 +98,134 @@ gcloud projects add-iam-policy-binding "$PROJECT" \
   --role="projects/${PROJECT}/roles/driftscribeInfraReader"
 ```
 
-## 3. Deploy the worker via Cloud Build
+### 2b. Predefined roles (simpler, broader)
 
-`infra/cloudbuild.yaml` already contains the `driftscribe-infra-reader`
-build/push/deploy steps and the OWN_URL writeback, mirroring the other workers.
-
-**This file has no automatic deploy-on-push trigger** — it runs only when an
-operator submits it manually. So this step is safe to have merged before you
-complete steps 1–2; nothing deploys until you run the build. Conversely, do
-**not** submit the build until `infra-reader-sa` exists (step 2) and the CAI API
-is enabled (step 1), or the deploy fails on `actAs`/permission.
+If you'd rather not manage a custom role, the predefined pair works — at the
+cost of granting more metadata-read surface than the worker uses:
 
 ```bash
 PROJECT=driftscribe-hack-2026
-gcloud builds submit --config infra/cloudbuild.yaml --project="$PROJECT" \
-  --substitutions=_TAG="$(git rev-parse --short HEAD)"
+SA="infra-reader-sa@${PROJECT}.iam.gserviceaccount.com"
+
+# Read-only resource metadata via Cloud Asset Inventory.
+gcloud projects add-iam-policy-binding "$PROJECT" \
+  --member="serviceAccount:${SA}" \
+  --role="roles/cloudasset.viewer"
+
+# REQUIRED in addition to cloudasset.viewer: every CAI call needs
+# serviceusage.services.use. viewer alone is insufficient (Phase B decision #11).
+gcloud projects add-iam-policy-binding "$PROJECT" \
+  --member="serviceAccount:${SA}" \
+  --role="roles/serviceusage.serviceUsageConsumer"
 ```
 
-The deploy step sets, on the `driftscribe-infra-reader` service:
+> **Live-state reconciliation note.** The first Phase B deploy granted the SA
+> the **predefined pair** (2b). To migrate the live `infra-reader-sa` to the
+> least-privilege custom role, do it **bind-first, then remove** so there is no
+> permission gap if the custom role has a typo or hasn't propagated:
+>
+> ```bash
+> PROJECT=driftscribe-hack-2026
+> SA="infra-reader-sa@${PROJECT}.iam.gserviceaccount.com"
+> # 1. Create + bind the custom role (step 2a above), then verify the reader
+> #    still answers (runbook §5) BEFORE removing anything.
+> # 2. Only then remove the now-redundant predefined grants:
+> gcloud projects remove-iam-policy-binding "$PROJECT" \
+>   --member="serviceAccount:${SA}" --role="roles/cloudasset.viewer"
+> gcloud projects remove-iam-policy-binding "$PROJECT" \
+>   --member="serviceAccount:${SA}" --role="roles/serviceusage.serviceUsageConsumer"
+> ```
+
+## 3. Deploy the worker via Cloud Build
+
+> **⚠️ Do NOT use the full `infra/cloudbuild.yaml` to deploy the infra-reader on
+> this project.** That config is a **full-stack** build: it rebuilds and
+> redeploys **all ~9 images, including `payment-demo`** (the `${_TARGET_SERVICE}`
+> step), at a fresh image tag. Phase A adopted `payment-demo` into OpenTofu state
+> pinned to a specific serving image tag (`iac/cloudrun.tf`). Running the full
+> build moves `payment-demo` off that tag and **breaks the Phase A zero-diff** —
+> a later `tofu apply` could then revert prod. Use the **targeted** config below
+> instead. (The full config remains the right tool only when you *intend* a
+> coordinated full-stack redeploy and will re-pin `iac/cloudrun.tf` afterward.)
+
+Use the targeted config `infra/cloudbuild.infra-reader.yaml`. It builds + deploys
+**only** `driftscribe-infra-reader`, runs the OWN_URL writeback, and wires
+`INFRA_READER_URL` onto the already-running coordinator via an incremental
+`--update-env-vars` (preserving all other coordinator env/secrets/SA). It does
+**not** touch `payment-demo` or any other worker. Like every config here it has
+**no deploy-on-push trigger** — operator-run only. Do not submit until
+`infra-reader-sa` exists (step 2) and the CAI API is enabled (step 1).
+
+> **Coordinator-first on initial rollout.** The targeted config ships the
+> *worker*, not the coordinator image. The coordinator needs its own image to
+> contain the `read_project_inventory` tool. If you are rolling out Phase B for
+> the first time (or the running coordinator predates the tool), deploy the
+> coordinator **first** via `infra/cloudbuild.coordinator-update.yaml`, then run
+> the targeted build below.
+
+```bash
+PROJECT=driftscribe-hack-2026
+
+# (Initial rollout only) ship the coordinator image carrying read_project_inventory:
+gcloud builds submit --config infra/cloudbuild.coordinator-update.yaml \
+  --project="$PROJECT" --substitutions=_TAG="$(git rev-parse --short HEAD)"
+
+# Deploy the infra-reader worker + wire INFRA_READER_URL onto the coordinator:
+gcloud builds submit --config infra/cloudbuild.infra-reader.yaml \
+  --project="$PROJECT" \
+  --substitutions=_TAG="$(git rev-parse --short HEAD)",_IAC_SNAPSHOT_SHA="$(git rev-parse HEAD)"
+```
+
+The worker deploy sets, on `driftscribe-infra-reader`:
 
 - `--service-account=infra-reader-sa@$PROJECT_ID.iam.gserviceaccount.com`
 - `--no-allow-unauthenticated` (ID-token auth required)
-- `--set-env-vars=GCP_PROJECT=…,OWN_URL=…,ALLOWED_CALLERS=driftscribe-agent@…,IAC_SNAPSHOT_SHA=$COMMIT_SHA`
+- `--set-env-vars=GCP_PROJECT=…,OWN_URL=…,ALLOWED_CALLERS=driftscribe-agent@…,IAC_SNAPSHOT_SHA=${_IAC_SNAPSHOT_SHA}`
 
-> **`IAC_SNAPSHOT_SHA` caveat.** It is stamped from Cloud Build's built-in
-> `$COMMIT_SHA`. On a **manual** `gcloud builds submit` from a local source
-> upload (no connected Git repo), `$COMMIT_SHA` resolves to empty, so the worker
-> reports an empty `iac_snapshot_sha`. This is cosmetic — it only affects the
-> provenance string in the response, never the inventory itself. If you want
-> accurate provenance from a manual submit, deploy from a build trigger wired to
-> the repo, or update the service afterwards:
+> **`IAC_SNAPSHOT_SHA` caveat.** The targeted config takes it from the explicit
+> `_IAC_SNAPSHOT_SHA` substitution (Cloud Build does **not** recursively expand
+> user substitutions, and a manual `gcloud builds submit` has no built-in
+> `$COMMIT_SHA`). Pass `_IAC_SNAPSHOT_SHA=$(git rev-parse HEAD)` as shown; if you
+> omit it, it defaults to the literal `manual`. This only affects the provenance
+> string in the response, never the inventory itself. To fix it after the fact:
 > `gcloud run services update driftscribe-infra-reader --region=asia-northeast1 --update-env-vars=IAC_SNAPSHOT_SHA=$(git rev-parse HEAD)`.
 
-## 4. Auth wiring — who allowlists whom
+## 4. Auth wiring — who allowlists whom + the platform invoker grant
 
-The **coordinator calls the worker**, so the **worker** allowlists the
-**coordinator's** service account — not the other way around. This is already
-encoded in the Cloud Build deploy step:
+There are **two** independent gates on a coordinator→worker call, and you need
+both:
 
-- The worker's `ALLOWED_CALLERS` = `driftscribe-agent@$PROJECT_ID.iam.gserviceaccount.com`
-  (the coordinator's SA). `verify_caller` rejects any other caller, fail-closed.
-- The coordinator does **not** need to allowlist `infra-reader-sa`. It only needs
-  the worker's URL.
+1. **Cloud Run platform IAM (`roles/run.invoker`).** The worker is deployed
+   `--no-allow-unauthenticated`, so Cloud Run itself rejects the request at the
+   admission layer unless the **coordinator's SA holds `roles/run.invoker` on
+   the `driftscribe-infra-reader` service**. This is a per-service binding,
+   separate from anything in the app. **This grant is required** — without it,
+   every inventory call 403s before the worker code ever runs. (It is the grant
+   that had to be applied by hand during the first Phase B deploy.) The
+   idempotent way to apply it is to **(re-)run `infra/scripts/setup_secrets.sh`**
+   — its per-service invoker loop now includes `driftscribe-infra-reader` and is
+   gated on the service existing, so run it *after* the worker is deployed. Or
+   apply it directly:
 
-`INFRA_READER_URL` is synced onto the coordinator automatically by the final
-post-deploy step in `infra/cloudbuild.yaml` (the same writeback loop that sets
-`READER_URL`, `UPGRADE_READER_URL`, etc.). If you ever set it by hand:
+   ```bash
+   PROJECT=driftscribe-hack-2026
+   gcloud run services add-iam-policy-binding driftscribe-infra-reader \
+     --project="$PROJECT" --region=asia-northeast1 \
+     --member="serviceAccount:driftscribe-agent@${PROJECT}.iam.gserviceaccount.com" \
+     --role="roles/run.invoker"
+   ```
+
+2. **App-level caller allowlist (`ALLOWED_CALLERS`).** The **coordinator calls
+   the worker**, so the **worker** allowlists the **coordinator's** SA — not the
+   other way around. This is already encoded in the deploy step: the worker's
+   `ALLOWED_CALLERS` = `driftscribe-agent@$PROJECT_ID.iam.gserviceaccount.com`,
+   and `verify_caller` rejects any other caller, fail-closed. The coordinator
+   does **not** need to allowlist `infra-reader-sa`; it only needs the worker's
+   URL (below).
+
+`INFRA_READER_URL` is set onto the coordinator automatically — by the targeted
+`infra/cloudbuild.infra-reader.yaml` (its final step), or by the full
+`infra/cloudbuild.yaml`'s post-deploy writeback loop. If you ever set it by hand:
 
 ```bash
 URL=$(gcloud run services describe driftscribe-infra-reader \

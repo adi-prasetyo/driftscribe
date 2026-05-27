@@ -21,11 +21,18 @@ on:
     # (which flips the gate between operator and agent mode in "Derive gate mode")
     # reruns the check; the default activity types omit label events.
     types: [opened, synchronize, reopened, labeled, unlabeled]
-    paths:
-      - 'iac/**'
-      - 'tools/iac_static_gate.py'
-      - 'tests/unit/test_iac_static_gate*.py'
-      - '.github/workflows/iac.yml'
+    # NO `paths:` filter — intentional. This workflow runs on EVERY pull request
+    # so it can be promoted to a *required* status check in branch protection.
+    # A path-filtered workflow never reports a status on PRs that don't touch
+    # the path, so GitHub would block such PRs forever if the check were
+    # required. Running always is cheap and safe: on a PR that touches no
+    # `iac/` files the static gate sees an empty in-scope diff and passes
+    # (operator mode treats non-`iac/` paths as out-of-scope — see
+    # tools/iac_static_gate.py and test_operator_mode_still_governs_only_iac),
+    # and `tofu init -backend=false`/fmt/validate just re-checks the unchanged
+    # `iac/` tree. (agent mode still rejects non-`iac/` paths, but only `infra/`
+    # branches / `driftscribe-infra`-labeled PRs run in agent mode, and those
+    # are iac-only by design.)
 
 permissions:
   contents: read
