@@ -55,8 +55,9 @@ enabled_tool_names:
 
 # Only read workers. drift_docs / drift_rollback / upgrade_docs (the
 # mutation workers) and notifier are deliberately absent — explore cannot
-# reach a write surface. infra_reader is read-only (cloudasset.viewer
-# only). NOTE: worker_names is a manifest/audit field validated at load
+# reach a write surface. infra_reader is read-only (cloudasset.viewer +
+# serviceUsageConsumer — read-only metadata). NOTE: worker_names is a
+# manifest/audit field validated at load
 # time (the URL env vars must be set); the real read-only guarantee is the
 # enabled_tool_names subset above, since tools call workers by hardcoded
 # name through worker_client, not via this list.

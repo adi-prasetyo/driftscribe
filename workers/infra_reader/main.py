@@ -8,7 +8,7 @@ credential. The SA holds only ``cloudasset.viewer`` + ``serviceUsageConsumer``.
 
 Safety layers (mirroring :mod:`workers.reader`):
 
-- **Layer 1 (IAM scoping):** ``infra-reader-agent-sa`` can only *read* the
+- **Layer 1 (IAM scoping):** ``infra-reader-sa`` can only *read* the
   asset index; it cannot mutate anything.
 - **Layer 2 (payload-intent policy):** the request body is a closed schema
   (:class:`DescribeRequest` with ``extra="forbid"``). Scope/project come from

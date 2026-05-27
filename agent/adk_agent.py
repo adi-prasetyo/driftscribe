@@ -47,8 +47,8 @@ Developer Knowledge MCP wrappers (2, Phase 17.B.3):
 
 Infra-IaC read-only inventory (1):
 - ``read_project_inventory_tool`` → Infra-Reader Agent ``/describe``.
-  Read-only (cloudasset.viewer only); exposed by the chat-only
-  ``explore`` workload. Authority-clean: takes no args.
+  Read-only (cloudasset.viewer + serviceUsageConsumer); exposed by the
+  chat-only ``explore`` workload. Authority-clean: takes no args.
 
 That's 13 tools, period (8 → 10 in 17.C.4 with the upgrade reader/proposer;
 → 11 with close; → 12 in 20.9 with merge; → 13 with the infra-IaC inventory
@@ -67,8 +67,8 @@ the three-way YAML ⇄ code ⇄ runtime equality enforced by
 chat-only, strictly read-only workload: its inventory is a read-only
 SUBSET of the others PLUS the one read-only callable it introduces,
 ``read_project_inventory`` (infra-IaC initiative) — backed by the
-infra_reader worker (cloudasset.viewer only), so the addition is
-strictly read-only and does not widen the mutation surface. That
+infra_reader worker (cloudasset.viewer + serviceUsageConsumer), so the
+addition is strictly read-only and does not widen the mutation surface. That
 callable is what bumps the count above from 12 to 13.
 """
 
@@ -148,8 +148,9 @@ COORDINATOR_TOOLS = [
     # merges with a deploy-pinned squash.
     upgrade_merge_pr_tool,
     # Infra-IaC read-only inventory (whole-project resource describe).
-    # Backed by the infra_reader worker (cloudasset.viewer only) — no
-    # mutation surface. Exposed by the chat-only ``explore`` workload.
+    # Backed by the infra_reader worker (cloudasset.viewer +
+    # serviceUsageConsumer) — no mutation surface. Exposed by the chat-only
+    # ``explore`` workload.
     # Authority-clean: takes no args; the worker has the target project
     # pinned via env.
     read_project_inventory_tool,
@@ -249,7 +250,8 @@ UPGRADE_WORKLOAD_TOOL_NAMES: tuple[str, ...] = (
 # callable this workload introduces to COORDINATOR_TOOLS:
 # ``read_project_inventory`` (infra-IaC initiative). That callable is
 # itself strictly read-only — backed by the infra_reader worker which
-# holds only cloudasset.viewer — so adding it does NOT widen the mutation
+# holds only cloudasset.viewer + serviceUsageConsumer — so adding it does
+# NOT widen the mutation
 # surface. By construction this list lists ZERO mutation tools (no
 # patch/rollback/PR-open/close/merge) and not even ``notify`` or
 # ``search_recent_prs`` (the latter rides the write-capable coordinator
