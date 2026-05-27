@@ -25,10 +25,10 @@ resource "google_cloud_run_v2_service" "payment_demo" {
     }
 
     containers {
-      # RECONCILE: the live image tag is mutated by CI (:manual or a commit SHA).
-      # The operator pins this to whatever tag is actually serving at import time;
-      # a stale tag here is the most likely source of a non-empty plan.
-      image = "asia-northeast1-docker.pkg.dev/driftscribe-hack-2026/driftscribe/payment-demo:manual"
+      # Pinned to the tag actually serving at import time (2026-05-27 adoption).
+      # CI mutates the live tag on deploy, so expect to re-pin this (or adopt a
+      # Phase C ignore_changes policy) whenever payment-demo is redeployed.
+      image = "asia-northeast1-docker.pkg.dev/driftscribe-hack-2026/driftscribe/payment-demo:158a072"
 
       # Documented contract env (demo/ops-contract.yaml): PAYMENT_MODE is locked to
       # "mock"; FEATURE_NEW_CHECKOUT is the operator-toggleable feature flag.
@@ -48,8 +48,15 @@ resource "google_cloud_run_v2_service" "payment_demo" {
     }
   }
 
-  # RECONCILE: the v2 API populates several server-managed/default fields on read
-  # (e.g. `launch_stage`, `traffic` weights to LATEST, annotations/labels, the
-  # default execution_environment). Add/adjust as the post-import plan reveals
-  # them; do not guess values that aren't documented.
+  # The v2 API returns volatile gcloud-deploy metadata (`client`/`client_version`
+  # — the gcloud CLI version that last deployed) and a top-level service `scaling`
+  # block of defaults (manual/min = 0) on read. Neither is part of the demo's
+  # desired state, and pinning the gcloud version would force a perpetual diff, so
+  # they are ignored rather than declared. (template.scaling — the per-revision
+  # min/max above — IS still managed.) Other server-populated defaults the plan
+  # surfaced (resources, ports, startup_probe, launch_stage, traffic→LATEST) match
+  # as computed reads and need no config.
+  lifecycle {
+    ignore_changes = [client, client_version, scaling]
+  }
 }
