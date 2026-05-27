@@ -1,0 +1,10 @@
+# Foundation & security-critical paths — require code-owner review.
+# (Enforcement requires branch protection "Require review from Code Owners" — see docs/runbooks/iac-bootstrap.md.)
+/iac/versions.tf            @adi-prasetyo
+/iac/providers.tf           @adi-prasetyo
+/iac/variables.tf           @adi-prasetyo
+/iac/imports.tf             @adi-prasetyo
+/iac/.terraform.lock.hcl    @adi-prasetyo
+/tools/iac_static_gate.py   @adi-prasetyo
+/.github/                   @adi-prasetyo
+/infra/scripts/             @adi-prasetyo
