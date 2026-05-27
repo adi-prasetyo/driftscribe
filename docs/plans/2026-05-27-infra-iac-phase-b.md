@@ -525,26 +525,28 @@ def extract_declared_identities(
                 )
                 found.append(DeclaredIdentity(ident, address, "derived_resource", "derived", asset_type))
 
-    # De-dup by identity: prefer high > derived, and MERGE asset_type so a high
-    # import with an inferable type never drops to None. Unresolved (identity
-    # None) entries are all kept.
-    best: dict[str, DeclaredIdentity] = {}
+    # De-dup by (asset_type, identity) — NOT identity alone. Keying by the pair
+    # is what keeps an unsupported import (asset_type=None) distinct from a
+    # supported resource that happens to share the identity string: they get
+    # different keys, so the None-typed import can never inherit the supported
+    # type and become matchable (Codex review). Within one (asset_type,
+    # identity) key the asset_type is identical, so on collision we just keep
+    # the higher-confidence source. Unresolved (identity None) entries are all
+    # kept (they're reported, never matched).
+    best: dict[tuple[str | None, str], DeclaredIdentity] = {}
     unresolved: list[DeclaredIdentity] = []
     for d in found:
         if d.identity is None:
             unresolved.append(d)
             continue
-        prev = best.get(d.identity)
-        if prev is None:
-            best[d.identity] = d
-            continue
-        winner = d if (prev.confidence == "derived" and d.confidence == "high") else prev
-        merged_type = winner.asset_type or prev.asset_type or d.asset_type
-        best[d.identity] = DeclaredIdentity(
-            winner.identity, winner.address, winner.source, winner.confidence, merged_type
-        )
+        key = (d.asset_type, d.identity)
+        prev = best.get(key)
+        if prev is None or (prev.confidence == "derived" and d.confidence == "high"):
+            best[key] = d
     return list(best.values()) + unresolved, parse_errors
 ```
+
+> **Executor:** add a test for this exact edge — an unsupported high-confidence import (`asset_type=None`) and a supported derived resource that share the same identity string must remain TWO distinct `DeclaredIdentity` entries (one with `asset_type=None`, one with the supported type), so the unsupported one is never matchable in Task 3.
 
 **Step 4: Run — expect pass**
 
@@ -1048,7 +1050,7 @@ git commit -m "build(iac): cloudbuild steps for infra-reader (mirror reader; IAC
 - Create: `docs/runbooks/infra-reader.md`
 - Modify: `iac/README.md` (one-line pointer, optional)
 
-**Content:** Operator steps from design §8: (1) enable `cloudasset.googleapis.com`; (2) create `infra-reader-sa`, grant `roles/cloudasset.viewer` + `roles/serviceusage.serviceUsageConsumer` (or a custom role with `cloudasset.assets.searchAllResources` + `serviceusage.services.use`) — document this as the narrow, read-only invariant exception; (3) deploy via cloudbuild; (4) set `INFRA_READER_URL` on the coordinator + add `infra-reader-sa` to the coordinator's `ALLOWED_CALLERS` if needed; (5) the recommendation to retain `iac/imports.tf` import blocks until Phase C for highest-confidence matching. Note the worker works even before the Phase A backend bootstrap (no state/KMS).
+**Content:** Operator steps from design §8: (1) enable `cloudasset.googleapis.com`; (2) create `infra-reader-sa`, grant `roles/cloudasset.viewer` + `roles/serviceusage.serviceUsageConsumer` (or a custom role with `cloudasset.assets.searchAllResources` + `serviceusage.services.use`) — document this as the narrow, read-only invariant exception; (3) deploy via cloudbuild; (4) set `INFRA_READER_URL` on the coordinator, and set the **worker's** `ALLOWED_CALLERS` to include the coordinator's SA `driftscribe-agent@$PROJECT_ID.iam.gserviceaccount.com` (auth direction: the coordinator CALLS the worker, so the *worker* allowlists the *coordinator's* SA — the coordinator does NOT allowlist `infra-reader-sa`); (5) the recommendation to retain `iac/imports.tf` import blocks until Phase C for highest-confidence matching. Note the worker works even before the Phase A backend bootstrap (no state/KMS).
 
 **Commit:**
 ```bash
