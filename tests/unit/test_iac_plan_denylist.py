@@ -141,3 +141,28 @@ def test_forget_unrelated_resource_is_hard_denied():
 def test_replace_unrelated_resource_is_hard_denied(fixture):
     parsed, _ = load_plan_json(_load(fixture))
     assert "replace-action-forbidden-v1" in _rules(evaluate(DenylistInput(plan=parsed))), fixture
+
+
+# --- Task 6a: control-plane Cloud Run service rule ---
+
+
+@pytest.mark.parametrize("fixture", [
+    "control_plane_coordinator_update.json",
+    "control_plane_reader_update.json",
+    "control_plane_infra_reader_update.json",
+    "control_plane_legacy_v1_service_update.json",
+    "update_rename_away_from_protected.json",
+])
+def test_control_plane_service_update_is_denied(fixture):
+    parsed, _ = load_plan_json(_load(fixture))
+    assert "control-plane-service" in _rules(evaluate(DenylistInput(plan=parsed))), fixture
+
+
+def test_control_plane_service_delete_via_before_emits_both_rules():
+    """A delete fixture with identity ONLY in `before` must still emit
+    control-plane-service (Codex Important #2 — before-side identity)
+    alongside delete-action-forbidden-v1.
+    """
+    parsed, _ = load_plan_json(_load("control_plane_cloudrun_delete_via_before.json"))
+    rules = set(_rules(evaluate(DenylistInput(plan=parsed))))
+    assert {"control-plane-service", "delete-action-forbidden-v1"} <= rules

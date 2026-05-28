@@ -1,0 +1,17 @@
+{
+  "_test_intent": "update of the drift-reader Cloud Run service (distinct from infra-reader) — must emit control-plane-service",
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "google_cloud_run_v2_service.reader",
+      "mode": "managed",
+      "type": "google_cloud_run_v2_service",
+      "name": "reader",
+      "change": {
+        "actions": ["update"],
+        "before": {"name": "driftscribe-reader"},
+        "after": {"name": "driftscribe-reader"}
+      }
+    }
+  ]
+}

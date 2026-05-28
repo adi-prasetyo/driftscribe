@@ -61,6 +61,40 @@ MUTATION_KNOWN_TUPLES: frozenset[tuple[str, ...]] = (
 ALL_KNOWN_TUPLES: frozenset[tuple[str, ...]] = NO_OP_ACTION_TUPLES | MUTATION_KNOWN_TUPLES
 
 
+# ---------------------------------------------------------------------------
+# Control-plane identity constants. Names below were re-derived from
+# infra/cloudbuild.yaml, infra/scripts/setup_prod_project.sh, and
+# infra/scripts/setup_secrets.sh at the worktree's main HEAD; forward-compat
+# entries (services/SAs not yet built — tofu-apply, tofu-editor,
+# driftscribe-plan-builder, plus their SAs) are intentionally listed so the
+# denylist already protects them by the time C2/C4 spin them up.
+# ---------------------------------------------------------------------------
+
+# Both the v2 and legacy v1 Cloud Run resource types are matched: the static
+# gate doesn't ban the legacy type (Codex Important #3), so the denylist must
+# guard it explicitly or an agent could redirect a control-plane service via
+# the legacy resource without ever tripping the gate.
+CLOUD_RUN_SERVICE_TYPES: frozenset[str] = frozenset({
+    "google_cloud_run_v2_service",
+    "google_cloud_run_service",  # legacy v1 — explicitly covered
+})
+
+CONTROL_PLANE_SERVICE_NAMES: frozenset[str] = frozenset({
+    "driftscribe-agent",            # coordinator
+    "driftscribe-reader",           # drift reader (distinct from infra-reader)
+    "driftscribe-docs",
+    "driftscribe-rollback",
+    "driftscribe-notifier",
+    "driftscribe-upgrade-reader",
+    "driftscribe-upgrade-docs",
+    "driftscribe-infra-reader",     # Phase B
+    # Forward-compat (additive-safe — names listed before they exist):
+    "tofu-apply",
+    "tofu-editor",
+    "driftscribe-plan-builder",
+})
+
+
 def load_plan_json(text: str) -> tuple[dict | None, Violation | None]:
     """Parse a plan.json document.
 
@@ -116,6 +150,64 @@ def _is_mutation(actions: tuple[str, ...]) -> bool:
     return actions not in NO_OP_ACTION_TUPLES
 
 
+def _identity_dicts(rc: dict) -> tuple[dict, dict]:
+    """Return ``(before_dict, after_dict)`` from an RC, each possibly empty.
+
+    Both ``before`` and ``after`` may legitimately be ``null`` (create vs
+    delete) or be partly null because attributes are computed. The helpers
+    coerce non-dict values to empty dicts so the per-rule callers can use
+    ``.get(key)`` without isinstance checks at every callsite.
+    """
+    change = rc.get("change") or {}
+    before = change.get("before")
+    after = change.get("after")
+    return (
+        before if isinstance(before, dict) else {},
+        after if isinstance(after, dict) else {},
+    )
+
+
+def _check_control_plane_service(
+    rc: dict,
+    rtype: str,
+    actions: tuple[str, ...],
+    before: dict,
+    after: dict,
+    violations: list[Violation],
+) -> None:
+    """Emit control-plane-service if RC targets a protected Cloud Run service.
+
+    Identity is matched against BOTH ``before.name`` and ``after.name`` so
+    a rename AWAY from a protected name cannot escape the rule by leaving
+    only ``after.name`` non-protected (Codex Important #2). If neither side
+    has a string name, the resource type is protected but unidentifiable —
+    defensive bias-to-deny via plan-json-malformed-change.
+    """
+    if rtype not in CLOUD_RUN_SERVICE_TYPES:
+        return
+    before_name = before.get("name") if isinstance(before, dict) else None
+    after_name = after.get("name") if isinstance(after, dict) else None
+    if not isinstance(before_name, str) and not isinstance(after_name, str):
+        violations.append(
+            Violation(
+                "plan-json-malformed-change",
+                f"{rc.get('address', '<unknown>')}: {rtype} has no name in before/after",
+            )
+        )
+        return
+    if (before_name in CONTROL_PLANE_SERVICE_NAMES) or (
+        after_name in CONTROL_PLANE_SERVICE_NAMES
+    ):
+        violations.append(
+            Violation(
+                "control-plane-service",
+                f"{rc.get('address', '<unknown>')}: Cloud Run service "
+                f"{(after_name or before_name)!r} is control plane "
+                f"(actions={list(actions)})",
+            )
+        )
+
+
 def evaluate(di: DenylistInput) -> list[Violation]:
     """Return all violations (empty list = pass).
 
@@ -133,7 +225,7 @@ def evaluate(di: DenylistInput) -> list[Violation]:
             )
         )
         return violations
-    for rc, _rtype, actions in _iter_resource_changes(di.plan):
+    for rc, rtype, actions in _iter_resource_changes(di.plan):
         address = rc.get("address", "<unknown>") if isinstance(rc, dict) else "<unknown>"
         if actions is None:
             # Either the entry is not a dict, the change is not a dict, the
@@ -179,4 +271,10 @@ def evaluate(di: DenylistInput) -> list[Violation]:
                     f"{address}: action {list(actions)!r} (replace) forbidden in v1",
                 )
             )
+        # Identity-based per-resource rules only run for mutations; a `read`
+        # data-source on a control-plane name is a legitimate no-op
+        # (see read_action_is_pass fixture).
+        if _is_mutation(actions):
+            before, after = _identity_dicts(rc)
+            _check_control_plane_service(rc, rtype, actions, before, after, violations)
     return violations
