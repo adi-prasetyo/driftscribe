@@ -133,3 +133,44 @@ def format_summary(inp: SummaryInput) -> str:
         + fence + "\n"
         + "</details>\n"
     )
+
+
+def _main(argv: list[str], stdin_text: str) -> int:
+    import argparse
+    parser = argparse.ArgumentParser(prog="iac_plan_diff_summary")
+    parser.add_argument("--head-sha", required=True)
+    parser.add_argument("--plan-sha256", required=True)
+    parser.add_argument("--plan-json-sha256", required=True)
+    parser.add_argument("--generation-plan", required=True)
+    parser.add_argument("--generation-json", required=True)
+    parser.add_argument("--generation-metadata", required=True)
+    parser.add_argument("--artifact-uri-plan", required=True)
+    parser.add_argument("--artifact-uri-json", required=True)
+    parser.add_argument("--artifact-uri-metadata", required=True)
+    parser.add_argument("--opentofu-version", required=True)
+    ns = parser.parse_args(argv)
+    try:
+        body = format_summary(SummaryInput(
+            plan_text=stdin_text,
+            head_sha=ns.head_sha,
+            plan_sha256=ns.plan_sha256,
+            plan_json_sha256=ns.plan_json_sha256,
+            generation_plan=ns.generation_plan,
+            generation_json=ns.generation_json,
+            generation_metadata=ns.generation_metadata,
+            artifact_uri_plan=ns.artifact_uri_plan,
+            artifact_uri_json=ns.artifact_uri_json,
+            artifact_uri_metadata=ns.artifact_uri_metadata,
+            opentofu_version=ns.opentofu_version,
+        ))
+    except ValueError as e:
+        import sys as _sys
+        print(str(e), file=_sys.stderr)
+        return 1
+    print(body, end="")
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised via subprocess
+    import sys as _sys
+    _sys.exit(_main(_sys.argv[1:], _sys.stdin.read()))
