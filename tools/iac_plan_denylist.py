@@ -8,13 +8,71 @@ versions, the plan-builder KMS key + key ring), any IAM/WIF change, and
 any state-mutating action (``delete`` / ``forget`` / replace) — even on
 unrelated resources, in v1.
 
-Task 3 added :func:`load_plan_json` + the three structural rules
-(``plan-json-unparseable``, ``plan-json-missing-resource-changes``,
-``plan-json-malformed-change``). Task 4 adds the OpenTofu action
-vocabulary check (``unknown-action-forbidden-v1``) and the
-:func:`_iter_resource_changes` helper that subsequent rule evaluators
-share. Per-resource identity rules land in subsequent tasks.
+Runs in three places: this CLI for local-dev validation, the trusted
+plan-builder CI workflow (wired in C2), and the ``tofu-apply`` worker
+which re-runs the denylist against the same ``plan.json`` immediately
+before ``tofu apply`` (wired in C4). Each call site supplies the parsed
+plan dict (or raw JSON text via :func:`load_plan_json`) and treats any
+non-empty result as deny.
+
+**v1 floor.** The rule set is intentionally over-inclusive: hard-deny
+*all* IAM changes (even on unrelated resources), hard-deny *all*
+``delete``/``forget``/replace actions. A positive allowlist is a later-
+phase decision; the v1 false-positive trade-off (e.g. a clean IAM grant
+on a payment-demo bucket is also denied) is accepted to keep the gate
+defensible until the C3 human-approval flow lands.
+
+**Rule IDs (14)**:
+
+- ``plan-json-unparseable`` — bad JSON or top-level not an object.
+- ``plan-json-missing-resource-changes`` — key missing OR not a list.
+- ``plan-json-malformed-change`` — entry / change / type / actions are
+  missing or wrong-typed; OR a protected resource type lacks an
+  identity field in BOTH ``before`` and ``after`` (defensive bias-to-
+  deny — see "Identity matching" below).
+- ``control-plane-service`` — non-no-op change to a Cloud Run service
+  in the protected set (v2 OR legacy v1 resource type).
+- ``control-plane-sa`` — non-no-op change to a control-plane SA
+  (matched on ``account_id`` OR the local part of ``email``).
+- ``control-plane-bucket`` — non-no-op change to a ``-tofu-state`` /
+  ``-tofu-artifacts`` bucket or an OBJECT inside one.
+- ``control-plane-secret`` — non-no-op change to a protected secret
+  (matched on ``secret_id``) or one of its versions (parent id
+  extracted from the resource path).
+- ``control-plane-kms`` — non-no-op change to the ``tofu-state`` crypto
+  key or the ``driftscribe-tofu`` key ring.
+- ``wif-config-change`` — non-no-op change to a WIF pool or provider
+  (always dual-emits with iam-change-forbidden-v1).
+- ``iam-change-forbidden-v1`` — non-no-op change to any IAM resource
+  type (``startswith("google_") and "_iam_" in rtype`` OR membership
+  in :data:`IAM_EXTRA_TYPES`).
+- ``delete-action-forbidden-v1`` — ``actions == ["delete"]``.
+- ``forget-action-forbidden-v1`` — ``actions == ["forget"]``.
+- ``replace-action-forbidden-v1`` — ``actions in (["delete","create"],
+  ["create","delete"])``.
+- ``unknown-action-forbidden-v1`` — ``actions`` tuple not in the
+  documented OpenTofu vocabulary.
+
+**Identity matching.** Per-resource rules check identity from BOTH
+``change.before`` and ``change.after`` — a rename AWAY from a protected
+name still fires. A protected resource type with no identity in either
+side emits ``plan-json-malformed-change`` (defensive bias-to-deny: an
+unknown identity on a protected type could hide a protected suffix).
+
+**C4 worker contract.** Callers from the ``tofu-apply`` worker MUST:
+
+1. ``parsed, parse_v = load_plan_json(text)``
+2. If ``parse_v is not None``: treat as deny (the raw artifact is
+   either corrupt or not a JSON object).
+3. ``violations = evaluate(DenylistInput(plan=parsed))``
+4. If ``violations`` is non-empty: treat as deny (do NOT apply).
+
+The library NEVER raises on policy or structural concerns. Genuine
+programming errors (e.g. passing a non-string to an internal helper)
+can still bubble up, but the C4 worker should surround the calls with
+a broad except to convert any such bug into a deny anyway.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -50,10 +108,12 @@ class DenylistInput:
 NO_OP_ACTION_TUPLES: frozenset[tuple[str, ...]] = frozenset({("no-op",), ("read",)})
 DELETE_ACTION_TUPLES: frozenset[tuple[str, ...]] = frozenset({("delete",)})
 FORGET_ACTION_TUPLES: frozenset[tuple[str, ...]] = frozenset({("forget",)})
-REPLACE_ACTION_TUPLES: frozenset[tuple[str, ...]] = frozenset({
-    ("delete", "create"),
-    ("create", "delete"),
-})
+REPLACE_ACTION_TUPLES: frozenset[tuple[str, ...]] = frozenset(
+    {
+        ("delete", "create"),
+        ("create", "delete"),
+    }
+)
 MUTATION_KNOWN_TUPLES: frozenset[tuple[str, ...]] = (
     frozenset({("create",), ("update",)})
     | DELETE_ACTION_TUPLES
@@ -76,46 +136,52 @@ ALL_KNOWN_TUPLES: frozenset[tuple[str, ...]] = NO_OP_ACTION_TUPLES | MUTATION_KN
 # gate doesn't ban the legacy type (Codex Important #3), so the denylist must
 # guard it explicitly or an agent could redirect a control-plane service via
 # the legacy resource without ever tripping the gate.
-CLOUD_RUN_SERVICE_TYPES: frozenset[str] = frozenset({
-    "google_cloud_run_v2_service",
-    "google_cloud_run_service",  # legacy v1 — explicitly covered
-})
+CLOUD_RUN_SERVICE_TYPES: frozenset[str] = frozenset(
+    {
+        "google_cloud_run_v2_service",
+        "google_cloud_run_service",  # legacy v1 — explicitly covered
+    }
+)
 
-CONTROL_PLANE_SERVICE_NAMES: frozenset[str] = frozenset({
-    "driftscribe-agent",            # coordinator
-    "driftscribe-reader",           # drift reader (distinct from infra-reader)
-    "driftscribe-docs",
-    "driftscribe-rollback",
-    "driftscribe-notifier",
-    "driftscribe-upgrade-reader",
-    "driftscribe-upgrade-docs",
-    "driftscribe-infra-reader",     # Phase B
-    # Forward-compat (additive-safe — names listed before they exist):
-    "tofu-apply",
-    "tofu-editor",
-    "driftscribe-plan-builder",
-})
+CONTROL_PLANE_SERVICE_NAMES: frozenset[str] = frozenset(
+    {
+        "driftscribe-agent",  # coordinator
+        "driftscribe-reader",  # drift reader (distinct from infra-reader)
+        "driftscribe-docs",
+        "driftscribe-rollback",
+        "driftscribe-notifier",
+        "driftscribe-upgrade-reader",
+        "driftscribe-upgrade-docs",
+        "driftscribe-infra-reader",  # Phase B
+        # Forward-compat (additive-safe — names listed before they exist):
+        "tofu-apply",
+        "tofu-editor",
+        "driftscribe-plan-builder",
+    }
+)
 
 # google_service_account account_ids (or the local part of `email` when
 # account_id is absent — `<aid>@<proj>.iam.gserviceaccount.com`). A SA whose
 # google_service_account RC matches one of these emits BOTH `control-plane-sa`
 # AND `iam-change-forbidden-v1` — intentional defense in depth: if a later
 # phase relaxes the blanket IAM rule, the control-plane-sa rule remains.
-CONTROL_PLANE_SA_ACCOUNT_IDS: frozenset[str] = frozenset({
-    "driftscribe-agent",        # coordinator SA
-    "reader-agent-sa",
-    "docs-agent-sa",
-    "rollback-agent-sa",
-    "notifier-agent-sa",
-    "upgrade-reader-sa",
-    "upgrade-docs-sa",
-    "infra-reader-sa",          # Phase B
-    "tofu-plan-builder",        # Phase A WIF CI SA
-    "eventarc-trigger-sa",
-    # Forward-compat:
-    "tofu-apply-sa",
-    "tofu-editor-sa",
-})
+CONTROL_PLANE_SA_ACCOUNT_IDS: frozenset[str] = frozenset(
+    {
+        "driftscribe-agent",  # coordinator SA
+        "reader-agent-sa",
+        "docs-agent-sa",
+        "rollback-agent-sa",
+        "notifier-agent-sa",
+        "upgrade-reader-sa",
+        "upgrade-docs-sa",
+        "infra-reader-sa",  # Phase B
+        "tofu-plan-builder",  # Phase A WIF CI SA
+        "eventarc-trigger-sa",
+        # Forward-compat:
+        "tofu-apply-sa",
+        "tofu-editor-sa",
+    }
+)
 
 # A bucket whose name ends with either suffix is the OpenTofu state bucket or
 # the plan-artifact bucket: any mutation to it (or to an OBJECT inside it —
@@ -128,17 +194,19 @@ CONTROL_PLANE_BUCKET_SUFFIXES: tuple[str, ...] = ("-tofu-state", "-tofu-artifact
 # bias toward "any operational secret should not be redirected by IaC without
 # explicit design intent". plan-hmac-key is forward-compat for the C3 approval
 # flow; the github-pat trio backs the worker GitHub clients.
-CONTROL_PLANE_SECRET_IDS: frozenset[str] = frozenset({
-    "approval-hmac-key",
-    "coordinator-shared-token",
-    "plan-hmac-key",            # forward-compat (C3)
-    "github-pat",
-    "docs-agent-github-pat",
-    "upgrade-reader-github-pat",
-    "upgrade-docs-github-pat",
-    "developer-knowledge-api-key",
-    "driftscribe-webhook-url",
-})
+CONTROL_PLANE_SECRET_IDS: frozenset[str] = frozenset(
+    {
+        "approval-hmac-key",
+        "coordinator-shared-token",
+        "plan-hmac-key",  # forward-compat (C3)
+        "github-pat",
+        "docs-agent-github-pat",
+        "upgrade-reader-github-pat",
+        "upgrade-docs-github-pat",
+        "developer-knowledge-api-key",
+        "driftscribe-webhook-url",
+    }
+)
 
 # KMS resources that back the OpenTofu state encryption. Names match the Phase A
 # bootstrap key + its containing ring (setup_iac_backend.sh).
@@ -148,23 +216,30 @@ CONTROL_PLANE_KMS_KEYRING_NAMES: frozenset[str] = frozenset({"driftscribe-tofu"}
 # WIF resource types — explicit set used by both the WIF rule (single-emit)
 # AND the IAM rule (dual-emit). Listed once and reused so the two rule
 # definitions never drift apart.
-WIF_RESOURCE_TYPES: frozenset[str] = frozenset({
-    "google_iam_workload_identity_pool",
-    "google_iam_workload_identity_pool_provider",
-})
+WIF_RESOURCE_TYPES: frozenset[str] = frozenset(
+    {
+        "google_iam_workload_identity_pool",
+        "google_iam_workload_identity_pool_provider",
+    }
+)
 
 # IAM-identity resource types that do NOT carry `_iam_` in their name and so
 # wouldn't be caught by the substring rule. Per Codex Blocker #4 the general
 # rule is "starts with google_ AND contains _iam_" (covers project_iam_binding,
 # storage_bucket_iam_member, run_v2_service_iam_member, folder_iam_binding,
 # kms_*_iam_*, etc.) PLUS this explicit extras set.
-IAM_EXTRA_TYPES: frozenset[str] = frozenset({
-    "google_service_account",
-    "google_service_account_key",
-    "google_project_iam_audit_config",
-    "google_project_iam_custom_role",
-    "google_organization_iam_custom_role",
-}) | WIF_RESOURCE_TYPES
+IAM_EXTRA_TYPES: frozenset[str] = (
+    frozenset(
+        {
+            "google_service_account",
+            "google_service_account_key",
+            "google_project_iam_audit_config",
+            "google_project_iam_custom_role",
+            "google_organization_iam_custom_role",
+        }
+    )
+    | WIF_RESOURCE_TYPES
+)
 
 
 def load_plan_json(text: str) -> tuple[dict | None, Violation | None]:
@@ -267,9 +342,7 @@ def _check_control_plane_service(
             )
         )
         return
-    if (before_name in CONTROL_PLANE_SERVICE_NAMES) or (
-        after_name in CONTROL_PLANE_SERVICE_NAMES
-    ):
+    if (before_name in CONTROL_PLANE_SERVICE_NAMES) or (after_name in CONTROL_PLANE_SERVICE_NAMES):
         violations.append(
             Violation(
                 "control-plane-service",
@@ -341,9 +414,7 @@ def _check_control_plane_sa(
 
 def _is_protected_bucket_name(name: object) -> bool:
     """True iff ``name`` is a string ending with a control-plane bucket suffix."""
-    return isinstance(name, str) and any(
-        name.endswith(s) for s in CONTROL_PLANE_BUCKET_SUFFIXES
-    )
+    return isinstance(name, str) and any(name.endswith(s) for s in CONTROL_PLANE_BUCKET_SUFFIXES)
 
 
 def _check_control_plane_bucket(
@@ -462,8 +533,7 @@ def _check_control_plane_secret(
             violations.append(
                 Violation(
                     "plan-json-malformed-change",
-                    f"{rc.get('address', '<unknown>')}: "
-                    "secret_version path has no /secrets/<id>",
+                    f"{rc.get('address', '<unknown>')}: secret_version path has no /secrets/<id>",
                 )
             )
             return
@@ -543,8 +613,7 @@ def _check_wif(
         violations.append(
             Violation(
                 "wif-config-change",
-                f"{rc.get('address', '<unknown>')}: WIF {rtype!r} "
-                f"(actions={list(actions)})",
+                f"{rc.get('address', '<unknown>')}: WIF {rtype!r} (actions={list(actions)})",
             )
         )
 

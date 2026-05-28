@@ -4,6 +4,7 @@ Table-driven over hand-authored plan-JSON fixtures under
 ``tests/fixtures/iac_plan_denylist/``. Each single-rule fixture exercises
 exactly one rule; multi-rule aggregation has dedicated fixtures.
 """
+
 import dataclasses
 from pathlib import Path
 
@@ -48,10 +49,13 @@ def test_empty_plan_with_empty_resource_changes_passes():
 # --- Task 3: load_plan_json + structural rules ---
 
 
-@pytest.mark.parametrize("fixture", [
-    "unparseable_empty_file.json",
-    "unparseable_not_object.json",
-])
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        "unparseable_empty_file.json",
+        "unparseable_not_object.json",
+    ],
+)
 def test_load_plan_json_handles_unparseable(fixture):
     parsed, violation = load_plan_json(_load(fixture))
     assert parsed is None
@@ -65,20 +69,26 @@ def test_load_plan_json_happy_path_returns_dict_and_no_violation():
     assert violation is None
 
 
-@pytest.mark.parametrize("fixture", [
-    "missing_resource_changes.json",
-    "resource_changes_not_list.json",
-])
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        "missing_resource_changes.json",
+        "resource_changes_not_list.json",
+    ],
+)
 def test_missing_or_non_list_resource_changes_is_denied(fixture):
     parsed, _ = load_plan_json(_load(fixture))
     assert parsed is not None
     assert "plan-json-missing-resource-changes" in _rules(evaluate(DenylistInput(plan=parsed)))
 
 
-@pytest.mark.parametrize("fixture", [
-    "resource_changes_entry_not_dict.json",
-    "change_not_dict.json",
-])
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        "resource_changes_entry_not_dict.json",
+        "change_not_dict.json",
+    ],
+)
 def test_entry_or_change_not_dict_is_malformed(fixture):
     parsed, _ = load_plan_json(_load(fixture))
     assert parsed is not None
@@ -88,11 +98,14 @@ def test_entry_or_change_not_dict_is_malformed(fixture):
 # --- Task 4: malformed-change (missing type/actions/non-string) + unknown-action ---
 
 
-@pytest.mark.parametrize("fixture", [
-    "malformed_change_missing_actions.json",
-    "malformed_change_missing_type.json",
-    "actions_not_all_strings.json",
-])
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        "malformed_change_missing_actions.json",
+        "malformed_change_missing_type.json",
+        "actions_not_all_strings.json",
+    ],
+)
 def test_malformed_type_or_actions_emits_malformed_change(fixture):
     parsed, _ = load_plan_json(_load(fixture))
     assert parsed is not None
@@ -111,13 +124,16 @@ def test_unknown_action_vocabulary_is_denied():
 # --- Task 5: delete / forget / replace hard-deny on unrelated resources ---
 
 
-@pytest.mark.parametrize("fixture", [
-    "benign_no_op.json",
-    "benign_payment_demo_update.json",
-    "benign_create_unprotected_secret.json",
-    "benign_create_unprotected_bucket.json",
-    "read_action_is_pass.json",
-])
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        "benign_no_op.json",
+        "benign_payment_demo_update.json",
+        "benign_create_unprotected_secret.json",
+        "benign_create_unprotected_bucket.json",
+        "read_action_is_pass.json",
+    ],
+)
 def test_benign_fixtures_pass(fixture):
     parsed, _ = load_plan_json(_load(fixture))
     assert parsed is not None
@@ -134,10 +150,13 @@ def test_forget_unrelated_resource_is_hard_denied():
     assert "forget-action-forbidden-v1" in _rules(evaluate(DenylistInput(plan=parsed)))
 
 
-@pytest.mark.parametrize("fixture", [
-    "replace_unprotected_resource.json",
-    "replace_create_first_unprotected.json",
-])
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        "replace_unprotected_resource.json",
+        "replace_create_first_unprotected.json",
+    ],
+)
 def test_replace_unrelated_resource_is_hard_denied(fixture):
     parsed, _ = load_plan_json(_load(fixture))
     assert "replace-action-forbidden-v1" in _rules(evaluate(DenylistInput(plan=parsed))), fixture
@@ -146,13 +165,16 @@ def test_replace_unrelated_resource_is_hard_denied(fixture):
 # --- Task 6a: control-plane Cloud Run service rule ---
 
 
-@pytest.mark.parametrize("fixture", [
-    "control_plane_coordinator_update.json",
-    "control_plane_reader_update.json",
-    "control_plane_infra_reader_update.json",
-    "control_plane_legacy_v1_service_update.json",
-    "update_rename_away_from_protected.json",
-])
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        "control_plane_coordinator_update.json",
+        "control_plane_reader_update.json",
+        "control_plane_infra_reader_update.json",
+        "control_plane_legacy_v1_service_update.json",
+        "update_rename_away_from_protected.json",
+    ],
+)
 def test_control_plane_service_update_is_denied(fixture):
     parsed, _ = load_plan_json(_load(fixture))
     assert "control-plane-service" in _rules(evaluate(DenylistInput(plan=parsed))), fixture
@@ -188,12 +210,15 @@ def test_control_plane_sa_update_by_email_local_part_is_denied():
 # --- Task 6c: control-plane bucket + bucket-object rules ---
 
 
-@pytest.mark.parametrize("fixture", [
-    "control_plane_state_bucket_update.json",
-    "control_plane_artifact_bucket_create.json",
-    "control_plane_state_bucket_object_create.json",
-    "control_plane_artifact_bucket_object_update.json",
-])
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        "control_plane_state_bucket_update.json",
+        "control_plane_artifact_bucket_create.json",
+        "control_plane_state_bucket_object_create.json",
+        "control_plane_artifact_bucket_object_update.json",
+    ],
+)
 def test_control_plane_bucket_or_object_change_is_denied(fixture):
     parsed, _ = load_plan_json(_load(fixture))
     assert "control-plane-bucket" in _rules(evaluate(DenylistInput(plan=parsed))), fixture
@@ -226,10 +251,13 @@ def test_unprotected_secret_version_passes():
     assert evaluate(DenylistInput(plan=parsed)) == []
 
 
-@pytest.mark.parametrize("fixture", [
-    "control_plane_kms_update.json",
-    "control_plane_kms_keyring_update.json",
-])
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        "control_plane_kms_update.json",
+        "control_plane_kms_keyring_update.json",
+    ],
+)
 def test_control_plane_kms_change_is_denied(fixture):
     parsed, _ = load_plan_json(_load(fixture))
     assert "control-plane-kms" in _rules(evaluate(DenylistInput(plan=parsed))), fixture
@@ -247,10 +275,13 @@ def test_secret_version_with_unparseable_path_is_malformed():
 # --- Task 7: WIF + IAM hard-deny rules ---
 
 
-@pytest.mark.parametrize("fixture", [
-    "wif_pool_update.json",
-    "wif_provider_create.json",
-])
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        "wif_pool_update.json",
+        "wif_provider_create.json",
+    ],
+)
 def test_wif_change_emits_both_wif_and_iam_rules(fixture):
     """WIF pool/provider changes must dual-emit `wif-config-change` AND
     `iam-change-forbidden-v1` (Codex Blocker #4 — WIF types are IAM
@@ -261,12 +292,15 @@ def test_wif_change_emits_both_wif_and_iam_rules(fixture):
     assert {"wif-config-change", "iam-change-forbidden-v1"} <= rules, fixture
 
 
-@pytest.mark.parametrize("fixture", [
-    "iam_project_binding_create.json",
-    "iam_storage_binding_update.json",
-    "iam_run_invoker_grant.json",
-    "iam_folder_binding_create.json",
-])
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        "iam_project_binding_create.json",
+        "iam_storage_binding_update.json",
+        "iam_run_invoker_grant.json",
+        "iam_folder_binding_create.json",
+    ],
+)
 def test_any_iam_resource_change_is_denied_in_v1(fixture):
     """All four fixtures cover the `_iam_` substring rule (project_iam_binding,
     storage_bucket_iam_member, cloud_run_v2_service_iam_member,
@@ -322,6 +356,7 @@ def test_constants_are_frozensets_or_tuples():
         IAM_EXTRA_TYPES,
         WIF_RESOURCE_TYPES,
     )
+
     for c in (
         ALL_KNOWN_TUPLES,
         CLOUD_RUN_SERVICE_TYPES,

@@ -4,6 +4,7 @@ The CLI is a thin wrapper around :func:`tools.iac_plan_denylist.evaluate`
 plus :func:`tools.iac_plan_denylist.load_plan_json`. These tests pin its
 exit-code contract (0 / 1 / 2) and ASCII-only stderr output.
 """
+
 import subprocess
 import sys
 from pathlib import Path
@@ -59,11 +60,14 @@ def test_control_plane_change_exits_1_and_names_rule():
     assert "control-plane-service" in proc.stderr
 
 
-@pytest.mark.parametrize("fixture", [
-    "control_plane_coordinator_update.json",
-    "delete_unprotected_resource.json",
-    "wif_pool_update.json",
-])
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        "control_plane_coordinator_update.json",
+        "delete_unprotected_resource.json",
+        "wif_pool_update.json",
+    ],
+)
 def test_cli_output_is_ascii_only(fixture):
     """ASCII-only CLI output (Codex nit) — no em-dashes, no Unicode in
     stderr/stdout messages emitted by the CLI. This catches an accidental
