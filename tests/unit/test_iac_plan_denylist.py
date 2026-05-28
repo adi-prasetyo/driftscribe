@@ -202,3 +202,43 @@ def test_control_plane_bucket_or_object_change_is_denied(fixture):
 def test_unprotected_bucket_object_passes():
     parsed, _ = load_plan_json(_load("benign_unprotected_bucket_object.json"))
     assert evaluate(DenylistInput(plan=parsed)) == []
+
+
+# --- Task 6d: control-plane secret (+ secret_version) + KMS rules ---
+
+
+def test_control_plane_secret_update_is_denied():
+    parsed, _ = load_plan_json(_load("control_plane_hmac_secret_update.json"))
+    assert "control-plane-secret" in _rules(evaluate(DenylistInput(plan=parsed)))
+
+
+def test_control_plane_secret_version_create_is_denied():
+    """secret_version resources carry the parent secret_id inside a resource
+    path like ``projects/<p>/secrets/<id>``. The denylist extracts it and
+    matches against CONTROL_PLANE_SECRET_IDS.
+    """
+    parsed, _ = load_plan_json(_load("control_plane_secret_version_create.json"))
+    assert "control-plane-secret" in _rules(evaluate(DenylistInput(plan=parsed)))
+
+
+def test_unprotected_secret_version_passes():
+    parsed, _ = load_plan_json(_load("benign_unprotected_secret_version.json"))
+    assert evaluate(DenylistInput(plan=parsed)) == []
+
+
+@pytest.mark.parametrize("fixture", [
+    "control_plane_kms_update.json",
+    "control_plane_kms_keyring_update.json",
+])
+def test_control_plane_kms_change_is_denied(fixture):
+    parsed, _ = load_plan_json(_load(fixture))
+    assert "control-plane-kms" in _rules(evaluate(DenylistInput(plan=parsed))), fixture
+
+
+def test_secret_version_with_unparseable_path_is_malformed():
+    """A secret_version whose `name` / `secret` does not contain /secrets/<id>
+    cannot be matched against the allowlist; defensive bias-to-deny via
+    plan-json-malformed-change.
+    """
+    parsed, _ = load_plan_json(_load("malformed_protected_secret_version_no_path.json"))
+    assert "plan-json-malformed-change" in _rules(evaluate(DenylistInput(plan=parsed)))

@@ -121,6 +121,28 @@ CONTROL_PLANE_SA_ACCOUNT_IDS: frozenset[str] = frozenset({
 # trusted artifact store, so both must be denied even on a green PR.
 CONTROL_PLANE_BUCKET_SUFFIXES: tuple[str, ...] = ("-tofu-state", "-tofu-artifacts")
 
+# Operational secrets that the denylist protects. Per Codex Important #4 the
+# v1 list is intentionally broader than just the design-mandated HMAC keys —
+# bias toward "any operational secret should not be redirected by IaC without
+# explicit design intent". plan-hmac-key is forward-compat for the C3 approval
+# flow; the github-pat trio backs the worker GitHub clients.
+CONTROL_PLANE_SECRET_IDS: frozenset[str] = frozenset({
+    "approval-hmac-key",
+    "coordinator-shared-token",
+    "plan-hmac-key",            # forward-compat (C3)
+    "github-pat",
+    "docs-agent-github-pat",
+    "upgrade-reader-github-pat",
+    "upgrade-docs-github-pat",
+    "developer-knowledge-api-key",
+    "driftscribe-webhook-url",
+})
+
+# KMS resources that back the OpenTofu state encryption. Names match the Phase A
+# bootstrap key + its containing ring (setup_iac_backend.sh).
+CONTROL_PLANE_KMS_KEY_NAMES: frozenset[str] = frozenset({"tofu-state"})
+CONTROL_PLANE_KMS_KEYRING_NAMES: frozenset[str] = frozenset({"driftscribe-tofu"})
+
 
 def load_plan_json(text: str) -> tuple[dict | None, Violation | None]:
     """Parse a plan.json document.
@@ -356,6 +378,122 @@ def _check_control_plane_bucket(
             )
 
 
+def _secret_id_from_version_path(value: object) -> str | None:
+    """Extract a secret id from a secret_version resource path.
+
+    OpenTofu emits secret_version ``secret`` / ``name`` attributes as
+    ``projects/<p>/secrets/<id>`` or
+    ``projects/<p>/secrets/<id>/versions/<n>``. We split on ``/secrets/``
+    and take the next path segment up to the next ``/``. Returns ``None``
+    if the input is not a string or does not contain that segment.
+    """
+    if not isinstance(value, str) or "/secrets/" not in value:
+        return None
+    rest = value.split("/secrets/", 1)[1]
+    head = rest.split("/", 1)[0]
+    return head or None
+
+
+def _check_control_plane_secret(
+    rc: dict,
+    rtype: str,
+    actions: tuple[str, ...],
+    before: dict,
+    after: dict,
+    violations: list[Violation],
+) -> None:
+    """Emit control-plane-secret on protected secret OR secret_version changes.
+
+    For ``google_secret_manager_secret`` the identity is ``secret_id``.
+    For ``google_secret_manager_secret_version`` the identity is the
+    parent secret id extracted from the resource path in ``secret`` or
+    ``name``. Either before- or after-side match is sufficient.
+    """
+    if rtype == "google_secret_manager_secret":
+        bid = before.get("secret_id")
+        aid = after.get("secret_id")
+        if not isinstance(bid, str) and not isinstance(aid, str):
+            violations.append(
+                Violation(
+                    "plan-json-malformed-change",
+                    f"{rc.get('address', '<unknown>')}: google_secret_manager_secret has no secret_id",
+                )
+            )
+            return
+        if (bid in CONTROL_PLANE_SECRET_IDS) or (aid in CONTROL_PLANE_SECRET_IDS):
+            violations.append(
+                Violation(
+                    "control-plane-secret",
+                    f"{rc.get('address', '<unknown>')}: secret "
+                    f"{(aid or bid)!r} (actions={list(actions)})",
+                )
+            )
+    elif rtype == "google_secret_manager_secret_version":
+        before_id = _secret_id_from_version_path(
+            before.get("secret")
+        ) or _secret_id_from_version_path(before.get("name"))
+        after_id = _secret_id_from_version_path(
+            after.get("secret")
+        ) or _secret_id_from_version_path(after.get("name"))
+        if before_id is None and after_id is None:
+            violations.append(
+                Violation(
+                    "plan-json-malformed-change",
+                    f"{rc.get('address', '<unknown>')}: "
+                    "secret_version path has no /secrets/<id>",
+                )
+            )
+            return
+        if (before_id in CONTROL_PLANE_SECRET_IDS) or (after_id in CONTROL_PLANE_SECRET_IDS):
+            violations.append(
+                Violation(
+                    "control-plane-secret",
+                    f"{rc.get('address', '<unknown>')}: version of "
+                    f"{(after_id or before_id)!r} (actions={list(actions)})",
+                )
+            )
+
+
+def _check_control_plane_kms(
+    rc: dict,
+    rtype: str,
+    actions: tuple[str, ...],
+    before: dict,
+    after: dict,
+    violations: list[Violation],
+) -> None:
+    """Emit control-plane-kms on a protected KMS key or key-ring change.
+
+    Both google_kms_crypto_key (name in CONTROL_PLANE_KMS_KEY_NAMES) and
+    google_kms_key_ring (name in CONTROL_PLANE_KMS_KEYRING_NAMES) match;
+    other resource types are ignored.
+    """
+    if rtype == "google_kms_crypto_key":
+        protected_names = CONTROL_PLANE_KMS_KEY_NAMES
+    elif rtype == "google_kms_key_ring":
+        protected_names = CONTROL_PLANE_KMS_KEYRING_NAMES
+    else:
+        return
+    before_name = before.get("name")
+    after_name = after.get("name")
+    if not isinstance(before_name, str) and not isinstance(after_name, str):
+        violations.append(
+            Violation(
+                "plan-json-malformed-change",
+                f"{rc.get('address', '<unknown>')}: {rtype} has no name",
+            )
+        )
+        return
+    if (before_name in protected_names) or (after_name in protected_names):
+        violations.append(
+            Violation(
+                "control-plane-kms",
+                f"{rc.get('address', '<unknown>')}: protected KMS resource "
+                f"{(after_name or before_name)!r} (actions={list(actions)})",
+            )
+        )
+
+
 def evaluate(di: DenylistInput) -> list[Violation]:
     """Return all violations (empty list = pass).
 
@@ -427,4 +565,6 @@ def evaluate(di: DenylistInput) -> list[Violation]:
             _check_control_plane_service(rc, rtype, actions, before, after, violations)
             _check_control_plane_sa(rc, rtype, actions, before, after, violations)
             _check_control_plane_bucket(rc, rtype, actions, before, after, violations)
+            _check_control_plane_secret(rc, rtype, actions, before, after, violations)
+            _check_control_plane_kms(rc, rtype, actions, before, after, violations)
     return violations
