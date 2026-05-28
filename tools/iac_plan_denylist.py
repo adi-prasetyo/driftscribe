@@ -154,4 +154,29 @@ def evaluate(di: DenylistInput) -> list[Violation]:
                 )
             )
             continue
+        # delete / forget / replace are v1 hard-deny floors regardless of
+        # which resource they target. Fall through (do NOT continue) so the
+        # identity-based rules added in later tasks can ALSO fire on the
+        # same RC — multi_violations_sa_delete is the regression fixture.
+        if actions in DELETE_ACTION_TUPLES:
+            violations.append(
+                Violation(
+                    "delete-action-forbidden-v1",
+                    f"{address}: action {list(actions)!r} forbidden in v1",
+                )
+            )
+        if actions in FORGET_ACTION_TUPLES:
+            violations.append(
+                Violation(
+                    "forget-action-forbidden-v1",
+                    f"{address}: action {list(actions)!r} forbidden in v1",
+                )
+            )
+        if actions in REPLACE_ACTION_TUPLES:
+            violations.append(
+                Violation(
+                    "replace-action-forbidden-v1",
+                    f"{address}: action {list(actions)!r} (replace) forbidden in v1",
+                )
+            )
     return violations

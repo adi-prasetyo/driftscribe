@@ -106,3 +106,38 @@ def test_unknown_action_vocabulary_is_denied():
     assert "unknown-action-forbidden-v1" in rules
     # The structural rules MUST NOT fire — the plan is well-formed, just unknown.
     assert "plan-json-malformed-change" not in rules
+
+
+# --- Task 5: delete / forget / replace hard-deny on unrelated resources ---
+
+
+@pytest.mark.parametrize("fixture", [
+    "benign_no_op.json",
+    "benign_payment_demo_update.json",
+    "benign_create_unprotected_secret.json",
+    "benign_create_unprotected_bucket.json",
+    "read_action_is_pass.json",
+])
+def test_benign_fixtures_pass(fixture):
+    parsed, _ = load_plan_json(_load(fixture))
+    assert parsed is not None
+    assert evaluate(DenylistInput(plan=parsed)) == [], fixture
+
+
+def test_delete_unrelated_resource_is_hard_denied():
+    parsed, _ = load_plan_json(_load("delete_unprotected_resource.json"))
+    assert "delete-action-forbidden-v1" in _rules(evaluate(DenylistInput(plan=parsed)))
+
+
+def test_forget_unrelated_resource_is_hard_denied():
+    parsed, _ = load_plan_json(_load("forget_unprotected_resource.json"))
+    assert "forget-action-forbidden-v1" in _rules(evaluate(DenylistInput(plan=parsed)))
+
+
+@pytest.mark.parametrize("fixture", [
+    "replace_unprotected_resource.json",
+    "replace_create_first_unprotected.json",
+])
+def test_replace_unrelated_resource_is_hard_denied(fixture):
+    parsed, _ = load_plan_json(_load(fixture))
+    assert "replace-action-forbidden-v1" in _rules(evaluate(DenylistInput(plan=parsed))), fixture

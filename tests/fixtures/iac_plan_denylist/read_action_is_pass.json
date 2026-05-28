@@ -1,0 +1,17 @@
+{
+  "_test_intent": "read action on a control-plane Cloud Run service is read-only and must pass (no-op category)",
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "data.google_cloud_run_v2_service.agent",
+      "mode": "data",
+      "type": "google_cloud_run_v2_service",
+      "name": "agent",
+      "change": {
+        "actions": ["read"],
+        "before": null,
+        "after": {"name": "driftscribe-agent"}
+      }
+    }
+  ]
+}

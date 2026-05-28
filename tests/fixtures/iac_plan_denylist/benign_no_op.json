@@ -1,0 +1,6 @@
+{
+  "_test_intent": "Empty resource_changes — legitimate no-op plan; must pass with zero violations",
+  "format_version": "1.2",
+  "terraform_version": "1.12.0",
+  "resource_changes": []
+}

@@ -1,0 +1,17 @@
+{
+  "_test_intent": "forget (remove from state, do not destroy) of an unrelated resource — hard-deny in v1",
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "google_storage_bucket_object.legacy",
+      "mode": "managed",
+      "type": "google_storage_bucket_object",
+      "name": "legacy",
+      "change": {
+        "actions": ["forget"],
+        "before": {"bucket": "payment-demo-uploads", "name": "legacy.txt"},
+        "after": null
+      }
+    }
+  ]
+}
