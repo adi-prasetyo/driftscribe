@@ -75,8 +75,10 @@ def test_plan_and_json_returns_two_generations(tmp_path: pathlib.Path) -> None:
 
 def test_plan_and_json_upload_order(tmp_path: pathlib.Path) -> None:
     """plan.tfplan first, then plan.json — deterministic for debugging."""
-    plan = tmp_path / "plan.tfplan"; plan.write_bytes(b"x")
-    pjson = tmp_path / "plan.json"; pjson.write_text("{}")
+    plan = tmp_path / "plan.tfplan"
+    plan.write_bytes(b"x")
+    pjson = tmp_path / "plan.json"
+    pjson.write_text("{}")
     bucket = _make_mock_bucket({
         f"{_PREFIX}/plan.tfplan": 1, f"{_PREFIX}/plan.json": 2,
     })
@@ -134,7 +136,8 @@ def test_metadata_returns_one_generation(tmp_path: pathlib.Path) -> None:
 
 
 def test_metadata_uses_correct_blob_path(tmp_path: pathlib.Path) -> None:
-    meta = tmp_path / "metadata.json"; meta.write_text("{}")
+    meta = tmp_path / "metadata.json"
+    meta.write_text("{}")
     bucket = _make_mock_bucket({f"{_PREFIX}/metadata.json": 1})
     upload_metadata(MetadataUploadInput(
         bucket=bucket, object_prefix=_PREFIX, local_metadata=meta,
