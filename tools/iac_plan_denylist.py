@@ -645,9 +645,13 @@ def _check_iam(
 def evaluate(di: DenylistInput) -> list[Violation]:
     """Return all violations (empty list = pass).
 
-    Fail-closed: any structural surprise in the plan-JSON yields a
-    :class:`Violation` rather than an exception. The library never raises
-    on policy concerns; only genuine programming errors bubble up.
+    Fail-closed: any **policy-relevant** structural surprise in the plan-
+    JSON (missing/wrong-typed fields the rules rely on, or a protected
+    resource type with no identity in either ``before`` or ``after``)
+    yields a :class:`Violation` rather than an exception. The library
+    never raises on policy concerns; only genuine programming errors
+    bubble up. Plan-JSON fields the rules do not consume are not
+    inspected and cannot cause a denial.
     """
     violations: list[Violation] = []
     rcs = di.plan.get("resource_changes")
@@ -722,9 +726,13 @@ def evaluate(di: DenylistInput) -> list[Violation]:
 
 # ---------------------------------------------------------------------------
 # CLI wrapper. Exit-code contract: 0 = pass, 1 = violations (incl. parse
-# failure), 2 = usage / I/O error. ASCII-only output by design — the C4 apply
-# worker will scrape stderr for rule ids, and embedded em-dashes would corrupt
-# downstream regex matching in a future structured-output mode.
+# failure), 2 = usage / I/O error. ASCII-only output by design — keeps the
+# violation lines safely greppable in CI logs and shell pipelines. NOTE: the
+# C4 apply worker does NOT scrape this stderr output — per the module
+# docstring's C4 contract, in-process callers MUST use load_plan_json() +
+# evaluate() directly, treating both a non-None parse Violation and any
+# non-empty evaluate() result as deny. This CLI is for the C2 CI plan-builder
+# job and for local developer use.
 # ---------------------------------------------------------------------------
 
 
