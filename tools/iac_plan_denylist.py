@@ -8,11 +8,14 @@ versions, the plan-builder KMS key + key ring), any IAM/WIF change, and
 any state-mutating action (``delete`` / ``forget`` / replace) — even on
 unrelated resources, in v1.
 
-Scaffold only at this commit (Task 2 of the C1 plan). Subsequent tasks
-fill in load_plan_json + per-rule evaluators behind the same shape.
+Task 3 adds :func:`load_plan_json` + the three structural rules
+(``plan-json-unparseable``, ``plan-json-missing-resource-changes``,
+``plan-json-malformed-change``); per-resource and per-action rules land
+in subsequent tasks.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 
@@ -36,6 +39,27 @@ class DenylistInput:
     plan: dict
 
 
+def load_plan_json(text: str) -> tuple[dict | None, Violation | None]:
+    """Parse a plan.json document.
+
+    Returns ``(parsed_dict, None)`` on success or
+    ``(None, Violation("plan-json-unparseable", ...))`` on failure (bad
+    JSON, or top-level not an object). Never raises — the producer (CI
+    plan-builder in C2 or the apply worker in C4) hands raw bytes to this
+    helper and expects a parse-side Violation to be treated as deny.
+    """
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as e:
+        return None, Violation("plan-json-unparseable", f"json decode error: {e}")
+    if not isinstance(parsed, dict):
+        return None, Violation(
+            "plan-json-unparseable",
+            f"root is {type(parsed).__name__}, expected object",
+        )
+    return parsed, None
+
+
 def evaluate(di: DenylistInput) -> list[Violation]:
     """Return all violations (empty list = pass).
 
@@ -43,4 +67,33 @@ def evaluate(di: DenylistInput) -> list[Violation]:
     :class:`Violation` rather than an exception. The library never raises
     on policy concerns; only genuine programming errors bubble up.
     """
-    return []
+    violations: list[Violation] = []
+    rcs = di.plan.get("resource_changes")
+    if not isinstance(rcs, list):
+        violations.append(
+            Violation(
+                "plan-json-missing-resource-changes",
+                f"resource_changes is {type(rcs).__name__}, expected list",
+            )
+        )
+        return violations
+    for rc in rcs:
+        if not isinstance(rc, dict):
+            violations.append(
+                Violation(
+                    "plan-json-malformed-change",
+                    f"resource_changes entry is {type(rc).__name__}, expected object",
+                )
+            )
+            continue
+        change = rc.get("change")
+        if not isinstance(change, dict):
+            address = rc.get("address", "<unknown>")
+            violations.append(
+                Violation(
+                    "plan-json-malformed-change",
+                    f"{address}: change is {type(change).__name__}, expected object",
+                )
+            )
+            continue
+    return violations
