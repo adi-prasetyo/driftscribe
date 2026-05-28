@@ -1,0 +1,17 @@
+{
+  "_test_intent": "create of google_cloud_run_v2_service with after={} (no name) — defensive bias-to-deny via plan-json-malformed-change",
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "google_cloud_run_v2_service.mystery",
+      "mode": "managed",
+      "type": "google_cloud_run_v2_service",
+      "name": "mystery",
+      "change": {
+        "actions": ["create"],
+        "before": null,
+        "after": {}
+      }
+    }
+  ]
+}

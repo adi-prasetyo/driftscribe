@@ -274,3 +274,64 @@ def test_any_iam_resource_change_is_denied_in_v1(fixture):
     """
     parsed, _ = load_plan_json(_load(fixture))
     assert "iam-change-forbidden-v1" in _rules(evaluate(DenylistInput(plan=parsed))), fixture
+
+
+# --- Task 8: multi-rule aggregation + bias-to-deny ---
+
+
+def test_one_plan_can_fire_multiple_rules():
+    """A delete on the coordinator SA must emit ALL THREE rules:
+    control-plane-sa (identity match), iam-change-forbidden-v1
+    (IAM resource type), and delete-action-forbidden-v1 (action floor).
+    Regression catch for the no-`continue` fall-through in evaluate.
+    """
+    parsed, _ = load_plan_json(_load("multi_violations_sa_delete.json"))
+    rules = set(_rules(evaluate(DenylistInput(plan=parsed))))
+    assert {
+        "control-plane-sa",
+        "iam-change-forbidden-v1",
+        "delete-action-forbidden-v1",
+    } <= rules
+
+
+def test_protected_type_with_no_identity_is_malformed():
+    """A control-plane Cloud Run create with after={} (no name) cannot be
+    matched against the allowlist; defensive bias-to-deny emits
+    plan-json-malformed-change.
+    """
+    parsed, _ = load_plan_json(_load("malformed_protected_cloud_run_no_name.json"))
+    assert "plan-json-malformed-change" in _rules(evaluate(DenylistInput(plan=parsed)))
+
+
+# --- Constant-shape guards (catch accidental mutation of the allowlists) ---
+
+
+def test_constants_are_frozensets_or_tuples():
+    """The constants must be immutable so a downstream caller cannot
+    accidentally extend the allowlist at runtime.
+    """
+    from tools.iac_plan_denylist import (
+        ALL_KNOWN_TUPLES,
+        CLOUD_RUN_SERVICE_TYPES,
+        CONTROL_PLANE_BUCKET_SUFFIXES,
+        CONTROL_PLANE_KMS_KEY_NAMES,
+        CONTROL_PLANE_KMS_KEYRING_NAMES,
+        CONTROL_PLANE_SA_ACCOUNT_IDS,
+        CONTROL_PLANE_SECRET_IDS,
+        CONTROL_PLANE_SERVICE_NAMES,
+        IAM_EXTRA_TYPES,
+        WIF_RESOURCE_TYPES,
+    )
+    for c in (
+        ALL_KNOWN_TUPLES,
+        CLOUD_RUN_SERVICE_TYPES,
+        CONTROL_PLANE_KMS_KEY_NAMES,
+        CONTROL_PLANE_KMS_KEYRING_NAMES,
+        CONTROL_PLANE_SA_ACCOUNT_IDS,
+        CONTROL_PLANE_SECRET_IDS,
+        CONTROL_PLANE_SERVICE_NAMES,
+        IAM_EXTRA_TYPES,
+        WIF_RESOURCE_TYPES,
+    ):
+        assert isinstance(c, frozenset), c
+    assert isinstance(CONTROL_PLANE_BUCKET_SUFFIXES, tuple)
