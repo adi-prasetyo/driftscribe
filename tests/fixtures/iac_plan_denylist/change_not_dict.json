@@ -1,0 +1,12 @@
+{
+  "_test_intent": "resource_changes[].change is a string, not an object; must emit plan-json-malformed-change",
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "google_storage_bucket.x",
+      "type": "google_storage_bucket",
+      "name": "x",
+      "change": "this should be an object, not a string"
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "_test_intent": "delete of an unrelated bucket object — hard-deny in v1 even on non-control-plane targets",
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "google_storage_bucket_object.demo_uploads",
+      "mode": "managed",
+      "type": "google_storage_bucket_object",
+      "name": "demo_uploads",
+      "change": {
+        "actions": ["delete"],
+        "before": {"bucket": "payment-demo-uploads", "name": "demo.txt"},
+        "after": null
+      }
+    }
+  ]
+}

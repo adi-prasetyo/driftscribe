@@ -1,0 +1,17 @@
+{
+  "_test_intent": "update of the tofu-state KMS crypto key (Phase A bootstrap key) — must emit control-plane-kms",
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "google_kms_crypto_key.tofu_state",
+      "mode": "managed",
+      "type": "google_kms_crypto_key",
+      "name": "tofu_state",
+      "change": {
+        "actions": ["update"],
+        "before": {"name": "tofu-state"},
+        "after": {"name": "tofu-state"}
+      }
+    }
+  ]
+}

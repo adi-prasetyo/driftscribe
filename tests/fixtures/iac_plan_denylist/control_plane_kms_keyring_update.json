@@ -1,0 +1,17 @@
+{
+  "_test_intent": "update of the driftscribe-tofu KMS key ring (holds the tofu-state crypto key) — must emit control-plane-kms",
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "google_kms_key_ring.driftscribe_tofu",
+      "mode": "managed",
+      "type": "google_kms_key_ring",
+      "name": "driftscribe_tofu",
+      "change": {
+        "actions": ["update"],
+        "before": {"name": "driftscribe-tofu"},
+        "after": {"name": "driftscribe-tofu"}
+      }
+    }
+  ]
+}

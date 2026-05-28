@@ -169,3 +169,50 @@ python -m tools.iac_static_gate --base <sha> --head <sha> --mode <agent|operator
 It computes changed paths via `git diff --name-only <base>...<head>`, reads the
 post-change content of changed `iac/*.tf` files at `<head>`, runs the gate, and
 exits non-zero if there are any violations.
+
+## Phase C1: plan-JSON denylist
+
+`tools/iac_plan_denylist.py` is the **self-protection denylist** layered on top
+of the static HCL gate (design doc §5.2). Where the static gate is a syntax-
+level check on the PR diff, the denylist is a semantic check on a parsed
+OpenTofu `tofu show -json plan.tfplan` document: it refuses any non-no-op
+change targeting DriftScribe's own control plane, any IAM/WIF change, and any
+state-mutating action (`delete` / `forget` / replace) — even on unrelated
+resources, in v1.
+
+The module is a pure, deterministic, fail-closed Python library plus a thin
+CLI; no new third-party dependencies (stdlib `json`-only). It is designed to
+be called from **three** places:
+
+1. This CLI for local-dev validation.
+2. The trusted plan-builder CI workflow (wired in **C2**, not C1).
+3. The `tofu-apply` worker re-runs the denylist against the same `plan.json`
+   immediately before `tofu apply` (wired in **C4**).
+
+**14 rules** spread across structural fail-closed (`plan-json-unparseable`,
+`plan-json-missing-resource-changes`, `plan-json-malformed-change`), action-
+floor (`delete-action-forbidden-v1`, `forget-action-forbidden-v1`, `replace-
+action-forbidden-v1`, `unknown-action-forbidden-v1`), control-plane identity
+(`control-plane-service`, `control-plane-sa`, `control-plane-bucket`, `control-
+plane-secret`, `control-plane-kms`), and IAM/WIF (`wif-config-change`,
+`iam-change-forbidden-v1`). See the module docstring for the exact identity-
+matching strategy and the full C4 worker contract.
+
+The CLI form is:
+
+```bash
+python -m tools.iac_plan_denylist <plan.json>
+```
+
+Exit codes: `0` = pass, `1` = violations (incl. unparseable plan), `2` =
+usage / I/O error. Output is ASCII-only.
+
+**v1 floor.** The rule set is intentionally over-inclusive: hard-deny *all*
+IAM changes and *all* `delete`/`forget`/replace actions, even on unrelated
+resources. A positive allowlist is a later-phase decision; the false-positive
+trade-off is accepted to keep the gate defensible until the C3 human-approval
+flow lands.
+
+> **C1 is library + CLI + tests only.** No CI wiring (C2 builds the trusted
+> plan-builder workflow that produces the `plan.json`), no apply worker (C4),
+> no HMAC schema (C3/C5).

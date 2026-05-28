@@ -1,0 +1,5 @@
+{
+  "_test_intent": "top-level object lacks resource_changes; must emit plan-json-missing-resource-changes",
+  "format_version": "1.2",
+  "terraform_version": "1.12.0"
+}

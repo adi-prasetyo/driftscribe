@@ -1,0 +1,17 @@
+{
+  "_test_intent": "update of an unrelated Cloud Run v2 service (payment-demo, not control plane); must pass",
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "google_cloud_run_v2_service.payment_demo",
+      "mode": "managed",
+      "type": "google_cloud_run_v2_service",
+      "name": "payment_demo",
+      "change": {
+        "actions": ["update"],
+        "before": {"name": "payment-demo"},
+        "after": {"name": "payment-demo"}
+      }
+    }
+  ]
+}

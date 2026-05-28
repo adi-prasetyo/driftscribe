@@ -1,0 +1,17 @@
+{
+  "_test_intent": "delete of the coordinator SA — must dual+triple-emit control-plane-sa AND iam-change-forbidden-v1 AND delete-action-forbidden-v1; identity is in before only",
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "google_service_account.coordinator",
+      "mode": "managed",
+      "type": "google_service_account",
+      "name": "coordinator",
+      "change": {
+        "actions": ["delete"],
+        "before": {"account_id": "driftscribe-agent"},
+        "after": null
+      }
+    }
+  ]
+}

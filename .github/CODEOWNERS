@@ -6,5 +6,6 @@
 /iac/imports.tf             @adi-prasetyo
 /iac/.terraform.lock.hcl    @adi-prasetyo
 /tools/iac_static_gate.py   @adi-prasetyo
+/tools/iac_plan_denylist.py @adi-prasetyo
 /.github/                   @adi-prasetyo
 /infra/scripts/             @adi-prasetyo

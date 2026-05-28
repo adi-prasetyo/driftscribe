@@ -1,0 +1,20 @@
+{
+  "_test_intent": "create of a bucket OBJECT inside the -tofu-state bucket — must emit control-plane-bucket (writing into a protected bucket is a control-plane mutation)",
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "google_storage_bucket_object.injected",
+      "mode": "managed",
+      "type": "google_storage_bucket_object",
+      "name": "injected",
+      "change": {
+        "actions": ["create"],
+        "before": null,
+        "after": {
+          "bucket": "driftscribe-hack-2026-tofu-state",
+          "name": "injected.tfstate"
+        }
+      }
+    }
+  ]
+}

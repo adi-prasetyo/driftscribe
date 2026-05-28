@@ -1,0 +1,5 @@
+{
+  "_test_intent": "resource_changes is an object, not a list; must emit plan-json-missing-resource-changes",
+  "format_version": "1.2",
+  "resource_changes": {"oops": "not a list"}
+}

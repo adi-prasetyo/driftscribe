@@ -1,0 +1,17 @@
+{
+  "_test_intent": "update of the Phase B infra-reader Cloud Run service — must emit control-plane-service",
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "google_cloud_run_v2_service.infra_reader",
+      "mode": "managed",
+      "type": "google_cloud_run_v2_service",
+      "name": "infra_reader",
+      "change": {
+        "actions": ["update"],
+        "before": {"name": "driftscribe-infra-reader"},
+        "after": {"name": "driftscribe-infra-reader"}
+      }
+    }
+  ]
+}

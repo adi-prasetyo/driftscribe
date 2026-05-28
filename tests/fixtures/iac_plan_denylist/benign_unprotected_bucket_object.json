@@ -1,0 +1,17 @@
+{
+  "_test_intent": "create of an OBJECT in a non-control-plane bucket (payment-demo-uploads) — must pass",
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "google_storage_bucket_object.flag",
+      "mode": "managed",
+      "type": "google_storage_bucket_object",
+      "name": "flag",
+      "change": {
+        "actions": ["create"],
+        "before": null,
+        "after": {"bucket": "payment-demo-uploads", "name": "flag.txt"}
+      }
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "_test_intent": "create of a google_project_iam_binding — must emit iam-change-forbidden-v1",
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "google_project_iam_binding.viewer",
+      "mode": "managed",
+      "type": "google_project_iam_binding",
+      "name": "viewer",
+      "change": {
+        "actions": ["create"],
+        "before": null,
+        "after": {
+          "project": "driftscribe-hack-2026",
+          "role": "roles/viewer",
+          "members": ["user:someone@example.com"]
+        }
+      }
+    }
+  ]
+}
