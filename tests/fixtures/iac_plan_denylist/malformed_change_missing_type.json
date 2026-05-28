@@ -1,0 +1,15 @@
+{
+  "_test_intent": "resource_changes entry lacks type field; must emit plan-json-malformed-change",
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "google_storage_bucket.x",
+      "name": "x",
+      "change": {
+        "actions": ["update"],
+        "before": {"name": "demo"},
+        "after": {"name": "demo"}
+      }
+    }
+  ]
+}

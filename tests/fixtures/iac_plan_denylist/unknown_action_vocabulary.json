@@ -1,0 +1,16 @@
+{
+  "_test_intent": "actions tuple is not in OpenTofu's documented vocabulary; must emit unknown-action-forbidden-v1",
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "google_storage_bucket.x",
+      "type": "google_storage_bucket",
+      "name": "x",
+      "change": {
+        "actions": ["yeet"],
+        "before": null,
+        "after": {"name": "demo-uploads"}
+      }
+    }
+  ]
+}

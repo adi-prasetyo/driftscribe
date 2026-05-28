@@ -83,3 +83,26 @@ def test_entry_or_change_not_dict_is_malformed(fixture):
     parsed, _ = load_plan_json(_load(fixture))
     assert parsed is not None
     assert "plan-json-malformed-change" in _rules(evaluate(DenylistInput(plan=parsed)))
+
+
+# --- Task 4: malformed-change (missing type/actions/non-string) + unknown-action ---
+
+
+@pytest.mark.parametrize("fixture", [
+    "malformed_change_missing_actions.json",
+    "malformed_change_missing_type.json",
+    "actions_not_all_strings.json",
+])
+def test_malformed_type_or_actions_emits_malformed_change(fixture):
+    parsed, _ = load_plan_json(_load(fixture))
+    assert parsed is not None
+    assert "plan-json-malformed-change" in _rules(evaluate(DenylistInput(plan=parsed)))
+
+
+def test_unknown_action_vocabulary_is_denied():
+    parsed, _ = load_plan_json(_load("unknown_action_vocabulary.json"))
+    assert parsed is not None
+    rules = _rules(evaluate(DenylistInput(plan=parsed)))
+    assert "unknown-action-forbidden-v1" in rules
+    # The structural rules MUST NOT fire — the plan is well-formed, just unknown.
+    assert "plan-json-malformed-change" not in rules
