@@ -17,7 +17,9 @@ share. Per-resource identity rules land in subsequent tasks.
 """
 from __future__ import annotations
 
+import argparse
 import json
+import sys
 from dataclasses import dataclass
 
 
@@ -566,7 +568,7 @@ def _check_iam(
             Violation(
                 "iam-change-forbidden-v1",
                 f"{rc.get('address', '<unknown>')}: IAM {rtype!r} "
-                f"(actions={list(actions)}) — v1 hard-deny",
+                f"(actions={list(actions)}) - v1 hard-deny",
             )
         )
 
@@ -647,3 +649,60 @@ def evaluate(di: DenylistInput) -> list[Violation]:
             _check_wif(rc, rtype, actions, violations)
             _check_iam(rc, rtype, actions, violations)
     return violations
+
+
+# ---------------------------------------------------------------------------
+# CLI wrapper. Exit-code contract: 0 = pass, 1 = violations (incl. parse
+# failure), 2 = usage / I/O error. ASCII-only output by design — the C4 apply
+# worker will scrape stderr for rule ids, and embedded em-dashes would corrupt
+# downstream regex matching in a future structured-output mode.
+# ---------------------------------------------------------------------------
+
+
+def _main(argv: list[str]) -> int:
+    """CLI entrypoint: read a plan.json file, evaluate, print, exit.
+
+    Returns 0 (pass), 1 (violations), or 2 (usage / I/O error). The
+    library functions never raise on policy concerns — both
+    ``load_plan_json`` and ``evaluate`` return :class:`Violation`
+    records, which the CLI flattens to "DENY [rule] detail" lines on
+    stderr.
+    """
+    if not argv:
+        print("usage: python -m tools.iac_plan_denylist <plan.json>", file=sys.stderr)
+        return 2
+    parser = argparse.ArgumentParser(
+        prog="python -m tools.iac_plan_denylist",
+        description=(
+            "Self-protection denylist for OpenTofu plan.json (design doc 5.2). "
+            "Exits 0 on pass, 1 on violations, 2 on usage/IO error."
+        ),
+    )
+    parser.add_argument("plan_json", help="Path to plan.json")
+    ns = parser.parse_args(argv)
+    try:
+        with open(ns.plan_json, encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError as e:
+        print(f"error: cannot read {ns.plan_json}: {e}", file=sys.stderr)
+        return 2
+    parsed, parse_violation = load_plan_json(text)
+    if parsed is None:
+        assert parse_violation is not None  # narrowing for type checkers
+        print(f"DENY [{parse_violation.rule}] {parse_violation.detail}", file=sys.stderr)
+        return 1
+    violations = evaluate(DenylistInput(plan=parsed))
+    if not violations:
+        print(f"OK: {ns.plan_json} - 0 violations")
+        return 0
+    for v in violations:
+        print(f"DENY [{v.rule}] {v.detail}", file=sys.stderr)
+    print(
+        f"FAIL: {ns.plan_json} - {len(violations)} violation(s)",
+        file=sys.stderr,
+    )
+    return 1
+
+
+if __name__ == "__main__":  # pragma: no cover (covered by CLI subprocess tests)
+    sys.exit(_main(sys.argv[1:]))
