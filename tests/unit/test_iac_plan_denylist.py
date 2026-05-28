@@ -166,3 +166,20 @@ def test_control_plane_service_delete_via_before_emits_both_rules():
     parsed, _ = load_plan_json(_load("control_plane_cloudrun_delete_via_before.json"))
     rules = set(_rules(evaluate(DenylistInput(plan=parsed))))
     assert {"control-plane-service", "delete-action-forbidden-v1"} <= rules
+
+
+# --- Task 6b: control-plane SA rule (account_id + email-local-part) ---
+
+
+def test_control_plane_sa_update_by_account_id_is_denied():
+    parsed, _ = load_plan_json(_load("control_plane_sa_update_account_id.json"))
+    assert "control-plane-sa" in _rules(evaluate(DenylistInput(plan=parsed)))
+
+
+def test_control_plane_sa_update_by_email_local_part_is_denied():
+    """When account_id is absent but email is present, the local-part
+    extraction must still identify the SA (rollback-agent-sa from
+    rollback-agent-sa@<proj>.iam.gserviceaccount.com).
+    """
+    parsed, _ = load_plan_json(_load("control_plane_sa_update_email_only.json"))
+    assert "control-plane-sa" in _rules(evaluate(DenylistInput(plan=parsed)))

@@ -1,0 +1,17 @@
+{
+  "_test_intent": "update of google_service_account where account_id is absent but email is present — local-part extraction must still match rollback-agent-sa",
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "google_service_account.rollback",
+      "mode": "managed",
+      "type": "google_service_account",
+      "name": "rollback",
+      "change": {
+        "actions": ["update"],
+        "before": {"email": "rollback-agent-sa@driftscribe-hack-2026.iam.gserviceaccount.com"},
+        "after":  {"email": "rollback-agent-sa@driftscribe-hack-2026.iam.gserviceaccount.com"}
+      }
+    }
+  ]
+}

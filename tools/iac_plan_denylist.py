@@ -94,6 +94,27 @@ CONTROL_PLANE_SERVICE_NAMES: frozenset[str] = frozenset({
     "driftscribe-plan-builder",
 })
 
+# google_service_account account_ids (or the local part of `email` when
+# account_id is absent — `<aid>@<proj>.iam.gserviceaccount.com`). A SA whose
+# google_service_account RC matches one of these emits BOTH `control-plane-sa`
+# AND `iam-change-forbidden-v1` — intentional defense in depth: if a later
+# phase relaxes the blanket IAM rule, the control-plane-sa rule remains.
+CONTROL_PLANE_SA_ACCOUNT_IDS: frozenset[str] = frozenset({
+    "driftscribe-agent",        # coordinator SA
+    "reader-agent-sa",
+    "docs-agent-sa",
+    "rollback-agent-sa",
+    "notifier-agent-sa",
+    "upgrade-reader-sa",
+    "upgrade-docs-sa",
+    "infra-reader-sa",          # Phase B
+    "tofu-plan-builder",        # Phase A WIF CI SA
+    "eventarc-trigger-sa",
+    # Forward-compat:
+    "tofu-apply-sa",
+    "tofu-editor-sa",
+})
+
 
 def load_plan_json(text: str) -> tuple[dict | None, Violation | None]:
     """Parse a plan.json document.
@@ -208,6 +229,65 @@ def _check_control_plane_service(
         )
 
 
+def _sa_account_id(identity: dict) -> str | None:
+    """Extract a SA's account_id from a before/after dict.
+
+    Prefers the explicit ``account_id`` field; falls back to the local
+    part of ``email`` (everything before ``@``) when ``account_id`` is
+    absent — Codex Blocker #2 / Important #1: real plan.json sometimes
+    carries only ``email`` after the SA is fully realized.
+    """
+    if not isinstance(identity, dict):
+        return None
+    aid = identity.get("account_id")
+    if isinstance(aid, str):
+        return aid
+    email = identity.get("email")
+    if isinstance(email, str) and "@" in email:
+        return email.split("@", 1)[0]
+    return None
+
+
+def _check_control_plane_sa(
+    rc: dict,
+    rtype: str,
+    actions: tuple[str, ...],
+    before: dict,
+    after: dict,
+    violations: list[Violation],
+) -> None:
+    """Emit control-plane-sa if RC targets a protected service account.
+
+    Matches on EITHER ``before`` or ``after`` identity (rename-away
+    coverage, same as the service rule). If a google_service_account RC
+    carries no account_id/email in either direction, defensive
+    plan-json-malformed-change.
+
+    NB: this rule fires alongside ``iam-change-forbidden-v1`` (added in
+    Task 7) because google_service_account is also an IAM-identity type.
+    """
+    if rtype != "google_service_account":
+        return
+    bid = _sa_account_id(before)
+    aid = _sa_account_id(after)
+    if bid is None and aid is None:
+        violations.append(
+            Violation(
+                "plan-json-malformed-change",
+                f"{rc.get('address', '<unknown>')}: google_service_account has no account_id/email",
+            )
+        )
+        return
+    if (bid in CONTROL_PLANE_SA_ACCOUNT_IDS) or (aid in CONTROL_PLANE_SA_ACCOUNT_IDS):
+        violations.append(
+            Violation(
+                "control-plane-sa",
+                f"{rc.get('address', '<unknown>')}: SA "
+                f"{(aid or bid)!r} is control plane (actions={list(actions)})",
+            )
+        )
+
+
 def evaluate(di: DenylistInput) -> list[Violation]:
     """Return all violations (empty list = pass).
 
@@ -277,4 +357,5 @@ def evaluate(di: DenylistInput) -> list[Violation]:
         if _is_mutation(actions):
             before, after = _identity_dicts(rc)
             _check_control_plane_service(rc, rtype, actions, before, after, violations)
+            _check_control_plane_sa(rc, rtype, actions, before, after, violations)
     return violations
