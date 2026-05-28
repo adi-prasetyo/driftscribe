@@ -7,5 +7,8 @@
 /iac/.terraform.lock.hcl    @adi-prasetyo
 /tools/iac_static_gate.py   @adi-prasetyo
 /tools/iac_plan_denylist.py @adi-prasetyo
+/tools/iac_plan_metadata.py        @adi-prasetyo
+/tools/iac_plan_diff_summary.py    @adi-prasetyo
+/tools/iac_plan_artifact_upload.py @adi-prasetyo
 /.github/                   @adi-prasetyo
 /infra/scripts/             @adi-prasetyo
