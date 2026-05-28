@@ -1,0 +1,21 @@
+{
+  "_test_intent": "create of a google_cloud_run_v2_service_iam_member (run.invoker grant) — must emit iam-change-forbidden-v1",
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "google_cloud_run_v2_service_iam_member.agent_invoker",
+      "mode": "managed",
+      "type": "google_cloud_run_v2_service_iam_member",
+      "name": "agent_invoker",
+      "change": {
+        "actions": ["create"],
+        "before": null,
+        "after": {
+          "name": "driftscribe-agent",
+          "role": "roles/run.invoker",
+          "member": "serviceAccount:notifier-agent-sa@driftscribe-hack-2026.iam.gserviceaccount.com"
+        }
+      }
+    }
+  ]
+}

@@ -143,6 +143,27 @@ CONTROL_PLANE_SECRET_IDS: frozenset[str] = frozenset({
 CONTROL_PLANE_KMS_KEY_NAMES: frozenset[str] = frozenset({"tofu-state"})
 CONTROL_PLANE_KMS_KEYRING_NAMES: frozenset[str] = frozenset({"driftscribe-tofu"})
 
+# WIF resource types — explicit set used by both the WIF rule (single-emit)
+# AND the IAM rule (dual-emit). Listed once and reused so the two rule
+# definitions never drift apart.
+WIF_RESOURCE_TYPES: frozenset[str] = frozenset({
+    "google_iam_workload_identity_pool",
+    "google_iam_workload_identity_pool_provider",
+})
+
+# IAM-identity resource types that do NOT carry `_iam_` in their name and so
+# wouldn't be caught by the substring rule. Per Codex Blocker #4 the general
+# rule is "starts with google_ AND contains _iam_" (covers project_iam_binding,
+# storage_bucket_iam_member, run_v2_service_iam_member, folder_iam_binding,
+# kms_*_iam_*, etc.) PLUS this explicit extras set.
+IAM_EXTRA_TYPES: frozenset[str] = frozenset({
+    "google_service_account",
+    "google_service_account_key",
+    "google_project_iam_audit_config",
+    "google_project_iam_custom_role",
+    "google_organization_iam_custom_role",
+}) | WIF_RESOURCE_TYPES
+
 
 def load_plan_json(text: str) -> tuple[dict | None, Violation | None]:
     """Parse a plan.json document.
@@ -494,6 +515,62 @@ def _check_control_plane_kms(
         )
 
 
+def _is_iam_type(rtype: str) -> bool:
+    """True iff ``rtype`` is an IAM-related resource type under v1 policy.
+
+    The rule is intentionally over-inclusive (Codex Blocker #4): the
+    substring check catches every ``google_<x>_iam_<member|binding|policy>``
+    shape across project, service_account, storage_bucket, kms_*, secret,
+    run_v2_service, pubsub_topic, folder, organization, etc., and the
+    explicit IAM_EXTRA_TYPES set catches identity-side types that lack the
+    ``_iam_`` substring (google_service_account, IAM custom roles, WIF).
+    """
+    if rtype in IAM_EXTRA_TYPES:
+        return True
+    return rtype.startswith("google_") and "_iam_" in rtype
+
+
+def _check_wif(
+    rc: dict,
+    rtype: str,
+    actions: tuple[str, ...],
+    violations: list[Violation],
+) -> None:
+    """Emit wif-config-change for WIF pool / provider resources."""
+    if rtype in WIF_RESOURCE_TYPES:
+        violations.append(
+            Violation(
+                "wif-config-change",
+                f"{rc.get('address', '<unknown>')}: WIF {rtype!r} "
+                f"(actions={list(actions)})",
+            )
+        )
+
+
+def _check_iam(
+    rc: dict,
+    rtype: str,
+    actions: tuple[str, ...],
+    violations: list[Violation],
+) -> None:
+    """Emit iam-change-forbidden-v1 for ANY IAM-related resource type.
+
+    This rule is the v1 floor — every IAM change is denied even on
+    unrelated resources. A positive IAM allowlist is a later-phase
+    decision (design §5.2). Intentional defense-in-depth: WIF and
+    google_service_account types ALSO trip more specific rules; if a
+    later phase relaxes this blanket rule, those specific rules remain.
+    """
+    if _is_iam_type(rtype):
+        violations.append(
+            Violation(
+                "iam-change-forbidden-v1",
+                f"{rc.get('address', '<unknown>')}: IAM {rtype!r} "
+                f"(actions={list(actions)}) — v1 hard-deny",
+            )
+        )
+
+
 def evaluate(di: DenylistInput) -> list[Violation]:
     """Return all violations (empty list = pass).
 
@@ -567,4 +644,6 @@ def evaluate(di: DenylistInput) -> list[Violation]:
             _check_control_plane_bucket(rc, rtype, actions, before, after, violations)
             _check_control_plane_secret(rc, rtype, actions, before, after, violations)
             _check_control_plane_kms(rc, rtype, actions, before, after, violations)
+            _check_wif(rc, rtype, actions, violations)
+            _check_iam(rc, rtype, actions, violations)
     return violations

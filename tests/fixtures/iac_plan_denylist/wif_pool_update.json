@@ -1,0 +1,17 @@
+{
+  "_test_intent": "update of a google_iam_workload_identity_pool — must emit wif-config-change AND iam-change-forbidden-v1 (dual-emit)",
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "google_iam_workload_identity_pool.github",
+      "mode": "managed",
+      "type": "google_iam_workload_identity_pool",
+      "name": "github",
+      "change": {
+        "actions": ["update"],
+        "before": {"workload_identity_pool_id": "github-actions"},
+        "after": {"workload_identity_pool_id": "github-actions", "display_name": "GitHub Actions OIDC"}
+      }
+    }
+  ]
+}

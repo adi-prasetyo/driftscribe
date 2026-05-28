@@ -242,3 +242,35 @@ def test_secret_version_with_unparseable_path_is_malformed():
     """
     parsed, _ = load_plan_json(_load("malformed_protected_secret_version_no_path.json"))
     assert "plan-json-malformed-change" in _rules(evaluate(DenylistInput(plan=parsed)))
+
+
+# --- Task 7: WIF + IAM hard-deny rules ---
+
+
+@pytest.mark.parametrize("fixture", [
+    "wif_pool_update.json",
+    "wif_provider_create.json",
+])
+def test_wif_change_emits_both_wif_and_iam_rules(fixture):
+    """WIF pool/provider changes must dual-emit `wif-config-change` AND
+    `iam-change-forbidden-v1` (Codex Blocker #4 — WIF types are IAM
+    identities under the general v1 hard-deny).
+    """
+    parsed, _ = load_plan_json(_load(fixture))
+    rules = set(_rules(evaluate(DenylistInput(plan=parsed))))
+    assert {"wif-config-change", "iam-change-forbidden-v1"} <= rules, fixture
+
+
+@pytest.mark.parametrize("fixture", [
+    "iam_project_binding_create.json",
+    "iam_storage_binding_update.json",
+    "iam_run_invoker_grant.json",
+    "iam_folder_binding_create.json",
+])
+def test_any_iam_resource_change_is_denied_in_v1(fixture):
+    """All four fixtures cover the `_iam_` substring rule (project_iam_binding,
+    storage_bucket_iam_member, cloud_run_v2_service_iam_member,
+    folder_iam_binding). The v1 floor hard-denies every IAM resource type.
+    """
+    parsed, _ = load_plan_json(_load(fixture))
+    assert "iam-change-forbidden-v1" in _rules(evaluate(DenylistInput(plan=parsed))), fixture
