@@ -115,6 +115,12 @@ CONTROL_PLANE_SA_ACCOUNT_IDS: frozenset[str] = frozenset({
     "tofu-editor-sa",
 })
 
+# A bucket whose name ends with either suffix is the OpenTofu state bucket or
+# the plan-artifact bucket: any mutation to it (or to an OBJECT inside it —
+# Codex Blocker #5) redirects the IaC backend or smuggles a payload into the
+# trusted artifact store, so both must be denied even on a green PR.
+CONTROL_PLANE_BUCKET_SUFFIXES: tuple[str, ...] = ("-tofu-state", "-tofu-artifacts")
+
 
 def load_plan_json(text: str) -> tuple[dict | None, Violation | None]:
     """Parse a plan.json document.
@@ -288,6 +294,68 @@ def _check_control_plane_sa(
         )
 
 
+def _is_protected_bucket_name(name: object) -> bool:
+    """True iff ``name`` is a string ending with a control-plane bucket suffix."""
+    return isinstance(name, str) and any(
+        name.endswith(s) for s in CONTROL_PLANE_BUCKET_SUFFIXES
+    )
+
+
+def _check_control_plane_bucket(
+    rc: dict,
+    rtype: str,
+    actions: tuple[str, ...],
+    before: dict,
+    after: dict,
+    violations: list[Violation],
+) -> None:
+    """Emit control-plane-bucket on a non-no-op change to a protected bucket
+    OR to an OBJECT inside a protected bucket.
+
+    Writing an object INTO the -tofu-state bucket is functionally a state
+    mutation; writing one INTO the -tofu-artifacts bucket smuggles into the
+    trusted artifact store the plan-builder reads. Both are denied.
+    """
+    if rtype == "google_storage_bucket":
+        before_name = before.get("name")
+        after_name = after.get("name")
+        if not isinstance(before_name, str) and not isinstance(after_name, str):
+            violations.append(
+                Violation(
+                    "plan-json-malformed-change",
+                    f"{rc.get('address', '<unknown>')}: google_storage_bucket has no name",
+                )
+            )
+            return
+        if _is_protected_bucket_name(before_name) or _is_protected_bucket_name(after_name):
+            violations.append(
+                Violation(
+                    "control-plane-bucket",
+                    f"{rc.get('address', '<unknown>')}: protected bucket "
+                    f"{(after_name or before_name)!r} (actions={list(actions)})",
+                )
+            )
+    elif rtype == "google_storage_bucket_object":
+        before_bucket = before.get("bucket")
+        after_bucket = after.get("bucket")
+        if not isinstance(before_bucket, str) and not isinstance(after_bucket, str):
+            violations.append(
+                Violation(
+                    "plan-json-malformed-change",
+                    f"{rc.get('address', '<unknown>')}: google_storage_bucket_object has no bucket",
+                )
+            )
+            return
+        if _is_protected_bucket_name(before_bucket) or _is_protected_bucket_name(after_bucket):
+            violations.append(
+                Violation(
+                    "control-plane-bucket",
+                    f"{rc.get('address', '<unknown>')}: object in protected bucket "
+                    f"{(after_bucket or before_bucket)!r} (actions={list(actions)})",
+                )
+            )
+
+
 def evaluate(di: DenylistInput) -> list[Violation]:
     """Return all violations (empty list = pass).
 
@@ -358,4 +426,5 @@ def evaluate(di: DenylistInput) -> list[Violation]:
             before, after = _identity_dicts(rc)
             _check_control_plane_service(rc, rtype, actions, before, after, violations)
             _check_control_plane_sa(rc, rtype, actions, before, after, violations)
+            _check_control_plane_bucket(rc, rtype, actions, before, after, violations)
     return violations

@@ -1,0 +1,23 @@
+{
+  "_test_intent": "update of a bucket OBJECT inside the -tofu-artifacts bucket — must emit control-plane-bucket",
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "google_storage_bucket_object.plan_artifact",
+      "mode": "managed",
+      "type": "google_storage_bucket_object",
+      "name": "plan_artifact",
+      "change": {
+        "actions": ["update"],
+        "before": {
+          "bucket": "driftscribe-hack-2026-tofu-artifacts",
+          "name": "plans/2026-05-28.tfplan"
+        },
+        "after": {
+          "bucket": "driftscribe-hack-2026-tofu-artifacts",
+          "name": "plans/2026-05-28.tfplan"
+        }
+      }
+    }
+  ]
+}

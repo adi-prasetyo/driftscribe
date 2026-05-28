@@ -1,0 +1,17 @@
+{
+  "_test_intent": "update of the -tofu-state bucket — must emit control-plane-bucket",
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "google_storage_bucket.tofu_state",
+      "mode": "managed",
+      "type": "google_storage_bucket",
+      "name": "tofu_state",
+      "change": {
+        "actions": ["update"],
+        "before": {"name": "driftscribe-hack-2026-tofu-state"},
+        "after": {"name": "driftscribe-hack-2026-tofu-state"}
+      }
+    }
+  ]
+}

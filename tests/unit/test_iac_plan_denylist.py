@@ -183,3 +183,22 @@ def test_control_plane_sa_update_by_email_local_part_is_denied():
     """
     parsed, _ = load_plan_json(_load("control_plane_sa_update_email_only.json"))
     assert "control-plane-sa" in _rules(evaluate(DenylistInput(plan=parsed)))
+
+
+# --- Task 6c: control-plane bucket + bucket-object rules ---
+
+
+@pytest.mark.parametrize("fixture", [
+    "control_plane_state_bucket_update.json",
+    "control_plane_artifact_bucket_create.json",
+    "control_plane_state_bucket_object_create.json",
+    "control_plane_artifact_bucket_object_update.json",
+])
+def test_control_plane_bucket_or_object_change_is_denied(fixture):
+    parsed, _ = load_plan_json(_load(fixture))
+    assert "control-plane-bucket" in _rules(evaluate(DenylistInput(plan=parsed))), fixture
+
+
+def test_unprotected_bucket_object_passes():
+    parsed, _ = load_plan_json(_load("benign_unprotected_bucket_object.json"))
+    assert evaluate(DenylistInput(plan=parsed)) == []
