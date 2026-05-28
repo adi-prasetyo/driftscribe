@@ -1,0 +1,15 @@
+{
+  "_test_intent": "change object lacks actions; must emit plan-json-malformed-change",
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "google_storage_bucket.x",
+      "type": "google_storage_bucket",
+      "name": "x",
+      "change": {
+        "before": null,
+        "after": {"name": "demo-uploads"}
+      }
+    }
+  ]
+}

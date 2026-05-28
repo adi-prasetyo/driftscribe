@@ -1,0 +1,20 @@
+{
+  "_test_intent": "create of a google_iam_workload_identity_pool_provider — must emit wif-config-change AND iam-change-forbidden-v1",
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "google_iam_workload_identity_pool_provider.github",
+      "mode": "managed",
+      "type": "google_iam_workload_identity_pool_provider",
+      "name": "github",
+      "change": {
+        "actions": ["create"],
+        "before": null,
+        "after": {
+          "workload_identity_pool_provider_id": "github-actions",
+          "issuer_uri": "https://token.actions.githubusercontent.com"
+        }
+      }
+    }
+  ]
+}

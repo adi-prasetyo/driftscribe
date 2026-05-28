@@ -1,0 +1,21 @@
+{
+  "_test_intent": "create of a google_folder_iam_binding (substring _iam_ catches this even though no codebase example exists) — must emit iam-change-forbidden-v1",
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "google_folder_iam_binding.viewer",
+      "mode": "managed",
+      "type": "google_folder_iam_binding",
+      "name": "viewer",
+      "change": {
+        "actions": ["create"],
+        "before": null,
+        "after": {
+          "folder": "folders/12345",
+          "role": "roles/viewer",
+          "members": ["user:someone@example.com"]
+        }
+      }
+    }
+  ]
+}

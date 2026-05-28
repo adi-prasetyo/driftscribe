@@ -1,0 +1,17 @@
+{
+  "_test_intent": "update of google_service_account by account_id=reader-agent-sa — must emit control-plane-sa AND iam-change-forbidden-v1",
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "google_service_account.reader",
+      "mode": "managed",
+      "type": "google_service_account",
+      "name": "reader",
+      "change": {
+        "actions": ["update"],
+        "before": {"account_id": "reader-agent-sa"},
+        "after": {"account_id": "reader-agent-sa", "display_name": "Drift Reader"}
+      }
+    }
+  ]
+}

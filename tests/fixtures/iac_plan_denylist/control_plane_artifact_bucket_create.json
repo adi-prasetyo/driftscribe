@@ -1,0 +1,17 @@
+{
+  "_test_intent": "create of the -tofu-artifacts bucket — must emit control-plane-bucket",
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "google_storage_bucket.tofu_artifacts",
+      "mode": "managed",
+      "type": "google_storage_bucket",
+      "name": "tofu_artifacts",
+      "change": {
+        "actions": ["create"],
+        "before": null,
+        "after": {"name": "driftscribe-hack-2026-tofu-artifacts"}
+      }
+    }
+  ]
+}

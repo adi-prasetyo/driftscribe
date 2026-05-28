@@ -1,0 +1,17 @@
+{
+  "_test_intent": "update on the legacy google_cloud_run_service (v1) resource type targeting driftscribe-agent — must emit control-plane-service",
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "google_cloud_run_service.legacy_agent",
+      "mode": "managed",
+      "type": "google_cloud_run_service",
+      "name": "legacy_agent",
+      "change": {
+        "actions": ["update"],
+        "before": {"name": "driftscribe-agent"},
+        "after": {"name": "driftscribe-agent"}
+      }
+    }
+  ]
+}

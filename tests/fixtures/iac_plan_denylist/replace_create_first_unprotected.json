@@ -1,0 +1,17 @@
+{
+  "_test_intent": "create-before-destroy replace of an unrelated resource — hard-deny in v1",
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "google_storage_bucket_object.flag2",
+      "mode": "managed",
+      "type": "google_storage_bucket_object",
+      "name": "flag2",
+      "change": {
+        "actions": ["create", "delete"],
+        "before": {"bucket": "payment-demo-uploads", "name": "flag2.txt"},
+        "after": {"bucket": "payment-demo-uploads", "name": "flag2.txt"}
+      }
+    }
+  ]
+}
