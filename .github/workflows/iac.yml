@@ -137,3 +137,139 @@ jobs:
 
       - name: tofu validate
         run: tofu -chdir=iac validate
+
+  plan-builder:
+    # Two-layer gate: event AND ref must both pass. The WIF attribute
+    # condition (bootstrap-provisioned) ALSO requires ref==refs/heads/main
+    # for workflow_dispatch — this `if:` is the workflow-side belt-and-
+    # suspenders. Either layer alone closes the "dispatch from feature
+    # branch to exfiltrate creds" attack; both layers together keep the
+    # WIF token from ever being requested if the ref isn't main.
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # WIF needs id-token: write; diff comment needs pull-requests: write.
+    # contents: read inherits from the workflow floor. NEVER write contents
+    # or expand permissions — this job runs against live state.
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    # One plan-builder per PR at a time; do NOT cancel-in-progress (a
+    # cancelled mid-upload could leave a partial artifact in the bucket).
+    concurrency:
+      group: iac-plan-builder-pr-${{ inputs.pr_number }}
+      cancel-in-progress: false
+    steps:
+      - name: Validate PR number is a positive integer
+        env:
+          PR_RAW: ${{ inputs.pr_number }}
+        run: |
+          if ! printf '%s' "$PR_RAW" | grep -Eq '^[1-9][0-9]{0,9}$'; then
+            echo "::error::pr_number must be a positive integer (got $PR_RAW)"
+            exit 1
+          fi
+          echo "PR_NUMBER=$PR_RAW" >> "$GITHUB_ENV"
+
+      - name: Resolve PR head/base SHAs + refuse fork/non-main-base
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Pull PR metadata. baseRefOid is the SHA the PR is mergeable INTO at
+          # this moment; headRefOid is the PR head. Both are 40-hex.
+          PR_JSON=$(gh pr view "$PR_NUMBER" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --json headRefOid,baseRefOid,baseRefName,headRefName,state,isCrossRepository)
+          STATE=$(printf '%s' "$PR_JSON" | jq -r .state)
+          CROSS=$(printf '%s' "$PR_JSON" | jq -r .isCrossRepository)
+          BASE_REF=$(printf '%s' "$PR_JSON" | jq -r .baseRefName)
+          if [ "$STATE" != "OPEN" ]; then
+            echo "::error::PR #$PR_NUMBER is not OPEN (state=$STATE) — refusing to plan"
+            exit 1
+          fi
+          if [ "$CROSS" != "false" ]; then
+            echo "::error::PR #$PR_NUMBER isCrossRepository=$CROSS (not literal 'false') — refusing to plan (design §11.8 forbids fork-PR auth)"
+            exit 1
+          fi
+          if [ "$BASE_REF" != "main" ]; then
+            echo "::error::PR #$PR_NUMBER base is $BASE_REF, not main — refusing to plan (artifact metadata.repo invariants assume base=main)"
+            exit 1
+          fi
+          HEAD_SHA=$(printf '%s' "$PR_JSON" | jq -r .headRefOid)
+          BASE_SHA=$(printf '%s' "$PR_JSON" | jq -r .baseRefOid)
+          HEAD_REF=$(printf '%s' "$PR_JSON" | jq -r .headRefName)
+          printf '%s' "$HEAD_SHA" | grep -Eq '^[0-9a-f]{40}$' || { echo "::error::headRefOid is not 40-hex"; exit 1; }
+          printf '%s' "$BASE_SHA" | grep -Eq '^[0-9a-f]{40}$' || { echo "::error::baseRefOid is not 40-hex"; exit 1; }
+          echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
+          echo "BASE_SHA=$BASE_SHA" >> "$GITHUB_ENV"
+          echo "BASE_REF=$BASE_REF" >> "$GITHUB_ENV"
+          echo "HEAD_REF=$HEAD_REF" >> "$GITHUB_ENV"
+          echo "Resolved PR #$PR_NUMBER: head $HEAD_SHA ($HEAD_REF), base $BASE_SHA ($BASE_REF)"
+
+      - name: Checkout the PR head SHA (pinned)
+        # We pin to HEAD_SHA resolved server-side. If a force-push happened
+        # between resolution and now, the pinned SHA may have been deleted
+        # from the branch tip but git still serves it (refs are mutable,
+        # commits are immutable). The diff-guard below runs against THIS
+        # exact pair (BASE_SHA, HEAD_SHA), not against whatever the PR
+        # currently points at — closing the TOCTOU Codex flagged.
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ env.HEAD_SHA }}
+          fetch-depth: 0
+
+      - name: Fetch the base SHA so git can resolve it locally
+        run: |
+          set -euo pipefail
+          # checkout@v4 with fetch-depth=0 fetches the default branch tip and
+          # the ref, but not necessarily ALL named branches. Force-fetch the
+          # base SHA so `git diff $BASE_SHA $HEAD_SHA` resolves locally.
+          git fetch --no-tags origin "$BASE_SHA" || true
+          git rev-parse --verify "$BASE_SHA" >/dev/null
+          git rev-parse --verify "$HEAD_SHA" >/dev/null
+
+      - name: PR-touches-only-iac diff-guard (PURE GIT, against pinned SHA pair)
+        # CRITICAL: this MUST come before `uv sync` or any Python invocation,
+        # because once PR-controlled code runs we cannot trust its output.
+        # We use `git diff --name-only $BASE_SHA $HEAD_SHA` — both SHAs are
+        # immutable git objects we just fetched; no API call that could
+        # observe a later force-push (closes Codex rev-2 blocker on the
+        # server-side /files endpoint TOCTOU). If any changed path is
+        # outside iac/, refuse to plan. After this passes, the checked-out
+        # tools/, tests/, uv.lock, pyproject.toml etc. are byte-identical
+        # to main (the PR did not touch them), so the trusted Python
+        # helpers running after WIF auth are NOT PR-controlled.
+        #
+        # Implementation: pure shell + git only (no jq, no curl, no Python).
+        #
+        # `--no-renames`: forces git to report renames as add+delete pairs.
+        # Without it, a file renamed FROM `tools/x.py` TO `iac/x.py` would
+        # only surface as `iac/x.py` and slip past this guard. With it, the
+        # original `tools/x.py` is reported as deleted — failing the guard.
+        # `-z`: NUL-delimited records so filenames with newlines/quotes
+        # cannot break the loop.
+        run: |
+          set -euo pipefail
+          BAD=""
+          ANY=0
+          while IFS= read -r -d '' path; do
+            ANY=1
+            case "$path" in
+              iac/*) ;;
+              *) BAD="${BAD}${path}"$'\n' ;;
+            esac
+          done < <(git diff --name-only --no-renames -z "$BASE_SHA" "$HEAD_SHA")
+          if [ "$ANY" -eq 0 ]; then
+            echo "::error::No files differ between BASE_SHA=$BASE_SHA and HEAD_SHA=$HEAD_SHA — refusing to plan."
+            exit 1
+          fi
+          if [ -n "$BAD" ]; then
+            echo "::error::PR head (SHA $HEAD_SHA) touches paths outside iac/ — refusing to plan."
+            echo "Offending paths:"
+            printf '%s' "$BAD"
+            exit 1
+          fi
+          # Recount for the success log line (separate pass over the same NUL stream).
+          N=$(git diff --name-only --no-renames -z "$BASE_SHA" "$HEAD_SHA" | tr '\0' '\n' | grep -c .)
+          echo "diff-guard PASS — $N file(s) changed, all under iac/."
