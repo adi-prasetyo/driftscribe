@@ -273,3 +273,54 @@ jobs:
           # Recount for the success log line (separate pass over the same NUL stream).
           N=$(git diff --name-only --no-renames -z "$BASE_SHA" "$HEAD_SHA" | tr '\0' '\n' | grep -c .)
           echo "diff-guard PASS — $N file(s) changed, all under iac/."
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
+        with:
+          cache: true
+          cache-dependency-glob: 'uv.lock'
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+
+      - name: Sync dependencies
+        run: uv sync --all-extras
+
+      - name: Re-run static HCL gate (HARDCODED MODE=agent)
+        # Defense-in-depth: the PR-side static gate ran against an earlier
+        # snapshot of head. The plan-builder runs against the SHA the
+        # maintainer pinned at dispatch. We force MODE=agent regardless of
+        # PR label/branch — agent mode rejects ALL non-iac/ paths. Combined
+        # with the pure-git diff-guard above, this is the second of two
+        # walls keeping PR-controlled tools/ out of the trusted execution
+        # surface. If this gate fails for ANY reason, no GCP auth happens.
+        run: |
+          uv run python -m tools.iac_static_gate \
+            --base "$BASE_SHA" \
+            --head "$HEAD_SHA" \
+            --mode agent
+
+      - name: Setup OpenTofu 1.12.0 (PINNED)
+        # Pin the exact binary version. The action's default is "latest"
+        # which would drift — C4 compares metadata.opentofu_version to the
+        # apply-side configured version and would refuse on mismatch.
+        uses: opentofu/setup-opentofu@847eaa4afeb791b06daa46e8eafa8b1b68d7cfb4 # v2.0.1
+        with:
+          tofu_version: '1.12.0'
+
+      - name: Authenticate to GCP via WIF
+        # Short-lived token via Workload Identity Federation. The provider's
+        # attribute condition (bootstrap-provisioned) only mints tokens
+        # when ALL of: workflow_ref starts with this workflow path, ref ==
+        # refs/heads/main, and event_name in {push, workflow_dispatch}.
+        # No JSON key on disk.
+        id: gcp-auth
+        uses: google-github-actions/auth@b7593ed2efd1c1617e1b0254da33b86225adb2a5 # v2.1.7
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_TOFU_PLAN_BUILDER_SA }}
+
+      - name: Setup gcloud CLI (uses the WIF credential from previous step)
+        uses: google-github-actions/setup-gcloud@77e7a554d41e2ee56fc945c52dfd3f27b12cd0b2 # v2.1.4
