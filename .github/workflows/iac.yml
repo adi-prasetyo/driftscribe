@@ -324,3 +324,121 @@ jobs:
 
       - name: Setup gcloud CLI (uses the WIF credential from previous step)
         uses: google-github-actions/setup-gcloud@77e7a554d41e2ee56fc945c52dfd3f27b12cd0b2 # v2.1.4
+
+      - name: tofu init (with backend — needs WIF auth)
+        env:
+          KMS_KEY: ${{ secrets.GCP_TOFU_STATE_KMS_KEY }}
+        run: |
+          tofu -chdir=iac init -lockfile=readonly \
+            -var "tofu_state_kms_key=$KMS_KEY"
+
+      - name: tofu plan → plan.tfplan
+        env:
+          KMS_KEY: ${{ secrets.GCP_TOFU_STATE_KMS_KEY }}
+        run: |
+          tofu -chdir=iac plan \
+            -out=plan.tfplan \
+            -input=false \
+            -var "tofu_state_kms_key=$KMS_KEY"
+
+      - name: tofu show -json → plan.json
+        run: |
+          tofu -chdir=iac show -json plan.tfplan > iac/plan.json
+
+      - name: Run C1 denylist on plan.json (FAIL BEFORE upload on violation)
+        run: |
+          # Exit 0 = clean, 1 = policy violation, 2 = usage/IO error. We fail
+          # the workflow on either nonzero, BEFORE the artifact gets uploaded.
+          uv run python -m tools.iac_plan_denylist iac/plan.json
+
+      - name: Compute artifact hashes + read tofu version + lockfile hash
+        run: |
+          set -euo pipefail
+          PLAN_SHA256=$(sha256sum iac/plan.tfplan | awk '{print $1}')
+          PLAN_JSON_SHA256=$(sha256sum iac/plan.json | awk '{print $1}')
+          LOCKFILE_SHA256=$(sha256sum iac/.terraform.lock.hcl | awk '{print $1}')
+          TOFU_VERSION=$(tofu version -json | jq -r .terraform_version)
+          echo "PLAN_SHA256=$PLAN_SHA256" >> "$GITHUB_ENV"
+          echo "PLAN_JSON_SHA256=$PLAN_JSON_SHA256" >> "$GITHUB_ENV"
+          echo "LOCKFILE_SHA256=$LOCKFILE_SHA256" >> "$GITHUB_ENV"
+          echo "TOFU_VERSION=$TOFU_VERSION" >> "$GITHUB_ENV"
+
+      - name: Compute the artifact path prefix + URIs
+        env:
+          ARTIFACT_BUCKET: driftscribe-hack-2026-tofu-artifacts
+        run: |
+          set -euo pipefail
+          OBJECT_PREFIX="pr-${PR_NUMBER}/${HEAD_SHA}/run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "OBJECT_PREFIX=$OBJECT_PREFIX" >> "$GITHUB_ENV"
+          echo "ARTIFACT_URI_PLAN=gs://${ARTIFACT_BUCKET}/${OBJECT_PREFIX}/plan.tfplan" >> "$GITHUB_ENV"
+          echo "ARTIFACT_URI_JSON=gs://${ARTIFACT_BUCKET}/${OBJECT_PREFIX}/plan.json"   >> "$GITHUB_ENV"
+          echo "ARTIFACT_URI_METADATA=gs://${ARTIFACT_BUCKET}/${OBJECT_PREFIX}/metadata.json" >> "$GITHUB_ENV"
+
+      - name: Upload plan.tfplan + plan.json (capture generations)
+        # Step 1 of the two-step uploader. Reads Blob.generation in-band
+        # from the upload response — no storage.objects.get call needed.
+        run: |
+          set -euo pipefail
+          uv run python -m tools.iac_plan_artifact_upload \
+            --mode plan-and-json \
+            --bucket driftscribe-hack-2026-tofu-artifacts \
+            --object-prefix "$OBJECT_PREFIX" \
+            --local-plan iac/plan.tfplan \
+            --local-plan-json iac/plan.json \
+            | tee /tmp/upload-step1.env
+          grep '^GEN_PLAN=' /tmp/upload-step1.env >> "$GITHUB_ENV"
+          grep '^GEN_JSON=' /tmp/upload-step1.env >> "$GITHUB_ENV"
+
+      - name: Build the final metadata.json (REAL generations, no placeholder)
+        env:
+          META_REPO: ${{ github.repository }}
+          META_PR_NUMBER: ${{ env.PR_NUMBER }}
+          META_HEAD_SHA: ${{ env.HEAD_SHA }}
+          META_BASE_SHA: ${{ env.BASE_SHA }}
+          META_WORKFLOW_RUN_ID: ${{ github.run_id }}
+          META_WORKFLOW_RUN_ATTEMPT: ${{ github.run_attempt }}
+          META_ARTIFACT_URI_PLAN: ${{ env.ARTIFACT_URI_PLAN }}
+          META_ARTIFACT_URI_JSON: ${{ env.ARTIFACT_URI_JSON }}
+          META_GENERATION_PLAN: ${{ env.GEN_PLAN }}
+          META_GENERATION_JSON: ${{ env.GEN_JSON }}
+          META_PLAN_SHA256: ${{ env.PLAN_SHA256 }}
+          META_PLAN_JSON_SHA256: ${{ env.PLAN_JSON_SHA256 }}
+          META_OPENTOFU_VERSION: ${{ env.TOFU_VERSION }}
+          META_PROVIDER_LOCKFILE_SHA256: ${{ env.LOCKFILE_SHA256 }}
+        run: |
+          uv run python -m tools.iac_plan_metadata > iac/metadata.json
+          cat iac/metadata.json
+
+      - name: Upload metadata.json (capture generation)
+        # Step 2 of the two-step uploader. No placeholder metadata ever
+        # lands on the bucket — metadata.json is built and uploaded ONCE
+        # with the real plan/json generations baked in.
+        run: |
+          set -euo pipefail
+          uv run python -m tools.iac_plan_artifact_upload \
+            --mode metadata \
+            --bucket driftscribe-hack-2026-tofu-artifacts \
+            --object-prefix "$OBJECT_PREFIX" \
+            --local-metadata iac/metadata.json \
+            | tee /tmp/upload-step2.env
+          grep '^GEN_METADATA=' /tmp/upload-step2.env >> "$GITHUB_ENV"
+
+      - name: Post tofu show diff to PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tofu -chdir=iac show -no-color plan.tfplan > /tmp/plan.txt
+          uv run python -m tools.iac_plan_diff_summary \
+            --head-sha="$HEAD_SHA" \
+            --plan-sha256="$PLAN_SHA256" \
+            --plan-json-sha256="$PLAN_JSON_SHA256" \
+            --generation-plan="$GEN_PLAN" \
+            --generation-json="$GEN_JSON" \
+            --generation-metadata="$GEN_METADATA" \
+            --artifact-uri-plan="$ARTIFACT_URI_PLAN" \
+            --artifact-uri-json="$ARTIFACT_URI_JSON" \
+            --artifact-uri-metadata="$ARTIFACT_URI_METADATA" \
+            --opentofu-version="$TOFU_VERSION" \
+            < /tmp/plan.txt > /tmp/comment.md
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file /tmp/comment.md
