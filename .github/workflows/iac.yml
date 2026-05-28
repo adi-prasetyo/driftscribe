@@ -33,16 +33,38 @@ on:
     # `iac/` tree. (agent mode still rejects non-`iac/` paths, but only `infra/`
     # branches / `driftscribe-infra`-labeled PRs run in agent mode, and those
     # are iac-only by design.)
+  workflow_dispatch:
+    # Phase C2 plan-builder trigger. The WIF OIDC condition (provisioned by
+    # infra/scripts/setup_iac_backend.sh §6) admits ONLY push-to-main and
+    # workflow_dispatch from this exact workflow file. pull_request is
+    # excluded so fork PRs never obtain GCP credentials (design §11.8).
+    # Operator-initiated: maintainer clicks "Run workflow" with the PR number.
+    inputs:
+      pr_number:
+        description: 'PR number to plan (e.g. 42 — must be open and from the canonical repo)'
+        required: true
+        type: string
 
+# Top-level permissions are the floor for ALL jobs: only `contents: read`. The
+# plan-builder job (Phase C2) overrides its own permissions block to ADD
+# `id-token: write` (WIF) and `pull-requests: write` (post diff). No other
+# job needs them.
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # PR runs share a group per ref so a force-push cancels the older run
+  # (saves CI cost; the gate is fast to redo). Workflow_dispatch runs
+  # carry the event in the group so they NEVER collide with PR runs, and
+  # `cancel-in-progress` flips to false so a partial artifact upload
+  # cannot be aborted by a second dispatch — the job-level concurrency in
+  # the plan-builder job serializes dispatches per PR (see Task 7b).
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   static-gate:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -93,6 +115,7 @@ jobs:
 
   tofu:
     needs: static-gate
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
