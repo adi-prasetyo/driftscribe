@@ -288,7 +288,14 @@ def _approval_window() -> tuple[str, str]:
 def apply(req: TokenRequest, caller: str = Depends(_verify_caller_dep)) -> dict:
     """Verify → claim (single-use burn) → re-verify → denylist → fidelity →
     freshness → saved-plan apply. The §3.6 claim-first order: every decision
-    reads from ``signed_payload`` once the HMAC has verified the bytes."""
+    reads from ``signed_payload`` once the HMAC has verified the bytes.
+
+    State-lock contention on any tofu step (init/refresh-only/apply) surfaces as
+    the DISTINCT terminal phase ``lock_refused`` (HTTP 423), not ``failed`` (502):
+    a held or orphaned GCS lock that needs operator ``force-unlock`` (NEVER an
+    auto-unlock) before retry. Detection is post-claim, so a transient lock burns
+    the approval and the retry is a re-propose (operator re-clicks Approve) — an
+    accepted low-friction trade for keeping the claim-first single-use invariant."""
     store = _get_plan_approval_store()
     stored = store.get(req.approval_id)
     if stored is None:
@@ -347,6 +354,18 @@ def apply(req: TokenRequest, caller: str = Depends(_verify_caller_dep)) -> dict:
         _fail(store, req.approval_id, attempt_id, "integrity_refused", 422, f"artifact integrity: {e}")
     except tofu_runner.FidelityError as e:
         _fail(store, req.approval_id, attempt_id, "fidelity_refused", 422, f"fidelity: {e}")
+    except tofu_runner.LockRefused as e:
+        # Defensive parity with the run-tofu block below. No subprocess in THIS
+        # gate block acquires the state lock today — the only tofu call here is the
+        # fidelity probe (`tofu version`, read-only, which raises TofuStepError, not
+        # LockRefused). But classifying it identically means a future refactor that
+        # ever routes a locking step through _raise_step_failure here can never
+        # leave a burned approval stranded at phase="claimed" behind an unhandled
+        # 500. Same terminal lock_refused/423 + operator-only force-unlock.
+        _fail(store, req.approval_id, attempt_id, "lock_refused", 423,
+              f"refusing apply: tofu {e.step} could not acquire the state lock "
+              "(held or orphaned); operator force-unlock required before retry",
+              extra={"step": e.step, "apply_exit_code": e.exit_code, "stderr_tail": e.stderr[-500:]})
     except tofu_runner.TofuStepError as e:
         # The fidelity check probes `tofu version`; a probe failure pre-apply →
         # fail closed with a terminal audit (not an unhandled 500 that would
@@ -369,6 +388,18 @@ def apply(req: TokenRequest, caller: str = Depends(_verify_caller_dep)) -> dict:
     except tofu_runner.FreshnessDrift as e:
         _fail(store, req.approval_id, attempt_id, "drift_refused", 409,
               "refusing apply: refresh-only detected out-of-band drift", extra={"stderr_tail": e.stderr[-500:]})
+    except tofu_runner.LockRefused as e:
+        # State-lock contention (held or orphaned GCS lock) — a DISTINCT terminal
+        # post-claim outcome (HTTP 423), not an apply failure (502). The operator
+        # action is unambiguous: `tofu force-unlock` (operator-only — NO
+        # auto-unlock) then retry. The claim already burned the approval, so the
+        # retry is a re-propose (operator re-clicks Approve) — accepted low-friction
+        # behavior. Ordered before TofuStepError defensively (LockRefused is not a
+        # subclass, but the explicit ordering documents intent).
+        _fail(store, req.approval_id, attempt_id, "lock_refused", 423,
+              f"refusing apply: tofu {e.step} could not acquire the state lock "
+              "(held or orphaned); operator force-unlock required before retry",
+              extra={"step": e.step, "apply_exit_code": e.exit_code, "stderr_tail": e.stderr[-500:]})
     except tofu_runner.TofuStepError as e:
         _fail(store, req.approval_id, attempt_id, "failed", 502,
               f"tofu {e.step} failed (exit {e.exit_code})",
