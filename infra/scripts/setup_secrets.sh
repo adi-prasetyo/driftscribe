@@ -560,52 +560,144 @@ gcloud firestore databases describe --project "$PROJECT" >/dev/null 2>&1 || \
   gcloud firestore databases create --project "$PROJECT" --location="$REGION" --type=firestore-native
 
 # --------------------------------------------------------------------------
-# 10. Eventarc trigger SA + driftscribe-cloudrun-changes trigger
+# 10. Eventarc drift triggers (payment-demo mutations → coordinator /eventarc)
 # --------------------------------------------------------------------------
-# Both `eventarc triggers describe` and the trigger create are regional —
-# the gates below pass --location=$REGION explicitly.
-EVENTARC_SA="eventarc-trigger-sa@${PROJECT}.iam.gserviceaccount.com"
-gcloud iam service-accounts describe "$EVENTARC_SA" --project "$PROJECT" >/dev/null 2>&1 || \
-  gcloud iam service-accounts create eventarc-trigger-sa \
-    --project "$PROJECT" --display-name="DriftScribe Eventarc trigger SA"
+# Phase-gated: `SETUP_EVENTARC=0` skips this whole block. A Phase C4 re-run
+# (which only needs the §8 coordinator invoker grant) must NOT touch drift
+# triggers — run it as `SETUP_EVENTARC=0 infra/scripts/setup_secrets.sh ...`.
+# Default is ON so a fresh bootstrap still wires drift detection.
+#
+# TWO triggers are created, both → driftscribe-agent /eventarc, because Cloud
+# Run emits DIFFERENT audit-log methodNames depending on who mutates the service:
+#   - gcloud / CI deploys / older clients → google.cloud.run.v1.Services.ReplaceService
+#       resourceName: namespaces/<proj>/services/<svc>
+#   - the rollback worker (run_v2 client) / console / newer clients
+#                                         → google.cloud.run.v2.Services.UpdateService
+#       resourceName: projects/<proj>/locations/<region>/services/<svc>
+# An Eventarc audit-log trigger filters EXACTLY ONE methodName, so it takes one
+# trigger per variant. The /eventarc handler is methodName-agnostic (it whitelists
+# on resource.labels.service_name/location), so both feed the same recheck. A
+# single mutation emits exactly one methodName, so the two triggers do not
+# double-fire on one event. The canonical demo drift-injection
+# (`gcloud run services update payment-demo`) emits the v1 ReplaceService variant
+# — the v2-only filter the original design shipped produced an ACTIVE-but-DEAD
+# trigger that silently delivered nothing. See docs/runbooks/deploy.md step 7.
+if [[ "${SETUP_EVENTARC:-1}" == "1" ]]; then
+  EVENTARC_SA="eventarc-trigger-sa@${PROJECT}.iam.gserviceaccount.com"
+  gcloud iam service-accounts describe "$EVENTARC_SA" --project "$PROJECT" >/dev/null 2>&1 || \
+    gcloud iam service-accounts create eventarc-trigger-sa \
+      --project "$PROJECT" --display-name="DriftScribe Eventarc trigger SA"
 
-gcloud projects add-iam-policy-binding "$PROJECT" \
-  --member="serviceAccount:${EVENTARC_SA}" \
-  --role="roles/eventarc.eventReceiver" >/dev/null
+  # The Eventarc SERVICE AGENT (Google-managed) provisions the trigger's Pub/Sub
+  # plumbing. On projects where it was never provisioned, `triggers create` fails
+  # FAILED_PRECONDITION "Permission denied while using the Eventarc Service Agent".
+  # Force-create the identity + grant its role explicitly (the auto-grant on API
+  # enablement is not reliably present); the create retry loop below then absorbs
+  # the (documented, multi-minute) permission-propagation delay.
+  gcloud beta services identity create --service=eventarc.googleapis.com \
+    --project="$PROJECT" >/dev/null 2>&1 || true
+  EVENTARC_AGENT="service-$(gcloud projects describe "$PROJECT" \
+    --format='value(projectNumber)')@gcp-sa-eventarc.iam.gserviceaccount.com"
+  gcloud projects add-iam-policy-binding "$PROJECT" \
+    --member="serviceAccount:${EVENTARC_AGENT}" \
+    --role="roles/eventarc.serviceAgent" --condition=None >/dev/null
 
-# run.invoker grant AND trigger create both depend on the coordinator
-# existing. On first-ever run (before Cloud Build) both are no-ops; re-run
-# after the build to apply.
-if gcloud run services describe driftscribe-agent \
-   --region="$REGION" --project="$PROJECT" >/dev/null 2>&1; then
-  gcloud run services add-iam-policy-binding driftscribe-agent \
-    --project="$PROJECT" --region="$REGION" \
-    --member="serviceAccount:${EVENTARC_SA}" --role="roles/run.invoker" >/dev/null
-  echo "driftscribe-agent: granted run.invoker on eventarc-trigger-sa"
+  # The trigger SA receives events (eventReceiver) and invokes the coordinator.
+  gcloud projects add-iam-policy-binding "$PROJECT" \
+    --member="serviceAccount:${EVENTARC_SA}" \
+    --role="roles/eventarc.eventReceiver" --condition=None >/dev/null
 
-  if gcloud eventarc triggers describe driftscribe-cloudrun-changes \
-       --location="$REGION" --project="$PROJECT" >/dev/null 2>&1; then
-    echo "eventarc trigger driftscribe-cloudrun-changes already exists — skipping create"
+  # create-with-retry: retry ONLY the Eventarc-service-agent propagation
+  # FAILED_PRECONDITION (bounded). Any other error (bad filter, deployer
+  # permission, malformed resourceName) fails fast — we never paper over real
+  # misconfiguration with blind retries.
+  _eventarc_create() {
+    local name="$1" method="$2" resource="$3" out rc attempt
+    for attempt in 1 2 3 4 5 6; do
+      # `if out=$(...)` — NOT `out=$(...); rc=$?`. Under `set -e` a bare
+      # assignment whose command-substitution fails exits the whole script
+      # before rc can be read, making this entire retry loop dead code for
+      # the failure path it exists to handle.
+      if out="$(gcloud eventarc triggers create "$name" \
+        --project="$PROJECT" --location="$REGION" \
+        --destination-run-service=driftscribe-agent \
+        --destination-run-region="$REGION" \
+        --destination-run-path=/eventarc \
+        --event-filters="type=google.cloud.audit.log.v1.written" \
+        --event-filters="serviceName=run.googleapis.com" \
+        --event-filters="methodName=${method}" \
+        --event-filters="resourceName=${resource}" \
+        --service-account="${EVENTARC_SA}" 2>&1)"; then
+        rc=0
+      else
+        rc=$?
+      fi
+      if [ "$rc" -eq 0 ] || echo "$out" | grep -qE "already exists|ALREADY_EXISTS"; then
+        echo "  eventarc trigger ${name}: ready"; return 0
+      fi
+      if echo "$out" | grep -qF "Permission denied while using the Eventarc Service Agent"; then
+        echo "  eventarc service agent perms propagating (attempt ${attempt}/6) — waiting 60s..." >&2
+        sleep 60; continue
+      fi
+      echo "$out" >&2
+      echo "  ERROR: eventarc trigger ${name} create failed (non-retryable)" >&2
+      return "$rc"
+    done
+    echo "  ERROR: eventarc trigger ${name} still failing after retries" >&2; return 1
+  }
+
+  # ensure: create if absent; if present, verify methodName/resourceName/path/SA
+  # and recreate on drift. This REPAIRS a project carrying the old
+  # ACTIVE-but-dead v2-only `driftscribe-cloudrun-changes` instead of skipping it
+  # forever on a describe-and-skip.
+  _eventarc_ensure() {
+    local name="$1" method="$2" resource="$3" filters meta dsvc dregion dpath dsa
+    if gcloud eventarc triggers describe "$name" --location="$REGION" --project="$PROJECT" >/dev/null 2>&1; then
+      filters="$(gcloud eventarc triggers describe "$name" --location="$REGION" --project="$PROJECT" --format='value(eventFilters)' 2>/dev/null || true)"
+      # Scalar destination/SA fields are tab-separated and contain no
+      # tabs/spaces, so a single describe + IFS=tab read extracts them for
+      # EXACT comparison (a substring check on the path would wrongly accept
+      # e.g. /eventarc-upgrade, and would not verify service/region at all).
+      meta="$(gcloud eventarc triggers describe "$name" --location="$REGION" --project="$PROJECT" --format='value(destination.cloudRun.service,destination.cloudRun.region,destination.cloudRun.path,serviceAccount)' 2>/dev/null || true)"
+      IFS=$'\t' read -r dsvc dregion dpath dsa <<<"$meta"
+      if [ "$dsvc" = "driftscribe-agent" ] && [ "$dregion" = "$REGION" ] \
+         && [ "$dpath" = "/eventarc" ] && [ "$dsa" = "$EVENTARC_SA" ] \
+         && echo "$filters" | grep -qF "$method" && echo "$filters" | grep -qF "$resource"; then
+        echo "  eventarc trigger ${name}: already correct — skipping"
+        return 0
+      fi
+      echo "  eventarc trigger ${name}: config drifted — recreating"
+      gcloud eventarc triggers delete "$name" --location="$REGION" --project="$PROJECT" --quiet >/dev/null 2>&1 || true
+    fi
+    _eventarc_create "$name" "$method" "$resource"
+  }
+
+  # run.invoker grant + trigger create both depend on the coordinator existing.
+  # On the first-ever run (before Cloud Build) this is a no-op; re-run after the
+  # build to apply.
+  if gcloud run services describe driftscribe-agent \
+     --region="$REGION" --project="$PROJECT" >/dev/null 2>&1; then
+    gcloud run services add-iam-policy-binding driftscribe-agent \
+      --project="$PROJECT" --region="$REGION" \
+      --member="serviceAccount:${EVENTARC_SA}" --role="roles/run.invoker" >/dev/null
+    echo "driftscribe-agent: granted run.invoker on eventarc-trigger-sa"
+
+    _eventarc_ensure driftscribe-cloudrun-changes \
+      "google.cloud.run.v1.Services.ReplaceService" \
+      "namespaces/${PROJECT}/services/payment-demo"
+    _eventarc_ensure driftscribe-cloudrun-changes-v2-update \
+      "google.cloud.run.v2.Services.UpdateService" \
+      "projects/${PROJECT}/locations/${REGION}/services/payment-demo"
+
+    echo
+    echo "  verify a mutation fires the handler — see docs/runbooks/deploy.md →"
+    echo "    'confirm Eventarc trigger fires' (mutate payment-demo; expect /eventarc 200 ~30s later)"
   else
-    gcloud eventarc triggers create driftscribe-cloudrun-changes \
-      --project="$PROJECT" --location="$REGION" \
-      --destination-run-service=driftscribe-agent \
-      --destination-run-region="$REGION" \
-      --destination-run-path=/eventarc \
-      --event-filters="type=google.cloud.audit.log.v1.written" \
-      --event-filters="serviceName=run.googleapis.com" \
-      --event-filters="methodName=google.cloud.run.v2.Services.UpdateService" \
-      --event-filters="resourceName=projects/${PROJECT}/locations/${REGION}/services/payment-demo" \
-      --service-account="${EVENTARC_SA}"
-    echo "eventarc trigger driftscribe-cloudrun-changes: created"
+    echo "driftscribe-agent not deployed yet — skipping run.invoker grant + trigger create"
   fi
 else
-  echo "driftscribe-agent not deployed yet — skipping run.invoker grant + trigger create"
+  echo "SETUP_EVENTARC != 1 — skipping eventarc drift-trigger setup"
 fi
-
-echo
-echo "  next: confirm the trigger filter matches what your env emits —"
-echo "    see docs/runbooks/deploy.md → 'confirm Eventarc trigger fires' (mutate payment-demo, check audit log + handler logs)"
 
 # --------------------------------------------------------------------------
 # 11. Log retention — extend `_Default` bucket to 365 days (Phase 18.A)

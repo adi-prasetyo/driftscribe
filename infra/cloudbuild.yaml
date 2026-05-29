@@ -695,23 +695,37 @@ steps:
         echo "  UPGRADE_READER_URL=$${UPGRADE_READER_URL}"
         echo "  UPGRADE_DOCS_URL=$${UPGRADE_DOCS_URL}"
         echo "  INFRA_READER_URL=$${INFRA_READER_URL}"
-        # Phase 14.3: the coordinator's own URL is the audience claim
-        # /eventarc verifies Eventarc-minted ID tokens against. Resolve
-        # it here and stamp it as EVENTARC_AUDIENCE in the same update
-        # call. If the describe returns empty, fail-closed (the /eventarc
-        # handler's 503-on-empty canary already covers the missing-env
-        # case at runtime; this exits 1 at build time so the operator
-        # sees the problem before Eventarc starts delivering events).
+        # Phase 14.3: EVENTARC_AUDIENCE is the audience claim the /eventarc
+        # handler verifies Eventarc-minted ID tokens against.
+        #
+        # IMPORTANT — it MUST include the `/eventarc` path, not just the bare
+        # service URL. Eventarc delivers via a Pub/Sub push subscription whose
+        # OIDC token audience is the PUSH ENDPOINT = <service URL> + the
+        # trigger's `--destination-run-path` (i.e. `<COORD_URL>/eventarc`).
+        # `verify_oauth2_token` does an EXACT-match on `aud`, so stamping the
+        # bare URL here makes every real Eventarc delivery 401 (the trigger is
+        # ACTIVE, events are delivered, the handler rejects them — silent drift
+        # blindness). This differs from the coordinator→worker call path, which
+        # deliberately uses the ROOT URL as audience (Cloud Run's platform
+        # validates against the root) — see tests/unit/test_worker_client.py.
+        # The /eventarc token is app-verified, not platform-verified, so it
+        # carries the path-suffixed audience Pub/Sub actually mints.
+        #
+        # If the describe returns empty, fail-closed (the /eventarc handler's
+        # 503-on-empty canary already covers the missing-env case at runtime;
+        # this exits 1 at build time so the operator sees it before Eventarc
+        # starts delivering events).
         COORD_URL=$$(gcloud run services describe driftscribe-agent \
           --region=asia-northeast1 --format='value(status.url)')
         if [ -z "$${COORD_URL}" ]; then
           echo "ERROR: Could not resolve driftscribe-agent URL for EVENTARC_AUDIENCE" >&2
           exit 1
         fi
-        echo "  EVENTARC_AUDIENCE=$${COORD_URL}"
+        EVENTARC_AUDIENCE=$${COORD_URL}/eventarc
+        echo "  EVENTARC_AUDIENCE=$${EVENTARC_AUDIENCE}"
         gcloud run services update driftscribe-agent \
           --region=asia-northeast1 \
-          --update-env-vars=READER_URL=$${READER_URL},DOCS_URL=$${DOCS_URL},ROLLBACK_URL=$${ROLLBACK_URL},NOTIFIER_URL=$${NOTIFIER_URL},UPGRADE_READER_URL=$${UPGRADE_READER_URL},UPGRADE_DOCS_URL=$${UPGRADE_DOCS_URL},INFRA_READER_URL=$${INFRA_READER_URL},EVENTARC_AUDIENCE=$${COORD_URL}
+          --update-env-vars=READER_URL=$${READER_URL},DOCS_URL=$${DOCS_URL},ROLLBACK_URL=$${ROLLBACK_URL},NOTIFIER_URL=$${NOTIFIER_URL},UPGRADE_READER_URL=$${UPGRADE_READER_URL},UPGRADE_DOCS_URL=$${UPGRADE_DOCS_URL},INFRA_READER_URL=$${INFRA_READER_URL},EVENTARC_AUDIENCE=$${EVENTARC_AUDIENCE}
 
 images:
   - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-agent:${_TAG}

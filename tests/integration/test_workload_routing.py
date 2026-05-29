@@ -576,7 +576,7 @@ def test_eventarc_ignores_workload_in_payload_and_routes_to_drift(
     workload param yet — once it does (this task), the assertion below
     pins that it received ``"drift"``.
     """
-    monkeypatch.setenv("EVENTARC_AUDIENCE", "https://driftscribe-agent-xyz.a.run.app")
+    monkeypatch.setenv("EVENTARC_AUDIENCE", "https://driftscribe-agent-xyz.a.run.app/eventarc")
     monkeypatch.setenv("GCP_PROJECT", "test-proj")
     monkeypatch.setenv("TARGET_SERVICE", "payment-demo")
     monkeypatch.setenv("TARGET_REGION", "asia-northeast1")
@@ -590,7 +590,7 @@ def test_eventarc_ignores_workload_in_payload_and_routes_to_drift(
     }
     mock_recheck = AsyncMock(return_value=recheck_result)
     expected_email = "eventarc-trigger-sa@test-proj.iam.gserviceaccount.com"
-    valid_audience = "https://driftscribe-agent-xyz.a.run.app"
+    valid_audience = "https://driftscribe-agent-xyz.a.run.app/eventarc"
 
     with (
         patch("agent.main.verify_oauth2_token") as m_verify,
@@ -704,7 +704,7 @@ def test_chat_eventarc_dispatched_agent_has_drift_tools_regardless_of_payload(
     with — that's the load-bearing assertion that pins drift even when
     the payload tried to flip it.
     """
-    monkeypatch.setenv("EVENTARC_AUDIENCE", "https://driftscribe-agent-xyz.a.run.app")
+    monkeypatch.setenv("EVENTARC_AUDIENCE", "https://driftscribe-agent-xyz.a.run.app/eventarc")
     monkeypatch.setenv("GCP_PROJECT", "test-proj")
     monkeypatch.setenv("TARGET_SERVICE", "payment-demo")
     monkeypatch.setenv("TARGET_REGION", "asia-northeast1")
@@ -732,7 +732,7 @@ def test_chat_eventarc_dispatched_agent_has_drift_tools_regardless_of_payload(
     mock_run_agent = AsyncMock(return_value=no_op_proposal)
 
     expected_email = "eventarc-trigger-sa@test-proj.iam.gserviceaccount.com"
-    valid_audience = "https://driftscribe-agent-xyz.a.run.app"
+    valid_audience = "https://driftscribe-agent-xyz.a.run.app/eventarc"
 
     with (
         patch("agent.main.verify_oauth2_token") as m_verify,

@@ -32,9 +32,13 @@ CloudEvent. The HTTP request `driftscribe-agent` receives at `/eventarc` carries
 - `ce-type`: `google.cloud.audit.log.v1.written`
 - `ce-subject`: resource path, e.g. `services/payment-demo`
 - `content-type`: `application/json`
-- `authorization`: `Bearer <id-token>` — minted by Eventarc against
-  `eventarc-trigger-sa@$PROJECT.iam.gserviceaccount.com`; verified by the handler
-  per `docs/architecture/multi-agent-design.md` Layer 1.
+- `authorization`: `Bearer <id-token>` — minted by Eventarc's Pub/Sub push
+  subscription against `eventarc-trigger-sa@$PROJECT.iam.gserviceaccount.com`,
+  with `aud` = the **push endpoint** (`<coordinator URL>/eventarc` = service URL
+  + the trigger's `--destination-run-path`). The handler exact-matches this
+  against `EVENTARC_AUDIENCE`, which therefore MUST be path-suffixed — a bare
+  service URL 401s every delivery. Verified per
+  `docs/architecture/multi-agent-design.md` Layer 1.
 
 The JSON body is the audit `LogEntry` proto, JSON-serialized. The fields DriftScribe
 cares about live inside `protoPayload`:
@@ -69,24 +73,28 @@ The handler reads:
 
 Audit logs emit different method names depending on which API path the caller used:
 
-| methodName                                          | Triggered by                                              |
-| --------------------------------------------------- | --------------------------------------------------------- |
-| `google.cloud.run.v2.Services.UpdateService`        | `gcloud run services update`, Console UI, v2 Admin API.   |
-| `google.cloud.run.v1.Services.ReplaceService`       | Older clients, some Terraform versions, raw v1 API calls. |
+| methodName                                          | Triggered by                                                      |
+| --------------------------------------------------- | ----------------------------------------------------------------- |
+| `google.cloud.run.v1.Services.ReplaceService`       | **`gcloud run services update`, `gcloud run deploy`, CI** (verified on driftscribe-hack-2026 2026-05-29). resourceName: `namespaces/<P>/services/<svc>`. |
+| `google.cloud.run.v2.Services.UpdateService`        | The rollback worker (`run_v2` client), Cloud Console, newer/v2 Admin API. resourceName: `projects/<P>/locations/<region>/services/<svc>`. |
 
-DriftScribe treats both as "service mutation; recheck drift". The Eventarc trigger
-itself filters on **one** `methodName` value at a time (multi-value `methodName` in
-`--event-filters` is not supported). The trigger created in `setup_secrets.sh`
-filters on the v2 name (`UpdateService`); if `gcloud` ever switches to v1 we update
-the trigger.
+DriftScribe treats both as "service mutation; recheck drift". An Eventarc audit-log
+trigger filters on **one** `methodName` at a time (multi-value `methodName` in
+`--event-filters` is unsupported), so `setup_secrets.sh` §10 creates **two**
+triggers — one per variant, both → `/eventarc`. The handler is methodName-agnostic
+(it branches only on `resource.labels`), so a single mutation (which emits exactly
+one methodName) drives exactly one recheck. Note: the canonical demo drift-injection
+emits the **v1** variant — the original v2-only trigger was silently dead.
 
 ## Filtering at the handler
 
 Even with the trigger filter, the handler must guard:
 
 1. **Auth**: `Authorization: Bearer <id-token>` verified via
-   `google.oauth2.id_token.verify_oauth2_token`; the `email` claim must equal
-   `eventarc-trigger-sa@$PROJECT.iam.gserviceaccount.com`. Anything else → 401/403.
+   `google.oauth2.id_token.verify_oauth2_token` with `audience=EVENTARC_AUDIENCE`
+   (the path-suffixed `<coord URL>/eventarc` — see the envelope note above; a bad
+   `aud` → 401). The `email` claim must equal
+   `eventarc-trigger-sa@$PROJECT.iam.gserviceaccount.com` → else 403.
 2. **Service whitelist**: only `payment-demo` is in scope for the demo. Other services
    that somehow reach this endpoint return 200 (so Eventarc doesn't retry forever)
    but record no decision; the response body carries `"ignored": "non-target-service"`.
