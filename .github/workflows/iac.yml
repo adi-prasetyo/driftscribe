@@ -321,27 +321,39 @@ jobs:
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.GCP_TOFU_PLAN_BUILDER_SA }}
+          # Explicit project so the action exports GOOGLE_CLOUD_PROJECT for
+          # downstream tooling (gcloud + the google-cloud-storage uploader,
+          # which resolves a project at Client() construction). Defense in
+          # depth: the action would otherwise derive it from the SA email, but
+          # the upload tool also hard-defaults it (decoupled from this export).
+          project_id: driftscribe-hack-2026
 
       - name: Setup gcloud CLI (uses the WIF credential from previous step)
         uses: google-github-actions/setup-gcloud@77e7a554d41e2ee56fc945c52dfd3f33d12def9a # v2.1.4
 
+      # All four tofu steps below take the KMS key via TF_VAR_tofu_state_kms_key
+      # rather than `-var`. `tofu show` accepts NO -var flags but still must
+      # decrypt the KMS-encrypted state/plan (iac/versions.tf encryption block,
+      # enforced=true), so TF_VAR_* is the only channel that works for it — and
+      # using the same mechanism on init/plan keeps all four uniform.
       - name: tofu init (with backend — needs WIF auth)
         env:
-          KMS_KEY: ${{ secrets.GCP_TOFU_STATE_KMS_KEY }}
+          TF_VAR_tofu_state_kms_key: ${{ secrets.GCP_TOFU_STATE_KMS_KEY }}
         run: |
-          tofu -chdir=iac init -lockfile=readonly \
-            -var "tofu_state_kms_key=$KMS_KEY"
+          tofu -chdir=iac init -lockfile=readonly
 
       - name: tofu plan → plan.tfplan
         env:
-          KMS_KEY: ${{ secrets.GCP_TOFU_STATE_KMS_KEY }}
+          TF_VAR_tofu_state_kms_key: ${{ secrets.GCP_TOFU_STATE_KMS_KEY }}
         run: |
           tofu -chdir=iac plan \
             -out=plan.tfplan \
-            -input=false \
-            -var "tofu_state_kms_key=$KMS_KEY"
+            -input=false
 
       - name: tofu show -json → plan.json
+        # `show` must decrypt the saved plan → needs the key; takes no -var.
+        env:
+          TF_VAR_tofu_state_kms_key: ${{ secrets.GCP_TOFU_STATE_KMS_KEY }}
         run: |
           tofu -chdir=iac show -json plan.tfplan > iac/plan.json
 
@@ -426,6 +438,9 @@ jobs:
       - name: Post tofu show diff to PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # `tofu show -no-color` also decrypts the KMS-encrypted saved plan,
+          # so this step needs the key too (same reason as the show -json step).
+          TF_VAR_tofu_state_kms_key: ${{ secrets.GCP_TOFU_STATE_KMS_KEY }}
         run: |
           set -euo pipefail
           tofu -chdir=iac show -no-color plan.tfplan > /tmp/plan.txt
@@ -441,4 +456,17 @@ jobs:
             --artifact-uri-metadata="$ARTIFACT_URI_METADATA" \
             --opentofu-version="$TOFU_VERSION" \
             < /tmp/plan.txt > /tmp/comment.md
-          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file /tmp/comment.md
+          # POST via the REST issues/comments endpoint, NOT `gh pr comment`:
+          # the latter uses the GraphQL addComment mutation, which fails under
+          # the Actions GITHUB_TOKEN with "Resource not accessible by
+          # integration" (cli/cli #8374, #10464). `pull-requests: write`
+          # authorizes this endpoint (a PR is an issue). jq --rawfile encodes
+          # the body as a JSON string so a body that is literally "true"/an
+          # integer is not type-coerced (the -F @file trap), and newlines/
+          # backticks/quotes are escaped safely; --input - sends the whole body.
+          jq -n --rawfile body /tmp/comment.md '{body: $body}' \
+            | gh api \
+                --method POST \
+                -H "Accept: application/vnd.github+json" \
+                "/repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
+                --input -

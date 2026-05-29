@@ -32,6 +32,7 @@ without updating the bootstrap script comment is a regression.
 """
 from __future__ import annotations
 
+import os
 import pathlib
 import re
 from dataclasses import dataclass
@@ -114,7 +115,15 @@ def _main(argv: list[str]) -> int:
 
     # Defer the SDK import so unit tests do not require google-cloud-storage.
     from google.cloud import storage  # type: ignore
-    client = storage.Client()
+    # storage.Client() resolves the project EAGERLY in __init__ and raises
+    # EnvironmentError if it can't — even though uploading to an existing
+    # bucket never needs a project. Under WIF the ADC carries no project, so
+    # we pass one explicitly: GOOGLE_CLOUD_PROJECT (exported by the auth
+    # action) when present, else the hardcoded project. This keeps the tool
+    # correct independent of the workflow's ambient env (e.g. ad-hoc operator
+    # runs, or a future switch to direct WIF without SA impersonation).
+    project = os.environ.get("GOOGLE_CLOUD_PROJECT") or "driftscribe-hack-2026"
+    client = storage.Client(project=project)
     bucket = client.bucket(ns.bucket)
 
     try:
