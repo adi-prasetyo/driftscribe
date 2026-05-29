@@ -183,3 +183,95 @@ def test_workflow_level_permissions_floor_is_contents_read_only(workflow: dict):
         "workflow-level id-token: write would be inherited by static-gate/tofu — forbidden"
     assert wf_perms.get("contents") == "read", \
         "workflow-level permissions floor must be `contents: read` (minimal)"
+
+
+# ---------------------------------------------------------------------------
+# Regression pins for the live-only blockers found by the 2026-05-29 C2
+# smoke-test (run 26620367059 finally went green only after these fixes).
+# Each test below would have been red against the pre-fix workflow. A future
+# edit that reintroduces any of these failures is a release-blocker.
+# ---------------------------------------------------------------------------
+
+_KMS_VAR_ENV = "TF_VAR_tofu_state_kms_key"
+
+
+def _tofu_steps(workflow: dict) -> list[dict]:
+    """plan-builder steps that invoke the `tofu` CLI in their `run` body."""
+    out = []
+    for s in _steps_of(workflow, "plan-builder"):
+        run = s.get("run", "")
+        if "tofu " in run or run.strip().startswith("tofu"):
+            out.append(s)
+    return out
+
+
+def test_tofu_show_steps_supply_kms_var_via_tf_var(workflow: dict):
+    """Both `tofu show` invocations must decrypt the KMS-encrypted saved plan
+    (iac/versions.tf encryption.plan enforced=true). `tofu show` accepts no
+    `-var`, so the key MUST be supplied via the TF_VAR_* env. The 2026-05-29
+    dispatch died here: `Failed to request input from user for variable
+    var.tofu_state_kms_key`."""
+    show_steps = [s for s in _tofu_steps(workflow) if "show " in s.get("run", "")]
+    assert len(show_steps) >= 2, \
+        "expected at least two `tofu show` steps (show -json and the PR-comment show -no-color)"
+    for s in show_steps:
+        env = s.get("env") or {}
+        assert _KMS_VAR_ENV in env, (
+            f"`tofu show` step {s.get('name')!r} must set env {_KMS_VAR_ENV} "
+            f"(show takes no -var; the plan is KMS-encrypted)"
+        )
+
+
+def test_all_tofu_steps_use_tf_var_not_dash_var_for_kms_key(workflow: dict):
+    """The KMS key is supplied through ONE mechanism — TF_VAR_tofu_state_kms_key —
+    on every tofu step. The old `-var "tofu_state_kms_key=..."` form must not
+    return (it cannot work for `tofu show`, and mixing the two channels invites
+    the show steps being forgotten again)."""
+    tofu_steps = _tofu_steps(workflow)
+    assert tofu_steps, "plan-builder has no tofu steps"
+    for s in tofu_steps:
+        run = s.get("run", "")
+        assert "tofu_state_kms_key=" not in run, (
+            f"tofu step {s.get('name')!r} still passes the KMS key via -var "
+            f"(`tofu_state_kms_key=`); use the {_KMS_VAR_ENV} env instead"
+        )
+    # init + plan must carry the env (they evaluate the encryption block).
+    for needle in ("init", "plan"):
+        matches = [s for s in tofu_steps if f" {needle} " in f" {s.get('run','')} " or
+                   f"-chdir=iac {needle}" in s.get("run", "")]
+        assert matches, f"expected a `tofu {needle}` step"
+        assert any((s.get("env") or {}).get(_KMS_VAR_ENV) for s in matches), \
+            f"the `tofu {needle}` step must set env {_KMS_VAR_ENV}"
+
+
+def test_wif_auth_sets_project_id(workflow: dict):
+    """The WIF auth step must pin project_id so GOOGLE_CLOUD_PROJECT is exported
+    for downstream tooling (the google-cloud-storage uploader resolves a project
+    at Client() construction)."""
+    for s in _steps_of(workflow, "plan-builder"):
+        if s.get("uses", "").startswith("google-github-actions/auth@"):
+            assert (s.get("with") or {}).get("project_id"), \
+                "WIF auth step must set `project_id`"
+            return
+    raise AssertionError("plan-builder has no google-github-actions/auth step")
+
+
+def test_pr_comment_uses_rest_api_not_gh_pr_comment(workflow: dict):
+    """The diff comment must be posted via the REST issues/comments endpoint,
+    NOT `gh pr comment` — the latter uses the GraphQL addComment mutation which
+    403s under the Actions GITHUB_TOKEN ("Resource not accessible by
+    integration", cli/cli #8374/#10464)."""
+    comment_steps = [
+        s for s in _steps_of(workflow, "plan-builder")
+        if "/comments" in s.get("run", "") or "gh pr comment" in s.get("run", "")
+    ]
+    assert comment_steps, "plan-builder has no PR-comment step"
+    for s in comment_steps:
+        run = s.get("run", "")
+        # Inspect only EXECUTED lines — `#` comment lines legitimately mention
+        # `gh pr comment` to explain why it was replaced.
+        executed = "\n".join(ln for ln in run.splitlines() if not ln.strip().startswith("#"))
+        assert "gh pr comment" not in executed, \
+            "must not use `gh pr comment` (GraphQL addComment 403s under GITHUB_TOKEN)"
+        assert "gh api" in executed and "/comments" in executed, \
+            "PR comment must POST to the REST issues/{n}/comments endpoint via `gh api`"
