@@ -1174,14 +1174,21 @@ def test_apply_request_rejects_extra_field() -> None:
         m.ApplyRequest(approval_id=uid, approval_token="t" * 43, operator_jwt="j", bogus="x")
 
 
-def test_require_cf_config_if_enforce_fails_fast() -> None:
-    """C5b-2 review: enforce mode with empty CF_ACCESS_* must fail-fast at boot
-    (a clear 'Revision is not ready') rather than 403 every apply at runtime. e2e
-    mode and a fully-configured enforce boot are fine."""
+def test_validate_operator_auth_config_fails_fast() -> None:
+    """C5b-2 review: boot fail-fast on operator-auth misconfig — a clear 'Revision
+    is not ready' over a runtime 403. (1) enforce + empty CF_ACCESS_* refuses to
+    start; (2) an UNKNOWN mode (typo) refuses to start rather than silently
+    behaving like enforce-without-the-CF-gate; e2e and fully-configured enforce
+    boot fine."""
     with pytest.raises(RuntimeError, match="CF_ACCESS_TEAM_DOMAIN"):
-        m._require_cf_config_if_enforce("enforce", "", "aud")
+        m._validate_operator_auth_config("enforce", "", "aud")
     with pytest.raises(RuntimeError, match="CF_ACCESS_TEAM_DOMAIN"):
-        m._require_cf_config_if_enforce("enforce", "team.cloudflareaccess.com", "")
+        m._validate_operator_auth_config("enforce", "team.cloudflareaccess.com", "")
+    # Unknown/typo'd mode → fail-fast (Codex: 'enfroce' must not boot).
+    with pytest.raises(RuntimeError, match="must be one of"):
+        m._validate_operator_auth_config("enfroce", "team.cloudflareaccess.com", "aud")
+    with pytest.raises(RuntimeError, match="must be one of"):
+        m._validate_operator_auth_config("", "", "")
     # Fully-configured enforce and e2e (any CF config) both boot fine.
-    m._require_cf_config_if_enforce("enforce", "team.cloudflareaccess.com", "aud-tag")
-    m._require_cf_config_if_enforce("e2e", "", "")
+    m._validate_operator_auth_config("enforce", "team.cloudflareaccess.com", "aud-tag")
+    m._validate_operator_auth_config("e2e", "", "")

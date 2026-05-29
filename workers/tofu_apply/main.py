@@ -87,13 +87,23 @@ CF_ACCESS_AUD_TAG = os.environ.get("CF_ACCESS_AUD_TAG", "")
 # (so the e2e smoke + offline unit tests run without a real CF JWT).
 IAC_OPERATOR_AUTH_MODE = os.environ.get("IAC_OPERATOR_AUTH_MODE", "enforce")
 
+_VALID_OPERATOR_AUTH_MODES = frozenset({"enforce", "e2e"})
 
-def _require_cf_config_if_enforce(mode: str, team_domain: str, aud_tag: str) -> None:
-    """Fail-fast at boot: in enforce mode the worker MUST have CF Access
-    configured, else EVERY operator-JWT verify would 403 — a silent prod outage
-    that looks like an auth failure (a deploy that forgot the CF env vars). Refuse
-    to start instead, so it surfaces as a clear "Revision is not ready" the way
-    the other hard-required env does, not a runtime 403 on the first apply."""
+
+def _validate_operator_auth_config(mode: str, team_domain: str, aud_tag: str) -> None:
+    """Fail-fast at boot on operator-auth misconfig — surface a clear "Revision is
+    not ready" rather than a runtime 403 on the first apply.
+
+    1. The mode MUST be exactly ``enforce`` or ``e2e``. A typo (e.g. ``enfroce``)
+       would otherwise boot, SKIP the enforce CF-env gate below, then behave like
+       enforce at request time and 403 — a silent foot-gun. Reject unknown modes.
+    2. In enforce mode the worker MUST have CF Access configured, else EVERY
+       operator-JWT verify 403s (a deploy that forgot the CF env vars)."""
+    if mode not in _VALID_OPERATOR_AUTH_MODES:
+        raise RuntimeError(
+            f"IAC_OPERATOR_AUTH_MODE must be one of {sorted(_VALID_OPERATOR_AUTH_MODES)}, "
+            f"got {mode!r}"
+        )
     if mode == "enforce" and (not team_domain or not aud_tag):
         raise RuntimeError(
             "IAC_OPERATOR_AUTH_MODE=enforce requires CF_ACCESS_TEAM_DOMAIN and "
@@ -101,7 +111,7 @@ def _require_cf_config_if_enforce(mode: str, team_domain: str, aud_tag: str) -> 
         )
 
 
-_require_cf_config_if_enforce(IAC_OPERATOR_AUTH_MODE, CF_ACCESS_TEAM_DOMAIN, CF_ACCESS_AUD_TAG)
+_validate_operator_auth_config(IAC_OPERATOR_AUTH_MODE, CF_ACCESS_TEAM_DOMAIN, CF_ACCESS_AUD_TAG)
 # Distinct from rollback's APPROVAL_HMAC_KEY — the C3 plan-approval HMAC is
 # domain-separated and lives in its own secret (plan-hmac-key).
 PLAN_APPROVAL_HMAC_KEY = os.environ["PLAN_APPROVAL_HMAC_KEY"]
