@@ -10,5 +10,8 @@
 /tools/iac_plan_metadata.py        @adi-prasetyo
 /tools/iac_plan_diff_summary.py    @adi-prasetyo
 /tools/iac_plan_artifact_upload.py @adi-prasetyo
+# C3: the canonical c2.v1 schema (promoted out of tools/) + the plan-approval HMAC crypto.
+/driftscribe_lib/iac_plan_metadata.py @adi-prasetyo
+/driftscribe_lib/approvals.py         @adi-prasetyo
 /.github/                   @adi-prasetyo
 /infra/scripts/             @adi-prasetyo

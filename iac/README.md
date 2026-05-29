@@ -256,3 +256,49 @@ The `plan-builder` job in `.github/workflows/iac.yml` produces the authoritative
     `GCP_TOFU_STATE_KMS_KEY` (values printed by the bootstrap script).
 - **What it does NOT do:** mint approvals, sign HMAC, apply state, read other
   PRs' artifacts. Those live in C3 (schema) and C4 (apply worker).
+
+### Phase C3 — Plan-bound approval schema
+
+`driftscribe_lib/approvals.py` gains a typed **plan-bound** approval alongside the
+existing rollback `Approval` (rollback path untouched). It cryptographically binds
+ONE human approval to exactly ONE immutable `c2.v1` plan artifact. **Library/schema
+only** — no GCS I/O, no `tofu`; fully unit-tested with a fake Firestore client.
+
+- **Canonical c2.v1 schema promoted to the lib:** `driftscribe_lib/iac_plan_metadata.py`
+  is now the single source of truth for the metadata schema + validators;
+  `tools/iac_plan_metadata.py` re-exports it and keeps the `python -m` CLI. (Worker
+  containers ship `driftscribe_lib/` but not `tools/`, and `tools/` is not an installed
+  package — so the schema must live in the lib for the C4 worker to import it.)
+- **Signed payload (`c3.v1`):** `build_plan_approval_payload(...)` re-validates the 15
+  c2.v1 fields through `build_metadata` (treats operator-supplied metadata as untrusted),
+  nests them under `metadata`, and adds the out-of-band metadata locator
+  (`artifact_uri_metadata` + `generation_metadata`), the `approver` (SIGNED — Decision
+  B/D2), and the frozen-format window (`issued_at`/`expires_at` from `new_approval_window`,
+  the single clock site). `canonicalize_payload` is compact sorted JSON.
+- **Plan-bound HMAC:** `compute_plan_approval_hmac(token, approval_id, payload_sha256, key)`
+  binds a single-use token to the SHA-256 of the canonical payload, with a
+  domain-separation tag (`driftscribe-plan-approval-v1`) so a rollback token can never
+  validate here. `verify_plan_approval` recomputes the digest from the stored
+  `payload_canonical` (source of truth) and constant-time compares.
+- **Integrity primitive:** `verify_artifact_integrity(...)` recomputes the SHA-256 of the
+  fetched `plan.tfplan`/`plan.json` bytes and compares to the digests bound in the signed
+  metadata (raises `ArtifactIntegrityError`). Pure — the GCS fetch that supplies the bytes
+  is C4's job.
+- **Store:** `PlanApprovalStore` over a new `plan_approvals` Firestore collection (separate
+  from `approvals`), mirroring `ApprovalStore`: single-use transactional `pending → used`
+  (`claim_pending`) / `pending → denied` (`claim_denied`), audit pair written atomically;
+  the raw token is returned once and never persisted.
+- **C4 consumer contract** (built in C4 — the worker holds the HMAC key, runs both
+  `/propose` create-after-verify and `/apply` claim): `get → status==pending →
+  verify_plan_approval → sp = signed_payload(stored) → not expired (plan_approval_is_expired —
+  the SIGNED window, never the denormalized stored.expires_at) → current actor == sp["approver"]
+  → claim_pending (burn) → re-fetch metadata @ sp["generation_metadata"] + compare to payload →
+  re-fetch plan/json @ sp["metadata"] generations + verify_artifact_integrity → re-run C1
+  denylist on fetched plan.json → freshness refresh-only plan → tofu apply`. Verify precedes the
+  signed-window/approver reads (those bytes are only trusted post-HMAC); ALL apply decisions read
+  from `signed_payload(stored)`, never the denormalized dataclass fields. The denylist re-run
+  needs `iac_plan_denylist` importable at worker runtime, so its promotion to the lib is a C4 task.
+- **What it does NOT do:** fetch from GCS, re-run the denylist, freshness-check, or apply
+  (all C4); render the approval page or authenticate the operator (C5). Full
+  non-repudiation of the signed `approver` depends on C5 forwarding a trusted operator
+  identity that C4 verifies — see the plan doc §4 residual-gap note.
