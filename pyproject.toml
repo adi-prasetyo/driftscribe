@@ -37,6 +37,10 @@ dependencies = [
     "google-genai>=0.5",
     "pygithub>=2.5",
     "httpx>=0.27",
+    # Direct dep (not just transitive via pygithub): agent.auth →
+    # driftscribe_lib.cf_access imports `jwt` to verify the operator CF-Access JWT
+    # on the C5 approval POST. [crypto] → cryptography for RS256.
+    "pyjwt[crypto]>=2.10",
     "pyyaml>=6.0",
     "typer>=0.15",
     "jinja2>=3.1",

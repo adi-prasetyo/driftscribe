@@ -58,6 +58,15 @@ _JWKS_TIMEOUT_SEC = 5.0
 # "don't hammer the JWKS endpoint per-request".
 _JWKS_CACHE_TTL_SEC = 3600.0
 
+# Minimum spacing between JWKS re-fetches triggered by a *kid miss* on an
+# otherwise-fresh cache. Without this, a flood of tokens carrying an unknown
+# ``kid`` (a compromised coordinator, or simply garbage) re-fetches the JWKS on
+# EVERY request — amplifying load onto Cloudflare's endpoint and defeating the
+# cache. Within this window a kid miss is treated as "key genuinely absent"
+# (fail-closed, no fetch); a single rate-limited refresh is allowed once the
+# cache is older than this, so a real key rotation is still picked up promptly.
+_JWKS_MIN_REFRESH_SEC = 60.0
+
 # team_domain shape pin: a hostname (RFC 1123-ish), no scheme/path/query/port.
 # We strip leading/trailing whitespace before this check. The match is
 # intentionally loose — Cloudflare's actual team domains are always of the
@@ -147,7 +156,17 @@ def _get_signing_key(team_domain: str, kid: str) -> "jwt.PyJWK":
         key = cached.keys.get(kid)
         if key is not None:
             return key
-        # kid miss — fall through to refresh.
+        # kid miss on a fresh cache. Rate-limit the refresh: only re-fetch if the
+        # cached JWKS is older than _JWKS_MIN_REFRESH_SEC. Otherwise a flood of
+        # unknown-kid tokens would re-fetch the JWKS on every request (DoS
+        # amplification onto Cloudflare's endpoint). Within the window the kid is
+        # treated as genuinely absent — fail closed, no fetch.
+        if now - cached.fetched_at < _JWKS_MIN_REFRESH_SEC:
+            raise CfAccessJwtError(
+                f"kid {kid!r} not in cached JWKS for {team_domain} (refresh rate-limited)"
+            )
+        # cache is past the min-refresh window — allow ONE refresh to pick up a
+        # key rotation that may have added this kid.
     keys = _fetch_jwks(team_domain)
     _JWKS_CACHE[team_domain] = _JwksCacheEntry(keys=keys, fetched_at=now)
     key = keys.get(kid)
