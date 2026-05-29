@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     # Cloudflare Access integration: when both values are non-empty, the
     # ``verify_token`` dependency will accept a valid ``Cf-Access-Jwt-Assertion``
     # header as proof of authentication in lieu of ``X-DriftScribe-Token``.
-    # See agent/cf_access.py for the verification details and trust boundary.
+    # See driftscribe_lib/cf_access.py for the verification details and trust boundary.
     # Empty defaults so local dev + unit tests behave exactly like the
     # pre-CF-Access build (CF Access path is disabled).
     cf_access_team_domain: str = ""

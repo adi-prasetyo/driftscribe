@@ -38,8 +38,12 @@ import secrets
 
 from fastapi import Header, HTTPException, status
 
-from agent.cf_access import CfAccessJwtError, verify_cf_access_jwt
 from agent.config import get_settings
+from driftscribe_lib.cf_access import (
+    CfAccessJwtError,
+    canonical_operator_email,
+    verify_cf_access_jwt,
+)
 
 _log = logging.getLogger("driftscribe.agent.auth")
 
@@ -96,4 +100,71 @@ def verify_token(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="invalid X-DriftScribe-Token",
+        )
+
+
+def require_cf_operator(
+    cf_access_jwt: str | None = Header(default=None, alias="Cf-Access-Jwt-Assertion"),
+) -> str:
+    """FastAPI dependency requiring a valid Cloudflare Access JWT; returns the
+    canonical operator email.
+
+    Unlike :func:`verify_token` (which accepts CF Access as an OR-fallback to
+    ``X-DriftScribe-Token``), this dependency MANDATES CF Access: there is NO
+    static-token fallback. It is the operator-identity gate for the C5e
+    infra-approval POST — a route that must establish *who* the operator is so
+    the verified email can be bound to a plan approval's ``approver``. (Wiring
+    onto that route lands in a later slice; this defines + tests the dependency.)
+
+    Returns the canonical operator email on success; raises ``HTTPException`` on
+    failure. Fail-closed semantics:
+
+    - 503 if CF Access is not configured (both ``cf_access_team_domain`` AND
+      ``cf_access_aud_tag`` must be set) — the infra-approval route must NOT be
+      reachable without CF Access; we never silently fall back to the static
+      token here.
+    - 401 if the ``Cf-Access-Jwt-Assertion`` header is missing/empty.
+    - 403 if JWT verification fails OR the verified claims lack a usable email.
+
+    As in :func:`verify_token`, a rejection is logged at INFO (one line, no
+    token bytes) and the response NEVER echoes the exception detail.
+    """
+    settings = get_settings()
+
+    if not (settings.cf_access_team_domain and settings.cf_access_aud_tag):
+        # Fail-closed: the operator-identity gate cannot be satisfied by the
+        # static token, so if CF Access isn't configured the route is unusable.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="CF Access not configured",
+        )
+
+    if not cf_access_jwt:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="missing Cf-Access-Jwt-Assertion",
+        )
+
+    try:
+        claims = verify_cf_access_jwt(
+            cf_access_jwt,
+            settings.cf_access_team_domain,
+            settings.cf_access_aud_tag,
+        )
+    except CfAccessJwtError as exc:
+        # One INFO line, no token bytes (mirrors verify_token). Do NOT leak the
+        # exception detail into the response — a bare 403 is all the client gets.
+        _log.info("cf_operator_jwt_rejected", extra={"reason": str(exc)})
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="CF Access verification failed",
+        )
+
+    try:
+        return canonical_operator_email(claims)
+    except CfAccessJwtError as exc:
+        _log.info("cf_operator_email_invalid", extra={"reason": str(exc)})
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="CF Access verification failed",
         )
