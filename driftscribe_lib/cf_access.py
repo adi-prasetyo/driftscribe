@@ -41,7 +41,7 @@ from dataclasses import dataclass
 import httpx
 import jwt
 
-_log = logging.getLogger("driftscribe.agent.cf_access")
+_log = logging.getLogger("driftscribe.lib.cf_access")
 
 # Cloudflare Access mints RS256 only; never trust the ``alg`` from the token
 # header (otherwise a forged JWT with ``alg=none`` or HS256-with-pubkey-as-secret
@@ -206,3 +206,48 @@ def _reset_cache_for_tests() -> None:
     cases to avoid cross-test contamination.
     """
     _JWKS_CACHE.clear()
+
+
+# Maximum email length per RFC 3696 §3 / RFC 5321 (the forward-path limit:
+# 64-octet local part + "@" + 255-octet domain). A claim longer than this is
+# not a real address — reject rather than store/compare an absurd value.
+_MAX_EMAIL_LEN = 320
+
+
+def canonical_operator_email(claims: dict) -> str:
+    """Return the canonical operator email from verified CF Access ``claims``.
+
+    THE SINGLE canonicalization used at BOTH sign-time and compare-time, so the
+    normalization is byte-identical on both sides (design §3.1 "Canonical
+    subject rule I4"):
+
+    - **Sign-time** — the coordinator (Phase C5) sets a plan approval's
+      ``approver`` to this value.
+    - **Compare-time** — the C5b-2 ``tofu-apply`` worker re-verifies the
+      forwarded JWT and compares ITS ``canonical_operator_email(claims)`` to the
+      signed ``approver``. Because both sides call this one function, the
+      compared strings are byte-identical for the same underlying address; any
+      divergence in normalization would silently break that binding.
+
+    The normalization is a deliberate ``.strip().lower()`` (CF Access / the IdP
+    may emit mixed-case or whitespace-padded values; addresses are matched
+    case-insensitively for this gate) bounded at ``≤ 320`` chars
+    (:data:`_MAX_EMAIL_LEN`, the RFC forward-path max).
+
+    Fails CLOSED: requires ``claims["email"]`` to be present, a ``str``,
+    non-empty after ``.strip()``, and ``≤ 320`` chars. On any violation raises
+    :class:`CfAccessJwtError` — NEVER returns a non-canonical or empty value.
+    """
+    email = claims.get("email")
+    if not isinstance(email, str):
+        raise CfAccessJwtError(
+            "CF Access claims missing a string 'email' claim"
+        )
+    stripped = email.strip()
+    if not stripped:
+        raise CfAccessJwtError("CF Access 'email' claim is empty")
+    if len(stripped) > _MAX_EMAIL_LEN:
+        raise CfAccessJwtError(
+            f"CF Access 'email' claim exceeds {_MAX_EMAIL_LEN} chars"
+        )
+    return stripped.lower()
