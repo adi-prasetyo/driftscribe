@@ -216,3 +216,43 @@ flow lands.
 > **C1 is library + CLI + tests only.** No CI wiring (C2 builds the trusted
 > plan-builder workflow that produces the `plan.json`), no apply worker (C4),
 > no HMAC schema (C3/C5).
+
+### Phase C2 — Trusted plan-builder workflow
+
+The `plan-builder` job in `.github/workflows/iac.yml` produces the authoritative
+`tofu plan` artifact for a DriftScribe IaC PR:
+
+- **Trigger:** `workflow_dispatch` only, AND only when the dispatched ref is
+  `refs/heads/main`. A maintainer clicks **Run workflow** from the `main` branch
+  and enters the PR number. `pull_request` is excluded (the WIF condition
+  refuses tokens for that event — fork-PR `repository` claim cannot be
+  filtered); dispatch from a non-main branch is also rejected (so a modified
+  workflow file on a feature branch cannot mint creds).
+- **Identity:** WIF-impersonated `tofu-plan-builder@…` SA. No long-lived keys.
+  Bucket-scoped IAM: state lock + KMS encrypt/decrypt + artifact write only.
+- **PR eligibility:** same-repo (no forks), base `main`, **changes only `iac/`
+  paths**. After checkout of the pinned head SHA, a pure-shell
+  `git diff --name-only --no-renames -z $BASE_SHA $HEAD_SHA` against the
+  immutable git objects refuses if any path is outside `iac/` — no API
+  call, no force-push TOCTOU. The in-checkout static-gate re-run in
+  HARDCODED `MODE=agent` is the second line of defense.
+- **Steps:** validate PR → resolve head/base SHAs (refuse fork/non-main-base)
+  → checkout pinned head → fetch base SHA → diff-guard (`git diff --no-renames`)
+  → uv/python setup → static-gate re-run (agent mode) → setup-opentofu
+  (pinned 1.12.0) → WIF auth → `tofu init` (backend) → `tofu plan -out`
+  → `tofu show -json` → C1 denylist (fails before upload on violation) →
+  upload plan.tfplan + plan.json (capture generations) → build final
+  metadata.json with real generations → upload metadata.json (no
+  placeholder ever lands) → post truncated `tofu show` diff to the PR
+  (with all 3 generations + 2 content hashes + 3 URIs).
+- **Metadata schema:** `c2.v1` — 15 keys (`schema_version` + 14 data fields),
+  validated by `tools.iac_plan_metadata`. The C3 input contract; C4 fetches by
+  pinned generation. Per-run path segment means re-plans never collide.
+- **Operator preconditions** (one-time after merge):
+  - Re-run `infra/scripts/setup_iac_backend.sh` to apply BOTH the new
+    `storage.objectCreator` IAM binding on the artifact bucket AND the
+    tightened WIF condition (ref-pinned workflow_dispatch).
+  - Set GitHub secrets `GCP_WIF_PROVIDER`, `GCP_TOFU_PLAN_BUILDER_SA`,
+    `GCP_TOFU_STATE_KMS_KEY` (values printed by the bootstrap script).
+- **What it does NOT do:** mint approvals, sign HMAC, apply state, read other
+  PRs' artifacts. Those live in C3 (schema) and C4 (apply worker).
