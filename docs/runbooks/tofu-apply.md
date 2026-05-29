@@ -149,7 +149,19 @@ applies.
   worker uses a finite `-lock-timeout=120s` then fails closed. **Never
   auto-force-unlock** — a stuck lock from a crashed apply is cleared by hand only
   after confirming no apply is in flight:
-  `tofu -chdir=iac force-unlock <LOCK_ID>` (operator, deliberate).
+  `tofu -chdir=iac force-unlock <LOCK_ID>` (operator, deliberate). **A crash mid
+  `plan -refresh-only` orphans the lock** (the lock is acquired before the apply
+  proper). Observed live in the C4 smoke: an OOM-killed container (see memory note
+  below) left `gs://…-tofu-state/prod/default.tflock`; the next `/apply` then
+  failed the freshness gate with `tofu refresh-only failed (exit 1)` (a lock error
+  surfacing as exit 1, not drift's exit 2). Recovery: confirm the lock's
+  `Created`/`Who` match the dead attempt, then `force-unlock <LOCK_ID>`.
+- **Memory.** The apply path spawns `tofu` + the google provider plugin, which
+  peaked at **539 MiB** during the live smoke — past Cloud Run's **512 MiB
+  default**, OOM-killing the container (HTTP 503) and orphaning the lock above.
+  The deploy pins **`--memory=2Gi --cpu=2`** (infra/cloudbuild.tofu-apply.yaml).
+  A real (non-no-op) apply uses more than a no-op; keep ≥2Gi and watch
+  `Memory limit … exceeded` in the logs if iac/ grows.
 - **Audit.** Every terminal `/apply` writes `apply_audit` to the `plan_approvals`
   doc: `apply_attempt_id`, `phase`, exit codes, `applied_at`, and the observed
   state `serial`/`lineage` (proves which state snapshot the apply ran against).

@@ -60,6 +60,12 @@ steps:
   #    a placeholder overwritten by step 3. concurrency=1/max-instances=1 so the
   #    GCS state lock is never self-contended. timeout=900 covers a cold start +
   #    tofu init/refresh/apply within one synchronous request.
+  #    memory=2Gi/cpu=2: the apply path spawns `tofu` + the google provider
+  #    plugin, which peaked at 539 MiB during the C4 live smoke and OOM-killed
+  #    the container at Cloud Run's 512 MiB default — which ALSO orphaned the GCS
+  #    state lock (a crash mid-`plan -refresh-only` leaves prod/default.tflock,
+  #    needing a manual `tofu force-unlock`; see docs/runbooks/tofu-apply.md §5).
+  #    2Gi gives ~4x headroom for a real (non-no-op) apply; 2 CPU speeds it up.
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
     entrypoint: gcloud
     args:
@@ -74,6 +80,8 @@ steps:
       - --max-instances=1
       - --concurrency=1
       - --timeout=900
+      - --memory=2Gi
+      - --cpu=2
       - --set-env-vars=GCP_PROJECT=$PROJECT_ID,TARGET_REGION=${_REGION},OWN_URL=https://placeholder.invalid,COORDINATOR_URL=https://placeholder.invalid,ALLOWED_CALLERS=driftscribe-agent@$PROJECT_ID.iam.gserviceaccount.com,ARTIFACT_BUCKET=$PROJECT_ID-tofu-artifacts,TF_VAR_tofu_state_kms_key=${_KMS_KEY}
       - --set-secrets=PLAN_APPROVAL_HMAC_KEY=plan-hmac-key:latest
 
