@@ -37,6 +37,7 @@ DOCS_URL = "https://docs.example.com"
 ROLLBACK_URL = "https://rollback.example.com"
 NOTIFIER_URL = "https://notifier.example.com"
 UPGRADE_DOCS_URL = "https://upgrade-docs.example.com"
+TOFU_APPLY_URL = "https://tofu-apply.example.com"
 
 
 @pytest.fixture(autouse=True)
@@ -49,6 +50,7 @@ def _stub_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ROLLBACK_URL", ROLLBACK_URL)
     monkeypatch.setenv("NOTIFIER_URL", NOTIFIER_URL)
     monkeypatch.setenv("UPGRADE_DOCS_URL", UPGRADE_DOCS_URL)
+    monkeypatch.setenv("TOFU_APPLY_URL", TOFU_APPLY_URL)
 
 
 @pytest.fixture(autouse=True)
@@ -373,3 +375,232 @@ def test_call_merge_pr_audience_is_root_url(_stub_mint_id_token) -> None:
     worker_client.call_merge_pr("owner/repo", 1)
     assert _stub_mint_id_token == [UPGRADE_DOCS_URL]
     assert all(not aud.endswith("/merge") for aud in _stub_mint_id_token)
+
+
+# --------------------------------------------------------------------------- #
+# Phase C5a: tofu-apply worker wiring
+#
+# The tofu-apply worker is the sole infra mutator. /propose is its canonical
+# (default) endpoint; /apply mutates; /deny is cleanup-only. None of the
+# three wrappers is ever an ADK tool — they are server-side approval-handler
+# calls only (the ADK-non-exposure pin lives at the bottom of this file).
+# --------------------------------------------------------------------------- #
+
+
+def test_tofu_apply_url_resolves_from_env() -> None:
+    """The tofu_apply base URL resolves from ``TOFU_APPLY_URL``."""
+    assert worker_client._worker_url("tofu_apply") == TOFU_APPLY_URL
+
+
+def test_tofu_apply_raises_503_when_url_unset(monkeypatch) -> None:
+    """Missing config at runtime is a deploy bug. Fail closed at 503."""
+    monkeypatch.delenv("TOFU_APPLY_URL", raising=False)
+    with pytest.raises(WorkerClientError) as exc:
+        worker_client.call("tofu_apply", {})
+    assert exc.value.status_code == 503
+    assert "not configured" in str(exc.value).lower()
+
+
+def test_tofu_apply_raises_503_when_url_empty(monkeypatch) -> None:
+    monkeypatch.setenv("TOFU_APPLY_URL", "")
+    with pytest.raises(WorkerClientError) as exc:
+        worker_client.call("tofu_apply", {})
+    assert exc.value.status_code == 503
+
+
+# --------------------------------------------------------------------------- #
+# call_propose: default endpoint is /propose; operator_jwt is conditional
+# --------------------------------------------------------------------------- #
+
+
+@respx.mock
+def test_call_propose_posts_to_propose_default_endpoint() -> None:
+    """``call_propose`` uses the worker's DEFAULT endpoint (/propose) — it
+    must NOT pass an ``endpoint=`` override."""
+    route = respx.post(f"{TOFU_APPLY_URL}/propose").respond(
+        200, json={"approval_id": "id1", "status": "pending"}
+    )
+    out = worker_client.call_propose(
+        "gs://bucket/plan.json", "42", "operator@example.com", None
+    )
+    assert out == {"approval_id": "id1", "status": "pending"}
+    assert route.called
+
+
+@respx.mock
+def test_call_propose_includes_operator_jwt_when_present() -> None:
+    """With ``operator_jwt="x"`` the body contains the ``operator_jwt`` key
+    alongside the three canonical fields."""
+    route = respx.post(f"{TOFU_APPLY_URL}/propose").respond(
+        200, json={"approval_id": "id1"}
+    )
+    worker_client.call_propose(
+        "gs://bucket/plan.json", "42", "operator@example.com", "x"
+    )
+    body = json.loads(route.calls.last.request.content)
+    assert body == {
+        "artifact_uri_metadata": "gs://bucket/plan.json",
+        "generation_metadata": "42",
+        "approver": "operator@example.com",
+        "operator_jwt": "x",
+    }
+
+
+@respx.mock
+def test_call_propose_omits_operator_jwt_when_none() -> None:
+    """With ``operator_jwt=None`` the body has NO ``operator_jwt`` key — the
+    worker's ProposeRequest is ``extra="forbid"`` and the field does not
+    exist until C5b, so omitting it keeps the wrapper wire-compatible."""
+    route = respx.post(f"{TOFU_APPLY_URL}/propose").respond(
+        200, json={"approval_id": "id1"}
+    )
+    worker_client.call_propose(
+        "gs://bucket/plan.json", "42", "operator@example.com", None
+    )
+    body = json.loads(route.calls.last.request.content)
+    assert "operator_jwt" not in body
+    assert body == {
+        "artifact_uri_metadata": "gs://bucket/plan.json",
+        "generation_metadata": "42",
+        "approver": "operator@example.com",
+    }
+
+
+@respx.mock
+def test_call_propose_audience_is_root_url(_stub_mint_id_token) -> None:
+    """Audience binding holds for /propose — the minted token's ``aud`` is
+    the worker ROOT url, never the /propose path."""
+    respx.post(f"{TOFU_APPLY_URL}/propose").respond(200, json={"ok": True})
+    worker_client.call_propose("gs://b/p.json", "1", "op@e.com", None)
+    assert _stub_mint_id_token == [TOFU_APPLY_URL]
+    assert all(not aud.endswith("/propose") for aud in _stub_mint_id_token)
+
+
+# --------------------------------------------------------------------------- #
+# call_apply: must hit /apply; operator_jwt conditional; id+token always
+# --------------------------------------------------------------------------- #
+
+
+@respx.mock
+def test_call_apply_hits_apply_not_propose() -> None:
+    """``call_apply`` routes to /apply (the mutating path), never the
+    default /propose."""
+    route_propose = respx.post(f"{TOFU_APPLY_URL}/propose").respond(
+        200, json={"should": "not be called"}
+    )
+    route_apply = respx.post(f"{TOFU_APPLY_URL}/apply").respond(
+        200, json={"status": "applied"}
+    )
+    out = worker_client.call_apply("aid", "atok", None)
+    assert out == {"status": "applied"}
+    assert route_apply.called
+    assert not route_propose.called
+
+
+@respx.mock
+def test_call_apply_includes_operator_jwt_when_present() -> None:
+    route = respx.post(f"{TOFU_APPLY_URL}/apply").respond(
+        200, json={"status": "applied"}
+    )
+    worker_client.call_apply("aid", "atok", "x")
+    body = json.loads(route.calls.last.request.content)
+    assert body == {
+        "approval_id": "aid",
+        "approval_token": "atok",
+        "operator_jwt": "x",
+    }
+
+
+@respx.mock
+def test_call_apply_omits_operator_jwt_when_none() -> None:
+    """``operator_jwt=None`` → no ``operator_jwt`` key; id+token always
+    present (the worker's TokenRequest is ``extra="forbid"``)."""
+    route = respx.post(f"{TOFU_APPLY_URL}/apply").respond(
+        200, json={"status": "applied"}
+    )
+    worker_client.call_apply("aid", "atok", None)
+    body = json.loads(route.calls.last.request.content)
+    assert "operator_jwt" not in body
+    assert body == {"approval_id": "aid", "approval_token": "atok"}
+
+
+@respx.mock
+def test_call_apply_audience_is_root_url(_stub_mint_id_token) -> None:
+    respx.post(f"{TOFU_APPLY_URL}/apply").respond(200, json={"status": "applied"})
+    worker_client.call_apply("aid", "atok", None)
+    assert _stub_mint_id_token == [TOFU_APPLY_URL]
+    assert all(not aud.endswith("/apply") for aud in _stub_mint_id_token)
+
+
+# --------------------------------------------------------------------------- #
+# call_plan_deny: must hit /deny; body is exactly id+token, never operator_jwt
+# --------------------------------------------------------------------------- #
+
+
+@respx.mock
+def test_call_plan_deny_hits_deny_endpoint_with_exact_payload() -> None:
+    """``call_plan_deny`` routes to /deny (cleanup-only) and sends exactly
+    ``{approval_id, approval_token}`` — never an ``operator_jwt`` key, since
+    cleanup carries no operator-identity binding."""
+    route_propose = respx.post(f"{TOFU_APPLY_URL}/propose").respond(
+        200, json={"should": "not be called"}
+    )
+    route_deny = respx.post(f"{TOFU_APPLY_URL}/deny").respond(
+        200, json={"status": "denied"}
+    )
+    out = worker_client.call_plan_deny("aid", "atok")
+    assert out == {"status": "denied"}
+    assert route_deny.called
+    assert not route_propose.called
+    body = json.loads(route_deny.calls.last.request.content)
+    assert body == {"approval_id": "aid", "approval_token": "atok"}
+    assert "operator_jwt" not in body
+
+
+@respx.mock
+def test_call_plan_deny_audience_is_root_url(_stub_mint_id_token) -> None:
+    respx.post(f"{TOFU_APPLY_URL}/deny").respond(200, json={"status": "denied"})
+    worker_client.call_plan_deny("aid", "atok")
+    assert _stub_mint_id_token == [TOFU_APPLY_URL]
+    assert all(not aud.endswith("/deny") for aud in _stub_mint_id_token)
+
+
+# --------------------------------------------------------------------------- #
+# ADK-non-exposure: the three tofu-apply wrappers are NOT registered tools.
+#
+# Mirrors the Layer-0 guarantee for call_execute / call_deny: the operator's
+# approval-handler is the only caller. ``COORDINATOR_TOOLS`` (agent.adk_agent)
+# is the EXHAUSTIVE registry of ADK-exposed callables — these wrappers must
+# not appear among the registered tool function names.
+# --------------------------------------------------------------------------- #
+
+
+def test_tofu_apply_wrappers_are_not_adk_tools() -> None:
+    """``call_propose`` / ``call_apply`` / ``call_plan_deny`` must NEVER be
+    exposed as ADK tools — they are server-side approval-handler calls only.
+
+    Same Layer-0 invariant the rollback worker's ``call_execute`` /
+    ``call_deny`` enjoy: the LLM-facing tool registry
+    (``agent.adk_agent.COORDINATOR_TOOLS``) is exhaustive, so the proof is
+    that none of these three callables appears among the registered tool
+    function names.
+    """
+    from agent.adk_agent import COORDINATOR_TOOLS
+
+    registered_names = {t.__name__ for t in COORDINATOR_TOOLS}
+    for name in ("call_propose", "call_apply", "call_plan_deny"):
+        assert name not in registered_names, (
+            f"{name} is a server-side mutation wrapper and must never be an "
+            f"ADK tool, but it appears in COORDINATOR_TOOLS."
+        )
+
+    # Defense in depth: also confirm the coordinator's ADK-tool module does
+    # not re-export these wrappers as module-level callables (a future PR
+    # that imported them into agent.adk_tools could accidentally widen the
+    # surface even before they hit COORDINATOR_TOOLS).
+    import agent.adk_tools as adk_tools
+
+    for name in ("call_propose", "call_apply", "call_plan_deny"):
+        assert not hasattr(adk_tools, name), (
+            f"agent.adk_tools must not expose {name} as a callable."
+        )
