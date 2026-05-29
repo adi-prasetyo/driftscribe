@@ -60,3 +60,9 @@ resource "google_cloud_run_v2_service" "payment_demo" {
     ignore_changes = [client, client_version, scaling]
   }
 }
+
+# C4 live no-op smoke (2026-05-29): this comment is the only change in the
+# smoke PR. HCL comments are ignored by tofu, so the plan-builder produces a
+# zero-action plan — exercising the full /propose → /apply gate (HMAC, integrity,
+# denylist, fidelity, freshness, saved-plan apply) against the sole-mutator worker
+# with no real infra change. Safe to remove after the smoke is recorded.
