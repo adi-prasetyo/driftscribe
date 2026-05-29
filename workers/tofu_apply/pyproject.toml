@@ -1,0 +1,33 @@
+# Canonical dependency documentation for the tofu-apply worker (Phase C4).
+#
+# Same pattern as the other workers: the container is NOT built by `pip install .`
+# against this file — workers/tofu_apply/Dockerfile installs the listed deps via
+# `uv pip install --system <floors>` and ships driftscribe_lib via PYTHONPATH.
+# This file exists so the worker's deps are readable without parsing a Dockerfile;
+# keep it in sync with the Dockerfile install line.
+#
+# C4 firsts vs the other workers: the Dockerfile also bakes a pinned `tofu`
+# binary + the iac/ source + pre-fetched providers (see the Dockerfile).
+[project]
+name = "driftscribe-tofu-apply"
+version = "0.1.0"
+description = "DriftScribe tofu-apply worker — HITL-gated, plan-bound OpenTofu apply (sole mutator)"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    # Firestore — backs the plan_approvals collection via driftscribe_lib.approvals.
+    "google-cloud-firestore>=2.19",
+    # GCS — fetches the pinned plan artifacts (workers/tofu_apply/gcs_fetch.py).
+    "google-cloud-storage>=2.18",
+    "google-auth>=2.35",
+    # google.auth.transport.requests imports `requests` at runtime.
+    "requests>=2.32",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "httpx>=0.27",  # fastapi.testclient.TestClient
+]

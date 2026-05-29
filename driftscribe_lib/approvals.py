@@ -596,6 +596,12 @@ class PlanApproval:
     denied_at: dt.datetime | None = None
     denied_by: str | None = None
     operation_name: str | None = None
+    # C4: a SINGLE nested audit map (apply_attempt_id, phase, freshness_exit_code,
+    # apply_exit_code, apply_status, applied_at, state_serial, state_lineage, …).
+    # One optional field (not many top-level keys) so a growing audit record never
+    # breaks PlanApprovalStore.get()'s PlanApproval(approval_id=id, **data) on reads
+    # of used docs. NOT an HMAC input — written at/after claim time only.
+    apply_audit: dict[str, Any] | None = None
 
 
 def _parse_rfc3339_utc(value: str) -> dt.datetime:
@@ -691,15 +697,44 @@ class PlanApprovalStore:
         return PlanApproval(approval_id=approval_id, **data)
 
     def claim_pending(
-        self, approval_id: str, *, used_by: str, used_at: dt.datetime
+        self,
+        approval_id: str,
+        *,
+        used_by: str,
+        used_at: dt.datetime,
+        apply_audit: dict[str, Any] | None = None,
     ) -> PlanApproval | None:
         """Transactionally flip ``status: pending -> used`` and record the actor
         that drove /apply (atomic with the flip). Returns the updated record, or
         ``None`` if the doc is missing or not pending (already used/denied) — the
-        canonical single-use replay defense (mirrors :meth:`ApprovalStore.claim_pending`)."""
-        return self._claim(
-            approval_id, new_status="used", extra={"used_by": used_by, "used_at": used_at}
-        )
+        canonical single-use replay defense (mirrors :meth:`ApprovalStore.claim_pending`).
+
+        ``apply_audit`` (C4) is an optional nested map written **atomically with the
+        status flip** so a worker crash after the claim but before the terminal audit
+        leaves a ``used`` doc whose ``apply_audit.phase`` records the outcome-unknown
+        state (never a silent ``used``). It MUST be a plain dict; it lands only under
+        the ``apply_audit`` key and so cannot collide with the control fields
+        (``status``/``used_by``/``used_at``/``token_hmac``/``payload_canonical``/…)."""
+        extra: dict[str, Any] = {"used_by": used_by, "used_at": used_at}
+        if apply_audit is not None:
+            if not isinstance(apply_audit, dict):
+                raise TypeError("apply_audit must be a dict")
+            extra["apply_audit"] = apply_audit
+        return self._claim(approval_id, new_status="used", extra=extra)
+
+    def set_apply_audit(self, approval_id: str, audit: dict[str, Any]) -> None:
+        """Write the terminal ``apply_audit`` record (post-apply, non-transactional).
+
+        Separate from the transactional claim because it runs AFTER the heavy
+        re-checks + ``tofu apply`` — it is audit, not control-flow. Overwrites the
+        ``apply_audit`` key only (never touches ``status`` or any HMAC-bound field).
+        Used to record the terminal phase (``applied``/``failed``/``drift_refused``/
+        ``integrity_refused``/…), the tofu exit codes, and the observed state
+        serial/lineage. A plain ``update`` (no transaction): the single-use claim
+        already happened, so there is no concurrency to guard here."""
+        if not isinstance(audit, dict):
+            raise TypeError("audit must be a dict")
+        self._ref(approval_id).update({"apply_audit": audit})
 
     def claim_denied(
         self, approval_id: str, *, denied_by: str, denied_at: dt.datetime

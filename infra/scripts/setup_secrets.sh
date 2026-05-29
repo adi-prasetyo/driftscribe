@@ -147,13 +147,23 @@ NOTIFIER_SA="notifier-agent-sa@${PROJECT}.iam.gserviceaccount.com"
 UPGRADE_READER_SA="upgrade-reader-sa@${PROJECT}.iam.gserviceaccount.com"
 UPGRADE_DOCS_SA="upgrade-docs-sa@${PROJECT}.iam.gserviceaccount.com"
 
-# Cloud Build acts-as each runtime SA during `gcloud run deploy`.
+# Cloud Build acts-as each runtime SA during `gcloud run deploy`. The C4
+# tofu-apply-sa (created by setup_iac_backend.sh §6.5) is included — gated on
+# existence so this is a no-op until that script has run.
+APPLY_SA="${APPLY_SA:-tofu-apply-sa@${PROJECT}.iam.gserviceaccount.com}"
 for sa in "$COORD_SA" "$READER_SA" "$DOCS_SA" "$ROLLBACK_SA" "$NOTIFIER_SA"; do
   gcloud iam service-accounts add-iam-policy-binding "$sa" \
     --project="$PROJECT" \
     --member="serviceAccount:${CLOUDBUILD_SA}" \
     --role="roles/iam.serviceAccountUser" >/dev/null
 done
+if gcloud iam service-accounts describe "$APPLY_SA" --project="$PROJECT" >/dev/null 2>&1; then
+  gcloud iam service-accounts add-iam-policy-binding "$APPLY_SA" \
+    --project="$PROJECT" \
+    --member="serviceAccount:${CLOUDBUILD_SA}" \
+    --role="roles/iam.serviceAccountUser" >/dev/null
+  echo "  cloudbuild: actAs on ${APPLY_SA} (C4 tofu-apply deploy)"
+fi
 
 # --------------------------------------------------------------------------
 # 5. Per-SA project-level IAM grants
@@ -236,6 +246,21 @@ if ! gcloud secrets describe approval-hmac-key --project "$PROJECT" >/dev/null 2
   echo "approval-hmac-key created (no operator-facing surface)"
 else
   echo "approval-hmac-key already exists — leaving untouched"
+fi
+
+# plan-hmac-key (Phase C4): the plan-bound approval HMAC key for the tofu-apply
+# worker. SEPARATE from approval-hmac-key (the C3 plan-approval HMAC is
+# domain-separated) so the apply worker never holds the rollback key — clean
+# per-worker key separation. First-run-only auto-generation, like the keys above.
+if ! gcloud secrets describe plan-hmac-key --project "$PROJECT" >/dev/null 2>&1; then
+  RANDOM_PLAN_HMAC="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+  gcloud secrets create plan-hmac-key \
+    --project "$PROJECT" --replication-policy=automatic
+  printf '%s' "$RANDOM_PLAN_HMAC" | gcloud secrets versions add plan-hmac-key \
+    --project "$PROJECT" --data-file=-
+  echo "plan-hmac-key created (no operator-facing surface)"
+else
+  echo "plan-hmac-key already exists — leaving untouched"
 fi
 
 # Docs Agent's fine-grained PAT — operator must supply. If omitted, print
@@ -421,6 +446,12 @@ bind_secret docs-agent-github-pat     "$DOCS_SA"
 # Rollback worker: one secret (the HMAC key).
 bind_secret approval-hmac-key         "$ROLLBACK_SA"
 
+# tofu-apply worker (Phase C4): one secret (the plan-bound HMAC key). Scoped to
+# plan-hmac-key ONLY — the apply worker cannot read approval-hmac-key or any
+# other secret (clean per-worker key separation; see setup_iac_backend.sh §6.5).
+APPLY_SA="${APPLY_SA:-tofu-apply-sa@${PROJECT}.iam.gserviceaccount.com}"
+bind_secret plan-hmac-key             "$APPLY_SA"
+
 # Notifier worker: one secret (the outbound webhook URL).
 bind_secret driftscribe-webhook-url   "$NOTIFIER_SA"
 
@@ -448,6 +479,38 @@ else
   echo "  re-run this script after the first 'gcloud builds submit' to apply it"
 fi
 
+# 7b. tofu-apply worker (Phase C4) — resource-scoped run.developer on payment-demo
+# AND scoped iam.serviceAccountUser (actAs) on payment-demo's RUNTIME SA. A
+# `tofu apply` that updates the Cloud Run service requires actAs on whatever
+# identity the service runs as (iac/cloudrun.tf declares no template.service_account,
+# so the live service runs as the DEFAULT COMPUTE SA — resolved below, with a
+# fallback). Both grants are resource-scoped + gated on existence; harmless under
+# the editor IAM fast path (which already covers them project-wide). The hardened
+# default (run.developer project-wide, NO project-wide actAs) needs THIS scoped
+# actAs for non-no-op applies — see setup_iac_backend.sh §6.5 + the C4 plan §4.3.
+APPLY_SA="${APPLY_SA:-tofu-apply-sa@${PROJECT}.iam.gserviceaccount.com}"
+if gcloud run services describe payment-demo --region="$REGION" --project="$PROJECT" >/dev/null 2>&1 \
+   && gcloud iam service-accounts describe "$APPLY_SA" --project="$PROJECT" >/dev/null 2>&1; then
+  gcloud run services add-iam-policy-binding payment-demo \
+    --project="$PROJECT" --region="$REGION" \
+    --member="serviceAccount:${APPLY_SA}" \
+    --role="roles/run.developer" >/dev/null
+  # Resolve the live runtime SA; empty value ⇒ the default compute SA.
+  PD_RUNTIME_SA="$(gcloud run services describe payment-demo \
+    --region="$REGION" --project="$PROJECT" --format='value(template.serviceAccount)' 2>/dev/null || echo '')"
+  if [ -z "$PD_RUNTIME_SA" ]; then
+    PD_RUNTIME_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+  fi
+  gcloud iam service-accounts add-iam-policy-binding "$PD_RUNTIME_SA" \
+    --project="$PROJECT" \
+    --member="serviceAccount:${APPLY_SA}" \
+    --role="roles/iam.serviceAccountUser" >/dev/null
+  echo "tofu-apply-sa: granted run.developer on payment-demo + actAs on its runtime SA (${PD_RUNTIME_SA})"
+else
+  echo "payment-demo or tofu-apply-sa not present yet — skipping C4 apply-SA resource grants"
+  echo "  re-run this script after deploying payment-demo + running setup_iac_backend.sh"
+fi
+
 # --------------------------------------------------------------------------
 # 8. Coordinator → worker per-service run.invoker grants
 # --------------------------------------------------------------------------
@@ -471,7 +534,13 @@ fi
 # NOT sufficient on its own — the coordinator SA also needs this Cloud Run
 # platform invoker grant, or the call 403s at the admission layer. (This is the
 # grant that had to be applied by hand during the first Phase B deploy.)
-for worker in driftscribe-reader driftscribe-docs driftscribe-rollback driftscribe-notifier driftscribe-upgrade-reader driftscribe-upgrade-docs driftscribe-infra-reader; do
+# Phase infra-iac C4: driftscribe-tofu-apply (the sole-mutator apply worker)
+# added so the coordinator (C5) can drive /propose + /apply. NOTE: C4 deploys
+# the worker --no-allow-unauthenticated for the live smoke, then redeploys
+# --ingress=internal; under internal ingress the coordinator must reach it from
+# inside the VPC (a C5 egress concern) — this invoker grant is necessary but not
+# sufficient there. See docs/runbooks/tofu-apply.md.
+for worker in driftscribe-reader driftscribe-docs driftscribe-rollback driftscribe-notifier driftscribe-upgrade-reader driftscribe-upgrade-docs driftscribe-infra-reader driftscribe-tofu-apply; do
   if gcloud run services describe "$worker" \
      --region="$REGION" --project="$PROJECT" >/dev/null 2>&1; then
     gcloud run services add-iam-policy-binding "$worker" \
