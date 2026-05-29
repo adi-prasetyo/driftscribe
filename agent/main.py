@@ -23,10 +23,12 @@ from google.oauth2.id_token import verify_oauth2_token
 from pydantic import BaseModel, ConfigDict
 
 from agent import approvals as approval_helpers
+from agent import iac_artifacts
+from agent import iac_csrf
 from agent import worker_client
 from agent.auth import verify_token
 from agent.classifier import ClassificationInput, classify
-from agent.config import Settings, get_settings
+from agent.config import Settings, artifacts_bucket, get_settings
 from agent.worker_client import WorkerClientError
 from agent.contract import OpsContract, load_contract
 from agent.github_actions import (
@@ -216,6 +218,26 @@ def _apply_approval_security_headers(response: Response) -> Response:
     response.headers["Cache-Control"] = "no-store"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["X-Frame-Options"] = "DENY"
+    return response
+
+
+# Strict Content-Security-Policy for the C5e ``/iac-approvals`` pages (Phase
+# C5e-2). The page is fully self-contained: inline ``<style>`` only, a same-origin
+# form, no scripts, no images, no remote anything. We pin the CSP accordingly so a
+# stored-XSS-style injection into the rendered plan/diff text cannot exfiltrate or
+# escalate:
+# - ``default-src 'none'``  — deny everything not explicitly allowed.
+# - ``style-src 'unsafe-inline'`` — the only inline content we ship is the
+#   ``<style>`` block (Jinja autoescaping covers the dynamic plan/diff text).
+# - ``form-action 'self'`` — the Approve/Reject POST may only target this origin
+#   (a CSP-level companion to the POST handler's exact-Origin check in C5e-3).
+# - ``base-uri 'none'`` / ``frame-ancestors 'none'`` — no ``<base>`` hijack, no
+#   framing (defense-in-depth alongside ``X-Frame-Options: DENY``).
+def _apply_iac_csp(response: Response) -> Response:
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; "
+        "base-uri 'none'; frame-ancestors 'none'"
+    )
     return response
 
 
@@ -1779,6 +1801,169 @@ def approval_get(request: Request, approval_id: str, t: str = "") -> Response:
         },
     )
     return _apply_approval_security_headers(response)
+
+
+# --------------------------------------------------------------------------- #
+# Phase C5e-2 — read-only infra-apply approval page.
+#
+# GET /iac-approvals/{pr_number} renders the C2 ``tofu plan`` artifact a
+# plan-builder run already produced, plus a signed, artifact-bound CSRF form
+# token the C5e-3 POST will verify. It is READ-ONLY: it never mints a plan
+# approval, never calls the tofu-apply worker, and never reads ``plan_approvals``.
+# --------------------------------------------------------------------------- #
+
+
+def _resolve_iac_plan(
+    s: Settings, pr_number: int
+) -> tuple["iac_artifacts.C2CommentRef | None", "iac_artifacts.IacPlanView | None"]:
+    """Resolve the latest C2 artifact for ``pr_number`` into ``(ref, view)``.
+
+    Thin + monkeypatch-friendly (tests patch ``agent.main.get_repo`` and the
+    ``agent.main.iac_artifacts.*`` seams). Returns:
+
+    - ``(None, None)`` when GitHub is not configured (route renders "run C2"
+      / approvals-not-configured) or no C2 marker comment exists.
+    - ``(ref, None)`` when a comment was found but the artifact could not be
+      fetched/verified (route renders unverifiable, Approve suppressed).
+    - ``(ref, view)`` on success (``view`` carries the advisory verify result;
+      the worker re-verifies authoritatively at /apply).
+    """
+    if not (s.github_token and s.github_repo):
+        return (None, None)
+
+    # Fail-closed at this boundary so the GET stays ALWAYS-200 (probe-safe). We
+    # catch broadly on purpose: load_plan_view already converts its own
+    # IacArtifactErrors into unverifiable views, and find_latest_c2_comment wraps
+    # GithubException — but get_repo, a GCS permission/network error, or any
+    # unexpected SDK exception could still escape and surface a 500. ``ref`` is
+    # seeded to None so a comment-listing failure yields (None, None) ("run C2")
+    # while a post-resolution failure yields (ref, None) (render unverifiable).
+    ref: "iac_artifacts.C2CommentRef | None" = None
+    try:
+        repo = get_repo(s.github_token, s.github_repo)
+        ref = iac_artifacts.find_latest_c2_comment(repo, pr_number)
+        if ref is None:
+            return (None, None)
+        view = iac_artifacts.load_plan_view(ref, bucket_name=artifacts_bucket(s))
+    except Exception:  # noqa: BLE001 — fail-closed: any resolver error → no/unverifiable plan
+        log.warning("iac_plan_resolution_failed", extra={"pr_number": pr_number})
+        return (ref, None)
+    return (ref, view)
+
+
+def _iac_artifact_consistent(
+    ref: "iac_artifacts.C2CommentRef | None",
+    view: "iac_artifacts.IacPlanView",
+    pr_number: int,
+) -> bool:
+    """True iff the rendered/pinned artifact coherently belongs to ``pr_number``.
+
+    Defense-in-depth (Codex C5e-2 review, BLOCKER): ``find_latest_c2_comment``
+    only matches the C2 marker on the route's issue, and ``load_plan_view`` does
+    not cross-check the comment ref against the fetched metadata or against the
+    route PR. Without this guard a marker comment could point at a (validly
+    signed) artifact for a DIFFERENT pr/head, and we would mint a form token
+    binding the wrong artifact to ``/iac-approvals/{pr_number}`` — the worker's
+    ``/propose`` receives only ``(artifact_uri_metadata, generation_metadata)``,
+    so it does not re-establish this PR binding for us.
+
+    We require: a parsed ref; the metadata's ``pr_number`` equals the route PR;
+    and the comment ref's identity fields (head_sha, both plan hashes, the
+    plan/json URIs + generations) match the fetched metadata exactly. Any
+    mismatch suppresses Approve (advisory; the worker still re-verifies).
+    """
+    if ref is None:
+        return False
+    md = view.metadata
+    try:
+        if int(md.get("pr_number")) != pr_number:
+            return False
+    except (TypeError, ValueError):
+        return False
+    return (
+        ref.head_sha == md.get("head_sha")
+        and ref.plan_sha256 == md.get("plan_sha256")
+        and ref.plan_json_sha256 == md.get("plan_json_sha256")
+        and ref.artifact_uri_plan == md.get("artifact_uri_plan")
+        and ref.artifact_uri_json == md.get("artifact_uri_json")
+        and ref.generation_plan == md.get("generation_plan")
+        and ref.generation_json == md.get("generation_json")
+    )
+
+
+@app.get("/iac-approvals/{pr_number}", response_class=HTMLResponse)
+def iac_approval_get(request: Request, pr_number: int) -> Response:
+    """Render the read-only infra-apply approval page for ``pr_number``.
+
+    Auth posture: like the rollback ``approval_get``, this GET has NO app-level
+    auth dependency — the whole coordinator sits behind Cloudflare Access at the
+    edge, and this read-only page reveals only plan details already visible to a
+    signed-in operator. The mandatory operator-identity gate
+    (``require_cf_operator``) lives on the C5e-3 POST, not here.
+
+    Always returns 200 (probe-safe): missing comment / unverifiable artifact /
+    denylist violation all render an informative page with Approve suppressed
+    rather than an error code that would let a probe enumerate PR state.
+
+    Hard invariant: this handler never mints a plan approval, never calls the
+    tofu-apply worker, and never reads ``plan_approvals``.
+    """
+    s = get_settings()
+    ref, view = _resolve_iac_plan(s, pr_number)
+
+    can_approve = False
+    reason_blocked = ""
+    form_token: str | None = None
+
+    if view is None:
+        reason_blocked = "No verifiable C2 plan artifact."
+    elif view.unverifiable:
+        reason_blocked = "artifact unverifiable"
+    elif not view.integrity_ok:
+        reason_blocked = "plan.json integrity mismatch"
+    elif view.denylist_violations:
+        reason_blocked = "denylist violations (self-protection policy)"
+    elif not _iac_artifact_consistent(ref, view, pr_number):
+        # The artifact does not coherently belong to this PR (metadata pr_number
+        # mismatch, or comment ref ≠ fetched metadata). Fail-closed — never pin
+        # an artifact for a different PR/head to this page.
+        reason_blocked = "artifact does not match this PR"
+    elif not s.driftscribe_token:
+        reason_blocked = "approvals not configured (server token unset)"
+    else:
+        can_approve = True
+
+    if can_approve:
+        try:
+            form_token = iac_csrf.mint_form_token(
+                s,
+                pr_number=pr_number,
+                head_sha=view.head_sha,
+                artifact_uri_metadata=view.artifact_uri_metadata,
+                generation_metadata=view.generation_metadata,
+                plan_sha256=view.plan_sha256,
+                plan_json_sha256=view.plan_json_sha256,
+                comment_id=(ref.comment_id if ref else None),
+            )
+        except iac_csrf.IacCsrfError:
+            can_approve = False
+            form_token = None
+            reason_blocked = "approvals not configured (server token unset)"
+
+    response = _TEMPLATES.TemplateResponse(
+        request,
+        "iac_approval.html",
+        {
+            "pr_number": pr_number,
+            "view": view,
+            "form_token": form_token,
+            "can_approve": can_approve,
+            "reason_blocked": reason_blocked,
+        },
+    )
+    _apply_approval_security_headers(response)
+    _apply_iac_csp(response)
+    return response
 
 
 @app.post("/approvals/{approval_id}", response_class=HTMLResponse)
