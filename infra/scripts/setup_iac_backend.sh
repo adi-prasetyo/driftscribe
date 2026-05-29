@@ -286,6 +286,23 @@ echo "  ${CI_SA}: run.viewer (project) — read-only refresh of payment-demo for
 # Note: storage.objectAdmin (5a) already covers reading the backend state
 # object; no extra storage read role is needed for the plan refresh.
 
+# 5d. Artifact bucket: roles/storage.objectCreator — Phase C2 write grant.
+# The plan-builder uploads {plan.tfplan, plan.json, metadata.json} to this
+# bucket via the google-cloud-storage Python SDK. objectCreator allows
+# storage.objects.create (the only verb needed for a fresh write into a
+# versioned bucket — the SDK upload response populates Blob.generation
+# in-band so no separate storage.objects.get call is needed; thus no
+# objectViewer grant either). DELIBERATELY NOT objectAdmin: we do not want
+# the plan-builder to be able to delete an earlier plan, and we do not
+# want it to read other PRs' artifacts. Bucket-level IAM, never
+# project-wide. Apply-side reads (C4) come from a different SA grant
+# added in that slice.
+gcloud storage buckets add-iam-policy-binding "gs://${ARTIFACT_BUCKET}" \
+  --project="$PROJECT" \
+  --member="serviceAccount:${CI_SA}" \
+  --role="roles/storage.objectCreator" >/dev/null
+echo "  ${CI_SA}: storage.objectCreator on gs://${ARTIFACT_BUCKET} (plan upload, write-only)"
+
 # --------------------------------------------------------------------------
 # 6. Workload Identity Federation — pool + GitHub OIDC provider.
 # --------------------------------------------------------------------------
@@ -317,9 +334,12 @@ WIF_ATTR_MAPPING+=",attribute.workflow_ref=assertion.workflow_ref"
 # Attribute CONDITION (CEL): tokens are accepted ONLY when ALL hold:
 #   - repository == the canonical repo             -> see fork note below
 #   - workflow_ref starts with "<repo>/<workflow>" -> only THIS workflow file mints creds
+#   - AND the dispatched ref equals refs/heads/<trusted-branch>      <- NEW
 #   - AND the event is a TRUSTED TRIGGER, one of:
-#       * push to the trusted branch (ref == "refs/heads/<branch>"), OR
-#       * workflow_dispatch (a maintainer manually running the workflow)
+#       * push to the trusted branch, OR
+#       * workflow_dispatch (a maintainer manually running the workflow,
+#         restricted by the previous clause to the trusted branch only —
+#         dispatching from a feature branch is rejected)
 #     -> the `pull_request` event is NOT granted creds at all.
 #
 # FORK-PR FIX (verified against GitHub's OIDC docs, 2026-05-27): `repository ==`
@@ -337,8 +357,12 @@ WIF_ATTR_MAPPING+=",attribute.workflow_ref=assertion.workflow_ref"
 # "owner/repo/.github/workflows/iac.yml@refs/heads/main"; we match its prefix.
 WIF_ATTR_CONDITION="assertion.repository == '${GITHUB_REPO}'"
 WIF_ATTR_CONDITION+=" && assertion.workflow_ref.startsWith('${GITHUB_REPO}/${GITHUB_WORKFLOW}@')"
-WIF_ATTR_CONDITION+=" && ((assertion.event_name == 'push' && assertion.ref == '${GITHUB_PUSH_REF}')"
-WIF_ATTR_CONDITION+=" || assertion.event_name == 'workflow_dispatch')"
+# workflow_dispatch is admitted ONLY when the dispatched ref is the trusted
+# branch — without this clause, a maintainer could dispatch the workflow
+# from a feature branch whose iac.yml had been edited to exfiltrate the
+# WIF-minted token. Pin BOTH push and dispatch to ${GITHUB_PUSH_REF}.
+WIF_ATTR_CONDITION+=" && assertion.ref == '${GITHUB_PUSH_REF}'"
+WIF_ATTR_CONDITION+=" && (assertion.event_name == 'push' || assertion.event_name == 'workflow_dispatch')"
 
 if gcloud iam workload-identity-pools providers describe "$WIF_PROVIDER" \
      --project="$PROJECT" --location=global \
@@ -412,6 +436,11 @@ workflow + authenticated plan land in Phase C):
 
   CI plan-builder service account (google-github-actions/auth service_account):
     ${CI_SA}
+
+  Plan-builder write target (versioned, immutable per generation):
+    gs://${ARTIFACT_BUCKET}
+  Plan-builder IAM: storage.objectCreator on the bucket above.
+  WIF: workflow_dispatch is admitted ONLY for ref=${GITHUB_PUSH_REF}.
 
   The provider only accepts tokens from repo ${GITHUB_REPO}, workflow
   ${GITHUB_WORKFLOW}, on a TRUSTED TRIGGER: a push to ${GITHUB_PUSH_REF} (ref)
