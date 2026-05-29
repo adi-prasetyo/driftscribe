@@ -60,6 +60,11 @@ _WORKER_URL_ENV: Final[dict[str, str]] = {
     "upgrade_reader": "UPGRADE_READER_URL",
     "upgrade_docs": "UPGRADE_DOCS_URL",
     "infra_reader": "INFRA_READER_URL",
+    # Phase C5a: wire the coordinator to the tofu-apply worker — the sole
+    # infra mutator. The canonical endpoint is /propose (see
+    # WORKER_ENDPOINTS); /apply and /deny are reached via the named
+    # wrappers below, never the default path.
+    "tofu_apply": "TOFU_APPLY_URL",
 }
 
 
@@ -85,6 +90,12 @@ WORKER_ENDPOINTS: Final[dict[str, str]] = {
     "upgrade_reader": "/read",
     "upgrade_docs": "/patch",
     "infra_reader": "/describe",
+    # Phase C5a: /propose is the tofu-apply worker's canonical (default)
+    # endpoint — the "ask permission" path that creates a pending plan
+    # approval. The mutating /apply and the cleanup /deny are reached only
+    # via :func:`call_apply` / :func:`call_plan_deny`, which hardcode the
+    # path, so the LLM-facing surface can never select them.
+    "tofu_apply": "/propose",
 }
 
 
@@ -290,4 +301,106 @@ def call_merge_pr(target_repo: str, pr_number: int) -> dict:
         "upgrade_docs",
         {"target_repo": target_repo, "pr_number": pr_number},
         endpoint="/merge",
+    )
+
+
+def call_propose(
+    artifact_uri_metadata: str,
+    generation_metadata: str,
+    approver: str,
+    operator_jwt: str | None,
+) -> dict:
+    """Wrapper for the tofu-apply worker's ``/propose`` endpoint (Phase C5a).
+
+    ``/propose`` is the tofu-apply worker's canonical/default endpoint —
+    the "ask permission" path that creates a pending plan approval bound to
+    the named plan artifact. We still route through a named wrapper (rather
+    than letting a tool call ``call("tofu_apply", ...)`` directly) so the
+    payload shape and the choice of endpoint are fixed in code: the LLM
+    never gets to assemble an arbitrary tofu-apply request.
+
+    Like :func:`call_execute` / :func:`call_apply`, this is NEVER exposed as
+    an ADK tool. The tofu-apply worker is the sole infra mutator, and the
+    decision to propose-then-apply is the operator's, not the model's — this
+    wrapper is invoked only by the coordinator's server-side approval POST
+    handler (added in a later phase), never from anything the LLM can reach.
+
+    ``operator_jwt`` is included in the body ONLY when it is not ``None``.
+    The worker's ``ProposeRequest`` schema is ``extra="forbid"`` and does not
+    grow an ``operator_jwt`` field until C5b; conditionally omitting the key
+    when ``None`` keeps this wrapper wire-compatible with the current worker
+    while letting C5b start forwarding the trusted operator identity without
+    touching this call site again.
+
+    Uses the DEFAULT endpoint (``/propose``) — no ``endpoint=`` override.
+    """
+    payload: dict = {
+        "artifact_uri_metadata": artifact_uri_metadata,
+        "generation_metadata": generation_metadata,
+        "approver": approver,
+    }
+    if operator_jwt is not None:
+        payload["operator_jwt"] = operator_jwt
+    return call("tofu_apply", payload)
+
+
+def call_apply(
+    approval_id: str,
+    approval_token: str,
+    operator_jwt: str | None,
+) -> dict:
+    """Wrapper for the tofu-apply worker's ``/apply`` endpoint (Phase C5a).
+
+    ``/apply`` is the mutating path — it consumes a pending plan approval and
+    runs ``tofu apply``, making the tofu-apply worker the sole service that
+    ever changes live infra. Hardcoding ``endpoint="/apply"`` here (rather
+    than exposing endpoint selection) is what keeps the "do the thing" path
+    off the LLM-facing surface entirely: the model only ever drives the
+    upstream plan-builder, never the applier.
+
+    NEVER exposed as an ADK tool. The operator's Approve click in the
+    coordinator's server-side approval POST handler is the only trigger; the
+    handler validates the approval token before calling this.
+
+    ``operator_jwt`` inclusion mirrors :func:`call_propose` exactly: the key
+    is added to the body ONLY when it is not ``None`` (the worker's
+    ``TokenRequest`` is ``extra="forbid"`` and the ``operator_jwt`` field is
+    not added until C5b). ``approval_id`` and ``approval_token`` are always
+    present.
+    """
+    payload: dict = {
+        "approval_id": approval_id,
+        "approval_token": approval_token,
+    }
+    if operator_jwt is not None:
+        payload["operator_jwt"] = operator_jwt
+    return call("tofu_apply", payload, endpoint="/apply")
+
+
+def call_plan_deny(approval_id: str, approval_token: str) -> dict:
+    """Wrapper for the tofu-apply worker's ``/deny`` endpoint (Phase C5a).
+
+    Named ``call_plan_deny`` rather than ``call_deny`` because the latter is
+    already taken by the rollback worker's deny wrapper
+    (:func:`call_deny`) — the two deny operations target different workers
+    and must not collide.
+
+    Cleanup-only. Under propose-on-approve, the operator's "Reject" is a
+    coordinator-side audit event and there is normally no approval to deny
+    yet (none is created until the operator Approves and ``/propose`` runs).
+    ``/deny`` is retained ONLY to clean up the rare orphaned pending approval
+    — the case where ``/propose`` succeeded but the subsequent ``/apply``
+    failed, leaving a pending plan approval behind. Because this is pure
+    cleanup of an approval the coordinator already minted, it takes NO
+    ``operator_jwt``: there is no operator-identity binding to forward for a
+    cleanup, unlike :func:`call_propose` / :func:`call_apply`.
+
+    NEVER exposed as an ADK tool — invoked only by the coordinator's
+    server-side approval POST handler. Hardcodes ``endpoint="/deny"`` so the
+    LLM-facing surface can never select it.
+    """
+    return call(
+        "tofu_apply",
+        {"approval_id": approval_id, "approval_token": approval_token},
+        endpoint="/deny",
     )
