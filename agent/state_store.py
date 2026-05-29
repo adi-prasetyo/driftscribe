@@ -70,6 +70,10 @@ class InMemoryStateStore:
 
         record = dict(decision)
         record.setdefault("created_at", datetime.now(timezone.utc))
+        # Phase C5e: store ``event_key`` on the decision itself so the Firestore
+        # store's query-fallback recovery (find_decision_for_event) has a field to
+        # query, and so callers / tests see the same shape across both stores.
+        record["event_key"] = event_key
         self._decisions[decision_id] = record
         if event_key in self._events:
             self._events[event_key]["decision_id"] = decision_id
@@ -158,13 +162,22 @@ class FirestoreStateStore:
 
     def find_decision_for_event(self, event_key: str) -> dict[str, Any] | None:
         snap = self._events.document(event_key).get()
-        if not snap.exists:
-            return None
-        data = snap.to_dict() or {}
-        decision_id = data.get("decision_id")
-        if not decision_id:
-            return None
-        return self.get_decision(decision_id)
+        decision_id = None
+        if snap.exists:
+            data = snap.to_dict() or {}
+            decision_id = data.get("decision_id")
+        if decision_id:
+            return self.get_decision(decision_id)
+        # Phase C5e recovery fallback (belt-and-suspenders): if the event doc is
+        # missing or carries no decision_id — e.g. the pointer write was lost — fall
+        # back to a query on the ``event_key`` field that ``record_decision`` now
+        # stores INSIDE the decision doc. C5e uses the decision doc as the
+        # apply-then-merge reconcile pointer, so a lost pointer must still be
+        # recoverable rather than silently re-minting + re-applying.
+        snaps = self._decisions.where("event_key", "==", event_key).limit(1).stream()
+        for s in snaps:
+            return s.to_dict()
+        return None
 
     def record_decision(
         self, decision_id: str, event_key: str, decision: dict[str, Any]
@@ -178,12 +191,30 @@ class FirestoreStateStore:
         # ``snapshot.create_time`` so pre-Phase-19 docs without
         # ``created_at`` still appear) — but the UI surfaces it as
         # the displayed timestamp, so it's worth recording explicitly.
+        #
+        # Phase C5e: the decision doc is the apply-then-merge reconcile pointer, so
+        # the decision write + the event→decision pointer write MUST commit together
+        # — previously two separate writes, where a crash between them orphaned the
+        # pointer (a later /apply could then re-mint + re-apply over a possibly-
+        # changed world). A WriteBatch makes both atomic. We ALSO store ``event_key``
+        # inside the decision doc so ``find_decision_for_event`` can recover via a
+        # query if the pointer write is ever lost. The event pointer uses
+        # ``set(..., merge=True)`` rather than ``update`` so a (corner-case) missing
+        # event doc upserts instead of raising NotFound — without clobbering the
+        # existing claim payload.
         from google.cloud import firestore
 
         record = dict(decision)
         record["created_at"] = firestore.SERVER_TIMESTAMP
-        self._decisions.document(decision_id).set(record)
-        self._events.document(event_key).update({"decision_id": decision_id})
+        record["event_key"] = event_key
+        batch = self._db.batch()
+        batch.set(self._decisions.document(decision_id), record)
+        batch.set(
+            self._events.document(event_key),
+            {"decision_id": decision_id},
+            merge=True,
+        )
+        batch.commit()
 
     def get_decision(self, decision_id: str) -> dict[str, Any] | None:
         snap = self._decisions.document(decision_id).get()

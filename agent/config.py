@@ -54,6 +54,39 @@ class Settings(BaseSettings):
     cf_access_team_domain: str = ""
     cf_access_aud_tag: str = ""
 
+    # Phase C5e: coordinator-side read of the C2 plan-builder artifact + the
+    # propose-on-approve POST. All default to safe empties so dev/test boot is
+    # unchanged; the downstream routes fail-closed when a value is empty.
+    #
+    # The GCS bucket holding the C2 plan artifacts. Empty default ⇒ derive
+    # ``{gcp_project}-tofu-artifacts`` at use site (see ``artifacts_bucket``),
+    # matching the worker's ARTIFACT_BUCKET convention without embedding the
+    # project name in two places.
+    tofu_artifacts_bucket: str = ""
+    # Comma-separated CI check names that MUST be green on the PR head before the
+    # C5e merge step will merge. EMPTY ⇒ merge is disabled downstream (the merge
+    # helper refuses rather than merging an unchecked head).
+    iac_required_checks: str = ""
+    # GitHub merge method for the C5e merge step (``squash`` | ``merge`` |
+    # ``rebase``). Squash by default to keep the IaC history linear.
+    iac_merge_method: str = "squash"
+    # Exact Origin allowlist (scheme+host+port) for the C5e approval POST. CSRF
+    # defense: CF Access does NOT stop a cross-site POST, so the POST handler
+    # compares the request Origin to this value exactly. EMPTY ⇒ the POST refuses
+    # with 403 (fail-closed — an unconfigured origin must never accept a POST).
+    coordinator_origin: str = ""
+
+
+def artifacts_bucket(settings: "Settings") -> str:
+    """Resolve the C2 artifacts bucket name.
+
+    Honours an explicit ``tofu_artifacts_bucket`` override; otherwise derives the
+    deploy-convention ``{project}-tofu-artifacts`` from ``gcp_project`` (mirrors the
+    ``tofu-apply`` worker's ARTIFACT_BUCKET) so the project name lives in exactly
+    one config field.
+    """
+    return settings.tofu_artifacts_bucket or f"{settings.gcp_project}-tofu-artifacts"
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

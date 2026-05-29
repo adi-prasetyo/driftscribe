@@ -575,6 +575,84 @@ def test_call_plan_deny_audience_is_root_url(_stub_mint_id_token) -> None:
 # --------------------------------------------------------------------------- #
 
 
+# --------------------------------------------------------------------------- #
+# Phase C5e-1: per-call timeout. /apply runs a real ``tofu apply`` (up to the
+# worker's --timeout=900), so call_apply uses a long read timeout while every
+# other call keeps the 30s default. A premature client timeout after the worker
+# burned the approval + mutated infra would make the coordinator skip the merge
+# → silent divergence; this is correctness, not latency.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def _capture_timeout(monkeypatch: pytest.MonkeyPatch) -> list:
+    """Wrap ``httpx.Client`` so each constructed client records the ``timeout``
+    it was built with, while still serving the respx-mocked transport."""
+    captured: list = []
+    real_client = httpx.Client
+
+    class _RecordingClient(real_client):  # type: ignore[misc, valid-type]
+        def __init__(self, *args, **kwargs):
+            captured.append(kwargs.get("timeout"))
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(worker_client.httpx, "Client", _RecordingClient)
+    return captured
+
+
+@respx.mock
+def test_call_apply_uses_long_timeout(_capture_timeout) -> None:
+    """``call_apply`` builds its httpx client with :data:`_APPLY_HTTPX_TIMEOUT`
+    (920s read), not the 30s default."""
+    respx.post(f"{TOFU_APPLY_URL}/apply").respond(200, json={"status": "applied"})
+    worker_client.call_apply("aid", "atok", None)
+    assert len(_capture_timeout) == 1
+    timeout = _capture_timeout[0]
+    assert timeout is worker_client._APPLY_HTTPX_TIMEOUT
+    # The read budget must exceed the worker's Cloud Run --timeout=900.
+    assert timeout.read > 900.0
+    assert timeout.connect == 10.0
+
+
+@respx.mock
+def test_call_propose_uses_default_timeout(_capture_timeout) -> None:
+    """``call_propose`` does NOT pass a timeout — it gets the 30s default
+    (``call`` falls back to ``_HTTPX_TIMEOUT`` when ``timeout is None``, so the
+    client is built with the 30s float, NOT the long apply timeout)."""
+    respx.post(f"{TOFU_APPLY_URL}/propose").respond(200, json={"approval_id": "id1"})
+    worker_client.call_propose("gs://b/p.json", "1", "op@e.com", None)
+    assert _capture_timeout == [worker_client._HTTPX_TIMEOUT]
+    assert _capture_timeout[0] is not worker_client._APPLY_HTTPX_TIMEOUT
+
+
+@respx.mock
+def test_call_plan_deny_uses_default_timeout(_capture_timeout) -> None:
+    respx.post(f"{TOFU_APPLY_URL}/deny").respond(200, json={"status": "denied"})
+    worker_client.call_plan_deny("aid", "atok")
+    assert _capture_timeout == [worker_client._HTTPX_TIMEOUT]
+    assert _capture_timeout[0] is not worker_client._APPLY_HTTPX_TIMEOUT
+
+
+@respx.mock
+def test_call_per_call_timeout_override_is_honored(_capture_timeout) -> None:
+    """A caller-supplied ``timeout=`` overrides the default and is passed straight
+    through to the httpx client."""
+    respx.post(f"{READER_URL}/read").respond(200, json={"ok": True})
+    custom = httpx.Timeout(connect=1.0, read=2.0, write=3.0, pool=4.0)
+    worker_client.call("reader", {}, timeout=custom)
+    assert _capture_timeout == [custom]
+
+
+@respx.mock
+def test_call_default_timeout_when_no_override(_capture_timeout) -> None:
+    """Without ``timeout=``, ``call`` builds the client with the module 30s
+    default — captured as the ``_HTTPX_TIMEOUT`` float since ``call`` passes it
+    explicitly when ``timeout is None``."""
+    respx.post(f"{READER_URL}/read").respond(200, json={"ok": True})
+    worker_client.call("reader", {})
+    assert _capture_timeout == [worker_client._HTTPX_TIMEOUT]
+
+
 def test_tofu_apply_wrappers_are_not_adk_tools() -> None:
     """``call_propose`` / ``call_apply`` / ``call_plan_deny`` must NEVER be
     exposed as ADK tools — they are server-side approval-handler calls only.
