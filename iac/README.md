@@ -256,3 +256,9 @@ The `plan-builder` job in `.github/workflows/iac.yml` produces the authoritative
     `GCP_TOFU_STATE_KMS_KEY` (values printed by the bootstrap script).
 - **What it does NOT do:** mint approvals, sign HMAC, apply state, read other
   PRs' artifacts. Those live in C3 (schema) and C4 (apply worker).
+
+<!-- C2 plan-builder smoke-test marker (2026-05-29) — verifies the dispatch →
+WIF auth → plan → denylist → two-step artifact upload → PR-comment loop end to
+end against live driftscribe-hack-2026. README-only (no .tf change) so the plan
+is a no-op. Safe to remove once the smoke test is confirmed. -->
+
