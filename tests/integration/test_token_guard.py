@@ -24,8 +24,8 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
-from agent import cf_access
 from agent.config import get_settings
+from driftscribe_lib import cf_access
 from agent.main import app
 
 pytestmark = pytest.mark.no_auth_override
