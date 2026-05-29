@@ -1888,7 +1888,7 @@ Add these steps AT THE END of the `plan-builder` job's `steps:` list:
           service_account: ${{ secrets.GCP_TOFU_PLAN_BUILDER_SA }}
 
       - name: Setup gcloud CLI (uses the WIF credential from previous step)
-        uses: google-github-actions/setup-gcloud@77e7a554d41e2ee56fc945c52dfd3f27b12cd0b2 # v2.1.4
+        uses: google-github-actions/setup-gcloud@77e7a554d41e2ee56fc945c52dfd3f33d12def9a # v2.1.4
 ```
 
 **Step 2: Lint YAML**
