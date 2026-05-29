@@ -28,8 +28,18 @@ os.environ.setdefault("COORDINATOR_URL", "https://coord.example.com")
 os.environ.setdefault("ALLOWED_CALLERS", "alice@corp.example,coordinator@test-proj.iam.gserviceaccount.com")
 os.environ.setdefault("PLAN_APPROVAL_HMAC_KEY", "test-plan-hmac-key")
 os.environ.setdefault("TF_VAR_tofu_state_kms_key", "projects/p/locations/l/keyRings/r/cryptoKeys/tofu-state")
+# C5b-2: default the offline suite to "e2e" mode so the no-JWT propose/apply tests
+# pass via the legacy caller==approver fallback (exactly the pre-C5 behavior). The
+# new enforce-mode tests monkeypatch m.IAC_OPERATOR_AUTH_MODE="enforce" per-test.
+os.environ.setdefault("IAC_OPERATOR_AUTH_MODE", "e2e")
+
+import httpx  # noqa: E402
+import jwt  # noqa: E402
+import respx  # noqa: E402
+from cryptography.hazmat.primitives.asymmetric import rsa  # noqa: E402
 
 from driftscribe_lib import approvals as approvals_mod  # noqa: E402
+from driftscribe_lib import cf_access as cf_access_mod  # noqa: E402
 from driftscribe_lib.approvals import (  # noqa: E402
     PlanApprovalStore,
     build_plan_approval_payload,
@@ -845,3 +855,333 @@ def test_propose_nondict_metadata_clean_422(client: TestClient, monkeypatch, tmp
         "approver": "alice@corp.example",
     })
     assert r.status_code == 422
+
+
+# =========================================================================== #
+# C5b-2 — worker operator-JWT re-verification (enforce mode)
+# =========================================================================== #
+#
+# The most security-critical edit: the SOLE MUTATOR independently re-verifies a
+# forwarded Cloudflare-Access operator JWT against CF's JWKS and binds
+# verified-email == signed approver. These tests mint a real RS256 JWT with a
+# throwaway RSA key + mock the CF JWKS over respx (NEVER the network), reusing the
+# exact pattern from tests/unit/test_cf_access.py. The signed approver in `_wire`
+# is ``alice@corp.example``, so the operator email must match that to bind.
+
+_CF_TEAM = "test-team.cloudflareaccess.com"
+_CF_AUD = "test-aud-tag-deadbeef"
+_CF_JWKS_URL = f"https://{_CF_TEAM}/cdn-cgi/access/certs"
+
+
+def _b64url_uint(i: int) -> str:
+    import base64
+    b = i.to_bytes((i.bit_length() + 7) // 8, "big")
+    return base64.urlsafe_b64encode(b).rstrip(b"=").decode("ascii")
+
+
+def _new_keypair() -> tuple[rsa.RSAPrivateKey, dict]:
+    priv = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    nums = priv.public_key().public_numbers()
+    return priv, {"kty": "RSA", "n": _b64url_uint(nums.n), "e": _b64url_uint(nums.e)}
+
+
+def _make_jwks(jwk_pub: dict, kid: str) -> dict:
+    return {"keys": [{**jwk_pub, "kid": kid, "alg": "RS256", "use": "sig"}]}
+
+
+def _mint_operator_jwt(priv, kid: str, *, email: str = "alice@corp.example",
+                       aud: str = _CF_AUD, iss: str = f"https://{_CF_TEAM}",
+                       exp_offset: int = 300, nbf_offset: int = -5) -> str:
+    import time
+    now = int(time.time())
+    return jwt.encode(
+        {"aud": aud, "iss": iss, "iat": now, "nbf": now + nbf_offset,
+         "exp": now + exp_offset, "email": email, "sub": "subject-123"},
+        priv, algorithm="RS256", headers={"kid": kid},
+    )
+
+
+@pytest.fixture
+def _enforce(monkeypatch) -> None:
+    """Switch the worker into enforce mode + configure the CF Access app, and reset
+    the module-level JWKS cache so respx mocks aren't shadowed by a prior fetch."""
+    monkeypatch.setattr(m, "IAC_OPERATOR_AUTH_MODE", "enforce")
+    monkeypatch.setattr(m, "CF_ACCESS_TEAM_DOMAIN", _CF_TEAM)
+    monkeypatch.setattr(m, "CF_ACCESS_AUD_TAG", _CF_AUD)
+    cf_access_mod._reset_cache_for_tests()
+    yield
+    cf_access_mod._reset_cache_for_tests()
+
+
+def _serve_jwks(priv_pub_kid: tuple) -> None:
+    _priv, jwk_pub, kid = priv_pub_kid
+    respx.get(_CF_JWKS_URL).mock(return_value=httpx.Response(200, json=_make_jwks(jwk_pub, kid)))
+
+
+# ---- /apply enforce ----
+
+
+@respx.mock
+def test_apply_enforce_valid_jwt_applies_and_audits_both_identities(
+    client: TestClient, monkeypatch, tmp_path, _enforce
+) -> None:
+    """Valid operator JWT whose email == signed approver → 200 applied; the audit
+    records BOTH the verified operator_email AND the caller_sa (N2)."""
+    priv, jwk_pub = _new_keypair()
+    _serve_jwks((priv, jwk_pub, "kid-1"))
+    ctx = _wire(monkeypatch, tmp_path)
+    token = _mint_operator_jwt(priv, "kid-1", email="alice@corp.example")
+    r = client.post("/apply", json={
+        "approval_id": ctx["record"].approval_id, "approval_token": ctx["raw_token"],
+        "operator_jwt": token,
+    })
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "applied"
+    audit = _doc(ctx)["apply_audit"]
+    assert audit["phase"] == "applied"
+    assert audit["operator_email"] == "alice@corp.example"
+    assert audit["caller_sa"] == "alice@corp.example"  # the overridden caller
+
+
+@respx.mock
+def test_apply_enforce_forged_jwt_403_not_burned(
+    client: TestClient, monkeypatch, tmp_path, _enforce
+) -> None:
+    """A forged JWT (signed by a key NOT in the served JWKS) → 403 PRE-CLAIM; the
+    approval stays pending (nothing burned, no apply_audit)."""
+    real_priv, _ = _new_keypair()
+    _decoy_priv, decoy_pub = _new_keypair()
+    _serve_jwks((_decoy_priv, decoy_pub, "kid-1"))
+    ctx = _wire(monkeypatch, tmp_path)
+    token = _mint_operator_jwt(real_priv, "kid-1")  # signed by the wrong key
+    r = client.post("/apply", json={
+        "approval_id": ctx["record"].approval_id, "approval_token": ctx["raw_token"],
+        "operator_jwt": token,
+    })
+    assert r.status_code == 403
+    assert r.json()["detail"] == "operator verification failed"
+    doc = _doc(ctx)
+    assert doc["status"] == "pending"          # NOT burned
+    assert "apply_audit" not in doc            # claim never ran
+
+
+def test_apply_enforce_garbage_jwt_403_not_burned(
+    client: TestClient, monkeypatch, tmp_path, _enforce
+) -> None:
+    """A garbage (non-JWT) operator_jwt → 403 PRE-CLAIM, not burned. No JWKS fetch
+    is needed (the header parse fails first), so no respx mock required."""
+    ctx = _wire(monkeypatch, tmp_path)
+    r = client.post("/apply", json={
+        "approval_id": ctx["record"].approval_id, "approval_token": ctx["raw_token"],
+        "operator_jwt": "not.a.jwt",
+    })
+    assert r.status_code == 403
+    assert r.json()["detail"] == "operator verification failed"
+    doc = _doc(ctx)
+    assert doc["status"] == "pending"
+    assert "apply_audit" not in doc
+
+
+def test_apply_enforce_absent_jwt_403_not_burned(
+    client: TestClient, monkeypatch, tmp_path, _enforce
+) -> None:
+    """No operator_jwt in enforce mode → 403 PRE-CLAIM, not burned."""
+    ctx = _wire(monkeypatch, tmp_path)
+    r = client.post("/apply", json={
+        "approval_id": ctx["record"].approval_id, "approval_token": ctx["raw_token"],
+    })
+    assert r.status_code == 403
+    assert r.json()["detail"] == "operator JWT required"
+    doc = _doc(ctx)
+    assert doc["status"] == "pending"
+    assert "apply_audit" not in doc
+
+
+@respx.mock
+def test_apply_enforce_expired_jwt_403_not_burned(
+    client: TestClient, monkeypatch, tmp_path, _enforce
+) -> None:
+    """An EXPIRED operator JWT → 403 PRE-CLAIM, not burned (CfAccessJwtError on the
+    exp check is swallowed into the generic 403 — no detail leak)."""
+    priv, jwk_pub = _new_keypair()
+    _serve_jwks((priv, jwk_pub, "kid-1"))
+    ctx = _wire(monkeypatch, tmp_path)
+    token = _mint_operator_jwt(priv, "kid-1", exp_offset=-60)  # expired 1min ago
+    r = client.post("/apply", json={
+        "approval_id": ctx["record"].approval_id, "approval_token": ctx["raw_token"],
+        "operator_jwt": token,
+    })
+    assert r.status_code == 403
+    assert r.json()["detail"] == "operator verification failed"
+    doc = _doc(ctx)
+    assert doc["status"] == "pending"
+    assert "apply_audit" not in doc
+
+
+@respx.mock
+def test_apply_enforce_valid_jwt_wrong_email_403_not_burned(
+    client: TestClient, monkeypatch, tmp_path, _enforce
+) -> None:
+    """A perfectly valid JWT whose email != the signed approver → 403 PRE-CLAIM,
+    not burned (the email-binding check)."""
+    priv, jwk_pub = _new_keypair()
+    _serve_jwks((priv, jwk_pub, "kid-1"))
+    ctx = _wire(monkeypatch, tmp_path)
+    token = _mint_operator_jwt(priv, "kid-1", email="mallory@corp.example")
+    r = client.post("/apply", json={
+        "approval_id": ctx["record"].approval_id, "approval_token": ctx["raw_token"],
+        "operator_jwt": token,
+    })
+    assert r.status_code == 403
+    assert r.json()["detail"] == "operator is not the approver"
+    doc = _doc(ctx)
+    assert doc["status"] == "pending"
+    assert "apply_audit" not in doc
+
+
+# ---- /propose enforce ----
+
+
+@respx.mock
+def test_propose_enforce_valid_jwt_mints(
+    client: TestClient, monkeypatch, tmp_path, _enforce
+) -> None:
+    """Valid JWT whose email == req.approver → 200 (mints)."""
+    priv, jwk_pub = _new_keypair()
+    _serve_jwks((priv, jwk_pub, "kid-1"))
+    _wire(monkeypatch, tmp_path)
+    token = _mint_operator_jwt(priv, "kid-1", email="alice@corp.example")
+    r = client.post("/propose", json={
+        "artifact_uri_metadata": _prefix() + "metadata.json",
+        "generation_metadata": "1700000000000003",
+        "approver": "alice@corp.example",
+        "operator_jwt": token,
+    })
+    assert r.status_code == 200, r.text
+    assert r.json()["approval_id"] and r.json()["approval_token"]
+
+
+@respx.mock
+def test_propose_enforce_jwt_email_mismatch_403_no_mint(
+    client: TestClient, monkeypatch, tmp_path, _enforce
+) -> None:
+    """Valid JWT but email != req.approver → 403, no mint."""
+    priv, jwk_pub = _new_keypair()
+    _serve_jwks((priv, jwk_pub, "kid-1"))
+    _wire(monkeypatch, tmp_path)
+    token = _mint_operator_jwt(priv, "kid-1", email="mallory@corp.example")
+    r = client.post("/propose", json={
+        "artifact_uri_metadata": _prefix() + "metadata.json",
+        "generation_metadata": "1700000000000003",
+        "approver": "alice@corp.example",
+        "operator_jwt": token,
+    })
+    assert r.status_code == 403
+    assert r.json()["detail"] == "operator is not the approver"
+
+
+def test_propose_enforce_absent_jwt_403(
+    client: TestClient, monkeypatch, tmp_path, _enforce
+) -> None:
+    """No operator_jwt in enforce mode → 403 (no mint)."""
+    _wire(monkeypatch, tmp_path)
+    r = client.post("/propose", json={
+        "artifact_uri_metadata": _prefix() + "metadata.json",
+        "generation_metadata": "1700000000000003",
+        "approver": "alice@corp.example",
+    })
+    assert r.status_code == 403
+    assert r.json()["detail"] == "operator JWT required"
+
+
+# ---- schema shape: /deny rejects operator_jwt; Apply/Propose accept it ----
+
+
+def test_deny_rejects_operator_jwt_field(client: TestClient, monkeypatch, tmp_path) -> None:
+    """/deny keeps TokenRequest (extra='forbid'), so an operator_jwt field → 422.
+    Deny is cleanup-only with no operator binding (plan §5)."""
+    ctx = _wire(monkeypatch, tmp_path)
+    r = client.post("/deny", json={
+        "approval_id": ctx["record"].approval_id, "approval_token": ctx["raw_token"],
+        "operator_jwt": "x" * 40,
+    })
+    assert r.status_code == 422
+    assert _doc(ctx)["status"] == "pending"  # no flip
+
+
+def test_deny_without_operator_jwt_still_works(client: TestClient, monkeypatch, tmp_path) -> None:
+    """Regression: /deny with the original TokenRequest shape still denies."""
+    ctx = _wire(monkeypatch, tmp_path)
+    r = client.post("/deny", json={
+        "approval_id": ctx["record"].approval_id, "approval_token": ctx["raw_token"],
+    })
+    assert r.status_code == 200 and r.json()["status"] == "denied"
+
+
+def test_request_schema_shapes_for_operator_jwt() -> None:
+    """ProposeRequest + ApplyRequest accept operator_jwt; TokenRequest (deny) does
+    NOT (extra='forbid')."""
+    uid = "0" * 8 + "-0000-0000-0000-" + "0" * 12
+    tok = "t" * 43
+    # ApplyRequest accepts it (and defaults to None when absent).
+    assert m.ApplyRequest(approval_id=uid, approval_token=tok).operator_jwt is None
+    assert m.ApplyRequest(approval_id=uid, approval_token=tok, operator_jwt="j").operator_jwt == "j"
+    # ProposeRequest accepts it.
+    pr = m.ProposeRequest(artifact_uri_metadata="gs://b/o/metadata.json",
+                          generation_metadata="1", approver="a@b.com", operator_jwt="j")
+    assert pr.operator_jwt == "j"
+    # TokenRequest (deny) forbids it.
+    with pytest.raises(Exception):
+        m.TokenRequest(approval_id=uid, approval_token=tok, operator_jwt="j")
+
+
+def test_e2e_empty_string_operator_jwt_fails_closed(
+    client: TestClient, monkeypatch, tmp_path
+) -> None:
+    """In e2e mode the legacy fallback gates on ``operator_jwt is None`` — NOT
+    falsiness. An empty-string operator_jwt is 'present but invalid' and must fail
+    closed (403 'operator JWT required'), never silently fall through to the
+    caller==approver legacy path. The default suite mode is already 'e2e' and the
+    caller==approver would otherwise have PASSED, so this proves the is-None gate."""
+    ctx = _wire(monkeypatch, tmp_path)
+    r = client.post("/apply", json={
+        "approval_id": ctx["record"].approval_id, "approval_token": ctx["raw_token"],
+        "operator_jwt": "",
+    })
+    assert r.status_code == 403
+    assert r.json()["detail"] == "operator JWT required"
+    doc = _doc(ctx)
+    assert doc["status"] == "pending"      # not burned
+    assert "apply_audit" not in doc
+
+
+def test_coordinator_url_is_optional() -> None:
+    """I8: COORDINATOR_URL is no longer hard-required. The module read uses
+    os.environ.get(...) so a missing var does not KeyError at import — assert the
+    boot constant resolved to a string (set or "")."""
+    assert isinstance(m.COORDINATOR_URL, str)
+    # And the underlying read is the optional ``.get`` form (no KeyError on absence).
+    assert os.environ.get("DRIFTSCRIBE_DEFINITELY_UNSET_VAR", "") == ""
+
+
+def test_apply_request_rejects_extra_field() -> None:
+    """C5b-2 review: ApplyRequest is a CLOSED schema. Pydantic v2 does NOT inherit
+    model_config across subclasses, so extra='forbid' is restated explicitly on
+    ApplyRequest — a stray field must be a ValidationError, not silently dropped
+    (a compromised coordinator can't probe undocumented extension points)."""
+    uid = "0" * 8 + "-0000-0000-0000-" + "0" * 12
+    with pytest.raises(Exception):  # pydantic ValidationError → FastAPI 422
+        m.ApplyRequest(approval_id=uid, approval_token="t" * 43, operator_jwt="j", bogus="x")
+
+
+def test_require_cf_config_if_enforce_fails_fast() -> None:
+    """C5b-2 review: enforce mode with empty CF_ACCESS_* must fail-fast at boot
+    (a clear 'Revision is not ready') rather than 403 every apply at runtime. e2e
+    mode and a fully-configured enforce boot are fine."""
+    with pytest.raises(RuntimeError, match="CF_ACCESS_TEAM_DOMAIN"):
+        m._require_cf_config_if_enforce("enforce", "", "aud")
+    with pytest.raises(RuntimeError, match="CF_ACCESS_TEAM_DOMAIN"):
+        m._require_cf_config_if_enforce("enforce", "team.cloudflareaccess.com", "")
+    # Fully-configured enforce and e2e (any CF config) both boot fine.
+    m._require_cf_config_if_enforce("enforce", "team.cloudflareaccess.com", "aud-tag")
+    m._require_cf_config_if_enforce("e2e", "", "")

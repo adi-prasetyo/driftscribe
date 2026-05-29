@@ -52,6 +52,11 @@ from driftscribe_lib.approvals import (
     verify_plan_approval,
 )
 from driftscribe_lib.auth import verify_caller
+from driftscribe_lib.cf_access import (
+    CfAccessJwtError,
+    canonical_operator_email,
+    verify_cf_access_jwt,
+)
 from driftscribe_lib.iac_plan_denylist import DenylistInput, evaluate, load_plan_json
 from driftscribe_lib.logging import install_trace_middleware, setup as setup_logging
 from workers.tofu_apply import gcs_fetch, tofu_runner
@@ -62,10 +67,41 @@ log = setup_logging("tofu-apply-agent")
 # Run revision fails to start (clear "Revision is not ready" over a runtime 500).
 GCP_PROJECT = os.environ["GCP_PROJECT"]
 OWN_URL = os.environ["OWN_URL"].rstrip("/")
-COORDINATOR_URL = os.environ["COORDINATOR_URL"].rstrip("/")
+# Optional (I8): unused under the propose-on-approve flow — the worker never
+# calls back to the coordinator. Kept readable but no longer hard-required so a
+# revision boots without it (previously a placeholder kept this from KeyError-ing).
+COORDINATOR_URL = os.environ.get("COORDINATOR_URL", "").rstrip("/")
 ALLOWED_CALLERS = frozenset(
     e.strip() for e in os.environ["ALLOWED_CALLERS"].split(",") if e.strip()
 )
+# Phase C5b-2 operator-JWT re-verification. The worker INDEPENDENTLY re-verifies a
+# forwarded Cloudflare-Access operator JWT against CF's JWKS and binds
+# verified-email == signed approver, closing the C3/C4 tautology (caller is the
+# coordinator SA; approver was free text the coordinator asserted). These name the
+# CF Access Application the operator signed into; empty in unit/e2e boots.
+CF_ACCESS_TEAM_DOMAIN = os.environ.get("CF_ACCESS_TEAM_DOMAIN", "")
+CF_ACCESS_AUD_TAG = os.environ.get("CF_ACCESS_AUD_TAG", "")
+# "enforce" (default, fail-closed for prod): a valid operator JWT bound to the
+# signed approver is REQUIRED. "e2e": if a JWT is present it is verified+bound
+# exactly as enforce; if absent, fall back to the pre-C5 caller==approver check
+# (so the e2e smoke + offline unit tests run without a real CF JWT).
+IAC_OPERATOR_AUTH_MODE = os.environ.get("IAC_OPERATOR_AUTH_MODE", "enforce")
+
+
+def _require_cf_config_if_enforce(mode: str, team_domain: str, aud_tag: str) -> None:
+    """Fail-fast at boot: in enforce mode the worker MUST have CF Access
+    configured, else EVERY operator-JWT verify would 403 — a silent prod outage
+    that looks like an auth failure (a deploy that forgot the CF env vars). Refuse
+    to start instead, so it surfaces as a clear "Revision is not ready" the way
+    the other hard-required env does, not a runtime 403 on the first apply."""
+    if mode == "enforce" and (not team_domain or not aud_tag):
+        raise RuntimeError(
+            "IAC_OPERATOR_AUTH_MODE=enforce requires CF_ACCESS_TEAM_DOMAIN and "
+            "CF_ACCESS_AUD_TAG to be set"
+        )
+
+
+_require_cf_config_if_enforce(IAC_OPERATOR_AUTH_MODE, CF_ACCESS_TEAM_DOMAIN, CF_ACCESS_AUD_TAG)
 # Distinct from rollback's APPROVAL_HMAC_KEY — the C3 plan-approval HMAC is
 # domain-separated and lives in its own secret (plan-hmac-key).
 PLAN_APPROVAL_HMAC_KEY = os.environ["PLAN_APPROVAL_HMAC_KEY"]
@@ -126,21 +162,41 @@ _UUID = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-
 
 
 class ProposeRequest(BaseModel):
-    """Coordinator → /propose. ``approver`` is the authenticated operator subject
-    (asserted by the coordinator until C5 forwards a trusted operator identity —
-    see the plan §6 residual gap)."""
+    """Coordinator → /propose. ``approver`` is the authenticated operator subject;
+    in enforce mode the worker re-verifies the forwarded ``operator_jwt`` and
+    binds its verified email == ``approver`` BEFORE minting (C5b-2), so a
+    compromised coordinator can no longer assert an arbitrary approver."""
 
     artifact_uri_metadata: str = Field(min_length=1, max_length=512)
     generation_metadata: str = Field(min_length=1, max_length=32, pattern=r"^[0-9]+$")
     approver: str = Field(min_length=1, max_length=320)
+    # Forwarded Cf-Access-Jwt-Assertion (C5b-2). Optional in the schema so the
+    # e2e-legacy path (no real CF JWT) still validates; enforce mode rejects a
+    # None at the handler.
+    operator_jwt: str | None = None
     model_config = ConfigDict(extra="forbid")
 
 
 class TokenRequest(BaseModel):
-    """Closed schema for /apply + /deny — id + raw token only, no artifact fields."""
+    """Closed schema for /deny — id + raw token only, no artifact fields.
+
+    /deny stays cleanup-only with NO operator binding (per plan §5): because
+    ``extra="forbid"``, passing an ``operator_jwt`` to /deny is a 422."""
 
     approval_id: str = Field(min_length=36, max_length=36, pattern=_UUID)
     approval_token: str = Field(min_length=43, max_length=64)
+    model_config = ConfigDict(extra="forbid")
+
+
+class ApplyRequest(TokenRequest):
+    """Closed schema for /apply — TokenRequest plus the forwarded operator JWT
+    (C5b-2). The worker re-verifies it and binds verified email == signed approver
+    PRE-CLAIM, so an absent/forged/expired JWT fails 403 with nothing burned."""
+
+    operator_jwt: str | None = None
+    # Pydantic v2 does NOT inherit model_config across subclasses — restate it so
+    # /apply stays a closed schema (a stray extra field is a 422, not silently
+    # dropped), matching every other worker request model.
     model_config = ConfigDict(extra="forbid")
 
 
@@ -202,6 +258,58 @@ def _fidelity_or_raise(signed_md: dict, parsed_plan_json: dict) -> None:
     )
 
 
+def _verify_operator(
+    operator_jwt: str | None, expected_approver: str, *, caller: str
+) -> str | None:
+    """Re-verify the forwarded CF Access operator JWT and bind its verified email
+    to ``expected_approver`` (the C5b-2 hardening). Returns the verified operator
+    email, or ``None`` only in the e2e-legacy fallback. Raises ``HTTPException``
+    (403) on ANY failure — never leaks the verifier's exception detail or token
+    bytes.
+
+    Trust note: this is a real hardening, NOT full non-repudiation — a compromised
+    coordinator could still REPLAY a currently-valid operator JWT within its TTL.
+    That residual is documented + out of scope (plan §6). The bind is on the
+    canonical EMAIL claim (design I4) — this assumes the CF Access policy on the
+    Application enforces email ownership/uniqueness (it gates which emails can get
+    a token at all), which is the trust boundary the design relies on.
+
+    - **enforce** (default, prod): a valid operator JWT whose
+      ``canonical_operator_email`` equals the signed/asserted approver is
+      REQUIRED. Absent/forged/wrong-aud|iss/EXPIRED/unconfigured → 403.
+    - **e2e**: if a JWT is present, verify+bind EXACTLY as enforce; if absent, fall
+      back to the pre-C5 ``caller == expected_approver`` check (returns ``None``,
+      no verified operator email) so the smoke + offline tests run without a real
+      CF JWT.
+    """
+    if IAC_OPERATOR_AUTH_MODE == "e2e" and operator_jwt is None:
+        # Legacy fallback (preserves the C4 behavior exactly). Gate on ``is None``,
+        # NOT falsiness: an empty-string operator_jwt is "present but invalid" and
+        # must fail closed via the verify path below (a bad coordinator forwarding
+        # an empty JWT in e2e is still a 403, never a silent legacy bypass).
+        if caller != expected_approver:
+            log.warning(
+                "operator(e2e-legacy): actor %s != approver %s", caller, expected_approver
+            )
+            raise HTTPException(status_code=403, detail="actor is not the signed approver")
+        return None
+
+    # enforce mode (and e2e WITH a JWT): a real operator JWT is required + bound.
+    if not operator_jwt:
+        raise HTTPException(status_code=403, detail="operator JWT required")
+    try:
+        claims = verify_cf_access_jwt(operator_jwt, CF_ACCESS_TEAM_DOMAIN, CF_ACCESS_AUD_TAG)
+        email = canonical_operator_email(claims)
+    except CfAccessJwtError:
+        # One INFO line, no token bytes; do NOT echo the verifier's detail.
+        log.info("operator: CF Access JWT verification failed")
+        raise HTTPException(status_code=403, detail="operator verification failed")
+    if email != expected_approver:
+        log.warning("operator: verified email != signed approver")
+        raise HTTPException(status_code=403, detail="operator is not the approver")
+    return email
+
+
 # --------------------------------------------------------------------------- #
 # App
 # --------------------------------------------------------------------------- #
@@ -223,7 +331,15 @@ def propose(req: ProposeRequest, caller: str = Depends(_verify_caller_dep)) -> d
     the plan/json at the metadata's generations, recomputes integrity, re-runs
     the denylist, and runs the fidelity + resource-set guard (so it never mints a
     dead approval), THEN signs the c3.v1 payload and stores it. Returns the raw
-    token ONCE."""
+    token ONCE.
+
+    C5b-2: the worker first re-verifies the forwarded operator JWT and binds its
+    verified email == ``req.approver`` (enforce mode) BEFORE any artifact work or
+    mint, so a compromised coordinator cannot mint an approval for an approver it
+    didn't authenticate."""
+    operator_email = _verify_operator(
+        req.operator_jwt, expected_approver=req.approver, caller=caller
+    )
     bucket = _get_artifact_bucket()
     try:
         meta_bytes = gcs_fetch.fetch_artifact(
@@ -270,7 +386,10 @@ def propose(req: ProposeRequest, caller: str = Depends(_verify_caller_dep)) -> d
     record, raw_token = store.create(
         payload=payload, hmac_key=PLAN_APPROVAL_HMAC_KEY, created_by=caller
     )
-    log.info("propose: id=%s approver=%s caller=%s", record.approval_id, req.approver, caller)
+    log.info(
+        "propose: id=%s approver=%s caller=%s operator=%s",
+        record.approval_id, req.approver, caller, operator_email,
+    )
     return {
         "approval_id": record.approval_id,
         "approval_token": raw_token,
@@ -285,10 +404,16 @@ def _approval_window() -> tuple[str, str]:
 
 
 @app.post("/apply")
-def apply(req: TokenRequest, caller: str = Depends(_verify_caller_dep)) -> dict:
-    """Verify → claim (single-use burn) → re-verify → denylist → fidelity →
-    freshness → saved-plan apply. The §3.6 claim-first order: every decision
-    reads from ``signed_payload`` once the HMAC has verified the bytes.
+def apply(req: ApplyRequest, caller: str = Depends(_verify_caller_dep)) -> dict:
+    """Verify → operator-bind → claim (single-use burn) → re-verify → denylist →
+    fidelity → freshness → saved-plan apply. The §3.6 claim-first order: every
+    decision reads from ``signed_payload`` once the HMAC has verified the bytes.
+
+    C5b-2: the operator-identity bind (``_verify_operator``) runs PRE-CLAIM,
+    exactly where the old ``caller == approver`` check was — so an
+    absent/forged/expired operator JWT fails 403 with NOTHING burned. The
+    inter-service ``_verify_caller_dep`` SA-allowlist still runs; the CF binding is
+    ADDITIONAL, not a replacement.
 
     State-lock contention on any tofu step (init/refresh-only/apply) surfaces as
     the DISTINCT terminal phase ``lock_refused`` (HTTP 423), not ``failed`` (502):
@@ -309,15 +434,17 @@ def apply(req: TokenRequest, caller: str = Depends(_verify_caller_dep)) -> dict:
     sp = signed_payload(stored)  # trusted dict — every read below uses THIS
     if plan_approval_is_expired(stored, now=_now()):
         raise HTTPException(status_code=403, detail="approval expired")
-    if caller != sp["approver"]:
-        log.warning("apply: actor %s != signed approver %s id=%s", caller, sp["approver"], req.approval_id)
-        raise HTTPException(status_code=403, detail="actor is not the signed approver")
+    # PRE-CLAIM operator bind (replaces the C4 caller==approver check). Raises 403
+    # BEFORE claim_pending, so an absent/forged/expired JWT burns NOTHING. Returns
+    # the verified operator email (or None in the e2e-legacy path).
+    operator_email = _verify_operator(req.operator_jwt, expected_approver=sp["approver"], caller=caller)
 
     attempt_id = str(uuid.uuid4())
     now = _now()
     claimed = store.claim_pending(
         req.approval_id, used_by=caller, used_at=now,
-        apply_audit={"phase": "claimed", "claimed_at": now.isoformat(), "apply_attempt_id": attempt_id},
+        apply_audit={"phase": "claimed", "claimed_at": now.isoformat(), "apply_attempt_id": attempt_id,
+                     "caller_sa": caller, "operator_email": operator_email},
     )
     if claimed is None:
         raise HTTPException(status_code=403, detail="approval already used or revoked")
@@ -349,11 +476,14 @@ def apply(req: TokenRequest, caller: str = Depends(_verify_caller_dep)) -> dict:
         _denylist_or_raise(parsed_plan_json)          # contract #4
         _fidelity_or_raise(md, parsed_plan_json)       # §3.2 fidelity + resource-set guard
     except gcs_fetch.GcsFetchError as e:
-        _fail(store, req.approval_id, attempt_id, "integrity_refused", 422, f"artifact fetch failed: {e}")
+        _fail(store, req.approval_id, attempt_id, "integrity_refused", 422, f"artifact fetch failed: {e}",
+              caller_sa=caller, operator_email=operator_email)
     except ArtifactIntegrityError as e:
-        _fail(store, req.approval_id, attempt_id, "integrity_refused", 422, f"artifact integrity: {e}")
+        _fail(store, req.approval_id, attempt_id, "integrity_refused", 422, f"artifact integrity: {e}",
+              caller_sa=caller, operator_email=operator_email)
     except tofu_runner.FidelityError as e:
-        _fail(store, req.approval_id, attempt_id, "fidelity_refused", 422, f"fidelity: {e}")
+        _fail(store, req.approval_id, attempt_id, "fidelity_refused", 422, f"fidelity: {e}",
+              caller_sa=caller, operator_email=operator_email)
     except tofu_runner.LockRefused as e:
         # Defensive parity with the run-tofu block below. No subprocess in THIS
         # gate block acquires the state lock today — the only tofu call here is the
@@ -365,15 +495,18 @@ def apply(req: TokenRequest, caller: str = Depends(_verify_caller_dep)) -> dict:
         _fail(store, req.approval_id, attempt_id, "lock_refused", 423,
               f"refusing apply: tofu {e.step} could not acquire the state lock "
               "(held or orphaned); operator force-unlock required before retry",
+              caller_sa=caller, operator_email=operator_email,
               extra={"step": e.step, "apply_exit_code": e.exit_code, "stderr_tail": e.stderr[-500:]})
     except tofu_runner.TofuStepError as e:
         # The fidelity check probes `tofu version`; a probe failure pre-apply →
         # fail closed with a terminal audit (not an unhandled 500 that would
         # leave the burned approval at the outcome-unknown phase="claimed").
         _fail(store, req.approval_id, attempt_id, "failed", 502, f"tofu probe failed: {e}",
+              caller_sa=caller, operator_email=operator_email,
               extra={"step": e.step, "apply_exit_code": e.exit_code})
     except (ValueError, TypeError, json.JSONDecodeError, KeyError) as e:
-        _fail(store, req.approval_id, attempt_id, "verify_refused", 422, f"apply rejected: {e}")
+        _fail(store, req.approval_id, attempt_id, "verify_refused", 422, f"apply rejected: {e}",
+              caller_sa=caller, operator_email=operator_email)
 
     # ---- gates passed: materialize a per-request workdir + run tofu ----
     try:
@@ -387,7 +520,9 @@ def apply(req: TokenRequest, caller: str = Depends(_verify_caller_dep)) -> dict:
             )
     except tofu_runner.FreshnessDrift as e:
         _fail(store, req.approval_id, attempt_id, "drift_refused", 409,
-              "refusing apply: refresh-only detected out-of-band drift", extra={"stderr_tail": e.stderr[-500:]})
+              "refusing apply: refresh-only detected out-of-band drift",
+              caller_sa=caller, operator_email=operator_email,
+              extra={"stderr_tail": e.stderr[-500:]})
     except tofu_runner.LockRefused as e:
         # State-lock contention (held or orphaned GCS lock) — a DISTINCT terminal
         # post-claim outcome (HTTP 423), not an apply failure (502). The operator
@@ -399,10 +534,12 @@ def apply(req: TokenRequest, caller: str = Depends(_verify_caller_dep)) -> dict:
         _fail(store, req.approval_id, attempt_id, "lock_refused", 423,
               f"refusing apply: tofu {e.step} could not acquire the state lock "
               "(held or orphaned); operator force-unlock required before retry",
+              caller_sa=caller, operator_email=operator_email,
               extra={"step": e.step, "apply_exit_code": e.exit_code, "stderr_tail": e.stderr[-500:]})
     except tofu_runner.TofuStepError as e:
         _fail(store, req.approval_id, attempt_id, "failed", 502,
               f"tofu {e.step} failed (exit {e.exit_code})",
+              caller_sa=caller, operator_email=operator_email,
               extra={"step": e.step, "apply_exit_code": e.exit_code, "stderr_tail": e.stderr[-500:]})
 
     store.set_apply_audit(req.approval_id, {
@@ -410,18 +547,22 @@ def apply(req: TokenRequest, caller: str = Depends(_verify_caller_dep)) -> dict:
         "freshness_exit_code": outcome.freshness_exit, "apply_exit_code": outcome.apply_exit,
         "applied_at": _now().isoformat(),
         "state_serial": outcome.state_serial, "state_lineage": outcome.state_lineage,
+        "caller_sa": caller, "operator_email": operator_email,
     })
     log.info("apply: id=%s attempt=%s APPLIED serial=%s", req.approval_id, attempt_id, outcome.state_serial)
     return {"approval_id": req.approval_id, "status": "applied", "apply_attempt_id": attempt_id}
 
 
 def _fail(store: PlanApprovalStore, approval_id: str, attempt_id: str, phase: str,
-          http_status: int, detail: str, *, extra: dict | None = None) -> NoReturn:
+          http_status: int, detail: str, *, caller_sa: str, operator_email: str | None,
+          extra: dict | None = None) -> NoReturn:
     """Write a terminal apply_audit (the approval is already burned) + raise.
     ``NoReturn`` documents the always-raises contract so a type checker narrows
     ``plan_bytes``/``outcome`` as bound after the gate try-blocks (and flags any
-    future non-raising path)."""
-    audit = {"phase": phase, "apply_attempt_id": attempt_id, "failed_at": _now().isoformat(), "detail": detail}
+    future non-raising path). N2: every terminal audit carries BOTH identities —
+    the SA ``caller_sa`` and the verified ``operator_email`` (None in e2e-legacy)."""
+    audit = {"phase": phase, "apply_attempt_id": attempt_id, "failed_at": _now().isoformat(),
+             "detail": detail, "caller_sa": caller_sa, "operator_email": operator_email}
     if extra:
         audit.update(extra)
     try:

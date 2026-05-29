@@ -16,6 +16,7 @@ import pytest
 import respx
 from cryptography.hazmat.primitives.asymmetric import rsa
 
+import driftscribe_lib.cf_access as cf_access_mod
 from driftscribe_lib.cf_access import (
     CfAccessJwtError,
     _reset_cache_for_tests,
@@ -158,8 +159,14 @@ def test_kid_miss_refreshes_jwks_once_then_raises():
 
 
 @respx.mock
-def test_kid_miss_then_refresh_finds_new_key():
-    """A kid added by Cloudflare's key rotation is picked up on refresh."""
+def test_kid_miss_then_refresh_finds_new_key(monkeypatch):
+    """A kid added by Cloudflare's key rotation is picked up on refresh.
+
+    The kid-miss refresh rate-limit (_JWKS_MIN_REFRESH_SEC) is orthogonal to
+    rotation pickup; disable it here (0.0) so the two back-to-back calls exercise
+    the refresh path without the DoS guard short-circuiting the second one. The
+    rate-limit itself is covered by test_kid_miss_refresh_is_rate_limited."""
+    monkeypatch.setattr(cf_access_mod, "_JWKS_MIN_REFRESH_SEC", 0.0)
     priv_old, jwk_old = _new_keypair()
     priv_new, jwk_new = _new_keypair()
 
@@ -174,6 +181,59 @@ def test_kid_miss_then_refresh_finds_new_key():
     respx.get(JWKS_URL).mock(return_value=httpx.Response(200, json=_make_jwks(jwk_new, "kid-new")))
     token_new = _mint(priv_new, "kid-new")
     verify_cf_access_jwt(token_new, TEAM, AUD)  # should succeed after refresh
+
+
+@respx.mock
+def test_kid_miss_refresh_is_rate_limited():
+    """A flood of unknown-kid tokens must NOT re-fetch the JWKS on every request
+    (DoS amplification onto Cloudflare's endpoint). With a fresh cache, an unknown
+    kid within _JWKS_MIN_REFRESH_SEC is rejected WITHOUT a re-fetch."""
+    priv, jwk_pub = _new_keypair()
+    route = respx.get(JWKS_URL).mock(return_value=httpx.Response(200, json=_make_jwks(jwk_pub, "kid-A")))
+    # Populate the cache with a successful verify (fetch #1).
+    verify_cf_access_jwt(_mint(priv, "kid-A"), TEAM, AUD)
+    assert route.call_count == 1
+
+    # Now hammer with unknown kids. Each is rejected via the rate-limit branch
+    # (cache is fresh, age << 60s) — NO additional JWKS fetch.
+    other_priv, _ = _new_keypair()
+    for _ in range(5):
+        with pytest.raises(CfAccessJwtError, match="rate-limited"):
+            verify_cf_access_jwt(_mint(other_priv, "kid-UNKNOWN"), TEAM, AUD)
+    assert route.call_count == 1  # still just the initial populate fetch
+
+
+@respx.mock
+def test_alg_hs256_token_rejected():
+    """Algorithm-confusion defense: a token with alg=HS256 in the header (the
+    classic RS256→HS256 confusion, signing with the public key as an HMAC secret)
+    is rejected because verify pins algorithms=["RS256"] — the header alg is
+    checked against the allowlist before any signature work."""
+    priv, jwk_pub = _new_keypair()
+    respx.get(JWKS_URL).mock(return_value=httpx.Response(200, json=_make_jwks(jwk_pub, "kid-1")))
+    now = int(time.time())
+    forged = jwt.encode(
+        {"aud": AUD, "iss": f"https://{TEAM}", "iat": now, "nbf": now - 5,
+         "exp": now + 300, "email": "attacker@example.com", "sub": "x"},
+        "x" * 32, algorithm="HS256", headers={"kid": "kid-1"},
+    )
+    with pytest.raises(CfAccessJwtError, match="JWT verification failed"):
+        verify_cf_access_jwt(forged, TEAM, AUD)
+
+
+@respx.mock
+def test_alg_none_token_rejected():
+    """An unsigned alg=none token is rejected (algorithms=["RS256"] only)."""
+    priv, jwk_pub = _new_keypair()
+    respx.get(JWKS_URL).mock(return_value=httpx.Response(200, json=_make_jwks(jwk_pub, "kid-1")))
+    now = int(time.time())
+    forged = jwt.encode(
+        {"aud": AUD, "iss": f"https://{TEAM}", "iat": now, "nbf": now - 5,
+         "exp": now + 300, "email": "attacker@example.com", "sub": "x"},
+        key=None, algorithm="none", headers={"kid": "kid-1"},
+    )
+    with pytest.raises(CfAccessJwtError, match="JWT verification failed"):
+        verify_cf_access_jwt(forged, TEAM, AUD)
 
 
 @respx.mock

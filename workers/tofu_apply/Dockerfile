@@ -46,7 +46,9 @@ ENV TOFU_VERSION=${TOFU_VERSION}
 
 RUN pip install --no-cache-dir uv
 # Runtime deps mirror workers/rollback (fastapi/uvicorn/pydantic/firestore/
-# google-auth/requests) PLUS google-cloud-storage (NEW — the artifact fetch).
+# google-auth/requests) PLUS google-cloud-storage (NEW — the artifact fetch) and
+# httpx + pyjwt[crypto] (NEW, C5b-2 — driftscribe_lib.cf_access fetches the CF
+# JWKS over httpx and verifies the RS256 operator JWT; [crypto] → cryptography).
 RUN uv pip install --system \
     "fastapi>=0.115" \
     "uvicorn[standard]>=0.32" \
@@ -54,7 +56,9 @@ RUN uv pip install --system \
     "google-cloud-firestore>=2.19" \
     "google-cloud-storage>=2.18" \
     "google-auth>=2.35" \
-    "requests>=2.32"
+    "requests>=2.32" \
+    "httpx>=0.27" \
+    "pyjwt[crypto]>=2.10"
 
 # The verified tofu binary (only the binary — none of the build tooling).
 COPY --from=tofu-builder /usr/local/bin/tofu /usr/local/bin/tofu
