@@ -82,7 +82,14 @@ steps:
       - --timeout=900
       - --memory=2Gi
       - --cpu=2
-      - --set-env-vars=GCP_PROJECT=$PROJECT_ID,TARGET_REGION=${_REGION},OWN_URL=https://placeholder.invalid,COORDINATOR_URL=https://placeholder.invalid,ALLOWED_CALLERS=driftscribe-agent@$PROJECT_ID.iam.gserviceaccount.com,ARTIFACT_BUCKET=$PROJECT_ID-tofu-artifacts,TF_VAR_tofu_state_kms_key=${_KMS_KEY}
+      # C5b-2: CF_ACCESS_* + IAC_OPERATOR_AUTH_MODE=enforce are REQUIRED — the
+      # worker re-verifies the forwarded operator JWT against this CF Access App's
+      # JWKS and binds verified-email == signed approver. In enforce mode an empty
+      # CF_ACCESS_TEAM_DOMAIN/CF_ACCESS_AUD_TAG makes the revision fail to boot
+      # (_require_cf_config_if_enforce), so these MUST match the coordinator's CF
+      # Access App (mirrors infra/cloudbuild.yaml). COORDINATOR_URL is now optional
+      # (I8) — the placeholder is harmless/unused under propose-on-approve.
+      - --set-env-vars=GCP_PROJECT=$PROJECT_ID,TARGET_REGION=${_REGION},OWN_URL=https://placeholder.invalid,COORDINATOR_URL=https://placeholder.invalid,ALLOWED_CALLERS=driftscribe-agent@$PROJECT_ID.iam.gserviceaccount.com,ARTIFACT_BUCKET=$PROJECT_ID-tofu-artifacts,TF_VAR_tofu_state_kms_key=${_KMS_KEY},CF_ACCESS_TEAM_DOMAIN=adp-app.cloudflareaccess.com,CF_ACCESS_AUD_TAG=5e6a20fe63e5fb03a742eeb0623e216ad4c837413d2afa9885a79b1091016262,IAC_OPERATOR_AUTH_MODE=enforce
       - --set-secrets=PLAN_APPROVAL_HMAC_KEY=plan-hmac-key:latest
 
   # 3. Post-deploy: resolve the assigned URL + write it back into OWN_URL.
