@@ -284,20 +284,32 @@ step 5 failed — check the Cloud Build logs before continuing.
 
 ## Step 7 — confirm Eventarc trigger fires
 
-The Step 6 re-run of `setup_secrets.sh` also:
+The Step 6 re-run of `setup_secrets.sh` §10 (skippable with `SETUP_EVENTARC=0`) also:
 
 - Created `eventarc-trigger-sa@…`.
-- Granted it `roles/run.invoker` on `driftscribe-agent` plus
+- Provisioned the Eventarc **service agent** (`gcloud beta services identity
+  create` + `roles/eventarc.serviceAgent`) — without it `triggers create` fails
+  `FAILED_PRECONDITION: Permission denied while using the Eventarc Service Agent`.
+- Granted `eventarc-trigger-sa` `roles/run.invoker` on `driftscribe-agent` plus
   `roles/eventarc.eventReceiver` project-wide.
-- Created the `driftscribe-cloudrun-changes` trigger filtering on
-  `payment-demo` mutations (resourceName exact match,
-  `methodName=google.cloud.run.v2.Services.UpdateService`).
+- Created **two** triggers (both → `/eventarc`), one per Cloud Run audit-log
+  method variant (an audit-log trigger filters exactly one `methodName`):
+  - `driftscribe-cloudrun-changes` — `methodName=google.cloud.run.v1.Services.ReplaceService`,
+    `resourceName=namespaces/<proj>/services/payment-demo`. **This is the one that
+    fires for the demo/CI/manual drift path** (`gcloud run services update`).
+  - `driftscribe-cloudrun-changes-v2-update` — `methodName=google.cloud.run.v2.Services.UpdateService`,
+    `resourceName=projects/<proj>/locations/<region>/services/payment-demo`. Fires
+    for the rollback worker (run_v2 client), the console, and newer clients.
 
-The Step 5 build also stamps `EVENTARC_AUDIENCE` on the coordinator (the
-coordinator's own assigned URL) in the same `gcloud run services update`
-call as the four worker URLs — see the final post-deploy step in
-`infra/cloudbuild.yaml`. Without that env, the `/eventarc` handler
-fail-closes with 503.
+The Step 5 build also stamps `EVENTARC_AUDIENCE` on the coordinator in the same
+`gcloud run services update` call as the worker URLs (see the final post-deploy
+step in `infra/cloudbuild.yaml`). **It MUST be the coordinator URL + `/eventarc`
+path** (`<coord_url>/eventarc`), because Eventarc's Pub/Sub push subscription
+mints the OIDC token with `aud` = the push endpoint (service URL + the trigger's
+`--destination-run-path`), and the handler exact-matches `aud`. A bare-URL value
+makes every delivery 401 while the trigger stays ACTIVE (silent drift blindness);
+an empty value fail-closes the handler with 503. Guarded by
+`tests/integration/test_eventarc_setup.py`.
 
 Manually mutate `payment-demo` once. Then check both halves of the path:
 the audit log emitted the expected method name (trigger-side), AND the
@@ -331,32 +343,27 @@ gcloud logging read \
   --project "$PROJECT"
 ```
 
-If the audit log output is `google.cloud.run.v2.Services.UpdateService`
-AND the coordinator logs show a `200` on `/eventarc`, you're done.
+A `gcloud run services update` (and CI deploys, and the demo drift-injection)
+emits `google.cloud.run.v1.Services.ReplaceService`. The coordinator logs should
+show a **`200`** on `/eventarc` ~30s later — then you're done. Both method
+variants ship as separate triggers by default (§10), so the old manual
+"edit the filter to v1 and recreate" surgery is **no longer needed**; the
+script also verifies an existing trigger's filters and recreates it if they
+drifted (so a project carrying the old dead v2-only trigger self-repairs).
 
-If the audit log emits `google.cloud.run.v1.Services.ReplaceService`
-instead, the v1 path uses a **different resourceName format** as well —
-not just the methodName. v1 uses `namespaces/{project}/services/{name}`,
-not `projects/{project}/locations/{region}/services/{name}`. Edit BOTH
-filter lines in section 10 of `infra/scripts/setup_secrets.sh`:
-
-```diff
-- --event-filters="methodName=google.cloud.run.v2.Services.UpdateService"
-- --event-filters="resourceName=projects/${PROJECT}/locations/${REGION}/services/payment-demo"
-+ --event-filters="methodName=google.cloud.run.v1.Services.ReplaceService"
-+ --event-filters="resourceName=namespaces/${PROJECT}/services/payment-demo"
-```
-
-Then delete the existing trigger and re-run the script to recreate it
-with the new filters:
+**If you see `/eventarc` deliveries but they return `401` (not `200`):** the
+token verified but the audience didn't match — `EVENTARC_AUDIENCE` is almost
+certainly missing the `/eventarc` path suffix (see the audience note above).
+Confirm with:
 
 ```bash
-gcloud eventarc triggers delete driftscribe-cloudrun-changes \
-  --location=asia-northeast1 --project "$PROJECT"
-./infra/scripts/setup_secrets.sh "$PROJECT" "$GH_PAT" "$DOCS_PAT" "$WEBHOOK_URL" "$DK_API_KEY" "$UPGRADE_READER_PAT" "$UPGRADE_DOCS_PAT"
+# the Pub/Sub push subscription's OIDC audience Eventarc actually mints:
+SUB=$(gcloud pubsub subscriptions list --project "$PROJECT" \
+  --format='value(name)' | grep driftscribe-cloudrun-changes | head -1)
+gcloud pubsub subscriptions describe "$SUB" --project "$PROJECT" \
+  --format='value(pushConfig.oidcToken.audience)'
+# must equal the coordinator's EVENTARC_AUDIENCE env, e.g. https://<coord>/eventarc
 ```
-
-Re-mutate `payment-demo` and re-check the coordinator logs.
 
 ## Step 8 — enable the ADK delegation path
 

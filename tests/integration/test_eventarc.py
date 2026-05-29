@@ -31,7 +31,12 @@ from agent.main import app
 from driftscribe_lib import logging as ds_logging
 
 
-_VALID_AUDIENCE = "https://driftscribe-agent-xyz.a.run.app"
+# Eventarc mints the OIDC token with aud = the push endpoint = the coordinator
+# service URL + the trigger's --destination-run-path (`/eventarc`). The handler
+# therefore verifies against the PATH-SUFFIXED audience, NOT the bare service URL.
+# (Contrast the coordinator→worker path, which uses the ROOT URL — see
+# tests/unit/test_worker_client.py.) Keeping this realistic guards the contract.
+_VALID_AUDIENCE = "https://driftscribe-agent-xyz.a.run.app/eventarc"
 _EXPECTED_EMAIL = "eventarc-trigger-sa@test-proj.iam.gserviceaccount.com"
 
 
@@ -285,6 +290,42 @@ def test_eventarc_accepts_correct_email_and_dispatches_recheck(monkeypatch):
     # handler uses settings.eventarc_audience, not a hardcoded value.
     args, kwargs = m_verify.call_args
     assert kwargs.get("audience") == _VALID_AUDIENCE or _VALID_AUDIENCE in args
+
+
+def test_eventarc_rejects_bare_url_audience(monkeypatch):
+    """Regression for the prod bug: Eventarc mints ``aud = <svc URL>/eventarc``
+    (push endpoint = service URL + ``--destination-run-path``), but
+    ``EVENTARC_AUDIENCE`` was once stamped as the BARE service URL, so every real
+    delivery 401'd. Here we emulate ``verify_oauth2_token``'s real exact-match on
+    the ``audience`` kwarg: the token carries the BARE audience while the handler
+    is configured with the path-suffixed one → the verifier raises ValueError →
+    401, and the recheck never runs. This exercises the handler→verifier wiring,
+    not a rubber-stamp mock.
+    """
+    _set_audience(monkeypatch, _VALID_AUDIENCE)  # path-suffixed (correct)
+    bare_url = _VALID_AUDIENCE.rsplit("/eventarc", 1)[0]  # the dead bare value
+
+    def _verify_exact_match(token, request, audience=None):
+        # Mirror google.oauth2.id_token.verify_oauth2_token: ValueError on aud
+        # mismatch. This token was minted for the BARE audience.
+        if audience != bare_url:
+            raise ValueError("Token has wrong audience")
+        return {"email": _EXPECTED_EMAIL, "aud": bare_url}
+
+    mock_recheck = AsyncMock()
+    with (
+        patch("agent.main.verify_oauth2_token", side_effect=_verify_exact_match),
+        patch("agent.main._do_recheck", mock_recheck),
+    ):
+        client = TestClient(app)
+        r = client.post(
+            "/eventarc",
+            json=_audit_log_body(),
+            headers={"Authorization": "Bearer fake-token"},
+        )
+    assert r.status_code == 401
+    assert r.json()["detail"] == "invalid Eventarc token"
+    mock_recheck.assert_not_awaited()
 
 
 def test_eventarc_ignores_non_target_service(monkeypatch):

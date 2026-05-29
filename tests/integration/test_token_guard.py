@@ -113,8 +113,9 @@ def test_eventarc_does_not_require_token(monkeypatch):
     """
     _set_token(monkeypatch, "test-token-value-123")
     # EVENTARC_AUDIENCE must be set for the handler to reach the
-    # Authorization-header check (empty audience → 503 fail-closed).
-    monkeypatch.setenv("EVENTARC_AUDIENCE", "https://example.a.run.app")
+    # Authorization-header check (empty audience → 503 fail-closed). Realistic
+    # value is path-suffixed (Eventarc mints aud as <svc URL>/eventarc).
+    monkeypatch.setenv("EVENTARC_AUDIENCE", "https://example.a.run.app/eventarc")
     get_settings.cache_clear()
     client = TestClient(app)
     r = client.post("/eventarc")
