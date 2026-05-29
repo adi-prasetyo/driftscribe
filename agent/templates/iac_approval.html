@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex,nofollow">
+  <title>DriftScribe Infra Approval — PR #{{ pr_number }}</title>
+  <style>
+    body {
+      font-family: -apple-system, system-ui, "Segoe UI", sans-serif;
+      max-width: 760px;
+      margin: 2em auto;
+      padding: 0 1em;
+      color: #222;
+      line-height: 1.45;
+    }
+    h1 { font-size: 1.5em; margin-bottom: 0.5em; }
+    h2 { font-size: 1.1em; margin: 1.25em 0 0.5em; }
+    .subtle { color: #666; font-size: 0.9em; }
+    .approval-box {
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      padding: 1.25em 1.5em;
+      margin: 1.5em 0;
+      background: #fafafa;
+    }
+    .field { margin: 0.5em 0; word-break: break-all; }
+    .label {
+      color: #888;
+      display: inline-block;
+      min-width: 14em;
+      vertical-align: top;
+    }
+    .head-sha { font-size: 1.05em; }
+    .head-sha code { background: #eef6ff; padding: 0.1em 0.4em; }
+    code { background: #eee; padding: 0 0.25em; border-radius: 3px; }
+    pre {
+      background: #f6f8fa;
+      border: 1px solid #e1e4e8;
+      border-radius: 4px;
+      padding: 0.75em 1em;
+      overflow-x: auto;
+      font-size: 0.82em;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    details { margin: 1em 0; }
+    summary { cursor: pointer; font-weight: 600; }
+    .action-buttons {
+      margin-top: 1.5em;
+      display: flex;
+      gap: 1em;
+    }
+    button {
+      padding: 0.75em 1.5em;
+      border: 0;
+      border-radius: 4px;
+      font-size: 1em;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    .approve { background: #2ea44f; color: white; }
+    .reject { background: #d73a49; color: white; }
+    .ok { color: #2ea44f; font-weight: 600; }
+    .bad { color: #d73a49; font-weight: 600; }
+    .blocked {
+      color: #d73a49;
+      font-weight: 600;
+      background: #fff5f5;
+      border-left: 3px solid #d73a49;
+      padding: 0.75em 1em;
+      margin: 1em 0;
+    }
+    .note {
+      background: #f3f8ff;
+      border-left: 3px solid #0366d6;
+      padding: 0.75em 1em;
+      margin: 1em 0;
+      font-size: 0.9em;
+    }
+    ul.violations { margin: 0.25em 0; padding-left: 1.25em; }
+    ul.violations li { color: #d73a49; }
+    .result-block {
+      background: #f3f8ff;
+      border-left: 3px solid #2ea44f;
+      padding: 0.75em 1em;
+      margin: 1em 0;
+      font-family: ui-monospace, "Cascadia Code", Menlo, monospace;
+      font-size: 0.85em;
+      white-space: pre-wrap;
+    }
+    .result-block.deny { border-left-color: #d73a49; }
+  </style>
+</head>
+<body>
+  <h1>DriftScribe Infra Approval</h1>
+  <p class="subtle">Human-in-the-loop gate for the OpenTofu apply worker — PR #{{ pr_number }}.</p>
+
+  {% if view is none %}
+    <div class="approval-box">
+      <p>No C2 <code>tofu plan</code> artifact found for PR #{{ pr_number }}.</p>
+      <p class="subtle">Run the C2 plan-builder workflow first, then reload this page.</p>
+    </div>
+  {% else %}
+    {% if decision is defined and decision %}
+      {% if decision == "approve" %}
+        <div class="result-block">
+          {{ outcome if (outcome is defined and outcome) else "Approved — infra apply dispatched." }}
+        </div>
+      {% elif decision == "reject" %}
+        <div class="result-block deny">
+          {{ outcome if (outcome is defined and outcome) else "Rejected. No apply will run for this artifact." }}
+        </div>
+      {% endif %}
+      {% if decision_result is defined and decision_result %}
+        <div class="result-block">{{ decision_result }}</div>
+      {% endif %}
+    {% endif %}
+
+    <div class="approval-box">
+      <div class="field head-sha">
+        <span class="label">head_sha:</span> <code>{{ view.head_sha }}</code>
+      </div>
+      <div class="field">
+        <span class="label">Integrity:</span>
+        {% if view.unverifiable %}
+          <span class="bad">UNVERIFIABLE</span>
+        {% elif view.integrity_ok %}
+          <span class="ok">verified</span>
+        {% else %}
+          <span class="bad">MISMATCH</span>
+        {% endif %}
+      </div>
+      <div class="field">
+        <span class="label">Denylist (self-protection):</span>
+        {% if view.denylist_violations %}
+          <span class="bad">{{ view.denylist_violations | length }} violation(s)</span>
+          <ul class="violations">
+            {% for rule, detail in view.denylist_violations %}
+              <li><code>{{ rule }}</code>: {{ detail }}</li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <span class="ok">none</span>
+        {% endif %}
+      </div>
+    </div>
+
+    <h2>C2 plan artifact (c2.v1)</h2>
+    <div class="approval-box">
+      <div class="field"><span class="label">schema_version:</span> <code>{{ view.metadata.get("schema_version", "") }}</code></div>
+      <div class="field"><span class="label">repo:</span> <code>{{ view.metadata.get("repo", "") }}</code></div>
+      <div class="field"><span class="label">pr_number:</span> <code>{{ view.metadata.get("pr_number", "") }}</code></div>
+      <div class="field"><span class="label">head_sha:</span> <code>{{ view.metadata.get("head_sha", "") }}</code></div>
+      <div class="field"><span class="label">base_sha:</span> <code>{{ view.metadata.get("base_sha", "") }}</code></div>
+      <div class="field"><span class="label">workflow_run_id:</span> <code>{{ view.metadata.get("workflow_run_id", "") }}</code></div>
+      <div class="field"><span class="label">workflow_run_attempt:</span> <code>{{ view.metadata.get("workflow_run_attempt", "") }}</code></div>
+      <div class="field"><span class="label">artifact_uri_plan:</span> <code>{{ view.metadata.get("artifact_uri_plan", "") }}</code></div>
+      <div class="field"><span class="label">artifact_uri_json:</span> <code>{{ view.metadata.get("artifact_uri_json", "") }}</code></div>
+      <div class="field"><span class="label">artifact_uri_metadata:</span> <code>{{ view.artifact_uri_metadata }}</code></div>
+      <div class="field"><span class="label">generation_plan:</span> <code>{{ view.metadata.get("generation_plan", "") }}</code></div>
+      <div class="field"><span class="label">generation_json:</span> <code>{{ view.metadata.get("generation_json", "") }}</code></div>
+      <div class="field"><span class="label">generation_metadata:</span> <code>{{ view.generation_metadata }}</code></div>
+      <div class="field"><span class="label">plan_sha256:</span> <code>{{ view.metadata.get("plan_sha256", "") }}</code></div>
+      <div class="field"><span class="label">plan_json_sha256:</span> <code>{{ view.metadata.get("plan_json_sha256", "") }}</code></div>
+      <div class="field"><span class="label">opentofu_version:</span> <code>{{ view.metadata.get("opentofu_version", "") }}</code></div>
+      <div class="field"><span class="label">provider_lockfile_sha256:</span> <code>{{ view.metadata.get("provider_lockfile_sha256", "") }}</code></div>
+    </div>
+
+    <details>
+      <summary>tofu show</summary>
+      <pre>{{ view.tofu_show_text }}</pre>
+    </details>
+
+    <div class="note">
+      Required CI checks must be green on this exact <code>head_sha</code>; final
+      acceptance happens when you click Approve — the tofu-apply worker
+      independently re-verifies integrity, denylist, fidelity, and your operator
+      identity before applying. This page is advisory.
+    </div>
+
+    {% if can_approve %}
+      <form method="post" action="/iac-approvals/{{ pr_number }}">
+        <input type="hidden" name="form_token" data-testid="token-field" value="{{ form_token }}">
+        <div class="action-buttons">
+          <button class="approve" data-testid="approve-button" type="submit" name="decision" value="approve">Approve infra apply</button>
+          <button class="reject" data-testid="reject-button" type="submit" name="decision" value="reject">Reject</button>
+        </div>
+      </form>
+    {% else %}
+      <div class="blocked">
+        Approve disabled: {{ reason_blocked if reason_blocked else "this artifact cannot be approved." }}
+      </div>
+    {% endif %}
+  {% endif %}
+</body>
+</html>
