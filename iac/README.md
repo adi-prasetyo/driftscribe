@@ -172,7 +172,10 @@ exits non-zero if there are any violations.
 
 ## Phase C1: plan-JSON denylist
 
-`tools/iac_plan_denylist.py` is the **self-protection denylist** layered on top
+The **self-protection denylist** (canonical policy in
+`driftscribe_lib/iac_plan_denylist.py`, with a `tools/iac_plan_denylist.py`
+CLI/re-export shim — promoted to the lib in **C4** so the worker container can
+re-run it at runtime) is layered on top
 of the static HCL gate (design doc §5.2). Where the static gate is a syntax-
 level check on the PR diff, the denylist is a semantic check on a parsed
 OpenTofu `tofu show -json plan.tfplan` document: it refuses any non-no-op
@@ -297,7 +300,8 @@ only** — no GCS I/O, no `tofu`; fully unit-tested with a fake Firestore client
   denylist on fetched plan.json → freshness refresh-only plan → tofu apply`. Verify precedes the
   signed-window/approver reads (those bytes are only trusted post-HMAC); ALL apply decisions read
   from `signed_payload(stored)`, never the denormalized dataclass fields. The denylist re-run
-  needs `iac_plan_denylist` importable at worker runtime, so its promotion to the lib is a C4 task.
+  needs `iac_plan_denylist` importable at worker runtime; **C4 promoted it to
+  `driftscribe_lib/iac_plan_denylist.py`** (CLI shim kept in `tools/`).
 - **What it does NOT do:** fetch from GCS, re-run the denylist, freshness-check, or apply
   (all C4); render the approval page or authenticate the operator (C5). Full
   non-repudiation of the signed `approver` depends on C5 forwarding a trusted operator

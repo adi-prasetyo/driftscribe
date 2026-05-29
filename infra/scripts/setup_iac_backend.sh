@@ -406,6 +406,93 @@ echo "  ${CI_SA}: workloadIdentityUser for principalSet repository=${GITHUB_REPO
 WIF_PROVIDER_NAME="${WIF_POOL_NAME}/providers/${WIF_PROVIDER}"
 
 # --------------------------------------------------------------------------
+# 6.5. Phase C4 — the tofu-apply worker service account (the SOLE MUTATOR).
+# --------------------------------------------------------------------------
+# A DEDICATED Cloud Run runtime SA (NOT the federated CI plan-builder SA above:
+# that one is WIF-only, read + write-only-artifact). This SA runs `tofu apply`
+# and so holds the BROAD apply grant the user chose. Two modes (TOFU_APPLY_IAM_MODE):
+#
+#   "hardened" (DEFAULT, recommended): broad apply across the managed resource
+#     types WITHOUT any IAM-escalation vector — roles/run.developer PROJECT-WIDE
+#     (deploy/update any Cloud Run service; NOTABLY excludes run.services.setIamPolicy,
+#     unlike roles/run.admin) + the resource-scoped state/KMS/artifact/Firestore
+#     grants below. No roles/editor, no project-wide iam.serviceAccounts.actAs, no
+#     SA/HMAC-key creation, no *.setIamPolicy. As iac/ grows beyond Cloud Run, add
+#     the corresponding developer-style role per resource type (never editor/owner,
+#     never a *.setIamPolicy role).
+#
+#   "editor" (operator fast path): plain roles/editor — broadest, but editor grants
+#     iam.serviceAccountKeys.create, storage.hmacKeys.create, AND project-wide
+#     iam.serviceAccounts.actAs (deploy a workload AS another SA → inherit its
+#     access). This mode REQUIRES the org policy constraints/iam.disableServiceAccountKeyCreation
+#     to be enforced (the key-creation vector); the actAs vector remains an accepted,
+#     documented blast radius. The script refuses this mode if the org policy is
+#     not detectable. See docs/runbooks/tofu-apply.md + the C4 plan §4.3/§6.
+TOFU_APPLY_IAM_MODE="${TOFU_APPLY_IAM_MODE:-hardened}"
+APPLY_SA_NAME="${APPLY_SA_NAME:-tofu-apply-sa}"
+APPLY_SA="${APPLY_SA_NAME}@${PROJECT}.iam.gserviceaccount.com"
+
+create_service_account_idempotent "$PROJECT" "$APPLY_SA_NAME" \
+  "DriftScribe tofu-apply worker (sole mutator)"
+
+# Resource-scoped grants shared by BOTH modes (editor technically covers some of
+# these, but KMS crypto is NEVER in editor and the explicit grants stay auditable):
+# 6.5a State bucket objectAdmin — gcs backend lock + state write on apply.
+gcloud storage buckets add-iam-policy-binding "gs://${STATE_BUCKET}" \
+  --project="$PROJECT" --member="serviceAccount:${APPLY_SA}" \
+  --role="roles/storage.objectAdmin" >/dev/null
+echo "  ${APPLY_SA}: storage.objectAdmin on gs://${STATE_BUCKET} (lock + state write)"
+# 6.5b KMS encrypt/decrypt on the single state key — REQUIRED (editor grants no KMS crypto).
+gcloud kms keys add-iam-policy-binding "$KMS_KEY" \
+  --project="$PROJECT" --location="$KMS_LOCATION" --keyring="$KMS_KEYRING" \
+  --member="serviceAccount:${APPLY_SA}" \
+  --role="roles/cloudkms.cryptoKeyEncrypterDecrypter" >/dev/null
+echo "  ${APPLY_SA}: cryptoKeyEncrypterDecrypter on ${KMS_KEY} (decrypt state, re-encrypt on apply)"
+# 6.5c Artifact bucket objectViewer — READ plan.tfplan/plan.json/metadata.json by pinned
+# generation (the apply-side read the plan-builder grant (5d) deferred to C4). NOT
+# objectCreator/objectAdmin: the apply worker only reads artifacts.
+gcloud storage buckets add-iam-policy-binding "gs://${ARTIFACT_BUCKET}" \
+  --project="$PROJECT" --member="serviceAccount:${APPLY_SA}" \
+  --role="roles/storage.objectViewer" >/dev/null
+echo "  ${APPLY_SA}: storage.objectViewer on gs://${ARTIFACT_BUCKET} (read artifacts by generation)"
+# 6.5d Firestore — the plan_approvals collection (no collection-scope IAM exists;
+# project-level datastore.user, the same acknowledged shared blast radius as rollback).
+grant_role_idempotent "$PROJECT" "serviceAccount:${APPLY_SA}" "roles/datastore.user"
+echo "  ${APPLY_SA}: datastore.user (project) — plan_approvals collection"
+
+if [ "$TOFU_APPLY_IAM_MODE" = "editor" ]; then
+  # Fast path: refuse unless the SA-key-creation org policy is enforced.
+  KEY_POLICY="$(gcloud resource-manager org-policies describe \
+    constraints/iam.disableServiceAccountKeyCreation --project="$PROJECT" \
+    --effective --format='value(booleanPolicy.enforced)' 2>/dev/null || echo "")"
+  if [ "$KEY_POLICY" != "True" ]; then
+    echo "ERROR: TOFU_APPLY_IAM_MODE=editor requires constraints/iam.disableServiceAccountKeyCreation" >&2
+    echo "       enforced on ${PROJECT} (could not confirm it is; got '${KEY_POLICY}')." >&2
+    echo "       Enforce it, or use the default hardened mode. See docs/runbooks/tofu-apply.md." >&2
+    exit 1
+  fi
+  grant_role_idempotent "$PROJECT" "serviceAccount:${APPLY_SA}" "roles/editor"
+  echo "  ${APPLY_SA}: EDITOR (fast path) — broad; actAs blast radius accepted (org-policy key lockdown verified)"
+else
+  # Hardened-broad: project-wide Cloud Run apply WITHOUT project-wide
+  # setIamPolicy/actAs/key creation. The ONE actAs the apply genuinely needs —
+  # scoped iam.serviceAccountUser on payment-demo's RUNTIME SA so `tofu apply` can
+  # update the service (Cloud Run update requires actAs on the service's runtime
+  # identity, even though iac/cloudrun.tf declares none → the default compute SA) —
+  # is granted resource-scoped in setup_secrets.sh §7b (gated on payment-demo +
+  # this SA existing). Any NEW iac/ resource type gets its own developer-style role
+  # here (never editor/owner, never a *.setIamPolicy role, never project-wide actAs).
+  grant_role_idempotent "$PROJECT" "serviceAccount:${APPLY_SA}" "roles/run.developer"
+  echo "  ${APPLY_SA}: run.developer (project) — broad Cloud Run apply, no project-wide setIamPolicy/actAs/key-creation"
+  echo "    (scoped actAs on payment-demo's runtime SA is granted by setup_secrets.sh §7b)"
+fi
+
+# NOTE (operator steps, NOT here): the plan-hmac-key secret + the
+# secretmanager.secretAccessor bind for ${APPLY_SA}, the Cloud Build actAs on
+# ${APPLY_SA}, and the coordinator run.invoker on driftscribe-tofu-apply are in
+# infra/scripts/setup_secrets.sh (idempotent, gated on existence).
+
+# --------------------------------------------------------------------------
 # 7. Summary — values the operator wires in.
 # --------------------------------------------------------------------------
 cat <<EOF
