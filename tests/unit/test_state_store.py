@@ -177,3 +177,205 @@ def test_firestore_evict_cached_decision_returns_false_when_doc_missing():
     result = store.evict_cached_decision("ev-1", "dec-1")
     assert result is False
     mock_transaction.delete.assert_not_called()
+
+
+# --------------------------------------------------------------------------- #
+# Phase C5e: record_decision stores event_key + is atomic; find_decision_for_event
+# recovers via a query when the pointer is lost.
+# --------------------------------------------------------------------------- #
+
+
+def test_inmemory_record_decision_stores_event_key():
+    """The decision doc carries its ``event_key`` so both stores expose the same
+    shape (and the Firestore query-fallback has a field to query)."""
+    s = InMemoryStateStore()
+    s.record_event("ev-1", {})
+    s.record_decision("dec-1", "ev-1", {"action": "rollback"})
+    out = s.get_decision("dec-1")
+    assert out is not None
+    assert out["event_key"] == "ev-1"
+
+
+def test_inmemory_find_decision_for_event_returns_by_pointer():
+    """Normal path: the event pointer resolves the decision (event_key field is
+    present but the pointer is what's used)."""
+    s = InMemoryStateStore()
+    s.record_event("ev-1", {})
+    s.record_decision("dec-1", "ev-1", {"action": "rollback"})
+    out = s.find_decision_for_event("ev-1")
+    assert out is not None
+    assert out["action"] == "rollback"
+    assert out["event_key"] == "ev-1"
+
+
+class _FakeDocRef:
+    """Records ``set`` / ``update`` calls so the test can assert what a batch wrote."""
+
+    def __init__(self, name: str, recorder: list):
+        self._name = name
+        self._recorder = recorder
+
+    def set(self, data, merge=False):
+        self._recorder.append(("set", self._name, data, merge))
+
+    def update(self, data):
+        self._recorder.append(("update", self._name, data))
+
+    def get(self, transaction=None):  # unused here
+        raise NotImplementedError
+
+
+class _FakeBatch:
+    def __init__(self, recorder: list):
+        self._recorder = recorder
+        self.committed = False
+
+    def set(self, doc_ref, data, merge=False):
+        doc_ref.set(data, merge=merge)
+
+    def update(self, doc_ref, data):
+        doc_ref.update(data)
+
+    def commit(self):
+        self.committed = True
+        self._recorder.append(("commit",))
+
+
+def _build_record_decision_mock():
+    """Firestore client mock for ``record_decision``: a ``.batch()`` whose writes
+    land in a shared recorder; ``.collection("decisions"|"events").document(id)``
+    returns recording doc refs."""
+    recorder: list = []
+    decision_refs: dict[str, _FakeDocRef] = {}
+    event_refs: dict[str, _FakeDocRef] = {}
+
+    mock_db = MagicMock()
+
+    def collection_dispatch(name):
+        col = MagicMock()
+        registry = decision_refs if name == "decisions" else event_refs
+
+        def document(doc_id):
+            if doc_id not in registry:
+                registry[doc_id] = _FakeDocRef(f"{name}/{doc_id}", recorder)
+            return registry[doc_id]
+
+        col.document.side_effect = document
+        return col
+
+    mock_db.collection.side_effect = collection_dispatch
+    batch = _FakeBatch(recorder)
+    mock_db.batch.return_value = batch
+    return mock_db, recorder, batch
+
+
+def test_firestore_record_decision_writes_both_atomically():
+    """``record_decision`` commits BOTH the decision doc and the event→decision
+    pointer through a single batch — guarding against the orphaned-pointer crash
+    window the C5e reconcile contract depends on."""
+    mock_db, recorder, batch = _build_record_decision_mock()
+    store = FirestoreStateStore(project="p", client=mock_db)
+
+    store.record_decision("dec-1", "ev-1", {"action": "applied"})
+
+    # Exactly one batch.commit().
+    assert batch.committed is True
+    assert ("commit",) in recorder
+
+    # The decision doc was set with the action + event_key + created_at.
+    decision_sets = [r for r in recorder if r[0] == "set" and r[1] == "decisions/dec-1"]
+    assert len(decision_sets) == 1
+    _, _, data, merge = decision_sets[0]
+    assert data["action"] == "applied"
+    assert data["event_key"] == "ev-1"
+    assert "created_at" in data
+    assert merge is False
+
+    # The event pointer was set with merge=True (upsert; no NotFound on a missing
+    # event doc, no clobber of an existing claim payload).
+    event_sets = [r for r in recorder if r[0] == "set" and r[1] == "events/ev-1"]
+    assert len(event_sets) == 1
+    _, _, pdata, pmerge = event_sets[0]
+    assert pdata == {"decision_id": "dec-1"}
+    assert pmerge is True
+
+
+def test_firestore_find_decision_for_event_query_fallback():
+    """If the event pointer is missing (lost write), find_decision_for_event falls
+    back to a query on the decision's ``event_key`` field."""
+    mock_db = MagicMock()
+
+    # events.document("ev-1").get() → snapshot that does not exist.
+    mock_events = MagicMock()
+    missing_snap = MagicMock()
+    missing_snap.exists = False
+    mock_events.document.return_value.get.return_value = missing_snap
+
+    # decisions.where("event_key","==","ev-1").limit(1).stream() → one match.
+    mock_decisions = MagicMock()
+    recovered = MagicMock()
+    recovered.to_dict.return_value = {"action": "applied", "event_key": "ev-1"}
+    where_q = MagicMock()
+    where_q.limit.return_value.stream.return_value = iter([recovered])
+    mock_decisions.where.return_value = where_q
+
+    def collection_dispatch(name):
+        return mock_events if name == "events" else mock_decisions
+
+    mock_db.collection.side_effect = collection_dispatch
+    store = FirestoreStateStore(project="p", client=mock_db)
+
+    out = store.find_decision_for_event("ev-1")
+    assert out == {"action": "applied", "event_key": "ev-1"}
+    mock_decisions.where.assert_called_once_with("event_key", "==", "ev-1")
+
+
+def test_firestore_find_decision_for_event_query_fallback_no_match_returns_none():
+    """Event pointer missing AND no decision carries the event_key → None."""
+    mock_db = MagicMock()
+
+    mock_events = MagicMock()
+    missing_snap = MagicMock()
+    missing_snap.exists = False
+    mock_events.document.return_value.get.return_value = missing_snap
+
+    mock_decisions = MagicMock()
+    where_q = MagicMock()
+    where_q.limit.return_value.stream.return_value = iter([])
+    mock_decisions.where.return_value = where_q
+
+    def collection_dispatch(name):
+        return mock_events if name == "events" else mock_decisions
+
+    mock_db.collection.side_effect = collection_dispatch
+    store = FirestoreStateStore(project="p", client=mock_db)
+
+    assert store.find_decision_for_event("ev-1") is None
+
+
+def test_firestore_find_decision_for_event_pointer_present_skips_fallback():
+    """When the event pointer IS present, the normal get_decision path is used and
+    the query fallback is NOT consulted."""
+    mock_db = MagicMock()
+
+    mock_events = MagicMock()
+    snap = MagicMock()
+    snap.exists = True
+    snap.to_dict.return_value = {"payload": {}, "decision_id": "dec-1"}
+    mock_events.document.return_value.get.return_value = snap
+
+    mock_decisions = MagicMock()
+    dec_snap = MagicMock()
+    dec_snap.exists = True
+    dec_snap.to_dict.return_value = {"action": "applied", "event_key": "ev-1"}
+    mock_decisions.document.return_value.get.return_value = dec_snap
+
+    def collection_dispatch(name):
+        return mock_events if name == "events" else mock_decisions
+
+    mock_db.collection.side_effect = collection_dispatch
+    store = FirestoreStateStore(project="p", client=mock_db)
+
+    out = store.find_decision_for_event("ev-1")
+    assert out == {"action": "applied", "event_key": "ev-1"}
+    mock_decisions.where.assert_not_called()
