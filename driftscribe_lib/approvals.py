@@ -311,6 +311,25 @@ _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 # payload, bypassing new_approval_window, cannot sign a year-2099 expiry).
 _MAX_APPROVAL_TTL_MINUTES = 15
 
+# The known terminal values of ``apply_audit.phase`` (written by the tofu-apply
+# worker via claim_pending/set_apply_audit). This is DOCUMENTATION + a single
+# source of truth for consumers (e.g. the C5 coordinator's reconcile/audit
+# surfaces) — it is intentionally NOT enforced in set_apply_audit, so a future
+# phase can be added at the worker without a lockstep library bump. Keep this in
+# sync when a new phase is introduced.
+#   - claimed:           burned but outcome-unknown (a crash between claim + terminal audit)
+#   - applied:           tofu apply succeeded
+#   - failed:            a tofu step failed (non-lock) — HTTP 502
+#   - lock_refused:      a tofu step could not acquire the GCS state lock — HTTP 423 (C5d)
+#   - drift_refused:     refresh-only detected out-of-band drift — HTTP 409
+#   - integrity_refused: artifact fetch/integrity recompute failed — HTTP 422
+#   - fidelity_refused:  version/lockfile/resource-set fidelity guard refused — HTTP 422
+#   - verify_refused:    signed-payload re-derivation / parse refusal — HTTP 422
+APPLY_AUDIT_PHASES = frozenset({
+    "claimed", "applied", "failed", "lock_refused", "drift_refused",
+    "integrity_refused", "fidelity_refused", "verify_refused",
+})
+
 # The exact top-level key set of a c3.v1 signed payload (from
 # build_plan_approval_payload) — create() rejects anything else fail-closed.
 _PLAN_PAYLOAD_TOP_KEYS = frozenset({
@@ -728,10 +747,13 @@ class PlanApprovalStore:
         Separate from the transactional claim because it runs AFTER the heavy
         re-checks + ``tofu apply`` — it is audit, not control-flow. Overwrites the
         ``apply_audit`` key only (never touches ``status`` or any HMAC-bound field).
-        Used to record the terminal phase (``applied``/``failed``/``drift_refused``/
+        Used to record the terminal phase (see :data:`APPLY_AUDIT_PHASES` for the
+        known vocabulary — ``applied``/``failed``/``lock_refused``/``drift_refused``/
         ``integrity_refused``/…), the tofu exit codes, and the observed state
         serial/lineage. A plain ``update`` (no transaction): the single-use claim
-        already happened, so there is no concurrency to guard here."""
+        already happened, so there is no concurrency to guard here. ``phase`` is
+        deliberately NOT validated against :data:`APPLY_AUDIT_PHASES` here so the
+        worker can introduce a new phase without a lockstep library change."""
         if not isinstance(audit, dict):
             raise TypeError("audit must be a dict")
         self._ref(approval_id).update({"apply_audit": audit})

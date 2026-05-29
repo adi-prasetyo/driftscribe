@@ -439,6 +439,91 @@ def test_run_apply_sequence_init_failure_skips_plan_and_apply() -> None:
 
 
 # =========================================================================== #
+# tofu_runner — state-lock contention classification (C5d)
+# =========================================================================== #
+
+# OpenTofu's canonical state-lock-acquire stderr (the "Lock Info:" block follows).
+_LOCK_STDERR = (
+    "Error: Error acquiring the state lock\n\n"
+    "Error message: writing \"gs://.../default.tflock\" failed: "
+    "googleapi: Error 412: Precondition Failed, conditionNotMet\n"
+    "Lock Info:\n  ID:        abc-123\n  Operation: OperationTypeApply\n"
+)
+
+
+def test_run_apply_sequence_init_lock_refused() -> None:
+    run, _ = _runner({"init": (1, "", _LOCK_STDERR)})
+    with pytest.raises(tofu_runner.LockRefused) as ei:
+        tofu_runner.run_apply_sequence(workdir="/x", kms_key="K", base_env={}, run_tofu=run)
+    assert ei.value.step == "init"
+    # LockRefused is a STANDALONE Exception, NOT a TofuStepError subclass.
+    assert not isinstance(ei.value, tofu_runner.TofuStepError)
+
+
+def test_run_apply_sequence_refresh_only_lock_refused() -> None:
+    run, _ = _runner({"init": (0, "", ""), "plan": (1, "", _LOCK_STDERR)})
+    with pytest.raises(tofu_runner.LockRefused) as ei:
+        tofu_runner.run_apply_sequence(workdir="/x", kms_key="K", base_env={}, run_tofu=run)
+    assert ei.value.step == "refresh-only"
+
+
+def test_run_apply_sequence_apply_lock_refused() -> None:
+    run, _ = _runner({"init": (0, "", ""), "plan": (0, "", ""), "apply": (1, "", _LOCK_STDERR)})
+    with pytest.raises(tofu_runner.LockRefused) as ei:
+        tofu_runner.run_apply_sequence(workdir="/x", kms_key="K", base_env={}, run_tofu=run)
+    assert ei.value.step == "apply"
+
+
+def test_run_apply_sequence_init_nonlock_failure_is_step_error() -> None:
+    run, _ = _runner({"init": (1, "", "Error: some provider error")})
+    with pytest.raises(tofu_runner.TofuStepError) as ei:
+        tofu_runner.run_apply_sequence(workdir="/x", kms_key="K", base_env={}, run_tofu=run)
+    assert ei.value.step == "init"
+    assert not isinstance(ei.value, tofu_runner.LockRefused)
+
+
+def test_run_apply_sequence_refresh_only_nonlock_failure_is_step_error() -> None:
+    run, _ = _runner({"init": (0, "", ""), "plan": (1, "", "Error: some provider error")})
+    with pytest.raises(tofu_runner.TofuStepError) as ei:
+        tofu_runner.run_apply_sequence(workdir="/x", kms_key="K", base_env={}, run_tofu=run)
+    assert ei.value.step == "refresh-only"
+    assert not isinstance(ei.value, tofu_runner.LockRefused)
+
+
+def test_run_apply_sequence_apply_nonlock_failure_is_step_error() -> None:
+    run, _ = _runner({"init": (0, "", ""), "plan": (0, "", ""), "apply": (1, "", "Error: some provider error")})
+    with pytest.raises(tofu_runner.TofuStepError) as ei:
+        tofu_runner.run_apply_sequence(workdir="/x", kms_key="K", base_env={}, run_tofu=run)
+    assert ei.value.step == "apply"
+    assert not isinstance(ei.value, tofu_runner.LockRefused)
+
+
+def test_run_apply_sequence_drift_not_shadowed_by_lock_classification() -> None:
+    """refresh-only rc==2 stays FreshnessDrift even if its stderr mentions a lock —
+    the drift branch is checked ABOVE the rc!=0 lock classification."""
+    run, _ = _runner({"init": (0, "", ""), "plan": (2, "drift!", _LOCK_STDERR)})
+    with pytest.raises(tofu_runner.FreshnessDrift):
+        tofu_runner.run_apply_sequence(workdir="/x", kms_key="K", base_env={}, run_tofu=run)
+
+
+def test_is_lock_contention_matches_canonical_phrase_any_case() -> None:
+    assert tofu_runner._is_lock_contention("Error: Error acquiring the state lock\nLock Info:")
+    assert tofu_runner._is_lock_contention("error acquiring the state lock")
+    assert tofu_runner._is_lock_contention("ERROR ACQUIRING THE STATE LOCK")
+    assert tofu_runner._is_lock_contention("prefix... Error Acquiring The State Lock ...suffix")
+
+
+def test_is_lock_contention_conservative_on_benign_lock_words() -> None:
+    # Benign uses of the word "lock" must NOT be classified as contention
+    # (fail-closed default → TofuStepError).
+    assert not tofu_runner._is_lock_contention("Error: deadlock avoidance in provider X")
+    assert not tofu_runner._is_lock_contention("Error: cannot open block device /dev/sda")
+    assert not tofu_runner._is_lock_contention("Error: failed to read lockfile .terraform.lock.hcl")
+    assert not tofu_runner._is_lock_contention("Error: some provider error")
+    assert not tofu_runner._is_lock_contention("")
+
+
+# =========================================================================== #
 # /healthz + /deny
 # =========================================================================== #
 
@@ -577,6 +662,92 @@ def test_apply_tofu_failure_records_failed(client: TestClient, monkeypatch, tmp_
     r = client.post("/apply", json={"approval_id": ctx["record"].approval_id, "approval_token": ctx["raw_token"]})
     assert r.status_code == 502
     assert _doc(ctx)["apply_audit"]["phase"] == "failed"
+
+
+def test_apply_lock_refused_returns_423(client: TestClient, monkeypatch, tmp_path) -> None:
+    """C5d: state-lock contention surfaces as the DISTINCT phase ``lock_refused``
+    (HTTP 423), not ``failed`` (502). The fidelity/freshness gates pass, then
+    run_apply_sequence raises LockRefused — the handler maps it to 423 + writes a
+    terminal lock_refused audit carrying step + stderr_tail."""
+    ctx = _wire(monkeypatch, tmp_path)
+
+    def fake_seq(**kwargs):  # noqa: ANN001, ANN003
+        raise tofu_runner.LockRefused(
+            "apply", 1,
+            "Error: Error acquiring the state lock\nLock Info:\n  ID: abc-123\n",
+        )
+
+    monkeypatch.setattr(m.tofu_runner, "run_apply_sequence", fake_seq)
+    r = client.post("/apply", json={"approval_id": ctx["record"].approval_id, "approval_token": ctx["raw_token"]})
+    assert r.status_code == 423
+    assert r.status_code != 502
+    detail = r.json()["detail"]
+    assert "state lock" in detail and "force-unlock" in detail
+    audit = _doc(ctx)["apply_audit"]
+    assert audit["phase"] == "lock_refused"
+    assert audit["phase"] != "failed"
+    assert audit["step"] == "apply"
+    assert "Error acquiring the state lock" in audit["stderr_tail"]
+
+
+def test_apply_lock_refused_is_post_claim(client: TestClient, monkeypatch, tmp_path) -> None:
+    """Post-claim proof (I1 contract): the approval is claimed/BURNED before the
+    lock is hit. claim_pending must have run BEFORE run_apply_sequence, the stored
+    approval status must have flipped pending → used, and the terminal audit phase
+    is lock_refused (detection happened after the burn)."""
+    ctx = _wire(monkeypatch, tmp_path)
+    order: list[str] = []
+
+    real_claim = ctx["store"].claim_pending
+
+    def spy_claim(*a, **k):  # noqa: ANN002, ANN003
+        order.append("claim_pending")
+        return real_claim(*a, **k)
+
+    monkeypatch.setattr(ctx["store"], "claim_pending", spy_claim)
+
+    def fake_seq(**kwargs):  # noqa: ANN001, ANN003
+        order.append("run_apply_sequence")
+        raise tofu_runner.LockRefused("apply", 1, "...Error acquiring the state lock...")
+
+    monkeypatch.setattr(m.tofu_runner, "run_apply_sequence", fake_seq)
+    r = client.post("/apply", json={"approval_id": ctx["record"].approval_id, "approval_token": ctx["raw_token"]})
+    assert r.status_code == 423
+    # claim happened, and it happened BEFORE the lock was hit.
+    assert order == ["claim_pending", "run_apply_sequence"]
+    # the approval was burned (status flipped) AND the terminal phase is lock_refused.
+    doc = _doc(ctx)
+    assert doc["status"] == "used"
+    assert doc["apply_audit"]["phase"] == "lock_refused"
+
+
+def test_apply_lock_refused_in_gate_block_returns_423(client: TestClient, monkeypatch, tmp_path) -> None:
+    """Defensive-parity proof (C5d review finding): a LockRefused raised from the
+    FIRST post-claim gate block (re-fetch/integrity/fidelity) — not just from
+    run_apply_sequence — is also caught and mapped to 423 + lock_refused, never an
+    unhandled 500 that would strand the burned approval at phase=\"claimed\".
+
+    No locking subprocess runs in that block today (the fidelity probe is
+    `tofu version`, read-only → TofuStepError), so we simulate a hypothetical
+    future locking step by making _fidelity_or_raise raise LockRefused. This pins
+    the gate block's handler so a later refactor cannot reintroduce the 500 gap."""
+    ctx = _wire(monkeypatch, tmp_path)
+
+    def fake_fidelity(*a, **k):  # noqa: ANN002, ANN003
+        raise tofu_runner.LockRefused(
+            "refresh-only", 1, "Error: Error acquiring the state lock\nLock Info:\n",
+        )
+
+    monkeypatch.setattr(m, "_fidelity_or_raise", fake_fidelity)
+    r = client.post("/apply", json={"approval_id": ctx["record"].approval_id, "approval_token": ctx["raw_token"]})
+    assert r.status_code == 423  # NOT 500 (unhandled) and NOT 502 (failed)
+    detail = r.json()["detail"]
+    assert "state lock" in detail and "force-unlock" in detail
+    doc = _doc(ctx)
+    assert doc["status"] == "used"  # claim still happened before the gate block
+    audit = doc["apply_audit"]
+    assert audit["phase"] == "lock_refused"
+    assert audit["step"] == "refresh-only"
 
 
 def test_apply_missing_approval(client: TestClient, monkeypatch, tmp_path) -> None:

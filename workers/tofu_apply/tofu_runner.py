@@ -34,12 +34,22 @@ import subprocess  # noqa: S404 — the worker legitimately shells out to tofu
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NoReturn
 
 # A run_tofu callable: (args, cwd, env) -> (returncode, stdout, stderr).
 RunTofu = Callable[[list[str], str, dict[str, str]], tuple[int, str, str]]
 
 # resource "<type>" "<name>" — top-level managed resource declarations in baked HCL.
 _RESOURCE_DECL_RE = re.compile(r'(?m)^\s*resource\s+"([A-Za-z0-9_]+)"\s+"([A-Za-z0-9_-]+)"')
+
+# OpenTofu/Terraform's canonical state-lock-acquire failure: the GCS backend (and
+# every other lockable backend) prints "Error acquiring the state lock" followed
+# by a "Lock Info:" block. Match ONLY that canonical phrase (case-insensitive) —
+# deliberately NOT the bare word "lock", which appears in unrelated errors
+# ("deadlock", "block device", a provider's own "lock" wording) and would
+# misclassify a genuine step failure as contention. When the phrase is absent we
+# fall through to TofuStepError (fail-closed default).
+_STATE_LOCK_RE = re.compile(r"error acquiring the state lock", re.IGNORECASE)
 
 
 class FidelityError(Exception):
@@ -65,6 +75,49 @@ class TofuStepError(Exception):
         self.exit_code = exit_code
         self.stderr = stderr
         super().__init__(f"tofu {step} failed (exit {exit_code})")
+
+
+class LockRefused(Exception):
+    """A tofu step could not acquire the GCS-backend state lock — distinct from a
+    genuine step failure.
+
+    Raised when a non-success step's stderr carries OpenTofu's canonical
+    "Error acquiring the state lock" signature: the lock is held by a concurrent
+    run OR was orphaned (e.g. an OOM-killed apply that never released it — this
+    actually bit production). This is a self-describing terminal outcome so the
+    operator knows to ``tofu force-unlock`` (operator-only — the worker NEVER
+    auto-unlocks) and retry, rather than chasing a phantom apply failure.
+
+    Intentionally a STANDALONE ``Exception`` subclass, NOT a subclass of
+    :class:`TofuStepError`, so existing ``except TofuStepError`` handlers are
+    unaffected and lock contention always surfaces as its own outcome."""
+
+    def __init__(self, step: str, exit_code: int, stderr: str) -> None:
+        self.step = step
+        self.exit_code = exit_code
+        self.stderr = stderr
+        super().__init__(f"tofu {step} refused: state lock held (exit {exit_code})")
+
+
+def _is_lock_contention(stderr: str) -> bool:
+    """True only if ``stderr`` carries tofu's canonical state-lock-acquire phrase.
+
+    Conservative by design: a false negative (treat contention as a plain step
+    failure) is merely a less-specific outcome, whereas a false positive (treat a
+    real failure as contention) would mislead the operator into a force-unlock.
+    So when uncertain this returns False and the caller raises
+    :class:`TofuStepError` (fail-closed default)."""
+    return bool(_STATE_LOCK_RE.search(stderr))
+
+
+def _raise_step_failure(step: str, rc: int, stderr: str) -> NoReturn:
+    """Classify a non-success tofu step: :class:`LockRefused` if the stderr is
+    state-lock contention, else :class:`TofuStepError` (the fail-closed default).
+    Both are terminal/fail-closed; the distinction only changes the operator's
+    next action (force-unlock + retry vs. investigate the failure)."""
+    if _is_lock_contention(stderr):
+        raise LockRefused(step, rc, stderr)
+    raise TofuStepError(step, rc, stderr)
 
 
 @dataclass(frozen=True)
@@ -201,13 +254,15 @@ def run_apply_sequence(
     ``workdir`` is the per-request temp iac dir containing the fetched, verified
     ``plan.tfplan``. ``kms_key`` is injected as ``TF_VAR_tofu_state_kms_key`` on
     every call (the iac/ encryption block is enforced; ``show``/``plan``/``apply``
-    all must decrypt). Raises :class:`FreshnessDrift` on drift and
-    :class:`TofuStepError` on any non-success step — both fail-closed."""
+    all must decrypt). Raises :class:`FreshnessDrift` on drift and, on any
+    non-success step, :class:`LockRefused` if the failure is state-lock contention
+    (held/orphaned GCS lock) or :class:`TofuStepError` otherwise — all fail-closed
+    (the classification applies to init, refresh-only, and apply)."""
     env = {**base_env, "TF_VAR_tofu_state_kms_key": kms_key}
 
     rc, _out, err = run_tofu(["init", "-input=false", "-no-color", "-lockfile=readonly"], workdir, env)
     if rc != 0:
-        raise TofuStepError("init", rc, err)
+        _raise_step_failure("init", rc, err)
 
     rc, out, err = run_tofu(
         ["plan", "-refresh-only", "-detailed-exitcode", "-input=false", "-no-color",
@@ -217,7 +272,7 @@ def run_apply_sequence(
     if rc == 2:
         raise FreshnessDrift(out, err)
     if rc != 0:
-        raise TofuStepError("refresh-only", rc, err)
+        _raise_step_failure("refresh-only", rc, err)
 
     rc, _out, err = run_tofu(
         ["apply", "-input=false", "-no-color", "-lock=true", "-lock-timeout=120s",
@@ -225,7 +280,7 @@ def run_apply_sequence(
         workdir, env,
     )
     if rc != 0:
-        raise TofuStepError("apply", rc, err)
+        _raise_step_failure("apply", rc, err)
 
     serial, lineage = _state_serial_lineage(run_tofu, workdir, env)
     return ApplyOutcome(freshness_exit=0, apply_exit=0, state_serial=serial, state_lineage=lineage)
