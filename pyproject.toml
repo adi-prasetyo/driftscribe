@@ -25,6 +25,11 @@ dependencies = [
     # Phase B (infra-reader worker): whole-project resource enumeration via
     # Cloud Asset Inventory searchAllResources.
     "google-cloud-asset>=3.25",
+    # Phase C2 (plan-builder): tools/iac_plan_artifact_upload.py writes plan
+    # artifacts to GCS via the google-cloud-storage SDK. Today it resolves only
+    # as a transitive of google-adk==1.33.0; promote to a direct dep so a future
+    # ADK bump cannot silently sever this load-bearing import.
+    "google-cloud-storage>=3.10",
     # Phase B: python-hcl2 is now RUNTIME (was dev-only in Phase A). The
     # infra-reader worker imports driftscribe_lib.iac_hcl to parse the baked-in
     # iac/*.tf for the declared-identity set; the static gate also uses it.
