@@ -133,8 +133,13 @@ def test_inmemory_list_decisions_missing_created_at_sorts_last():
 
 
 def _build_firestore_mock_for_record_decision():
-    """Wire up a Firestore client mock that captures ``.set()`` payloads
-    on the decisions collection and ``.update()`` on the events one."""
+    """Wire up a Firestore client mock that captures the writes
+    ``record_decision`` issues. Phase C5e: the two writes (decision doc + event
+    pointer) now go through a single ``client.batch()`` for atomicity, so the
+    mock's ``batch.set`` / ``batch.update`` delegate to the target doc refs'
+    own ``.set`` / ``.update`` — that keeps the captured-payload assertions
+    working against the real doc refs and lets a test confirm ``batch.commit()``
+    fired exactly once."""
     mock_db = MagicMock()
     mock_decisions = MagicMock()
     mock_events = MagicMock()
@@ -151,7 +156,15 @@ def _build_firestore_mock_for_record_decision():
     mock_event_doc = MagicMock()
     mock_events.document.return_value = mock_event_doc
 
-    return mock_db, mock_decision_doc, mock_event_doc
+    # The WriteBatch delegates each staged write to the target doc ref so the
+    # existing capture-and-assert pattern still observes the payloads, mirroring
+    # how the real batch ultimately applies them to those documents.
+    mock_batch = MagicMock()
+    mock_batch.set.side_effect = lambda ref, data, merge=False: ref.set(data, merge=merge)
+    mock_batch.update.side_effect = lambda ref, data: ref.update(data)
+    mock_db.batch.return_value = mock_batch
+
+    return mock_db, mock_decision_doc, mock_event_doc, mock_batch
 
 
 def test_firestore_record_decision_sets_created_at_server_timestamp():
@@ -168,7 +181,7 @@ def test_firestore_record_decision_sets_created_at_server_timestamp():
     has the key and that it isn't the bare dict the caller passed."""
     from google.cloud import firestore
 
-    mock_db, mock_decision_doc, mock_event_doc = (
+    mock_db, mock_decision_doc, mock_event_doc, mock_batch = (
         _build_firestore_mock_for_record_decision()
     )
     store = FirestoreStateStore(project="p", client=mock_db)
@@ -183,12 +196,20 @@ def test_firestore_record_decision_sets_created_at_server_timestamp():
     assert written["trace_id"] == "a" * 32
     assert "created_at" in written
     assert written["created_at"] is firestore.SERVER_TIMESTAMP
+    # Phase C5e: the decision doc now also carries its event_key (the
+    # query-fallback recovery field).
+    assert written["event_key"] == "ev-1"
 
     # Caller's dict must NOT be mutated (defensive copy).
     assert "created_at" not in caller_payload
+    assert "event_key" not in caller_payload
 
-    # Event doc cross-reference still happens.
-    mock_event_doc.update.assert_called_once_with({"decision_id": "dec-1"})
+    # Phase C5e: both writes commit through ONE batch (atomic) and the event
+    # cross-reference is an upserting merge=True set (not update — avoids a
+    # NotFound on a corner-case missing event doc, without clobbering the claim).
+    mock_event_doc.set.assert_called_once_with({"decision_id": "dec-1"}, merge=True)
+    mock_event_doc.update.assert_not_called()
+    mock_batch.commit.assert_called_once()
 
 
 # --------------------------------------------------------------------------- #

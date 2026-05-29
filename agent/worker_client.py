@@ -113,6 +113,20 @@ _ERROR_BODY_TRUNCATE: Final[int] = 500
 _HTTPX_TIMEOUT: Final[float] = 30.0
 
 
+# Phase C5e: the tofu-apply worker's /apply runs a real ``tofu apply`` that can
+# take up to its Cloud Run ``--timeout=900`` (see infra/cloudbuild.tofu-apply.yaml).
+# The default 30s read timeout would misread a long-but-successful apply as a
+# transport failure — which, after the worker has already burned the approval and
+# mutated live infra, is exactly the ambiguous/non-recoverable case the C5e state
+# machine must avoid (a coordinator timeout-then-skip-merge while infra actually
+# changed = silent divergence). Give /apply a read timeout comfortably above the
+# worker's wall clock (+ margin); keep a tight connect/write/pool so we still fail
+# fast on a real transport problem before the worker starts working.
+_APPLY_HTTPX_TIMEOUT: Final = httpx.Timeout(
+    connect=10.0, read=920.0, write=30.0, pool=10.0
+)
+
+
 class WorkerClientError(Exception):
     """Structured error for any worker-side or transport-side failure.
 
@@ -160,7 +174,13 @@ def _worker_url(worker: str) -> str:
     return url
 
 
-def call(worker: str, payload: dict, *, endpoint: str | None = None) -> dict:
+def call(
+    worker: str,
+    payload: dict,
+    *,
+    endpoint: str | None = None,
+    timeout: "float | httpx.Timeout | None" = None,
+) -> dict:
     """POST ``payload`` to the named worker. Return parsed JSON response.
 
     Audience binding: the ID token's ``aud`` claim is the worker's root
@@ -180,6 +200,11 @@ def call(worker: str, payload: dict, *, endpoint: str | None = None) -> dict:
             hardcodes a fixed path. ADK tools never pass this argument
             directly — they go through a wrapper, so the LLM can't pick
             an arbitrary endpoint.
+        timeout: per-call httpx timeout override. ``None`` (the default)
+            uses :data:`_HTTPX_TIMEOUT` (30s) — fine for every short worker
+            call. Only :func:`call_apply` passes a longer value
+            (:data:`_APPLY_HTTPX_TIMEOUT`) because ``tofu apply`` can run for
+            minutes; see that wrapper's docstring for why.
 
     Raises:
         WorkerClientError: with status_code preserved from the worker
@@ -204,7 +229,9 @@ def call(worker: str, payload: dict, *, endpoint: str | None = None) -> dict:
         "X-Trace-Id": current_trace_id_or_new(),
     }
     try:
-        with httpx.Client(timeout=_HTTPX_TIMEOUT) as client:
+        with httpx.Client(
+            timeout=timeout if timeout is not None else _HTTPX_TIMEOUT
+        ) as client:
             r = client.post(f"{base}{path}", json=payload, headers=headers)
     except httpx.RequestError as e:
         # Connection refused, DNS failure, timeout — anything that
@@ -367,6 +394,17 @@ def call_apply(
     ``TokenRequest`` is ``extra="forbid"`` and the ``operator_jwt`` field is
     not added until C5b). ``approval_id`` and ``approval_token`` are always
     present.
+
+    Long timeout (Phase C5e, BLOCKER fix): unlike every other worker call,
+    ``/apply`` runs a real ``tofu apply`` that can take up to the worker's
+    Cloud Run ``--timeout=900``. We pass :data:`_APPLY_HTTPX_TIMEOUT` (920s
+    read) so the coordinator does not misread a long-but-successful apply as a
+    transport failure. This is apply-then-merge CORRECTNESS, not just latency:
+    a premature client timeout after the worker has already burned the approval
+    and mutated live infra would make the coordinator skip the merge, leaving
+    the applied infra change unmerged in the PR — a silent divergence. The
+    default 30s stays on :func:`call_propose` / :func:`call_plan_deny`, which
+    never run ``tofu apply``.
     """
     payload: dict = {
         "approval_id": approval_id,
@@ -374,7 +412,7 @@ def call_apply(
     }
     if operator_jwt is not None:
         payload["operator_jwt"] = operator_jwt
-    return call("tofu_apply", payload, endpoint="/apply")
+    return call("tofu_apply", payload, endpoint="/apply", timeout=_APPLY_HTTPX_TIMEOUT)
 
 
 def call_plan_deny(approval_id: str, approval_token: str) -> dict:
