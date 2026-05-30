@@ -1,0 +1,27 @@
+// Pre-Phase-6 backup — compute SA project-level role bindings (rollback / break-glass re-grant spec)
+// SA: 1079423440495-compute@developer.gserviceaccount.com  project: driftscribe-hack-2026  captured: 2026-05-31
+// Phase 6 strips these in order: run.admin -> artifactregistry.writer -> iam.serviceAccountUser -> editor (LAST).
+// Re-grant any subset with: gcloud projects add-iam-policy-binding driftscribe-hack-2026 \
+//   --member=serviceAccount:1079423440495-compute@developer.gserviceaccount.com --role=<ROLE>
+[
+  {
+    "bindings": {
+      "role": "roles/artifactregistry.writer"
+    }
+  },
+  {
+    "bindings": {
+      "role": "roles/editor"
+    }
+  },
+  {
+    "bindings": {
+      "role": "roles/iam.serviceAccountUser"
+    }
+  },
+  {
+    "bindings": {
+      "role": "roles/run.admin"
+    }
+  }
+]

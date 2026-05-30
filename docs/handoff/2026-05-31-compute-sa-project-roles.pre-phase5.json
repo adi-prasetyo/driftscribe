@@ -1,0 +1,44 @@
+[
+  {
+    "bindings": {
+      "members": "serviceAccount:1079423440495-compute@developer.gserviceaccount.com",
+      "role": "roles/artifactregistry.writer"
+    }
+  },
+  {
+    "bindings": {
+      "members": "serviceAccount:1079423440495-compute@developer.gserviceaccount.com",
+      "role": "roles/datastore.user"
+    }
+  },
+  {
+    "bindings": {
+      "members": "serviceAccount:1079423440495-compute@developer.gserviceaccount.com",
+      "role": "roles/editor"
+    }
+  },
+  {
+    "bindings": {
+      "members": "serviceAccount:1079423440495-compute@developer.gserviceaccount.com",
+      "role": "roles/iam.serviceAccountUser"
+    }
+  },
+  {
+    "bindings": {
+      "members": "serviceAccount:1079423440495-compute@developer.gserviceaccount.com",
+      "role": "roles/run.admin"
+    }
+  },
+  {
+    "bindings": {
+      "members": "serviceAccount:1079423440495-compute@developer.gserviceaccount.com",
+      "role": "roles/run.viewer"
+    }
+  },
+  {
+    "bindings": {
+      "members": "serviceAccount:1079423440495-compute@developer.gserviceaccount.com",
+      "role": "roles/secretmanager.secretAccessor"
+    }
+  }
+]

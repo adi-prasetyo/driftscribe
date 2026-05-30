@@ -1,0 +1,13 @@
+{
+  "bindings": [
+    {
+      "members": [
+        "serviceAccount:rollback-agent-sa@driftscribe-hack-2026.iam.gserviceaccount.com",
+        "serviceAccount:tofu-apply-sa@driftscribe-hack-2026.iam.gserviceaccount.com"
+      ],
+      "role": "roles/iam.serviceAccountUser"
+    }
+  ],
+  "etag": "BwZS9A9ncBg=",
+  "version": 1
+}
