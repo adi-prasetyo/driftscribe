@@ -40,10 +40,11 @@ _MERGE_MERGEABILITY_DELAY = 1.5
 #     still runs, so an ``unstable`` PR whose ``lint-test`` is red is
 #     refused there, not here.)
 # Everything else is refused as 409: ``dirty`` (conflict), ``behind``
-# (out of date), ``blocked`` (branch protection / required review — we do
-# NOT bypass it even though the human PAT could), ``unknown`` (mergeability
-# not yet computed), ``has_hooks``, ``draft``, ``None``, or any state
-# GitHub adds later.
+# (out of date), ``blocked`` (branch protection — a required review OR status
+# not yet satisfied; we do NOT bypass it even though the human PAT could, and we
+# flag it ``permanent`` since a plain retry can't clear it), ``unknown``
+# (mergeability not yet computed), ``has_hooks``, ``draft``, ``None``, or any
+# state GitHub adds later.
 _MERGE_ALLOWED_STATES = frozenset({"clean", "unstable"})
 
 
@@ -69,20 +70,26 @@ class PrNotEligibleError(Exception):
 class PrMergeBlockedError(Exception):
     """A PR passes provenance but cannot be merged *right now*.
 
-    Dynamic, retry-able conditions: checks pending / failed / missing,
-    merge conflict, head behind base, branch protection ``blocked``,
-    draft PR, closed-unmerged PR, mergeability still computing, or a
-    head-SHA race that GitHub rejects at merge time. Defaults to **409
-    Conflict** — the operator can act (rerun CI, rebase, retry) and try
-    again. Kept separate from :class:`PrNotEligibleError` so the worker
-    maps "not yours" (403/404) and "not yet" (409) to different statuses
-    and the chat surface can word them differently.
-    """
+    Mostly dynamic, retry-able conditions: checks pending / failed / missing,
+    merge conflict, head behind base, draft PR, closed-unmerged PR, mergeability
+    still computing, or a head-SHA race that GitHub rejects at merge time.
+    Defaults to **409 Conflict** — the operator can act (rerun CI, rebase, retry)
+    and try again. Kept separate from :class:`PrNotEligibleError` so the worker
+    maps "not yours" (403/404) and "not yet" (409) to different statuses and the
+    chat surface can word them differently.
 
-    def __init__(self, reason: str, *, status_code: int = 409):
+    ``permanent=True`` marks the sub-case a plain retry will NOT clear on its own:
+    branch protection actively blocking the merge (a required review or status not
+    yet satisfied — e.g. a sole-owner repo where the author can't approve their own
+    PR). It clears only once the requirement is met out-of-band (approve / satisfy
+    the check / admin-merge), so the caller words it "resolve out-of-band / merge
+    manually" rather than the transient "re-submit to retry" (C5g carry-forward 4)."""
+
+    def __init__(self, reason: str, *, status_code: int = 409, permanent: bool = False):
         super().__init__(reason)
         self.reason = reason
         self.status_code = status_code
+        self.permanent = permanent
 
 
 def get_repo(token: str, repo_full_name: str) -> Repository:
@@ -584,9 +591,20 @@ def merge_pr(
             f"PR #{pr_number} is not mergeable (state={state!r})"
         )
     if state not in _MERGE_ALLOWED_STATES:
-        raise PrMergeBlockedError(
-            f"PR #{pr_number} cannot be merged in state {state!r}"
-        )
+        # ``blocked`` = branch protection is actively preventing the merge (a
+        # required review/status not met). A plain merge retry can't clear that —
+        # it needs out-of-band resolution (an approval / admin merge) — so mark it
+        # PERMANENT, distinct from transient states (behind/dirty/unknown) a
+        # rebase or wait could fix. (C5g carry-forward 4.)
+        permanent = state == "blocked"
+        reason = f"PR #{pr_number} cannot be merged in state {state!r}"
+        if permanent:
+            reason += (
+                " — blocked by branch protection (a required review or status is "
+                "not yet satisfied); resolve out-of-band (approve the review, "
+                "satisfy the required check, or admin-merge)"
+            )
+        raise PrMergeBlockedError(reason, permanent=permanent)
 
     head_sha = pr.head.sha
     runs = _latest_check_runs(repo.get_commit(head_sha).get_check_runs())
@@ -834,9 +852,20 @@ def merge_pr_at_sha(
             f"PR #{pr_number} is not mergeable (state={state!r})"
         )
     if state not in _MERGE_ALLOWED_STATES:
-        raise PrMergeBlockedError(
-            f"PR #{pr_number} cannot be merged in state {state!r}"
-        )
+        # ``blocked`` = branch protection is actively preventing the merge (a
+        # required review/status not met). A plain merge retry can't clear that —
+        # it needs out-of-band resolution (an approval / admin merge) — so mark it
+        # PERMANENT, distinct from transient states (behind/dirty/unknown) a
+        # rebase or wait could fix. (C5g carry-forward 4.)
+        permanent = state == "blocked"
+        reason = f"PR #{pr_number} cannot be merged in state {state!r}"
+        if permanent:
+            reason += (
+                " — blocked by branch protection (a required review or status is "
+                "not yet satisfied); resolve out-of-band (approve the review, "
+                "satisfy the required check, or admin-merge)"
+            )
+        raise PrMergeBlockedError(reason, permanent=permanent)
 
     _assert_required_checks_green(repo, expected_head_sha, required)
 

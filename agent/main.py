@@ -2744,6 +2744,13 @@ def _iac_merge_step(
             dry_run=s.dry_run,
         )
     except Exception as e:  # noqa: BLE001 — any merge failure → reconcile doc
+        # A PERMANENT block (branch protection: a required review OR status not
+        # yet satisfied) is NOT cleared by a plain re-submit — the apply succeeded
+        # and the merge needs out-of-band resolution (approve the review / satisfy
+        # the check / admin-merge). Word that distinctly from a transient failure
+        # where re-submit (the merge-only reconcile) genuinely retries. (C5g
+        # carry-forward 4.)
+        permanent = isinstance(e, github.PrMergeBlockedError) and e.permanent
         _record_iac_decision(
             state,
             event_key,
@@ -2755,28 +2762,42 @@ def _iac_merge_step(
             pr_number=pr_number,
             approver=operator_email,
         )
+        if permanent:
+            alert = (
+                f"IaC apply SUCCEEDED but the merge for PR #{pr_number} "
+                f"(head {view.head_sha[:7]}) is BLOCKED BY BRANCH PROTECTION: {e}. "
+                "Resolve out-of-band (approve the required review, satisfy the "
+                "required check, or admin-merge) — re-submitting alone will NOT "
+                "merge it."
+            )
+            outcome = (
+                "Applied; the merge is blocked by branch protection (a required "
+                "review or status is not yet satisfied). Resolve it out-of-band "
+                "(approve the review, satisfy the required check, or admin-merge), "
+                "then re-submit — re-submitting alone will NOT merge it. The apply "
+                "will NOT re-run."
+            )
+        else:
+            alert = (
+                f"IaC apply SUCCEEDED but merge failed for PR #{pr_number} "
+                f"(head {view.head_sha[:7]}): {e}. Re-submit to retry the merge "
+                "(apply will NOT re-run)."
+            )
+            outcome = (
+                "Applied; merge pending reconcile — re-submit to retry the merge "
+                "(the apply will NOT re-run)."
+            )
         with contextlib.suppress(Exception):
             worker_client.call(
                 "notifier",
-                {
-                    "channel": "approval",
-                    "severity": "high",
-                    "body": (
-                        f"IaC apply SUCCEEDED but merge failed for PR #{pr_number} "
-                        f"(head {view.head_sha[:7]}): {e}. Re-submit to retry the "
-                        "merge (apply will NOT re-run)."
-                    ),
-                },
+                {"channel": "approval", "severity": "high", "body": alert},
             )
         return _render_iac_outcome(
             request,
             pr_number=pr_number,
             view=view,
             decision="approve",
-            outcome=(
-                "Applied; merge pending reconcile — re-submit to retry the merge "
-                "(the apply will NOT re-run)."
-            ),
+            outcome=outcome,
         )
 
     _record_iac_decision(
