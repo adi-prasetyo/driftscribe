@@ -645,8 +645,16 @@ class PlanApprovalStore:
     coordinator flip).
     """
 
-    def __init__(self, project: str, client: Any = None) -> None:
-        self._client = client or firestore.Client(project=project)
+    def __init__(
+        self, project: str, client: Any = None, *, database: str | None = None
+    ) -> None:
+        # ``database`` (Phase C5f) selects a NAMED Firestore database to isolate
+        # ``plan_approvals`` from the coordinator's project-wide datastore.user.
+        # ``None`` (the default) targets the project's ``(default)`` database,
+        # exactly as before — so every existing caller and the fake-client tests
+        # are unaffected. An injected ``client`` ignores ``database`` (the fake
+        # already encodes whichever database the test means).
+        self._client = client or firestore.Client(project=project, database=database)
         self._collection_name = "plan_approvals"
 
     def _ref(self, approval_id: str):  # noqa: ANN202

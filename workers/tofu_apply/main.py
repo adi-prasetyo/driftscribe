@@ -120,6 +120,10 @@ PLAN_APPROVAL_HMAC_KEY = os.environ["PLAN_APPROVAL_HMAC_KEY"]
 TOFU_STATE_KMS_KEY = os.environ["TF_VAR_tofu_state_kms_key"]
 ARTIFACT_BUCKET = os.environ.get("ARTIFACT_BUCKET", gcs_fetch.ARTIFACT_BUCKET)
 IAC_DIR = Path(os.environ.get("IAC_DIR", "/app/iac"))
+# Phase C5f: the NAMED Firestore database holding ``plan_approvals``, isolated from
+# the coordinator's project-wide datastore.user (per-database IAM conditioning).
+# Empty/absent → the project's ``(default)`` database (back-compat for tests/e2e).
+PLAN_APPROVALS_DB = os.environ.get("PLAN_APPROVALS_DB") or None
 
 # The tofu subprocess seam — tests monkeypatch this module attribute so the full
 # decision matrix runs with no live tofu (design §10).
@@ -136,7 +140,7 @@ def _verify_caller_dep(request: Request) -> str:
 
 
 def _get_plan_approval_store() -> PlanApprovalStore:
-    return PlanApprovalStore(project=GCP_PROJECT)
+    return PlanApprovalStore(project=GCP_PROJECT, database=PLAN_APPROVALS_DB)
 
 
 def _get_artifact_bucket() -> Any:
