@@ -199,12 +199,13 @@ def probe_worker_health(worker: str, *, timeout: float = 10.0) -> dict:
 
     * ``reachable`` (got ANY HTTP response) — the route + TLS reached a Cloud
       Run GFE (a transport error means a DNS/route blackhole instead).
-    * ``app_reached`` (got a response whose status is NOT 404) — the request
-      passed the ingress gate and hit the worker process. For the internal
+    * ``app_reached`` (response status NOT in {401, 403, 404}) — the request
+      passed the ingress gate AND IAM and hit the app router. For the internal
       ``tofu_apply`` this is the load-bearing proof that VPC routing delivers
-      the call AS INTERNAL; a bare ``404`` would be a pre-app ingress reject.
-      ``405`` is the expected hit (GET on a POST route); ``403`` (passed ingress,
-      failed IAM) also counts as app-reached — both prove the network gate.
+      the call AS INTERNAL. ``405`` (GET on a POST route) is the expected hit; a
+      ``404`` is a pre-app ingress/GFE reject, and ``401/403`` is an auth/IAM
+      reject that a real ``/propose``|``/apply`` call would hit identically — so
+      neither is a green cutover signal (Codex C5c review).
 
     GET on a POST-only route is inert — there is no handler, so no side effect
     (this never POSTs to the mutator). NEVER exposed as an ADK tool; like
@@ -224,8 +225,9 @@ def probe_worker_health(worker: str, *, timeout: float = 10.0) -> dict:
 
     * URL unset → ``reachable``/``app_reached`` False, ``error="url_unset"``
       (the :class:`WorkerClientError` from :func:`_worker_url` is caught).
-    * Got an HTTP response → ``reachable=True``, ``app_reached=(status != 404)``,
-      ``status_code`` set, ``error=None``.
+    * Got an HTTP response → ``reachable=True``,
+      ``app_reached=(status not in {401, 403, 404})``, ``status_code`` set,
+      ``error=None``.
     * Token-mint / transport failure → ``reachable``/``app_reached`` False,
       ``error`` carrying the class + short message.
     """
@@ -288,15 +290,17 @@ def probe_worker_health(worker: str, *, timeout: float = 10.0) -> dict:
 
     latency_ms = int((time.monotonic() - started) * 1000)
     # reachable=True on any HTTP status — the route + TLS reached a Cloud Run
-    # GFE. app_reached=True only when the status is NOT 404: a 404 is the GFE /
-    # ingress pre-app reject; 405 (GET on a POST route) / 403 (ingress ok, IAM
-    # rejected) prove the request reached the worker process past the ingress gate.
+    # GFE. app_reached requires the request to have reached the app router past
+    # BOTH the ingress gate AND IAM: 405 (GET on a POST route) is the expected
+    # hit. A 404 is the GFE / ingress pre-app reject; 401/403 is an auth/IAM
+    # rejection — and crucially a real /propose|/apply call would hit the SAME
+    # rejection, so 401/403 is NOT a green cutover signal (Codex C5c review).
     return {
         "worker": worker,
         "target": base,
         "probed_path": path,
         "reachable": True,
-        "app_reached": r.status_code != 404,
+        "app_reached": r.status_code not in (401, 403, 404),
         "status_code": r.status_code,
         "latency_ms": latency_ms,
         "error": None,
