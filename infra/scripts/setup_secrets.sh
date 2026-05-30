@@ -586,6 +586,27 @@ for member in "$APPLY_SA" "$ROLLBACK_SA" "$BUILD_DEPLOY_SA"; do
     echo "  ${member} not present yet — skipping actAs on ${PD_RUNTIME_SA_DEDICATED}"
   fi
 done
+# 7b-AR. Repo-scoped artifactregistry.reader for BOTH the apply mutator and the
+# dedicated runtime SA. When the gated pipeline applies an in-place UPDATE to
+# payment-demo, Cloud Run validates image-pull at DEPLOY ADMISSION for BOTH the
+# deploying identity (tofu-apply-sa, which issues run.services.update) AND the
+# new RUNTIME SA (payment-demo-runtime) — both pull payment-demo's image from
+# the `driftscribe` repo. Missing reader on either was the C5g 502 root-cause
+# ("Permission 'artifactregistry.repositories.downloadArtifacts' denied" at
+# admission); it was granted live during C5g and is codified here so a fresh
+# bootstrap is reproducible. Repo-scoped (NOT project-level); run.developer does
+# NOT include AR reader. (cloudbuild-deploy-sa@ gets its own repo reader in §4c.)
+for member in "$APPLY_SA" "$PD_RUNTIME_SA_DEDICATED"; do
+  if gcloud iam service-accounts describe "$member" --project="$PROJECT" >/dev/null 2>&1; then
+    gcloud artifacts repositories add-iam-policy-binding driftscribe \
+      --project="$PROJECT" --location="$REGION" \
+      --member="serviceAccount:${member}" \
+      --role="roles/artifactregistry.reader" --condition=None >/dev/null
+    echo "  ${member}: artifactregistry.reader on repo driftscribe (image-pull admission)"
+  else
+    echo "  ${member} not present yet — skipping artifactregistry.reader on repo driftscribe"
+  fi
+done
 # tofu-apply-sa also needs resource-scoped run.developer on the service itself.
 if gcloud run services describe payment-demo --region="$REGION" --project="$PROJECT" >/dev/null 2>&1 \
    && gcloud iam service-accounts describe "$APPLY_SA" --project="$PROJECT" >/dev/null 2>&1; then
