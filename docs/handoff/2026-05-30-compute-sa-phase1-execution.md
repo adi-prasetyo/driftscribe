@@ -88,7 +88,22 @@ Operator-authorized ("go to the next phase"). Gated by a read-only **adversarial
 - **Post-verify:** all 10 services `Ready=True` on dedicated SAs (none on compute SA); coordinator HTTP 302; compute SA resource policy empty + not disabled.
 - **Rollback (break-glass):** re-grant any subset of the 4 roles from the backup (additive, instant) while the SA is still enabled.
 
-## NOT executed (held)
+## 2026-05-31 — Phase 7 EXECUTED (DISABLE + close regression sources — RETIREMENT COMPLETE)
 
-- **Phase 7** (`disable` — not delete — the now-roleless compute SA + close the latent regression sources). The SA is roleless, consumer-free, and the build SA is proven self-sufficient post-editor-strip, so disabling is low-risk + instantly reversible. **Codex-recommended ordering (`019e78c2`): disable LAST** — (1) patch the code/script reintroduction sources (`setup_prod_project.sh:303`, `setup_e2e_project.sh:338-339`, docs defaulting runtime SA → `PROJECT_NUMBER-compute@`); (2) prune the live legacy `@cloudbuild` actAs bindings (recon found them still on 8/10 runtime SAs) once confirmed unused; (3) `disable` the SA last, then a negative-reference check + a pinned-build smoke / config validation — keeps the re-grant-only rollback available while reintroduction sources are removed. **Codex caveat:** don't claim "all build-identity debt gone" until the legacy `@cloudbuild` prune is done.
-- **Code changes are UNCOMMITTED** (operator preference is code-only by default): modified `infra/cloudbuild*.yaml` ×5, `infra/scripts/setup_secrets.sh`, 3 docs; `git rm` staged deletion of `spikes/cloud_run_auth/`; plan + handoff updates. Phases 5 & 6 themselves touched **no repo code** — only live IAM + 3 untracked backup JSONs (`*.pre-phase1`, `*.pre-phase5` ×2, `*.pre-phase6`).
+Operator-authorized ("commit and push everything first. then continue to phase 7"). Gated by a read-only **adversarial** workflow (`wf_ad38fe98-17a`, 8 agents) + Codex pre-execution review + tie-break (`019e78c2`). Disable LAST.
+
+- **Step 1 — reintroduction sources patched (committed `2ed8478`):** `setup_prod_project.sh:303` rollback-SA actAs fallback `compute@` → `payment-demo-runtime@`; `setup_e2e_project.sh` + `docs/runbooks/e2e-{environment,ci}.md` → live-resolve of `payment-demo-e2e`'s runtime SA with e2e-compute fallback (e2e's compute SA is NOT retired — separate project). `bash -n` clean.
+- **Step 2 — dead build-identity debt pruned:** removed `roles/iam.serviceAccountUser` for **compute@** from 7 runtime SAs + for legacy **`@cloudbuild`** from 6 runtime SAs (`--condition=None`); plus `@cloudbuild`'s 3 dead **project** roles (`artifactregistry.writer`, `run.admin`, `iam.serviceAccountUser`), keeping only Google-managed `cloudbuild.builds.builder`. (Codex Q3: per-SA prune alone is *false cleanup* while the project-level `iam.serviceAccountUser` still grants actAs over all SAs.) Backup: `docs/handoff/2026-05-31-build-identity-actas.pre-phase7.json`.
+- **Negative-reference check:** compute@ actAs **0/10**, `@cloudbuild` actAs **0/10**, `cloudbuild-deploy-sa@` **10/10**, compute@ project roles **0**, `@cloudbuild` only `cloudbuild.builds.builder`.
+- **Step 3 — DISABLE:** `gcloud iam service-accounts disable 1079423440495-compute@developer.gserviceaccount.com` → `disabled: True`. NOT deleted (reversible: `enable` + re-grant).
+- **Gate blocker disproven:** the gate returned `gateClear=FALSE` on one skeptic (S1) citing 28/31 historical compute@ builds. **Timeline false positive** — those builds predate the Phase-6 strip; a compute@ build today fails at `run.services.update` (zero project roles) before actAs is consulted. The 3 post-strip + most-recent builds all ran as `cloudbuild-deploy-sa@`/SUCCESS. S2 + S3 + surface checks P1–P5 cleared; **Codex tie-break = GO** (fresh backups taken first).
+- **Post-disable smoke:** `tofu-apply.yaml` build `d244f7fb-89f5-4ab7-982a-9eef5a7ed12d` SUCCESS (3m29s) AS `cloudbuild-deploy-sa@` **with compute@ disabled** → rev `driftscribe-tofu-apply-00011-jzq` Ready on `tofu-apply-sa@`.
+- **Post-verify:** 10/10 services `Ready=True` on dedicated SAs; coordinator HTTP 302; **zero** `code=7` + **zero** cloud_run/build errors (last 2h).
+- **Eventarc:** 2 ACTIVE drift triggers on `eventarc-trigger-sa@` (the "trigger absent" carry-forward is stale/corrected).
+- **Rollback (break-glass):** `enable` + re-grant from `docs/handoff/2026-05-31-build-identity-actas.pre-phase7.json`.
+
+**RETIREMENT COMPLETE** — the default compute SA `1079423440495-compute@` is roleless, referenced in zero IAM bindings, and disabled.
+
+## Commit status
+
+All compute-SA-retirement work is on branch `chore/compute-sa-retirement` / **PR #34** (Phases 1–7): spike retirement, the Cloud Build deploy-SA cutover + fail-closed guard, the Phase-7 reintroduction-source patches, and the plan + handoff + IAM backups. The live Phase 5/6/7 IAM mutations touched **no repo code** — only live gcloud + untracked backup JSONs (`*.pre-phase1`, `*.pre-phase5` ×2, `*.pre-phase6`, `build-identity-actas.pre-phase7`).

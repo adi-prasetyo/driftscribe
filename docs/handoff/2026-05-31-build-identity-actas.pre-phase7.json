@@ -1,0 +1,299 @@
+// Pre-Phase-7 break-glass backup (captured 2026-05-31, project driftscribe-hack-2026)
+// Phase 7 mutations (then DISABLE compute@ LAST):
+//   (A) remove 1079423440495-compute@developer.gserviceaccount.com  roles/iam.serviceAccountUser  from 7 SAs:
+//       driftscribe-agent reader-agent-sa docs-agent-sa rollback-agent-sa notifier-agent-sa upgrade-reader-sa upgrade-docs-sa
+//   (B) remove 1079423440495@cloudbuild.gserviceaccount.com  roles/iam.serviceAccountUser  from 6 SAs:
+//       driftscribe-agent reader-agent-sa docs-agent-sa rollback-agent-sa notifier-agent-sa tofu-apply-sa
+//   (C) remove 1079423440495@cloudbuild  project roles: artifactregistry.writer, run.admin, iam.serviceAccountUser (KEEP cloudbuild.builds.builder)
+//   (D) gcloud iam service-accounts disable 1079423440495-compute@developer.gserviceaccount.com
+// Re-grant actAs:  gcloud iam service-accounts add-iam-policy-binding <SA>@driftscribe-hack-2026.iam.gserviceaccount.com --member=serviceAccount:<PRINCIPAL> --role=roles/iam.serviceAccountUser --condition=None
+// Re-grant proj role: gcloud projects add-iam-policy-binding driftscribe-hack-2026 --member=serviceAccount:1079423440495@cloudbuild.gserviceaccount.com --role=<ROLE> --condition=None
+// Re-enable compute@: gcloud iam service-accounts enable 1079423440495-compute@developer.gserviceaccount.com
+{
+  "captured": "2026-05-31",
+  "project": "driftscribe-hack-2026",
+  "project_iam_policy": {
+    "bindings": [
+      {
+        "members": [
+          "serviceAccount:service-1079423440495@gcp-sa-aiplatform.iam.gserviceaccount.com"
+        ],
+        "role": "roles/aiplatform.serviceAgent"
+      },
+      {
+        "members": [
+          "serviceAccount:driftscribe-agent@driftscribe-hack-2026.iam.gserviceaccount.com"
+        ],
+        "role": "roles/aiplatform.user"
+      },
+      {
+        "members": [
+          "serviceAccount:service-1079423440495@gcp-sa-artifactregistry.iam.gserviceaccount.com"
+        ],
+        "role": "roles/artifactregistry.serviceAgent"
+      },
+      {
+        "members": [
+          "serviceAccount:1079423440495@cloudbuild.gserviceaccount.com"
+        ],
+        "role": "roles/artifactregistry.writer"
+      },
+      {
+        "members": [
+          "serviceAccount:infra-reader-sa@driftscribe-hack-2026.iam.gserviceaccount.com"
+        ],
+        "role": "roles/cloudasset.viewer"
+      },
+      {
+        "members": [
+          "serviceAccount:1079423440495@cloudbuild.gserviceaccount.com"
+        ],
+        "role": "roles/cloudbuild.builds.builder"
+      },
+      {
+        "members": [
+          "serviceAccount:service-1079423440495@gcp-sa-cloudbuild.iam.gserviceaccount.com"
+        ],
+        "role": "roles/cloudbuild.serviceAgent"
+      },
+      {
+        "members": [
+          "serviceAccount:1079423440495@cloudservices.gserviceaccount.com"
+        ],
+        "role": "roles/compute.instanceGroupManagerServiceAgent"
+      },
+      {
+        "members": [
+          "serviceAccount:service-1079423440495@compute-system.iam.gserviceaccount.com"
+        ],
+        "role": "roles/compute.serviceAgent"
+      },
+      {
+        "members": [
+          "serviceAccount:service-1079423440495@containerregistry.iam.gserviceaccount.com"
+        ],
+        "role": "roles/containerregistry.ServiceAgent"
+      },
+      {
+        "condition": {
+          "expression": "resource.name == \"projects/driftscribe-hack-2026/databases/(default)\"",
+          "title": "datastore-user--default-"
+        },
+        "members": [
+          "serviceAccount:driftscribe-agent@driftscribe-hack-2026.iam.gserviceaccount.com",
+          "serviceAccount:rollback-agent-sa@driftscribe-hack-2026.iam.gserviceaccount.com"
+        ],
+        "role": "roles/datastore.user"
+      },
+      {
+        "condition": {
+          "expression": "resource.name == \"projects/driftscribe-hack-2026/databases/plan-approvals\"",
+          "title": "datastore-user-plan-approvals"
+        },
+        "members": [
+          "serviceAccount:tofu-apply-sa@driftscribe-hack-2026.iam.gserviceaccount.com"
+        ],
+        "role": "roles/datastore.user"
+      },
+      {
+        "members": [
+          "serviceAccount:eventarc-trigger-sa@driftscribe-hack-2026.iam.gserviceaccount.com"
+        ],
+        "role": "roles/eventarc.eventReceiver"
+      },
+      {
+        "members": [
+          "serviceAccount:service-1079423440495@gcp-sa-eventarc.iam.gserviceaccount.com"
+        ],
+        "role": "roles/eventarc.serviceAgent"
+      },
+      {
+        "members": [
+          "serviceAccount:service-1079423440495@firebase-rules.iam.gserviceaccount.com"
+        ],
+        "role": "roles/firebaserules.system"
+      },
+      {
+        "members": [
+          "serviceAccount:service-1079423440495@gcp-sa-firestore.iam.gserviceaccount.com"
+        ],
+        "role": "roles/firestore.serviceAgent"
+      },
+      {
+        "members": [
+          "serviceAccount:1079423440495@cloudbuild.gserviceaccount.com"
+        ],
+        "role": "roles/iam.serviceAccountUser"
+      },
+      {
+        "members": [
+          "serviceAccount:cloudbuild-deploy-sa@driftscribe-hack-2026.iam.gserviceaccount.com"
+        ],
+        "role": "roles/logging.logWriter"
+      },
+      {
+        "members": [
+          "serviceAccount:driftscribe-agent@driftscribe-hack-2026.iam.gserviceaccount.com"
+        ],
+        "role": "roles/logging.viewer"
+      },
+      {
+        "members": [
+          "user:theghostsquad00@gmail.com"
+        ],
+        "role": "roles/owner"
+      },
+      {
+        "members": [
+          "serviceAccount:service-1079423440495@gcp-sa-pubsub.iam.gserviceaccount.com"
+        ],
+        "role": "roles/pubsub.serviceAgent"
+      },
+      {
+        "members": [
+          "serviceAccount:1079423440495@cloudbuild.gserviceaccount.com",
+          "serviceAccount:cloudbuild-deploy-sa@driftscribe-hack-2026.iam.gserviceaccount.com"
+        ],
+        "role": "roles/run.admin"
+      },
+      {
+        "members": [
+          "serviceAccount:tofu-apply-sa@driftscribe-hack-2026.iam.gserviceaccount.com"
+        ],
+        "role": "roles/run.developer"
+      },
+      {
+        "members": [
+          "serviceAccount:service-1079423440495@serverless-robot-prod.iam.gserviceaccount.com"
+        ],
+        "role": "roles/run.serviceAgent"
+      },
+      {
+        "members": [
+          "serviceAccount:reader-agent-sa@driftscribe-hack-2026.iam.gserviceaccount.com",
+          "serviceAccount:tofu-plan-builder@driftscribe-hack-2026.iam.gserviceaccount.com"
+        ],
+        "role": "roles/run.viewer"
+      },
+      {
+        "members": [
+          "serviceAccount:infra-reader-sa@driftscribe-hack-2026.iam.gserviceaccount.com"
+        ],
+        "role": "roles/serviceusage.serviceUsageConsumer"
+      }
+    ],
+    "etag": "BwZTCyAsmbk=",
+    "version": 3
+  },
+  "sa_policies": {
+    "driftscribe-agent": {
+      "bindings": [
+        {
+          "members": [
+            "serviceAccount:1079423440495-compute@developer.gserviceaccount.com",
+            "serviceAccount:1079423440495@cloudbuild.gserviceaccount.com",
+            "serviceAccount:cloudbuild-deploy-sa@driftscribe-hack-2026.iam.gserviceaccount.com"
+          ],
+          "role": "roles/iam.serviceAccountUser"
+        }
+      ],
+      "etag": "BwZTCSr0M2k=",
+      "version": 1
+    },
+    "reader-agent-sa": {
+      "bindings": [
+        {
+          "members": [
+            "serviceAccount:1079423440495-compute@developer.gserviceaccount.com",
+            "serviceAccount:1079423440495@cloudbuild.gserviceaccount.com",
+            "serviceAccount:cloudbuild-deploy-sa@driftscribe-hack-2026.iam.gserviceaccount.com"
+          ],
+          "role": "roles/iam.serviceAccountUser"
+        }
+      ],
+      "etag": "BwZTCSsX7TE=",
+      "version": 1
+    },
+    "docs-agent-sa": {
+      "bindings": [
+        {
+          "members": [
+            "serviceAccount:1079423440495-compute@developer.gserviceaccount.com",
+            "serviceAccount:1079423440495@cloudbuild.gserviceaccount.com",
+            "serviceAccount:cloudbuild-deploy-sa@driftscribe-hack-2026.iam.gserviceaccount.com"
+          ],
+          "role": "roles/iam.serviceAccountUser"
+        }
+      ],
+      "etag": "BwZTCSs7pxk=",
+      "version": 1
+    },
+    "rollback-agent-sa": {
+      "bindings": [
+        {
+          "members": [
+            "serviceAccount:1079423440495-compute@developer.gserviceaccount.com",
+            "serviceAccount:1079423440495@cloudbuild.gserviceaccount.com",
+            "serviceAccount:cloudbuild-deploy-sa@driftscribe-hack-2026.iam.gserviceaccount.com"
+          ],
+          "role": "roles/iam.serviceAccountUser"
+        }
+      ],
+      "etag": "BwZTCStgeNM=",
+      "version": 1
+    },
+    "notifier-agent-sa": {
+      "bindings": [
+        {
+          "members": [
+            "serviceAccount:1079423440495-compute@developer.gserviceaccount.com",
+            "serviceAccount:1079423440495@cloudbuild.gserviceaccount.com",
+            "serviceAccount:cloudbuild-deploy-sa@driftscribe-hack-2026.iam.gserviceaccount.com"
+          ],
+          "role": "roles/iam.serviceAccountUser"
+        }
+      ],
+      "etag": "BwZTCSuGKsE=",
+      "version": 1
+    },
+    "upgrade-reader-sa": {
+      "bindings": [
+        {
+          "members": [
+            "serviceAccount:1079423440495-compute@developer.gserviceaccount.com",
+            "serviceAccount:cloudbuild-deploy-sa@driftscribe-hack-2026.iam.gserviceaccount.com"
+          ],
+          "role": "roles/iam.serviceAccountUser"
+        }
+      ],
+      "etag": "BwZTCSugRfY=",
+      "version": 1
+    },
+    "upgrade-docs-sa": {
+      "bindings": [
+        {
+          "members": [
+            "serviceAccount:1079423440495-compute@developer.gserviceaccount.com",
+            "serviceAccount:cloudbuild-deploy-sa@driftscribe-hack-2026.iam.gserviceaccount.com"
+          ],
+          "role": "roles/iam.serviceAccountUser"
+        }
+      ],
+      "etag": "BwZTCSvIXGE=",
+      "version": 1
+    },
+    "tofu-apply-sa": {
+      "bindings": [
+        {
+          "members": [
+            "serviceAccount:1079423440495@cloudbuild.gserviceaccount.com",
+            "serviceAccount:cloudbuild-deploy-sa@driftscribe-hack-2026.iam.gserviceaccount.com"
+          ],
+          "role": "roles/iam.serviceAccountUser"
+        }
+      ],
+      "etag": "BwZTCSwRdSE=",
+      "version": 1
+    }
+  }
+}
