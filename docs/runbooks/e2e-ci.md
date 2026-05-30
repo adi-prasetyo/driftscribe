@@ -128,9 +128,11 @@ binding set from this single file.
   reset.
 - `roles/iam.serviceAccountUser` on `payment-demo-e2e`'s Cloud Run
   runtime SA (the default compute SA
-  `<PROJECT_NUMBER>-compute@developer.gserviceaccount.com`, unless the
-  deploy step pinned `--service-account=...`). Required so the runner
-  can `act-as` the service identity during `update_service` calls.
+  `<PROJECT_NUMBER>-compute@developer.gserviceaccount.com` — this is
+  **e2e's own** compute SA, distinct from hack-2026's, which was retired
+  2026-05-31 — unless the deploy step pinned `--service-account=...`).
+  Required so the runner can `act-as` the service identity during
+  `update_service` calls.
 - `roles/artifactregistry.reader` (project-wide) — Cloud Run's admin
   API validates the *caller* can pull the image referenced by a
   service when `update_service` is called (security: prevents image-

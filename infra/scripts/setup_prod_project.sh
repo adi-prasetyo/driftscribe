@@ -289,10 +289,11 @@ Next steps (operator action required):
     # + actAs on its runtime SA (required for real HITL-approved traffic
     # shifts). Phase C5f: the dedicated minimal runtime SA payment-demo-runtime
     # (provisioned by setup_secrets.sh §7b) becomes ${TARGET_SERVICE}'s identity
-    # once the repoint is applied through the gated pipeline. On a FRESH bootstrap
-    # the service still runs as the default compute SA until then, so we grant
-    # actAs on BOTH the LIVE-resolved runtime SA (covers the transition window)
-    # AND the dedicated SA (covers post-repoint) — a rollback works in either.
+    # once the repoint is applied through the gated pipeline. The default compute
+    # SA was RETIRED (2026-05-31), so on a FRESH bootstrap LIVE_RUNTIME_SA falls
+    # back to the dedicated payment-demo-runtime SA — NOT the retired compute SA;
+    # we grant actAs on BOTH the LIVE-resolved runtime SA AND the dedicated SA, so
+    # a rollback works whether the service is pre- or post-repoint.
     gcloud run services add-iam-policy-binding ${TARGET_SERVICE} \\
       --project=$PROJECT --region=$REGION \\
       --member="serviceAccount:${ROLLBACK_SA}" \\
@@ -300,7 +301,7 @@ Next steps (operator action required):
     LIVE_RUNTIME_SA="\$(gcloud run services describe ${TARGET_SERVICE} \\
       --project=$PROJECT --region=$REGION \\
       --format='value(template.serviceAccount)' 2>/dev/null)"
-    : "\${LIVE_RUNTIME_SA:=${PROJECT_NUMBER}-compute@developer.gserviceaccount.com}"
+    : "\${LIVE_RUNTIME_SA:=payment-demo-runtime@$PROJECT.iam.gserviceaccount.com}"
     for RUNTIME_SA in "\$LIVE_RUNTIME_SA" "payment-demo-runtime@$PROJECT.iam.gserviceaccount.com"; do
       gcloud iam service-accounts add-iam-policy-binding "\$RUNTIME_SA" \\
         --project=$PROJECT \\
