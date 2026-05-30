@@ -132,6 +132,7 @@ def test_all_workers_200_returns_go_true(monkeypatch):
     body = resp.json()
     assert body["go"] is True
     assert body["worker_healthy"] is True
+    assert body["all_siblings_reachable"] is True
     workers = {r["worker"] for r in body["results"]}
     assert workers == set(worker_client._WORKER_URL_ENV)
     assert "tofu_apply" in workers
@@ -159,6 +160,7 @@ def test_one_sibling_unreachable_returns_502_go_false(monkeypatch):
     assert resp.status_code == 502
     body = resp.json()
     assert body["go"] is False
+    assert body["all_siblings_reachable"] is False
     # The new path itself is healthy — the regression is in a sibling.
     assert body["worker_healthy"] is True
 

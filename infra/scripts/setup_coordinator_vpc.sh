@@ -53,7 +53,9 @@ source "${SCRIPT_DIR}/_setup_lib.sh"
 # --------------------------------------------------------------------------
 PROJECT="${PROJECT:-driftscribe-hack-2026}"
 REGION="${REGION:-asia-northeast1}"
-PROJECT_NUMBER="${PROJECT_NUMBER:-1079423440495}"
+# Derived from the project after pre-flight (not hardcoded) so a throwaway-project
+# override gets the RIGHT service agent. Env override still honored if set.
+PROJECT_NUMBER="${PROJECT_NUMBER:-}"
 
 NETWORK="${NETWORK:-driftscribe-vpc}"
 SUBNET="${SUBNET:-driftscribe-coord-an1}"
@@ -67,10 +69,10 @@ DNS_NAME="run.app."
 VIP_IPS=(199.36.153.8 199.36.153.9 199.36.153.10 199.36.153.11)
 VIP_RANGE="199.36.153.8/30"
 
-# The Cloud Run service agent — Direct VPC egress needs THIS identity to use the
-# subnet. Normally covered by roles/run.serviceAgent, but we grant networkUser
-# on the subnet explicitly to be safe.
-RUN_SERVICE_AGENT="service-${PROJECT_NUMBER}@serverless-robot-prod.iam.gserviceaccount.com"
+# The Cloud Run service agent (service-<projnum>@serverless-robot-prod) — Direct
+# VPC egress needs THIS identity to use the subnet. Normally covered by
+# roles/run.serviceAgent, but we grant networkUser on the subnet explicitly to be
+# safe. RUN_SERVICE_AGENT is computed AFTER pre-flight, once PROJECT_NUMBER is known.
 # Optional extra principal (e.g. a non-owner deploy SA) to also grant
 # networkUser on the subnet. Empty = grant only the Cloud Run service agent.
 NETWORK_USER_MEMBER="${NETWORK_USER_MEMBER:-}"
@@ -189,6 +191,18 @@ if [ -z "$CALLER_EMAIL" ]; then
   echo "ERROR: gcloud has no active account configured. Run 'gcloud auth login'." >&2
   exit 1
 fi
+
+# Derive PROJECT_NUMBER from the project unless explicitly overridden, so the
+# Cloud Run service agent is correct even against a throwaway project.
+if [ -z "$PROJECT_NUMBER" ]; then
+  PROJECT_NUMBER="$(gcloud projects describe "$PROJECT" --format='value(projectNumber)' 2>/dev/null)"
+fi
+if [ -z "$PROJECT_NUMBER" ]; then
+  echo "ERROR: could not determine project number for ${PROJECT}." >&2
+  exit 1
+fi
+RUN_SERVICE_AGENT="service-${PROJECT_NUMBER}@serverless-robot-prod.iam.gserviceaccount.com"
+
 echo "Provisioning coordinator VPC egress for ${PROJECT} (region ${REGION}) as ${CALLER_EMAIL}..."
 if [ -n "$DRY_RUN" ]; then
   echo "  DRY_RUN=1 — mutating gcloud commands are PRINTED, not executed."
@@ -238,7 +252,7 @@ fi
 # --------------------------------------------------------------------------
 EXISTING_SUBNET="$(gcloud compute networks subnets describe "$SUBNET" \
   --project="$PROJECT" --region="$REGION" \
-  --format='value(ipCidrRange,privateIpGoogleAccess)' 2>/dev/null || echo "")"
+  --format='value(ipCidrRange,privateIpGoogleAccess,network)' 2>/dev/null || echo "")"
 if [ -z "$EXISTING_SUBNET" ]; then
   run_cmd gcloud compute networks subnets create "$SUBNET" \
     --project="$PROJECT" \
@@ -248,13 +262,21 @@ if [ -z "$EXISTING_SUBNET" ]; then
     --enable-private-ip-google-access
   echo "  subnet ${SUBNET} (${REGION}, ${SUBNET_RANGE}, PGA on): created"
 else
-  # value(a,b) is TAB-separated; awk splits on whitespace. PGA renders as a
-  # capitalized bool — lowercase-compare to be version-robust.
+  # value(a,b,c) is TAB-separated; awk splits on whitespace. PGA renders as a
+  # capitalized bool — lowercase-compare to be version-robust. `network` is a
+  # full resource URL ending in /networks/<NAME>.
   EXISTING_RANGE="$(echo "$EXISTING_SUBNET" | awk '{print $1}')"
   EXISTING_PGA="$(echo "$EXISTING_SUBNET" | awk '{print tolower($2)}')"
-  if [ -z "$EXISTING_RANGE" ] || [ -z "$EXISTING_PGA" ]; then
+  EXISTING_SUBNET_NET="$(echo "$EXISTING_SUBNET" | awk '{print $3}')"
+  if [ -z "$EXISTING_RANGE" ] || [ -z "$EXISTING_PGA" ] || [ -z "$EXISTING_SUBNET_NET" ]; then
     echo "ERROR: could not parse existing subnet ${SUBNET} describe output" >&2
     echo "       ('${EXISTING_SUBNET}'). Refusing to proceed (fail-closed)." >&2
+    exit 1
+  fi
+  # A same-name subnet under a DIFFERENT VPC is a collision — fail closed.
+  if ! echo "$EXISTING_SUBNET_NET" | grep -qE "/networks/${NETWORK}\$"; then
+    echo "ERROR: subnet ${SUBNET} (${REGION}) belongs to network ${EXISTING_SUBNET_NET}," >&2
+    echo "       not ${NETWORK}. Refusing to use it (fail-closed on collision)." >&2
     exit 1
   fi
   if [ "$EXISTING_RANGE" != "$SUBNET_RANGE" ] || [ "$EXISTING_PGA" != "true" ]; then
@@ -263,7 +285,7 @@ else
     echo "       Refusing to mutate (fail-closed on collision)." >&2
     exit 1
   fi
-  echo "  subnet ${SUBNET} already exists (${EXISTING_RANGE}, PGA=${EXISTING_PGA}) — matches, not mutating"
+  echo "  subnet ${SUBNET} already exists (${EXISTING_RANGE}, PGA=${EXISTING_PGA}, ${NETWORK}) — matches, not mutating"
 fi
 
 # --------------------------------------------------------------------------
@@ -301,14 +323,19 @@ else
     echo "       Refusing to overwrite a pre-existing run.app. zone (fail-closed)." >&2
     exit 1
   fi
-  # networkUrl ends with /<NETWORK>; NETWORK is validated above (no regex metachars).
-  if ! echo "$ZONE_NETS" | grep -qE "/${NETWORK}\$"; then
-    echo "ERROR: DNS zone ${DNS_ZONE} is not attached to network ${NETWORK}." >&2
-    echo "       Attached networks: ${ZONE_NETS:-<none>}." >&2
+  # Require the zone be attached to EXACTLY our VPC — not our-VPC-plus-others
+  # (our records would then affect unrelated networks). gcloud value() may join a
+  # repeated field with ';' or newlines — normalize both. networkUrl ends with
+  # /networks/<NAME>; NETWORK is validated above (no regex metachars).
+  ZONE_NET_LIST="$(printf '%s' "$ZONE_NETS" | tr ';' '\n' | sed '/^$/d')"
+  ZONE_NET_COUNT="$(printf '%s\n' "$ZONE_NET_LIST" | grep -c . || true)"
+  if [ "$ZONE_NET_COUNT" != "1" ] || ! printf '%s\n' "$ZONE_NET_LIST" | grep -qE "/networks/${NETWORK}\$"; then
+    echo "ERROR: DNS zone ${DNS_ZONE} must be attached to EXACTLY network ${NETWORK}." >&2
+    echo "       Attached networks: ${ZONE_NETS:-<none>} (count ${ZONE_NET_COUNT})." >&2
     echo "       Refusing to mutate a pre-existing zone (fail-closed)." >&2
     exit 1
   fi
-  echo "  DNS zone ${DNS_ZONE} already exists (private, attached to ${NETWORK}) — verifying records"
+  echo "  DNS zone ${DNS_ZONE} already exists (private, attached to ${NETWORK} only) — verifying records"
 fi
 
 # Ensure the two records exist and match — idempotent + recoverable + fail-closed.
@@ -341,8 +368,24 @@ fi
 # "route already exists" create error regardless of filter quirks), then by
 # coverage (skip if the default 0.0.0.0/0 already covers the VIP block).
 VIP_ROUTE_NAME="${NETWORK}-vip-igw"
-if gcloud compute routes describe "$VIP_ROUTE_NAME" --project="$PROJECT" >/dev/null 2>&1; then
-  echo "  route ${VIP_ROUTE_NAME} already exists — not mutating"
+if EXISTING_VIP_ROUTE="$(gcloud compute routes describe "$VIP_ROUTE_NAME" \
+    --project="$PROJECT" \
+    --format='value(network,destRange,nextHopGateway)' 2>/dev/null)"; then
+  # Name collision — verify it is OURS (our network + VIP range + IGW next hop)
+  # before trusting it; a foreign route of the same name is fail-closed.
+  R_NET="$(echo "$EXISTING_VIP_ROUTE" | awk '{print $1}')"
+  R_DEST="$(echo "$EXISTING_VIP_ROUTE" | awk '{print $2}')"
+  R_HOP="$(echo "$EXISTING_VIP_ROUTE" | awk '{print $3}')"
+  if ! echo "$R_NET" | grep -qE "/networks/${NETWORK}\$" \
+     || [ "$R_DEST" != "$VIP_RANGE" ] \
+     || ! echo "$R_HOP" | grep -q "default-internet-gateway"; then
+    echo "ERROR: route ${VIP_ROUTE_NAME} exists but does not match expected" >&2
+    echo "       (network=${R_NET}, dest=${R_DEST}, nextHop=${R_HOP};" >&2
+    echo "        want network ${NETWORK}, dest ${VIP_RANGE}, default-internet-gateway)." >&2
+    echo "       Refusing to use it (fail-closed on collision)." >&2
+    exit 1
+  fi
+  echo "  route ${VIP_ROUTE_NAME} already exists (matches) — not mutating"
 else
   VIP_COVERED="$(gcloud compute routes list \
     --project="$PROJECT" \

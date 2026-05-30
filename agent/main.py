@@ -636,6 +636,7 @@ def iac_reachability(
         content={
             "go": go,
             "worker_healthy": worker_healthy,
+            "all_siblings_reachable": all_siblings_reachable,
             "results": results,
         },
         headers={"Cache-Control": "no-store"},

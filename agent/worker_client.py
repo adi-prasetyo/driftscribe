@@ -233,9 +233,21 @@ def probe_worker_health(worker: str, *, timeout: float = 10.0) -> dict:
         }
 
     # Audience is the worker ROOT url (same rule as :func:`call`) — Cloud Run
-    # validates the aud claim against the receiving service's URL.
-    token = mint_id_token(base)
+    # validates the aud claim against the receiving service's URL. Minting hits
+    # the metadata server, so it can fail (auth/transport) — catch it too: a
+    # diagnostic that 500s and loses every per-worker result defeats its purpose.
     started = time.monotonic()
+    try:
+        token = mint_id_token(base)
+    except Exception as e:  # noqa: BLE001 — diagnostic must never raise through
+        return {
+            "worker": worker,
+            "target": base,
+            "reachable": False,
+            "status_code": None,
+            "latency_ms": None,
+            "error": f"token_mint_failed: {type(e).__name__}: {e}",
+        }
     try:
         r = httpx.get(
             f"{base}/healthz",

@@ -658,6 +658,27 @@ def test_probe_worker_health_timeout_is_unreachable() -> None:
     assert "ConnectTimeout" in out["error"]
 
 
+def test_probe_worker_health_token_mint_failure_is_caught(monkeypatch) -> None:
+    """If ``mint_id_token`` raises (metadata/auth failure), the probe CATCHES it
+    and returns ``reachable=False, error="token_mint_failed: ..."`` rather than
+    raising through — a diagnostic that 500s and loses every per-worker result
+    would defeat its purpose. target is still the resolved URL."""
+    monkeypatch.setenv("TOFU_APPLY_URL", TOFU_APPLY_URL)
+
+    def boom(_base: str) -> str:
+        raise RuntimeError("metadata server unreachable")
+
+    monkeypatch.setattr(worker_client, "mint_id_token", boom)
+    out = worker_client.probe_worker_health("tofu_apply")
+    assert out["worker"] == "tofu_apply"
+    assert out["target"] == TOFU_APPLY_URL
+    assert out["reachable"] is False
+    assert out["status_code"] is None
+    assert out["latency_ms"] is None
+    assert out["error"].startswith("token_mint_failed:")
+    assert "RuntimeError" in out["error"]
+
+
 def test_probe_worker_health_url_unset_returns_url_unset(monkeypatch) -> None:
     """When the worker's URL env is empty, ``_worker_url`` raises
     WorkerClientError — which the probe CATCHES and reports as a result
