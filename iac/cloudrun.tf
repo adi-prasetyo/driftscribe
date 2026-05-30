@@ -19,6 +19,12 @@ resource "google_cloud_run_v2_service" "payment_demo" {
     # (--concurrency=1, --min-instances=0, --max-instances=1).
     max_instance_request_concurrency = 1
 
+    # C5f/C5g hardening: run payment-demo as a dedicated, minimal runtime service
+    # account instead of the default compute SA (1079423440495-compute@). Applied
+    # in-place through the gated tofu-apply pipeline as the C5g positive smoke —
+    # this is the first real in-place UPDATE driven end-to-end through the gate.
+    service_account = "payment-demo-runtime@${var.project_id}.iam.gserviceaccount.com"
+
     scaling {
       min_instance_count = 0
       max_instance_count = 1
