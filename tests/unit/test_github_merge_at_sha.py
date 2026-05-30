@@ -370,6 +370,29 @@ def test_merge_at_sha_not_mergeable_blocked():
         merge_pr_at_sha(repo, **_merge_kwargs())
 
 
+def test_merge_at_sha_branch_protection_blocked_is_permanent():
+    """mergeable_state == 'blocked' (branch protection) → PERMANENT: a plain retry
+    can't clear it (the C5g sole-owner self-approval case). _iac_merge_step keys
+    its 'resolve out-of-band' vs 'retry' messaging off this flag."""
+    pr = _pr_obj(mergeable=True, mergeable_state="blocked")
+    repo = _repo_with(pr, check_runs=[_check_run("static-gate"), _check_run("tofu"), _check_run("lint-test")])
+    with pytest.raises(PrMergeBlockedError) as exc:
+        merge_pr_at_sha(repo, **_merge_kwargs())
+    assert exc.value.permanent is True
+    assert exc.value.status_code == 409
+    pr.merge.assert_not_called()
+
+
+def test_merge_at_sha_transient_state_is_not_permanent():
+    """A transient refused state ('behind') is NOT permanent — a rebase/retry can
+    clear it, so it keeps the retry messaging."""
+    pr = _pr_obj(mergeable=True, mergeable_state="behind")
+    repo = _repo_with(pr)
+    with pytest.raises(PrMergeBlockedError) as exc:
+        merge_pr_at_sha(repo, **_merge_kwargs())
+    assert exc.value.permanent is False
+
+
 def test_merge_at_sha_mergeability_unknown_after_retries_blocked():
     pr = _pr_obj(mergeable=None)
     repo = _repo_with(pr)

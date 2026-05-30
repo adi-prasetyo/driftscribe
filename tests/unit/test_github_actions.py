@@ -638,6 +638,9 @@ def test_merge_pr_blocks_states_outside_allowlist(state):
     with pytest.raises(PrMergeBlockedError) as exc:
         merge_pr(repo, **_merge_kwargs())
     assert exc.value.status_code == 409
+    # `blocked` (branch protection) is PERMANENT — a plain retry can't clear it;
+    # every other refused state is transient (rebase/wait/rerun could fix it).
+    assert exc.value.permanent is (state == "blocked")
     pr.merge.assert_not_called()
 
 
