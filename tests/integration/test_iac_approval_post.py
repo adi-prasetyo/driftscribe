@@ -831,6 +831,50 @@ def test_apply_502_failed_no_release_terminal(_configured, monkeypatch):
     assert len(attempts) == 1  # apply attempted exactly once (no re-apply)
 
 
+def test_apply_502_failed_state_suspect_terminal_and_reconcile_hint(_configured, monkeypatch):
+    """C5g 1b: a worker 502 whose body carries the ``failed_state_suspect`` token
+    → the coordinator records apply_status='failed_state_suspect' (not 'failed'),
+    the alert + 502 detail point at the recovery runbook (state reconcile), the
+    event is NOT released, and a re-POST is terminal (no re-apply) with a
+    reconcile-pointing message."""
+    _patch_resolve(monkeypatch)
+    _patch_repo(monkeypatch)
+    _patch_github(monkeypatch)
+
+    attempts = []
+
+    def _apply_suspect(aid, tok, jwt):
+        attempts.append((aid, tok, jwt))
+        raise worker_client.WorkerClientError(
+            502,
+            "tofu apply failed (exit 1) and state may be partially mutated "
+            "(failed_state_suspect): a state reconcile is required before any retry",
+            "tofu_apply",
+        )
+
+    calls = _patch_workers(monkeypatch, apply_=_apply_suspect)
+    client = TestClient(app)
+    resp = _post(client, token=_mint())
+    assert resp.status_code == 502
+    assert "failed_state_suspect" in resp.json()["detail"]
+    assert "runbook" in resp.json()["detail"]
+    # alert fired once and points at the recovery runbook (not the generic "verify").
+    assert len(calls["notify"]) == 1
+    assert "runbook" in calls["notify"][0][1]["body"]
+    state = get_state()
+    ek = main_mod._iac_event_key(
+        "theghostsquad00/driftscribe", 42, _HEAD, _GEN_META
+    )
+    existing = state.find_decision_for_event(ek)
+    assert existing is not None
+    assert existing["apply_status"] == "failed_state_suspect"
+    # Re-POST → terminal, NO re-apply, message points at the reconcile runbook.
+    resp2 = _post(client, token=_mint())
+    assert resp2.status_code == 200
+    assert len(attempts) == 1
+    assert "runbook" in resp2.text
+
+
 def test_apply_synthetic_503_ambiguous_no_release_504(_configured, monkeypatch):
     _patch_resolve(monkeypatch)
     _patch_repo(monkeypatch)

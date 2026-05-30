@@ -99,6 +99,45 @@ class LockRefused(Exception):
         super().__init__(f"tofu {step} refused: state lock held (exit {exit_code})")
 
 
+@dataclass(frozen=True)
+class PostFailureState:
+    """Diagnostic captured AFTER a failed ``tofu apply`` to decide whether the
+    failure left state dirty. ``state_suspect`` is the fail-closed verdict: True
+    unless the worker can PROVE state stayed clean (serial known + unchanged AND
+    a read-only refresh-only plan reports no drift). ``refresh_output`` is the
+    human-readable refresh-only plan text (bounded by the caller before audit)."""
+
+    state_suspect: bool
+    serial_before: int | None
+    serial_after: int | None
+    serial_bumped: bool
+    refresh_exit: int | None
+    refresh_drift: bool
+    refresh_output: str
+    refresh_stderr: str
+
+
+class ApplyStateSuspect(Exception):
+    """``tofu apply`` FAILED and the worker could NOT prove state stayed clean —
+    the failed apply may have persisted (partial/desired) state into the backend
+    even though the live update was rejected. This bit production during C5g: a
+    403-at-admission apply still wrote ``service_account`` into state, so the next
+    refresh-only 409'd on a phantom "drift". DISTINCT from :class:`TofuStepError`
+    (a clean failure) so the operator runs the apply-failure recovery runbook (a
+    state reconcile) instead of a futile blind retry.
+
+    Standalone (NOT a TofuStepError subclass), mirroring :class:`LockRefused`, so
+    existing ``except TofuStepError`` handlers are unaffected and a suspect-state
+    failure always surfaces as its own outcome."""
+
+    def __init__(self, step: str, exit_code: int, stderr: str, diag: "PostFailureState") -> None:
+        self.step = step
+        self.exit_code = exit_code
+        self.stderr = stderr
+        self.diag = diag
+        super().__init__(f"tofu {step} failed (exit {exit_code}); state suspect")
+
+
 def _is_lock_contention(stderr: str) -> bool:
     """True only if ``stderr`` carries tofu's canonical state-lock-acquire phrase.
 
@@ -225,8 +264,10 @@ def _state_serial_lineage(
     run_tofu: RunTofu, cwd: str, env: dict[str, str]
 ) -> tuple[int | None, str | None]:
     """Best-effort: parse ``tofu state pull`` for serial + lineage ONLY (never
-    log full state). Returns ``(None, None)`` if unavailable — the apply already
-    succeeded, so this is audit, not control-flow."""
+    log full state). Returns ``(None, None)`` if unavailable. Used both for the
+    post-success audit AND as the pre-apply baseline that the failed-apply
+    diagnosis compares against — an unreadable serial is treated fail-closed
+    (a clean failure can't be PROVEN, so it's classified suspect)."""
     try:
         rc, out, _err = run_tofu(["state", "pull"], cwd, env)
         if rc != 0:
@@ -240,6 +281,72 @@ def _state_serial_lineage(
         )
     except Exception:  # noqa: BLE001 — audit best-effort, never fail the apply on this
         return None, None
+
+
+def _diagnose_post_failure_state(
+    run_tofu: RunTofu, cwd: str, env: dict[str, str],
+    serial_before: int | None, lineage_before: str | None,
+) -> PostFailureState:
+    """After a failed ``tofu apply``, decide whether the failure dirtied state.
+
+    Fail-closed: ``state_suspect`` is True UNLESS the worker can PROVE state
+    stayed clean — the serial AND lineage were readable both before AND after,
+    are UNCHANGED, AND a non-mutating refresh-only plan reports no drift
+    (exit 0). Anything weaker is suspect: serial/lineage unreadable on either
+    side, serial bumped, lineage changed, refresh drift (exit 2), the refresh
+    erroring (exit 1 ⇒ "could not prove clean"), or the diagnosis itself raising.
+    A failed apply that can't be proven clean must route the operator to a state
+    reconcile, never a blind retry — the C5g signature was a rejected live update
+    that still persisted the planned attribute and bumped the serial. (Lineage is
+    read for free alongside the serial and closes the pathological "serial
+    coincidentally equal but the state was replaced" gap.) ``serial_bumped`` /
+    ``refresh_drift`` are kept as explanatory audit fields (NOT the sole verdict).
+
+    Never raises — it is called on the already-failed apply branch, so any
+    internal error fails closed to ``state_suspect=True`` rather than escaping
+    and 500-ing the burned-approval request (which would strand phase="claimed").
+    ``tofu state pull`` is swallowed by ``_state_serial_lineage``; the only other
+    subprocess (the refresh-only plan) is wrapped below. The refresh-only plan is
+    ``-lock=false`` (never persists, never acquires/contends the state lock,
+    including one orphaned by the failed apply)."""
+    serial_after, lineage_after = _state_serial_lineage(run_tofu, cwd, env)
+    serial_bumped = (
+        serial_before is not None
+        and serial_after is not None
+        and serial_after != serial_before
+    )
+    try:
+        rc, out, err = run_tofu(
+            ["plan", "-refresh-only", "-detailed-exitcode", "-no-color",
+             "-lock=false", "-input=false"],
+            cwd, env,
+        )
+    except Exception as exc:  # noqa: BLE001 — a diagnosis that can't run can't prove clean
+        return PostFailureState(
+            state_suspect=True, serial_before=serial_before, serial_after=serial_after,
+            serial_bumped=serial_bumped, refresh_exit=None, refresh_drift=False,
+            refresh_output="", refresh_stderr=f"refresh diagnosis raised: {exc}",
+        )
+    refresh_drift = rc == 2
+    provably_clean = (
+        serial_before is not None
+        and serial_after is not None
+        and serial_after == serial_before
+        and lineage_before is not None
+        and lineage_after is not None
+        and lineage_after == lineage_before
+        and rc == 0
+    )
+    return PostFailureState(
+        state_suspect=not provably_clean,
+        serial_before=serial_before,
+        serial_after=serial_after,
+        serial_bumped=serial_bumped,
+        refresh_exit=rc,
+        refresh_drift=refresh_drift,
+        refresh_output=out,
+        refresh_stderr=err,
+    )
 
 
 def run_apply_sequence(
@@ -274,13 +381,28 @@ def run_apply_sequence(
     if rc != 0:
         _raise_step_failure("refresh-only", rc, err)
 
+    # State serial + lineage BEFORE the mutating apply — the baseline for
+    # detecting whether a FAILED apply nonetheless persisted (partial) state.
+    serial_before, lineage_before = _state_serial_lineage(run_tofu, workdir, env)
+
     rc, _out, err = run_tofu(
         ["apply", "-input=false", "-no-color", "-lock=true", "-lock-timeout=120s",
          "-auto-approve", "plan.tfplan"],
         workdir, env,
     )
     if rc != 0:
-        _raise_step_failure("apply", rc, err)
+        # Lock contention never acquired the lock ⇒ no state write ⇒ clean
+        # outcome (the existing 423 path). Classified FIRST.
+        if _is_lock_contention(err):
+            raise LockRefused("apply", rc, err)
+        # Genuine apply failure: distinguish a clean failure (:class:`TofuStepError`
+        # — today's 502) from a state-suspect one (:class:`ApplyStateSuspect`) by
+        # inspecting state IN THIS workdir, which main.py tears down once the
+        # exception leaves the worker (so the diagnosis must happen here).
+        diag = _diagnose_post_failure_state(run_tofu, workdir, env, serial_before, lineage_before)
+        if diag.state_suspect:
+            raise ApplyStateSuspect("apply", rc, err, diag)
+        raise TofuStepError("apply", rc, err)
 
     serial, lineage = _state_serial_lineage(run_tofu, workdir, env)
     return ApplyOutcome(freshness_exit=0, apply_exit=0, state_serial=serial, state_lineage=lineage)

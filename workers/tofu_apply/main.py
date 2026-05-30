@@ -550,6 +550,31 @@ def apply(req: ApplyRequest, caller: str = Depends(_verify_caller_dep)) -> dict:
               "(held or orphaned); operator force-unlock required before retry",
               caller_sa=caller, operator_email=operator_email,
               extra={"step": e.step, "apply_exit_code": e.exit_code, "stderr_tail": e.stderr[-500:]})
+    except tofu_runner.ApplyStateSuspect as e:
+        # `tofu apply` FAILED and the worker could not PROVE state stayed clean
+        # (serial bump, post-failure refresh-only drift, OR an unreadable serial /
+        # errored refresh — anything short of a positive clean proof). A terminal
+        # phase so the operator runs the apply-failure recovery runbook (a state
+        # reconcile) instead of a blind retry — a self-inflicted partial-apply
+        # must not masquerade as independent drift. The "failed_state_suspect"
+        # token in the detail lets the coordinator refine its apply_status +
+        # alert. The diagnostic is bounded (Firestore size limits); the operator
+        # re-derives the full picture live via the runbook. HTTP 502 (same
+        # transport as a clean failure: no release, possible mutation, do NOT
+        # retry blindly).
+        d = e.diag
+        _fail(store, req.approval_id, attempt_id, "failed_state_suspect", 502,
+              f"tofu apply failed (exit {e.exit_code}) and state may be partially "
+              "mutated (failed_state_suspect): a state reconcile is required "
+              "before any retry — see the apply-failure recovery runbook",
+              caller_sa=caller, operator_email=operator_email,
+              extra={"step": e.step, "apply_exit_code": e.exit_code,
+                     "stderr_tail": e.stderr[-500:], "state_suspect": True,
+                     "serial_before": d.serial_before, "serial_after": d.serial_after,
+                     "serial_bumped": d.serial_bumped,
+                     "refresh_exit_code": d.refresh_exit, "refresh_drift": d.refresh_drift,
+                     "post_failure_refresh_tail": d.refresh_output[-4000:],
+                     "post_failure_refresh_stderr_tail": d.refresh_stderr[-1000:]})
     except tofu_runner.TofuStepError as e:
         _fail(store, req.approval_id, attempt_id, "failed", 502,
               f"tofu {e.step} failed (exit {e.exit_code})",
