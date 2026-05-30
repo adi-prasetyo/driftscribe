@@ -176,29 +176,41 @@ def _worker_url(worker: str) -> str:
 
 
 def probe_worker_health(worker: str, *, timeout: float = 10.0) -> dict:
-    """Read-only reachability probe: GET the worker's ``/healthz``.
+    """Read-only reachability probe: GET the worker's canonical POST endpoint.
 
     Phase C5c. This is the per-worker primitive behind the coordinator's
     ``GET /iac-apply/reachability`` diagnostic, which exists to answer ONE
     question after the coordinator is moved onto Direct VPC egress: can it
-    actually reach its downstream ``*.run.app`` workers, or does the rewritten
-    ``run.app`` private DNS zone blackhole the route? The endpoint loops this
+    actually reach its downstream ``*.run.app`` workers (in particular the
+    internal-ingress ``tofu_apply`` mutator), or does the rewritten ``run.app``
+    private DNS zone blackhole / get ingress-rejected? The endpoint loops this
     helper over every configured worker; this function probes exactly one.
 
-    The crux is the ``reachable`` semantics. We mint the same audience-bound
-    ID token and hit the same ``f"{base}/healthz"`` path a real call would, but
-    we treat ANY HTTP response — including a 403 or 404 from the *app* — as
-    ``reachable=True``. That is deliberate: a 403/404 is returned by the worker
-    process, which means the network route + TLS + Cloud Run ingress all worked;
-    only a transport failure (DNS / route blackhole / connect timeout) means the
-    path itself is broken. A pre-app blackhole is the exact failure mode the VPC
-    cutover risks and is trivially mistaken for an auth failure — distinguishing
-    the two is the whole point of this probe.
+    **Why GET the canonical POST path and not ``/healthz``.** Cloud Run's GFE
+    reserves ``z``-suffixed paths and returns its own ``404`` for ``/healthz``
+    *before the request reaches the app* (the same quirk that forced the
+    coordinator to expose ``/health`` as its external alias). So ``/healthz``
+    can never yield the app's ``200`` over the network, and — fatally for an
+    internal-ingress service — a ``404`` is indistinguishable from an ingress
+    rejection. We therefore GET the worker's canonical endpoint
+    (:data:`WORKER_ENDPOINTS`, a POST-only path): the app answers **405 Method
+    Not Allowed**, which is returned ONLY after the request has traversed the
+    full network → Cloud Run ingress → IAM (invoker) → app stack. So:
 
-    NEVER exposed as an ADK tool. Like :func:`call_apply`, this is an internal
-    diagnostic invoked only by the coordinator's server-side reachability route,
-    never from anything the LLM can reach. The path is hardcoded ``/healthz`` so
-    there is no endpoint selection to expose.
+    * ``reachable`` (got ANY HTTP response) — the route + TLS reached a Cloud
+      Run GFE (a transport error means a DNS/route blackhole instead).
+    * ``app_reached`` (got a response whose status is NOT 404) — the request
+      passed the ingress gate and hit the worker process. For the internal
+      ``tofu_apply`` this is the load-bearing proof that VPC routing delivers
+      the call AS INTERNAL; a bare ``404`` would be a pre-app ingress reject.
+      ``405`` is the expected hit (GET on a POST route); ``403`` (passed ingress,
+      failed IAM) also counts as app-reached — both prove the network gate.
+
+    GET on a POST-only route is inert — there is no handler, so no side effect
+    (this never POSTs to the mutator). NEVER exposed as an ADK tool; like
+    :func:`call_apply`, it is an internal diagnostic reached only by the
+    coordinator's server-side reachability route. The path is taken verbatim
+    from :data:`WORKER_ENDPOINTS`, so there is no caller endpoint selection.
 
     Args:
         worker: one of the keys in :data:`_WORKER_URL_ENV`.
@@ -206,18 +218,18 @@ def probe_worker_health(worker: str, *, timeout: float = 10.0) -> dict:
             enough that a blackholed route fails the diagnostic quickly rather
             than hanging the fan-out.
 
-    Returns a flat dict (never raises through):
+    Returns a flat dict (never raises through) with keys ``worker``, ``target``,
+    ``probed_path``, ``reachable``, ``app_reached``, ``status_code``,
+    ``latency_ms``, ``error``:
 
-    * URL unset → ``{"worker", "target": None, "reachable": False,
-      "status_code": None, "latency_ms": None, "error": "url_unset"}``. The
-      :class:`WorkerClientError` :func:`_worker_url` raises is caught, not
-      propagated — a probe of an unconfigured worker is a result, not a crash.
-    * Got an HTTP response → ``{"worker", "target": base, "reachable": True,
-      "status_code": <int>, "latency_ms": <int>, "error": None}``.
-    * Transport error → ``{"worker", "target": base, "reachable": False,
-      "status_code": None, "latency_ms": None,
-      "error": "<ExceptionClassName>: <short msg>"}``.
+    * URL unset → ``reachable``/``app_reached`` False, ``error="url_unset"``
+      (the :class:`WorkerClientError` from :func:`_worker_url` is caught).
+    * Got an HTTP response → ``reachable=True``, ``app_reached=(status != 404)``,
+      ``status_code`` set, ``error=None``.
+    * Token-mint / transport failure → ``reachable``/``app_reached`` False,
+      ``error`` carrying the class + short message.
     """
+    path = WORKER_ENDPOINTS[worker]
     try:
         base = _worker_url(worker)
     except WorkerClientError:
@@ -226,7 +238,9 @@ def probe_worker_health(worker: str, *, timeout: float = 10.0) -> dict:
         return {
             "worker": worker,
             "target": None,
+            "probed_path": path,
             "reachable": False,
+            "app_reached": False,
             "status_code": None,
             "latency_ms": None,
             "error": "url_unset",
@@ -243,14 +257,16 @@ def probe_worker_health(worker: str, *, timeout: float = 10.0) -> dict:
         return {
             "worker": worker,
             "target": base,
+            "probed_path": path,
             "reachable": False,
+            "app_reached": False,
             "status_code": None,
             "latency_ms": None,
             "error": f"token_mint_failed: {type(e).__name__}: {e}",
         }
     try:
         r = httpx.get(
-            f"{base}/healthz",
+            f"{base}{path}",
             headers={"Authorization": f"Bearer {token}"},
             timeout=timeout,
         )
@@ -262,19 +278,25 @@ def probe_worker_health(worker: str, *, timeout: float = 10.0) -> dict:
         return {
             "worker": worker,
             "target": base,
+            "probed_path": path,
             "reachable": False,
+            "app_reached": False,
             "status_code": None,
             "latency_ms": None,
             "error": f"{type(e).__name__}: {e}",
         }
 
     latency_ms = int((time.monotonic() - started) * 1000)
-    # reachable=True even on 4xx/5xx — an HTTP status means the network path
-    # + TLS + ingress worked; the app's verdict is irrelevant to reachability.
+    # reachable=True on any HTTP status — the route + TLS reached a Cloud Run
+    # GFE. app_reached=True only when the status is NOT 404: a 404 is the GFE /
+    # ingress pre-app reject; 405 (GET on a POST route) / 403 (ingress ok, IAM
+    # rejected) prove the request reached the worker process past the ingress gate.
     return {
         "worker": worker,
         "target": base,
+        "probed_path": path,
         "reachable": True,
+        "app_reached": r.status_code != 404,
         "status_code": r.status_code,
         "latency_ms": latency_ms,
         "error": None,
