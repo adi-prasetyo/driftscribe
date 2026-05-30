@@ -587,44 +587,62 @@ def test_call_plan_deny_audience_is_root_url(_stub_mint_id_token) -> None:
 
 
 @respx.mock
-def test_probe_worker_health_200_is_reachable_and_healthy(_stub_mint_id_token) -> None:
-    """A 200 from /healthz → reachable True, status_code 200, no error, and the
-    audience is the worker ROOT url (same binding rule as ``call``)."""
-    respx.get(f"{TOFU_APPLY_URL}/healthz").respond(200, json={"ok": True})
+def test_probe_worker_health_405_is_app_reached(_stub_mint_id_token) -> None:
+    """GET on the canonical POST path → the app answers 405 → reachable True AND
+    app_reached True (status != 404). probed_path is the canonical endpoint, and
+    the audience is the worker ROOT url (same binding rule as ``call``)."""
+    respx.get(f"{TOFU_APPLY_URL}/propose").respond(405, text="method not allowed")
     out = worker_client.probe_worker_health("tofu_apply")
     assert out["worker"] == "tofu_apply"
     assert out["target"] == TOFU_APPLY_URL
+    assert out["probed_path"] == "/propose"
     assert out["reachable"] is True
-    assert out["status_code"] == 200
+    assert out["app_reached"] is True
+    assert out["status_code"] == 405
     assert out["error"] is None
     assert isinstance(out["latency_ms"], int)
-    # Audience binding holds — aud is the ROOT url, never the /healthz path.
+    # Audience binding holds — aud is the ROOT url, never the /propose path.
     assert _stub_mint_id_token == [TOFU_APPLY_URL]
-    assert all(not aud.endswith("/healthz") for aud in _stub_mint_id_token)
+    assert all(not aud.endswith("/propose") for aud in _stub_mint_id_token)
 
 
 @respx.mock
-def test_probe_worker_health_403_is_reachable_not_healthy() -> None:
-    """A 403 from the app still proves the route worked → reachable True. The
-    endpoint's ``worker_healthy`` gate (status==200) is what downgrades this; the
-    probe itself reports reachability, not a verdict."""
-    respx.get(f"{TOFU_APPLY_URL}/healthz").respond(403, text="forbidden")
+def test_probe_worker_health_200_is_app_reached() -> None:
+    """Any non-404 app response counts as app_reached (e.g. a 200 if a worker
+    ever answered GET on its canonical path)."""
+    respx.get(f"{TOFU_APPLY_URL}/propose").respond(200, json={"ok": True})
     out = worker_client.probe_worker_health("tofu_apply")
     assert out["reachable"] is True
+    assert out["app_reached"] is True
+    assert out["status_code"] == 200
+
+
+@respx.mock
+def test_probe_worker_health_403_is_app_reached() -> None:
+    """A 403 means the request passed the ingress network gate and reached the
+    IAM layer → app_reached True (the route works; only IAM rejected). 403, NOT
+    404, is the 'reached' boundary."""
+    respx.get(f"{TOFU_APPLY_URL}/propose").respond(403, text="forbidden")
+    out = worker_client.probe_worker_health("tofu_apply")
+    assert out["reachable"] is True
+    assert out["app_reached"] is True
     assert out["status_code"] == 403
     assert out["error"] is None
 
 
 @respx.mock
-def test_probe_worker_health_404_is_reachable_not_healthy() -> None:
-    """A 404 (e.g. a sibling without /healthz) is still a received HTTP status →
-    reachable True. This is the exact signal that distinguishes a routed-but-
-    app-rejected call from a pre-app DNS/route blackhole."""
-    respx.get(f"{READER_URL}/healthz").respond(404, text="not found")
+def test_probe_worker_health_404_is_reachable_not_app_reached() -> None:
+    """A 404 is the pre-app reject — GFE-reserved path OR an internal-ingress
+    rejection (the request never reached the worker process). reachable True
+    (an HTTP status came back, not a blackhole) but app_reached False. This is
+    the exact signal that fails the cutover gate for an unrouted internal call."""
+    respx.get(f"{READER_URL}/read").respond(404, text="not found")
     out = worker_client.probe_worker_health("reader")
     assert out["worker"] == "reader"
     assert out["target"] == READER_URL
+    assert out["probed_path"] == "/read"
     assert out["reachable"] is True
+    assert out["app_reached"] is False
     assert out["status_code"] == 404
     assert out["error"] is None
 
@@ -633,7 +651,7 @@ def test_probe_worker_health_404_is_reachable_not_healthy() -> None:
 def test_probe_worker_health_transport_error_is_unreachable(_stub_mint_id_token) -> None:
     """A transport error (ConnectError) → reachable False, status_code None, and
     a non-None error string carrying the class name. NEVER raises through."""
-    respx.get(f"{TOFU_APPLY_URL}/healthz").mock(
+    respx.get(f"{TOFU_APPLY_URL}/propose").mock(
         side_effect=httpx.ConnectError("connection refused")
     )
     out = worker_client.probe_worker_health("tofu_apply")
@@ -649,7 +667,7 @@ def test_probe_worker_health_transport_error_is_unreachable(_stub_mint_id_token)
 def test_probe_worker_health_timeout_is_unreachable() -> None:
     """A read/connect timeout is also a transport failure → reachable False with
     the timeout class in the error (httpx timeouts subclass httpx.HTTPError)."""
-    respx.get(f"{TOFU_APPLY_URL}/healthz").mock(
+    respx.get(f"{TOFU_APPLY_URL}/propose").mock(
         side_effect=httpx.ConnectTimeout("timed out")
     )
     out = worker_client.probe_worker_health("tofu_apply")
