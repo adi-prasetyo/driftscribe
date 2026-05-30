@@ -315,6 +315,18 @@ def test_null_origin_without_fetch_site_fails_closed_403(_configured, monkeypatc
     assert resp.status_code == 403
 
 
+def test_unconfigured_origin_refuses_even_same_origin_403(_configured, monkeypatch):
+    # Fail-closed invariant (Codex): an empty coordinator_origin must refuse ALL
+    # POSTs — the Sec-Fetch-Site fallback must NOT bypass an unconfigured origin.
+    monkeypatch.setenv("COORDINATOR_ORIGIN", "")
+    get_settings.cache_clear()
+    _patch_resolve(monkeypatch)
+    _patch_workers(monkeypatch)
+    client = TestClient(app)
+    resp = _post(client, token=_mint(), origin="null", sec_fetch_site="same-origin")
+    assert resp.status_code == 403
+
+
 def test_forged_form_token_403(_configured, monkeypatch):
     _patch_resolve(monkeypatch)
     _patch_workers(monkeypatch)
