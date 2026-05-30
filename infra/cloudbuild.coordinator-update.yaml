@@ -2,17 +2,16 @@
 # driftscribe-hack-2026 (single-user portfolio).
 #
 # WHY THIS FILE EXISTS:
-#   infra/cloudbuild.yaml describes the older aspirational multi-worker
-#   topology (4-6 workers, custom runtime SA, audience-bound IAM) which
-#   was never fully wired up in this project. The live coordinator runs
-#   on the default compute SA in a simpler "Option C" mode (DRY_RUN=true,
-#   no worker URLs set). A fresh `gcloud builds submit --config
-#   infra/cloudbuild.yaml` would rewrite the running config in ways that
-#   break /recheck (placeholder.invalid worker URLs).
+#   infra/cloudbuild.yaml is the FULL-STACK build (coordinator + all workers +
+#   payment-demo). Running it just to ship a coordinator change rebuilds
+#   payment-demo at a fresh image tag — moving it off the tag Phase A pinned
+#   into OpenTofu state and BREAKING the zero-diff — and re-runs the whole
+#   worker-URL sync dance.
 #
-#   This file is the narrow deploy path that ACTUALLY matches the running
-#   service: build the new coordinator image, then update the existing
-#   revision template in place (image + env vars only). No worker
+#   This file is the narrow deploy path for the LIVE coordinator
+#   (driftscribe-agent, which runs under its own driftscribe-agent@ runtime SA —
+#   NOT the default compute SA): build the new coordinator image, then update
+#   the existing revision template in place (image + env vars only). No worker
 #   touches, no SA changes, no IAM dance. Preserves everything the live
 #   coordinator already has.
 #
@@ -61,6 +60,19 @@ substitutions:
   # not secrets. See agent/cf_access.py and infra/cloudflare/.
   _CF_ACCESS_TEAM_DOMAIN: adp-app.cloudflareaccess.com
   _CF_ACCESS_AUD_TAG: 5e6a20fe63e5fb03a742eeb0623e216ad4c837413d2afa9885a79b1091016262
+
+# Default-compute-SA retirement (Phase 4): run this build as the dedicated
+# cloudbuild-deploy-sa@ rather than the project's default compute SA, so the
+# compute SA's roles/editor can be stripped (Phase 6). See
+# docs/plans/2026-05-30-default-compute-sa-retirement.md. A user-specified
+# serviceAccount REQUIRES an explicit logging option, so options.logging is set
+# in the same block (CLOUD_LOGGING_ONLY — no default GCS logs bucket). Hardcoded
+# to driftscribe-hack-2026: this file is operator-run on hack-2026 ONLY (no e2e
+# / CI use), and the top-level serviceAccount field is not a documented
+# substitution site, so a literal resource path is the safe form.
+serviceAccount: 'projects/driftscribe-hack-2026/serviceAccounts/cloudbuild-deploy-sa@driftscribe-hack-2026.iam.gserviceaccount.com'
+options:
+  logging: CLOUD_LOGGING_ONLY
 
 steps:
   # 1. Build the new coordinator image. Same Dockerfile + tag pattern as

@@ -158,4 +158,4 @@ classic PAT pending the C5f rotation.
 - Upgrade-side workers: `workers/upgrade_reader/main.py`, `workers/upgrade_docs/main.py`
 - Post-LLM validator (upgrade-docs Layer 3): `workers/upgrade_docs/validator.py`
 - Deploy-pin guard (registry ⇄ worker regex agreement): `tests/integration/test_upgrade_deploy_pin.py`
-- Cloud Run inter-service auth proof: `spikes/cloud_run_auth/README.md`
+- Cloud Run inter-service auth proof: spike 11.0 (`spikes/cloud_run_auth/`, retired 2026-05-30 — the mechanism now ships in the production workers; see git history for the original spike + README)

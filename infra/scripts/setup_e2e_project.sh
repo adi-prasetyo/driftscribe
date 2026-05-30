@@ -334,9 +334,15 @@ Next steps (operator action required):
     # the rollback-agent-sa binding, /approve 5xxs with
     # "Permission 'iam.serviceaccounts.actAs' denied".
     # If the deploy step pinned --service-account on payment-demo-e2e
-    # (Phase 20+), target that SA. Otherwise the default is the project's
-    # Compute Engine default SA (PROJECT_NUMBER-compute@developer.gserviceaccount.com):
-    RUNTIME_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+    # (Phase 20+), target that SA. Otherwise resolve the LIVE runtime SA and
+    # fall back to e2e's Compute Engine default SA. (e2e's compute SA is NOT
+    # being retired — only hack-2026's was, 2026-05-31. Resolving first avoids
+    # hardcoding the assumption if payment-demo-e2e is ever pinned to a
+    # dedicated runtime SA.)
+    RUNTIME_SA="\$(gcloud run services describe payment-demo-e2e \\
+      --project=$PROJECT --region=$REGION \\
+      --format='value(template.serviceAccount)' 2>/dev/null)"
+    : "\${RUNTIME_SA:=${PROJECT_NUMBER}-compute@developer.gserviceaccount.com}"
     for member in "${E2E_RUNNER_SA}" "${ROLLBACK_SA}"; do
       gcloud iam service-accounts add-iam-policy-binding "\$RUNTIME_SA" \\
         --project=$PROJECT \\

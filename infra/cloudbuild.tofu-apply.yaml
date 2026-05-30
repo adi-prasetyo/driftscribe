@@ -43,6 +43,19 @@ substitutions:
   # named DB (the worker then uses the project's (default) database).
   _PLAN_APPROVALS_DB: 'plan-approvals'
 
+# Default-compute-SA retirement (Phase 4): run this build as the dedicated
+# cloudbuild-deploy-sa@ rather than the project's default compute SA, so the
+# compute SA's roles/editor can be stripped (Phase 6). See
+# docs/plans/2026-05-30-default-compute-sa-retirement.md. A user-specified
+# serviceAccount REQUIRES an explicit logging option, so options.logging is set
+# in the same block (CLOUD_LOGGING_ONLY — no default GCS logs bucket). Hardcoded
+# to driftscribe-hack-2026: this file is operator-run on hack-2026 ONLY (no e2e
+# / CI use), and the top-level serviceAccount field is not a documented
+# substitution site, so a literal resource path is the safe form.
+serviceAccount: 'projects/driftscribe-hack-2026/serviceAccounts/cloudbuild-deploy-sa@driftscribe-hack-2026.iam.gserviceaccount.com'
+options:
+  logging: CLOUD_LOGGING_ONLY
+
 steps:
   # 1. Build + push ONLY the tofu-apply image (build context = repo root; the
   #    worker needs driftscribe_lib/ + iac/). The Dockerfile bakes a pinned,

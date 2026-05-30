@@ -1,23 +1,33 @@
-# ─── Status: aspirational ──────────────────────────────────────────────────
-# This file describes the FULL multi-worker topology (coordinator + 6 workers,
-# custom runtime SAs, audience-bound IAM). It is NOT the canonical deploy path
-# for the live coordinator on driftscribe-hack-2026 (which runs in a narrower
-# "Option C" mode: default compute SA, no worker URLs, no /chat). A fresh
-# `gcloud builds submit --config infra/cloudbuild.yaml` on hack-2026 would:
-#   1. Try to deploy with a runtime SA (driftscribe-agent@...) that doesn't
-#      exist in this project — fails with PERMISSION_DENIED on actAs.
-#   2. Even if step 1 is fixed, set the coordinator's READER_URL / DOCS_URL
-#      / ROLLBACK_URL / NOTIFIER_URL to placeholder.invalid — there's no
-#      follow-up step that resolves real worker URLs back into the coordinator.
-# It IS the canonical path for the driftscribe-e2e project (which has the
-# full multi-worker setup wired up via --substitutions).
+# ─── Scope: FULL-STACK build (coordinator + 8 workers + payment-demo) ────────
+# This file builds and deploys the ENTIRE topology — the coordinator
+# (driftscribe-agent) and every worker, each on its own custom runtime SA with
+# audience-bound IAM — AND rebuilds/redeploys payment-demo (the
+# ${_TARGET_SERVICE} step) at a fresh image tag. It resolves and stamps the real
+# worker URLs back onto the coordinator at the end (no placeholder.invalid is
+# left in a successful run).
 #
-# For routine incremental deploys to hack-2026, use:
-#   infra/cloudbuild.coordinator-update.yaml
-# A future reconciliation can either bring this file's assumptions in line
-# with hack-2026's reality (create the SA, deploy the missing workers, fix
-# the worker-URL injection step) OR rename this file to make its
-# e2e-or-multiworker-only scope explicit.
+# It is the canonical full build for the driftscribe-e2e project (which wires
+# the whole stack via --substitutions).
+#
+# DO NOT RUN THIS ON driftscribe-hack-2026. hack-2026 now runs the full
+# multi-worker stack (every worker SA exists, /chat is live on
+# driftscribe.adp-app.com), so the build would largely succeed — but the
+# ${_TARGET_SERVICE} step rebuilds payment-demo at a fresh tag, moving it off
+# the image tag Phase A pinned into OpenTofu state and BREAKING the zero-diff (a
+# later `tofu apply` could revert prod). For routine hack-2026 deploys use the
+# TARGETED files, each of which touches one service and leaves payment-demo
+# alone:
+#   infra/cloudbuild.coordinator-update.yaml   (coordinator)
+#   infra/cloudbuild.infra-reader.yaml         (infra-reader worker)
+#   infra/cloudbuild.tofu-apply.yaml           (tofu-apply worker)
+#   infra/cloudbuild.upgrade-docs-update.yaml  (upgrade-docs worker)
+#
+# Default-compute-SA retirement (2026-05-30): unlike the 4 targeted hack-2026
+# files, this file is deliberately NOT pinned to cloudbuild-deploy-sa@ — it is
+# dual-project and driftscribe-e2e has no such SA. On e2e it runs as e2e's
+# default compute SA (unchanged). On hack-2026, post-Phase-6 it would run as the
+# editor-stripped compute SA and fail-closed at the first AR push (no churn).
+# The payment-demo deploy takes an optional _TARGET_SERVICE_SA pin (see below).
 # ───────────────────────────────────────────────────────────────────────────
 #
 # Cloud Build does NOT recursively expand substitutions inside other
@@ -38,6 +48,19 @@ substitutions:
   #                   _UPGRADE_TARGET_REPO=adi-prasetyo/driftscribe-e2e-target,
   #                   _USE_ADK=true
   _TARGET_SERVICE: payment-demo
+  # Default-compute-SA retirement: optional runtime-SA pin for the payment
+  # service deploy below. Empty default ⇒ no --service-account ⇒ Cloud Run
+  # preserves the service's existing runtime SA, which keeps today's e2e build a
+  # no-op (payment-demo-e2e stays on e2e's default compute SA). An accidental
+  # hack-2026 run can pin the dedicated runtime SA via
+  #   --substitutions=_TARGET_SERVICE_SA=payment-demo-runtime@driftscribe-hack-2026.iam.gserviceaccount.com
+  # so payment-demo is never reverted onto the default compute SA being retired.
+  _TARGET_SERVICE_SA: ''
+  # Default-compute-SA retirement guard: this full-stack build is DO-NOT-RUN on
+  # driftscribe-hack-2026 (it churns payment-demo + breaks the Phase A tofu
+  # zero-diff). The first step below aborts on hack-2026 unless this is 'yes'.
+  # e2e and any other project are unaffected (the guard only trips on hack-2026).
+  _ALLOW_HACK2026: ''
   _TARGET_GITHUB_REPO: adi-prasetyo/driftscribe
   _UPGRADE_TARGET_REPO: adi-prasetyo/driftscribe
   # _USE_ADK gates the coordinator's /chat path. Prod default is 'false'
@@ -60,6 +83,28 @@ substitutions:
   _DRY_RUN: 'true'
 
 steps:
+  # Default-compute-SA retirement guard (Phase 4): refuse to run this
+  # full-stack build on driftscribe-hack-2026 unless explicitly overridden. It
+  # rebuilds+redeploys payment-demo at a fresh tag, which breaks the Phase A
+  # OpenTofu zero-diff; the targeted files (coordinator-update / infra-reader /
+  # tofu-apply / upgrade-docs-update) are the supported hack-2026 deploy paths.
+  # This closes the accidental-run window until Phase 6 strips the compute SA's
+  # editor (after which it fails-closed at the first AR push on its own). e2e and
+  # any other project run normally — the guard only trips on hack-2026.
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        if [ "$PROJECT_ID" = "driftscribe-hack-2026" ] && [ "${_ALLOW_HACK2026}" != "yes" ]; then
+          echo "REFUSING: infra/cloudbuild.yaml is DO-NOT-RUN on driftscribe-hack-2026 — it churns payment-demo and breaks the OpenTofu zero-diff." >&2
+          echo "Use a targeted file (coordinator-update / infra-reader / tofu-apply / upgrade-docs-update), or override with:" >&2
+          echo "  --substitutions=_ALLOW_HACK2026=yes,_TARGET_SERVICE_SA=payment-demo-runtime@driftscribe-hack-2026.iam.gserviceaccount.com" >&2
+          exit 1
+        fi
+        echo "Pre-flight OK (project=$PROJECT_ID)."
+
   - name: gcr.io/cloud-builders/docker
     args:
       - build
@@ -164,18 +209,35 @@ steps:
     args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-infra-reader:${_TAG}']
 
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
-    entrypoint: gcloud
+    entrypoint: bash
     args:
-      - run
-      - deploy
-      - ${_TARGET_SERVICE}
-      - --image=asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/${_TARGET_SERVICE}:${_TAG}
-      - --region=asia-northeast1
-      - --allow-unauthenticated
-      - --min-instances=0
-      - --max-instances=1
-      - --concurrency=1
-      - --set-env-vars=PAYMENT_MODE=mock,FEATURE_NEW_CHECKOUT=false
+      - -c
+      - |
+        set -euo pipefail
+        # Default-compute-SA retirement: pin the payment service's runtime SA when
+        # _TARGET_SERVICE_SA is set, so an (accidental) hack-2026 run keeps
+        # payment-demo on payment-demo-runtime@ instead of reverting it onto the
+        # default compute SA being retired. Empty default ⇒ no --service-account ⇒
+        # Cloud Run preserves the service's existing runtime SA, which on
+        # driftscribe-e2e is e2e's default compute SA (payment-demo-e2e runs as
+        # 486336957620-compute@) — so e2e behavior is unchanged. Same empty-arg-safe
+        # array pattern as cloudbuild.coordinator-update.yaml: $$ escapes the
+        # runtime bash array so Cloud Build does not try to substitute it, while
+        # ${_TARGET_SERVICE_SA}/${_TARGET_SERVICE}/${_TAG}/$PROJECT_ID stay
+        # single-$ for Cloud Build to expand before bash runs.
+        EXTRA_ARGS=()
+        if [ -n "${_TARGET_SERVICE_SA}" ]; then
+          EXTRA_ARGS+=(--service-account="${_TARGET_SERVICE_SA}")
+        fi
+        gcloud run deploy "${_TARGET_SERVICE}" \
+          --image=asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/${_TARGET_SERVICE}:${_TAG} \
+          --region=asia-northeast1 \
+          --allow-unauthenticated \
+          --min-instances=0 \
+          --max-instances=1 \
+          --concurrency=1 \
+          --set-env-vars=PAYMENT_MODE=mock,FEATURE_NEW_CHECKOUT=false \
+          "$${EXTRA_ARGS[@]}"
 
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
     entrypoint: gcloud

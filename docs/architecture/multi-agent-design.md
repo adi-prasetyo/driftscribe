@@ -97,7 +97,7 @@ DriftScribe has **two non-overlapping** auth mechanisms. Mixing them up has been
 
 ### Layer B — Coordinator → Worker: audience-bound Google ID tokens
 
-- **Where:** `agent/worker_client.py`. Spike 11.0 proved the mechanism end-to-end; see `spikes/cloud_run_auth/README.md` for the verified gotchas (audience must be the worker's *root* URL, not a path; metadata server caches tokens for ~3500s).
+- **Where:** `agent/worker_client.py`. Spike 11.0 proved the mechanism end-to-end before it was built into the workers (verified gotchas: audience must be the worker's *root* URL, not a path; metadata server caches tokens for ~3500s). The spike itself (`spikes/cloud_run_auth/`) was retired 2026-05-30 once the production path superseded it; see git history for the original caller/callee + README.
 - **Mechanism:** Coordinator mints an ID token via `google.oauth2.id_token.fetch_id_token(Request(), audience=<worker root URL>)` and sends it as `Authorization: Bearer <token>`. The worker calls `verify_oauth2_token` with the same audience and asserts the email claim is the coordinator's service-account email.
 - **Why two checks (audience + caller allowlist):** Audience binding alone prevents token replay against the wrong service. Caller-email allowlist additionally prevents a different Cloud Run service in the same project from calling the worker with a valid-but-foreign token.
 - **Scope:** Every coordinator → worker hop — including the two upgrade workers added in Phase 17. Workers are deployed with `--no-allow-unauthenticated`, so an attacker without a coordinator-SA-minted token gets a 403 from Cloud Run before even reaching the worker process.
@@ -320,5 +320,5 @@ The single-worker-side transaction is what makes the "compromised coordinator ca
 - Developer Knowledge MCP wrapper: `agent/mcp/developer_knowledge.py`
 - Upgrade workers: `workers/upgrade_reader/main.py`, `workers/upgrade_docs/main.py`
 - Upgrade post-LLM validator: `workers/upgrade_docs/validator.py`
-- Cloud Run inter-service auth proof: `spikes/cloud_run_auth/README.md`
+- Cloud Run inter-service auth proof: spike 11.0 (`spikes/cloud_run_auth/`, retired 2026-05-30 — superseded by the production workers; see git history)
 - Token guard implementation: `agent/auth.py`, `tests/integration/test_token_guard.py`
