@@ -34,6 +34,7 @@ one ``os.environ.get`` per call — cheap.
 from __future__ import annotations
 
 import os
+import time
 from typing import Final
 
 import httpx
@@ -172,6 +173,100 @@ def _worker_url(worker: str) -> str:
             worker,
         )
     return url
+
+
+def probe_worker_health(worker: str, *, timeout: float = 10.0) -> dict:
+    """Read-only reachability probe: GET the worker's ``/healthz``.
+
+    Phase C5c. This is the per-worker primitive behind the coordinator's
+    ``GET /iac-apply/reachability`` diagnostic, which exists to answer ONE
+    question after the coordinator is moved onto Direct VPC egress: can it
+    actually reach its downstream ``*.run.app`` workers, or does the rewritten
+    ``run.app`` private DNS zone blackhole the route? The endpoint loops this
+    helper over every configured worker; this function probes exactly one.
+
+    The crux is the ``reachable`` semantics. We mint the same audience-bound
+    ID token and hit the same ``f"{base}/healthz"`` path a real call would, but
+    we treat ANY HTTP response — including a 403 or 404 from the *app* — as
+    ``reachable=True``. That is deliberate: a 403/404 is returned by the worker
+    process, which means the network route + TLS + Cloud Run ingress all worked;
+    only a transport failure (DNS / route blackhole / connect timeout) means the
+    path itself is broken. A pre-app blackhole is the exact failure mode the VPC
+    cutover risks and is trivially mistaken for an auth failure — distinguishing
+    the two is the whole point of this probe.
+
+    NEVER exposed as an ADK tool. Like :func:`call_apply`, this is an internal
+    diagnostic invoked only by the coordinator's server-side reachability route,
+    never from anything the LLM can reach. The path is hardcoded ``/healthz`` so
+    there is no endpoint selection to expose.
+
+    Args:
+        worker: one of the keys in :data:`_WORKER_URL_ENV`.
+        timeout: per-probe httpx timeout (seconds). Defaults to 10s — short
+            enough that a blackholed route fails the diagnostic quickly rather
+            than hanging the fan-out.
+
+    Returns a flat dict (never raises through):
+
+    * URL unset → ``{"worker", "target": None, "reachable": False,
+      "status_code": None, "latency_ms": None, "error": "url_unset"}``. The
+      :class:`WorkerClientError` :func:`_worker_url` raises is caught, not
+      propagated — a probe of an unconfigured worker is a result, not a crash.
+    * Got an HTTP response → ``{"worker", "target": base, "reachable": True,
+      "status_code": <int>, "latency_ms": <int>, "error": None}``.
+    * Transport error → ``{"worker", "target": base, "reachable": False,
+      "status_code": None, "latency_ms": None,
+      "error": "<ExceptionClassName>: <short msg>"}``.
+    """
+    try:
+        base = _worker_url(worker)
+    except WorkerClientError:
+        # URL unset/empty (or unknown worker) — a diagnostic result, not a
+        # failure to propagate. The route's gate treats this as not-reachable.
+        return {
+            "worker": worker,
+            "target": None,
+            "reachable": False,
+            "status_code": None,
+            "latency_ms": None,
+            "error": "url_unset",
+        }
+
+    # Audience is the worker ROOT url (same rule as :func:`call`) — Cloud Run
+    # validates the aud claim against the receiving service's URL.
+    token = mint_id_token(base)
+    started = time.monotonic()
+    try:
+        r = httpx.get(
+            f"{base}/healthz",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=timeout,
+        )
+    except httpx.HTTPError as e:
+        # ConnectError / TimeoutException / any transport-layer failure — we
+        # never received an HTTP response, so the route is (or appears) broken.
+        # Surface the class + a short message so the operator can tell a DNS
+        # blackhole from a connect timeout, without echoing a full stack trace.
+        return {
+            "worker": worker,
+            "target": base,
+            "reachable": False,
+            "status_code": None,
+            "latency_ms": None,
+            "error": f"{type(e).__name__}: {e}",
+        }
+
+    latency_ms = int((time.monotonic() - started) * 1000)
+    # reachable=True even on 4xx/5xx — an HTTP status means the network path
+    # + TLS + ingress worked; the app's verdict is irrelevant to reachability.
+    return {
+        "worker": worker,
+        "target": base,
+        "reachable": True,
+        "status_code": r.status_code,
+        "latency_ms": latency_ms,
+        "error": None,
+    }
 
 
 def call(

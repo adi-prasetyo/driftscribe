@@ -576,6 +576,126 @@ def test_call_plan_deny_audience_is_root_url(_stub_mint_id_token) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Phase C5c: probe_worker_health — the read-only reachability primitive behind
+# GET /iac-apply/reachability. The crux is the ``reachable`` semantics: ANY HTTP
+# response (incl. 403/404 from the app) means the network route + TLS + ingress
+# worked → reachable=True; only a transport error (DNS / route blackhole /
+# connect timeout) means the path is broken → reachable=False. A URL-unset
+# worker is a result ("url_unset"), never a raised exception. NEVER raises
+# through — the endpoint fans this out and must not crash on one bad worker.
+# --------------------------------------------------------------------------- #
+
+
+@respx.mock
+def test_probe_worker_health_200_is_reachable_and_healthy(_stub_mint_id_token) -> None:
+    """A 200 from /healthz → reachable True, status_code 200, no error, and the
+    audience is the worker ROOT url (same binding rule as ``call``)."""
+    respx.get(f"{TOFU_APPLY_URL}/healthz").respond(200, json={"ok": True})
+    out = worker_client.probe_worker_health("tofu_apply")
+    assert out["worker"] == "tofu_apply"
+    assert out["target"] == TOFU_APPLY_URL
+    assert out["reachable"] is True
+    assert out["status_code"] == 200
+    assert out["error"] is None
+    assert isinstance(out["latency_ms"], int)
+    # Audience binding holds — aud is the ROOT url, never the /healthz path.
+    assert _stub_mint_id_token == [TOFU_APPLY_URL]
+    assert all(not aud.endswith("/healthz") for aud in _stub_mint_id_token)
+
+
+@respx.mock
+def test_probe_worker_health_403_is_reachable_not_healthy() -> None:
+    """A 403 from the app still proves the route worked → reachable True. The
+    endpoint's ``worker_healthy`` gate (status==200) is what downgrades this; the
+    probe itself reports reachability, not a verdict."""
+    respx.get(f"{TOFU_APPLY_URL}/healthz").respond(403, text="forbidden")
+    out = worker_client.probe_worker_health("tofu_apply")
+    assert out["reachable"] is True
+    assert out["status_code"] == 403
+    assert out["error"] is None
+
+
+@respx.mock
+def test_probe_worker_health_404_is_reachable_not_healthy() -> None:
+    """A 404 (e.g. a sibling without /healthz) is still a received HTTP status →
+    reachable True. This is the exact signal that distinguishes a routed-but-
+    app-rejected call from a pre-app DNS/route blackhole."""
+    respx.get(f"{READER_URL}/healthz").respond(404, text="not found")
+    out = worker_client.probe_worker_health("reader")
+    assert out["worker"] == "reader"
+    assert out["target"] == READER_URL
+    assert out["reachable"] is True
+    assert out["status_code"] == 404
+    assert out["error"] is None
+
+
+@respx.mock
+def test_probe_worker_health_transport_error_is_unreachable(_stub_mint_id_token) -> None:
+    """A transport error (ConnectError) → reachable False, status_code None, and
+    a non-None error string carrying the class name. NEVER raises through."""
+    respx.get(f"{TOFU_APPLY_URL}/healthz").mock(
+        side_effect=httpx.ConnectError("connection refused")
+    )
+    out = worker_client.probe_worker_health("tofu_apply")
+    assert out["worker"] == "tofu_apply"
+    assert out["target"] == TOFU_APPLY_URL
+    assert out["reachable"] is False
+    assert out["status_code"] is None
+    assert out["latency_ms"] is None
+    assert "ConnectError" in out["error"]
+
+
+@respx.mock
+def test_probe_worker_health_timeout_is_unreachable() -> None:
+    """A read/connect timeout is also a transport failure → reachable False with
+    the timeout class in the error (httpx timeouts subclass httpx.HTTPError)."""
+    respx.get(f"{TOFU_APPLY_URL}/healthz").mock(
+        side_effect=httpx.ConnectTimeout("timed out")
+    )
+    out = worker_client.probe_worker_health("tofu_apply")
+    assert out["reachable"] is False
+    assert out["status_code"] is None
+    assert "ConnectTimeout" in out["error"]
+
+
+def test_probe_worker_health_url_unset_returns_url_unset(monkeypatch) -> None:
+    """When the worker's URL env is empty, ``_worker_url`` raises
+    WorkerClientError — which the probe CATCHES and reports as a result
+    (``error="url_unset"``, reachable False, target None), never propagating."""
+    monkeypatch.setenv("TOFU_APPLY_URL", "")
+    out = worker_client.probe_worker_health("tofu_apply")
+    assert out["worker"] == "tofu_apply"
+    assert out["target"] is None
+    assert out["reachable"] is False
+    assert out["status_code"] is None
+    assert out["latency_ms"] is None
+    assert out["error"] == "url_unset"
+
+
+def test_probe_worker_health_url_unset_when_env_deleted(monkeypatch) -> None:
+    """Same url_unset result when the env var is absent entirely (not just empty)."""
+    monkeypatch.delenv("TOFU_APPLY_URL", raising=False)
+    out = worker_client.probe_worker_health("tofu_apply")
+    assert out["error"] == "url_unset"
+    assert out["reachable"] is False
+
+
+def test_probe_worker_health_is_not_an_adk_tool() -> None:
+    """``probe_worker_health`` is an internal diagnostic (like ``call_apply``) —
+    it must NEVER be exposed as an ADK tool. The LLM-facing tool registry
+    (``COORDINATOR_TOOLS``) is exhaustive, so the proof is its absence there and
+    on the adk_tools module."""
+    from agent.adk_agent import COORDINATOR_TOOLS
+
+    registered_names = {t.__name__ for t in COORDINATOR_TOOLS}
+    assert "probe_worker_health" not in registered_names
+
+    import agent.adk_tools as adk_tools
+
+    assert not hasattr(adk_tools, "probe_worker_health")
+
+
+# --------------------------------------------------------------------------- #
 # Phase C5e-1: per-call timeout. /apply runs a real ``tofu apply`` (up to the
 # worker's --timeout=900), so call_apply uses a long read timeout while every
 # other call keeps the 30s default. A premature client timeout after the worker

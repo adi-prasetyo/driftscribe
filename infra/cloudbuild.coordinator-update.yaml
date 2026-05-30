@@ -42,6 +42,19 @@ substitutions:
   # to create the revision without serving it; then shift traffic
   # manually after smoke-testing.
   _NO_TRAFFIC: ''
+  # Phase C5c — OPTIONAL Direct VPC egress path. All empty by default =
+  # today's behaviour unchanged (no VPC attach, TOFU_APPLY_URL untouched). When
+  # set together, the deploy step appends --network/--subnet/--vpc-egress and
+  # --update-env-vars TOFU_APPLY_URL=... so the coordinator can reach the
+  # internal-ingress workers. Each is appended only when non-empty (same
+  # empty-arg-safety pattern as _NO_TRAFFIC). The staged LIVE rollout uses a
+  # direct `gcloud run services update` (for tighter --no-traffic/--tag
+  # control); this path keeps the documented deploy coherent. See
+  # infra/scripts/setup_coordinator_vpc.sh.
+  _VPC_NETWORK: ''
+  _VPC_SUBNET: ''
+  _VPC_EGRESS: ''
+  _TOFU_APPLY_URL: ''
   # Cloudflare Access integration (Phase 21). These are PUBLIC identifiers
   # (the AUD tag is the per-Application identifier shown in the CF
   # dashboard, the team domain is the hostname users see at sign-in) —
@@ -68,20 +81,39 @@ steps:
   #    --set-env-vars) adds the CF Access vars without clobbering DRY_RUN,
   #    GITHUB_REPO, TARGET_SERVICE, GITHUB_TOKEN secret refs, etc. The
   #    SA, ingress, scaling, and traffic policy all stay as they were.
-  # bash entrypoint so we can conditionally append --no-traffic. An empty
-  # substitution passed as a positional gcloud arg fails with
-  # "unrecognized arguments: <empty>", so we can't just inline ${_NO_TRAFFIC}.
+  # bash entrypoint so we can conditionally append --no-traffic and the
+  # optional Phase C5c VPC flags. An empty substitution passed as a positional
+  # gcloud arg fails with "unrecognized arguments: <empty>", so we can't just
+  # inline empty ${_VPC_*}; we build the arg list and only append each flag
+  # when its substitution is non-empty (same empty-arg-safety as ${_NO_TRAFFIC}).
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
     entrypoint: bash
     args:
       - -c
       - |
         set -euo pipefail
+        # Base env vars (CF Access). TOFU_APPLY_URL is folded in below only when
+        # _TOFU_APPLY_URL is set, so today's deploys leave it untouched.
+        ENV_VARS="CF_ACCESS_TEAM_DOMAIN=${_CF_ACCESS_TEAM_DOMAIN},CF_ACCESS_AUD_TAG=${_CF_ACCESS_AUD_TAG}"
+        EXTRA_ARGS=()
+        if [ -n "${_VPC_NETWORK}" ]; then
+          EXTRA_ARGS+=(--network="${_VPC_NETWORK}")
+        fi
+        if [ -n "${_VPC_SUBNET}" ]; then
+          EXTRA_ARGS+=(--subnet="${_VPC_SUBNET}")
+        fi
+        if [ -n "${_VPC_EGRESS}" ]; then
+          EXTRA_ARGS+=(--vpc-egress="${_VPC_EGRESS}")
+        fi
+        if [ -n "${_TOFU_APPLY_URL}" ]; then
+          ENV_VARS="$${ENV_VARS},TOFU_APPLY_URL=${_TOFU_APPLY_URL}"
+        fi
         gcloud run services update ${_SERVICE} \
           --image=asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-agent:${_TAG} \
-          --update-env-vars=CF_ACCESS_TEAM_DOMAIN=${_CF_ACCESS_TEAM_DOMAIN},CF_ACCESS_AUD_TAG=${_CF_ACCESS_AUD_TAG} \
+          --update-env-vars="$${ENV_VARS}" \
           --region=${_REGION} \
           --project=$PROJECT_ID \
+          "$${EXTRA_ARGS[@]}" \
           ${_NO_TRAFFIC}
 
 images:

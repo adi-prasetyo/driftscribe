@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request, Response
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from google.auth import exceptions as google_auth_exceptions
 from google.auth.transport.requests import Request as GoogleAuthRequest
@@ -556,6 +556,90 @@ def healthz():
     # uptime check or runbook smoke must hit `/health` instead. Keep
     # `/healthz` for in-cluster / unit-test callers that already wired to it.
     return {"ok": True}
+
+
+@app.get("/iac-apply/reachability")
+def iac_reachability(
+    _: None = Depends(verify_token),
+) -> Response:
+    """Read-only diagnostic: can the coordinator reach its downstream workers?
+
+    Phase C5c GO/NO-GO gate. After the coordinator is moved onto Direct VPC
+    egress (so internal-ingress workers become reachable) the live question is
+    binary: does the coordinator's outbound path to its ``*.run.app`` workers
+    actually work, or did the ``run.app`` private DNS zone rewrite blackhole it?
+    A broken network gate returns a 403/404 *pre-app*, which the C5c plan warns
+    is "trivially mistaken for auth failure" — so this endpoint fans
+    :func:`worker_client.probe_worker_health` out across EVERY configured worker
+    and reports per-worker reachability plus a single ``go`` verdict.
+
+    Token-guarded via :func:`verify_token` exactly like ``/recheck`` /
+    ``/decisions`` — so it is curl-able on the tagged no-traffic revision URL
+    (``X-DriftScribe-Token`` header) during the staged smoke, and behind
+    Cloudflare Access later. The token is accepted via header ONLY (verify_token
+    reads the header / CF JWT header — there is no query-param token path).
+
+    Pure read-only fan-out of ``/healthz`` GETs: no GitHub, no GCS, no approval,
+    no mutation. ``Cache-Control: no-store`` because a stale cached verdict
+    during a cutover would be actively misleading.
+
+    Gates (the source of truth for the worker set is
+    :data:`worker_client._WORKER_URL_ENV`, iterated here so a new worker can
+    never be silently omitted):
+
+    * ``worker_healthy`` — the ``tofu_apply`` worker (the sole infra mutator,
+      the NEW path C5c enables) is reachable AND returned ``200``. An unrouted
+      call would 403/404 pre-app, so a 200 unambiguously proves VPC routing to
+      an internal-ingress service.
+    * ``all_siblings_reachable`` — every NON-``tofu_apply`` worker is reachable
+      (received any HTTP status → the rewritten DNS zone didn't regress its
+      route). A worker whose URL is unset counts as NOT reachable: this is
+      fail-closed — a sibling URL silently dropped from the deploy must block the
+      cutover rather than let it through (in prod all siblings have URLs set).
+    * ``go = worker_healthy AND all_siblings_reachable``.
+
+    Status codes: ``503`` when ``TOFU_APPLY_URL`` is unset (the new path cannot
+    exist yet — body still carries ``results`` for diagnosis); ``200`` when
+    ``go``; ``502`` otherwise.
+    """
+    results = [
+        worker_client.probe_worker_health(worker)
+        for worker in worker_client._WORKER_URL_ENV
+    ]
+    by_worker = {r["worker"]: r for r in results}
+
+    tofu_apply_result = by_worker.get("tofu_apply")
+    # tofu_apply has no configured URL → the new path can't exist yet. Fail
+    # closed at 503, but still hand back results so the operator can diagnose
+    # the rest of the fan-out in the same call.
+    if tofu_apply_result is None or tofu_apply_result["error"] == "url_unset":
+        return JSONResponse(
+            status_code=503,
+            content={
+                "go": False,
+                "detail": "TOFU_APPLY_URL not configured",
+                "results": results,
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+
+    worker_healthy = (
+        tofu_apply_result["reachable"] and tofu_apply_result["status_code"] == 200
+    )
+    all_siblings_reachable = all(
+        r["reachable"] for r in results if r["worker"] != "tofu_apply"
+    )
+    go = worker_healthy and all_siblings_reachable
+
+    return JSONResponse(
+        status_code=200 if go else 502,
+        content={
+            "go": go,
+            "worker_healthy": worker_healthy,
+            "results": results,
+        },
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 def _render_for(action: DecisionAction, proposal: DecisionProposal) -> str:
