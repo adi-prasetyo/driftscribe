@@ -472,10 +472,14 @@ def test_run_apply_sequence_freshness_error_refuses() -> None:
 
 
 def test_run_apply_sequence_apply_failure() -> None:
-    run, _ = _runner({"init": (0, "", ""), "plan": (0, "", ""), "apply": (1, "", "apply boom")})
+    # readable + unchanged serial (before==after==3) + clean refresh (plan exit 0)
+    # ⇒ PROVABLY clean failure ⇒ plain TofuStepError (not state-suspect).
+    run, _ = _runner({"init": (0, "", ""), "plan": (0, "", ""), "apply": (1, "", "apply boom"),
+                      "state": (0, json.dumps({"serial": 3, "lineage": "L"}), "")})
     with pytest.raises(tofu_runner.TofuStepError) as ei:
         tofu_runner.run_apply_sequence(workdir="/x", kms_key="K", base_env={}, run_tofu=run)
     assert ei.value.step == "apply"
+    assert not isinstance(ei.value, tofu_runner.ApplyStateSuspect)
 
 
 def test_run_apply_sequence_init_failure_skips_plan_and_apply() -> None:
@@ -538,11 +542,15 @@ def test_run_apply_sequence_refresh_only_nonlock_failure_is_step_error() -> None
 
 
 def test_run_apply_sequence_apply_nonlock_failure_is_step_error() -> None:
-    run, _ = _runner({"init": (0, "", ""), "plan": (0, "", ""), "apply": (1, "", "Error: some provider error")})
+    # non-lock failure + provably-clean state (serial readable+unchanged, refresh 0)
+    # ⇒ TofuStepError, and specifically NOT LockRefused / NOT ApplyStateSuspect.
+    run, _ = _runner({"init": (0, "", ""), "plan": (0, "", ""), "apply": (1, "", "Error: some provider error"),
+                      "state": (0, json.dumps({"serial": 3, "lineage": "L"}), "")})
     with pytest.raises(tofu_runner.TofuStepError) as ei:
         tofu_runner.run_apply_sequence(workdir="/x", kms_key="K", base_env={}, run_tofu=run)
     assert ei.value.step == "apply"
     assert not isinstance(ei.value, tofu_runner.LockRefused)
+    assert not isinstance(ei.value, tofu_runner.ApplyStateSuspect)
 
 
 def test_run_apply_sequence_drift_not_shadowed_by_lock_classification() -> None:
@@ -568,6 +576,137 @@ def test_is_lock_contention_conservative_on_benign_lock_words() -> None:
     assert not tofu_runner._is_lock_contention("Error: failed to read lockfile .terraform.lock.hcl")
     assert not tofu_runner._is_lock_contention("Error: some provider error")
     assert not tofu_runner._is_lock_contention("")
+
+
+# =========================================================================== #
+# tofu_runner — failed_state_suspect diagnosis (C5g carry-forward 1b)
+# =========================================================================== #
+
+
+def _seq_runner(*, apply, serials, refresh=(0, "", ""), freshness=(0, "", ""), init=(0, "", "")):
+    """run_tofu stub with per-call control of the failed-apply DIAGNOSTIC path.
+
+    Call order in run_apply_sequence: init → plan(freshness) → state pull(before)
+    → apply → [on non-lock failure] state pull(after) → plan(refresh-only diag).
+    ``serials`` = (before, after); a None entry makes that ``state pull`` error
+    (→ serial None). ``freshness``/``refresh`` are the 1st/2nd ``plan`` calls."""
+    state_n = {"i": 0}
+    plan_n = {"i": 0}
+    calls: list[list[str]] = []
+
+    def run(args, cwd, env):  # noqa: ANN001
+        calls.append(args)
+        if args[:2] == ["state", "pull"]:
+            i = state_n["i"]
+            state_n["i"] += 1
+            s = serials[i] if i < len(serials) else None
+            return (1, "", "state pull failed") if s is None else (0, json.dumps({"serial": s, "lineage": "L"}), "")
+        if args[0] == "init":
+            return init
+        if args[0] == "plan":
+            i = plan_n["i"]
+            plan_n["i"] += 1
+            return freshness if i == 0 else refresh
+        if args[0] == "apply":
+            return apply
+        return 1, "", "unexpected"
+
+    return run, calls
+
+
+def test_apply_failure_state_suspect_on_serial_bump() -> None:
+    """A failed apply that BUMPED the state serial → ApplyStateSuspect (the C5g
+    signature: a 403-at-admission apply still persisted the planned attribute)."""
+    run, _ = _seq_runner(apply=(1, "", "Error 403 admission denied"), serials=(3, 4))
+    with pytest.raises(tofu_runner.ApplyStateSuspect) as ei:
+        tofu_runner.run_apply_sequence(workdir="/x", kms_key="K", base_env={}, run_tofu=run)
+    e = ei.value
+    assert e.step == "apply" and e.exit_code == 1
+    assert e.diag.state_suspect is True and e.diag.serial_bumped is True
+    assert e.diag.serial_before == 3 and e.diag.serial_after == 4
+    # standalone — NOT a TofuStepError subclass (so existing handlers are unaffected)
+    assert not isinstance(e, tofu_runner.TofuStepError)
+
+
+def test_apply_failure_state_suspect_on_refresh_drift() -> None:
+    """No serial bump, but a post-failure refresh-only now sees state≠live (exit 2)
+    → ApplyStateSuspect carrying the drift output."""
+    run, _ = _seq_runner(
+        apply=(1, "", "boom"), serials=(3, 3),
+        refresh=(2, "~ service_account = runtime@ -> compute@", ""),
+    )
+    with pytest.raises(tofu_runner.ApplyStateSuspect) as ei:
+        tofu_runner.run_apply_sequence(workdir="/x", kms_key="K", base_env={}, run_tofu=run)
+    assert ei.value.diag.serial_bumped is False
+    assert ei.value.diag.refresh_drift is True
+    assert "service_account" in ei.value.diag.refresh_output
+
+
+def test_apply_failure_clean_stays_step_error() -> None:
+    """No serial bump AND a clean post-failure refresh (exit 0) → plain
+    TofuStepError (today's 502 'failed'), NOT suspect."""
+    run, _ = _seq_runner(apply=(1, "", "boom"), serials=(3, 3), refresh=(0, "", ""))
+    with pytest.raises(tofu_runner.TofuStepError) as ei:
+        tofu_runner.run_apply_sequence(workdir="/x", kms_key="K", base_env={}, run_tofu=run)
+    assert ei.value.step == "apply"
+    assert not isinstance(ei.value, tofu_runner.ApplyStateSuspect)
+
+
+def test_apply_failure_serial_lost_is_suspect() -> None:
+    """Serial readable BEFORE the apply but not after (state left unreadable) →
+    suspect even without a positive drift signal (can't PROVE clean)."""
+    run, _ = _seq_runner(apply=(1, "", "boom"), serials=(3, None), refresh=(0, "", ""))
+    with pytest.raises(tofu_runner.ApplyStateSuspect) as ei:
+        tofu_runner.run_apply_sequence(workdir="/x", kms_key="K", base_env={}, run_tofu=run)
+    assert ei.value.diag.state_suspect is True
+
+
+def test_apply_failure_serial_unknown_before_is_suspect() -> None:
+    """Serial UNREADABLE before the apply ⇒ a clean verdict cannot be proven ⇒
+    suspect, even if the post-failure refresh is exit 0 (Codex blocker 1: the
+    fail-closed posture, NOT 'positive signals only')."""
+    run, _ = _seq_runner(apply=(1, "", "boom"), serials=(None, 3), refresh=(0, "", ""))
+    with pytest.raises(tofu_runner.ApplyStateSuspect) as ei:
+        tofu_runner.run_apply_sequence(workdir="/x", kms_key="K", base_env={}, run_tofu=run)
+    assert ei.value.diag.state_suspect is True
+    assert ei.value.diag.serial_bumped is False  # no bump signal — suspect is from unprovable-clean
+
+
+def test_apply_failure_refresh_error_is_suspect() -> None:
+    """The post-failure refresh-only itself ERRORING (exit 1) is 'could not prove
+    clean', not 'clean' ⇒ suspect even with no serial bump (Codex blocker 2)."""
+    run, _ = _seq_runner(apply=(1, "", "boom"), serials=(3, 3), refresh=(1, "", "refresh exploded"))
+    with pytest.raises(tofu_runner.ApplyStateSuspect) as ei:
+        tofu_runner.run_apply_sequence(workdir="/x", kms_key="K", base_env={}, run_tofu=run)
+    assert ei.value.diag.state_suspect is True
+    assert ei.value.diag.refresh_drift is False  # exit 1 ≠ drift(exit 2), but still suspect
+
+
+def test_apply_failure_diagnostic_refresh_is_lock_free() -> None:
+    """The post-failure diagnostic refresh-only MUST be ``-lock=false`` (it runs
+    after a failed apply and must never contend for / re-acquire the lock)."""
+    run, calls = _seq_runner(apply=(1, "", "boom"), serials=(3, 4))
+    with pytest.raises(tofu_runner.ApplyStateSuspect):
+        tofu_runner.run_apply_sequence(workdir="/x", kms_key="K", base_env={}, run_tofu=run)
+    diag_plan = [c for c in calls if c[0] == "plan"][-1]
+    assert "-refresh-only" in diag_plan and "-lock=false" in diag_plan
+
+
+def test_apply_lock_contention_skips_diagnosis() -> None:
+    """Lock contention on apply → LockRefused with NO post-failure diagnosis (the
+    lock was never acquired ⇒ no state write ⇒ nothing to diagnose). The 2nd state
+    pull + diagnostic refresh must NOT run."""
+    run, calls = _seq_runner(apply=(1, "", _LOCK_STDERR), serials=(3, 4))
+    with pytest.raises(tofu_runner.LockRefused):
+        tofu_runner.run_apply_sequence(workdir="/x", kms_key="K", base_env={}, run_tofu=run)
+    assert sum(1 for c in calls if c[:2] == ["state", "pull"]) == 1  # only serial_before
+    assert sum(1 for c in calls if c[0] == "plan") == 1              # only freshness
+
+
+def test_failed_state_suspect_in_phase_vocabulary() -> None:
+    """The new terminal phase is registered in the single source of truth so the
+    coordinator's reconcile/audit surfaces recognize it (approvals.py)."""
+    assert "failed_state_suspect" in approvals_mod.APPLY_AUDIT_PHASES
 
 
 # =========================================================================== #
@@ -699,8 +838,11 @@ def test_apply_tofu_failure_records_failed(client: TestClient, monkeypatch, tmp_
     def run(args, cwd, env):  # noqa: ANN001
         if args[:2] == ["version", "-json"]:
             return 0, json.dumps({"terraform_version": "1.12.0"}), ""
+        if args[:2] == ["state", "pull"]:
+            # readable + unchanged serial both sides → PROVABLY clean failure.
+            return 0, json.dumps({"serial": 3, "lineage": "L"}), ""
         if args[0] in ("init", "plan"):
-            return 0, "", ""
+            return 0, "", ""  # init + freshness gate + diagnostic refresh-only all clean
         if args[0] == "apply":
             return 1, "", "apply exploded"
         return 0, "{}", ""
@@ -709,6 +851,48 @@ def test_apply_tofu_failure_records_failed(client: TestClient, monkeypatch, tmp_
     r = client.post("/apply", json={"approval_id": ctx["record"].approval_id, "approval_token": ctx["raw_token"]})
     assert r.status_code == 502
     assert _doc(ctx)["apply_audit"]["phase"] == "failed"
+
+
+def test_apply_state_suspect_records_phase_and_bounded_diagnostic(
+    client: TestClient, monkeypatch, tmp_path
+) -> None:
+    """C5g 1b: an ApplyStateSuspect from run_apply_sequence → HTTP 502 + the
+    DISTINCT terminal phase ``failed_state_suspect`` + a BOUNDED diagnostic in the
+    audit (serials, drift, refresh tail capped for Firestore), and a detail that
+    carries the ``failed_state_suspect`` token + a runbook pointer so the
+    coordinator can refine its apply_status."""
+    ctx = _wire(monkeypatch, tmp_path)
+    diag = tofu_runner.PostFailureState(
+        state_suspect=True, serial_before=3, serial_after=4, serial_bumped=True,
+        refresh_exit=2, refresh_drift=True,
+        refresh_output="~ service_account = payment-demo-runtime@ -> compute@\n" * 300,
+        refresh_stderr="Warning: provider read slow",
+    )
+
+    def fake_seq(**kwargs):  # noqa: ANN003
+        raise tofu_runner.ApplyStateSuspect("apply", 1, "Error 403 admission denied", diag)
+
+    monkeypatch.setattr(m.tofu_runner, "run_apply_sequence", fake_seq)
+    r = client.post("/apply", json={"approval_id": ctx["record"].approval_id, "approval_token": ctx["raw_token"]})
+    assert r.status_code == 502
+    detail = r.json()["detail"]
+    assert "failed_state_suspect" in detail and "runbook" in detail
+    # CONTRACT with the coordinator: it detects suspect by substring-matching the
+    # worker body truncated to 500 chars (worker_client). Pin that the token lands
+    # well within that window so a future reword can't silently break the coupling.
+    assert "failed_state_suspect" in r.text[:500]
+    doc = _doc(ctx)
+    assert doc["status"] == "used"  # claim-first: burned
+    audit = doc["apply_audit"]
+    assert audit["phase"] == "failed_state_suspect"
+    assert audit["phase"] != "failed"
+    assert audit["state_suspect"] is True
+    assert audit["serial_before"] == 3 and audit["serial_after"] == 4
+    assert audit["serial_bumped"] is True and audit["refresh_drift"] is True
+    assert audit["step"] == "apply" and audit["apply_exit_code"] == 1
+    assert audit["post_failure_refresh_stderr_tail"] == "Warning: provider read slow"
+    # the attached refresh output is BOUNDED (never the full ~15KB) for Firestore.
+    assert 0 < len(audit["post_failure_refresh_tail"]) <= 4000
 
 
 def test_apply_lock_refused_returns_423(client: TestClient, monkeypatch, tmp_path) -> None:

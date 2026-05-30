@@ -2225,7 +2225,8 @@ def _record_iac_decision(
     Mirrors :func:`_do_rollback`'s ``record_decision`` usage. The decision doc
     is the apply-then-merge reconcile pointer: an ``apply_status=="applied"`` +
     ``merge_state=="failed"`` doc is what a re-POST reads to do a merge-only
-    reconcile; an ``apply_status in {"failed","ambiguous"}`` doc is terminal.
+    reconcile; an ``apply_status in {"failed","failed_state_suspect","ambiguous"}``
+    doc is terminal.
     """
     decision_id = str(uuid.uuid4())
     decision = {
@@ -2421,17 +2422,24 @@ def iac_approval_post(
         ):
             # Merge-only reconcile: skip propose/apply; jump to the merge step.
             reconcile_existing = existing
-        elif existing and existing.get("apply_status") in {"failed", "ambiguous"}:
+        elif existing and existing.get("apply_status") in {
+            "failed", "failed_state_suspect", "ambiguous"
+        }:
+            terminal_status = existing.get("apply_status")
+            note = (
+                "The failed apply could not be proven to have left state clean — "
+                "run the apply-failure recovery runbook (state reconcile) before "
+                "any retry; this will NOT be retried automatically."
+                if terminal_status == "failed_state_suspect"
+                else "Manual verification required; this will NOT be retried "
+                "automatically."
+            )
             return _render_iac_outcome(
                 request,
                 pr_number=pr_number,
                 view=view,
                 decision="approve",
-                outcome=(
-                    f"Terminal state recorded: apply_status="
-                    f"{existing.get('apply_status')!r}. Manual verification "
-                    "required; this will NOT be retried automatically."
-                ),
+                outcome=f"Terminal state recorded: apply_status={terminal_status!r}. {note}",
             )
         else:
             raise HTTPException(
@@ -2539,10 +2547,29 @@ def iac_approval_post(
             raise _map_tofu_apply_error(e, action="apply") from e
         if e.status_code == 502 or e.status_code >= 500:
             # Possible partial mutation. Do NOT release. Distinguish a
-            # worker-returned 502 (definite ``tofu apply`` failure) from the
-            # synthetic 503 / any other 5xx (unknown whether it reached/applied).
+            # worker-returned 502 (a definite worker-side tofu failure — the apply
+            # itself, or the pre-apply probe; either way no successful mutation)
+            # from the synthetic 503 / any other 5xx (unknown whether it
+            # reached/applied), and — within the 502 case — the worker's
+            # ``failed_state_suspect`` phase (the failed apply could not be PROVEN
+            # to have left state clean). That last case needs a state RECONCILE
+            # before any retry, not just "verify" — so it gets its own
+            # apply_status + a sharper message pointing at the recovery runbook.
+            #
+            # The suspect signal is the literal ``failed_state_suspect`` token in
+            # the worker's response body — a cross-service contract: the worker
+            # puts the token early in its 502 ``detail`` (well within
+            # worker_client's 500-char body truncation) and it is pinned by tests
+            # on BOTH boundaries. Follow-up (tracked): promote this to a structured
+            # ``phase`` field in the worker JSON body rather than substring-sniffing
+            # the human-readable detail.
             ambiguous = e.status_code != 502
-            apply_status = "ambiguous" if ambiguous else "failed"
+            state_suspect = (not ambiguous) and ("failed_state_suspect" in (e.body or ""))
+            apply_status = (
+                "ambiguous" if ambiguous
+                else "failed_state_suspect" if state_suspect
+                else "failed"
+            )
             _record_iac_decision(
                 state,
                 event_key,
@@ -2553,6 +2580,13 @@ def iac_approval_post(
                 pr_number=pr_number,
                 approver=operator_email,
             )
+            next_action = (
+                "The failed apply could not be proven to have left state clean — "
+                "run the apply-failure recovery runbook (state reconcile) before "
+                "any retry."
+                if state_suspect
+                else "Manual verification required; do NOT retry blindly."
+            )
             with contextlib.suppress(Exception):
                 worker_client.call(
                     "notifier",
@@ -2562,7 +2596,7 @@ def iac_approval_post(
                         "body": (
                             f"IaC apply {apply_status} for PR #{pr_number} "
                             f"(head {view.head_sha[:7]}, approval {approval_id}). "
-                            "Manual verification required; do NOT retry blindly."
+                            f"{next_action}"
                         ),
                     },
                 )
@@ -2578,8 +2612,12 @@ def iac_approval_post(
             raise HTTPException(
                 status_code=502,
                 detail=(
-                    "tofu-apply failed; infra may be partially mutated. Manual "
-                    "verification required; do NOT retry blindly."
+                    "tofu-apply failed and state may be partially mutated "
+                    "(failed_state_suspect); run the apply-failure recovery "
+                    "runbook (state reconcile) before any retry."
+                    if state_suspect
+                    else "tofu-apply failed; infra may be partially mutated. "
+                    "Manual verification required; do NOT retry blindly."
                 ),
             ) from e
         # Defensive: any unclassified status → treat as ambiguous (no release).
