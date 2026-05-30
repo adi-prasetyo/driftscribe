@@ -319,15 +319,19 @@ _MAX_APPROVAL_TTL_MINUTES = 15
 # sync when a new phase is introduced.
 #   - claimed:           burned but outcome-unknown (a crash between claim + terminal audit)
 #   - applied:           tofu apply succeeded
-#   - failed:            a tofu step failed (non-lock) — HTTP 502
+#   - failed:               a tofu step failed (non-lock), state provably clean — HTTP 502
+#   - failed_state_suspect: tofu apply failed AND state could not be proven clean
+#                           (serial bump / post-failure refresh-only drift) — the
+#                           failed apply may have persisted partial state; a state
+#                           reconcile is required before retry — HTTP 502 (C5g)
 #   - lock_refused:      a tofu step could not acquire the GCS state lock — HTTP 423 (C5d)
 #   - drift_refused:     refresh-only detected out-of-band drift — HTTP 409
 #   - integrity_refused: artifact fetch/integrity recompute failed — HTTP 422
 #   - fidelity_refused:  version/lockfile/resource-set fidelity guard refused — HTTP 422
 #   - verify_refused:    signed-payload re-derivation / parse refusal — HTTP 422
 APPLY_AUDIT_PHASES = frozenset({
-    "claimed", "applied", "failed", "lock_refused", "drift_refused",
-    "integrity_refused", "fidelity_refused", "verify_refused",
+    "claimed", "applied", "failed", "failed_state_suspect", "lock_refused",
+    "drift_refused", "integrity_refused", "fidelity_refused", "verify_refused",
 })
 
 # The exact top-level key set of a c3.v1 signed payload (from
