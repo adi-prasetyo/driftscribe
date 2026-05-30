@@ -389,6 +389,58 @@ def _make_store() -> tuple[PlanApprovalStore, _FakeFirestore]:
     return PlanApprovalStore(project="test-proj", client=fake), fake
 
 
+# --------------------------------------------------------------------------- #
+# PlanApprovalStore named-database threading (Phase C5f) — the `database` kwarg
+# selects a named Firestore DB to isolate plan_approvals from the coordinator.
+# --------------------------------------------------------------------------- #
+
+
+def test_store_threads_database_to_firestore_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With no injected client, the `database` kwarg is passed through to
+    firestore.Client(project=, database=) verbatim."""
+    from driftscribe_lib import approvals as approvals_mod
+
+    captured: dict[str, Any] = {}
+
+    def fake_client(**kwargs: Any) -> _FakeFirestore:
+        captured.update(kwargs)
+        return _FakeFirestore()
+
+    monkeypatch.setattr(approvals_mod.firestore, "Client", fake_client)
+    PlanApprovalStore(project="test-proj", database="plan-approvals")
+    assert captured == {"project": "test-proj", "database": "plan-approvals"}
+
+
+def test_store_default_database_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Omitting `database` passes database=None — google.cloud.firestore treats
+    that exactly as the (default) database (back-compat for existing deploys)."""
+    from driftscribe_lib import approvals as approvals_mod
+
+    captured: dict[str, Any] = {}
+
+    def fake_client(**kwargs: Any) -> _FakeFirestore:
+        captured.update(kwargs)
+        return _FakeFirestore()
+
+    monkeypatch.setattr(approvals_mod.firestore, "Client", fake_client)
+    PlanApprovalStore(project="test-proj")
+    assert captured == {"project": "test-proj", "database": None}
+
+
+def test_injected_client_ignores_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An injected client wins — firestore.Client is never called, so `database`
+    is irrelevant (the fake already encodes whichever DB the test means)."""
+    from driftscribe_lib import approvals as approvals_mod
+
+    def boom(**kwargs: Any) -> None:
+        raise AssertionError("firestore.Client must not be called with an injected client")
+
+    monkeypatch.setattr(approvals_mod.firestore, "Client", boom)
+    fake = _FakeFirestore()
+    store = PlanApprovalStore(project="test-proj", client=fake, database="plan-approvals")
+    assert store._client is fake
+
+
 def _now() -> dt.datetime:
     return dt.datetime(2026, 5, 29, 12, 0, 0, tzinfo=dt.timezone.utc)
 

@@ -30,25 +30,33 @@ GH_PAT=github_pat_xxx    # FINE-GRAINED PAT (see below)
 ./infra/scripts/setup_secrets.sh "$PROJECT" "$GH_PAT"
 ```
 
-> **IMPORTANT (Phase 11.9 / Codex review of 11.7):** `GH_PAT` MUST be a
-> **fine-grained** PAT, NOT a classic PAT. The coordinator's
-> `search_recent_prs_tool` only reads PR metadata, so the scope is small
-> and a leaked classic PAT (`repo` scope = write everywhere) would
-> meaningfully weaken the Layer 1 IAM claim in
+> **IMPORTANT (Phase 11.9 / Codex review of 11.7; updated Phase C5f):**
+> `GH_PAT` MUST be a **fine-grained** PAT, NOT a classic PAT. A leaked
+> classic PAT (`repo` scope = write everywhere) would meaningfully weaken
+> the Layer 1 IAM claim in
 > [`../architecture/iam-matrix.md`](../architecture/iam-matrix.md). Create
 > it at https://github.com/settings/personal-access-tokens/new with:
 >
 > - **Repository access:** Only select repositories →
 >   `adi-prasetyo/driftscribe`
 > - **Repository permissions:**
->   - `Pull requests: Read-only` (read-only — coordinator NEVER writes
->     PRs; the docs worker holds a separate fine-grained PAT for that)
->   - Nothing else
+>   - `Contents: Read and write` (the coordinator now MERGES approved IaC
+>     PRs (C5e) — the merge endpoint needs Contents:write)
+>   - `Pull requests: Read` (get PR / head sha / state)
+>   - `Checks: Read` (the readiness gate reads check-runs only; required
+>     commit-status checks are enforced by branch protection at merge, so
+>     no `Commit statuses` scope is needed)
+>
+> The post-merge audit comment (`pr.create_issue_comment`) is
+> **best-effort** and may `403` under this minimal scope — it does NOT
+> lose the merge. Add `Pull requests: write` only if you want that
+> comment.
 >
 > If you have already deployed with a classic PAT, rotate to a
 > fine-grained one before doing any demo or making the deployment
-> public — the IAM matrix's coordinator-row negative-space claim is
-> only literally true once this is done.
+> public — the IAM matrix's coordinator-row scope claim is only
+> literally true once this is done. (Prod currently still holds an
+> over-scoped classic PAT, so this rotation is a live action item.)
 
 The script will:
 - Enable required APIs, including `developerknowledge.googleapis.com`
@@ -281,6 +289,20 @@ rollback-agent-sa: granted run.developer on payment-demo (resource-scoped)
 
 If any worker still says "not deployed yet", that worker's deploy step in
 step 5 failed — check the Cloud Build logs before continuing.
+
+## Step 6b — confirm the dedicated `payment-demo` runtime SA (Phase C5f)
+
+`payment-demo` runs as a dedicated minimal runtime SA —
+`payment-demo-runtime@${PROJECT}.iam.gserviceaccount.com`, with ZERO
+project roles (the mock HTTP demo makes no GCP calls) — NOT the default
+compute SA. `setup_secrets.sh` (§7b) provisions this SA and grants
+`roles/iam.serviceAccountUser` (actAs) on it to BOTH `tofu-apply-sa`
+(the apply pipeline) and `rollback-agent-sa` (the `/execute`
+traffic-shift `update_service` path). Cloud Run requires the caller to
+actAs the service's runtime SA for ANY update, so both need it. The
+service-side repoint (`template.service_account`) is applied through the
+gated tofu-apply pipeline as an in-place update (NOT out-of-band) — it is
+the Phase C5g positive test.
 
 ## Step 7 — confirm Eventarc trigger fires
 

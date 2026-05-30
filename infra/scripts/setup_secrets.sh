@@ -6,8 +6,12 @@
 #
 # Arguments:
 #   PROJECT                       GCP project ID (e.g. driftscribe-hack-2026)
-#   GITHUB_TOKEN                  Classic PAT for the coordinator's read-only PR search
-#                                 (repo: contents:read + pull_requests:read on the demo repo)
+#   GITHUB_TOKEN                  Fine-grained PAT for the coordinator (Phase C5f), scoped to
+#                                 the single repo adi-prasetyo/driftscribe with Contents: write
+#                                 (C5e merges approved IaC PRs), Pull requests: read, Checks: read
+#                                 (check-runs only). NOT a classic PAT, NOT multi-repo, no admin.
+#                                 (Legacy: was described as a classic read-only PR-search PAT — the
+#                                 coordinator now merges PRs, so Contents: write is required.)
 #   DOCS_AGENT_PAT                (optional) Fine-grained PAT scoped to ONE repository, with
 #                                 Contents: write + Pull requests: write. If omitted, the
 #                                 script prints instructions and SKIPS creating the secret
@@ -168,17 +172,17 @@ fi
 # --------------------------------------------------------------------------
 # 5. Per-SA project-level IAM grants
 # --------------------------------------------------------------------------
-# Coordinator: Firestore (sessions/, approvals/ pending→denied flip) +
-# Vertex AI (Phase 14.5 — the ADK path calls gemini-2.5-flash via Vertex
-# AI's generate-content endpoint; ADC routes through this SA).
+# Coordinator: Vertex AI (Phase 14.5 — the ADK path calls gemini-2.5-flash via
+# Vertex AI's generate-content endpoint; ADC routes through this SA) + Firestore
+# datastore.user CONDITIONED to the (default) database (Phase C5f).
 # Phase 13: run.viewer removed — classifier path migrated to Reader Worker.
-for role in \
-  roles/datastore.user \
-  roles/aiplatform.user \
-; do
-  gcloud projects add-iam-policy-binding "$PROJECT" \
-    --member="serviceAccount:${COORD_SA}" --role="$role" >/dev/null
-done
+# C5f: the coordinator's Firestore access is now scoped to (default) only
+# (events/decisions/sessions/approvals). The condition DENIES it the named
+# plan-approvals DB (the C4 tofu-apply worker's sole-writer collection), closing
+# the B3 status-flip-and-replay risk that project-wide datastore.user opened.
+gcloud projects add-iam-policy-binding "$PROJECT" \
+  --member="serviceAccount:${COORD_SA}" --role="roles/aiplatform.user" >/dev/null
+grant_datastore_user_for_db "$PROJECT" "serviceAccount:${COORD_SA}" "(default)"
 
 # Idempotent cleanup for pre-Phase-13 deploys: remove the legacy
 # project-wide run.viewer grant that the classifier path no longer
@@ -193,11 +197,25 @@ gcloud projects add-iam-policy-binding "$PROJECT" \
 
 # Docs: NO project-level grants. Per-secret binding applied below.
 
-# Rollback: project-wide datastore.user (acknowledged Firestore-IAM constraint
-# — the approvals/ collection is the only thing the worker reads/writes).
+# Rollback: datastore.user CONDITIONED to (default) (C5f) — the approvals/
+# collection lives in (default); the condition denies the named plan-approvals DB.
 # The resource-scoped run.developer on payment-demo is below (§7).
-gcloud projects add-iam-policy-binding "$PROJECT" \
-  --member="serviceAccount:${ROLLBACK_SA}" --role="roles/datastore.user" >/dev/null
+grant_datastore_user_for_db "$PROJECT" "serviceAccount:${ROLLBACK_SA}" "(default)"
+
+# C5f cutover: remove the pre-isolation UN-conditioned project-wide datastore.user
+# from the coordinator + rollback so the (default)-conditioned grants above are
+# their ONLY datastore access (completing plan_approvals isolation). GATED — a
+# default re-run only ADDS the conditioned grant (harmless union-of-allows); the
+# removal is the deliberate, verified cutover (run with SETUP_PLAN_APPROVALS_DB=1
+# AFTER the empirical CEL proof — see docs/runbooks/c5f-hardening.md). The
+# conditioned grants above are asserted first, every run (bind-before-remove).
+if [[ "${SETUP_PLAN_APPROVALS_DB:-0}" == "1" ]]; then
+  remove_unconditioned_datastore_user "$PROJECT" "serviceAccount:${COORD_SA}"
+  remove_unconditioned_datastore_user "$PROJECT" "serviceAccount:${ROLLBACK_SA}"
+  echo "  C5f: removed UN-conditioned datastore.user from coordinator + rollback (isolation ACTIVE)"
+else
+  echo "  C5f: (default)-conditioned datastore.user asserted; UN-conditioned removal gated (set SETUP_PLAN_APPROVALS_DB=1)"
+fi
 
 # Notifier: NO project-level grants. Per-secret binding applied below.
 
@@ -479,35 +497,46 @@ else
   echo "  re-run this script after the first 'gcloud builds submit' to apply it"
 fi
 
-# 7b. tofu-apply worker (Phase C4) — resource-scoped run.developer on payment-demo
-# AND scoped iam.serviceAccountUser (actAs) on payment-demo's RUNTIME SA. A
-# `tofu apply` that updates the Cloud Run service requires actAs on whatever
-# identity the service runs as (iac/cloudrun.tf declares no template.service_account,
-# so the live service runs as the DEFAULT COMPUTE SA — resolved below, with a
-# fallback). Both grants are resource-scoped + gated on existence; harmless under
-# the editor IAM fast path (which already covers them project-wide). The hardened
-# default (run.developer project-wide, NO project-wide actAs) needs THIS scoped
-# actAs for non-no-op applies — see setup_iac_backend.sh §6.5 + the C4 plan §4.3.
+# 7b. Dedicated payment-demo runtime SA (Phase C5f) + the apply/rollback actAs grants.
+# Replace the default compute SA with a MINIMAL dedicated runtime identity. The
+# SERVICE-SIDE repoint (template.service_account in iac/cloudrun.tf) is applied
+# THROUGH the gated pipeline (the C5g positive in-place UPDATE), so THIS script only
+# provisions the SA and the actAs grants every mutator of payment-demo needs on it.
+# Cloud Run requires the caller to actAs the service's runtime SA for ANY update
+# (incl. a traffic-only update), so BOTH of these need it (the C4 plan named only
+# tofu-apply-sa — rollback was a gap):
+#   - tofu-apply-sa     : `tofu apply` updates the service (sets the new runtime SA)
+#   - rollback-agent-sa : /execute traffic-shift update_service (else `actAs denied`)
+# Grants target the KNOWN dedicated SA name (not the live-resolved one) so the actAs
+# exists BEFORE the apply that first wires service_account=payment-demo-runtime.
+# (The pre-existing actAs on the default compute SA is left live for the transition
+# window and removed as a documented post-cutover cleanup — see the C5f runbook.)
+PD_RUNTIME_SA_NAME="${PD_RUNTIME_SA_NAME:-payment-demo-runtime}"
+PD_RUNTIME_SA_DEDICATED="${PD_RUNTIME_SA_NAME}@${PROJECT}.iam.gserviceaccount.com"
+create_service_account_idempotent "$PROJECT" "$PD_RUNTIME_SA_NAME" \
+  "DriftScribe payment-demo runtime (minimal)"
 APPLY_SA="${APPLY_SA:-tofu-apply-sa@${PROJECT}.iam.gserviceaccount.com}"
+for member in "$APPLY_SA" "$ROLLBACK_SA"; do
+  if gcloud iam service-accounts describe "$member" --project="$PROJECT" >/dev/null 2>&1; then
+    gcloud iam service-accounts add-iam-policy-binding "$PD_RUNTIME_SA_DEDICATED" \
+      --project="$PROJECT" \
+      --member="serviceAccount:${member}" \
+      --role="roles/iam.serviceAccountUser" >/dev/null
+    echo "  ${member}: actAs on dedicated runtime SA ${PD_RUNTIME_SA_DEDICATED}"
+  else
+    echo "  ${member} not present yet — skipping actAs on ${PD_RUNTIME_SA_DEDICATED}"
+  fi
+done
+# tofu-apply-sa also needs resource-scoped run.developer on the service itself.
 if gcloud run services describe payment-demo --region="$REGION" --project="$PROJECT" >/dev/null 2>&1 \
    && gcloud iam service-accounts describe "$APPLY_SA" --project="$PROJECT" >/dev/null 2>&1; then
   gcloud run services add-iam-policy-binding payment-demo \
     --project="$PROJECT" --region="$REGION" \
     --member="serviceAccount:${APPLY_SA}" \
     --role="roles/run.developer" >/dev/null
-  # Resolve the live runtime SA; empty value ⇒ the default compute SA.
-  PD_RUNTIME_SA="$(gcloud run services describe payment-demo \
-    --region="$REGION" --project="$PROJECT" --format='value(template.serviceAccount)' 2>/dev/null || echo '')"
-  if [ -z "$PD_RUNTIME_SA" ]; then
-    PD_RUNTIME_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
-  fi
-  gcloud iam service-accounts add-iam-policy-binding "$PD_RUNTIME_SA" \
-    --project="$PROJECT" \
-    --member="serviceAccount:${APPLY_SA}" \
-    --role="roles/iam.serviceAccountUser" >/dev/null
-  echo "tofu-apply-sa: granted run.developer on payment-demo + actAs on its runtime SA (${PD_RUNTIME_SA})"
+  echo "tofu-apply-sa: granted run.developer on payment-demo (resource-scoped)"
 else
-  echo "payment-demo or tofu-apply-sa not present yet — skipping C4 apply-SA resource grants"
+  echo "payment-demo or tofu-apply-sa not present yet — skipping run.developer on payment-demo"
   echo "  re-run this script after deploying payment-demo + running setup_iac_backend.sh"
 fi
 

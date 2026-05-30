@@ -59,6 +59,43 @@ def _sha(b: bytes) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Phase C5f — _get_plan_approval_store threads the named-DB env into the store.
+# --------------------------------------------------------------------------- #
+
+
+def test_get_plan_approval_store_passes_named_database(monkeypatch: Any) -> None:
+    """_get_plan_approval_store forwards GCP_PROJECT + PLAN_APPROVALS_DB to the
+    store so the worker writes plan_approvals to the isolated named database."""
+    captured: dict[str, Any] = {}
+
+    def fake_store(**kwargs: Any) -> str:
+        captured.update(kwargs)
+        return "store-sentinel"
+
+    monkeypatch.setattr(m, "PlanApprovalStore", fake_store)
+    monkeypatch.setattr(m, "GCP_PROJECT", "test-proj")
+    monkeypatch.setattr(m, "PLAN_APPROVALS_DB", "plan-approvals")
+    assert m._get_plan_approval_store() == "store-sentinel"
+    assert captured == {"project": "test-proj", "database": "plan-approvals"}
+
+
+def test_get_plan_approval_store_default_database_none(monkeypatch: Any) -> None:
+    """With PLAN_APPROVALS_DB unset (None), the store gets database=None →
+    the (default) database (back-compat for e2e / pre-isolation deploys)."""
+    captured: dict[str, Any] = {}
+
+    def fake_store(**kwargs: Any) -> str:
+        captured.update(kwargs)
+        return "store-sentinel"
+
+    monkeypatch.setattr(m, "PlanApprovalStore", fake_store)
+    monkeypatch.setattr(m, "GCP_PROJECT", "test-proj")
+    monkeypatch.setattr(m, "PLAN_APPROVALS_DB", None)
+    m._get_plan_approval_store()
+    assert captured == {"project": "test-proj", "database": None}
+
+
+# --------------------------------------------------------------------------- #
 # Fake Firestore (reuse the C3 shape) + transactional bypass
 # --------------------------------------------------------------------------- #
 

@@ -38,6 +38,10 @@ substitutions:
   # worker as TF_VAR_tofu_state_kms_key (a resource PATH, not key material — the
   # decrypt authority is the SA's cryptoKeyEncrypterDecrypter binding).
   _KMS_KEY: 'projects/driftscribe-hack-2026/locations/asia-northeast1/keyRings/driftscribe-tofu/cryptoKeys/tofu-state'
+  # Named Firestore database isolating plan_approvals from the coordinator (C5f).
+  # 'plan-approvals' is the prod default; set empty for environments without the
+  # named DB (the worker then uses the project's (default) database).
+  _PLAN_APPROVALS_DB: 'plan-approvals'
 
 steps:
   # 1. Build + push ONLY the tofu-apply image (build context = repo root; the
@@ -75,6 +79,10 @@ steps:
       - --image=asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-tofu-apply:${_TAG}
       - --region=${_REGION}
       - --no-allow-unauthenticated
+      # The sole mutator MUST stay internal-only (coordinator reaches it over the
+      # C5c VPC). gcloud run deploy is not guaranteed to preserve the live ingress,
+      # so pin it explicitly here rather than relying on a post-deploy by-hand step.
+      - --ingress=internal
       - --service-account=tofu-apply-sa@$PROJECT_ID.iam.gserviceaccount.com
       - --min-instances=0
       - --max-instances=1
@@ -89,7 +97,10 @@ steps:
       # (_require_cf_config_if_enforce), so these MUST match the coordinator's CF
       # Access App (mirrors infra/cloudbuild.yaml). COORDINATOR_URL is now optional
       # (I8) — the placeholder is harmless/unused under propose-on-approve.
-      - --set-env-vars=GCP_PROJECT=$PROJECT_ID,TARGET_REGION=${_REGION},OWN_URL=https://placeholder.invalid,COORDINATOR_URL=https://placeholder.invalid,ALLOWED_CALLERS=driftscribe-agent@$PROJECT_ID.iam.gserviceaccount.com,ARTIFACT_BUCKET=$PROJECT_ID-tofu-artifacts,TF_VAR_tofu_state_kms_key=${_KMS_KEY},CF_ACCESS_TEAM_DOMAIN=adp-app.cloudflareaccess.com,CF_ACCESS_AUD_TAG=5e6a20fe63e5fb03a742eeb0623e216ad4c837413d2afa9885a79b1091016262,IAC_OPERATOR_AUTH_MODE=enforce
+      # PLAN_APPROVALS_DB (C5f): the named Firestore DB isolating plan_approvals from
+      # the coordinator's datastore.user. Empty (${_PLAN_APPROVALS_DB} unset) → the
+      # worker code falls back to the (default) database (back-compat for e2e).
+      - --set-env-vars=GCP_PROJECT=$PROJECT_ID,TARGET_REGION=${_REGION},OWN_URL=https://placeholder.invalid,COORDINATOR_URL=https://placeholder.invalid,ALLOWED_CALLERS=driftscribe-agent@$PROJECT_ID.iam.gserviceaccount.com,ARTIFACT_BUCKET=$PROJECT_ID-tofu-artifacts,TF_VAR_tofu_state_kms_key=${_KMS_KEY},CF_ACCESS_TEAM_DOMAIN=adp-app.cloudflareaccess.com,CF_ACCESS_AUD_TAG=5e6a20fe63e5fb03a742eeb0623e216ad4c837413d2afa9885a79b1091016262,IAC_OPERATOR_AUTH_MODE=enforce,PLAN_APPROVALS_DB=${_PLAN_APPROVALS_DB}
       - --set-secrets=PLAN_APPROVAL_HMAC_KEY=plan-hmac-key:latest
 
   # 3. Post-deploy: resolve the assigned URL + write it back into OWN_URL.

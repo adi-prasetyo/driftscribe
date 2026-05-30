@@ -41,17 +41,30 @@ config-changing applies wait for C5.
    `roles/run.developer` (project, broad Cloud Run apply — **no** `setIamPolicy`),
    `storage.objectAdmin` on the state bucket, `cryptoKeyEncrypterDecrypter` on
    the `tofu-state` key, `storage.objectViewer` on the artifact bucket,
-   `datastore.user`. To use the broader `roles/editor` fast path instead:
+   `datastore.user` **conditioned to the `plan-approvals` named Firestore database**
+   (per-database isolation — the condition is
+   `resource.name == "projects/driftscribe-hack-2026/databases/plan-approvals"`, so
+   the `(default)` database is **denied** to the apply SA; the worker selects the DB
+   via `PLAN_APPROVALS_DB=plan-approvals`). To use the broader `roles/editor` fast path instead:
    `TOFU_APPLY_IAM_MODE=editor infra/scripts/setup_iac_backend.sh` (accepts the
-   documented actAs blast radius; requires step 1).
+   documented actAs blast radius; requires step 1). **Caveat:** editor mode grants
+   `roles/editor`, which carries UNCONDITIONED all-database Firestore access and
+   therefore **FORFEITS the `plan_approvals` named-DB isolation** for the apply SA
+   (the script prints a warning). Use the default hardened mode to keep the apply
+   SA's Firestore access conditioned to `plan-approvals`.
 3. **Secret + binds + apply grants** — run `infra/scripts/setup_secrets.sh`
    (idempotent). It creates `plan-hmac-key` (first-run-only, auto-generated),
    binds `secretmanager.secretAccessor` on it to `tofu-apply-sa`, adds the Cloud
    Build `actAs` on `tofu-apply-sa`, and — gated on payment-demo + the SA existing
    (§7b) — grants `tofu-apply-sa` resource-scoped `run.developer` on payment-demo
-   **plus `iam.serviceAccountUser` (actAs) on payment-demo's runtime SA** (the
-   default compute SA; required for a non-no-op Cloud Run apply). So run this
-   **again after the deploy** (step 2) once payment-demo + the SA both exist.
+   **plus `iam.serviceAccountUser` (actAs) on payment-demo's dedicated runtime SA**
+   (`payment-demo-runtime@driftscribe-hack-2026.iam.gserviceaccount.com` — a
+   minimal SA with zero project roles; required for a non-no-op Cloud Run apply).
+   **`rollback-agent-sa` ALSO gets `iam.serviceAccountUser` (actAs) on the same
+   runtime SA** (§7b grants both): Cloud Run requires the caller to actAs the
+   service's runtime SA for any update, so the rollback agent's `/execute`
+   traffic-shift `update_service` needs it too. So run this **again after the
+   deploy** (step 2) once payment-demo + the SA both exist.
 4. **Verify the KMS binding exists** (else `tofu init` fails to decrypt with a
    confusing error):
    ```bash
@@ -73,7 +86,8 @@ gcloud builds submit \
 ```
 
 This builds the image (pinned tofu 1.12.0, checksum-verified; baked
-`iac/` + providers), deploys `--no-allow-unauthenticated` (for the smoke), and
+`iac/` + providers), deploys `--no-allow-unauthenticated` (for the smoke) with
+`--ingress=internal` pinned explicitly (`infra/cloudbuild.tofu-apply.yaml`), and
 writes `OWN_URL` back. Then grant the caller `run.invoker` (re-run
 `infra/scripts/setup_secrets.sh` — its invoker loop now includes
 `driftscribe-tofu-apply`).

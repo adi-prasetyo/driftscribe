@@ -147,6 +147,65 @@ create_firestore_native_idempotent() {
 }
 
 # -----------------------------------------------------------------------------
+# create_named_firestore_db_idempotent PROJECT DB_ID LOCATION
+#
+# Describe-then-create a NAMED Firestore database in Native mode (Phase C5f —
+# isolates ``plan_approvals`` from the coordinator's project-wide datastore.user
+# via per-database IAM conditioning). MUST be the SAME location as (default).
+# -----------------------------------------------------------------------------
+create_named_firestore_db_idempotent() {
+  local project="${1:?create_named_firestore_db_idempotent: PROJECT required}"
+  local db_id="${2:?create_named_firestore_db_idempotent: DB_ID required}"
+  local location="${3:?create_named_firestore_db_idempotent: LOCATION required}"
+  gcloud firestore databases describe --database="$db_id" \
+    --project "$project" >/dev/null 2>&1 || \
+    gcloud firestore databases create --database="$db_id" \
+      --project "$project" --location="$location" --type=firestore-native
+}
+
+# -----------------------------------------------------------------------------
+# grant_datastore_user_for_db PROJECT MEMBER DB_ID
+#
+# Grant roles/datastore.user CONDITIONED to a single Firestore database via the
+# documented per-database pattern (CEL resource.name == the database resource).
+# A project-level roles/datastore.user reaches ALL databases; this condition
+# scopes it to exactly one (REST/client libraries enforce it). Server-side
+# idempotent; coexists with any UN-conditioned binding for the same member+role
+# (that is the bind-before-remove intermediate state — remove the un-conditioned
+# one separately with remove_unconditioned_datastore_user). The (default) DB is
+# spelled literally, parens and all, inside the string.
+# -----------------------------------------------------------------------------
+grant_datastore_user_for_db() {
+  local project="${1:?grant_datastore_user_for_db: PROJECT required}"
+  local member="${2:?grant_datastore_user_for_db: MEMBER required}"
+  local db_id="${3:?grant_datastore_user_for_db: DB_ID required}"
+  # Title may only contain letters/digits/spaces/hyphens/underscores — sanitize
+  # the DB id (e.g. "(default)" -> "-default-") so the literal stays valid.
+  local title="datastore-user-${db_id//[^a-zA-Z0-9]/-}"
+  gcloud projects add-iam-policy-binding "$project" \
+    --member="$member" --role="roles/datastore.user" \
+    --condition="expression=resource.name == \"projects/${project}/databases/${db_id}\",title=${title}" \
+    --quiet >/dev/null
+}
+
+# -----------------------------------------------------------------------------
+# remove_unconditioned_datastore_user PROJECT MEMBER
+#
+# Remove the UN-conditioned project-wide roles/datastore.user binding for a
+# member (the pre-C5f all-databases grant), leaving any DB-conditioned binding
+# intact (``--condition=None`` targets ONLY the no-condition binding). ``|| true``
+# makes it a no-op when already removed. This is the deliberate cutover step that
+# completes the isolation — gated by the caller behind an explicit flag.
+# -----------------------------------------------------------------------------
+remove_unconditioned_datastore_user() {
+  local project="${1:?remove_unconditioned_datastore_user: PROJECT required}"
+  local member="${2:?remove_unconditioned_datastore_user: MEMBER required}"
+  gcloud projects remove-iam-policy-binding "$project" \
+    --member="$member" --role="roles/datastore.user" \
+    --condition=None --quiet >/dev/null 2>&1 || true
+}
+
+# -----------------------------------------------------------------------------
 # extend_log_retention_idempotent PROJECT DAYS
 #
 # Update the project's ``_Default`` Cloud Logging bucket retention. The
