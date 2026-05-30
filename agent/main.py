@@ -2133,16 +2133,31 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
 
 
 def _check_iac_origin(request: Request, s: Settings) -> bool:
-    """Exact same-origin check for the C5e POST (Codex important; CSRF defense).
+    """Same-origin check for the C5e approval POST (CSRF defense; CF Access does
+    NOT stop a cross-site POST).
 
-    CF Access does NOT stop a cross-site POST, so we compare the request
-    ``Origin`` to ``settings.coordinator_origin`` EXACTLY on (scheme, host,
-    port). No ``Referer`` fallback. Fail-closed: a missing ``Origin`` header or
-    an unconfigured ``coordinator_origin`` returns ``False``.
+    Two accepted signals, in order:
+
+    1. **Exact ``Origin`` match** — compared to ``settings.coordinator_origin``
+       on (scheme, host, port). No ``Referer`` fallback.
+    2. **``Sec-Fetch-Site: same-origin`` fallback** when ``Origin`` is absent or
+       the opaque string ``"null"``. The C5e page ships ``Referrer-Policy:
+       no-referrer``, which makes Chromium serialize the Origin of a *navigation*
+       (form) POST as ``"null"`` even for a genuine same-origin submit — so an
+       Origin-only check rejects every real approval. ``Sec-Fetch-Site`` is a
+       Forbidden header name: the browser sets it and page JavaScript cannot, so
+       a cross-site attacker — even one that suppresses its own Origin to
+       ``"null"`` via ``no-referrer`` — gets ``cross-site`` here and is rejected.
+
+    Fail-closed: a missing Origin with no/!=``same-origin`` ``Sec-Fetch-Site``
+    (older engines), or a real Origin against an unconfigured
+    ``coordinator_origin``, returns ``False``.
     """
     origin = request.headers.get("origin")
-    if not origin:
-        return False
+    if not origin or origin == "null":
+        # Opaque/absent Origin (e.g. no-referrer navigation POST): trust only the
+        # browser-asserted, unspoofable Fetch-Metadata same-origin signal.
+        return request.headers.get("sec-fetch-site") == "same-origin"
     if not s.coordinator_origin:
         return False
     # Fail-closed on a malformed Origin: ``urllib.parse`` defers parsing of the

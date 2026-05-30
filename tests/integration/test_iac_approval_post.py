@@ -204,10 +204,12 @@ def _patch_workers(
     return calls
 
 
-def _post(client, *, token, decision="approve", origin=_ORIGIN, pr=42):
+def _post(client, *, token, decision="approve", origin=_ORIGIN, pr=42, sec_fetch_site=None):
     headers = {"Cf-Access-Jwt-Assertion": _JWT}
     if origin is not None:
         headers["Origin"] = origin
+    if sec_fetch_site is not None:
+        headers["Sec-Fetch-Site"] = sec_fetch_site
     return client.post(
         f"/iac-approvals/{pr}",
         data={"form_token": token, "decision": decision},
@@ -259,6 +261,56 @@ def test_malformed_origin_fails_closed_403_not_500(_configured, monkeypatch):
     _patch_workers(monkeypatch)
     client = TestClient(app)
     resp = _post(client, token=_mint(), origin="https://host:notaport")
+    assert resp.status_code == 403
+
+
+def test_null_origin_with_same_origin_fetch_site_ok(_configured, monkeypatch):
+    # Chromium serializes the Origin of a no-referrer navigation (form) POST as
+    # the opaque string "null" even for a genuine same-origin submit. The origin
+    # gate must accept it on the strength of Sec-Fetch-Site: same-origin (a
+    # Forbidden header the browser sets and a cross-site page cannot forge). A
+    # reject is a clean no-op that proves the gate passed without driving apply.
+    _patch_resolve(monkeypatch)
+    _patch_workers(monkeypatch)
+    client = TestClient(app)
+    resp = _post(
+        client, token=_mint(), decision="reject", origin="null",
+        sec_fetch_site="same-origin",
+    )
+    assert resp.status_code == 200
+    assert "reject" in resp.text.lower()
+
+
+def test_missing_origin_with_same_origin_fetch_site_ok(_configured, monkeypatch):
+    # Same fallback when the engine omits Origin entirely on a same-origin POST.
+    _patch_resolve(monkeypatch)
+    _patch_workers(monkeypatch)
+    client = TestClient(app)
+    resp = _post(
+        client, token=_mint(), decision="reject", origin=None,
+        sec_fetch_site="same-origin",
+    )
+    assert resp.status_code == 200
+
+
+def test_null_origin_cross_site_fetch_site_403(_configured, monkeypatch):
+    # A cross-site attacker that suppresses its own Origin to "null" via
+    # no-referrer still gets Sec-Fetch-Site: cross-site — must be rejected.
+    _patch_resolve(monkeypatch)
+    _patch_workers(monkeypatch)
+    client = TestClient(app)
+    resp = _post(
+        client, token=_mint(), origin="null", sec_fetch_site="cross-site",
+    )
+    assert resp.status_code == 403
+
+
+def test_null_origin_without_fetch_site_fails_closed_403(_configured, monkeypatch):
+    # Opaque Origin + no Sec-Fetch-Site (older engines) → fail-closed.
+    _patch_resolve(monkeypatch)
+    _patch_workers(monkeypatch)
+    client = TestClient(app)
+    resp = _post(client, token=_mint(), origin="null")
     assert resp.status_code == 403
 
 
