@@ -579,21 +579,29 @@ def iac_reachability(
     Cloudflare Access later. The token is accepted via header ONLY (verify_token
     reads the header / CF JWT header — there is no query-param token path).
 
-    Pure read-only fan-out of ``/healthz`` GETs: no GitHub, no GCS, no approval,
-    no mutation. ``Cache-Control: no-store`` because a stale cached verdict
-    during a cutover would be actively misleading.
+    Pure read-only fan-out of GETs to each worker's canonical (POST) path: no
+    GitHub, no GCS, no approval, no mutation (GET on a POST route is inert).
+    ``Cache-Control: no-store`` because a stale cached verdict during a cutover
+    would be actively misleading.
+
+    The signal is ``app_reached`` (status NOT 404), not bare ``reachable``.
+    ``/healthz`` is GFE-reserved (404 pre-app), and for the internal-ingress
+    ``tofu_apply`` a 404 is indistinguishable from an ingress rejection — so the
+    probe GETs the canonical POST path and treats the app's **405** (or 403) as
+    proof the request traversed network → ingress → IAM → app. See
+    :func:`worker_client.probe_worker_health`.
 
     Gates (the source of truth for the worker set is
     :data:`worker_client._WORKER_URL_ENV`, iterated here so a new worker can
     never be silently omitted):
 
     * ``worker_healthy`` — the ``tofu_apply`` worker (the sole infra mutator,
-      the NEW path C5c enables) is reachable AND returned ``200``. An unrouted
-      call would 403/404 pre-app, so a 200 unambiguously proves VPC routing to
-      an internal-ingress service.
-    * ``all_siblings_reachable`` — every NON-``tofu_apply`` worker is reachable
-      (received any HTTP status → the rewritten DNS zone didn't regress its
-      route). A worker whose URL is unset counts as NOT reachable: this is
+      the NEW path C5c enables) is ``app_reached``: its app answered (405/403,
+      not a pre-app 404). For an internal-ingress service this unambiguously
+      proves the VPC routing delivers the call AS INTERNAL.
+    * ``all_siblings_reachable`` — every NON-``tofu_apply`` worker is
+      ``app_reached`` (the rewritten DNS zone didn't regress its route to a
+      pre-app 404). A worker whose URL is unset counts as NOT reached: this is
       fail-closed — a sibling URL silently dropped from the deploy must block the
       cutover rather than let it through (in prod all siblings have URLs set).
     * ``go = worker_healthy AND all_siblings_reachable``.
@@ -623,11 +631,9 @@ def iac_reachability(
             headers={"Cache-Control": "no-store"},
         )
 
-    worker_healthy = (
-        tofu_apply_result["reachable"] and tofu_apply_result["status_code"] == 200
-    )
+    worker_healthy = tofu_apply_result["app_reached"]
     all_siblings_reachable = all(
-        r["reachable"] for r in results if r["worker"] != "tofu_apply"
+        r["app_reached"] for r in results if r["worker"] != "tofu_apply"
     )
     go = worker_healthy and all_siblings_reachable
 

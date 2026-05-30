@@ -5,10 +5,14 @@ egress cutover. It fans :func:`worker_client.probe_worker_health` out across
 EVERY configured worker (the 7 siblings + the tofu-apply worker) and returns a
 single ``go`` verdict:
 
-* ``worker_healthy`` — tofu_apply reachable AND status 200 (the NEW path).
-* ``all_siblings_reachable`` — every non-tofu_apply worker reachable (no
+* ``worker_healthy`` — tofu_apply ``app_reached`` (its app answered 405/403, not
+  a pre-app 404) — proves the internal-ingress mutator is reachable via the VPC.
+* ``all_siblings_reachable`` — every non-tofu_apply worker ``app_reached`` (no
   regression from the run.app DNS rewrite).
 * ``go = worker_healthy AND all_siblings_reachable``.
+
+The probe GETs each worker's canonical POST path (``/healthz`` is GFE-reserved →
+pre-app 404, useless for an internal service); the app's 405 is the proof.
 
 Status codes: 200 when ``go``; 502 otherwise; 503 when ``TOFU_APPLY_URL`` is
 unset (the new path cannot exist yet). Token-guarded like ``/recheck`` /
@@ -49,11 +53,18 @@ def _probe_result(
     error: str | None = None,
     target: str = "https://worker.example.com",
 ) -> dict:
-    """Build a probe_worker_health-shaped result dict."""
+    """Build a probe_worker_health-shaped result dict.
+
+    ``app_reached`` mirrors the probe: reachable with a status that is NOT 404
+    (404 = GFE/ingress pre-app reject; 405/403/200 = the app answered)."""
     return {
         "worker": worker,
         "target": None if error == "url_unset" else target,
+        "probed_path": worker_client.WORKER_ENDPOINTS.get(worker, "/x"),
         "reachable": reachable,
+        "app_reached": bool(
+            reachable and status_code is not None and status_code != 404
+        ),
         "status_code": status_code,
         "latency_ms": None if not reachable else 12,
         "error": error,
@@ -65,13 +76,14 @@ def _install_probe(monkeypatch, results_by_worker: dict[str, dict]) -> None:
 
     Patches the name the route actually calls (``agent.main.worker_client``).
     Any worker not present in ``results_by_worker`` falls back to a healthy
-    200 — so a test only has to specify the workers it wants to vary.
+    405 (GET on a POST canonical → app_reached) — so a test only has to specify
+    the workers it wants to vary.
     """
 
     def fake_probe(worker: str, **kwargs) -> dict:
         if worker in results_by_worker:
             return results_by_worker[worker]
-        return _probe_result(worker, reachable=True, status_code=200)
+        return _probe_result(worker, reachable=True, status_code=405)
 
     monkeypatch.setattr(
         "agent.main.worker_client.probe_worker_health", fake_probe
@@ -119,11 +131,11 @@ def test_token_in_query_param_is_rejected(monkeypatch):
 # --------------------------------------------------------------------------- #
 
 
-def test_all_workers_200_returns_go_true(monkeypatch):
-    """Valid token + every worker reachable 200 → 200 with go=true,
+def test_all_workers_app_reached_returns_go_true(monkeypatch):
+    """Valid token + every worker app_reached (405) → 200 with go=true,
     worker_healthy=true, and a per-worker results list covering all 8."""
     _set_token(monkeypatch)
-    _install_probe(monkeypatch, {})  # all default to healthy 200
+    _install_probe(monkeypatch, {})  # all default to app_reached 405
     client = TestClient(app)
     resp = client.get(
         "/iac-apply/reachability", headers={"X-DriftScribe-Token": _TOKEN}
@@ -165,16 +177,18 @@ def test_one_sibling_unreachable_returns_502_go_false(monkeypatch):
     assert body["worker_healthy"] is True
 
 
-def test_tofu_apply_403_returns_502_worker_unhealthy(monkeypatch):
-    """tofu_apply reachable but 403 (routed but app-rejected pre-200) →
-    worker_healthy false → go=false → 502. The siblings are all fine, proving
-    the 403 is what fails the gate, not a sibling."""
+def test_tofu_apply_404_returns_502_worker_unhealthy(monkeypatch):
+    """tofu_apply reachable but 404 (pre-app: GFE-reserved path OR an ingress
+    rejection — the request never reached the worker process) → app_reached
+    false → worker_healthy false → go=false → 502. The siblings are all fine,
+    proving the 404 is what fails the gate, not a sibling. (A 403 would mean the
+    request DID reach past ingress to IAM, so 404 — not 403 — is 'not reached'.)"""
     _set_token(monkeypatch)
     _install_probe(
         monkeypatch,
         {
             "tofu_apply": _probe_result(
-                "tofu_apply", reachable=True, status_code=403
+                "tofu_apply", reachable=True, status_code=404
             )
         },
     )
