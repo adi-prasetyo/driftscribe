@@ -258,7 +258,7 @@ def open_docs_pr(
 def _assert_pr_eligible(
     pr: Any,
     *,
-    required_label: str,
+    required_label: str | None,
     required_head_prefix: str | None,
     required_base: str | None,
 ) -> None:
@@ -267,19 +267,25 @@ def _assert_pr_eligible(
 
     Shared provenance gate for every mutation that targets an existing PR
     (:func:`close_pr`, :func:`merge_pr`). ALL conditions must hold: the PR
-    carries ``required_label``, its head ref starts with
-    ``required_head_prefix`` (when given), and its base ref equals
-    ``required_base`` (when given). The single-repo PAT already bounds the
-    blast radius to one repository; this adds that the PR is one *this
-    workload* produced, not an arbitrary collaborator's PR in the same
-    repo. Performs no write — callers gate on this before mutating.
+    carries ``required_label`` (when given — ``None`` SKIPS the label check),
+    its head ref starts with ``required_head_prefix`` (when given), and its
+    base ref equals ``required_base`` (when given). The single-repo PAT
+    already bounds the blast radius to one repository; this adds that the PR
+    is one *this workload* produced, not an arbitrary collaborator's PR in the
+    same repo. Performs no write — callers gate on this before mutating.
+
+    ``required_label=None`` is used by the C5e infra-apply merge path
+    (:func:`merge_pr_at_sha`), whose provenance comes from a verified C2
+    artifact bound to the exact head_sha plus required-check greenness, not
+    from a label (Codex C5e-3 blocker #5).
     """
-    labels = {lbl.name for lbl in pr.get_labels()}
-    if required_label not in labels:
-        raise PrNotEligibleError(
-            f"PR #{pr.number} is not a DriftScribe PR "
-            f"(missing {required_label!r} label)"
-        )
+    if required_label is not None:
+        labels = {lbl.name for lbl in pr.get_labels()}
+        if required_label not in labels:
+            raise PrNotEligibleError(
+                f"PR #{pr.number} is not a DriftScribe PR "
+                f"(missing {required_label!r} label)"
+            )
     head_ref = pr.head.ref
     if required_head_prefix is not None and not head_ref.startswith(
         required_head_prefix
@@ -396,6 +402,37 @@ def _latest_check_runs(check_runs: Any) -> dict[str, Any]:
         if prev is None or _check_run_order_key(cr) >= _check_run_order_key(prev):
             latest[cr.name] = cr
     return latest
+
+
+def _assert_required_checks_green(
+    repo: Repository, head_sha: str, required: set[str]
+) -> None:
+    """Raise :class:`PrMergeBlockedError` unless every check in ``required`` has
+    *completed successfully* on ``head_sha``.
+
+    Reads the check runs scoped to the exact ``head_sha`` (not "the PR's current
+    head" — the caller pins the sha), collapses re-runs to the latest per name
+    (:func:`_latest_check_runs`), and verifies each required name is present,
+    ``completed``, and concluded ``success``. Shared by :func:`merge_pr_at_sha`
+    and :func:`assert_pr_ready_at_sha` so the readiness gate and the merge-time
+    re-check apply identical semantics on the identical sha.
+    """
+    runs = _latest_check_runs(repo.get_commit(head_sha).get_check_runs())
+    for name in sorted(required):
+        cr = runs.get(name)
+        if cr is None:
+            raise PrMergeBlockedError(
+                f"required check {name!r} has not reported on {head_sha[:7]} yet"
+            )
+        if cr.status != "completed":
+            raise PrMergeBlockedError(
+                f"required check {name!r} is still {cr.status!r}"
+            )
+        if cr.conclusion != "success":
+            raise PrMergeBlockedError(
+                f"required check {name!r} concluded {cr.conclusion!r}, "
+                "not 'success'"
+            )
 
 
 def _assert_merge_preconditions(
@@ -611,4 +648,227 @@ def merge_pr(
         "merge_method": merge_method,
         "comment_posted": comment_posted,
         "comment_error": comment_error,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Phase C5e-3 — head-SHA-bound readiness + merge for the infra-apply flow.
+#
+# Unlike :func:`merge_pr` (upgrade workload: label + ``upgrade/`` prefix), the
+# C5e merge derives provenance from a verified C2 artifact bound to the EXACT
+# head_sha plus required-check greenness on that sha, not from a label
+# (Codex C5e-3 OD-A). Both helpers pin ``expected_head_sha`` so what the
+# operator saw == what's latest == what gets applied.
+# --------------------------------------------------------------------------- #
+
+
+def get_pr_head_sha(repo: Repository, pr_number: int) -> str:
+    """Return the PR's current head SHA (the cheap C5e step-5b re-check)."""
+    return repo.get_pull(pr_number).head.sha
+
+
+def assert_pr_ready_at_sha(
+    repo: Repository,
+    *,
+    pr_number: int,
+    expected_head_sha: str,
+    required_checks: Any,
+    required_base: str = "main",
+) -> str:
+    """Read-only pre-propose readiness gate (Codex r2: readiness BEFORE mint).
+
+    Returns ``expected_head_sha`` when the PR is ready to propose+apply against
+    that exact head; otherwise raises. Performs NO write — the C5e POST runs this
+    before minting any plan approval so we never apply then discover we cannot
+    merge.
+
+    Gates (fail-closed):
+
+    - ``required_checks`` must be non-empty (empty ⇒ merge disabled ⇒ refuse
+      BEFORE any apply, since an unmergeable head must not be applied).
+    - the PR must exist (404 → :class:`PrNotEligibleError`).
+    - ``pr.base.ref == required_base`` (provenance: ``main`` only).
+    - the PR must be open, not merged, not draft.
+    - ``pr.head.sha == expected_head_sha`` (the pinned artifact's head).
+    - every required check must be green on ``expected_head_sha``.
+    """
+    required = set(required_checks)
+    if not required:
+        raise PrMergeBlockedError(
+            "no required checks configured — merge disabled"
+        )
+
+    try:
+        pr = repo.get_pull(pr_number)
+    except UnknownObjectException as e:
+        raise PrNotEligibleError(
+            f"PR #{pr_number} not found", status_code=404
+        ) from e
+
+    if pr.base.ref != required_base:
+        raise PrNotEligibleError(
+            f"PR #{pr_number} base {pr.base.ref!r} is not {required_base!r}"
+        )
+    if pr.merged:
+        raise PrMergeBlockedError(f"PR #{pr_number} is already merged")
+    if pr.state != "open":
+        raise PrMergeBlockedError(
+            f"PR #{pr_number} is {pr.state!r}, not open"
+        )
+    if pr.draft:
+        raise PrMergeBlockedError(f"PR #{pr_number} is a draft")
+    if pr.head.sha != expected_head_sha:
+        raise PrMergeBlockedError(
+            f"PR head moved (expected {expected_head_sha[:7]})"
+        )
+
+    _assert_required_checks_green(repo, expected_head_sha, required)
+    return expected_head_sha
+
+
+def merge_pr_at_sha(
+    repo: Repository,
+    *,
+    pr_number: int,
+    expected_head_sha: str,
+    required_checks: Any,
+    merge_method: str,
+    dry_run: bool,
+    required_base: str = "main",
+) -> dict[str, Any]:
+    """Merge the infra-apply PR at the EXACT ``expected_head_sha`` (fail-closed).
+
+    Ordering is load-bearing (Codex r2):
+
+    1. ``dry_run`` short-circuits to a preview.
+    2. empty ``required_checks`` ⇒ refuse (merge disabled).
+    3. fetch the PR (404 → :class:`PrNotEligibleError`).
+    4. assert ``base == required_base`` AND ``head == expected_head_sha``
+       FIRST (else 409 stale) — BEFORE the already-merged short-circuit, so a
+       manually-merged *newer* head is NOT mistaken for an idempotent reconcile
+       of an OLDER artifact.
+    5. THEN, if already merged (at the matching head), return idempotent success.
+    6. else: poll mergeability (re-fetch + RE-ASSERT base+head after the loop),
+       assert mergeable + allowed state, verify required checks green on
+       ``expected_head_sha``, ``pr.merge(sha=expected_head_sha, merge_method=...)``.
+
+    Provenance (OD-A): base==main + head==applied-head + required checks green +
+    (upstream) a verified C2 artifact existing for this exact head. No label /
+    head-prefix is required (``required_label=None``).
+    """
+    if dry_run:
+        return {"dry_run": True, "number": pr_number, "would_merge": True}
+
+    required = set(required_checks)
+    if not required:
+        raise PrMergeBlockedError(
+            "no required checks configured — merge disabled"
+        )
+
+    try:
+        pr = repo.get_pull(pr_number)
+    except UnknownObjectException as e:
+        raise PrNotEligibleError(
+            f"PR #{pr_number} not found", status_code=404
+        ) from e
+
+    def _assert_base_and_head(p: Any) -> None:
+        # Head + base FIRST (Codex r2): a moved head — even one that's been
+        # merged — is a stale-artifact race, NOT an idempotent reconcile.
+        if p.base.ref != required_base:
+            raise PrMergeBlockedError(
+                f"PR #{pr_number} base {p.base.ref!r} is not {required_base!r}"
+            )
+        if p.head.sha != expected_head_sha:
+            raise PrMergeBlockedError(
+                f"PR head moved (expected {expected_head_sha[:7]})"
+            )
+
+    _assert_base_and_head(pr)
+
+    # ONLY after the head check: a PR merged at the EXACT expected head is the
+    # idempotent reconcile success (the apply already succeeded; the merge is
+    # what we are reconciling).
+    if pr.merged:
+        return {
+            "merged": True,
+            "already_merged": True,
+            "number": pr_number,
+            "url": pr.html_url,
+        }
+    if pr.state != "open":
+        raise PrMergeBlockedError(
+            f"PR #{pr_number} is {pr.state!r}, not open"
+        )
+    if pr.draft:
+        raise PrMergeBlockedError(f"PR #{pr_number} is a draft")
+
+    # Mergeability is computed async; poll briefly rather than merge blind.
+    mergeable = pr.mergeable
+    attempts = 0
+    while mergeable is None and attempts < _MERGE_MERGEABILITY_RETRIES:
+        time.sleep(_MERGE_MERGEABILITY_DELAY)
+        pr = repo.get_pull(pr_number)
+        mergeable = pr.mergeable
+        attempts += 1
+    if mergeable is None:
+        raise PrMergeBlockedError(
+            f"PR #{pr_number} mergeability is still computing; retry shortly"
+        )
+
+    # Re-assert base+head on the freshest PR object — a re-fetch in the loop
+    # may have observed a moved head / retargeted base. ``sha=`` at merge only
+    # guards the head; base + the pin must be re-checked here.
+    _assert_base_and_head(pr)
+    if pr.merged:
+        return {
+            "merged": True,
+            "already_merged": True,
+            "number": pr_number,
+            "url": pr.html_url,
+        }
+
+    state = pr.mergeable_state
+    if mergeable is not True:
+        raise PrMergeBlockedError(
+            f"PR #{pr_number} is not mergeable (state={state!r})"
+        )
+    if state not in _MERGE_ALLOWED_STATES:
+        raise PrMergeBlockedError(
+            f"PR #{pr_number} cannot be merged in state {state!r}"
+        )
+
+    _assert_required_checks_green(repo, expected_head_sha, required)
+
+    try:
+        result = pr.merge(merge_method=merge_method, sha=expected_head_sha)
+    except GithubException as e:
+        data = e.data if isinstance(e.data, dict) else {}
+        detail = data.get("message") or str(e)
+        log.warning(
+            "iac merge refused for PR #%s (github %s): %s",
+            pr_number, e.status, detail,
+        )
+        raise PrMergeBlockedError(
+            f"GitHub refused the merge: {detail}"
+        ) from e
+
+    if not result.merged:
+        raise PrMergeBlockedError(
+            f"merge was not completed: {result.message or 'unknown reason'}"
+        )
+
+    # Best-effort audit comment (a failed comment must not lose the merge).
+    try:
+        pr.create_issue_comment(
+            f"Merged by DriftScribe IaC apply ({merge_method})."
+        )
+    except GithubException as e:
+        log.warning("failed to comment on merged IaC PR #%s: %s", pr.number, e)
+
+    return {
+        "merged": True,
+        "already_merged": False,
+        "number": pr_number,
+        "url": pr.html_url,
     }

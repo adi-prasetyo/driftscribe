@@ -8,6 +8,7 @@ import json
 import re
 import secrets
 import time
+import urllib.parse
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as _FutureTimeout
@@ -26,7 +27,7 @@ from agent import approvals as approval_helpers
 from agent import iac_artifacts
 from agent import iac_csrf
 from agent import worker_client
-from agent.auth import verify_token
+from agent.auth import require_cf_operator, verify_token
 from agent.classifier import ClassificationInput, classify
 from agent.config import Settings, artifacts_bucket, get_settings
 from agent.worker_client import WorkerClientError
@@ -66,6 +67,8 @@ from agent.workloads import (
     set_workload,
 )
 from pydantic import ValidationError as PydanticValidationError
+from driftscribe_lib import github
+from driftscribe_lib.github import PrMergeBlockedError, PrNotEligibleError
 from driftscribe_lib.logging import (
     current_trace_id_or_new,
     install_trace_middleware,
@@ -1711,6 +1714,59 @@ def _map_worker_error(
     )
 
 
+def _map_tofu_apply_error(
+    e: "worker_client.WorkerClientError", *, action: str
+) -> HTTPException:
+    """Map a tofu-apply worker error to the surfaced coordinator HTTPException.
+
+    Preserves the two operationally-distinct refusals (Codex C5e-3 blocker /
+    carry-forward):
+
+    - **423** (lock_refused): the OpenTofu state lock is held. Surface 423 with
+      an actionable message — the operator can force-unlock then re-approve.
+    - **409** (drift_refused): the saved plan no longer matches live state.
+      Surface 409 — the operator must re-run C2 to regenerate a fresh plan.
+
+    Everything else collapses so a probe cannot enumerate which worker-side
+    check failed:
+
+    - **422** (integrity/fidelity/verify) → 403 (don't leak which check).
+    - **404** (approval not found) → 403.
+    - **403** (bad token / operator-verify / not-pending) → 403.
+    - **5xx** (incl. the synthetic 503) → 502.
+
+    This mapper only chooses the SURFACED status. The §2 state-machine decision
+    of whether to release the idempotency claim (or record a terminal decision)
+    is the CALLER's — see :func:`iac_approval_post`.
+    """
+    if e.status_code == 423:
+        return HTTPException(
+            status_code=423,
+            detail=(
+                f"tofu-apply state lock held on {action}: force-unlock then "
+                f"re-approve. {e}"
+            ),
+        )
+    if e.status_code == 409:
+        return HTTPException(
+            status_code=409,
+            detail=(
+                f"tofu-apply plan no longer matches live state on {action}: "
+                f"re-run C2. {e}"
+            ),
+        )
+    if e.status_code == 422:
+        return HTTPException(status_code=403, detail="tofu-apply rejected the plan")
+    if e.status_code == 404:
+        return HTTPException(status_code=403, detail="tofu-apply approval not found")
+    if e.status_code == 403:
+        return HTTPException(status_code=403, detail="tofu-apply rejected the request")
+    # 5xx (incl. synthetic 503): availability/ambiguity — surface 502.
+    return HTTPException(
+        status_code=502, detail=f"tofu-apply unavailable on {action}: {e}"
+    )
+
+
 # --------------------------------------------------------------------------- #
 # HITL approval endpoints (Phase 11.7)
 # --------------------------------------------------------------------------- #
@@ -1930,6 +1986,10 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
         reason_blocked = "artifact does not match this PR"
     elif not s.driftscribe_token:
         reason_blocked = "approvals not configured (server token unset)"
+    elif s.dry_run:
+        # The POST fail-closes under dry-run (it would drive a REAL worker apply
+        # while skipping the merge); suppress Approve here so the UI matches.
+        reason_blocked = "infra apply disabled (coordinator in dry-run mode)"
     else:
         can_approve = True
 
@@ -1964,6 +2024,627 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
     _apply_approval_security_headers(response)
     _apply_iac_csp(response)
     return response
+
+
+# --------------------------------------------------------------------------- #
+# Phase C5e-3 — propose-on-approve POST orchestration.
+#
+# POST /iac-approvals/{pr_number} performs the §2 orchestration state machine:
+# Origin + CSRF (the signed, artifact-pinned form token) → re-resolve + pin
+# assert → pre-propose readiness → idempotency claim → /propose → 5b head
+# re-check → /apply (release matrix per the §2 table) → merge the exact applied
+# head (reconcile on merge-fail). The tofu-apply worker remains the sole infra
+# mutator and re-verifies everything authoritatively before it applies.
+# --------------------------------------------------------------------------- #
+
+
+def _check_iac_origin(request: Request, s: Settings) -> bool:
+    """Exact same-origin check for the C5e POST (Codex important; CSRF defense).
+
+    CF Access does NOT stop a cross-site POST, so we compare the request
+    ``Origin`` to ``settings.coordinator_origin`` EXACTLY on (scheme, host,
+    port). No ``Referer`` fallback. Fail-closed: a missing ``Origin`` header or
+    an unconfigured ``coordinator_origin`` returns ``False``.
+    """
+    origin = request.headers.get("origin")
+    if not origin:
+        return False
+    if not s.coordinator_origin:
+        return False
+    # Fail-closed on a malformed Origin: ``urllib.parse`` defers parsing of the
+    # port until ``.port`` is read, which raises ``ValueError`` for a non-numeric
+    # / out-of-range port (e.g. ``https://host:badport``). A bad Origin must be a
+    # clean 403, never a 500.
+    try:
+        got = urllib.parse.urlsplit(origin)
+        want = urllib.parse.urlsplit(s.coordinator_origin)
+        # Compare scheme + host + port; use ``.port`` so default-port
+        # normalization is consistent on both sides (e.g. https with/without
+        # explicit :443).
+        return (got.scheme, got.hostname, got.port) == (
+            want.scheme,
+            want.hostname,
+            want.port,
+        )
+    except ValueError:
+        return False
+
+
+def _iac_event_key(
+    repo: str, pr_number: int, head_sha: str, generation_metadata: str
+) -> str:
+    """Deterministic idempotency key for an infra-apply (Codex blocker #4).
+
+    Keyed on ``{repo, pr_number, head_sha, generation_metadata}`` — NOT on the
+    approver, so two operators acting on the same artifact cannot double-mint +
+    double-apply it. The approver is recorded in the event payload + decision
+    doc, never in the key.
+    """
+    digest = hashlib.sha256(
+        json.dumps(
+            {
+                "repo": repo,
+                "pr_number": pr_number,
+                "head_sha": head_sha,
+                "generation_metadata": generation_metadata,
+            },
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()[:32]
+    return f"iac-apply-{pr_number}-{digest}"
+
+
+def _record_iac_decision(
+    state: StateStore,
+    event_key: str,
+    *,
+    apply_status: str,
+    merge_state: str,
+    approval_id: str | None = None,
+    apply_attempt_id: str | None = None,
+    head_sha: str,
+    pr_number: int,
+    approver: str,
+) -> dict:
+    """Build + persist the infra-apply decision doc (the reconcile pointer).
+
+    Mirrors :func:`_do_rollback`'s ``record_decision`` usage. The decision doc
+    is the apply-then-merge reconcile pointer: an ``apply_status=="applied"`` +
+    ``merge_state=="failed"`` doc is what a re-POST reads to do a merge-only
+    reconcile; an ``apply_status in {"failed","ambiguous"}`` doc is terminal.
+    """
+    decision_id = str(uuid.uuid4())
+    decision = {
+        "decision_id": decision_id,
+        "event_key": event_key,
+        "trace_id": current_trace_id_or_new(),
+        "action": "iac_apply",
+        "apply_status": apply_status,
+        "merge_state": merge_state,
+        "approval_id": approval_id,
+        "apply_attempt_id": apply_attempt_id,
+        "head_sha": head_sha,
+        "pr_number": pr_number,
+        "approver": approver,
+    }
+    if apply_status == "applied":
+        decision["applied_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
+    state.record_decision(decision_id, event_key, decision)
+    return decision
+
+
+def _render_iac_outcome(
+    request: Request,
+    *,
+    pr_number: int,
+    view: "iac_artifacts.IacPlanView | None",
+    decision: str,
+    outcome: str,
+    status_code: int = 200,
+) -> Response:
+    """Re-render the approval page for a terminal SUCCESS/info POST outcome.
+
+    Suppresses the Approve form (``can_approve=False``) and shows the outcome
+    banner. Applies both the approval security headers and the strict IaC CSP.
+    """
+    response = _TEMPLATES.TemplateResponse(
+        request,
+        "iac_approval.html",
+        {
+            "pr_number": pr_number,
+            "view": view,
+            "form_token": None,
+            "can_approve": False,
+            "reason_blocked": "",
+            "decision": decision,
+            "outcome": outcome,
+        },
+    )
+    response.status_code = status_code
+    _apply_approval_security_headers(response)
+    _apply_iac_csp(response)
+    return response
+
+
+@app.post("/iac-approvals/{pr_number}", response_class=HTMLResponse)
+def iac_approval_post(
+    request: Request,
+    pr_number: int,
+    operator_email: str = Depends(require_cf_operator),
+    cf_access_jwt: str | None = Header(default=None, alias="Cf-Access-Jwt-Assertion"),
+    form_token: str = Form(...),
+    decision: Literal["approve", "reject"] = Form(...),
+) -> Response:
+    """Propose-on-approve POST: run the §2 orchestration state machine.
+
+    ``require_cf_operator`` mandates a verified Cloudflare-Access operator
+    identity (401 if absent, 403 on verify-fail, 503 if CF unconfigured) and
+    returns the canonical operator email — the ``approver`` bound to the plan
+    approval. ``cf_access_jwt`` is the RAW header forwarded to the worker so it
+    can re-verify the operator identity authoritatively at ``/apply``.
+
+    REJECT is a coordinator-side audit no-op (no approval exists under
+    propose-on-approve). APPROVE executes the ordered state machine; see the
+    inline step comments and the plan's §2 table for the release matrix.
+    """
+    s = get_settings()
+
+    # REJECT — no approval exists yet (propose-on-approve mints on approve), so
+    # there is nothing to deny on the worker. Audit no-op + re-render, 200.
+    if decision == "reject":
+        _ref, view = _resolve_iac_plan(s, pr_number)
+        return _render_iac_outcome(
+            request,
+            pr_number=pr_number,
+            view=view,
+            decision="reject",
+            outcome="Rejected (no apply performed). No plan approval was minted.",
+        )
+
+    # --- APPROVE -------------------------------------------------------------
+
+    # (a) Origin + CSRF (hard, raise 403/503).
+    if not _check_iac_origin(request, s):
+        raise HTTPException(status_code=403, detail="bad origin")
+    try:
+        payload = iac_csrf.verify_form_token(s, form_token, pr_number=pr_number)
+    except iac_csrf.IacCsrfError as e:
+        raise HTTPException(
+            status_code=503, detail="approvals not configured"
+        ) from e
+    if payload is None:
+        raise HTTPException(
+            status_code=403,
+            detail="stale or invalid form token; reload the approval page",
+        )
+
+    # Dry-run fail-closed (Codex C5e-3 completed-work review, BLOCKER): this POST
+    # is an explicit operator apply that drives the worker's REAL /apply (propose/
+    # apply are NOT dry-gated). Under coordinator dry-run we would mutate live infra
+    # yet skip the merge (merge_pr_at_sha previews) and record a misleading state —
+    # so refuse the whole operation BEFORE /propose rather than half-perform it.
+    # Checked after Origin+CSRF so a cross-site probe still gets 403, not a mode hint.
+    if s.dry_run:
+        raise HTTPException(
+            status_code=503,
+            detail="infra apply is disabled while the coordinator runs in dry-run mode",
+        )
+
+    # (b) Re-resolve + pin: bind what-you-saw == what's-latest == what-applies.
+    ref, view = _resolve_iac_plan(s, pr_number)
+    if view is None or view.unverifiable:
+        raise HTTPException(status_code=403, detail="artifact unverifiable")
+    if not view.integrity_ok:
+        raise HTTPException(status_code=403, detail="integrity mismatch")
+    if view.denylist_violations:
+        raise HTTPException(status_code=403, detail="denylist violations")
+    if not _iac_artifact_consistent(ref, view, pr_number):
+        raise HTTPException(
+            status_code=403, detail="artifact does not match this PR"
+        )
+    if not (
+        payload["head_sha"] == view.head_sha
+        and payload["artifact_uri_metadata"] == view.artifact_uri_metadata
+        and payload["generation_metadata"] == view.generation_metadata
+        and payload["plan_sha256"] == view.plan_sha256
+        and payload["plan_json_sha256"] == view.plan_json_sha256
+        # Codex C5e-3 completed-work review: the token pins comment_id, so enforce
+        # it too — the full exact-identity contract from the plan (ref is non-None
+        # here because _iac_artifact_consistent already required it).
+        and payload["comment_id"] == (ref.comment_id if ref else None)
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="the plan changed since you loaded this page; reload and re-review",
+        )
+
+    # (c) Pre-propose readiness (raise, no mint — Codex r2: readiness BEFORE claim).
+    required_checks = [
+        c.strip() for c in s.iac_required_checks.split(",") if c.strip()
+    ]
+    repo = get_repo(s.github_token, s.github_repo)
+    try:
+        github.assert_pr_ready_at_sha(
+            repo,
+            pr_number=pr_number,
+            expected_head_sha=view.head_sha,
+            required_checks=required_checks,
+        )
+    except (PrNotEligibleError, PrMergeBlockedError) as e:
+        raise HTTPException(
+            status_code=getattr(e, "status_code", None) or 409, detail=str(e)
+        ) from e
+
+    # (d) Idempotency claim.
+    state = get_state()
+    event_key = _iac_event_key(
+        s.github_repo, pr_number, view.head_sha, view.generation_metadata
+    )
+    claimed = state.record_event(
+        event_key,
+        {
+            "approver": operator_email,
+            "pr_number": pr_number,
+            "head_sha": view.head_sha,
+            "trigger": "iac_apply",
+        },
+    )
+    reconcile_existing: dict | None = None
+    if not claimed:
+        existing = state.find_decision_for_event(event_key)
+        if existing and existing.get("merge_state") == "merged":
+            return _render_iac_outcome(
+                request,
+                pr_number=pr_number,
+                view=view,
+                decision="approve",
+                outcome="Already applied and merged (idempotent).",
+            )
+        if (
+            existing
+            and existing.get("apply_status") == "applied"
+            and existing.get("merge_state") == "failed"
+        ):
+            # Merge-only reconcile: skip propose/apply; jump to the merge step.
+            reconcile_existing = existing
+        elif existing and existing.get("apply_status") in {"failed", "ambiguous"}:
+            return _render_iac_outcome(
+                request,
+                pr_number=pr_number,
+                view=view,
+                decision="approve",
+                outcome=(
+                    f"Terminal state recorded: apply_status="
+                    f"{existing.get('apply_status')!r}. Manual verification "
+                    "required; this will NOT be retried automatically."
+                ),
+            )
+        else:
+            raise HTTPException(
+                status_code=409,
+                detail="an apply for this plan is already in progress",
+            )
+
+    if reconcile_existing is not None:
+        # Merge-only reconcile path (re-POST after applied+merge-failed).
+        approval_id = reconcile_existing.get("approval_id")
+        apply_attempt_id = reconcile_existing.get("apply_attempt_id")
+        return _iac_merge_step(
+            request,
+            s,
+            state,
+            repo=repo,
+            event_key=event_key,
+            view=view,
+            required_checks=required_checks,
+            approval_id=approval_id,
+            apply_attempt_id=apply_attempt_id,
+            operator_email=operator_email,
+            pr_number=pr_number,
+        )
+
+    # (e) Propose (mints the plan approval; failure ⇒ no approval ⇒ release).
+    try:
+        pr_res = worker_client.call_propose(
+            view.artifact_uri_metadata,
+            view.generation_metadata,
+            operator_email,
+            cf_access_jwt,
+        )
+    except worker_client.WorkerClientError as e:
+        state.release_event(event_key)
+        raise _map_tofu_apply_error(e, action="propose") from e
+    # Validate the /propose 2xx before using the ids (Codex C5e-3 review, IMPORTANT):
+    # a malformed success would otherwise feed None into call_apply/call_plan_deny.
+    # Check the TYPE before .get() — worker_client.call returns r.json(), which may
+    # be a non-dict (array/str/null) on a 2xx; .get() on that would raise and strand
+    # the claim (Codex r2). This is pre-apply (nothing mutated, nothing burned we can
+    # trust), so release the claim and 502 — do NOT attempt deny with untrusted ids.
+    if not isinstance(pr_res, dict):
+        state.release_event(event_key)
+        raise HTTPException(
+            status_code=502,
+            detail="tofu-apply returned a malformed propose response",
+        )
+    approval_id = pr_res.get("approval_id")
+    approval_token = pr_res.get("approval_token")
+    if not (
+        isinstance(approval_id, str)
+        and approval_id
+        and isinstance(approval_token, str)
+        and approval_token
+    ):
+        state.release_event(event_key)
+        raise HTTPException(
+            status_code=502,
+            detail="tofu-apply returned a malformed propose response",
+        )
+
+    # (5b) Head re-check immediately before /apply — a push between propose and
+    # apply would otherwise apply a stale saved plan then diverge from the head.
+    # A read failure here must NOT strand the claim + the pending approval we
+    # just minted: treat any error reading the head as "cannot prove the head is
+    # safe to apply", clean up (best-effort deny + release), and fail-closed 409
+    # (Codex C5e-3 completed-work review). The approval is still pending (not yet
+    # applied), so deny is the correct cleanup.
+    try:
+        head_now = github.get_pr_head_sha(repo, pr_number)
+    except Exception as e:  # noqa: BLE001 — fail-closed: cannot prove head safe
+        with contextlib.suppress(Exception):
+            worker_client.call_plan_deny(approval_id, approval_token)
+        state.release_event(event_key)
+        raise HTTPException(
+            status_code=409,
+            detail="could not confirm PR head before apply; re-approve",
+        ) from e
+    if head_now != view.head_sha:
+        with contextlib.suppress(Exception):
+            worker_client.call_plan_deny(approval_id, approval_token)
+        state.release_event(event_key)
+        raise HTTPException(
+            status_code=409, detail="PR head moved after propose; re-approve"
+        )
+
+    # (f) Apply — the §2 release matrix.
+    try:
+        apply_res = worker_client.call_apply(
+            approval_id, approval_token, cf_access_jwt
+        )
+    except worker_client.WorkerClientError as e:
+        if e.status_code in (403, 404):
+            # PRE-claim: approval NOT burned, infra NOT mutated. Clean the
+            # orphaned pending we just minted, release, surface.
+            with contextlib.suppress(Exception):
+                worker_client.call_plan_deny(approval_id, approval_token)
+            state.release_event(event_key)
+            raise _map_tofu_apply_error(e, action="apply") from e
+        if e.status_code in (422, 423, 409):
+            # Post-claim, NON-mutating: the approval is burned but infra is
+            # unchanged. Release so the operator can re-click for a fresh mint.
+            state.release_event(event_key)
+            raise _map_tofu_apply_error(e, action="apply") from e
+        if e.status_code == 502 or e.status_code >= 500:
+            # Possible partial mutation. Do NOT release. Distinguish a
+            # worker-returned 502 (definite ``tofu apply`` failure) from the
+            # synthetic 503 / any other 5xx (unknown whether it reached/applied).
+            ambiguous = e.status_code != 502
+            apply_status = "ambiguous" if ambiguous else "failed"
+            _record_iac_decision(
+                state,
+                event_key,
+                apply_status=apply_status,
+                merge_state="n/a",
+                approval_id=approval_id,
+                head_sha=view.head_sha,
+                pr_number=pr_number,
+                approver=operator_email,
+            )
+            with contextlib.suppress(Exception):
+                worker_client.call(
+                    "notifier",
+                    {
+                        "channel": "approval",
+                        "severity": "high",
+                        "body": (
+                            f"IaC apply {apply_status} for PR #{pr_number} "
+                            f"(head {view.head_sha[:7]}, approval {approval_id}). "
+                            "Manual verification required; do NOT retry blindly."
+                        ),
+                    },
+                )
+            if ambiguous:
+                raise HTTPException(
+                    status_code=504,
+                    detail=(
+                        "tofu-apply outcome uncertain (timeout/unreachable after "
+                        "send); infra may have changed. Manual verification "
+                        "required; do NOT retry blindly."
+                    ),
+                ) from e
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    "tofu-apply failed; infra may be partially mutated. Manual "
+                    "verification required; do NOT retry blindly."
+                ),
+            ) from e
+        # Defensive: any unclassified status → treat as ambiguous (no release).
+        _record_iac_decision(
+            state,
+            event_key,
+            apply_status="ambiguous",
+            merge_state="n/a",
+            approval_id=approval_id,
+            head_sha=view.head_sha,
+            pr_number=pr_number,
+            approver=operator_email,
+        )
+        with contextlib.suppress(Exception):
+            worker_client.call(
+                "notifier",
+                {
+                    "channel": "approval",
+                    "severity": "high",
+                    "body": (
+                        f"IaC apply ambiguous for PR #{pr_number} "
+                        f"(unexpected worker status {e.status_code})."
+                    ),
+                },
+            )
+        raise HTTPException(
+            status_code=504,
+            detail=(
+                "tofu-apply returned an unexpected status; outcome uncertain. "
+                "Manual verification required; do NOT retry blindly."
+            ),
+        ) from e
+
+    # Validate the /apply 2xx before merging (Codex C5e-3 review, BLOCKER): a
+    # malformed 200 must NOT merge unapplied config. The worker only returns 200
+    # after a real apply, so a malformed body is treated as AMBIGUOUS (may have
+    # mutated) — no release, terminal decision, alert, 504, NO merge.
+    apply_attempt_id = apply_res.get("apply_attempt_id") if isinstance(apply_res, dict) else None
+    if not (
+        isinstance(apply_res, dict)
+        and apply_res.get("status") == "applied"
+        and apply_res.get("approval_id") == approval_id
+        and isinstance(apply_attempt_id, str)
+        and apply_attempt_id
+    ):
+        _record_iac_decision(
+            state,
+            event_key,
+            apply_status="ambiguous",
+            merge_state="n/a",
+            approval_id=approval_id,
+            apply_attempt_id=apply_attempt_id if isinstance(apply_attempt_id, str) else None,
+            head_sha=view.head_sha,
+            pr_number=pr_number,
+            approver=operator_email,
+        )
+        with contextlib.suppress(Exception):
+            worker_client.call(
+                "notifier",
+                {
+                    "channel": "approval",
+                    "severity": "high",
+                    "body": (
+                        f"IaC apply returned a malformed success for PR #{pr_number} "
+                        f"(head {view.head_sha[:7]}, approval {approval_id}); outcome "
+                        "uncertain. Manual verification required; do NOT retry blindly."
+                    ),
+                },
+            )
+        raise HTTPException(
+            status_code=504,
+            detail=(
+                "tofu-apply returned a malformed success response; outcome "
+                "uncertain. Manual verification required; do NOT retry blindly."
+            ),
+        )
+
+    # (g) Merge (apply succeeded).
+    return _iac_merge_step(
+        request,
+        s,
+        state,
+        repo=repo,
+        event_key=event_key,
+        view=view,
+        required_checks=required_checks,
+        approval_id=approval_id,
+        apply_attempt_id=apply_attempt_id,
+        operator_email=operator_email,
+        pr_number=pr_number,
+    )
+
+
+def _iac_merge_step(
+    request: Request,
+    s: Settings,
+    state: StateStore,
+    *,
+    repo,
+    event_key: str,
+    view: "iac_artifacts.IacPlanView",
+    required_checks: list[str],
+    approval_id: str | None,
+    apply_attempt_id: str | None,
+    operator_email: str,
+    pr_number: int,
+) -> Response:
+    """Step (g): merge the EXACT applied head; reconcile on merge-fail.
+
+    Shared by the fresh apply→merge path and the merge-only reconcile re-POST.
+    On merge success → record ``merged`` decision + success banner. On merge
+    failure → record the ``applied``/``failed`` reconcile doc + notifier alert +
+    a 200 "merge pending reconcile" banner (apply SUCCEEDED — not an operator
+    error; the event is NOT released because the decision carries the reconcile
+    pointer).
+    """
+    try:
+        github.merge_pr_at_sha(
+            repo,
+            pr_number=pr_number,
+            expected_head_sha=view.head_sha,
+            required_checks=required_checks,
+            merge_method=(s.iac_merge_method or "squash"),
+            dry_run=s.dry_run,
+        )
+    except Exception as e:  # noqa: BLE001 — any merge failure → reconcile doc
+        _record_iac_decision(
+            state,
+            event_key,
+            apply_status="applied",
+            merge_state="failed",
+            approval_id=approval_id,
+            apply_attempt_id=apply_attempt_id,
+            head_sha=view.head_sha,
+            pr_number=pr_number,
+            approver=operator_email,
+        )
+        with contextlib.suppress(Exception):
+            worker_client.call(
+                "notifier",
+                {
+                    "channel": "approval",
+                    "severity": "high",
+                    "body": (
+                        f"IaC apply SUCCEEDED but merge failed for PR #{pr_number} "
+                        f"(head {view.head_sha[:7]}): {e}. Re-submit to retry the "
+                        "merge (apply will NOT re-run)."
+                    ),
+                },
+            )
+        return _render_iac_outcome(
+            request,
+            pr_number=pr_number,
+            view=view,
+            decision="approve",
+            outcome=(
+                "Applied; merge pending reconcile — re-submit to retry the merge "
+                "(the apply will NOT re-run)."
+            ),
+        )
+
+    _record_iac_decision(
+        state,
+        event_key,
+        apply_status="applied",
+        merge_state="merged",
+        approval_id=approval_id,
+        apply_attempt_id=apply_attempt_id,
+        head_sha=view.head_sha,
+        pr_number=pr_number,
+        approver=operator_email,
+    )
+    return _render_iac_outcome(
+        request,
+        pr_number=pr_number,
+        view=view,
+        decision="approve",
+        outcome="Applied and merged.",
+    )
 
 
 @app.post("/approvals/{approval_id}", response_class=HTMLResponse)
