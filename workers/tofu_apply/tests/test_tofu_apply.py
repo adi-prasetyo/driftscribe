@@ -710,6 +710,276 @@ def test_failed_state_suspect_in_phase_vocabulary() -> None:
 
 
 # =========================================================================== #
+# tofu_runner — semantic freshness gate (C5g carry-forward 1a)
+# =========================================================================== #
+
+_PD = "google_cloud_run_v2_service.payment_demo"
+
+
+def _drift_show(before, after, *, address=_PD, actions=None,
+                resource_changes=None, output_changes=None):  # noqa: ANN001, ANN201
+    """A minimal `tofu show -json` of a refresh-only plan with one drift entry."""
+    j = {"resource_drift": [{
+        "address": address, "type": "google_cloud_run_v2_service",
+        "change": {"actions": actions or ["update"], "before": before, "after": after},
+    }]}
+    if resource_changes is not None:
+        j["resource_changes"] = resource_changes
+    if output_changes is not None:
+        j["output_changes"] = output_changes
+    return j
+
+
+def test_changed_leaf_paths_added_removed_nested() -> None:
+    paths = tofu_runner._changed_leaf_paths({"a": 1, "b": {"c": 2}}, {"a": 1, "b": {"c": 3, "d": 4}})
+    assert paths == {"b.c", "b.d"}  # c changed + d added; a unchanged → omitted
+
+
+def test_changed_leaf_paths_list_index_stripped() -> None:
+    paths = tofu_runner._changed_leaf_paths(
+        {"conditions": [{"t": "t1"}]}, {"conditions": [{"t": "t2"}]})
+    assert paths == {"conditions.t"}  # list index stripped in the normalized path
+
+
+def test_is_computed_only_path_anchoring() -> None:
+    assert tofu_runner._is_computed_only_path("generation")
+    assert tofu_runner._is_computed_only_path("conditions.last_transition_time")
+    assert tofu_runner._is_computed_only_path("terminal_condition")
+    # subtree match is anchored at the path root + a "." boundary
+    assert not tofu_runner._is_computed_only_path("conditionsFoo")
+    assert not tofu_runner._is_computed_only_path("template.conditions.x")
+    assert not tofu_runner._is_computed_only_path("template.service_account")
+    # identity/lifecycle-computed fields are deliberately NOT allowlisted
+    assert not tofu_runner._is_computed_only_path("uid")
+    assert not tofu_runner._is_computed_only_path("create_time")
+
+
+def test_classify_drift_benign_computed_churn() -> None:
+    """The exact C5g churn set (generation/etag/timestamps/revisions/...) → benign."""
+    before = {
+        "generation": 6, "etag": "a", "client_version": "1.0",
+        "template": {"service_account": "runtime@", "containers": [{"image": "img:1"}]},
+        "terminal_condition": {"last_transition_time": "t1"},
+        "conditions": [{"type": "Ready", "last_transition_time": "t1"}],
+        "latest_ready_revision": "rev-6",
+    }
+    after = {**before, "generation": 10, "etag": "b", "client_version": "1.1",
+             "terminal_condition": {"last_transition_time": "t2"},
+             "conditions": [{"type": "Ready", "last_transition_time": "t2"}],
+             "latest_ready_revision": "rev-10"}
+    v = tofu_runner.classify_refresh_drift(_drift_show(before, after))
+    assert v.benign is True
+    assert v.paths and all(":" in p for p in v.paths)  # the drifted computed paths, for audit
+
+
+def test_classify_drift_material_env_change_refuses() -> None:
+    before = {"generation": 6, "template": {"containers": [{"env": [{"name": "X", "value": "a"}]}]}}
+    after = {"generation": 7, "template": {"containers": [{"env": [{"name": "X", "value": "b"}]}]}}
+    v = tofu_runner.classify_refresh_drift(_drift_show(before, after))
+    assert v.benign is False and any("env" in p for p in v.paths)
+
+
+def test_classify_drift_material_service_account_refuses() -> None:
+    v = tofu_runner.classify_refresh_drift(_drift_show(
+        {"template": {"service_account": "runtime@"}}, {"template": {"service_account": "evil@"}}))
+    assert v.benign is False and any("service_account" in p for p in v.paths)
+
+
+def test_classify_drift_mixed_reports_only_material() -> None:
+    """A drift mixing computed churn + one material change refuses, and the
+    refusal names ONLY the material path (computed paths are not the offender)."""
+    v = tofu_runner.classify_refresh_drift(_drift_show(
+        {"generation": 6, "template": {"service_account": "runtime@"}},
+        {"generation": 7, "template": {"service_account": "evil@"}}))
+    assert v.benign is False
+    assert any("service_account" in p for p in v.paths)
+    assert not any(p.endswith(":generation") for p in v.paths)
+
+
+def test_classify_drift_delete_create_replace_actions_material() -> None:
+    for acts in (["delete"], ["create"], ["delete", "create"], ["create", "delete"]):
+        v = tofu_runner.classify_refresh_drift(_drift_show({"x": 1}, {"x": 2}, actions=acts))
+        assert v.benign is False, acts
+
+
+def test_classify_drift_resource_changes_action_refuses() -> None:
+    j = _drift_show({"generation": 6}, {"generation": 7},
+                    resource_changes=[{"address": "x", "change": {"actions": ["update"]}}])
+    v = tofu_runner.classify_refresh_drift(j)
+    assert v.benign is False and "resource_changes" in v.reason
+
+
+def test_classify_drift_resource_changes_noop_read_ok() -> None:
+    for act in (["no-op"], ["read"]):
+        j = _drift_show({"generation": 6}, {"generation": 7},
+                        resource_changes=[{"address": "x", "change": {"actions": act}}])
+        assert tofu_runner.classify_refresh_drift(j).benign is True, act
+
+
+def test_classify_drift_output_changes_refuses() -> None:
+    j = _drift_show({"generation": 6}, {"generation": 7},
+                    output_changes={"o": {"actions": ["update"]}})
+    v = tofu_runner.classify_refresh_drift(j)
+    assert v.benign is False and "output" in v.reason
+
+
+def test_classify_drift_identity_lifecycle_fields_material() -> None:
+    """uid / create_time / delete_time are computed but signal recreate/deletion —
+    they MUST refuse, not pass as benign (Codex review 019e7a3f)."""
+    for added in ({"uid": "u"}, {"create_time": "t"}, {"delete_time": "t"}):
+        v = tofu_runner.classify_refresh_drift(_drift_show({"generation": 6}, {"generation": 6, **added}))
+        assert v.benign is False, added
+
+
+def test_classify_drift_noop_entry_skipped() -> None:
+    assert tofu_runner.classify_refresh_drift(_drift_show({"x": 1}, {"x": 1}, actions=["no-op"])).benign is True
+
+
+def test_classify_drift_unknown_type_fails_closed() -> None:
+    """The computed allowlist is type-scoped: even PURELY computed-looking drift
+    on a NON-Cloud-Run-v2 resource refuses (future C6 resource-set safety)."""
+    j = {"resource_drift": [{
+        "address": "google_storage_bucket.x", "type": "google_storage_bucket",
+        "change": {"actions": ["update"], "before": {"generation": 1}, "after": {"generation": 2}}}]}
+    v = tofu_runner.classify_refresh_drift(j)
+    assert v.benign is False and "type-scoped" in v.reason
+
+
+def test_has_true_recurses_only_real_true() -> None:
+    assert tofu_runner._has_true({"a": {"b": True}}) is True
+    assert tofu_runner._has_true([False, {"x": True}]) is True
+    # all-false / empty present trees must NOT flag (else benign churn over-refuses)
+    assert tofu_runner._has_true({"a": False, "b": {"c": False}}) is False
+    assert tofu_runner._has_true({}) is False
+    assert tofu_runner._has_true(False) is False
+
+
+def test_classify_drift_sensitive_marker_fails_closed() -> None:
+    """A sensitive attr is redacted IDENTICALLY in before/after; the real change
+    lives only in *_sensitive. before==after must NOT read as benign when a marker
+    is set (the false-PROCEED the adversarial review found)."""
+    j = {"resource_drift": [{
+        "address": _PD, "type": "google_cloud_run_v2_service",
+        "change": {"actions": ["update"],
+                   "before": {"template": {"containers": [{"env": [{"value": None}]}]}},
+                   "after": {"template": {"containers": [{"env": [{"value": None}]}]}},
+                   "after_sensitive": {"template": {"containers": [{"env": [{"value": True}]}]}}}}]}
+    v = tofu_runner.classify_refresh_drift(j)
+    assert v.benign is False and "sensitive" in v.reason
+
+
+def test_classify_drift_after_unknown_marker_fails_closed() -> None:
+    j = {"resource_drift": [{
+        "address": _PD, "type": "google_cloud_run_v2_service",
+        "change": {"actions": ["update"], "before": {"generation": 6}, "after": {"generation": 6},
+                   "after_unknown": {"uri": True}}}]}
+    assert tofu_runner.classify_refresh_drift(j).benign is False
+
+
+def test_classify_drift_all_false_marker_tree_still_benign() -> None:
+    """An all-false (present-but-empty) marker tree must NOT over-refuse the
+    benign computed-churn case (why _has_true recurses for a real True)."""
+    j = {"resource_drift": [{
+        "address": _PD, "type": "google_cloud_run_v2_service",
+        "change": {"actions": ["update"], "before": {"generation": 6}, "after": {"generation": 10},
+                   "before_sensitive": {"generation": False}, "after_sensitive": {"generation": False},
+                   "after_unknown": {}}}]}
+    assert tofu_runner.classify_refresh_drift(j).benign is True
+
+
+def test_classify_drift_fail_closed_on_malformed() -> None:
+    assert tofu_runner.classify_refresh_drift("not-a-dict").benign is False
+    assert tofu_runner.classify_refresh_drift({}).benign is False                      # no resource_drift
+    assert tofu_runner.classify_refresh_drift({"resource_drift": "x"}).benign is False  # not a list
+    # non-dict before/after on an update → fail closed
+    assert tofu_runner.classify_refresh_drift(
+        {"resource_drift": [{"address": "a", "change": {"actions": ["update"], "before": "x", "after": {}}}]}
+    ).benign is False
+    # malformed entry (not a dict)
+    assert tofu_runner.classify_refresh_drift({"resource_drift": ["x"]}).benign is False
+
+
+def _gate_runner(*, refresh_exit, show_json=None, show_exit=0, apply=(0, "", ""), serials=(3, 3)):  # noqa: ANN001, ANN202
+    """Stub for the freshness-gate path: init → plan(freshness)=refresh_exit →
+    [on exit 2] show -json refresh.tfplan → show_json → state pull → apply."""
+    state_n = {"i": 0}
+    calls: list[list[str]] = []
+
+    def run(args, cwd, env):  # noqa: ANN001
+        calls.append(args)
+        if args[:2] == ["state", "pull"]:
+            i = state_n["i"]
+            state_n["i"] += 1
+            s = serials[i] if i < len(serials) else None
+            return (1, "", "") if s is None else (0, json.dumps({"serial": s, "lineage": "L"}), "")
+        if args[0] == "init":
+            return 0, "", ""
+        if args[:2] == ["show", "-json"]:
+            return show_exit, (json.dumps(show_json) if show_json is not None else ""), ""
+        if args[0] == "plan":
+            return refresh_exit, ("drift" if refresh_exit == 2 else ""), ""
+        if args[0] == "apply":
+            return apply
+        return 1, "", "unexpected"
+
+    return run, calls
+
+
+def test_gate_benign_drift_proceeds_and_records_paths() -> None:
+    run, calls = _gate_runner(refresh_exit=2, show_json=_drift_show({"generation": 6}, {"generation": 10}))
+    out = tofu_runner.run_apply_sequence(workdir="/x", kms_key="K", base_env={}, run_tofu=run)
+    assert out.apply_exit == 0 and out.freshness_exit == 2
+    assert any(":generation" in p for p in out.benign_drift_paths)
+    assert sum(1 for c in calls if c[0] == "apply") == 1  # it DID apply (the saved plan)
+
+
+def test_gate_material_drift_refuses() -> None:
+    run, calls = _gate_runner(refresh_exit=2, show_json=_drift_show(
+        {"template": {"service_account": "a"}}, {"template": {"service_account": "b"}}))
+    with pytest.raises(tofu_runner.FreshnessDrift):
+        tofu_runner.run_apply_sequence(workdir="/x", kms_key="K", base_env={}, run_tofu=run)
+    assert not any(c[0] == "apply" for c in calls)  # never applied
+
+
+def test_gate_show_failure_fails_closed() -> None:
+    run, _ = _gate_runner(refresh_exit=2, show_exit=1)
+    with pytest.raises(tofu_runner.FreshnessDrift):
+        tofu_runner.run_apply_sequence(workdir="/x", kms_key="K", base_env={}, run_tofu=run)
+
+
+def test_gate_fresh_exit0_skips_show() -> None:
+    run, calls = _gate_runner(refresh_exit=0)
+    out = tofu_runner.run_apply_sequence(workdir="/x", kms_key="K", base_env={}, run_tofu=run)
+    assert out.freshness_exit == 0 and out.benign_drift_paths == ()
+    assert not any(c[:2] == ["show", "-json"] for c in calls)  # show only runs on drift
+
+
+def test_gate_empty_drift_on_exit2_fails_closed() -> None:
+    """refresh exit 2 (drift) but show -json carries an EMPTY resource_drift (the
+    signals disagree) → refuse, never proceed (fail-closed symmetry)."""
+    run, calls = _gate_runner(refresh_exit=2, show_json={"resource_drift": []})
+    with pytest.raises(tofu_runner.FreshnessDrift):
+        tofu_runner.run_apply_sequence(workdir="/x", kms_key="K", base_env={}, run_tofu=run)
+    assert not any(c[0] == "apply" for c in calls)
+
+
+def test_refresh_drift_verdict_fails_closed_on_classify_exception(monkeypatch) -> None:  # noqa: ANN001
+    """A classification error (e.g. RecursionError on pathological nesting) must
+    return a non-benign verdict, NEVER escape (an escape would 500 the request and
+    strand the already-burned approval at phase=\"claimed\")."""
+    def boom(_show_json):  # noqa: ANN001, ANN202
+        raise RecursionError("too deep")
+
+    monkeypatch.setattr(tofu_runner, "classify_refresh_drift", boom)
+
+    def run(args, cwd, env):  # noqa: ANN001
+        return 0, "{}", ""  # valid JSON from show -json; the classifier raises
+
+    v = tofu_runner._refresh_drift_verdict(run, "/x", {})
+    assert v.benign is False and "classification failed" in v.reason
+
+
+# =========================================================================== #
 # /healthz + /deny
 # =========================================================================== #
 
@@ -815,13 +1085,22 @@ def test_apply_denylist_violation_burns_and_refuses(client: TestClient, monkeypa
 
 
 def test_apply_drift_refused(client: TestClient, monkeypatch, tmp_path) -> None:
+    """MATERIAL refresh drift (an out-of-band desired-state change) → 409
+    drift_refused, and the saved plan is NEVER applied."""
     ctx = _wire(monkeypatch, tmp_path)
+    material_show = {"resource_drift": [{
+        "address": "google_cloud_run_v2_service.payment_demo",
+        "type": "google_cloud_run_v2_service",
+        "change": {"actions": ["update"], "before": {"template": {"service_account": "a@x"}},
+                   "after": {"template": {"service_account": "b@x"}}}}]}
 
     def run(args, cwd, env):  # noqa: ANN001
         if args[:2] == ["version", "-json"]:
             return 0, json.dumps({"terraform_version": "1.12.0"}), ""
         if args[0] == "init":
             return 0, "", ""
+        if args[:2] == ["show", "-json"]:
+            return 0, json.dumps(material_show), ""
         if args[0] == "plan":
             return 2, "drift detected", ""  # refresh-only exit 2
         return 1, "", "should not apply"
@@ -830,6 +1109,41 @@ def test_apply_drift_refused(client: TestClient, monkeypatch, tmp_path) -> None:
     r = client.post("/apply", json={"approval_id": ctx["record"].approval_id, "approval_token": ctx["raw_token"]})
     assert r.status_code == 409
     assert _doc(ctx)["apply_audit"]["phase"] == "drift_refused"
+
+
+def test_apply_benign_computed_drift_applies(client: TestClient, monkeypatch, tmp_path) -> None:
+    """C5g 1a: refresh drift that is PURELY server-computed churn (generation) →
+    the semantic gate proceeds, applies the saved plan, and the success audit
+    records freshness_exit_code=2 + the benign drift paths."""
+    ctx = _wire(monkeypatch, tmp_path)
+    benign_show = {"resource_drift": [{
+        "address": "google_cloud_run_v2_service.payment_demo",
+        "type": "google_cloud_run_v2_service",
+        "change": {"actions": ["update"], "before": {"generation": 6}, "after": {"generation": 10}}}]}
+
+    def run(args, cwd, env):  # noqa: ANN001
+        if args[:2] == ["version", "-json"]:
+            return 0, json.dumps({"terraform_version": "1.12.0"}), ""
+        if args[:2] == ["state", "pull"]:
+            return 0, json.dumps({"serial": 7, "lineage": "L"}), ""
+        if args[0] == "init":
+            return 0, "", ""
+        if args[:2] == ["show", "-json"]:
+            return 0, json.dumps(benign_show), ""
+        if args[0] == "plan":
+            return 2, "drift detected", ""  # refresh-only exit 2 (computed churn)
+        if args[0] == "apply":
+            return 0, "Apply complete!", ""
+        return 1, "", "unexpected"
+
+    monkeypatch.setattr(m, "_RUN_TOFU", run)
+    r = client.post("/apply", json={"approval_id": ctx["record"].approval_id, "approval_token": ctx["raw_token"]})
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "applied"
+    audit = _doc(ctx)["apply_audit"]
+    assert audit["phase"] == "applied"
+    assert audit["freshness_exit_code"] == 2  # proceeded THROUGH benign drift
+    assert any(":generation" in p for p in audit["benign_drift_paths"])
 
 
 def test_apply_tofu_failure_records_failed(client: TestClient, monkeypatch, tmp_path) -> None:
