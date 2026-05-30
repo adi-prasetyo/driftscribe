@@ -618,14 +618,15 @@ def test_probe_worker_health_200_is_app_reached() -> None:
 
 
 @respx.mock
-def test_probe_worker_health_403_is_app_reached() -> None:
-    """A 403 means the request passed the ingress network gate and reached the
-    IAM layer → app_reached True (the route works; only IAM rejected). 403, NOT
-    404, is the 'reached' boundary."""
+def test_probe_worker_health_403_is_reachable_not_app_reached() -> None:
+    """A 403 means the request reached the GFE (reachable True) but was rejected
+    by ingress-IAM or app auth — a real /propose|/apply call would hit the SAME
+    rejection, so it is NOT a green cutover signal: app_reached False (status in
+    {401,403,404}). 405, not 403, is the 'reached' boundary."""
     respx.get(f"{TOFU_APPLY_URL}/propose").respond(403, text="forbidden")
     out = worker_client.probe_worker_health("tofu_apply")
     assert out["reachable"] is True
-    assert out["app_reached"] is True
+    assert out["app_reached"] is False
     assert out["status_code"] == 403
     assert out["error"] is None
 

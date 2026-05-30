@@ -55,15 +55,18 @@ def _probe_result(
 ) -> dict:
     """Build a probe_worker_health-shaped result dict.
 
-    ``app_reached`` mirrors the probe: reachable with a status that is NOT 404
-    (404 = GFE/ingress pre-app reject; 405/403/200 = the app answered)."""
+    ``app_reached`` mirrors the probe: reachable with a status NOT in
+    {401,403,404} (404 = GFE/ingress pre-app reject; 401/403 = auth/IAM reject a
+    real call would also hit; 405/200 = the app router answered)."""
     return {
         "worker": worker,
         "target": None if error == "url_unset" else target,
         "probed_path": worker_client.WORKER_ENDPOINTS.get(worker, "/x"),
         "reachable": reachable,
         "app_reached": bool(
-            reachable and status_code is not None and status_code != 404
+            reachable
+            and status_code is not None
+            and status_code not in (401, 403, 404)
         ),
         "status_code": status_code,
         "latency_ms": None if not reachable else 12,
@@ -189,6 +192,31 @@ def test_tofu_apply_404_returns_502_worker_unhealthy(monkeypatch):
         {
             "tofu_apply": _probe_result(
                 "tofu_apply", reachable=True, status_code=404
+            )
+        },
+    )
+    client = TestClient(app)
+    resp = client.get(
+        "/iac-apply/reachability", headers={"X-DriftScribe-Token": _TOKEN}
+    )
+    assert resp.status_code == 502
+    body = resp.json()
+    assert body["go"] is False
+    assert body["worker_healthy"] is False
+
+
+def test_tofu_apply_403_returns_502_worker_unhealthy(monkeypatch):
+    """tofu_apply reachable but 403 (auth/IAM reject — Cloud Run IAM before the
+    container OR the app's verify_caller). A real /propose|/apply would hit the
+    SAME rejection, so 403 is NOT a green cutover signal: app_reached false →
+    worker_healthy false → go=false → 502. 405 — not merely non-404 — is the bar
+    (Codex C5c review)."""
+    _set_token(monkeypatch)
+    _install_probe(
+        monkeypatch,
+        {
+            "tofu_apply": _probe_result(
+                "tofu_apply", reachable=True, status_code=403
             )
         },
     )

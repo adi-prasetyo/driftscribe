@@ -584,24 +584,27 @@ def iac_reachability(
     ``Cache-Control: no-store`` because a stale cached verdict during a cutover
     would be actively misleading.
 
-    The signal is ``app_reached`` (status NOT 404), not bare ``reachable``.
-    ``/healthz`` is GFE-reserved (404 pre-app), and for the internal-ingress
-    ``tofu_apply`` a 404 is indistinguishable from an ingress rejection — so the
-    probe GETs the canonical POST path and treats the app's **405** (or 403) as
-    proof the request traversed network → ingress → IAM → app. See
-    :func:`worker_client.probe_worker_health`.
+    The signal is ``app_reached`` (status NOT in {401, 403, 404}), not bare
+    ``reachable``. ``/healthz`` is GFE-reserved (404 pre-app), and for the
+    internal-ingress ``tofu_apply`` a 404 is indistinguishable from an ingress
+    rejection — so the probe GETs the canonical POST path and takes the app's
+    **405** as proof the request traversed network → ingress → IAM → app router.
+    A ``401/403`` is an auth/IAM reject a real ``/apply`` would also hit, so it
+    is NOT green. See :func:`worker_client.probe_worker_health`.
 
     Gates (the source of truth for the worker set is
     :data:`worker_client._WORKER_URL_ENV`, iterated here so a new worker can
     never be silently omitted):
 
     * ``worker_healthy`` — the ``tofu_apply`` worker (the sole infra mutator,
-      the NEW path C5c enables) is ``app_reached``: its app answered (405/403,
-      not a pre-app 404). For an internal-ingress service this unambiguously
-      proves the VPC routing delivers the call AS INTERNAL.
+      the NEW path C5c enables) is ``app_reached``: its app router answered
+      ``405`` (not a pre-app 404, not an auth-reject 401/403). For an
+      internal-ingress service this unambiguously proves the VPC routing delivers
+      the call AS INTERNAL.
     * ``all_siblings_reachable`` — every NON-``tofu_apply`` worker is
       ``app_reached`` (the rewritten DNS zone didn't regress its route to a
-      pre-app 404). A worker whose URL is unset counts as NOT reached: this is
+      pre-app 404 / auth reject). A worker whose URL is unset counts as NOT
+      reached: this is
       fail-closed — a sibling URL silently dropped from the deploy must block the
       cutover rather than let it through (in prod all siblings have URLs set).
     * ``go = worker_healthy AND all_siblings_reachable``.
