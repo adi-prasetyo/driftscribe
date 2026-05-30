@@ -165,6 +165,10 @@ class ApplyOutcome:
     apply_exit: int
     state_serial: int | None
     state_lineage: str | None
+    # The refresh-only drift paths that the semantic gate classified as benign
+    # server-computed churn and PROCEEDED through (empty when freshness_exit == 0,
+    # i.e. no drift at all). Recorded in the success audit for transparency.
+    benign_drift_paths: tuple[str, ...] = ()
 
 
 def _default_run_tofu(args: list[str], cwd: str, env: dict[str, str]) -> tuple[int, str, str]:
@@ -349,6 +353,211 @@ def _diagnose_post_failure_state(
     )
 
 
+# --------------------------------------------------------------------------- #
+# Semantic freshness gate (C5g carry-forward 1a)
+# --------------------------------------------------------------------------- #
+#
+# The blunt freshness gate refused on ANY refresh-only drift (exit 2). That
+# false-positived in prod (C5g): a redeploy froze gcs state at an old generation
+# while live moved on, so refresh detected PURELY server-computed churn (no
+# desired-state change) and the gate refused, forcing a manual state reconcile.
+# The semantic gate classifies the drift: PROCEED (still applying the
+# human-approved saved plan.tfplan — re-planning the head is C6, NOT here) only
+# when EVERY drifted attribute is a known server-computed/status field; any
+# material desired-state drift, or any unparseable/unexpected structure, fails
+# CLOSED to drift_refused.
+#
+# SAFETY: the allowlist holds ONLY fields with no desired-state security meaning —
+# server-computed readback PLUS the two gcloud-deploy metadata fields client /
+# client_version (operator-settable but free-text deploy-tool tags, and already in
+# iac/cloudrun.tf `ignore_changes`, so their out-of-band churn is tolerable by
+# design). A material change to a real desired attribute (image, env,
+# service_account, scaling, ingress, ...) is never allowlisted ⇒ always refuses.
+# An incomplete allowlist can only OVER-refuse (= the old status quo) — it can
+# never introduce a false-clean. Identity/lifecycle-computed fields (uid,
+# create_time, delete_time) are deliberately NOT allowlisted: a changed uid /
+# populated delete_time signals a recreate/deletion and MUST refuse. Sensitive /
+# not-yet-known values are handled separately (the *_sensitive / after_unknown
+# markers below) since their real value is redacted from before/after. (Codex
+# review 019e7a3f + sole-mutator adversarial review.)
+
+# List-index-stripped attribute paths tolerated as benign drift: server readback
+# (generation, etag, ...) + the two ignore_changes'd gcloud-deploy metadata tags
+# (client, client_version).
+COMPUTED_ONLY_DRIFT_PATHS = frozenset({
+    "generation", "observed_generation", "etag", "update_time", "last_modifier",
+    "client", "client_version", "latest_created_revision", "latest_ready_revision",
+    "reconciling",
+})
+# Whole subtrees that are status/readback only (never desired-state inputs).
+COMPUTED_ONLY_DRIFT_SUBTREES = ("conditions", "terminal_condition", "traffic_statuses")
+# The computed-field allowlist above is Cloud-Run-v2-specific (conditions /
+# terminal_condition / traffic_statuses are Cloud Run status fields) and iac/
+# manages exactly ONE resource today. Benign classification is therefore SCOPED
+# to this type: refresh drift on any OTHER resource type fails closed (refuses)
+# until the allowlist is extended for it (Codex review 019e7a3f — future-proofs
+# the C6 resource-set expansion against a Cloud-Run allowlist misfiring).
+_BENIGN_DRIFT_TYPES = frozenset({"google_cloud_run_v2_service"})
+
+_LIST_INDEX_RE = re.compile(r"\[\d+\]")
+
+
+@dataclass(frozen=True)
+class RefreshDriftVerdict:
+    """Result of classifying a refresh-only ``tofu show -json``.
+
+    ``benign`` is True only if EVERY detected change is a known computed/status
+    field. ``paths`` carries the offending material paths when not benign (for
+    the refusal message) or the benign computed paths when benign (for the
+    success audit). Fail-closed: malformed/unexpected input ⇒ ``benign=False``."""
+
+    benign: bool
+    paths: tuple[str, ...]
+    reason: str
+
+
+def _normalize_attr_path(path: str) -> str:
+    """Strip list indices from a dotted attribute path
+    (``conditions[0].last_transition_time`` → ``conditions.last_transition_time``)."""
+    return _LIST_INDEX_RE.sub("", path)
+
+
+def _changed_leaf_paths(before: object, after: object, prefix: str = "") -> set[str]:
+    """Recursively diff two JSON values → the set of NORMALIZED leaf paths that
+    differ. Added/removed keys (present on one side only) count as a change at
+    that path. Lists are compared element-wise by index (indices are stripped in
+    the normalized leaf path, so per-element churn collapses onto its subtree)."""
+    if before == after:
+        return set()
+    if isinstance(before, dict) and isinstance(after, dict):
+        out: set[str] = set()
+        for key in set(before) | set(after):
+            sub = f"{prefix}.{key}" if prefix else str(key)
+            out |= _changed_leaf_paths(before.get(key), after.get(key), sub)
+        return out
+    if isinstance(before, list) and isinstance(after, list):
+        out = set()
+        for i in range(max(len(before), len(after))):
+            b = before[i] if i < len(before) else None
+            a = after[i] if i < len(after) else None
+            out |= _changed_leaf_paths(b, a, f"{prefix}[{i}]")
+        return out
+    # scalar (or type-mismatch) leaf: a genuine value change.
+    return {_normalize_attr_path(prefix)}
+
+
+def _is_computed_only_path(path: str) -> bool:
+    """True iff ``path`` is an exact computed leaf OR sits under a status subtree
+    (anchored at the path root — never a same-named field deeper in the tree)."""
+    if path in COMPUTED_ONLY_DRIFT_PATHS:
+        return True
+    return any(path == p or path.startswith(p + ".") for p in COMPUTED_ONLY_DRIFT_SUBTREES)
+
+
+def _has_true(obj: object) -> bool:
+    """True iff any leaf of a tofu sensitivity/unknown marker tree is ``True``.
+
+    ``before_sensitive`` / ``after_sensitive`` / ``after_unknown`` mirror the
+    attribute shape with ``true`` marking a sensitive or not-yet-known value (and
+    ``false`` / ``{}`` / ``[]`` elsewhere). A plain truthiness test would
+    over-refuse on the common all-false-but-present tree, so recurse for a real
+    ``true``."""
+    if obj is True:
+        return True
+    if isinstance(obj, dict):
+        return any(_has_true(v) for v in obj.values())
+    if isinstance(obj, list):
+        return any(_has_true(v) for v in obj)
+    return False
+
+
+def classify_refresh_drift(show_json: object) -> RefreshDriftVerdict:
+    """Pure, fail-closed classifier of a refresh-only ``tofu show -json``.
+
+    Benign ONLY when: no root ``output_changes``; every ``resource_changes``
+    entry is no-op/read (a refresh-only plan carries no config-driven actions);
+    and every ``resource_drift`` entry is either no-op/read or an ``update`` whose
+    every changed leaf path is computed-only. Anything else (create/delete/replace
+    drift, a config action, malformed/unexpected structure) ⇒ NOT benign."""
+    if not isinstance(show_json, dict):
+        return RefreshDriftVerdict(False, (), "show-json is not an object")
+    # iac/ declares no outputs — any root output change is unexpected → refuse.
+    if show_json.get("output_changes"):
+        return RefreshDriftVerdict(False, (), "refresh changed root outputs")
+    rcs = show_json.get("resource_changes")
+    if rcs is not None:
+        if not isinstance(rcs, list):
+            return RefreshDriftVerdict(False, (), "resource_changes is not a list")
+        for rc in rcs:
+            change = rc.get("change") if isinstance(rc, dict) else None
+            actions = change.get("actions") if isinstance(change, dict) else None
+            if actions not in (["no-op"], ["read"]):
+                return RefreshDriftVerdict(False, (), f"resource_changes carries action {actions!r}")
+    drift = show_json.get("resource_drift")
+    if not isinstance(drift, list):
+        # exit-2 came with no parseable drift array → can't prove benign → refuse.
+        return RefreshDriftVerdict(False, (), "resource_drift missing or not a list")
+    computed: list[str] = []
+    material: list[str] = []
+    for entry in drift:
+        if not isinstance(entry, dict):
+            return RefreshDriftVerdict(False, (), "malformed resource_drift entry")
+        addr = entry.get("address", "<unknown>")
+        change = entry.get("change")
+        if not isinstance(change, dict):
+            return RefreshDriftVerdict(False, (), f"{addr}: malformed change object")
+        actions = change.get("actions")
+        if actions in (["no-op"], ["read"]):
+            continue
+        if actions != ["update"]:
+            # create/delete/replace/unknown → resource appeared/vanished/recreated
+            # out of band → material, refuse.
+            return RefreshDriftVerdict(False, (), f"{addr}: drift action {actions!r} is material")
+        if entry.get("type") not in _BENIGN_DRIFT_TYPES:
+            # The computed-field allowlist is type-scoped; an unrecognized type's
+            # drift cannot be proven benign by it → fail closed.
+            return RefreshDriftVerdict(
+                False, (), f"{addr}: computed-drift allowlist is type-scoped; "
+                f"{entry.get('type')!r} not recognized")
+        # A sensitive or not-yet-known value is redacted in before/after, so a
+        # change to it can leave before==after with the real delta carried ONLY in
+        # the marker trees. If any marker is set we cannot prove the drift benign
+        # from before/after → fail closed (adversarial-review finding).
+        if (_has_true(change.get("before_sensitive"))
+                or _has_true(change.get("after_sensitive"))
+                or _has_true(change.get("after_unknown"))):
+            return RefreshDriftVerdict(
+                False, (), f"{addr}: drift carries sensitive/unknown markers — cannot prove benign")
+        before, after = change.get("before"), change.get("after")
+        if not isinstance(before, dict) or not isinstance(after, dict):
+            return RefreshDriftVerdict(False, (), f"{addr}: non-dict before/after on update")
+        for p in sorted(_changed_leaf_paths(before, after)):
+            (computed if _is_computed_only_path(p) else material).append(f"{addr}:{p}")
+    if material:
+        return RefreshDriftVerdict(False, tuple(material),
+                                   "material refresh drift: " + ", ".join(material[:10]))
+    return RefreshDriftVerdict(True, tuple(computed), "all refresh drift is computed-only churn")
+
+
+def _refresh_drift_verdict(run_tofu: RunTofu, cwd: str, env: dict[str, str]) -> RefreshDriftVerdict:
+    """Run ``tofu show -json refresh.tfplan`` + classify, fail-closed on any
+    show/parse error (the saved refresh plan is encrypted; ``env`` carries the
+    KMS key so ``show`` can decrypt)."""
+    rc, out, err = run_tofu(["show", "-json", "refresh.tfplan"], cwd, env)
+    if rc != 0:
+        return RefreshDriftVerdict(False, (), f"refresh show -json failed (exit {rc}): {err[-200:]}")
+    # Broad except: this guard runs POST-CLAIM (the approval is burned), so a
+    # parse OR classification error (incl. RecursionError on pathologically nested
+    # input — a RuntimeError, NOT caught by ValueError/TypeError) must fail CLOSED
+    # to a refusal, never escape and 500 the request (which would strand the
+    # approval at phase="claimed" with no terminal audit). Adversarial-review fix.
+    try:
+        show_json = json.loads(out)
+        return classify_refresh_drift(show_json)
+    except Exception as exc:  # noqa: BLE001 — any failure to classify ⇒ cannot prove benign ⇒ refuse
+        return RefreshDriftVerdict(False, (), f"refresh drift classification failed: {type(exc).__name__}")
+
+
 def run_apply_sequence(
     *,
     workdir: str,
@@ -361,10 +570,13 @@ def run_apply_sequence(
     ``workdir`` is the per-request temp iac dir containing the fetched, verified
     ``plan.tfplan``. ``kms_key`` is injected as ``TF_VAR_tofu_state_kms_key`` on
     every call (the iac/ encryption block is enforced; ``show``/``plan``/``apply``
-    all must decrypt). Raises :class:`FreshnessDrift` on drift and, on any
-    non-success step, :class:`LockRefused` if the failure is state-lock contention
-    (held/orphaned GCS lock) or :class:`TofuStepError` otherwise — all fail-closed
-    (the classification applies to init, refresh-only, and apply)."""
+    all must decrypt). The refresh-only freshness gate is SEMANTIC: refresh drift
+    that is purely server-computed churn proceeds (still applying the approved
+    saved plan); only MATERIAL desired-state drift raises :class:`FreshnessDrift`.
+    On any non-success step raises :class:`LockRefused` if the failure is
+    state-lock contention (held/orphaned GCS lock) or :class:`TofuStepError`
+    otherwise — all fail-closed (the classification applies to init, refresh-only,
+    and apply)."""
     env = {**base_env, "TF_VAR_tofu_state_kms_key": kms_key}
 
     rc, _out, err = run_tofu(["init", "-input=false", "-no-color", "-lockfile=readonly"], workdir, env)
@@ -372,13 +584,30 @@ def run_apply_sequence(
         _raise_step_failure("init", rc, err)
 
     rc, out, err = run_tofu(
-        ["plan", "-refresh-only", "-detailed-exitcode", "-input=false", "-no-color",
-         "-lock=true", "-lock-timeout=120s"],
+        ["plan", "-refresh-only", "-detailed-exitcode", "-out=refresh.tfplan",
+         "-input=false", "-no-color", "-lock=true", "-lock-timeout=120s"],
         workdir, env,
     )
+    freshness_exit = rc
+    benign_drift_paths: tuple[str, ...] = ()
     if rc == 2:
-        raise FreshnessDrift(out, err)
-    if rc != 0:
+        # Drift detected — classify SEMANTICALLY rather than blanket-refusing.
+        # Proceed (still applying the human-approved saved plan.tfplan) ONLY when
+        # every drifted attribute is known server-computed churn; any material
+        # desired-state drift, or any unparseable/unexpected structure, fails
+        # closed to FreshnessDrift → drift_refused (C5g carry-forward 1a).
+        verdict = _refresh_drift_verdict(run_tofu, workdir, env)
+        if not verdict.benign:
+            raise FreshnessDrift(out, f"refusing apply: {verdict.reason}")
+        if not verdict.paths:
+            # Symmetry / fail-closed: refresh exited 2 (drift) yet the classifier
+            # affirmatively identified NO benign computed change to explain it
+            # (empty/all-no-op resource_drift) — the signals disagree, so we
+            # cannot prove benign → refuse rather than proceed on an unexplained
+            # exit-2 (adversarial-review nit).
+            raise FreshnessDrift(out, "refusing apply: refresh exit 2 but no classifiable drift")
+        benign_drift_paths = verdict.paths
+    elif rc != 0:
         _raise_step_failure("refresh-only", rc, err)
 
     # State serial + lineage BEFORE the mutating apply — the baseline for
@@ -405,4 +634,7 @@ def run_apply_sequence(
         raise TofuStepError("apply", rc, err)
 
     serial, lineage = _state_serial_lineage(run_tofu, workdir, env)
-    return ApplyOutcome(freshness_exit=0, apply_exit=0, state_serial=serial, state_lineage=lineage)
+    return ApplyOutcome(
+        freshness_exit=freshness_exit, apply_exit=0, state_serial=serial,
+        state_lineage=lineage, benign_drift_paths=benign_drift_paths,
+    )

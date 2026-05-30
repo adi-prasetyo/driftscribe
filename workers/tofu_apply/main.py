@@ -586,6 +586,10 @@ def apply(req: ApplyRequest, caller: str = Depends(_verify_caller_dep)) -> dict:
         "freshness_exit_code": outcome.freshness_exit, "apply_exit_code": outcome.apply_exit,
         "applied_at": _now().isoformat(),
         "state_serial": outcome.state_serial, "state_lineage": outcome.state_lineage,
+        # When freshness_exit_code == 2 the semantic gate PROCEEDED through refresh
+        # drift it classified as benign server-computed churn — record exactly which
+        # paths so the audit shows what was tolerated (empty when no drift).
+        "benign_drift_paths": list(outcome.benign_drift_paths),
         "caller_sa": caller, "operator_email": operator_email,
     })
     log.info("apply: id=%s attempt=%s APPLIED serial=%s", req.approval_id, attempt_id, outcome.state_serial)
