@@ -137,6 +137,33 @@ def test_actas_granted_to_both_apply_and_rollback() -> None:
     assert 'roles/iam.serviceAccountUser' in body
 
 
+def test_ar_reader_granted_to_apply_and_runtime_sa() -> None:
+    """Both the apply mutator (tofu-apply-sa) AND the dedicated payment-demo
+    runtime SA need repo-scoped ``artifactregistry.reader``: a payment-demo
+    in-place UPDATE through the gate makes Cloud Run validate image-pull at
+    deploy admission for BOTH the deploying identity and the new runtime SA.
+    Missing reader on either was the C5g 502 root-cause; codified here for a
+    reproducible bootstrap (Phase-3 / C5g carry-forward 1).
+
+    Asserted by membership (locate the loop; tolerate additions), not an exact
+    header — the same durable lesson as the actAs guard above.
+    """
+    body = _body(SECRETS)
+    loop = next(
+        (ln for ln in body.splitlines()
+         if ln.strip().startswith("for member in")
+         and '"$APPLY_SA"' in ln
+         and "$PD_RUNTIME_SA_DEDICATED" in ln),
+        None,
+    )
+    assert loop is not None, (
+        "no `for member in $APPLY_SA $PD_RUNTIME_SA_DEDICATED` AR-reader loop "
+        "found in setup_secrets.sh"
+    )
+    assert "roles/artifactregistry.reader" in body
+    assert "artifacts repositories add-iam-policy-binding driftscribe" in body
+
+
 def test_prod_project_rollback_actas_covers_dedicated_sa() -> None:
     """The fresh-prod operator heredoc must grant rollback actAs on the dedicated
     runtime SA (Codex IMPORTANT-5), AND — because a fresh service still runs as the

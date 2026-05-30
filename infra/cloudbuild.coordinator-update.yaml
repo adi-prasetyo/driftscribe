@@ -60,6 +60,17 @@ substitutions:
   # not secrets. See agent/cf_access.py and infra/cloudflare/.
   _CF_ACCESS_TEAM_DOMAIN: adp-app.cloudflareaccess.com
   _CF_ACCESS_AUD_TAG: 5e6a20fe63e5fb03a742eeb0623e216ad4c837413d2afa9885a79b1091016262
+  # Phase C5e/C5g IaC operator-auth + merge config. AVAILABILITY-CRITICAL, so
+  # codified here rather than set live-only (a fresh deploy that omitted them
+  # would silently break the IaC approval flow): an empty COORDINATOR_ORIGIN
+  # refuses EVERY approval POST (the CSRF Origin/Sec-Fetch-Site check in
+  # agent/main.py fail-closes when unset), and an empty IAC_REQUIRED_CHECKS
+  # DISABLES the IaC merge (merge_pr_at_sha refuses to merge an unchecked head).
+  # All three are PUBLIC, non-secret values (an origin URL, CI check names, a
+  # merge method) — safe to keep in the build config.
+  _COORDINATOR_ORIGIN: 'https://driftscribe.adp-app.com'
+  _IAC_REQUIRED_CHECKS: 'static-gate,tofu,lint-test'
+  _IAC_MERGE_METHOD: 'squash'
 
 # Default-compute-SA retirement (Phase 4): run this build as the dedicated
 # cloudbuild-deploy-sa@ rather than the project's default compute SA, so the
@@ -90,9 +101,9 @@ steps:
     args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-agent:${_TAG}']
 
   # 2. Incremental update of the existing service. --update-env-vars (NOT
-  #    --set-env-vars) adds the CF Access vars without clobbering DRY_RUN,
-  #    GITHUB_REPO, TARGET_SERVICE, GITHUB_TOKEN secret refs, etc. The
-  #    SA, ingress, scaling, and traffic policy all stay as they were.
+  #    --set-env-vars) adds the CF Access + IaC operator-auth/merge vars without
+  #    clobbering DRY_RUN, GITHUB_REPO, TARGET_SERVICE, GITHUB_TOKEN secret refs,
+  #    etc. The SA, ingress, scaling, and traffic policy all stay as they were.
   # bash entrypoint so we can conditionally append --no-traffic and the
   # optional Phase C5c VPC flags. An empty substitution passed as a positional
   # gcloud arg fails with "unrecognized arguments: <empty>", so we can't just
@@ -104,9 +115,14 @@ steps:
       - -c
       - |
         set -euo pipefail
-        # Base env vars (CF Access). TOFU_APPLY_URL is folded in below only when
+        # Base env vars (CF Access + IaC operator-auth/merge config). gcloud's
+        # default --update-env-vars delimiter is ",", but IAC_REQUIRED_CHECKS is
+        # itself comma-separated (static-gate,tofu,lint-test), so we use the
+        # "^@^" custom-delimiter form: the leading ^@^ makes "@" the separator
+        # between K=V pairs, leaving commas safe inside values (none of these
+        # values contain "@"). TOFU_APPLY_URL is folded in below only when
         # _TOFU_APPLY_URL is set, so today's deploys leave it untouched.
-        ENV_VARS="CF_ACCESS_TEAM_DOMAIN=${_CF_ACCESS_TEAM_DOMAIN},CF_ACCESS_AUD_TAG=${_CF_ACCESS_AUD_TAG}"
+        ENV_VARS="^@^CF_ACCESS_TEAM_DOMAIN=${_CF_ACCESS_TEAM_DOMAIN}@CF_ACCESS_AUD_TAG=${_CF_ACCESS_AUD_TAG}@COORDINATOR_ORIGIN=${_COORDINATOR_ORIGIN}@IAC_REQUIRED_CHECKS=${_IAC_REQUIRED_CHECKS}@IAC_MERGE_METHOD=${_IAC_MERGE_METHOD}"
         EXTRA_ARGS=()
         if [ -n "${_VPC_NETWORK}" ]; then
           EXTRA_ARGS+=(--network="${_VPC_NETWORK}")
@@ -118,7 +134,7 @@ steps:
           EXTRA_ARGS+=(--vpc-egress="${_VPC_EGRESS}")
         fi
         if [ -n "${_TOFU_APPLY_URL}" ]; then
-          ENV_VARS="$${ENV_VARS},TOFU_APPLY_URL=${_TOFU_APPLY_URL}"
+          ENV_VARS="$${ENV_VARS}@TOFU_APPLY_URL=${_TOFU_APPLY_URL}"
         fi
         gcloud run services update ${_SERVICE} \
           --image=asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-agent:${_TAG} \
