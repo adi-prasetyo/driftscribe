@@ -141,6 +141,7 @@ PROJECT_NUMBER="$(gcloud projects describe "$PROJECT" --format='value(projectNum
 # compute resource is imported.
 enable_apis_idempotent "$PROJECT" \
   cloudkms.googleapis.com \
+  firestore.googleapis.com \
   iam.googleapis.com \
   iamcredentials.googleapis.com \
   run.googleapis.com \
@@ -455,10 +456,28 @@ gcloud storage buckets add-iam-policy-binding "gs://${ARTIFACT_BUCKET}" \
   --project="$PROJECT" --member="serviceAccount:${APPLY_SA}" \
   --role="roles/storage.objectViewer" >/dev/null
 echo "  ${APPLY_SA}: storage.objectViewer on gs://${ARTIFACT_BUCKET} (read artifacts by generation)"
-# 6.5d Firestore — the plan_approvals collection (no collection-scope IAM exists;
-# project-level datastore.user, the same acknowledged shared blast radius as rollback).
-grant_role_idempotent "$PROJECT" "serviceAccount:${APPLY_SA}" "roles/datastore.user"
-echo "  ${APPLY_SA}: datastore.user (project) — plan_approvals collection"
+# 6.5d Firestore — plan_approvals in a DEDICATED NAMED database (Phase C5f).
+# Collection-scope IAM does not exist, and project-level datastore.user reaches
+# EVERY database (the B3 blast radius: a compromised coordinator could flip a
+# plan_approvals status used->pending and re-spend). Isolation: put plan_approvals
+# in its own named DB and CONDITION each SA's datastore.user to a single database —
+# tofu-apply-sa to the named DB (its sole-writer collection), coordinator+rollback
+# to (default) (in setup_secrets.sh §5). REST/client libraries enforce the
+# resource.name condition. The named DB must match (default)'s location.
+PLAN_APPROVALS_DB="${PLAN_APPROVALS_DB:-plan-approvals}"
+create_named_firestore_db_idempotent "$PROJECT" "$PLAN_APPROVALS_DB" "$REGION"
+grant_datastore_user_for_db "$PROJECT" "serviceAccount:${APPLY_SA}" "$PLAN_APPROVALS_DB"
+echo "  ${APPLY_SA}: datastore.user CONDITIONED to database ${PLAN_APPROVALS_DB} (plan_approvals isolation)"
+# Cutover: remove the pre-isolation UN-conditioned project-wide datastore.user so
+# the named-DB-conditioned grant above is the apply SA's ONLY datastore access.
+# GATED (default re-run only ADDS the conditioned grant — harmless); the removal is
+# the deliberate cutover (SETUP_PLAN_APPROVALS_DB=1, AFTER the empirical CEL proof).
+if [ "${SETUP_PLAN_APPROVALS_DB:-0}" = "1" ]; then
+  remove_unconditioned_datastore_user "$PROJECT" "serviceAccount:${APPLY_SA}"
+  echo "  ${APPLY_SA}: removed UN-conditioned datastore.user (isolation ACTIVE)"
+else
+  echo "  ${APPLY_SA}: UN-conditioned datastore.user removal gated (set SETUP_PLAN_APPROVALS_DB=1)"
+fi
 
 if [ "$TOFU_APPLY_IAM_MODE" = "editor" ]; then
   # Fast path: refuse unless the SA-key-creation org policy is enforced.
@@ -473,6 +492,15 @@ if [ "$TOFU_APPLY_IAM_MODE" = "editor" ]; then
   fi
   grant_role_idempotent "$PROJECT" "serviceAccount:${APPLY_SA}" "roles/editor"
   echo "  ${APPLY_SA}: EDITOR (fast path) — broad; actAs blast radius accepted (org-policy key lockdown verified)"
+  # C5f caveat: roles/editor carries UNCONDITIONED, all-database Firestore data
+  # access (datastore.entities.*), which OVERRIDES the named-DB-conditioned grant
+  # above and re-opens (default) (sessions/, approvals/) to the apply SA. The
+  # plan_approvals isolation's PRIMARY goal (denying the COORDINATOR the named DB)
+  # still holds — the coordinator never runs in editor mode — but the apply SA's
+  # named-DB fencing is FORFEIT in this opt-in fast path. Use the default hardened
+  # mode if you need the apply SA's Firestore access conditioned.
+  echo "  WARNING: editor mode FORFEITS the apply SA's plan_approvals named-DB isolation"
+  echo "           (roles/editor grants unconditioned all-database datastore access)."
 else
   # Hardened-broad: project-wide Cloud Run apply WITHOUT project-wide
   # setIamPolicy/actAs/key creation. The ONE actAs the apply genuinely needs —

@@ -168,23 +168,35 @@ done
 # --------------------------------------------------------------------------
 # 5. Per-SA project-level IAM grants (mirrors prod matrix).
 # --------------------------------------------------------------------------
-# Coordinator: Firestore + Vertex AI + logging.viewer (for /trace's
-# logEntries.list). aiplatform.user is what makes USE_ADK=true work via
-# Vertex ADC (GOOGLE_GENAI_USE_VERTEXAI=true).
+# Coordinator: Vertex AI + logging.viewer (for /trace's logEntries.list) +
+# Firestore datastore.user CONDITIONED to the (default) database (Phase C5f).
+# aiplatform.user is what makes USE_ADK=true work via Vertex ADC
+# (GOOGLE_GENAI_USE_VERTEXAI=true). The (default)-condition denies the coordinator
+# the named plan-approvals DB (the C4 worker's sole-writer collection).
 for role in \
-  roles/datastore.user \
   roles/aiplatform.user \
   roles/logging.viewer \
 ; do
   grant_role_idempotent "$PROJECT" "serviceAccount:${COORD_SA}" "$role"
 done
+grant_datastore_user_for_db "$PROJECT" "serviceAccount:${COORD_SA}" "(default)"
 
 # Reader: project-wide run.viewer.
 grant_role_idempotent "$PROJECT" "serviceAccount:${READER_SA}" "roles/run.viewer"
 
-# Rollback: project-wide datastore.user (resource-scoped run.developer on
-# payment-demo is a post-deploy step; see "next steps" block).
-grant_role_idempotent "$PROJECT" "serviceAccount:${ROLLBACK_SA}" "roles/datastore.user"
+# Rollback: datastore.user CONDITIONED to (default) (C5f) — the approvals/
+# collection lives in (default). Resource-scoped run.developer on payment-demo is a
+# post-deploy step; see "next steps" block.
+grant_datastore_user_for_db "$PROJECT" "serviceAccount:${ROLLBACK_SA}" "(default)"
+
+# C5f cutover (gated): remove the pre-isolation UN-conditioned project-wide
+# datastore.user so the (default)-conditioned grants above are the only datastore
+# access (run with SETUP_PLAN_APPROVALS_DB=1 after the empirical CEL proof).
+if [ "${SETUP_PLAN_APPROVALS_DB:-0}" = "1" ]; then
+  remove_unconditioned_datastore_user "$PROJECT" "serviceAccount:${COORD_SA}"
+  remove_unconditioned_datastore_user "$PROJECT" "serviceAccount:${ROLLBACK_SA}"
+  echo "  C5f: removed UN-conditioned datastore.user from coordinator + rollback (isolation ACTIVE)"
+fi
 
 # --------------------------------------------------------------------------
 # 6. Secrets — create resources (operator populates values afterward).
@@ -275,17 +287,26 @@ Next steps (operator action required):
 
     # Rollback worker — resource-scoped run.developer on ${TARGET_SERVICE}
     # + actAs on its runtime SA (required for real HITL-approved traffic
-    # shifts). The deploy step pins ${TARGET_SERVICE}'s SA to the default
-    # compute SA unless changed; adjust RUNTIME_SA if you pinned one.
+    # shifts). Phase C5f: the dedicated minimal runtime SA payment-demo-runtime
+    # (provisioned by setup_secrets.sh §7b) becomes ${TARGET_SERVICE}'s identity
+    # once the repoint is applied through the gated pipeline. On a FRESH bootstrap
+    # the service still runs as the default compute SA until then, so we grant
+    # actAs on BOTH the LIVE-resolved runtime SA (covers the transition window)
+    # AND the dedicated SA (covers post-repoint) — a rollback works in either.
     gcloud run services add-iam-policy-binding ${TARGET_SERVICE} \\
       --project=$PROJECT --region=$REGION \\
       --member="serviceAccount:${ROLLBACK_SA}" \\
       --role="roles/run.developer" --condition=None
-    RUNTIME_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
-    gcloud iam service-accounts add-iam-policy-binding "\$RUNTIME_SA" \\
-      --project=$PROJECT \\
-      --member="serviceAccount:${ROLLBACK_SA}" \\
-      --role="roles/iam.serviceAccountUser" --condition=None
+    LIVE_RUNTIME_SA="\$(gcloud run services describe ${TARGET_SERVICE} \\
+      --project=$PROJECT --region=$REGION \\
+      --format='value(template.serviceAccount)' 2>/dev/null)"
+    : "\${LIVE_RUNTIME_SA:=${PROJECT_NUMBER}-compute@developer.gserviceaccount.com}"
+    for RUNTIME_SA in "\$LIVE_RUNTIME_SA" "payment-demo-runtime@$PROJECT.iam.gserviceaccount.com"; do
+      gcloud iam service-accounts add-iam-policy-binding "\$RUNTIME_SA" \\
+        --project=$PROJECT \\
+        --member="serviceAccount:${ROLLBACK_SA}" \\
+        --role="roles/iam.serviceAccountUser" --condition=None
+    done
 
 (4) Flip ADK on:
 
