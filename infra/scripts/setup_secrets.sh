@@ -111,19 +111,17 @@ gcloud artifacts repositories create driftscribe \
   --description="DriftScribe agent + worker + payment-demo images"
 
 # --------------------------------------------------------------------------
-# 3. Cloud Build SA grants (project-wide)
+# 3. Cloud Build SA grants — RETIRED (default-compute-SA retirement, Phase 4)
 # --------------------------------------------------------------------------
-PROJECT_NUMBER="$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')"
-CLOUDBUILD_SA="${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com"
-
-for role in \
-  roles/artifactregistry.writer \
-  roles/run.admin \
-  roles/iam.serviceAccountUser \
-; do
-  gcloud projects add-iam-policy-binding "$PROJECT" \
-    --member="serviceAccount:${CLOUDBUILD_SA}" --role="$role" >/dev/null
-done
+# Historically this granted the LEGACY Cloud Build service-agent SA
+# (${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com) artifactregistry.writer +
+# run.admin + iam.serviceAccountUser. That SA was never the identity builds
+# actually ran as (Cloud Build defaulted to the compute SA), so the grants were
+# dead config. The dedicated cloudbuild-deploy-sa@ (§4c) is now the build
+# identity, pinned via `serviceAccount:` in the cloudbuild*.yaml files. The
+# legacy block was removed here; any residual live @cloudbuild bindings are
+# inert and can be pruned in a later hygiene pass. See
+# docs/plans/2026-05-30-default-compute-sa-retirement.md.
 
 # --------------------------------------------------------------------------
 # 4. Service Accounts — 1 coordinator + 6 workers (idempotent)
@@ -151,23 +149,79 @@ NOTIFIER_SA="notifier-agent-sa@${PROJECT}.iam.gserviceaccount.com"
 UPGRADE_READER_SA="upgrade-reader-sa@${PROJECT}.iam.gserviceaccount.com"
 UPGRADE_DOCS_SA="upgrade-docs-sa@${PROJECT}.iam.gserviceaccount.com"
 
-# Cloud Build acts-as each runtime SA during `gcloud run deploy`. The C4
-# tofu-apply-sa (created by setup_iac_backend.sh §6.5) is included — gated on
-# existence so this is a no-op until that script has run.
-APPLY_SA="${APPLY_SA:-tofu-apply-sa@${PROJECT}.iam.gserviceaccount.com}"
-for sa in "$COORD_SA" "$READER_SA" "$DOCS_SA" "$ROLLBACK_SA" "$NOTIFIER_SA"; do
-  gcloud iam service-accounts add-iam-policy-binding "$sa" \
-    --project="$PROJECT" \
-    --member="serviceAccount:${CLOUDBUILD_SA}" \
-    --role="roles/iam.serviceAccountUser" >/dev/null
+# Cloud Build's per-runtime-SA actAs grants now target the dedicated
+# cloudbuild-deploy-sa@ (§4c below), derived from the live deploy configs. The
+# legacy loop that granted actAs to ${PROJECT_NUMBER}@cloudbuild was removed
+# here as part of the default-compute-SA retirement (Phase 4) — that SA was not
+# the identity builds ran as, so the grants were dead config.
+
+# --------------------------------------------------------------------------
+# 4c. Dedicated Cloud Build deploy SA (default-compute-SA retirement, Phase 3)
+# --------------------------------------------------------------------------
+# cloudbuild-deploy-sa@ replaces the default compute SA (PROJECT_NUMBER-compute@)
+# as the identity Cloud Build runs as, so the compute SA's roles/editor can
+# eventually be stripped. See docs/plans/2026-05-30-default-compute-sa-retirement.md.
+# This block is ADDITIVE + idempotent and stays INERT until the cloudbuild*.yaml
+# files pin `serviceAccount:` to this SA + add `options.logging` (plan Phase 4);
+# the legacy §3/§4 grants above remain load-bearing until that cutover. The
+# actAs list is the union of every `--service-account=` across
+# infra/cloudbuild*.yaml plus payment-demo-runtime@ (the payment-demo deploy
+# preserves that runtime SA). NO secretmanager grant: every --set-secrets is
+# deploy-time and runtime-SA-scoped, not read by the build SA.
+BUILD_DEPLOY_SA="cloudbuild-deploy-sa@${PROJECT}.iam.gserviceaccount.com"
+gcloud iam service-accounts describe "$BUILD_DEPLOY_SA" --project="$PROJECT" >/dev/null 2>&1 \
+  || gcloud iam service-accounts create cloudbuild-deploy-sa \
+       --project="$PROJECT" \
+       --display-name="Cloud Build deploy SA (default-compute retirement)" \
+       --description="Dedicated Cloud Build runtime identity replacing the default compute SA. Inert until cloudbuild*.yaml serviceAccount: pins (Phase 4)."
+
+# Repo-scoped AR push (writer) + pull-at-deploy-admission (reader — the C5g
+# image-pull-admission prereq); NOT project-level.
+for role in roles/artifactregistry.writer roles/artifactregistry.reader; do
+  gcloud artifacts repositories add-iam-policy-binding driftscribe \
+    --project="$PROJECT" --location="$REGION" \
+    --member="serviceAccount:${BUILD_DEPLOY_SA}" --role="$role" --condition=None >/dev/null
 done
-if gcloud iam service-accounts describe "$APPLY_SA" --project="$PROJECT" >/dev/null 2>&1; then
-  gcloud iam service-accounts add-iam-policy-binding "$APPLY_SA" \
-    --project="$PROJECT" \
-    --member="serviceAccount:${CLOUDBUILD_SA}" \
-    --role="roles/iam.serviceAccountUser" >/dev/null
-  echo "  cloudbuild: actAs on ${APPLY_SA} (C4 tofu-apply deploy)"
+
+# Project-level: run.admin (NOT run.developer — the --allow-unauthenticated
+# deploys call run.services.setIamPolicy) + logging.logWriter (mandatory once a
+# user-specified build SA runs with options.logging: CLOUD_LOGGING_ONLY).
+for role in roles/run.admin roles/logging.logWriter; do
+  gcloud projects add-iam-policy-binding "$PROJECT" \
+    --member="serviceAccount:${BUILD_DEPLOY_SA}" --role="$role" --condition=None >/dev/null
+done
+
+# Source fetch: the build (running as this SA) reads the uploaded source tarball
+# from the Cloud Build staging bucket; scoped to that one bucket. `gcloud builds
+# submit` auto-creates gs://[PROJECT]_cloudbuild on first use, so on a fresh
+# project the bucket may not exist yet — guard + skip (re-run after first build).
+if gcloud storage buckets describe "gs://${PROJECT}_cloudbuild" >/dev/null 2>&1; then
+  gcloud storage buckets add-iam-policy-binding "gs://${PROJECT}_cloudbuild" \
+    --member="serviceAccount:${BUILD_DEPLOY_SA}" --role="roles/storage.objectViewer" >/dev/null
+else
+  echo "  staging bucket gs://${PROJECT}_cloudbuild absent — skipping build-SA objectViewer (re-run after first 'gcloud builds submit', or pre-create it)"
 fi
+
+# actAs on each runtime SA the build deploys services as. The coordinator + 6
+# workers exist by now (§4). tofu-apply-sa (setup_iac_backend.sh) + infra-reader-sa
+# (infra-reader runbook) are external to this script → gate on existence (re-run
+# picks them up). payment-demo-runtime's build-SA actAs is granted in §7b instead —
+# right after THIS script creates that SA — so a single pass is complete for
+# everything this script owns.
+for sa in driftscribe-agent reader-agent-sa docs-agent-sa rollback-agent-sa notifier-agent-sa upgrade-reader-sa upgrade-docs-sa; do
+  gcloud iam service-accounts add-iam-policy-binding "${sa}@${PROJECT}.iam.gserviceaccount.com" \
+    --project="$PROJECT" \
+    --member="serviceAccount:${BUILD_DEPLOY_SA}" --role="roles/iam.serviceAccountUser" --condition=None >/dev/null
+done
+for sa in tofu-apply-sa infra-reader-sa; do
+  if gcloud iam service-accounts describe "${sa}@${PROJECT}.iam.gserviceaccount.com" --project="$PROJECT" >/dev/null 2>&1; then
+    gcloud iam service-accounts add-iam-policy-binding "${sa}@${PROJECT}.iam.gserviceaccount.com" \
+      --project="$PROJECT" \
+      --member="serviceAccount:${BUILD_DEPLOY_SA}" --role="roles/iam.serviceAccountUser" --condition=None >/dev/null
+    echo "  cloudbuild-deploy-sa: actAs on ${sa}@"
+  fi
+done
+echo "  cloudbuild-deploy-sa provisioned (inert until cloudbuild serviceAccount: pins — plan Phase 4)"
 
 # --------------------------------------------------------------------------
 # 5. Per-SA project-level IAM grants
@@ -505,8 +559,12 @@ fi
 # Cloud Run requires the caller to actAs the service's runtime SA for ANY update
 # (incl. a traffic-only update), so BOTH of these need it (the C4 plan named only
 # tofu-apply-sa — rollback was a gap):
-#   - tofu-apply-sa     : `tofu apply` updates the service (sets the new runtime SA)
-#   - rollback-agent-sa : /execute traffic-shift update_service (else `actAs denied`)
+#   - tofu-apply-sa      : `tofu apply` updates the service (sets the new runtime SA)
+#   - rollback-agent-sa  : /execute traffic-shift update_service (else `actAs denied`)
+#   - cloudbuild-deploy-sa : `gcloud run deploy payment-demo` (default-compute
+#                            retirement Phase 3; BUILD_DEPLOY_SA defined in §4c).
+#                            Granted here (not §4c) so a single pass works — this
+#                            SA is created in §7b just above this loop.
 # Grants target the KNOWN dedicated SA name (not the live-resolved one) so the actAs
 # exists BEFORE the apply that first wires service_account=payment-demo-runtime.
 # (The pre-existing actAs on the default compute SA is left live for the transition
@@ -516,7 +574,8 @@ PD_RUNTIME_SA_DEDICATED="${PD_RUNTIME_SA_NAME}@${PROJECT}.iam.gserviceaccount.co
 create_service_account_idempotent "$PROJECT" "$PD_RUNTIME_SA_NAME" \
   "DriftScribe payment-demo runtime (minimal)"
 APPLY_SA="${APPLY_SA:-tofu-apply-sa@${PROJECT}.iam.gserviceaccount.com}"
-for member in "$APPLY_SA" "$ROLLBACK_SA"; do
+BUILD_DEPLOY_SA="${BUILD_DEPLOY_SA:-cloudbuild-deploy-sa@${PROJECT}.iam.gserviceaccount.com}"
+for member in "$APPLY_SA" "$ROLLBACK_SA" "$BUILD_DEPLOY_SA"; do
   if gcloud iam service-accounts describe "$member" --project="$PROJECT" >/dev/null 2>&1; then
     gcloud iam service-accounts add-iam-policy-binding "$PD_RUNTIME_SA_DEDICATED" \
       --project="$PROJECT" \

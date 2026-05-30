@@ -118,9 +118,21 @@ def test_dedicated_runtime_sa_created() -> None:
 
 def test_actas_granted_to_both_apply_and_rollback() -> None:
     """Cloud Run requires actAs on the runtime SA for ANY update (incl. rollback's
-    traffic-only update_service), so BOTH SAs must get it on the dedicated SA."""
+    traffic-only update_service), so BOTH SAs must get it on the dedicated SA.
+
+    Assert by membership, not an exact loop header: the default-compute-SA
+    retirement (Phase 3) legitimately adds ``$BUILD_DEPLOY_SA`` to the same loop
+    (cloudbuild-deploy-sa now deploys payment-demo, so it too needs actAs on the
+    dedicated runtime SA). The load-bearing invariant is that a single actAs loop
+    over the dedicated SA covers BOTH the apply and rollback mutators."""
     body = _body(SECRETS)
-    assert 'for member in "$APPLY_SA" "$ROLLBACK_SA"; do' in body
+    loop = next(
+        (ln for ln in body.splitlines() if ln.strip().startswith("for member in") and "; do" in ln),
+        None,
+    )
+    assert loop is not None, "no `for member in ...; do` actAs loop found in setup_secrets.sh"
+    assert '"$APPLY_SA"' in loop, f"apply SA missing from actAs loop: {loop!r}"
+    assert '"$ROLLBACK_SA"' in loop, f"rollback SA missing from actAs loop: {loop!r}"
     assert "$PD_RUNTIME_SA_DEDICATED" in body
     assert 'roles/iam.serviceAccountUser' in body
 
