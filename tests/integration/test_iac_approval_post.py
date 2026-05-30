@@ -268,29 +268,30 @@ def test_null_origin_with_same_origin_fetch_site_ok(_configured, monkeypatch):
     # Chromium serializes the Origin of a no-referrer navigation (form) POST as
     # the opaque string "null" even for a genuine same-origin submit. The origin
     # gate must accept it on the strength of Sec-Fetch-Site: same-origin (a
-    # Forbidden header the browser sets and a cross-site page cannot forge). A
-    # reject is a clean no-op that proves the gate passed without driving apply.
+    # Forbidden header the browser sets and a cross-site page cannot forge), so
+    # the full approve path runs to completion. NOTE decision="approve" is
+    # required: reject short-circuits BEFORE the origin gate (see handler), so a
+    # reject would pass regardless of the gate and prove nothing.
     _patch_resolve(monkeypatch)
+    _patch_repo(monkeypatch)
+    _patch_github(monkeypatch)
     _patch_workers(monkeypatch)
     client = TestClient(app)
-    resp = _post(
-        client, token=_mint(), decision="reject", origin="null",
-        sec_fetch_site="same-origin",
-    )
+    resp = _post(client, token=_mint(), origin="null", sec_fetch_site="same-origin")
     assert resp.status_code == 200
-    assert "reject" in resp.text.lower()
+    assert "applied and merged" in resp.text.lower()
 
 
 def test_missing_origin_with_same_origin_fetch_site_ok(_configured, monkeypatch):
     # Same fallback when the engine omits Origin entirely on a same-origin POST.
     _patch_resolve(monkeypatch)
+    _patch_repo(monkeypatch)
+    _patch_github(monkeypatch)
     _patch_workers(monkeypatch)
     client = TestClient(app)
-    resp = _post(
-        client, token=_mint(), decision="reject", origin=None,
-        sec_fetch_site="same-origin",
-    )
+    resp = _post(client, token=_mint(), origin=None, sec_fetch_site="same-origin")
     assert resp.status_code == 200
+    assert "applied and merged" in resp.text.lower()
 
 
 def test_null_origin_cross_site_fetch_site_403(_configured, monkeypatch):

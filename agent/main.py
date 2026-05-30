@@ -2149,17 +2149,21 @@ def _check_iac_origin(request: Request, s: Settings) -> bool:
        a cross-site attacker — even one that suppresses its own Origin to
        ``"null"`` via ``no-referrer`` — gets ``cross-site`` here and is rejected.
 
-    Fail-closed: a missing Origin with no/!=``same-origin`` ``Sec-Fetch-Site``
-    (older engines), or a real Origin against an unconfigured
-    ``coordinator_origin``, returns ``False``.
+    Fail-closed: an unconfigured ``coordinator_origin`` refuses ALL POSTs;
+    otherwise a missing/``"null"`` Origin without ``Sec-Fetch-Site: same-origin``
+    (older engines), or a real Origin that doesn't exactly match, returns
+    ``False``.
     """
+    if not s.coordinator_origin:
+        # Unconfigured ⇒ the approval POST is disabled (fail-closed), independent
+        # of any request header — preserves the "empty coordinator_origin refuses
+        # POSTs" invariant (agent/config.py) even with the Sec-Fetch-Site fallback.
+        return False
     origin = request.headers.get("origin")
     if not origin or origin == "null":
-        # Opaque/absent Origin (e.g. no-referrer navigation POST): trust only the
-        # browser-asserted, unspoofable Fetch-Metadata same-origin signal.
+        # Opaque/absent Origin (e.g. a no-referrer navigation POST): trust only
+        # the browser-asserted, unspoofable Fetch-Metadata same-origin signal.
         return request.headers.get("sec-fetch-site") == "same-origin"
-    if not s.coordinator_origin:
-        return False
     # Fail-closed on a malformed Origin: ``urllib.parse`` defers parsing of the
     # port until ``.port`` is read, which raises ``ValueError`` for a non-numeric
     # / out-of-range port (e.g. ``https://host:badport``). A bad Origin must be a
@@ -2167,9 +2171,10 @@ def _check_iac_origin(request: Request, s: Settings) -> bool:
     try:
         got = urllib.parse.urlsplit(origin)
         want = urllib.parse.urlsplit(s.coordinator_origin)
-        # Compare scheme + host + port; use ``.port`` so default-port
-        # normalization is consistent on both sides (e.g. https with/without
-        # explicit :443).
+        # Compare (scheme, host, port). ``.port`` is ``None`` for an implicit port
+        # and an int for an explicit one, and they are NOT cross-normalized — so
+        # configure ``coordinator_origin`` WITHOUT an explicit ``:443`` to match a
+        # browser ``Origin`` (which omits the default port).
         return (got.scheme, got.hostname, got.port) == (
             want.scheme,
             want.hostname,
