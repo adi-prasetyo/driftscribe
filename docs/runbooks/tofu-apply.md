@@ -154,11 +154,14 @@ applies.
   error) leaves the approval `used` with `apply_audit.phase` recording the stage.
   The operator must **re-propose** a fresh approval. This is intended fail-closed
   behavior.
-- **Partial / failed apply.** If `tofu apply` fails mid-way, tofu persists
-  **partial state**; the worker returns 502 + `apply_audit.phase="failed"`. The
-  operator **reconciles manually + re-proposes** (a fresh plan against the
-  partial state). C4 does NOT auto-rollback — rollback of a partial infra apply
-  is a human decision.
+- **Partial / failed apply.** If `tofu apply` fails, the worker runs a read-only,
+  fail-closed post-failure diagnosis: if it can PROVE state stayed clean it
+  returns 502 + `apply_audit.phase="failed"` (no reconcile needed); otherwise it
+  returns 502 + `apply_audit.phase="failed_state_suspect"` with a bounded
+  diagnostic (serials, refresh drift) — the failed apply may have persisted
+  **partial state**, so a **state reconcile is required before any retry**. The
+  worker does NOT auto-rollback/auto-reconcile — that's a human decision. Full
+  procedure: **`docs/runbooks/iac-apply-failure-recovery.md`**.
 - **Lock contention.** The GCS backend serializes via an atomic `.tflock`. The
   worker uses a finite `-lock-timeout=120s` then fails closed. **Never
   auto-force-unlock** — a stuck lock from a crashed apply is cleared by hand only
