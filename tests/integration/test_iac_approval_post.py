@@ -911,6 +911,40 @@ def test_apply_synthetic_503_ambiguous_no_release_504(_configured, monkeypatch):
 # --------------------------------------------------------------------------- #
 
 
+def test_applied_merge_blocked_by_protection_is_permanent_message(_configured, monkeypatch):
+    """C5g 4: a PERMANENT merge block (branch protection — a required review or
+    status not yet satisfied) → apply is parked, but the banner + alert say
+    resolve out-of-band / will NOT merge on re-submit, NOT the transient 'retry'
+    wording."""
+    _patch_resolve(monkeypatch)
+    _patch_repo(monkeypatch)
+
+    def _merge(repo, **kw):
+        raise PrMergeBlockedError(
+            "branch protection requires a review/status this account cannot satisfy",
+            permanent=True,
+        )
+
+    _patch_github(monkeypatch, merge=_merge)
+    calls = _patch_workers(monkeypatch)
+    client = TestClient(app)
+    r = _post(client, token=_mint())
+    assert r.status_code == 200
+    body = r.text.lower()
+    assert "branch protection" in body
+    assert "will not merge" in body
+    assert "re-submit to retry" not in body  # the transient wording must NOT appear
+    # alert names the branch-protection block + out-of-band resolution
+    assert len(calls["notify"]) == 1
+    assert "blocked by branch protection" in calls["notify"][0][1]["body"].lower()
+    # still parked (applied + merge failed), event NOT released
+    state = get_state()
+    ek = main_mod._iac_event_key("theghostsquad00/driftscribe", 42, _HEAD, _GEN_META)
+    existing = state.find_decision_for_event(ek)
+    assert existing is not None
+    assert existing["apply_status"] == "applied" and existing["merge_state"] == "failed"
+
+
 def test_applied_merge_fail_parks_and_reconciles(_configured, monkeypatch):
     _patch_resolve(monkeypatch)
     _patch_repo(monkeypatch)
