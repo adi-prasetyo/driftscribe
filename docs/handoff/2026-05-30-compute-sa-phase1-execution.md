@@ -107,3 +107,7 @@ Operator-authorized ("commit and push everything first. then continue to phase 7
 ## Commit status
 
 All compute-SA-retirement work is on branch `chore/compute-sa-retirement` / **PR #34** (Phases 1–7): spike retirement, the Cloud Build deploy-SA cutover + fail-closed guard, the Phase-7 reintroduction-source patches, and the plan + handoff + IAM backups. The live Phase 5/6/7 IAM mutations touched **no repo code** — only live gcloud + untracked backup JSONs (`*.pre-phase1`, `*.pre-phase5` ×2, `*.pre-phase6`, `build-identity-actas.pre-phase7`).
+
+**Rollback now (post-disable)** = `gcloud iam service-accounts enable 1079423440495-compute@developer.gserviceaccount.com` **+** targeted role/actAs re-grants from the backups (the `enable` step is new vs the pre-Phase-7 re-grant-only rollback).
+
+**Post-merge hygiene (Codex `019e78c2`, operator action after PR #34 merges):** one `main`-branch grep for `1079423440495-compute@` / `compute@developer` to confirm no active config/script re-introduces the dependency — remaining hits should only be intentional point-in-time records under `docs/plans/*` (left as history) and e2e's *own* compute SA (not retired). Leave the Google-managed `cloudbuild.builds.builder` on `@cloudbuild` alone; keep the unpinned `infra/cloudbuild.yaml` guard documented (the project default build SA still points at the now-disabled compute SA by design → unpinned builds fail-closed).
