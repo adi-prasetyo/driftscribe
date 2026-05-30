@@ -95,6 +95,10 @@ def _configured(monkeypatch):
     monkeypatch.setenv("GITHUB_TOKEN", "ghp_test_token")
     monkeypatch.setenv("DRIFTSCRIBE_TOKEN", "static-server-token")
     monkeypatch.setenv("TOFU_ARTIFACTS_BUCKET", _BUCKET)
+    # The POST fail-closes under coordinator dry-run, so the GET suppresses Approve
+    # there too; the conftest defaults DRY_RUN=true, so flip it off to render the
+    # approvable happy path (a dedicated test covers the dry-run suppression).
+    monkeypatch.setenv("DRY_RUN", "false")
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
@@ -274,6 +278,21 @@ def test_token_unset_suppresses_approve_not_configured(_configured, monkeypatch)
     assert resp.status_code == 200
     body = resp.text
     assert "not configured" in body.lower()
+    assert 'data-testid="approve-button"' not in body
+    assert 'name="form_token"' not in body
+
+
+def test_dry_run_suppresses_approve(_configured, monkeypatch):
+    # Coordinator dry-run: the POST fail-closes, so the GET suppresses Approve too
+    # (a fully-verifiable plan otherwise).
+    monkeypatch.setenv("DRY_RUN", "true")
+    get_settings.cache_clear()
+    _patch_resolve(monkeypatch, ref=_ref(), view=_view())
+    client = TestClient(app)
+    resp = client.get("/iac-approvals/42")
+    assert resp.status_code == 200
+    body = resp.text
+    assert "dry-run" in body.lower()
     assert 'data-testid="approve-button"' not in body
     assert 'name="form_token"' not in body
 
