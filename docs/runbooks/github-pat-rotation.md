@@ -13,17 +13,43 @@ repo owner's GitHub account — they cannot be done from code/CI.
 
 ## §1. Rotate `github-pat` to a fine-grained PAT
 
+> **DONE — 2026-05-31 (coordinator side).** The coordinator now authenticates with a
+> least-privilege **fine-grained PAT** (GitHub token name `driftscribe-coordinator-iac-merge`,
+> permissions Contents:R/W + Pull requests:Read + Metadata:Read). Pre-flight validated the
+> token against the exact merge-gate calls (repo auth / contents / `commits/{sha}/check-runs`
+> all HTTP 200), added it as `github-pat` **version 3**, and rolled `driftscribe-agent` to
+> revision `driftscribe-agent-patrot-20260531223502` (`GITHUB_TOKEN=github-pat:latest`, clean
+> boot, no 401/403). **Step 5 (revoke the old classic PAT) is INTENTIONALLY NOT DONE:** the
+> classic value's only remaining consumer is `upgrade-docs-github-pat` (separate secret, 1
+> version). Revoking classic on GitHub would break the upgrade-docs worker — so first mint a
+> dedicated fine-grained PAT for it (Contents+PR write on `UPGRADE_TARGET_REPO`) and
+> `versions add upgrade-docs-github-pat`, THEN revoke classic. Rollback for the coordinator:
+> `:latest` still has v1/v2; re-point or redeploy to a prior revision (`00027-5rp`).
+
 ### Target shape (matches `infra/scripts/setup_secrets.sh` header)
 Fine-grained PAT, **Repository access = only `adi-prasetyo/driftscribe`**, permissions:
 
 | Permission | Level | Why |
 |---|---|---|
-| Contents | **Read and write** | the C5e merge of an approved IaC PR creates a commit on `main` |
-| Pull requests | Read | resolve head SHA / mergeability / PR metadata |
-| Checks | Read | the merge gate reads check-runs (`_assert_required_checks_green`) |
+| Contents | **Read and write** | the C5e merge of an approved IaC PR creates a commit on `main` (public read does NOT cover writes — this is the only permission you MUST explicitly grant) |
+| Pull requests | Read | resolve head SHA / mergeability / PR metadata (belt-and-suspenders for the merge call) |
+| Metadata | Read | auto-selected + mandatory; **this is what covers the check-runs + mergeability reads** |
 
-Nothing else. (Commit statuses: Read too **only if** your required checks are
-legacy *statuses* rather than check-runs — DriftScribe's are check-runs.)
+Nothing else.
+
+> **`adi-prasetyo/driftscribe` is a PUBLIC repo, so there is NO `Checks` row to
+> select — and you don't need one.** The merge gate's check-runs read
+> (`_assert_required_checks_green` → `repo.get_commit(sha).get_check_runs()` →
+> `GET /commits/{ref}/check-runs`, `driftscribe_lib/github.py:427`) and the PR
+> mergeability reads are all covered by the auto-included **Metadata: Read** on a
+> public repo (GitHub documents that endpoint as usable "without … permissions if
+> only public resources are requested"). Fine-grained PATs also don't expose a
+> standalone `Checks` permission the way GitHub *Apps* do — so its absence in the
+> UI is expected, not a problem. `Commit statuses: Read` is likewise unnecessary
+> (and only ever relevant if required checks were legacy *statuses* rather than
+> check-runs — DriftScribe's are check-runs). **If the repo is ever made private**,
+> you would then need to add `Checks: Read` (and `Pull requests: Read` becomes
+> load-bearing rather than belt-and-suspenders).
 
 ### Steps
 
