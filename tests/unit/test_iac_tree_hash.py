@@ -192,3 +192,22 @@ def test_symlinked_iac_dir_itself_raises(tmp_path):
     link.symlink_to(real, target_is_directory=True)
     with pytest.raises(IacTreeHashError):
         iac_tree_hash(link)
+
+
+def test_oserror_during_read_is_wrapped_fail_closed(tmp_path, monkeypatch):
+    """A read failure (e.g. a TOCTOU delete between os.walk and read_bytes, or a
+    permission anomaly) must surface as IacTreeHashError — NOT a raw OSError that
+    escapes the worker gate and 500-strands a burned approval (adversarial review)."""
+    _write(tmp_path, "main.tf", "x")
+
+    import pathlib
+    orig = pathlib.Path.read_bytes
+
+    def boom(self):
+        if self.name == "main.tf":
+            raise PermissionError("vanished")
+        return orig(self)
+
+    monkeypatch.setattr(pathlib.Path, "read_bytes", boom)
+    with pytest.raises(IacTreeHashError):
+        iac_tree_hash(tmp_path)

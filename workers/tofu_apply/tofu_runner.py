@@ -58,6 +58,22 @@ class FidelityError(Exception):
     resource / touches an address the baked iac/ does not declare)."""
 
 
+class IacTreeMismatch(Exception):
+    """C6 head-config-delivery gate: the worker's baked ``iac/``-tree hash does NOT
+    equal the C2 sidecar's ``iac_tree_hash`` (or the sidecar failed its cross-check
+    against the HMAC-signed metadata, or no sidecar generation was supplied for a
+    create-class plan). For a create-class apply this means the worker was NOT
+    re-baked from the approved head's merged config (or ``main`` advanced after the
+    merge) — refuse. Distinct terminal outcome ``tree_mismatch_refused`` (HTTP 409 at
+    ``/apply``; 422 at ``/propose``, pre-mint): the operator must re-bake from the
+    current ``main`` (or re-plan if ``main`` advanced with another ``iac/`` change),
+    NOT blind-retry.
+
+    Standalone ``Exception`` (NOT a ``FidelityError`` subclass), mirroring
+    :class:`LockRefused`/:class:`ApplyStateSuspect`, so ``except FidelityError``
+    handlers don't capture it and it always surfaces as its own terminal phase."""
+
+
 class FreshnessDrift(Exception):
     """The non-mutating refresh-only gate detected out-of-band drift (exit 2)."""
 
@@ -206,15 +222,25 @@ def _normalize_address(address: str) -> str:
     return re.sub(r"\[[^\]]*\]$", "", address)
 
 
-def resource_set_guard(plan_json: dict, declared: set[str]) -> str | None:
+def resource_set_guard(
+    plan_json: dict, declared: set[str], *, allow_create_of_declared: bool = False
+) -> str | None:
     """Return a refusal reason if the plan touches anything the baked iac/ can't
     faithfully reproduce, else ``None``.
 
-    Refuse if any managed ``resource_changes`` entry: (a) has a ``create`` action
-    (a new resource the baked config doesn't yet declare → init/refresh would be
-    misled), (b) is a ``module.*`` address (no module-aware extraction), or
-    (c) has a normalized address not in the baked declared set. ``no-op``/``read``
-    entries are ignored (they touch nothing)."""
+    Per managed ``resource_changes`` entry (``no-op``/``read`` ignored), in order:
+    (a) a ``module.*`` address is refused UNCONDITIONALLY and FIRST — there is no
+    module-aware extraction, and re-baking does NOT unlock modules (C6); (b) a
+    ``create`` action is refused UNLESS ``allow_create_of_declared`` is True; (c) any
+    address (create or otherwise) not in the baked declared set is refused.
+
+    ``allow_create_of_declared`` defaults to **False** (the C5 floor: every create
+    refused). The worker sets it True ONLY after the C6 ``iac/``-tree hash gate has
+    PROVEN the baked config equals the approved head's merged config — so a create is
+    admitted only when (i) the baked ``main`` now declares the resource AND (ii) that
+    baked config is provably the reviewed one. Decoupling these would let a saved
+    plan's PR-authored create apply against a coincidentally-declaring config; the
+    hash gate is the safety coupling (see the C6 plan §2)."""
     rcs = plan_json.get("resource_changes")
     if not isinstance(rcs, list):
         return "plan.json has no resource_changes list"
@@ -230,12 +256,20 @@ def resource_set_guard(plan_json: dict, declared: set[str]) -> str | None:
         address = rc.get("address")
         if not isinstance(address, str):
             return "resource_changes entry has no address"
-        if "create" in actions:
-            return f"{address}: plan creates a resource (needs the head config — C5)"
+        # (a) module refusal FIRST — unconditional, before any create admission.
         if address.startswith("module."):
             return f"{address}: module-nested address not supported by the baked-config guard"
+        # (a.5) a REPLACE (create+delete) is destroy-then-recreate — destructive and
+        # OUT of C6 scope (pure creates only). Refuse UNCONDITIONALLY (even with the
+        # create flag), independent of the denylist (defense in depth — Codex C6a-3).
+        if "create" in actions and "delete" in actions:
+            return f"{address}: replace (destroy+recreate) not supported by the baked-config guard (C6 admits pure creates)"
+        # (b) creates need the head config delivered via re-bake-from-main (C6).
+        if "create" in actions and not allow_create_of_declared:
+            return f"{address}: plan creates a resource (needs the head config — re-bake from main, C6)"
+        # (c) every touched address must be declared in the baked iac/.
         if _normalize_address(address) not in declared:
-            return f"{address}: address not declared in the baked iac/ (needs the head config — C5)"
+            return f"{address}: address not declared in the baked iac/ (needs the head config — C6)"
     return None
 
 
@@ -246,9 +280,12 @@ def assert_fidelity(
     baked_lockfile_sha256: str,
     plan_json: dict,
     declared_addresses: set[str],
+    allow_create_of_declared: bool = False,
 ) -> None:
     """Fail-closed fidelity gate — raise :class:`FidelityError` on any mismatch.
-    Runs before init/refresh/apply (``tofu version`` itself is a subprocess)."""
+    Runs before init/refresh/apply (``tofu version`` itself is a subprocess).
+    ``allow_create_of_declared`` is forwarded to :func:`resource_set_guard` — the
+    worker sets it True ONLY after the C6 hash gate proved baked == approved-head."""
     want_version = signed_metadata.get("opentofu_version")
     if want_version != baked_tofu_version:
         raise FidelityError(
@@ -259,7 +296,9 @@ def assert_fidelity(
         raise FidelityError(
             f"provider_lockfile_sha256 mismatch: signed {want_lock!r} != baked {baked_lockfile_sha256!r}"
         )
-    reason = resource_set_guard(plan_json, declared_addresses)
+    reason = resource_set_guard(
+        plan_json, declared_addresses, allow_create_of_declared=allow_create_of_declared
+    )
     if reason is not None:
         raise FidelityError(f"resource-set guard: {reason}")
 

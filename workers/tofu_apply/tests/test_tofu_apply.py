@@ -1321,17 +1321,17 @@ def test_apply_contract1_metadata_tamper_burns_and_refuses(client: TestClient, m
     assert "does not reproduce the signed payload" in doc["apply_audit"]["detail"]
 
 
-def test_apply_fidelity_refused_on_create_plan(client: TestClient, monkeypatch, tmp_path) -> None:
-    """The fidelity/resource-set guard is the SOLE /apply gate for a plan that
-    creates a resource (the denylist does NOT catch a plain create of a
-    non-control-plane resource). Drive /apply with a create plan → 422,
-    fidelity_refused, burned, and tofu init/apply NEVER ran (only the version probe)."""
+def test_apply_create_plan_without_sidecar_tree_refused(client: TestClient, monkeypatch, tmp_path) -> None:
+    """C6: a create-class /apply with NO iac-tree sidecar generation is refused at
+    the tree gate (409 tree_mismatch_refused) BEFORE fidelity — a create now needs
+    the head config delivered via re-bake-from-main, proven by the sidecar hash. Still
+    claim-first burned, and tofu init/apply NEVER ran (only the version probe)."""
     ctx = _wire(monkeypatch, tmp_path, plan_obj=_plan_json_obj(["create"]))
     r = client.post("/apply", json={"approval_id": ctx["record"].approval_id, "approval_token": ctx["raw_token"]})
-    assert r.status_code == 422
+    assert r.status_code == 409
     doc = _doc(ctx)
     assert doc["status"] == "used"  # claim-first: burned
-    assert doc["apply_audit"]["phase"] == "fidelity_refused"
+    assert doc["apply_audit"]["phase"] == "tree_mismatch_refused"
     # tofu init/apply must never have run — only the `version -json` fidelity probe.
     cmds = [c["args"][0] for c in ctx["tofu_calls"]]
     assert "init" not in cmds and "apply" not in cmds
@@ -1369,7 +1369,10 @@ def test_propose_denylist_violation_refused(client: TestClient, monkeypatch, tmp
     assert r.status_code == 422
 
 
-def test_propose_create_fidelity_refused(client: TestClient, monkeypatch, tmp_path) -> None:
+def test_propose_create_without_sidecar_refused(client: TestClient, monkeypatch, tmp_path) -> None:
+    """C6: a create-class /propose with NO iac-tree sidecar generation is refused at
+    the tree gate (pre-mint, 422) — a create now needs the head config delivered via
+    re-bake-from-main, proven by the sidecar hash."""
     _wire(monkeypatch, tmp_path, plan_obj=_plan_json_obj(["create"]))
     r = client.post("/propose", json={
         "artifact_uri_metadata": _prefix() + "metadata.json",
@@ -1377,6 +1380,7 @@ def test_propose_create_fidelity_refused(client: TestClient, monkeypatch, tmp_pa
         "approver": "alice@corp.example",
     })
     assert r.status_code == 422
+    assert "iac-tree gate" in r.json()["detail"]
 
 
 def test_propose_nondict_metadata_clean_422(client: TestClient, monkeypatch, tmp_path) -> None:
@@ -1727,3 +1731,335 @@ def test_validate_operator_auth_config_fails_fast() -> None:
     # Fully-configured enforce and e2e (any CF config) both boot fine.
     m._validate_operator_auth_config("enforce", "team.cloudflareaccess.com", "aud-tag")
     m._validate_operator_auth_config("e2e", "", "")
+
+
+# =========================================================================== #
+# C6a-3 — iac/-tree hash gate + create-of-declared guard (SOLE MUTATOR)
+# =========================================================================== #
+
+from driftscribe_lib.iac_tree import (  # noqa: E402
+    SidecarInput,
+    build_sidecar,
+    iac_tree_hash,
+    serialize_sidecar,
+)
+
+_DECLARED = {"google_cloud_run_v2_service.payment_demo"}
+_SIDECAR_OBJ = f"pr-12/{_SHA40}/run-100-1/iac-tree.json"
+_SIDECAR_GEN = "1700000000000004"
+
+
+def _add_sidecar(ctx, *, tree_hash=None, field_overrides=None) -> str:
+    """Drop a c6.v1 iac-tree.json into the wired bucket, matching ctx['md'] +
+    (by default) the REAL baked-iac tree hash. Returns the generation to pass."""
+    md = ctx["md"]
+    th = tree_hash if tree_hash is not None else iac_tree_hash(ctx["iac"])
+    fields = dict(
+        repo=md["repo"], pr_number=md["pr_number"], head_sha=md["head_sha"],
+        base_sha=md["base_sha"], workflow_run_id=md["workflow_run_id"],
+        workflow_run_attempt=md["workflow_run_attempt"], plan_sha256=md["plan_sha256"],
+        plan_json_sha256=md["plan_json_sha256"], iac_tree_hash=th,
+    )
+    if field_overrides:
+        fields.update(field_overrides)
+    ctx["bucket"]._objects[_SIDECAR_OBJ] = serialize_sidecar(
+        build_sidecar(SidecarInput(**fields))
+    ).encode("utf-8")
+    return _SIDECAR_GEN
+
+
+# --- resource_set_guard: the create-of-declared relaxation ----------------
+
+
+def test_guard_allows_create_of_declared_only_when_flagged() -> None:
+    pj = _plan_json_obj(["create"])  # create of the DECLARED payment_demo
+    assert tofu_runner.resource_set_guard(pj, _DECLARED) is not None  # default: refuse
+    assert tofu_runner.resource_set_guard(pj, _DECLARED, allow_create_of_declared=True) is None
+
+
+def test_guard_create_of_undeclared_refused_even_when_flagged() -> None:
+    pj = _plan_json_obj(["create"], address="google_storage_bucket.new")
+    assert tofu_runner.resource_set_guard(pj, _DECLARED, allow_create_of_declared=True) is not None
+
+
+def test_guard_module_refused_first_even_when_flagged() -> None:
+    pj = _plan_json_obj(["create"], address="module.m.google_cloud_run_v2_service.payment_demo")
+    reason = tofu_runner.resource_set_guard(pj, _DECLARED, allow_create_of_declared=True)
+    assert reason is not None and "module" in reason
+
+
+def test_assert_fidelity_admits_create_of_declared_with_flag(tmp_path: Path) -> None:
+    iac = _iac_dir(tmp_path)
+    lock = hashlib.sha256((iac / ".terraform.lock.hcl").read_bytes()).hexdigest()
+    md = _metadata(lock, b"p", b"j")
+    pj = _plan_json_obj(["create"])
+    # default → refuse; flagged → admit
+    with pytest.raises(tofu_runner.FidelityError):
+        tofu_runner.assert_fidelity(signed_metadata=md, baked_tofu_version="1.12.0",
+                                    baked_lockfile_sha256=lock, plan_json=pj, declared_addresses=_DECLARED)
+    tofu_runner.assert_fidelity(signed_metadata=md, baked_tofu_version="1.12.0",
+                                baked_lockfile_sha256=lock, plan_json=pj, declared_addresses=_DECLARED,
+                                allow_create_of_declared=True)
+
+
+# --- derive_sidecar_uri ----------------------------------------------------
+
+
+def test_derive_sidecar_uri_swaps_basename() -> None:
+    meta = _prefix() + "metadata.json"
+    assert gcs_fetch.derive_sidecar_uri(meta) == _prefix() + "iac-tree.json"
+
+
+def test_derive_sidecar_uri_rejects_non_metadata() -> None:
+    with pytest.raises(gcs_fetch.GcsFetchError):
+        gcs_fetch.derive_sidecar_uri(_prefix() + "plan.tfplan")
+
+
+# --- _verify_iac_tree_or_raise (unit) -------------------------------------
+
+
+def test_verify_iac_tree_match_returns_hash(monkeypatch, tmp_path) -> None:
+    ctx = _wire(monkeypatch, tmp_path, plan_obj=_plan_json_obj(["create"]))
+    gen = _add_sidecar(ctx)
+    got = m._verify_iac_tree_or_raise(
+        ctx["bucket"], signed_md=ctx["md"], metadata_uri=_prefix() + "metadata.json",
+        generation_iac_tree=gen,
+    )
+    assert got == iac_tree_hash(ctx["iac"])
+
+
+def test_verify_iac_tree_absent_generation_raises(monkeypatch, tmp_path) -> None:
+    ctx = _wire(monkeypatch, tmp_path, plan_obj=_plan_json_obj(["create"]))
+    with pytest.raises(tofu_runner.IacTreeMismatch):
+        m._verify_iac_tree_or_raise(
+            ctx["bucket"], signed_md=ctx["md"], metadata_uri=_prefix() + "metadata.json",
+            generation_iac_tree=None,
+        )
+
+
+def test_verify_iac_tree_hash_mismatch_raises(monkeypatch, tmp_path) -> None:
+    ctx = _wire(monkeypatch, tmp_path, plan_obj=_plan_json_obj(["create"]))
+    gen = _add_sidecar(ctx, tree_hash="f" * 64)
+    with pytest.raises(tofu_runner.IacTreeMismatch):
+        m._verify_iac_tree_or_raise(
+            ctx["bucket"], signed_md=ctx["md"], metadata_uri=_prefix() + "metadata.json",
+            generation_iac_tree=gen,
+        )
+
+
+def test_verify_iac_tree_field_mismatch_raises(monkeypatch, tmp_path) -> None:
+    ctx = _wire(monkeypatch, tmp_path, plan_obj=_plan_json_obj(["create"]))
+    gen = _add_sidecar(ctx, field_overrides={"plan_sha256": "9" * 64})
+    with pytest.raises(tofu_runner.IacTreeMismatch):
+        m._verify_iac_tree_or_raise(
+            ctx["bucket"], signed_md=ctx["md"], metadata_uri=_prefix() + "metadata.json",
+            generation_iac_tree=gen,
+        )
+
+
+def test_verify_iac_tree_missing_object_raises(monkeypatch, tmp_path) -> None:
+    ctx = _wire(monkeypatch, tmp_path, plan_obj=_plan_json_obj(["create"]))
+    # generation supplied but no sidecar object in the bucket → fetch fails closed.
+    with pytest.raises(tofu_runner.IacTreeMismatch):
+        m._verify_iac_tree_or_raise(
+            ctx["bucket"], signed_md=ctx["md"], metadata_uri=_prefix() + "metadata.json",
+            generation_iac_tree=_SIDECAR_GEN,
+        )
+
+
+# --- /apply create-class matrix -------------------------------------------
+
+
+def _apply_body(ctx, **extra):
+    body = {"approval_id": ctx["record"].approval_id, "approval_token": ctx["raw_token"]}
+    body.update(extra)
+    return body
+
+
+def test_apply_create_class_with_matching_sidecar_applies(client, monkeypatch, tmp_path) -> None:
+    ctx = _wire(monkeypatch, tmp_path, plan_obj=_plan_json_obj(["create"]))
+    gen = _add_sidecar(ctx)
+    r = client.post("/apply", json=_apply_body(ctx, generation_iac_tree=gen))
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "applied"
+    audit = _doc(ctx)["apply_audit"]
+    assert audit["phase"] == "applied"
+    assert audit["iac_tree_verified"] is True
+
+
+def test_apply_create_class_hash_mismatch_409(client, monkeypatch, tmp_path) -> None:
+    ctx = _wire(monkeypatch, tmp_path, plan_obj=_plan_json_obj(["create"]))
+    gen = _add_sidecar(ctx, tree_hash="f" * 64)
+    r = client.post("/apply", json=_apply_body(ctx, generation_iac_tree=gen))
+    assert r.status_code == 409, r.text
+    assert "failed_state_suspect" not in r.text
+    assert _doc(ctx)["apply_audit"]["phase"] == "tree_mismatch_refused"
+
+
+def test_apply_create_class_no_generation_409(client, monkeypatch, tmp_path) -> None:
+    ctx = _wire(monkeypatch, tmp_path, plan_obj=_plan_json_obj(["create"]))
+    _add_sidecar(ctx)  # sidecar present, but the caller forgot to pass the generation
+    r = client.post("/apply", json=_apply_body(ctx))
+    assert r.status_code == 409, r.text
+    assert _doc(ctx)["apply_audit"]["phase"] == "tree_mismatch_refused"
+
+
+def test_apply_create_class_field_mismatch_409(client, monkeypatch, tmp_path) -> None:
+    ctx = _wire(monkeypatch, tmp_path, plan_obj=_plan_json_obj(["create"]))
+    gen = _add_sidecar(ctx, field_overrides={"head_sha": "b" * 40})
+    r = client.post("/apply", json=_apply_body(ctx, generation_iac_tree=gen))
+    assert r.status_code == 409, r.text
+
+
+def test_apply_module_create_refused_fidelity_even_with_sidecar(client, monkeypatch, tmp_path) -> None:
+    """Modules stay forbidden: a module.* create with a VALID sidecar still refuses
+    at the resource-set guard (module-before-create) → fidelity_refused, NOT applied."""
+    ctx = _wire(monkeypatch, tmp_path,
+                plan_obj=_plan_json_obj(["create"], address="module.m.google_cloud_run_v2_service.payment_demo"))
+    gen = _add_sidecar(ctx)
+    r = client.post("/apply", json=_apply_body(ctx, generation_iac_tree=gen))
+    assert r.status_code == 422, r.text
+    assert _doc(ctx)["apply_audit"]["phase"] == "fidelity_refused"
+
+
+def test_apply_noncreate_ignores_sidecar_c5_path(client, monkeypatch, tmp_path) -> None:
+    """A C5 update applies WITHOUT a sidecar (the hash gate is create-class only);
+    a stray generation_iac_tree is harmless (never fetched)."""
+    ctx = _wire(monkeypatch, tmp_path)  # default plan = update
+    r = client.post("/apply", json=_apply_body(ctx, generation_iac_tree=_SIDECAR_GEN))
+    assert r.status_code == 200, r.text
+    audit = _doc(ctx)["apply_audit"]
+    assert audit["phase"] == "applied"
+    assert audit["iac_tree_verified"] is False
+
+
+# --- /propose create-class -------------------------------------------------
+
+
+def test_propose_create_class_with_matching_sidecar_mints(client, monkeypatch, tmp_path) -> None:
+    ctx = _wire(monkeypatch, tmp_path, plan_obj=_plan_json_obj(["create"]))
+    gen = _add_sidecar(ctx)
+    r = client.post("/propose", json={
+        "artifact_uri_metadata": _prefix() + "metadata.json",
+        "generation_metadata": "1700000000000003",
+        "approver": "alice@corp.example",
+        "generation_iac_tree": gen,
+    })
+    assert r.status_code == 200, r.text
+    assert r.json()["approval_id"]
+
+
+def test_propose_create_class_hash_mismatch_422(client, monkeypatch, tmp_path) -> None:
+    ctx = _wire(monkeypatch, tmp_path, plan_obj=_plan_json_obj(["create"]))
+    gen = _add_sidecar(ctx, tree_hash="f" * 64)
+    r = client.post("/propose", json={
+        "artifact_uri_metadata": _prefix() + "metadata.json",
+        "generation_metadata": "1700000000000003",
+        "approver": "alice@corp.example",
+        "generation_iac_tree": gen,
+    })
+    assert r.status_code == 422, r.text
+    assert "iac-tree gate" in r.json()["detail"]
+
+
+# --- C6a-3 review hardening: replace refusal, schema/hex validation, req pattern ---
+
+
+def test_guard_refuses_replace_of_declared_even_when_flagged() -> None:
+    """A replace (create+delete) of a DECLARED address is destroy+recreate — refused
+    UNCONDITIONALLY (C6 admits pure creates only), independent of the denylist."""
+    for actions in (["create", "delete"], ["delete", "create"]):
+        pj = _plan_json_obj(actions)
+        reason = tofu_runner.resource_set_guard(pj, _DECLARED, allow_create_of_declared=True)
+        assert reason is not None and "replace" in reason
+
+
+def test_apply_replace_refused_fidelity_with_valid_sidecar(client, monkeypatch, tmp_path) -> None:
+    """A replace with a valid sidecar still refuses (the resource-set guard refuses
+    replace before admitting). Denylist may also catch it; this proves the guard
+    itself does, defense in depth."""
+    ctx = _wire(monkeypatch, tmp_path, plan_obj=_plan_json_obj(["create", "delete"]))
+    gen = _add_sidecar(ctx)
+    r = client.post("/apply", json=_apply_body(ctx, generation_iac_tree=gen))
+    assert r.status_code == 422, r.text
+    assert _doc(ctx)["apply_audit"]["phase"] in ("fidelity_refused", "verify_refused")
+
+
+def test_verify_iac_tree_wrong_schema_version_raises(monkeypatch, tmp_path) -> None:
+    ctx = _wire(monkeypatch, tmp_path, plan_obj=_plan_json_obj(["create"]))
+    _add_sidecar(ctx)
+    # Corrupt the stored sidecar's schema_version.
+    import json as _json
+    obj = _json.loads(ctx["bucket"]._objects[_SIDECAR_OBJ])
+    obj["schema_version"] = "c6.v2"
+    ctx["bucket"]._objects[_SIDECAR_OBJ] = _json.dumps(obj).encode("utf-8")
+    with pytest.raises(tofu_runner.IacTreeMismatch):
+        m._verify_iac_tree_or_raise(
+            ctx["bucket"], signed_md=ctx["md"], metadata_uri=_prefix() + "metadata.json",
+            generation_iac_tree=_SIDECAR_GEN,
+        )
+
+
+def test_verify_iac_tree_non_hex_hash_raises(monkeypatch, tmp_path) -> None:
+    ctx = _wire(monkeypatch, tmp_path, plan_obj=_plan_json_obj(["create"]))
+    _add_sidecar(ctx)
+    import json as _json
+    obj = _json.loads(ctx["bucket"]._objects[_SIDECAR_OBJ])
+    obj["iac_tree_hash"] = "NOT-HEX"
+    ctx["bucket"]._objects[_SIDECAR_OBJ] = _json.dumps(obj).encode("utf-8")
+    with pytest.raises(tofu_runner.IacTreeMismatch):
+        m._verify_iac_tree_or_raise(
+            ctx["bucket"], signed_md=ctx["md"], metadata_uri=_prefix() + "metadata.json",
+            generation_iac_tree=_SIDECAR_GEN,
+        )
+
+
+def test_apply_rejects_nonnumeric_generation_iac_tree(client, monkeypatch, tmp_path) -> None:
+    """Request-schema validation: a non-numeric generation_iac_tree is a 422 at the
+    boundary (matches the generation_metadata contract)."""
+    ctx = _wire(monkeypatch, tmp_path, plan_obj=_plan_json_obj(["create"]))
+    r = client.post("/apply", json=_apply_body(ctx, generation_iac_tree="abc"))
+    assert r.status_code == 422, r.text
+
+
+def test_apply_accepts_absent_generation_iac_tree_on_c5_path(client, monkeypatch, tmp_path) -> None:
+    """None is still valid at the schema boundary (the pattern only constrains a
+    present string) — the C5 update path passes no sidecar."""
+    ctx = _wire(monkeypatch, tmp_path)  # update plan
+    r = client.post("/apply", json=_apply_body(ctx))  # no generation_iac_tree key
+    assert r.status_code == 200, r.text
+
+
+def test_apply_create_class_unhashable_baked_tree_is_terminal_not_500(client, monkeypatch, tmp_path) -> None:
+    """If iac_tree_hash(IAC_DIR) raises (a baked-tree IO/anomaly), the worker must
+    return the terminal tree_mismatch_refused (409) with a recorded audit — NOT an
+    uncaught 500 that strands the burned approval at phase='claimed' (adversarial
+    review C6a-3, fail-open lens)."""
+    ctx = _wire(monkeypatch, tmp_path, plan_obj=_plan_json_obj(["create"]))
+    gen = _add_sidecar(ctx)
+
+    def boom(_dir):
+        raise tofu_runner.IacTreeMismatch  # placeholder; replaced below
+    # Force the hash compute to raise the lib's fail-closed error.
+    from driftscribe_lib.iac_tree import IacTreeHashError as _ITHE
+    monkeypatch.setattr(m, "iac_tree_hash", lambda _d: (_ for _ in ()).throw(_ITHE("baked tree vanished")))
+
+    r = client.post("/apply", json=_apply_body(ctx, generation_iac_tree=gen))
+    assert r.status_code == 409, r.text
+    assert _doc(ctx)["apply_audit"]["phase"] == "tree_mismatch_refused"
+
+
+def test_fetch_object_pinned_converts_transport_error_to_gcsfetcherror() -> None:
+    """A non-NotFound SDK/transport error (Forbidden, ServiceUnavailable, retry
+    exhaustion) must surface as GcsFetchError — NOT a raw exception that escapes the
+    POST-CLAIM gate and 500-strands the burned approval (adversarial review C6a-3)."""
+    class _RaisingBlob:
+        def download_as_bytes(self, raw_download=False, if_generation_match=None):
+            raise RuntimeError("503 Service Unavailable (simulated transport)")
+
+    class _RaisingBucket:
+        def blob(self, name, generation=None):
+            return _RaisingBlob()
+
+    with pytest.raises(gcs_fetch.GcsFetchError):
+        gcs_fetch.fetch_object_pinned(_RaisingBucket(), "o", 123)
