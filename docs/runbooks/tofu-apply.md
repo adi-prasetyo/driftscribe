@@ -23,11 +23,22 @@ Design: `docs/plans/2026-05-29-infra-iac-phase-c4-tofu-apply.md`.
 - `/deny` — verify token → flip `pending → denied`.
 
 **Fidelity boundary (important).** The worker bakes `iac/` from `main`. It
-faithfully applies **no-ops and updates of resources the baked `iac/` declares**;
-it **refuses** any plan that creates a resource, touches an address the baked
-config doesn't declare, or changes providers (those need the approved head's
-config, a C5 capability). So C4 proves the gate on a no-op/update; arbitrary
-config-changing applies wait for C5.
+faithfully applies **no-ops and in-place updates of resources the baked `iac/`
+declares**; it **refuses** a plan that touches an address the baked config doesn't
+declare, a `module.*` address, a `replace`/destroy, or a provider/lockfile change.
+
+**Creates (C6 — merge-then-apply-from-main).** A plan that *creates* a new top-level
+resource is delivered by the **C6 two-step flow**: the coordinator merges the PR to
+`main` FIRST, **the operator re-bakes this worker from the new `main`** (so the baked
+`iac/` now declares the resource), then `/apply` admits the create — but ONLY after
+the worker re-derives its baked `iac/`-tree hash and confirms it equals the approved
+plan's `iac_tree_hash` (the C2 `iac-tree.json` sidecar, cross-checked against the
+HMAC-signed metadata). A not-yet-re-baked worker refuses with `tree_mismatch_refused`
+(HTTP 409). Modules + provider/lockfile changes stay refused. The re-bake is the same
+`gcloud builds submit` deploy as §2; the operator drives it (the coordinator gets NO
+build-trigger privilege). See `docs/runbooks/iac-apply-failure-recovery.md` §7 for the
+create-class operating + recovery flow, and `GET /baked-iac-hash` to confirm the
+re-bake before clicking Apply.
 
 ---
 
