@@ -96,32 +96,53 @@ branch-protection block). The IaC merge path is **already gated** by the in-app
 (`static-gate`, `tofu`, `lint-test`) — so the CODEOWNER review is **redundant**
 for IaC PRs.
 
-**Decision (yours).** Drop the required review *for the IaC merge to succeed via
-the coordinator*, relying on the in-app gate + required checks. Per Codex this is
-sound **but**: (a) do it **after** the PAT rotation (§1) so the merge identity is
-already least-privilege, and (b) do **not** give the coordinator a broad
-branch-protection *bypass* (`enforce_admins` / admin-merge token) — the controls
-should be the in-app approval + the required checks, not a privileged escape hatch.
+**DONE — 2026-05-31 (executed as a C6e Path-A prerequisite; operator-approved).**
+`required_pull_request_reviews` was **removed** on `main` so the coordinator's
+merge-first can actually merge a create-class PR. This was necessary, not optional:
+without it the coordinator-driven C6 flow cannot work in prod at all (the merge is
+the irreversible first step of `_iac_create_merge_first`).
 
-**Which knob.** Unblocking the coordinator needs the *review requirement* gone,
-which on `main` is `required_pull_request_reviews` — note that clearing only
-`require_code_owner_reviews` does NOT unblock if `required_approving_review_count >= 1`
-remains (the author still can't self-approve), so you must address the count too
-(or remove `required_pull_request_reviews` entirely). The required status checks
-(`static-gate`, `tofu`, `lint-test`) stay required.
+**Exact change.**
+```
+gh api -X DELETE repos/adi-prasetyo/driftscribe/branches/main/protection/required_pull_request_reviews
+```
+Clearing only `require_code_owner_reviews` is **insufficient** — `required_approving_
+review_count=1` alone leaves a sole-owner self-authored PR at `mergeStateStatus=BLOCKED`,
+and `merge_pr_at_sha` refuses any state ∉ `{clean, unstable}`. So the whole review
+object had to go. (Confirmed live: PR #47 flipped `BLOCKED` → `CLEAN` immediately.)
 
-**Tradeoff.** Dropping the review requirement shifts trust from GitHub-native
-review onto the in-app gate + required checks. It is **repo-wide on `main`**, not
-path-scoped — GitHub branch protection can't require a review for `iac/**` only —
-so it weakens review enforcement for **non-IaC** PRs to `main` too. If you want to
-keep that for non-IaC changes, the alternative is to **keep admin-merge** as the
-IaC path (today's behavior) and treat the permanent-block banner (P2) as the
-expected UX.
+**What was deliberately NOT changed (compensating controls — the controls are the
+in-app gate + required checks, NOT a privileged escape hatch):**
+- Required **status checks stay required**: `lint-test`, `GitGuardian Security Checks`
+  (and `static-gate` / `tofu` on IaC PRs). CI + secret-scanning still gate every merge.
+- `enforce_admins` stays **false** — no separate admin-bypass token is used; the
+  coordinator merges through the normal API once the state is `clean`.
+- The **authoritative human review for IaC** is the CF-Access `/iac-approvals` approval
+  (operator identity bound to the signed plan), not a GitHub PR review.
 
-**If you decide to drop it**, I can make the change (I have `gh` as
-`adi-prasetyo`) — it's a `gh api` PATCH of the branch-protection
-`required_pull_request_reviews` — but I will confirm with you first since it's a
-live, security-relevant branch-protection edit.
+**Caveat (repo-wide).** This is **repo-wide on `main`**, not path-scoped (GitHub can't
+require a review for `iac/**` only), so GitHub-native review is no longer enforced for
+**non-IaC** PRs either. Accepted for this single-operator portfolio: only `adi-prasetyo`
+/ the coordinator PAT have push access, the owner already admin-bypassed `count:1` on
+every merge, and the real gates (status checks + GitGuardian + the in-app IaC approval)
+remain. Longer-term hardening (per Codex): a second reviewer, a GitHub App merge
+identity, or a path-scoped ruleset would beat "sole owner + disabled reviews."
+
+**Reachability note (Codex C6e review #3).** The tofu-apply worker is
+`--ingress=internal` + `IAC_OPERATOR_AUTH_MODE=enforce`, so a direct operator-host curl
+to the worker (`/baked-iac-hash`, `/propose`, `/apply`) is **not** a valid operational
+check — it has no VPC path and no CF-Access operator JWT. The canonical path is
+**coordinator → worker** (the operator's authenticated browser drives the coordinator,
+which reaches the worker over the C5c VPC). This is intended, better posture.
+
+**To restore** (if the policy is ever reversed):
+```
+gh api -X PUT repos/adi-prasetyo/driftscribe/branches/main/protection/required_pull_request_reviews \
+  -f required_approving_review_count=1 -F require_code_owner_reviews=true \
+  -F dismiss_stale_reviews=false -F require_last_push_approval=false
+```
+Note: restoring this re-blocks the coordinator's merge-first — create-class IaC PRs
+would then need an out-of-band admin merge each time (undercuts the C6 automation).
 
 ---
 

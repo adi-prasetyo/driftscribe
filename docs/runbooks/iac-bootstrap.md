@@ -112,6 +112,15 @@ or keep it in a local `tofu.tfvars` that you do **not** commit (see
 
 ## 3. Enable branch protection so CODEOWNERS is enforced
 
+> **⚠️ SUPERSEDED for the merge path (2026-05-31, Phase C6).** `required_pull_request_reviews`
+> was **removed** from `main` so the coordinator's C6 merge-first can merge create-class
+> IaC PRs (a sole-owner self-authored PR is otherwise structurally `BLOCKED`). The
+> authoritative IaC review is now the CF-Access `/iac-approvals` approval + the required
+> status checks; `.github/CODEOWNERS` remains for advisory ownership but is no longer
+> review-enforced at merge. See `docs/runbooks/github-pat-rotation.md §2` for the exact
+> change, compensating controls, and restore steps. The section below is retained as the
+> original bootstrap intent / restore reference.
+
 The repo ships `.github/CODEOWNERS`, which names `@adi-prasetyo` as the required
 reviewer for the foundation + security-critical paths (the `iac/` foundation
 files, `tools/iac_static_gate.py`, `.github/`, and `infra/scripts/`). This is
