@@ -262,6 +262,122 @@ def open_docs_pr(
     return _finalize_pr(pr, reused=reused)
 
 
+def open_iac_pr(
+    repo: Repository,
+    *,
+    branch: str,
+    base: str,
+    title: str,
+    body: str,
+    files: list[dict[str, Any]],
+    label: str = "driftscribe-infra",
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Commit a LIST of file writes onto ONE branch and open ONE PR.
+
+    The Phase D ``tofu-editor`` sibling of :func:`open_docs_pr`: instead of one
+    ``file_path``/``new_content`` it takes ``files`` (a list of
+    ``{"path", "content"}`` writes), commits one per file on a single branch
+    off ``base``, opens one PR, and labels it ``driftscribe-infra`` (NOT the
+    ``"driftscribe","docs"`` labels :func:`_finalize_pr` hard-codes — hence a
+    dedicated best-effort label step here rather than reusing it).
+
+    The branch/PR idempotency idioms (:func:`_is_already_exists`,
+    :func:`_find_open_pr_for_head`) match :func:`open_docs_pr` so a re-run with
+    the same branch returns the existing open PR (``reused=True``) instead of
+    crashing. ``base`` is used consistently (the worker pins it to ``"main"``).
+
+    On ``dry_run=True`` no API calls are made — a preview dict is returned
+    (mirroring :func:`open_docs_pr`'s dry-run convention).
+    """
+    if dry_run:
+        return {
+            "dry_run": True,
+            "url": None,
+            "branch": branch,
+            "files": [f.get("path", "") for f in files],
+        }
+
+    base_ref = repo.get_branch(base)
+    try:
+        repo.create_git_ref(ref=f"refs/heads/{branch}", sha=base_ref.commit.sha)
+    except GithubException as e:
+        # Idempotency (same idiom as open_docs_pr): a re-run can hit an
+        # already-created branch and GitHub answers create_git_ref with 422
+        # "Reference already exists". If an open PR exists for the branch,
+        # return it unchanged rather than 500-ing; otherwise (dangling branch
+        # from a prior failed run) fall through to (re)write files + open a PR.
+        if not _is_already_exists(e):
+            raise
+        existing_pr = _find_open_pr_for_head(repo, branch)
+        if existing_pr is not None:
+            return _finalize_iac_pr(existing_pr, branch=branch, label=label, reused=True)
+
+    for f in files:
+        path = f["path"]
+        content = f["content"]
+        try:
+            existing = repo.get_contents(path, ref=branch)
+        except UnknownObjectException:
+            # 404 — file genuinely doesn't exist on the branch. Create it.
+            repo.create_file(
+                path=path,
+                message=f"feat(iac): author {path}",
+                content=content,
+                branch=branch,
+            )
+        else:
+            repo.update_file(
+                path=path,
+                message=f"feat(iac): author {path}",
+                content=content,
+                sha=existing.sha,
+                branch=branch,
+            )
+
+    try:
+        pr = repo.create_pull(title=title, body=body, head=branch, base=base)
+        reused = False
+    except GithubException as e:
+        # Backstop for the dangling-branch path above (and any create race):
+        # GitHub rejects a duplicate PR for the same head with 422 "A pull
+        # request already exists". Return the existing one rather than failing.
+        if not _is_already_exists(e):
+            raise
+        pr = _find_open_pr_for_head(repo, branch)
+        if pr is None:
+            raise
+        reused = True
+
+    return _finalize_iac_pr(pr, branch=branch, label=label, reused=reused)
+
+
+def _finalize_iac_pr(
+    pr: Any, *, branch: str, label: str, reused: bool
+) -> dict[str, Any]:
+    """Best-effort apply the IaC ``label``, then build the open_iac_pr result.
+
+    Separate from :func:`_finalize_pr` because that one hard-codes the docs
+    labels ``"driftscribe","docs"``; the editor PR must carry the single
+    ``driftscribe-infra`` label (which the CI static gate / branch-protection
+    keys off). Like :func:`_finalize_pr`, labeling is best-effort and runs for
+    both fresh and reused PRs.
+    """
+    labeled = True
+    try:
+        pr.add_to_labels(label)
+    except GithubException as e:
+        labeled = False
+        log.warning("failed to label IaC PR #%s: %s", pr.number, e)
+    return {
+        "url": pr.html_url,
+        "number": pr.number,
+        "branch": branch,
+        "labeled": labeled,
+        "reused": reused,
+    }
+
+
 def _assert_pr_eligible(
     pr: Any,
     *,
