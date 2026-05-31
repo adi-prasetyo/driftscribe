@@ -246,6 +246,17 @@ def test_control_plane_secret_version_create_is_denied():
     assert "control-plane-secret" in _rules(evaluate(DenylistInput(plan=parsed)))
 
 
+def test_control_plane_tofu_editor_github_pat_secret_create_is_denied():
+    """D1-0 forward-compat: the Phase D ``tofu-editor`` worker reads its GitHub
+    PAT from the ``tofu-editor-github-pat`` secret. That secret is registered on
+    the denylist BEFORE the worker exists, so a create of a
+    ``google_secret_manager_secret`` whose ``secret_id`` resolves to it must
+    emit control-plane-secret.
+    """
+    parsed, _ = load_plan_json(_load("control_plane_tofu_editor_pat_secret_create.json"))
+    assert "control-plane-secret" in _rules(evaluate(DenylistInput(plan=parsed)))
+
+
 def test_unprotected_secret_version_passes():
     parsed, _ = load_plan_json(_load("benign_unprotected_secret_version.json"))
     assert evaluate(DenylistInput(plan=parsed)) == []
