@@ -60,6 +60,13 @@ _PAYLOAD_KEYS = frozenset(
         "plan_sha256",
         "plan_json_sha256",
         "comment_id",
+        # C6: the iac-tree sidecar identity the GET rendered — pinned so the operator
+        # can't approve a page whose sidecar was swapped under them (the worker still
+        # re-derives + cross-checks the real sidecar; this is operator-review
+        # integrity, not a worker security input). Always present as strings (empty
+        # for a pre-C6 / no-sidecar comment).
+        "generation_iac_tree",
+        "iac_tree_hash",
         "exp",
     }
 )
@@ -69,6 +76,8 @@ _STR_FIELDS = (
     "generation_metadata",
     "plan_sha256",
     "plan_json_sha256",
+    "generation_iac_tree",
+    "iac_tree_hash",
 )
 
 
@@ -128,6 +137,8 @@ def mint_form_token(
     plan_sha256: str,
     plan_json_sha256: str,
     comment_id: int | None,
+    generation_iac_tree: str = "",
+    iac_tree_hash: str = "",
     ttl_seconds: int = _DEFAULT_TTL_SECONDS,
     now: float | None = None,
 ) -> str:
@@ -149,6 +160,8 @@ def mint_form_token(
         "plan_sha256": plan_sha256,
         "plan_json_sha256": plan_json_sha256,
         "comment_id": comment_id,
+        "generation_iac_tree": generation_iac_tree,
+        "iac_tree_hash": iac_tree_hash,
         "exp": int(now) + ttl_seconds,
     }
     canonical = _canonical_json(payload)
