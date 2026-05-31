@@ -31,8 +31,10 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import hmac
 import json
 import os
+import re
 import shutil
 import tempfile
 import uuid
@@ -57,7 +59,13 @@ from driftscribe_lib.cf_access import (
     canonical_operator_email,
     verify_cf_access_jwt,
 )
+from driftscribe_lib.iac_plan_classify import plan_has_create
 from driftscribe_lib.iac_plan_denylist import DenylistInput, evaluate, load_plan_json
+from driftscribe_lib.iac_tree import (
+    SIDECAR_SCHEMA_VERSION,
+    IacTreeHashError,
+    iac_tree_hash,
+)
 from driftscribe_lib.logging import install_trace_middleware, setup as setup_logging
 from workers.tofu_apply import gcs_fetch, tofu_runner
 
@@ -188,6 +196,11 @@ class ProposeRequest(BaseModel):
     # e2e-legacy path (no real CF JWT) still validates; enforce mode rejects a
     # None at the handler.
     operator_jwt: str | None = None
+    # C6: the GCS generation of the iac-tree.json sidecar. Additive endpoint field
+    # (NOT a c2.v1/c3.v1 wire change). MANDATORY for a create-class plan (the worker
+    # derives the sidecar URI from the signed metadata + cross-checks it). Unsigned,
+    # but a wrong/missing value can only refuse, never subvert (C6 plan §2).
+    generation_iac_tree: str | None = Field(default=None, max_length=32, pattern=r"^[0-9]+$")
     model_config = ConfigDict(extra="forbid")
 
 
@@ -208,6 +221,8 @@ class ApplyRequest(TokenRequest):
     PRE-CLAIM, so an absent/forged/expired JWT fails 403 with nothing burned."""
 
     operator_jwt: str | None = None
+    # C6 sidecar generation (see ProposeRequest). MANDATORY for a create-class plan.
+    generation_iac_tree: str | None = Field(default=None, max_length=32, pattern=r"^[0-9]+$")
     # Pydantic v2 does NOT inherit model_config across subclasses — restate it so
     # /apply stays a closed schema (a stray extra field is a 422, not silently
     # dropped), matching every other worker request model.
@@ -262,14 +277,96 @@ def _denylist_or_raise(parsed_plan_json: dict) -> None:
         )
 
 
-def _fidelity_or_raise(signed_md: dict, parsed_plan_json: dict) -> None:
+def _fidelity_or_raise(
+    signed_md: dict, parsed_plan_json: dict, *, allow_create_of_declared: bool = False
+) -> None:
     tofu_runner.assert_fidelity(
         signed_metadata=signed_md,
         baked_tofu_version=_baked_tofu_version(),
         baked_lockfile_sha256=_baked_lockfile_sha256(),
         plan_json=parsed_plan_json,
         declared_addresses=tofu_runner.extract_declared_addresses(IAC_DIR),
+        allow_create_of_declared=allow_create_of_declared,
     )
+
+
+# Fields the C6 sidecar MUST reproduce from the HMAC-signed c2.v1 metadata. The
+# sidecar is unsigned; this total cross-check is what binds it to THIS approved plan,
+# so a compromised coordinator (objectViewer only) cannot substitute a sidecar from a
+# different plan even though it supplies the (unsigned) generation.
+_SIDECAR_CROSSCHECK_FIELDS = (
+    "repo", "pr_number", "head_sha", "base_sha",
+    "workflow_run_id", "workflow_run_attempt", "plan_sha256", "plan_json_sha256",
+)
+_HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _verify_iac_tree_or_raise(
+    bucket: Any, *, signed_md: dict, metadata_uri: str, generation_iac_tree: str | None
+) -> str:
+    """C6 head-config-delivery gate — run ONLY for a create-class plan. Returns the
+    matched ``iac_tree_hash`` on success; raises :class:`tofu_runner.IacTreeMismatch`
+    on ANY failure (mapped to ``tree_mismatch_refused`` — 409 at /apply, 422 at
+    /propose). Steps (C6 plan §2/§3.3):
+
+    1. require the sidecar generation (absent ⇒ refuse: a create needs the sidecar);
+    2. derive the sidecar URI from the SIGNED metadata path (not coordinator input);
+    3. fetch the sidecar pinned to ``generation_iac_tree``;
+    4. cross-check EVERY shared field against the signed metadata (binds the unsigned
+       sidecar to this exact approved plan);
+    5. compare the sidecar's ``iac_tree_hash`` to the worker's OWN baked ``IAC_DIR``
+       hash (constant-time) — equal ⇒ the baked config IS the approved head's merged
+       config, so the create may be admitted.
+    """
+    if not generation_iac_tree:
+        raise tofu_runner.IacTreeMismatch(
+            "create-class apply requires the iac-tree sidecar generation (none supplied)"
+        )
+    try:
+        sidecar_uri = gcs_fetch.derive_sidecar_uri(metadata_uri)
+        raw = gcs_fetch.fetch_artifact(
+            bucket, signed_uri=sidecar_uri, generation=generation_iac_tree,
+            expected_basename="iac-tree.json",
+        )
+    except gcs_fetch.GcsFetchError as e:
+        raise tofu_runner.IacTreeMismatch(f"sidecar fetch failed: {e}")
+    try:
+        sidecar = json.loads(raw)
+    except (ValueError, RecursionError) as e:  # JSONDecodeError ⊂ ValueError; RecursionError = pathological nesting
+        # Post-claim: any parse failure (incl. a pathologically nested doc) must fail
+        # CLOSED as the C6 refusal class, never escape and strand the burned approval.
+        raise tofu_runner.IacTreeMismatch(f"sidecar parse failed: {type(e).__name__}")
+    if not isinstance(sidecar, dict):
+        raise tofu_runner.IacTreeMismatch(
+            f"sidecar root is {type(sidecar).__name__}, expected object"
+        )
+    # Validate the sidecar schema (defense in depth — Codex C6a-3 import 1): a legit
+    # c6.v1 sidecar always passes, but a malformed/wrong-version one is refused even
+    # if its hash string happened to equal the local digest.
+    if sidecar.get("schema_version") != SIDECAR_SCHEMA_VERSION:
+        raise tofu_runner.IacTreeMismatch(
+            f"sidecar schema_version != {SIDECAR_SCHEMA_VERSION!r}"
+        )
+    for k in _SIDECAR_CROSSCHECK_FIELDS:
+        if sidecar.get(k) != signed_md.get(k):
+            raise tofu_runner.IacTreeMismatch(
+                f"sidecar field {k!r} does not match the signed metadata"
+            )
+    want = sidecar.get("iac_tree_hash")
+    if not isinstance(want, str) or not _HEX64_RE.fullmatch(want):
+        raise tofu_runner.IacTreeMismatch("sidecar iac_tree_hash missing or not 64-hex")
+    try:
+        have = iac_tree_hash(IAC_DIR)
+    except IacTreeHashError as e:
+        # A symlink/anomaly in the baked iac/ → surface as the C6 refusal class (not
+        # the generic verify_refused), for precise operator diagnosis (Codex import 4).
+        raise tofu_runner.IacTreeMismatch(f"baked iac/ tree is unhashable: {e}")
+    if not hmac.compare_digest(want, have):
+        raise tofu_runner.IacTreeMismatch(
+            "baked iac/-tree hash does not match the approved head's iac_tree_hash "
+            "(worker not re-baked from the merged main, or main advanced)"
+        )
+    return have
 
 
 def _verify_operator(
@@ -368,11 +465,25 @@ def propose(req: ProposeRequest, caller: str = Depends(_verify_caller_dep)) -> d
             signed_meta_gen=req.generation_metadata,
         )
         _denylist_or_raise(parsed_plan_json)
-        _fidelity_or_raise(fetched_md, parsed_plan_json)
+        # C6: a create-class plan must pass the iac/-tree hash gate (the baked config
+        # IS the approved head's merged config) before the resource-set guard will
+        # admit the create. Non-create plans skip the gate (C5 path unchanged).
+        has_create = plan_has_create(parsed_plan_json)
+        if has_create:
+            _verify_iac_tree_or_raise(
+                bucket, signed_md=fetched_md,
+                metadata_uri=req.artifact_uri_metadata,
+                generation_iac_tree=req.generation_iac_tree,
+            )
+        _fidelity_or_raise(fetched_md, parsed_plan_json, allow_create_of_declared=has_create)
     except gcs_fetch.GcsFetchError as e:
         raise HTTPException(status_code=422, detail=f"artifact fetch failed: {e}")
     except ArtifactIntegrityError as e:
         raise HTTPException(status_code=422, detail=f"artifact integrity: {e}")
+    except tofu_runner.IacTreeMismatch as e:
+        # Pre-mint: nothing burned. The worker isn't re-baked from the approved head
+        # (or main advanced / sidecar mismatch) — re-bake/re-plan, do not retry.
+        raise HTTPException(status_code=422, detail=f"iac-tree gate (re-bake required): {e}")
     except tofu_runner.FidelityError as e:
         raise HTTPException(status_code=422, detail=f"fidelity: {e}")
     except tofu_runner.TofuStepError as e:
@@ -465,6 +576,7 @@ def apply(req: ApplyRequest, caller: str = Depends(_verify_caller_dep)) -> dict:
 
     # ---- approval BURNED; every failure below is fail-closed (re-propose) ----
     md = sp["metadata"]
+    iac_tree_verified = False  # set True iff the C6 create-class hash gate passes
     try:
         bucket = _get_artifact_bucket()
         # Contract #1: re-fetch metadata @ signed locator+gen, rebuild + compare to the signed bytes.
@@ -488,13 +600,34 @@ def apply(req: ApplyRequest, caller: str = Depends(_verify_caller_dep)) -> dict:
             signed_meta_gen=sp["generation_metadata"],
         )
         _denylist_or_raise(parsed_plan_json)          # contract #4
-        _fidelity_or_raise(md, parsed_plan_json)       # §3.2 fidelity + resource-set guard
+        # C6 (contract #4.5): a create-class plan must pass the iac/-tree hash gate
+        # BEFORE the resource-set guard will admit the create — proving the baked
+        # config IS the approved head's merged config. Non-create plans skip it (the
+        # C5 path: baked main != not-yet-merged head by construction).
+        has_create = plan_has_create(parsed_plan_json)
+        if has_create:
+            _verify_iac_tree_or_raise(
+                bucket, signed_md=md, metadata_uri=sp["artifact_uri_metadata"],
+                generation_iac_tree=req.generation_iac_tree,
+            )
+            iac_tree_verified = True
+        _fidelity_or_raise(md, parsed_plan_json, allow_create_of_declared=has_create)  # §3.2 fidelity + resource-set guard
     except gcs_fetch.GcsFetchError as e:
         _fail(store, req.approval_id, attempt_id, "integrity_refused", 422, f"artifact fetch failed: {e}",
               caller_sa=caller, operator_email=operator_email)
     except ArtifactIntegrityError as e:
         _fail(store, req.approval_id, attempt_id, "integrity_refused", 422, f"artifact integrity: {e}",
               caller_sa=caller, operator_email=operator_email)
+    except tofu_runner.IacTreeMismatch as e:
+        # C6: the baked config is NOT the approved head's merged config (worker not
+        # re-baked, main advanced, or the sidecar failed its cross-check / was absent).
+        # No mutation occurred — distinct terminal phase so the coordinator keeps the
+        # merge-first decision and the operator re-bakes/re-plans (never blind-retry).
+        _fail(store, req.approval_id, attempt_id, "tree_mismatch_refused", 409,
+              f"refusing apply: {e}; re-bake the worker from the merged main "
+              "(or re-plan if main advanced) before retry",
+              caller_sa=caller, operator_email=operator_email,
+              extra={"has_create": True})
     except tofu_runner.FidelityError as e:
         _fail(store, req.approval_id, attempt_id, "fidelity_refused", 422, f"fidelity: {e}",
               caller_sa=caller, operator_email=operator_email)
@@ -590,6 +723,9 @@ def apply(req: ApplyRequest, caller: str = Depends(_verify_caller_dep)) -> dict:
         # drift it classified as benign server-computed churn — record exactly which
         # paths so the audit shows what was tolerated (empty when no drift).
         "benign_drift_paths": list(outcome.benign_drift_paths),
+        # C6: True iff this was a create-class apply that passed the iac/-tree hash
+        # gate (baked config proven == approved head). False for C5 no-op/update.
+        "iac_tree_verified": iac_tree_verified,
         "caller_sa": caller, "operator_email": operator_email,
     })
     log.info("apply: id=%s attempt=%s APPLIED serial=%s", req.approval_id, attempt_id, outcome.state_serial)

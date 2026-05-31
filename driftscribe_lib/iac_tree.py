@@ -111,30 +111,40 @@ def iac_tree_hash(iac_dir: str | os.PathLike[str]) -> str:
         raise IacTreeHashError(f"iac dir not found or not a directory: {root}")
     entries: list[tuple[str, str]] = []
 
-    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-        rel_dir = Path(dirpath).relative_to(root).as_posix()
+    # ANY OSError raised while walking/stat-ing/reading (a TOCTOU file delete between
+    # os.walk and read_bytes, a permission/IsADirectory anomaly, a stat failure) is
+    # wrapped as IacTreeHashError so callers have a SINGLE fail-closed exception type
+    # to handle — a raw OSError must never escape uncaught and 500 the apply, which
+    # post-claim would strand the burned approval with no terminal audit (adversarial
+    # review C6a-3 — fail-open lens). The explicit IacTreeHashError raises below are
+    # NOT OSError, so they propagate unchanged.
+    try:
+        for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+            rel_dir = Path(dirpath).relative_to(root).as_posix()
 
-        # Prune excluded / symlinked subdirs IN PLACE so os.walk never descends them.
-        kept: list[str] = []
-        for d in dirnames:
-            rel = d if rel_dir == "." else f"{rel_dir}/{d}"
-            if _is_excluded_dir(rel):
-                continue  # .terraform/ — never traversed (its symlinks ignored)
-            if os.path.islink(os.path.join(dirpath, d)):
-                raise IacTreeHashError(f"symlink directory under iac/ not allowed: {rel}")
-            kept.append(d)
-        dirnames[:] = kept
+            # Prune excluded / symlinked subdirs IN PLACE so os.walk never descends them.
+            kept: list[str] = []
+            for d in dirnames:
+                rel = d if rel_dir == "." else f"{rel_dir}/{d}"
+                if _is_excluded_dir(rel):
+                    continue  # .terraform/ — never traversed (its symlinks ignored)
+                if os.path.islink(os.path.join(dirpath, d)):
+                    raise IacTreeHashError(f"symlink directory under iac/ not allowed: {rel}")
+                kept.append(d)
+            dirnames[:] = kept
 
-        for f in filenames:
-            rel = f if rel_dir == "." else f"{rel_dir}/{f}"
-            if _is_excluded_file(rel):
-                continue
-            full = os.path.join(dirpath, f)
-            if os.path.islink(full):
-                raise IacTreeHashError(f"symlink under iac/ not allowed: {rel}")
-            if not os.path.isfile(full):
-                raise IacTreeHashError(f"non-regular file under iac/: {rel}")
-            entries.append((rel, hashlib.sha256(Path(full).read_bytes()).hexdigest()))
+            for f in filenames:
+                rel = f if rel_dir == "." else f"{rel_dir}/{f}"
+                if _is_excluded_file(rel):
+                    continue
+                full = os.path.join(dirpath, f)
+                if os.path.islink(full):
+                    raise IacTreeHashError(f"symlink under iac/ not allowed: {rel}")
+                if not os.path.isfile(full):
+                    raise IacTreeHashError(f"non-regular file under iac/: {rel}")
+                entries.append((rel, hashlib.sha256(Path(full).read_bytes()).hexdigest()))
+    except OSError as e:
+        raise IacTreeHashError(f"failed to read the iac/ tree: {e}") from e
 
     entries.sort()
     h = hashlib.sha256()
