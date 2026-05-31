@@ -3005,8 +3005,13 @@ def _iac_resume_apply(
     advanced), propose/apply fail-closed and the ``waiting_for_rebake`` decision is
     LEFT IN PLACE so the operator can re-bake and retry.
 
-    Post-merge failure handling is intentionally minimal here; C6d refines the
-    create-class freeze / orphan-reconcile matrix.
+    Post-merge failure handling (§3.6): no-mutation refusals (4xx/423/409, incl.
+    tree_mismatch when not re-baked) keep ``waiting_for_rebake`` for retry; a 502 apply
+    failure is ALWAYS terminal ``failed_state_suspect`` — FREEZE + orphan reconcile,
+    because a failed CREATE can leave a live resource absent from state (Codex C6
+    blocker 4); a non-502 5xx is terminal ``ambiguous``. The merge is never auto-
+    reverted (merged main is the desired state). See
+    docs/runbooks/iac-apply-failure-recovery.md.
     """
     gen_iac_tree = view.generation_iac_tree
     if not gen_iac_tree:
@@ -3070,11 +3075,14 @@ def _iac_resume_apply(
             with contextlib.suppress(Exception):
                 worker_client.call_plan_deny(approval_id, approval_token)
             return _iac_resume_not_ready(request, view, pr_number, action="apply", err=e)
-        # 5xx / unknown: possible partial mutation on a CREATE — record a terminal
-        # decision + alert (C6d refines the create-class freeze/orphan handling).
-        apply_status = "failed_state_suspect" if (e.status_code == 502 and "failed_state_suspect" in (e.body or "")) else (
-            "failed" if e.status_code == 502 else "ambiguous"
-        )
+        # 5xx / unknown on a CREATE resume: a failed `tofu apply` that CREATES can
+        # leave a live ORPHAN resource that was never written to state — which the
+        # worker's post-failure "clean" diagnosis CANNOT disprove (a resource absent
+        # from state is absent from the refresh). So a 502 here is ALWAYS
+        # failed_state_suspect (FREEZE + orphan reconcile), never a retryable plain
+        # "failed" (Codex C6 blocker 4); a non-502 5xx (timeout/unreachable) is
+        # ambiguous. Both are terminal — the operator runs the recovery runbook.
+        apply_status = "failed_state_suspect" if e.status_code == 502 else "ambiguous"
         _record_iac_decision(
             state, event_key, apply_status=apply_status, merge_state="merged",
             approval_id=approval_id, head_sha=view.head_sha, pr_number=pr_number,

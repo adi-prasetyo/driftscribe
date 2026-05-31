@@ -1221,3 +1221,26 @@ def test_resume_baked_hash_unreachable_falls_through_to_apply(_configured, monke
     r2 = _post(client, token=tok)  # resume → GET fails → falls through → applies
     assert r2.status_code == 200 and "applied" in r2.text.lower()
     assert len(calls["apply"]) == 1
+
+
+def test_resume_apply_clean_502_still_freezes_as_state_suspect(_configured, monkeypatch):
+    """C6d (Codex blocker 4): a create-class resume 502 with NO failed_state_suspect
+    token still freezes as failed_state_suspect — a failed CREATE can orphan a live
+    resource the worker's 'clean' diagnosis can't disprove. NOT a retryable 'failed'."""
+    _patch_resolve(monkeypatch, view=_create_view())
+    _patch_repo(monkeypatch)
+    _patch_github(monkeypatch)
+
+    def _apply_502_clean(aid, tok, jwt, generation_iac_tree=None):
+        raise worker_client.WorkerClientError(502, "tofu apply failed (exit 1)", "tofu_apply")
+
+    _patch_workers(monkeypatch, apply_=_apply_502_clean)
+    client = TestClient(app)
+    tok = _create_token()
+    assert _post(client, token=tok).status_code == 200  # merge-first
+    r2 = _post(client, token=tok)  # resume → clean 502
+    assert r2.status_code == 502, r2.text
+    assert "orphan" in r2.text.lower()
+    state = get_state()
+    ek = main_mod._iac_event_key("theghostsquad00/driftscribe", 42, _HEAD, _GEN_META)
+    assert state.find_decision_for_event(ek)["apply_status"] == "failed_state_suspect"
