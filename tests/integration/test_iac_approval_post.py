@@ -203,6 +203,7 @@ def _patch_workers(
     apply_=None,
     plan_deny=None,
     notifier=None,
+    baked_hash=None,
 ):
     calls = {"propose": [], "apply": [], "plan_deny": [], "notify": []}
 
@@ -222,6 +223,10 @@ def _patch_workers(
         calls["notify"].append((worker, payload))
         return {"ok": True}
 
+    def _default_baked_hash():
+        # C6c: by default the worker IS re-baked (baked hash == the create view's).
+        return {"iac_tree_hash": _IAC_TREE_HASH}
+
     monkeypatch.setattr(
         main_mod.worker_client, "call_propose", propose or _default_propose
     )
@@ -232,6 +237,9 @@ def _patch_workers(
         main_mod.worker_client, "call_plan_deny", plan_deny or _default_plan_deny
     )
     monkeypatch.setattr(main_mod.worker_client, "call", notifier or _default_notify)
+    monkeypatch.setattr(
+        main_mod.worker_client, "get_baked_iac_hash", baked_hash or _default_baked_hash
+    )
     return calls
 
 
@@ -1177,3 +1185,39 @@ def test_create_class_crash_after_pending_recovers_by_re_merge(_configured, monk
     assert len(merge_calls) == 1  # idempotent merge re-driven
     dec = state.find_decision_for_event(ek)
     assert dec["apply_status"] == "waiting_for_rebake" and dec["merge_state"] == "merged"
+
+
+def test_resume_baked_hash_mismatch_short_circuits_before_propose(_configured, monkeypatch):
+    """C6c: if the worker's baked iac_tree_hash != the approved hash, the resume
+    short-circuits with a precise 'not re-baked' message BEFORE burning a propose."""
+    _patch_resolve(monkeypatch, view=_create_view())
+    _patch_repo(monkeypatch)
+    _patch_github(monkeypatch)
+    calls = _patch_workers(monkeypatch, baked_hash=lambda: {"iac_tree_hash": "0" * 64})
+    client = TestClient(app)
+    tok = _create_token()
+    assert _post(client, token=tok).status_code == 200  # merge-first
+    r2 = _post(client, token=tok)  # resume → baked-hash pre-check mismatch
+    assert r2.status_code == 200
+    body = r2.text.lower()
+    assert "not re-baked" in body
+    assert calls["propose"] == []  # short-circuited before propose
+
+
+def test_resume_baked_hash_unreachable_falls_through_to_apply(_configured, monkeypatch):
+    """C6c best-effort: a baked-hash GET failure (worker unreachable / older revision)
+    falls through to propose→apply — the apply-time gate is the real guard."""
+    _patch_resolve(monkeypatch, view=_create_view())
+    _patch_repo(monkeypatch)
+    _patch_github(monkeypatch)
+
+    def _boom():
+        raise worker_client.WorkerClientError(503, "unreachable", "tofu_apply")
+
+    calls = _patch_workers(monkeypatch, baked_hash=_boom)
+    client = TestClient(app)
+    tok = _create_token()
+    assert _post(client, token=tok).status_code == 200  # merge-first
+    r2 = _post(client, token=tok)  # resume → GET fails → falls through → applies
+    assert r2.status_code == 200 and "applied" in r2.text.lower()
+    assert len(calls["apply"]) == 1

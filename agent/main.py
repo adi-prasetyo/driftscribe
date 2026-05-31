@@ -3015,6 +3015,31 @@ def _iac_resume_apply(
             detail="create-class resume has no iac-tree sidecar; re-run the plan-builder",
         )
 
+    # C6c re-bake readiness pre-check: confirm the worker is baked from the approved
+    # head's config BEFORE burning a propose. Best-effort — a GET failure (worker
+    # unreachable, or an older revision without the endpoint) falls through to
+    # propose→apply, where the worker's apply-time hash gate is the authoritative
+    # guard. A DEFINITE mismatch short-circuits with a precise "not re-baked" message.
+    if view.iac_tree_hash:
+        baked_hash: str | None = None
+        try:
+            baked_hash = worker_client.get_baked_iac_hash().get("iac_tree_hash")
+        except Exception as e:  # noqa: BLE001 — best-effort: log + fall through to the gate
+            log.info("iac_rebake_precheck_unavailable", extra={"pr_number": pr_number, "error": str(e)})
+        if isinstance(baked_hash, str) and baked_hash and baked_hash != view.iac_tree_hash:
+            return _render_iac_outcome(
+                request, pr_number=pr_number, view=view, decision="approve",
+                outcome=(
+                    "Merged, but the worker is NOT re-baked from the merged main yet: "
+                    f"its baked iac_tree_hash ({baked_hash[:12]}…) != the approved "
+                    f"({view.iac_tree_hash[:12]}…). Re-bake (`gcloud builds submit "
+                    "--config=infra/cloudbuild.tofu-apply.yaml "
+                    "--substitutions=_TAG=$(git rev-parse --short HEAD)`), then RELOAD "
+                    "and click Apply. If main advanced with another iac/ change, "
+                    "re-run the plan-builder (re-plan)."
+                ),
+            )
+
     # Propose (mints a fresh approval). A refusal here (e.g. the worker's 422 tree
     # gate when not yet re-baked) is NO-mutation → keep waiting_for_rebake, render a
     # retry-after-rebake page rather than a hard error.
