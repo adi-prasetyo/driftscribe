@@ -558,6 +558,35 @@ def call_apply(
     return call("tofu_apply", payload, endpoint="/apply", timeout=_APPLY_HTTPX_TIMEOUT)
 
 
+def get_baked_iac_hash() -> dict:
+    """GET the tofu-apply worker's OWN baked ``iac/``-tree hash (C6c re-bake readiness).
+
+    Lets the coordinator confirm the operator re-baked the worker from the merged
+    ``main`` BEFORE driving a create-class resume — a clearer, cheaper pre-check than
+    burning a ``/propose`` the worker's hash gate would refuse. Read-only; NEVER an
+    ADK tool. Raises :class:`WorkerClientError` (the caller treats any failure as
+    best-effort and falls through to the apply-time gate, which is the real guard)."""
+    base = _worker_url("tofu_apply")
+    token = mint_id_token(base)
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-Trace-Id": current_trace_id_or_new(),
+    }
+    try:
+        with httpx.Client(timeout=_HTTPX_TIMEOUT) as client:
+            r = client.get(f"{base}/baked-iac-hash", headers=headers)
+    except httpx.RequestError as e:
+        raise WorkerClientError(
+            503, f"tofu_apply unreachable: {type(e).__name__}: {e}", "tofu_apply"
+        ) from e
+    if not 200 <= r.status_code < 300:
+        raise WorkerClientError(r.status_code, r.text, "tofu_apply")
+    try:
+        return r.json()
+    except ValueError as e:
+        raise WorkerClientError(502, f"tofu_apply returned non-JSON body: {e}", "tofu_apply") from e
+
+
 def call_plan_deny(approval_id: str, approval_token: str) -> dict:
     """Wrapper for the tofu-apply worker's ``/deny`` endpoint (Phase C5a).
 
