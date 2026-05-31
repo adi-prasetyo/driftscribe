@@ -160,3 +160,33 @@ def test_metadata_rejects_unsafe_object_prefix(tmp_path: pathlib.Path) -> None:
         upload_metadata(MetadataUploadInput(
             bucket=bucket, object_prefix="../escape", local_metadata=tmp_path,
         ))
+
+
+# --------------------------------------------------------------------------- #
+# C6 — iac-tree.json sidecar upload (step 3)
+# --------------------------------------------------------------------------- #
+
+
+def test_upload_iac_tree_returns_generation(tmp_path: pathlib.Path) -> None:
+    from tools.iac_plan_artifact_upload import IacTreeUploadInput, upload_iac_tree
+
+    prefix = "pr-42/" + ("a" * 40) + "/run-1234567890-1"
+    bucket = _make_mock_bucket({f"{prefix}/iac-tree.json": 1700000000000009})
+    local = tmp_path / "iac-tree.json"
+    local.write_text('{"schema_version": "c6.v1"}\n')
+    gen = upload_iac_tree(IacTreeUploadInput(
+        bucket=bucket, object_prefix=prefix, local_iac_tree=local,
+    ))
+    assert gen == "1700000000000009"
+    assert bucket.blob.call_args_list[0].args[0] == f"{prefix}/iac-tree.json"
+
+
+def test_upload_iac_tree_rejects_unsafe_prefix(tmp_path: pathlib.Path) -> None:
+    from tools.iac_plan_artifact_upload import IacTreeUploadInput, upload_iac_tree
+
+    local = tmp_path / "iac-tree.json"
+    local.write_text("{}")
+    with pytest.raises(ValueError):
+        upload_iac_tree(IacTreeUploadInput(
+            bucket=_make_mock_bucket({}), object_prefix="../escape", local_iac_tree=local,
+        ))
