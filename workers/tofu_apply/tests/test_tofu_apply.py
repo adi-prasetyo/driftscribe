@@ -2063,3 +2063,21 @@ def test_fetch_object_pinned_converts_transport_error_to_gcsfetcherror() -> None
 
     with pytest.raises(gcs_fetch.GcsFetchError):
         gcs_fetch.fetch_object_pinned(_RaisingBucket(), "o", 123)
+
+
+# --- C6c: GET /baked-iac-hash (re-bake readiness) -------------------------
+
+
+def test_baked_iac_hash_returns_baked_hash(client, monkeypatch, tmp_path) -> None:
+    iac = _iac_dir(tmp_path)
+    monkeypatch.setattr(m, "IAC_DIR", iac)
+    r = client.get("/baked-iac-hash")
+    assert r.status_code == 200
+    assert r.json()["iac_tree_hash"] == iac_tree_hash(iac)
+
+
+def test_baked_iac_hash_anomaly_returns_503(client, monkeypatch, tmp_path) -> None:
+    from driftscribe_lib.iac_tree import IacTreeHashError as _E
+    monkeypatch.setattr(m, "iac_tree_hash", lambda _d: (_ for _ in ()).throw(_E("baked tree boom")))
+    r = client.get("/baked-iac-hash")
+    assert r.status_code == 503

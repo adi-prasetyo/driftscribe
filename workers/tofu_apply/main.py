@@ -434,6 +434,21 @@ def healthz() -> dict[str, bool]:
     return {"ok": True}
 
 
+@app.get("/baked-iac-hash")
+def baked_iac_hash(caller: str = Depends(_verify_caller_dep)) -> dict:
+    """Return the worker's OWN baked ``iac/``-tree hash (C6c re-bake readiness).
+
+    The coordinator (or an operator) compares this to the approved plan's
+    ``iac_tree_hash`` to confirm the worker was RE-BAKED from the merged main before
+    driving a create-class apply. Behind ``verify_caller`` (the same inter-service
+    auth as ``/apply``); it discloses only a content hash, no secrets. A baked-tree
+    anomaly surfaces as a clean 503 (read-only, pre-apply, nothing burned)."""
+    try:
+        return {"iac_tree_hash": iac_tree_hash(IAC_DIR)}
+    except IacTreeHashError as e:
+        raise HTTPException(status_code=503, detail=f"baked iac/ tree unhashable: {e}")
+
+
 @app.post("/propose")
 def propose(req: ProposeRequest, caller: str = Depends(_verify_caller_dep)) -> dict:
     """Independently verify the artifact, then mint a pending plan approval.

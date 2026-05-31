@@ -842,3 +842,30 @@ def test_tofu_apply_wrappers_are_not_adk_tools() -> None:
         assert not hasattr(adk_tools, name), (
             f"agent.adk_tools must not expose {name} as a callable."
         )
+
+
+@respx.mock
+def test_get_baked_iac_hash_gets_with_bearer(_stub_mint_id_token) -> None:
+    route = respx.get(f"{TOFU_APPLY_URL}/baked-iac-hash").respond(200, json={"iac_tree_hash": "a" * 64})
+    out = worker_client.get_baked_iac_hash()
+    assert out == {"iac_tree_hash": "a" * 64}
+    assert route.called
+    assert route.calls[0].request.headers["authorization"].startswith("Bearer ")
+    # audience is the worker ROOT url (not the endpoint)
+    assert _stub_mint_id_token[-1] == TOFU_APPLY_URL
+
+
+@respx.mock
+def test_get_baked_iac_hash_non_2xx_raises(_stub_mint_id_token) -> None:
+    respx.get(f"{TOFU_APPLY_URL}/baked-iac-hash").respond(503, text="unhashable")
+    with pytest.raises(worker_client.WorkerClientError) as ei:
+        worker_client.get_baked_iac_hash()
+    assert ei.value.status_code == 503
+
+
+@respx.mock
+def test_get_baked_iac_hash_transport_error_is_503(_stub_mint_id_token) -> None:
+    respx.get(f"{TOFU_APPLY_URL}/baked-iac-hash").mock(side_effect=httpx.ConnectError("boom"))
+    with pytest.raises(worker_client.WorkerClientError) as ei:
+        worker_client.get_baked_iac_hash()
+    assert ei.value.status_code == 503
