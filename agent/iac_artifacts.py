@@ -423,11 +423,35 @@ class IacPlanView:
     def plan_json_sha256(self) -> str:
         return str(self.metadata.get("plan_json_sha256", ""))
 
+    @property
+    def generation_iac_tree(self) -> str:
+        """C6 sidecar generation (empty if the comment predates C6 / has no sidecar)."""
+        return self._generation_iac_tree
+
+    @property
+    def iac_tree_hash(self) -> str:
+        """C6 expected iac/-tree hash from the comment (advisory — for the page +
+        the CSRF pin; the WORKER re-derives + cross-checks the real sidecar)."""
+        return self._iac_tree_hash
+
+    @property
+    def has_create(self) -> bool:
+        """True iff the plan CREATEs a resource (routes through the C6 merge-first
+        two-step flow). Uses the shared ``plan_has_create`` predicate so the
+        coordinator and worker agree; fail-closed (an unparsed plan ⇒ create-class)."""
+        from driftscribe_lib.iac_plan_classify import plan_has_create
+
+        return plan_has_create(self._plan_json)
+
     # The metadata URI + generation are taken from the C2 comment ref (the
     # metadata dict itself does NOT carry artifact_uri_metadata / generation_metadata
     # — those live only in the comment), so load_plan_view stashes them here.
     _artifact_uri_metadata: str = ""
     _generation_metadata: str = ""
+    # C6 sidecar identity (from the comment ref) + the parsed plan.json (for has_create).
+    _generation_iac_tree: str = ""
+    _iac_tree_hash: str = ""
+    _plan_json: dict | None = None
 
 
 def load_plan_view(
@@ -455,6 +479,8 @@ def load_plan_view(
         tofu_show_text=ref.tofu_show_text,
         _artifact_uri_metadata=ref.artifact_uri_metadata,
         _generation_metadata=ref.generation_metadata,
+        _generation_iac_tree=ref.generation_iac_tree or "",
+        _iac_tree_hash=ref.iac_tree_hash or "",
     )
 
     # Step 1: fetch metadata.json.
@@ -500,6 +526,10 @@ def load_plan_view(
     from driftscribe_lib.iac_plan_denylist import DenylistInput, evaluate, load_plan_json
 
     parsed, parse_v = load_plan_json(plan_json_bytes.decode("utf-8", errors="replace"))
+    # Stash the parsed plan for the C6 has_create classification (None if it didn't
+    # parse → has_create fail-closes to True, and the POST refuses on the parse-error
+    # denylist violation below anyway).
+    view._plan_json = parsed if parse_v is None else None
     if parse_v is not None:
         view.denylist_violations = [(parse_v.rule, parse_v.detail)]
     else:

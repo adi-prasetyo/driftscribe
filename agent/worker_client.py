@@ -469,6 +469,7 @@ def call_propose(
     generation_metadata: str,
     approver: str,
     operator_jwt: str | None,
+    generation_iac_tree: str | None = None,
 ) -> dict:
     """Wrapper for the tofu-apply worker's ``/propose`` endpoint (Phase C5a).
 
@@ -501,6 +502,11 @@ def call_propose(
     }
     if operator_jwt is not None:
         payload["operator_jwt"] = operator_jwt
+    # C6: the iac-tree.json sidecar generation — forwarded only when the coordinator
+    # has it (create-class plans). Omitted when None so the wrapper stays
+    # wire-compatible with a worker that predates the field (extra="forbid").
+    if generation_iac_tree is not None:
+        payload["generation_iac_tree"] = generation_iac_tree
     return call("tofu_apply", payload)
 
 
@@ -508,6 +514,7 @@ def call_apply(
     approval_id: str,
     approval_token: str,
     operator_jwt: str | None,
+    generation_iac_tree: str | None = None,
 ) -> dict:
     """Wrapper for the tofu-apply worker's ``/apply`` endpoint (Phase C5a).
 
@@ -545,6 +552,9 @@ def call_apply(
     }
     if operator_jwt is not None:
         payload["operator_jwt"] = operator_jwt
+    # C6: forward the sidecar generation for a create-class apply (omitted when None).
+    if generation_iac_tree is not None:
+        payload["generation_iac_tree"] = generation_iac_tree
     return call("tofu_apply", payload, endpoint="/apply", timeout=_APPLY_HTTPX_TIMEOUT)
 
 
