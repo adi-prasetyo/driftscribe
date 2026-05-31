@@ -35,9 +35,19 @@ class SummaryInput:
     artifact_uri_json: str
     artifact_uri_metadata: str
     opentofu_version: str
+    # C6 sidecar (iac-tree.json). Optional so pre-C6 callers/tests still construct a
+    # SummaryInput; the plan-builder workflow always provides all three. When present
+    # they surface in the comment + are parsed by agent.iac_artifacts.C2CommentRef so
+    # the coordinator can pass generation_iac_tree to the worker + pin iac_tree_hash.
+    generation_iac_tree: str | None = None
+    artifact_uri_iac_tree: str | None = None
+    iac_tree_hash: str | None = None
 
 
 _BACKTICK_RUN = re.compile(r"`+")
+
+
+_DIGITS = re.compile(r"^[0-9]+$")
 
 
 def _validate(inp: SummaryInput) -> None:
@@ -47,6 +57,13 @@ def _validate(inp: SummaryInput) -> None:
         raise ValueError(f"plan_sha256: must be 64 lowercase hex (got {inp.plan_sha256!r})")
     if not _HEX64.fullmatch(inp.plan_json_sha256):
         raise ValueError(f"plan_json_sha256: must be 64 lowercase hex (got {inp.plan_json_sha256!r})")
+    # C6 sidecar fields validated only when present (optional pre-C6).
+    if inp.iac_tree_hash is not None and not _HEX64.fullmatch(inp.iac_tree_hash):
+        raise ValueError(f"iac_tree_hash: must be 64 lowercase hex (got {inp.iac_tree_hash!r})")
+    if inp.generation_iac_tree is not None and not _DIGITS.fullmatch(inp.generation_iac_tree):
+        raise ValueError(
+            f"generation_iac_tree: must be a numeric string (got {inp.generation_iac_tree!r})"
+        )
 
 
 def _pick_fence(text: str) -> str:
@@ -78,8 +95,18 @@ def format_summary(inp: SummaryInput) -> str:
         f"- **artifact plan.json:** `{inp.artifact_uri_json}`",
         f"- **artifact metadata.json:** `{inp.artifact_uri_metadata}`",
         f"- **opentofu:** `{inp.opentofu_version}`",
-        "",
     ]
+    # C6 sidecar lines (appended only when provided — see SummaryInput). The worker
+    # DERIVES the sidecar URI from the signed metadata path; these are for the
+    # coordinator (generation_iac_tree → worker arg; iac_tree_hash → page + CSRF pin)
+    # and human review.
+    if inp.generation_iac_tree is not None:
+        header_lines.append(f"- **iac-tree generation:** `{inp.generation_iac_tree}`")
+    if inp.artifact_uri_iac_tree is not None:
+        header_lines.append(f"- **artifact iac-tree.json:** `{inp.artifact_uri_iac_tree}`")
+    if inp.iac_tree_hash is not None:
+        header_lines.append(f"- **iac_tree_hash:** `{inp.iac_tree_hash}`")
+    header_lines.append("")
     header = "\n".join(header_lines)
 
     fence = _pick_fence(clean)
@@ -148,6 +175,10 @@ def _main(argv: list[str], stdin_text: str) -> int:
     parser.add_argument("--artifact-uri-json", required=True)
     parser.add_argument("--artifact-uri-metadata", required=True)
     parser.add_argument("--opentofu-version", required=True)
+    # C6 sidecar (optional; the plan-builder always supplies all three).
+    parser.add_argument("--generation-iac-tree", default=None)
+    parser.add_argument("--artifact-uri-iac-tree", default=None)
+    parser.add_argument("--iac-tree-hash", default=None)
     ns = parser.parse_args(argv)
     try:
         body = format_summary(SummaryInput(
@@ -162,6 +193,9 @@ def _main(argv: list[str], stdin_text: str) -> int:
             artifact_uri_json=ns.artifact_uri_json,
             artifact_uri_metadata=ns.artifact_uri_metadata,
             opentofu_version=ns.opentofu_version,
+            generation_iac_tree=ns.generation_iac_tree,
+            artifact_uri_iac_tree=ns.artifact_uri_iac_tree,
+            iac_tree_hash=ns.iac_tree_hash,
         ))
     except ValueError as e:
         import sys as _sys

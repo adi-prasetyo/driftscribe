@@ -535,3 +535,62 @@ def test_find_latest_non_github_exception_propagates() -> None:
 
     with pytest.raises(RuntimeError):
         find_latest_c2_comment(_TypeErrorRepo(), 12)
+
+
+# --------------------------------------------------------------------------- #
+# C6 — optional iac-tree.json sidecar fields on the parsed ref
+# --------------------------------------------------------------------------- #
+
+_C6_TREE_HASH = "e" * 64
+_C6_GEN_TREE = "1700000000000003"
+
+
+def _summary_input_with_sidecar(**overrides) -> SummaryInput:
+    base = dict(
+        plan_text="~ google_x.foo\n",
+        head_sha=SHA,
+        plan_sha256=PLAN_SHA,
+        plan_json_sha256=PLAN_JSON_SHA,
+        generation_plan=GEN_PLAN,
+        generation_json=GEN_JSON,
+        generation_metadata=GEN_META,
+        artifact_uri_plan=URI_PLAN,
+        artifact_uri_json=URI_JSON,
+        artifact_uri_metadata=URI_META,
+        opentofu_version=OPENTOFU,
+        generation_iac_tree=_C6_GEN_TREE,
+        artifact_uri_iac_tree=URI_META.replace("metadata.json", "iac-tree.json"),
+        iac_tree_hash=_C6_TREE_HASH,
+    )
+    base.update(overrides)
+    return SummaryInput(**base)
+
+
+def test_sidecar_fields_roundtrip():
+    ref = parse_c2_pr_comment(format_summary(_summary_input_with_sidecar()), comment_id=1)
+    assert ref is not None
+    assert ref.generation_iac_tree == _C6_GEN_TREE
+    assert ref.iac_tree_hash == _C6_TREE_HASH
+
+
+def test_sidecar_fields_absent_parse_to_none():
+    """A pre-C6 comment (no sidecar lines) still parses; the fields are None."""
+    ref = parse_c2_pr_comment(format_summary(_summary_input()), comment_id=1)
+    assert ref is not None
+    assert ref.generation_iac_tree is None
+    assert ref.iac_tree_hash is None
+
+
+def test_malformed_iac_tree_hash_fails_closed():
+    body = format_summary(_summary_input_with_sidecar())
+    mangled = body.replace(f"`{_C6_TREE_HASH}`", "`not-hex`")
+    assert parse_c2_pr_comment(mangled) is None
+
+
+def test_duplicate_iac_tree_hash_fails_closed():
+    body = format_summary(_summary_input_with_sidecar())
+    dup = body.replace(
+        f"- **iac_tree_hash:** `{_C6_TREE_HASH}`",
+        f"- **iac_tree_hash:** `{_C6_TREE_HASH}`\n- **iac_tree_hash:** `{_C6_TREE_HASH}`",
+    )
+    assert parse_c2_pr_comment(dup) is None

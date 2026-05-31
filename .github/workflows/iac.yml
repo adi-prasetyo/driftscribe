@@ -375,6 +375,19 @@ jobs:
           echo "LOCKFILE_SHA256=$LOCKFILE_SHA256" >> "$GITHUB_ENV"
           echo "TOFU_VERSION=$TOFU_VERSION" >> "$GITHUB_ENV"
 
+      - name: Compute the iac/-tree content hash (C6 sidecar input)
+        # The canonical hash of the COMMITTED iac/ tree (driftscribe_lib.iac_tree —
+        # excludes .terraform/, plan.tfplan/plan.json/metadata.json, *.tfstate). The
+        # worker re-derives the SAME hash over its baked IAC_DIR and refuses a
+        # create-class apply unless they match (merge-then-apply-from-main, C6). Run
+        # after the diff-guard (head tree verified) + uv sync; the excludes make the
+        # exact position relative to tofu init/plan immaterial.
+        run: |
+          set -euo pipefail
+          IAC_TREE_HASH=$(uv run python -m tools.iac_tree_hash iac)
+          printf '%s' "$IAC_TREE_HASH" | grep -Eq '^[0-9a-f]{64}$' || { echo "::error::iac_tree_hash is not 64-hex"; exit 1; }
+          echo "IAC_TREE_HASH=$IAC_TREE_HASH" >> "$GITHUB_ENV"
+
       - name: Compute the artifact path prefix + URIs
         env:
           ARTIFACT_BUCKET: driftscribe-hack-2026-tofu-artifacts
@@ -385,6 +398,8 @@ jobs:
           echo "ARTIFACT_URI_PLAN=gs://${ARTIFACT_BUCKET}/${OBJECT_PREFIX}/plan.tfplan" >> "$GITHUB_ENV"
           echo "ARTIFACT_URI_JSON=gs://${ARTIFACT_BUCKET}/${OBJECT_PREFIX}/plan.json"   >> "$GITHUB_ENV"
           echo "ARTIFACT_URI_METADATA=gs://${ARTIFACT_BUCKET}/${OBJECT_PREFIX}/metadata.json" >> "$GITHUB_ENV"
+          # C6 sidecar (iac-tree.json) — same run dir as the c2.v1 triplet.
+          echo "ARTIFACT_URI_IAC_TREE=gs://${ARTIFACT_BUCKET}/${OBJECT_PREFIX}/iac-tree.json" >> "$GITHUB_ENV"
 
       - name: Upload plan.tfplan + plan.json (capture generations)
         # Step 1 of the two-step uploader. Reads Blob.generation in-band
@@ -435,6 +450,36 @@ jobs:
             | tee /tmp/upload-step2.env
           grep '^GEN_METADATA=' /tmp/upload-step2.env >> "$GITHUB_ENV"
 
+      - name: Build the iac-tree.json sidecar (C6)
+        # The c6.v1 sidecar binds the iac/-tree hash to the same plan identity the
+        # c2.v1 metadata carries (so the worker cross-checks it against the
+        # HMAC-signed metadata before trusting the hash). Built from META_* +
+        # IAC_TREE_HASH; uploaded AFTER metadata.json (after the denylist gate).
+        env:
+          META_REPO: ${{ github.repository }}
+          META_PR_NUMBER: ${{ env.PR_NUMBER }}
+          META_HEAD_SHA: ${{ env.HEAD_SHA }}
+          META_BASE_SHA: ${{ env.BASE_SHA }}
+          META_WORKFLOW_RUN_ID: ${{ github.run_id }}
+          META_WORKFLOW_RUN_ATTEMPT: ${{ github.run_attempt }}
+          META_PLAN_SHA256: ${{ env.PLAN_SHA256 }}
+          META_PLAN_JSON_SHA256: ${{ env.PLAN_JSON_SHA256 }}
+          IAC_TREE_HASH: ${{ env.IAC_TREE_HASH }}
+        run: |
+          uv run python -m tools.iac_tree_sidecar > iac/iac-tree.json
+          cat iac/iac-tree.json
+
+      - name: Upload iac-tree.json (capture generation)
+        run: |
+          set -euo pipefail
+          uv run python -m tools.iac_plan_artifact_upload \
+            --mode iac-tree \
+            --bucket driftscribe-hack-2026-tofu-artifacts \
+            --object-prefix "$OBJECT_PREFIX" \
+            --local-iac-tree iac/iac-tree.json \
+            | tee /tmp/upload-step3.env
+          grep '^GEN_IAC_TREE=' /tmp/upload-step3.env >> "$GITHUB_ENV"
+
       - name: Post tofu show diff to PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -455,6 +500,9 @@ jobs:
             --artifact-uri-json="$ARTIFACT_URI_JSON" \
             --artifact-uri-metadata="$ARTIFACT_URI_METADATA" \
             --opentofu-version="$TOFU_VERSION" \
+            --generation-iac-tree="$GEN_IAC_TREE" \
+            --artifact-uri-iac-tree="$ARTIFACT_URI_IAC_TREE" \
+            --iac-tree-hash="$IAC_TREE_HASH" \
             < /tmp/plan.txt > /tmp/comment.md
           # POST via the REST issues/comments endpoint, NOT `gh pr comment`:
           # the latter uses the GraphQL addComment mutation, which fails under
