@@ -46,9 +46,12 @@ retry needs a **fresh** approval (re-Approve), never the same token.
 | `drift_refused` | the semantic freshness gate found **material** desired-state drift (an out-of-band change to a managed resource) | §3 |
 | `lock_refused` | a tofu step could not acquire the GCS state lock (held or orphaned) | §4 |
 | `integrity_refused` / `fidelity_refused` / `verify_refused` | the C2 artifact failed re-verification (hash / version-lockfile / resource-set / payload) | §5 — rebuild C2 |
+| `tree_mismatch_refused` (HTTP 409, **C6 create-class only**) | the worker's baked `iac/`-tree hash ≠ the approved plan's `iac_tree_hash` — the worker is **not re-baked** from the merged main (or main advanced, or the sidecar failed its cross-check) | §7 — re-bake / re-plan (the PR is already merged) |
 
 A **permanent merge block** (apply succeeded, but branch protection blocks the
-merge) is **not** an `apply_audit` failure — see §6.
+merge) is **not** an `apply_audit` failure — see §6. A **C6 create-class** apply
+that is `waiting_for_rebake` (merged but no apply attempt yet) or that fails after
+the merge is **§7**.
 
 ---
 
@@ -227,6 +230,101 @@ gh pr merge <N> --squash --admin
 
 The decision doc is parked `apply_status=applied`, `merge_state=failed`; once the
 PR is merged (by you or a later re-submit) the reconcile records `merged`.
+
+---
+
+## 7. C6 create-class — "merged but not fully applied" (merge-then-apply-from-main)
+
+A plan that **creates** a new top-level resource takes the **two-step** C6 flow:
+Approve → the coordinator **merges the PR to `main` first** + records
+`apply_status=waiting_for_rebake` → **you re-bake the worker from the new `main`** →
+**reload the page + Apply** (the resume drives propose→apply). The worker admits the
+create only after its baked `iac/`-tree hash matches the approved plan's
+`iac_tree_hash` (proof the baked config IS the reviewed, now-merged config).
+
+**Locked principle: the merge is NEVER auto-reverted.** Merged `main` is the desired
+state. Recovery moves *forward* (re-bake / re-plan / orphan-reconcile), never by
+reverting the merge automatically (you may of course open a revert PR by hand).
+
+### 7a. `waiting_for_rebake` — the normal hand-off (NOT a failure)
+The page shows "Merged to main … re-bake … then RELOAD and click Apply." Do exactly
+that:
+```bash
+# Re-bake the worker from the merged main (operator, owner + ADC):
+cd <repo at the merged main> && git pull
+gcloud builds submit --config=infra/cloudbuild.tofu-apply.yaml \
+  --substitutions=_TAG=$(git rev-parse --short HEAD) --project=driftscribe-hack-2026
+# Confirm the worker is re-baked (its baked hash == the approved iac_tree_hash).
+# NOTE: the worker is --ingress=internal, so this curl only works from a network
+# path that can reach internal Cloud Run (inside driftscribe-vpc — e.g. a VPC-
+# connected box / Cloud Shell on the VPC). From a laptop it will NOT connect; in
+# that case rely on the coordinator's built-in resume re-bake pre-check (below),
+# which runs this same GET from INSIDE the VPC and surfaces a mismatch on the page.
+URL=$(gcloud run services describe driftscribe-tofu-apply --region=asia-northeast1 --format='value(status.url)')
+COORD=driftscribe-agent@driftscribe-hack-2026.iam.gserviceaccount.com
+TOK=$(gcloud auth print-identity-token --impersonate-service-account="$COORD" --audiences="$URL" --include-email)
+curl -fsS "$URL/baked-iac-hash" -H "Authorization: Bearer $TOK"   # compare iac_tree_hash to the page's
+```
+Then reload `/iac-approvals/<N>` and click **Apply**. The coordinator's resume
+re-bake pre-check (best-effort, from inside the VPC) will short-circuit with a clear
+"not re-baked (baked X ≠ approved Y)" message if the worker isn't re-baked yet.
+
+### 7b. `tree_mismatch_refused` — baked ≠ approved (re-bake / re-plan)
+The resume tried to apply but the worker's baked `iac/`-tree hash ≠ the approved
+`iac_tree_hash`. Two causes:
+- **Not re-baked yet** (or Cloud Run still routing to the old revision) → **re-bake**
+  (§7a), confirm `/baked-iac-hash` matches, retry Apply. The `waiting_for_rebake`
+  decision is left in place — no state was touched.
+- **`main` advanced** after the merge with *another* `iac/` change → the merged-`main`
+  tree no longer equals the approved head's tree, so the saved plan is stale. The
+  original PR is closed/merged, so you **re-plan via a NEW PR**: open a fresh `iac/` PR
+  off current `main` that reproduces the still-wanted change (if the resource is now
+  fully in `main` + state, this may be a no-op PR; if `main` advanced but the resource
+  still isn't applied, the new PR re-expresses the create), run C2 on it
+  (`gh workflow run iac.yml -f pr_number=<new PR>`), and approve THAT. The hash gate is
+  *designed* to refuse the stale plan — do not try to force it.
+
+### 7c. Create-class `failed_state_suspect` — the live × state reconciliation
+A create-class resume that ends `failed_state_suspect` (HTTP 502) is the most
+delicate case: **a failed `tofu apply` that creates can leave a live resource that
+was never written to state** (created at the provider, then the apply errored), AND
+it can leave **state inconsistent** (the C5g poison case — §2 — where state holds the
+planned value but live does not). The worker's "clean" diagnosis **cannot** disprove
+either for a create, so a create-class 502 is **always** frozen here, never a
+retryable `failed`.
+
+**First read `apply_audit`** (§0): `serial_before`/`serial_after`/`serial_bumped` +
+`post_failure_refresh_tail` tell you whether state moved. Then, for EACH `create`
+address in the approved `plan.json` (the PR's `tofu show` comment, or the artifact in
+`gs://…-tofu-artifacts/pr-<N>/<head_sha>/…`), check **both live AND state** — running
+the §2 pre-flight first (check out the worker's baked commit, export
+`TF_VAR_tofu_state_kms_key`, confirm no lock, `tofu init -lockfile=readonly` — do NOT
+skip these before any `tofu state`/`import`):
+
+```bash
+# live (adapt to the resource type) + state, per create address:
+gcloud storage buckets describe gs://<name> 2>/dev/null && echo "LIVE: exists"   # e.g. a bucket
+tofu state list | grep -F '<address>' && echo "STATE: present"
+```
+
+| live | state | meaning + action |
+|---|---|---|
+| exists | missing | **orphan** — `tofu import <address> <id>` then re-Approve a fresh plan (now no-op/update), OR delete it live + re-Approve to recreate cleanly. Import if the live object is already correct; delete+recreate if uncertain. |
+| missing | exists | **state-only ghost** — the §2 poison shape — run the §2 state reconcile (refresh-only → inspect → apply) to drop it from state, then re-Approve. NOT "clean". |
+| exists | exists | likely a complete-but-unrecorded apply — a fresh C2 plan should be a no-op/update; re-Approve and let the gate confirm. |
+| missing | missing | the apply failed before creating anything **and** state is unmoved — fix the root cause (`apply_audit.stderr_tail`), re-bake if needed, re-Approve. |
+
+Only after EVERY create address is settled (live and state agree) is it safe to
+proceed. The PR is already merged, so `main` already declares the resource — a fresh
+C2 plan against the reconciled state + the re-baked worker will no-op or cleanly
+create. **Never** retry the burned approval; always re-plan.
+
+### 7d. Other create-class resume outcomes
+- **`ambiguous`** (504 — timeout/unreachable after send): outcome unknown; treat like
+  §7c (check for a live orphan + the state serial) before any retry.
+- **No-mutation refusals** (`integrity_/fidelity_/verify_refused` 422, `lock_refused`
+  423, `drift_refused` 409) on the resume: handled exactly as §5/§4/§3 — no infra
+  changed, the `waiting_for_rebake` pointer is kept, fix + retry the Apply.
 
 ---
 
