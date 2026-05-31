@@ -36,6 +36,8 @@ _GEN_META = "1700000000000003"
 _ORIGIN = "https://driftscribe.adp-app.com"
 _OPERATOR = "operator@example.com"
 _JWT = "raw-cf-access-jwt-value"
+_GEN_IAC_TREE = "1700000000000009"
+_IAC_TREE_HASH = "f" * 64
 
 
 def _metadata() -> dict:
@@ -75,6 +77,22 @@ def _ref() -> C2CommentRef:
     )
 
 
+# A non-create (in-place UPDATE) plan.json — the C5 default. has_create=False ⇒ the
+# C5 apply-first path. Create-class tests override _plan_json with a create action.
+_UPDATE_PLAN_JSON = {
+    "resource_changes": [
+        {"address": "google_cloud_run_v2_service.x", "type": "google_cloud_run_v2_service",
+         "change": {"actions": ["update"]}}
+    ]
+}
+_CREATE_PLAN_JSON = {
+    "resource_changes": [
+        {"address": "google_storage_bucket.new", "type": "google_storage_bucket",
+         "change": {"actions": ["create"]}}
+    ]
+}
+
+
 def _view(**overrides) -> IacPlanView:
     base = dict(
         metadata=_metadata(),
@@ -84,9 +102,22 @@ def _view(**overrides) -> IacPlanView:
         unverifiable=False,
         _artifact_uri_metadata=_META_URI,
         _generation_metadata=_GEN_META,
+        # Default to a non-create plan so existing C5 tests take the apply-first path.
+        _plan_json=_UPDATE_PLAN_JSON,
     )
     base.update(overrides)
     return IacPlanView(**base)
+
+
+def _create_view(**overrides) -> IacPlanView:
+    """A create-class view (has_create=True) WITH a C6 sidecar (generation + hash)."""
+    base = dict(
+        _plan_json=_CREATE_PLAN_JSON,
+        _generation_iac_tree=_GEN_IAC_TREE,
+        _iac_tree_hash=_IAC_TREE_HASH,
+    )
+    base.update(overrides)
+    return _view(**base)
 
 
 @pytest.fixture
@@ -175,12 +206,12 @@ def _patch_workers(
 ):
     calls = {"propose": [], "apply": [], "plan_deny": [], "notify": []}
 
-    def _default_propose(uri, gen, approver, jwt):
-        calls["propose"].append((uri, gen, approver, jwt))
+    def _default_propose(uri, gen, approver, jwt, generation_iac_tree=None):
+        calls["propose"].append((uri, gen, approver, jwt, generation_iac_tree))
         return {"approval_id": "ap-1", "approval_token": "tok-1", "expires_at": 1}
 
-    def _default_apply(aid, tok, jwt):
-        calls["apply"].append((aid, tok, jwt))
+    def _default_apply(aid, tok, jwt, generation_iac_tree=None):
+        calls["apply"].append((aid, tok, jwt, generation_iac_tree))
         return {"approval_id": aid, "status": "applied", "apply_attempt_id": "att-1"}
 
     def _default_plan_deny(aid, tok):
@@ -630,10 +661,10 @@ def test_happy_propose_apply_merge(_configured, monkeypatch):
     assert resp.status_code == 200
     body = resp.text.lower()
     assert "applied and merged" in body
-    # propose got the raw JWT + canonical operator email.
-    assert calls["propose"] == [(_META_URI, _GEN_META, _OPERATOR, _JWT)]
-    # apply got the approval + raw JWT.
-    assert calls["apply"] == [("ap-1", "tok-1", _JWT)]
+    # propose got the raw JWT + canonical operator email (C5 path: no sidecar gen).
+    assert calls["propose"] == [(_META_URI, _GEN_META, _OPERATOR, _JWT, None)]
+    # apply got the approval + raw JWT (C5 path: no sidecar gen).
+    assert calls["apply"] == [("ap-1", "tok-1", _JWT, None)]
     # merge bound the exact applied head.
     assert merge_calls[0]["expected_head_sha"] == _HEAD
     assert merge_calls[0]["merge_method"] == "squash"
@@ -977,3 +1008,172 @@ def test_applied_merge_fail_parks_and_reconciles(_configured, monkeypatch):
     assert r2.status_code == 200
     assert "applied and merged" in r2.text.lower()
     assert len(calls["apply"]) == 1  # NOT re-applied
+
+
+# =========================================================================== #
+# C6 — create-class merge-FIRST routing + resume
+# =========================================================================== #
+
+
+def _create_token():
+    return _mint(generation_iac_tree=_GEN_IAC_TREE, iac_tree_hash=_IAC_TREE_HASH)
+
+
+def test_create_class_merges_first_and_waits_for_rebake(_configured, monkeypatch):
+    _patch_resolve(monkeypatch, view=_create_view())
+    _patch_repo(monkeypatch)
+    merge_calls = []
+
+    def _merge(*a, **k):
+        merge_calls.append(k)
+        return {"merged": True, "already_merged": False, "number": 42, "url": "u"}
+
+    _patch_github(monkeypatch, merge=_merge)
+    calls = _patch_workers(monkeypatch)
+    client = TestClient(app)
+    resp = _post(client, token=_create_token())
+    assert resp.status_code == 200, resp.text
+    body = resp.text.lower()
+    assert "merged to main" in body and "re-bake" in body
+    assert len(merge_calls) == 1  # merged FIRST
+    assert calls["propose"] == [] and calls["apply"] == []  # NOT applied yet
+    state = get_state()
+    ek = main_mod._iac_event_key("theghostsquad00/driftscribe", 42, _HEAD, _GEN_META)
+    dec = state.find_decision_for_event(ek)
+    assert dec["apply_status"] == "waiting_for_rebake"
+    assert dec["merge_state"] == "merged"
+
+
+def test_create_class_without_sidecar_409(_configured, monkeypatch):
+    # A create plan whose C2 comment carries NO sidecar (empty generation/hash).
+    _patch_resolve(monkeypatch, view=_view(_plan_json=_CREATE_PLAN_JSON))
+    _patch_repo(monkeypatch)
+    _patch_github(monkeypatch)
+    calls = _patch_workers(monkeypatch)
+    client = TestClient(app)
+    resp = _post(client, token=_mint())  # token has empty sidecar fields → pin matches
+    assert resp.status_code == 409
+    assert "sidecar" in resp.text.lower()
+    assert calls["propose"] == []
+
+
+def test_create_class_resume_applies_without_re_merging(_configured, monkeypatch):
+    _patch_resolve(monkeypatch, view=_create_view())
+    _patch_repo(monkeypatch)
+    merge_calls = []
+
+    def _merge(*a, **k):
+        merge_calls.append(k)
+        return {"merged": True, "already_merged": False, "number": 42, "url": "u"}
+
+    _patch_github(monkeypatch, merge=_merge)
+    calls = _patch_workers(monkeypatch)
+    client = TestClient(app)
+    tok = _create_token()
+    assert _post(client, token=tok).status_code == 200  # POST1: merge-first
+    r2 = _post(client, token=tok)  # POST2: resume (operator re-baked)
+    assert r2.status_code == 200, r2.text
+    assert "applied" in r2.text.lower()
+    assert len(merge_calls) == 1  # NOT merged again on resume
+    # propose + apply each got the sidecar generation
+    assert len(calls["propose"]) == 1 and calls["propose"][0][4] == _GEN_IAC_TREE
+    assert len(calls["apply"]) == 1 and calls["apply"][0][3] == _GEN_IAC_TREE
+    state = get_state()
+    ek = main_mod._iac_event_key("theghostsquad00/driftscribe", 42, _HEAD, _GEN_META)
+    dec = state.find_decision_for_event(ek)
+    assert dec["apply_status"] == "applied" and dec["merge_state"] == "merged"
+
+
+def test_resume_propose_refused_keeps_waiting(_configured, monkeypatch):
+    _patch_resolve(monkeypatch, view=_create_view())
+    _patch_repo(monkeypatch)
+    _patch_github(monkeypatch)  # merge succeeds
+
+    def _propose_422(uri, gen, approver, jwt, generation_iac_tree=None):
+        raise worker_client.WorkerClientError(422, "iac-tree gate (re-bake required)", "tofu_apply")
+
+    _patch_workers(monkeypatch, propose=_propose_422)
+    client = TestClient(app)
+    tok = _create_token()
+    assert _post(client, token=tok).status_code == 200  # merge-first
+    r2 = _post(client, token=tok)  # resume → propose refused (not re-baked)
+    assert r2.status_code == 200
+    assert "re-bake" in r2.text.lower()
+    state = get_state()
+    ek = main_mod._iac_event_key("theghostsquad00/driftscribe", 42, _HEAD, _GEN_META)
+    assert state.find_decision_for_event(ek)["apply_status"] == "waiting_for_rebake"
+
+
+def test_resume_apply_5xx_records_terminal_and_alerts(_configured, monkeypatch):
+    _patch_resolve(monkeypatch, view=_create_view())
+    _patch_repo(monkeypatch)
+    _patch_github(monkeypatch)
+
+    def _apply_502(aid, tok, jwt, generation_iac_tree=None):
+        raise worker_client.WorkerClientError(502, "tofu apply failed (failed_state_suspect)", "tofu_apply")
+
+    calls = _patch_workers(monkeypatch, apply_=_apply_502)
+    client = TestClient(app)
+    tok = _create_token()
+    assert _post(client, token=tok).status_code == 200  # merge-first
+    r2 = _post(client, token=tok)  # resume → apply 502
+    assert r2.status_code == 502, r2.text
+    assert "orphan" in r2.text.lower() or "runbook" in r2.text.lower()
+    # an alert was sent + a terminal decision recorded
+    assert any(n[0] == "notifier" for n in calls["notify"])
+    state = get_state()
+    ek = main_mod._iac_event_key("theghostsquad00/driftscribe", 42, _HEAD, _GEN_META)
+    assert state.find_decision_for_event(ek)["apply_status"] == "failed_state_suspect"
+
+
+def test_create_merge_failure_409_nothing_applied_keeps_pending_pointer(_configured, monkeypatch):
+    """A create-class merge failure: 409, nothing applied — but the
+    waiting_for_rebake+PENDING decision is KEPT as the recovery pointer (NOT released),
+    so a re-submit re-tries the idempotent merge once the block is resolved."""
+    _patch_resolve(monkeypatch, view=_create_view())
+    _patch_repo(monkeypatch)
+
+    def _merge_fail(*a, **k):
+        raise PrMergeBlockedError("required check not green")
+
+    _patch_github(monkeypatch, merge=_merge_fail)
+    calls = _patch_workers(monkeypatch)
+    client = TestClient(app)
+    resp = _post(client, token=_create_token())
+    assert resp.status_code == 409, resp.text
+    assert calls["propose"] == [] and calls["apply"] == []
+    state = get_state()
+    ek = main_mod._iac_event_key("theghostsquad00/driftscribe", 42, _HEAD, _GEN_META)
+    dec = state.find_decision_for_event(ek)
+    assert dec["apply_status"] == "waiting_for_rebake" and dec["merge_state"] == "pending"
+
+
+def test_create_class_crash_after_pending_recovers_by_re_merge(_configured, monkeypatch):
+    """Crash window (Codex C6b-1 blocker): a waiting_for_rebake+PENDING decision exists
+    (the merge may or may not have happened). A re-POST re-drives the IDEMPOTENT merge
+    and promotes to merged — never strands a merged create-class PR with no pointer."""
+    _patch_resolve(monkeypatch, view=_create_view())
+    _patch_repo(monkeypatch)
+    merge_calls = []
+
+    def _merge(*a, **k):
+        merge_calls.append(k)
+        return {"merged": True, "already_merged": True, "number": 42, "url": "u"}
+
+    _patch_github(monkeypatch, merge=_merge)
+    _patch_workers(monkeypatch)
+    # Pre-seed the crash state: claimed event + waiting_for_rebake + merge_state=pending.
+    state = get_state()
+    ek = main_mod._iac_event_key("theghostsquad00/driftscribe", 42, _HEAD, _GEN_META)
+    state.record_event(ek, {"x": 1})
+    main_mod._record_iac_decision(
+        state, ek, apply_status="waiting_for_rebake", merge_state="pending",
+        head_sha=_HEAD, pr_number=42, approver=_OPERATOR,
+    )
+    client = TestClient(app)
+    resp = _post(client, token=_create_token())
+    assert resp.status_code == 200, resp.text
+    assert "re-bake" in resp.text.lower()
+    assert len(merge_calls) == 1  # idempotent merge re-driven
+    dec = state.find_decision_for_event(ek)
+    assert dec["apply_status"] == "waiting_for_rebake" and dec["merge_state"] == "merged"

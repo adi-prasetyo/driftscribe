@@ -2098,6 +2098,8 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
                 plan_sha256=view.plan_sha256,
                 plan_json_sha256=view.plan_json_sha256,
                 comment_id=(ref.comment_id if ref else None),
+                generation_iac_tree=view.generation_iac_tree,
+                iac_tree_hash=view.iac_tree_hash,
             )
         except iac_csrf.IacCsrfError:
             can_approve = False
@@ -2367,17 +2369,44 @@ def iac_approval_post(
         # it too — the full exact-identity contract from the plan (ref is non-None
         # here because _iac_artifact_consistent already required it).
         and payload["comment_id"] == (ref.comment_id if ref else None)
+        # C6: the token also pins the iac-tree sidecar identity the operator saw, so a
+        # sidecar swap between GET and POST is caught (the worker re-derives + verifies
+        # the real sidecar regardless — this is operator-review integrity).
+        and payload["generation_iac_tree"] == view.generation_iac_tree
+        and payload["iac_tree_hash"] == view.iac_tree_hash
     ):
         raise HTTPException(
             status_code=409,
             detail="the plan changed since you loaded this page; reload and re-review",
         )
 
-    # (c) Pre-propose readiness (raise, no mint — Codex r2: readiness BEFORE claim).
+    # repo + required_checks + the idempotency key are needed by BOTH the
+    # existing-decision routing (c0) and the fresh path. They are computed BEFORE
+    # readiness because a C6 resume re-POST hits a MERGED/closed PR — running
+    # assert_pr_ready_at_sha first would fail before the ``waiting_for_rebake``
+    # decision is ever consulted (Codex C6 blocker 2).
     required_checks = [
         c.strip() for c in s.iac_required_checks.split(",") if c.strip()
     ]
     repo = get_repo(s.github_token, s.github_repo)
+    state = get_state()
+    event_key = _iac_event_key(
+        s.github_repo, pr_number, view.head_sha, view.generation_metadata
+    )
+
+    # (c0) Existing-decision routing (READ-ONLY) — runs FIRST so a resume / merge-only
+    # reconcile / terminal / already-done re-POST is handled without (and before) PR
+    # readiness. A fresh plan has no decision yet → fall through to readiness + claim.
+    existing = state.find_decision_for_event(event_key)
+    if existing is not None:
+        return _handle_existing_iac_decision(
+            request, s, state, existing, repo=repo, event_key=event_key, view=view,
+            required_checks=required_checks, operator_email=operator_email,
+            pr_number=pr_number, cf_access_jwt=cf_access_jwt,
+        )
+
+    # (c) Pre-propose readiness (raise, no mint — Codex r2: readiness BEFORE claim).
+    # No decision yet ⇒ this flow has not merged the PR, so it should still be open.
     try:
         github.assert_pr_ready_at_sha(
             repo,
@@ -2391,10 +2420,6 @@ def iac_approval_post(
         ) from e
 
     # (d) Idempotency claim.
-    state = get_state()
-    event_key = _iac_event_key(
-        s.github_repo, pr_number, view.head_sha, view.generation_metadata
-    )
     claimed = state.record_event(
         event_key,
         {
@@ -2404,67 +2429,31 @@ def iac_approval_post(
             "trigger": "iac_apply",
         },
     )
-    reconcile_existing: dict | None = None
     if not claimed:
+        # Raced: a decision appeared between (c0) and the claim. Re-route on it.
         existing = state.find_decision_for_event(event_key)
-        if existing and existing.get("merge_state") == "merged":
-            return _render_iac_outcome(
-                request,
-                pr_number=pr_number,
-                view=view,
-                decision="approve",
-                outcome="Already applied and merged (idempotent).",
+        if existing is not None:
+            return _handle_existing_iac_decision(
+                request, s, state, existing, repo=repo, event_key=event_key, view=view,
+                required_checks=required_checks, operator_email=operator_email,
+                pr_number=pr_number, cf_access_jwt=cf_access_jwt,
             )
-        if (
-            existing
-            and existing.get("apply_status") == "applied"
-            and existing.get("merge_state") == "failed"
-        ):
-            # Merge-only reconcile: skip propose/apply; jump to the merge step.
-            reconcile_existing = existing
-        elif existing and existing.get("apply_status") in {
-            "failed", "failed_state_suspect", "ambiguous"
-        }:
-            terminal_status = existing.get("apply_status")
-            note = (
-                "The failed apply could not be proven to have left state clean — "
-                "run the apply-failure recovery runbook (state reconcile) before "
-                "any retry; this will NOT be retried automatically."
-                if terminal_status == "failed_state_suspect"
-                else "Manual verification required; this will NOT be retried "
-                "automatically."
-            )
-            return _render_iac_outcome(
-                request,
-                pr_number=pr_number,
-                view=view,
-                decision="approve",
-                outcome=f"Terminal state recorded: apply_status={terminal_status!r}. {note}",
-            )
-        else:
-            raise HTTPException(
-                status_code=409,
-                detail="an apply for this plan is already in progress",
-            )
+        raise HTTPException(
+            status_code=409,
+            detail="an apply for this plan is already in progress",
+        )
 
-    if reconcile_existing is not None:
-        # Merge-only reconcile path (re-POST after applied+merge-failed).
-        approval_id = reconcile_existing.get("approval_id")
-        apply_attempt_id = reconcile_existing.get("apply_attempt_id")
-        return _iac_merge_step(
-            request,
-            s,
-            state,
-            repo=repo,
-            event_key=event_key,
-            view=view,
-            required_checks=required_checks,
-            approval_id=approval_id,
-            apply_attempt_id=apply_attempt_id,
-            operator_email=operator_email,
+    # (e) Route. A CREATE-class plan takes the C6 two-step merge-FIRST path (merge →
+    # operator re-bake → resume apply); every other plan (no-op / in-place update of a
+    # main-declared resource) takes the C5 apply-first path below, unchanged.
+    if view.has_create:
+        return _iac_create_merge_first(
+            request, s, state, repo=repo, event_key=event_key, view=view,
+            required_checks=required_checks, operator_email=operator_email,
             pr_number=pr_number,
         )
 
+    # ---- C5 apply-first path (non-create): propose → head re-check → apply → merge ----
     # (e) Propose (mints the plan approval; failure ⇒ no approval ⇒ release).
     try:
         pr_res = worker_client.call_propose(
@@ -2817,6 +2806,303 @@ def _iac_merge_step(
         view=view,
         decision="approve",
         outcome="Applied and merged.",
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Phase C6b — create-class merge-FIRST routing + resume (head-config delivery).
+# --------------------------------------------------------------------------- #
+
+
+def _handle_existing_iac_decision(
+    request: Request,
+    s: Settings,
+    state: StateStore,
+    existing: dict,
+    *,
+    repo,
+    event_key: str,
+    view: "iac_artifacts.IacPlanView",
+    required_checks: list[str],
+    operator_email: str,
+    pr_number: int,
+    cf_access_jwt: str | None,
+) -> Response:
+    """Route a re-POST that already has a recorded decision (runs BEFORE readiness).
+
+    - ``waiting_for_rebake`` → the C6 RESUME (propose→apply against the re-baked
+      worker; no merge, no readiness — the PR is merged/closed).
+    - ``applied`` + ``merged`` → idempotent "already applied and merged".
+    - ``applied`` + ``failed`` → merge-only reconcile (existing C5 path).
+    - ``failed``/``failed_state_suspect``/``ambiguous`` → terminal render.
+    - anything else → an apply is in progress (409).
+    """
+    status = existing.get("apply_status")
+    merge_state = existing.get("merge_state")
+
+    if status == "waiting_for_rebake":
+        if merge_state != "merged":
+            # Crash/failure AFTER recording the intent but BEFORE the merge completed
+            # (or the merge itself failed) — re-drive the IDEMPOTENT merge (a PR merged
+            # at the expected head returns already_merged; an unmerged one merges now).
+            # This is the recovery for the merge-first crash window (Codex C6b-1 blocker).
+            return _iac_merge_then_wait(
+                request, s, state, repo=repo, event_key=event_key, view=view,
+                required_checks=required_checks, operator_email=operator_email,
+                pr_number=pr_number,
+            )
+        return _iac_resume_apply(
+            request, s, state, repo=repo, event_key=event_key, view=view,
+            operator_email=operator_email, pr_number=pr_number, cf_access_jwt=cf_access_jwt,
+        )
+    if status == "applied" and merge_state == "merged":
+        return _render_iac_outcome(
+            request, pr_number=pr_number, view=view, decision="approve",
+            outcome="Already applied and merged (idempotent).",
+        )
+    if status == "applied" and merge_state == "failed":
+        return _iac_merge_step(
+            request, s, state, repo=repo, event_key=event_key, view=view,
+            required_checks=required_checks,
+            approval_id=existing.get("approval_id"),
+            apply_attempt_id=existing.get("apply_attempt_id"),
+            operator_email=operator_email, pr_number=pr_number,
+        )
+    if status in {"failed", "failed_state_suspect", "ambiguous"}:
+        note = (
+            "The failed apply could not be proven to have left state clean — run the "
+            "apply-failure recovery runbook (state reconcile) before any retry; this "
+            "will NOT be retried automatically."
+            if status == "failed_state_suspect"
+            else "Manual verification required; this will NOT be retried automatically."
+        )
+        return _render_iac_outcome(
+            request, pr_number=pr_number, view=view, decision="approve",
+            outcome=f"Terminal state recorded: apply_status={status!r}. {note}",
+        )
+    raise HTTPException(
+        status_code=409, detail="an apply for this plan is already in progress"
+    )
+
+
+def _iac_create_merge_first(
+    request: Request,
+    s: Settings,
+    state: StateStore,
+    *,
+    repo,
+    event_key: str,
+    view: "iac_artifacts.IacPlanView",
+    required_checks: list[str],
+    operator_email: str,
+    pr_number: int,
+) -> Response:
+    """C6 step 1: a CREATE-class plan is merged to ``main`` FIRST, then the operator
+    re-bakes the worker, then re-opens this page to Apply (the resume). The worker
+    cannot admit the create until it is re-baked from the merged main + the iac/-tree
+    hash matches — so we merge here and hand off, recording ``waiting_for_rebake``.
+
+    The fail-closed sidecar check runs FIRST and releases the event (nothing recorded
+    yet). After it passes, the ``waiting_for_rebake``+``pending`` pointer is recorded
+    BEFORE the merge and ``_iac_merge_then_wait`` does the merge: on merge failure that
+    pointer is KEPT (the recovery handle), not released, so a re-submit re-tries the
+    idempotent merge.
+    """
+    # A create needs the C2 sidecar (the worker's hash gate is mandatory for creates).
+    if not view.generation_iac_tree or not view.iac_tree_hash:
+        state.release_event(event_key)
+        raise HTTPException(
+            status_code=409,
+            detail="create-class plan has no iac-tree sidecar in the C2 comment; "
+            "re-run the plan-builder (C2) so the sidecar is produced",
+        )
+    # Record the resume pointer (merge_state="pending") BEFORE the irreversible,
+    # no-auto-revert merge. If the coordinator crashes between the merge and the
+    # post-merge record, a re-POST finds waiting_for_rebake+pending and re-drives the
+    # idempotent merge — closing the merge-first crash window (Codex C6b-1 blocker).
+    _record_iac_decision(
+        state, event_key, apply_status="waiting_for_rebake", merge_state="pending",
+        head_sha=view.head_sha, pr_number=pr_number, approver=operator_email,
+    )
+    return _iac_merge_then_wait(
+        request, s, state, repo=repo, event_key=event_key, view=view,
+        required_checks=required_checks, operator_email=operator_email, pr_number=pr_number,
+    )
+
+
+def _iac_merge_then_wait(
+    request: Request,
+    s: Settings,
+    state: StateStore,
+    *,
+    repo,
+    event_key: str,
+    view: "iac_artifacts.IacPlanView",
+    required_checks: list[str],
+    operator_email: str,
+    pr_number: int,
+) -> Response:
+    """Idempotent merge → record ``waiting_for_rebake``+``merged`` → instruct re-bake.
+
+    Shared by the fresh create-class path and the pending-recovery path. The decision
+    pointer is ALREADY ``waiting_for_rebake`` (``pending`` here, becoming ``merged``),
+    so on merge failure it is LEFT IN PLACE (the recovery pointer) — never released —
+    and a re-submit re-tries the (idempotent) merge once any branch-protection block is
+    resolved. ``merge_pr_at_sha`` returns ``already_merged`` for a PR merged at the
+    expected head, so re-driving after a crash is a safe no-op."""
+    try:
+        github.merge_pr_at_sha(
+            repo, pr_number=pr_number, expected_head_sha=view.head_sha,
+            required_checks=required_checks,
+            merge_method=(s.iac_merge_method or "squash"), dry_run=s.dry_run,
+        )
+    except Exception as e:  # noqa: BLE001 — merge failed ⇒ no mutation; keep the pointer
+        permanent = isinstance(e, github.PrMergeBlockedError) and e.permanent
+        detail = (
+            f"merge for PR #{pr_number} is blocked by branch protection ({e}); "
+            "resolve out-of-band (approve the required review / satisfy the required "
+            "check / admin-merge), then re-submit — nothing was applied"
+            if permanent
+            else f"merge for PR #{pr_number} failed ({e}); nothing was applied — re-submit to retry"
+        )
+        raise HTTPException(status_code=409, detail=detail) from e
+
+    # Merged. Promote the pointer to merged + instruct the operator to re-bake.
+    _record_iac_decision(
+        state, event_key, apply_status="waiting_for_rebake", merge_state="merged",
+        head_sha=view.head_sha, pr_number=pr_number, approver=operator_email,
+    )
+    return _render_iac_outcome(
+        request, pr_number=pr_number, view=view, decision="approve",
+        outcome=(
+            f"Merged to main (PR #{pr_number}, head {view.head_sha[:7]}). This plan "
+            "CREATES a resource, so the worker must be RE-BAKED from the new main "
+            "before it can apply. Operator: run `gcloud builds submit "
+            "--config=infra/cloudbuild.tofu-apply.yaml "
+            "--substitutions=_TAG=$(git rev-parse --short HEAD) "
+            "--project=driftscribe-hack-2026`, then RELOAD this page and click Apply "
+            f"to complete. Expected iac_tree_hash: {view.iac_tree_hash}."
+        ),
+    )
+
+
+def _iac_resume_apply(
+    request: Request,
+    s: Settings,
+    state: StateStore,
+    *,
+    repo,
+    event_key: str,
+    view: "iac_artifacts.IacPlanView",
+    operator_email: str,
+    pr_number: int,
+    cf_access_jwt: str | None,
+) -> Response:
+    """C6 step 2 (resume): the create-class PR is already merged; the operator has
+    (hopefully) re-baked the worker. Drive propose→apply against it, forwarding the
+    sidecar generation. NO merge (done) and NO readiness (PR closed). The worker's
+    iac/-tree hash gate is the real guard: if the re-bake hasn't happened (or main
+    advanced), propose/apply fail-closed and the ``waiting_for_rebake`` decision is
+    LEFT IN PLACE so the operator can re-bake and retry.
+
+    Post-merge failure handling is intentionally minimal here; C6d refines the
+    create-class freeze / orphan-reconcile matrix.
+    """
+    gen_iac_tree = view.generation_iac_tree
+    if not gen_iac_tree:
+        raise HTTPException(
+            status_code=409,
+            detail="create-class resume has no iac-tree sidecar; re-run the plan-builder",
+        )
+
+    # Propose (mints a fresh approval). A refusal here (e.g. the worker's 422 tree
+    # gate when not yet re-baked) is NO-mutation → keep waiting_for_rebake, render a
+    # retry-after-rebake page rather than a hard error.
+    try:
+        pr_res = worker_client.call_propose(
+            view.artifact_uri_metadata, view.generation_metadata, operator_email,
+            cf_access_jwt, generation_iac_tree=gen_iac_tree,
+        )
+    except worker_client.WorkerClientError as e:
+        return _iac_resume_not_ready(request, view, pr_number, action="propose", err=e)
+    if not isinstance(pr_res, dict):
+        raise HTTPException(status_code=502, detail="tofu-apply returned a malformed propose response")
+    approval_id = pr_res.get("approval_id")
+    approval_token = pr_res.get("approval_token")
+    if not (isinstance(approval_id, str) and approval_id and isinstance(approval_token, str) and approval_token):
+        raise HTTPException(status_code=502, detail="tofu-apply returned a malformed propose response")
+
+    # Apply (the merge already happened, so no head re-check; the worker hash gate guards it).
+    try:
+        apply_res = worker_client.call_apply(
+            approval_id, approval_token, cf_access_jwt, generation_iac_tree=gen_iac_tree,
+        )
+    except worker_client.WorkerClientError as e:
+        if e.status_code in (403, 404, 422, 423, 409):
+            # PRE-claim (403/404) or post-claim NON-mutating (422/423/409, incl.
+            # tree_mismatch_refused when the worker isn't re-baked): no infra change.
+            # Best-effort clean the orphaned pending; keep waiting_for_rebake for retry.
+            with contextlib.suppress(Exception):
+                worker_client.call_plan_deny(approval_id, approval_token)
+            return _iac_resume_not_ready(request, view, pr_number, action="apply", err=e)
+        # 5xx / unknown: possible partial mutation on a CREATE — record a terminal
+        # decision + alert (C6d refines the create-class freeze/orphan handling).
+        apply_status = "failed_state_suspect" if (e.status_code == 502 and "failed_state_suspect" in (e.body or "")) else (
+            "failed" if e.status_code == 502 else "ambiguous"
+        )
+        _record_iac_decision(
+            state, event_key, apply_status=apply_status, merge_state="merged",
+            approval_id=approval_id, head_sha=view.head_sha, pr_number=pr_number,
+            approver=operator_email,
+        )
+        with contextlib.suppress(Exception):
+            worker_client.call("notifier", {"channel": "approval", "severity": "high", "body": (
+                f"C6 create-class apply {apply_status} for PR #{pr_number} (already MERGED to "
+                f"main, head {view.head_sha[:7]}). A created resource may exist out of state — "
+                "run the apply-failure recovery runbook (orphan check) before any retry.")})
+        raise HTTPException(status_code=(502 if apply_status != "ambiguous" else 504), detail=(
+            f"tofu-apply {apply_status} on the create-class resume; the PR is already merged and a "
+            "created resource may exist out of state — run the apply-failure recovery runbook "
+            "(orphan check) before any retry.")) from e
+
+    if not (isinstance(apply_res, dict) and apply_res.get("status") == "applied"
+            and apply_res.get("approval_id") == approval_id
+            and isinstance(apply_res.get("apply_attempt_id"), str) and apply_res.get("apply_attempt_id")):
+        _record_iac_decision(
+            state, event_key, apply_status="ambiguous", merge_state="merged",
+            approval_id=approval_id, head_sha=view.head_sha, pr_number=pr_number, approver=operator_email,
+        )
+        raise HTTPException(status_code=504, detail="tofu-apply returned a malformed success on the create-class resume; verify manually")
+
+    _record_iac_decision(
+        state, event_key, apply_status="applied", merge_state="merged",
+        approval_id=approval_id, apply_attempt_id=apply_res.get("apply_attempt_id"),
+        head_sha=view.head_sha, pr_number=pr_number, approver=operator_email,
+    )
+    return _render_iac_outcome(
+        request, pr_number=pr_number, view=view, decision="approve",
+        outcome="Applied (create) — the PR was already merged to main. Done.",
+    )
+
+
+def _iac_resume_not_ready(
+    request: Request, view: "iac_artifacts.IacPlanView", pr_number: int, *, action: str, err
+) -> Response:
+    """Render the 'merged but the worker is not re-baked yet (or main advanced)' page.
+    The ``waiting_for_rebake`` decision is unchanged, so the operator re-bakes and
+    re-submits. 200 (the operator's action is legitimate, just premature) — NOT an
+    error code."""
+    return _render_iac_outcome(
+        request, pr_number=pr_number, view=view, decision="approve",
+        outcome=(
+            f"Merged, but the worker could not apply yet (tofu-apply {action} refused: "
+            f"status {getattr(err, 'status_code', '?')}). The worker is likely not re-baked "
+            "from the merged main, or main advanced after the merge. Re-bake "
+            "(`gcloud builds submit --config=infra/cloudbuild.tofu-apply.yaml "
+            "--substitutions=_TAG=$(git rev-parse --short HEAD)`), confirm the baked "
+            f"iac_tree_hash is {view.iac_tree_hash}, then RELOAD and click Apply. If main "
+            "advanced with another iac/ change, re-run the plan-builder (re-plan)."
+        ),
     )
 
 
