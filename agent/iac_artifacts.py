@@ -172,6 +172,10 @@ _RE_URI_PLAN = re.compile(r"^- \*\*artifact plan\.tfplan:\*\* `([^`]*)`", re.MUL
 _RE_URI_JSON = re.compile(r"^- \*\*artifact plan\.json:\*\* `([^`]*)`", re.MULTILINE)
 _RE_URI_META = re.compile(r"^- \*\*artifact metadata\.json:\*\* `([^`]*)`", re.MULTILINE)
 _RE_OPENTOFU = re.compile(r"^- \*\*opentofu:\*\* `([^`]*)`", re.MULTILINE)
+# C6 sidecar (iac-tree.json). OPTIONAL in C6a-2 (old comments without these still
+# parse); C6b-1 makes the coordinator REQUIRE generation_iac_tree on the create path.
+_RE_IAC_TREE_GEN = re.compile(r"^- \*\*iac-tree generation:\*\* `([^`]*)`", re.MULTILINE)
+_RE_IAC_TREE_HASH = re.compile(r"^- \*\*iac_tree_hash:\*\* `([^`]*)`", re.MULTILINE)
 
 # The tofu-show <details> block: a backtick run (>=3) on its own line opens, a
 # matching run closes. The fence width is chosen by format_summary._pick_fence.
@@ -204,6 +208,13 @@ class C2CommentRef:
     opentofu_version: str
     comment_id: int | None
     tofu_show_text: str
+    # C6 sidecar identity (optional pre-C6 / on comments that predate it). The
+    # coordinator passes generation_iac_tree to the worker on the create path and pins
+    # iac_tree_hash into the CSRF form token; the worker independently re-derives the
+    # sidecar URI from the signed metadata + cross-checks it (these are not a worker
+    # security input — see the C6 plan §2).
+    generation_iac_tree: str | None = None
+    iac_tree_hash: str | None = None
 
 
 def _single_match(rx: re.Pattern[str], body: str) -> list[str] | None:
@@ -218,6 +229,20 @@ def _single_match(rx: re.Pattern[str], body: str) -> list[str] | None:
         return None
     m = found[0]
     return list(m) if isinstance(m, tuple) else [m]
+
+
+def _optional_single_match(rx: re.Pattern[str], body: str) -> tuple[str | None, bool]:
+    """Parse an OPTIONAL single-capture field. Returns ``(value, ok)``:
+    absent → ``(None, True)`` (fine — optional); exactly one → ``(value, True)``;
+    DUPLICATE → ``(None, False)`` (malformed, fail-closed). Used for the C6 sidecar
+    lines, which may be absent on a pre-C6 comment."""
+    found = rx.findall(body)
+    if not found:
+        return None, True
+    if len(found) != 1:
+        return None, False
+    m = found[0]
+    return (m if isinstance(m, str) else m[0]), True
 
 
 def parse_c2_pr_comment(body: str, *, comment_id: int | None = None) -> C2CommentRef | None:
@@ -273,6 +298,17 @@ def parse_c2_pr_comment(body: str, *, comment_id: int | None = None) -> C2Commen
     if not opentofu_version:
         return None
 
+    # C6 sidecar (optional). Absent → None (a pre-C6 comment); present-but-malformed
+    # or duplicated → fail-closed (the whole parse returns None).
+    generation_iac_tree, ok_gi = _optional_single_match(_RE_IAC_TREE_GEN, body)
+    iac_tree_hash, ok_hi = _optional_single_match(_RE_IAC_TREE_HASH, body)
+    if not (ok_gi and ok_hi):
+        return None
+    if generation_iac_tree is not None and not _DIGITS.fullmatch(generation_iac_tree):
+        return None
+    if iac_tree_hash is not None and not _HEX64.fullmatch(iac_tree_hash):
+        return None
+
     tofu_show_text = ""
     m = _RE_TOFU_SHOW.search(body)
     if m is not None:
@@ -291,6 +327,8 @@ def parse_c2_pr_comment(body: str, *, comment_id: int | None = None) -> C2Commen
         opentofu_version=opentofu_version,
         comment_id=comment_id,
         tofu_show_text=tofu_show_text,
+        generation_iac_tree=generation_iac_tree,
+        iac_tree_hash=iac_tree_hash,
     )
 
 

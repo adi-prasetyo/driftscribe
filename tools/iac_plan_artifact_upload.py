@@ -99,18 +99,38 @@ def upload_metadata(inp: MetadataUploadInput) -> str:
     return _upload_one(inp.bucket, f"{inp.object_prefix}/metadata.json", inp.local_metadata)
 
 
+# --- Step 3 (C6): iac-tree.json sidecar ----------------------------------
+
+
+@dataclass(frozen=True)
+class IacTreeUploadInput:
+    bucket: Any
+    object_prefix: str
+    local_iac_tree: pathlib.Path
+
+
+def upload_iac_tree(inp: IacTreeUploadInput) -> str:
+    """Upload the C6 sidecar ``iac-tree.json`` into the SAME run dir as the c2.v1
+    triplet, returning its generation. Uploaded AFTER metadata.json (the denylist /
+    integrity gates run against plan.json; the sidecar carries no policy of its own —
+    it only binds the iac/-tree hash the worker re-derives + cross-checks)."""
+    _check_prefix(inp.object_prefix)
+    return _upload_one(inp.bucket, f"{inp.object_prefix}/iac-tree.json", inp.local_iac_tree)
+
+
 # --- CLI -----------------------------------------------------------------
 
 def _main(argv: list[str]) -> int:
     import argparse
     import sys as _sys
     parser = argparse.ArgumentParser(prog="iac_plan_artifact_upload")
-    parser.add_argument("--mode", required=True, choices=["plan-and-json", "metadata"])
+    parser.add_argument("--mode", required=True, choices=["plan-and-json", "metadata", "iac-tree"])
     parser.add_argument("--bucket", required=True)
     parser.add_argument("--object-prefix", required=True)
     parser.add_argument("--local-plan", type=pathlib.Path)
     parser.add_argument("--local-plan-json", type=pathlib.Path)
     parser.add_argument("--local-metadata", type=pathlib.Path)
+    parser.add_argument("--local-iac-tree", type=pathlib.Path)
     ns = parser.parse_args(argv)
 
     # Defer the SDK import so unit tests do not require google-cloud-storage.
@@ -136,7 +156,7 @@ def _main(argv: list[str]) -> int:
             ))
             print(f"GEN_PLAN={r.generation_plan}")
             print(f"GEN_JSON={r.generation_json}")
-        else:  # mode == "metadata"
+        elif ns.mode == "metadata":
             if ns.local_metadata is None:
                 raise ValueError("--mode metadata requires --local-metadata")
             gen = upload_metadata(MetadataUploadInput(
@@ -144,6 +164,14 @@ def _main(argv: list[str]) -> int:
                 local_metadata=ns.local_metadata,
             ))
             print(f"GEN_METADATA={gen}")
+        else:  # mode == "iac-tree"
+            if ns.local_iac_tree is None:
+                raise ValueError("--mode iac-tree requires --local-iac-tree")
+            gen = upload_iac_tree(IacTreeUploadInput(
+                bucket=bucket, object_prefix=ns.object_prefix,
+                local_iac_tree=ns.local_iac_tree,
+            ))
+            print(f"GEN_IAC_TREE={gen}")
     except (ValueError, FileNotFoundError) as e:
         print(str(e), file=_sys.stderr)
         return 1

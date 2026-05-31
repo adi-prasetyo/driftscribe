@@ -146,3 +146,59 @@ def test_summary_truncated_output_stays_within_budget_with_long_uri_and_huge_siz
     # The long URI must actually appear in the truncation notice (proves
     # the test is exercising the notice path, not just the header).
     assert long_uri in out
+
+
+# --------------------------------------------------------------------------- #
+# C6 — iac-tree.json sidecar comment lines (optional)
+# --------------------------------------------------------------------------- #
+
+_TREE = "e" * 64
+_GEN_TREE = "1700000000000003"
+_URI_TREE = (
+    "gs://driftscribe-hack-2026-tofu-artifacts/pr-42/" + ("a" * 40)
+    + "/run-1234567890-1/iac-tree.json"
+)
+
+
+def test_sidecar_lines_absent_by_default():
+    """Pre-C6 callers (no sidecar fields) emit NO iac-tree lines."""
+    out = format_summary(_valid_input())
+    assert "iac-tree generation" not in out
+    assert "iac_tree_hash" not in out
+
+
+def test_sidecar_lines_present_when_provided():
+    out = format_summary(_valid_input(
+        generation_iac_tree=_GEN_TREE,
+        artifact_uri_iac_tree=_URI_TREE,
+        iac_tree_hash=_TREE,
+    ))
+    assert f"- **iac-tree generation:** `{_GEN_TREE}`" in out
+    assert f"- **artifact iac-tree.json:** `{_URI_TREE}`" in out
+    assert f"- **iac_tree_hash:** `{_TREE}`" in out
+
+
+def test_sidecar_lines_roundtrip_through_parser():
+    from agent.iac_artifacts import parse_c2_pr_comment
+
+    out = format_summary(_valid_input(
+        generation_iac_tree=_GEN_TREE,
+        artifact_uri_iac_tree=_URI_TREE,
+        iac_tree_hash=_TREE,
+    ))
+    ref = parse_c2_pr_comment(out, comment_id=7)
+    assert ref is not None
+    assert ref.generation_iac_tree == _GEN_TREE
+    assert ref.iac_tree_hash == _TREE
+
+
+def test_format_rejects_malformed_iac_tree_hash():
+    with pytest.raises(ValueError):
+        format_summary(_valid_input(iac_tree_hash="G" * 64))
+    with pytest.raises(ValueError):
+        format_summary(_valid_input(iac_tree_hash="e" * 63))
+
+
+def test_format_rejects_malformed_generation_iac_tree():
+    with pytest.raises(ValueError):
+        format_summary(_valid_input(generation_iac_tree="not-a-number"))
