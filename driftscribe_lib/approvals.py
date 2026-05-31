@@ -329,9 +329,15 @@ _MAX_APPROVAL_TTL_MINUTES = 15
 #   - integrity_refused: artifact fetch/integrity recompute failed — HTTP 422
 #   - fidelity_refused:  version/lockfile/resource-set fidelity guard refused — HTTP 422
 #   - verify_refused:    signed-payload re-derivation / parse refusal — HTTP 422
+#   - tree_mismatch_refused: C6 — a create-class plan's baked iac/-tree hash != the
+#                           approved head's iac_tree_hash (worker not re-baked from
+#                           the merged main, or main advanced, or the sidecar failed
+#                           its cross-check / was absent) — HTTP 409 (re-bake/re-plan,
+#                           NOT a blind retry)
 APPLY_AUDIT_PHASES = frozenset({
     "claimed", "applied", "failed", "failed_state_suspect", "lock_refused",
     "drift_refused", "integrity_refused", "fidelity_refused", "verify_refused",
+    "tree_mismatch_refused",
 })
 
 # The exact top-level key set of a c3.v1 signed payload (from

@@ -34,9 +34,14 @@ ARTIFACT_BUCKET = "driftscribe-hack-2026-tofu-artifacts"
 
 # pr-<N>/<head_sha>/run-<id>-<attempt>/<basename> — mirrors the upload-side
 # _OBJECT_PREFIX_RE (tools/iac_plan_artifact_upload.py) with a trailing basename.
+# ``iac-tree.json`` is the C6 sidecar (carries the iac/-tree hash).
 _OBJECT_RE = re.compile(
-    r"^pr-[1-9][0-9]*/[0-9a-f]{40}/run-[1-9][0-9]*-[1-9][0-9]*/(metadata\.json|plan\.tfplan|plan\.json)$"
+    r"^pr-[1-9][0-9]*/[0-9a-f]{40}/run-[1-9][0-9]*-[1-9][0-9]*/"
+    r"(metadata\.json|plan\.tfplan|plan\.json|iac-tree\.json)$"
 )
+
+_METADATA_BASENAME = "metadata.json"
+_SIDECAR_BASENAME = "iac-tree.json"
 
 
 class GcsFetchError(Exception):
@@ -61,7 +66,8 @@ def validate_artifact_uri(uri: str, *, expected_basename: str) -> tuple[str, str
 
     Asserts the bucket is exactly :data:`ARTIFACT_BUCKET` and the object path
     matches the ``pr-<N>/<sha>/run-<id>-<attempt>/<basename>`` scheme with the
-    expected basename (``metadata.json`` / ``plan.tfplan`` / ``plan.json``).
+    expected basename (``metadata.json`` / ``plan.tfplan`` / ``plan.json`` /
+    ``iac-tree.json``).
     """
     bucket, obj = parse_gs_uri(uri)
     if bucket != ARTIFACT_BUCKET:
@@ -94,18 +100,39 @@ def fetch_object_pinned(bucket: Any, object_name: str, generation: Any) -> bytes
     blob = bucket.blob(object_name, generation=gen)
     try:
         return blob.download_as_bytes(raw_download=True, if_generation_match=gen)
-    except Exception as e:  # noqa: BLE001 — narrow to the GCS exceptions below, re-raise others
-        # Lazy import so the module imports without google-cloud-storage (tests).
-        try:
-            from google.api_core.exceptions import NotFound, PreconditionFailed
-        except Exception:  # pragma: no cover - SDK always present in the container
-            # Surface the ORIGINAL download failure, not this ImportError.
-            raise e from None
-        if isinstance(e, (NotFound, PreconditionFailed)):
-            raise GcsFetchError(
-                f"fetch of {object_name}@{gen} failed ({type(e).__name__}): {e}"
-            ) from e
-        raise
+    except GcsFetchError:
+        raise  # already a fail-closed fetch error (e.g. a test double) — propagate as-is
+    except Exception as e:  # noqa: BLE001 — ANY download failure fails CLOSED
+        # Convert EVERY download failure to GcsFetchError — not just NotFound /
+        # PreconditionFailed (missing/mismatched generation) but ALSO transport /
+        # permission / retry-exhaustion errors (Forbidden, ServiceUnavailable, ...).
+        # The /apply + /propose gates call this POST-CLAIM, so a raw SDK exception
+        # escaping here would 500 and strand the burned approval at phase="claimed"
+        # with NO terminal audit (adversarial review C6a-3 — closes the new C6 sidecar
+        # fetch AND the pre-existing C5 plan/json/metadata fetch exposure). The caller
+        # always treats GcsFetchError as a fail-closed refusal, so collapsing the
+        # error classes loses nothing.
+        raise GcsFetchError(
+            f"fetch of {object_name}@{gen} failed ({type(e).__name__}): {e}"
+        ) from e
+
+
+def derive_sidecar_uri(metadata_uri: str) -> str:
+    """Derive the C6 ``iac-tree.json`` sidecar URI from the (HMAC-signed)
+    ``metadata.json`` URI by swapping ONLY the trailing basename, then re-validate
+    the result fail-closed.
+
+    The sidecar lives in the SAME run dir as ``metadata.json``, so deriving its
+    locator from the signed metadata path means the coordinator supplies only the
+    sidecar *generation* (an unsigned endpoint field) — never its URI. Combined with
+    the worker's field cross-check against the signed metadata, a compromised
+    coordinator cannot point the worker at an arbitrary object."""
+    bucket, obj = validate_artifact_uri(metadata_uri, expected_basename=_METADATA_BASENAME)
+    sidecar_obj = obj[: -len(_METADATA_BASENAME)] + _SIDECAR_BASENAME
+    sidecar_uri = f"gs://{bucket}/{sidecar_obj}"
+    # Re-validate the derived URI (bucket + path scheme + basename) fail-closed.
+    validate_artifact_uri(sidecar_uri, expected_basename=_SIDECAR_BASENAME)
+    return sidecar_uri
 
 
 def fetch_artifact(bucket: Any, *, signed_uri: str, generation: Any, expected_basename: str) -> bytes:
