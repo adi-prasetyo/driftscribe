@@ -156,25 +156,33 @@ def test_plain_google_resource_has_no_execution_violation():
 # --- Task D1-6: secret material is operator-only (AGENT-mode ban) ---
 
 
-@pytest.mark.parametrize("hcl", [
+_SECRET_MATERIAL_HCL = [
     'resource "google_secret_manager_secret" "s" { secret_id = "plan-hmac-key" }',
     (
         'resource "google_secret_manager_secret_version" "v" '
         '{ secret = "x" secret_data = "supersecret" }'
     ),
-])
+    # Regional variants are real google provider resource types and must be
+    # banned too — a regional container carries no secret_data, so without the
+    # resource-type ban it would slip the gate entirely.
+    (
+        'resource "google_secret_manager_regional_secret" "s" '
+        '{ secret_id = "plan-hmac-key" location = "us-central1" }'
+    ),
+    (
+        'resource "google_secret_manager_regional_secret_version" "v" '
+        '{ secret = "x" secret_data = "supersecret" }'
+    ),
+]
+
+
+@pytest.mark.parametrize("hcl", _SECRET_MATERIAL_HCL)
 def test_agent_authored_secret_material_rejected(hcl):
     gi = GateInput(GateMode.AGENT, ("iac/x.tf",), {"iac/x.tf": hcl})
     assert any(v.rule == "secret-material-forbidden" for v in evaluate(gi)), hcl
 
 
-@pytest.mark.parametrize("hcl", [
-    'resource "google_secret_manager_secret" "s" { secret_id = "plan-hmac-key" }',
-    (
-        'resource "google_secret_manager_secret_version" "v" '
-        '{ secret = "x" secret_data = "supersecret" }'
-    ),
-])
+@pytest.mark.parametrize("hcl", _SECRET_MATERIAL_HCL)
 def test_operator_mode_may_author_secret_material(hcl):
     # Operators legitimately declare secrets during bootstrap — the same secret
     # HCL must NOT raise secret-material-forbidden in OPERATOR mode.

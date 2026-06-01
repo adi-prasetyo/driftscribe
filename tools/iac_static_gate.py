@@ -93,9 +93,14 @@ FORBIDDEN_DATA_SOURCE_TYPES = frozenset({"external", "terraform_remote_state"})
 # bootstrap, so this is an AGENT-mode-only ban. (Arbitrary literal secrets
 # smuggled into other resource attributes are caught by the GitGuardian
 # required check + human review, not this structural gate.)
+# Includes the REGIONAL variants: a regional secret CONTAINER has no
+# `secret_data`, so without the resource-type ban it would slip both this rule
+# and the secret_data attribute check entirely.
 SECRET_MATERIAL_RESOURCE_TYPES = frozenset({
     "google_secret_manager_secret",
     "google_secret_manager_secret_version",
+    "google_secret_manager_regional_secret",
+    "google_secret_manager_regional_secret_version",
 })
 # The attribute that carries a literal secret VALUE. It only validly appears in
 # the (already-banned) google_secret_manager_secret_version, so this attribute
