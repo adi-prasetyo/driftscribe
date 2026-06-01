@@ -28,13 +28,26 @@ Design notes:
 from __future__ import annotations
 
 import enum
+import json
 import re
+import uuid
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from driftscribe_lib.iac_editor_policy import EditorPolicyError, validate_iac_path
+
+# ``Runner`` is imported at module scope (NOT lazily like the other ADK
+# symbols) for ONE reason: it is the mock seam for :func:`decompose`. Tests
+# patch ``agent.fanout.Runner`` (mirroring how ``tests/unit/test_run_chat_stream
+# .py`` patches ``agent.adk_agent.Runner``), which requires the name to be a
+# real module attribute at patch time and to be the name ``decompose`` reads.
+# A lazy in-function import would shadow the patch and the mock would never
+# take effect. The rest of the ADK surface stays lazily imported inside the
+# agent-building functions so the pure-decomposition core (SliceSpec /
+# validate_slice_specs) callers don't pull ADK in.
+from google.adk.runners import Runner
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, no runtime ADK import here
     from google.adk import Agent
@@ -405,3 +418,269 @@ def build_slice_author_agent(
             thinking_config=ThinkingConfig(include_thoughts=True),
         ),
     )
+
+
+# --------------------------------------------------------------------------- #
+# D5-4: decompose() — the structured plan agent (runs BEFORE parallel author)
+# --------------------------------------------------------------------------- #
+
+
+class DecomposeResult(BaseModel):
+    """The validated output of :func:`decompose`.
+
+    A plan = the list of INDEPENDENT one-file :class:`SliceSpec`s plus an
+    overall PR ``pr_title`` and ``pr_body_intro`` (the intro prose the
+    coordinator prepends to the merged PR body downstream). ``extra="forbid"``
+    keeps the result model as strict as the rest of the coordinator's models.
+
+    A result with ``len(slices) == 1`` is VALID and returned — the CALLER
+    decides to route that single coupled/simple change to the legacy
+    single-agent path. :func:`decompose` itself never collapses to a fallback.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    slices: list[SliceSpec]
+    pr_title: str = Field(min_length=1)
+    pr_body_intro: str
+
+
+def make_submit_plan(sink: dict) -> Callable[..., dict]:
+    """Build the decompose agent's single hand-back tool.
+
+    Mirrors :func:`make_submit_slice_file`: the returned closure RECORDS the
+    model's raw plan into ``sink`` and returns an ack. The plan is passed as a
+    single ``plan_json`` STRING param — a JSON object
+    ``{"slices":[{"goal","target_path","doc_citations"?}],"pr_title",
+    "pr_body_intro"}``. A flat string param is chosen deliberately: ADK builds
+    the tool's function-declaration from the callable's type hints, and a
+    primitive ``str`` maps cleanly to ``types.Type.STRING`` — unlike a
+    deeply-nested ``list[dict]`` / ``list[SliceSpec]`` param, whose schema may
+    not be expressible. The shape is proven to build offline in
+    ``tests/unit/test_fanout_decompose.py`` (it wraps this callable in
+    ``FunctionTool`` and asserts ``_get_declaration()`` succeeds).
+
+    This tool deliberately does NOT validate or parse the plan — it only
+    records the raw string. Parsing (``json.loads``) and validation
+    (Pydantic + :func:`validate_slice_specs`) happen in :func:`decompose`, so
+    there is a single place that decides the POLICY vs DECOMPOSE_NON_POLICY
+    failure kind.
+    """
+
+    def submit_plan(plan_json: str) -> dict:
+        """Submit your FULL decomposition plan, exactly once, as a JSON string.
+
+        Call this once when you have decided the split. ``plan_json`` must be a
+        JSON object of the form::
+
+            {
+              "slices": [
+                {"goal": "...", "target_path": "iac/<file>.tf",
+                 "doc_citations": ["...optional..."]}
+              ],
+              "pr_title": "...",
+              "pr_body_intro": "..."
+            }
+
+        Each slice is ONE independent ``iac/`` file with NO cross-references to
+        the others. Use 2+ slices ONLY for genuinely independent multi-file
+        work; use EXACTLY ONE slice for a coupled/interdependent change or a
+        simple single-file change. Never put two slices on the same
+        ``target_path``. Returns an acknowledgement ``{"status": "recorded"}``.
+        """
+        sink["plan_json"] = plan_json
+        return {"status": "recorded"}
+
+    return submit_plan
+
+
+# The decomposition system prompt. The model READs the live env / inventory /
+# docs first to ground its split, then decides INDEPENDENT multi-slice vs a
+# single coupled/simple change, then calls ``submit_plan`` exactly once. The
+# "EXACTLY ONE slice for anything coupled or simple" rule is what lets the
+# caller cleanly fall back to the legacy single-agent path on a 1-slice result.
+_DECOMPOSE_INSTRUCTION = """\
+You are the DriftScribe decomposition planner. Your ONE job is to turn the \
+operator's infrastructure request into a plan of INDEPENDENT one-file \
+authoring slices, then hand it back by calling `submit_plan` exactly once.
+
+Process:
+1. READ the current state first with your read tools (live env, project \
+inventory, the ops contract, and developer docs) so your split is grounded in \
+what already exists. You author NOTHING — you only plan.
+2. Decide the shape of the work:
+   - If it splits into MULTIPLE INDEPENDENT `iac/` files — files that have NO \
+cross-references between them (no slice's file refers to a resource/local/ \
+output another slice's file defines) — return 2 OR MORE slices, each with one \
+`target_path` and a prose `goal` describing exactly what that one file should \
+contain.
+   - If the work is COUPLED or interdependent (the files would reference each \
+other), OR it is a simple single-file change, return EXACTLY ONE slice. The \
+caller routes a single-slice plan to the legacy single-agent path — so when \
+in doubt, prefer ONE slice.
+3. Constraints on every slice (the downstream gate enforces these; violating \
+them fails the whole fan-out):
+   - Never put two slices on the SAME `target_path`.
+   - Only ordinary `iac/*.tf` resource/data/locals files or `iac/*.md` docs. \
+NEVER providers, modules, provisioners, backend, secrets, or any other \
+foundation/provider/module/secret file.
+4. Call `submit_plan` exactly ONCE with a JSON object: a `slices` list (each \
+`{"goal", "target_path", "doc_citations"?}`), a `pr_title`, and a \
+`pr_body_intro` (a short prose intro for the overall pull request). Do not \
+call it more than once.
+"""
+
+
+async def decompose(
+    prompt: str,
+    *,
+    read_tools: dict[str, Callable] | None = None,
+    event_sink: Callable[[object], None] | None = None,
+) -> DecomposeResult:
+    """Run the ONE structured decomposition LLM call → a validated plan.
+
+    Turns the operator's ``prompt`` into a :class:`DecomposeResult`: a list of
+    INDEPENDENT one-file :class:`SliceSpec`s plus a PR title/intro. This is the
+    stage that runs BEFORE the parallel authoring; the parallel author is a
+    later slice.
+
+    ``read_tools`` defaults to :func:`resolve_provision_read_tools` so the
+    decomposer can READ the live env / inventory / docs to ground its split.
+    Only the read-tool VALUES are handed to the agent (plus the ``submit_plan``
+    hand-back tool) — never any mutation/PR tool.
+
+    The agent runs in its OWN dedicated :class:`InMemorySessionService` session
+    with a FRESH session id (never shared with any authoring session): this
+    isolation is required so decompose chatter can't leak into later slice
+    prompts. If ``event_sink`` is provided, each ADK event is forwarded to it
+    (so a later orchestrator can buffer decompose events); otherwise events are
+    simply consumed.
+
+    Failure typing (load-bearing — the orchestrator branches on ``kind``):
+
+    - The model never called ``submit_plan`` / the sink is empty / the recorded
+      plan is malformed (not JSON, can't build the :class:`SliceSpec`s, missing
+      ``pr_title``/``pr_body_intro``, a forbidden extra field, etc.) → a
+      :class:`FanoutError` ``(502, kind=DECOMPOSE_NON_POLICY)``. The orchestrator
+      FAILS OPEN to the single-agent path on this kind.
+    - If :func:`validate_slice_specs` rejects the slice set (foundation path /
+      duplicate path / non-iac / too many) it raises a POLICY-kind
+      :class:`FanoutError`; that propagates UNCHANGED (kind stays POLICY → the
+      orchestrator FAILS CLOSED).
+
+    A 1-slice result is VALID and returned — the CALLER decides to fall back,
+    not :func:`decompose`.
+
+    The agent-building ADK imports are lazy (mirroring the rest of this module)
+    so the pure core stays import-light for callers that only use
+    :class:`SliceSpec` / :func:`validate_slice_specs`. ``Runner`` is the one
+    exception — it is a module-level import on purpose (the mock seam; see the
+    import comment).
+    """
+    from google.adk import Agent
+    from google.adk.planners.built_in_planner import BuiltInPlanner
+    from google.adk.sessions import InMemorySessionService
+    from google.genai import types
+    from google.genai.types import ThinkingConfig
+
+    if read_tools is None:
+        read_tools = resolve_provision_read_tools()
+
+    sink: dict = {}
+    submit_plan = make_submit_plan(sink)
+    agent = Agent(
+        name="driftscribe_decompose",
+        model="gemini-2.5-flash",
+        instruction=_DECOMPOSE_INSTRUCTION,
+        tools=[*read_tools.values(), submit_plan],
+        # Mirror build_chat_agent: surface Gemini 2.5 Flash's thought summaries.
+        planner=BuiltInPlanner(
+            thinking_config=ThinkingConfig(include_thoughts=True),
+        ),
+    )
+
+    # Own dedicated session — a FRESH id, never shared with any authoring
+    # session, so decompose chatter can't leak into later slice prompts.
+    session_service = InMemorySessionService()
+    sid = str(uuid.uuid4())
+    await session_service.create_session(
+        app_name="driftscribe",
+        user_id="driftscribe-runtime",
+        session_id=sid,
+    )
+    runner = Runner(
+        agent=agent,
+        app_name="driftscribe",
+        session_service=session_service,
+    )
+    msg = types.Content(role="user", parts=[types.Part(text=prompt)])
+
+    async for event in runner.run_async(
+        user_id="driftscribe-runtime",
+        session_id=sid,
+        new_message=msg,
+    ):
+        if event_sink is not None:
+            event_sink(event)
+
+    return _parse_plan_sink(sink)
+
+
+def _parse_plan_sink(sink: dict) -> DecomposeResult:
+    """Parse + validate the recorded plan into a :class:`DecomposeResult`.
+
+    A missing/empty sink or any malformed plan is a NON-POLICY failure (raised
+    as ``FanoutError(502, kind=DECOMPOSE_NON_POLICY)``); a slice-set policy
+    rejection from :func:`validate_slice_specs` (kind POLICY) is allowed to
+    propagate UNCHANGED. Split out from :func:`decompose` so the parse/validate
+    path is testable without an agent run.
+    """
+    raw = sink.get("plan_json")
+    if not raw:
+        raise FanoutError(
+            502,
+            "decompose produced no plan (submit_plan was never called)",
+            kind=FanoutFailureKind.DECOMPOSE_NON_POLICY,
+        )
+    try:
+        payload = json.loads(raw)
+    except (ValueError, TypeError) as e:
+        raise FanoutError(
+            502,
+            f"decompose plan was not valid JSON: {e}",
+            kind=FanoutFailureKind.DECOMPOSE_NON_POLICY,
+        ) from e
+    if not isinstance(payload, dict):
+        raise FanoutError(
+            502,
+            "decompose plan must be a JSON object",
+            kind=FanoutFailureKind.DECOMPOSE_NON_POLICY,
+        )
+
+    raw_slices = payload.get("slices")
+    if not isinstance(raw_slices, list):
+        raise FanoutError(
+            502,
+            "decompose plan is missing a 'slices' list",
+            kind=FanoutFailureKind.DECOMPOSE_NON_POLICY,
+        )
+    try:
+        slices = [SliceSpec(**s) for s in raw_slices]
+        title = payload["pr_title"]
+        intro = payload["pr_body_intro"]
+        result = DecomposeResult(
+            slices=slices, pr_title=title, pr_body_intro=intro
+        )
+    except (ValidationError, KeyError, TypeError, ValueError) as e:
+        # A malformed/missing field (bad slice, missing pr_title, forbidden
+        # extra, etc.) is a NON-POLICY failure — the orchestrator fails OPEN.
+        raise FanoutError(
+            502,
+            f"decompose plan was malformed: {e}",
+            kind=FanoutFailureKind.DECOMPOSE_NON_POLICY,
+        ) from e
+
+    # Slice-set POLICY gate — a rejection here (kind=POLICY) propagates
+    # UNCHANGED so the orchestrator fails CLOSED.
+    validate_slice_specs(result.slices)
+    return result
