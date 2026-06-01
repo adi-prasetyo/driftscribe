@@ -28,6 +28,7 @@ Design notes:
 from __future__ import annotations
 
 import enum
+from collections.abc import Callable
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -162,3 +163,55 @@ def validate_slice_specs(specs: list[SliceSpec]) -> None:
                 kind=FanoutFailureKind.POLICY,
             )
         seen.add(spec.target_path)
+
+
+def make_submit_slice_file(
+    target_path: str, sink: dict
+) -> Callable[..., dict]:
+    """Build the authority-clean hand-back tool for ONE fan-out slice.
+
+    Each slice sub-agent gets its own ``submit_slice_file`` closure. The
+    slice's ``target_path`` is PINNED here, server-side — it is captured in
+    the closure and is the ONLY source of the recorded path. The returned
+    tool exposes ONLY ``content`` (+ optional ``citations``) to the LLM, so
+    the model can never influence the path/repo/branch. This mirrors the
+    authority-clean philosophy of
+    :func:`agent.adk_tools.open_infra_pr_tool`, where the LLM supplies only
+    the decision content and every routing field is derived server-side.
+
+    The returned callable's ``__name__`` is ``submit_slice_file`` and its
+    annotated signature is what google-adk turns into the tool's
+    function-declaration; the docstring is the model-facing tool description.
+
+    This tool only RECORDS into ``sink`` — it deliberately does NOT validate
+    or reject the content. Empty/oversize content and path policy are enforced
+    later by the fan-out barrier via ``validate_file_writes``; surfacing those
+    rejections there (not here) keeps a single source of truth for file policy.
+    """
+
+    def submit_slice_file(
+        content: str, citations: list[str] | None = None
+    ) -> dict:
+        """Submit the FULL file content you authored for your assigned path.
+
+        Call this exactly once when your slice is complete. Pass the ENTIRE
+        final file body in ``content`` (not a diff or a fragment) — it is
+        written verbatim to the path this slice was assigned. You do NOT
+        choose or pass the path: it is fixed for your slice. In
+        ``citations`` (optional) list any developer-doc URLs or identifiers
+        you relied on to author the file, for grounding/audit.
+
+        Calling this again within the same slice OVERWRITES the previous
+        submission (last write wins). Returns an acknowledgement
+        ``{"status": "recorded", "path": <your assigned path>, "bytes": <UTF-8
+        byte length of content>}``.
+        """
+        sink["file"] = {"path": target_path, "content": content}
+        sink["citations"] = list(citations) if citations else []
+        return {
+            "status": "recorded",
+            "path": target_path,
+            "bytes": len(content.encode("utf-8")),
+        }
+
+    return submit_slice_file
