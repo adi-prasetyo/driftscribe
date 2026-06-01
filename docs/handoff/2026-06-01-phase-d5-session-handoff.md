@@ -65,10 +65,49 @@ Final unit-suite state after D5-7: **1315 passed**, tree clean.
   **positional args and NO `base=`** (the wrapper pins `base="main"` internally;
   passing it would crash).
 
-## REMAINING — D5-9: operator live deploy + multi-slice e2e (USER-GATED)
+## D5-9 — DONE: live-deployed + multi-slice e2e validated (2026-06-01)
 
-Not yet done — gated on the operator, exactly like D4 was. **Coordinator rebuild
-only; no new infra/SA/secret/IAM/worker.**
+Driven via operator gcloud (`theghostsquad00`, owner+ADC, `driftscribe-hack-2026`).
+Coordinator rebuilt from branch HEAD via `infra/cloudbuild.coordinator-update.yaml`
+(`--update-env-vars` preserved `TOFU_EDITOR_URL`/`TOFU_APPLY_URL`); **no new
+SA/secret/IAM/worker**. Live revisions: `:055da7a` (`driftscribe-agent-00031-tww`)
+then `:46036da` (`driftscribe-agent-00032-tmx`) after the deploy-fix below.
+
+- **Deploy-time bug found + fixed live (`46036da`):** the first provision fan-out
+  `/chat` 500'd with `No module named 'tools'`. `agent/fanout.py` imports
+  `driftscribe_lib.iac_editor_policy`, which does `from tools.iac_static_gate
+  import …`; `tools` is not a setuptools package and `Dockerfile.agent` didn't
+  copy it (pre-D5 the coordinator never imported `iac_editor_policy`). Fixed by
+  copying `tools/{__init__,iac_static_gate}.py` + `PYTHONPATH=/app` (mirrors
+  `workers/tofu_editor/Dockerfile`); pinned by
+  `tests/integration/test_dockerfile_agent_packaging.py`.
+- **Reachability:** `GET /iac-apply/reachability` → `go:true`, all 9 workers
+  reachable incl. `tofu_editor`.
+- **Positive e2e (SSE):** `/chat?workload=provision` request for two independent
+  `iac/` buckets → timeline showed **two parallel slice authors** (branches
+  `driftscribe_fanout.driftscribe_slice_0_iac_d5_probe_a_tf` /
+  `…_slice_1_iac_d5_probe_b_tf`, tagged slice_id 0/1 → `iac/d5-probe-a.tf` /
+  `iac/d5-probe-b.tf`), 4 buffered `phase=decompose` events flushed on commit,
+  one `submit_plan`, one `submit_slice_file` per slice, **exactly one
+  `final_response`**, `tool_calls=["open_infra_pr"]` → **ONE PR #56** (label
+  `driftscribe-infra`, two `iac/*.tf`, clean independent HCL) → CI **static-gate
+  pass / tofu pass / lint-test pass**. PR #56 was an apply-neutral throwaway →
+  **closed + branch deleted** (the D4/PR-#53 pattern).
+- **Negative e2e (SSE):** a secret-material multi-slice request → **fail-closed**:
+  reply "Could not author the infrastructure change: slice authoring failed…",
+  `tool_calls=[]`, **NO PR** (max PR stayed #56), graceful `done` frame (no 500).
+  The fan-out caught the offending slice at AUTHORING → `FanoutError(AUTHORING)` →
+  no partial/duplicate PR.
+- Known cosmetic residual (Codex non-blocking): the AUTHORING fail-closed reply
+  surfaces the `TaskGroup` wrapper string rather than the inner cause.
+
+**Phase D5 is fully shipped — code on branch (PR #55, awaiting merge) + live on prod.**
+
+---
+
+## (historical) D5-9 recipe as planned — USER-GATED
+
+**Coordinator rebuild only; no new infra/SA/secret/IAM/worker.**
 
 1. Rebuild the coordinator: `infra/cloudbuild.coordinator-update.yaml` with
    `_TAG=$(git rev-parse --short HEAD)` (the `TOFU_EDITOR_URL` substitution is
