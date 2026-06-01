@@ -1,0 +1,132 @@
+# Canonical TARGETED first-deploy for the Phase D tofu-editor worker on
+# driftscribe-hack-2026 (single-user portfolio). Operator runs by hand; there is
+# NO CI trigger — like cloudbuild.infra-reader.yaml / cloudbuild.tofu-apply.yaml,
+# this worker is never auto-deployed.
+#
+# WHY THIS FILE EXISTS (same reason as cloudbuild.infra-reader.yaml /
+# cloudbuild.tofu-apply.yaml):
+#   The full infra/cloudbuild.yaml rebuilds + redeploys ALL images INCLUDING
+#   payment-demo at a fresh tag, which moves payment-demo off the image tag Phase
+#   A pinned into OpenTofu state and BREAKS the zero-diff. This file deploys ONLY
+#   the tofu-editor worker — it does NOT build or deploy payment-demo, the
+#   coordinator image, or any other worker.
+#
+# SCOPE BOUNDARY — this file ships the WORKER, not the coordinator:
+#   It does NOT rebuild the coordinator image. The coordinator-side env wiring
+#   (TOFU_EDITOR_URL onto driftscribe-agent) is owned by the coordinator deploy
+#   path, NOT this file — mirroring cloudbuild.tofu-apply.yaml, which likewise
+#   deploys only the worker and leaves coordinator wiring out.
+#
+# INGRESS:
+#   This deploys --no-allow-unauthenticated (ID-token-gated). The tofu-editor is
+#   a WRITE surface (it opens PRs), but it never mutates infra directly — it
+#   authors HCL *text* only (plan/apply live in the separate tofu-apply mutator).
+#   The inbound auth is the coordinator's ID token (verify_caller against OWN_URL
+#   + ALLOWED_CALLERS); the GitHub blast radius is bounded by a single-repo,
+#   write-scoped fine-grained PAT (the tofu-editor-github-pat secret).
+#
+# USAGE (operator runs by hand, no CI integration):
+#   gcloud builds submit \
+#     --config=infra/cloudbuild.tofu-editor.yaml \
+#     --substitutions=_TAG=$(git rev-parse --short HEAD) \
+#     --project=driftscribe-hack-2026
+#
+# PREREQUISITES (operator-side — see docs/runbooks/tofu-editor.md):
+#   1. tofu-editor-sa created (no broad GCP roles — its only authority is the
+#      GitHub PAT secret; it talks to no GCP API beyond reading that secret).
+#   2. tofu-editor-github-pat secret created (a fine-grained, write-scoped PAT
+#      pinned to the single _IAC_EDITOR_TARGET_REPO with Contents + Pull requests
+#      write) + the secretAccessor bound to tofu-editor-sa.
+#   3. AFTER this build: grant the COORDINATOR's SA roles/run.invoker on
+#      driftscribe-tofu-editor. Workers are --no-allow-unauthenticated, so the
+#      app-level ALLOWED_CALLERS allowlist is NOT sufficient on its own — the
+#      caller also needs Cloud Run platform invoker IAM.
+
+substitutions:
+  _TAG: 'manual'
+  # Region kept as a substitution (not hardcoded) so a future region migration
+  # is one substitution change rather than a search/replace.
+  _REGION: asia-northeast1
+  # The single repository slug the worker is pinned to. Injected as
+  # IAC_EDITOR_TARGET_REPO; the request body's target_repo is re-validated
+  # against it (worker main.py §Layer 2). Must match the repo the
+  # tofu-editor-github-pat is scoped to.
+  _IAC_EDITOR_TARGET_REPO: 'adi-prasetyo/driftscribe'
+  # The coordinator's service-account email — the ONLY caller the in-app
+  # ALLOWED_CALLERS allowlist accepts. Parameterized (PROJECT_ID-relative) the
+  # same way infra-reader / tofu-apply do.
+  _ALLOWED_CALLER: 'driftscribe-agent'
+
+# Default-compute-SA retirement (Phase 4): run this build as the dedicated
+# cloudbuild-deploy-sa@ rather than the project's default compute SA, so the
+# compute SA's roles/editor can be stripped (Phase 6). See
+# docs/plans/2026-05-30-default-compute-sa-retirement.md. A user-specified
+# serviceAccount REQUIRES an explicit logging option, so options.logging is set
+# in the same block (CLOUD_LOGGING_ONLY — no default GCS logs bucket). Hardcoded
+# to driftscribe-hack-2026: this file is operator-run on hack-2026 ONLY (no e2e
+# / CI use), and the top-level serviceAccount field is not a documented
+# substitution site, so a literal resource path is the safe form.
+serviceAccount: 'projects/driftscribe-hack-2026/serviceAccounts/cloudbuild-deploy-sa@driftscribe-hack-2026.iam.gserviceaccount.com'
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+steps:
+  # 1. Build + push ONLY the tofu-editor image. Build context is the repo root
+  #    (the worker depends on driftscribe_lib/ + tools/iac_static_gate.py); the
+  #    Dockerfile lives under workers/tofu_editor/. Same context/Dockerfile split
+  #    as the sibling targeted builds.
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-tofu-editor:${_TAG}
+      - -f
+      - workers/tofu_editor/Dockerfile
+      - .
+  - name: gcr.io/cloud-builders/docker
+    args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-tofu-editor:${_TAG}']
+
+  # 2. Deploy the worker. --no-allow-unauthenticated (ID-token auth) + the
+  #    dedicated tofu-editor-sa + in-app ALLOWED_CALLERS naming the coordinator
+  #    SA. GITHUB_TOKEN is mounted from the tofu-editor-github-pat secret.
+  #    IAC_EDITOR_TARGET_REPO pins the single repo the worker may write to.
+  #    OWN_URL is a placeholder overwritten by step 3. concurrency=1 /
+  #    max-instances=1 keep PR creation serialized.
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - driftscribe-tofu-editor
+      - --image=asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-tofu-editor:${_TAG}
+      - --region=${_REGION}
+      - --no-allow-unauthenticated
+      - --service-account=tofu-editor-sa@$PROJECT_ID.iam.gserviceaccount.com
+      - --min-instances=0
+      - --max-instances=1
+      - --concurrency=1
+      - --set-env-vars=IAC_EDITOR_TARGET_REPO=${_IAC_EDITOR_TARGET_REPO},OWN_URL=https://placeholder.invalid,ALLOWED_CALLERS=${_ALLOWED_CALLER}@$PROJECT_ID.iam.gserviceaccount.com
+      - --set-secrets=GITHUB_TOKEN=tofu-editor-github-pat:latest
+
+  # 3. Post-deploy: resolve the assigned URL + write it back into OWN_URL.
+  #    Fail-closed if it can't be resolved (verify_caller would reject every
+  #    audience). Same mechanism the sibling targeted builds use.
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        URL=$$(gcloud run services describe driftscribe-tofu-editor \
+          --region=${_REGION} --format='value(status.url)')
+        if [ -z "$${URL}" ] || [ "$${URL}" = "https://placeholder.invalid" ]; then
+          echo "ERROR: Could not resolve driftscribe-tofu-editor URL" >&2
+          exit 1
+        fi
+        echo "Setting OWN_URL=$${URL} on driftscribe-tofu-editor"
+        gcloud run services update driftscribe-tofu-editor \
+          --region=${_REGION} \
+          --update-env-vars=OWN_URL=$${URL}
+
+images:
+  - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-tofu-editor:${_TAG}
