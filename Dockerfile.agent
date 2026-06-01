@@ -1,3 +1,14 @@
+# ---- Stage 1: build the Svelte+Vite operator UI into agent/static/ ----------
+# vite.config.ts outputs to ../agent/static (i.e. /build/agent/static here).
+# `npm ci` requires the committed frontend/package-lock.json (.gitignore
+# re-includes it). The Python stage copies ONLY the built output across, so node
+# never ships in the runtime image.
+FROM node:24-slim AS frontend
+WORKDIR /build
+COPY frontend/ ./frontend/
+RUN cd frontend && npm ci && npm run build
+
+# ---- Stage 2: the Python coordinator runtime --------------------------------
 FROM python:3.12-slim
 WORKDIR /app
 RUN pip install --no-cache-dir uv
@@ -6,6 +17,11 @@ RUN pip install --no-cache-dir uv
 # but the hackathon doesn't need fancy two-stage layer caching.
 COPY pyproject.toml ./
 COPY agent/ ./agent/
+# Built SPA bundle from the frontend stage. MUST come after `COPY agent/` so it
+# is authoritative (and .dockerignore excludes agent/static/ so no stale local
+# copy leaks in via `COPY agent/`). Served by StaticFiles at /static; the shell
+# route resolves hashed names from agent/static/.vite/manifest.json.
+COPY --from=frontend /build/agent/static ./agent/static
 COPY checker/ ./checker/
 COPY driftscribe_lib/ ./driftscribe_lib/
 RUN uv pip install --system -e .
