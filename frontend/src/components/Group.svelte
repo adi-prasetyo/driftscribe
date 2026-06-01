@@ -1,0 +1,85 @@
+<script lang="ts">
+  import type { Snippet } from 'svelte';
+  import type { GroupKey } from '../lib/timeline';
+
+  // One of the three top-level reasoning groups. MUST be a real <details> with
+  // id="group-{key}" and a direct child <div class="events" data-group="{key}">
+  // — the Playwright e2e sets `.open = true` on #group-tools and asserts
+  // [data-group="tools"] becomes visible (Appendix B).
+  let {
+    key,
+    title,
+    count = 0,
+    open = false,
+    empty = false,
+    children,
+  }: {
+    key: GroupKey;
+    title: string;
+    count?: number;
+    open?: boolean;
+    empty?: boolean;
+    children?: Snippet;
+  } = $props();
+</script>
+
+<details id={`group-${key}`} class="group" {open}>
+  <summary class="group__summary">
+    <span class="group__title">{title}</span>
+    {#if count > 0}
+      <span class="ds-pill ds-pill--muted group__count">{count}</span>
+    {/if}
+  </summary>
+  <div class="events" data-group={key}>
+    {#if empty}
+      <p class="group__empty">No {title.toLowerCase()} yet.</p>
+    {:else}
+      {@render children?.()}
+    {/if}
+  </div>
+</details>
+
+<style>
+  .group {
+    border: 1px solid var(--ds-border);
+    border-radius: var(--ds-radius);
+    background: var(--ds-surface);
+    margin: var(--ds-sp-3) 0;
+    overflow: hidden;
+  }
+  .group__summary {
+    display: flex;
+    align-items: center;
+    gap: var(--ds-sp-3);
+    padding: var(--ds-sp-3) var(--ds-sp-4);
+    cursor: pointer;
+    font-weight: var(--ds-fw-semibold);
+    list-style: none;
+    user-select: none;
+  }
+  .group__summary::-webkit-details-marker {
+    display: none;
+  }
+  .group__summary::before {
+    content: '▸';
+    color: var(--ds-faint);
+    font-size: 0.8em;
+    transition: transform var(--ds-dur-fast) var(--ds-ease);
+  }
+  .group[open] > .group__summary::before {
+    transform: rotate(90deg);
+  }
+  .group__title {
+    flex: 1 1 auto;
+  }
+  .events {
+    padding: var(--ds-sp-2) var(--ds-sp-4) var(--ds-sp-4);
+    border-top: 1px solid var(--ds-border);
+  }
+  .group__empty {
+    color: var(--ds-faint);
+    font-size: var(--ds-fs-1);
+    font-style: italic;
+    padding: var(--ds-sp-2) 0;
+  }
+</style>
