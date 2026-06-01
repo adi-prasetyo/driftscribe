@@ -155,6 +155,7 @@
         return;
       }
 
+      let streamErrored = false;
       try {
         await consumeSse(resp, {
           onMeta: (m) => {
@@ -181,23 +182,23 @@
         });
       } catch {
         // Stream transport error (reader threw / body errored mid-stream).
-        // Recover what we can from /trace; only surface an error if nothing
-        // was produced.
         if (myRun !== runSeq) return;
-        await backfillTrace(myRun);
-        // finalReply is set by both onDone and onError; if it's still null the
-        // stream broke before producing anything → surface a recoverable error.
-        if (myRun === runSeq && finalReply == null) {
-          status = 'error';
-          finalReply = 'The reasoning stream was interrupted. Showing the recovered trace.';
-          finalIsError = true;
-        }
+        streamErrored = true;
       }
 
-      // One post-`done` backfill: pulls side-channel mcp_call events not carried
-      // on the stream + reconciles ordering (mirrors the legacy UI).
+      // One post-stream backfill (also the recovery path on transport error):
+      // pulls side-channel mcp_call events not carried on the stream +
+      // reconciles ordering (mirrors the legacy UI).
       await backfillTrace(myRun);
-      if (myRun === runSeq) await loadDecisions();
+      if (myRun !== runSeq) return;
+      // finalReply is set by both onDone and onError; if the stream broke before
+      // producing anything, surface a recoverable error after the backfill.
+      if (streamErrored && finalReply == null) {
+        status = 'error';
+        finalReply = 'The reasoning stream was interrupted. Showing the recovered trace.';
+        finalIsError = true;
+      }
+      await loadDecisions();
     } finally {
       if (myRun === runSeq) busy = false;
     }
