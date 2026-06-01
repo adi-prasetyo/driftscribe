@@ -267,6 +267,14 @@ def _shell_assets() -> dict[str, str]:
     return {"js": "/static/transparency.js", "css": "/static/driftscribe.css"}
 
 
+# Expose the built CSS href to EVERY template render (the SPA shell passes it via
+# context; the Jinja approval pages — which have many render branches: GET, POST
+# success, POST blocked, 409 — read it through this global callable so we don't
+# have to thread ``ds_css`` through each context dict and risk missing a branch).
+# A callable (not a static value) so the lazy manifest resolution runs per render.
+_TEMPLATES.env.globals["ds_css_href"] = lambda: _shell_assets()["css"]
+
+
 # Endpoints that handle the HITL approval token MUST set these headers
 # on every response (GET render + POST decision). The token may appear
 # in the URL (?t=<raw_token>) and in the form body; the headers below
@@ -290,20 +298,23 @@ def _apply_approval_security_headers(response: Response) -> Response:
 
 
 # Strict Content-Security-Policy for the C5e ``/iac-approvals`` pages (Phase
-# C5e-2). The page is fully self-contained: inline ``<style>`` only, a same-origin
-# form, no scripts, no images, no remote anything. We pin the CSP accordingly so a
-# stored-XSS-style injection into the rendered plan/diff text cannot exfiltrate or
-# escalate:
+# C5e-2). The page is self-contained: ONE same-origin stylesheet (the shared
+# Svelte+Vite bundle CSS — no inline ``<style>`` after the UI refresh), a
+# same-origin form, no scripts, no images, no remote anything. We pin the CSP
+# accordingly so a stored-XSS-style injection into the rendered plan/diff text
+# cannot exfiltrate or escalate:
 # - ``default-src 'none'``  — deny everything not explicitly allowed.
-# - ``style-src 'unsafe-inline'`` — the only inline content we ship is the
-#   ``<style>`` block (Jinja autoescaping covers the dynamic plan/diff text).
+# - ``style-src 'self'`` — allow ONLY the same-origin built stylesheet at
+#   ``/static`` (no inline styles; the built CSS contains no ``url()`` assets,
+#   so no img-src/font-src relaxation is needed). Jinja autoescaping still
+#   covers the dynamic plan/diff text.
 # - ``form-action 'self'`` — the Approve/Reject POST may only target this origin
 #   (a CSP-level companion to the POST handler's exact-Origin check in C5e-3).
 # - ``base-uri 'none'`` / ``frame-ancestors 'none'`` — no ``<base>`` hijack, no
 #   framing (defense-in-depth alongside ``X-Frame-Options: DENY``).
 def _apply_iac_csp(response: Response) -> Response:
     response.headers["Content-Security-Policy"] = (
-        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; "
+        "default-src 'none'; style-src 'self'; form-action 'self'; "
         "base-uri 'none'; frame-ancestors 'none'"
     )
     return response

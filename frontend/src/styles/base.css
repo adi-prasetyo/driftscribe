@@ -277,6 +277,43 @@ code.ds-code {
   border-color: var(--ds-border);
 }
 
+/* --- Action row (button group on the approval pages) --------------------- */
+.ds-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-sp-3);
+  margin-top: var(--ds-sp-5);
+}
+
+/* --- Denylist violation list (iac approval page) ------------------------- */
+.ds-violations {
+  margin: var(--ds-sp-2) 0 0;
+  padding-left: var(--ds-sp-5);
+}
+.ds-violations li {
+  color: var(--ds-danger-ink);
+  margin: var(--ds-sp-1) 0;
+}
+
+/* --- Disclosure (tofu show on the iac approval page) --------------------- */
+.ds-disclosure {
+  border: 1px solid var(--ds-border);
+  border-radius: var(--ds-radius);
+  background: var(--ds-surface);
+  margin: var(--ds-sp-4) 0;
+}
+.ds-disclosure > summary {
+  cursor: pointer;
+  padding: var(--ds-sp-3) var(--ds-sp-4);
+  font-weight: var(--ds-fw-semibold);
+}
+.ds-disclosure[open] > summary {
+  border-bottom: 1px solid var(--ds-border);
+}
+.ds-disclosure > .ds-pre {
+  margin: var(--ds-sp-3) var(--ds-sp-4) var(--ds-sp-4);
+}
+
 /* --- Buttons ------------------------------------------------------------- */
 .ds-btn {
   display: inline-flex;

@@ -82,3 +82,26 @@ def test_approval_template_has_testids():
         assert (
             f'data-testid="{tid}"' in body
         ), f"approval.html missing data-testid={tid!r}"
+
+
+def test_approval_pages_link_shared_css_no_inline_style():
+    """P5b: both approval pages link the built design-system CSS (via the
+    ds_css_href() Jinja global) and ship NO inline <style> — the IaC approval
+    CSP is ``style-src 'self'`` (no 'unsafe-inline'), so an inline block would
+    be blocked. This guard is what makes the P5b restyle non-optional."""
+    for name in ("approval.html", "iac_approval.html"):
+        body = Path(f"agent/templates/{name}").read_text()
+        assert "ds_css_href()" in body, f"{name} must link the built CSS"
+        assert "<style" not in body, f"{name} must not ship an inline <style>"
+        assert 'class="ds-' in body, f"{name} must use ds-* classes"
+
+
+def test_approval_pages_preserve_form_post_and_hidden_token():
+    """P5b must not regress the form-POST security flow: real method=post forms
+    + hidden CSRF token fields with the token-field testid."""
+    rollback = Path("agent/templates/approval.html").read_text()
+    assert 'method="post"' in rollback
+    assert 'name="t"' in rollback and 'data-testid="token-field"' in rollback
+    iac = Path("agent/templates/iac_approval.html").read_text()
+    assert 'method="post"' in iac
+    assert 'name="form_token"' in iac and 'data-testid="token-field"' in iac

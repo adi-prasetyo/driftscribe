@@ -38,6 +38,13 @@
   let authPanelOpen = $state(false);
   let authResolver: ((t: string | null) => void) | null = null;
 
+  // Concurrency guard: a monotonically-incrementing run id. submitChat /
+  // openTrace / newChat each bump it; in-flight callbacks bail at every await
+  // boundary when their captured id is stale, so a slow first stream can't
+  // append into (or backfill over) a newer run. `busy` also disables Send.
+  let runSeq = 0;
+  let busy = $state(false);
+
   // ---- auth plumbing (replaces window.prompt) ----
   function requestToken(): Promise<string | null> {
     authPanelOpen = true;
@@ -89,87 +96,121 @@
     }
   }
 
+  const asString = (v: unknown): string | null =>
+    typeof v === 'string' && v.length > 0 ? v : null;
+
   // ---- live chat (SSE) ----
   async function submitChat(prompt: string, workload: Workload) {
-    if (historicalActive) return;
+    if (historicalActive || busy) return;
+    const myRun = ++runSeq;
+    busy = true;
     events = [];
     traceId = null;
     finalReply = null;
     finalIsError = false;
     status = 'pending';
 
-    let resp: Response;
     try {
-      resp = await call('/chat', {
-        method: 'POST',
-        headers: { Accept: 'text/event-stream', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, workload }),
-      });
-    } catch {
-      status = 'error';
-      finalReply = 'Network error contacting the coordinator.';
-      finalIsError = true;
-      return;
-    }
-
-    if (!resp.ok) {
-      status = 'error';
-      finalReply = `Request failed (${resp.status}).`;
-      finalIsError = true;
-      return;
-    }
-
-    const ctype = resp.headers.get('content-type') ?? '';
-    if (!ctype.includes('text/event-stream')) {
-      // Fallback: non-streaming JSON {reply, tool_calls}. The backfill below
-      // still pulls the full timeline (incl. mcp_call) from /trace.
+      let resp: Response;
       try {
-        const body = await resp.json();
-        traceId = resp.headers.get('X-Trace-Id');
-        finalReply = typeof body?.reply === 'string' ? body.reply : JSON.stringify(body);
-        status = 'complete';
+        resp = await call('/chat', {
+          method: 'POST',
+          headers: { Accept: 'text/event-stream', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt, workload }),
+        });
       } catch {
+        if (myRun !== runSeq) return;
         status = 'error';
-        finalReply = 'Malformed response.';
+        finalReply = 'Network error contacting the coordinator.';
         finalIsError = true;
+        return;
       }
-      await backfillTrace();
-      await loadDecisions();
-      return;
-    }
+      if (myRun !== runSeq) return;
 
-    await consumeSse(resp, {
-      onMeta: (m) => {
-        traceId = m.trace_id;
-        status = 'streaming';
-      },
-      onEvent: (e) => {
-        events = [...events, e as unknown as TraceEvent];
-      },
-      onDone: (d) => {
-        finalReply = d.reply;
-        finalIsError = false;
-        status = 'complete';
-      },
-      onError: (er) => {
-        finalReply = er.detail || 'The coordinator returned an error.';
-        finalIsError = true;
+      if (!resp.ok) {
         status = 'error';
-      },
-    });
+        finalReply = `Request failed (${resp.status}).`;
+        finalIsError = true;
+        return;
+      }
 
-    // One post-`done` backfill: pulls side-channel mcp_call events not carried
-    // on the stream + reconciles ordering (mirrors the legacy UI).
-    await backfillTrace();
-    await loadDecisions();
+      const ctype = resp.headers.get('content-type') ?? '';
+      if (!ctype.includes('text/event-stream')) {
+        // Fallback: non-streaming JSON {reply, tool_calls}. The backfill below
+        // still pulls the full timeline (incl. mcp_call) from /trace.
+        try {
+          const body = await resp.json();
+          if (myRun !== runSeq) return;
+          traceId = resp.headers.get('X-Trace-Id');
+          finalReply = typeof body?.reply === 'string' ? body.reply : JSON.stringify(body);
+          status = 'complete';
+        } catch {
+          if (myRun !== runSeq) return;
+          status = 'error';
+          finalReply = 'Malformed response.';
+          finalIsError = true;
+        }
+        await backfillTrace(myRun);
+        if (myRun === runSeq) await loadDecisions();
+        return;
+      }
+
+      try {
+        await consumeSse(resp, {
+          onMeta: (m) => {
+            if (myRun !== runSeq) return;
+            traceId = m.trace_id;
+            status = 'streaming';
+          },
+          onEvent: (e) => {
+            if (myRun !== runSeq) return;
+            events = [...events, e as unknown as TraceEvent];
+          },
+          onDone: (d) => {
+            if (myRun !== runSeq) return;
+            finalReply = d.reply;
+            finalIsError = false;
+            status = 'complete';
+          },
+          onError: (er) => {
+            if (myRun !== runSeq) return;
+            finalReply = er.detail || 'The coordinator returned an error.';
+            finalIsError = true;
+            status = 'error';
+          },
+        });
+      } catch {
+        // Stream transport error (reader threw / body errored mid-stream).
+        // Recover what we can from /trace; only surface an error if nothing
+        // was produced.
+        if (myRun !== runSeq) return;
+        await backfillTrace(myRun);
+        // finalReply is set by both onDone and onError; if it's still null the
+        // stream broke before producing anything → surface a recoverable error.
+        if (myRun === runSeq && finalReply == null) {
+          status = 'error';
+          finalReply = 'The reasoning stream was interrupted. Showing the recovered trace.';
+          finalIsError = true;
+        }
+      }
+
+      // One post-`done` backfill: pulls side-channel mcp_call events not carried
+      // on the stream + reconciles ordering (mirrors the legacy UI).
+      await backfillTrace(myRun);
+      if (myRun === runSeq) await loadDecisions();
+    } finally {
+      if (myRun === runSeq) busy = false;
+    }
   }
 
-  async function backfillTrace() {
-    if (!traceId) return;
+  async function backfillTrace(myRun: number) {
+    const tid = traceId;
+    if (!tid || myRun !== runSeq) return;
     try {
-      const resp = await call('/trace/' + encodeURIComponent(traceId));
-      if (!resp.ok) return;
+      const resp = await call('/trace/' + encodeURIComponent(tid));
+      if (myRun !== runSeq || !resp.ok) return;
       const t = (await resp.json()) as TraceResponse;
+      if (myRun !== runSeq) return;
       if (Array.isArray(t.events) && t.events.length > 0) {
         events = t.events;
       }
@@ -180,6 +221,8 @@
 
   // ---- historical replay ----
   async function openTrace(tid: string) {
+    const myRun = ++runSeq; // cancels any in-flight live stream
+    busy = false;
     historicalActive = true;
     historicalTraceId = tid;
     activeTraceId = tid;
@@ -190,19 +233,27 @@
     status = 'pending';
     try {
       const resp = await call('/trace/' + encodeURIComponent(tid));
+      if (myRun !== runSeq) return;
       if (resp.ok) {
         const t = (await resp.json()) as TraceResponse;
+        if (myRun !== runSeq) return;
         events = Array.isArray(t.events) ? t.events : [];
+        // Surface the decision's summary in the hero card (legacy parity).
+        const d = t.decision as Record<string, unknown> | null | undefined;
+        finalReply = d ? asString(d.rationale) ?? asString(d.rendered_body) : null;
+        finalIsError = false;
         status = t.complete ? 'complete' : 'streaming';
       } else {
         status = 'error';
       }
     } catch {
-      status = 'error';
+      if (myRun === runSeq) status = 'error';
     }
   }
 
   function newChat() {
+    ++runSeq; // cancel any in-flight live stream
+    busy = false;
     historicalActive = false;
     historicalTraceId = null;
     activeTraceId = null;
@@ -227,7 +278,7 @@
   <DecisionsRail {decisions} {activeTraceId} onOpenTrace={openTrace} />
 
   <section id="chat-area" class="chat-area" aria-label="Chat and reasoning timeline">
-    <ChatForm disabled={historicalActive} onSubmit={submitChat} />
+    <ChatForm disabled={historicalActive || busy} onSubmit={submitChat} />
     <HistoricalBanner active={historicalActive} traceId={historicalTraceId} onNewChat={newChat} />
     <TraceBadge {traceId} {status} />
     <FinalResponse reply={finalReply} isError={finalIsError} />
