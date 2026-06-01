@@ -492,7 +492,10 @@ def open_infra_pr_tool(files: list[dict], title: str, body: str) -> dict:
     before it can apply.
     """
     target_repo = _get_iac_editor_target()
-    slug = _BRANCH_SLUG.sub("-", title.lower()).strip("-") or "infra"
+    # Cap the slug (and re-strip so it can't end on a "-" before the "-{ts}"
+    # suffix): keeps the derived branch tail well under the worker's 200-char
+    # validate_branch limit for any title length, avoiding a wasted 403 round-trip.
+    slug = (_BRANCH_SLUG.sub("-", title.lower()).strip("-")[:80].strip("-")) or "infra"
     branch = f"infra/{slug}-{int(time.time())}-{secrets.token_hex(2)}"
     result = worker_client.call_open_infra_pr(
         target_repo=target_repo,

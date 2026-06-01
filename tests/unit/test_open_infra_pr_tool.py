@@ -195,6 +195,26 @@ def test_open_infra_pr_tool_empty_title_falls_back_to_infra(monkeypatch):
     assert slug == "infra"
 
 
+def test_open_infra_pr_tool_caps_branch_for_pathological_title(monkeypatch):
+    """A ~300-char title still yields a branch the worker accepts: the tail
+    (everything after ``infra/``) is <= 200 chars, allowlist-safe, has no ``..``,
+    and the authoritative ``validate_branch`` does NOT raise.
+    """
+    from driftscribe_lib.iac_editor_policy import validate_branch
+
+    title = "Add " + "very long resource name " * 12  # ~300 chars
+    assert len(title) > 200
+    branch = _capture_branch(monkeypatch, title=title)
+
+    assert branch.startswith("infra/")
+    tail = branch[len("infra/"):]
+    assert len(tail) <= 200, len(tail)
+    assert _WORKER_ALLOWLIST_RE.match(branch), branch
+    assert ".." not in branch
+    # Authoritative check — must not raise.
+    validate_branch(branch)
+
+
 # --------------------------------------------------------------------------- #
 # Override — IAC_EDITOR_TARGET_REPO_OVERRIDE redirects routing at call time
 # --------------------------------------------------------------------------- #
