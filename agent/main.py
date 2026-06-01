@@ -17,6 +17,7 @@ from typing import Literal
 
 from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from google.auth import exceptions as google_auth_exceptions
 from google.auth.transport.requests import Request as GoogleAuthRequest
@@ -200,6 +201,70 @@ install_trace_middleware(app)
 # the agent package so a single ``pip install -e .`` or Cloud Build
 # COPY ships it alongside the Python sources.
 _TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+
+# ---------------------------------------------------------------------------
+# Frontend (Svelte+Vite) static assets + Vite-manifest resolution.
+#
+# The operator UI (GET /ui/transparency) is a Svelte SPA compiled by Vite into
+# ``agent/static/`` (gitignored; built in Docker/CI and locally for the smoke).
+# FastAPI serves a thin shell that loads the hashed JS/CSS resolved here. The
+# approval pages (GET /approvals, /iac-approvals) link the same built CSS.
+#
+# ``check_dir=False``: the pure-Python CI ``lint-test`` job never runs
+# ``vite build``, so ``agent/static/`` is absent there — the mount must not
+# raise at import. The shell route still returns 200 via the dev fallback below.
+# ---------------------------------------------------------------------------
+_STATIC_DIR = Path(__file__).parent / "static"
+app.mount("/static", StaticFiles(directory=str(_STATIC_DIR), check_dir=False), name="static")
+
+# Cached Vite manifest. Cached ONLY on a successful read (Codex review): a build
+# that lands later in the same process is picked up, and tests can force a
+# re-read by resetting this to None.
+_VITE_MANIFEST_CACHE: dict | None = None
+
+
+def _read_vite_manifest() -> dict | None:
+    """Return the parsed Vite ``manifest.json`` or ``None`` if not built yet.
+
+    Lazy + cache-on-success: a missing/malformed manifest returns ``None``
+    WITHOUT caching, so a subsequent build in the same process resolves.
+    """
+    global _VITE_MANIFEST_CACHE
+    if _VITE_MANIFEST_CACHE is not None:
+        return _VITE_MANIFEST_CACHE
+    try:
+        data = json.loads((_STATIC_DIR / ".vite" / "manifest.json").read_text())
+    except (OSError, ValueError):
+        return None
+    if isinstance(data, dict):
+        _VITE_MANIFEST_CACHE = data
+        return data
+    return None
+
+
+def _shell_assets() -> dict[str, str]:
+    """Resolve the built JS + CSS URLs for the SPA shell and approval pages.
+
+    The Vite entry is the single ``isEntry`` record (documented key
+    ``src/main.ts``). Falls back to conventional ``/static`` names when the
+    manifest is absent so the shell route still renders 200 in the pure-Python
+    CI job (which never runs ``vite build``).
+    """
+    manifest = _read_vite_manifest()
+    if manifest:
+        entry = manifest.get("src/main.ts")
+        if entry is None:
+            for value in manifest.values():
+                if isinstance(value, dict) and value.get("isEntry"):
+                    entry = value
+                    break
+        if isinstance(entry, dict) and entry.get("file"):
+            css_list = entry.get("css") or []
+            return {
+                "js": "/static/" + entry["file"],
+                "css": ("/static/" + css_list[0]) if css_list else "/static/driftscribe.css",
+            }
+    return {"js": "/static/transparency.js", "css": "/static/driftscribe.css"}
 
 
 # Endpoints that handle the HITL approval token MUST set these headers
@@ -1892,20 +1957,39 @@ def _map_tofu_apply_error(
 
 @app.get("/ui/transparency", response_class=HTMLResponse)
 def transparency_ui(request: Request) -> Response:
-    """Serve the transparency UI (Phase 19.B.1 scaffolding).
+    """Serve the transparency UI shell (Svelte+Vite SPA).
 
-    No auth on the HTML itself — the markup is harmless. Every API
-    call the page makes (``/chat``, ``/decisions``, ``/trace/{id}``)
-    carries the ``X-DriftScribe-Token`` header, which the operator
-    sets via the prompt wired up in 19.B.2. The token is held in
-    ``sessionStorage`` so it does not survive a tab close.
+    No auth on the HTML itself — the shell is harmless. Every API call the
+    Svelte app makes (``/chat``, ``/decisions``, ``/trace/{id}``) carries the
+    ``X-DriftScribe-Token`` header (or relies on Cloudflare Access). The token
+    is held in ``sessionStorage['driftscribe_token']`` so it does not survive a
+    tab close.
 
-    ``Cache-Control: no-store`` because this is an operator surface
-    — a stale cached copy of the shell would confuse the
-    fetch-flow tasks (19.B.3/19.B.4) and could surface yesterday's
-    decisions in the rail.
+    The shell loads the hashed JS/CSS resolved from the Vite manifest
+    (:func:`_shell_assets`); when the bundle is not built (pure-Python CI /
+    dev), the dev fallback still returns a 200 shell with ``id="app"``.
+
+    ``Cache-Control: no-store`` because this is an operator surface — a stale
+    cached shell could surface yesterday's decisions in the rail.
     """
-    resp = _TEMPLATES.TemplateResponse(request, "transparency.html", {})
+    assets = _shell_assets()
+    resp = _TEMPLATES.TemplateResponse(
+        request,
+        "transparency.html",
+        {"ds_js": assets["js"], "ds_css": assets["css"]},
+    )
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@app.get("/ui/transparency-legacy", response_class=HTMLResponse)
+def transparency_ui_legacy(request: Request) -> Response:
+    """Serve the pre-refresh single-file UI (one-release safety net).
+
+    Kept reachable during the demo window in case the Svelte SPA needs a
+    fallback. Same unauthenticated, ``no-store`` contract as the new shell.
+    """
+    resp = _TEMPLATES.TemplateResponse(request, "transparency_legacy.html", {})
     resp.headers["Cache-Control"] = "no-store"
     return resp
 
