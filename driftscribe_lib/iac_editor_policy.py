@@ -89,6 +89,20 @@ def _validate_one_path(path: str) -> None:
         raise EditorPolicyError(403, f"foundation file is operator-only: {path!r}")
 
 
+def validate_iac_path(path: str) -> None:
+    """PUBLIC, fail-closed single-path allowlist gate.
+
+    Thin delegate to the module-private :func:`_validate_one_path` so other
+    modules (e.g. :mod:`agent.fanout`'s D5 slice validation) can reuse the
+    exact same ``iac/``-only / ``.tf``-``.md`` / foundation-guard / traversal
+    policy without importing a private symbol. Behaviour and the raised
+    :class:`EditorPolicyError` (``status_code`` 403 policy / 422 schema-shaped)
+    are identical to ``_validate_one_path``; this is only a name promotion, not
+    a new policy.
+    """
+    _validate_one_path(path)
+
+
 def validate_file_writes(writes: list[dict]) -> list[dict]:
     if not writes:
         raise EditorPolicyError(422, "no file writes supplied")
