@@ -60,6 +60,7 @@ from driftscribe_lib.iac_editor_policy import (
     validate_title_body,
 )
 from driftscribe_lib.logging import install_trace_middleware, setup as setup_logging
+from tools.iac_static_gate import GateInput, GateMode, evaluate
 
 log = setup_logging("tofu-editor")
 
@@ -166,9 +167,12 @@ def open_pr(
       ``status_code == 403`` (path outside iac/, bad suffix, foundation file,
       traversal, duplicate path, bad branch / base).
     - **401/403** on auth failure (raised by ``verify_caller`` upstream).
-    - **422** on schema violation (extra/missing field, bad type) or any
+    - **422** on schema violation (extra/missing field, bad type), any
       ``EditorPolicyError`` carrying ``status_code == 422`` (empty file list,
-      empty/oversize content, oversize title/body).
+      empty/oversize content, oversize title/body), OR an AGENT-mode
+      static-gate content violation — ``{"error": "static_gate", "violations":
+      [...]}`` (NEW provider, module, provisioner, etc.; same ``evaluate`` as
+      CI).
     """
     # Re-validate request-body target_repo against the env-pinned allowlist
     # BEFORE any GitHub call. Defense in depth: a misconfigured coordinator
@@ -189,6 +193,32 @@ def open_pr(
         validate_title_body(req.title, req.body)
     except EditorPolicyError as e:
         raise HTTPException(status_code=e.status_code, detail=e.reason) from e
+
+    # In-process AGENT-mode static gate (Phase D1-4). Runs AFTER the path /
+    # title-body allowlist (so it only ever sees already-iac/-validated input)
+    # and BEFORE any GitHub call — fail fast so a content-policy violation never
+    # opens a junk PR. This is the SAME ``evaluate`` CI runs in AGENT mode, so
+    # the worker's content policy is identical to CI's by construction: HCL the
+    # worker accepts is HCL CI's static gate accepts (NEW providers, modules,
+    # provisioners, arbitrary-execution / forbidden-data-source / dynamic
+    # blocks, etc. are all rejected here). Fail-closed: any violation → 422 with
+    # no GitHub side effect. Only ``.tf`` content is structurally analyzed (the
+    # path checks above already pinned the suffix to ``.tf``/``.md``).
+    paths = tuple(f.path for f in req.files)
+    hcl = {f.path: f.content for f in req.files if f.path.endswith(".tf")}
+    violations = evaluate(
+        GateInput(mode=GateMode.AGENT, changed_paths=paths, hcl_files=hcl)
+    )
+    if violations:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "static_gate",
+                "violations": [
+                    {"rule": v.rule, "detail": v.detail} for v in violations
+                ],
+            },
+        )
 
     # Do NOT log file contents — only counts/metadata.
     log.info(
