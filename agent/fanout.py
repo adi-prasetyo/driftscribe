@@ -28,11 +28,16 @@ Design notes:
 from __future__ import annotations
 
 import enum
+import re
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from driftscribe_lib.iac_editor_policy import EditorPolicyError, validate_iac_path
+
+if TYPE_CHECKING:  # pragma: no cover - typing only, no runtime ADK import here
+    from google.adk import Agent
 
 # Fan-out fans the coordinator's authoring concurrency out to at most this many
 # sub-agents. A small cap bounds the parallel surface (each slice spawns a
@@ -215,3 +220,188 @@ def make_submit_slice_file(
         }
 
     return submit_slice_file
+
+
+# --------------------------------------------------------------------------- #
+# D5-3: the constrained slice-author agent + provision read-tool resolution
+# --------------------------------------------------------------------------- #
+#
+# Single source of truth for "which symbolic tool names are mutation tools".
+# This set is the trust-boundary classifier used by
+# :func:`resolve_provision_read_tools` to strip the editor/PR tool out of a
+# slice sub-agent's tool set. It is the SAME canonical set the coordinator
+# tool-inventory audit pins: ``tests/unit/test_coordinator_tool_inventory.py``
+# imports it from here (so the audit and the runtime filter cannot drift
+# apart) and asserts the read-only/mutation disjointness invariants on it.
+# The names mirror every symbolic tool that either mutates a system OR rides
+# a write-capable credential — see that test module for the per-name
+# rationale (notify/search_recent_prs are here for credential containment,
+# not because their code writes).
+MUTATION_TOOL_NAMES: frozenset[str] = frozenset({
+    "drift_patch_docs",
+    "drift_propose_rollback",
+    "upgrade_propose_pr",
+    "upgrade_close_pr",
+    "upgrade_merge_pr",
+    "notify",
+    "search_recent_prs",
+    # The provision workload's IaC-authoring tool: it rides the tofu-editor's
+    # write-capable GitHub PAT and opens a PR (a mutation). Its symbolic name
+    # ``provision_open_infra_pr`` DIFFERS from its callable ``__name__``
+    # (``open_infra_pr_tool``) — both are filtered below, see the
+    # double-filter rationale on resolve_provision_read_tools.
+    "provision_open_infra_pr",
+})
+
+# Belt-and-suspenders companion to MUTATION_TOOL_NAMES: the set of *callable*
+# ``__name__``s that back a mutation tool. This matters because a symbolic
+# name and its callable name can DIFFER (``provision_open_infra_pr`` resolves
+# to ``open_infra_pr_tool``), so filtering on only the symbolic name would
+# leak the editor callable into a slice agent if the YAML ever exposed it
+# under a different symbolic name. Filtering on BOTH is the load-bearing
+# trust check that keeps a slice sub-agent authority-clean (read + author
+# only; no PR/apply/mutation).
+MUTATION_CALLABLE_NAMES: frozenset[str] = frozenset({
+    "open_infra_pr_tool",
+})
+
+
+def resolve_provision_read_tools() -> dict[str, Callable]:
+    """Resolve the ``provision`` workload's READ tools — every mutation
+    tool stripped — as a ``{symbolic_name: callable}`` mapping.
+
+    Loads :func:`agent.workloads.load_workload` ``("provision")`` and returns
+    its ``.tools`` mapping with every mutation tool removed. A tool is dropped
+    if EITHER its symbolic name is in :data:`MUTATION_TOOL_NAMES` OR its
+    callable ``__name__`` is in :data:`MUTATION_CALLABLE_NAMES`. BOTH filters
+    matter: the symbolic name (``provision_open_infra_pr``) and the callable
+    name (``open_infra_pr_tool``) DIFFER, so filtering on only one would leak
+    the editor tool into a slice sub-agent. This is the load-bearing trust
+    check behind the fan-out boundary — sub-agents author HCL text only and
+    must never be handed a PR/apply/mutation tool.
+
+    The result preserves the workload's tool order (insertion order of the
+    resolution mapping) for the surviving read tools, and is a plain mutable
+    ``dict`` the caller owns (the workload's own ``tools`` is a read-only
+    ``MappingProxyType`` view — we copy out of it, never mutate it).
+
+    Note this imports ``load_workload`` lazily so the pure-decomposition core
+    of this module stays import-light (no agent/registry pull-in for the
+    callers that only use :class:`SliceSpec` / :func:`validate_slice_specs`).
+    """
+    from agent.workloads import load_workload
+
+    resolution = load_workload("provision")
+    return {
+        symbolic: fn
+        for symbolic, fn in resolution.tools.items()
+        if symbolic not in MUTATION_TOOL_NAMES
+        and getattr(fn, "__name__", "") not in MUTATION_CALLABLE_NAMES
+    }
+
+
+# Bound on the slugged path segment of a slice agent's name. ADK agent names
+# must be identifier-safe and we keep them short so the (already-prefixed)
+# name stays a sane Python identifier even for a deep/long target path.
+_MAX_SLUG_LEN = 64
+
+
+def _slug_target_path(target_path: str) -> str:
+    """Turn a ``target_path`` into an identifier-safe slug.
+
+    Replaces every char outside ``[A-Za-z0-9_]`` with ``_`` (so
+    ``iac/bucket.tf`` -> ``iac_bucket_tf``; no hyphens, dots, or slashes),
+    collapses leading/trailing underscores, and bounds the length. The result
+    is used as the suffix of an ADK ``Agent.name``, which must be a valid
+    Python identifier (letters/digits/underscores; NO hyphens/dots) — see the
+    name comment in :func:`agent.adk_agent.build_chat_agent`.
+    """
+    slug = re.sub(r"[^A-Za-z0-9_]", "_", target_path).strip("_")
+    if not slug:
+        slug = "slice"
+    return slug[:_MAX_SLUG_LEN]
+
+
+# The constrained slice-author system prompt. The trust boundary is stated in
+# the prompt itself (you have NO PR/apply/mutation tool; you must NOT attempt
+# to open a PR) AND enforced structurally by the tool set built in
+# :func:`build_slice_author_agent` (the editor tool is filtered out). Prompt
+# discipline is defense-in-depth on top of the structural guarantee, never the
+# only guard. ``{goal}`` and ``{target_path}`` are injected per slice.
+_SLICE_AUTHOR_INSTRUCTION = """\
+You are a DriftScribe slice-author sub-agent. You author EXACTLY ONE \
+OpenTofu (HCL) file and nothing else.
+
+Your assigned file (the ONLY path you may write): {target_path}
+Your goal for that file: {goal}
+
+Rules:
+- Author the single file `{target_path}` to achieve the goal above. Keep the \
+change MINIMAL and in-place: add only what the goal requires, and match the \
+existing style/conventions of the surrounding `iac/` files.
+- Before authoring, READ the current state with your read tools (live env, \
+project inventory, the ops contract, and developer docs) so your file is \
+grounded in what already exists.
+- You have NO PR tool, NO apply tool, and NO mutation tool of any kind. You \
+must NOT attempt to open a PR, merge, or apply anything. Authoring the file \
+text is the entire extent of your authority — opening the pull request is \
+done downstream, not by you.
+- NEVER author providers, modules, provisioners, secrets, backend, or other \
+foundation files: the downstream static gate rejects them and your slice \
+would fail. Author only the ordinary resource/data/locals content the goal \
+calls for, scoped to `{target_path}`.
+- When the file is complete, call `submit_slice_file` with the FULL final \
+file content (the entire file body, not a diff or fragment) and any \
+developer-doc citations you relied on. You do not choose the path — it is \
+pinned to `{target_path}` for you.
+"""
+
+
+def build_slice_author_agent(
+    spec: SliceSpec, read_tools, sink: dict
+) -> Agent:
+    """Construct the constrained slice-author ADK ``Agent`` for one slice.
+
+    The agent gets the provision workload's READ tools plus this slice's
+    pinned ``submit_slice_file`` hand-back tool (built via
+    :func:`make_submit_slice_file`, which pins ``spec.target_path`` and writes
+    into ``sink``) — and crucially NO editor / PR / mutation tool. That is the
+    fan-out trust boundary: a sub-agent authors HCL text only; it cannot open
+    a PR (the coordinator merges the slices into ONE PR downstream, behind the
+    gated apply pipeline).
+
+    ``read_tools`` is the ``{symbolic_name: callable}`` mapping returned by
+    :func:`resolve_provision_read_tools` (it accepts the mapping; only the
+    callable VALUES are handed to the agent). The agent's ``name`` is
+    ``driftscribe_slice_<slugged-target-path>`` — identifier-safe (the slug
+    replaces every non-``[A-Za-z0-9_]`` char with ``_``), so two slices for
+    two different paths get two different, valid ADK names. Model/planner
+    mirror :func:`agent.adk_agent.build_chat_agent` exactly (``gemini-2.5-
+    flash`` + ``BuiltInPlanner(ThinkingConfig(include_thoughts=True))``).
+
+    Constructing the ``Agent`` is offline (no network) — the ADK imports
+    happen lazily here so the pure-decomposition core of this module stays
+    import-light for callers that only need :class:`SliceSpec` /
+    :func:`validate_slice_specs`.
+    """
+    from google.adk import Agent
+    from google.adk.planners.built_in_planner import BuiltInPlanner
+    from google.genai.types import ThinkingConfig
+
+    read_tool_values = list(read_tools.values())
+    submit_tool = make_submit_slice_file(spec.target_path, sink)
+
+    return Agent(
+        name=f"driftscribe_slice_{_slug_target_path(spec.target_path)}",
+        model="gemini-2.5-flash",
+        instruction=_SLICE_AUTHOR_INSTRUCTION.format(
+            goal=spec.goal,
+            target_path=spec.target_path,
+        ),
+        tools=[*read_tool_values, submit_tool],
+        # Mirror build_chat_agent: surface Gemini 2.5 Flash's thought
+        # summaries (same planner/thinking config as the coordinator agents).
+        planner=BuiltInPlanner(
+            thinking_config=ThinkingConfig(include_thoughts=True),
+        ),
+    )
