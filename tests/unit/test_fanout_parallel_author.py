@@ -43,6 +43,7 @@ from agent.fanout import (
     FanoutError,
     FanoutFailureKind,
     SliceSpec,
+    _describe_authoring_cause,
     author_slices_parallel,
 )
 from tests.unit._adk_stubs import StubEvent as _Ev, StubPart as _P
@@ -234,6 +235,80 @@ async def test_cancelled_error_propagates_unchanged():
     with patch.object(fanout, "Runner", make_runner):
         with pytest.raises(asyncio.CancelledError):
             await author_slices_parallel(specs, read_tools=_NO_READ_TOOLS)
+
+
+async def test_taskgroup_exceptiongroup_surfaces_inner_cause():
+    """LIVE-FAITHFUL: ADK's ``ParallelAgent`` runs sub-agents inside an
+    ``asyncio.TaskGroup``, so a sub-agent crash reaches the barrier as an
+    ``ExceptionGroup`` — NOT the bare error. The earlier
+    ``test_run_raises_generic_exception_*`` raises a bare ``RuntimeError``,
+    which is why the opaque-wrapper regression escaped to prod. The AUTHORING
+    detail must name the INNER cause, not the
+    ``"unhandled errors in a TaskGroup (N sub-exception)"`` wrapper string."""
+    specs = _specs(2)
+    group = ExceptionGroup(
+        "unhandled errors in a TaskGroup",
+        [RuntimeError("provider block is forbidden in slice content")],
+    )
+    make_runner, _ = _fake_parallel_runner({}, raise_exc=group)
+    with patch.object(fanout, "Runner", make_runner):
+        with pytest.raises(FanoutError) as ei:
+            await author_slices_parallel(specs, read_tools=_NO_READ_TOOLS)
+    assert ei.value.kind is FanoutFailureKind.AUTHORING
+    assert ei.value.status == 502
+    assert "provider block is forbidden in slice content" in ei.value.detail
+    assert "TaskGroup" not in ei.value.detail
+    assert "sub-exception" not in ei.value.detail
+
+
+def test_describe_authoring_cause_plain_exception_is_str():
+    assert _describe_authoring_cause(RuntimeError("boom")) == "boom"
+
+
+def test_describe_authoring_cause_empty_message_falls_back_to_classname():
+    assert _describe_authoring_cause(RuntimeError("")) == "RuntimeError"
+    assert _describe_authoring_cause(ValueError("   ")) == "ValueError"
+
+
+def test_describe_authoring_cause_single_element_group_returns_inner():
+    grp = ExceptionGroup("wrapper", [KeyError("missing")])
+    # KeyError str() quotes its arg — assert the leaf cause is surfaced, not
+    # the wrapper, rather than pinning KeyError's exact repr.
+    out = _describe_authoring_cause(grp)
+    assert "missing" in out
+    assert "wrapper" not in out
+
+
+def test_describe_authoring_cause_dedups_identical_leaf_messages():
+    grp = ExceptionGroup(
+        "tg", [RuntimeError("same"), RuntimeError("same"), ValueError("other")]
+    )
+    out = _describe_authoring_cause(grp)
+    # Order-preserving de-dup: "same" appears once, "other" once.
+    assert out == "same; other"
+
+
+async def test_nested_exceptiongroup_unwraps_to_distinct_leaf_causes():
+    """Defensive: a nested ``ExceptionGroup`` (group-within-group, which a
+    TaskGroup can produce when sub-agents fail at different nesting depths) is
+    recursively unwrapped, and the distinct leaf messages are joined (no
+    wrapper text leaks)."""
+    specs = _specs(3)
+    group = ExceptionGroup(
+        "outer",
+        [
+            ExceptionGroup("inner", [ValueError("bad path")]),
+            RuntimeError("io failed"),
+        ],
+    )
+    make_runner, _ = _fake_parallel_runner({}, raise_exc=group)
+    with patch.object(fanout, "Runner", make_runner):
+        with pytest.raises(FanoutError) as ei:
+            await author_slices_parallel(specs, read_tools=_NO_READ_TOOLS)
+    detail = ei.value.detail
+    assert ei.value.kind is FanoutFailureKind.AUTHORING
+    assert "bad path" in detail and "io failed" in detail
+    assert "TaskGroup" not in detail and "ExceptionGroup" not in detail
 
 
 # --------------------------------------------------------------------------- #
