@@ -1,0 +1,11 @@
+/* Design tokens — scaffold placeholder (enriched in P3). */
+:root {
+  --ds-bg: #fcfcfb;
+  --ds-fg: #1a1a18;
+  --ds-muted: #6b6b66;
+  --ds-border: #e7e6e1;
+  --ds-accent: #2ea44f;
+  --ds-warn: #b07d00;
+  --ds-danger: #d73a49;
+  --ds-stream: #1f6feb;
+}

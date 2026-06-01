@@ -15,8 +15,14 @@ build/
 # Node (tests/e2e/ui/ Playwright suite)
 node_modules/
 package-lock.json
+# frontend/ uses `npm ci`, which REQUIRES a committed lockfile — re-include it.
+!frontend/package-lock.json
 playwright-report/
 test-results/
+
+# Frontend build output (Svelte+Vite → agent/static/). Built in Docker/CI and
+# locally for the smoke; never committed.
+agent/static/
 
 # Local-only operator notes (gcloud account, billing, secrets recipes — never commit)
 .claude/

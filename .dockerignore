@@ -18,3 +18,11 @@ tests/
 docs/
 README.md
 *.md
+
+# Node deps must be installed fresh inside the builder stage, never copied in.
+node_modules/
+**/node_modules/
+# The frontend build OUTPUT (agent/static/) must come ONLY from the builder
+# stage via `COPY --from=frontend`, never from a stale local `COPY agent/`.
+agent/static/
+frontend/dist/

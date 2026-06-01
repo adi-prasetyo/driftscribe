@@ -1,0 +1,11 @@
+/* Base + shared component styles — scaffold placeholder (enriched in P3).
+   Also linked by the Jinja approval pages, so component classes (ds-*) live
+   here, not scoped inside .svelte files. */
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--ds-bg);
+  color: var(--ds-fg);
+  font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+  line-height: 1.45;
+}
