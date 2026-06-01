@@ -11,6 +11,7 @@ and the dry_run no-op preview.
 
 from unittest.mock import MagicMock
 
+import pytest
 from github import GithubException, UnknownObjectException
 from driftscribe_lib import github as gh
 
@@ -138,6 +139,7 @@ class TestOpenIacPr:
             "number": 7,
             "branch": "infra/add-x-20260601-ab12cd",
             "labeled": True,
+            "label_error": None,
             "reused": False,
         }
 
@@ -148,6 +150,9 @@ class TestOpenIacPr:
         repo.create_pull.return_value = pr
         result = _call(repo)
         assert result["labeled"] is False
+        # label_error mirrors _finalize_pr: the exception string, not None.
+        assert result["label_error"] is not None
+        assert "no perms" in result["label_error"]
         assert result["reused"] is False
 
     def test_branch_already_exists_returns_existing_pr(self):
@@ -193,3 +198,19 @@ class TestOpenIacPr:
         repo.create_file.assert_not_called()
         repo.update_file.assert_not_called()
         repo.create_pull.assert_not_called()
+
+    def test_directory_path_raises_not_attributeerror(self):
+        # get_contents returns a LIST for a directory path (it does NOT 404),
+        # so the helper must reject it explicitly rather than AttributeError on
+        # ``existing.sha``. No write should happen for that path.
+        repo = _fake_repo()
+        repo.create_pull.return_value = _fake_pr()
+
+        def _get_contents(path, ref=None):
+            return [MagicMock(), MagicMock()]  # a directory listing
+
+        repo.get_contents.side_effect = _get_contents
+        with pytest.raises(ValueError):
+            _call(repo)
+        repo.update_file.assert_not_called()
+        repo.create_file.assert_not_called()

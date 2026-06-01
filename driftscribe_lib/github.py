@@ -327,6 +327,11 @@ def open_iac_pr(
                 branch=branch,
             )
         else:
+            # get_contents returns a LIST when ``path`` resolves to a directory
+            # (it does NOT 404), so ``existing.sha`` below would AttributeError
+            # → 500. Reject explicitly instead.
+            if isinstance(existing, list):
+                raise ValueError(f"path resolves to a directory, not a file: {path!r}")
             repo.update_file(
                 path=path,
                 message=f"feat(iac): author {path}",
@@ -364,16 +369,19 @@ def _finalize_iac_pr(
     both fresh and reused PRs.
     """
     labeled = True
+    label_error: str | None = None
     try:
         pr.add_to_labels(label)
     except GithubException as e:
         labeled = False
+        label_error = str(e)
         log.warning("failed to label IaC PR #%s: %s", pr.number, e)
     return {
         "url": pr.html_url,
         "number": pr.number,
         "branch": branch,
         "labeled": labeled,
+        "label_error": label_error,
         "reused": reused,
     }
 
