@@ -52,12 +52,12 @@ from pydantic import BaseModel, ConfigDict
 from driftscribe_lib import github as ds_github
 from driftscribe_lib.auth import verify_caller
 from driftscribe_lib.iac_editor_policy import (
-    MAX_BODY,
-    MAX_TITLE,
+    ALLOWED_BASE,
     EditorPolicyError,
     validate_base,
     validate_branch,
     validate_file_writes,
+    validate_title_body,
 )
 from driftscribe_lib.logging import install_trace_middleware, setup as setup_logging
 
@@ -77,6 +77,14 @@ OWN_URL = os.environ["OWN_URL"].rstrip("/")
 ALLOWED_CALLERS = frozenset(
     e.strip() for e in os.environ["ALLOWED_CALLERS"].split(",") if e.strip()
 )
+# An empty allowlist would let verify_caller accept no one (every request
+# bounces) — but worse, it silently signals a misconfigured deploy. Fail the
+# revision at boot rather than ship a worker that can never serve. Mirrors the
+# upgrade-docs REQUIRED_CHECKS empty-set guard.
+if not ALLOWED_CALLERS:
+    raise RuntimeError(
+        "ALLOWED_CALLERS resolved to an empty set — refusing to boot"
+    )
 
 
 def _verify_caller_dep(request: Request) -> str:
@@ -171,19 +179,16 @@ def open_pr(
             detail="target_repo does not match deployed allowlist",
         )
 
-    # Layer 2 payload-intent policy. Each call maps EditorPolicyError onto an
+    # Layer 2 payload-intent policy — the whole allowlist lives in
+    # ``iac_editor_policy``. Each call maps EditorPolicyError onto an
     # HTTPException with the error's own status_code (403 policy / 422 schema).
     try:
         validate_base(req.base)
         validate_branch(req.branch)
         validate_file_writes([f.model_dump() for f in req.files])
+        validate_title_body(req.title, req.body)
     except EditorPolicyError as e:
         raise HTTPException(status_code=e.status_code, detail=e.reason) from e
-
-    if len(req.title) > MAX_TITLE:
-        raise HTTPException(status_code=422, detail="title too long")
-    if len(req.body) > MAX_BODY:
-        raise HTTPException(status_code=422, detail="body too long")
 
     # Do NOT log file contents — only counts/metadata.
     log.info(
@@ -192,12 +197,13 @@ def open_pr(
     )
 
     repo = _get_repo()
-    # ``base`` is pinned to "main" here even though ``validate_base`` already
-    # enforced it — belt and suspenders, matches the plan.
+    # ``base`` is pinned to the policy constant here even though
+    # ``validate_base`` already enforced ``req.base == ALLOWED_BASE`` — belt and
+    # suspenders, matches the plan.
     result = ds_github.open_iac_pr(
         repo,
         branch=req.branch,
-        base="main",
+        base=ALLOWED_BASE,
         title=req.title,
         body=req.body,
         files=[f.model_dump() for f in req.files],

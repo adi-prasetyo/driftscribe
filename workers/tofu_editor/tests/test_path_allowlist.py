@@ -13,6 +13,9 @@ short-circuited before any GitHub side effect) AND the status code is 403
 correctness is the whole point of the worker, so this is the canonical suite.
 """
 import os
+import subprocess
+import sys
+import textwrap
 
 import pytest
 from fastapi.testclient import TestClient
@@ -196,3 +199,57 @@ def test_oversize_title_returns_422(client) -> None:
     r = tc.post("/open-pr", json=body)
     assert r.status_code == 422, r.text
     assert captured == []
+
+
+def test_oversize_body_returns_422(client) -> None:
+    # body > MAX_BODY (20_000) → 422.
+    tc, captured = client
+    body = _valid_body() | {"body": "B" * 20_001}
+    r = tc.post("/open-pr", json=body)
+    assert r.status_code == 422, r.text
+    assert captured == []
+
+
+def test_non_ascii_path_returns_403(client) -> None:
+    # Fullwidth 'x' carries a .tf suffix and survives normpath but is a
+    # confusable — the ASCII path-char allowlist rejects it (403).
+    tc, captured = client
+    body = _valid_body()
+    body["files"] = [{"path": "iac/ｘ.tf", "content": 'x = 1\n'}]
+    r = tc.post("/open-pr", json=body)
+    assert r.status_code == 403, r.text
+    assert captured == []
+
+
+# Boot-time guard -------------------------------------------------------- #
+
+
+def test_empty_allowed_callers_fails_to_boot() -> None:
+    """An empty ``ALLOWED_CALLERS`` must fail the revision at import time —
+    refusing to ship a worker that can never authenticate any caller. Spawn a
+    clean subprocess so the assertion is on the worker's own boot, not this
+    test process (which already imported the module with a valid value)."""
+    script = textwrap.dedent(
+        """
+        import os
+        os.environ["IAC_EDITOR_TARGET_REPO"] = "adi-prasetyo/driftscribe"
+        os.environ["GITHUB_TOKEN"] = "test-token"
+        os.environ["OWN_URL"] = "https://tofu-editor.example.com"
+        os.environ["ALLOWED_CALLERS"] = ""   # empty → must raise at boot
+        import workers.tofu_editor.main  # noqa: F401
+        """
+    ).strip()
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__))
+        ))),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0, (
+        "tofu-editor worker booted with an empty ALLOWED_CALLERS set — it "
+        f"must fail-closed at import time.\nstdout: {result.stdout}\n"
+        f"stderr: {result.stderr}"
+    )
+    assert "ALLOWED_CALLERS" in result.stderr, result.stderr

@@ -41,11 +41,22 @@ _FOUNDATION = frozenset(PROTECTED_FOUNDATION)   # PROTECTED_FOUNDATION is a tupl
 # the single-file upgrade-docs worker.
 MAX_FILES = 32
 MAX_FILE_BYTES = 200_000
+# Aggregate ceiling across ALL writes (D1-3 adversarial hardening). The per-file
+# cap alone permits 32×200KB≈6.4MB, enough that a single /open-pr could blow the
+# coordinator's ~30s timeout mid-write and orphan a half-committed branch. Cap
+# the total so the amplification can't get there.
+MAX_TOTAL_BYTES = 1_000_000
 MAX_TITLE = 200
 MAX_BODY = 20_000
 
 # Mirror workers/upgrade_docs/main.py::_BRANCH_TAIL.
 _BRANCH_TAIL = re.compile(r"[A-Za-z0-9._/-]{1,200}\Z")
+# Conservative ASCII path-char allowlist (D1-3 hardening) — same byte-class as
+# _BRANCH_TAIL. Closes the confusable-filename vector: fullwidth / zero-width /
+# homoglyph characters survive ``normpath`` + ``splitext`` (so the suffix and
+# normalization guards pass) yet render as a legit ``.tf`` path. Restricting to
+# the Git-ref byte-class keeps authored paths unambiguous.
+_PATH_CHARS = re.compile(r"[A-Za-z0-9._/-]*\Z")
 
 
 @dataclass
@@ -64,6 +75,8 @@ def _validate_one_path(path: str) -> None:
         raise EditorPolicyError(403, f"control character in path: {path!r}")
     if "\\" in path:
         raise EditorPolicyError(403, f"backslash in path: {path!r}")
+    if not _PATH_CHARS.fullmatch(path):
+        raise EditorPolicyError(403, f"path has disallowed characters: {path!r}")
     if path.startswith("/"):
         raise EditorPolicyError(403, f"absolute path forbidden: {path!r}")
     if path != posixpath.normpath(path) or ".." in path.split("/"):
@@ -92,7 +105,22 @@ def validate_file_writes(writes: list[dict]) -> list[dict]:
             raise EditorPolicyError(422, f"empty content for {path!r}")
         if len(content.encode("utf-8")) > MAX_FILE_BYTES:
             raise EditorPolicyError(422, f"file too large: {path!r}")
+    # Aggregate ceiling AFTER the per-file loop: even when every file is under
+    # MAX_FILE_BYTES, the sum must stay under MAX_TOTAL_BYTES so the whole
+    # commit-and-open round-trip can't blow the coordinator's timeout.
+    if sum(len(w.get("content", "").encode("utf-8")) for w in writes) > MAX_TOTAL_BYTES:
+        raise EditorPolicyError(422, "total payload too large")
     return writes
+
+
+def validate_title_body(title: str, body: str) -> None:
+    """Size-bound the PR title/body. Codepoint length is used here (these map to
+    GitHub's title/body field limits), whereas file content uses byte length —
+    the distinction is intentional."""
+    if len(title) > MAX_TITLE:
+        raise EditorPolicyError(422, "title too long")
+    if len(body) > MAX_BODY:
+        raise EditorPolicyError(422, "body too long")
 
 
 def validate_branch(branch: str) -> None:
