@@ -732,6 +732,28 @@ class AuthorResult(BaseModel):
     citations: dict[str, list[str]]
 
 
+def _describe_authoring_cause(exc: BaseException) -> str:
+    """Render the most informative human cause of a parallel-author failure.
+
+    ADK's :class:`ParallelAgent` runs each sub-agent inside an
+    ``asyncio.TaskGroup``; when a sub-agent raises, the TaskGroup re-raises a
+    wrapping :class:`ExceptionGroup` whose ``str()`` is the opaque
+    ``"unhandled errors in a TaskGroup (N sub-exception(s))"`` — useless in a
+    fail-closed reply (this was the cosmetic residual: the AUTHORING reply
+    surfaced the wrapper, not the real error). Recurse through the group(s) and
+    join the distinct leaf causes (order-preserving de-dup) so the surfaced
+    detail names the actual error. A plain (non-group) exception renders as its
+    ``str()``, falling back to the class name when the message is empty.
+    """
+    if isinstance(exc, BaseExceptionGroup):
+        seen: dict[str, None] = {}
+        for sub in exc.exceptions:
+            seen.setdefault(_describe_authoring_cause(sub), None)
+        return "; ".join(seen) or type(exc).__name__
+    text = str(exc).strip()
+    return text or type(exc).__name__
+
+
 async def author_slices_parallel(
     specs: list[SliceSpec],
     *,
@@ -888,11 +910,14 @@ async def author_slices_parallel(
         raise
     except Exception as e:
         # A sub-agent errored → the ParallelAgent's TaskGroup cancelled its
-        # siblings and raised through. DISCARD every sink write (we simply
-        # never read them) and surface a typed AUTHORING failure.
+        # siblings and raised through (as an ExceptionGroup). DISCARD every sink
+        # write (we simply never read them) and surface a typed AUTHORING
+        # failure naming the INNER cause — never the opaque TaskGroup wrapper
+        # (see _describe_authoring_cause). The original exception is chained
+        # via `from e` so the full group is still in the server-side traceback.
         raise FanoutError(
             502,
-            f"slice authoring failed: {e}",
+            f"slice authoring failed: {_describe_authoring_cause(e)}",
             kind=FanoutFailureKind.AUTHORING,
         ) from e
 
