@@ -590,6 +590,27 @@ def resolve_upgrade_target(name: str) -> UpgradeTarget:
     return base
 
 
+# Phase D: authoritative target repo for the iac-editor workload (the repo whose
+# iac/ the tofu-editor opens PRs against). Code-side pin, never LLM-supplied. The
+# IAC_EDITOR_TARGET_REPO_OVERRIDE env redirects it for e2e (mirrors
+# UPGRADE_TARGET_REPO_OVERRIDE); the tofu-editor worker independently pins
+# IAC_EDITOR_TARGET_REPO at boot and a CI parity test (D2-3) ties the two.
+# Slug confirmed equal to infra/cloudbuild.tofu-editor.yaml's _IAC_EDITOR_TARGET_REPO
+# and UPGRADE_TARGET_REGISTRY's target_repo — all three agree on adi-prasetyo/driftscribe.
+IAC_EDITOR_TARGET: Final[str] = "adi-prasetyo/driftscribe"
+
+
+def resolve_iac_editor_target() -> str:
+    """Resolve the iac-editor target repo (pin, or IAC_EDITOR_TARGET_REPO_OVERRIDE).
+
+    Mirrors :func:`resolve_upgrade_target`'s override idiom: the env is read at
+    call time (not import time) so the agent-side ``target_repo`` agrees with the
+    worker-side ``IAC_EDITOR_TARGET_REPO`` pin when the e2e build redirects both,
+    and so tests can monkeypatch it. Prod (env unset) keeps the registry pin.
+    """
+    return os.environ.get("IAC_EDITOR_TARGET_REPO_OVERRIDE", IAC_EDITOR_TARGET)
+
+
 # --------------------------------------------------------------------------- #
 # Loader — `load_workload(name)`
 # --------------------------------------------------------------------------- #

@@ -441,3 +441,75 @@ def upgrade_merge_pr_tool(pr_number: int) -> dict:
             "worker": e.worker,
             "status_code": e.status_code,
         }
+
+
+# --------------------------------------------------------------------------- #
+# Phase D — iac-editor authoring tool
+# --------------------------------------------------------------------------- #
+
+
+def _get_iac_editor_target() -> str:
+    """Resolve the iac-editor workload's authoritative target repo.
+
+    Authority field — derived here, never from the LLM. Pin lives in the
+    registry (IAC_EDITOR_TARGET) with an IAC_EDITOR_TARGET_REPO_OVERRIDE escape
+    hatch for e2e; the tofu-editor worker re-pins IAC_EDITOR_TARGET_REPO at boot
+    and re-validates, so this coordinator surface is defense-in-depth, not the
+    sole boundary.
+
+    Unlike :func:`_get_upgrade_target` this is NOT lru-cached: the registry
+    resolver reads the override env at call time (so e2e / tests can redirect it
+    without a process restart), and resolving a single string slug is cheap.
+    """
+    from agent.workloads.registry import resolve_iac_editor_target  # lazy, mirrors _get_upgrade_target
+
+    return resolve_iac_editor_target()
+
+
+def open_infra_pr_tool(files: list[dict], title: str, body: str) -> dict:
+    """Ask the tofu-editor to open ONE iac/-only infrastructure PR.
+
+    The LLM supplies ONLY the decision content: the list of file writes
+    (``{"path","content"}`` under iac/, .tf/.md), the PR title, and the body.
+    Every authority/routing field is derived server-side and the LLM can never
+    influence it:
+
+    - ``target_repo``: registry pin (IAC_EDITOR_TARGET / override) — never LLM.
+    - ``branch``: computed ``infra/{slug(title)}-{ts}-{hex}`` (collision-safe, and
+      the ``infra/`` prefix scopes the PR to the editor; the worker's
+      ``validate_branch`` re-checks).
+    - ``base``: pinned ``"main"`` inside :func:`call_open_infra_pr`.
+    - ``label``: ``driftscribe-infra``, applied worker-side.
+
+    The tofu-editor worker re-validates every file (iac/-prefix, suffix,
+    foundation, traversal, size, AGENT-mode static gate incl. the secret ban)
+    before any GitHub call, so this tool deliberately does NOT pre-validate — a
+    bad request surfaces the worker's 403/422 to the model as a feedback loop.
+
+    After the PR opens, the operator must: dispatch the C2 plan-builder workflow
+    on the PR number, then review + approve at ``/iac-approvals/<pr_number>``; a
+    PR that CREATES new resources additionally needs an operator re-bake (C6)
+    before it can apply.
+    """
+    target_repo = _get_iac_editor_target()
+    slug = _BRANCH_SLUG.sub("-", title.lower()).strip("-") or "infra"
+    branch = f"infra/{slug}-{int(time.time())}-{secrets.token_hex(2)}"
+    result = worker_client.call_open_infra_pr(
+        target_repo=target_repo,
+        branch=branch,
+        title=title,
+        body=body,
+        files=files,
+    )
+    # Compact, LLM-useful result + the required next-steps reminder.
+    return {
+        "status": result.get("status"),
+        "pr_number": result.get("pr_number"),
+        "pr_url": result.get("pr_url"),
+        "branch": result.get("branch", branch),
+        "next_steps": (
+            "PR opened. Operator: dispatch the C2 plan-builder on this PR number, "
+            "then review & approve at /iac-approvals/<pr_number>. A PR that creates "
+            "NEW resources also needs an operator re-bake (C6) before it can apply."
+        ),
+    }
