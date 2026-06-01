@@ -63,6 +63,7 @@ from agent.adk_agent import (
     build_agent,
     build_chat_agent,
 )
+from agent.fanout import MUTATION_TOOL_NAMES
 from agent.workloads.spec import WorkloadSpec
 
 
@@ -154,24 +155,16 @@ _UPGRADE_ONLY_TOOL_NAMES = frozenset({
 # only reads) but because it rides the coordinator's write-capable GitHub
 # PAT; credential containment is part of "strictly read-only" (Codex review
 # 2026-05-25). ``notify`` is a side-effect (posts a webhook), so it counts
-# as a mutation for this purpose too. Hardcoded as the audit point, same as
-# the other constants here.
-_MUTATION_TOOL_NAMES = frozenset({
-    "drift_patch_docs",
-    "drift_propose_rollback",
-    "upgrade_propose_pr",
-    "upgrade_close_pr",
-    "upgrade_merge_pr",
-    "notify",
-    "search_recent_prs",
-    # Phase D2 — the provision workload's IaC-authoring tool. It rides the
-    # tofu-editor's write-capable GitHub PAT and opens a PR (a mutation),
-    # so it counts as a mutation tool here. ``provision`` intentionally
-    # carries it — see ``test_provision_workload_carries_mutation_tool``
-    # below: explore stays read-only (disjoint from this set), provision
-    # does NOT (it is NOT asserted read-only).
-    "provision_open_infra_pr",
-})
+# as a mutation for this purpose too.
+#
+# Phase D5-3: the canonical set was promoted to ``agent.fanout`` (as
+# ``MUTATION_TOOL_NAMES``) so the fan-out slice-author resolution and THIS
+# audit pin share ONE source of truth — the runtime trust filter
+# (``resolve_provision_read_tools`` strips these from a slice sub-agent's
+# tool set) and the read-only/mutation disjointness assertions below cannot
+# drift apart. This module is still the audit point: it imports the set and
+# asserts the invariants on it; a name added to the set is reviewed here.
+_MUTATION_TOOL_NAMES = MUTATION_TOOL_NAMES
 
 # Mutation WORKERS no read-only workload may wire in. This is a secondary,
 # manifest-level guard (the primary read-only guarantee is the tool-set

@@ -18,6 +18,21 @@ COPY demo/ /contract/demo/
 # package (pyproject `[tool.setuptools] packages` doesn't include it),
 # so it must be copied as plain data after the editable install.
 COPY workloads/ ./workloads/
+# The `tools` package (Phase D5): agent/fanout.py imports
+# driftscribe_lib.iac_editor_policy, which does
+# `from tools.iac_static_gate import ...` (the AGENT-mode static-gate policy
+# constants — the single source of truth shared with CI + the tofu-editor
+# worker). `tools` is NOT a setuptools package (see pyproject
+# [tool.setuptools] packages), so the editable install above does NOT expose
+# it; copy it as a PACKAGE and put /app on PYTHONPATH so the import resolves
+# (mirrors workers/tofu_editor/Dockerfile). iac_static_gate imports ONLY
+# driftscribe_lib.iac_hcl (already installed) + stdlib, so no other tools/*.py
+# is needed. Pre-D5 the coordinator never imported iac_editor_policy (the
+# single-agent open_infra_pr_tool defers all validation to the worker), which
+# is why this COPY wasn't needed until the fan-out barrier landed.
+COPY tools/__init__.py ./tools/__init__.py
+COPY tools/iac_static_gate.py ./tools/iac_static_gate.py
+ENV PYTHONPATH=/app
 ENV PORT=8080
 ENV DOCS_ROOT=/contract
 ENV CONTRACT_PATH=/contract/demo/ops-contract.yaml

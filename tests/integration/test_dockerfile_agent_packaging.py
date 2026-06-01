@@ -35,6 +35,49 @@ def test_dockerfile_agent_copies_required_python_packages():
         )
 
 
+def test_dockerfile_agent_packages_tools_static_gate_for_fanout():
+    """Phase D5 regression — same bug class as the workloads/ escape above.
+
+    `agent/fanout.py` (the parallel fan-out engine) imports
+    `driftscribe_lib.iac_editor_policy`, which does
+    `from tools.iac_static_gate import ...`. `tools` is NOT a setuptools
+    package (`pyproject [tool.setuptools] packages` is agent/checker/
+    driftscribe_lib only), so the editable install does NOT expose it — the
+    image must COPY `tools/` as a package AND put /app on PYTHONPATH so the
+    import resolves at runtime. Pre-D5 the coordinator never imported
+    iac_editor_policy, so this was latent; the first live provision fan-out
+    `/chat` call 500'd with `No module named 'tools'`. Pin it so it can't recur.
+    """
+    content = DOCKERFILE.read_text()
+    assert "COPY tools/iac_static_gate.py" in content, (
+        "Dockerfile.agent must copy tools/iac_static_gate.py — "
+        "driftscribe_lib.iac_editor_policy (pulled in by agent/fanout.py) "
+        "imports `from tools.iac_static_gate import ...`."
+    )
+    assert "COPY tools/__init__.py" in content, (
+        "Dockerfile.agent must copy tools/__init__.py so `tools` is an "
+        "importable package, not a loose module."
+    )
+    assert "PYTHONPATH=/app" in content, (
+        "Dockerfile.agent must set PYTHONPATH=/app so the non-installed "
+        "`tools` package resolves (the editable install only exposes the "
+        "declared setuptools packages)."
+    )
+
+
+def test_iac_editor_policy_still_depends_on_tools_static_gate():
+    """Cross-check that keeps the Dockerfile guard above honest: if the
+    iac_editor_policy -> tools.iac_static_gate import is ever removed (e.g.
+    the constants get relocated), this fails first so the COPY/PYTHONPATH
+    assertions can be revisited rather than silently guarding a dead dep."""
+    policy_src = (REPO / "driftscribe_lib" / "iac_editor_policy.py").read_text()
+    assert "from tools.iac_static_gate import" in policy_src, (
+        "driftscribe_lib/iac_editor_policy.py no longer imports "
+        "tools.iac_static_gate — revisit the Dockerfile.agent tools/ COPY "
+        "guard in this module (it may no longer be needed)."
+    )
+
+
 def test_dockerfile_agent_copies_demo_contract():
     content = DOCKERFILE.read_text()
     assert "COPY demo/" in content and "/contract/demo/" in content, (

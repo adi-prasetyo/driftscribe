@@ -29,7 +29,7 @@ import re
 import secrets
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, NamedTuple
 
 from agent import worker_client
 from agent.config import get_settings
@@ -466,6 +466,56 @@ def _get_iac_editor_target() -> str:
     return resolve_iac_editor_target()
 
 
+class IacPrAuthority(NamedTuple):
+    """The server-pinned authority/routing fields of an iac-editor PR.
+
+    ``target_repo`` is the registry-pinned editor target; ``branch`` is the
+    computed collision-safe ``infra/`` branch. The LLM supplies NEITHER — both
+    are derived by :func:`derive_iac_pr_authority`. Packaged as a tuple so the
+    one derivation can serve both the single-agent tool and the D5 fan-out
+    orchestrator without either re-deriving (or drifting on) these fields.
+    """
+
+    target_repo: str
+    branch: str
+
+
+def derive_iac_pr_authority(
+    title: str,
+    *,
+    clock: Callable[[], float] | None = None,
+    rng: Callable[[], str] | None = None,
+) -> IacPrAuthority:
+    """Derive the server-pinned PR authority (target_repo + collision-safe
+    ``infra/`` branch) for an iac-editor PR. The LLM never supplies these.
+
+    This is the SINGLE source of the derivation: both
+    :func:`open_infra_pr_tool` (the single-agent tool) and the D5 fan-out
+    orchestrator (``agent.fanout.run_provision_fanout_stream``) call it, so the
+    two authoring paths CANNOT drift apart in how they pin ``target_repo`` or
+    compute the branch. The branch is ``infra/{slug(title)}-{ts}-{hex}``:
+
+    - the ``infra/`` prefix scopes the PR to the editor (the worker's
+      ``validate_branch`` re-checks),
+    - the slug is the title lowercased with every non-``[a-z0-9_-]`` run
+      collapsed to ``-`` and the ends stripped, capped at 80 chars (and
+      re-stripped so it can't end on a ``-`` before the ``-{ts}`` suffix) —
+      keeping the tail well under the worker's 200-char limit for any title
+      length, and falling back to the literal ``infra`` for a slug-empty title,
+    - ``-{ts}-{hex}`` is a collision-safe suffix (a second-resolution unix
+      timestamp + 2 random bytes).
+
+    ``clock``/``rng`` are injectable ONLY so the derivation is deterministically
+    testable; both default to the real ``time.time`` / ``secrets.token_hex(2)``.
+    """
+    _clock = clock or time.time
+    _rng = rng or (lambda: secrets.token_hex(2))
+    target_repo = _get_iac_editor_target()
+    slug = (_BRANCH_SLUG.sub("-", title.lower()).strip("-")[:80].strip("-")) or "infra"
+    branch = f"infra/{slug}-{int(_clock())}-{_rng()}"
+    return IacPrAuthority(target_repo=target_repo, branch=branch)
+
+
 def open_infra_pr_tool(files: list[dict], title: str, body: str) -> dict:
     """Ask the tofu-editor to open ONE iac/-only infrastructure PR.
 
@@ -491,15 +541,14 @@ def open_infra_pr_tool(files: list[dict], title: str, body: str) -> dict:
     PR that CREATES new resources additionally needs an operator re-bake (C6)
     before it can apply.
     """
-    target_repo = _get_iac_editor_target()
-    # Cap the slug (and re-strip so it can't end on a "-" before the "-{ts}"
-    # suffix): keeps the derived branch tail well under the worker's 200-char
-    # validate_branch limit for any title length, avoiding a wasted 403 round-trip.
-    slug = (_BRANCH_SLUG.sub("-", title.lower()).strip("-")[:80].strip("-")) or "infra"
-    branch = f"infra/{slug}-{int(time.time())}-{secrets.token_hex(2)}"
+    # Authority/routing fields are derived server-side via the SHARED helper
+    # (see derive_iac_pr_authority) — the same one the D5 fan-out orchestrator
+    # uses, so the two authoring paths can never drift on how they pin the repo
+    # or compute the branch. The LLM influences NONE of these.
+    authority = derive_iac_pr_authority(title)
     result = worker_client.call_open_infra_pr(
-        target_repo=target_repo,
-        branch=branch,
+        target_repo=authority.target_repo,
+        branch=authority.branch,
         title=title,
         body=body,
         files=files,
@@ -509,7 +558,7 @@ def open_infra_pr_tool(files: list[dict], title: str, body: str) -> dict:
         "status": result.get("status"),
         "pr_number": result.get("pr_number"),
         "pr_url": result.get("pr_url"),
-        "branch": result.get("branch", branch),
+        "branch": result.get("branch", authority.branch),
         "next_steps": (
             "PR opened. Operator: dispatch the C2 plan-builder on this PR number, "
             "then review & approve at /iac-approvals/<pr_number>. A PR that creates "

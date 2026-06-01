@@ -659,6 +659,29 @@ def _redact_final_response(accepted_text: str) -> tuple[str, str]:
     return ((redact_text(accepted_text) or "")[:2000], "text")
 
 
+def _emit_final_response(text: str) -> dict:
+    """Redact + log + return the ``final_response`` payload.
+
+    Single source of the ``final_response`` emit so :func:`run_chat_stream`
+    and the D5 fan-out orchestrator (``agent.fanout.run_provision_fanout_stream``)
+    emit the operator's natural-language final IDENTICALLY: same redaction
+    (:func:`_redact_final_response` + the outer :func:`redact_event`), same
+    trace/workload tagging, and the same 365-day-durable ``_log.info`` emit.
+    Returns the redacted payload (so the streaming caller can yield a
+    seq-augmented copy) — it does NOT add the SSE ordering metadata.
+    """
+    response_preview, response_kind = _redact_final_response(text)
+    fr_payload = redact_event({
+        "event": "final_response",
+        "trace_id": current_trace_id_or_new(),
+        "workload": current_workload(),
+        "response_preview": response_preview,
+        "response_kind": response_kind,
+    })
+    _log.info("final_response", extra=fr_payload)
+    return fr_payload
+
+
 async def run_agent(
     user_msg: str, *, workload: str = "drift"
 ) -> DecisionProposal:
@@ -852,17 +875,7 @@ async def run_chat_stream(
                     reply_chunks.append(part.text)
             accepted_text = "".join(reply_chunks)
             if accepted_text.strip() and not final_response_logged:
-                response_preview, response_kind = (
-                    _redact_final_response(accepted_text)
-                )
-                fr_payload = redact_event({
-                    "event": "final_response",
-                    "trace_id": current_trace_id_or_new(),
-                    "workload": current_workload(),
-                    "response_preview": response_preview,
-                    "response_kind": response_kind,
-                })
-                _log.info("final_response", extra=fr_payload)
+                fr_payload = _emit_final_response(accepted_text)
                 final_response_logged = True
                 yield {"type": "event", "event": _stream(fr_payload)}
         usage_payload = _emit_llm_usage(event)
