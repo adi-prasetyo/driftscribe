@@ -709,7 +709,7 @@ fi
 # inside the VPC (a C5 egress concern) — this invoker grant is necessary but not
 # sufficient there. See docs/runbooks/tofu-apply.md.
 # Phase D (D3-1): driftscribe-tofu-editor (the provision-workload HCL-authoring
-# worker) added so the coordinator can invoke /author to open infra/ PRs. Like the
+# worker) added so the coordinator can invoke /open-pr to open infra/ PRs. Like the
 # others it is --no-allow-unauthenticated, so the coordinator SA needs this Cloud
 # Run platform invoker grant IN ADDITION to the worker's in-app ALLOWED_CALLERS
 # allowlist. Still per-service — invoker on the editor does NOT extend to any other
