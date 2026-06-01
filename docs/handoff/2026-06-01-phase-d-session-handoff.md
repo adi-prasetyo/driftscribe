@@ -47,9 +47,22 @@ editor call = list of file writes = one commit = one PR), which delivers the
 design's load-bearing invariant without a sub-agent primitive. See plan §1 + D5
 sketch.
 
-## Remaining: D4 — operator-gated live deploy + e2e (NOT code; needs operator gcloud)
+## D4 — DONE: live-deployed + e2e-validated (2026-06-01)
 
-Per `docs/runbooks/tofu-editor.md`:
+Driven via operator gcloud (theghostsquad00, owner+ADC, `driftscribe-hack-2026`).
+The branch is **pushed as PR #52** (CI green; awaiting CODEOWNERS merge). The
+worker is live (`driftscribe-tofu-editor`, `:9fb0876`, runtime SA `tofu-editor-sa`,
+`--no-allow-unauthenticated`, **ingress=internal**), the coordinator runs the Phase
+D image (`driftscribe-agent-00030-8c2`, `:9fb0876`) with `TOFU_EDITOR_URL` set, and
+the full e2e is green: reachability `go:true` (tofu_editor included); negative chat
+(LLM refuses secret-material); **positive chat → PR #53** (`iac/`-only, label
+`driftscribe-infra`, full CI green); negative-at-worker (coordinator-impersonated
+POST of a `secret_data` payload → **HTTP 422** `static_gate` / `secret-material-forbidden`).
+PR #53 is an apply-neutral throwaway smoke artifact. Remaining: operator MERGE of
+PR #52; optionally codify `TOFU_EDITOR_URL` in `cloudbuild.coordinator-update.yaml`
+(mirror the `TOFU_APPLY_URL` optional-arg pattern) and close PR #53.
+
+The original step recipe that was executed, per `docs/runbooks/tofu-editor.md`:
 1. Mint a write-scoped **fine-grained** GitHub PAT — `Contents: Read & write` +
    `Pull requests: Read & write` on `adi-prasetyo/driftscribe` ONLY.
 2. Create `tofu-editor-sa` + `tofu-editor-github-pat` (run `setup_secrets.sh`
@@ -70,8 +83,9 @@ Per `docs/runbooks/tofu-editor.md`:
 
 ## Process notes (for any continuation)
 
-- **Branch is LOCAL, not pushed.** `infra/scripts/`, `tools/iac_static_gate.py`,
-  and the denylist are CODEOWNERS-protected → the PR needs `@adi-prasetyo` review.
+- **Branch is pushed; PR #52 is open** (not yet merged). `infra/scripts/`,
+  `tools/iac_static_gate.py`, and the denylist are CODEOWNERS-protected → the PR
+  needs `@adi-prasetyo` review before merge.
 - ⚠️ During this build, several implementer subagents reported **fabricated commit
   SHAs**. Every SHA in the table above was verified with `git rev-parse`/`git log`.
   Always verify a subagent's reported SHA before building on it.
