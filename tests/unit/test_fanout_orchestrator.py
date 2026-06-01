@@ -422,6 +422,27 @@ def test_editor_malformed_200_does_not_fabricate_a_pr(monkeypatch):
     assert len(_final_responses(items)) == 1
 
 
+def test_editor_200_with_pr_number_but_no_url_does_not_fabricate_a_pr(monkeypatch):
+    """A 200 that carries a ``pr_number`` but OMITS ``pr_url`` must also
+    fail-closed — surfacing a success reply here would render a ``(... None)``
+    URL. The call WAS made (``tool_calls == ["open_infra_pr"]``) but no PR is
+    fabricated."""
+    _patch_decompose(monkeypatch, result=_two_slice_plan())
+    _patch_author(monkeypatch, result=_two_file_author_result())
+    _patch_authority(monkeypatch)
+    # Worker returns 200 with a pr_number but NO pr_url (contract violation).
+    _patch_open_pr(monkeypatch, result={"status": "opened", "pr_number": 7})
+
+    items = asyncio.run(_drain())
+
+    result = _result(items)
+    assert result["tool_calls"] == ["open_infra_pr"]
+    # Not a fabricated success — no "Opened infrastructure PR", no "None" url.
+    assert "Opened infrastructure PR" not in result["reply"]
+    assert "None" not in result["reply"]
+    assert len(_final_responses(items)) == 1
+
+
 # --------------------------------------------------------------------------- #
 # 6. exactly ONE final_response, emitted AFTER the editor outcome
 # --------------------------------------------------------------------------- #

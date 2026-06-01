@@ -376,7 +376,7 @@ pinned to `{target_path}` for you.
 
 
 def build_slice_author_agent(
-    spec: SliceSpec, read_tools, sink: dict
+    spec: SliceSpec, read_tools, sink: dict, slice_index: int
 ) -> Agent:
     """Construct the constrained slice-author ADK ``Agent`` for one slice.
 
@@ -391,11 +391,19 @@ def build_slice_author_agent(
     ``read_tools`` is the ``{symbolic_name: callable}`` mapping returned by
     :func:`resolve_provision_read_tools` (it accepts the mapping; only the
     callable VALUES are handed to the agent). The agent's ``name`` is
-    ``driftscribe_slice_<slugged-target-path>`` — identifier-safe (the slug
-    replaces every non-``[A-Za-z0-9_]`` char with ``_``), so two slices for
-    two different paths get two different, valid ADK names. Model/planner
-    mirror :func:`agent.adk_agent.build_chat_agent` exactly (``gemini-2.5-
-    flash`` + ``BuiltInPlanner(ThinkingConfig(include_thoughts=True))``).
+    ``driftscribe_slice_<slice_index>_<slugged-target-path>`` — identifier-safe
+    (it begins with the literal ``driftscribe_slice_<int>_`` and the slug
+    replaces every non-``[A-Za-z0-9_]`` char with ``_``). The ``slice_index``
+    (the slice's 0-based ordinal within the fan-out, guaranteed unique there)
+    makes the name UNIQUE BY CONSTRUCTION: two DISJOINT paths can slug to the
+    SAME suffix (e.g. ``iac/foo-bar.tf`` and ``iac/foo_bar.tf`` both slug to
+    ``iac_foo_bar_tf``, and any two paths sharing the first ``_MAX_SLUG_LEN``
+    slug chars collide after truncation), but their index prefixes differ — so
+    ADK never sees a duplicate sub-agent name and the ``name_to_slice`` tagging
+    map is never overwritten. The slug suffix is kept purely for human
+    readability. Model/planner mirror :func:`agent.adk_agent.build_chat_agent`
+    exactly (``gemini-2.5-flash`` + ``BuiltInPlanner(ThinkingConfig(
+    include_thoughts=True))``).
 
     Constructing the ``Agent`` is offline (no network) — the ADK imports
     happen lazily here so the pure-decomposition core of this module stays
@@ -410,7 +418,7 @@ def build_slice_author_agent(
     submit_tool = make_submit_slice_file(spec.target_path, sink)
 
     return Agent(
-        name=f"driftscribe_slice_{_slug_target_path(spec.target_path)}",
+        name=f"driftscribe_slice_{slice_index}_{_slug_target_path(spec.target_path)}",
         model="gemini-2.5-flash",
         instruction=_SLICE_AUTHOR_INSTRUCTION.format(
             goal=spec.goal,
@@ -801,7 +809,10 @@ async def author_slices_parallel(
     name_to_slice: dict[str, tuple[int, str]] = {}
     for idx, spec in enumerate(specs):
         sink: dict = {}
-        agent = build_slice_author_agent(spec, read_tools, sink)
+        # Pass idx so the agent name is unique-by-construction (idx prefix) —
+        # two disjoint paths can slug identically, but their indices differ, so
+        # no duplicate ADK name and no name_to_slice overwrite below.
+        agent = build_slice_author_agent(spec, read_tools, sink, idx)
         pairs.append((spec, sink))
         sub_agents.append(agent)
         name_to_slice[agent.name] = (idx, spec.target_path)
@@ -1248,11 +1259,12 @@ async def run_provision_fanout_stream(
         }
         return
 
-    # 9. Success — but only if the worker actually returned a PR number. A
-    # malformed 200 that omits pr_number must NOT surface a fabricated
-    # "PR #None": treat it as an attempted-but-failed editor outcome (the call
-    # WAS made → tool_calls records open_infra_pr; no fabricated PR number/url).
-    if result.get("pr_number") is None:
+    # 9. Success — but only if the worker actually returned a PR number AND a
+    # PR url. A malformed 200 that omits pr_number OR pr_url must NOT surface a
+    # fabricated "PR #None" / "(... None)": treat it as an attempted-but-failed
+    # editor outcome (the call WAS made → tool_calls records open_infra_pr; no
+    # fabricated PR number/url).
+    if result.get("pr_number") is None or result.get("pr_url") is None:
         reply = (
             "The infrastructure PR could not be confirmed: the editor worker "
             f"returned no PR number (response status {result.get('status')!r})."

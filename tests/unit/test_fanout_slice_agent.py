@@ -157,7 +157,7 @@ def test_build_slice_author_agent_name_is_identifier_safe(provision_workload_env
     read_tools = resolve_provision_read_tools()
     sink: dict = {}
     spec = _slice_spec("iac/bucket.tf")
-    agent = build_slice_author_agent(spec, read_tools, sink)
+    agent = build_slice_author_agent(spec, read_tools, sink, 0)
 
     assert re.match(r"^[A-Za-z0-9_]+$", agent.name), (
         f"agent name {agent.name!r} is not identifier-safe"
@@ -172,7 +172,7 @@ def test_build_slice_author_agent_tool_set(provision_workload_env):
     read_tools = resolve_provision_read_tools()
     sink: dict = {}
     spec = _slice_spec("iac/bucket.tf")
-    agent = build_slice_author_agent(spec, read_tools, sink)
+    agent = build_slice_author_agent(spec, read_tools, sink, 0)
 
     tool_names = {_tool_name(t) for t in agent.tools}
     assert "submit_slice_file" in tool_names
@@ -187,7 +187,7 @@ def test_build_slice_author_agent_instruction_is_constrained(provision_workload_
     read_tools = resolve_provision_read_tools()
     sink: dict = {}
     spec = _slice_spec("iac/storage.tf", goal="add a versioning block to the bucket")
-    agent = build_slice_author_agent(spec, read_tools, sink)
+    agent = build_slice_author_agent(spec, read_tools, sink, 0)
 
     instr = agent.instruction
     # Pinned path + goal are injected.
@@ -211,8 +211,8 @@ def test_two_slices_get_distinct_names_and_isolated_sinks(provision_workload_env
     spec_a = _slice_spec("iac/bucket.tf", goal="create bucket")
     spec_b = _slice_spec("iac/network.tf", goal="create vpc")
 
-    agent_a = build_slice_author_agent(spec_a, read_tools, sink_a)
-    agent_b = build_slice_author_agent(spec_b, read_tools, sink_b)
+    agent_a = build_slice_author_agent(spec_a, read_tools, sink_a, 0)
+    agent_b = build_slice_author_agent(spec_b, read_tools, sink_b, 1)
 
     assert agent_a.name != agent_b.name
 
@@ -227,3 +227,59 @@ def test_two_slices_get_distinct_names_and_isolated_sinks(provision_workload_env
     assert sink_a["file"]["content"] == "resource A {}"
     assert sink_b["file"]["path"] == "iac/network.tf"
     assert sink_b["file"]["content"] == "resource B {}"
+
+
+# --------------------------------------------------------------------------- #
+# Name uniqueness by construction (slice-index prefix)
+# --------------------------------------------------------------------------- #
+
+
+def test_slug_colliding_disjoint_paths_get_distinct_names(provision_workload_env):
+    """Two VALID, DISJOINT paths that SLUG to the SAME string must still get
+    distinct agent names — the slice-index prefix guarantees uniqueness.
+
+    ``iac/foo-bar.tf`` and ``iac/foo_bar.tf`` both slug to ``iac_foo_bar_tf``
+    (the hyphen and the underscore both become ``_``). Without the idx prefix
+    both agents would be named ``driftscribe_slice_iac_foo_bar_tf`` — a
+    duplicate ADK name that collapses their ParallelAgent branches and corrupts
+    the ``name_to_slice`` tagging map."""
+    read_tools = resolve_provision_read_tools()
+    agent_0 = build_slice_author_agent(
+        _slice_spec("iac/foo-bar.tf"), read_tools, {}, 0
+    )
+    agent_1 = build_slice_author_agent(
+        _slice_spec("iac/foo_bar.tf"), read_tools, {}, 1
+    )
+
+    assert agent_0.name != agent_1.name
+    # Both names remain valid Python identifiers.
+    assert agent_0.name.isidentifier()
+    assert agent_1.name.isidentifier()
+
+
+def test_long_paths_sharing_first_64_slug_chars_get_distinct_names(
+    provision_workload_env,
+):
+    """Two paths whose slugs share the first ``_MAX_SLUG_LEN`` (64) chars (so
+    the slug TRUNCATION collides) still get distinct names via the idx prefix."""
+    common = "x" * 70  # > 64, so the slugs are identical after truncation
+    read_tools = resolve_provision_read_tools()
+    agent_0 = build_slice_author_agent(
+        _slice_spec(f"iac/{common}a.tf"), read_tools, {}, 0
+    )
+    agent_1 = build_slice_author_agent(
+        _slice_spec(f"iac/{common}b.tf"), read_tools, {}, 1
+    )
+
+    assert agent_0.name != agent_1.name
+    assert agent_0.name.isidentifier()
+    assert agent_1.name.isidentifier()
+
+
+def test_slice_index_appears_in_name_and_name_is_identifier(provision_workload_env):
+    """The slice index is embedded in the name (so it is unique-by-construction)
+    and the resulting name is a valid Python identifier."""
+    read_tools = resolve_provision_read_tools()
+    agent = build_slice_author_agent(_slice_spec("iac/bucket.tf"), read_tools, {}, 7)
+    assert agent.name == "driftscribe_slice_7_iac_bucket_tf"
+    assert agent.name.isidentifier()

@@ -169,9 +169,10 @@ async def test_parallel_agent_constructed_with_n_sub_agents():
     root = captured["root"]
     assert isinstance(root, ParallelAgent)
     assert len(root.sub_agents) == 3
-    # Sub-agent names are derived from the slugged target_path, in slice order.
-    assert root.sub_agents[0].name == "driftscribe_slice_iac_slice_0_tf"
-    assert root.sub_agents[2].name == "driftscribe_slice_iac_slice_2_tf"
+    # Sub-agent names are unique-by-construction: a "<slice_index>_" prefix
+    # ahead of the slugged target_path, in slice order.
+    assert root.sub_agents[0].name == "driftscribe_slice_0_iac_slice_0_tf"
+    assert root.sub_agents[2].name == "driftscribe_slice_2_iac_slice_2_tf"
 
 
 # --------------------------------------------------------------------------- #
@@ -272,8 +273,8 @@ async def test_event_sink_receives_tagged_payloads_no_final_response():
     specs = _specs(2)
     # A branch-tagged thought event from slice 0's branch, plus a tool_call
     # event from slice 1's branch. The branch is "<parallel>.<sub_agent.name>".
-    branch0 = f"driftscribe_fanout.driftscribe_slice_{_slug('iac/slice_0.tf')}"
-    branch1 = f"driftscribe_fanout.driftscribe_slice_{_slug('iac/slice_1.tf')}"
+    branch0 = f"driftscribe_fanout.driftscribe_slice_0_{_slug('iac/slice_0.tf')}"
+    branch1 = f"driftscribe_fanout.driftscribe_slice_1_{_slug('iac/slice_1.tf')}"
     thought_ev = _branch_event(
         [_P(text="thinking about slice 0", thought=True)], branch0
     )
@@ -310,6 +311,72 @@ async def test_event_sink_receives_tagged_payloads_no_final_response():
     assert tcp["branch"] == branch1
     assert tcp["target_path"] == "iac/slice_1.tf"
     assert tcp["slice_id"] == 1
+
+
+# --------------------------------------------------------------------------- #
+# Regression: slug-colliding DISJOINT paths must NOT corrupt branch tagging
+# --------------------------------------------------------------------------- #
+
+
+async def test_slug_colliding_disjoint_paths_tag_to_distinct_slices():
+    """Two VALID, DISJOINT target paths that SLUG to the same string
+    (``iac/foo-bar.tf`` and ``iac/foo_bar.tf`` both slug to ``iac_foo_bar_tf``)
+    must still map back to their OWN slice.
+
+    Before the idx-prefix fix the two sub-agents shared the identical ADK name
+    ``driftscribe_slice_iac_foo_bar_tf`` → they collapsed onto the SAME
+    ParallelAgent branch AND ``name_to_slice`` overwrote slice 0 with slice 1,
+    so an event from slice 0's branch got mis-tagged as ``slice_id=1`` /
+    ``target_path="iac/foo_bar.tf"``. With unique-by-construction names each
+    branch's trailing sub-agent segment resolves to exactly one slice.
+    """
+    specs = [
+        SliceSpec(goal="bucket dash", target_path="iac/foo-bar.tf"),
+        SliceSpec(goal="bucket underscore", target_path="iac/foo_bar.tf"),
+    ]
+
+    captured: dict = {}
+
+    class _FakeRunner:
+        def __init__(self, *, agent, app_name, session_service):
+            captured["root"] = agent
+
+        async def run_async(self, *, user_id, session_id, new_message):
+            root = captured["root"]
+            # Submit each slice's file via its own pinned closure.
+            for i, sub in enumerate(root.sub_agents):
+                _find_submit_slice_file(sub)(content=f"resource s{i} {{}}\n")
+            # Emit ONE branch-tagged thought event per sub-agent, with the
+            # branch built from that sub-agent's REAL name (the same shape ADK
+            # stamps: "<parallel.name>.<sub_agent.name>"). With colliding names
+            # both branches would be identical; with the fix they differ.
+            for sub in root.sub_agents:
+                branch = f"{root.name}.{sub.name}"
+                yield _branch_event(
+                    [_P(text=f"thinking on {sub.name}", thought=True)], branch
+                )
+            yield _Ev([_P(text="all done")], partial=False, final=True)
+
+    seen: list = []
+    with patch.object(fanout, "Runner", _FakeRunner):
+        await author_slices_parallel(
+            specs, read_tools=_NO_READ_TOOLS, event_sink=seen.append
+        )
+
+    root = captured["root"]
+    # The two sub-agent names must be distinct (no collision by construction).
+    assert root.sub_agents[0].name != root.sub_agents[1].name
+
+    thoughts = [p for p in seen if p.get("event") == "llm_thought"]
+    # One tagged thought per slice, each resolving to its OWN slice.
+    by_slice = {p["slice_id"]: p for p in thoughts}
+    assert set(by_slice) == {0, 1}, (
+        f"expected events tagged slice_id 0 and 1, got {sorted(by_slice)}"
+    )
+    assert by_slice[0]["target_path"] == "iac/foo-bar.tf"
+    assert by_slice[0]["branch"].endswith(root.sub_agents[0].name)
+    assert by_slice[1]["target_path"] == "iac/foo_bar.tf"
+    assert by_slice[1]["branch"].endswith(root.sub_agents[1].name)
 
 
 # --------------------------------------------------------------------------- #
