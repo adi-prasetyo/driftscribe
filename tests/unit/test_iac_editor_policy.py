@@ -2,6 +2,7 @@ import pytest
 from driftscribe_lib.iac_editor_policy import (
     EditorPolicyError, validate_file_writes, validate_branch, validate_base,
     ALLOWED_BRANCH_PREFIX, ALLOWED_BASE, EDITOR_LABEL,
+    MAX_FILES, MAX_FILE_BYTES,
 )
 
 
@@ -55,6 +56,32 @@ def test_size_bounds():
         validate_file_writes([_w("iac/a.tf", content=big)])     # per-file cap
     with pytest.raises(EditorPolicyError):
         validate_file_writes([_w(f"iac/f{i}.tf") for i in range(33)])  # file-count cap
+
+
+def test_rejects_control_chars_and_nul():
+    # Embedded NUL / newline must be rejected (would slip past splitext/normpath).
+    for bad in ("iac/x\x00.tf", "iac/x\n.tf"):
+        with pytest.raises(EditorPolicyError) as e:
+            validate_file_writes([_w(bad)])
+        assert e.value.status_code == 403
+
+
+def test_rejects_backslash_paths():
+    for bad in ("iac\\x.tf", "iac/sub\\..\\x.tf"):
+        with pytest.raises(EditorPolicyError) as e:
+            validate_file_writes([_w(bad)])
+        assert e.value.status_code == 403
+
+
+def test_accepts_at_limit_file_count():
+    writes = [_w(f"iac/f{i}.tf") for i in range(MAX_FILES)]
+    assert validate_file_writes(writes)
+
+
+def test_accepts_at_limit_file_bytes():
+    content = "x" * MAX_FILE_BYTES
+    assert len(content.encode("utf-8")) == MAX_FILE_BYTES
+    assert validate_file_writes([_w("iac/a.tf", content=content)])
 
 
 def test_branch_rules():

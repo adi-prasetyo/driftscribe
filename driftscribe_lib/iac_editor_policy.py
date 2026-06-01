@@ -60,6 +60,10 @@ class EditorPolicyError(Exception):
 def _validate_one_path(path: str) -> None:
     if not path or path != path.strip():
         raise EditorPolicyError(422, f"empty/whitespace path: {path!r}")
+    if any(ord(c) < 0x20 or ord(c) == 0x7f for c in path):
+        raise EditorPolicyError(403, f"control character in path: {path!r}")
+    if "\\" in path:
+        raise EditorPolicyError(403, f"backslash in path: {path!r}")
     if path.startswith("/"):
         raise EditorPolicyError(403, f"absolute path forbidden: {path!r}")
     if path != posixpath.normpath(path) or ".." in path.split("/"):
