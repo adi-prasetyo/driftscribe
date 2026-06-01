@@ -763,7 +763,17 @@ denylist; Codex sign-off; full suite green.
 
 ---
 
-## D5 (DEFERRED — sketch only, NOT v1): parallel sub-agent fan-out
+## D5 (IMPLEMENTED 2026-06-01): parallel sub-agent fan-out
+
+> **Status: IMPLEMENTED** — built as its own plan,
+> `docs/plans/2026-06-01-infra-iac-phase-d5-fanout.md` (Codex-reviewed rev-3
+> READY), on branch `feat/iac-phase-d5-fanout`. The sketch below was the
+> original deferral note; the realized design follows it closely (ADK
+> `ParallelAgent` for concurrent authoring + a deterministic code barrier that
+> re-validates with `validate_file_writes` and makes exactly ONE
+> `call_open_infra_pr`; single-slice/coupled changes fall back to the
+> single-agent path; the worker + PR + C1–C6 apply contract is byte-unchanged;
+> no new SA/secret/IAM/worker). The original sketch text is kept for history:
 
 Net-new orchestration (no sub-agent primitive today). When/if built:
 coordinator-side decomposition → parallel sub-agent slice authoring → barrier

@@ -49,6 +49,17 @@ Cross-references:
   / secret-material change that would later apply (the static gate refuses it,
   and even if a PR slipped through, the C1 denylist + C3 approval + C4
   apply-worker re-verification would refuse the apply).
+- **Parallel fan-out (Phase D5) does NOT change this worker.** When the
+  coordinator decomposes a multi-independent-file request into parallel
+  sub-agent slices, it still converges them into **exactly ONE** `/open-pr`
+  call carrying the merged `files` list (one commit → one PR). The fan-out is
+  entirely **coordinator-internal** — **no new SA, secret, IAM, or worker** —
+  so the editor receives an `/open-pr` request byte-identical to the
+  single-agent path, every gate above (`iac/`-only, AGENT-mode static gate,
+  secret ban) and the whole downstream flow (§7) are unchanged, and the
+  sub-agents themselves hold **no** PR/apply/mutation tool. Shipping D5 is just
+  a coordinator image rebuild (no step in this runbook changes). See
+  `docs/plans/2026-06-01-infra-iac-phase-d5-fanout.md`.
 
 ---
 
