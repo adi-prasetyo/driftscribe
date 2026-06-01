@@ -320,7 +320,10 @@ def test_security_headers(_configured, monkeypatch):
     csp = resp.headers.get("Content-Security-Policy")
     assert csp is not None
     assert "default-src 'none'" in csp
-    assert "style-src 'unsafe-inline'" in csp
+    # UI refresh: the page now links the same-origin built stylesheet instead of
+    # shipping an inline <style>, so the CSP allows 'self' styles (NOT inline).
+    assert "style-src 'self'" in csp
+    assert "unsafe-inline" not in csp
     assert "form-action 'self'" in csp
     assert "base-uri 'none'" in csp
     assert "frame-ancestors 'none'" in csp

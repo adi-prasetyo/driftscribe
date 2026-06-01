@@ -1,0 +1,330 @@
+<script lang="ts">
+  import { onMount } from 'svelte';
+  import {
+    apiFetch,
+    getStoredToken,
+    setToken,
+    clearToken,
+    type TokenState,
+  } from './lib/api';
+  import { consumeSse } from './lib/sse';
+  import type { TraceEvent, TimelineStatus } from './lib/timeline';
+  import type { Decision, TraceResponse } from './lib/types';
+  import type { Workload } from './lib/workloads';
+
+  import TokenStatus from './components/TokenStatus.svelte';
+  import AuthPanel from './components/AuthPanel.svelte';
+  import ChatForm from './components/ChatForm.svelte';
+  import TraceBadge from './components/TraceBadge.svelte';
+  import FinalResponse from './components/FinalResponse.svelte';
+  import HistoricalBanner from './components/HistoricalBanner.svelte';
+  import DecisionsRail from './components/DecisionsRail.svelte';
+  import Timeline from './components/Timeline.svelte';
+
+  // ---- state ----
+  let tokenState = $state<TokenState>(getStoredToken() ? 'ok' : 'missing');
+  let events = $state<TraceEvent[]>([]);
+  let traceId = $state<string | null>(null);
+  let status = $state<TimelineStatus>('pending');
+  let finalReply = $state<string | null>(null);
+  let finalIsError = $state(false);
+
+  let decisions = $state<Decision[]>([]);
+
+  let historicalActive = $state(false);
+  let historicalTraceId = $state<string | null>(null);
+  let activeTraceId = $state<string | null>(null);
+
+  let authPanelOpen = $state(false);
+  let authResolver: ((t: string | null) => void) | null = null;
+
+  // Concurrency guard: a monotonically-incrementing run id. submitChat /
+  // openTrace / newChat each bump it; in-flight callbacks bail at every await
+  // boundary when their captured id is stale, so a slow first stream can't
+  // append into (or backfill over) a newer run. `busy` also disables Send.
+  let runSeq = 0;
+  let busy = $state(false);
+
+  // ---- auth plumbing (replaces window.prompt) ----
+  function requestToken(): Promise<string | null> {
+    authPanelOpen = true;
+    return new Promise((resolve) => {
+      authResolver = resolve;
+    });
+  }
+  function onAuthSubmit(token: string) {
+    authPanelOpen = false;
+    setToken(token);
+    tokenState = 'ok';
+    const r = authResolver;
+    authResolver = null;
+    r?.(token);
+  }
+  function onAuthCancel() {
+    authPanelOpen = false;
+    tokenState = getStoredToken() ? 'ok' : 'missing';
+    const r = authResolver;
+    authResolver = null;
+    r?.(null);
+  }
+  function onChangeToken() {
+    clearToken();
+    tokenState = 'missing';
+    void requestToken();
+  }
+
+  // ---- request wrapper that keeps the token pill honest ----
+  async function call(path: string, init?: RequestInit): Promise<Response> {
+    const resp = await apiFetch(path, init, requestToken);
+    if (resp.ok) {
+      if (getStoredToken()) tokenState = 'ok';
+    } else if (resp.status === 401 || resp.status === 403) {
+      tokenState = getStoredToken() ? 'invalid' : 'missing';
+    }
+    return resp;
+  }
+
+  // ---- decisions rail ----
+  async function loadDecisions() {
+    try {
+      const resp = await call('/decisions?limit=50');
+      if (!resp.ok) return;
+      const body = await resp.json();
+      if (Array.isArray(body?.decisions)) decisions = body.decisions as Decision[];
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  const asString = (v: unknown): string | null =>
+    typeof v === 'string' && v.length > 0 ? v : null;
+
+  // ---- live chat (SSE) ----
+  async function submitChat(prompt: string, workload: Workload) {
+    if (historicalActive || busy) return;
+    const myRun = ++runSeq;
+    busy = true;
+    events = [];
+    traceId = null;
+    finalReply = null;
+    finalIsError = false;
+    status = 'pending';
+
+    try {
+      let resp: Response;
+      try {
+        resp = await call('/chat', {
+          method: 'POST',
+          headers: { Accept: 'text/event-stream', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt, workload }),
+        });
+      } catch {
+        if (myRun !== runSeq) return;
+        status = 'error';
+        finalReply = 'Network error contacting the coordinator.';
+        finalIsError = true;
+        return;
+      }
+      if (myRun !== runSeq) return;
+
+      if (!resp.ok) {
+        status = 'error';
+        finalReply = `Request failed (${resp.status}).`;
+        finalIsError = true;
+        return;
+      }
+
+      const ctype = resp.headers.get('content-type') ?? '';
+      if (!ctype.includes('text/event-stream')) {
+        // Fallback: non-streaming JSON {reply, tool_calls}. The backfill below
+        // still pulls the full timeline (incl. mcp_call) from /trace.
+        try {
+          const body = await resp.json();
+          if (myRun !== runSeq) return;
+          traceId = resp.headers.get('X-Trace-Id');
+          finalReply = typeof body?.reply === 'string' ? body.reply : JSON.stringify(body);
+          status = 'complete';
+        } catch {
+          if (myRun !== runSeq) return;
+          status = 'error';
+          finalReply = 'Malformed response.';
+          finalIsError = true;
+        }
+        await backfillTrace(myRun);
+        if (myRun === runSeq) await loadDecisions();
+        return;
+      }
+
+      let streamErrored = false;
+      try {
+        await consumeSse(resp, {
+          onMeta: (m) => {
+            if (myRun !== runSeq) return;
+            traceId = m.trace_id;
+            status = 'streaming';
+          },
+          onEvent: (e) => {
+            if (myRun !== runSeq) return;
+            events = [...events, e as unknown as TraceEvent];
+          },
+          onDone: (d) => {
+            if (myRun !== runSeq) return;
+            finalReply = d.reply;
+            finalIsError = false;
+            status = 'complete';
+          },
+          onError: (er) => {
+            if (myRun !== runSeq) return;
+            finalReply = er.detail || 'The coordinator returned an error.';
+            finalIsError = true;
+            status = 'error';
+          },
+        });
+      } catch {
+        // Stream transport error (reader threw / body errored mid-stream).
+        if (myRun !== runSeq) return;
+        streamErrored = true;
+      }
+
+      // One post-stream backfill (also the recovery path on transport error):
+      // pulls side-channel mcp_call events not carried on the stream +
+      // reconciles ordering (mirrors the legacy UI).
+      await backfillTrace(myRun);
+      if (myRun !== runSeq) return;
+      // finalReply is set by both onDone and onError; if the stream broke before
+      // producing anything, surface a recoverable error after the backfill.
+      if (streamErrored && finalReply == null) {
+        status = 'error';
+        finalReply = 'The reasoning stream was interrupted. Showing the recovered trace.';
+        finalIsError = true;
+      }
+      await loadDecisions();
+    } finally {
+      if (myRun === runSeq) busy = false;
+    }
+  }
+
+  async function backfillTrace(myRun: number) {
+    const tid = traceId;
+    if (!tid || myRun !== runSeq) return;
+    try {
+      const resp = await call('/trace/' + encodeURIComponent(tid));
+      if (myRun !== runSeq || !resp.ok) return;
+      const t = (await resp.json()) as TraceResponse;
+      if (myRun !== runSeq) return;
+      if (Array.isArray(t.events) && t.events.length > 0) {
+        events = t.events;
+      }
+    } catch {
+      /* backfill is best-effort — the live stream already populated the timeline */
+    }
+  }
+
+  // ---- historical replay ----
+  async function openTrace(tid: string) {
+    const myRun = ++runSeq; // cancels any in-flight live stream
+    busy = false;
+    historicalActive = true;
+    historicalTraceId = tid;
+    activeTraceId = tid;
+    traceId = tid;
+    events = [];
+    finalReply = null;
+    finalIsError = false;
+    status = 'pending';
+    try {
+      const resp = await call('/trace/' + encodeURIComponent(tid));
+      if (myRun !== runSeq) return;
+      if (resp.ok) {
+        const t = (await resp.json()) as TraceResponse;
+        if (myRun !== runSeq) return;
+        events = Array.isArray(t.events) ? t.events : [];
+        // Surface the decision's summary in the hero card (legacy parity).
+        const d = t.decision as Record<string, unknown> | null | undefined;
+        finalReply = d ? asString(d.rationale) ?? asString(d.rendered_body) : null;
+        finalIsError = false;
+        status = t.complete ? 'complete' : 'streaming';
+      } else {
+        status = 'error';
+      }
+    } catch {
+      if (myRun === runSeq) status = 'error';
+    }
+  }
+
+  function newChat() {
+    ++runSeq; // cancel any in-flight live stream
+    busy = false;
+    historicalActive = false;
+    historicalTraceId = null;
+    activeTraceId = null;
+    traceId = null;
+    events = [];
+    finalReply = null;
+    finalIsError = false;
+    status = 'pending';
+  }
+
+  onMount(() => {
+    void loadDecisions();
+  });
+</script>
+
+<header class="app-header">
+  <h1 class="app-title">DriftScribe <span class="app-title__sub">— Reasoning Timeline</span></h1>
+  <TokenStatus state={tokenState} onChange={onChangeToken} />
+</header>
+
+<main class="layout">
+  <DecisionsRail {decisions} {activeTraceId} onOpenTrace={openTrace} />
+
+  <section id="chat-area" class="chat-area" aria-label="Chat and reasoning timeline">
+    <ChatForm disabled={historicalActive || busy} onSubmit={submitChat} />
+    <HistoricalBanner active={historicalActive} traceId={historicalTraceId} onNewChat={newChat} />
+    <TraceBadge {traceId} {status} />
+    <FinalResponse reply={finalReply} isError={finalIsError} />
+    <Timeline {events} {status} />
+  </section>
+</main>
+
+<AuthPanel open={authPanelOpen} onSubmit={onAuthSubmit} onCancel={onAuthCancel} />
+
+<style>
+  .app-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--ds-sp-4);
+    padding: var(--ds-sp-3) var(--ds-sp-6);
+    border-bottom: 1px solid var(--ds-border);
+    background: var(--ds-surface);
+  }
+  .app-title {
+    font-size: var(--ds-fs-3);
+    font-weight: var(--ds-fw-bold);
+    letter-spacing: -0.01em;
+    margin: 0;
+  }
+  .app-title__sub {
+    color: var(--ds-muted);
+    font-weight: var(--ds-fw-normal);
+  }
+  .layout {
+    display: grid;
+    grid-template-columns: 280px minmax(0, 1fr);
+    align-items: start;
+    min-height: calc(100vh - 56px);
+  }
+  .chat-area {
+    padding: var(--ds-sp-5) var(--ds-sp-6) var(--ds-sp-8);
+    max-width: var(--ds-page-max);
+  }
+  .chat-area > :global(*) {
+    margin-bottom: var(--ds-sp-4);
+  }
+  @media (max-width: 760px) {
+    .layout {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>

@@ -1,25 +1,45 @@
-"""Integration tests for ``GET /ui/transparency`` (Phase 19.B.1).
+"""Integration tests for ``GET /ui/transparency`` (Svelte SPA shell).
 
-Scaffolding-only coverage: the route must serve the template, set
-``Cache-Control: no-store`` (operator surface, mutable state), and be
-reachable WITHOUT the ``X-DriftScribe-Token`` header — the HTML itself
-is unauthenticated and every API call the page makes (in later 19.B
-tasks) carries the token from ``sessionStorage``.
+Post-refresh the route serves a THIN shell (a ``#app`` mount + the Vite
+manifest-resolved JS/CSS); the Svelte app renders the DOM client-side. So this
+file pins the SHELL contract (200, html, no-store, no token, the bundle
+reference, the legacy fallback, and the manifest-present/absent resolution).
 
-Landmarks pinned here are intentionally minimal — later UI tasks
-(19.B.2-19.B.4) add their own tests that lock down the IDs they wire
-up. The landmarks below are the ones a judge or a future refactor
-would expect to find before any JS runs.
+The behavioral/structural guards that the old single-file template inlined have
+been RE-HOMED (not dropped) — each is now asserted on the pure function or the
+runtime DOM:
+
+  - token + 401/403 try-then-prompt  → frontend vitest api.test.ts
+  - SSE consume + frame parsing       → frontend vitest sse.test.ts
+  - event→group binning (incl mcp)    → frontend vitest timeline.test.ts
+  - worker/MCP friendly labels        → frontend vitest labels.test.ts
+  - same-origin approval-CTA guard    → frontend vitest approval.test.ts
+                                         + mock smoke (off-origin → no link)
+  - workload <select> option values   → frontend vitest workloads.test.ts
+                                         + tests/unit/test_transparency_template_testids.py
+  - testids / three groups / DOM flow → frontend/tests/smoke + tests/e2e/ui
 """
 
 from __future__ import annotations
 
+import json
+
+import pytest
 from fastapi.testclient import TestClient
 
+import agent.main as main
 from agent.main import app
 
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _reset_manifest_cache():
+    """Each test starts from a clean manifest cache (it caches on success)."""
+    main._VITE_MANIFEST_CACHE = None
+    yield
+    main._VITE_MANIFEST_CACHE = None
 
 
 def test_ui_transparency_route_returns_html():
@@ -28,159 +48,71 @@ def test_ui_transparency_route_returns_html():
     assert resp.headers["content-type"].startswith("text/html")
     assert resp.headers.get("Cache-Control") == "no-store"
     body = resp.text
-    # Pin key landmarks so later tasks (and judges) can rely on them.
     assert "DriftScribe" in body
-    assert "transparency" in body.lower() or "reasoning timeline" in body.lower()
+    assert "reasoning timeline" in body.lower()
 
 
 def test_ui_transparency_route_does_not_require_token():
-    # The HTML itself is unauthenticated; subsequent API calls carry the token.
+    # The shell itself is unauthenticated; the SPA's API calls carry the token.
     resp = client.get("/ui/transparency")  # NO X-DriftScribe-Token
     assert resp.status_code == 200
 
 
-def test_ui_transparency_route_has_hook_landmarks():
-    """Pin the structural IDs that 19.B.2-19.B.4 will attach to. If
-    any of these disappear in a future refactor, the corresponding
-    follow-up task's JS would silently no-op — better to fail here."""
+def test_ui_transparency_shell_mounts_spa_bundle():
+    """The shell must carry the #app mount point and reference the built ES
+    module + stylesheet under /static (resolved from the Vite manifest)."""
+    body = client.get("/ui/transparency").text
+    assert 'id="app"' in body
+    assert "/static/" in body
+    assert 'type="module"' in body
+    assert '<link rel="stylesheet"' in body
+
+
+def test_shell_uses_hashed_assets_when_manifest_present(tmp_path, monkeypatch):
+    """Manifest present → the shell points at the hashed entry + its CSS."""
+    static = tmp_path / "static"
+    (static / ".vite").mkdir(parents=True)
+    (static / ".vite" / "manifest.json").write_text(
+        json.dumps(
+            {
+                "src/main.ts": {
+                    "file": "transparency-DEADBEEF.js",
+                    "isEntry": True,
+                    "css": ["driftscribe-CAFEBABE.css"],
+                }
+            }
+        )
+    )
+    monkeypatch.setattr(main, "_STATIC_DIR", static)
+    main._VITE_MANIFEST_CACHE = None
+
+    body = client.get("/ui/transparency").text
+    assert "/static/transparency-DEADBEEF.js" in body
+    assert "/static/driftscribe-CAFEBABE.css" in body
+
+
+def test_shell_falls_back_when_manifest_absent(tmp_path, monkeypatch):
+    """Manifest absent (pure-Python CI / pre-build) → 200 with the dev fallback
+    asset names, so the route never 500s without a `vite build`."""
+    empty = tmp_path / "no-static"
+    empty.mkdir()
+    monkeypatch.setattr(main, "_STATIC_DIR", empty)
+    main._VITE_MANIFEST_CACHE = None
+
     resp = client.get("/ui/transparency")
+    assert resp.status_code == 200
     body = resp.text
-    # Token + decisions rail (19.B.2 / 19.B.3)
-    assert 'id="token-status"' in body
-    assert 'id="decisions-rail"' in body
-    # Chat form pieces (19.B.3)
-    assert 'id="prompt-input"' in body
-    assert 'id="workload-select"' in body
-    assert 'id="send-btn"' in body
-    # Workload dropdown: four options with domain-led labels. The
-    # option VALUES (drift/upgrade/explore/provision) are the API contract
-    # sent to /chat; the visible labels are operator-facing. Pin both so a
-    # label rename or a dropped option is a reviewed change.
-    assert '<option value="drift">Cloud Run config</option>' in body
-    assert '<option value="upgrade">Dependencies</option>' in body
-    assert '<option value="explore">Explore (read-only)</option>' in body
-    assert '<option value="provision">Provision (infra edits)</option>' in body
-    # Trace badge + final-response card (19.B.3)
-    assert 'id="trace-badge"' in body
-    assert 'id="final-response-card"' in body
-    # Timeline groups (19.B.4)
+    assert 'id="app"' in body
+    assert "/static/transparency.js" in body
+    assert "/static/driftscribe.css" in body
+
+
+def test_legacy_ui_still_reachable():
+    """The pre-refresh single-file UI is preserved one release as a safety net."""
+    resp = client.get("/ui/transparency-legacy")
+    assert resp.status_code == 200
+    assert resp.headers.get("Cache-Control") == "no-store"
+    body = resp.text
+    # Legacy landmarks (the inline-JS single-file page) are intact here.
     assert 'id="group-coordinator"' in body
-    assert 'id="group-tools"' in body
-    assert 'id="group-mcp"' in body
-
-
-def test_ui_transparency_contains_token_prompt_helpers():
-    # Pin the API shape that 19.B.3 will rely on.
-    resp = client.get("/ui/transparency")
-    body = resp.text
-    assert "getToken" in body
-    assert "api(" in body or "function api" in body
-    assert "X-DriftScribe-Token" in body
-    assert "driftscribe_token" in body  # sessionStorage key
-    assert "401" in body and "403" in body  # cleared on auth failures
-
-
-def test_ui_transparency_contains_chat_polling_logic():
-    resp = client.get("/ui/transparency")
-    body = resp.text
-    # Pin the public JS contract that 19.B.4 will rely on.
-    assert "/chat" in body
-    assert "/trace/" in body  # polling endpoint
-    assert "X-Trace-Id" in body  # header read on /chat response
-    assert "final-response-card" in body  # element written to
-    assert "2000" in body or "2_000" in body  # 2-second poll cadence
-    # Status pill states — at least 'complete' must be referenced.
-    assert "complete" in body.lower()
-
-
-def test_ui_transparency_contains_three_group_renderer():
-    """19.B.4: three-group timeline render (coordinator / tools / MCP).
-
-    Pin the renderer's public surface so subsequent refactors don't quietly
-    regress the worker-friendly labels (Codex v3 MINOR) or drop one of the
-    three group anchors that the polling glue writes into.
-
-    Phase-19 follow-up (Codex final review MINOR): pin the upgrade-
-    workload friendly labels AND the correct tool names — the previous
-    mapping had ``upgrade_read_dependencies`` / ``upgrade_patch_docs_tool``
-    which never matched the actual exposed surface
-    (``upgrade_read_dependencies_tool`` / ``upgrade_propose_pr_tool``
-    in ``agent/adk_tools.py``), so upgrade traces silently showed the
-    raw function names instead of the friendly labels.
-    """
-    body = client.get("/ui/transparency").text
-    assert "_WORKER_LABELS" in body or "WORKER_LABELS" in body
-    assert "Reader (drift)" in body
-    assert "Developer Knowledge MCP" in body
-    assert "group-coordinator" in body
-    assert "group-tools" in body
-    assert "group-mcp" in body
-    # Upgrade workload labels — friendly text + correct tool keys.
-    assert "Upgrade Reader" in body
-    assert "Upgrade Docs" in body
-    # Provision workload label — keyed on the callable __name__
-    # (``open_infra_pr_tool``); the symbolic workload name is
-    # ``provision_open_infra_pr``.
-    assert '"open_infra_pr_tool":' in body
-    assert "Open infra PR" in body
-    assert "upgrade_read_dependencies_tool" in body
-    assert "upgrade_propose_pr_tool" in body
-
-
-def test_ui_transparency_contains_approval_cta_renderer():
-    """19.B.5: inline HITL approval CTA.
-
-    Pin: the renderer exists and only fires for ``propose_rollback_tool``
-    with a same-origin ``/approvals/`` URL. If a future refactor drops the
-    helper or relaxes the URL guard, this test fails before judges (or an
-    attacker probing for an open redirect) ever see the regression.
-
-    Phase-19 follow-up (Codex final review IMPORTANT): the helper must
-    accept BOTH relative (``/approvals/...``) AND absolute
-    (``https://<coordinator>/approvals/...``) URLs — the rollback
-    worker emits the absolute form (see ``workers/rollback/main.py``),
-    so the prior literal ``startsWith("/approvals/")`` guard NEVER
-    rendered the CTA in real demos. The fix uses ``new URL(raw,
-    window.location.origin)`` and rejects off-origin / non-http
-    schemes, so both shapes are accepted with the same-origin
-    invariant preserved.
-    """
-    body = client.get("/ui/transparency").text
-    # Pin: the renderer exists and only fires for propose_rollback_tool.
-    assert "propose_rollback_tool" in body
-    assert "approval_url" in body
-    assert "Approve" in body  # button text
-    assert "approval-cta" in body or "approval-btn" in body
-    # Path-prefix guard still load-bearing (the literal "/approvals/"
-    # appears in BOTH the URL.pathname.startsWith check and the
-    # block comments — neither should regress).
-    assert '"/approvals/"' in body or "'/approvals/'" in body
-    # Shared same-origin helper — pin its name so a refactor that
-    # inlines or renames it shows up here.
-    assert "_safeApprovalHref" in body
-    # URL-parse-based acceptance: pins that the implementation uses
-    # ``new URL(raw, window.location.origin)`` and compares against
-    # ``window.location.origin`` (NOT a literal startsWith). If a
-    # future refactor reverts to the prefix-only guard, this fails.
-    assert "new URL(" in body
-    assert "window.location.origin" in body
-
-
-def test_ui_transparency_contains_decisions_pane():
-    """19.B.6: past-decisions pane + historical-trace navigation.
-
-    Pin the rail's contract: it must reference /decisions, render an
-    "open trace" affordance backed by a /trace/{id} fetch, dim the form
-    when a historical trace is active ("← new chat" to return), and
-    surface expired approval URLs (expires_at timestamp comparison) so a
-    judge clicking a stale rollback gets a strikethrough + badge instead
-    of a dead "Approve →".
-    """
-    body = client.get("/ui/transparency").text
     assert "decisions-rail" in body
-    assert "/decisions" in body
-    assert "/trace/" in body  # historical fetch
-    assert "open trace" in body.lower() or "open-trace" in body.lower()
-    assert "← new chat" in body or "new chat" in body.lower()
-    # expired badge / past-decision approval CTA
-    assert "expires_at" in body or "expired" in body
