@@ -10,8 +10,9 @@ These tests pin three properties:
 
 1. A valid drift YAML parses into a `WorkloadSpec`.
 2. Missing required fields raise `ValidationError`.
-3. An unknown `name` (not in the `Literal["drift", "upgrade"]` set)
-   is rejected at the schema layer, not later by the registry.
+3. An unknown `name` (not in the
+   `Literal["drift", "upgrade", "explore", "provision"]` set) is
+   rejected at the schema layer, not later by the registry.
 """
 from pathlib import Path
 
@@ -121,7 +122,7 @@ def test_repo_workload_yaml_files_exist_and_parse(tmp_path):
     instantiate the registry here (that's `test_workload_registry`) —
     just that the YAML is valid against the schema."""
     repo_root = Path(__file__).resolve().parents[2]
-    for name in ("drift", "upgrade"):
+    for name in ("drift", "upgrade", "explore", "provision"):
         path = repo_root / "workloads" / name / "workload.yaml"
         assert path.exists(), f"missing workload manifest: {path}"
         WorkloadSpec.model_validate(yaml.safe_load(path.read_text()))

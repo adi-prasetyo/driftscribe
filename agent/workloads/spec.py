@@ -19,11 +19,15 @@ class WorkloadSpec(BaseModel):
 
     Attributes:
         name: workload identifier. Constrained to the closed set
-            ``{"drift", "upgrade", "explore"}`` so a YAML typo
-            (``"drft"``) is caught by pydantic, not by a later runtime
-            branch. ``"explore"`` is the chat-only, strictly read-only
-            workload (no autonomous ``/recheck`` path; see the
-            ``observation_kind="none"`` note below).
+            ``{"drift", "upgrade", "explore", "provision"}`` so a YAML
+            typo (``"drft"``) is caught by pydantic, not by a later
+            runtime branch. ``"explore"`` is the chat-only, strictly
+            read-only workload (no autonomous ``/recheck`` path; see the
+            ``observation_kind="none"`` note below). ``"provision"`` is
+            also chat-only (Phase D) — it authors OpenTofu (IaC) edits
+            and opens ONE iac/-only PR for the gated apply pipeline; it
+            never touches live infra directly, so it likewise has no
+            ``/recheck`` path.
         display_name: short human-readable label (operator-facing).
         description: one-paragraph description of what this workload
             detects and acts on. Surfaces in operator UI / docs.
@@ -70,7 +74,7 @@ class WorkloadSpec(BaseModel):
     # point of the manifest schema is to keep the surface narrow.
     model_config = ConfigDict(extra="forbid")
 
-    name: Literal["drift", "upgrade", "explore"]
+    name: Literal["drift", "upgrade", "explore", "provision"]
     display_name: str
     description: str
     system_prompt_file: str

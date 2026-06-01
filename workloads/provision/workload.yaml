@@ -1,0 +1,77 @@
+# Provision workload manifest — chat-only IaC-authoring (Phase D2).
+#
+# Same security model as the drift/upgrade/explore manifests: symbolic
+# names only. The central registry (agent/workloads/registry.py) resolves
+# each name to a real callable or WorkerEndpoint. URLs / secrets / repos /
+# audiences NEVER appear here. Anything referenced that isn't in
+# TOOL_REGISTRY / WORKER_REGISTRY fails coordinator boot loudly.
+#
+# What makes "provision" different from explore (the other chat-only
+# workload):
+# - explore NARROWS to a strictly read-only subset and lists ZERO
+#   mutation tools. provision is chat-only too, but it intentionally
+#   carries ONE mutation tool: ``provision_open_infra_pr``. That tool
+#   authors validated iac/-only file writes and opens ONE pull request
+#   via the tofu-editor worker. It writes HCL and opens a PR — it NEVER
+#   touches live infra directly (the gated C2→approve→C4 apply pipeline
+#   does that, downstream, behind a human approval). So unlike explore,
+#   provision is NOT pinned read-only:
+#   tests/unit/test_coordinator_tool_inventory.py asserts
+#   ``provision_open_infra_pr`` IS in the mutation-tool set and the
+#   ``tofu_editor`` worker IS in the mutation-worker set.
+# - It is CHAT-ONLY. There is no autonomous /recheck path: /recheck
+#   refuses ``provision`` early (agent/main.py::CHAT_ONLY_WORKLOAD_NAMES),
+#   so it needs no decision-rules contract and no action vocabulary.
+# - Its read tools (live env / inventory / contract / dev-docs) are
+#   explore's read subset minus ``upgrade_read_dependencies`` (provision
+#   has no lockfile/dependency concern); they let the agent inspect
+#   current state before authoring minimal edits.
+
+name: provision
+display_name: "Provision (infra edits)"
+description: >
+  Author OpenTofu (IaC) changes from a chat request and open ONE iac/-only
+  pull request for the gated apply pipeline to plan, approve, and apply. It
+  never touches live infra directly — it only writes HCL and opens a PR.
+
+# The single prompt file. There is intentionally no chat_system_prompt_file:
+# provision is chat-only, so /chat falls back to system_prompt (the registry
+# resolves chat_system_prompt to system_prompt when the field is absent).
+# Mirrors explore — the /recheck-only framing other workloads use does not
+# apply here.
+system_prompt_file: system_prompt.md
+
+# No contract_file: provision is chat-only and makes no structured
+# DecisionProposal, so it has no decision-rules contract. (It can still READ
+# the baked-in ops-contract via the load_contract tool, which reads
+# CONTRACT_PATH from settings, independent of this field.)
+
+# Read tools (explore's read subset minus upgrade_read_dependencies) PLUS the
+# one mutation tool ``provision_open_infra_pr``. Order MUST equal
+# PROVISION_WORKLOAD_TOOL_NAMES in agent/adk_agent.py (tool-order pin) — the
+# read tools first, provision_open_infra_pr LAST.
+enabled_tool_names:
+  - drift_read_live_env
+  - read_project_inventory
+  - load_contract
+  - search_developer_docs
+  - retrieve_developer_doc
+  - provision_open_infra_pr
+
+# Read workers (drift_reader / infra_reader) PLUS the tofu_editor worker that
+# backs provision_open_infra_pr. NOTE: worker_names is a manifest/audit field
+# validated at load time (the URL env vars must be set); tools call workers by
+# hardcoded name through worker_client, not via this list.
+worker_names:
+  - drift_reader
+  - infra_reader
+  - tofu_editor
+
+# Chat-only: no autonomous observation source. "none" is a declarative
+# marker (nothing in code switches on observation_kind); /recheck is
+# route-refused for provision regardless.
+observation_kind: none
+
+# No structured decisions — provision authors edits and opens a PR via a
+# tool, not via a DecisionProposal action.
+action_names: []

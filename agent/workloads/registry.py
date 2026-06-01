@@ -62,6 +62,7 @@ from pydantic import BaseModel, ConfigDict
 from agent.adk_tools import (
     load_contract_tool,
     notify_tool,
+    open_infra_pr_tool,
     patch_docs_tool,
     propose_rollback_tool,
     read_live_env_tool,
@@ -377,6 +378,17 @@ _TOOL_REGISTRY: Final[dict[str, Callable | None]] = {
     # structured error result — see ``agent.mcp.developer_knowledge``.
     "search_developer_docs":     search_developer_docs,
     "retrieve_developer_doc":    retrieve_developer_doc,
+    # Provision workload (Phase D2) — author OpenTofu (IaC) edits and open
+    # ONE iac/-only PR via the tofu-editor worker. Authority-clean: the LLM
+    # supplies only the file writes + PR title/body; target_repo / branch /
+    # base / label are derived server-side (registry pin, never LLM). The
+    # tofu-editor re-validates every file (iac/-prefix, foundation ban,
+    # secret ban, AGENT-mode static gate) before any GitHub call, so a bad
+    # request surfaces the worker's 403/422 as a model feedback loop. This is
+    # the one MUTATION tool the chat-only ``provision`` workload carries (it
+    # writes HCL + opens a PR; it never touches live infra) — see
+    # ``agent.adk_tools.open_infra_pr_tool``.
+    "provision_open_infra_pr":   open_infra_pr_tool,
     # Coordinator session memory — reserved, implemented in 17.B.
     "get_session_state":         None,
     "set_session_state":         None,
@@ -420,6 +432,12 @@ _WORKER_REGISTRY: Final[dict[str, WorkerSpec]] = {
     # `load_workload("upgrade")` time (17.E wires the env vars).
     "upgrade_reader": WorkerSpec(url_env="UPGRADE_READER_URL"),
     "upgrade_docs":   WorkerSpec(url_env="UPGRADE_DOCS_URL"),
+    # Provision workload (Phase D2) — the tofu-editor worker (agent-authoring
+    # seam) that commits validated iac/-only file writes and opens ONE PR.
+    # Its URL env mirrors ``agent.worker_client._WORKER_URL_ENV["tofu_editor"]``
+    # (both consume the same source of truth; the D2-3 parity test
+    # ``tests/unit/test_worker_registry_parity.py`` pins the two equal).
+    "tofu_editor":    WorkerSpec(url_env="TOFU_EDITOR_URL"),
 }
 
 # Public, read-only view. See note on TOOL_REGISTRY above.

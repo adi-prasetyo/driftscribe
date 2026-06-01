@@ -291,9 +291,9 @@ def test_chat_unknown_workload_returns_422() -> None:
     """``POST /chat`` with ``workload="does_not_exist"`` → 422.
 
     The ChatRequest's ``workload`` field is
-    ``Literal["drift", "upgrade", "explore"]``; pydantic rejects unknown
-    values before the handler body runs. The response shape is FastAPI's
-    standard validation error envelope.
+    ``Literal["drift", "upgrade", "explore", "provision"]``; pydantic
+    rejects unknown values before the handler body runs. The response
+    shape is FastAPI's standard validation error envelope.
     """
     fake = AsyncMock()
     with patch("agent.adk_agent.run_chat", fake):

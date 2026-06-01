@@ -52,13 +52,14 @@ def test_ui_transparency_route_has_hook_landmarks():
     assert 'id="prompt-input"' in body
     assert 'id="workload-select"' in body
     assert 'id="send-btn"' in body
-    # Workload dropdown: three options with domain-led labels. The
-    # option VALUES (drift/upgrade/explore) are the API contract sent to
-    # /chat; the visible labels are operator-facing. Pin both so a label
-    # rename or a dropped option is a reviewed change.
+    # Workload dropdown: four options with domain-led labels. The
+    # option VALUES (drift/upgrade/explore/provision) are the API contract
+    # sent to /chat; the visible labels are operator-facing. Pin both so a
+    # label rename or a dropped option is a reviewed change.
     assert '<option value="drift">Cloud Run config</option>' in body
     assert '<option value="upgrade">Dependencies</option>' in body
     assert '<option value="explore">Explore (read-only)</option>' in body
+    assert '<option value="provision">Provision (infra edits)</option>' in body
     # Trace badge + final-response card (19.B.3)
     assert 'id="trace-badge"' in body
     assert 'id="final-response-card"' in body
@@ -117,6 +118,11 @@ def test_ui_transparency_contains_three_group_renderer():
     # Upgrade workload labels — friendly text + correct tool keys.
     assert "Upgrade Reader" in body
     assert "Upgrade Docs" in body
+    # Provision workload label — keyed on the callable __name__
+    # (``open_infra_pr_tool``); the symbolic workload name is
+    # ``provision_open_infra_pr``.
+    assert '"open_infra_pr_tool":' in body
+    assert "Open infra PR" in body
     assert "upgrade_read_dependencies_tool" in body
     assert "upgrade_propose_pr_tool" in body
 

@@ -58,6 +58,7 @@ from agent.adk_agent import (
     COORDINATOR_TOOLS,
     DRIFT_WORKLOAD_TOOL_NAMES,
     EXPLORE_WORKLOAD_TOOL_NAMES,
+    PROVISION_WORKLOAD_TOOL_NAMES,
     UPGRADE_WORKLOAD_TOOL_NAMES,
     build_agent,
     build_chat_agent,
@@ -104,6 +105,13 @@ EXPECTED_TOOL_NAMES = frozenset({
     # (no args). Strictly read-only: exposed by the chat-only ``explore``
     # workload and intentionally absent from ``_MUTATION_TOOL_NAMES``.
     "read_project_inventory_tool",
+    # Phase D2 — Provision workload: author OpenTofu (IaC) edits and open
+    # ONE iac/-only PR via the tofu-editor worker. Authority-clean (the LLM
+    # supplies only the file writes + PR title/body; routing fields derived
+    # server-side). UNLIKE the read tools, this is a MUTATION tool — its
+    # symbolic name ``provision_open_infra_pr`` IS in ``_MUTATION_TOOL_NAMES``
+    # below. Callable ``__name__`` is ``open_infra_pr_tool``.
+    "open_infra_pr_tool",
 })
 
 
@@ -156,6 +164,13 @@ _MUTATION_TOOL_NAMES = frozenset({
     "upgrade_merge_pr",
     "notify",
     "search_recent_prs",
+    # Phase D2 — the provision workload's IaC-authoring tool. It rides the
+    # tofu-editor's write-capable GitHub PAT and opens a PR (a mutation),
+    # so it counts as a mutation tool here. ``provision`` intentionally
+    # carries it — see ``test_provision_workload_carries_mutation_tool``
+    # below: explore stays read-only (disjoint from this set), provision
+    # does NOT (it is NOT asserted read-only).
+    "provision_open_infra_pr",
 })
 
 # Mutation WORKERS no read-only workload may wire in. This is a secondary,
@@ -168,6 +183,10 @@ _MUTATION_WORKER_NAMES = frozenset({
     "drift_docs",
     "drift_rollback",
     "upgrade_docs",
+    # Phase D2 — the tofu-editor worker commits validated iac/-only file
+    # writes and opens ONE PR (the provision workload's write surface). It
+    # holds a write-capable GitHub editor PAT, so it is a mutation worker.
+    "tofu_editor",
 })
 
 
@@ -351,6 +370,76 @@ def test_explore_workload_is_strictly_read_only():
     )
 
 
+def _load_provision_spec() -> WorkloadSpec:
+    """Parse ``workloads/provision/workload.yaml`` directly (no env needed).
+
+    Like the explore/upgrade enabled-tools tests, the audit point here is
+    the YAML ⇄ constant equality, which doesn't depend on the worker URL
+    env vars being set.
+    """
+    yaml_path = (
+        Path(__file__).resolve().parents[2]
+        / "workloads"
+        / "provision"
+        / "workload.yaml"
+    )
+    raw = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+    return WorkloadSpec.model_validate(raw)
+
+
+def test_provision_workload_enabled_tools_match_expected_set():
+    """Phase D2: the provision workload's enabled_tool_names must equal
+    :data:`PROVISION_WORKLOAD_TOOL_NAMES` exactly — same names, same order.
+    Mirrors the drift/upgrade/explore inventory pins (three-way YAML ⇄ code
+    constant ⇄ runtime equality)."""
+    actual = tuple(_load_provision_spec().enabled_tool_names)
+
+    assert actual == PROVISION_WORKLOAD_TOOL_NAMES, (
+        f"Provision workload tool inventory drifted.\n"
+        f"  Expected (ordered): {list(PROVISION_WORKLOAD_TOOL_NAMES)}\n"
+        f"  Actual   (ordered): {list(actual)}\n"
+        f"  Added:    {sorted(set(actual) - set(PROVISION_WORKLOAD_TOOL_NAMES))}\n"
+        f"  Removed:  {sorted(set(PROVISION_WORKLOAD_TOOL_NAMES) - set(actual))}\n"
+        f"If this change is intentional, update both the YAML at "
+        f"workloads/provision/workload.yaml AND PROVISION_WORKLOAD_TOOL_NAMES "
+        f"in agent/adk_agent.py."
+    )
+
+
+def test_provision_workload_carries_mutation_tool_explore_stays_read_only():
+    """Phase D2: the two chat-only workloads diverge on read-only-ness.
+
+    ``explore`` is strictly read-only — disjoint from
+    :data:`_MUTATION_TOOL_NAMES` (pinned in
+    :func:`test_explore_workload_is_strictly_read_only`). ``provision``
+    intentionally carries ONE mutation tool (``provision_open_infra_pr``),
+    so it is deliberately NOT asserted read-only and is NOT added to any
+    read-only-disjointness check.
+
+    Three pins:
+
+    1. ``provision_open_infra_pr`` is NOT in ``EXPLORE_WORKLOAD_TOOL_NAMES``
+       (explore must never gain the IaC-authoring tool).
+    2. ``provision_open_infra_pr`` IS in ``PROVISION_WORKLOAD_TOOL_NAMES``
+       (provision intentionally carries it).
+    3. ``provision_open_infra_pr`` IS in ``_MUTATION_TOOL_NAMES`` — i.e. it
+       is recognized as a mutation tool, which is why provision is exempt
+       from the read-only disjointness assertion explore must satisfy.
+    """
+    assert "provision_open_infra_pr" not in EXPLORE_WORKLOAD_TOOL_NAMES, (
+        "explore (strictly read-only) must NOT carry the IaC-authoring "
+        "mutation tool provision_open_infra_pr."
+    )
+    assert "provision_open_infra_pr" in PROVISION_WORKLOAD_TOOL_NAMES, (
+        "provision must carry its IaC-authoring tool provision_open_infra_pr."
+    )
+    assert "provision_open_infra_pr" in _MUTATION_TOOL_NAMES, (
+        "provision_open_infra_pr opens a PR via a write-capable editor PAT "
+        "and must be classified as a mutation tool — which is precisely why "
+        "provision (unlike explore) is NOT asserted read-only."
+    )
+
+
 def test_explore_workload_wires_no_mutation_worker():
     """Secondary manifest-level guard: explore lists no mutation worker.
 
@@ -376,6 +465,7 @@ _ALL_WORKLOAD_TOOL_NAMES = sorted(
     set(DRIFT_WORKLOAD_TOOL_NAMES)
     | set(UPGRADE_WORKLOAD_TOOL_NAMES)
     | set(EXPLORE_WORKLOAD_TOOL_NAMES)
+    | set(PROVISION_WORKLOAD_TOOL_NAMES)
 )
 
 
