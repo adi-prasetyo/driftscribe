@@ -25,6 +25,11 @@ dependencies = [
     # `driftscribe_lib.github.open_iac_pr` uses PyGithub to commit files +
     # open the PR.
     "PyGithub>=2.4",
+    # The D1-4 in-process static gate pre-check imports tools.iac_static_gate ->
+    # driftscribe_lib.iac_hcl -> `import hcl2`, whose PyPI package is python-hcl2
+    # (`hcl2` is only the import name). Required at boot; omitting it passes unit
+    # tests via the root env but crashes the deployed image.
+    "python-hcl2>=4.3",
 ]
 
 [project.optional-dependencies]

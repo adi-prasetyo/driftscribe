@@ -11,15 +11,20 @@ RUN pip install --no-cache-dir uv
 # Install the worker's runtime deps directly (no `pip install .`). The version
 # specifiers below are floors, not pins — uv resolves to the latest compatible
 # release at build time. workers/tofu_editor/pyproject.toml mirrors these floors
-# as canonical documentation. Same dep set as workers/upgrade_docs: both talk to
-# GitHub (PyGithub via `driftscribe_lib.github.open_iac_pr`) and verify inbound
-# ID tokens (google-auth + requests via `driftscribe_lib.auth.verify_caller`).
+# as canonical documentation. Same dep set as workers/upgrade_docs (both talk to
+# GitHub via PyGithub and verify inbound ID tokens via google-auth + requests),
+# PLUS python-hcl2: unlike upgrade_docs, this worker runs the D1-4 in-process
+# static gate (main.py -> tools.iac_static_gate -> driftscribe_lib.iac_hcl ->
+# `import hcl2`). The PyPI package for `import hcl2` is python-hcl2 (`hcl2` is
+# only the import name). Omitting it passes unit tests via the root env but
+# ModuleNotFound's at boot in the deployed image — do NOT remove.
 RUN uv pip install --system \
     "fastapi>=0.115" \
     "uvicorn[standard]>=0.32" \
     "google-auth>=2.35" \
     "requests>=2.32" \
-    "PyGithub>=2.4"
+    "PyGithub>=2.4" \
+    "python-hcl2>=4.3"
 
 # `driftscribe_lib` is a sibling package of the worker source, exposed inside
 # the container via PYTHONPATH rather than pip-installed (it has no pyproject of
