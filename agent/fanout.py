@@ -31,12 +31,17 @@ import enum
 import json
 import re
 import uuid
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from driftscribe_lib.iac_editor_policy import EditorPolicyError, validate_iac_path
+from driftscribe_lib.iac_editor_policy import (
+    EditorPolicyError,
+    validate_iac_path,
+    validate_title_body,
+)
 
 # ``Runner`` is imported at module scope (NOT lazily like the other ADK
 # symbols) for ONE reason: it is the mock seam for :func:`decompose`. Tests
@@ -947,3 +952,326 @@ def _merge_slice_sinks(pairs: list[tuple[SliceSpec, dict]]) -> AuthorResult:
         ) from e
 
     return AuthorResult(files=writes, citations=citations)
+
+
+# --------------------------------------------------------------------------- #
+# D5-6: run_provision_fanout_stream() — the streaming orchestrator
+# --------------------------------------------------------------------------- #
+#
+# The orchestrator ties the engine (decompose → parallel author → barrier)
+# into ONE streaming entrypoint and makes the SINGLE convergent editor call.
+# It yields the SAME item shapes as agent.adk_agent.run_chat_stream so /chat
+# (and the SSE timeline) treats a fan-out run exactly like a chat run.
+#
+# The agent/worker imports below are FUNCTION-SCOPED (lazy) — mirroring how
+# author_slices_parallel imports `_emit_event_logs`/`_emit_llm_usage` — so this
+# module keeps its pure, import-light core (callers that only need SliceSpec /
+# validate_slice_specs never pull ADK/agent in, and there is no import cycle
+# with agent.adk_agent, which in turn imports agent.adk_tools).
+
+
+# The exact next-steps reminder the operator needs after a fan-out PR opens.
+# Reused VERBATIM from agent.adk_tools.open_infra_pr_tool's ``next_steps`` so
+# the single-agent and fan-out paths give the operator identical instructions.
+_FANOUT_NEXT_STEPS = (
+    "Operator: dispatch the C2 plan-builder on this PR number, then review & "
+    "approve at /iac-approvals/<pr_number>. A PR that creates NEW resources "
+    "also needs an operator re-bake (C6) before it can apply."
+)
+
+
+def _compose_fanout_pr_body(plan: DecomposeResult, author_result: AuthorResult) -> str:
+    """Compose the merged PR body from the plan intro + a per-slice manifest.
+
+    Pure + deterministic (split out so it is unit-testable without an agent
+    run, mirroring :func:`_parse_plan_sink` / :func:`_merge_slice_sinks`). The
+    body is the decomposer's ``pr_body_intro`` followed by one bullet per slice
+    (in slice order): a backticked ``target_path`` — ``goal``, plus a citations
+    sub-line whenever the slice's authoring sub-agent recorded any. The
+    per-slice manifest makes the convergent PR self-describing (which file came
+    from which slice goal, and what each file was grounded in).
+    """
+    lines = [plan.pr_body_intro, "", "## Authored files"]
+    for spec in plan.slices:
+        lines.append(f"- `{spec.target_path}` — {spec.goal}")
+        cites = author_result.citations.get(spec.target_path) or []
+        if cites:
+            lines.append(f"  - citations: {', '.join(cites)}")
+    return "\n".join(lines)
+
+
+def _compose_success_reply(
+    worker_result: dict, plan: DecomposeResult, author_result: AuthorResult
+) -> str:
+    """Compose the operator-facing success reply for a fan-out PR.
+
+    Pure + deterministic (testable without an agent run). Summarizes the opened
+    PR (number + url), lists the N authored paths (in slice order), and ends
+    with the EXACT :data:`_FANOUT_NEXT_STEPS` wording reused from
+    :func:`agent.adk_tools.open_infra_pr_tool` so the two authoring paths give
+    identical next steps.
+    """
+    pr_number = worker_result.get("pr_number")
+    pr_url = worker_result.get("pr_url")
+    paths = ", ".join(f["path"] for f in author_result.files)
+    return (
+        f"Opened infrastructure PR #{pr_number} ({pr_url}) with {len(author_result.files)} "
+        f"authored file(s): {paths}.\n\n{_FANOUT_NEXT_STEPS}"
+    )
+
+
+async def run_provision_fanout_stream(
+    prompt: str,
+    session_id: str | None = None,
+) -> AsyncIterator[dict]:
+    """Stream a parallel fan-out ``provision`` (IaC-authoring) run end to end.
+
+    This is the D5-6 orchestrator: it runs :func:`decompose`, decides
+    single-slice vs committed fan-out, runs :func:`author_slices_parallel`
+    LIVE-streaming the N parallel authors, makes the ONE convergent editor call
+    via the shared authority helper, and surfaces the operator's final.
+
+    Yields the SAME item shapes as :func:`agent.adk_agent.run_chat_stream`::
+
+        {"type": "event",  "event": <payload + seq/insert_id/timestamp>}
+        ...and finally exactly one...
+        {"type": "result", "reply": str, "tool_calls": list, "session_id": str}
+
+    Every yielded event flows through ONE monotonic ``seq`` counter for the
+    whole committed run (so the SSE timeline keeps stable, contiguous ordering
+    keys across the buffered decompose events, the live parallel-author events,
+    and the trailing ``final_response``).
+
+    Branching contract (the fail-open vs fail-closed decision keys on
+    :class:`FanoutFailureKind`, never on a status):
+
+    - **POLICY** decompose failure → FAIL CLOSED: surface the violation as the
+      operator's final, NO editor call, ``tool_calls == []``.
+    - **DECOMPOSE_NON_POLICY** (or any non-policy) decompose failure → FAIL
+      OPEN: delegate the whole stream to the legacy single-agent
+      :func:`run_chat_stream` (``workload="provision"``); its own ``seq``
+      restarts at 1, which is correct for a fresh delegated run.
+    - **single-slice** plan (``len == 1``) → delegate to the legacy
+      single-agent path (a coupled/simple change the fan-out wasn't built for).
+    - **committed** (``N >= 2``) → fan out: flush buffered decompose events,
+      author in parallel (live), then make the ONE editor call.
+    - **AUTHORING** failure → FAIL CLOSED: surface, NO editor call, ``[]``.
+    - editor :class:`WorkerClientError` → surface the worker error, NO
+      fabricated PR; ``tool_calls == ["open_infra_pr"]`` (the call WAS attempted).
+
+    ``tool_calls`` semantics: it reflects operator-facing MUTATION INVOCATION
+    only — exactly one synthetic ``"open_infra_pr"`` entry whenever the editor
+    call was ATTEMPTED (success OR a WorkerClientError), and ``[]`` when no
+    editor call was attempted (any fail-closed branch). It deliberately does
+    NOT include the internal ``submit_slice_file`` / ``submit_plan`` tool calls
+    the sub-agents make — those are engine internals, not operator mutations.
+
+    The ADK/agent/worker imports are FUNCTION-SCOPED (lazy) to keep this
+    module's pure import-light core (and to avoid an import cycle with
+    ``agent.adk_agent``); ``decompose`` / ``author_slices_parallel`` are
+    module globals (patchable at the seam by tests).
+    """
+    import asyncio
+    import contextlib
+
+    from agent import worker_client
+    from agent.adk_agent import (
+        _emit_event_logs,
+        _emit_final_response,
+        _emit_llm_usage,
+        run_chat_stream,
+    )
+    from agent.adk_tools import derive_iac_pr_authority
+
+    sid = session_id or str(uuid.uuid4())
+    read_tools = resolve_provision_read_tools()
+    seq = 0
+
+    def _stream(payload: dict) -> dict:
+        # ONE monotonic seq for the whole committed run — augment the
+        # already-redacted, already-emitted payload with the SSE-only ordering
+        # metadata (mirrors run_chat_stream's _stream exactly).
+        nonlocal seq
+        seq += 1
+        return {
+            **payload,
+            "seq": seq,
+            "insert_id": f"stream-{seq}",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+    # 1+2. Decompose into a BUFFER (events are not yielded yet — we don't know
+    # whether this run commits, single-slice-delegates, or fails).
+    decompose_buffer: list = []
+    try:
+        plan = await decompose(
+            prompt, read_tools=read_tools, event_sink=decompose_buffer.append
+        )
+    except FanoutError as e:
+        if e.kind is FanoutFailureKind.POLICY:
+            # FAIL CLOSED: a policy rejection (foundation/duplicate/non-iac
+            # path, count bound). Editor NOT called; decompose_buffer discarded.
+            reply = f"Could not author the infrastructure change: {e.detail}"
+            yield {"type": "event", "event": _stream(_emit_final_response(reply))}
+            yield {
+                "type": "result",
+                "reply": reply,
+                "tool_calls": [],
+                "session_id": sid,
+            }
+            return
+        # FAIL OPEN (DECOMPOSE_NON_POLICY etc.): discard the buffer, delegate to
+        # the legacy single-agent path. Its own seq restarts at 1 — correct for
+        # a fresh delegated run.
+        async for item in run_chat_stream(prompt, sid, workload="provision"):
+            yield item
+        return
+
+    # 3. Single-slice plan → a coupled/simple change. Discard the buffer and
+    # delegate to the legacy single-agent path (same as the non-policy branch).
+    if len(plan.slices) == 1:
+        async for item in run_chat_stream(prompt, sid, workload="provision"):
+            yield item
+        return
+
+    # 4. Committed (N >= 2): flush the buffered decompose events through _stream,
+    # tagged phase="decompose". Mirror run_chat_stream's emit gate EXACTLY.
+    # (_emit_event_logs never emits final_response, so decompose's own
+    # natural-language final is naturally suppressed — correct.)
+    for ev in decompose_buffer:
+        if ev.content and ev.content.parts and getattr(ev, "partial", None) is not True:
+            for payload in _emit_event_logs(ev):
+                payload["phase"] = "decompose"
+                yield {"type": "event", "event": _stream(payload)}
+        usage = _emit_llm_usage(ev)
+        if usage is not None:
+            usage["phase"] = "decompose"
+            yield {"type": "event", "event": _stream(usage)}
+
+    # 5. Author in parallel, LIVE-streaming via a queue bridge so the N parallel
+    # authors appear incrementally in the SSE timeline under the SAME seq.
+    # The author sink (event_sink) is a synchronous Callable[[dict],None] called
+    # from the author coroutine; put_nowait bridges it onto an unbounded queue
+    # this generator drains. The author payloads are already tagged
+    # (branch/slice_id/target_path) by author_slices_parallel's _tag_and_forward.
+    queue: asyncio.Queue = asyncio.Queue()
+    _SENTINEL = object()
+
+    async def _run_author() -> AuthorResult:
+        try:
+            return await author_slices_parallel(
+                plan.slices, read_tools=read_tools, event_sink=queue.put_nowait
+            )
+        finally:
+            # Always unblock the drain loop, even on failure/cancel.
+            queue.put_nowait(_SENTINEL)
+
+    author_task = asyncio.create_task(_run_author())
+    try:
+        while True:
+            item = await queue.get()
+            if item is _SENTINEL:
+                break
+            yield {"type": "event", "event": _stream(item)}
+        author_result = await author_task  # re-raises FanoutError / CancelledError
+    except FanoutError as e:
+        # Authoring failed CLOSED → surface, NO PR. (CancelledError is NOT
+        # caught here — it propagates to the caller unchanged.)
+        reply = f"Could not author the infrastructure change: {e.detail}"
+        yield {"type": "event", "event": _stream(_emit_final_response(reply))}
+        yield {
+            "type": "result",
+            "reply": reply,
+            "tool_calls": [],
+            "session_id": sid,
+        }
+        return
+    finally:
+        # If we leave this block via an exception or an early generator close
+        # (the SSE consumer stops draining mid-author), don't orphan the author
+        # task: cancel it AND reap it. Awaiting here is safe — a `finally` in an
+        # async generator may await as long as it does not `yield`. Reaping
+        # retrieves any pending task exception so it can't surface later as an
+        # unretrieved-task warning; CancelledError (and any already-surfaced
+        # FanoutError/authoring error we deliberately don't re-handle here) is
+        # suppressed since the outcome was already decided above.
+        if not author_task.done():
+            author_task.cancel()
+        with contextlib.suppress(BaseException):
+            await author_task
+
+    # 6. Derive authority via the SHARED helper (no independent derivation here
+    # — same helper open_infra_pr_tool uses).
+    authority = derive_iac_pr_authority(plan.pr_title)
+
+    # 7. Compose the body + validate title/body BEFORE the call (fail closed on
+    # an overflow without attempting the editor call).
+    body = _compose_fanout_pr_body(plan, author_result)
+    try:
+        validate_title_body(plan.pr_title, body)
+    except EditorPolicyError as e:
+        reply = f"Could not author the infrastructure change: {e.reason}"
+        yield {"type": "event", "event": _stream(_emit_final_response(reply))}
+        yield {
+            "type": "result",
+            "reply": reply,
+            "tool_calls": [],
+            "session_id": sid,
+        }
+        return
+
+    # 8. The SINGLE convergent editor call — off the event loop (synchronous
+    # httpx), positional args ONLY (call_open_infra_pr pins base="main"
+    # internally; there is NO base parameter, passing one would crash).
+    try:
+        result = await asyncio.to_thread(
+            worker_client.call_open_infra_pr,
+            authority.target_repo,
+            authority.branch,
+            plan.pr_title,
+            body,
+            author_result.files,
+        )
+    except worker_client.WorkerClientError as e:
+        # The call WAS attempted → tool_calls records the synthetic open_infra_pr.
+        # Surface the worker error; do NOT fabricate a PR number/url.
+        reply = (
+            f"The infrastructure PR could not be opened (editor worker error "
+            f"{e.status_code}): {e.body or e}"
+        )
+        yield {"type": "event", "event": _stream(_emit_final_response(reply))}
+        yield {
+            "type": "result",
+            "reply": reply,
+            "tool_calls": ["open_infra_pr"],
+            "session_id": sid,
+        }
+        return
+
+    # 9. Success — but only if the worker actually returned a PR number. A
+    # malformed 200 that omits pr_number must NOT surface a fabricated
+    # "PR #None": treat it as an attempted-but-failed editor outcome (the call
+    # WAS made → tool_calls records open_infra_pr; no fabricated PR number/url).
+    if result.get("pr_number") is None:
+        reply = (
+            "The infrastructure PR could not be confirmed: the editor worker "
+            f"returned no PR number (response status {result.get('status')!r})."
+        )
+        yield {"type": "event", "event": _stream(_emit_final_response(reply))}
+        yield {
+            "type": "result",
+            "reply": reply,
+            "tool_calls": ["open_infra_pr"],
+            "session_id": sid,
+        }
+        return
+
+    # Surface the opened PR + the exact operator next steps.
+    reply = _compose_success_reply(result, plan, author_result)
+    yield {"type": "event", "event": _stream(_emit_final_response(reply))}
+    yield {
+        "type": "result",
+        "reply": reply,
+        "tool_calls": ["open_infra_pr"],
+        "session_id": sid,
+    }
