@@ -3290,6 +3290,48 @@ def _sse_frame(*, event: str | None = None, data: dict) -> str:
 _SSE_HEARTBEAT_S = 15
 
 
+def _chat_stream(workload: str, prompt: str, session_id: str | None):
+    """Select the chat-stream async generator for a workload.
+
+    The ``provision`` workload (Phase D5) routes through the parallel
+    fan-out orchestrator ``agent.fanout.run_provision_fanout_stream`` — which
+    internally falls back to the single-agent ``run_chat_stream`` for a
+    1-slice/coupled change — while every other workload uses
+    ``run_chat_stream`` directly. BOTH yield the SAME
+    ``{"type":"event"|"result"}`` item shapes, so all downstream framing
+    (``_chat_sse`` SSE frames, the JSON drain) is workload-agnostic. Imports
+    are lazy to avoid pulling ADK/fanout at module import and to dodge an
+    import cycle (``agent.fanout`` imports ``agent.adk_agent``)."""
+    if workload == "provision":
+        from agent.fanout import run_provision_fanout_stream
+        return run_provision_fanout_stream(prompt, session_id)
+    from agent.adk_agent import run_chat_stream
+    return run_chat_stream(prompt, session_id=session_id, workload=workload)
+
+
+async def _drain_chat_stream_result(agen) -> dict:
+    """Drain a chat-stream async generator to the JSON ``/chat`` result dict.
+
+    Mirrors ``run_chat``'s drain (Phase 22) but works on any selected stream
+    so the fan-out orchestrator's JSON output stays identical to the
+    single-agent path's. The orchestrator and ``run_chat_stream`` both yield
+    zero-or-more ``{"type":"event"}`` items followed by exactly one
+    ``{"type":"result", ...}``; we ignore the events (the JSON path has no
+    timeline) and project the single result into the same
+    ``{reply, tool_calls, session_id}`` shape ``run_chat`` returns. Raising on
+    an exhausted stream with no result keeps the "no final response"
+    RuntimeError identical to ``run_chat``'s, so the ``/chat`` ``except``
+    tuple maps it the same way."""
+    async for item in agen:
+        if item["type"] == "result":
+            return {
+                "reply": item["reply"],
+                "tool_calls": item["tool_calls"],
+                "session_id": item["session_id"],
+            }
+    raise RuntimeError("ADK chat agent produced no final response")
+
+
 async def _chat_sse(prompt: str, session_id: str | None, workload: str,
                     trace_id: str):
     """SSE generator for the /chat streaming path.
@@ -3303,18 +3345,19 @@ async def _chat_sse(prompt: str, session_id: str | None, workload: str,
     trace_id — corrupting both the live stream and the durable logs. The
     ``set_*`` calls happen before ``create_task`` so the producer task
     inherits the bindings (``create_task`` copies the current context).
-    """
-    from agent.adk_agent import run_chat_stream
 
+    The stream generator is selected by :func:`_chat_stream` (Phase D5-7):
+    ``provision`` fans out via ``run_provision_fanout_stream``, every other
+    workload uses ``run_chat_stream`` — both yield identical item shapes, so
+    the queue/heartbeat/frame-shaping below stays workload-agnostic.
+    """
     t_tok = set_trace_id(trace_id)
     w_tok = set_workload(workload)
     queue: asyncio.Queue = asyncio.Queue()
 
     async def _produce():
         try:
-            async for item in run_chat_stream(
-                prompt, session_id=session_id, workload=workload
-            ):
+            async for item in _chat_stream(workload, prompt, session_id):
                 await queue.put(("item", item))
         except Exception as e:  # noqa: BLE001 - mapped to a status hint
             await queue.put(("error", _chat_error_payload(e, workload=workload)))
@@ -3480,6 +3523,21 @@ async def chat(
     _workload_token = set_workload(req.workload)
     try:
         try:
+            if req.workload == "provision":
+                # Phase D5-7: the JSON provision path drains the SAME fan-out
+                # orchestrator the SSE path streams (via :func:`_chat_stream`),
+                # so a 1-slice change (internal fallback to ``run_chat_stream``)
+                # and an N-slice fan-out both project into the identical
+                # ``{reply, tool_calls, session_id}`` dict ``run_chat`` returns.
+                # ``run_chat`` is kept for every other workload — an existing
+                # test patches ``agent.adk_agent.run_chat`` and would break if
+                # drift were routed away from it. The orchestrator raises the
+                # same ``WorkerClientError``/``RuntimeError`` types as the chat
+                # path, so the outer ``except`` + ``_chat_error_payload``
+                # mapping below covers it unchanged.
+                return await _drain_chat_stream_result(
+                    _chat_stream("provision", req.prompt, req.session_id)
+                )
             return await run_chat(
                 req.prompt, session_id=req.session_id, workload=req.workload
             )

@@ -51,6 +51,13 @@ operator the EXACT next steps, in order:
    edit of an already-declared one), the apply additionally needs an operator
    re-bake (C6) before it can run. State this plainly when it applies.
 
+Transparency (no operator action needed): when a request spans MULTIPLE
+INDEPENDENT `iac/` files, the coordinator may author those files as parallel
+slices that are merged into ONE pull request. The result is the same single PR
+you would get otherwise — the operator does nothing differently and follows the
+identical next steps (C2 plan → approve → C6 re-bake if it creates a new
+resource). This is informational only; it changes no instruction above.
+
 Rules:
 - If a tool returns an error, surface it to the operator clearly and revise.
   Do NOT pretend you opened a PR you didn't, or invent a PR number/URL.

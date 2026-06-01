@@ -18,7 +18,7 @@ Pins three properties:
 """
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -112,32 +112,38 @@ def test_recheck_provision_workload_is_route_refused(_bypass_auth) -> None:
 def test_chat_provision_workload_agent_exposes_open_infra_pr_tool(
     monkeypatch, provision_workload_env, _bypass_auth,
 ) -> None:
-    """``POST /chat`` with ``workload="provision"`` builds a chat agent that
-    exposes the IaC-authoring tool ``provision_open_infra_pr`` (callable
-    ``open_infra_pr_tool``).
+    """``POST /chat`` with ``workload="provision"`` routes through the fan-out
+    orchestrator and builds a chat agent that exposes the IaC-authoring tool
+    ``provision_open_infra_pr`` (callable ``open_infra_pr_tool``).
 
-    We patch ``run_chat`` to a no-op so no live LLM is needed, then assert
-    the agent the coordinator built for ``workload="provision"`` carries the
-    expected callables. The build itself is the load-bearing check (the
-    routing-layer capability bound), so we inspect ``build_chat_agent``
-    directly for the tool-exposure assertion and only use /chat to confirm
-    the route accepts the provision workload (200, not 422).
+    Phase D5-7 routes the provision ``/chat`` JSON path through the parallel
+    fan-out orchestrator ``agent.fanout.run_provision_fanout_stream`` (drained
+    to the same ``{reply, tool_calls, session_id}`` dict), NOT through
+    ``run_chat`` — so we patch the orchestrator (at its source module, since
+    ``agent.main._chat_stream`` imports it lazily) to a no-op stub async-gen
+    rather than ``run_chat``. The route-level assertion is just that provision
+    is accepted (200, not 422) and the stub's result drains through.
+
+    The capability-bound proof — that the agent built for
+    ``workload="provision"`` carries ``open_infra_pr_tool`` — is unchanged and
+    remains the load-bearing check: the orchestrator's single-slice fallback
+    delegates to ``run_chat_stream`` over exactly this ``build_chat_agent``
+    output, so the tool exposure still gates provision's one mutation path.
     """
     monkeypatch.setenv("USE_ADK", "true")
     monkeypatch.setenv("DEVELOPER_KNOWLEDGE_API_KEY", "test-key")
     get_settings.cache_clear()
 
-    fake = AsyncMock(
-        return_value={"reply": "ok", "tool_calls": [], "session_id": "sid"}
-    )
-    with patch("agent.adk_agent.run_chat", fake):
+    async def _stub_fanout(prompt, session_id=None):
+        yield {"type": "result", "reply": "ok", "tool_calls": [],
+               "session_id": "sid"}
+
+    with patch("agent.fanout.run_provision_fanout_stream", _stub_fanout):
         client = TestClient(app)
         r = client.post("/chat", json={"prompt": "hi", "workload": "provision"})
 
     assert r.status_code == 200, r.text
-    fake.assert_awaited_once()
-    _, kwargs = fake.call_args
-    assert kwargs.get("workload") == "provision"
+    assert r.json()["reply"] == "ok"
 
     # The capability-bound proof: the agent built for workload=provision
     # carries the IaC-authoring tool.
