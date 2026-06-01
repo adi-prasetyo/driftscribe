@@ -66,6 +66,11 @@ _WORKER_URL_ENV: Final[dict[str, str]] = {
     # WORKER_ENDPOINTS); /apply and /deny are reached via the named
     # wrappers below, never the default path.
     "tofu_apply": "TOFU_APPLY_URL",
+    # Phase D2: wire the coordinator to the tofu-editor worker — the
+    # agent-authoring seam that commits validated iac/-only file writes and
+    # opens ONE PR. Its canonical (and only) endpoint is /open-pr (see
+    # WORKER_ENDPOINTS); the LLM never selects a path.
+    "tofu_editor": "TOFU_EDITOR_URL",
 }
 
 
@@ -97,6 +102,10 @@ WORKER_ENDPOINTS: Final[dict[str, str]] = {
     # via :func:`call_apply` / :func:`call_plan_deny`, which hardcode the
     # path, so the LLM-facing surface can never select them.
     "tofu_apply": "/propose",
+    # Phase D2: /open-pr is the tofu-editor worker's sole canonical endpoint —
+    # the editor exposes no other path, so the default is the only path. The
+    # LLM never selects a path; :func:`call_open_infra_pr` routes here.
+    "tofu_editor": "/open-pr",
 }
 
 
@@ -461,6 +470,43 @@ def call_merge_pr(target_repo: str, pr_number: int) -> dict:
         "upgrade_docs",
         {"target_repo": target_repo, "pr_number": pr_number},
         endpoint="/merge",
+    )
+
+
+def call_open_infra_pr(
+    target_repo: str, branch: str, title: str, body: str, files: list[dict]
+) -> dict:
+    """Wrapper for the tofu-editor worker's ``/open-pr`` endpoint (Phase D2).
+
+    ``/open-pr`` is the tofu-editor worker's sole canonical (default) endpoint —
+    it commits the validated, ``iac/``-only ``files`` onto an ``infra/`` branch
+    and opens ONE PR. Like :func:`call_close_pr` / :func:`call_merge_pr`, this IS
+    reachable from an ADK tool (the agent-authoring tool added in a later phase),
+    so keeping the routing fixed here — rather than letting the tool assemble the
+    request — is what keeps the LLM-facing surface narrow: the model supplies
+    only the content (``target_repo`` selection, ``branch``, ``title``, ``body``,
+    ``files``), never the path, and never the ``base``.
+
+    ``base`` is pinned to ``"main"`` in code: the editor only ever targets the
+    default branch, so the LLM does not (and must not) get to pick the base
+    branch, the label, or the worker endpoint. The worker re-validates
+    ``target_repo`` against its env-pinned ``TARGET_REPO`` and runs every
+    ``iac/``-path / branch / static-gate policy check BEFORE any GitHub call;
+    this wrapper just routes.
+
+    Uses the DEFAULT endpoint (``/open-pr``) — no ``endpoint=`` override, since
+    it is the editor's only path.
+    """
+    return call(
+        "tofu_editor",
+        {
+            "target_repo": target_repo,
+            "branch": branch,
+            "base": "main",
+            "title": title,
+            "body": body,
+            "files": files,
+        },
     )
 
 

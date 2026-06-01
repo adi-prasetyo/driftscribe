@@ -216,6 +216,7 @@ CONTROL_PLANE_SECRET_IDS: frozenset[str] = frozenset(
         "upgrade-docs-github-pat",
         "developer-knowledge-api-key",
         "driftscribe-webhook-url",
+        "tofu-editor-github-pat",  # forward-compat (Phase D editor worker PAT)
     }
 )
 

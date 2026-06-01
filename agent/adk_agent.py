@@ -88,6 +88,7 @@ from google.genai.types import ThinkingConfig
 from agent.adk_tools import (
     load_contract_tool,
     notify_tool,
+    open_infra_pr_tool,
     patch_docs_tool,
     propose_rollback_tool,
     read_live_env_tool,
@@ -154,6 +155,13 @@ COORDINATOR_TOOLS = [
     # Authority-clean: takes no args; the worker has the target project
     # pinned via env.
     read_project_inventory_tool,
+    # Provision workload (Phase D2) — author OpenTofu (IaC) edits and open
+    # ONE iac/-only PR via the tofu-editor worker. Authority-clean LLM-facing
+    # surface: the LLM supplies only the file writes + PR title/body; every
+    # routing field (target_repo / branch / base / label) is derived
+    # server-side. The tofu-editor re-validates every file before any GitHub
+    # call — see ``agent.adk_tools.open_infra_pr_tool``.
+    open_infra_pr_tool,
 ]
 
 
@@ -269,6 +277,27 @@ EXPLORE_WORKLOAD_TOOL_NAMES: tuple[str, ...] = (
     "read_project_inventory",
 )
 
+# The chat-only IaC-authoring workload (Phase D2). Its read set is
+# explore's read subset MINUS ``upgrade_read_dependencies`` (provision has
+# no lockfile/dependency concern) PLUS the one MUTATION tool it introduces:
+# ``provision_open_infra_pr``. That tool authors validated iac/-only file
+# writes and opens ONE PR via the tofu-editor worker — it writes HCL and
+# opens a PR, it never touches live infra directly. So UNLIKE ``explore``,
+# provision is deliberately NOT asserted read-only: it intentionally carries
+# a mutation tool (pinned in ``tests/unit/test_coordinator_tool_inventory.py``
+# — ``provision_open_infra_pr`` IS in ``_MUTATION_TOOL_NAMES`` and the
+# ``tofu_editor`` worker IS in ``_MUTATION_WORKER_NAMES``). Order mirrors
+# ``workloads/provision/workload.yaml`` exactly (tool-order pin) — the
+# read tools first, ``provision_open_infra_pr`` LAST.
+PROVISION_WORKLOAD_TOOL_NAMES: tuple[str, ...] = (
+    "drift_read_live_env",
+    "read_project_inventory",
+    "load_contract",
+    "search_developer_docs",
+    "retrieve_developer_doc",
+    "provision_open_infra_pr",
+)
+
 
 # --------------------------------------------------------------------------- #
 # Structured drift-triage agent (/recheck)
@@ -377,7 +406,7 @@ def build_agent(workload: WorkloadResolution) -> Agent:
 
     ADK requires agent names to be valid Python identifiers (letters,
     digits, underscores; no hyphens). The workload name is from the
-    closed Literal ``{"drift", "upgrade", "explore"}``, all
+    closed Literal ``{"drift", "upgrade", "explore", "provision"}``, all
     identifier-safe.
     """
     return Agent(

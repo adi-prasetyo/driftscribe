@@ -153,6 +153,64 @@ def test_plain_google_resource_has_no_execution_violation():
     assert evaluate(gi) == []
 
 
+# --- Task D1-6: secret material is operator-only (AGENT-mode ban) ---
+
+
+_SECRET_MATERIAL_HCL = [
+    'resource "google_secret_manager_secret" "s" { secret_id = "plan-hmac-key" }',
+    (
+        'resource "google_secret_manager_secret_version" "v" '
+        '{ secret = "x" secret_data = "supersecret" }'
+    ),
+    # Regional variants are real google provider resource types and must be
+    # banned too — a regional container carries no secret_data, so without the
+    # resource-type ban it would slip the gate entirely.
+    (
+        'resource "google_secret_manager_regional_secret" "s" '
+        '{ secret_id = "plan-hmac-key" location = "us-central1" }'
+    ),
+    (
+        'resource "google_secret_manager_regional_secret_version" "v" '
+        '{ secret = "x" secret_data = "supersecret" }'
+    ),
+]
+
+
+@pytest.mark.parametrize("hcl", _SECRET_MATERIAL_HCL)
+def test_agent_authored_secret_material_rejected(hcl):
+    gi = GateInput(GateMode.AGENT, ("iac/x.tf",), {"iac/x.tf": hcl})
+    assert any(v.rule == "secret-material-forbidden" for v in evaluate(gi)), hcl
+
+
+@pytest.mark.parametrize("hcl", _SECRET_MATERIAL_HCL)
+def test_operator_mode_may_author_secret_material(hcl):
+    # Operators legitimately declare secrets during bootstrap — the same secret
+    # HCL must NOT raise secret-material-forbidden in OPERATOR mode.
+    gi = GateInput(GateMode.OPERATOR, ("iac/secrets.tf",), {"iac/secrets.tf": hcl})
+    assert all(v.rule != "secret-material-forbidden" for v in evaluate(gi)), hcl
+
+
+def test_inline_secret_data_attribute_rejected_in_agent_mode():
+    # Defense-in-depth: a `secret_data` attribute smuggled into a NON-secret
+    # resource type is still rejected in AGENT mode...
+    hcl = 'resource "google_x" "y" { secret_data = "supersecret" }'
+    gi_agent = GateInput(GateMode.AGENT, ("iac/x.tf",), {"iac/x.tf": hcl})
+    assert any(v.rule == "secret-material-forbidden" for v in evaluate(gi_agent))
+    # ...but allowed in OPERATOR mode.
+    gi_op = GateInput(GateMode.OPERATOR, ("iac/x.tf",), {"iac/x.tf": hcl})
+    assert all(v.rule != "secret-material-forbidden" for v in evaluate(gi_op))
+
+
+def test_benign_agent_resource_has_no_secret_material_violation():
+    # A normal bucket in AGENT mode yields no secret-material-forbidden (and no
+    # violations at all).
+    hcl = 'resource "google_storage_bucket" "b" {}'
+    gi = GateInput(GateMode.AGENT, ("iac/x.tf",), {"iac/x.tf": hcl})
+    violations = evaluate(gi)
+    assert all(v.rule != "secret-material-forbidden" for v in violations), violations
+    assert violations == []
+
+
 # --- Adversarial / regression lock-ins (security gate hardening) ---
 
 

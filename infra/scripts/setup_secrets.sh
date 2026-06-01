@@ -2,7 +2,7 @@
 # Idempotent bootstrap for a fresh DriftScribe multi-agent deployment.
 #
 # Usage:
-#   setup_secrets.sh PROJECT GITHUB_TOKEN [DOCS_AGENT_PAT] [WEBHOOK_URL] [DEVELOPER_KNOWLEDGE_API_KEY] [UPGRADE_READER_PAT] [UPGRADE_DOCS_PAT]
+#   setup_secrets.sh PROJECT GITHUB_TOKEN [DOCS_AGENT_PAT] [WEBHOOK_URL] [DEVELOPER_KNOWLEDGE_API_KEY] [UPGRADE_READER_PAT] [UPGRADE_DOCS_PAT] [TOFU_EDITOR_PAT]
 #
 # Arguments:
 #   PROJECT                       GCP project ID (e.g. driftscribe-hack-2026)
@@ -34,6 +34,13 @@
 #                                 Contents: read + write AND Pull requests: read + write.
 #                                 Backs the upgrade-docs worker's PR-opening flow.
 #                                 If omitted, skipped — re-run with the value later.
+#   TOFU_EDITOR_PAT               (optional, Phase D / D3-1) Fine-grained PAT scoped to ONE
+#                                 repository (adi-prasetyo/driftscribe) with
+#                                 Contents: read + write AND Pull requests: read + write.
+#                                 Backs the tofu-editor worker's iac/-PR-opening flow.
+#                                 DISTINCT from the docs / upgrade-docs PATs (separate
+#                                 secret, separate SA). NO admin, NO Issues, NO Actions,
+#                                 NO second repo. If omitted, skipped — re-run later.
 #
 # Safe to re-run: every gcloud create is gated by a describe-check, every IAM
 # binding is idempotent server-side, and the two auto-generated secrets
@@ -61,13 +68,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=infra/scripts/_setup_lib.sh
 source "${SCRIPT_DIR}/_setup_lib.sh"
 
-PROJECT="${1:?usage: $0 PROJECT GITHUB_TOKEN [DOCS_AGENT_PAT] [WEBHOOK_URL] [DEVELOPER_KNOWLEDGE_API_KEY] [UPGRADE_READER_PAT] [UPGRADE_DOCS_PAT]}"
+PROJECT="${1:?usage: $0 PROJECT GITHUB_TOKEN [DOCS_AGENT_PAT] [WEBHOOK_URL] [DEVELOPER_KNOWLEDGE_API_KEY] [UPGRADE_READER_PAT] [UPGRADE_DOCS_PAT] [TOFU_EDITOR_PAT]}"
 GITHUB_TOKEN="${2:?}"
 DOCS_AGENT_PAT="${3:-}"
 WEBHOOK_URL="${4:-}"
 DEVELOPER_KNOWLEDGE_API_KEY="${5:-}"
 UPGRADE_READER_PAT="${6:-}"
 UPGRADE_DOCS_PAT="${7:-}"
+TOFU_EDITOR_PAT="${8:-}"
 
 REGION="asia-northeast1"
 
@@ -130,10 +138,17 @@ gcloud artifacts repositories create driftscribe \
 # runtime identity. Workers' ALLOWED_CALLERS env lists this SA's email.
 # Phase 17.E.2: upgrade-reader-sa and upgrade-docs-sa added for the
 # upgrade workload (one SA per worker, distinct from the drift workers).
+# Phase D (D3-1): tofu-editor-sa added for the provision-workload HCL-authoring
+# worker. Like upgrade-docs-sa it is a worker SA this stack OWNS (created here),
+# NOT externally provisioned — distinct from tofu-apply-sa / infra-reader-sa
+# which are created by setup_iac_backend.sh / the infra-reader runbook and only
+# gated-for on existence below. tofu-editor-sa holds exactly ONE secret (its
+# write-scoped GitHub PAT) and NO project-level GCP role: it authors PR text
+# only and never runs tofu.
 # Note: infra-reader-sa (the Phase infra-iac B explore worker) is NOT created
 # here — it is provisioned operator-side per docs/runbooks/infra-reader.md;
 # this script only grants the coordinator run.invoker on it once deployed.
-for sa in driftscribe-agent reader-agent-sa docs-agent-sa rollback-agent-sa notifier-agent-sa upgrade-reader-sa upgrade-docs-sa; do
+for sa in driftscribe-agent reader-agent-sa docs-agent-sa rollback-agent-sa notifier-agent-sa upgrade-reader-sa upgrade-docs-sa tofu-editor-sa; do
   gcloud iam service-accounts describe "${sa}@${PROJECT}.iam.gserviceaccount.com" \
     --project="$PROJECT" >/dev/null 2>&1 \
     || gcloud iam service-accounts create "$sa" \
@@ -148,6 +163,7 @@ ROLLBACK_SA="rollback-agent-sa@${PROJECT}.iam.gserviceaccount.com"
 NOTIFIER_SA="notifier-agent-sa@${PROJECT}.iam.gserviceaccount.com"
 UPGRADE_READER_SA="upgrade-reader-sa@${PROJECT}.iam.gserviceaccount.com"
 UPGRADE_DOCS_SA="upgrade-docs-sa@${PROJECT}.iam.gserviceaccount.com"
+TOFU_EDITOR_SA="tofu-editor-sa@${PROJECT}.iam.gserviceaccount.com"  # Phase D (D3-1): provision-workload HCL-authoring worker — one PAT, no GCP role
 
 # Cloud Build's per-runtime-SA actAs grants now target the dedicated
 # cloudbuild-deploy-sa@ (§4c below), derived from the live deploy configs. The
@@ -208,7 +224,7 @@ fi
 # picks them up). payment-demo-runtime's build-SA actAs is granted in §7b instead —
 # right after THIS script creates that SA — so a single pass is complete for
 # everything this script owns.
-for sa in driftscribe-agent reader-agent-sa docs-agent-sa rollback-agent-sa notifier-agent-sa upgrade-reader-sa upgrade-docs-sa; do
+for sa in driftscribe-agent reader-agent-sa docs-agent-sa rollback-agent-sa notifier-agent-sa upgrade-reader-sa upgrade-docs-sa tofu-editor-sa; do
   gcloud iam service-accounts add-iam-policy-binding "${sa}@${PROJECT}.iam.gserviceaccount.com" \
     --project="$PROJECT" \
     --member="serviceAccount:${BUILD_DEPLOY_SA}" --role="roles/iam.serviceAccountUser" --condition=None >/dev/null
@@ -450,6 +466,43 @@ else
   fi
 fi
 
+# tofu-editor's fine-grained PAT (Phase D / D3-1) — operator must supply. DISTINCT
+# from docs-agent-github-pat AND upgrade-docs-github-pat: the tofu-editor worker
+# authors infra/ (iac/) PRs on adi-prasetyo/driftscribe and holds its OWN write
+# PAT (Contents: read+write + Pull requests: read+write), bound to tofu-editor-sa
+# ONLY. Same operator-supplied describe-then-create + skip-with-instructions
+# pattern as the docs / upgrade PATs above. The worker never runs tofu — it
+# emits HCL text; the PAT's only authority is opening PRs on the single repo.
+if [ -n "$TOFU_EDITOR_PAT" ]; then
+  gcloud secrets describe tofu-editor-github-pat --project "$PROJECT" >/dev/null 2>&1 || \
+    gcloud secrets create tofu-editor-github-pat \
+      --project "$PROJECT" --replication-policy=automatic
+  printf '%s' "$TOFU_EDITOR_PAT" | gcloud secrets versions add tofu-editor-github-pat \
+    --project "$PROJECT" --data-file=-
+else
+  if gcloud secrets describe tofu-editor-github-pat --project "$PROJECT" >/dev/null 2>&1; then
+    echo "tofu-editor-github-pat already exists — leaving untouched (no arg supplied)"
+  else
+    echo
+    echo "----------------------------------------------------------------"
+    echo "TOFU_EDITOR_PAT arg not supplied — tofu-editor-github-pat NOT created."
+    echo
+    echo "Create a READ+WRITE fine-grained GitHub PAT (separate from"
+    echo "docs-agent-github-pat AND upgrade-docs-github-pat — same repo,"
+    echo "distinct token for the provision-workload editor):"
+    echo "  https://github.com/settings/personal-access-tokens/new"
+    echo "  Repository access: select ONE repo (adi-prasetyo/driftscribe)"
+    echo "  Permissions:"
+    echo "    Contents:      Read and write"
+    echo "    Pull requests: Read and write"
+    echo "  NO Issues, NO Actions, NO admin, NO second repo."
+    echo "Then re-run with the value as the 8th positional arg:"
+    echo "  $0 \$PROJECT \$GH_TOKEN \$DOCS_PAT \$WEBHOOK_URL \$DEV_KEY \$UPGRADE_READER_PAT \$UPGRADE_DOCS_PAT <tofu-editor-pat>"
+    echo "----------------------------------------------------------------"
+    echo
+  fi
+fi
+
 # Developer Knowledge API key (Phase 17.B) — operator must supply. The key
 # itself MUST be created by the operator in the GCP Console with an
 # API-restriction binding it to `developerknowledge.googleapis.com` only
@@ -533,6 +586,12 @@ bind_secret driftscribe-webhook-url   "$NOTIFIER_SA"
 # a compromise of the read-only worker cannot escalate to PR creation.
 bind_secret upgrade-reader-github-pat "$UPGRADE_READER_SA"
 bind_secret upgrade-docs-github-pat   "$UPGRADE_DOCS_SA"
+
+# tofu-editor worker (Phase D / D3-1): one secret (its write-scoped fine-grained
+# PAT). PER-SECRET accessor ONLY — scoped to tofu-editor-github-pat. The editor SA
+# holds NO project-level GCP role and NO other secret: it authors infra/ PR text
+# and never runs tofu, so its entire authority is this single GitHub PAT.
+bind_secret tofu-editor-github-pat    "$TOFU_EDITOR_SA"
 
 # --------------------------------------------------------------------------
 # 7. Rollback worker — resource-scoped run.developer on payment-demo ONLY
@@ -649,7 +708,13 @@ fi
 # --ingress=internal; under internal ingress the coordinator must reach it from
 # inside the VPC (a C5 egress concern) — this invoker grant is necessary but not
 # sufficient there. See docs/runbooks/tofu-apply.md.
-for worker in driftscribe-reader driftscribe-docs driftscribe-rollback driftscribe-notifier driftscribe-upgrade-reader driftscribe-upgrade-docs driftscribe-infra-reader driftscribe-tofu-apply; do
+# Phase D (D3-1): driftscribe-tofu-editor (the provision-workload HCL-authoring
+# worker) added so the coordinator can invoke /open-pr to open infra/ PRs. Like the
+# others it is --no-allow-unauthenticated, so the coordinator SA needs this Cloud
+# Run platform invoker grant IN ADDITION to the worker's in-app ALLOWED_CALLERS
+# allowlist. Still per-service — invoker on the editor does NOT extend to any other
+# workload's workers. See docs/runbooks/tofu-editor.md.
+for worker in driftscribe-reader driftscribe-docs driftscribe-rollback driftscribe-notifier driftscribe-upgrade-reader driftscribe-upgrade-docs driftscribe-infra-reader driftscribe-tofu-apply driftscribe-tofu-editor; do
   if gcloud run services describe "$worker" \
      --region="$REGION" --project="$PROJECT" >/dev/null 2>&1; then
     gcloud run services add-iam-policy-binding "$worker" \

@@ -1,0 +1,40 @@
+# Canonical dependency documentation for the tofu-editor worker (Phase D).
+#
+# The worker's container is NOT built by `pip install .` against this file —
+# the Dockerfile installs the listed deps directly via `uv pip install --system
+# <pinned list>` to avoid pulling in a build-system. `driftscribe_lib` (and
+# `tools/iac_static_gate.py`, which `driftscribe_lib.iac_editor_policy`
+# imports) is made available inside the container via PYTHONPATH (see
+# workers/tofu_editor/Dockerfile).
+#
+# Keep this file in sync with the Dockerfile install line. Future agents / the
+# spec reviewer should be able to read the worker's deps without parsing a
+# Dockerfile.
+[project]
+name = "driftscribe-tofu-editor"
+version = "0.1.0"
+description = "DriftScribe tofu-editor Worker — iac/-only multi-file PR opener"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "google-auth>=2.35",
+    # google.auth.transport.requests imports `requests` at runtime; it is
+    # NOT pulled in transitively by google-auth. Spike 11.0 confirmed this.
+    "requests>=2.32",
+    # `driftscribe_lib.github.open_iac_pr` uses PyGithub to commit files +
+    # open the PR.
+    "PyGithub>=2.4",
+    # The D1-4 in-process static gate pre-check imports tools.iac_static_gate ->
+    # driftscribe_lib.iac_hcl -> `import hcl2`, whose PyPI package is python-hcl2
+    # (`hcl2` is only the import name). Required at boot; omitting it passes unit
+    # tests via the root env but crashes the deployed image.
+    "python-hcl2>=4.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.27",  # for fastapi.testclient.TestClient
+]

@@ -931,11 +931,12 @@ def _do_rollback(
 
 # Workloads with no autonomous /recheck pipeline — chat-only by design.
 # ``explore`` is strictly read-only and exists only as a free-form /chat
-# surface; it has no DecisionProposal renderer / observation pass, so
-# /recheck refuses it early (see the guard at the top of _do_recheck).
+# surface; ``provision`` (Phase D) authors IaC edits and opens ONE PR from
+# /chat — neither has a DecisionProposal renderer / observation pass, so
+# /recheck refuses them early (see the guard at the top of _do_recheck).
 # Kept as an explicit set (not a schema flag) to mirror the inline
 # upgrade /recheck refusal below — both are routing facts owned here.
-CHAT_ONLY_WORKLOAD_NAMES: frozenset[str] = frozenset({"explore"})
+CHAT_ONLY_WORKLOAD_NAMES: frozenset[str] = frozenset({"explore", "provision"})
 
 
 async def _do_recheck(
@@ -1335,7 +1336,7 @@ class RecheckRequest(BaseModel):
     working without a body shape change.
     """
 
-    workload: Literal["drift", "upgrade", "explore"] = "drift"
+    workload: Literal["drift", "upgrade", "explore", "provision"] = "drift"
 
     model_config = ConfigDict(extra="forbid")
 
@@ -3241,7 +3242,7 @@ class ChatRequest(BaseModel):
     §"session memory").
 
     Phase 17.A.3: ``workload`` selects the workload-scoped agent. The
-    Literal closes the set to ``{"drift", "upgrade", "explore"}`` —
+    Literal closes the set to ``{"drift", "upgrade", "explore", "provision"}`` —
     pydantic rejects any other value with 422 before the handler body
     runs, which prevents a malformed request from reaching the workload
     loader's exception path. Defaults to ``"drift"`` so pre-17 callers
@@ -3250,7 +3251,7 @@ class ChatRequest(BaseModel):
 
     prompt: str
     session_id: str | None = None
-    workload: Literal["drift", "upgrade", "explore"] = "drift"
+    workload: Literal["drift", "upgrade", "explore", "provision"] = "drift"
 
     model_config = ConfigDict(extra="forbid")
 

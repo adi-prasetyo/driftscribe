@@ -54,6 +54,15 @@ substitutions:
   _VPC_SUBNET: ''
   _VPC_EGRESS: ''
   _TOFU_APPLY_URL: ''
+  # Phase D — OPTIONAL tofu-editor worker URL. Same empty-arg-safety: folded
+  # into ENV_VARS only when non-empty (mirrors _TOFU_APPLY_URL). Set this so a
+  # from-scratch coordinator deploy wires TOFU_EDITOR_URL and the agent can open
+  # iac/ PRs via the credential-isolated editor (also clears the D2-1
+  # GET /iac-apply/reachability "editor unreachable" warning). On the LIVE
+  # coordinator it is currently set via a direct --update-env-vars and persists
+  # across these incremental deploys; codifying it here keeps a from-scratch
+  # rebuild from silently dropping it. See docs/runbooks/tofu-editor.md.
+  _TOFU_EDITOR_URL: ''
   # Cloudflare Access integration (Phase 21). These are PUBLIC identifiers
   # (the AUD tag is the per-Application identifier shown in the CF
   # dashboard, the team domain is the hostname users see at sign-in) —
@@ -120,8 +129,9 @@ steps:
         # itself comma-separated (static-gate,tofu,lint-test), so we use the
         # "^@^" custom-delimiter form: the leading ^@^ makes "@" the separator
         # between K=V pairs, leaving commas safe inside values (none of these
-        # values contain "@"). TOFU_APPLY_URL is folded in below only when
-        # _TOFU_APPLY_URL is set, so today's deploys leave it untouched.
+        # values contain "@"). TOFU_APPLY_URL / TOFU_EDITOR_URL are folded in
+        # below only when their substitution is set, so today's deploys leave
+        # them untouched.
         ENV_VARS="^@^CF_ACCESS_TEAM_DOMAIN=${_CF_ACCESS_TEAM_DOMAIN}@CF_ACCESS_AUD_TAG=${_CF_ACCESS_AUD_TAG}@COORDINATOR_ORIGIN=${_COORDINATOR_ORIGIN}@IAC_REQUIRED_CHECKS=${_IAC_REQUIRED_CHECKS}@IAC_MERGE_METHOD=${_IAC_MERGE_METHOD}"
         EXTRA_ARGS=()
         if [ -n "${_VPC_NETWORK}" ]; then
@@ -135,6 +145,9 @@ steps:
         fi
         if [ -n "${_TOFU_APPLY_URL}" ]; then
           ENV_VARS="$${ENV_VARS}@TOFU_APPLY_URL=${_TOFU_APPLY_URL}"
+        fi
+        if [ -n "${_TOFU_EDITOR_URL}" ]; then
+          ENV_VARS="$${ENV_VARS}@TOFU_EDITOR_URL=${_TOFU_EDITOR_URL}"
         fi
         gcloud run services update ${_SERVICE} \
           --image=asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-agent:${_TAG} \

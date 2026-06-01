@@ -85,6 +85,29 @@ ARBITRARY_EXECUTION_BLOCK_KEYS = frozenset({"provisioner", "connection"})
 # `data "<type>"` sources that read outside the declared config (command
 # execution / cross-state read).
 FORBIDDEN_DATA_SOURCE_TYPES = frozenset({"external", "terraform_remote_state"})
+# Secret material is OPERATOR-only: an authoring agent must never create a
+# Secret Manager secret container or version (secret VALUES live in the
+# `secret_data` attribute of a *_secret_version). Agents reference existing
+# secrets by id (e.g. in a Cloud Run --set-secrets binding); they never
+# author the secret itself. Operators legitimately declare these during
+# bootstrap, so this is an AGENT-mode-only ban. (Arbitrary literal secrets
+# smuggled into other resource attributes are caught by the GitGuardian
+# required check + human review, not this structural gate.)
+# Includes the REGIONAL variants: a regional secret CONTAINER has no
+# `secret_data`, so without the resource-type ban it would slip both this rule
+# and the secret_data attribute check entirely.
+SECRET_MATERIAL_RESOURCE_TYPES = frozenset({
+    "google_secret_manager_secret",
+    "google_secret_manager_secret_version",
+    "google_secret_manager_regional_secret",
+    "google_secret_manager_regional_secret_version",
+})
+# The attribute that carries a literal secret VALUE. It only validly appears in
+# the (already-banned) google_secret_manager_secret_version, so this attribute
+# check is pure defense-in-depth: it also rejects a `secret_data` smuggled into
+# some OTHER resource type in AGENT mode. Over-rejecting here is the safe
+# direction for a security gate (mirrors `_body_has_block`'s over-approximation).
+SECRET_MATERIAL_ATTR_KEY = "secret_data"
 # `dynamic` blocks are banned in v1: a `dynamic "provisioner"` would smuggle
 # execution past a naive key check (design §5.1).
 DYNAMIC_BLOCK_KEY = "dynamic"
@@ -292,6 +315,27 @@ def evaluate(gi: GateInput) -> list[Violation]:
                     Violation(
                         "arbitrary-execution",
                         f"{path}: resource type {rtype!r} (command-execution resource)",
+                    )
+                )
+            # Secret material is operator-only — agents reference existing
+            # secrets by id, never author the secret itself (AGENT mode only).
+            if gi.mode is GateMode.AGENT and rtype in SECRET_MATERIAL_RESOURCE_TYPES:
+                violations.append(
+                    Violation(
+                        "secret-material-forbidden",
+                        f"{path}: resource type {rtype!r} (secret material is operator-only)",
+                    )
+                )
+            # Defense-in-depth: a literal `secret_data` attribute (the secret
+            # VALUE) anywhere in an agent PR is banned even if smuggled into a
+            # non-secret resource type, which would otherwise dodge the
+            # resource-type ban above.
+            if gi.mode is GateMode.AGENT and SECRET_MATERIAL_ATTR_KEY in body:
+                violations.append(
+                    Violation(
+                        "secret-material-forbidden",
+                        f"{path}: resource {rtype!r} has a {SECRET_MATERIAL_ATTR_KEY!r} "
+                        "attribute (secret material is operator-only)",
                     )
                 )
             for key in ARBITRARY_EXECUTION_BLOCK_KEYS:
