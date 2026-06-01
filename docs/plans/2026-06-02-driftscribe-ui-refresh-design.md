@@ -2,7 +2,14 @@
 
 **Date:** 2026-06-02
 **Branch:** `feat/ui-refresh-svelte`
-**Status:** Design (pending Codex review → implementation plan)
+**Status:** Design — Codex review incorporated (thread 019e83fc; CSP/lockfile/
+manifest/`mcp_call`/required-smoke fixes folded into the plan's §2a P0 patches).
+
+> Deferred (Codex suggestion, low value / higher risk): server-side
+> normalization of `approval.approval_url` in `GET /decisions`. The URL is
+> server-minted from `COORDINATOR_URL` (not user input), and the client
+> `safeApprovalHref` same-origin guard is sufficient defense-in-depth, so we do
+> not modify the stable `/decisions` endpoint.
 
 ## 1. Context & goal
 
@@ -129,7 +136,11 @@ All shapes per the verified runtime contract (see
    `llm_thought`/`tool_call`/`tool_result`/`llm_usage`/`final_response` →
    `done` (reply, tool_calls, session_id) or `error` (detail, status_hint).
    Render the final reply from the `done` frame immediately; the timeline is
-   already populated live.
+   already populated live. **MCP note:** `mcp_call` events are NOT carried on the
+   stream — after `done`, the app does ONE `/trace/{id}` **backfill** to pull the
+   side-channel `mcp_call` events (sub-grouped by `mcp_tool || mcp_server`) and
+   reconcile ordering (mirrors the legacy UI). MCP routing is by `event ===
+   'mcp_call'`, not by tool-name prefix.
 2. **Historical replay:** opening a past decision fetches `GET /trace/{id}` and
    renders its `events[]` (sorted by timestamp, insert_id) read-only, with the
    historical banner shown and the chat form dimmed (`.historical`).
