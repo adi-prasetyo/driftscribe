@@ -684,3 +684,266 @@ def _parse_plan_sink(sink: dict) -> DecomposeResult:
     # UNCHANGED so the orchestrator fails CLOSED.
     validate_slice_specs(result.slices)
     return result
+
+
+# --------------------------------------------------------------------------- #
+# D5-5: author_slices_parallel() — parallel authoring + fail-closed barrier
+# --------------------------------------------------------------------------- #
+#
+# The N slice-author sub-agents run IN PARALLEL via ADK ``ParallelAgent``
+# (asyncio.TaskGroup under the hood). Then a DETERMINISTIC, FAIL-CLOSED barrier
+# collects each slice's file-write from its own sink and merges them. The next
+# slice (the orchestrator) makes the single editor call from this output.
+#
+# The fan-out's "name" is fixed below so the per-sub-agent isolation branch ADK
+# stamps on each event (``<parallel.name>.<sub_agent.name>``, see
+# ``parallel_agent._create_branch_ctx_for_sub_agent``) is predictable — the
+# event-tagging loop maps a branch's sub-agent suffix back to the slice whose
+# agent ``name`` it ends with.
+_FANOUT_PARALLEL_NAME = "driftscribe_fanout"
+
+
+class AuthorResult(BaseModel):
+    """The validated output of :func:`author_slices_parallel`.
+
+    ``files`` is the per-slice ``{"path", "content"}`` writes IN SLICE ORDER
+    (the same order the orchestrator hands to the editor downstream).
+    ``citations`` maps each slice's ``target_path`` to the citation list its
+    sub-agent recorded (``[]`` if none). ``extra="forbid"`` keeps the result
+    model as strict as the rest of the coordinator's models.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    files: list[dict]
+    citations: dict[str, list[str]]
+
+
+async def author_slices_parallel(
+    specs: list[SliceSpec],
+    *,
+    read_tools: dict[str, Callable] | None = None,
+    event_sink: Callable[[dict], None] | None = None,
+) -> AuthorResult:
+    """Run N slice-author sub-agents IN PARALLEL, then merge fail-closed.
+
+    Each spec gets its OWN fresh per-slice ``sink`` and a constrained
+    slice-author agent (:func:`build_slice_author_agent`, which has NO PR/apply/
+    mutation tool). The N agents are wrapped in a single ADK
+    :class:`~google.adk.agents.ParallelAgent` and run concurrently on a
+    dedicated authoring session (fresh uuid, mirroring :func:`decompose` /
+    :func:`agent.adk_agent.run_chat_stream`).
+
+    ``read_tools`` defaults to :func:`resolve_provision_read_tools` so each
+    sub-agent can READ the live env / inventory / docs to ground its file. Only
+    read-tool VALUES are handed to each agent (plus its pinned
+    ``submit_slice_file`` hand-back tool) — never any mutation/PR tool.
+
+    Event handling (per slice): for each ADK event we emit the SAME
+    ``llm_thought`` / ``tool_call`` / ``tool_result`` / ``llm_usage`` payloads
+    the chat path emits (via :func:`agent.adk_agent._emit_event_logs` /
+    :func:`agent.adk_agent._emit_llm_usage`), TAG each payload with the event's
+    ``branch`` plus the matched slice's ``slice_id`` / ``target_path``, and
+    forward the tagged payload to ``event_sink`` (if given). We DELIBERATELY do
+    NOT collect any ``is_final_response()`` reply: each of the N sub-agents
+    would otherwise emit its own natural-language final and corrupt the single
+    coordinator reply timeline. Per-slice finals are suppressed; the file each
+    slice produced comes from its tool sink, not its final text.
+
+    Fail-closed contract (load-bearing):
+
+    - If the run raises (a sub-agent errored → the ``ParallelAgent``'s
+      TaskGroup cancels its siblings and raises through), ALL sink writes are
+      DISCARDED and a :class:`FanoutError` ``(502, kind=AUTHORING)`` is raised
+      — never a partial :class:`AuthorResult`.
+    - :class:`asyncio.CancelledError` (outer request cancellation) is re-raised
+      UNCHANGED — it is NOT converted into a :class:`FanoutError`. The narrow
+      ``except CancelledError: raise`` sits BEFORE the broad ``except`` so an
+      outer cancel can never be swallowed into an authoring failure.
+
+    Barrier (only on a clean run), deterministic, in slice order:
+
+    - Each slice must have produced a non-empty file (``sink["file"]`` present
+      with content that is not empty/whitespace) — else
+      :class:`FanoutError` ``(502, kind=AUTHORING)`` naming the offending path.
+    - The merged writes (in slice order) are re-validated by
+      :func:`driftscribe_lib.iac_editor_policy.validate_file_writes` (disjoint
+      paths + per-file/total byte bounds). A rejection is translated to a
+      :class:`FanoutError` carrying the library's status/reason
+      (``kind=AUTHORING``) — the library error is NEVER allowed to leak.
+
+    Returns an :class:`AuthorResult` with the files in slice order and a
+    ``target_path → citations`` map.
+    """
+    import asyncio
+
+    from google.adk.agents import ParallelAgent
+    from google.adk.sessions import InMemorySessionService
+    from google.genai import types
+
+    from agent.adk_agent import _emit_event_logs, _emit_llm_usage
+
+    if read_tools is None:
+        read_tools = resolve_provision_read_tools()
+
+    # Build one (spec, sink, agent) per slice, IN SLICE ORDER. Each sink is a
+    # fresh dict captured by that slice's pinned submit_slice_file closure.
+    pairs: list[tuple[SliceSpec, dict]] = []
+    sub_agents = []
+    # name -> (slice_id, target_path); used to map an event branch suffix back
+    # to its slice. The branch is "<parallel.name>.<sub_agent.name>", so we
+    # match the slice whose agent name the branch ENDS with.
+    name_to_slice: dict[str, tuple[int, str]] = {}
+    for idx, spec in enumerate(specs):
+        sink: dict = {}
+        agent = build_slice_author_agent(spec, read_tools, sink)
+        pairs.append((spec, sink))
+        sub_agents.append(agent)
+        name_to_slice[agent.name] = (idx, spec.target_path)
+
+    root = ParallelAgent(name=_FANOUT_PARALLEL_NAME, sub_agents=sub_agents)
+
+    # Own dedicated authoring session — a FRESH id, never shared with the
+    # decompose session, so authoring chatter stays isolated.
+    session_service = InMemorySessionService()
+    sid = str(uuid.uuid4())
+    await session_service.create_session(
+        app_name="driftscribe",
+        user_id="driftscribe-runtime",
+        session_id=sid,
+    )
+    runner = Runner(
+        agent=root,
+        app_name="driftscribe",
+        session_service=session_service,
+    )
+    # The ParallelAgent fans the SAME user message to every sub-agent; each
+    # sub-agent's own instruction (goal + pinned target_path) is what scopes it.
+    msg = types.Content(
+        role="user",
+        parts=[types.Part(text="Author your assigned iac/ file slice now.")],
+    )
+
+    def _slice_tag_for_branch(branch: str | None) -> tuple[int, str] | None:
+        """Map an event ``branch`` to its slice ``(slice_id, target_path)``.
+
+        The branch is ``<parallel.name>.<sub_agent.name>``; the sub-agent name
+        is the trailing dotted segment. Match the slice whose agent name equals
+        that suffix (``endswith`` on a ``.<name>`` boundary, falling back to an
+        exact tail-segment match) so a future nested branch prefix can't break
+        the mapping."""
+        if not branch:
+            return None
+        tail = branch.rsplit(".", 1)[-1]
+        return name_to_slice.get(tail)
+
+    try:
+        async for event in runner.run_async(
+            user_id="driftscribe-runtime",
+            session_id=sid,
+            new_message=msg,
+        ):
+            # Same partial-event dedup gate as the chat path: only merged
+            # non-partial events are eligible to emit. NB: we deliberately run
+            # NO is_final_response() reply-collection — per-slice finals are
+            # suppressed (see docstring).
+            if (
+                event.content
+                and event.content.parts
+                and getattr(event, "partial", None) is not True
+            ):
+                branch = getattr(event, "branch", None)
+                tag = _slice_tag_for_branch(branch)
+                for payload in _emit_event_logs(event):
+                    _tag_and_forward(payload, branch, tag, event_sink)
+            usage_payload = _emit_llm_usage(event)
+            if usage_payload is not None:
+                branch = getattr(event, "branch", None)
+                tag = _slice_tag_for_branch(branch)
+                _tag_and_forward(usage_payload, branch, tag, event_sink)
+    except asyncio.CancelledError:
+        # Outer request cancellation — propagate UNCHANGED. This narrow re-raise
+        # MUST stay before the broad except so a cancel is never swallowed into
+        # an AUTHORING failure.
+        raise
+    except FanoutError:
+        # Defensive: a FanoutError surfaced mid-run (e.g. from a future tool)
+        # is already typed — let it propagate unchanged rather than re-wrap.
+        raise
+    except Exception as e:
+        # A sub-agent errored → the ParallelAgent's TaskGroup cancelled its
+        # siblings and raised through. DISCARD every sink write (we simply
+        # never read them) and surface a typed AUTHORING failure.
+        raise FanoutError(
+            502,
+            f"slice authoring failed: {e}",
+            kind=FanoutFailureKind.AUTHORING,
+        ) from e
+
+    return _merge_slice_sinks(pairs)
+
+
+def _tag_and_forward(
+    payload: dict,
+    branch: str | None,
+    tag: tuple[int, str] | None,
+    event_sink: Callable[[dict], None] | None,
+) -> None:
+    """Tag a per-event payload with its slice provenance and forward it.
+
+    Adds ``branch`` (the raw ADK isolation branch, or ``None``) and — when the
+    branch mapped to a slice — ``slice_id`` / ``target_path``. The payload is a
+    plain dict already redacted by the emit helper; we mutate it in place (it is
+    not the durable log copy — the emit helper already logged its own) and hand
+    it to ``event_sink`` if one was provided.
+    """
+    payload["branch"] = branch
+    if tag is not None:
+        payload["slice_id"] = tag[0]
+        payload["target_path"] = tag[1]
+    if event_sink is not None:
+        event_sink(payload)
+
+
+def _merge_slice_sinks(pairs: list[tuple[SliceSpec, dict]]) -> AuthorResult:
+    """Deterministic, fail-closed barrier over the per-slice sinks (in order).
+
+    Only called on a CLEAN run. Split out from :func:`author_slices_parallel`
+    so the barrier is testable without an agent run. Enforces, in slice order:
+
+    1. Every slice produced a non-empty file (``sink["file"]`` present, content
+       not empty/whitespace) — else :class:`FanoutError` ``(502, AUTHORING)``
+       naming the offending ``target_path``.
+    2. The merged writes pass
+       :func:`driftscribe_lib.iac_editor_policy.validate_file_writes` (disjoint
+       paths + per-file/total byte bounds); an :class:`EditorPolicyError` is
+       translated to a :class:`FanoutError` carrying the lib status/reason
+       (``kind=AUTHORING``) — the lib error never leaks.
+
+    Returns the :class:`AuthorResult` (files in slice order + path→citations).
+    """
+    from driftscribe_lib.iac_editor_policy import validate_file_writes
+
+    writes: list[dict] = []
+    citations: dict[str, list[str]] = {}
+    for spec, sink in pairs:
+        file_write = sink.get("file")
+        content = (file_write or {}).get("content")
+        if not file_write or not content or not content.strip():
+            raise FanoutError(
+                502,
+                f"slice {spec.target_path} produced no file",
+                kind=FanoutFailureKind.AUTHORING,
+            )
+        writes.append(file_write)
+        citations[spec.target_path] = list(sink.get("citations", []))
+
+    try:
+        validate_file_writes(writes)
+    except EditorPolicyError as e:
+        # Translate the library error — never let EditorPolicyError leak.
+        raise FanoutError(
+            e.status_code, e.reason, kind=FanoutFailureKind.AUTHORING
+        ) from e
+
+    return AuthorResult(files=writes, citations=citations)
