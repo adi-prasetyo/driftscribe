@@ -37,3 +37,26 @@ export function fmtPreview(s: string, max: number = DEFAULT_PREVIEW_MAX): string
   if (s.length <= max) return s;
   return s.slice(0, max) + ELLIPSIS;
 }
+
+/**
+ * Render an ISO timestamp as a readable absolute wall-clock string with the
+ * year (used by the DecisionSummary card — a historical decision can be from
+ * any date, so unlike the rail's compact no-year form we include the year).
+ * Falls back to the raw value when it doesn't parse, and to '' when absent.
+ */
+export function fmtWhen(iso: string): string {
+  if (!iso) return '';
+  const parsed = Date.parse(iso);
+  if (Number.isNaN(parsed)) return iso;
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(parsed);
+  } catch {
+    return iso;
+  }
+}

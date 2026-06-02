@@ -101,6 +101,12 @@
 {/snippet}
 
 <div class="timeline">
+  {#if status === 'historical' && events.length === 0}
+    <p class="timeline-empty ds-subtle" data-testid="timeline-empty">
+      No reasoning timeline for this decision — it was recorded directly, not
+      produced by an agent reasoning run.
+    </p>
+  {/if}
   <Group
     key="coordinator"
     title={titleFor.coordinator}
@@ -178,6 +184,13 @@
     display: flex;
     flex-direction: column;
     gap: 0;
+  }
+  .timeline-empty {
+    margin: 0 0 var(--ds-sp-3);
+    padding: var(--ds-sp-3) 0;
+    color: var(--ds-faint);
+    font-style: italic;
+    max-width: var(--ds-measure);
   }
   .event-item {
     padding: var(--ds-sp-3) 0;

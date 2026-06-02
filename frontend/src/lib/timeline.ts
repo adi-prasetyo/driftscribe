@@ -31,7 +31,17 @@ export interface TraceEvent extends Record<string, unknown> {
 }
 
 // Lifecycle state of the timeline (consumed by TraceBadge / status pill).
-export type TimelineStatus = 'pending' | 'streaming' | 'complete' | 'stalled' | 'error';
+// 'historical' is the label for a past decision opened from the rail — it is a
+// snapshot replay, NOT a live stream, so it must never derive from /trace's
+// `complete` flag (which is false for any trace without a stable final_response,
+// e.g. an iac_apply, or any trace on a cold observation cache after a restart).
+export type TimelineStatus =
+  | 'pending'
+  | 'streaming'
+  | 'complete'
+  | 'stalled'
+  | 'error'
+  | 'historical';
 
 /**
  * Classify a single event into its display group.

@@ -16,6 +16,11 @@ export const TESTIDS = {
 
 export const TRACE_ID = 'abcdef0123456789abcdef0123456789';
 
+// A historical iac_apply trace: produced by the HITL approval handler, NOT the
+// reasoning loop — so its /trace has a decision doc but ZERO `event` entries.
+// Exercises the historical-label + DecisionSummary + empty-timeline path.
+export const IAC_TRACE_ID = '88908d9b2d244dd6b8f952a6d799851f';
+
 // One SSE chat turn: meta → thought → tool_call → tool_result → done.
 // NB: mcp_call is intentionally ABSENT from the stream (it only arrives via the
 // /trace backfill — see TRACE_RESPONSE).
@@ -47,8 +52,38 @@ export function traceResponse(traceId = TRACE_ID) {
   };
 }
 
+// The iac_apply decision doc (mirrors the live Firestore shape). Used both as a
+// rail row and as the /trace decision for IAC_TRACE_ID.
+export function iacDecision() {
+  return {
+    decision_id: 'd-iac',
+    trace_id: IAC_TRACE_ID,
+    action: 'iac_apply',
+    pr_number: 47,
+    apply_status: 'applied',
+    merge_state: 'merged',
+    approver: 'op@example.com',
+    head_sha: '89f2d4e093f2fa15fab0d86b21c1e98d45845418',
+    applied_at: '2026-05-31T08:27:45Z',
+    created_at: '2026-05-31T08:27:45Z',
+  };
+}
+
+// /trace for an iac_apply: a real decision doc, but NO reasoning events and
+// complete:false (no final_response is ever emitted for this path). The UI must
+// still label it "historical" (not "streaming") and render the DecisionSummary.
+export function iacTraceResponse() {
+  return {
+    trace_id: IAC_TRACE_ID,
+    events: [],
+    decision: iacDecision(),
+    complete: false,
+  };
+}
+
 // /decisions rail. Includes a rollback decision with a SAME-ORIGIN approval_url
-// (built per-test against the page origin) and an off-origin "malicious" one.
+// (built per-test against the page origin), an off-origin "malicious" one, and a
+// historical iac_apply (no prose, no reasoning timeline).
 export function decisionsResponse(origin: string) {
   return {
     decisions: [
@@ -74,6 +109,7 @@ export function decisionsResponse(origin: string) {
           expires_at: '2099-01-01T00:00:00Z',
         },
       },
+      iacDecision(),
     ],
   };
 }
