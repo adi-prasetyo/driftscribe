@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { fmtTokens, shortTrace, fmtPreview } from '../../src/lib/format';
+import { fmtTokens, shortTrace, fmtPreview, fmtWhen } from '../../src/lib/format';
 
 describe('fmtTokens', () => {
   it('formats a present total with comma grouping and " tok" suffix', () => {
@@ -96,5 +96,28 @@ describe('fmtPreview', () => {
   it('handles null/undefined input safely (returns "")', () => {
     expect(fmtPreview(null as unknown as string)).toBe('');
     expect(fmtPreview(undefined as unknown as string)).toBe('');
+  });
+});
+
+describe('fmtWhen', () => {
+  it('formats a valid ISO timestamp into a readable string with the year', () => {
+    const out = fmtWhen('2026-05-31T08:27:45.434428+00:00');
+    // Locale/tz-dependent exact text; assert it parsed (year present) and is not
+    // the raw ISO string.
+    expect(out).toContain('2026');
+    expect(out).not.toContain('T08:27');
+  });
+
+  it('returns "" for an empty string', () => {
+    expect(fmtWhen('')).toBe('');
+  });
+
+  it('returns the raw value when it does not parse', () => {
+    expect(fmtWhen('not-a-date')).toBe('not-a-date');
+  });
+
+  it('handles null/undefined input safely (returns "")', () => {
+    expect(fmtWhen(null as unknown as string)).toBe('');
+    expect(fmtWhen(undefined as unknown as string)).toBe('');
   });
 });

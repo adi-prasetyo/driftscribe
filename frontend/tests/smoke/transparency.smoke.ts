@@ -2,8 +2,10 @@ import { test, expect, type Page, type Route } from '@playwright/test';
 import {
   TESTIDS,
   TRACE_ID,
+  IAC_TRACE_ID,
   sseBody,
   traceResponse,
+  iacTraceResponse,
   decisionsResponse,
 } from './fixtures';
 
@@ -38,13 +40,18 @@ async function mockData(page: Page, state: RouteState) {
     });
   });
 
-  await page.route('**/trace/**', (route: Route) =>
-    route.fulfill({
+  await page.route('**/trace/**', (route: Route) => {
+    // Branch by URL so each decision's trace resolves to its OWN payload — the
+    // iac_apply trace has no events + a decision doc; the chat trace has events.
+    const body = route.request().url().includes(IAC_TRACE_ID)
+      ? iacTraceResponse()
+      : traceResponse();
+    return route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify(traceResponse()),
-    }),
-  );
+      body: JSON.stringify(body),
+    });
+  });
 
   await page.route('**/chat', (route: Route) => {
     state.chatHeaders = route.request().headers();
@@ -136,12 +143,45 @@ test.describe('transparency UI (mock smoke)', () => {
     await mockData(page, freshState());
     await page.goto('/ui/transparency');
 
-    // two seeded decisions render
-    await expect(page.locator(`[data-testid="${TESTIDS.pastDecisionItem}"]`)).toHaveCount(2);
+    // three seeded decisions render (two rollbacks + one iac_apply)
+    await expect(page.locator(`[data-testid="${TESTIDS.pastDecisionItem}"]`)).toHaveCount(3);
     // the off-origin approval_url must NOT become an anchor
     await expect(page.locator('a[href*="evil.example"]')).toHaveCount(0);
     // the same-origin one DOES render an Approve link
     await expect(page.locator('a.past-approve-btn[href*="/approvals/ap-1"]')).toHaveCount(1);
+  });
+
+  test('historical iac_apply: "historical" pill (not streaming) + decision summary + empty-timeline note', async ({ page }) => {
+    await seedToken(page);
+    await mockData(page, freshState());
+    await page.goto('/ui/transparency');
+
+    // Open the iac_apply decision specifically (not .first(), which is a rollback).
+    await page
+      .locator(`[data-testid="${TESTIDS.pastDecisionItem}"]`)
+      .filter({ hasText: 'iac_apply' })
+      .locator(`[data-testid="${TESTIDS.openTraceButton}"]`)
+      .click();
+
+    await expect(page.locator(`[data-testid="${TESTIDS.historicalBanner}"]`)).toBeVisible();
+
+    // The status pill reads "historical" — NOT the regressed "streaming".
+    const pill = page.locator('#status-pill');
+    await expect(pill).toHaveText(/historical/);
+    await expect(pill).not.toHaveText(/streaming/);
+
+    // The DecisionSummary card renders the curated, safe fields.
+    const summary = page.locator('[data-testid="decision-summary"]');
+    await expect(summary).toBeVisible();
+    await expect(summary).toContainText('Infra apply');
+    await expect(summary).toContainText('#47');
+    await expect(summary).toContainText('op@example.com');
+
+    // The empty-timeline note explains why there's no reasoning stream.
+    await expect(page.locator('[data-testid="timeline-empty"]')).toBeVisible();
+
+    // The hero stays hidden — this decision carries no prose.
+    await expect(page.locator(`[data-testid="${TESTIDS.finalResponse}"]`)).toBeHidden();
   });
 
   test('open-trace enters historical mode; new chat exits', async ({ page }) => {

@@ -23,6 +23,10 @@
     complete: { label: 'complete', pill: 'ds-pill--ok' },
     stalled: { label: 'stalled · logs lagging', pill: 'ds-pill--warn' },
     error: { label: 'error', pill: 'ds-pill--danger' },
+    // A past decision opened from the rail — a snapshot replay, not a live
+    // stream. Green (settled) styling, no streaming dot. Matches the legacy
+    // setStatusPill("complete", "historical").
+    historical: { label: 'historical', pill: 'ds-pill--ok' },
   };
 
   const meta = $derived(STATUS_META[status]);

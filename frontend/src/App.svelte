@@ -17,6 +17,7 @@
   import ChatForm from './components/ChatForm.svelte';
   import TraceBadge from './components/TraceBadge.svelte';
   import FinalResponse from './components/FinalResponse.svelte';
+  import DecisionSummary from './components/DecisionSummary.svelte';
   import HistoricalBanner from './components/HistoricalBanner.svelte';
   import DecisionsRail from './components/DecisionsRail.svelte';
   import Timeline from './components/Timeline.svelte';
@@ -34,6 +35,9 @@
   let historicalActive = $state(false);
   let historicalTraceId = $state<string | null>(null);
   let activeTraceId = $state<string | null>(null);
+  // The decision doc of the trace being replayed — drives the DecisionSummary
+  // card when the replayed decision carries no prose (e.g. an iac_apply).
+  let historicalDecision = $state<Decision | null>(null);
 
   let authPanelOpen = $state(false);
   let authResolver: ((t: string | null) => void) | null = null;
@@ -108,6 +112,7 @@
     traceId = null;
     finalReply = null;
     finalIsError = false;
+    historicalDecision = null;
     status = 'pending';
 
     try {
@@ -231,6 +236,7 @@
     events = [];
     finalReply = null;
     finalIsError = false;
+    historicalDecision = null;
     status = 'pending';
     try {
       const resp = await call('/trace/' + encodeURIComponent(tid));
@@ -239,16 +245,27 @@
         const t = (await resp.json()) as TraceResponse;
         if (myRun !== runSeq) return;
         events = Array.isArray(t.events) ? t.events : [];
-        // Surface the decision's summary in the hero card (legacy parity).
+        // Surface the decision's prose in the hero card (legacy parity).
         const d = t.decision as Record<string, unknown> | null | undefined;
         finalReply = d ? asString(d.rationale) ?? asString(d.rendered_body) : null;
         finalIsError = false;
-        status = t.complete ? 'complete' : 'streaming';
+        // The replayed decision drives the DecisionSummary card when it has no
+        // prose (e.g. an iac_apply — see the {#if} in the template).
+        historicalDecision = (t.decision as Decision) ?? null;
+        // A replay is a snapshot, NOT a live stream — always 'historical'.
+        // (Deriving from t.complete would mislabel as 'streaming': iac_apply
+        // traces never have a final_response, and a cold post-restart
+        // observation cache returns complete=false on a single fetch.)
+        status = 'historical';
       } else {
+        historicalDecision = null;
         status = 'error';
       }
     } catch {
-      if (myRun === runSeq) status = 'error';
+      if (myRun === runSeq) {
+        historicalDecision = null;
+        status = 'error';
+      }
     }
   }
 
@@ -262,6 +279,7 @@
     events = [];
     finalReply = null;
     finalIsError = false;
+    historicalDecision = null;
     status = 'pending';
   }
 
@@ -283,6 +301,9 @@
     <HistoricalBanner active={historicalActive} traceId={historicalTraceId} onNewChat={newChat} />
     <TraceBadge {traceId} {status} />
     <FinalResponse reply={finalReply} isError={finalIsError} />
+    {#if historicalActive && finalReply == null && historicalDecision}
+      <DecisionSummary decision={historicalDecision} />
+    {/if}
     <Timeline {events} {status} />
   </section>
 </main>
