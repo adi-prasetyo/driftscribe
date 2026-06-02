@@ -17,6 +17,7 @@
   import ChatForm from './components/ChatForm.svelte';
   import TraceBadge from './components/TraceBadge.svelte';
   import FinalResponse from './components/FinalResponse.svelte';
+  import ReplyPending from './components/ReplyPending.svelte';
   import DecisionSummary from './components/DecisionSummary.svelte';
   import HistoricalBanner from './components/HistoricalBanner.svelte';
   import DecisionsRail from './components/DecisionsRail.svelte';
@@ -196,11 +197,17 @@
       // reconciles ordering (mirrors the legacy UI).
       await backfillTrace(myRun);
       if (myRun !== runSeq) return;
-      // finalReply is set by both onDone and onError; if the stream broke before
-      // producing anything, surface a recoverable error after the backfill.
-      if (streamErrored && finalReply == null) {
+      // finalReply is set by both onDone and onError. If we reach here with it
+      // still null, the stream produced neither a `done` nor an `error` frame —
+      // either it broke mid-transport (streamErrored) or it closed cleanly on
+      // EOF without ever emitting a final reply. Either way, never leave the
+      // answer area empty: surface a recoverable error after the backfill so the
+      // loading shimmer resolves to a message instead of a blank hero.
+      if (finalReply == null) {
         status = 'error';
-        finalReply = 'The reasoning stream was interrupted. Showing the recovered trace.';
+        finalReply = streamErrored
+          ? 'The reasoning stream was interrupted. Showing the recovered trace.'
+          : 'The reasoning stream ended before a final reply arrived.';
         finalIsError = true;
       }
       await loadDecisions();
@@ -301,6 +308,9 @@
     <HistoricalBanner active={historicalActive} traceId={historicalTraceId} onNewChat={newChat} />
     <TraceBadge {traceId} {status} />
     <FinalResponse reply={finalReply} isError={finalIsError} />
+    {#if busy && finalReply == null}
+      <ReplyPending />
+    {/if}
     {#if historicalActive && finalReply == null && historicalDecision}
       <DecisionSummary decision={historicalDecision} />
     {/if}

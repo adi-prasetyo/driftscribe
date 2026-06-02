@@ -22,6 +22,9 @@ async function seedToken(page: Page, token = 'smoke-token') {
 interface RouteState {
   decisionsStatus: number;
   chatHeaders: Record<string, string>;
+  // When > 0, the /chat route holds the response open this long before
+  // fulfilling — long enough to observe the in-flight loading shimmer.
+  chatDelayMs: number;
 }
 
 async function mockData(page: Page, state: RouteState) {
@@ -53,8 +56,11 @@ async function mockData(page: Page, state: RouteState) {
     });
   });
 
-  await page.route('**/chat', (route: Route) => {
+  await page.route('**/chat', async (route: Route) => {
     state.chatHeaders = route.request().headers();
+    if (state.chatDelayMs > 0) {
+      await new Promise((r) => setTimeout(r, state.chatDelayMs));
+    }
     return route.fulfill({
       status: 200,
       contentType: 'text/event-stream',
@@ -65,7 +71,7 @@ async function mockData(page: Page, state: RouteState) {
 }
 
 function freshState(decisionsStatus = 200): RouteState {
-  return { decisionsStatus, chatHeaders: {} };
+  return { decisionsStatus, chatHeaders: {}, chatDelayMs: 0 };
 }
 
 test.describe('transparency UI (mock smoke)', () => {
@@ -119,6 +125,29 @@ test.describe('transparency UI (mock smoke)', () => {
     });
     await expect(page.locator('[data-group="mcp"]')).toBeVisible();
     await expect(page.locator('#group-mcp')).toContainText('search_documents');
+  });
+
+  test('loading shimmer fills the hero until the reply lands, then is replaced', async ({ page }) => {
+    const state = freshState();
+    state.chatDelayMs = 800; // hold /chat open so the in-flight state is observable
+    await seedToken(page);
+    await mockData(page, state);
+    await page.goto('/ui/transparency');
+
+    await page.locator(`[data-testid="${TESTIDS.chatPrompt}"]`).fill('Check payment-demo for drift');
+    await page.locator(`[data-testid="${TESTIDS.chatSubmit}"]`).click();
+
+    // While the coordinator is working (request in flight, no reply yet) the
+    // shimmer placeholder occupies the hero slot and the real hero stays hidden.
+    const pending = page.locator(`[data-testid="${TESTIDS.replyPending}"]`);
+    const final = page.locator(`[data-testid="${TESTIDS.finalResponse}"]`);
+    await expect(pending).toBeVisible();
+    await expect(final).toBeHidden();
+
+    // Once the reply lands, the shimmer is replaced by the real answer.
+    await expect(final).toBeVisible();
+    await expect(final).toContainText('Found 3 drifted env vars.');
+    await expect(pending).toBeHidden();
   });
 
   test('auth-required (401) shows the inline AuthPanel instead of window.prompt', async ({ page }) => {
