@@ -8,6 +8,7 @@ export const TESTIDS = {
   chatPrompt: 'chat-prompt',
   chatSubmit: 'chat-submit',
   finalResponse: 'final-response',
+  replyPending: 'reply-pending',
   pastDecisionsPane: 'past-decisions-pane',
   pastDecisionItem: 'past-decision-item',
   openTraceButton: 'open-trace-button',
