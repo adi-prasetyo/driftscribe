@@ -70,6 +70,7 @@ from agent.workloads import (
 from pydantic import ValidationError as PydanticValidationError
 from driftscribe_lib import github
 from driftscribe_lib.github import PrMergeBlockedError, PrNotEligibleError
+from driftscribe_lib.infra_graph import build_graph
 from driftscribe_lib.logging import (
     current_trace_id_or_new,
     install_trace_middleware,
@@ -1704,6 +1705,67 @@ def list_decisions_endpoint(
         )
     response.headers["Cache-Control"] = "no-store"
     return {"decisions": state.list_decisions(limit=limit)}
+
+
+@app.get("/infra/graph")
+def get_infra_graph(
+    response: Response,
+    _: None = Depends(verify_token),
+) -> dict:
+    """Resource-map graph for the operator UI's Infrastructure panel (Phase 1).
+
+    Proxies the read-only ``infra_reader`` worker (the SPA can't reach the
+    internal-ingress worker directly) and reshapes its whole-project CAI
+    inventory into a redaction-safe, NODE-ONLY graph DTO via
+    :func:`driftscribe_lib.infra_graph.build_graph`. Nodes are grouped by
+    asset_type and flagged managed-in-IaC vs drift; secret/sensitive types are
+    counts-only (never a name). ``edges`` is always ``[]`` — the partial
+    topology is a Phase-4 follow-up.
+
+    Token-guarded via :func:`verify_token` exactly like ``/decisions`` /
+    ``/trace`` (header only). ``Cache-Control: no-store`` — the inventory
+    reflects mutable live state, and CAI is eventually consistent, so no
+    proxy/browser cache should hold a stale resource map.
+
+    Degradation (soft-fail to 200, never 5xx): the panel is best-effort, so a
+    failure becomes a ``degraded`` DTO the UI renders as an "unavailable" note
+    rather than a hard error:
+
+    * the worker's own CAI soft-fail (``{"error": "cloud_asset_unavailable"}``
+      at 200) flows through :func:`build_graph` → ``degraded=True``; and
+    * a real transport/config failure reaching the worker
+      (:class:`WorkerClientError` — e.g. ``INFRA_READER_URL`` unset, or the
+      worker down) is caught here and mapped to a synthetic
+      ``infra_reader_unavailable`` degraded DTO (the status code is preserved
+      in the ``detail`` for diagnosis).
+    """
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        inventory = worker_client.call("infra_reader", {})
+    except WorkerClientError as e:
+        # Soft-fail to a degraded 200 so the panel degrades instead of erroring,
+        # but log at WARNING so a real worker outage (e.g. INFRA_READER_URL unset)
+        # is visible server-side rather than hidden behind the friendly UI note.
+        log.warning(
+            "infra_graph_worker_unavailable",
+            extra={"status_code": e.status_code, "error": str(e)},
+        )
+        return build_graph(
+            {
+                "error": "infra_reader_unavailable",
+                "detail": f"{e.status_code}: {e.body}",
+            }
+        )
+    # The worker soft-fails a CAI permission/availability failure to a 200 with
+    # an ``error`` key (not a non-2xx, so it doesn't raise above). Log it at
+    # WARNING too — symmetric with the transport-failure branch — so a genuine
+    # CAI outage is visible coordinator-side, not only as the friendly UI note.
+    if isinstance(inventory, dict) and inventory.get("error"):
+        log.warning(
+            "infra_graph_inventory_error",
+            extra={"error": inventory.get("error"), "detail": inventory.get("detail")},
+        )
+    return build_graph(inventory)
 
 
 @app.get("/trace/{trace_id}")
