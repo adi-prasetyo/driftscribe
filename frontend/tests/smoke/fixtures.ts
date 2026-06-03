@@ -13,6 +13,11 @@ export const TESTIDS = {
   pastDecisionItem: 'past-decision-item',
   openTraceButton: 'open-trace-button',
   historicalBanner: 'historical-banner',
+  infraPanel: 'infra-panel',
+  infraToggle: 'infra-toggle',
+  infraDiagram: 'infra-diagram',
+  infraDriftBadge: 'infra-drift-badge',
+  infraRefresh: 'infra-refresh',
 } as const;
 
 export const TRACE_ID = 'abcdef0123456789abcdef0123456789';
@@ -79,6 +84,46 @@ export function iacTraceResponse() {
     events: [],
     decision: iacDecision(),
     complete: false,
+  };
+}
+
+// GET /infra/graph — the resource-map DTO (build_graph shape). A Cloud Run group
+// (one managed, one drift) + a counts-only secret group. totals.drift = 2 so the
+// glanceable badge reads "2 drift"; the secret group carries NO name.
+export function infraGraphResponse() {
+  return {
+    generated_at: '2026-06-03T00:00:00Z',
+    project: 'driftscribe-hack-2026',
+    caveat: 'CAI is eventually consistent — may lag a recent apply.',
+    iac_snapshot_sha: 'cafef00d',
+    degraded: false,
+    degraded_reason: null,
+    totals: { resources: 3, managed: 1, drift: 2 },
+    groups: [
+      {
+        asset_type: 'run.googleapis.com/Service',
+        label: 'Cloud Run service',
+        count: 2,
+        managed: 1,
+        drift: 1,
+        sensitive: false,
+        nodes: [
+          { id: 'g0n0', label: 'payment-demo', asset_type: 'run.googleapis.com/Service', managed: true, location: 'asia-northeast1' },
+          { id: 'g0n1', label: 'storefront', asset_type: 'run.googleapis.com/Service', managed: false, location: 'asia-northeast1' },
+        ],
+      },
+      {
+        asset_type: 'secretmanager.googleapis.com/Secret',
+        label: 'Secret',
+        count: 1,
+        managed: 0,
+        drift: 1,
+        sensitive: true,
+        nodes: [],
+      },
+    ],
+    edges: [],
+    truncated: { per_type_sample: 10 },
   };
 }
 

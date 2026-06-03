@@ -21,6 +21,7 @@
   import DecisionSummary from './components/DecisionSummary.svelte';
   import HistoricalBanner from './components/HistoricalBanner.svelte';
   import DecisionsRail from './components/DecisionsRail.svelte';
+  import InfraDiagram from './components/InfraDiagram.svelte';
   import Timeline from './components/Timeline.svelte';
 
   // ---- state ----
@@ -33,6 +34,11 @@
 
   let decisions = $state<Decision[]>([]);
 
+  // Bumps when a freshly-`applied` iac_apply decision is observed in /decisions
+  // — drives InfraDiagram's delayed resource-map re-fetches (rides out CAI lag).
+  let appliedEpoch = $state(0);
+  let lastAppliedId: string | null = null;
+
   let historicalActive = $state(false);
   let historicalTraceId = $state<string | null>(null);
   let activeTraceId = $state<string | null>(null);
@@ -42,6 +48,11 @@
 
   let authPanelOpen = $state(false);
   let authResolver: ((t: string | null) => void) | null = null;
+  // Single-flight: concurrent callers (loadDecisions + InfraDiagram both fetch
+  // on mount, and either may 401) share ONE prompt and one resolution. Without
+  // this, a second requestToken() overwrites the first's resolver and strands
+  // the first in-flight request forever (Codex review).
+  let authPromise: Promise<string | null> | null = null;
 
   // Concurrency guard: a monotonically-incrementing run id. submitChat /
   // openTrace / newChat each bump it; in-flight callbacks bail at every await
@@ -52,25 +63,29 @@
 
   // ---- auth plumbing (replaces window.prompt) ----
   function requestToken(): Promise<string | null> {
+    if (authPromise) return authPromise; // reuse the in-flight prompt
     authPanelOpen = true;
-    return new Promise((resolve) => {
+    authPromise = new Promise((resolve) => {
       authResolver = resolve;
     });
+    return authPromise;
+  }
+  function settleAuth(token: string | null) {
+    const r = authResolver;
+    authResolver = null;
+    authPromise = null;
+    r?.(token);
   }
   function onAuthSubmit(token: string) {
     authPanelOpen = false;
     setToken(token);
     tokenState = 'ok';
-    const r = authResolver;
-    authResolver = null;
-    r?.(token);
+    settleAuth(token);
   }
   function onAuthCancel() {
     authPanelOpen = false;
     tokenState = getStoredToken() ? 'ok' : 'missing';
-    const r = authResolver;
-    authResolver = null;
-    r?.(null);
+    settleAuth(null);
   }
   function onChangeToken() {
     clearToken();
@@ -95,9 +110,27 @@
       const resp = await call('/decisions?limit=50');
       if (!resp.ok) return;
       const body = await resp.json();
-      if (Array.isArray(body?.decisions)) decisions = body.decisions as Decision[];
+      if (Array.isArray(body?.decisions)) {
+        decisions = body.decisions as Decision[];
+        noteApplied(decisions);
+      }
     } catch {
       /* best-effort */
+    }
+  }
+
+  // Detect a freshly-`applied` iac_apply decision (decisions arrive newest-first)
+  // so the Infrastructure panel can refresh the resource map after an apply lands.
+  function noteApplied(ds: Decision[]) {
+    const applied = ds.find(
+      (d) =>
+        d.action === 'iac_apply' &&
+        (d as Record<string, unknown>).apply_status === 'applied',
+    );
+    const id = applied?.decision_id ?? null;
+    if (id && id !== lastAppliedId) {
+      lastAppliedId = id;
+      appliedEpoch += 1;
     }
   }
 
@@ -304,6 +337,7 @@
   <DecisionsRail {decisions} {activeTraceId} onOpenTrace={openTrace} />
 
   <section id="chat-area" class="chat-area" aria-label="Chat and reasoning timeline">
+    <InfraDiagram {call} {appliedEpoch} />
     <ChatForm disabled={historicalActive || busy} onSubmit={submitChat} />
     <HistoricalBanner active={historicalActive} traceId={historicalTraceId} onNewChat={newChat} />
     <TraceBadge {traceId} {status} />

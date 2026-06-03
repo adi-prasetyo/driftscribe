@@ -7,6 +7,7 @@ import {
   traceResponse,
   iacTraceResponse,
   decisionsResponse,
+  infraGraphResponse,
 } from './fixtures';
 
 const ORIGIN = 'http://127.0.0.1:8765';
@@ -55,6 +56,16 @@ async function mockData(page: Page, state: RouteState) {
       body: JSON.stringify(body),
     });
   });
+
+  // InfraDiagram fetches this on mount (for the glanceable badge); mock it for
+  // every test so no real infra_reader call escapes the browser.
+  await page.route('**/infra/graph', (route: Route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(infraGraphResponse()),
+    }),
+  );
 
   await page.route('**/chat', async (route: Route) => {
     state.chatHeaders = route.request().headers();
@@ -211,6 +222,30 @@ test.describe('transparency UI (mock smoke)', () => {
 
     // The hero stays hidden — this decision carries no prose.
     await expect(page.locator(`[data-testid="${TESTIDS.finalResponse}"]`)).toBeHidden();
+  });
+
+  test('infrastructure panel: glanceable drift badge, then expand lazy-renders the resource map', async ({ page }) => {
+    await seedToken(page);
+    await mockData(page, freshState());
+    await page.goto('/ui/transparency');
+
+    // Collapsed panel shows a glanceable drift badge (data fetched on mount —
+    // no Mermaid loaded yet).
+    const panel = page.locator(`[data-testid="${TESTIDS.infraPanel}"]`);
+    await expect(panel).toBeVisible();
+    const badge = page.locator(`[data-testid="${TESTIDS.infraDriftBadge}"]`);
+    await expect(badge).toBeVisible();
+    await expect(badge).toHaveText(/2 drift/);
+
+    // Expand → Mermaid is lazy-imported and renders an <svg> resource map.
+    await page.locator(`[data-testid="${TESTIDS.infraToggle}"]`).click();
+    const diagram = page.locator(`[data-testid="${TESTIDS.infraDiagram}"]`);
+    await expect(diagram).toBeVisible();
+    await expect(diagram.locator('svg')).toBeVisible();
+    await expect(diagram).toContainText('payment-demo');
+    await expect(diagram).toContainText('storefront');
+    // The secret group is counts-only — its name never appears, just the count.
+    await expect(diagram).toContainText('1 secret');
   });
 
   test('open-trace enters historical mode; new chat exits', async ({ page }) => {
