@@ -97,11 +97,33 @@ class DeclaredIdentity:
     asset_type: str | None = None
 
 
-# v1 supports exactly Cloud Run v2 services. Map the HCL resource type to its
-# CAI asset type + an identity template. Deliberately narrow (design §4.3 /
-# Codex nit): static literal/var-default resolution only — unresolved is fine.
+# Supported HCL resource types → their CAI asset type. Phase 2 extended this from
+# Cloud Run alone to the agent-dogfoodable checkout-demo types (buckets, Pub/Sub)
+# plus service accounts. Resolution stays deliberately narrow (design §4.3 / Codex
+# nit): static literal/var-default scalars only — anything runtime-valued
+# (interpolated, resource/local refs) resolves to None and is reported as
+# unresolved, never guessed. Each identity template in `_derive_identity` is
+# grounded against the LIVE CAI name AFTER `normalize_cai_name` (the path with the
+# `//<service>/` scheme stripped), so a declared resource matches its live asset
+# exactly.
 _CLOUD_RUN_V2 = "google_cloud_run_v2_service"
-_SUPPORTED_RESOURCE_ASSET_TYPES = {_CLOUD_RUN_V2: "run.googleapis.com/Service"}
+_STORAGE_BUCKET = "google_storage_bucket"
+_PUBSUB_TOPIC = "google_pubsub_topic"
+_PUBSUB_SUBSCRIPTION = "google_pubsub_subscription"
+_SERVICE_ACCOUNT = "google_service_account"
+
+_SUPPORTED_RESOURCE_ASSET_TYPES = {
+    _CLOUD_RUN_V2: "run.googleapis.com/Service",
+    _STORAGE_BUCKET: "storage.googleapis.com/Bucket",
+    _PUBSUB_TOPIC: "pubsub.googleapis.com/Topic",
+    _PUBSUB_SUBSCRIPTION: "pubsub.googleapis.com/Subscription",
+    _SERVICE_ACCOUNT: "iam.googleapis.com/ServiceAccount",
+}
+
+# google_secret_manager_secret is DELIBERATELY absent: the CAI secret name uses the
+# project NUMBER (projects/<NUMBER>/secrets/<id>), which the resolver can't derive
+# from var.project_id alone, and secrets are surfaced counts-only regardless.
+# Deferred until a project-number source exists (design §5 Phase 2).
 
 _REF_RE = re.compile(r"^\$\{(.+)\}$")
 _VAR_RE = re.compile(r"^var\.([A-Za-z_][A-Za-z0-9_]*)$")
@@ -163,6 +185,72 @@ def _asset_type_for_address(address: str | None) -> str | None:
     return _SUPPORTED_RESOURCE_ASSET_TYPES.get(rtype)
 
 
+def _is_short(value: str | None) -> bool:
+    """True if a resolved scalar is a usable bare name component: present and not
+    itself a path. Rejecting "/"-containing values stops a name accidentally
+    written in full CAI-path form (``projects/p/topics/t``) from being templated
+    into a double-prefixed ``projects/p/topics/projects/p/topics/t`` that could
+    never match a live resource (Codex review)."""
+    return bool(value) and "/" not in value
+
+
+def _derive_identity(
+    rtype: str, body: dict[str, Any], var_defaults: dict[str, str]
+) -> str | None:
+    """Derive a supported resource's CAI identity, or None if any required
+    attribute is not statically resolvable.
+
+    Each branch returns the resource name as it appears in CAI AFTER
+    ``normalize_cai_name`` (scheme-stripped path), so it compares directly to a
+    live resource. Identity formats are grounded against the live project's CAI.
+    """
+    proj = _resolve_scalar(body.get("project"), var_defaults)
+
+    # `_is_short` is applied to EVERY component templated into a path (project,
+    # location, leaf name) — not just the leaf — so a value resolved in path form
+    # can never double-prefix into a malformed identity that would never match.
+
+    if rtype == _CLOUD_RUN_V2:
+        loc = _resolve_scalar(body.get("location"), var_defaults)
+        svc = _resolve_scalar(body.get("name"), var_defaults)
+        if not (_is_short(proj) and _is_short(loc) and _is_short(svc)):
+            return None
+        return f"projects/{proj}/locations/{loc}/services/{svc}"
+
+    if rtype == _STORAGE_BUCKET:
+        # CAI bucket name is the BARE global bucket name — no project/location.
+        name = _resolve_scalar(body.get("name"), var_defaults)
+        return name if _is_short(name) else None
+
+    if rtype == _PUBSUB_TOPIC:
+        name = _resolve_scalar(body.get("name"), var_defaults)
+        if not (_is_short(proj) and _is_short(name)):
+            return None
+        return f"projects/{proj}/topics/{name}"
+
+    if rtype == _PUBSUB_SUBSCRIPTION:
+        name = _resolve_scalar(body.get("name"), var_defaults)
+        if not (_is_short(proj) and _is_short(name)):
+            return None
+        return f"projects/{proj}/subscriptions/{name}"
+
+    if rtype == _SERVICE_ACCOUNT:
+        # Operator-bootstrap (the apply denylist forbids the agent authoring SAs),
+        # but matched so an SA the operator chooses to declare in iac/ colors green.
+        # For google_service_account the CAI path project and the email-domain
+        # project are necessarily the same, and the domain is always
+        # .iam.gserviceaccount.com, so reusing `proj` for both is safe. Email form
+        # only: this project's CAI returns the email, not the numeric uniqueId — an
+        # SA whose CAI name uses the numeric form won't match (tracked limitation);
+        # account_id is a short token by GCP rule.
+        acct = _resolve_scalar(body.get("account_id"), var_defaults)
+        if not (_is_short(proj) and _is_short(acct)):
+            return None
+        return f"projects/{proj}/serviceAccounts/{acct}@{proj}.iam.gserviceaccount.com"
+
+    return None
+
+
 def extract_declared_identities(
     files: dict[str, str],
 ) -> tuple[list[DeclaredIdentity], list[str]]:
@@ -187,6 +275,16 @@ def extract_declared_identities(
     found: list[DeclaredIdentity] = []
 
     # (a) import blocks — high confidence. `to` and `id` both arrive wrapped.
+    # NB: the import `id` is taken VERBATIM (only unwrapped) — it is NOT routed
+    # through `_derive_identity` or canonicalized. For a SUPPORTED type the id
+    # becomes matchable via (asset_type, identity), so it MUST be written in the
+    # CAI-normalized form `_derive_identity` would emit (bare bucket name,
+    # projects/<P>/topics/<N>, projects/<P>/subscriptions/<N>, the SA email path).
+    # An alternate OpenTofu import spelling (e.g. `<P>/<bucket>` or a bare topic
+    # name) won't match its live resource and surfaces as a declared_not_found
+    # false-drift (format_mismatch). imports.tf is operator-only foundation
+    # (gate-locked; agents cannot add imports), so this is an operator-authoring
+    # contract — documented in docs/runbooks/iac-bootstrap.md.
     for parsed in parsed_files.values():
         for imp in iter_blocks(parsed, "import"):
             raw_id = imp.get("id")
@@ -197,7 +295,9 @@ def extract_declared_identities(
             asset_type = _asset_type_for_address(address)  # None if unsupported type
             found.append(DeclaredIdentity(ident, address, "import_id", "high", asset_type))
 
-    # (b) supported resource blocks — derived confidence.
+    # (b) supported resource blocks — derived confidence. Unsupported types emit
+    # an unresolved (identity=None, asset_type=None) record so they're reported
+    # but never matched; supported types derive their CAI identity per type.
     for parsed in parsed_files.values():
         for rtype, name, body in iter_typed_blocks(parsed, "resource"):
             address = f"{rtype}.{name}"
@@ -205,17 +305,10 @@ def extract_declared_identities(
             if asset_type is None:
                 found.append(DeclaredIdentity(None, address, "derived_resource", "derived"))
                 continue
-            if rtype == _CLOUD_RUN_V2:
-                proj = _resolve_scalar(body.get("project"), var_defaults)
-                loc = _resolve_scalar(body.get("location"), var_defaults)
-                svc = _resolve_scalar(body.get("name"), var_defaults)
-                ident = (
-                    f"projects/{proj}/locations/{loc}/services/{svc}"
-                    if (proj and loc and svc) else None
-                )
-                found.append(
-                    DeclaredIdentity(ident, address, "derived_resource", "derived", asset_type)
-                )
+            ident = _derive_identity(rtype, body, var_defaults)
+            found.append(
+                DeclaredIdentity(ident, address, "derived_resource", "derived", asset_type)
+            )
 
     # De-dup by (asset_type, identity) — NOT identity alone. Keying by the pair
     # is what keeps an unsupported import (asset_type=None) distinct from a
