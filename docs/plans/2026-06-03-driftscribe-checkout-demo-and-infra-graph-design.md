@@ -1,12 +1,13 @@
 # DriftScribe — Checkout demo build-out + live infra graph
 
 **Date:** 2026-06-03
-**Status:** Phase 1 (resource-map graph) IMPLEMENTED + reviewed 2026-06-03 (Codex
-thread `019e8cce` "no must-fix" ×2 + a 5-lens adversarial workflow; all 4
-should-fixes folded). Gates green: ruff, pytest 2043, svelte-check 0/0, vitest
-207, vite build, mock smoke 8/8. NOT yet committed/deployed. Phases 2–5 (resolver
-extension, checkout build-out, edges, go-bigger) pending operator go-ahead.
-Original design Codex-reviewed 2026-06-03; findings folded in.
+**Status:** Phase 1 (resource-map graph) SHIPPED + LIVE 2026-06-04 (PR #61 squash
+`27b64bd` → prod rev driftscribe-agent-00037-lcl). Phase 2 (resolver extension)
+IMPLEMENTED + reviewed 2026-06-04 (Codex thread `019e8e26` plan + completed-work
+GO; 5-lens adversarial workflow 0 must-fix, 3 should-fix + 5 nits all folded);
+gates green (ruff, pytest 2066, infra_reader worker 10); PR #62 open, deploy =
+infra-reader rebake. Phases 3–5 (checkout build-out, edges, go-bigger) pending
+operator go-ahead. Original design Codex-reviewed 2026-06-03; findings folded in.
 **Author:** operator + Claude (brainstormed interactively 2026-06-03)
 
 ## 1. Goal & narrative
