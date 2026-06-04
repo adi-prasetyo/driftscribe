@@ -182,6 +182,24 @@ The `import {}` block in `iac/imports.tf` adopts the live `payment-demo` service
 into state, so the plan should show an **import** of
 `google_cloud_run_v2_service.payment_demo` and ideally **no resource changes**.
 
+> **Import `id` must be in CAI-normalized form for infra-graph labeling.** The
+> infra-reader's declared-identity resolver (`driftscribe_lib/iac_hcl`) takes an
+> import block's `id` **verbatim** and matches it against the live resource's
+> Cloud Asset Inventory name (after stripping the `//<service>/` scheme). For a
+> *supported* type this means the `id` must be written exactly as CAI names it,
+> **not** an alternate OpenTofu import spelling:
+> - Cloud Run: `projects/<P>/locations/<L>/services/<S>` (as payment-demo uses)
+> - Storage bucket: the **bare** bucket name (`my-bucket`), **not** `<P>/my-bucket`
+> - Pub/Sub topic / subscription: `projects/<P>/topics/<N>` / `.../subscriptions/<N>`,
+>   **not** the bare short name
+> - Service account: `projects/<P>/serviceAccounts/<acct>@<P>.iam.gserviceaccount.com`
+>
+> An alternate spelling still imports correctly into state, but the resource will
+> show as **drift (not-in-IaC)** in the infra graph — a false negative that lands
+> in `declared_not_found` with a `format_mismatch` cause. Resources DriftScribe
+> authors itself go through the resolver's derived path and are unaffected; this
+> contract applies only to hand-written `import {}` blocks.
+
 `iac/cloudrun.tf` was authored from the *documented* live shape (the
 `infra/cloudbuild.yaml` deploy step + `demo/ops-contract.yaml`), **not** from a
 live read, so the first plan will likely show diffs. Iterate `cloudrun.tf` until
