@@ -1,3 +1,4 @@
+# reconcile-probe: Phase 3 PR1 post-apply zero-diff checkpoint (do not merge)
 resource "google_storage_bucket" "checkout_assets" {
   name     = "driftscribe-hack-2026-assets"
   project  = var.project_id
