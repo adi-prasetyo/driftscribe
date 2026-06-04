@@ -335,28 +335,61 @@ def test_service_account_numeric_uniqueid_cai_form_does_not_match_email_decl():
 _VARS = 'variable "project_id" { default = "p" }\n'
 
 
-def test_end_to_end_real_iac_matches_live_cloud_run_and_bucket():
-    # The actual committed iac/*.tf (payment-demo Cloud Run + the live c6e_probe
-    # bucket) resolved by the real resolver must match the real live CAI names,
-    # leaving NOTHING in declared_not_found.
+def test_real_iac_declarations_resolve_and_round_trip_inventory():
+    # The real committed iac/*.tf, resolved by the real resolver, must round-trip
+    # to a clean, fully-matched inventory. This is written to be ROBUST to iac/
+    # growth (the create-class dogfood loop adds resources to iac/ in a PR
+    # BEFORE they exist live), so it does NOT hardcode a resource count or live
+    # set. Instead it asserts the load-bearing invariants:
+    #   1. every file parses,
+    #   2. no SUPPORTED-type resource fails to resolve to an identity — a
+    #      Pub/Sub topic/subscription (or Cloud Run service) authored without an
+    #      explicit `project`/`location` resolves to None and would false-drift;
+    #      this guard fails CI on exactly that bug (caught a real one in the
+    #      checkout build-out),
+    #   3. the two long-lived resources still pin the resolver's derived identity
+    #      to their real CAI name forms,
+    #   4. synthesizing the live CAI set from the resolved declarations yields a
+    #      fully-matched inventory (nothing in declared_not_found).
+    # A newly-added resource's match against its REAL live CAI name is proven by
+    # apply plus the per-type resolver tests above.
     files = {p.name: p.read_text(encoding="utf-8") for p in IAC.glob("*.tf")}
     declared, parse_errors = extract_declared_identities(files)
     assert parse_errors == []
+
+    unresolved_supported = [
+        d for d in declared if d.asset_type is not None and d.identity is None
+    ]
+    assert unresolved_supported == [], (
+        "supported iac/ resources failed to resolve (false-drift risk — likely "
+        f"a missing explicit project/location): {[d.address for d in unresolved_supported]}"
+    )
+
+    declared_identities = {d.identity for d in declared}
+    assert (
+        "projects/driftscribe-hack-2026/locations/asia-northeast1/services/payment-demo"
+        in declared_identities
+    )
+    assert "driftscribe-hack-2026-c6e-probe" in declared_identities
+
+    # Synthesize one live CAI record per resolved declaration. normalize_cai_name
+    # strips the `//<service>/` scheme prefix, so the derived identity is what the
+    # matcher compares — a placeholder host derived from the asset_type is fine.
+    matchable = [
+        d for d in declared if d.asset_type is not None and d.identity is not None
+    ]
     live = [
         CaiResource(
-            name=("//run.googleapis.com/projects/driftscribe-hack-2026/"
-                  "locations/asia-northeast1/services/payment-demo"),
-            asset_type=RUN_TYPE, location="asia-northeast1",
-        ),
-        CaiResource(
-            name="//storage.googleapis.com/driftscribe-hack-2026-c6e-probe",
-            asset_type=BUCKET_TYPE, location="asia-northeast1",
-        ),
+            name=f"//{d.asset_type.split('/')[0]}/{d.identity}",
+            asset_type=d.asset_type,
+            location="asia-northeast1",
+        )
+        for d in matchable
     ]
     out = build_inventory(
         live, declared, project="driftscribe-hack-2026", iac_snapshot_sha="sha1",
     )
-    assert out["declared_in_iac"] == 2
+    assert out["declared_in_iac"] == len(matchable)
     assert out["declared_not_found"] == []
     assert out["by_type"][BUCKET_TYPE]["sample"][0]["iac"] is True
     assert out["by_type"][RUN_TYPE]["sample"][0]["iac"] is True
