@@ -121,6 +121,29 @@ def test_open_infra_pr_tool_happy_path_routes_with_derived_authority(monkeypatch
     nxt = result["next_steps"].lower()
     assert "plan-builder" in nxt
     assert "approv" in nxt
+    # The real pr_number is substituted into the approval link (not the literal
+    # "<pr_number>" placeholder) so the operator gets a usable path to click.
+    assert "/iac-approvals/7" in result["next_steps"]
+    assert "<pr_number>" not in result["next_steps"]
+
+
+def test_iac_pr_next_steps_substitutes_real_number_else_safe_placeholder():
+    """The shared next-steps helper substitutes a positive int pr_number into the
+    /iac-approvals/<N> link, and falls back to the literal placeholder for a
+    missing / non-positive / non-int / bool value (never a bogus
+    ``/iac-approvals/None`` or ``/iac-approvals/True``)."""
+    from agent.adk_tools import iac_pr_next_steps
+
+    assert "/iac-approvals/68" in iac_pr_next_steps(68)
+    assert "<pr_number>" not in iac_pr_next_steps(68)
+
+    for bad in (None, 0, -1, "68", True, False):
+        out = iac_pr_next_steps(bad)
+        assert "/iac-approvals/<pr_number>" in out, bad
+
+    # Wording invariant: still names the plan-builder + approval + C6 re-bake.
+    txt = iac_pr_next_steps(5).lower()
+    assert "plan-builder" in txt and "approv" in txt and "re-bake" in txt
 
 
 def test_open_infra_pr_tool_result_falls_back_to_derived_branch(monkeypatch):

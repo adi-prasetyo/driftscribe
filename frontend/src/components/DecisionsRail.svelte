@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { safeApprovalHref, isExpired } from '../lib/approval';
+  import { safeApprovalHref, iacApprovalHref, isExpired } from '../lib/approval';
   import type { Decision } from '../lib/types';
 
   let {
@@ -18,6 +18,25 @@
   function approveHref(d: Decision): string | null {
     const raw = d.approval?.approval_url;
     return raw ? safeApprovalHref(raw) : null;
+  }
+
+  // Resolve the infra-apply approval link for a row. An iac_apply decision
+  // carries a numeric `pr_number` (not an `approval` object, unlike rollback),
+  // so we build the same-origin `/iac-approvals/<n>` path from it — gated on the
+  // allowlisted action so we never construct a link from an unrelated decision.
+  function iacApproveHref(d: Decision): string | null {
+    return d.action === 'iac_apply' ? iacApprovalHref(d.pr_number) : null;
+  }
+
+  // The link text reflects whether the row is still ACTIONABLE. Only a
+  // `waiting_for_rebake` create-class decision still needs an operator click
+  // (the second, post-rebake Apply); for applied/failed/terminal history rows
+  // the page is view-only, so use neutral wording (Codex review: avoid a stale
+  // "Review & approve" label on a decision that is already resolved).
+  function iacApproveLabel(d: Decision): string {
+    return d.apply_status === 'waiting_for_rebake'
+      ? 'Review & approve →'
+      : 'Open approval page →';
   }
 
   // Render `created_at` as a compact, readable wall-clock string. Falls back to
@@ -77,6 +96,16 @@
               {:else}
                 <a class="past-approve-btn" href={href} target="_blank" rel="noopener">Approve →</a>
               {/if}
+            {/if}
+
+            {#if iacApproveHref(d)}
+              {@const iacHref = iacApproveHref(d)}
+              <a
+                class="past-approve-btn"
+                data-testid="iac-approve-link"
+                href={iacHref}
+                target="_blank"
+                rel="noopener">{iacApproveLabel(d)}</a>
             {/if}
           </div>
         </li>

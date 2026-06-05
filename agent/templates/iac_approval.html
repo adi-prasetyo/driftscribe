@@ -106,9 +106,22 @@
             <button class="ds-btn ds-btn--reject" data-testid="reject-button" type="submit" name="decision" value="reject">Reject</button>
           </div>
         </form>
-      {% else %}
-        <div class="ds-blocked">
+      {% elif decision is defined and decision %}
+        {# A decision outcome banner is already shown at the top — it is the single
+           source of truth, so render NO bottom callout. (Showing a red "Approve
+           disabled" box under a green "Approved" banner reads as an error when the
+           action actually succeeded.) #}
+      {% elif reason_severity == "error" %}
+        {# Genuine hard-stop (unverifiable / integrity mismatch / denylist /
+           artifact-mismatch) — this SHOULD draw attention, so keep it red. #}
+        <div class="ds-blocked" data-testid="approve-blocked">
           Approve disabled: {{ reason_blocked if reason_blocked else "this artifact cannot be approved." }}
+        </div>
+      {% else %}
+        {# Not an error — the gate just isn't ready yet (no plan, approvals not
+           configured, dry-run). Calm/neutral, not red. #}
+        <div class="ds-note" data-testid="approve-pending">
+          Approval not available yet{% if reason_blocked %}: {{ reason_blocked }}{% endif %}.
         </div>
       {% endif %}
     {% endif %}

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { safeApprovalHref, isExpired } from '../../src/lib/approval';
+import { safeApprovalHref, iacApprovalHref, isExpired } from '../../src/lib/approval';
 
 // SECURITY-CRITICAL guard. This file re-homes the assertions previously made
 // in tests/integration/test_ui_transparency.py:148-166 (the legacy
@@ -122,5 +122,33 @@ describe('isExpired', () => {
     const future = new Date(Date.now() + 60_000).toISOString();
     expect(isExpired(past)).toBe(true);
     expect(isExpired(future)).toBe(false);
+  });
+});
+
+describe('iacApprovalHref', () => {
+  it('builds the same-origin relative path for a positive integer PR number', () => {
+    expect(iacApprovalHref(68)).toBe('/iac-approvals/68');
+    expect(iacApprovalHref(1)).toBe('/iac-approvals/1');
+  });
+
+  it('rejects zero and negative PR numbers', () => {
+    expect(iacApprovalHref(0)).toBeNull();
+    expect(iacApprovalHref(-5)).toBeNull();
+  });
+
+  it('rejects non-integers (floats, NaN, Infinity)', () => {
+    expect(iacApprovalHref(4.5)).toBeNull();
+    expect(iacApprovalHref(Number.NaN)).toBeNull();
+    expect(iacApprovalHref(Number.POSITIVE_INFINITY)).toBeNull();
+  });
+
+  it('rejects non-number inputs (string/undefined/null/object)', () => {
+    // A numeric string is NOT accepted — the caller must pass a real number,
+    // so there is never an attacker-controlled string in the constructed path.
+    expect(iacApprovalHref('68')).toBeNull();
+    expect(iacApprovalHref('68/../../evil')).toBeNull();
+    expect(iacApprovalHref(undefined)).toBeNull();
+    expect(iacApprovalHref(null)).toBeNull();
+    expect(iacApprovalHref({ pr_number: 68 })).toBeNull();
   });
 });
