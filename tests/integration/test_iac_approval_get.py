@@ -182,6 +182,10 @@ def test_denylist_tripped_suppresses_approve(_configured, monkeypatch):
     assert 'data-testid="approve-button"' not in body
     assert 'name="form_token"' not in body
     assert "denylist" in body.lower()
+    # A denylist trip is a genuine hard-stop → red "error" callout, not the
+    # calm "not ready yet" note.
+    assert 'data-testid="approve-blocked"' in body
+    assert 'data-testid="approve-pending"' not in body
 
 
 def test_integrity_mismatch_suppresses_approve(_configured, monkeypatch):
@@ -194,6 +198,7 @@ def test_integrity_mismatch_suppresses_approve(_configured, monkeypatch):
     assert "MISMATCH" in body
     assert 'data-testid="approve-button"' not in body
     assert 'name="form_token"' not in body
+    assert 'data-testid="approve-blocked"' in body  # hard-stop → red
 
 
 def test_unverifiable_suppresses_approve(_configured, monkeypatch):
@@ -206,6 +211,7 @@ def test_unverifiable_suppresses_approve(_configured, monkeypatch):
     assert "unverifiable" in body.lower()
     assert 'data-testid="approve-button"' not in body
     assert 'name="form_token"' not in body
+    assert 'data-testid="approve-blocked"' in body  # hard-stop → red
 
 
 def test_metadata_pr_mismatch_suppresses_approve(_configured, monkeypatch):
@@ -280,6 +286,9 @@ def test_token_unset_suppresses_approve_not_configured(_configured, monkeypatch)
     assert "not configured" in body.lower()
     assert 'data-testid="approve-button"' not in body
     assert 'name="form_token"' not in body
+    # "Not configured" is an environment gap, not a bad artifact → calm note.
+    assert 'data-testid="approve-pending"' in body
+    assert 'data-testid="approve-blocked"' not in body
 
 
 def test_dry_run_suppresses_approve(_configured, monkeypatch):
@@ -295,6 +304,10 @@ def test_dry_run_suppresses_approve(_configured, monkeypatch):
     assert "dry-run" in body.lower()
     assert 'data-testid="approve-button"' not in body
     assert 'name="form_token"' not in body
+    # Dry-run is a "not ready yet" state, not a hard error → calm grey note.
+    assert 'data-testid="approve-pending"' in body
+    assert "Approval not available yet" in body
+    assert 'data-testid="approve-blocked"' not in body
 
 
 def test_approvals_not_configured_when_no_github(monkeypatch):

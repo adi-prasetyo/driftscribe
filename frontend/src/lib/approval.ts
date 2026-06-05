@@ -44,6 +44,29 @@ export function safeApprovalHref(raw: string, origin?: string): string | null {
 }
 
 /**
+ * Build the same-origin relative approval href for an infra (IaC) decision from
+ * its numeric PR number: `/iac-approvals/<n>` for a positive integer, else null.
+ *
+ * Unlike `safeApprovalHref` (which validates an arbitrary URL string), this
+ * takes ONLY a number and constructs the path itself — so there is no host, no
+ * scheme, and no attacker-controlled URL to parse. It is inherently same-origin
+ * and immune to open-redirect / `javascript:` smuggling. This is the deliberate
+ * data path for IaC approvals: callers derive it from an allowlisted
+ * `action === 'iac_apply'` decision's `pr_number`, never by reading a raw URL
+ * field off an unredacted decision doc.
+ */
+export function iacApprovalHref(prNumber: unknown): string | null {
+  if (
+    typeof prNumber !== 'number' ||
+    !Number.isInteger(prNumber) ||
+    prNumber <= 0
+  ) {
+    return null;
+  }
+  return `/iac-approvals/${prNumber}`;
+}
+
+/**
  * Returns `true` if `expiresAtIso` parses to a time at or before `now`
  * (defaults to the current epoch-ms clock). Fail-safe: if `expiresAtIso` is
  * absent or unparseable, returns `false` (NOT expired) — matching the legacy

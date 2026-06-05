@@ -516,6 +516,31 @@ def derive_iac_pr_authority(
     return IacPrAuthority(target_repo=target_repo, branch=branch)
 
 
+def iac_pr_next_steps(pr_number: object) -> str:
+    """The operator next-steps reminder appended after an infra PR opens.
+
+    Shared by the single-agent :func:`open_infra_pr_tool` and the D5 fan-out
+    orchestrator (``agent.fanout``) so both authoring paths give IDENTICAL
+    instructions. The real ``pr_number`` is substituted into the approval path
+    when it is a positive int — so the operator gets a usable
+    ``/iac-approvals/<N>`` link instead of the literal ``<pr_number>``
+    placeholder — falling back to the placeholder when the worker did not
+    return a number. (``bool`` is excluded explicitly: it subclasses ``int``.)
+    """
+    where = (
+        f"/iac-approvals/{pr_number}"
+        if isinstance(pr_number, int)
+        and not isinstance(pr_number, bool)
+        and pr_number > 0
+        else "/iac-approvals/<pr_number>"
+    )
+    return (
+        "Operator: dispatch the C2 plan-builder on this PR number, then review & "
+        f"approve at {where}. A PR that creates NEW resources also needs an "
+        "operator re-bake (C6) before it can apply."
+    )
+
+
 def open_infra_pr_tool(files: list[dict], title: str, body: str) -> dict:
     """Ask the tofu-editor to open ONE iac/-only infrastructure PR.
 
@@ -553,15 +578,14 @@ def open_infra_pr_tool(files: list[dict], title: str, body: str) -> dict:
         body=body,
         files=files,
     )
-    # Compact, LLM-useful result + the required next-steps reminder.
+    # Compact, LLM-useful result + the required next-steps reminder (the real
+    # pr_number is substituted into the /iac-approvals/<N> path so the operator
+    # gets a usable link, not a literal placeholder).
+    pr_number = result.get("pr_number")
     return {
         "status": result.get("status"),
-        "pr_number": result.get("pr_number"),
+        "pr_number": pr_number,
         "pr_url": result.get("pr_url"),
         "branch": result.get("branch", authority.branch),
-        "next_steps": (
-            "PR opened. Operator: dispatch the C2 plan-builder on this PR number, "
-            "then review & approve at /iac-approvals/<pr_number>. A PR that creates "
-            "NEW resources also needs an operator re-bake (C6) before it can apply."
-        ),
+        "next_steps": "PR opened. " + iac_pr_next_steps(pr_number),
     }

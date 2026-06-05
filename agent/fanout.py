@@ -1006,14 +1006,11 @@ def _merge_slice_sinks(pairs: list[tuple[SliceSpec, dict]]) -> AuthorResult:
 # with agent.adk_agent, which in turn imports agent.adk_tools).
 
 
-# The exact next-steps reminder the operator needs after a fan-out PR opens.
-# Reused VERBATIM from agent.adk_tools.open_infra_pr_tool's ``next_steps`` so
-# the single-agent and fan-out paths give the operator identical instructions.
-_FANOUT_NEXT_STEPS = (
-    "Operator: dispatch the C2 plan-builder on this PR number, then review & "
-    "approve at /iac-approvals/<pr_number>. A PR that creates NEW resources "
-    "also needs an operator re-bake (C6) before it can apply."
-)
+# The operator next-steps reminder after a fan-out PR opens is built by the
+# SHARED helper agent.adk_tools.iac_pr_next_steps (lazy-imported in
+# _compose_fanout_success_reply), so the single-agent and fan-out paths give the
+# operator IDENTICAL instructions — now with the real pr_number substituted into
+# the /iac-approvals/<N> approval link instead of a literal placeholder.
 
 
 def _compose_fanout_pr_body(plan: DecomposeResult, author_result: AuthorResult) -> str:
@@ -1043,16 +1040,21 @@ def _compose_success_reply(
 
     Pure + deterministic (testable without an agent run). Summarizes the opened
     PR (number + url), lists the N authored paths (in slice order), and ends
-    with the EXACT :data:`_FANOUT_NEXT_STEPS` wording reused from
-    :func:`agent.adk_tools.open_infra_pr_tool` so the two authoring paths give
-    identical next steps.
+    with the EXACT wording from the shared
+    :func:`agent.adk_tools.iac_pr_next_steps` helper so the two authoring paths
+    give identical next steps (the real pr_number is substituted into the
+    /iac-approvals/<N> approval link).
     """
+    # Lazy import keeps this module's pure SliceSpec core import-light (adk_tools
+    # pulls worker_client/config); only the reply composer needs the helper.
+    from agent.adk_tools import iac_pr_next_steps
+
     pr_number = worker_result.get("pr_number")
     pr_url = worker_result.get("pr_url")
     paths = ", ".join(f["path"] for f in author_result.files)
     return (
         f"Opened infrastructure PR #{pr_number} ({pr_url}) with {len(author_result.files)} "
-        f"authored file(s): {paths}.\n\n{_FANOUT_NEXT_STEPS}"
+        f"authored file(s): {paths}.\n\n{iac_pr_next_steps(pr_number)}"
     )
 
 

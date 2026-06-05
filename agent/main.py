@@ -2221,27 +2221,39 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
 
     can_approve = False
     reason_blocked = ""
+    # Severity classifies WHY approve is suppressed so the page can render it
+    # appropriately (see iac_approval.html): "error" = a genuine hard-stop the
+    # operator SHOULD be alarmed by (bad/unsafe artifact); "pending" = the gate
+    # simply isn't ready yet (no plan, not configured, dry-run) — calm, not red.
+    reason_severity = ""  # "" (approvable) | "error" | "pending"
     form_token: str | None = None
 
     if view is None:
         reason_blocked = "No verifiable C2 plan artifact."
+        reason_severity = "pending"
     elif view.unverifiable:
         reason_blocked = "artifact unverifiable"
+        reason_severity = "error"
     elif not view.integrity_ok:
         reason_blocked = "plan.json integrity mismatch"
+        reason_severity = "error"
     elif view.denylist_violations:
         reason_blocked = "denylist violations (self-protection policy)"
+        reason_severity = "error"
     elif not _iac_artifact_consistent(ref, view, pr_number):
         # The artifact does not coherently belong to this PR (metadata pr_number
         # mismatch, or comment ref ≠ fetched metadata). Fail-closed — never pin
         # an artifact for a different PR/head to this page.
         reason_blocked = "artifact does not match this PR"
+        reason_severity = "error"
     elif not s.driftscribe_token:
         reason_blocked = "approvals not configured (server token unset)"
+        reason_severity = "pending"
     elif s.dry_run:
         # The POST fail-closes under dry-run (it would drive a REAL worker apply
         # while skipping the merge); suppress Approve here so the UI matches.
         reason_blocked = "infra apply disabled (coordinator in dry-run mode)"
+        reason_severity = "pending"
     else:
         can_approve = True
 
@@ -2263,6 +2275,7 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
             can_approve = False
             form_token = None
             reason_blocked = "approvals not configured (server token unset)"
+            reason_severity = "pending"
 
     response = _TEMPLATES.TemplateResponse(
         request,
@@ -2273,6 +2286,7 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
             "form_token": form_token,
             "can_approve": can_approve,
             "reason_blocked": reason_blocked,
+            "reason_severity": reason_severity,
         },
     )
     _apply_approval_security_headers(response)
@@ -2431,6 +2445,10 @@ def _render_iac_outcome(
             "form_token": None,
             "can_approve": False,
             "reason_blocked": "",
+            # An outcome banner (decision) is the single source of truth on this
+            # render; the template suppresses the bottom callout when `decision`
+            # is set, so severity is irrelevant here.
+            "reason_severity": "",
             "decision": decision,
             "outcome": outcome,
         },
