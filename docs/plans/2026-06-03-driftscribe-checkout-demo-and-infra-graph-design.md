@@ -2,12 +2,21 @@
 
 **Date:** 2026-06-03
 **Status:** Phase 1 (resource-map graph) SHIPPED + LIVE 2026-06-04 (PR #61 squash
-`27b64bd` → prod rev driftscribe-agent-00037-lcl). Phase 2 (resolver extension)
-IMPLEMENTED + reviewed 2026-06-04 (Codex thread `019e8e26` plan + completed-work
-GO; 5-lens adversarial workflow 0 must-fix, 3 should-fix + 5 nits all folded);
-gates green (ruff, pytest 2066, infra_reader worker 10); PR #62 open, deploy =
-infra-reader rebake. Phases 3–5 (checkout build-out, edges, go-bigger) pending
-operator go-ahead. Original design Codex-reviewed 2026-06-03; findings folded in.
+`27b64bd`). Phase 2 (resolver extension) SHIPPED + LIVE 2026-06-04 (PR #62 squash
+`8d05d95` → infra-reader rebake; Codex `019e8e26` GO, 5-lens adversarial 0 must-fix).
+**Phase 3 (checkout build-out) COMPLETE + LIVE-VERIFIED 2026-06-05:** PR1 `#66`→`4f8683a`
+(assets bucket + order-events topic + orders-sub) + PR2 `#68`→`7854ff3` (storefront +
+orders-worker Cloud Run) both shipped via DriftScribe's OWN author→approve→apply loop;
+Track B (mock secret + 2 runtime SAs + pipeline IAM + resource-scoped demo wiring) done;
+`/infra/graph` totals **managed=7** (services payment-demo+storefront+orders-worker, buckets
+assets+c6e-probe, topic order-events, sub orders-sub; SAs/secret intentionally amber). Codex
+completed-work review (thread `019e9134`) — no must-fix. Follow-up approval-page UX PR
+`#69`→`90d13e2` (severity-aware approve callout — no red "error" box after a successful
+decision — + a clickable `/iac-approvals/<N>` link in the decisions rail + accurate prose;
+Codex-reviewed, no must-fix) SHIPPED. Full Phase-3 execution record (every command + HCL
+block) in `docs/plans/2026-06-04-phase3-checkout-buildout-execution-plan.md`. Phases 4–5
+(edges, go-bigger) + the deferred drift-demo finale remain future work. Original design
+Codex-reviewed 2026-06-03; findings folded in.
 **Author:** operator + Claude (brainstormed interactively 2026-06-03)
 
 ## 1. Goal & narrative
