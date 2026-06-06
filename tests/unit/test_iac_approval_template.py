@@ -87,3 +87,29 @@ def test_can_approve_renders_form_and_no_callout():
     assert 'data-testid="token-field"' in html
     assert 'data-testid="approve-blocked"' not in html
     assert 'data-testid="approve-pending"' not in html
+
+
+def test_outcome_severity_error_styles_banner_red():
+    # A TERMINAL apply failure is rendered via decision="approve" + a red banner
+    # (outcome_severity="error") so it never reads as green success.
+    html = _render(
+        decision="approve",
+        outcome="Terminal state recorded: apply_status='failed_state_suspect'.",
+        outcome_severity="error",
+    )
+    assert "Terminal state recorded" in html
+    assert 'class="ds-blocked"' in html  # banner is the red hard-stop variant
+    # bottom form/callout still suppressed (decision is set)
+    assert 'data-testid="approve-button"' not in html
+    assert 'data-testid="approve-blocked"' not in html
+    assert 'data-testid="approve-pending"' not in html
+
+
+def test_outcome_decision_default_severity_is_green_note():
+    # Without outcome_severity the success banner stays the green note (the
+    # `outcome_severity is defined` guard must not break the default path).
+    html = _render(decision="approve", outcome="Already applied and merged.")
+    assert "Already applied and merged." in html
+    # The banner is NOT the red hard-stop; the only ds-blocked in the page would
+    # be a banner, and there is none here.
+    assert 'class="ds-blocked"' not in html
