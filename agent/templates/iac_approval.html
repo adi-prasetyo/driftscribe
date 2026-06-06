@@ -23,7 +23,9 @@
     {% else %}
       {% if decision is defined and decision %}
         {% if decision == "approve" %}
-          <div class="ds-note">
+          {# Default green note; red hard-stop when a TERMINAL apply FAILURE is
+             being shown (outcome_severity == "error") so it never reads as success. #}
+          <div class="{{ 'ds-blocked' if (outcome_severity is defined and outcome_severity == 'error') else 'ds-note' }}">
             {{ outcome if (outcome is defined and outcome) else "Approved — infra apply dispatched." }}
           </div>
         {% elif decision == "reject" %}

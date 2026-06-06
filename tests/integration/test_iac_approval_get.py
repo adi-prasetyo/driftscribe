@@ -26,7 +26,7 @@ from agent import worker_client
 from agent.config import get_settings
 from agent.iac_artifacts import C2CommentRef, IacPlanView
 from agent.iac_csrf import verify_form_token
-from agent.main import app
+from agent.main import app, get_state, _iac_event_key, _record_iac_decision
 
 _HEAD = "a" * 40
 _PLAN_SHA = "b" * 64
@@ -369,3 +369,107 @@ def test_get_never_calls_worker_or_reads_plan_approvals(_configured, monkeypatch
     client = TestClient(app)
     resp = client.get("/iac-approvals/42")
     assert resp.status_code == 200
+
+
+# --------------------------------------------------------------------------- #
+# Decision-state awareness — suppress the Approve form for a plan whose apply is
+# already TERMINAL (applied+merged / failed); KEEP it for still-actionable
+# states (waiting_for_rebake, applied+failed). Best-effort read of the
+# decision/reconcile pointer (NOT plan_approvals); any failure falls back to the
+# form (always-200). The generation_metadata used to compute the event key
+# matches _view()/_ref() ("1700000000000003").
+# --------------------------------------------------------------------------- #
+
+_GEN_META = "1700000000000003"
+
+
+def _seed_decision(*, apply_status: str, merge_state: str) -> None:
+    """Record an iac_apply decision in the InMemory store under the key the GET
+    will compute for PR 42 / _HEAD / _GEN_META. The event must be CLAIMED first
+    (record_event) — find_decision_for_event only links a decision to a claimed
+    event, mirroring the real POST's idempotency-claim-then-record flow."""
+    s = get_settings()
+    ek = _iac_event_key(s.github_repo, 42, _HEAD, _GEN_META)
+    state = get_state()
+    state.record_event(ek, {"pr_number": 42})
+    _record_iac_decision(
+        state, ek, apply_status=apply_status, merge_state=merge_state,
+        head_sha=_HEAD, pr_number=42, approver="op@example.com",
+    )
+
+
+@pytest.fixture
+def _inmemory(monkeypatch):
+    """Pin get_state() to the InMemory store (Firestore only when gcp_project set)."""
+    monkeypatch.setenv("GCP_PROJECT", "")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+def test_already_applied_merged_suppresses_form(_configured, _inmemory, monkeypatch):
+    _patch_resolve(monkeypatch, ref=_ref(), view=_view())
+    _seed_decision(apply_status="applied", merge_state="merged")
+    resp = TestClient(app).get("/iac-approvals/42")
+    assert resp.status_code == 200
+    body = resp.text
+    # Form suppressed; no CSRF token minted for a resolved plan.
+    assert 'data-testid="approve-button"' not in body
+    assert 'name="form_token"' not in body
+    # Green outcome banner, no misleading red/grey bottom callout.
+    assert "Already applied and merged" in body
+    assert 'data-testid="approve-blocked"' not in body
+    assert 'data-testid="approve-pending"' not in body
+
+
+def test_terminal_failure_suppresses_form_and_renders_red(_configured, _inmemory, monkeypatch):
+    _patch_resolve(monkeypatch, ref=_ref(), view=_view())
+    _seed_decision(apply_status="failed_state_suspect", merge_state="merged")
+    resp = TestClient(app).get("/iac-approvals/42")
+    assert resp.status_code == 200
+    body = resp.text
+    assert 'data-testid="approve-button"' not in body
+    assert 'name="form_token"' not in body
+    assert "Terminal state recorded" in body
+    assert "failed_state_suspect" in body
+    # A terminal failure must read as a red hard-stop, not green success.
+    assert 'class="ds-blocked"' in body
+
+
+def test_waiting_for_rebake_keeps_form(_configured, _inmemory, monkeypatch):
+    # The create-class second click (post-rebake Apply) is still actionable.
+    _patch_resolve(monkeypatch, ref=_ref(), view=_view())
+    _seed_decision(apply_status="waiting_for_rebake", merge_state="merged")
+    resp = TestClient(app).get("/iac-approvals/42")
+    assert resp.status_code == 200
+    body = resp.text
+    assert 'data-testid="approve-button"' in body
+    assert 'name="form_token"' in body
+
+
+def test_applied_failed_keeps_form(_configured, _inmemory, monkeypatch):
+    # applied + merge FAILED → the POST does a merge-only reconcile, so this is
+    # still actionable: the form must stay (Codex review).
+    _patch_resolve(monkeypatch, ref=_ref(), view=_view())
+    _seed_decision(apply_status="applied", merge_state="failed")
+    resp = TestClient(app).get("/iac-approvals/42")
+    assert resp.status_code == 200
+    body = resp.text
+    assert 'data-testid="approve-button"' in body
+    assert 'name="form_token"' in body
+
+
+def test_decision_lookup_failure_falls_back_to_form(_configured, _inmemory, monkeypatch):
+    # A decision-store read error must NOT break the always-200 GET — it falls
+    # back to the artifact-only view (form shown; POST stays authoritative).
+    _patch_resolve(monkeypatch, ref=_ref(), view=_view())
+
+    def _boom():
+        raise RuntimeError("firestore unavailable")
+
+    monkeypatch.setattr("agent.main.get_state", _boom)
+    resp = TestClient(app).get("/iac-approvals/42")
+    assert resp.status_code == 200
+    body = resp.text
+    assert 'data-testid="approve-button"' in body
+    assert 'name="form_token"' in body

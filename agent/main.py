@@ -2214,7 +2214,14 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
     rather than an error code that would let a probe enumerate PR state.
 
     Hard invariant: this handler never mints a plan approval, never calls the
-    tofu-apply worker, and never reads ``plan_approvals``.
+    tofu-apply worker, never reads ``plan_approvals``, and mints NO CSRF form
+    token for a plan whose apply is already terminal. It is read-only but NOT
+    fully stateless: it does ONE best-effort read of the IaC decision/reconcile
+    pointer (``StateStore.find_decision_for_event`` — the same read the POST does
+    before readiness, NOT ``plan_approvals``) so it can suppress the Approve form
+    for an already applied+merged or terminally-failed plan instead of showing a
+    misleading, idempotently-guarded button. Any failure of that read falls back
+    to the artifact-only view, keeping the GET always-200.
     """
     s = get_settings()
     ref, view = _resolve_iac_plan(s, pr_number)
@@ -2257,6 +2264,59 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
     else:
         can_approve = True
 
+    # Best-effort decision-state awareness (runs BEFORE the CSRF token mint so a
+    # resolved plan never even mints a token): an artifact that is otherwise
+    # approvable but whose apply is already TERMINAL must not present an
+    # actionable Approve form. We read ONLY the decision/reconcile pointer (NOT
+    # plan_approvals) with the SAME event-key identity the POST uses, and fall
+    # back to the artifact-only view on ANY error so the GET stays always-200.
+    # `decision`/`outcome` reuse the outcome-banner template path (the bottom
+    # form/callout is suppressed when `decision` is set). The form is KEPT for
+    # still-actionable states (waiting_for_rebake = the post-rebake apply;
+    # applied+failed = the merge-only reconcile) — mirroring the POST's
+    # _handle_existing_iac_decision routing.
+    resolved_decision = ""
+    resolved_outcome = ""
+    resolved_outcome_severity = ""
+    if can_approve and view is not None and s.github_repo:
+        existing = None
+        try:
+            _event_key = _iac_event_key(
+                s.github_repo, pr_number, view.head_sha, view.generation_metadata
+            )
+            existing = get_state().find_decision_for_event(_event_key)
+        except Exception:  # noqa: BLE001 — best-effort; never break the always-200 GET
+            log.warning(
+                "iac_decision_state_lookup_failed", extra={"pr_number": pr_number}
+            )
+            existing = None
+        if existing is not None:
+            _st = existing.get("apply_status")
+            _ms = existing.get("merge_state")
+            if _st == "applied" and _ms == "merged":
+                can_approve = False
+                resolved_decision = "approve"
+                resolved_outcome = (
+                    "Already applied and merged — nothing more to approve here."
+                )
+            elif _st in {"failed", "failed_state_suspect", "ambiguous"}:
+                can_approve = False
+                resolved_decision = "approve"
+                resolved_outcome_severity = "error"
+                _note = (
+                    "The failed apply could not be proven to have left state clean "
+                    "— run the apply-failure recovery runbook (state reconcile) "
+                    "before any retry; this will NOT be retried automatically."
+                    if _st == "failed_state_suspect"
+                    else "Manual verification required; this will NOT be retried "
+                    "automatically."
+                )
+                resolved_outcome = (
+                    f"Terminal state recorded: apply_status={_st!r}. {_note}"
+                )
+            # Any other recorded status (waiting_for_rebake, applied+failed, …)
+            # is still actionable / idempotently guarded by the POST → KEEP form.
+
     if can_approve:
         try:
             form_token = iac_csrf.mint_form_token(
@@ -2277,18 +2337,20 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
             reason_blocked = "approvals not configured (server token unset)"
             reason_severity = "pending"
 
-    response = _TEMPLATES.TemplateResponse(
-        request,
-        "iac_approval.html",
-        {
-            "pr_number": pr_number,
-            "view": view,
-            "form_token": form_token,
-            "can_approve": can_approve,
-            "reason_blocked": reason_blocked,
-            "reason_severity": reason_severity,
-        },
-    )
+    ctx = {
+        "pr_number": pr_number,
+        "view": view,
+        "form_token": form_token,
+        "can_approve": can_approve,
+        "reason_blocked": reason_blocked,
+        "reason_severity": reason_severity,
+    }
+    if resolved_decision:
+        # Render the terminal-state outcome banner + suppress the bottom form.
+        ctx["decision"] = resolved_decision
+        ctx["outcome"] = resolved_outcome
+        ctx["outcome_severity"] = resolved_outcome_severity
+    response = _TEMPLATES.TemplateResponse(request, "iac_approval.html", ctx)
     _apply_approval_security_headers(response)
     _apply_iac_csp(response)
     return response
@@ -2430,11 +2492,15 @@ def _render_iac_outcome(
     decision: str,
     outcome: str,
     status_code: int = 200,
+    outcome_severity: str = "",
 ) -> Response:
     """Re-render the approval page for a terminal SUCCESS/info POST outcome.
 
     Suppresses the Approve form (``can_approve=False``) and shows the outcome
-    banner. Applies both the approval security headers and the strict IaC CSP.
+    banner. ``outcome_severity="error"`` styles the (``decision="approve"``)
+    banner as a red hard-stop instead of the default green note — used for a
+    TERMINAL apply FAILURE so it does not read as success. Applies both the
+    approval security headers and the strict IaC CSP.
     """
     response = _TEMPLATES.TemplateResponse(
         request,
@@ -2451,6 +2517,7 @@ def _render_iac_outcome(
             "reason_severity": "",
             "decision": decision,
             "outcome": outcome,
+            "outcome_severity": outcome_severity,
         },
     )
     response.status_code = status_code
@@ -3055,6 +3122,7 @@ def _handle_existing_iac_decision(
         return _render_iac_outcome(
             request, pr_number=pr_number, view=view, decision="approve",
             outcome=f"Terminal state recorded: apply_status={status!r}. {note}",
+            outcome_severity="error",  # a terminal failure must not read as green/success
         )
     raise HTTPException(
         status_code=409, detail="an apply for this plan is already in progress"
