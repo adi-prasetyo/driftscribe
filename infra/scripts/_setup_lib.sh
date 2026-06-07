@@ -99,6 +99,30 @@ grant_role_idempotent() {
 }
 
 # -----------------------------------------------------------------------------
+# create_or_update_custom_role_idempotent PROJECT ROLE_ID TITLE PERMISSIONS_CSV
+#
+# Describe-then-(update|create) a PROJECT custom role at GA stage. On re-runs the
+# update path REPLACES the live permission set with PERMISSIONS_CSV, so the role
+# converges to exactly the declared permissions (no drift accretes). Used to give
+# hand-made least-privilege roles (e.g. the apply SA's per-resource-type roles) a
+# reproducible home instead of a broad predefined role. ``--quiet`` blocks the
+# permission-change confirmation prompt.
+# -----------------------------------------------------------------------------
+create_or_update_custom_role_idempotent() {
+  local project="${1:?create_or_update_custom_role_idempotent: PROJECT required}"
+  local role_id="${2:?create_or_update_custom_role_idempotent: ROLE_ID required}"
+  local title="${3:?create_or_update_custom_role_idempotent: TITLE required}"
+  local perms="${4:?create_or_update_custom_role_idempotent: PERMISSIONS_CSV required}"
+  if gcloud iam roles describe "$role_id" --project="$project" >/dev/null 2>&1; then
+    gcloud iam roles update "$role_id" --project="$project" \
+      --title="$title" --stage=GA --permissions="$perms" --quiet >/dev/null
+  else
+    gcloud iam roles create "$role_id" --project="$project" \
+      --title="$title" --stage=GA --permissions="$perms" --quiet >/dev/null
+  fi
+}
+
+# -----------------------------------------------------------------------------
 # create_secret_idempotent PROJECT SECRET_NAME
 #
 # Describe-then-create. Caller adds the version separately via
