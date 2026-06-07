@@ -86,6 +86,7 @@ from google.genai import types
 from google.genai.types import ThinkingConfig
 
 from agent.adk_tools import (
+    iac_pr_pointer,
     load_contract_tool,
     notify_tool,
     open_infra_pr_tool,
@@ -484,9 +485,23 @@ def build_chat_agent(workload: WorkloadResolution) -> Agent:
 # emission either way.
 
 
-def _emit_event_logs(event, *, tool_calls: list[str] | None = None) -> list[dict]:
+def _emit_event_logs(
+    event,
+    *,
+    tool_calls: list[str] | None = None,
+    iac_pr_sink: dict | None = None,
+) -> list[dict]:
     """Emit ``llm_thought`` / ``tool_call`` / ``tool_result`` log lines
     for one ADK event's part list.
+
+    ``iac_pr_sink`` (Phase 3 approval-CTA): when provided, an ``open_infra_pr``
+    function_response carrying a CONFIRMED PR (validated by
+    :func:`agent.adk_tools.iac_pr_pointer`) overwrites the sink with
+    ``{pr_number, pr_url}`` (last-write-wins). The match is on the tool NAME
+    (``open_infra_pr_tool``) — NOT the result shape — so an upgrade PR (same
+    pr_number/pr_url fields, different tool) never surfaces an /iac-approvals CTA.
+    The sink lets :func:`run_chat_stream` attach a structured ``iac_pr`` field to
+    its terminal item so the SPA can render a clickable first-authoring CTA.
 
     Phase 22: returns the list of redacted payloads it logged, in emit
     order (0..N). The durable Cloud Logging copy is byte-identical to the
@@ -560,6 +575,14 @@ def _emit_event_logs(event, *, tool_calls: list[str] | None = None) -> list[dict
             # away. The double-redact-after-dumps approach only
             # catches credentialed URLs by regex.
             response = getattr(fr, "response", None) or {}
+            # Capture a CONFIRMED first-authoring infra PR for the approval CTA.
+            # Name-matched to open_infra_pr (never shape-matched: an upgrade PR
+            # carries the same pr_number/pr_url but is not an /iac-approvals PR).
+            if iac_pr_sink is not None and fr.name == open_infra_pr_tool.__name__:
+                pointer = iac_pr_pointer(response)
+                if pointer is not None:
+                    iac_pr_sink.clear()
+                    iac_pr_sink.update(pointer)
             safe_response = redact_event(response)
             preview = json.dumps(safe_response, default=str)[:2000]
             result_ok = not (
@@ -838,6 +861,9 @@ async def run_chat_stream(
 
     reply_chunks: list[str] = []
     tool_calls: list[str] = []
+    # Captures a CONFIRMED first-authoring infra PR (open_infra_pr) for the SPA
+    # approval CTA; stays empty for every other run (see _emit_event_logs).
+    iac_pr: dict = {}
     final_response_logged = False
     seq = 0
 
@@ -862,7 +888,9 @@ async def run_chat_stream(
         # Same partial-event dedup gate as run_chat (18.B.2): only merged
         # non-partial events are eligible to log/stream.
         if event.content and event.content.parts and getattr(event, "partial", None) is not True:
-            for payload in _emit_event_logs(event, tool_calls=tool_calls):
+            for payload in _emit_event_logs(
+                event, tool_calls=tool_calls, iac_pr_sink=iac_pr
+            ):
                 yield {"type": "event", "event": _stream(payload)}
         # Collect + emit the final natural-language response. This is the
         # SAME emit that lived in run_chat pre-Phase-22 — moved here so the
@@ -891,6 +919,9 @@ async def run_chat_stream(
         "reply": reply,
         "tool_calls": tool_calls,
         "session_id": sid,
+        # Only present when this run opened a confirmed infra PR — the SPA reads
+        # it to render a clickable first-authoring "Review & approve" CTA.
+        **({"iac_pr": dict(iac_pr)} if iac_pr else {}),
     }
 
 

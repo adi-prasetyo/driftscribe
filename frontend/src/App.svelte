@@ -17,6 +17,7 @@
   import ChatForm from './components/ChatForm.svelte';
   import TraceBadge from './components/TraceBadge.svelte';
   import FinalResponse from './components/FinalResponse.svelte';
+  import IacApprovalCta from './components/IacApprovalCta.svelte';
   import ReplyPending from './components/ReplyPending.svelte';
   import DecisionSummary from './components/DecisionSummary.svelte';
   import HistoricalBanner from './components/HistoricalBanner.svelte';
@@ -31,6 +32,9 @@
   let status = $state<TimelineStatus>('pending');
   let finalReply = $state<string | null>(null);
   let finalIsError = $state(false);
+  // Set from the `done` frame's `iac_pr` when a run just opened an infra PR —
+  // drives the clickable first-authoring "Review & approve" CTA.
+  let iacPr = $state<{ pr_number: number; pr_url: string } | null>(null);
 
   let decisions = $state<Decision[]>([]);
 
@@ -146,6 +150,7 @@
     traceId = null;
     finalReply = null;
     finalIsError = false;
+    iacPr = null;
     historicalDecision = null;
     status = 'pending';
 
@@ -182,6 +187,15 @@
           if (myRun !== runSeq) return;
           traceId = resp.headers.get('X-Trace-Id');
           finalReply = typeof body?.reply === 'string' ? body.reply : JSON.stringify(body);
+          // Best-effort: the JSON path mirrors the SSE done frame's iac_pr.
+          const ip = body?.iac_pr;
+          iacPr =
+            ip && typeof ip === 'object' && typeof ip.pr_number === 'number'
+              ? {
+                  pr_number: ip.pr_number,
+                  pr_url: typeof ip.pr_url === 'string' ? ip.pr_url : '',
+                }
+              : null;
           status = 'complete';
         } catch {
           if (myRun !== runSeq) return;
@@ -210,6 +224,7 @@
             if (myRun !== runSeq) return;
             finalReply = d.reply;
             finalIsError = false;
+            iacPr = d.iac_pr ?? null;
             status = 'complete';
           },
           onError: (er) => {
@@ -276,6 +291,7 @@
     events = [];
     finalReply = null;
     finalIsError = false;
+    iacPr = null;
     historicalDecision = null;
     status = 'pending';
     try {
@@ -319,6 +335,7 @@
     events = [];
     finalReply = null;
     finalIsError = false;
+    iacPr = null;
     historicalDecision = null;
     status = 'pending';
   }
@@ -342,6 +359,9 @@
     <HistoricalBanner active={historicalActive} traceId={historicalTraceId} onNewChat={newChat} />
     <TraceBadge {traceId} {status} />
     <FinalResponse reply={finalReply} isError={finalIsError} />
+    {#if iacPr && !historicalActive}
+      <IacApprovalCta prNumber={iacPr.pr_number} />
+    {/if}
     {#if busy && finalReply == null}
       <ReplyPending />
     {/if}

@@ -142,7 +142,7 @@ describe('iacApprovalHref', () => {
     expect(iacApprovalHref(Number.POSITIVE_INFINITY)).toBeNull();
   });
 
-  it('rejects non-number inputs (string/undefined/null/object)', () => {
+  it('rejects non-number inputs (string/undefined/null/object/boolean)', () => {
     // A numeric string is NOT accepted — the caller must pass a real number,
     // so there is never an attacker-controlled string in the constructed path.
     expect(iacApprovalHref('68')).toBeNull();
@@ -150,5 +150,9 @@ describe('iacApprovalHref', () => {
     expect(iacApprovalHref(undefined)).toBeNull();
     expect(iacApprovalHref(null)).toBeNull();
     expect(iacApprovalHref({ pr_number: 68 })).toBeNull();
+    // Booleans must be rejected too — IacApprovalCta passes `prNumber` straight
+    // through, so a stray `true`/`false` must never yield `/iac-approvals/1`.
+    expect(iacApprovalHref(true)).toBeNull();
+    expect(iacApprovalHref(false)).toBeNull();
   });
 });

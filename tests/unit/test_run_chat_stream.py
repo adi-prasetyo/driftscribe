@@ -65,6 +65,88 @@ async def test_run_chat_stream_order_terminal_and_redaction(drift_workload_env):
     assert items[-1]["session_id"]
 
 
+def _open_infra_pr_name() -> str:
+    from agent.adk_tools import open_infra_pr_tool
+
+    return open_infra_pr_tool.__name__
+
+
+async def _stub_open_infra_pr(*args, **kwargs):
+    name = _open_infra_pr_name()
+    yield _Ev([_P(function_call=SimpleNamespace(
+        name=name, args={"title": "Add bucket"}))], partial=False)
+    yield _Ev([_P(function_response=SimpleNamespace(
+        name=name,
+        response={"status": "opened", "pr_number": 73,
+                  "pr_url": "https://github.com/o/r/pull/73", "branch": "infra/x"}))],
+        partial=False)
+    yield _Ev(
+        [_P(text="Opened infrastructure PR #73 — review & approve at /iac-approvals/73.")],
+        partial=False, final=True)
+
+
+@pytest.mark.asyncio
+async def test_run_chat_stream_terminal_carries_iac_pr_for_open_infra_pr(drift_workload_env):
+    """When the single-agent run opens an infra PR, the terminal result carries
+    the structured ``iac_pr`` pointer so the SPA renders a clickable approval CTA."""
+    token = set_workload("drift")
+    items = []
+    try:
+        with patch.object(adk_agent, "Runner") as runner_cls:
+            runner_cls.return_value.run_async = _stub_open_infra_pr
+            async for it in adk_agent.run_chat_stream("provision a bucket", workload="drift"):
+                items.append(it)
+    finally:
+        reset_workload(token)
+
+    assert items[-1]["type"] == "result"
+    assert items[-1]["iac_pr"] == {
+        "pr_number": 73,
+        "pr_url": "https://github.com/o/r/pull/73",
+    }
+
+
+async def _stub_upgrade_pr(*args, **kwargs):
+    # Same pr_number/pr_url shape, DIFFERENT tool name → NOT an iac-approvals PR.
+    yield _Ev([_P(function_response=SimpleNamespace(
+        name="upgrade_propose_pr_tool",
+        response={"status": "opened", "pr_number": 99, "pr_url": "https://x/pull/99"}))],
+        partial=False)
+    yield _Ev([_P(text="Opened upgrade PR #99.")], partial=False, final=True)
+
+
+@pytest.mark.asyncio
+async def test_run_chat_stream_no_iac_pr_for_non_infra_pr(drift_workload_env):
+    token = set_workload("drift")
+    items = []
+    try:
+        with patch.object(adk_agent, "Runner") as runner_cls:
+            runner_cls.return_value.run_async = _stub_upgrade_pr
+            async for it in adk_agent.run_chat_stream("upgrade x", workload="drift"):
+                items.append(it)
+    finally:
+        reset_workload(token)
+
+    assert items[-1]["type"] == "result"
+    assert "iac_pr" not in items[-1]
+
+
+@pytest.mark.asyncio
+async def test_run_chat_stream_no_iac_pr_for_plain_run(drift_workload_env):
+    token = set_workload("drift")
+    items = []
+    try:
+        with patch.object(adk_agent, "Runner") as runner_cls:
+            runner_cls.return_value.run_async = _stub_run
+            async for it in adk_agent.run_chat_stream("hi", workload="drift"):
+                items.append(it)
+    finally:
+        reset_workload(token)
+
+    assert items[-1]["type"] == "result"
+    assert "iac_pr" not in items[-1]
+
+
 @pytest.mark.asyncio
 async def test_run_chat_stream_empty_reply_raises(drift_workload_env):
     async def _empty(*a, **k):

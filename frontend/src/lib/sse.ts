@@ -3,7 +3,7 @@
 // The /chat endpoint (Accept: text/event-stream) emits, in order:
 //   event: meta   data: {trace_id}
 //   (data-only)   data: {<ChatEvent>}        — one timeline event per frame
-//   event: done   data: {reply, tool_calls[], session_id}   (terminal)
+//   event: done   data: {reply, tool_calls[], session_id, iac_pr?}  (terminal)
 //   event: error  data: {detail, status_hint?}              (terminal alt)
 // with `: keepalive` comment frames on idle. See the plan §3 lib/sse.ts +
 // Appendix A. `mcp_call` is intentionally NOT in ChatEvent — it is a
@@ -57,6 +57,10 @@ export interface ChatDone {
   reply: string;
   tool_calls: string[];
   session_id: string;
+  // Present ONLY when the run just opened an infrastructure PR (first-authoring).
+  // The SPA reads `pr_number` to render a clickable /iac-approvals/<N> CTA;
+  // `pr_url` is carried for context but is never used to build the href.
+  iac_pr?: { pr_number: number; pr_url: string } | null;
 }
 
 export interface ChatError {

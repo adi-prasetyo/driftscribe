@@ -204,6 +204,12 @@ def test_multi_slice_happy_path_single_editor_call(monkeypatch):
     assert "C2 plan-builder" in result["reply"]
     assert "/iac-approvals/" in result["reply"]
     assert "re-bake (C6)" in result["reply"]
+    # The terminal item carries the structured approval pointer so the SPA can
+    # render a clickable first-authoring "Review & approve" CTA.
+    assert result["iac_pr"] == {
+        "pr_number": 42,
+        "pr_url": "https://github.com/owner/repo/pull/42",
+    }
 
 
 def test_multi_slice_editor_called_without_base_kwarg(monkeypatch):
@@ -419,6 +425,8 @@ def test_editor_malformed_200_does_not_fabricate_a_pr(monkeypatch):
     # Never a fabricated "#None" / "None" PR.
     assert "#None" not in result["reply"]
     assert "Opened infrastructure PR" not in result["reply"]
+    # No approval pointer for an unconfirmed PR → no first-authoring CTA.
+    assert "iac_pr" not in result
     assert len(_final_responses(items)) == 1
 
 
@@ -440,6 +448,46 @@ def test_editor_200_with_pr_number_but_no_url_does_not_fabricate_a_pr(monkeypatc
     # Not a fabricated success — no "Opened infrastructure PR", no "None" url.
     assert "Opened infrastructure PR" not in result["reply"]
     assert "None" not in result["reply"]
+    assert "iac_pr" not in result
+    assert len(_final_responses(items)) == 1
+
+
+def test_editor_200_with_bool_pr_number_is_not_confirmed(monkeypatch):
+    """A 200 whose ``pr_number`` is a bool (``True``/``False`` subclass ``int``)
+    is NOT a valid PR — the success gate is aligned with ``iac_pr_pointer`` so it
+    fails-closed (no fabricated ``PR #True``) and carries no approval pointer."""
+    _patch_decompose(monkeypatch, result=_two_slice_plan())
+    _patch_author(monkeypatch, result=_two_file_author_result())
+    _patch_authority(monkeypatch)
+    _patch_open_pr(
+        monkeypatch, result={"status": "opened", "pr_number": True, "pr_url": "u"}
+    )
+
+    items = asyncio.run(_drain())
+
+    result = _result(items)
+    assert result["tool_calls"] == ["open_infra_pr"]
+    assert "Opened infrastructure PR" not in result["reply"]
+    assert "iac_pr" not in result
+    assert len(_final_responses(items)) == 1
+
+
+def test_editor_200_with_empty_pr_url_is_not_confirmed(monkeypatch):
+    """A 200 with an empty-string ``pr_url`` is malformed — it fails-closed (no
+    fabricated ``(...)`` empty URL) and carries no approval pointer."""
+    _patch_decompose(monkeypatch, result=_two_slice_plan())
+    _patch_author(monkeypatch, result=_two_file_author_result())
+    _patch_authority(monkeypatch)
+    _patch_open_pr(
+        monkeypatch, result={"status": "opened", "pr_number": 7, "pr_url": ""}
+    )
+
+    items = asyncio.run(_drain())
+
+    result = _result(items)
+    assert result["tool_calls"] == ["open_infra_pr"]
+    assert "Opened infrastructure PR" not in result["reply"]
+    assert "iac_pr" not in result
     assert len(_final_responses(items)) == 1
 
 

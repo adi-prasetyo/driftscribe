@@ -541,6 +541,33 @@ def iac_pr_next_steps(pr_number: object) -> str:
     )
 
 
+def iac_pr_pointer(result: object) -> dict | None:
+    """Extract the operator-facing approval pointer from an ``open_infra_pr``
+    worker result, or ``None`` when the result is not a CONFIRMED opened PR.
+
+    Returns ``{"pr_number": <int>, "pr_url": <str>}`` ONLY when ``result`` is a
+    dict carrying a positive, non-bool ``pr_number`` AND a non-empty string
+    ``pr_url``. Any other shape (missing/None/bool/non-positive/non-int number,
+    missing/empty/non-str url, or a non-dict) yields ``None``.
+
+    This is the SINGLE shared validation behind the first-authoring approval CTA:
+    both the single-agent stream (``agent.adk_agent.run_chat_stream``) and the D5
+    fan-out orchestrator (``agent.fanout``) feed their ``open_infra_pr`` result
+    through it so the terminal ``done.iac_pr`` field is identical and is never
+    surfaced for a malformed / unconfirmed PR. (``bool`` is excluded explicitly:
+    it subclasses ``int``.)
+    """
+    if not isinstance(result, dict):
+        return None
+    pr_number = result.get("pr_number")
+    pr_url = result.get("pr_url")
+    if isinstance(pr_number, bool) or not isinstance(pr_number, int) or pr_number <= 0:
+        return None
+    if not isinstance(pr_url, str) or not pr_url:
+        return None
+    return {"pr_number": pr_number, "pr_url": pr_url}
+
+
 def open_infra_pr_tool(files: list[dict], title: str, body: str) -> dict:
     """Ask the tofu-editor to open ONE iac/-only infrastructure PR.
 

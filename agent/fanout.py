@@ -1073,7 +1073,11 @@ async def run_provision_fanout_stream(
 
         {"type": "event",  "event": <payload + seq/insert_id/timestamp>}
         ...and finally exactly one...
-        {"type": "result", "reply": str, "tool_calls": list, "session_id": str}
+        {"type": "result", "reply": str, "tool_calls": list, "session_id": str,
+         "iac_pr"?: {"pr_number": int, "pr_url": str}}
+
+    ``iac_pr`` is present ONLY on a confirmed first-authoring infra-PR success
+    (the SPA reads it for the clickable approval CTA); omitted otherwise.
 
     Every yielded event flows through ONE monotonic ``seq`` counter for the
     whole committed run (so the SSE timeline keeps stable, contiguous ordering
@@ -1286,15 +1290,19 @@ async def run_provision_fanout_stream(
         }
         return
 
-    # 9. Success — but only if the worker actually returned a PR number AND a
-    # PR url. A malformed 200 that omits pr_number OR pr_url must NOT surface a
-    # fabricated "PR #None" / "(... None)": treat it as an attempted-but-failed
-    # editor outcome (the call WAS made → tool_calls records open_infra_pr; no
-    # fabricated PR number/url).
-    if result.get("pr_number") is None or result.get("pr_url") is None:
+    # 9. Success — but ONLY if the worker returned a CONFIRMED PR: a positive
+    # non-bool pr_number AND a non-empty pr_url. The gate is the shared
+    # ``iac_pr_pointer`` helper (the same one that builds the SPA approval CTA),
+    # so a malformed 200 — no pr_number, ``pr_number=True``, an empty pr_url, etc.
+    # — fails closed instead of surfacing a fabricated "PR #None"/"#True"/"(...)".
+    # The call WAS made → tool_calls records open_infra_pr; no PR is fabricated.
+    from agent.adk_tools import iac_pr_pointer
+
+    iac_pr = iac_pr_pointer(result)
+    if iac_pr is None:
         reply = (
             "The infrastructure PR could not be confirmed: the editor worker "
-            f"returned no PR number (response status {result.get('status')!r})."
+            f"returned no usable PR number/url (response status {result.get('status')!r})."
         )
         yield {"type": "event", "event": _stream(_emit_final_response(reply))}
         yield {
@@ -1305,7 +1313,9 @@ async def run_provision_fanout_stream(
         }
         return
 
-    # Surface the opened PR + the exact operator next steps.
+    # Surface the opened PR + the exact operator next steps. The terminal item
+    # carries the structured ``iac_pr`` pointer so the SPA can render a clickable
+    # first-authoring "Review & approve" CTA (the reply text alone is not a link).
     reply = _compose_success_reply(result, plan, author_result)
     yield {"type": "event", "event": _stream(_emit_final_response(reply))}
     yield {
@@ -1313,4 +1323,5 @@ async def run_provision_fanout_stream(
         "reply": reply,
         "tool_calls": ["open_infra_pr"],
         "session_id": sid,
+        "iac_pr": iac_pr,
     }
