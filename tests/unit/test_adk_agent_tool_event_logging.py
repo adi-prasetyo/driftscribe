@@ -298,6 +298,77 @@ async def test_run_agent_emits_tool_result_for_function_response(caplog, drift_w
 
 
 # --------------------------------------------------------------------------- #
+# Invariant (g): the optional ``iac_pr_sink`` captures a CONFIRMED first-authoring
+# infra PR (open_infra_pr only) so the single-agent stream can surface a clickable
+# approval CTA. It must match on the tool NAME (open_infra_pr_tool), never on the
+# result shape — upgrade_propose_pr returns the same pr_number/pr_url fields but is
+# NOT an /iac-approvals PR.
+# --------------------------------------------------------------------------- #
+
+
+def test_emit_event_logs_captures_iac_pr_for_open_infra_pr():
+    from agent.adk_tools import open_infra_pr_tool
+
+    sink: dict = {}
+    ev = _Ev(
+        [_P(function_response=_fr(
+            open_infra_pr_tool.__name__,
+            {"status": "opened", "pr_number": 12,
+             "pr_url": "https://github.com/o/r/pull/12", "branch": "infra/x"},
+        ))],
+        partial=False,
+    )
+    adk_agent._emit_event_logs(ev, iac_pr_sink=sink)
+    assert sink == {"pr_number": 12, "pr_url": "https://github.com/o/r/pull/12"}
+
+
+def test_emit_event_logs_does_not_capture_iac_pr_for_other_tools():
+    """An upgrade PR (same pr_number/pr_url shape, DIFFERENT tool name) must NOT
+    populate the iac_pr sink — only open_infra_pr maps to an /iac-approvals page."""
+    sink: dict = {}
+    ev = _Ev(
+        [_P(function_response=_fr(
+            "upgrade_propose_pr_tool",
+            {"status": "opened", "pr_number": 99, "pr_url": "https://x/pull/99"},
+        ))],
+        partial=False,
+    )
+    adk_agent._emit_event_logs(ev, iac_pr_sink=sink)
+    assert sink == {}
+
+
+def test_emit_event_logs_iac_pr_sink_last_write_wins():
+    """Two open_infra_pr results in one run → the sink reflects the LAST one."""
+    from agent.adk_tools import open_infra_pr_tool
+
+    sink: dict = {}
+    ev1 = _Ev([_P(function_response=_fr(
+        open_infra_pr_tool.__name__,
+        {"status": "opened", "pr_number": 1, "pr_url": "https://x/pull/1"}))],
+        partial=False)
+    ev2 = _Ev([_P(function_response=_fr(
+        open_infra_pr_tool.__name__,
+        {"status": "opened", "pr_number": 2, "pr_url": "https://x/pull/2"}))],
+        partial=False)
+    adk_agent._emit_event_logs(ev1, iac_pr_sink=sink)
+    adk_agent._emit_event_logs(ev2, iac_pr_sink=sink)
+    assert sink == {"pr_number": 2, "pr_url": "https://x/pull/2"}
+
+
+def test_emit_event_logs_iac_pr_sink_ignored_for_malformed_open_infra_pr():
+    """A confirmed-shape gate: an open_infra_pr result missing pr_url leaves the
+    sink empty (no half-formed pointer)."""
+    from agent.adk_tools import open_infra_pr_tool
+
+    sink: dict = {}
+    ev = _Ev([_P(function_response=_fr(
+        open_infra_pr_tool.__name__, {"status": "opened", "pr_number": 5}))],
+        partial=False)
+    adk_agent._emit_event_logs(ev, iac_pr_sink=sink)
+    assert sink == {}
+
+
+# --------------------------------------------------------------------------- #
 # Invariant (h) (CRITICAL): nested secret-keyed values must be redacted via
 # the structured-then-serialize order, not just regex on the JSON string.
 # --------------------------------------------------------------------------- #

@@ -3561,17 +3561,23 @@ async def _drain_chat_stream_result(agen) -> dict:
     zero-or-more ``{"type":"event"}`` items followed by exactly one
     ``{"type":"result", ...}``; we ignore the events (the JSON path has no
     timeline) and project the single result into the same
-    ``{reply, tool_calls, session_id}`` shape ``run_chat`` returns. Raising on
-    an exhausted stream with no result keeps the "no final response"
+    ``{reply, tool_calls, session_id}`` shape ``run_chat`` returns (plus an
+    optional ``iac_pr`` pointer when a first-authoring infra run produced one).
+    Raising on an exhausted stream with no result keeps the "no final response"
     RuntimeError identical to ``run_chat``'s, so the ``/chat`` ``except``
     tuple maps it the same way."""
     async for item in agen:
         if item["type"] == "result":
-            return {
+            out = {
                 "reply": item["reply"],
                 "tool_calls": item["tool_calls"],
                 "session_id": item["session_id"],
             }
+            # Contract parity with the SSE done frame: pass the approval pointer
+            # through when a first-authoring infra run produced one.
+            if item.get("iac_pr"):
+                out["iac_pr"] = item["iac_pr"]
+            return out
     raise RuntimeError("ADK chat agent produced no final response")
 
 
@@ -3623,11 +3629,16 @@ async def _chat_sse(prompt: str, session_id: str | None, workload: str,
                 if item["type"] == "event":
                     yield _sse_frame(data=item["event"])
                 else:  # "result"
-                    yield _sse_frame(event="done", data={
+                    done_data = {
                         "reply": item["reply"],
                         "tool_calls": item["tool_calls"],
                         "session_id": item["session_id"],
-                    })
+                    }
+                    # Only a first-authoring infra run carries this — the SPA
+                    # reads it to render a clickable "Review & approve" CTA.
+                    if item.get("iac_pr"):
+                        done_data["iac_pr"] = item["iac_pr"]
+                    yield _sse_frame(event="done", data=done_data)
             elif kind == "error":
                 status, detail = payload
                 yield _sse_frame(

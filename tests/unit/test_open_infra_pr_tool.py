@@ -146,6 +146,42 @@ def test_iac_pr_next_steps_substitutes_real_number_else_safe_placeholder():
     assert "plan-builder" in txt and "approv" in txt and "re-bake" in txt
 
 
+def test_iac_pr_pointer_accepts_only_well_formed_open_pr_result():
+    """``iac_pr_pointer`` extracts ``{pr_number, pr_url}`` from a worker result
+    ONLY when pr_number is a positive, non-bool int AND pr_url is a non-empty
+    string. Everything else → ``None`` (so the first-authoring approval CTA is
+    never surfaced for a malformed / unconfirmed PR). Shared by the single-agent
+    stream and the fan-out orchestrator so the ``done.iac_pr`` field is identical.
+    """
+    from agent.adk_tools import iac_pr_pointer
+
+    ok = {"status": "opened", "pr_number": 7, "pr_url": "https://x/pull/7"}
+    assert iac_pr_pointer(ok) == {"pr_number": 7, "pr_url": "https://x/pull/7"}
+    # Extra keys are ignored; only the two pointer fields are returned.
+    assert set(iac_pr_pointer(ok)) == {"pr_number", "pr_url"}
+
+    # Rejected: missing/None number, bool number (subclass of int), non-positive,
+    # non-int number, missing/empty/non-str url, and non-dict input.
+    rejected = [
+        None,
+        "not-a-dict",
+        {},
+        {"pr_url": "https://x/pull/7"},  # no pr_number
+        {"pr_number": None, "pr_url": "u"},
+        {"pr_number": True, "pr_url": "u"},  # bool is NOT a valid PR number
+        {"pr_number": False, "pr_url": "u"},
+        {"pr_number": 0, "pr_url": "u"},
+        {"pr_number": -3, "pr_url": "u"},
+        {"pr_number": "7", "pr_url": "u"},  # str number
+        {"pr_number": 7},  # no pr_url
+        {"pr_number": 7, "pr_url": None},
+        {"pr_number": 7, "pr_url": ""},
+        {"pr_number": 7, "pr_url": 123},  # non-str url
+    ]
+    for r in rejected:
+        assert iac_pr_pointer(r) is None, r
+
+
 def test_open_infra_pr_tool_result_falls_back_to_derived_branch(monkeypatch):
     """If the worker omits ``branch`` in its response, the result echoes the
     server-derived branch rather than ``None`` (so the operator can find the PR).

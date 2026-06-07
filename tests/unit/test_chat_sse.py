@@ -80,6 +80,61 @@ def test_chat_streams_sse_when_accept_header(_adk_enabled):
     assert done[0]["tool_calls"] == ["read_drift"]
 
 
+async def _stub_stream_with_iac_pr(prompt, session_id=None, *, workload="drift"):
+    yield {"type": "event", "event": {
+        "event": "tool_call", "tool_name": "open_infra_pr", "tool_args": {},
+        "seq": 1, "insert_id": "stream-1", "timestamp": "t"}}
+    yield {"type": "result", "reply": "Opened infrastructure PR #73.",
+           "tool_calls": ["open_infra_pr"], "session_id": "sid",
+           "iac_pr": {"pr_number": 73, "pr_url": "https://x/pull/73"}}
+
+
+def test_chat_sse_done_carries_iac_pr_when_present(_adk_enabled):
+    """A first-authoring run's terminal ``iac_pr`` pointer is passed through to
+    the ``done`` frame so the SPA can render a clickable approval CTA."""
+    with patch("agent.adk_agent.run_chat_stream", _stub_stream_with_iac_pr), \
+         patch.object(agent_main, "load_workload"), \
+         patch.object(agent_main, "_eager_resolve_upgrade_contract"):
+        client = TestClient(agent_main.app)
+        r = client.post("/chat", json={"prompt": "provision a bucket", "workload": "drift"},
+                        headers={"Accept": "text/event-stream"})
+
+    frames = _parse_sse(r.text)
+    done = [d for ev, d in frames if ev == "done"]
+    assert done and done[0]["iac_pr"] == {"pr_number": 73, "pr_url": "https://x/pull/73"}
+
+
+def test_chat_sse_done_omits_iac_pr_when_absent(_adk_enabled):
+    """A plain run (no infra PR) carries NO ``iac_pr`` key on the done frame."""
+    with patch("agent.adk_agent.run_chat_stream", _stub_stream), \
+         patch.object(agent_main, "load_workload"), \
+         patch.object(agent_main, "_eager_resolve_upgrade_contract"):
+        client = TestClient(agent_main.app)
+        r = client.post("/chat", json={"prompt": "hi", "workload": "drift"},
+                        headers={"Accept": "text/event-stream"})
+
+    frames = _parse_sse(r.text)
+    done = [d for ev, d in frames if ev == "done"]
+    assert done and "iac_pr" not in done[0]
+
+
+@pytest.mark.asyncio
+async def test_drain_chat_stream_result_preserves_iac_pr():
+    """The JSON (non-SSE) drain projects ``iac_pr`` through when the terminal
+    item carries it, and omits it otherwise — contract parity with the SSE path."""
+    async def _with(*_a, **_k):
+        yield {"type": "result", "reply": "ok", "tool_calls": [], "session_id": "s",
+               "iac_pr": {"pr_number": 5, "pr_url": "https://x/pull/5"}}
+
+    async def _without(*_a, **_k):
+        yield {"type": "result", "reply": "ok", "tool_calls": [], "session_id": "s"}
+
+    got = await agent_main._drain_chat_stream_result(_with())
+    assert got["iac_pr"] == {"pr_number": 5, "pr_url": "https://x/pull/5"}
+    got2 = await agent_main._drain_chat_stream_result(_without())
+    assert "iac_pr" not in got2
+
+
 def test_chat_returns_json_without_accept_header(_adk_enabled):
     async def _run_chat(prompt, session_id=None, *, workload="drift"):
         return {"reply": "all good", "tool_calls": [], "session_id": "sid"}
