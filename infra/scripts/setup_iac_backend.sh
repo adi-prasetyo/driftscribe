@@ -134,6 +134,8 @@ PROJECT_NUMBER="$(gcloud projects describe "$PROJECT" --format='value(projectNum
 # - storage:         the gcs backend + artifact bucket APIs.
 # - run:             read-only describe surface `tofu plan` walks for the
 #                    payment-demo google_cloud_run_v2_service refresh.
+# - pubsub:          the order-events topic + orders-sub subscription the apply SA
+#                    creates/refreshes (iac/checkout_events.tf, Phase 3).
 # (M-2) compute.googleapis.com is intentionally NOT enabled: the only plan
 # refresh target is google_cloud_run_v2_service (Cloud Run admin API), there are
 # no compute resources in iac/, and the google provider initializes without the
@@ -144,6 +146,7 @@ enable_apis_idempotent "$PROJECT" \
   firestore.googleapis.com \
   iam.googleapis.com \
   iamcredentials.googleapis.com \
+  pubsub.googleapis.com \
   run.googleapis.com \
   storage.googleapis.com \
   sts.googleapis.com
@@ -513,6 +516,42 @@ else
   grant_role_idempotent "$PROJECT" "serviceAccount:${APPLY_SA}" "roles/run.developer"
   echo "  ${APPLY_SA}: run.developer (project) — broad Cloud Run apply, no project-wide setIamPolicy/actAs/key-creation"
   echo "    (scoped actAs on payment-demo's runtime SA is granted by setup_secrets.sh §7b)"
+
+  # 6.5e Pub/Sub — a custom developer-style role for the checkout order-events topic
+  # + orders-sub subscription (iac/checkout_events.tf, Phase 3). Mirrors the
+  # driftscribeTofuApplyStorage pattern: CREATE/get/list/UPDATE + attachSubscription
+  # ONLY. NO *.setIamPolicy (no IaC-managed Pub/Sub IAM exists); NO data-plane (the
+  # sole mutator manages resources — it does not publish/consume order events); NO
+  # schemas/snapshots breadth; NO delete (the plan denylist hard-denies
+  # delete/replace/forget — mirrors the storage role's no-delete posture).
+  # attachSubscription is REQUIRED to bind a subscription to its topic at create.
+  # This is the codified, least-privilege replacement for the TEMPORARY Phase-3
+  # roles/pubsub.editor (hand-added in Track B-0; removed below).
+  create_or_update_custom_role_idempotent "$PROJECT" "driftscribeTofuApplyPubsub" \
+    "DriftScribe tofu-apply Pub/Sub (topic+subscription create/manage, no IAM, no data-plane)" \
+    "pubsub.topics.create,pubsub.topics.get,pubsub.topics.list,pubsub.topics.update,pubsub.topics.attachSubscription,pubsub.subscriptions.create,pubsub.subscriptions.get,pubsub.subscriptions.list,pubsub.subscriptions.update"
+  grant_role_idempotent "$PROJECT" "serviceAccount:${APPLY_SA}" "projects/${PROJECT}/roles/driftscribeTofuApplyPubsub"
+  echo "  ${APPLY_SA}: driftscribeTofuApplyPubsub (custom) — Pub/Sub topic+sub CRU + attach, no IAM, no data-plane"
+  # Cutover: drop the broad, TEMPORARY roles/pubsub.editor. Bind-before-remove —
+  # the tight custom role is granted ABOVE first. GATED like the c5f datastore
+  # cutover: a default re-run only ADDS the tight role (safe/idempotent); the
+  # broad-role removal is the deliberate, flag-gated cutover step.
+  if [ "${SETUP_TOFU_APPLY_PUBSUB_CUSTOM:-0}" = "1" ]; then
+    # Presence-checked so a real removal failure surfaces (no `|| true` swallow) and
+    # the "removed" message is only printed when a binding actually existed.
+    if gcloud projects get-iam-policy "$PROJECT" --flatten="bindings[].members" \
+         --filter="bindings.members:${APPLY_SA}" --format="value(bindings.role)" 2>/dev/null \
+         | grep -qx "roles/pubsub.editor"; then
+      gcloud projects remove-iam-policy-binding "$PROJECT" \
+        --member="serviceAccount:${APPLY_SA}" --role="roles/pubsub.editor" \
+        --condition=None --quiet >/dev/null
+      echo "  ${APPLY_SA}: removed TEMPORARY roles/pubsub.editor (custom role is now the sole Pub/Sub grant)"
+    else
+      echo "  ${APPLY_SA}: roles/pubsub.editor already absent (custom role is the sole Pub/Sub grant)"
+    fi
+  else
+    echo "  ${APPLY_SA}: roles/pubsub.editor removal gated (set SETUP_TOFU_APPLY_PUBSUB_CUSTOM=1)"
+  fi
 fi
 
 # NOTE (operator steps, NOT here): the plan-hmac-key secret + the

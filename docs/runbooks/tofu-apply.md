@@ -52,6 +52,12 @@ re-bake before clicking Apply.
    `roles/run.developer` (project, broad Cloud Run apply — **no** `setIamPolicy`),
    `storage.objectAdmin` on the state bucket, `cryptoKeyEncrypterDecrypter` on
    the `tofu-state` key, `storage.objectViewer` on the artifact bucket,
+   the custom `driftscribeTofuApplyPubsub` role (Pub/Sub topic+subscription
+   create/get/list/update + `attachSubscription` — **no** `setIamPolicy`, **no**
+   data-plane publish/consume, **no** delete; the codified least-privilege
+   replacement for the temporary Phase-3 `roles/pubsub.editor`, whose removal is
+   gated behind `SETUP_TOFU_APPLY_PUBSUB_CUSTOM=1`, bind-before-remove so a default
+   re-run only ADDS the tight role),
    `datastore.user` **conditioned to the `plan-approvals` named Firestore database**
    (per-database isolation — the condition is
    `resource.name == "projects/driftscribe-hack-2026/databases/plan-approvals"`, so
