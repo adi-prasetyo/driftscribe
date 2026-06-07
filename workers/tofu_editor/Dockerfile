@@ -1,10 +1,39 @@
 # tofu-editor worker (Phase D) — the iac/-only multi-file PR opener and the
-# sole new WRITE SURFACE Phase D introduces. Single-stage: this worker authors
-# HCL *text* only — it never runs `tofu` — so (unlike workers/tofu_apply) it
-# bakes in NO tofu binary and needs no provider prefetch. Same shape as
-# workers/upgrade_docs/Dockerfile (the other GitHub-write worker).
+# sole new WRITE SURFACE Phase D introduces. This worker authors HCL *text* and
+# runs exactly ONE tofu subcommand: `tofu fmt` on each authored .tf BEFORE
+# committing, so agent HCL is canonical and the required `tofu` CI check
+# (`tofu -chdir=iac fmt -check`) passes without a manual fixup commit. `tofu fmt`
+# is a purely syntactic, OFFLINE transform (stdin→stdout) — no providers, state,
+# network, or filesystem writes — so the image bakes ONLY the binary (no provider
+# prefetch, unlike workers/tofu_apply).
+#
+# TOFU_VERSION is pinned in lockstep with workers/tofu_apply + the C2 plan-builder
+# (opentofu/setup-opentofu) so authoring, planning, and applying all use one tofu.
+
+# ---- stage 1: fetch + checksum-verify the pinned tofu binary ----
+FROM python:3.12-slim AS tofu-builder
+ARG TOFU_VERSION=1.12.0
+# tofu_${TOFU_VERSION}_linux_amd64.zip is pinned HERE, in-repo, NOT trusted from
+# the network: the SHA256 below is checked against the downloaded artifact, so a
+# tampered/substituted release fails the build. Update this in lockstep with
+# TOFU_VERSION (source: the official tofu_<v>_SHA256SUMS).
+ARG TOFU_SHA256=8d7650fd42b6d790f9f747604393ccd0a9035376bccc4f1688b905d7c5bb1137
+RUN set -eux; \
+    apt-get update && apt-get install -y --no-install-recommends ca-certificates curl unzip; \
+    curl -fsSLO "https://github.com/opentofu/opentofu/releases/download/v${TOFU_VERSION}/tofu_${TOFU_VERSION}_linux_amd64.zip"; \
+    echo "${TOFU_SHA256}  tofu_${TOFU_VERSION}_linux_amd64.zip" | sha256sum -c -; \
+    unzip "tofu_${TOFU_VERSION}_linux_amd64.zip" tofu -d /usr/local/bin; \
+    chmod +x /usr/local/bin/tofu; \
+    /usr/local/bin/tofu version
+
+# ---- runtime image ----
+# Same base-image pin as the sibling GitHub-write workers (workers/upgrade_docs).
 FROM python:3.12-slim
 WORKDIR /app
+
+# The verified tofu binary (only the binary — none of the build/download tooling
+# stays in the runtime image).
+COPY --from=tofu-builder /usr/local/bin/tofu /usr/local/bin/tofu
 
 RUN pip install --no-cache-dir uv
 

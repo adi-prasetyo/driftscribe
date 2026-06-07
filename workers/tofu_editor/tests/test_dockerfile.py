@@ -58,6 +58,18 @@ def test_does_not_copy_coordinator_code() -> None:
             assert "agent/" not in line, line
 
 
+def test_bakes_tofu_binary_for_fmt() -> None:
+    # The worker runs `tofu fmt` on authored HCL before committing, so the image
+    # MUST bake the pinned tofu binary. A future "cleanup" that drops it would
+    # silently disable fmt at runtime (fail-soft → unformatted commits → the
+    # `tofu` CI check fails). Lock the multi-stage fetch + the runtime COPY.
+    t = _text()
+    assert "TOFU_VERSION" in t, "tofu version must be pinned for the fmt binary"
+    assert "TOFU_SHA256" in t, "tofu binary must be checksum-verified"
+    # The verified binary is copied into the runtime image from the build stage.
+    assert "/usr/local/bin/tofu" in t
+
+
 def test_cmd_targets_the_worker_app() -> None:
     t = _text()
     assert "uvicorn workers.tofu_editor.main:app" in t

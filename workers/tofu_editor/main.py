@@ -7,9 +7,12 @@ head branch off ``main``, and opens ONE pull request labeled
 ``/open-pr`` is fail-closed by construction: every policy check runs BEFORE any
 GitHub call, and a rejected request leaves no side effect.
 
-This worker authors HCL *text* only — it never runs ``tofu`` (plan/apply live
-in the separate ``tofu-apply`` worker, the sole mutator) and it never touches
-``main`` directly. Its blast radius is bounded to PRs on an ``infra/`` head
+This worker authors HCL *text*. The ONLY ``tofu`` subcommand it runs is
+``tofu fmt`` — a purely syntactic, offline canonicalization of authored ``.tf``
+before committing (so the required ``tofu`` CI check passes without a manual
+fixup); it never runs plan/apply (those live in the separate ``tofu-apply``
+worker, the sole mutator) and never touches ``main`` directly. Its blast radius
+is bounded to PRs on an ``infra/`` head
 branch targeting ``main`` in a single pinned repo.
 
 Three safety layers stack here:
@@ -45,6 +48,9 @@ for schema-shaped (empty/oversize/malformed) failures — and are mapped straigh
 onto :class:`fastapi.HTTPException` at the handler boundary.
 """
 import os
+import shutil
+import subprocess
+import time
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
@@ -104,6 +110,86 @@ def _get_repo():
     entire ``driftscribe_lib.github`` surface (same idiom as upgrade-docs).
     """
     return ds_github.get_repo(GITHUB_TOKEN, TARGET_REPO)
+
+
+# `tofu fmt` is a purely syntactic, OFFLINE transform — no providers, no state,
+# no network, no filesystem writes (input on stdin, formatted output on stdout).
+# It is the ONE tofu subcommand this authoring worker runs; the image bakes the
+# pinned binary solely for this (see the Dockerfile).
+#
+# Resolve the binary to an ABSOLUTE path ONCE at import (not relying on PATH at
+# each subprocess call): in the deployed image this is /usr/local/bin/tofu;
+# locally/CI it's wherever `tofu` is installed. Falls back to the container path.
+_TOFU_BIN = os.path.abspath(shutil.which("tofu") or "/usr/local/bin/tofu")
+# Per-file cap AND an aggregate budget: a request may carry up to MAX_FILES (32)
+# files, so a naive per-file timeout would let worst-case pre-commit time blow
+# past the coordinator's ~30s worker HTTP timeout. The aggregate budget keeps the
+# whole formatting pass comfortably under that; once it is exhausted the
+# remaining files are committed UNFORMATTED (fail-soft, CI stays the backstop).
+_TOFU_FMT_PER_FILE_TIMEOUT_S = 15
+# Keep the whole pass well under the coordinator's ~30s worker HTTP timeout so
+# the bulk of the budget stays available for the GitHub branch/file/PR calls.
+# `tofu fmt` on authored files is milliseconds, so 5s is ample for ≤32 files.
+_TOFU_FMT_TOTAL_BUDGET_S = 5.0
+
+
+def _run_tofu_fmt(content: str, timeout_s: float = _TOFU_FMT_PER_FILE_TIMEOUT_S) -> str:
+    """Return ``content`` formatted by ``tofu fmt`` (stdin → stdout).
+
+    FAIL-SOFT by design: if the binary is missing, times out, errors, or rejects
+    the input (non-zero exit), the ORIGINAL content is returned unchanged. The
+    required ``tofu`` CI check (``tofu -chdir=iac fmt -check``) stays the
+    authoritative backstop, so a fmt hiccup never turns a valid PR into a 500 —
+    it just falls back to the pre-fmt behavior.
+    """
+    try:
+        proc = subprocess.run(
+            [_TOFU_BIN, "fmt", "-"],
+            input=content,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as e:  # binary missing / timeout
+        log.warning("tofu fmt unavailable — committing unformatted: %s", e)
+        return content
+    if proc.returncode != 0:
+        log.warning(
+            "tofu fmt rejected content (exit %d) — committing unformatted",
+            proc.returncode,
+        )
+        return content
+    return proc.stdout
+
+
+def _format_tf_files(files: list[dict]) -> list[dict]:
+    """Return committed file dicts with every ``.tf`` content run through
+    :func:`_run_tofu_fmt`. Non-``.tf`` files (``.md``) pass through untouched —
+    fmt only applies to HCL. Both authoring paths converge here, so formatting
+    at this single point makes agent-authored HCL ``tofu fmt -check``-clean
+    regardless of which orchestrator produced it.
+
+    Bounded by an aggregate wall-clock budget (``_TOFU_FMT_TOTAL_BUDGET_S``): each
+    file is formatted with whatever budget remains (capped per file); once the
+    budget is spent the rest pass through unformatted. The caller MUST re-validate
+    the returned dicts against the byte caps — ``tofu fmt`` can grow a file
+    (``=`` alignment) past ``MAX_FILE_BYTES`` / ``MAX_TOTAL_BYTES``.
+    """
+    formatted: list[dict] = []
+    deadline = time.monotonic() + _TOFU_FMT_TOTAL_BUDGET_S
+    for f in files:
+        if not f["path"].endswith(".tf"):
+            formatted.append(f)
+            continue
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            log.warning("tofu fmt budget exhausted — committing remaining files unformatted")
+            formatted.append(f)
+            continue
+        timeout_s = min(remaining, _TOFU_FMT_PER_FILE_TIMEOUT_S)
+        formatted.append({**f, "content": _run_tofu_fmt(f["content"], timeout_s)})
+    return formatted
 
 
 class FileWrite(BaseModel):
@@ -226,6 +312,23 @@ def open_pr(
         caller, TARGET_REPO, req.branch, len(req.files),
     )
 
+    # Canonicalize HCL with `tofu fmt` BEFORE committing (after the gate, which
+    # sees the agent's raw intent — fmt is whitespace-only so it can't change
+    # what the gate already approved). This makes agent-authored .tf files
+    # `tofu fmt -check`-clean so the required `tofu` CI check passes without a
+    # manual fixup commit (the friction seen on Phase 3 PR #66). Fail-soft.
+    committed_files = _format_tf_files([f.model_dump() for f in req.files])
+    # RE-VALIDATE the FORMATTED content against the byte caps before any GitHub
+    # call: `tofu fmt` can grow a file (`=` alignment) past MAX_FILE_BYTES /
+    # MAX_TOTAL_BYTES even when the raw payload was under them. Same 422 mapping
+    # as the first pass — fail-closed, no side effect. (Path/suffix/foundation
+    # checks are whitespace-invariant but re-running them is cheap and keeps this
+    # a single authoritative gate over exactly what gets committed.)
+    try:
+        validate_file_writes(committed_files)
+    except EditorPolicyError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.reason) from e
+
     repo = _get_repo()
     # ``base`` is pinned to the policy constant here even though
     # ``validate_base`` already enforced ``req.base == ALLOWED_BASE`` — belt and
@@ -236,7 +339,7 @@ def open_pr(
         base=ALLOWED_BASE,
         title=req.title,
         body=req.body,
-        files=[f.model_dump() for f in req.files],
+        files=committed_files,
     )
     return {
         "status": "opened",
