@@ -524,6 +524,20 @@ git commit -m "fix(rollback): scrub the worker reason payload (approval page no 
 
 ---
 
+## Task 6.5: Chat rollback tool — don't forward model-authored `reason` (added during completed-work review)
+
+**Files:** Modify `agent/adk_tools.py` (`propose_rollback_tool`, line ~90); Test `tests/unit/test_adk_tools.py`.
+
+The Codex completed-work review found a **fourth** rollback-`reason` boundary: the `/chat` tool `propose_rollback_tool(target_revision, reason)` calls the rollback worker **directly** (bypassing `_do_rollback` and its source scrub). The worker renders `reason` on the operator approval page, and the chat LLM sees live env **unredacted** (`read_live_env_tool` → reader worker returns raw `env`, verified at `workers/reader/main.py:91`), so the model can quote **any** secret form (bare token or credentialed URL) into `reason`. This tool has no `EnvDiff` context for a value-scoped scrub, so a partial text-scrub would be incomplete.
+
+**Fix:** do NOT forward the model-authored `reason`. Send a safe `reason` derived only from the non-secret `target_revision`; the model's full rationale stays in the chat conversation/trace. `_ = reason` keeps the tool's LLM-facing signature intact while documenting the intentional non-forward.
+
+**Tests:** updated `test_propose_rollback_tool_*` to assert the payload carries a revision-derived safe reason; new `test_propose_rollback_tool_does_not_forward_secret_reason` proves a bare token AND a credentialed URL in the model `reason` never reach the worker payload.
+
+(`call_execute`/`call_deny` carry no `reason`; grep confirmed `main.py:900` + `adk_tools.py:90` are the only two reason-bearing rollback-propose sites.)
+
+---
+
 ## Task 7: Full-suite verification gate + self-audit
 
 **Step 1:** `uv run pytest -q` → all green (no regressions; ~14 new tests).
