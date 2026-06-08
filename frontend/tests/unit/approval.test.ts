@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { safeApprovalHref, iacApprovalHref, isExpired } from '../../src/lib/approval';
+import { safeApprovalHref, iacApprovalHref, isExpired, safeGithubHref } from '../../src/lib/approval';
 
 // SECURITY-CRITICAL guard. This file re-homes the assertions previously made
 // in tests/integration/test_ui_transparency.py:148-166 (the legacy
@@ -154,5 +154,62 @@ describe('iacApprovalHref', () => {
     // through, so a stray `true`/`false` must never yield `/iac-approvals/1`.
     expect(iacApprovalHref(true)).toBeNull();
     expect(iacApprovalHref(false)).toBeNull();
+  });
+});
+
+describe('safeGithubHref — canonical github.com artifact allowlist', () => {
+  it('accepts a canonical github.com issue URL (returns absolute, unchanged)', () => {
+    const u = 'https://github.com/acme/ops/issues/42';
+    expect(safeGithubHref(u)).toBe(u);
+  });
+  it('accepts a github.com PR URL', () => {
+    const u = 'https://github.com/acme/ops/pull/7';
+    expect(safeGithubHref(u)).toBe(u);
+  });
+  it('accepts owner/repo names with dots/dashes', () => {
+    const u = 'https://github.com/acme-co/ops.infra/issues/3';
+    expect(safeGithubHref(u)).toBe(u);
+  });
+  it('rejects http (non-TLS)', () => {
+    expect(safeGithubHref('http://github.com/acme/ops/issues/42')).toBeNull();
+  });
+  it('rejects a look-alike / off-allowlist host', () => {
+    expect(safeGithubHref('https://github.com.evil.example/acme/ops/issues/42')).toBeNull();
+    expect(safeGithubHref('https://raw.githubusercontent.com/x/y/issues/1')).toBeNull();
+    expect(safeGithubHref('https://gitlab.com/acme/ops/issues/42')).toBeNull();
+  });
+  it('rejects userinfo smuggling (user@host, user:pass@host)', () => {
+    expect(safeGithubHref('https://evil@github.com/acme/ops/issues/1')).toBeNull();
+    expect(safeGithubHref('https://github.com@evil.example/acme/ops/issues/1')).toBeNull();
+    expect(safeGithubHref('https://u:p@github.com/acme/ops/issues/1')).toBeNull();
+  });
+  it('rejects a non-default port', () => {
+    expect(safeGithubHref('https://github.com:444/acme/ops/issues/1')).toBeNull();
+  });
+  it('rejects whitespace / control chars / backslashes in the raw string', () => {
+    expect(safeGithubHref('https://github.com/acme/ops/issues/1\t')).toBeNull();
+    expect(safeGithubHref('https://github.com/acme/ops/iss\nues/1')).toBeNull();
+    expect(safeGithubHref('https://github.com\\acme/ops/issues/1')).toBeNull();
+  });
+  it('rejects a non-whitespace C0 control char in the raw string', () => {
+    expect(safeGithubHref('https://github.com/acme/ops/issues/1\u0001')).toBeNull();
+    expect(safeGithubHref('https://github.com/acme/ops/issues/1\u0007')).toBeNull();
+  });
+  it('rejects a non-artifact github.com path (settings, bare repo, root)', () => {
+    expect(safeGithubHref('https://github.com/settings/profile')).toBeNull();
+    expect(safeGithubHref('https://github.com/acme/ops')).toBeNull();
+    expect(safeGithubHref('https://github.com/')).toBeNull();
+    expect(safeGithubHref('https://github.com/acme/ops/issues/notanumber')).toBeNull();
+  });
+  it('rejects javascript: / data: smuggling', () => {
+    expect(safeGithubHref('javascript:alert(1)')).toBeNull();
+    expect(safeGithubHref('data:text/html,<script>1</script>')).toBeNull();
+  });
+  it('rejects null / non-string / empty / unparseable', () => {
+    expect(safeGithubHref(null)).toBeNull();
+    expect(safeGithubHref(undefined)).toBeNull();
+    expect(safeGithubHref(123 as unknown)).toBeNull();
+    expect(safeGithubHref('')).toBeNull();
+    expect(safeGithubHref('not a url')).toBeNull();
   });
 });

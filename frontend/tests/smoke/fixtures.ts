@@ -156,6 +156,20 @@ export function decisionsResponse(origin: string) {
         },
       },
       iacDecision(),
+      {
+        decision_id: 'd-drift-1',
+        trace_id: 'aa11bb22cc33dd44ee55ff6600112233',
+        action: 'drift_issue',
+        created_at: '2026-06-08T01:00:00+00:00',
+        github: { url: 'https://github.com/acme/ops/issues/99', dry_run: false },
+      },
+      {
+        decision_id: 'd-drift-evil',
+        trace_id: 'bb11bb22cc33dd44ee55ff6600112233',
+        action: 'drift_issue',
+        created_at: '2026-06-08T01:01:00+00:00',
+        github: { url: 'javascript:alert(document.cookie)', dry_run: false },
+      },
     ],
   };
 }

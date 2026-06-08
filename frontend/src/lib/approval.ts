@@ -83,3 +83,38 @@ export function isExpired(
   const ref = now ?? Date.now();
   return parsed <= ref;
 }
+
+// Canonical PyGithub artifact path: /<owner>/<repo>/(issues|pull)/<number>.
+// PyGithub's html_url only ever emits this shape, so we pin to it (defence in
+// depth — the /trace + /decisions decision docs are UNREDACTED).
+const GITHUB_ARTIFACT_PATH = /^\/[^/]+\/[^/]+\/(?:issues|pull)\/\d+$/;
+
+/**
+ * External-link guard for a decision's `github.url` (the PR/issue the agent
+ * opened). Unlike `safeApprovalHref` (relative, same-origin), this is a
+ * DELIBERATE off-origin link, so it returns the ABSOLUTE url — but only after a
+ * strict allowlist: https, host EXACTLY `github.com` (no port, no userinfo), and
+ * a canonical issue/PR pathname. Rejects every other host, non-TLS schemes,
+ * `javascript:` / `data:` smuggling, look-alike hosts (`github.com.evil`,
+ * `user@github.com`), and any raw string carrying whitespace / control chars /
+ * backslashes (which a real html_url never does). Callers still gate on an
+ * allowlisted `action`, and the anchor uses `rel="noopener noreferrer"`.
+ */
+export function safeGithubHref(raw: unknown): string | null {
+  if (typeof raw !== 'string' || raw === '') return null;
+  // Reject up front so no URL-parser normalization trick slips a control char,
+  // newline, tab, space, or backslash through (\s covers ASCII whitespace).
+  if (/[\u0000-\u001f\s\\]/.test(raw)) return null;
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (u.protocol !== 'https:') return null;
+  if (u.hostname !== 'github.com') return null;
+  if (u.port !== '') return null;
+  if (u.username !== '' || u.password !== '') return null;
+  if (!GITHUB_ARTIFACT_PATH.test(u.pathname)) return null;
+  return u.href;
+}
