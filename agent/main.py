@@ -208,7 +208,7 @@ _TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 # ---------------------------------------------------------------------------
 # Frontend (Svelte+Vite) static assets + Vite-manifest resolution.
 #
-# The operator UI (GET /ui/transparency) is a Svelte SPA compiled by Vite into
+# The operator UI (GET /) is a Svelte SPA compiled by Vite into
 # ``agent/static/`` (gitignored; built in Docker/CI and locally for the smoke).
 # FastAPI serves a thin shell that loads the hashed JS/CSS resolved here. The
 # approval pages (GET /approvals, /iac-approvals) link the same built CSS.
@@ -1692,7 +1692,7 @@ def list_decisions_endpoint(
 ) -> dict:
     """List past decisions, newest first, for the operator transparency UI.
 
-    Phase 19.A.7 — backs the ``/ui/transparency`` decision history
+    Phase 19.A.7 — backs the ``/`` (operator SPA) decision history
     panel. Bounded by the ``limit`` query parameter (1..200) so a
     misconfigured caller can't pull the entire collection in one
     request. Token-guarded via :func:`verify_token` like /recheck.
@@ -2053,9 +2053,9 @@ def _map_tofu_apply_error(
 # painful) or be wired in a way that defeats the no-referrer headers.
 
 
-@app.get("/ui/transparency", response_class=HTMLResponse)
+@app.get("/", response_class=HTMLResponse)
 def transparency_ui(request: Request) -> Response:
-    """Serve the transparency UI shell (Svelte+Vite SPA).
+    """Serve the operator UI shell (Svelte+Vite SPA) at the site root ``/``.
 
     No auth on the HTML itself — the shell is harmless. Every API call the
     Svelte app makes (``/chat``, ``/decisions``, ``/trace/{id}``) carries the

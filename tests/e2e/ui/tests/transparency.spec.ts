@@ -4,7 +4,7 @@ const TOKEN = process.env.DRIFTSCRIBE_E2E_TOKEN ?? '';
 
 test.describe('transparency UI', () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/ui/transparency');
+    await page.goto('/');
     // Phase 19.B stores the token under sessionStorage['driftscribe_token']
     // (verified agent/templates/transparency.html:609); NOT the dot-separated form.
     await page.evaluate((t) => {

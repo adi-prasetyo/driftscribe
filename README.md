@@ -144,4 +144,4 @@ E2E runbooks: [`docs/runbooks/e2e-environment.md`](docs/runbooks/e2e-environment
 (project + secrets + cloudbuild) and [`docs/runbooks/e2e-ci.md`](docs/runbooks/e2e-ci.md)
 (WIF + GitHub Environment).
 
-Transparency UI: `/ui/transparency` on the coordinator (operator token required). See [`docs/demo-script.md`](docs/demo-script.md#transparency-ui-walkthrough) for the walkthrough.
+Transparency UI: `/` (the coordinator root; operator token required). See [`docs/demo-script.md`](docs/demo-script.md#transparency-ui-walkthrough) for the walkthrough.

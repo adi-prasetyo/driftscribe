@@ -338,8 +338,8 @@ recording doesn't accidentally open an upgrade PR.
 
 ## Transparency UI walkthrough
 
-Phase 19.B adds an operator-facing reasoning timeline at
-`/ui/transparency` on the coordinator. The page surfaces every
+Phase 19.B adds an operator-facing reasoning timeline at the
+coordinator root `/`. The page surfaces every
 `/chat` call's final response immediately, then fills in the three
 reasoning groups (Coordinator / Tools & workers / MCP) as Cloud
 Logging ingests the events (~15s lag). It also surfaces past
@@ -373,20 +373,20 @@ stub trace fetcher:
 ```bash
 USE_ADK=false DRIFTSCRIBE_TOKEN=test GCP_PROJECT=test-proj \
   uvicorn agent.main:app --port 8080
-# Then open http://localhost:8080/ui/transparency
+# Then open http://localhost:8080/
 ```
 
 The stub fetcher (`agent/trace_fetcher.py`) returns a synthetic
 timeline so you can exercise the rendering paths without GCP creds.
 The `Cache-Control: no-store` header is set on every operator
-surface (`/ui/transparency`, `/trace`, `/decisions`) — confirm with
-`curl -i http://localhost:8080/ui/transparency | grep -i cache-control`.
+surface (`/`, `/trace`, `/decisions`) — confirm with
+`curl -i http://localhost:8080/ | grep -i cache-control`.
 
 ### Walkthrough beats
 
 | Step | Action                                                                                      | Expected (≤ timing)                                                                                                       |
 | ---- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| 1    | Open `https://<coordinator-url>/ui/transparency` in a browser.                              | Page loads. Token-prompt modal appears (no token in `sessionStorage` yet).                                                |
+| 1    | Open `https://<coordinator-url>/` in a browser.                                             | Page loads. Token-prompt modal appears (no token in `sessionStorage` yet).                                                |
 | 2    | Paste the operator token; click **Save**.                                                   | Modal closes. Header shows `token: set` pill (green).                                                                     |
 | 3    | Type `what is the current drift?` in the chat input. Workload dropdown stays on **drift**. Click **Send**. | Within ≤2s: top "Final response" card populates with the agent's reply. Trace-ID pill in the header shows `trace abcd1234…`. |
 | 4    | Wait ~15s (Cloud Logging ingestion lag).                                                    | Within ≤30s: the three reasoning groups fill in. Click each `<details>` to expand.                                        |

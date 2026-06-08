@@ -140,4 +140,4 @@ E2E ランブック: [`docs/runbooks/e2e-environment.md`](docs/runbooks/e2e-envi
 [`docs/runbooks/e2e-ci.md`](docs/runbooks/e2e-ci.md)
 (WIF + GitHub Environment)。
 
-透明性 UI: コーディネーターの `/ui/transparency` (オペレータートークンが必要)。ウォークスルーは [`docs/demo-script.ja.md`](docs/demo-script.ja.md#透明性-ui-ウォークスルー) を参照。
+透明性 UI: コーディネーターのルート `/` (オペレータートークンが必要)。ウォークスルーは [`docs/demo-script.ja.md`](docs/demo-script.ja.md#透明性-ui-ウォークスルー) を参照。
