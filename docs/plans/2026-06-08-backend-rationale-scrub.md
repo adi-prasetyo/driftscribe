@@ -570,4 +570,6 @@ Coordinator change → redeploy:
 3. **Traffic-pinning gotcha** ([[coordinator_deploy_traffic_pinning]]): `driftscribe-agent` spec.traffic pins a specific revision → the build creates the new revision at **0%**. After the build: `gcloud run services update-traffic driftscribe-agent --to-revisions=<new-rev>=100 --region=...`.
 4. Smoke: open a historical drift decision in the SPA + `/ui/transparency-legacy`; confirm the hero rationale shows `(redacted)` where a secret would have been, the env-diff card still renders, and a rollback approval page's `reason` is scrubbed.
 
+**Pending-approval TTL caveat (Codex):** the serve-time scrub covers all *reads*, but a rollback approval doc minted **before** this deploy stores its raw `reason` in the worker's Firestore approvals collection and will keep rendering it on the approval page until its 15-minute TTL expires (or it is manually cleared). To consider the leak fully closed, wait out / clear any pending pre-deploy rollback approvals after the cutover. New approvals (post-deploy) are minted with the safe/scrubbed `reason`.
+
 Do NOT deploy without explicit operator go-ahead (operator gcloud / owner creds).
