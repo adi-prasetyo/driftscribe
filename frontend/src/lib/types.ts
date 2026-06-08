@@ -13,6 +13,14 @@ export interface DecisionApproval {
   expires_at?: string | null;
 }
 
+/** The PR/issue side-channel on a drift/docs/upgrade decision
+ *  (GET /decisions → decision.github). `url` is an absolute github.com URL or
+ *  null (dry-run / no-op); always routed through `safeGithubHref` before href. */
+export interface DecisionGithub {
+  url?: string | null;
+  dry_run?: boolean;
+}
+
 /** One row in the past-decisions rail (GET /decisions). Open shape — only the
  *  fields the rail renders are typed; the rest flow through the index sig. */
 export interface Decision extends Record<string, unknown> {
@@ -21,6 +29,7 @@ export interface Decision extends Record<string, unknown> {
   action: string;
   created_at?: string;
   approval?: DecisionApproval | null;
+  github?: DecisionGithub | null;
 }
 
 /** GET /trace/{id} response (historical replay + post-`done` backfill). */
