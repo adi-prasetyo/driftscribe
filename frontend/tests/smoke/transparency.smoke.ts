@@ -183,12 +183,28 @@ test.describe('transparency UI (mock smoke)', () => {
     await mockData(page, freshState());
     await page.goto('/ui/transparency');
 
-    // three seeded decisions render (two rollbacks + one iac_apply)
-    await expect(page.locator(`[data-testid="${TESTIDS.pastDecisionItem}"]`)).toHaveCount(3);
+    // five seeded decisions render (two rollbacks + one iac_apply + two drift_issue)
+    await expect(page.locator(`[data-testid="${TESTIDS.pastDecisionItem}"]`)).toHaveCount(5);
     // the off-origin approval_url must NOT become an anchor
     await expect(page.locator('a[href*="evil.example"]')).toHaveCount(0);
     // the same-origin one DOES render an Approve link
     await expect(page.locator('a.past-approve-btn[href*="/approvals/ap-1"]')).toHaveCount(1);
+  });
+
+  test('decision github.url: valid github.com link renders, javascript: url does not', async ({ page }) => {
+    await seedToken(page);
+    await mockData(page, freshState());
+    await page.goto('/ui/transparency');
+
+    // Exactly one safe github link — the valid github.com issue. The
+    // javascript: row is rejected by safeGithubHref and renders no anchor.
+    const ghLinks = page.getByTestId('decision-github-link');
+    await expect(ghLinks).toHaveCount(1);
+    await expect(ghLinks.first()).toHaveAttribute('href', 'https://github.com/acme/ops/issues/99');
+    await expect(ghLinks.first()).toHaveAttribute('rel', 'noopener noreferrer');
+    await expect(ghLinks.first()).toHaveAttribute('target', '_blank');
+    // Belt-and-suspenders: no anchor anywhere carries the javascript: payload.
+    await expect(page.locator('a[href^="javascript:"]')).toHaveCount(0);
   });
 
   test('historical iac_apply: "historical" pill (not streaming) + decision summary + empty-timeline note', async ({ page }) => {
