@@ -1708,7 +1708,12 @@ def list_decisions_endpoint(
             headers={"Cache-Control": "no-store"},
         )
     response.headers["Cache-Control"] = "no-store"
-    return {"decisions": state.list_decisions(limit=limit)}
+    # Serve-time rationale scrub (PR 2) on every row — see scrub_decision_rationale.
+    return {
+        "decisions": [
+            scrub_decision_rationale(d) for d in state.list_decisions(limit=limit)
+        ]
+    }
 
 
 @app.get("/infra/graph")
