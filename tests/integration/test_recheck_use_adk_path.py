@@ -91,6 +91,64 @@ def test_use_adk_path_wires_through_to_perform_action(monkeypatch):
     mock_run_agent.assert_awaited_once()
 
 
+def _drift_proposal_quoting_secret(secret_url: str) -> DecisionProposal:
+    """Like ``_drift_issue_proposal`` but the live value is a credentialed URL
+    and the rationale quotes it verbatim — so the serve-time scrub (PR 2) has
+    something real to redact regardless of the var name (``should_redact`` fires
+    on the credentialed value)."""
+    return DecisionProposal(
+        action=DecisionAction.DRIFT_ISSUE,
+        env_diffs=[
+            EnvDiff(
+                name="PAYMENT_MODE",
+                expected="mock",
+                live=secret_url,
+                contract_status=ContractStatus.PRESENT_DISALLOW_MANUAL,
+                debug_config_value=None,
+                recent_pr_match=None,
+            )
+        ],
+        target_docs_file=None,
+        target_docs_section=None,
+        rationale=(
+            f"PAYMENT_MODE drifted from 'mock' to {secret_url}; the contract "
+            "marks this var as allow_manual_change=false, so this is a policy "
+            "violation, not a docs update."
+        ),
+        confidence=0.92,
+        requires_human_review=True,
+    )
+
+
+def test_recheck_response_scrubs_secret_in_rationale(monkeypatch):
+    """PR 2 — the POST /recheck response body must not carry a secret quoted in
+    the LLM rationale. Exercises the real fresh ``_do_recheck`` path (agent
+    mocked) + the handler's ``scrub_decision_rationale`` wrap."""
+    monkeypatch.setenv("USE_ADK", "true")
+    get_settings.cache_clear()
+    _reset_state_for_tests()
+
+    secret_url = "https://admin:hunter2SECRET@svc.internal/api"
+    mock_run_agent = AsyncMock(return_value=_drift_proposal_quoting_secret(secret_url))
+    with (
+        patch("agent.main._run_adk_agent", mock_run_agent),
+        patch("agent.main.worker_client.call") as m_env,
+    ):
+        m_env.return_value = _reader_envelope({"PAYMENT_MODE": secret_url})
+        client = TestClient(app)
+        r = client.post("/recheck")
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["action"] == "drift_issue"
+    # The credentialed value is scrubbed out of the rationale prose...
+    assert "hunter2SECRET" not in body["rationale"]
+    assert secret_url not in body["rationale"]
+    assert "PAYMENT_MODE" in body["rationale"]   # var name survives
+    # ...diffs[] are returned raw by design (frontend redacts at display).
+    assert body["diffs"][0]["live"] == secret_url
+
+
 def test_use_adk_path_tolerates_cloud_run_read_failure(monkeypatch):
     """USE_ADK=true: Reader Worker call raising must NOT 502.
 

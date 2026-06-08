@@ -59,6 +59,35 @@ def test_list_decisions_returns_newest_first():
     assert ns == [2, 1, 0]
 
 
+def test_list_decisions_scrubs_secret_in_rationale():
+    """PR 2 — the rail/listing must not surface a secret quoted in an LLM
+    rationale. The store is reset per test, so the single recorded decision is
+    the only row."""
+    state = get_state()
+    secret = "sk-RAIL-7777"
+    state.record_event("ev-rail", {})
+    state.record_decision(
+        "dec-rail",
+        "ev-rail",
+        {
+            "decision_id": "dec-rail",
+            "action": "drift_issue",
+            "trace_id": "c" * 32,
+            "rationale": f"DB_PASSWORD changed to {secret}.",
+            "diffs": [
+                {"name": "DB_PASSWORD", "live": secret,
+                 "contract_status": "present_disallow_manual"}
+            ],
+        },
+    )
+    resp = TestClient(app).get("/decisions?limit=50")
+    assert resp.status_code == 200
+    row = resp.json()["decisions"][0]
+    assert secret not in row["rationale"]          # rationale prose scrubbed
+    assert "DB_PASSWORD" in row["rationale"]        # var name survives
+    assert row["diffs"][0]["live"] == secret        # diffs[] left raw (PR 1's job)
+
+
 def test_list_decisions_respects_limit_query_param():
     state = get_state()
     base = datetime(2026, 5, 21, 0, 0, 0, tzinfo=timezone.utc)

@@ -86,10 +86,26 @@ def propose_rollback_tool(target_revision: str, reason: str) -> dict:
     The coordinator does NOT execute rollbacks directly. This tool
     only PROPOSES — the operator must visit ``approval_url`` and
     press Approve.
+
+    SECURITY (PR 2): the rollback worker renders the ``reason`` on the
+    operator approval page, and the chat LLM sees live env UNREDACTED
+    (``read_live_env_tool`` returns the reader's raw ``env``), so a secret the
+    model quoted in ``reason`` would leak onto that page. Unlike the autonomous
+    ``_do_rollback`` path, this tool has no ``EnvDiff`` context for a
+    value-scoped scrub, and the reader returns raw env — so we do NOT forward
+    the model-authored ``reason``. Instead we send a safe reason derived only
+    from the (non-secret) ``target_revision``. The model's full rationale stays
+    visible in the chat conversation / trace; only the worker-stored,
+    operator-rendered string is replaced.
     """
+    _ = reason  # accepted for the model's tool contract; intentionally NOT forwarded
+    safe_reason = (
+        f"Rollback to {target_revision} proposed via DriftScribe chat; "
+        "see the conversation/trace for the rationale."
+    )
     return worker_client.call(
         "rollback",
-        {"target_revision": target_revision, "reason": reason},
+        {"target_revision": target_revision, "reason": safe_reason},
     )
 
 

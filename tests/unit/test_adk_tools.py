@@ -41,7 +41,11 @@ def test_read_live_env_tool_calls_reader_with_empty_payload():
     assert out == {"env": {"X": "1"}, "revision": "rev-1"}
 
 
-def test_propose_rollback_tool_calls_rollback_with_full_payload():
+def test_propose_rollback_tool_sends_target_revision_and_safe_reason():
+    """The worker payload carries the target_revision and a SAFE reason derived
+    only from it — NOT the model-authored ``reason`` (PR 2: the rollback worker
+    renders ``reason`` on the operator approval page, and the chat LLM sees raw
+    env, so its prose must not reach that page)."""
     from agent.adk_tools import propose_rollback_tool
 
     with patch("agent.adk_tools.worker_client.call") as m:
@@ -56,14 +60,33 @@ def test_propose_rollback_tool_calls_rollback_with_full_payload():
             reason="rollback to last known good",
         )
 
-    m.assert_called_once_with(
-        "rollback",
-        {
-            "target_revision": "payment-demo-00002-bbb",
-            "reason": "rollback to last known good",
-        },
-    )
+    worker, payload = m.call_args.args
+    assert worker == "rollback"
+    assert payload["target_revision"] == "payment-demo-00002-bbb"
+    assert "payment-demo-00002-bbb" in payload["reason"]  # safe, revision-derived
     assert out["approval_id"] == "id1"
+
+
+def test_propose_rollback_tool_does_not_forward_secret_reason():
+    """A secret quoted in the model-authored ``reason`` must NOT reach the
+    worker (and thus the approval page). The reader returns env unredacted, so
+    the model can see and quote any secret form — bare token or credentialed
+    URL — hence we drop the prose entirely rather than value-scrub it."""
+    from agent.adk_tools import propose_rollback_tool
+
+    secret_token = "sk-CHAT-LEAK-8421"
+    secret_url = "https://admin:hunter2CHAT@svc.internal/api"
+    with patch("agent.adk_tools.worker_client.call") as m:
+        m.return_value = {"approval_id": "id1", "approval_url": "u", "expires_at": "x"}
+        propose_rollback_tool(
+            target_revision="payment-demo-00002-bbb",
+            reason=f"rolling back because TOKEN={secret_token} and DSN={secret_url}",
+        )
+
+    reason = m.call_args.args[1]["reason"]
+    assert secret_token not in reason
+    assert secret_url not in reason
+    assert "hunter2CHAT" not in reason
 
 
 def test_patch_docs_tool_builds_safe_branch_and_calls_docs():

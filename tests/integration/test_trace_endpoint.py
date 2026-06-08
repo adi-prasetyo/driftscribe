@@ -526,6 +526,41 @@ def test_trace_endpoint_enriches_with_decision_when_present():
     assert body["decision"]["trace_id"] == _TRACE_A
 
 
+def test_trace_endpoint_scrubs_secret_in_rationale():
+    """PR 2 — the raw-rationale leak. A persisted decision whose rationale
+    quotes a secret value present in its diffs must come back with that value
+    redacted; the var name survives and the timeline is unaffected."""
+    state = get_state()
+    state.record_event("ev-scrub", {})
+    secret = "sk-LEAK-9999"
+    state.record_decision(
+        "dec-scrub",
+        "ev-scrub",
+        {
+            "action": "drift_issue",
+            "trace_id": _TRACE_A,
+            "event_key": "ev-scrub",
+            "rationale": f"API_TOKEN rotated to {secret} per the contract.",
+            "diffs": [
+                {"name": "API_TOKEN", "expected": None, "live": secret,
+                 "contract_status": "present_disallow_manual"}
+            ],
+        },
+    )
+    _install_fetcher(_stub_with([]))
+    client = TestClient(app)
+
+    resp = client.get(f"/trace/{_TRACE_A}")
+    assert resp.status_code == 200
+    body = resp.json()
+    # PR 2 scrubs the free-text RATIONALE prose...
+    assert secret not in body["decision"]["rationale"]
+    assert "API_TOKEN" in body["decision"]["rationale"]   # var name preserved
+    # ...but deliberately leaves diffs[] RAW (the decision is unredacted by
+    # design; the SPA's env-diff card redacts diff cells client-side — PR 1).
+    assert body["decision"]["diffs"][0]["live"] == secret
+
+
 # --------------------------------------------------------------------------- #
 # Sanity — module-level constant defaults haven't drifted
 # --------------------------------------------------------------------------- #

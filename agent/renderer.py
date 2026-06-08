@@ -1,4 +1,4 @@
-from agent.models import DecisionProposal, EnvDiff
+from agent.models import ContractStatus, DecisionProposal, EnvDiff
 from agent.secret_guard import should_redact, value_looks_credentialed
 
 _REDACTED = "`(value redacted: secret-like)`"
@@ -89,6 +89,86 @@ def _scrub_secret_values_from_rationale(rationale: str, diffs: list[EnvDiff]) ->
         if should_redact(d.name, d.recent_pr_match):
             _scrub(d.recent_pr_match)
     return scrubbed
+
+
+def _coerce_env_diffs(raw: object) -> list[EnvDiff]:
+    """Rebuild ``EnvDiff`` objects from a persisted decision's ``diffs[]``
+    (plain dicts from ``model_dump``) so they can feed
+    :func:`_scrub_secret_values_from_rationale` at serve time.
+
+    Defensive — the doc is whatever Firestore holds (possibly malformed or
+    legacy). Non-dict entries are skipped. Missing/invalid ``contract_status``
+    defaults to ``ABSENT`` (the scrubber never reads it). A non-string ``name``
+    becomes ``""`` so a credentialed-URL value is still caught by value
+    (``value_looks_credentialed``), not dropped. Non-string value fields
+    collapse to ``None``.
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[EnvDiff] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        try:
+            status = ContractStatus(item.get("contract_status"))
+        except (ValueError, TypeError):
+            status = ContractStatus.ABSENT
+
+        def _s(key: str) -> str | None:
+            v = item.get(key)
+            return v if isinstance(v, str) else None
+
+        name = item.get("name")
+        out.append(
+            EnvDiff(
+                name=name if isinstance(name, str) else "",
+                expected=_s("expected"),
+                live=_s("live"),
+                contract_status=status,
+                debug_config_value=_s("debug_config_value"),
+                recent_pr_match=_s("recent_pr_match"),
+            )
+        )
+    return out
+
+
+def scrub_decision_rationale(decision: object) -> object:
+    """Serve-time defense: return the decision doc with its free-text
+    ``rationale`` scrubbed of any secret-like value present in its own
+    ``diffs[]``. Closes the raw-rationale leak on every decision serve/return
+    boundary (GET /trace, /decisions, /runs; POST /recheck, /eventarc),
+    including already-persisted docs — no Firestore backfill.
+
+    The doc is otherwise returned verbatim (the decision is unredacted by
+    design; ``rendered_body`` is already scrubbed at persist, and ``diffs[]``
+    are left raw). Never mutates the input: returns it unchanged BY IDENTITY
+    when there is nothing to scrub, else a shallow copy with the new
+    ``rationale``. Accepts ``object`` and returns non-dict inputs as-is; never
+    raises.
+
+    Intentionally idempotent: an already-redacted rationale stays unchanged
+    (the raw diff values are gone, so :func:`_scrub_secret_values_from_rationale`
+    finds nothing to replace and we return the same object).
+    """
+    if not isinstance(decision, dict):
+        return decision
+    rationale = decision.get("rationale")
+    if not isinstance(rationale, str) or not rationale:
+        return decision
+    scrubbed = _scrub_secret_values_from_rationale(
+        rationale, _coerce_env_diffs(decision.get("diffs"))
+    )
+    if scrubbed == rationale:
+        return decision
+    return {**decision, "rationale": scrubbed}
+
+
+def scrub_rationale_text(rationale: str, env_diffs: list[EnvDiff]) -> str:
+    """Public wrapper over the rationale scrubber for callers holding typed
+    ``EnvDiff`` objects (the rollback worker ``reason`` boundary, where the
+    approval page renders the string). Decision-doc callers should use
+    :func:`scrub_decision_rationale` instead."""
+    return _scrub_secret_values_from_rationale(rationale, env_diffs)
 
 
 def render_docs_pr_body(p: DecisionProposal) -> str:

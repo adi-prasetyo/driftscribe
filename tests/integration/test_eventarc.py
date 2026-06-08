@@ -292,6 +292,41 @@ def test_eventarc_accepts_correct_email_and_dispatches_recheck(monkeypatch):
     assert kwargs.get("audience") == _VALID_AUDIENCE or _VALID_AUDIENCE in args
 
 
+def test_eventarc_response_scrubs_secret_in_rationale(monkeypatch):
+    """PR 2 — the /eventarc decision response must scrub a secret quoted in the
+    rationale. /eventarc routes through the same ``_do_recheck`` as /recheck
+    (its real path is tested in test_recheck_use_adk_path); here ``_do_recheck``
+    is mocked to isolate the handler's ``scrub_decision_rationale`` wrap."""
+    _set_audience(monkeypatch)
+    secret = "sk-EVT-3030"
+    decision = {
+        "decision_id": "dec-evt",
+        "action": "drift_issue",
+        "trigger": "eventarc",
+        "rationale": f"API_TOKEN rotated to {secret}.",
+        "diffs": [
+            {"name": "API_TOKEN", "live": secret,
+             "contract_status": "present_disallow_manual"}
+        ],
+    }
+    mock_recheck = AsyncMock(return_value=decision)
+    with (
+        patch("agent.main.verify_oauth2_token") as m_verify,
+        patch("agent.main._do_recheck", mock_recheck),
+    ):
+        m_verify.return_value = {"email": _EXPECTED_EMAIL, "aud": _VALID_AUDIENCE}
+        r = TestClient(app).post(
+            "/eventarc",
+            json=_audit_log_body(),
+            headers={"Authorization": "Bearer fake-token"},
+        )
+    assert r.status_code == 200
+    body = r.json()
+    assert secret not in body["rationale"]        # rationale prose scrubbed
+    assert "API_TOKEN" in body["rationale"]        # var name survives
+    assert body["diffs"][0]["live"] == secret      # diffs[] raw by design
+
+
 def test_eventarc_rejects_bare_url_audience(monkeypatch):
     """Regression for the prod bug: Eventarc mints ``aud = <svc URL>/eventarc``
     (push endpoint = service URL + ``--destination-run-path``), but
