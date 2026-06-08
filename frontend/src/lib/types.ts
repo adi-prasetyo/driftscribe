@@ -21,6 +21,27 @@ export interface DecisionGithub {
   dry_run?: boolean;
 }
 
+/** Mirrors agent/models.py:ContractStatus. The per-var verdict of the live env
+ *  against ops-contract.yaml. Rendered as a status pill on the env-diff card. */
+export type ContractStatus =
+  | 'absent'
+  | 'present_allow_manual'
+  | 'present_disallow_manual'
+  | 'match';
+
+/** One env-var drift row (GET /trace → decision.diffs[]). Mirrors
+ *  agent/models.py:EnvDiff. `expected`/`live` are RAW env-var values and may be
+ *  secrets (the decision doc is unredacted) — never render them directly; route
+ *  every value through `displayDiffValue` (lib/diff.ts). Only the fields the
+ *  card renders are typed; the backend also ships debug_config_value /
+ *  recent_pr_match, intentionally omitted (YAGNI). */
+export interface EnvDiff {
+  name: string;
+  expected?: string | null;
+  live?: string | null;
+  contract_status?: ContractStatus | string;
+}
+
 /** One row in the past-decisions rail (GET /decisions). Open shape — only the
  *  fields the rail renders are typed; the rest flow through the index sig. */
 export interface Decision extends Record<string, unknown> {
@@ -30,6 +51,7 @@ export interface Decision extends Record<string, unknown> {
   created_at?: string;
   approval?: DecisionApproval | null;
   github?: DecisionGithub | null;
+  diffs?: EnvDiff[];
 }
 
 /** GET /trace/{id} response (historical replay + post-`done` backfill). */

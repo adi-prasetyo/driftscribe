@@ -20,6 +20,7 @@
   import IacApprovalCta from './components/IacApprovalCta.svelte';
   import ReplyPending from './components/ReplyPending.svelte';
   import DecisionSummary from './components/DecisionSummary.svelte';
+  import DriftDiffCard from './components/DriftDiffCard.svelte';
   import HistoricalBanner from './components/HistoricalBanner.svelte';
   import DecisionsRail from './components/DecisionsRail.svelte';
   import InfraDiagram from './components/InfraDiagram.svelte';
@@ -359,6 +360,9 @@
     <HistoricalBanner active={historicalActive} traceId={historicalTraceId} onNewChat={newChat} />
     <TraceBadge {traceId} {status} />
     <FinalResponse reply={finalReply} isError={finalIsError} />
+    {#if historicalActive && historicalDecision}
+      <DriftDiffCard decision={historicalDecision} />
+    {/if}
     {#if iacPr && !historicalActive}
       <IacApprovalCta prNumber={iacPr.pr_number} />
     {/if}

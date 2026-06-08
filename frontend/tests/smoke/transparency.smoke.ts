@@ -3,11 +3,17 @@ import {
   TESTIDS,
   TRACE_ID,
   IAC_TRACE_ID,
+  DRIFT_CARD_TRACE_ID,
   sseBody,
   traceResponse,
   iacTraceResponse,
+  driftCardTraceResponse,
   decisionsResponse,
   infraGraphResponse,
+  SECRET_TOKEN_VALUE_OLD,
+  SECRET_TOKEN_VALUE_NEW,
+  SECRET_URL_VALUE_OLD,
+  SECRET_URL_VALUE_NEW,
 } from './fixtures';
 
 const ORIGIN = 'http://127.0.0.1:8765';
@@ -46,10 +52,14 @@ async function mockData(page: Page, state: RouteState) {
 
   await page.route('**/trace/**', (route: Route) => {
     // Branch by URL so each decision's trace resolves to its OWN payload — the
+    // drift trace carries a decision doc with env diffs (DriftDiffCard); the
     // iac_apply trace has no events + a decision doc; the chat trace has events.
-    const body = route.request().url().includes(IAC_TRACE_ID)
-      ? iacTraceResponse()
-      : traceResponse();
+    const url = route.request().url();
+    const body = url.includes(DRIFT_CARD_TRACE_ID)
+      ? driftCardTraceResponse()
+      : url.includes(IAC_TRACE_ID)
+        ? iacTraceResponse()
+        : traceResponse();
     return route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -277,5 +287,42 @@ test.describe('transparency UI (mock smoke)', () => {
 
     await page.locator('#new-chat-btn').click();
     await expect(page.locator(`[data-testid="${TESTIDS.historicalBanner}"]`)).toBeHidden();
+  });
+
+  test('drift decision: env-diff card shows non-secret values, redacts secret-named + credentialed-URL values, leaks no raw secret', async ({ page }) => {
+    await seedToken(page);
+    await mockData(page, freshState());
+    await page.goto('/ui/transparency');
+
+    // Open d-drift-1 specifically. Filter by its exact github href so the
+    // selector is unambiguous even if another row later also renders a link.
+    await page
+      .locator(`[data-testid="${TESTIDS.pastDecisionItem}"]`)
+      .filter({ has: page.locator('a[data-testid="decision-github-link"][href="https://github.com/acme/ops/issues/99"]') })
+      .locator(`[data-testid="${TESTIDS.openTraceButton}"]`)
+      .click();
+
+    const card = page.getByTestId('drift-diff-card');
+    await expect(card).toBeVisible();
+
+    // Non-secret var: both values shown verbatim.
+    const logRow = card.locator('tr', { hasText: 'LOG_LEVEL' });
+    await expect(logRow).toContainText('info');
+    await expect(logRow).toContainText('debug');
+
+    // Secret-by-NAME and secret-by-VALUE rows show the redaction marker.
+    await expect(card.locator('tr', { hasText: 'API_TOKEN' })).toContainText('(value redacted: secret-like)');
+    await expect(card.locator('tr', { hasText: 'ENDPOINT' })).toContainText('(value redacted: secret-like)');
+
+    // Hard guarantee: no raw diff secret value appears anywhere in the rendered DOM —
+    // checked both as serialized HTML (attributes included) and as visible text.
+    const html = await page.content();
+    const body = page.locator('body');
+    for (const secret of [
+      SECRET_TOKEN_VALUE_OLD, SECRET_TOKEN_VALUE_NEW, SECRET_URL_VALUE_OLD, SECRET_URL_VALUE_NEW,
+    ]) {
+      expect(html, `raw secret must not appear in DOM html: ${secret}`).not.toContain(secret);
+      await expect(body, `raw secret must not appear in body text: ${secret}`).not.toContainText(secret);
+    }
   });
 });
