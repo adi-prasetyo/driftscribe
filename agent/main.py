@@ -1430,7 +1430,12 @@ async def recheck(
     # The unused-parameter underscore is the standard FastAPI convention for
     # auth deps that only matter for their side effect (raising on failure).
     workload = (req or RecheckRequest()).workload
-    return await _do_recheck("manual_recheck", force=force, workload=workload)
+    # Serve-time rationale scrub (PR 2): wrapping the handler return covers
+    # _do_recheck's fresh response, its cached-existing return, AND the rollback
+    # response it routes through _do_rollback — one site, all paths.
+    return scrub_decision_rationale(
+        await _do_recheck("manual_recheck", force=force, workload=workload)
+    )
 
 
 # Module-level Google auth transport: verify_oauth2_token needs a transport
@@ -1657,7 +1662,8 @@ async def eventarc(
     # ignored. An event-triggered upgrade workload, if ever added, will
     # get its own endpoint with its own server-side binding (e.g.
     # ``/eventarc-upgrade`` against a dependabot-style trigger).
-    return await _do_recheck("eventarc", workload="drift")
+    # Serve-time rationale scrub (PR 2) — same wrap as /recheck.
+    return scrub_decision_rationale(await _do_recheck("eventarc", workload="drift"))
 
 
 @app.get("/runs/{decision_id}")
