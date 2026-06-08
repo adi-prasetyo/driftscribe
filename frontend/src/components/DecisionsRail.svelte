@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { safeApprovalHref, iacApprovalHref, isExpired } from '../lib/approval';
+  import { safeApprovalHref, iacApprovalHref, isExpired, safeGithubHref } from '../lib/approval';
   import type { Decision } from '../lib/types';
 
   let {
@@ -37,6 +37,34 @@
     return d.apply_status === 'waiting_for_rebake'
       ? 'Review & approve →'
       : 'Open approval page →';
+  }
+
+  // Resolve the GitHub PR/issue link for a drift/docs decision. Gated on an
+  // allowlisted `action` (so we never read github.url off an unrelated/iac
+  // decision) AND host-allowlisted via safeGithubHref. Returns null otherwise.
+  //
+  // IMPORTANT: use Object.hasOwn, NOT the `in` operator — `'toString' in obj`
+  // (and other prototype keys) is true, so `in` would let an unexpected action
+  // string slip the gate (Codex review). Object.hasOwn is own-key-only.
+  const GITHUB_LINK_LABEL: Record<string, string> = {
+    drift_issue: 'View issue →',
+    escalation: 'View issue →',
+    docs_pr: 'View PR →',
+    // `upgrade_pr` is NOT emitted by /recheck in this build (the upgrade
+    // workload is unimplemented — agent/main.py:1139), so no such decision
+    // currently persists a github.url. Listed for forward-compat only: it
+    // renders nothing today and lights up automatically if a future build
+    // starts persisting upgrade_pr decisions with a github.url.
+    upgrade_pr: 'View PR →',
+  };
+  function githubHref(d: Decision): string | null {
+    if (!Object.hasOwn(GITHUB_LINK_LABEL, d.action)) return null;
+    return safeGithubHref(d.github?.url);
+  }
+  function githubLabel(d: Decision): string {
+    return Object.hasOwn(GITHUB_LINK_LABEL, d.action)
+      ? GITHUB_LINK_LABEL[d.action]
+      : 'View on GitHub →';
   }
 
   // Render `created_at` as a compact, readable wall-clock string. Falls back to
@@ -106,6 +134,16 @@
                 href={iacHref}
                 target="_blank"
                 rel="noopener">{iacApproveLabel(d)}</a>
+            {/if}
+
+            {#if githubHref(d)}
+              {@const ghHref = githubHref(d)}
+              <a
+                class="past-approve-btn"
+                data-testid="decision-github-link"
+                href={ghHref}
+                target="_blank"
+                rel="noopener noreferrer">{githubLabel(d)}</a>
             {/if}
           </div>
         </li>
