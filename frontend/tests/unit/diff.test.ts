@@ -19,9 +19,12 @@ describe('displayDiffValue — mirrors agent/renderer.py:_format_value_cell', ()
     expect(displayDiffValue('API_TOKEN', null)).toBe('—'));
   it('preserves empty string (an explicitly-unset var is real drift)', () =>
     expect(displayDiffValue('LOG_LEVEL', '')).toBe(''));
-  it('redacts BEFORE clamping — a credentialed URL whose :pass@ is past 256 chars still redacts', () => {
-    const pad = 'a'.repeat(300);
-    const url = `https://user:secretpw@host.example/${pad}`; // userinfo within 256, but value > 256
+  it('redacts BEFORE clamping — a credentialed URL whose :pass@ sits past char 256 still redacts', () => {
+    // Push the userinfo (and so the `:pass@`) past the 256-char clamp. If we
+    // clamped before testing shouldRedact, the `@` would be sliced off and the
+    // CREDENTIALED_URL match would be lost — the value would leak. Redacting on
+    // the FULL value first is exactly what prevents that.
+    const url = `https://${'a'.repeat(300)}:secretpw@host.example/path`;
     expect(displayDiffValue('ENDPOINT', url)).toBe(REDACTED);
   });
   it('clamps a long NON-secret value to 256 chars + ellipsis', () => {
