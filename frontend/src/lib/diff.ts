@@ -28,7 +28,9 @@ export function displayDiffValue(name: string, value: string | null | undefined)
 }
 
 const CONTRACT_BADGE: Record<string, FieldBadge> = {
-  match: 'muted',
+  // `match` = live value matches the contract = no drift → 'ok' (green).
+  // `muted` (grey) is reserved for the unknown-status fallback below.
+  match: 'ok',
   present_allow_manual: 'ok',
   present_disallow_manual: 'danger',
   absent: 'warn',
@@ -62,6 +64,8 @@ export function diffRows(d: Decision | null | undefined): DiffRow[] {
     const status = typeof o.contract_status === 'string' ? o.contract_status : '';
     rows.push({
       name: clamp(name),
+      // displayDiffValue gets the RAW (unclamped) name so shouldRedact sees the
+      // full name text; clamp(name) above is display-only (redaction is not).
       expected: displayDiffValue(name, expected),
       live: displayDiffValue(name, live),
       status,

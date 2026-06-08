@@ -13,6 +13,8 @@ describe('displayDiffValue — mirrors agent/renderer.py:_format_value_cell', ()
     expect(displayDiffValue('ENDPOINT', 'https://a:b@h/x')).toBe(REDACTED));
   it('renders em-dash for a null value (not redacted)', () =>
     expect(displayDiffValue('LOG_LEVEL', null)).toBe('—'));
+  it('renders em-dash for an undefined value', () =>
+    expect(displayDiffValue('LOG_LEVEL', undefined)).toBe('—'));
   it('renders em-dash for a secret-named null value', () =>
     expect(displayDiffValue('API_TOKEN', null)).toBe('—'));
   it('preserves empty string (an explicitly-unset var is real drift)', () =>
@@ -58,6 +60,14 @@ describe('diffRows — safe rows from a decision', () => {
     const rows = diffRows(d);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toEqual({ name: 'OK', expected: '—', live: 'v', status: 'absent', badge: 'warn' });
+  });
+
+  it('gives an ok badge for a match (no-drift) contract_status', () => {
+    const d = {
+      decision_id: 'd', action: 'drift_issue',
+      diffs: [{ name: 'X', expected: 'a', live: 'a', contract_status: 'match' }],
+    } as unknown as Decision;
+    expect(diffRows(d)[0].badge).toBe('ok');
   });
 
   it('falls back to muted badge for an unknown contract_status', () => {
