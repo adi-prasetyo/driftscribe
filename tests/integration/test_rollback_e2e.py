@@ -249,6 +249,70 @@ def test_rollback_recheck_routes_through_worker_and_renders_approval_url(
     m_deny.assert_not_called()
 
 
+def _rollback_proposal_with_secret(secret_url: str) -> DecisionProposal:
+    """A ROLLBACK proposal whose live value is a credentialed URL quoted in the
+    rationale — so the source scrub (PR 2) has something real to redact in the
+    worker ``reason`` (``should_redact`` fires on the credentialed value)."""
+    return DecisionProposal(
+        action=DecisionAction.ROLLBACK,
+        env_diffs=[
+            EnvDiff(
+                name="PAYMENT_MODE",
+                expected="mock",
+                live=secret_url,
+                contract_status=ContractStatus.PRESENT_DISALLOW_MANUAL,
+                debug_config_value=None,
+                recent_pr_match=None,
+            )
+        ],
+        target_docs_file=None,
+        target_docs_section=None,
+        target_revision=_TARGET_REVISION,
+        rationale=(
+            f"PAYMENT_MODE drifted from 'mock' to {secret_url}; a previous "
+            f"revision ({_TARGET_REVISION}) was contract-compliant — proposing "
+            "rollback with operator approval."
+        ),
+        confidence=0.9,
+        requires_human_review=True,
+    )
+
+
+def test_rollback_reason_payload_is_scrubbed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PR 2 — the rollback worker ``reason`` is rendered on the approval page
+    (workers/rollback/main.py), so a secret quoted in the rationale must be
+    scrubbed at the source before the worker call. The benign-PAYMENT_MODE
+    assertion in test 1 is the 'unchanged' regression guard; this is the
+    'actually scrubs' case."""
+    monkeypatch.setenv("USE_ADK", "true")
+    get_settings.cache_clear()
+    _reset_state_for_tests()
+
+    secret_url = "https://admin:hunter2ROLL@svc.internal/api"
+    mock_run_agent = AsyncMock(return_value=_rollback_proposal_with_secret(secret_url))
+    with (
+        patch("agent.main._run_adk_agent", mock_run_agent),
+        patch("agent.main.worker_client.call") as m_call,
+        patch("agent.main.worker_client.call_execute"),
+        patch("agent.main.worker_client.call_deny"),
+    ):
+        m_call.side_effect = _make_dispatch(
+            live_env={"PAYMENT_MODE": secret_url, "FEATURE_NEW_CHECKOUT": "false"}
+        )
+        r = TestClient(app).post("/recheck")
+
+    assert r.status_code == 200, r.text
+    # The boundary that matters: the worker payload (worker stores + renders it).
+    rollback_calls = [c for c in m_call.call_args_list if c.args[0] == "rollback"]
+    assert len(rollback_calls) == 1
+    reason = rollback_calls[0].args[1]["reason"]
+    assert "hunter2ROLL" not in reason
+    assert secret_url not in reason
+    assert "PAYMENT_MODE" in reason          # var name survives
+    # And the /recheck response rationale is scrubbed too (the handler wrap).
+    assert secret_url not in r.json()["rationale"]
+
+
 def test_rollback_decision_does_not_execute_the_rollback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

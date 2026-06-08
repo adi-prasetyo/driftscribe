@@ -901,7 +901,12 @@ def _do_rollback(
             "rollback",
             {
                 "target_revision": proposal.target_revision,
-                "reason": proposal.rationale,
+                # Scrub before the worker stores it: the rollback worker renders
+                # `reason` on the operator approval page (workers/rollback), so a
+                # secret quoted in the rationale would leak there. The notification
+                # body (render_rollback_body below) is already scrubbed; this
+                # closes the `reason` boundary too. (PR 2)
+                "reason": scrub_rationale_text(proposal.rationale, proposal.env_diffs),
             },
         )
     except WorkerClientError as e:
