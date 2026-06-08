@@ -46,6 +46,8 @@ from agent.renderer import (
     render_drift_issue_body,
     render_escalation_issue_body,
     render_rollback_body,
+    scrub_decision_rationale,
+    scrub_rationale_text,
 )
 from agent.runbook_patcher import patch_runbook
 from agent.secret_guard import redact_event
@@ -1665,7 +1667,9 @@ def get_run(decision_id: str):
     d = get_state().get_decision(decision_id)
     if not d:
         raise HTTPException(status_code=404, detail="decision not found")
-    return d
+    # Serve-time rationale scrub (PR 2) — this read is UNAUTHENTICATED, so a
+    # secret quoted in the LLM rationale must not leak by decision_id.
+    return scrub_decision_rationale(d)
 
 
 @app.get("/decisions")
@@ -1841,7 +1845,12 @@ def get_trace(
     # freeze the null for the full 300s TTL. Re-reading on every
     # request — including cache hits — is cheap (single doc lookup) and
     # closes the staleness window.
-    decision = state.find_decision_by_trace_id(trace_id)
+    # Serve-time rationale scrub (PR 2): the persisted decision stores the LLM
+    # rationale RAW; scrub it here (the same boundary where events are
+    # redacted below) so a secret quoted in prose never reaches the SPA, the
+    # legacy template, or a raw API caller. This single var feeds BOTH the
+    # cache-hit return and the fresh return below.
+    decision = scrub_decision_rationale(state.find_decision_by_trace_id(trace_id))
 
     cached = _cache_get(trace_id)
     if cached is not None:
