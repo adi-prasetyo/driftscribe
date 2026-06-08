@@ -27,6 +27,17 @@ export const TRACE_ID = 'abcdef0123456789abcdef0123456789';
 // Exercises the historical-label + DecisionSummary + empty-timeline path.
 export const IAC_TRACE_ID = '88908d9b2d244dd6b8f952a6d799851f';
 
+// d-drift-1's trace_id (see decisionsResponse). Its /trace carries a decision
+// doc with env diffs so the smoke can exercise the DriftDiffCard.
+export const DRIFT_CARD_TRACE_ID = 'aa11bb22cc33dd44ee55ff6600112233';
+
+// Distinctive raw secret values — the smoke asserts NONE of these appear in the
+// DOM (the card redacts them; the rationale below never quotes them).
+export const SECRET_TOKEN_VALUE_OLD = 'sk-old-DEADBEEF0000';
+export const SECRET_TOKEN_VALUE_NEW = 'sk-new-CAFEBABE1111';
+export const SECRET_URL_VALUE_OLD = 'https://admin:hunter2OLD@svc.internal/api';
+export const SECRET_URL_VALUE_NEW = 'https://admin:s3cr3tNEW@svc.internal/api';
+
 // One SSE chat turn: meta → thought → tool_call → tool_result → done.
 // NB: mcp_call is intentionally ABSENT from the stream (it only arrives via the
 // /trace backfill — see TRACE_RESPONSE).
@@ -55,6 +66,32 @@ export function traceResponse(traceId = TRACE_ID) {
     decision: null,
     complete: true,
     fetched_from_cache: false,
+  };
+}
+
+// /trace for the d-drift-1 drift_issue: a decision doc carrying env diffs.
+// LOG_LEVEL is non-secret (values shown); API_TOKEN is secret by NAME; ENDPOINT
+// is secret by VALUE (credentialed URL) despite a non-secret name. The secret
+// raw values live ONLY in diffs[] (not the rationale), so the "no raw secret in
+// DOM" assertion isolates the CARD's client-side redaction (PR 1's concern).
+// The raw-rationale scrub is PR 2 (backend) and is not exercised here.
+export function driftCardTraceResponse() {
+  return {
+    trace_id: DRIFT_CARD_TRACE_ID,
+    events: [],
+    decision: {
+      decision_id: 'd-drift-1',
+      trace_id: DRIFT_CARD_TRACE_ID,
+      action: 'drift_issue',
+      rationale: 'Three variables drifted from the ops contract; secret values are redacted in the table below.',
+      github: { url: 'https://github.com/acme/ops/issues/99', dry_run: false },
+      diffs: [
+        { name: 'LOG_LEVEL', expected: 'info', live: 'debug', contract_status: 'present_allow_manual' },
+        { name: 'API_TOKEN', expected: SECRET_TOKEN_VALUE_OLD, live: SECRET_TOKEN_VALUE_NEW, contract_status: 'present_disallow_manual' },
+        { name: 'ENDPOINT', expected: SECRET_URL_VALUE_OLD, live: SECRET_URL_VALUE_NEW, contract_status: 'absent' },
+      ],
+    },
+    complete: true,
   };
 }
 
