@@ -329,7 +329,10 @@ export function displayDiffValue(name: string, value: string | null | undefined)
 }
 
 const CONTRACT_BADGE: Record<string, FieldBadge> = {
-  match: 'muted',
+  // `match` = live matches the contract = no drift → ok/green. `muted` (grey) is
+  // reserved for the `?? 'muted'` unrecognized-status fallback below, so the two
+  // stay visually distinct.
+  match: 'ok',
   present_allow_manual: 'ok',
   present_disallow_manual: 'danger',
   absent: 'warn',
