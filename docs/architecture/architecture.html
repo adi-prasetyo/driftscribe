@@ -5,102 +5,36 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>DriftScribe — Multi-Agent Architecture</title>
 <!--
-  Phase 17.D.2 architecture diagram. Self-contained: no external CSS/JS/fonts/images.
+  Self-contained architecture diagram. No external CSS / JS / fonts / images.
   Two-color palette: primary = ink (#1a1a1a + greys), accent = steel-blue (#3b6ea5).
   Two stacked diagrams, inline SVG, no animation, no script.
 
-  ============================================================
-  Geometry plan
-  ============================================================
+  Updated to the FOUR-workload reality (was a two-workload Phase-17 draft):
+    drift, upgrade, explore (read-only), provision (agent-authored IaC PRs).
+  Source of truth for every count/name below: agent/workloads/registry.py
+  (TOOL_REGISTRY = 16 entries, 14 wired + 2 reserved; WORKER_REGISTRY = 8),
+  agent/workloads/spec.py, the four workloads/<name>/workload.yaml manifests,
+  the worker source under workers/, and docs/architecture/iam-matrix.md.
 
-  Diagram 1 — Multi-workload trigger fan-in (viewBox 0 0 1240 780)
-    Top strip — Developer Knowledge MCP branch (above the coordinator):
-      MCP box       (400,  15, 440, 60)
-        "Developer Knowledge MCP" + endpoint + auth header
-      Vertical arrow MCP -> Coordinator at x=620 between y=75 and y=115
-        labelled "search/retrieve docs (per-workload)"
-    Column headers row at y=95.
-    Triggers (x=20, w=140):
-      Eventarc       (20, 115, 140, 56)  — server-pinned workload=drift
-      /chat          (20, 200, 140, 56)
-      /recheck       (20, 285, 140, 56)
-    Workload routing (x=210, w=150):
-      Drift          (210, 160, 150, 64)
-      Upgrade        (210, 250, 150, 64)
-      Eventarc -> Drift only (server-pinned).
-      /chat -> EITHER Drift OR Upgrade (workload= field).
-      /recheck -> Drift ONLY in this build; workload=upgrade returns
-        503 from agent/main.py (the drift /recheck post-agent plumbing
-        is drift-specific; workload-specific /recheck for upgrade is
-        post-Phase-17 work).
-    Coordinator (x=400, w=440, y=115, h=580):
-      box (400, 115, 440, 580)
-      title "driftscribe-agent" + sub "coordinator / public"
-      Layer 0 header: "Layer 0: 10-tool registry (workload-scoped via enabled_tool_names)"
-      Two stacked compartments inside the coordinator:
-        DRIFT compartment   y=190..400  (8 chips, 2x4)
-        UPGRADE compartment y=415..580  (6 chips, 2x3)
-      Approvals + Firestore footer at y=610..680
-    HITL diamond on Coordinator -> Rollback edge (drift only).
-    Workers (x=900, w=190): split into drift/upgrade/shared groups.
-      DRIFT WORKERS:
-        Reader         (900, 115, 190, 56)
-        Docs           (900, 185, 190, 56)
-        Rollback       (900, 255, 190, 56)   accent (HITL-gated)
-      UPGRADE WORKERS:
-        Upgrade Reader (900, 355, 190, 56)
-        Upgrade Docs   (900, 425, 190, 56)
-      SHARED:
-        Notifier       (900, 525, 190, 56)
-    Outcomes (x=1110, w=120):
-      Firestore             (1110, 115, 120, 56)
-      GitHub PR (docs)      (1110, 185, 120, 56)
-      Cloud Run flip        (1110, 255, 120, 56)
-      GitHub PR (upgrade)   (1110, 425, 120, 56)
-      Webhook               (1110, 525, 120, 56)
-    Arrows:
-      Triggers -> Workload routing
-        Eventarc -> Drift (solid; "workload=drift (server-pinned)")
-        /chat -> Drift AND Upgrade (one solid line per workload)
-        /recheck -> Drift ONLY in this build (workload=upgrade returns
-          503 from agent/main.py; workload-specific /recheck pipeline
-          for upgrade is post-Phase-17 work)
-      Workload routing -> Coordinator left edge (POST /chat workload=<name>)
-      Coordinator drift compartment -> drift workers (R/D/RB) + Notifier
-      Coordinator upgrade compartment -> upgrade workers (UR/UD) + Notifier
-      Coordinator -> Rollback passes through HITL diamond
-      Coordinator -> Firestore (top-curved path, "every decision persisted")
-      Each worker -> its outcome on the right
-      MCP <- -> Coordinator (annotated arrow at top)
-    Legend strip at bottom y=715..775 (includes the coordinator&rarr;worker
-    auth-pattern note line at y=762).
+  Diagram 1 — Multi-workload trigger fan-in & gated apply (viewBox 0 0 1320 1130)
+    Top strip: Developer Knowledge MCP <-> Coordinator (coordinator-only).
+    Columns: Triggers | 4-way Workload routing | Coordinator | Workers | Outcomes.
+    Coordinator holds four stacked Layer-0 tool compartments (drift 8, upgrade 8,
+    explore 6 read-only, provision 6). Mutation-capable tool chips carry an accent
+    tint; read-only chips are grey — so explore's "all grey" visually proves it is
+    read-only. Workers grouped drift / upgrade / infra (read+author) / shared.
+    A full-width bottom strip draws the DOWNSTREAM apply pipeline
+    (merged iac/ PR -> /iac-approvals HITL -> tofu-apply -> GCP infra), drawn
+    detached from the coordinator's direct worker calls because tofu-apply is
+    NOT a coordinator worker.
 
-  Diagram 2 — Layered safety boundary (viewBox 0 0 1000 1080)
-    Seven rows of nested boxes (Coordinator + 6 workers).
-    Each row 130 tall, gap 10:
-      Coordinator      y=  60..190
-      Reader           y= 200..330
-      Docs             y= 340..470
-      Rollback         y= 480..610
-      Upgrade Reader   y= 620..750
-      Upgrade Docs     y= 760..890
-      Notifier         y= 900..1030
-    Per row:
-      Outer dashed rect (IAM scope)   x=40,  w=920, dashed stroke
-      Inner solid rect  (policy)      x=380, w=560, accent stroke
-      Service label on the left band (between x=40 and x=380)
-      IAM details listed top-of-row inside the dashed outer
-      Policy details inside the solid inner
-    The Coordinator inner box is intentionally EMPTY and labelled
-    "no mutate caps on payment-demo" to highlight negative space, plus
-    a Phase 17 Layer 0 note: "MCP tools attached at coordinator only,
-    scoped per workload via enabled_tool_names".
-    Upgrade-Reader / Upgrade-Docs policy rows show env-pinned
-    UPGRADE_TARGET_REPO + lockfile path regex + (docs) post-LLM validator.
-    Each worker row carries a small "no MCP" badge under the service label
-    to reinforce that MCP is coordinator-only.
-    HITL diamond on the Coordinator -> Rollback boundary stays in the
-    left gutter, vertically positioned at the row gap above Rollback.
+  Diagram 2 — Layered safety boundary (viewBox 0 0 1000 1490)
+    Ten service rows: coordinator + the eight workers + the downstream tofu-apply
+    (fenced below a divider, "outside the coordinator's reach"). Each row: outer
+    dashed box (Layer 1 IAM scope) wrapping an inner solid box (Layer 2 hardcoded
+    payload-intent policy), a service label band, and a "no MCP" badge. The
+    Coordinator inner box is intentionally empty (no mutate caps on payment-demo).
+    HITL diamonds gate the drift rollback (left gutter) and the tofu-apply path.
 -->
 <style>
   :root {
@@ -169,7 +103,6 @@
     height: auto;
     max-width: 100%;
   }
-  /* SVG inherits these via attribute defaults set on the root <svg> */
   svg text {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     fill: var(--ink);
@@ -193,26 +126,24 @@
 <main>
   <header>
     <h1>DriftScribe — Multi-Agent Architecture</h1>
-    <p>Workload-aware coordinator + six execute-only workers on Cloud Run, with Google's Developer Knowledge MCP attached at the coordinator only. Two workloads ship today: <strong>drift</strong> (Cloud Run env vs ops contract) and <strong>upgrade</strong> (npm <code>package.json</code> vs GitHub Advisory DB). Layer-0 tool registry is workload-scoped via <code>enabled_tool_names</code>; per-worker hardcoded policies enforce Layer 2; HITL gates the drift rollback path. See <code>docs/architecture/multi-agent-design.md</code> for the full prose.</p>
+    <p>Workload-aware coordinator + eight execute-only workers on Cloud Run, with Google's Developer Knowledge MCP attached at the coordinator only. <strong>Four</strong> workloads ship today: <strong>drift</strong> (Cloud Run env vs ops contract), <strong>upgrade</strong> (npm <code>package.json</code> vs GitHub Advisory DB), <strong>explore</strong> (strictly read-only investigation), and <strong>provision</strong> (agent-authored OpenTofu PRs). Layer-0 tool registry is workload-scoped via <code>enabled_tool_names</code>; per-worker hardcoded policies enforce Layer&nbsp;2; HITL gates the drift rollback and the downstream infra apply. The sole infra mutator, <code>tofu-apply</code>, runs downstream of a plan-bound approval and is <em>not</em> coordinator-invokable. See <code>docs/architecture/multi-agent-design.md</code> for the full prose.</p>
   </header>
 
   <!--
     ================================================================
-    Diagram 1 — Trigger fan-in
+    Diagram 1 — Trigger fan-in & gated apply
     ================================================================
   -->
   <section>
-    <h2>1. Multi-workload trigger fan-in</h2>
-    <p class="caption">Three trigger sources fan in to a workload routing layer (Drift / Upgrade), which selects the workload-scoped agent inside the Coordinator. Each workload sees only its own per-workload tool inventory (Layer 0 capability bound). The Developer Knowledge MCP attaches at the Coordinator only &mdash; workers never reason and never query docs. The HITL diamond gates the Coordinator&rarr;Rollback edge (drift only); rollback <code>/execute</code> only fires after an operator approves at <code>/approvals/{id}</code>. <code>Eventarc</code> hardcodes <code>workload=drift</code> server-side; <code>/chat</code> routes by the request's <code>workload</code> field (drift or upgrade); <code>/recheck</code> serves drift only in this build (<code>workload=upgrade</code> returns 503 &mdash; a workload-specific <code>/recheck</code> pipeline for upgrade is post-Phase-17).</p>
+    <h2>1. Multi-workload trigger fan-in &amp; gated apply</h2>
+    <p class="caption">Three trigger sources fan in to a four-way workload router (drift / upgrade / explore / provision), selecting the workload-scoped agent inside the Coordinator. Each workload sees only its own Layer-0 tool slice &mdash; the two chat-only workloads make this vivid: <strong>explore</strong> carries <em>zero</em> mutation tools, <strong>provision</strong> exactly one (<code>provision_open_infra_pr</code> &rarr; opens an <code>iac/</code> PR, never applies). The Developer Knowledge MCP attaches at the Coordinator only. <code>Eventarc</code> hardcodes <code>workload=drift</code>; <code>/chat</code> routes by the request's <code>workload</code> field (any of the four); <code>/recheck</code> serves drift only (<code>upgrade</code> &rarr; 503; explore/provision are chat-only). HITL diamonds gate the drift rollback and &mdash; downstream, outside the coordinator's reach &mdash; the <code>tofu-apply</code> infra apply behind <code>/iac-approvals/{pr}</code>.</p>
     <div class="figure">
-      <svg class="diagram" viewBox="0 0 1240 780" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Multi-workload trigger fan-in diagram: Eventarc, /chat and /recheck feed a workload routing layer (Drift / Upgrade) which routes to the Coordinator. The Coordinator hosts two per-workload tool inventories and an attached Developer Knowledge MCP. Drift workers (Reader, Docs, Rollback) sit alongside upgrade workers (Upgrade Reader, Upgrade Docs) and a shared Notifier. The Rollback edge passes through a Human-In-The-Loop approval diamond.">
+      <svg class="diagram" viewBox="0 0 1320 1130" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Multi-workload trigger fan-in diagram. Eventarc, /chat and /recheck feed a four-way workload router (Drift, Upgrade, Explore, Provision) which routes to the Coordinator. The Coordinator hosts four per-workload Layer-0 tool compartments and an attached Developer Knowledge MCP. Drift workers (reader, docs, rollback), upgrade workers (upgrade-reader, upgrade-docs), infra workers (infra-reader, tofu-editor) and a shared notifier sit to the right. The drift rollback edge passes through a Human-In-The-Loop approval diamond. A separate bottom strip shows the downstream apply pipeline: a merged iac/ PR is approved at /iac-approvals and applied by tofu-apply, the sole infra mutator, which the coordinator cannot invoke.">
         <defs>
-          <!-- Standard arrowhead (ink) -->
           <marker id="arrow-ink" viewBox="0 0 10 10" refX="9" refY="5"
                   markerWidth="7" markerHeight="7" orient="auto-start-reverse">
             <path d="M0,0 L10,5 L0,10 z" fill="#1a1a1a"/>
           </marker>
-          <!-- Accent arrowhead for HITL-gated path and MCP branch -->
           <marker id="arrow-accent" viewBox="0 0 10 10" refX="9" refY="5"
                   markerWidth="7" markerHeight="7" orient="auto-start-reverse">
             <path d="M0,0 L10,5 L0,10 z" fill="#3b6ea5"/>
@@ -220,264 +151,309 @@
         </defs>
 
         <!-- ===== Developer Knowledge MCP branch (top strip) ===== -->
-        <rect x="400" y="15" width="440" height="60" rx="4" fill="#fff" stroke="#3b6ea5" stroke-width="1.4" stroke-dasharray="4 3"/>
-        <text x="620" y="36" text-anchor="middle" font-size="13" font-weight="700" fill="#3b6ea5">Developer Knowledge MCP</text>
-        <text x="620" y="52" text-anchor="middle" font-size="10" fill="#555">https://developerknowledge.googleapis.com/mcp &middot; X-Goog-Api-Key</text>
-        <text x="620" y="66" text-anchor="middle" font-size="10" fill="#555">tools: search_documents, get_documents &middot; 10s timeout &middot; 60s cache</text>
-        <!-- Two-way arrow MCP <-> Coordinator -->
-        <line x1="620" y1="75" x2="620" y2="113" stroke="#3b6ea5" stroke-width="1.4" marker-start="url(#arrow-accent)" marker-end="url(#arrow-accent)"/>
-        <text x="630" y="98" font-size="10" fill="#3b6ea5">search/retrieve docs (per-workload)</text>
+        <rect x="410" y="14" width="450" height="58" rx="4" fill="#fff" stroke="#3b6ea5" stroke-width="1.4" stroke-dasharray="4 3"/>
+        <text x="635" y="34" text-anchor="middle" font-size="13" font-weight="700" fill="#3b6ea5">Developer Knowledge MCP</text>
+        <text x="635" y="50" text-anchor="middle" font-size="10" fill="#555">https://developerknowledge.googleapis.com/mcp &middot; X-Goog-Api-Key</text>
+        <text x="635" y="64" text-anchor="middle" font-size="10" fill="#555">tools: search_documents, get_documents &middot; coordinator-only</text>
+        <line x1="635" y1="72" x2="635" y2="116" stroke="#3b6ea5" stroke-width="1.4" marker-start="url(#arrow-accent)" marker-end="url(#arrow-accent)"/>
+        <text x="645" y="98" font-size="10" fill="#3b6ea5">search/retrieve docs (per-workload)</text>
 
-        <!-- Column headers -->
-        <text x="90"   y="95" text-anchor="middle" font-size="12" fill="#555" font-weight="600">Triggers</text>
-        <text x="285"  y="95" text-anchor="middle" font-size="12" fill="#555" font-weight="600">Workload routing</text>
-        <text x="620"  y="95" text-anchor="middle" font-size="12" fill="#555" font-weight="600">Coordinator (public)</text>
-        <text x="995"  y="95" text-anchor="middle" font-size="12" fill="#555" font-weight="600">Workers (private)</text>
-        <text x="1170" y="95" text-anchor="middle" font-size="12" fill="#555" font-weight="600">Outcomes</text>
+        <!-- ===== Column headers ===== -->
+        <text x="90"   y="104" text-anchor="middle" font-size="12" fill="#555" font-weight="600">Triggers</text>
+        <text x="275"  y="104" text-anchor="middle" font-size="12" fill="#555" font-weight="600">Workload routing</text>
+        <text x="635"  y="104" text-anchor="middle" font-size="12" fill="#555" font-weight="600">Coordinator (public)</text>
+        <text x="1027" y="104" text-anchor="middle" font-size="12" fill="#555" font-weight="600">Workers (private)</text>
+        <text x="1237" y="104" text-anchor="middle" font-size="12" fill="#555" font-weight="600">Outcomes</text>
 
         <!-- ===== Triggers ===== -->
-        <!-- Eventarc -->
-        <rect x="20" y="115" width="140" height="56" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1.2"/>
-        <text x="90" y="138" text-anchor="middle" font-size="13" font-weight="600">Eventarc</text>
-        <text x="90" y="156" text-anchor="middle" font-size="11" fill="#555">audit-log on payment-demo</text>
+        <rect x="20" y="120" width="140" height="50" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1.2"/>
+        <text x="90" y="140" text-anchor="middle" font-size="13" font-weight="600">Eventarc</text>
+        <text x="90" y="156" text-anchor="middle" font-size="10" fill="#555">audit-log on payment-demo</text>
 
-        <!-- /chat -->
-        <rect x="20" y="200" width="140" height="56" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1.2"/>
-        <text x="90" y="223" text-anchor="middle" font-size="13" font-weight="600">/chat</text>
-        <text x="90" y="241" text-anchor="middle" font-size="11" fill="#555">NL operator request</text>
+        <rect x="20" y="195" width="140" height="50" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1.2"/>
+        <text x="90" y="215" text-anchor="middle" font-size="13" font-weight="600">/chat</text>
+        <text x="90" y="231" text-anchor="middle" font-size="10" fill="#555">NL operator request</text>
 
-        <!-- /recheck -->
-        <rect x="20" y="285" width="140" height="56" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1.2"/>
-        <text x="90" y="308" text-anchor="middle" font-size="13" font-weight="600">/recheck</text>
-        <text x="90" y="326" text-anchor="middle" font-size="11" fill="#555">manual workload check</text>
+        <rect x="20" y="270" width="140" height="50" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1.2"/>
+        <text x="90" y="290" text-anchor="middle" font-size="13" font-weight="600">/recheck</text>
+        <text x="90" y="306" text-anchor="middle" font-size="10" fill="#555">manual drift check</text>
 
-        <!-- ===== Workload routing layer ===== -->
-        <!-- Drift -->
-        <rect x="210" y="160" width="150" height="64" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1.2"/>
-        <text x="285" y="184" text-anchor="middle" font-size="13" font-weight="600">Drift</text>
-        <text x="285" y="201" text-anchor="middle" font-size="10" fill="#555">workload=drift</text>
-        <text x="285" y="215" text-anchor="middle" font-size="10" fill="#555">cloud_run_env</text>
+        <!-- ===== Workload routing layer (4-way) ===== -->
+        <rect x="200" y="120" width="150" height="52" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1.2"/>
+        <text x="275" y="141" text-anchor="middle" font-size="13" font-weight="600">Drift</text>
+        <text x="275" y="160" text-anchor="middle" font-size="10" fill="#555">workload=drift &middot; cloud_run_env</text>
 
-        <!-- Upgrade -->
-        <rect x="210" y="250" width="150" height="64" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1.2"/>
-        <text x="285" y="274" text-anchor="middle" font-size="13" font-weight="600">Upgrade</text>
-        <text x="285" y="291" text-anchor="middle" font-size="10" fill="#555">workload=upgrade</text>
-        <text x="285" y="305" text-anchor="middle" font-size="10" fill="#555">repo_lockfile</text>
+        <rect x="200" y="200" width="150" height="52" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1.2"/>
+        <text x="275" y="221" text-anchor="middle" font-size="13" font-weight="600">Upgrade</text>
+        <text x="275" y="240" text-anchor="middle" font-size="10" fill="#555">workload=upgrade &middot; repo_lockfile</text>
+
+        <rect x="200" y="280" width="150" height="52" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1.2"/>
+        <text x="275" y="301" text-anchor="middle" font-size="13" font-weight="600">Explore</text>
+        <text x="275" y="320" text-anchor="middle" font-size="10" fill="#555">read-only &middot; chat-only</text>
+
+        <rect x="200" y="360" width="150" height="52" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1.2"/>
+        <text x="275" y="381" text-anchor="middle" font-size="13" font-weight="600">Provision</text>
+        <text x="275" y="400" text-anchor="middle" font-size="10" fill="#555">infra edits &middot; chat-only</text>
 
         <!-- Arrows: Triggers -> Workload routing -->
-        <!-- Eventarc -> Drift (server-pinned) -->
-        <line x1="160" y1="143" x2="208" y2="180" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
-        <text x="166" y="155" font-size="9" fill="#555">workload=drift (server-pinned)</text>
+        <line x1="160" y1="145" x2="198" y2="140" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
+        <text x="120" y="116" font-size="9" fill="#555">drift (server-pinned)</text>
+        <line x1="160" y1="212" x2="198" y2="150" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
+        <line x1="160" y1="216" x2="198" y2="222" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
+        <line x1="160" y1="220" x2="198" y2="302" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
+        <line x1="160" y1="224" x2="198" y2="382" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
+        <line x1="160" y1="290" x2="198" y2="160" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
+        <text x="168" y="270" font-size="9" fill="#555">/recheck: drift only (upgrade&rarr;503)</text>
 
-        <!-- /chat -> Drift + Upgrade -->
-        <line x1="160" y1="222" x2="208" y2="200" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
-        <line x1="160" y1="232" x2="208" y2="270" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
-
-        <!-- /recheck -> Drift ONLY in this build.
-             workload=upgrade returns 503 from agent/main.py — the
-             drift /recheck post-agent plumbing is drift-specific.
-             Workload-specific /recheck for upgrade is post-Phase-17. -->
-        <line x1="160" y1="304" x2="208" y2="218" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
-
-        <!-- Arrows: Workload routing -> Coordinator left edge (x=400) -->
-        <line x1="360" y1="192" x2="398" y2="220" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
-        <line x1="360" y1="282" x2="398" y2="445" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
+        <!-- Arrows: Workload routing -> Coordinator left edge -->
+        <line x1="350" y1="141" x2="398" y2="250" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
+        <line x1="350" y1="221" x2="398" y2="400" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
+        <line x1="350" y1="301" x2="398" y2="520" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
+        <line x1="350" y1="381" x2="398" y2="640" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
 
         <!-- ===== Coordinator box ===== -->
-        <rect x="400" y="115" width="440" height="580" rx="4" fill="#fff" stroke="#1a1a1a" stroke-width="1.6"/>
-        <text x="620" y="141" text-anchor="middle" font-size="14" font-weight="700">driftscribe-agent</text>
-        <text x="620" y="159" text-anchor="middle" font-size="11" fill="#555">coordinator / public &middot; ADK runner per request</text>
+        <rect x="400" y="118" width="470" height="802" rx="4" fill="#fff" stroke="#1a1a1a" stroke-width="1.6"/>
+        <text x="635" y="144" text-anchor="middle" font-size="14" font-weight="700">driftscribe-agent</text>
+        <text x="635" y="162" text-anchor="middle" font-size="11" fill="#555">coordinator / public &middot; ADK runner per request</text>
+        <line x1="416" y1="176" x2="854" y2="176" stroke="#999" stroke-width="0.7"/>
+        <text x="635" y="193" text-anchor="middle" font-size="10.5" font-weight="600" fill="#3b6ea5">Layer 0: 14 wired tools (registry: 16, incl. 2 reserved) &mdash; each workload sees only its slice</text>
 
-        <!-- Layer 0 header -->
-        <line x1="416" y1="172" x2="824" y2="172" stroke="#999" stroke-width="0.7"/>
-        <text x="620" y="190" text-anchor="middle" font-size="11" font-weight="600" fill="#3b6ea5">Layer 0: 10-tool registry, workload-scoped via enabled_tool_names</text>
-
-        <!-- DRIFT compartment header -->
-        <text x="416" y="212" font-size="11" font-weight="700">Drift compartment</text>
-        <text x="824" y="212" text-anchor="end" font-size="10" fill="#555">8 tools (drift YAML)</text>
-
-        <!-- Drift tool chips: 2 cols x 4 rows -->
+        <!-- Drift compartment (8 tools) -->
+        <text x="414" y="212" font-size="11" font-weight="700">Drift compartment</text>
+        <text x="854" y="212" text-anchor="end" font-size="10" fill="#555">8 tools &middot; drift</text>
         <g font-size="10" fill="#1a1a1a">
-          <rect x="416" y="222" width="200" height="22" rx="2" fill="#fff" stroke="#3b6ea5" stroke-width="1"/>
-          <text x="516" y="237" text-anchor="middle">drift_read_live_env</text>
-
-          <rect x="624" y="222" width="200" height="22" rx="2" fill="#fff" stroke="#3b6ea5" stroke-width="1"/>
-          <text x="724" y="237" text-anchor="middle">drift_patch_docs</text>
-
-          <rect x="416" y="250" width="200" height="22" rx="2" fill="#fff" stroke="#3b6ea5" stroke-width="1"/>
-          <text x="516" y="265" text-anchor="middle">drift_propose_rollback</text>
-
-          <rect x="624" y="250" width="200" height="22" rx="2" fill="#fff" stroke="#3b6ea5" stroke-width="1"/>
-          <text x="724" y="265" text-anchor="middle">notify</text>
-
-          <rect x="416" y="278" width="200" height="22" rx="2" fill="#fff" stroke="#3b6ea5" stroke-width="1"/>
-          <text x="516" y="293" text-anchor="middle">load_contract</text>
-
-          <rect x="624" y="278" width="200" height="22" rx="2" fill="#fff" stroke="#3b6ea5" stroke-width="1"/>
-          <text x="724" y="293" text-anchor="middle">search_recent_prs</text>
-
-          <rect x="416" y="306" width="200" height="22" rx="2" fill="#fff" stroke="#3b6ea5" stroke-width="1"/>
-          <text x="516" y="321" text-anchor="middle">search_developer_docs</text>
-
-          <rect x="624" y="306" width="200" height="22" rx="2" fill="#fff" stroke="#3b6ea5" stroke-width="1"/>
-          <text x="724" y="321" text-anchor="middle">retrieve_developer_doc</text>
+          <rect x="414" y="218" width="206" height="20" rx="2" fill="#fff"    stroke="#bdbdbd" stroke-width="1"/>
+          <text x="517" y="232" text-anchor="middle">drift_read_live_env</text>
+          <rect x="626" y="218" width="206" height="20" rx="2" fill="#eef4fa" stroke="#3b6ea5" stroke-width="1.3"/>
+          <text x="729" y="232" text-anchor="middle">drift_patch_docs</text>
+          <rect x="414" y="243" width="206" height="20" rx="2" fill="#eef4fa" stroke="#3b6ea5" stroke-width="1.3"/>
+          <text x="517" y="257" text-anchor="middle">drift_propose_rollback</text>
+          <rect x="626" y="243" width="206" height="20" rx="2" fill="#fff"    stroke="#bdbdbd" stroke-width="1"/>
+          <text x="729" y="257" text-anchor="middle">notify</text>
+          <rect x="414" y="268" width="206" height="20" rx="2" fill="#fff"    stroke="#bdbdbd" stroke-width="1"/>
+          <text x="517" y="282" text-anchor="middle">load_contract</text>
+          <rect x="626" y="268" width="206" height="20" rx="2" fill="#fff"    stroke="#bdbdbd" stroke-width="1"/>
+          <text x="729" y="282" text-anchor="middle">search_recent_prs</text>
+          <rect x="414" y="293" width="206" height="20" rx="2" fill="#fff"    stroke="#bdbdbd" stroke-width="1"/>
+          <text x="517" y="307" text-anchor="middle">search_developer_docs</text>
+          <rect x="626" y="293" width="206" height="20" rx="2" fill="#fff"    stroke="#bdbdbd" stroke-width="1"/>
+          <text x="729" y="307" text-anchor="middle">retrieve_developer_doc</text>
         </g>
+        <text x="635" y="331" text-anchor="middle" font-size="10" fill="#555" font-style="italic">no upgrade_/provision_ tools surfaced &mdash; drift slice only</text>
+        <line x1="416" y1="341" x2="854" y2="341" stroke="#999" stroke-width="0.7" stroke-dasharray="2 3"/>
 
-        <!-- Drift compartment caption (negative space) -->
-        <text x="620" y="349" text-anchor="middle" font-size="10" fill="#555" font-style="italic">no upgrade_* tools surfaced when workload=drift</text>
-
-        <!-- Compartment separator -->
-        <line x1="416" y1="365" x2="824" y2="365" stroke="#999" stroke-width="0.7" stroke-dasharray="2 3"/>
-
-        <!-- UPGRADE compartment header -->
-        <text x="416" y="385" font-size="11" font-weight="700">Upgrade compartment</text>
-        <text x="824" y="385" text-anchor="end" font-size="10" fill="#555">6 tools (upgrade YAML)</text>
-
-        <!-- Upgrade tool chips: 2 cols x 3 rows -->
+        <!-- Upgrade compartment (8 tools) -->
+        <text x="414" y="358" font-size="11" font-weight="700">Upgrade compartment</text>
+        <text x="854" y="358" text-anchor="end" font-size="10" fill="#555">8 tools &middot; upgrade</text>
         <g font-size="10" fill="#1a1a1a">
-          <rect x="416" y="395" width="200" height="22" rx="2" fill="#fff" stroke="#3b6ea5" stroke-width="1"/>
-          <text x="516" y="410" text-anchor="middle">upgrade_read_dependencies</text>
-
-          <rect x="624" y="395" width="200" height="22" rx="2" fill="#fff" stroke="#3b6ea5" stroke-width="1"/>
-          <text x="724" y="410" text-anchor="middle">upgrade_propose_pr</text>
-
-          <rect x="416" y="423" width="200" height="22" rx="2" fill="#fff" stroke="#3b6ea5" stroke-width="1"/>
-          <text x="516" y="438" text-anchor="middle">notify</text>
-
-          <rect x="624" y="423" width="200" height="22" rx="2" fill="#fff" stroke="#3b6ea5" stroke-width="1"/>
-          <text x="724" y="438" text-anchor="middle">search_recent_prs</text>
-
-          <rect x="416" y="451" width="200" height="22" rx="2" fill="#fff" stroke="#3b6ea5" stroke-width="1"/>
-          <text x="516" y="466" text-anchor="middle">search_developer_docs</text>
-
-          <rect x="624" y="451" width="200" height="22" rx="2" fill="#fff" stroke="#3b6ea5" stroke-width="1"/>
-          <text x="724" y="466" text-anchor="middle">retrieve_developer_doc</text>
+          <rect x="414" y="364" width="206" height="20" rx="2" fill="#fff"    stroke="#bdbdbd" stroke-width="1"/>
+          <text x="517" y="378" text-anchor="middle">upgrade_read_dependencies</text>
+          <rect x="626" y="364" width="206" height="20" rx="2" fill="#eef4fa" stroke="#3b6ea5" stroke-width="1.3"/>
+          <text x="729" y="378" text-anchor="middle">upgrade_propose_pr</text>
+          <rect x="414" y="389" width="206" height="20" rx="2" fill="#eef4fa" stroke="#3b6ea5" stroke-width="1.3"/>
+          <text x="517" y="403" text-anchor="middle">upgrade_close_pr</text>
+          <rect x="626" y="389" width="206" height="20" rx="2" fill="#eef4fa" stroke="#3b6ea5" stroke-width="1.3"/>
+          <text x="729" y="403" text-anchor="middle">upgrade_merge_pr</text>
+          <rect x="414" y="414" width="206" height="20" rx="2" fill="#fff"    stroke="#bdbdbd" stroke-width="1"/>
+          <text x="517" y="428" text-anchor="middle">notify</text>
+          <rect x="626" y="414" width="206" height="20" rx="2" fill="#fff"    stroke="#bdbdbd" stroke-width="1"/>
+          <text x="729" y="428" text-anchor="middle">search_recent_prs</text>
+          <rect x="414" y="439" width="206" height="20" rx="2" fill="#fff"    stroke="#bdbdbd" stroke-width="1"/>
+          <text x="517" y="453" text-anchor="middle">search_developer_docs</text>
+          <rect x="626" y="439" width="206" height="20" rx="2" fill="#fff"    stroke="#bdbdbd" stroke-width="1"/>
+          <text x="729" y="453" text-anchor="middle">retrieve_developer_doc</text>
         </g>
+        <text x="635" y="477" text-anchor="middle" font-size="10" fill="#555" font-style="italic">PR lifecycle propose &rarr; close/merge &middot; post-LLM validator gates every write</text>
+        <line x1="416" y1="487" x2="854" y2="487" stroke="#999" stroke-width="0.7" stroke-dasharray="2 3"/>
 
-        <!-- Upgrade compartment caption -->
-        <text x="620" y="494" text-anchor="middle" font-size="10" fill="#555" font-style="italic">no drift_* tools, no load_contract (post-LLM validator owns policy)</text>
+        <!-- Explore compartment (6 tools, read-only) -->
+        <text x="414" y="504" font-size="11" font-weight="700">Explore compartment</text>
+        <text x="854" y="504" text-anchor="end" font-size="10" fill="#555">6 tools &middot; explore (read-only)</text>
+        <g font-size="10" fill="#1a1a1a">
+          <rect x="414" y="510" width="206" height="20" rx="2" fill="#fff" stroke="#bdbdbd" stroke-width="1"/>
+          <text x="517" y="524" text-anchor="middle">drift_read_live_env</text>
+          <rect x="626" y="510" width="206" height="20" rx="2" fill="#fff" stroke="#bdbdbd" stroke-width="1"/>
+          <text x="729" y="524" text-anchor="middle">upgrade_read_dependencies</text>
+          <rect x="414" y="535" width="206" height="20" rx="2" fill="#fff" stroke="#bdbdbd" stroke-width="1"/>
+          <text x="517" y="549" text-anchor="middle">read_project_inventory</text>
+          <rect x="626" y="535" width="206" height="20" rx="2" fill="#fff" stroke="#bdbdbd" stroke-width="1"/>
+          <text x="729" y="549" text-anchor="middle">load_contract</text>
+          <rect x="414" y="560" width="206" height="20" rx="2" fill="#fff" stroke="#bdbdbd" stroke-width="1"/>
+          <text x="517" y="574" text-anchor="middle">search_developer_docs</text>
+          <rect x="626" y="560" width="206" height="20" rx="2" fill="#fff" stroke="#bdbdbd" stroke-width="1"/>
+          <text x="729" y="574" text-anchor="middle">retrieve_developer_doc</text>
+        </g>
+        <text x="635" y="598" text-anchor="middle" font-size="10" fill="#3b6ea5" font-style="italic">ZERO mutation tools &mdash; no notify, no PR, no rollback (disjointness pinned by tests)</text>
+        <line x1="416" y1="608" x2="854" y2="608" stroke="#999" stroke-width="0.7" stroke-dasharray="2 3"/>
 
-        <!-- Cross-workload negative-space caption -->
-        <text x="620" y="514" text-anchor="middle" font-size="10" fill="#555" font-style="italic">no execute_shell, no arbitrary_http &middot; tool intersection = {notify, search_recent_prs, MCP*}</text>
+        <!-- Provision compartment (6 tools) -->
+        <text x="414" y="625" font-size="11" font-weight="700">Provision compartment</text>
+        <text x="854" y="625" text-anchor="end" font-size="10" fill="#555">6 tools &middot; provision</text>
+        <g font-size="10" fill="#1a1a1a">
+          <rect x="414" y="631" width="206" height="20" rx="2" fill="#fff"    stroke="#bdbdbd" stroke-width="1"/>
+          <text x="517" y="645" text-anchor="middle">drift_read_live_env</text>
+          <rect x="626" y="631" width="206" height="20" rx="2" fill="#fff"    stroke="#bdbdbd" stroke-width="1"/>
+          <text x="729" y="645" text-anchor="middle">read_project_inventory</text>
+          <rect x="414" y="656" width="206" height="20" rx="2" fill="#fff"    stroke="#bdbdbd" stroke-width="1"/>
+          <text x="517" y="670" text-anchor="middle">load_contract</text>
+          <rect x="626" y="656" width="206" height="20" rx="2" fill="#fff"    stroke="#bdbdbd" stroke-width="1"/>
+          <text x="729" y="670" text-anchor="middle">search_developer_docs</text>
+          <rect x="414" y="681" width="206" height="20" rx="2" fill="#fff"    stroke="#bdbdbd" stroke-width="1"/>
+          <text x="517" y="695" text-anchor="middle">retrieve_developer_doc</text>
+          <rect x="626" y="681" width="206" height="20" rx="2" fill="#eef4fa" stroke="#3b6ea5" stroke-width="1.3"/>
+          <text x="729" y="695" text-anchor="middle">provision_open_infra_pr</text>
+        </g>
+        <text x="635" y="719" text-anchor="middle" font-size="10" fill="#555" font-style="italic">5 read + 1 mutation: provision_open_infra_pr opens ONE iac/ PR &mdash; never applies live infra</text>
+        <line x1="416" y1="731" x2="854" y2="731" stroke="#999" stroke-width="0.7"/>
 
-        <!-- Approvals endpoint (HITL UI) — drift only -->
-        <line x1="416" y1="532" x2="824" y2="532" stroke="#999" stroke-width="0.7"/>
-        <text x="620" y="550" text-anchor="middle" font-size="11" font-weight="600">/approvals/{id} (drift rollback only)</text>
-        <text x="620" y="566" text-anchor="middle" font-size="10" fill="#555">renders HITL page, verifies HMAC token</text>
+        <!-- Cross-workload negative space -->
+        <text x="635" y="748" text-anchor="middle" font-size="10" fill="#555" font-style="italic">no execute_shell &middot; no arbitrary_http &middot; capability = the workload's slice, not the whole registry</text>
+        <line x1="416" y1="760" x2="854" y2="760" stroke="#999" stroke-width="0.7"/>
 
-        <!-- Firestore ledger note -->
-        <line x1="416" y1="582" x2="824" y2="582" stroke="#999" stroke-width="0.7"/>
-        <text x="620" y="600" text-anchor="middle" font-size="11" font-weight="600">decisions ledger</text>
-        <text x="620" y="616" text-anchor="middle" font-size="10" fill="#555">every step -&gt; Firestore (workload-tagged)</text>
+        <!-- HITL approval surfaces -->
+        <text x="635" y="776" text-anchor="middle" font-size="11" font-weight="600">HITL approval surfaces (rendered here, verified at the worker)</text>
+        <text x="635" y="792" text-anchor="middle" font-size="10" fill="#555">/approvals/{id} &mdash; drift rollback (HMAC, single-use, 15-min)</text>
+        <text x="635" y="806" text-anchor="middle" font-size="10" fill="#555">/iac-approvals/{pr} &mdash; infra apply (plan-bound HMAC, single-use)</text>
+        <line x1="416" y1="818" x2="854" y2="818" stroke="#999" stroke-width="0.7"/>
 
-        <!-- Footer caption inside coordinator -->
-        <text x="620" y="645" text-anchor="middle" font-size="10" fill="#555">build_agent(workload) &middot; build_chat_agent(workload)</text>
-        <text x="620" y="662" text-anchor="middle" font-size="10" fill="#555">tools = list(workload.tools.values())</text>
-        <text x="620" y="679" text-anchor="middle" font-size="10" fill="#555">prompt = workloads/&lt;name&gt;/system_prompt.md</text>
+        <!-- Decisions ledger + build notes -->
+        <text x="635" y="834" text-anchor="middle" font-size="11" font-weight="600">decisions ledger</text>
+        <text x="635" y="850" text-anchor="middle" font-size="10" fill="#555">every step &rarr; Firestore (workload-tagged): decisions &middot; approvals &middot; plan-approvals</text>
+        <text x="635" y="872" text-anchor="middle" font-size="10" fill="#555">build_agent(workload) &middot; tools = list(workload.tools) &middot; prompt = workloads/&lt;name&gt;/system_prompt.md</text>
+        <text x="635" y="889" text-anchor="middle" font-size="10" fill="#555">explore + provision are chat-only &mdash; /recheck route-refuses them</text>
 
         <!-- ===== Workers ===== -->
-        <!-- Group labels in the gutter above each cluster -->
-        <text x="995" y="110" text-anchor="middle" font-size="10" fill="#555" font-style="italic">drift workers</text>
+        <text x="1027" y="116" text-anchor="middle" font-size="10" fill="#555" font-style="italic">drift workers</text>
+        <rect x="920" y="120" width="215" height="52" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1.2"/>
+        <text x="1027" y="141" text-anchor="middle" font-size="13" font-weight="600">driftscribe-reader</text>
+        <text x="1027" y="158" text-anchor="middle" font-size="11" fill="#555">POST /read</text>
 
-        <!-- Reader -->
-        <rect x="900" y="115" width="190" height="56" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1.2"/>
-        <text x="995" y="138" text-anchor="middle" font-size="13" font-weight="600">driftscribe-reader</text>
-        <text x="995" y="156" text-anchor="middle" font-size="11" fill="#555">POST /read</text>
+        <rect x="920" y="185" width="215" height="52" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1.2"/>
+        <text x="1027" y="206" text-anchor="middle" font-size="13" font-weight="600">driftscribe-docs</text>
+        <text x="1027" y="223" text-anchor="middle" font-size="11" fill="#555">POST /patch</text>
 
-        <!-- Docs -->
-        <rect x="900" y="185" width="190" height="56" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1.2"/>
-        <text x="995" y="208" text-anchor="middle" font-size="13" font-weight="600">driftscribe-docs</text>
-        <text x="995" y="226" text-anchor="middle" font-size="11" fill="#555">POST /patch</text>
+        <rect x="920" y="250" width="215" height="52" rx="3" fill="#fff" stroke="#3b6ea5" stroke-width="1.6"/>
+        <text x="1027" y="271" text-anchor="middle" font-size="13" font-weight="600">driftscribe-rollback</text>
+        <text x="1027" y="288" text-anchor="middle" font-size="11" fill="#555">/propose &middot; /execute &middot; /deny</text>
 
-        <!-- Rollback (accent border because gated path) -->
-        <rect x="900" y="255" width="190" height="56" rx="3" fill="#fff" stroke="#3b6ea5" stroke-width="1.6"/>
-        <text x="995" y="278" text-anchor="middle" font-size="13" font-weight="600">driftscribe-rollback</text>
-        <text x="995" y="296" text-anchor="middle" font-size="11" fill="#555">/propose &middot; /execute</text>
+        <text x="1027" y="320" text-anchor="middle" font-size="10" fill="#555" font-style="italic">upgrade workers</text>
+        <rect x="920" y="325" width="215" height="52" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1.2"/>
+        <text x="1027" y="346" text-anchor="middle" font-size="12" font-weight="600">driftscribe-upgrade-reader</text>
+        <text x="1027" y="363" text-anchor="middle" font-size="11" fill="#555">POST /read</text>
 
-        <text x="995" y="350" text-anchor="middle" font-size="10" fill="#555" font-style="italic">upgrade workers</text>
+        <rect x="920" y="390" width="215" height="52" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1.2"/>
+        <text x="1027" y="411" text-anchor="middle" font-size="12" font-weight="600">driftscribe-upgrade-docs</text>
+        <text x="1027" y="428" text-anchor="middle" font-size="11" fill="#555">/patch &middot; /close &middot; /merge</text>
 
-        <!-- Upgrade Reader -->
-        <rect x="900" y="355" width="190" height="56" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1.2"/>
-        <text x="995" y="378" text-anchor="middle" font-size="13" font-weight="600">driftscribe-upgrade-reader</text>
-        <text x="995" y="396" text-anchor="middle" font-size="11" fill="#555">POST /read</text>
+        <text x="1027" y="460" text-anchor="middle" font-size="10" fill="#555" font-style="italic">infra workers (read + author)</text>
+        <rect x="920" y="465" width="215" height="52" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1.2"/>
+        <text x="1027" y="486" text-anchor="middle" font-size="12" font-weight="600">driftscribe-infra-reader</text>
+        <text x="1027" y="503" text-anchor="middle" font-size="11" fill="#555">POST /describe (read-only CAI)</text>
 
-        <!-- Upgrade Docs -->
-        <rect x="900" y="425" width="190" height="56" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1.2"/>
-        <text x="995" y="448" text-anchor="middle" font-size="13" font-weight="600">driftscribe-upgrade-docs</text>
-        <text x="995" y="466" text-anchor="middle" font-size="11" fill="#555">POST /patch &middot; post-LLM validator</text>
+        <rect x="920" y="530" width="215" height="52" rx="3" fill="#fff" stroke="#3b6ea5" stroke-width="1.6"/>
+        <text x="1027" y="551" text-anchor="middle" font-size="12" font-weight="600">driftscribe-tofu-editor</text>
+        <text x="1027" y="568" text-anchor="middle" font-size="11" fill="#555">POST /open-pr (iac/ PR)</text>
 
-        <text x="995" y="520" text-anchor="middle" font-size="10" fill="#555" font-style="italic">shared</text>
+        <text x="1027" y="600" text-anchor="middle" font-size="10" fill="#555" font-style="italic">shared</text>
+        <rect x="920" y="605" width="215" height="52" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1.2"/>
+        <text x="1027" y="626" text-anchor="middle" font-size="13" font-weight="600">driftscribe-notifier</text>
+        <text x="1027" y="643" text-anchor="middle" font-size="11" fill="#555">POST /notify</text>
 
-        <!-- Notifier -->
-        <rect x="900" y="525" width="190" height="56" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1.2"/>
-        <text x="995" y="548" text-anchor="middle" font-size="13" font-weight="600">driftscribe-notifier</text>
-        <text x="995" y="566" text-anchor="middle" font-size="11" fill="#555">POST /notify (drift + upgrade)</text>
+        <text x="1027" y="680" text-anchor="middle" font-size="9" fill="#555" font-style="italic">explore &amp; provision also reuse the read workers (workload-scoped run.invoker)</text>
 
-        <!-- Arrows: Coordinator right edge (x=840) -> workers left edge (x=900) -->
-        <!-- Drift compartment -> drift workers + notifier.
-             Per-arrow labels intentionally minimal — the legend at the
-             bottom of the figure documents that every coordinator->worker
-             call carries a Google ID token with aud=<worker hostname>. -->
-        <line x1="840" y1="230" x2="898" y2="143" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
-        <line x1="840" y1="260" x2="898" y2="213" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
-
-        <!-- HITL diamond between coordinator drift compartment and Rollback -->
-        <polygon points="870,265 890,283 870,301 850,283" fill="#fff" stroke="#3b6ea5" stroke-width="1.6"/>
-        <text x="870" y="287" text-anchor="middle" font-size="10" font-weight="700" fill="#3b6ea5">HITL</text>
-        <text x="870" y="255" text-anchor="middle" font-size="9" fill="#3b6ea5">approval gate</text>
-
-        <!-- Coordinator -> HITL diamond -->
-        <line x1="840" y1="283" x2="848" y2="283" stroke="#3b6ea5" stroke-width="1.4" marker-end="url(#arrow-accent)"/>
-        <!-- HITL diamond -> Rollback -->
-        <line x1="892" y1="283" x2="898" y2="283" stroke="#3b6ea5" stroke-width="1.4" marker-end="url(#arrow-accent)"/>
-
-        <!-- Upgrade compartment -> upgrade workers -->
-        <line x1="840" y1="406" x2="898" y2="383" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
-        <line x1="840" y1="434" x2="898" y2="453" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
-
-        <!-- Both compartments -> Notifier (shared, dashed to call out sharing) -->
-        <line x1="840" y1="265" x2="898" y2="540" stroke="#1a1a1a" stroke-width="1" marker-end="url(#arrow-ink)" stroke-dasharray="4 3"/>
-        <line x1="840" y1="438" x2="898" y2="556" stroke="#1a1a1a" stroke-width="1" marker-end="url(#arrow-ink)" stroke-dasharray="4 3"/>
+        <!-- Arrows: Coordinator right edge -> workers -->
+        <line x1="870" y1="240" x2="918" y2="143" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
+        <line x1="870" y1="255" x2="918" y2="208" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
+        <!-- HITL diamond on drift -> rollback -->
+        <line x1="870" y1="275" x2="884" y2="275" stroke="#3b6ea5" stroke-width="1.4" marker-end="url(#arrow-accent)"/>
+        <polygon points="898,263 910,275 898,287 886,275" fill="#fff" stroke="#3b6ea5" stroke-width="1.6"/>
+        <text x="898" y="278" text-anchor="middle" font-size="9" font-weight="700" fill="#3b6ea5">HITL</text>
+        <text x="898" y="256" text-anchor="middle" font-size="8" fill="#3b6ea5">approval gate</text>
+        <line x1="910" y1="275" x2="918" y2="275" stroke="#3b6ea5" stroke-width="1.4" marker-end="url(#arrow-accent)"/>
+        <!-- drift -> notifier (shared, dashed) -->
+        <line x1="870" y1="300" x2="918" y2="624" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="4 3" marker-end="url(#arrow-ink)"/>
+        <!-- upgrade -> upgrade workers -->
+        <line x1="870" y1="400" x2="918" y2="348" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
+        <line x1="870" y1="420" x2="918" y2="410" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
+        <line x1="870" y1="440" x2="918" y2="636" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="4 3" marker-end="url(#arrow-ink)"/>
+        <!-- explore -> infra-reader -->
+        <line x1="870" y1="535" x2="918" y2="488" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
+        <!-- provision -> tofu-editor -->
+        <line x1="870" y1="655" x2="918" y2="553" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
 
         <!-- ===== Outcomes ===== -->
-        <!-- Firestore (driven from coordinator's decisions ledger) -->
-        <rect x="1110" y="115" width="120" height="56" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="3 2"/>
-        <text x="1170" y="138" text-anchor="middle" font-size="12" font-weight="600">Firestore</text>
-        <text x="1170" y="156" text-anchor="middle" font-size="10" fill="#555">decisions, approvals</text>
+        <rect x="1175" y="120" width="125" height="52" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="3 2"/>
+        <text x="1237" y="141" text-anchor="middle" font-size="12" font-weight="600">Firestore</text>
+        <text x="1237" y="158" text-anchor="middle" font-size="9" fill="#555">decisions&middot;approvals&middot;plan-approvals</text>
 
-        <!-- GitHub PR (docs) -->
-        <rect x="1110" y="185" width="120" height="56" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="3 2"/>
-        <text x="1170" y="208" text-anchor="middle" font-size="12" font-weight="600">GitHub PR</text>
-        <text x="1170" y="226" text-anchor="middle" font-size="10" fill="#555">demo/docs/*.md</text>
+        <rect x="1175" y="185" width="125" height="52" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="3 2"/>
+        <text x="1237" y="206" text-anchor="middle" font-size="12" font-weight="600">GitHub PR</text>
+        <text x="1237" y="223" text-anchor="middle" font-size="10" fill="#555">demo/docs/*.md</text>
 
-        <!-- Cloud Run flip -->
-        <rect x="1110" y="255" width="120" height="56" rx="3" fill="#fff" stroke="#3b6ea5" stroke-width="1.2" stroke-dasharray="3 2"/>
-        <text x="1170" y="278" text-anchor="middle" font-size="12" font-weight="600">Cloud Run flip</text>
-        <text x="1170" y="296" text-anchor="middle" font-size="10" fill="#555">payment-demo traffic</text>
+        <rect x="1175" y="250" width="125" height="52" rx="3" fill="#fff" stroke="#3b6ea5" stroke-width="1.2" stroke-dasharray="3 2"/>
+        <text x="1237" y="271" text-anchor="middle" font-size="12" font-weight="600">Cloud Run flip</text>
+        <text x="1237" y="288" text-anchor="middle" font-size="10" fill="#555">payment-demo traffic</text>
 
-        <!-- GitHub PR (upgrade) -->
-        <rect x="1110" y="425" width="120" height="56" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="3 2"/>
-        <text x="1170" y="448" text-anchor="middle" font-size="12" font-weight="600">GitHub PR</text>
-        <text x="1170" y="466" text-anchor="middle" font-size="10" fill="#555">upgrade/&lt;pkg&gt;-&lt;ver&gt;</text>
+        <rect x="1175" y="390" width="125" height="52" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="3 2"/>
+        <text x="1237" y="411" text-anchor="middle" font-size="12" font-weight="600">GitHub PR</text>
+        <text x="1237" y="428" text-anchor="middle" font-size="10" fill="#555">upgrade/&lt;pkg&gt;</text>
 
-        <!-- Webhook -->
-        <rect x="1110" y="525" width="120" height="56" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="3 2"/>
-        <text x="1170" y="548" text-anchor="middle" font-size="12" font-weight="600">External webhook</text>
-        <text x="1170" y="566" text-anchor="middle" font-size="10" fill="#555">webhook.site (demo)</text>
+        <rect x="1175" y="465" width="125" height="52" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="3 2"/>
+        <text x="1237" y="483" text-anchor="middle" font-size="11" font-weight="600">Cloud Asset Inv.</text>
+        <text x="1237" y="499" text-anchor="middle" font-size="9" fill="#555">project metadata (read)</text>
+
+        <rect x="1175" y="530" width="125" height="52" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="3 2"/>
+        <text x="1237" y="551" text-anchor="middle" font-size="12" font-weight="600">GitHub PR</text>
+        <text x="1237" y="568" text-anchor="middle" font-size="10" fill="#555">iac/*.tf</text>
+
+        <rect x="1175" y="605" width="125" height="52" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="3 2"/>
+        <text x="1237" y="623" text-anchor="middle" font-size="11" font-weight="600">External webhook</text>
+        <text x="1237" y="639" text-anchor="middle" font-size="9" fill="#555">webhook.site (demo)</text>
 
         <!-- Worker -> outcome arrows -->
-        <line x1="1090" y1="143" x2="1108" y2="143" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
-        <line x1="1090" y1="213" x2="1108" y2="213" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
-        <line x1="1090" y1="283" x2="1108" y2="283" stroke="#3b6ea5" stroke-width="1.4" marker-end="url(#arrow-accent)"/>
-        <line x1="1090" y1="453" x2="1108" y2="453" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
-        <line x1="1090" y1="553" x2="1108" y2="553" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
+        <line x1="1135" y1="210" x2="1173" y2="210" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
+        <line x1="1135" y1="275" x2="1173" y2="275" stroke="#3b6ea5" stroke-width="1.4" marker-end="url(#arrow-accent)"/>
+        <line x1="1135" y1="415" x2="1173" y2="415" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
+        <line x1="1135" y1="490" x2="1173" y2="490" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
+        <text x="1154" y="481" text-anchor="middle" font-size="8" fill="#555">reads</text>
+        <line x1="1135" y1="555" x2="1173" y2="555" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
+        <line x1="1135" y1="630" x2="1173" y2="630" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
 
         <!-- Coordinator -> Firestore (decisions ledger curve over the top) -->
-        <path d="M 840 115 Q 1000 90 1170 110 L 1170 113" fill="none" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="3 3" marker-end="url(#arrow-ink)"/>
-        <text x="940" y="102" font-size="9" fill="#555">every decision persisted (workload-tagged)</text>
+        <path d="M 870 120 Q 1030 92 1235 116" fill="none" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="3 3" marker-end="url(#arrow-ink)"/>
+        <text x="980" y="100" font-size="9" fill="#555">every decision persisted (workload-tagged)</text>
+
+        <!-- ===== Downstream apply pipeline (full-width bottom strip) ===== -->
+        <line x1="20" y1="948" x2="1300" y2="948" stroke="#3b6ea5" stroke-width="1" stroke-dasharray="6 4"/>
+        <text x="20" y="940" font-size="11" font-weight="700" fill="#3b6ea5">Downstream apply pipeline &mdash; runs AFTER a human approves; the coordinator cannot invoke tofu-apply</text>
+
+        <rect x="120" y="958" width="190" height="52" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1.2"/>
+        <text x="215" y="979" text-anchor="middle" font-size="12" font-weight="600">merged iac/ PR</text>
+        <text x="215" y="996" text-anchor="middle" font-size="9" fill="#555">(opened by tofu-editor)</text>
+
+        <line x1="310" y1="984" x2="398" y2="984" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
+
+        <polygon points="430,964 464,984 430,1004 396,984" fill="#fff" stroke="#3b6ea5" stroke-width="1.6"/>
+        <text x="430" y="980" text-anchor="middle" font-size="9" font-weight="700" fill="#3b6ea5">HITL</text>
+        <text x="430" y="992" text-anchor="middle" font-size="8" fill="#3b6ea5">approve</text>
+        <text x="430" y="1020" text-anchor="middle" font-size="9" fill="#3b6ea5">/iac-approvals/{pr}</text>
+
+        <line x1="464" y1="984" x2="558" y2="984" stroke="#3b6ea5" stroke-width="1.4" marker-end="url(#arrow-accent)"/>
+
+        <rect x="560" y="958" width="230" height="52" rx="3" fill="#fff" stroke="#3b6ea5" stroke-width="1.6"/>
+        <text x="675" y="978" text-anchor="middle" font-size="12" font-weight="700" fill="#3b6ea5">driftscribe-tofu-apply</text>
+        <text x="675" y="994" text-anchor="middle" font-size="9" fill="#555">/propose &middot; /apply &middot; SOLE infra mutator</text>
+        <text x="675" y="1028" text-anchor="middle" font-size="9" fill="#3b6ea5">verifies plan-bound HMAC &middot; applies trusted C2 plan triplet</text>
+
+        <line x1="790" y1="984" x2="858" y2="984" stroke="#3b6ea5" stroke-width="1.4" marker-end="url(#arrow-accent)"/>
+
+        <rect x="860" y="958" width="200" height="52" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="3 2"/>
+        <text x="960" y="978" text-anchor="middle" font-size="12" font-weight="600">GCP infra</text>
+        <text x="960" y="994" text-anchor="middle" font-size="9" fill="#555">Cloud Run &middot; Pub/Sub &middot; GCS</text>
+        <text x="960" y="1028" text-anchor="middle" font-size="9" fill="#555">run.developer without setIamPolicy</text>
 
         <!-- ===== Legend ===== -->
-        <g transform="translate(20,720)">
+        <g transform="translate(20,1052)">
           <text x="0" y="0" font-size="11" font-weight="600" fill="#555">Legend</text>
 
           <line x1="0" y1="18" x2="40" y2="18" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow-ink)"/>
@@ -487,17 +463,21 @@
           <text x="248" y="22" font-size="11">HITL-gated / MCP</text>
 
           <line x1="400" y1="18" x2="440" y2="18" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="4 3" marker-end="url(#arrow-ink)"/>
-          <text x="448" y="22" font-size="11">shared/cross-compartment</text>
+          <text x="448" y="22" font-size="11">shared / cross-workload</text>
 
           <polygon points="660,12 672,18 660,24 648,18" fill="#fff" stroke="#3b6ea5" stroke-width="1.4"/>
-          <text x="680" y="22" font-size="11">approval diamond</text>
+          <text x="680" y="22" font-size="11">approval gate</text>
 
-          <rect x="840" y="10" width="40" height="16" fill="#fff" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="3 2"/>
-          <text x="888" y="22" font-size="11">external resource</text>
+          <rect x="820" y="10" width="40" height="16" fill="#fff" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="3 2"/>
+          <text x="868" y="22" font-size="11">external resource</text>
 
-          <!-- Authentication-pattern note (covers all coordinator->worker arrows
-               without per-arrow labels overflowing the gutter). -->
-          <text x="0" y="42" font-size="10" fill="#555">All coordinator&rarr;worker calls carry a Google ID token with aud = the worker's hostname (verified at the worker; mismatch &rarr; 401).</text>
+          <rect x="0" y="36" width="40" height="16" rx="2" fill="#eef4fa" stroke="#3b6ea5" stroke-width="1.3"/>
+          <text x="48" y="48" font-size="11">mutation-capable tool</text>
+
+          <rect x="240" y="36" width="40" height="16" rx="2" fill="#fff" stroke="#bdbdbd" stroke-width="1"/>
+          <text x="288" y="48" font-size="11">read-only tool</text>
+
+          <text x="0" y="70" font-size="10" fill="#555">All coordinator&rarr;worker calls carry a Google ID token with aud = the worker's hostname (verified at the worker; mismatch &rarr; 401). <tspan fill="#3b6ea5" font-weight="700">tofu-apply is NOT a coordinator worker.</tspan></text>
         </g>
       </svg>
     </div>
@@ -510,9 +490,9 @@
   -->
   <section>
     <h2>2. Layered safety boundary</h2>
-    <p class="caption">For each service, an outer dashed box (Layer 1: IAM scope of its deploy-time service account) wraps an inner solid box (Layer 2: hardcoded payload-intent policy). The Coordinator's inner box is intentionally empty &mdash; it has <em>no</em> mutate caps on <code>payment-demo</code> &mdash; and carries the Phase&nbsp;17 Layer&nbsp;0 note that Developer Knowledge MCP tools attach <em>only</em> at the coordinator, scoped per workload via <code>enabled_tool_names</code>. The HITL diamond intercepts the Coordinator&rarr;Rollback flow. The two upgrade workers carry an env-pinned <code>UPGRADE_TARGET_REPO</code> + lockfile path regex; <code>upgrade-docs</code> also runs a deterministic post-LLM validator before any GitHub call. Every worker row shows a small <em>no MCP</em> badge to reinforce that reasoning (and therefore MCP access) is coordinator-only.</p>
+    <p class="caption">For each service, an outer dashed box (Layer 1: IAM scope of its deploy-time service account) wraps an inner solid box (Layer 2: hardcoded payload-intent policy). The Coordinator's inner box is intentionally empty &mdash; it has <em>no</em> mutate caps on <code>payment-demo</code> &mdash; and notes that Developer Knowledge MCP tools attach <em>only</em> at the coordinator. Rows 7&ndash;8 add the infra workers: <code>infra-reader</code> (strictly read-only Cloud Asset Inventory metadata) and <code>tofu-editor</code> (an <code>iac/</code>-only PR author behind the AGENT static gate, holding <em>no</em> GCP role). The final row, <code>tofu-apply</code>, sits below a divider <em>outside the coordinator's reach</em>: it is the sole infra mutator and applies only behind a plan-bound HMAC approval. HITL diamonds gate the drift rollback (left gutter) and the infra apply. Every worker row carries a <em>no MCP</em> badge.</p>
     <div class="figure">
-      <svg class="diagram" viewBox="0 0 1000 1080" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Layered safety boundary diagram: for the coordinator and each of six workers (drift reader/docs/rollback, upgrade reader/docs, shared notifier), an outer dashed box shows IAM scope and an inner solid box shows the hardcoded payload-intent policy. The coordinator's inner box is empty to highlight that it has no mutation permissions on payment-demo and notes that Developer Knowledge MCP tools attach at the coordinator only, workload-scoped. A HITL approval diamond gates the coordinator-to-rollback path. Each worker row carries a 'no MCP' badge.">
+      <svg class="diagram" viewBox="0 0 1000 1490" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Layered safety boundary diagram. For the coordinator and each of the eight workers (drift reader/docs/rollback, upgrade reader/docs, infra-reader, tofu-editor, shared notifier) plus the downstream tofu-apply, an outer dashed box shows the IAM scope and an inner solid box shows the hardcoded payload-intent policy. The coordinator's inner box is empty to show it has no mutation permissions on payment-demo. The infra-reader is read-only Cloud Asset Inventory; tofu-editor authors iac/ PRs and holds no GCP role; tofu-apply is fenced below a divider as the sole infra mutator, gated by a plan-bound HMAC approval and not coordinator-invokable. HITL approval diamonds gate the rollback and the apply. Each worker row carries a no-MCP badge.">
         <defs>
           <marker id="arrow-ink-2" viewBox="0 0 10 10" refX="9" refY="5"
                   markerWidth="7" markerHeight="7" orient="auto-start-reverse">
@@ -528,26 +508,15 @@
         <text x="210" y="36" text-anchor="middle" font-size="12" fill="#555" font-weight="600">Layer 1 &mdash; IAM scope (deploy-time)</text>
         <text x="660" y="36" text-anchor="middle" font-size="12" fill="#555" font-weight="600">Layer 2 &mdash; hardcoded payload-intent policy</text>
 
-        <!--
-          Row template per service. Geometry:
-            row top = ${rowTop}
-            outer dashed: (40, rowTop, 920, 120)
-            service label band: (40..380) inside outer
-            inner solid: (380, rowTop+15, 560, 90)
-        -->
-
-        <!-- ============ Coordinator row (rowTop=60) ============ -->
+        <!-- ============ Coordinator row (T=60) ============ -->
         <rect x="40" y="60" width="920" height="120" rx="4" fill="#fff" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="5 3"/>
-        <!-- Service label -->
         <text x="56" y="84" font-size="13" font-weight="700">Coordinator</text>
         <text x="56" y="100" font-size="11" fill="#555">driftscribe-agent</text>
-        <!-- IAM list -->
-        <text x="56" y="124" font-size="10" fill="#1a1a1a">+ roles/datastore.user</text>
+        <text x="56" y="124" font-size="10" fill="#1a1a1a">+ roles/datastore.user (conditioned to (default) DB)</text>
         <text x="56" y="138" font-size="10" fill="#1a1a1a">+ secret accessor (own secrets + MCP API key)</text>
         <text x="56" y="152" font-size="10" fill="#1a1a1a">+ roles/aiplatform.user (Vertex AI ADC)</text>
-        <text x="56" y="168" font-size="10" font-weight="700" fill="#3b6ea5">&minus; NO roles on payment-demo</text>
+        <text x="56" y="168" font-size="10" font-weight="700" fill="#3b6ea5">&minus; NO roles on payment-demo &middot; NO run.developer</text>
 
-        <!-- Inner solid (empty, accent stroke) -->
         <rect x="380" y="75" width="560" height="90" rx="3" fill="#fff" stroke="#3b6ea5" stroke-width="1.5"/>
         <text x="660" y="96" text-anchor="middle" font-size="12" font-weight="700" fill="#3b6ea5">Layer 2 &mdash; no payload policy needed</text>
         <text x="660" y="114" text-anchor="middle" font-size="11" fill="#555">Coordinator holds no mutate capabilities, so it cannot</text>
@@ -555,7 +524,7 @@
         <text x="660" y="148" text-anchor="middle" font-size="10" fill="#3b6ea5" font-style="italic">Layer 0: MCP tools attach here ONLY, workload-scoped via</text>
         <text x="660" y="161" text-anchor="middle" font-size="10" fill="#3b6ea5" font-style="italic">enabled_tool_names (search_documents, get_documents)</text>
 
-        <!-- ============ Reader row (rowTop=200) ============ -->
+        <!-- ============ Reader (drift) row (T=200) ============ -->
         <rect x="40" y="200" width="920" height="120" rx="4" fill="#fff" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="5 3"/>
         <text x="56" y="224" font-size="13" font-weight="700">Reader (drift)</text>
         <text x="56" y="240" font-size="11" fill="#555">driftscribe-reader</text>
@@ -571,7 +540,7 @@
         <text x="660" y="276" text-anchor="middle" font-size="11" fill="#555">request body must be empty &lbrace;&rbrace;; extra fields &rarr; 400</text>
         <text x="660" y="294" text-anchor="middle" font-size="11" fill="#555">no service/region/project override accepted</text>
 
-        <!-- ============ Docs row (rowTop=340) ============ -->
+        <!-- ============ Docs (drift) row (T=340) ============ -->
         <rect x="40" y="340" width="920" height="120" rx="4" fill="#fff" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="5 3"/>
         <text x="56" y="364" font-size="13" font-weight="700">Docs (drift)</text>
         <text x="56" y="380" font-size="11" fill="#555">driftscribe-docs</text>
@@ -587,14 +556,14 @@
         <text x="660" y="416" text-anchor="middle" font-size="11" fill="#555">refuses ops-contract.yaml, .github/, infra/, *.py</text>
         <text x="660" y="434" text-anchor="middle" font-size="11" fill="#555">path traversal (..) normalized-then-checked</text>
 
-        <!-- ============ Rollback row (rowTop=480) ============ -->
+        <!-- ============ Rollback (drift) row (T=480, accent) ============ -->
         <rect x="40" y="480" width="920" height="120" rx="4" fill="#fff" stroke="#3b6ea5" stroke-width="1.2" stroke-dasharray="5 3"/>
         <text x="56" y="504" font-size="13" font-weight="700">Rollback (drift)</text>
         <text x="56" y="520" font-size="11" fill="#555">driftscribe-rollback</text>
         <rect x="200" y="492" width="58" height="14" rx="2" fill="#fff" stroke="#3b6ea5" stroke-width="0.8"/>
         <text x="229" y="502" text-anchor="middle" font-size="9" fill="#3b6ea5" font-weight="700">no MCP</text>
         <text x="56" y="544" font-size="10">+ roles/run.developer on payment-demo only</text>
-        <text x="56" y="558" font-size="10">+ roles/datastore.user (approval state)</text>
+        <text x="56" y="558" font-size="10">+ roles/datastore.user (approval state, (default) DB)</text>
         <text x="56" y="572" font-size="10">+ secret accessor: approval-hmac-key</text>
         <text x="56" y="586" font-size="10" fill="#555">Cloud Run invoker (callers: coordinator SA)</text>
 
@@ -604,7 +573,7 @@
         <text x="660" y="554" text-anchor="middle" font-size="11" fill="#555">target_revision must exist and NOT be active</text>
         <text x="660" y="572" text-anchor="middle" font-size="11" fill="#555">Firestore txn flips pending &rarr; used; replay 403</text>
 
-        <!-- ============ Upgrade Reader row (rowTop=620) ============ -->
+        <!-- ============ Upgrade Reader row (T=620) ============ -->
         <rect x="40" y="620" width="920" height="120" rx="4" fill="#fff" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="5 3"/>
         <text x="56" y="644" font-size="13" font-weight="700">Upgrade Reader</text>
         <text x="56" y="660" font-size="11" fill="#555">driftscribe-upgrade-reader</text>
@@ -621,7 +590,7 @@
         <text x="660" y="696" text-anchor="middle" font-size="11" fill="#555">advisory source hardcoded: GitHub Advisory DB only</text>
         <text x="660" y="714" text-anchor="middle" font-size="11" fill="#555">path traversal normalize-then-reject; body re-validates target_repo</text>
 
-        <!-- ============ Upgrade Docs row (rowTop=760) ============ -->
+        <!-- ============ Upgrade Docs row (T=760) ============ -->
         <rect x="40" y="760" width="920" height="120" rx="4" fill="#fff" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="5 3"/>
         <text x="56" y="784" font-size="13" font-weight="700">Upgrade Docs</text>
         <text x="56" y="800" font-size="11" fill="#555">driftscribe-upgrade-docs</text>
@@ -639,56 +608,111 @@
         <text x="660" y="848" text-anchor="middle" font-size="11" fill="#555">advisory_url must match ^https://github.com/advisories/GHSA-&hellip;</text>
         <text x="660" y="862" text-anchor="middle" font-size="10" fill="#3b6ea5" font-style="italic">major bumps &rarr; 403 (LLM routes to escalation; validator fails closed)</text>
 
-        <!-- ============ Notifier row (rowTop=900) ============ -->
+        <!-- ============ Infra Reader (explore) row (T=900) ============ -->
         <rect x="40" y="900" width="920" height="120" rx="4" fill="#fff" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="5 3"/>
-        <text x="56" y="924" font-size="13" font-weight="700">Notifier (shared)</text>
-        <text x="56" y="940" font-size="11" fill="#555">driftscribe-notifier</text>
+        <text x="56" y="924" font-size="13" font-weight="700">Infra Reader (explore)</text>
+        <text x="56" y="940" font-size="11" fill="#555">driftscribe-infra-reader</text>
         <rect x="200" y="912" width="58" height="14" rx="2" fill="#fff" stroke="#3b6ea5" stroke-width="0.8"/>
         <text x="229" y="922" text-anchor="middle" font-size="9" fill="#3b6ea5" font-weight="700">no MCP</text>
-        <text x="56" y="964" font-size="10">+ secret accessor: NOTIFY_WEBHOOK_URL</text>
-        <text x="56" y="978" font-size="10">+ Cloud Run invoker (callers: coordinator SA, drift + upgrade)</text>
-        <text x="56" y="992" font-size="10" fill="#555">no GCP write roles; egress only</text>
+        <text x="56" y="964" font-size="10">+ custom role driftscribeInfraReader:</text>
+        <text x="56" y="978" font-size="10">&nbsp;&nbsp;cloudasset.assets.searchAllResources + serviceusage.services.use</text>
+        <text x="56" y="992" font-size="10">+ Cloud Run invoker (callers: coordinator SA &mdash; explore-scoped)</text>
+        <text x="56" y="1006" font-size="10" fill="#555">&minus; NO write/secret/state/KMS &middot; secrets surface counts-only</text>
 
         <rect x="380" y="915" width="560" height="90" rx="3" fill="#fff" stroke="#3b6ea5" stroke-width="1.5"/>
-        <text x="660" y="938" text-anchor="middle" font-size="12" font-weight="700" fill="#3b6ea5">policy: outbound url = $NOTIFY_WEBHOOK_URL</text>
-        <text x="660" y="958" text-anchor="middle" font-size="11" fill="#555">caller-supplied `url` is silently dropped</text>
-        <text x="660" y="976" text-anchor="middle" font-size="11" fill="#555">channel constrained to closed enum</text>
-        <text x="660" y="994" text-anchor="middle" font-size="11" fill="#555">the worker's identity IS the URL</text>
+        <text x="660" y="938" text-anchor="middle" font-size="12" font-weight="700" fill="#3b6ea5">policy: scope = projects/$GCP_PROJECT (env)</text>
+        <text x="660" y="958" text-anchor="middle" font-size="11" fill="#555">reads CAI searchAllResources with a minimal read_mask</text>
+        <text x="660" y="976" text-anchor="middle" font-size="11" fill="#555">labels iac-declared by parsing baked-in iac/*.tf</text>
+        <text x="660" y="994" text-anchor="middle" font-size="11" fill="#555">never reads tofu state; strictly read-only metadata</text>
 
-        <!-- ============ HITL gate annotation ============ -->
-        <!--
-          Connector runs in the left gutter x=20 (between viewBox left=0 and
-          row outer frame at x=40), starting from below Coordinator row
-          (y=180) downward, passing the Reader and Docs row gutters, and
-          terminating with a HITL diamond in the gap between Docs (ends y=460)
-          and Rollback (starts y=480). That gap is 20px so we place a small
-          diamond there (y=462..478, 16px tall) directly above the Rollback
-          row's top edge.
-        -->
+        <!-- ============ Tofu Editor (provision) row (T=1040) ============ -->
+        <rect x="40" y="1040" width="920" height="120" rx="4" fill="#fff" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="5 3"/>
+        <text x="56" y="1064" font-size="13" font-weight="700">Tofu Editor (provision)</text>
+        <text x="56" y="1080" font-size="11" fill="#555">driftscribe-tofu-editor</text>
+        <rect x="200" y="1052" width="58" height="14" rx="2" fill="#fff" stroke="#3b6ea5" stroke-width="0.8"/>
+        <text x="229" y="1062" text-anchor="middle" font-size="9" fill="#3b6ea5" font-weight="700">no MCP</text>
+        <text x="56" y="1104" font-size="10">+ secret accessor: tofu-editor-github-pat (ONE secret only)</text>
+        <text x="56" y="1118" font-size="10">+ Cloud Run invoker (callers: coordinator SA &mdash; provision-scoped)</text>
+        <text x="56" y="1132" font-size="10" fill="#555">&minus; NO GCP role &middot; NO state/KMS/HMAC &middot; OUTSIDE apply boundary</text>
+
+        <rect x="380" y="1055" width="560" height="90" rx="3" fill="#fff" stroke="#3b6ea5" stroke-width="1.5"/>
+        <text x="660" y="1078" text-anchor="middle" font-size="12" font-weight="700" fill="#3b6ea5">policy: iac/-only path gate + AGENT static gate</text>
+        <text x="660" y="1098" text-anchor="middle" font-size="11" fill="#555">writes .tf/.md under iac/ only; branch infra/*; base main</text>
+        <text x="660" y="1116" text-anchor="middle" font-size="11" fill="#555">static gate bans secret literals / control-plane / IAM</text>
+        <text x="660" y="1134" text-anchor="middle" font-size="11" fill="#555">re-validates target_repo; runs tofu fmt; NEVER runs apply</text>
+
+        <!-- ============ Notifier (shared) row (T=1180) ============ -->
+        <rect x="40" y="1180" width="920" height="120" rx="4" fill="#fff" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="5 3"/>
+        <text x="56" y="1204" font-size="13" font-weight="700">Notifier (shared)</text>
+        <text x="56" y="1220" font-size="11" fill="#555">driftscribe-notifier</text>
+        <rect x="200" y="1192" width="58" height="14" rx="2" fill="#fff" stroke="#3b6ea5" stroke-width="0.8"/>
+        <text x="229" y="1202" text-anchor="middle" font-size="9" fill="#3b6ea5" font-weight="700">no MCP</text>
+        <text x="56" y="1244" font-size="10">+ secret accessor: NOTIFY_WEBHOOK_URL</text>
+        <text x="56" y="1258" font-size="10">+ Cloud Run invoker (callers: coordinator SA, all workloads)</text>
+        <text x="56" y="1272" font-size="10" fill="#555">no GCP write roles; egress only</text>
+
+        <rect x="380" y="1195" width="560" height="90" rx="3" fill="#fff" stroke="#3b6ea5" stroke-width="1.5"/>
+        <text x="660" y="1218" text-anchor="middle" font-size="12" font-weight="700" fill="#3b6ea5">policy: outbound url = $NOTIFY_WEBHOOK_URL</text>
+        <text x="660" y="1238" text-anchor="middle" font-size="11" fill="#555">caller-supplied `url` is silently dropped</text>
+        <text x="660" y="1256" text-anchor="middle" font-size="11" fill="#555">channel constrained to closed enum</text>
+        <text x="660" y="1274" text-anchor="middle" font-size="11" fill="#555">the worker's identity IS the URL</text>
+
+        <!-- ============ Divider: downstream / outside coordinator reach ============ -->
+        <line x1="40" y1="1322" x2="960" y2="1322" stroke="#3b6ea5" stroke-width="1" stroke-dasharray="6 4"/>
+        <text x="40" y="1316" font-size="11" font-weight="700" fill="#3b6ea5">downstream &mdash; outside the coordinator's reach (sole infra mutator; runs after /iac-approvals)</text>
+
+        <!-- ============ Tofu Apply (downstream) row (T=1340, accent) ============ -->
+        <rect x="40" y="1340" width="920" height="120" rx="4" fill="#fff" stroke="#3b6ea5" stroke-width="1.2" stroke-dasharray="5 3"/>
+        <text x="56" y="1364" font-size="13" font-weight="700">Tofu Apply (downstream)</text>
+        <text x="56" y="1380" font-size="11" fill="#555">driftscribe-tofu-apply</text>
+        <rect x="200" y="1352" width="58" height="14" rx="2" fill="#fff" stroke="#3b6ea5" stroke-width="0.8"/>
+        <text x="229" y="1362" text-anchor="middle" font-size="9" fill="#3b6ea5" font-weight="700">no MCP</text>
+        <text x="56" y="1404" font-size="10">+ roles/run.developer project-wide (NO setIamPolicy)</text>
+        <text x="56" y="1418" font-size="10">+ storage.objectAdmin (state bucket) &middot; KMS enc/dec (tofu-state key)</text>
+        <text x="56" y="1432" font-size="10">+ objectViewer (artifact bucket) &middot; datastore.user &rarr; plan-approvals DB</text>
+        <text x="56" y="1446" font-size="10" fill="#555">+ actAs payment-demo-runtime &middot; custom driftscribeTofuApplyPubsub</text>
+
+        <rect x="380" y="1355" width="560" height="90" rx="3" fill="#fff" stroke="#3b6ea5" stroke-width="1.5"/>
+        <text x="660" y="1378" text-anchor="middle" font-size="12" font-weight="700" fill="#3b6ea5">policy: plan-bound HMAC approval verified before apply</text>
+        <text x="660" y="1398" text-anchor="middle" font-size="11" fill="#555">single-use, signed-window TTL; applies trusted C2 plan triplet</text>
+        <text x="660" y="1416" text-anchor="middle" font-size="11" fill="#555">the ONE trust boundary where IaC mutations land</text>
+        <text x="660" y="1434" text-anchor="middle" font-size="10" fill="#3b6ea5" font-style="italic">NOT coordinator-invokable &mdash; gated by /iac-approvals/{pr}</text>
+
+        <!-- ============ HITL gate annotation — drift rollback (left gutter) ============ -->
         <line x1="20" y1="180" x2="20" y2="462" stroke="#3b6ea5" stroke-width="1.2" stroke-dasharray="4 3"/>
         <polygon points="20,462 32,470 20,478 8,470" fill="#fff" stroke="#3b6ea5" stroke-width="1.4"/>
         <text x="20" y="474" text-anchor="middle" font-size="9" font-weight="700" fill="#3b6ea5">HITL</text>
         <line x1="20" y1="478" x2="20" y2="480" stroke="#3b6ea5" stroke-width="1.4" marker-end="url(#arrow-accent-2)"/>
         <text x="40" y="475" font-size="10" fill="#3b6ea5" font-weight="700">HITL gate &mdash; operator approves via /approvals/{id} (HMAC, single-use, 15-min TTL)</text>
+
+        <!-- ============ HITL gate annotation — infra apply (left gutter) ============ -->
+        <polygon points="20,1322 32,1330 20,1338 8,1330" fill="#fff" stroke="#3b6ea5" stroke-width="1.4"/>
+        <text x="20" y="1334" text-anchor="middle" font-size="9" font-weight="700" fill="#3b6ea5">HITL</text>
+        <line x1="20" y1="1338" x2="20" y2="1340" stroke="#3b6ea5" stroke-width="1.4" marker-end="url(#arrow-accent-2)"/>
+        <text x="40" y="1336" font-size="10" fill="#3b6ea5" font-weight="700">plan-bound approval gate &mdash; operator approves via /iac-approvals/{pr}</text>
       </svg>
     </div>
     <p class="caption" style="margin-top:12px;">
       <strong>Reading the rows:</strong> Layer 1 (left) is what the service account
       <em>could</em> do at the Google Cloud IAM layer; Layer 2 (right) is what the
       worker code <em>will</em> do regardless of request shape. Both must be
-      breached to mutate <code>payment-demo</code> or open an upgrade PR. The drift
+      breached to mutate <code>payment-demo</code>, open a PR, or apply infra. The drift
       Rollback path additionally requires a one-shot HMAC token minted by
-      operator action, and the Upgrade Docs path additionally runs the
-      post-LLM deterministic validator before any GitHub call &mdash; so a
-      prompt-injected LLM still cannot smuggle a major-version bump, a
-      downgrade, an off-allowlist lockfile path, or a non-GHSA advisory URL.
-      Workload-scoped IAM means the coordinator's <code>run.invoker</code> on the
-      drift workers does <em>not</em> extend to the upgrade workers, and vice versa.
+      operator action; the Upgrade Docs path runs the post-LLM deterministic
+      validator before any GitHub call; the <code>tofu-editor</code> re-runs the
+      AGENT static gate (which bans secret literals, control-plane, and IAM edits)
+      before any write; and the downstream <code>tofu-apply</code> &mdash; the sole
+      infra mutator, which the coordinator cannot invoke &mdash; verifies a
+      plan-bound HMAC approval and applies only the trusted plan triplet. So a
+      prompt-injected LLM still cannot smuggle a major-version bump, a downgrade,
+      an off-allowlist path, a secret-baring IaC change, or an unapproved apply.
+      Workload-scoped IAM means the coordinator's <code>run.invoker</code> on one
+      workload's workers does <em>not</em> extend to another's.
     </p>
   </section>
 
   <footer>
-    <p>DriftScribe &mdash; DevOps &times; AI Agent Hackathon 2026 (Google Cloud Japan / Findy). Static diagram, no external assets. Source of truth: <code>docs/architecture/multi-agent-design.md</code>.</p>
+    <p>DriftScribe &mdash; DevOps &times; AI Agent Hackathon 2026 (Google Cloud Japan / Findy). Static diagram, no external assets. Source of truth: <code>docs/architecture/multi-agent-design.md</code> &middot; plain-English tour: <code>docs/OVERVIEW.md</code>.</p>
   </footer>
 </main>
 </body>
