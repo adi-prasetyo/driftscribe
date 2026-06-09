@@ -29,6 +29,16 @@ export function shortTrace(traceId: string): string {
 }
 
 /**
+ * Short commit SHA for the decision-rail meta line — first 7 chars (the
+ * conventional abbreviated-SHA length). Safe on empty / null / non-string input
+ * (returns ''), so a row without a `head_sha` simply renders no SHA.
+ */
+export function shortSha(headSha: string | null | undefined): string {
+  if (typeof headSha !== 'string' || !headSha) return '';
+  return headSha.slice(0, 7);
+}
+
+/**
  * Clamp a preview string to `max` chars (default 2000), appending an ellipsis
  * when the input was actually truncated. Safe on null/undefined input.
  */

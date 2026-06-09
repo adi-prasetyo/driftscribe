@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { fmtTokens, shortTrace, fmtPreview, fmtWhen } from '../../src/lib/format';
+import { fmtTokens, shortTrace, fmtPreview, fmtWhen, shortSha } from '../../src/lib/format';
 
 describe('fmtTokens', () => {
   it('formats a present total with comma grouping and " tok" suffix', () => {
@@ -52,6 +52,23 @@ describe('shortTrace', () => {
     // Defensive: callers may pass an unset trace id.
     expect(shortTrace(null as unknown as string)).toBe('');
     expect(shortTrace(undefined as unknown as string)).toBe('');
+  });
+});
+
+describe('shortSha', () => {
+  it('returns the first 7 chars of a commit sha', () => {
+    expect(shortSha('0496b305deadbeefcafe')).toBe('0496b30');
+  });
+
+  it('returns the whole string when shorter than 7 chars', () => {
+    expect(shortSha('abc')).toBe('abc');
+  });
+
+  it('returns "" for empty / null / undefined / non-string input', () => {
+    expect(shortSha('')).toBe('');
+    expect(shortSha(null as unknown as string)).toBe('');
+    expect(shortSha(undefined as unknown as string)).toBe('');
+    expect(shortSha(123 as unknown as string)).toBe('');
   });
 });
 

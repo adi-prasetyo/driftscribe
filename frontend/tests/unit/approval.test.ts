@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { safeApprovalHref, iacApprovalHref, isExpired, safeGithubHref } from '../../src/lib/approval';
+import { safeApprovalHref, iacApprovalHref, isExpired, safeGithubHref, iacPrHref } from '../../src/lib/approval';
 
 // SECURITY-CRITICAL guard. This file re-homes the assertions previously made
 // in tests/integration/test_ui_transparency.py:148-166 (the legacy
@@ -211,5 +211,28 @@ describe('safeGithubHref — canonical github.com artifact allowlist', () => {
     expect(safeGithubHref(123 as unknown)).toBeNull();
     expect(safeGithubHref('')).toBeNull();
     expect(safeGithubHref('not a url')).toBeNull();
+  });
+});
+
+describe('iacPrHref — the rail title link for an iac_apply row', () => {
+  it('returns the safe github href for an iac_apply decision', () => {
+    const d = { action: 'iac_apply', github: { url: 'https://github.com/adi-prasetyo/driftscribe/pull/68' } };
+    expect(iacPrHref(d)).toBe('https://github.com/adi-prasetyo/driftscribe/pull/68');
+  });
+
+  it('is null for a non-iac_apply action even if it carries a github.url', () => {
+    // Gate on the allowlisted action: never read github.url off an unrelated row.
+    const d = { action: 'drift_issue', github: { url: 'https://github.com/acme/ops/pull/9' } };
+    expect(iacPrHref(d)).toBeNull();
+  });
+
+  it('is null when the github.url fails the host allowlist (off-origin / smuggling)', () => {
+    expect(iacPrHref({ action: 'iac_apply', github: { url: 'https://evil.example/x/y/pull/1' } })).toBeNull();
+    expect(iacPrHref({ action: 'iac_apply', github: { url: 'javascript:alert(1)' } })).toBeNull();
+  });
+
+  it('is null when there is no github field', () => {
+    expect(iacPrHref({ action: 'iac_apply' })).toBeNull();
+    expect(iacPrHref({ action: 'iac_apply', github: null })).toBeNull();
   });
 });

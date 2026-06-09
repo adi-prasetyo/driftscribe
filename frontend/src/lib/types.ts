@@ -52,6 +52,12 @@ export interface Decision extends Record<string, unknown> {
   approval?: DecisionApproval | null;
   github?: DecisionGithub | null;
   diffs?: EnvDiff[];
+  // iac_apply rows: pr_number + head_sha are persisted; pr_title is the as-applied
+  // GitHub PR title (write-time snapshot, absent on pre-backfill rows). The rail
+  // renders PR # as a linked title, pr_title as the subtitle, head_sha in the meta.
+  pr_number?: number;
+  head_sha?: string;
+  pr_title?: string;
 }
 
 /** GET /trace/{id} response (historical replay + post-`done` backfill). */
