@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { safeApprovalHref, iacApprovalHref, isExpired, safeGithubHref } from '../lib/approval';
+  import { safeApprovalHref, iacApprovalHref, isExpired, safeGithubHref, iacPrHref } from '../lib/approval';
+  import { shortSha } from '../lib/format';
   import type { Decision } from '../lib/types';
 
   let {
@@ -94,17 +95,40 @@
   {:else}
     <ul id="decisions-list">
       {#each decisions as d (d.decision_id)}
+        {@const prHref = iacPrHref(d)}
         <li
           class="decision-row"
           data-testid="past-decision-item"
           class:active={d.trace_id && d.trace_id === activeTraceId}
         >
           <div class="row-summary">
-            <span class="row-action" title={d.action}>{d.action}</span>
+            {#if prHref}
+              <!-- iac_apply: the PR # IS the title and links to the GitHub PR
+                   (host-allowlisted via iacPrHref/safeGithubHref). -->
+              <a
+                class="row-action row-action-link"
+                data-testid="decision-pr-link"
+                href={prHref}
+                target="_blank"
+                rel="noopener noreferrer">PR #{d.pr_number} →</a>
+            {:else}
+              <span class="row-action" title={d.action}>{d.action}</span>
+            {/if}
             {#if d.created_at}
               <time class="row-time" datetime={d.created_at}>{fmtCreatedAt(d.created_at)}</time>
             {/if}
           </div>
+
+          {#if d.action === 'iac_apply' && d.pr_title}
+            <!-- As-applied PR title (write-time snapshot, iac_apply only). Plain
+                 text — Svelte auto-escapes; CSS keeps it to one ellipsised line. -->
+            <p class="row-subtitle" title={d.pr_title}>{d.pr_title}</p>
+          {/if}
+
+          {#if d.action === 'iac_apply'}
+            {@const sha = shortSha(d.head_sha)}
+            <p class="row-meta">iac_apply{#if sha} · <span class="row-sha">⎇ {sha}</span>{/if}</p>
+          {/if}
 
           <div class="row-actions">
             {#if d.trace_id}
@@ -233,12 +257,48 @@
     min-width: 0;
   }
 
+  /* iac_apply title rendered as an external PR link — inherits the prominent
+     .row-action type, adds the stream-ink link affordance. */
+  .row-action-link {
+    color: var(--ds-stream-ink);
+    text-decoration: none;
+    transition: color var(--ds-dur-fast) var(--ds-ease);
+  }
+
+  .row-action-link:hover {
+    color: var(--ds-stream);
+    text-decoration: underline;
+  }
+
   .row-time {
     flex: 0 0 auto;
     font-size: var(--ds-fs-1);
     color: var(--ds-muted);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
+  }
+
+  /* As-applied PR title — the human-readable subtitle. One tidy ellipsised line. */
+  .row-subtitle {
+    margin: 0;
+    font-size: var(--ds-fs-1);
+    color: var(--ds-fg);
+    line-height: var(--ds-lh-snug);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* Meta line: the action tag + short commit SHA, muted and small. */
+  .row-meta {
+    margin: 0;
+    font-size: var(--ds-fs-1);
+    color: var(--ds-muted);
+  }
+
+  .row-sha {
+    font-family: var(--ds-font-mono, ui-monospace, monospace);
+    font-variant-numeric: tabular-nums;
   }
 
   /* --- The action affordances -------------------------------------------- */

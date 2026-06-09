@@ -42,6 +42,7 @@ from agent.github_actions import (
 from agent.mcp.developer_knowledge import MissingDeveloperKnowledgeApiKeyError
 from agent.models import DecisionAction, DecisionProposal
 from agent.renderer import (
+    attach_iac_pr_link,
     render_docs_pr_body,
     render_drift_issue_body,
     render_escalation_issue_body,
@@ -1719,10 +1720,15 @@ def list_decisions_endpoint(
             headers={"Cache-Control": "no-store"},
         )
     response.headers["Cache-Control"] = "no-store"
-    # Serve-time rationale scrub (PR 2) on every row — see scrub_decision_rationale.
+    # Per-row serve-time transforms (both pure, copy-on-change, never-mutate):
+    #   1. scrub_decision_rationale — strip secret-like values from the rationale.
+    #   2. attach_iac_pr_link — derive github.url -> the PR for iac_apply rows, from
+    #      the trusted config repo, so the rail can link a row to its GitHub PR.
+    repo = get_settings().github_repo
     return {
         "decisions": [
-            scrub_decision_rationale(d) for d in state.list_decisions(limit=limit)
+            attach_iac_pr_link(scrub_decision_rationale(d), repo)
+            for d in state.list_decisions(limit=limit)
         ]
     }
 
@@ -2469,6 +2475,23 @@ def _iac_event_key(
     return f"iac-apply-{pr_number}-{digest}"
 
 
+def _fetch_pr_title(repo, pr_number: int) -> str | None:
+    """Best-effort PR title for the decision-rail subtitle. Fail-soft: a cosmetic
+    field must NEVER break or back out an apply, so any GitHub error degrades to
+    ``None`` (logged). Collapses newlines/runs of whitespace to single spaces
+    (the title renders on one ellipsised line — anti-spoof), strips, caps at 200.
+    Returns ``None`` for an empty/whitespace-only title."""
+    try:
+        raw = (repo.get_pull(pr_number).title or "")
+        return " ".join(raw.split())[:200] or None
+    except Exception as e:  # noqa: BLE001 — cosmetic; degrade, never propagate
+        log.warning(
+            "iac_pr_title_fetch_failed",
+            extra={"pr_number": pr_number, "error": str(e)},
+        )
+        return None
+
+
 def _record_iac_decision(
     state: StateStore,
     event_key: str,
@@ -2480,6 +2503,7 @@ def _record_iac_decision(
     head_sha: str,
     pr_number: int,
     approver: str,
+    pr_title: str | None = None,
 ) -> dict:
     """Build + persist the infra-apply decision doc (the reconcile pointer).
 
@@ -2488,6 +2512,11 @@ def _record_iac_decision(
     ``merge_state=="failed"`` doc is what a re-POST reads to do a merge-only
     reconcile; an ``apply_status in {"failed","failed_state_suspect","ambiguous"}``
     doc is terminal.
+
+    ``pr_title`` (optional) is the as-applied GitHub PR title, captured once per
+    request via :func:`_fetch_pr_title` and rendered as the rail row's subtitle.
+    Persisted only when a non-empty string is supplied (the PR URL, by contrast,
+    is derived at serve time — see :func:`attach_iac_pr_link`).
     """
     decision_id = str(uuid.uuid4())
     decision = {
@@ -2503,6 +2532,8 @@ def _record_iac_decision(
         "pr_number": pr_number,
         "approver": approver,
     }
+    if pr_title:
+        decision["pr_title"] = pr_title
     if apply_status == "applied":
         decision["applied_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
     state.record_decision(decision_id, event_key, decision)
@@ -2661,6 +2692,11 @@ def iac_approval_post(
     event_key = _iac_event_key(
         s.github_repo, pr_number, view.head_sha, view.generation_metadata
     )
+    # Capture the as-applied PR title ONCE per request (fail-soft, cosmetic) for the
+    # decision-rail subtitle, and thread it into every _record_iac_decision below.
+    # The existing-decision paths prefer the title already on the prior decision
+    # (first-approved wins) over this fresh read — see _handle_existing_iac_decision.
+    pr_title = _fetch_pr_title(repo, pr_number)
 
     # (c0) Existing-decision routing (READ-ONLY) — runs FIRST so a resume / merge-only
     # reconcile / terminal / already-done re-POST is handled without (and before) PR
@@ -2670,7 +2706,7 @@ def iac_approval_post(
         return _handle_existing_iac_decision(
             request, s, state, existing, repo=repo, event_key=event_key, view=view,
             required_checks=required_checks, operator_email=operator_email,
-            pr_number=pr_number, cf_access_jwt=cf_access_jwt,
+            pr_number=pr_number, cf_access_jwt=cf_access_jwt, pr_title=pr_title,
         )
 
     # (c) Pre-propose readiness (raise, no mint — Codex r2: readiness BEFORE claim).
@@ -2704,7 +2740,7 @@ def iac_approval_post(
             return _handle_existing_iac_decision(
                 request, s, state, existing, repo=repo, event_key=event_key, view=view,
                 required_checks=required_checks, operator_email=operator_email,
-                pr_number=pr_number, cf_access_jwt=cf_access_jwt,
+                pr_number=pr_number, cf_access_jwt=cf_access_jwt, pr_title=pr_title,
             )
         raise HTTPException(
             status_code=409,
@@ -2718,7 +2754,7 @@ def iac_approval_post(
         return _iac_create_merge_first(
             request, s, state, repo=repo, event_key=event_key, view=view,
             required_checks=required_checks, operator_email=operator_email,
-            pr_number=pr_number,
+            pr_number=pr_number, pr_title=pr_title,
         )
 
     # ---- C5 apply-first path (non-create): propose → head re-check → apply → merge ----
@@ -2836,6 +2872,7 @@ def iac_approval_post(
                 head_sha=view.head_sha,
                 pr_number=pr_number,
                 approver=operator_email,
+                pr_title=pr_title,
             )
             next_action = (
                 "The failed apply could not be proven to have left state clean — "
@@ -2887,6 +2924,7 @@ def iac_approval_post(
             head_sha=view.head_sha,
             pr_number=pr_number,
             approver=operator_email,
+            pr_title=pr_title,
         )
         with contextlib.suppress(Exception):
             worker_client.call(
@@ -2930,6 +2968,7 @@ def iac_approval_post(
             head_sha=view.head_sha,
             pr_number=pr_number,
             approver=operator_email,
+            pr_title=pr_title,
         )
         with contextlib.suppress(Exception):
             worker_client.call(
@@ -2965,6 +3004,7 @@ def iac_approval_post(
         apply_attempt_id=apply_attempt_id,
         operator_email=operator_email,
         pr_number=pr_number,
+        pr_title=pr_title,
     )
 
 
@@ -2981,6 +3021,7 @@ def _iac_merge_step(
     apply_attempt_id: str | None,
     operator_email: str,
     pr_number: int,
+    pr_title: str | None = None,
 ) -> Response:
     """Step (g): merge the EXACT applied head; reconcile on merge-fail.
 
@@ -3018,6 +3059,7 @@ def _iac_merge_step(
             head_sha=view.head_sha,
             pr_number=pr_number,
             approver=operator_email,
+            pr_title=pr_title,
         )
         if permanent:
             alert = (
@@ -3067,6 +3109,7 @@ def _iac_merge_step(
         head_sha=view.head_sha,
         pr_number=pr_number,
         approver=operator_email,
+        pr_title=pr_title,
     )
     return _render_iac_outcome(
         request,
@@ -3095,6 +3138,7 @@ def _handle_existing_iac_decision(
     operator_email: str,
     pr_number: int,
     cf_access_jwt: str | None,
+    pr_title: str | None = None,
 ) -> Response:
     """Route a re-POST that already has a recorded decision (runs BEFORE readiness).
 
@@ -3108,6 +3152,11 @@ def _handle_existing_iac_decision(
     status = existing.get("apply_status")
     merge_state = existing.get("merge_state")
 
+    # First-approved title wins: prefer the title captured on the PRIOR decision over
+    # a fresh read, so a PR title edited after the first approval can't overwrite the
+    # as-approved snapshot on later lifecycle rows (Codex review).
+    pr_title = existing.get("pr_title") or pr_title
+
     if status == "waiting_for_rebake":
         if merge_state != "merged":
             # Crash/failure AFTER recording the intent but BEFORE the merge completed
@@ -3117,11 +3166,12 @@ def _handle_existing_iac_decision(
             return _iac_merge_then_wait(
                 request, s, state, repo=repo, event_key=event_key, view=view,
                 required_checks=required_checks, operator_email=operator_email,
-                pr_number=pr_number,
+                pr_number=pr_number, pr_title=pr_title,
             )
         return _iac_resume_apply(
             request, s, state, repo=repo, event_key=event_key, view=view,
             operator_email=operator_email, pr_number=pr_number, cf_access_jwt=cf_access_jwt,
+            pr_title=pr_title,
         )
     if status == "applied" and merge_state == "merged":
         return _render_iac_outcome(
@@ -3134,7 +3184,7 @@ def _handle_existing_iac_decision(
             required_checks=required_checks,
             approval_id=existing.get("approval_id"),
             apply_attempt_id=existing.get("apply_attempt_id"),
-            operator_email=operator_email, pr_number=pr_number,
+            operator_email=operator_email, pr_number=pr_number, pr_title=pr_title,
         )
     if status in {"failed", "failed_state_suspect", "ambiguous"}:
         note = (
@@ -3165,6 +3215,7 @@ def _iac_create_merge_first(
     required_checks: list[str],
     operator_email: str,
     pr_number: int,
+    pr_title: str | None = None,
 ) -> Response:
     """C6 step 1: a CREATE-class plan is merged to ``main`` FIRST, then the operator
     re-bakes the worker, then re-opens this page to Apply (the resume). The worker
@@ -3192,10 +3243,12 @@ def _iac_create_merge_first(
     _record_iac_decision(
         state, event_key, apply_status="waiting_for_rebake", merge_state="pending",
         head_sha=view.head_sha, pr_number=pr_number, approver=operator_email,
+        pr_title=pr_title,
     )
     return _iac_merge_then_wait(
         request, s, state, repo=repo, event_key=event_key, view=view,
         required_checks=required_checks, operator_email=operator_email, pr_number=pr_number,
+        pr_title=pr_title,
     )
 
 
@@ -3210,6 +3263,7 @@ def _iac_merge_then_wait(
     required_checks: list[str],
     operator_email: str,
     pr_number: int,
+    pr_title: str | None = None,
 ) -> Response:
     """Idempotent merge → record ``waiting_for_rebake``+``merged`` → instruct re-bake.
 
@@ -3240,6 +3294,7 @@ def _iac_merge_then_wait(
     _record_iac_decision(
         state, event_key, apply_status="waiting_for_rebake", merge_state="merged",
         head_sha=view.head_sha, pr_number=pr_number, approver=operator_email,
+        pr_title=pr_title,
     )
     return _render_iac_outcome(
         request, pr_number=pr_number, view=view, decision="approve",
@@ -3266,6 +3321,7 @@ def _iac_resume_apply(
     operator_email: str,
     pr_number: int,
     cf_access_jwt: str | None,
+    pr_title: str | None = None,
 ) -> Response:
     """C6 step 2 (resume): the create-class PR is already merged; the operator has
     (hopefully) re-baked the worker. Drive propose→apply against it, forwarding the
@@ -3355,7 +3411,7 @@ def _iac_resume_apply(
         _record_iac_decision(
             state, event_key, apply_status=apply_status, merge_state="merged",
             approval_id=approval_id, head_sha=view.head_sha, pr_number=pr_number,
-            approver=operator_email,
+            approver=operator_email, pr_title=pr_title,
         )
         with contextlib.suppress(Exception):
             worker_client.call("notifier", {"channel": "approval", "severity": "high", "body": (
@@ -3373,6 +3429,7 @@ def _iac_resume_apply(
         _record_iac_decision(
             state, event_key, apply_status="ambiguous", merge_state="merged",
             approval_id=approval_id, head_sha=view.head_sha, pr_number=pr_number, approver=operator_email,
+            pr_title=pr_title,
         )
         raise HTTPException(status_code=504, detail="tofu-apply returned a malformed success on the create-class resume; verify manually")
 
@@ -3380,6 +3437,7 @@ def _iac_resume_apply(
         state, event_key, apply_status="applied", merge_state="merged",
         approval_id=approval_id, apply_attempt_id=apply_res.get("apply_attempt_id"),
         head_sha=view.head_sha, pr_number=pr_number, approver=operator_email,
+        pr_title=pr_title,
     )
     return _render_iac_outcome(
         request, pr_number=pr_number, view=view, decision="approve",

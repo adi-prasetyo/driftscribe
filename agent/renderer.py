@@ -1,5 +1,12 @@
+import re
+
 from agent.models import ContractStatus, DecisionProposal, EnvDiff
 from agent.secret_guard import should_redact, value_looks_credentialed
+
+# A conservative ``owner/repo`` shape (exactly one slash, GitHub-legal chars) so a
+# misconfigured ``github_repo`` can't form a surprising URL. Defense in depth: the
+# frontend re-validates the host via safeGithubHref before it becomes an anchor.
+_REPO_SHAPE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
 
 _REDACTED = "`(value redacted: secret-like)`"
 
@@ -169,6 +176,36 @@ def scrub_rationale_text(rationale: str, env_diffs: list[EnvDiff]) -> str:
     approval page renders the string). Decision-doc callers should use
     :func:`scrub_decision_rationale` instead."""
     return _scrub_secret_values_from_rationale(rationale, env_diffs)
+
+
+def attach_iac_pr_link(decision: object, repo: str) -> object:
+    """Serve-time: for an ``iac_apply`` decision, attach a ``github.url`` pointing
+    at the GitHub PR, derived from the TRUSTED config ``repo`` + the persisted
+    ``pr_number``. Lets the operator rail link a row to its PR.
+
+    The URL is fully derivable, so it is NEVER persisted — attaching it at serve
+    time (GET /decisions) covers every row, including pre-existing docs, with no
+    Firestore migration and no staleness risk. Reuses the same ``github.url`` shape
+    that drift_issue/docs_pr rows carry (the frontend re-validates the host via
+    ``safeGithubHref``).
+
+    Conventions mirror :func:`scrub_decision_rationale`: returns the input unchanged
+    BY IDENTITY when there is nothing to do (non-dict, non-iac_apply, a ``github``
+    field already present, an invalid ``pr_number`` or ``repo``), else a shallow
+    copy with the new ``github``. Never mutates the input (``list_decisions`` hands
+    back live dicts), never raises.
+    """
+    if not isinstance(decision, dict):
+        return decision
+    if decision.get("action") != "iac_apply" or "github" in decision:
+        return decision
+    pr_number = decision.get("pr_number")
+    # ``type(...) is int`` excludes bool (type(True) is bool) so True can't pass as 1.
+    if type(pr_number) is not int or pr_number <= 0:
+        return decision
+    if not isinstance(repo, str) or not _REPO_SHAPE.match(repo):
+        return decision
+    return {**decision, "github": {"url": f"https://github.com/{repo}/pull/{pr_number}"}}
 
 
 def render_docs_pr_body(p: DecisionProposal) -> str:

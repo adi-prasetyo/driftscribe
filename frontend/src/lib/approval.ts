@@ -118,3 +118,19 @@ export function safeGithubHref(raw: unknown): string | null {
   if (!GITHUB_ARTIFACT_PATH.test(u.pathname)) return null;
   return u.href;
 }
+
+/**
+ * The PR link for an `iac_apply` decision row's title. The coordinator derives
+ * `github.url` (`https://github.com/<repo>/pull/<n>`) at serve time from the
+ * trusted config repo; this gates on the allowlisted `action === 'iac_apply'`
+ * (so we never read `github.url` off an unrelated row) and routes it through
+ * `safeGithubHref` (host-allowlisted) before it becomes an anchor href. Returns
+ * the absolute github.com URL on success, or `null`.
+ */
+export function iacPrHref(decision: {
+  action?: string;
+  github?: { url?: string | null } | null;
+}): string | null {
+  if (decision?.action !== 'iac_apply') return null;
+  return safeGithubHref(decision.github?.url);
+}

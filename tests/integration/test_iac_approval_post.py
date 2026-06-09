@@ -678,6 +678,29 @@ def test_happy_propose_apply_merge(_configured, monkeypatch):
     assert merge_calls[0]["merge_method"] == "squash"
 
 
+def test_happy_apply_captures_pr_title_on_decision(_configured, monkeypatch):
+    """A successful apply records the as-applied GitHub PR title on the decision
+    doc (rail subtitle). Captured once per request from the repo handle."""
+    _patch_resolve(monkeypatch)
+
+    class _PR:
+        title = "infra(checkout): storefront + orders-worker Cloud Run services"
+
+    class _Repo:
+        def get_pull(self, pr_number):
+            return _PR()
+
+    monkeypatch.setattr(main_mod, "get_repo", lambda token, repo: _Repo())
+    _patch_github(monkeypatch)
+    _patch_workers(monkeypatch)
+    resp = _post(TestClient(app), token=_mint())
+    assert resp.status_code == 200
+    ek = main_mod._iac_event_key("theghostsquad00/driftscribe", 42, _HEAD, _GEN_META)
+    dec = get_state().find_decision_for_event(ek)
+    assert dec["apply_status"] == "applied" and dec["merge_state"] == "merged"
+    assert dec["pr_title"] == "infra(checkout): storefront + orders-worker Cloud Run services"
+
+
 # --------------------------------------------------------------------------- #
 # Idempotency
 # --------------------------------------------------------------------------- #

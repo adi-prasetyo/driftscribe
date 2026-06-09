@@ -226,3 +226,51 @@ def test_list_decisions_response_shape_includes_full_decision_dict():
     # ``created_at`` survives JSON serialization (FastAPI's default
     # encoder turns datetimes into ISO-8601 strings).
     assert "created_at" in d
+
+
+# --------------------------------------------------------------------------- #
+# Serve-time PR link — iac_apply rows get a derived github.url
+# --------------------------------------------------------------------------- #
+
+
+def test_list_decisions_attaches_pr_link_to_iac_apply_row(monkeypatch):
+    """An ``iac_apply`` row must come back with a derived ``github.url`` pointing
+    at its PR, so the rail can link the row. The URL is derived from the trusted
+    config repo at serve time (never persisted)."""
+    monkeypatch.setenv("GITHUB_REPO", "adi-prasetyo/driftscribe")
+    get_settings.cache_clear()
+    state = get_state()
+    state.record_event("ev-iac", {})
+    state.record_decision(
+        "dec-iac",
+        "ev-iac",
+        {
+            "decision_id": "dec-iac",
+            "action": "iac_apply",
+            "trace_id": "b" * 32,
+            "pr_number": 68,
+            "head_sha": "0496b305deadbeef",
+            "apply_status": "applied",
+            "created_at": datetime(2026, 6, 5, 1, 27, 0, tzinfo=timezone.utc),
+        },
+    )
+    resp = TestClient(app).get("/decisions")
+    assert resp.status_code == 200
+    row = resp.json()["decisions"][0]
+    assert row["github"]["url"] == "https://github.com/adi-prasetyo/driftscribe/pull/68"
+
+
+def test_list_decisions_does_not_attach_pr_link_to_non_iac_row(monkeypatch):
+    """A non-iac row carries no derived PR link (the helper is iac_apply-only)."""
+    monkeypatch.setenv("GITHUB_REPO", "adi-prasetyo/driftscribe")
+    get_settings.cache_clear()
+    state = get_state()
+    state.record_event("ev-noop", {})
+    state.record_decision(
+        "dec-noop", "ev-noop",
+        {"action": "no_op", "pr_number": 9,
+         "created_at": datetime(2026, 6, 5, tzinfo=timezone.utc)},
+    )
+    resp = TestClient(app).get("/decisions")
+    assert resp.status_code == 200
+    assert "github" not in resp.json()["decisions"][0]
