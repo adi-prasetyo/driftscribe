@@ -58,6 +58,10 @@ export interface Decision extends Record<string, unknown> {
   pr_number?: number;
   head_sha?: string;
   pr_title?: string;
+  // iac_apply lifecycle status (applied / waiting_for_rebake / failed /
+  // failed_state_suspect / ambiguous). The rail renders it as a meta-line token
+  // and uses it to retire the stale "Review & approve →" CTA on superseded rows.
+  apply_status?: string;
 }
 
 /** GET /trace/{id} response (historical replay + post-`done` backfill). */

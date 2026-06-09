@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { fmtTokens, shortTrace, fmtPreview, fmtWhen, shortSha } from '../../src/lib/format';
+import { fmtTokens, shortTrace, fmtPreview, fmtWhen, shortSha, iacStatusLabel } from '../../src/lib/format';
 
 describe('fmtTokens', () => {
   it('formats a present total with comma grouping and " tok" suffix', () => {
@@ -136,5 +136,38 @@ describe('fmtWhen', () => {
   it('handles null/undefined input safely (returns "")', () => {
     expect(fmtWhen(null as unknown as string)).toBe('');
     expect(fmtWhen(undefined as unknown as string)).toBe('');
+  });
+});
+
+describe('iacStatusLabel', () => {
+  it('maps each known apply_status to its readable phrase', () => {
+    expect(iacStatusLabel('applied')).toBe('applied');
+    expect(iacStatusLabel('waiting_for_rebake')).toBe('awaiting re-bake');
+    expect(iacStatusLabel('failed')).toBe('failed');
+    // Codex must-fix: failed_state_suspect is a real backend-emitted status.
+    expect(iacStatusLabel('failed_state_suspect')).toBe('failed (state suspect)');
+    expect(iacStatusLabel('ambiguous')).toBe('ambiguous');
+  });
+
+  it('passes an unrecognised non-empty status through verbatim', () => {
+    expect(iacStatusLabel('some_new_status')).toBe('some_new_status');
+  });
+
+  it('clamps an over-long unknown status to 40 chars + ellipsis', () => {
+    const long = 'x'.repeat(60);
+    const out = iacStatusLabel(long);
+    expect(out).toBe('x'.repeat(40) + '…');
+    expect(out.length).toBe(41);
+  });
+
+  it('passes an unknown status of exactly 40 chars through without an ellipsis', () => {
+    const exact = 'y'.repeat(40);
+    expect(iacStatusLabel(exact)).toBe(exact);
+  });
+
+  it('returns "" for empty / null / undefined', () => {
+    expect(iacStatusLabel('')).toBe('');
+    expect(iacStatusLabel(null)).toBe('');
+    expect(iacStatusLabel(undefined)).toBe('');
   });
 });

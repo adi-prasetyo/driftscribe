@@ -134,3 +134,67 @@ export function iacPrHref(decision: {
   if (decision?.action !== 'iac_apply') return null;
   return safeGithubHref(decision.github?.url);
 }
+
+/**
+ * PR numbers that have a terminal `apply_status === 'applied'` iac_apply row in
+ * `decisions`. A `waiting_for_rebake` row whose PR is in this set is SUPERSEDED
+ * — its apply already succeeded on a later request, so its "Review & approve →"
+ * CTA is stale and must downgrade to the neutral view-only label.
+ *
+ * The rail already holds the full list (`/decisions?limit=50`), so supersession
+ * is answerable client-side with no backend change. If a list ever exceeds the
+ * window and an `applied` row falls outside it, the matching waiting row simply
+ * keeps its live CTA — a fail-safe degradation (shows actionable, the status
+ * quo), never a false "resolved".
+ *
+ * Tolerates a null/undefined list and null/undefined entries. A pr_number is
+ * only counted when it is a positive integer (mirrors `iacApprovalHref`'s
+ * guard), so a missing/zero/non-integer number can never resolve a PR.
+ */
+export function resolvedIacPrNumbers(
+  decisions:
+    | ReadonlyArray<
+        { action?: string; apply_status?: string; pr_number?: number } | null | undefined
+      >
+    | null
+    | undefined,
+): Set<number> {
+  const resolved = new Set<number>();
+  for (const d of decisions ?? []) {
+    if (
+      d?.action === 'iac_apply' &&
+      d?.apply_status === 'applied' &&
+      typeof d.pr_number === 'number' &&
+      Number.isInteger(d.pr_number) &&
+      d.pr_number > 0
+    ) {
+      resolved.add(d.pr_number);
+    }
+  }
+  return resolved;
+}
+
+/**
+ * Label for an iac_apply row's approval CTA. The link target — `/iac-approvals/<n>`
+ * — is unchanged for every state; only the wording reflects whether the row is
+ * still ACTIONABLE.
+ *
+ * "Review & approve →" ONLY when the row is `waiting_for_rebake` AND not
+ * superseded (no `applied` row for its PR — see `resolvedIacPrNumbers`). A
+ * `waiting_for_rebake` create-class decision still needs an operator click (the
+ * second, post-rebake Apply); once a later `applied` row exists for the same PR,
+ * that work is done and the row is view-only. Every other state — a superseded
+ * waiting row, applied, failed, or a row with an invalid/missing `pr_number`
+ * that can't be matched to a resolved PR (so it keeps the live CTA) — resolves
+ * to the neutral "Open approval page →" (Codex review, PR #71: avoid a stale
+ * "Review & approve" affordance on a decision that is already resolved).
+ */
+export function iacApproveLabel(
+  d: { apply_status?: string; pr_number?: number },
+  resolvedPrs: ReadonlySet<number>,
+): string {
+  const superseded = typeof d.pr_number === 'number' && resolvedPrs.has(d.pr_number);
+  return d.apply_status === 'waiting_for_rebake' && !superseded
+    ? 'Review & approve →'
+    : 'Open approval page →';
+}

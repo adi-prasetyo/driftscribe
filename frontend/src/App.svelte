@@ -128,9 +128,7 @@
   // so the Infrastructure panel can refresh the resource map after an apply lands.
   function noteApplied(ds: Decision[]) {
     const applied = ds.find(
-      (d) =>
-        d.action === 'iac_apply' &&
-        (d as Record<string, unknown>).apply_status === 'applied',
+      (d) => d.action === 'iac_apply' && d.apply_status === 'applied',
     );
     const id = applied?.decision_id ?? null;
     if (id && id !== lastAppliedId) {

@@ -1,6 +1,14 @@
 <script lang="ts">
-  import { safeApprovalHref, iacApprovalHref, isExpired, safeGithubHref, iacPrHref } from '../lib/approval';
-  import { shortSha } from '../lib/format';
+  import {
+    safeApprovalHref,
+    iacApprovalHref,
+    isExpired,
+    safeGithubHref,
+    iacPrHref,
+    resolvedIacPrNumbers,
+    iacApproveLabel,
+  } from '../lib/approval';
+  import { shortSha, iacStatusLabel } from '../lib/format';
   import type { Decision } from '../lib/types';
 
   let {
@@ -12,6 +20,11 @@
     activeTraceId: string | null;
     onOpenTrace: (traceId: string) => void;
   } = $props();
+
+  // PRs whose iac_apply has terminally `applied` — a `waiting_for_rebake` row
+  // for one of these is superseded, so its CTA downgrades to view-only
+  // (iacApproveLabel). Derived once per render from the list the rail holds.
+  const resolvedPrs = $derived(resolvedIacPrNumbers(decisions));
 
   // Resolve the rollback approval link for a row, same-origin-guarded. Returns
   // the safe RELATIVE href, or null when there is no approval / it fails the
@@ -27,17 +40,6 @@
   // allowlisted action so we never construct a link from an unrelated decision.
   function iacApproveHref(d: Decision): string | null {
     return d.action === 'iac_apply' ? iacApprovalHref(d.pr_number) : null;
-  }
-
-  // The link text reflects whether the row is still ACTIONABLE. Only a
-  // `waiting_for_rebake` create-class decision still needs an operator click
-  // (the second, post-rebake Apply); for applied/failed/terminal history rows
-  // the page is view-only, so use neutral wording (Codex review: avoid a stale
-  // "Review & approve" label on a decision that is already resolved).
-  function iacApproveLabel(d: Decision): string {
-    return d.apply_status === 'waiting_for_rebake'
-      ? 'Review & approve →'
-      : 'Open approval page →';
   }
 
   // Resolve the GitHub PR/issue link for a drift/docs decision. Gated on an
@@ -127,7 +129,8 @@
 
           {#if d.action === 'iac_apply'}
             {@const sha = shortSha(d.head_sha)}
-            <p class="row-meta">iac_apply{#if sha} · <span class="row-sha">⎇ {sha}</span>{/if}</p>
+            {@const st = iacStatusLabel(d.apply_status)}
+            <p class="row-meta">iac_apply{#if st} · {st}{/if}{#if sha} · <span class="row-sha">⎇ {sha}</span>{/if}</p>
           {/if}
 
           <div class="row-actions">
@@ -157,7 +160,7 @@
                 data-testid="iac-approve-link"
                 href={iacHref}
                 target="_blank"
-                rel="noopener">{iacApproveLabel(d)}</a>
+                rel="noopener">{iacApproveLabel(d, resolvedPrs)}</a>
             {/if}
 
             {#if githubHref(d)}
