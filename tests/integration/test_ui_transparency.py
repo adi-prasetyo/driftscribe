@@ -1,9 +1,11 @@
-"""Integration tests for ``GET /ui/transparency`` (Svelte SPA shell).
+"""Integration tests for ``GET /`` (the operator Svelte SPA shell).
 
-Post-refresh the route serves a THIN shell (a ``#app`` mount + the Vite
-manifest-resolved JS/CSS); the Svelte app renders the DOM client-side. So this
-file pins the SHELL contract (200, html, no-store, no token, the bundle
-reference, the legacy fallback, and the manifest-present/absent resolution).
+The SPA is served at the site root ``/``; the old ``/ui/transparency`` path was
+removed (no redirect). Post-refresh the route serves a THIN shell (a ``#app``
+mount + the Vite manifest-resolved JS/CSS); the Svelte app renders the DOM
+client-side. So this file pins the SHELL contract (200, html, no-store, no
+token, the bundle reference, the legacy fallback, the manifest-present/absent
+resolution, and that the old path now 404s).
 
 The behavioral/structural guards that the old single-file template inlined have
 been RE-HOMED (not dropped) — each is now asserted on the pure function or the
@@ -42,8 +44,8 @@ def _reset_manifest_cache():
     main._VITE_MANIFEST_CACHE = None
 
 
-def test_ui_transparency_route_returns_html():
-    resp = client.get("/ui/transparency")
+def test_root_route_returns_html():
+    resp = client.get("/")
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/html")
     assert resp.headers.get("Cache-Control") == "no-store"
@@ -52,16 +54,23 @@ def test_ui_transparency_route_returns_html():
     assert "reasoning timeline" in body.lower()
 
 
-def test_ui_transparency_route_does_not_require_token():
+def test_root_route_does_not_require_token():
     # The shell itself is unauthenticated; the SPA's API calls carry the token.
-    resp = client.get("/ui/transparency")  # NO X-DriftScribe-Token
+    resp = client.get("/")  # NO X-DriftScribe-Token
     assert resp.status_code == 200
 
 
-def test_ui_transparency_shell_mounts_spa_bundle():
+def test_old_transparency_path_is_gone():
+    """The SPA moved to ``/``; the old path is deleted outright (no redirect/
+    alias). ``follow_redirects=False`` so a stray 3xx would fail this too."""
+    resp = client.get("/ui/transparency", follow_redirects=False)
+    assert resp.status_code == 404
+
+
+def test_root_shell_mounts_spa_bundle():
     """The shell must carry the #app mount point and reference the built ES
     module + stylesheet under /static (resolved from the Vite manifest)."""
-    body = client.get("/ui/transparency").text
+    body = client.get("/").text
     assert 'id="app"' in body
     assert "/static/" in body
     assert 'type="module"' in body
@@ -86,7 +95,7 @@ def test_shell_uses_hashed_assets_when_manifest_present(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "_STATIC_DIR", static)
     main._VITE_MANIFEST_CACHE = None
 
-    body = client.get("/ui/transparency").text
+    body = client.get("/").text
     assert "/static/transparency-DEADBEEF.js" in body
     assert "/static/driftscribe-CAFEBABE.css" in body
 
@@ -99,7 +108,7 @@ def test_shell_falls_back_when_manifest_absent(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "_STATIC_DIR", empty)
     main._VITE_MANIFEST_CACHE = None
 
-    resp = client.get("/ui/transparency")
+    resp = client.get("/")
     assert resp.status_code == 200
     body = resp.text
     assert 'id="app"' in body

@@ -1,7 +1,8 @@
 # DriftScribe UI E2E (Playwright)
 
-Playwright UI end-to-end tests for the `/ui/transparency` page (Phase 19.B
-transparency UI). Chromium-only; hackathon scope.
+Playwright UI end-to-end tests for the operator SPA served at the site root `/`
+(Phase 19.B transparency UI; moved from `/ui/transparency`). Chromium-only;
+hackathon scope.
 
 ## Install
 

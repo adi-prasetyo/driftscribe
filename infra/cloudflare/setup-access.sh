@@ -137,7 +137,7 @@ cat <<EOF
 
 Access setup done.
 
-  Public URL:    https://$HOST/ui/transparency
+  Public URL:    https://$HOST/
   Team domain:   https://$TEAM_DOMAIN
   Allowed:       ${ALLOWED_EMAILS[*]}
 

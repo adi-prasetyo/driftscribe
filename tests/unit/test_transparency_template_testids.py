@@ -1,7 +1,7 @@
 """Stable selector contract for the Playwright UI E2E (post-Svelte-refresh).
 
 The transparency UI is now a Svelte+Vite SPA (frontend/src/**), served via a thin
-shell at GET /ui/transparency. The Playwright spec (tests/e2e/ui/transparency.spec.ts)
+shell at GET / (the site root). The Playwright spec (tests/e2e/ui/transparency.spec.ts)
 keys off ``data-testid`` attributes + a few element ids, so this meta-test pins
 that those selectors exist IN THE SVELTE SOURCE (the rendered DOM is verified at
 runtime by the mock-Playwright smoke in frontend/tests/smoke and by the cloud

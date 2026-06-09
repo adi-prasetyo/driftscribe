@@ -1,7 +1,7 @@
 """Integration tests for ``GET /decisions`` (Phase 19.A.7).
 
-Backs the operator-facing decision-history panel on
-``/ui/transparency``. Pins the route contract:
+Backs the operator-facing decision-history panel on the operator SPA
+(served at ``/``). Pins the route contract:
 
 * 401 without the ``X-DriftScribe-Token`` header (when the guard is
   configured) — same shape as /recheck.

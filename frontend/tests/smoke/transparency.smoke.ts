@@ -103,7 +103,7 @@ test.describe('transparency UI (mock smoke)', () => {
     });
     await seedToken(page);
     await mockData(page, freshState());
-    await page.goto('/ui/transparency');
+    await page.goto('/');
 
     await expect(page.locator(`[data-testid="${TESTIDS.chatPrompt}"]`)).toBeVisible();
     await expect(page.locator(`[data-testid="${TESTIDS.chatSubmit}"]`)).toBeVisible();
@@ -119,7 +119,7 @@ test.describe('transparency UI (mock smoke)', () => {
     const state = freshState();
     await seedToken(page);
     await mockData(page, state);
-    await page.goto('/ui/transparency');
+    await page.goto('/');
 
     await page.locator(`[data-testid="${TESTIDS.chatPrompt}"]`).fill('Check payment-demo for drift');
     await page.locator(`[data-testid="${TESTIDS.chatSubmit}"]`).click();
@@ -153,7 +153,7 @@ test.describe('transparency UI (mock smoke)', () => {
     state.chatDelayMs = 800; // hold /chat open so the in-flight state is observable
     await seedToken(page);
     await mockData(page, state);
-    await page.goto('/ui/transparency');
+    await page.goto('/');
 
     await page.locator(`[data-testid="${TESTIDS.chatPrompt}"]`).fill('Check payment-demo for drift');
     await page.locator(`[data-testid="${TESTIDS.chatSubmit}"]`).click();
@@ -175,7 +175,7 @@ test.describe('transparency UI (mock smoke)', () => {
     // No token seeded; first /decisions returns 401.
     const state = freshState(401);
     await mockData(page, state);
-    await page.goto('/ui/transparency');
+    await page.goto('/');
 
     // The inline panel (role=dialog) appears — NOT a native prompt.
     await expect(page.getByRole('dialog')).toBeVisible();
@@ -191,7 +191,7 @@ test.describe('transparency UI (mock smoke)', () => {
   test('malicious off-origin approval URL renders NO link', async ({ page }) => {
     await seedToken(page);
     await mockData(page, freshState());
-    await page.goto('/ui/transparency');
+    await page.goto('/');
 
     // five seeded decisions render (two rollbacks + one iac_apply + two drift_issue)
     await expect(page.locator(`[data-testid="${TESTIDS.pastDecisionItem}"]`)).toHaveCount(5);
@@ -204,7 +204,7 @@ test.describe('transparency UI (mock smoke)', () => {
   test('decision github.url: valid github.com link renders, javascript: url does not', async ({ page }) => {
     await seedToken(page);
     await mockData(page, freshState());
-    await page.goto('/ui/transparency');
+    await page.goto('/');
 
     // Exactly one safe github link — the valid github.com issue. The
     // javascript: row is rejected by safeGithubHref and renders no anchor.
@@ -220,7 +220,7 @@ test.describe('transparency UI (mock smoke)', () => {
   test('historical iac_apply: "historical" pill (not streaming) + decision summary + empty-timeline note', async ({ page }) => {
     await seedToken(page);
     await mockData(page, freshState());
-    await page.goto('/ui/transparency');
+    await page.goto('/');
 
     // Open the iac_apply decision specifically (not .first(), which is a rollback).
     await page
@@ -253,7 +253,7 @@ test.describe('transparency UI (mock smoke)', () => {
   test('infrastructure panel: glanceable drift badge, then expand lazy-renders the resource map', async ({ page }) => {
     await seedToken(page);
     await mockData(page, freshState());
-    await page.goto('/ui/transparency');
+    await page.goto('/');
 
     // Collapsed panel shows a glanceable drift badge (data fetched on mount —
     // no Mermaid loaded yet).
@@ -277,7 +277,7 @@ test.describe('transparency UI (mock smoke)', () => {
   test('open-trace enters historical mode; new chat exits', async ({ page }) => {
     await seedToken(page);
     await mockData(page, freshState());
-    await page.goto('/ui/transparency');
+    await page.goto('/');
 
     await page.locator(`[data-testid="${TESTIDS.openTraceButton}"]`).first().click();
     await expect(page.locator(`[data-testid="${TESTIDS.historicalBanner}"]`)).toBeVisible();
@@ -292,7 +292,7 @@ test.describe('transparency UI (mock smoke)', () => {
   test('drift decision: env-diff card shows non-secret values, redacts secret-named + credentialed-URL values, leaks no raw secret', async ({ page }) => {
     await seedToken(page);
     await mockData(page, freshState());
-    await page.goto('/ui/transparency');
+    await page.goto('/');
 
     // Open d-drift-1 specifically. Filter by its exact github href so the
     // selector is unambiguous even if another row later also renders a link.
