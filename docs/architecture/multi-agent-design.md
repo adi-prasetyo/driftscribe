@@ -1,12 +1,14 @@
 # DriftScribe multi-agent architecture
 
-> **Status:** Phase 17 complete — multi-agent framework + Developer Knowledge MCP. Two workloads ship: **drift** (Cloud Run env vs ops contract) and **upgrade** (npm `package.json` vs GitHub Advisory DB). The coordinator routes per `workload=<name>` and only ever shows the LLM that workload's tool subset. The MCP attaches at the coordinator only. See `docs/plans/2026-05-19-driftscribe-phase17-framework-mcp.md` for the per-task list.
+> **Status:** Live, built out past Phase 17. **Four workloads ship:** **drift** (Cloud Run env vs ops contract), **upgrade** (npm `package.json` vs GitHub Advisory DB), **explore** (chat-only, strictly read-only investigation across infra + code), and **provision** (chat-only, authors `iac/`-only OpenTofu PRs for the gated apply pipeline). The coordinator routes per `workload=<name>` and only ever shows the LLM that workload's tool subset. The MCP attaches at the coordinator only. The drift/upgrade framework is Phase 17 (`docs/plans/2026-05-19-driftscribe-phase17-framework-mcp.md`); explore/provision and the infra workers (`infra-reader`, `tofu-editor`, `tofu-apply`) come from the infra-IaC initiative (`docs/plans/2026-05-27-infra-iac-agent-design.md` and the `infra-iac-phase-*` plans). For a plain-English tour see [`../OVERVIEW.md`](../OVERVIEW.md).
 
 ---
 
 ## 1. System topology
 
 DriftScribe is a coordinator + per-workload worker fleet. Each service runs on its own Cloud Run service with its own dedicated service account. The coordinator is the only public-facing entrypoint; workers refuse direct human traffic. The coordinator additionally attaches Google's Developer Knowledge MCP as a reasoning-time tool.
+
+The diagram below shows the original drift + upgrade topology extended with the infra workloads (**explore**, **provision**) and their workers (`infra-reader`, `tofu-editor`). One worker — `tofu-apply`, the sole live-infra mutator — is deliberately **not** in the coordinator's worker registry: the chat agent can only ever open an `iac/` PR via `tofu-editor`, and `tofu-apply` runs **downstream** behind a plan-bound, HMAC-signed operator approval (see §3 and the `infra-iac-phase-c*` plans). The full live service inventory is in the table after the diagram.
 
 ```mermaid
 flowchart LR
@@ -15,27 +17,36 @@ flowchart LR
     Webhook["External webhook\n(webhook.site for demo)"]
     GitHub["GitHub Contents/PR API\n+ Advisory DB"]
     CloudRunAdmin["Cloud Run admin API\n(payment-demo)"]
+    CAI["Cloud Asset Inventory\n(whole-project read)"]
+    GCPResources["GCP resource APIs\n(Cloud Run, GCS, Pub/Sub…)"]
     DKMCP["Developer Knowledge MCP\n(googleapis.com)"]
 
     subgraph Coordinator["driftscribe-agent (coordinator)"]
         Chat["/chat"]
         Recheck["/recheck"]
         Eventarc["/eventarc"]
-        Approvals["/approvals/{id}"]
-        subgraph Drift["Drift workload agent\n(prompt + 8 tools)"]
+        Approvals["/approvals/{id} + /iac-approvals/{n}"]
+        subgraph Drift["Drift agent\n(prompt + 8 tools)"]
             ADKd["ADK Agent"]
         end
-        subgraph Upgrade["Upgrade workload agent\n(prompt + 6 tools)"]
+        subgraph Upgrade["Upgrade agent\n(prompt + 8 tools)"]
             ADKu["ADK Agent"]
+        end
+        subgraph Explore["Explore agent — chat-only, read-only\n(prompt + 6 read tools)"]
+            ADKe["ADK Agent"]
+        end
+        subgraph Provision["Provision agent — chat-only, 1 mutation tool\n(prompt + 6 tools)"]
+            ADKp["ADK Agent"]
         end
         Chat --> ADKd
         Chat --> ADKu
+        Chat --> ADKe
+        Chat --> ADKp
         Recheck --> ADKd
         Eventarc --> ADKd
-        %% /recheck workload=upgrade returns 503 in this build — the
-        %% drift /recheck path's post-agent plumbing (classifier ->
-        %% validator -> renderer -> action) is drift-specific.
-        %% Workload-specific /recheck for upgrade is post-Phase-17.
+        %% /recheck serves drift; upgrade is rechecked via GitHub branch
+        %% observation. explore + provision are chat-only —
+        %% agent/main.py::CHAT_ONLY_WORKLOAD_NAMES refuses /recheck for them.
     end
 
     subgraph DriftWorkers["Drift workers (--no-allow-unauthenticated)"]
@@ -45,9 +56,14 @@ flowchart LR
     end
     subgraph UpgradeWorkers["Upgrade workers (--no-allow-unauthenticated)"]
         UReader["driftscribe-upgrade-reader\n/read"]
-        UDocs["driftscribe-upgrade-docs\n/patch"]
+        UDocs["driftscribe-upgrade-docs\n/patch, /close, /merge"]
+    end
+    subgraph InfraWorkers["Infra workers (--no-allow-unauthenticated)"]
+        InfraReader["driftscribe-infra-reader\n/describe"]
+        TofuEditor["driftscribe-tofu-editor\n/open-pr"]
     end
     Notifier["driftscribe-notifier\n/notify (shared)"]
+    TofuApply["driftscribe-tofu-apply\n/apply — sole live-infra mutator\n(downstream, NOT coordinator-invoked)"]
 
     Human -- "X-DriftScribe-Token" --> Coordinator
     Eventarc_GCP -- "Google-signed ID token" --> Eventarc
@@ -56,30 +72,46 @@ flowchart LR
     ADKd -- "Bearer ID token" --> Rollback
     ADKu -- "Bearer ID token" --> UReader
     ADKu -- "Bearer ID token" --> UDocs
+    ADKe -- "Bearer ID token" --> Reader
+    ADKe -- "Bearer ID token" --> UReader
+    ADKe -- "Bearer ID token" --> InfraReader
+    ADKp -- "Bearer ID token" --> Reader
+    ADKp -- "Bearer ID token" --> InfraReader
+    ADKp -- "Bearer ID token" --> TofuEditor
     ADKd -- "Bearer ID token" --> Notifier
     ADKu -- "Bearer ID token" --> Notifier
     ADKd -- "X-Goog-Api-Key" --> DKMCP
     ADKu -- "X-Goog-Api-Key" --> DKMCP
+    ADKe -- "X-Goog-Api-Key" --> DKMCP
+    ADKp -- "X-Goog-Api-Key" --> DKMCP
     Reader --> CloudRunAdmin
     Docs --> GitHub
     Rollback --> CloudRunAdmin
     UReader --> GitHub
     UDocs --> GitHub
+    InfraReader --> CAI
+    TofuEditor --> GitHub
     Notifier --> Webhook
-    Human -- "Approve / Reject\n(HMAC-signed)" --> Approvals
+    Human -- "Approve / Reject rollback\n(HMAC-signed)" --> Approvals
+    Human -. "Approve infra plan\n(plan-bound HMAC) → gated apply" .-> TofuApply
+    TofuApply --> GitHub
+    TofuApply -. "tofu apply" .-> GCPResources
 ```
 
 ### Service inventory
 
 | Service | Public? | Workload | Owns | Notes |
 | --- | --- | --- | --- | --- |
-| `driftscribe-agent` (coordinator) | Yes — `--allow-unauthenticated` + `X-DriftScribe-Token` | both | ADK agent loop, intent classification, approval HTML/HMAC, Firestore session + approval state, Developer Knowledge MCP attach | Single entrypoint for humans, Eventarc, and demo scripts. 10 callables in `COORDINATOR_TOOLS`; the LLM only ever sees the per-workload subset (8 drift, 6 upgrade — overlap on 4 tools: `notify`, `search_recent_prs`, `search_developer_docs`, `retrieve_developer_doc`; 8 + 6 − 4 = 10). |
+| `driftscribe-agent` (coordinator) | Yes — `--allow-unauthenticated` + `X-DriftScribe-Token` | all 4 | ADK agent loop, intent classification, approval HTML/HMAC, Firestore session + approval state, Developer Knowledge MCP attach, infra resource-map serve | Single entrypoint for humans, Eventarc, and demo scripts. 14 wired callables in `TOOL_REGISTRY` (+2 reserved session-memory slots); the LLM only ever sees the per-workload subset — 8 drift, 8 upgrade, 6 explore (all read-only), 6 provision (one of them the `provision_open_infra_pr` mutation tool). See §4. |
 | `driftscribe-reader` | No | drift | Reading live Cloud Run env + revision of `payment-demo` | Hardcoded target — request body is rejected if it tries to override service/region/project. |
 | `driftscribe-docs` | No | drift | Patching runbook files under `demo/docs/`, opening PRs against a single repo | Path allowlist regex `^demo/docs/[^/]+\.md$`. Refuses `ops-contract.yaml`, `.github/`, `infra/`, anything `.py`. |
 | `driftscribe-rollback` | No | drift | `/propose` → operator approval → `/execute` or `/deny` (HMAC-bound, single-use, 15-min TTL) on `payment-demo` only | Approval UI lives on the **coordinator** so the gated page can be reached by a human. **Both decision paths** verify the HMAC on this worker — the coordinator never validates the approval token itself, by design. |
 | `driftscribe-upgrade-reader` | No | upgrade | Reading `package.json` from a pinned repo and looking up matching GitHub Advisory DB entries | Hardcoded target via env-pinned `UPGRADE_TARGET_REPO`. Read-only PAT scope. See §3. |
-| `driftscribe-upgrade-docs` | No | upgrade | Bumping a single `dependencies[package_name]` entry in the pinned lockfile and opening a PR against `main` | Same `UPGRADE_TARGET_REPO` env pin; branch must start `upgrade/`. Post-LLM deterministic validator (semver, GHSA URL shape) runs before any GitHub write. See §3. |
-| `driftscribe-notifier` | No | both (shared) | Posting normalized payload to a single env-injected webhook URL | Caller-supplied `url` is ignored — the worker's identity *is* the URL. Reused unchanged by the upgrade workload. |
+| `driftscribe-upgrade-docs` | No | upgrade | Bumping a single `dependencies[package_name]` entry in the pinned lockfile and opening a PR (`/patch`), plus closing (`/close`) or CI-gated squash-merging (`/merge`) a PR this workload opened | Same `UPGRADE_TARGET_REPO` env pin; branch must start `upgrade/`. Post-LLM deterministic validator (semver, GHSA URL shape) runs before any GitHub write. `/merge` fails closed unless the required check is green on head and there's no conflict. See §3. |
+| `driftscribe-infra-reader` | No | explore + provision | Whole-project resource enumeration via Cloud Asset Inventory `searchAllResources` (`/describe`); also resolves which live resources are declared in `iac/` (managed) vs. unmanaged (drift) | Read-only — `roles/cloudasset.viewer` + `serviceusage.serviceUsageConsumer` only. No write surface of any kind. Backs the operator UI's infra resource-map panel. |
+| `driftscribe-tofu-editor` | No | provision | Authoring `iac/`-only HCL file writes and opening **one** PR (`/open-pr`); runs `tofu fmt` on the authored files first | Re-validates every file before any GitHub call: `iac/` prefix, foundation-file ban, secret ban, AGENT-mode static gate. `target_repo`/`branch`/`base`/`label` are server-derived, never LLM-supplied. A bad request surfaces as 403/422 the model can react to. |
+| `driftscribe-tofu-apply` | No | provision (downstream) | The **sole live-infra mutator**: `tofu apply` of an approved plan (`/apply`) | **NOT in the coordinator's `WORKER_REGISTRY`** — the chat agent cannot call it. Reached only by the gated plan-build → approve → apply pipeline, behind a plan-bound, HMAC-signed operator approval (`/iac-approvals/{n}`). Claim-first single-flight; verified end-to-end live. See the `infra-iac-phase-c*` plans. |
+| `driftscribe-notifier` | No | drift + upgrade (shared) | Posting normalized payload to a single env-injected webhook URL | Caller-supplied `url` is ignored — the worker's identity *is* the URL. Reused unchanged by the upgrade workload. |
 
 ---
 
@@ -169,28 +201,53 @@ Each worker has a tiny REST surface with a hardcoded "payload-intent policy" —
   The validator is transport-agnostic: it raises `UpgradeValidationError(status_code, reason)`; the FastAPI handler converts to `HTTPException` at the boundary. Policy → 403, schema-shaped → 422.
 - **Auth to GitHub:** Fine-grained PAT scoped to the single repo, `Contents: Read & write` + `Pull requests: Read & write`. Stored as Secret Manager `upgrade-docs-github-pat`.
 
+### Infra Reader — `driftscribe-infra-reader`
+
+- **Endpoint:** `POST /describe`
+- **Request:** `{}` (empty object; `extra="forbid"` → 422 on any field). The worker's whole job is fixed at deploy time — there is nothing for the body to select.
+- **Response:** a bounded project-inventory summary, IaC-labeled — managed (declared in the baked-in `iac/`) vs. unmanaged (drift) resource counts, with a `declared_set_status` that degrades independently if any `*.tf` fails to parse. CAI permission/availability failures **soft-fail to a 200** carrying `{ "error": "cloud_asset_unavailable", ... }` so a missing grant degrades the UI panel rather than crashing the request.
+- **Hardcoded policy:** project-scoped read of `$GCP_PROJECT` via Cloud Asset Inventory `searchAllResources` with a minimal read-mask. No write surface of any kind.
+- **Auth to GCP:** `roles/cloudasset.viewer` + `serviceusage.serviceUsageConsumer` — strictly read-only. Backs both the `explore` and `provision` workloads' `read_project_inventory` tool and the operator UI's infra resource-map panel.
+
+### Tofu Editor — `driftscribe-tofu-editor`
+
+- **Endpoint:** `POST /open-pr`
+- **Request:** `{ "target_repo", "branch", "base", "title", "body", "files": [{ "path", "content" }, ...] }` (closed schema; all fields required; extra fields → 422).
+- **Response:** `{ "status", "pr_number", "pr_url", "branch" }` on success.
+- **Hardcoded policy (fail-closed by construction — every check runs BEFORE any GitHub call, so a rejected request leaves no side effect):** `target_repo` is re-validated against the env-pinned `TARGET_REPO`. Each file must be a traversal-free, `iac/`-prefixed `.tf`/`.md` path that is **not** one of the operator-only foundation files; paths are deduplicated, non-empty, and size-bounded. `branch`/`base` are policy-checked; `title`/`body` are size-bounded. Authored files are run through `tofu fmt` first. Policy violations → **403**, schema-shaped → **422**. It writes HCL and opens a PR — it **never** touches live infra.
+- **Auth to GitHub:** Secret-Manager `GITHUB_TOKEN`; even a fully compromised coordinator can only ever cause an `iac/`-only PR against the pinned repo.
+
+### Tofu Apply — `driftscribe-tofu-apply` (downstream, not coordinator-invoked)
+
+- **Endpoint:** `POST /apply` — the **sole live-infra mutator** (`tofu apply` of an already-approved plan).
+- **Not in the coordinator's tool/worker registry.** No chat agent can reach it. It sits at the end of the gated pipeline (trusted plan-build → plan-bound, HMAC-signed operator approval at `/iac-approvals/{n}` → apply), proven end-to-end live. Claim-first single-flight guards against double-apply. Full interface, IAM, and the C2→C4 flow are documented in the `infra-iac-phase-c*` plans under [`../plans/`](../plans/).
+
 ---
 
 ## 4. Layer 0 — capability-bounded tool registry
 
 The coordinator's ADK agent operates against an explicit, hardcoded list of tools — `agent.adk_agent.COORDINATOR_TOOLS`. The LLM cannot invoke anything outside this list; no `execute_shell`, no `arbitrary_http_request`, no direct GCP/GitHub SDK calls.
 
-The 10 registered tools (as of Phase 17.C.4):
+The 14 wired tools (plus 2 reserved session-memory slots, `get_session_state` / `set_session_state`, that fail closed if a YAML enables them before they're implemented):
 
 | Tool | Purpose | Routes to | Workload(s) |
 |---|---|---|---|
-| `read_live_env_tool` | Read Cloud Run service env + revision | Reader (`/read`) | drift |
+| `read_live_env_tool` | Read Cloud Run service env + revision | Reader (`/read`) | drift, explore, provision |
 | `propose_rollback_tool` | Create an approval doc for a rollback | Rollback (`/propose`) | drift |
 | `patch_docs_tool` | Open a docs PR | Docs (`/patch`) | drift |
-| `notify_tool` | Post to webhook | Notifier (`/notify`) | drift + upgrade |
-| `search_recent_prs_tool` | Read-only PR history | Coordinator-internal (read-only GitHub token) | drift + upgrade |
-| `load_contract_tool` | Read the baked-in ops contract | Coordinator-internal (filesystem) | drift |
-| `search_developer_docs` | Search Developer Knowledge corpus | Developer Knowledge MCP (Streamable HTTP) | drift + upgrade |
-| `retrieve_developer_doc` | Fetch a single doc body by name | Developer Knowledge MCP | drift + upgrade |
-| `upgrade_read_dependencies_tool` | List deps + advisories | Upgrade Reader (`/read`) | upgrade |
+| `notify_tool` | Post to webhook | Notifier (`/notify`) | drift, upgrade |
+| `search_recent_prs_tool` | Read-only PR history | Coordinator-internal (read-only GitHub token) | drift, upgrade |
+| `load_contract_tool` | Read the baked-in ops contract | Coordinator-internal (filesystem) | drift, explore, provision |
+| `search_developer_docs` | Search Developer Knowledge corpus | Developer Knowledge MCP (Streamable HTTP) | all 4 |
+| `retrieve_developer_doc` | Fetch a single doc body by name | Developer Knowledge MCP | all 4 |
+| `upgrade_read_dependencies_tool` | List deps + advisories | Upgrade Reader (`/read`) | upgrade, explore |
 | `upgrade_propose_pr_tool` | Bump a dep + open PR | Upgrade Docs (`/patch`) | upgrade |
+| `upgrade_close_pr_tool` | Close an upgrade PR this workload opened | Upgrade Docs (`/close`) | upgrade |
+| `upgrade_merge_pr_tool` | CI-gated squash-merge of an upgrade PR | Upgrade Docs (`/merge`) | upgrade |
+| `read_project_inventory_tool` | Whole-project resource inventory (read-only) | Infra Reader (`/describe`) | explore, provision |
+| `open_infra_pr_tool` | Author `iac/`-only HCL + open ONE PR (the only mutation tool outside drift/upgrade) | Tofu Editor (`/open-pr`) | provision |
 
-**Per-workload tool scoping (Phase 17.A.4):** `COORDINATOR_TOOLS` is the *global registration manifest* — the universe of callables the coordinator may wire to ANY workload. Each workload's YAML (`workloads/<name>/workload.yaml`) carries `enabled_tool_names`, a symbolic filter that picks a per-workload subset from `agent.workloads.registry.TOOL_REGISTRY`. `Agent(tools=...)` receives ONLY the workload-scoped list at runtime, so **the LLM never sees a cross-workload tool**. `tests/unit/test_coordinator_tool_inventory.py` pins a three-way equality: YAML ⇄ the `DRIFT_WORKLOAD_TOOL_NAMES` / `UPGRADE_WORKLOAD_TOOL_NAMES` tuples in `agent/adk_agent.py` ⇄ runtime resolution via `load_workload(name)`.
+**Per-workload tool scoping (Phase 17.A.4):** `COORDINATOR_TOOLS` is the *global registration manifest* — the universe of callables the coordinator may wire to ANY workload. Each workload's YAML (`workloads/<name>/workload.yaml`) carries `enabled_tool_names`, a symbolic filter that picks a per-workload subset from `agent.workloads.registry.TOOL_REGISTRY`. `Agent(tools=...)` receives ONLY the workload-scoped list at runtime, so **the LLM never sees a cross-workload tool**. `tests/unit/test_coordinator_tool_inventory.py` pins a three-way equality: YAML ⇄ the `DRIFT_WORKLOAD_TOOL_NAMES` / `UPGRADE_WORKLOAD_TOOL_NAMES` / `EXPLORE_WORKLOAD_TOOL_NAMES` / `PROVISION_WORKLOAD_TOOL_NAMES` tuples in `agent/adk_agent.py` ⇄ runtime resolution via `load_workload(name)`. The same test pins the **read-only / mutation disjointness** invariants: `explore`'s tools must be disjoint from the mutation-tool set, while `provision`'s set must include `open_infra_pr_tool` (and its `tofu_editor` mutation worker).
 
 **MCP tools are Layer 0, scoped per workload.** The Developer Knowledge MCP is connected at the coordinator only (see §6). Workers have no MCP access. The two MCP-derived tools (`search_developer_docs`, `retrieve_developer_doc`) currently appear in both workloads' `enabled_tool_names`, but the scoping mechanism is the same as for any other tool — a future workload that doesn't need MCP grounding can simply omit them from its YAML.
 
@@ -216,13 +273,13 @@ See [`iam-matrix.md`](./iam-matrix.md) §"Phase 11.9 carry-overs" for the full s
 
 ## 5. Workload abstraction
 
-A **workload** is a named bundle of {system prompt, chat system prompt, tool inventory, worker set, action set, optional contract}. Two ship today: `drift` and `upgrade`. The coordinator routes `POST /chat workload=<name>` and `POST /recheck workload=<name>` per-request to a workload-specific agent.
+A **workload** is a named bundle of {system prompt, chat system prompt, tool inventory, worker set, action set, optional contract}. Four ship today: `drift`, `upgrade`, `explore`, and `provision`. The coordinator routes `POST /chat workload=<name>` per-request to a workload-specific agent; `POST /recheck workload=<name>` serves the autonomous path (`explore` and `provision` are chat-only and `/recheck` refuses them — `agent/main.py::CHAT_ONLY_WORKLOAD_NAMES`). `explore` narrows to a strictly read-only tool subset; `provision` is chat-only too but carries the single `open_infra_pr_tool` mutation, which writes `iac/` HCL and opens a PR — it never touches live infra.
 
 **Data model** (`agent/workloads/spec.py` + `agent/workloads/registry.py`):
 
-- `WorkloadSpec` — pydantic `BaseModel` with `extra="forbid"`, parsed from `workloads/<name>/workload.yaml`. Carries only *symbolic* names — `enabled_tool_names`, `worker_names`, `action_names`. No URLs, secrets, or repos live in YAML. The `name` field is a `Literal["drift", "upgrade"]` so a YAML typo fails at parse time.
+- `WorkloadSpec` — pydantic `BaseModel` with `extra="forbid"`, parsed from `workloads/<name>/workload.yaml`. Carries only *symbolic* names — `enabled_tool_names`, `worker_names`, `action_names`. No URLs, secrets, or repos live in YAML. The `name` field is a `Literal["drift", "upgrade", "explore", "provision"]` so a YAML typo fails at parse time.
 - `WorkloadResolution` — frozen dataclass holding the parsed spec plus resolved callables. The three name→object fields (`tools`, `workers`, `actions`) are exposed as `MappingProxyType` views over private dicts so a caller cannot widen authority by in-place mutation.
-- Three code-side allowlists in `registry.py`: `TOOL_REGISTRY` (12 entries — 10 wired callables plus 2 `None`-reserved session-memory slots, `get_session_state` / `set_session_state`, that fail with `ReservedToolNotImplementedError` if a future YAML enables them before a Phase-N PR flips them to real callables; the manifest the YAML's `enabled_tool_names` resolves against), `WORKER_REGISTRY` (6 entries; each carries its URL env var name), `ACTION_REGISTRY` (6 entries; each carries `requires_approval`). The security property is the inverse of "YAML drives behavior": *flipping a YAML value can choose from the allowlist, but it cannot introduce a new URL, secret, repo, or callable.* A fourth allowlist, `UPGRADE_TARGET_REGISTRY`, pins the upgrade workload's `(target_repo, lockfile_path, advisory_source)` for the same reason.
+- Three code-side allowlists in `registry.py`: `TOOL_REGISTRY` (16 entries — 14 wired callables plus 2 `None`-reserved session-memory slots, `get_session_state` / `set_session_state`, that fail with `ReservedToolNotImplementedError` if a future YAML enables them before a Phase-N PR flips them to real callables; the manifest the YAML's `enabled_tool_names` resolves against), `WORKER_REGISTRY` (8 entries — `drift_reader`/`drift_docs`/`drift_rollback`/`infra_reader`/`notifier`/`upgrade_reader`/`upgrade_docs`/`tofu_editor`; each carries its URL env var name; note `tofu-apply` is deliberately absent — it is not coordinator-callable), `ACTION_REGISTRY` (6 entries; each carries `requires_approval`). The security property is the inverse of "YAML drives behavior": *flipping a YAML value can choose from the allowlist, but it cannot introduce a new URL, secret, repo, or callable.* A fourth allowlist, `UPGRADE_TARGET_REGISTRY`, pins the upgrade workload's `(target_repo, lockfile_path, advisory_source)` for the same reason.
 
 **Routing.** `agent.main`'s `/chat` and `/recheck` handlers extract the `workload` field, call `load_workload(name)`, and pass the `WorkloadResolution` to `build_chat_agent` / `build_agent` in `agent/adk_agent.py`. The factory hands `Agent(tools=...)` the workload's filtered tool list (`list(workload.tools.values())`), NOT the global union. The system prompt comes from the workload directory: `workloads/<name>/system_prompt.md` for `/recheck` and `workloads/<name>/chat_system_prompt.md` (falling back to `system_prompt.md`) for `/chat`. The LLM literally never sees a cross-workload tool or prompt.
 
@@ -293,7 +350,7 @@ full agent traces with Logs Explorer queries like
 
 ## 7. HITL (human-in-the-loop) approval flow
 
-> **Status:** Shipped (Phase 11.5 + Phase 11.9). The flow below matches what's live in `agent/main.py::approval_get` / `approval_post` and `agent/templates/approval.html`. HITL applies only to the drift workload's `rollback` action today — the upgrade workload uses the post-LLM validator (§3) plus the operator-visible PR as its safety gates rather than a Firestore-backed approval.
+> **Status:** Shipped (Phase 11.5 + Phase 11.9). The flow below matches what's live in `agent/main.py::approval_get` / `approval_post` and `agent/templates/approval.html`. This Firestore-backed approval gates the **drift** workload's `rollback` action. The `upgrade` workload uses the post-LLM validator (§3) plus the operator-visible PR as its safety gates instead. The **provision** / infra-apply path has its *own*, separate HITL gate — a plan-bound, HMAC-signed approval at `/iac-approvals/{n}` that gates the downstream `tofu-apply` worker (the agent only ever opens an `iac/` PR; it cannot apply); see the `infra-iac-phase-c*` plans for that flow.
 
 1. Coordinator's ADK agent decides a rollback is warranted and calls `propose_rollback_tool(target_revision, reason)`.
 2. Rollback worker writes `approvals/{id}` to Firestore with `status=pending`, mints a one-time random token, stores its HMAC alongside the approval doc, and returns `{ approval_id, approval_url }`. The approval URL is `https://<coordinator>/approvals/<id>?t=<raw-token>`. The HMAC (bound to `(approval_id, target_revision, expires_at)`) lives server-side; the URL carries only the raw token so the worker can `hmac.compare_digest(stored_hmac, hmac(presented_token))` on `/execute`.
@@ -312,7 +369,9 @@ The single-worker-side transaction is what makes the "compromised coordinator ca
 
 ## 8. Cross-references
 
-- Implementation plan: [`docs/plans/2026-05-19-driftscribe-phase17-framework-mcp.md`](../plans/2026-05-19-driftscribe-phase17-framework-mcp.md)
+- Plain-English system tour: [`../OVERVIEW.md`](../OVERVIEW.md)
+- Multi-agent framework plan: [`docs/plans/2026-05-19-driftscribe-phase17-framework-mcp.md`](../plans/2026-05-19-driftscribe-phase17-framework-mcp.md)
+- Infra-IaC initiative (explore/provision + infra workers): [`docs/plans/2026-05-27-infra-iac-agent-design.md`](../plans/2026-05-27-infra-iac-agent-design.md) and the `infra-iac-phase-*` plans under [`../plans/`](../plans/)
 - IAM matrix (per-SA grants + negative space): [`iam-matrix.md`](./iam-matrix.md)
 - Architecture diagram (SVG, self-contained): [`architecture.html`](./architecture.html)
 - Workload data model: `agent/workloads/spec.py`, `agent/workloads/registry.py`
@@ -320,5 +379,6 @@ The single-worker-side transaction is what makes the "compromised coordinator ca
 - Developer Knowledge MCP wrapper: `agent/mcp/developer_knowledge.py`
 - Upgrade workers: `workers/upgrade_reader/main.py`, `workers/upgrade_docs/main.py`
 - Upgrade post-LLM validator: `workers/upgrade_docs/validator.py`
+- Infra workers: `workers/infra_reader/main.py`, `workers/tofu_editor/main.py`, `workers/tofu_apply/main.py`
 - Cloud Run inter-service auth proof: spike 11.0 (`spikes/cloud_run_auth/`, retired 2026-05-30 — superseded by the production workers; see git history)
 - Token guard implementation: `agent/auth.py`, `tests/integration/test_token_guard.py`

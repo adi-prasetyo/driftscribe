@@ -5,11 +5,14 @@
 [![E2E](https://github.com/adi-prasetyo/driftscribe/actions/workflows/e2e.yml/badge.svg?event=workflow_dispatch)](https://github.com/adi-prasetyo/driftscribe/actions/workflows/e2e.yml)
 
 A multi-agent coordinator/worker pattern for safe AI-driven DevOps on Cloud Run.
-Two demo workloads ship today: live drift detection (`payment-demo` Cloud Run
-env vs an ops contract) and dependency upgrade reviews (npm `package.json` vs
-GitHub Advisory DB). Both reasoning loops are grounded by Google's Developer
-Knowledge MCP. Submission for DevOps × AI Agent Hackathon 2026 (Google Cloud
-Japan / Findy).
+Four workloads ship today: live drift detection (`payment-demo` Cloud Run env vs
+an ops contract), dependency upgrade reviews (npm `package.json` vs GitHub
+Advisory DB), read-only project exploration, and agent-authored
+infrastructure-as-code (OpenTofu PRs through a gated apply pipeline). The
+reasoning loops are grounded by Google's Developer Knowledge MCP. Submission for
+DevOps × AI Agent Hackathon 2026 (Google Cloud Japan / Findy).
+
+**New here?** Start with [`docs/OVERVIEW.md`](docs/OVERVIEW.md) — a plain-English, ~10-minute tour of the whole system.
 
 **Architecture diagram:** [`docs/architecture/architecture.html`](docs/architecture/architecture.html) — self-contained, open in a browser.
 
@@ -40,6 +43,16 @@ The full topology and the IAM boundaries are documented in
 - Actions: `no_op` / `docs_pr` / `upgrade_pr` / `escalation`.
 - Workers: `upgrade-reader` (read-only lockfile + advisory query), `upgrade-docs` (open upgrade PR), plus the shared `notifier`.
 - Post-LLM deterministic validator on the write path: lockfile path regex, `package_name` must exist in the current lockfile, `target_version` must be greater than current (no downgrades), version jump ∈ {patch, minor}, `advisory_url` must match `https://github.com/advisories/GHSA-...`. Major bumps are refused at the validator — the LLM is instructed to route those to `escalation`; if it doesn't, the validator fails closed.
+- Also carries PR-lifecycle tools (`upgrade-close-pr`, `upgrade-merge-pr`) so the agent can close or CI-gated-merge an upgrade PR it opened; the `upgrade-docs` worker re-validates eligibility (driftscribe label + `upgrade/` branch + `main` base, green required check) before acting.
+
+### Workloads 3 & 4: Infrastructure (read + author)
+
+Two **chat-only** workloads cover infrastructure-as-code (the infra-IaC initiative):
+
+- **`explore`** (read-only) — whole-project resource inspection via Cloud Asset Inventory (`infra-reader` worker), plus live Cloud Run env, the ops contract, the dependency lockfile, and developer docs. Lists **zero mutation tools** — it can read everything and change nothing (the read-only guarantee is pinned by a test that asserts its tools are disjoint from the mutation set).
+- **`provision`** (infra edits) — authors OpenTofu changes from a chat request and opens **one `iac/`-only PR** via the `tofu-editor` worker (which re-validates every file: `iac/` prefix, foundation ban, secret ban, AGENT-mode static gate). It never touches live infra. The actual `tofu apply` runs **downstream** in the `tofu-apply` worker — the sole live-infra mutator — behind a plan-bound, HMAC-signed operator approval, a path the chat agent cannot invoke directly.
+
+Both are chat-only: `/recheck` refuses them (no autonomous observation source). The operator UI renders a live infra resource map (managed vs. drift) alongside the decisions timeline.
 
 ## Demo
 
@@ -105,7 +118,7 @@ not compared here.
 | Layered safety (OS + policy) | ✓ | ✗ | ✗ | partial | partial |
 | Multi-cloud | ✗ (GCP only) | ✓ (Terraform-aware, multi) | ✓ | ✓ (AWS-primary) | ✗ (AWS) |
 | Open source | ✓ | ✓ | ✓ | ✓ | ✗ |
-| Deployment surface | Cloud Run (7 DriftScribe services + 1 demo target after Phase 17) | Terraform | Plugin host | Lambda | Managed service |
+| Deployment surface | Cloud Run (10 DriftScribe services + 3 demo services) | Terraform | Plugin host | Lambda | Managed service |
 | Target user | DevOps + SRE on GCP | IaC platform teams | SQL-fluent ops | AWS ops | AWS compliance teams |
 
 DriftScribe trades multi-cloud breadth for layered safety on a single platform;
@@ -119,29 +132,43 @@ the worker boundary makes "propose" safe to expose.
 
 ## Repository layout
 
-- [`agent/`](agent/) — coordinator service (ADK agent, classifier, approvals, auth, MCP attach)
-- [`workloads/`](workloads/) — per-workload manifests (drift, upgrade): system prompts, contracts, action lists
-- [`workers/`](workers/) — execute-only worker services: per-workload worker sets (drift `reader` / `docs` / `rollback`, upgrade `upgrade-reader` / `upgrade-docs`) plus the shared `notifier`
+- [`agent/`](agent/) — coordinator service (ADK agent, classifier, approvals, auth, MCP attach, IaC authoring)
+- [`workloads/`](workloads/) — per-workload manifests (`drift`, `upgrade`, `explore`, `provision`): system prompts, contracts, tool/worker/action lists
+- [`workers/`](workers/) — execute-only worker services: drift `reader` / `docs` / `rollback`, upgrade `upgrade-reader` / `upgrade-docs`, infra `infra-reader` / `tofu-editor` / `tofu-apply`, plus the shared `notifier`
+- [`driftscribe_lib/`](driftscribe_lib/) — shared library (structured logging + trace IDs, GitHub helpers, HCL parser, plan-approval schema)
+- [`iac/`](iac/) — the OpenTofu the agent reads and authors (the demo's own infrastructure)
+- [`frontend/`](frontend/) — operator UI (Svelte + Vite SPA, served at `/`)
 - [`demo/`](demo/) — `payment-demo` drift target + ops contract, `upgrade-target` pinned npm lockfile
-- [`docs/architecture/`](docs/architecture/) — diagram, multi-agent design, IAM matrix
-- [`docs/runbooks/`](docs/runbooks/) — deploy + operate
-- [`docs/plans/`](docs/plans/) — phased implementation plans
+- [`docs/`](docs/) — [`OVERVIEW.md`](docs/OVERVIEW.md) (start here), `architecture/`, `runbooks/`, `plans/`
 - [`scripts/`](scripts/) — demo runner
 - [`infra/`](infra/) — Cloud Build + smoke tests
 - [`tests/`](tests/) — unit + integration suite
 
 ## Status
 
-Phase 20 (assertive E2E suite — drift via `/recheck`, upgrade via GitHub branch
-observation, HITL form-POST flow with explicit revision capture, Playwright UI
-on stable `data-testid` selectors — running in a dedicated `driftscribe-e2e`
-GCP project under WIF + Required-reviewer gate) complete on top of Phase 19.B
-(transparency UI), Phase 18.A (365-day logging), and Phase 17 (multi-agent
-framework). Hackathon submission deadline 2026-07-10. Latest implementation
-plan: [`docs/plans/2026-05-24-driftscribe-phase20-e2e-testing.md`](docs/plans/2026-05-24-driftscribe-phase20-e2e-testing.md).
+Built out past the hackathon MVP. Two initiatives landed on top of the Phase 17
+multi-agent framework:
 
+- **Infra-IaC agent** — a whole-project inventory reader (`infra-reader`, Cloud
+  Asset Inventory), agent-authored OpenTofu via the `tofu-editor` worker, and a
+  gated `tofu-apply` worker (sole live-infra mutator) behind a plan-bound,
+  HMAC-signed approval. The `explore` and `provision` workloads expose the read
+  and author sides. DriftScribe drove this very pipeline (author → approve →
+  apply) to provision its own checkout demo (`storefront` + `orders-worker`).
+- **Operator UI** — rebuilt as a Svelte + Vite SPA, now served at the site root
+  `/` (operator token required), with a live infra resource-map panel
+  (managed vs. drift) and a per-decision trace + env-diff view.
+
+This sits on Phase 20 (assertive E2E suite — drift via `/recheck`, upgrade via
+GitHub branch observation, HITL form-POST flow with explicit revision capture,
+Playwright UI on stable `data-testid` selectors, in a dedicated `driftscribe-e2e`
+GCP project under WIF + Required-reviewer gate), Phase 19.B (transparency UI),
+Phase 18.A (365-day logging), and Phase 17 (multi-agent framework). Hackathon
+submission deadline 2026-07-10.
+
+Implementation plans live in [`docs/plans/`](docs/plans/) (dated, newest last).
 E2E runbooks: [`docs/runbooks/e2e-environment.md`](docs/runbooks/e2e-environment.md)
 (project + secrets + cloudbuild) and [`docs/runbooks/e2e-ci.md`](docs/runbooks/e2e-ci.md)
 (WIF + GitHub Environment).
 
-Transparency UI: `/` (the coordinator root; operator token required). See [`docs/demo-script.md`](docs/demo-script.md#transparency-ui-walkthrough) for the walkthrough.
+Operator UI: `/` (the coordinator root; operator token required). See [`docs/demo-script.md`](docs/demo-script.md#transparency-ui-walkthrough) for the walkthrough.
