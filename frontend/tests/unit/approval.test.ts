@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { safeApprovalHref, iacApprovalHref, isExpired, safeGithubHref, iacPrHref } from '../../src/lib/approval';
+import {
+  safeApprovalHref,
+  iacApprovalHref,
+  isExpired,
+  safeGithubHref,
+  iacPrHref,
+  resolvedIacPrNumbers,
+  iacApproveLabel,
+} from '../../src/lib/approval';
 
 // SECURITY-CRITICAL guard. This file re-homes the assertions previously made
 // in tests/integration/test_ui_transparency.py:148-166 (the legacy
@@ -234,5 +242,109 @@ describe('iacPrHref — the rail title link for an iac_apply row', () => {
   it('is null when there is no github field', () => {
     expect(iacPrHref({ action: 'iac_apply' })).toBeNull();
     expect(iacPrHref({ action: 'iac_apply', github: null })).toBeNull();
+  });
+});
+
+describe('resolvedIacPrNumbers — PRs with a terminal applied iac_apply row', () => {
+  it('collects the pr_number of every applied iac_apply row', () => {
+    const set = resolvedIacPrNumbers([
+      { action: 'iac_apply', apply_status: 'applied', pr_number: 68 },
+      { action: 'iac_apply', apply_status: 'applied', pr_number: 71 },
+    ]);
+    expect(set.has(68)).toBe(true);
+    expect(set.has(71)).toBe(true);
+    expect(set.size).toBe(2);
+  });
+
+  it('ignores an applied row whose action is NOT iac_apply', () => {
+    // A rollback/other decision that happens to carry apply_status + pr_number
+    // must never mark an iac PR resolved.
+    const set = resolvedIacPrNumbers([
+      { action: 'rollback', apply_status: 'applied', pr_number: 99 },
+      { action: 'drift_issue', apply_status: 'applied', pr_number: 12 },
+    ]);
+    expect(set.size).toBe(0);
+  });
+
+  it('ignores non-applied iac_apply rows (waiting_for_rebake / failed / ambiguous)', () => {
+    const set = resolvedIacPrNumbers([
+      { action: 'iac_apply', apply_status: 'waiting_for_rebake', pr_number: 68 },
+      { action: 'iac_apply', apply_status: 'failed', pr_number: 70 },
+      { action: 'iac_apply', apply_status: 'ambiguous', pr_number: 72 },
+    ]);
+    expect(set.size).toBe(0);
+  });
+
+  it('ignores applied iac rows with a missing / zero / negative / non-integer pr_number', () => {
+    const set = resolvedIacPrNumbers([
+      { action: 'iac_apply', apply_status: 'applied' },
+      { action: 'iac_apply', apply_status: 'applied', pr_number: 0 },
+      { action: 'iac_apply', apply_status: 'applied', pr_number: -5 },
+      { action: 'iac_apply', apply_status: 'applied', pr_number: 4.5 },
+    ]);
+    expect(set.size).toBe(0);
+  });
+
+  it('returns an empty set for an empty list', () => {
+    expect(resolvedIacPrNumbers([]).size).toBe(0);
+  });
+
+  it('tolerates a null/undefined list (returns an empty set)', () => {
+    expect(resolvedIacPrNumbers(null).size).toBe(0);
+    expect(resolvedIacPrNumbers(undefined).size).toBe(0);
+  });
+
+  it('tolerates null/undefined entries in the list', () => {
+    const set = resolvedIacPrNumbers([
+      null,
+      undefined,
+      { action: 'iac_apply', apply_status: 'applied', pr_number: 68 },
+    ]);
+    expect(set.has(68)).toBe(true);
+    expect(set.size).toBe(1);
+  });
+});
+
+describe('iacApproveLabel — retire the stale CTA on superseded rows', () => {
+  it('waiting_for_rebake + PR NOT resolved → "Review & approve →"', () => {
+    expect(iacApproveLabel({ apply_status: 'waiting_for_rebake', pr_number: 68 }, new Set())).toBe(
+      'Review & approve →',
+    );
+  });
+
+  it('waiting_for_rebake + PR resolved → "Open approval page →" (superseded)', () => {
+    expect(
+      iacApproveLabel({ apply_status: 'waiting_for_rebake', pr_number: 68 }, new Set([68])),
+    ).toBe('Open approval page →');
+  });
+
+  it('applied / failed / undefined apply_status → "Open approval page →"', () => {
+    expect(iacApproveLabel({ apply_status: 'applied', pr_number: 68 }, new Set())).toBe(
+      'Open approval page →',
+    );
+    expect(iacApproveLabel({ apply_status: 'failed', pr_number: 70 }, new Set())).toBe(
+      'Open approval page →',
+    );
+    expect(iacApproveLabel({ pr_number: 68 }, new Set())).toBe('Open approval page →');
+  });
+
+  it('waiting_for_rebake with an invalid/missing pr_number against a non-empty set → still "Review & approve →"', () => {
+    // A row that can't be matched to a PR can't be superseded → keep the live CTA.
+    expect(iacApproveLabel({ apply_status: 'waiting_for_rebake' }, new Set([68]))).toBe(
+      'Review & approve →',
+    );
+    expect(
+      iacApproveLabel({ apply_status: 'waiting_for_rebake', pr_number: 0 }, new Set([68])),
+    ).toBe('Review & approve →');
+  });
+
+  it('PR A resolved, PR B waiting → only A downgrades, B keeps the live CTA', () => {
+    const resolved = new Set([68]); // PR A (68) is resolved; PR B (71) is not
+    expect(
+      iacApproveLabel({ apply_status: 'waiting_for_rebake', pr_number: 68 }, resolved),
+    ).toBe('Open approval page →');
+    expect(
+      iacApproveLabel({ apply_status: 'waiting_for_rebake', pr_number: 71 }, resolved),
+    ).toBe('Review & approve →');
   });
 });

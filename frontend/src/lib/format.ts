@@ -49,6 +49,31 @@ export function fmtPreview(s: string, max: number = DEFAULT_PREVIEW_MAX): string
 }
 
 /**
+ * Human label for an iac_apply row's `apply_status`, for the rail meta line.
+ * Known statuses get a readable phrase (the known set mirrors decision.ts's
+ * APPLY_STATUS_BADGE keys — applied/failed/failed_state_suspect/ambiguous —
+ * plus waiting_for_rebake). An unrecognised non-empty status passes through
+ * CLAMPED to 40 chars + '…' if longer (forward-compat — our own small backend
+ * enum, but the decision doc is unredacted so we cap length, matching
+ * decision.ts's defensive style). null/undefined/'' → '' (the meta line then
+ * omits the token).
+ */
+const IAC_STATUS_LABELS: Record<string, string> = {
+  applied: 'applied',
+  waiting_for_rebake: 'awaiting re-bake',
+  failed: 'failed',
+  failed_state_suspect: 'failed (state suspect)',
+  ambiguous: 'ambiguous',
+};
+const IAC_STATUS_MAX = 40; // a status enum is tiny; cap an unexpected value hard
+export function iacStatusLabel(status: string | null | undefined): string {
+  if (typeof status !== 'string' || status === '') return '';
+  const known = IAC_STATUS_LABELS[status];
+  if (known) return known;
+  return status.length > IAC_STATUS_MAX ? status.slice(0, IAC_STATUS_MAX) + ELLIPSIS : status;
+}
+
+/**
  * Render an ISO timestamp as a readable absolute wall-clock string with the
  * year (used by the DecisionSummary card — a historical decision can be from
  * any date, so unlike the rail's compact no-year form we include the year).
