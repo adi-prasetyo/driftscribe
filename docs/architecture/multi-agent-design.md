@@ -44,8 +44,9 @@ flowchart LR
         Chat --> ADKp
         Recheck --> ADKd
         Eventarc --> ADKd
-        %% /recheck serves drift; upgrade is rechecked via GitHub branch
-        %% observation. explore + provision are chat-only —
+        %% /recheck serves drift only in this build; workload=upgrade
+        %% returns 503 (upgrade /recheck plumbing is post-Phase-17), and
+        %% explore + provision are chat-only —
         %% agent/main.py::CHAT_ONLY_WORKLOAD_NAMES refuses /recheck for them.
     end
 
@@ -63,7 +64,7 @@ flowchart LR
         TofuEditor["driftscribe-tofu-editor\n/open-pr"]
     end
     Notifier["driftscribe-notifier\n/notify (shared)"]
-    TofuApply["driftscribe-tofu-apply\n/apply — sole live-infra mutator\n(downstream, NOT coordinator-invoked)"]
+    TofuApply["driftscribe-tofu-apply\n/apply — sole live-infra mutator\n(downstream; not an agent tool)"]
 
     Human -- "X-DriftScribe-Token" --> Coordinator
     Eventarc_GCP -- "Google-signed ID token" --> Eventarc
@@ -111,7 +112,7 @@ flowchart LR
 | `driftscribe-infra-reader` | No | explore + provision | Whole-project resource enumeration via Cloud Asset Inventory `searchAllResources` (`/describe`); also resolves which live resources are declared in `iac/` (managed) vs. unmanaged (drift) | Read-only — `roles/cloudasset.viewer` + `serviceusage.serviceUsageConsumer` only. No write surface of any kind. Backs the operator UI's infra resource-map panel. |
 | `driftscribe-tofu-editor` | No | provision | Authoring `iac/`-only HCL file writes and opening **one** PR (`/open-pr`); runs `tofu fmt` on the authored files first | Re-validates every file before any GitHub call: `iac/` prefix, foundation-file ban, secret ban, AGENT-mode static gate. `target_repo`/`branch`/`base`/`label` are server-derived, never LLM-supplied. A bad request surfaces as 403/422 the model can react to. |
 | `driftscribe-tofu-apply` | No | provision (downstream) | The **sole live-infra mutator**: `tofu apply` of an approved plan (`/apply`) | **NOT in the coordinator's `WORKER_REGISTRY`** — the chat agent cannot call it. Reached only by the gated plan-build → approve → apply pipeline, behind a plan-bound, HMAC-signed operator approval (`/iac-approvals/{n}`). Claim-first single-flight; verified end-to-end live. See the `infra-iac-phase-c*` plans. |
-| `driftscribe-notifier` | No | drift + upgrade (shared) | Posting normalized payload to a single env-injected webhook URL | Caller-supplied `url` is ignored — the worker's identity *is* the URL. Reused unchanged by the upgrade workload. |
+| `driftscribe-notifier` | No | drift + upgrade (shared) | Posting normalized payload to a single env-injected webhook URL | Caller-supplied `url` is rejected (422; `extra="forbid"`) — the worker's identity *is* the URL. Reused unchanged by the upgrade workload. |
 
 ---
 
@@ -150,14 +151,14 @@ Each worker has a tiny REST surface with a hardcoded "payload-intent policy" —
 ### Reader — `driftscribe-reader`
 
 - **Endpoint:** `POST /read`
-- **Request:** `{}` (empty object). Any extra fields → 400.
+- **Request:** `{}` (empty object). Closed schema (`extra="forbid"`); any extra field → 422.
 - **Response:** `{ "env": { "VAR": "value", ... }, "revision": "..." }`
 - **Hardcoded policy:** `target_service=payment-demo`, `region=asia-northeast1`, `project=$PROJECT_ID` — all loaded from env at boot, all rejected if present in the request body.
 
 ### Docs — `driftscribe-docs`
 
 - **Endpoint:** `POST /patch`
-- **Request:** `{ "file": "demo/docs/runbook.md", "section": "...", "new_content": "...", "title": "...", "body": "..." }`
+- **Request:** `{ "file_path": "demo/docs/runbook.md", "new_content": "...", "branch": "...", "base": "main", "title": "...", "body": "..." }` (closed schema; extra fields → 422).
 - **Response:** `{ "pr_url": "..." }` (or `{ "dry_run": true, "preview": "..." }`)
 - **Hardcoded policy:** `repo=adi-prasetyo/driftscribe` (env). Path allowlist regex `^demo/docs/[^/]+\.md$`. Refuses `ops-contract.yaml`, `.github/`, `infra/`, `Dockerfile`, `*.py`. Path traversal (`..`) is normalized-then-checked.
 - **Auth to GitHub:** Fine-grained PAT scoped to single repo, `Contents: Read & write`, `Pull requests: Read & write`. Stored as Secret Manager `docs-agent-github-pat`.
@@ -175,7 +176,7 @@ Each worker has a tiny REST surface with a hardcoded "payload-intent policy" —
 - **Endpoint:** `POST /notify`
 - **Request:** `{ "channel": "info|alert|approval", "severity": "...", "body": "..." }`
 - **Response:** `{ "delivered": true }` (or error envelope)
-- **Hardcoded policy:** Outbound URL = `$NOTIFY_WEBHOOK_URL` from Secret Manager. Caller-supplied `url` is silently dropped. Channel values are constrained to a closed enum. Shared between both workloads as-is.
+- **Hardcoded policy:** Outbound URL = `$NOTIFY_WEBHOOK_URL` from Secret Manager. The schema is closed (`extra="forbid"`), so a caller-supplied `url` is *rejected* with 422 — not silently dropped. Channel and severity values are constrained to closed enums. Shared by the drift and upgrade workloads (explore/provision don't notify).
 
 ### Upgrade Reader — `driftscribe-upgrade-reader`
 
@@ -190,7 +191,7 @@ Each worker has a tiny REST surface with a hardcoded "payload-intent policy" —
 - **Endpoint:** `POST /patch`
 - **Request:** `{ "target_repo", "lockfile_path", "package_name", "target_version", "advisory_url", "branch", "base", "title", "body" }` (closed schema; extra fields → 422).
 - **Response:** PR URL + metadata from `driftscribe_lib.github.open_docs_pr` (or `{ "dry_run": ... }`).
-- **Hardcoded policy:** Same env-pinned `UPGRADE_TARGET_REPO` re-validation. Same lockfile-path regex + traversal guard. `branch` must start with `upgrade/` and the suffix matches `[A-Za-z0-9._/-]{1,200}`. `base` must equal `main`. `title` must start with `upgrade`. The patch mutates ONLY `dependencies[package_name]`; every other key in the file is preserved as-is. Policy bounces are 403 (vs the reader's 400) — the worker is on the write path and treats every policy violation as a deny.
+- **Hardcoded policy:** Same env-pinned `UPGRADE_TARGET_REPO` re-validation. Same lockfile-path regex + traversal guard. `branch` must start with `upgrade/` and the suffix matches `[A-Za-z0-9._/-]{1,200}`. `base` must equal `main`. `title` must start with `upgrade`. The patch mutates ONLY `dependencies[package_name]`; every other key in the file is preserved as-is. Policy bounces are 403 (vs the reader's 422 schema rejection) — the worker is on the write path and treats every policy violation as a deny.
 - **Post-LLM deterministic validator** (`workers/upgrade_docs/validator.py`): runs after the lockfile read and before the GitHub write. Five rules, short-circuiting on first failure:
   1. `lockfile_path` matches the regex (defense-in-depth duplicate of the handler guard).
   2. `package_name` exists in the current lockfile's `dependencies` (no new-dep adds).
@@ -217,10 +218,10 @@ Each worker has a tiny REST surface with a hardcoded "payload-intent policy" —
 - **Hardcoded policy (fail-closed by construction — every check runs BEFORE any GitHub call, so a rejected request leaves no side effect):** `target_repo` is re-validated against the env-pinned `TARGET_REPO`. Each file must be a traversal-free, `iac/`-prefixed `.tf`/`.md` path that is **not** one of the operator-only foundation files; paths are deduplicated, non-empty, and size-bounded. `branch`/`base` are policy-checked; `title`/`body` are size-bounded. Authored files are run through `tofu fmt` first. Policy violations → **403**, schema-shaped → **422**. It writes HCL and opens a PR — it **never** touches live infra.
 - **Auth to GitHub:** Secret-Manager `GITHUB_TOKEN`; even a fully compromised coordinator can only ever cause an `iac/`-only PR against the pinned repo.
 
-### Tofu Apply — `driftscribe-tofu-apply` (downstream, not coordinator-invoked)
+### Tofu Apply — `driftscribe-tofu-apply` (downstream; not an agent tool)
 
-- **Endpoint:** `POST /apply` — the **sole live-infra mutator** (`tofu apply` of an already-approved plan).
-- **Not in the coordinator's tool/worker registry.** No chat agent can reach it. It sits at the end of the gated pipeline (trusted plan-build → plan-bound, HMAC-signed operator approval at `/iac-approvals/{n}` → apply), proven end-to-end live. Claim-first single-flight guards against double-apply. Full interface, IAM, and the C2→C4 flow are documented in the `infra-iac-phase-c*` plans under [`../plans/`](../plans/).
+- **Endpoints:** `POST /propose`, `POST /apply`, `POST /deny` — the **sole live-infra mutator** (`tofu apply` of an already-approved plan).
+- **Not in `WORKER_REGISTRY`, and never an ADK/chat tool — no LLM can reach it.** The coordinator invokes it *only* from its server-side approval handler (the `/iac-approvals/{n}` POST), after a human approves a plan-bound, HMAC-signed plan — the same pattern that gates the rollback worker's `/execute` (the LLM only ever opens a PR via `tofu-editor`). It sits at the end of the gated pipeline (trusted plan-build → approval → apply), proven end-to-end live. Claim-first single-flight guards against double-apply. Full interface, IAM, and the C2→C4 flow are documented in the `infra-iac-phase-c*` plans under [`../plans/`](../plans/).
 
 ---
 
@@ -249,7 +250,7 @@ The 14 wired tools (plus 2 reserved session-memory slots, `get_session_state` / 
 
 **Per-workload tool scoping (Phase 17.A.4):** `COORDINATOR_TOOLS` is the *global registration manifest* — the universe of callables the coordinator may wire to ANY workload. Each workload's YAML (`workloads/<name>/workload.yaml`) carries `enabled_tool_names`, a symbolic filter that picks a per-workload subset from `agent.workloads.registry.TOOL_REGISTRY`. `Agent(tools=...)` receives ONLY the workload-scoped list at runtime, so **the LLM never sees a cross-workload tool**. `tests/unit/test_coordinator_tool_inventory.py` pins a three-way equality: YAML ⇄ the `DRIFT_WORKLOAD_TOOL_NAMES` / `UPGRADE_WORKLOAD_TOOL_NAMES` / `EXPLORE_WORKLOAD_TOOL_NAMES` / `PROVISION_WORKLOAD_TOOL_NAMES` tuples in `agent/adk_agent.py` ⇄ runtime resolution via `load_workload(name)`. The same test pins the **read-only / mutation disjointness** invariants: `explore`'s tools must be disjoint from the mutation-tool set, while `provision`'s set must include `open_infra_pr_tool` (and its `tofu_editor` mutation worker).
 
-**MCP tools are Layer 0, scoped per workload.** The Developer Knowledge MCP is connected at the coordinator only (see §6). Workers have no MCP access. The two MCP-derived tools (`search_developer_docs`, `retrieve_developer_doc`) currently appear in both workloads' `enabled_tool_names`, but the scoping mechanism is the same as for any other tool — a future workload that doesn't need MCP grounding can simply omit them from its YAML.
+**MCP tools are Layer 0, scoped per workload.** The Developer Knowledge MCP is connected at the coordinator only (see §6). Workers have no MCP access. The two MCP-derived tools (`search_developer_docs`, `retrieve_developer_doc`) currently appear in all four workloads' `enabled_tool_names`, but the scoping mechanism is the same as for any other tool — a future workload that doesn't need MCP grounding can simply omit them from its YAML.
 
 **Enforcement:** `tests/unit/test_coordinator_tool_inventory.py` pins this set. Adding or removing a tool requires updating the `EXPECTED_TOOL_NAMES` constant in that test. A second test asserts no tool name matches a dangerous-capability pattern (`shell|exec|subprocess|os_command|delete|drop|destroy|sudo|raw_http|arbitrary|run_command|eval`). A third test extends the same logic to parameter names — `inspect.signature` enumerates each tool's params and rejects any matching `cmd|command|shell_cmd|url|endpoint|raw_url|payload|raw_request|script|eval|expr`. A fourth smoke test asserts that importing `agent.adk_agent` does not pull in remote-execution SDKs (`paramiko`, `fabric`, `pexpect`).
 
@@ -273,13 +274,13 @@ See [`iam-matrix.md`](./iam-matrix.md) §"Phase 11.9 carry-overs" for the full s
 
 ## 5. Workload abstraction
 
-A **workload** is a named bundle of {system prompt, chat system prompt, tool inventory, worker set, action set, optional contract}. Four ship today: `drift`, `upgrade`, `explore`, and `provision`. The coordinator routes `POST /chat workload=<name>` per-request to a workload-specific agent; `POST /recheck workload=<name>` serves the autonomous path (`explore` and `provision` are chat-only and `/recheck` refuses them — `agent/main.py::CHAT_ONLY_WORKLOAD_NAMES`). `explore` narrows to a strictly read-only tool subset; `provision` is chat-only too but carries the single `open_infra_pr_tool` mutation, which writes `iac/` HCL and opens a PR — it never touches live infra.
+A **workload** is a named bundle of {system prompt, chat system prompt, tool inventory, worker set, action set, optional contract}. Four ship today: `drift`, `upgrade`, `explore`, and `provision`. The coordinator routes `POST /chat workload=<name>` per-request to a workload-specific agent; `POST /recheck workload=<name>` serves the autonomous path — but only for `drift` in this build: `workload=upgrade` returns 503 (the upgrade `/recheck` plumbing is post-Phase-17), and `explore`/`provision` are chat-only, so `/recheck` refuses them (`agent/main.py::CHAT_ONLY_WORKLOAD_NAMES`). `explore` narrows to a strictly read-only tool subset; `provision` is chat-only too but carries the single `open_infra_pr_tool` mutation, which writes `iac/` HCL and opens a PR — it never touches live infra.
 
 **Data model** (`agent/workloads/spec.py` + `agent/workloads/registry.py`):
 
 - `WorkloadSpec` — pydantic `BaseModel` with `extra="forbid"`, parsed from `workloads/<name>/workload.yaml`. Carries only *symbolic* names — `enabled_tool_names`, `worker_names`, `action_names`. No URLs, secrets, or repos live in YAML. The `name` field is a `Literal["drift", "upgrade", "explore", "provision"]` so a YAML typo fails at parse time.
 - `WorkloadResolution` — frozen dataclass holding the parsed spec plus resolved callables. The three name→object fields (`tools`, `workers`, `actions`) are exposed as `MappingProxyType` views over private dicts so a caller cannot widen authority by in-place mutation.
-- Three code-side allowlists in `registry.py`: `TOOL_REGISTRY` (16 entries — 14 wired callables plus 2 `None`-reserved session-memory slots, `get_session_state` / `set_session_state`, that fail with `ReservedToolNotImplementedError` if a future YAML enables them before a Phase-N PR flips them to real callables; the manifest the YAML's `enabled_tool_names` resolves against), `WORKER_REGISTRY` (8 entries — `drift_reader`/`drift_docs`/`drift_rollback`/`infra_reader`/`notifier`/`upgrade_reader`/`upgrade_docs`/`tofu_editor`; each carries its URL env var name; note `tofu-apply` is deliberately absent — it is not coordinator-callable), `ACTION_REGISTRY` (6 entries; each carries `requires_approval`). The security property is the inverse of "YAML drives behavior": *flipping a YAML value can choose from the allowlist, but it cannot introduce a new URL, secret, repo, or callable.* A fourth allowlist, `UPGRADE_TARGET_REGISTRY`, pins the upgrade workload's `(target_repo, lockfile_path, advisory_source)` for the same reason.
+- Three code-side allowlists in `registry.py`: `TOOL_REGISTRY` (16 entries — 14 wired callables plus 2 `None`-reserved session-memory slots, `get_session_state` / `set_session_state`, that fail with `ReservedToolNotImplementedError` if a future YAML enables them before a Phase-N PR flips them to real callables; the manifest the YAML's `enabled_tool_names` resolves against), `WORKER_REGISTRY` (8 entries — `drift_reader`/`drift_docs`/`drift_rollback`/`infra_reader`/`notifier`/`upgrade_reader`/`upgrade_docs`/`tofu_editor`; each carries its URL env var name; note `tofu-apply` is deliberately absent — the LLM never gets a tool for it, and the coordinator reaches it only from its `/iac-approvals` approval handler), `ACTION_REGISTRY` (6 entries; each carries `requires_approval`). The security property is the inverse of "YAML drives behavior": *flipping a YAML value can choose from the allowlist, but it cannot introduce a new URL, secret, repo, or callable.* A fourth allowlist, `UPGRADE_TARGET_REGISTRY`, pins the upgrade workload's `(target_repo, lockfile_path, advisory_source)` for the same reason.
 
 **Routing.** `agent.main`'s `/chat` and `/recheck` handlers extract the `workload` field, call `load_workload(name)`, and pass the `WorkloadResolution` to `build_chat_agent` / `build_agent` in `agent/adk_agent.py`. The factory hands `Agent(tools=...)` the workload's filtered tool list (`list(workload.tools.values())`), NOT the global union. The system prompt comes from the workload directory: `workloads/<name>/system_prompt.md` for `/recheck` and `workloads/<name>/chat_system_prompt.md` (falling back to `system_prompt.md`) for `/chat`. The LLM literally never sees a cross-workload tool or prompt.
 

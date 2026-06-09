@@ -25,12 +25,13 @@
     read-only. Workers grouped drift / upgrade / infra (read+author) / shared.
     A full-width bottom strip draws the DOWNSTREAM apply pipeline
     (merged iac/ PR -> /iac-approvals HITL -> tofu-apply -> GCP infra), drawn
-    detached from the coordinator's direct worker calls because tofu-apply is
-    NOT a coordinator worker.
+    detached from the coordinator's direct worker calls because tofu-apply is not
+    in WORKER_REGISTRY (never an agent tool); the coordinator invokes it only from
+    its server-side /iac-approvals approval handler, after a human approves.
 
   Diagram 2 — Layered safety boundary (viewBox 0 0 1000 1490)
     Ten service rows: coordinator + the eight workers + the downstream tofu-apply
-    (fenced below a divider, "outside the coordinator's reach"). Each row: outer
+    (fenced below a divider, "not in WORKER_REGISTRY — outside the agent's reach"). Each row: outer
     dashed box (Layer 1 IAM scope) wrapping an inner solid box (Layer 2 hardcoded
     payload-intent policy), a service label band, and a "no MCP" badge. The
     Coordinator inner box is intentionally empty (no mutate caps on payment-demo).
@@ -126,7 +127,7 @@
 <main>
   <header>
     <h1>DriftScribe — Multi-Agent Architecture</h1>
-    <p>Workload-aware coordinator + eight execute-only workers on Cloud Run, with Google's Developer Knowledge MCP attached at the coordinator only. <strong>Four</strong> workloads ship today: <strong>drift</strong> (Cloud Run env vs ops contract), <strong>upgrade</strong> (npm <code>package.json</code> vs GitHub Advisory DB), <strong>explore</strong> (strictly read-only investigation), and <strong>provision</strong> (agent-authored OpenTofu PRs). Layer-0 tool registry is workload-scoped via <code>enabled_tool_names</code>; per-worker hardcoded policies enforce Layer&nbsp;2; HITL gates the drift rollback and the downstream infra apply. The sole infra mutator, <code>tofu-apply</code>, runs downstream of a plan-bound approval and is <em>not</em> coordinator-invokable. See <code>docs/architecture/multi-agent-design.md</code> for the full prose.</p>
+    <p>Workload-aware coordinator + eight execute-only workers on Cloud Run, with Google's Developer Knowledge MCP attached at the coordinator only. <strong>Four</strong> workloads ship today: <strong>drift</strong> (Cloud Run env vs ops contract), <strong>upgrade</strong> (npm <code>package.json</code> vs GitHub Advisory DB), <strong>explore</strong> (strictly read-only investigation), and <strong>provision</strong> (agent-authored OpenTofu PRs). Layer-0 tool registry is workload-scoped via <code>enabled_tool_names</code>; per-worker hardcoded policies enforce Layer&nbsp;2; HITL gates the drift rollback and the downstream infra apply. The sole infra mutator, <code>tofu-apply</code>, runs downstream of a plan-bound approval and is never exposed to the agent as a tool &mdash; the coordinator invokes it only from its approval handler. See <code>docs/architecture/multi-agent-design.md</code> for the full prose.</p>
   </header>
 
   <!--
@@ -136,9 +137,9 @@
   -->
   <section>
     <h2>1. Multi-workload trigger fan-in &amp; gated apply</h2>
-    <p class="caption">Three trigger sources fan in to a four-way workload router (drift / upgrade / explore / provision), selecting the workload-scoped agent inside the Coordinator. Each workload sees only its own Layer-0 tool slice &mdash; the two chat-only workloads make this vivid: <strong>explore</strong> carries <em>zero</em> mutation tools, <strong>provision</strong> exactly one (<code>provision_open_infra_pr</code> &rarr; opens an <code>iac/</code> PR, never applies). The Developer Knowledge MCP attaches at the Coordinator only. <code>Eventarc</code> hardcodes <code>workload=drift</code>; <code>/chat</code> routes by the request's <code>workload</code> field (any of the four); <code>/recheck</code> serves drift only (<code>upgrade</code> &rarr; 503; explore/provision are chat-only). HITL diamonds gate the drift rollback and &mdash; downstream, outside the coordinator's reach &mdash; the <code>tofu-apply</code> infra apply behind <code>/iac-approvals/{pr}</code>.</p>
+    <p class="caption">Three trigger sources fan in to a four-way workload router (drift / upgrade / explore / provision), selecting the workload-scoped agent inside the Coordinator. Each workload sees only its own Layer-0 tool slice &mdash; the two chat-only workloads make this vivid: <strong>explore</strong> carries <em>zero</em> mutation tools, <strong>provision</strong> exactly one (<code>provision_open_infra_pr</code> &rarr; opens an <code>iac/</code> PR, never applies). The Developer Knowledge MCP attaches at the Coordinator only. <code>Eventarc</code> hardcodes <code>workload=drift</code>; <code>/chat</code> routes by the request's <code>workload</code> field (any of the four); <code>/recheck</code> serves drift only (<code>upgrade</code> &rarr; 503; explore/provision are chat-only). HITL diamonds gate the drift rollback and &mdash; downstream, outside the agent's tool reach &mdash; the <code>tofu-apply</code> infra apply behind <code>/iac-approvals/{pr}</code>.</p>
     <div class="figure">
-      <svg class="diagram" viewBox="0 0 1320 1130" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Multi-workload trigger fan-in diagram. Eventarc, /chat and /recheck feed a four-way workload router (Drift, Upgrade, Explore, Provision) which routes to the Coordinator. The Coordinator hosts four per-workload Layer-0 tool compartments and an attached Developer Knowledge MCP. Drift workers (reader, docs, rollback), upgrade workers (upgrade-reader, upgrade-docs), infra workers (infra-reader, tofu-editor) and a shared notifier sit to the right. The drift rollback edge passes through a Human-In-The-Loop approval diamond. A separate bottom strip shows the downstream apply pipeline: a merged iac/ PR is approved at /iac-approvals and applied by tofu-apply, the sole infra mutator, which the coordinator cannot invoke.">
+      <svg class="diagram" viewBox="0 0 1320 1130" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Multi-workload trigger fan-in diagram. Eventarc, /chat and /recheck feed a four-way workload router (Drift, Upgrade, Explore, Provision) which routes to the Coordinator. The Coordinator hosts four per-workload Layer-0 tool compartments and an attached Developer Knowledge MCP. Drift workers (reader, docs, rollback), upgrade workers (upgrade-reader, upgrade-docs), infra workers (infra-reader, tofu-editor) and a shared notifier sit to the right. The drift rollback edge passes through a Human-In-The-Loop approval diamond. A separate bottom strip shows the downstream apply pipeline: a merged iac/ PR is approved at /iac-approvals and applied by tofu-apply, the sole infra mutator, which is never an agent tool and runs only after approval.">
         <defs>
           <marker id="arrow-ink" viewBox="0 0 10 10" refX="9" refY="5"
                   markerWidth="7" markerHeight="7" orient="auto-start-reverse">
@@ -425,7 +426,7 @@
 
         <!-- ===== Downstream apply pipeline (full-width bottom strip) ===== -->
         <line x1="20" y1="948" x2="1300" y2="948" stroke="#3b6ea5" stroke-width="1" stroke-dasharray="6 4"/>
-        <text x="20" y="940" font-size="11" font-weight="700" fill="#3b6ea5">Downstream apply pipeline &mdash; runs AFTER a human approves; the coordinator cannot invoke tofu-apply</text>
+        <text x="20" y="940" font-size="11" font-weight="700" fill="#3b6ea5">Downstream apply pipeline &mdash; runs AFTER a human approves; tofu-apply is never an agent tool (invoked only by the approval handler)</text>
 
         <rect x="120" y="958" width="190" height="52" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1.2"/>
         <text x="215" y="979" text-anchor="middle" font-size="12" font-weight="600">merged iac/ PR</text>
@@ -477,7 +478,7 @@
           <rect x="240" y="36" width="40" height="16" rx="2" fill="#fff" stroke="#bdbdbd" stroke-width="1"/>
           <text x="288" y="48" font-size="11">read-only tool</text>
 
-          <text x="0" y="70" font-size="10" fill="#555">All coordinator&rarr;worker calls carry a Google ID token with aud = the worker's hostname (verified at the worker; mismatch &rarr; 401). <tspan fill="#3b6ea5" font-weight="700">tofu-apply is NOT a coordinator worker.</tspan></text>
+          <text x="0" y="70" font-size="10" fill="#555">All coordinator&rarr;worker calls carry a Google ID token with aud = the worker's hostname (verified at the worker; mismatch &rarr; 401). <tspan fill="#3b6ea5" font-weight="700">tofu-apply is not in WORKER_REGISTRY &mdash; never an agent tool.</tspan></text>
         </g>
       </svg>
     </div>
@@ -490,9 +491,9 @@
   -->
   <section>
     <h2>2. Layered safety boundary</h2>
-    <p class="caption">For each service, an outer dashed box (Layer 1: IAM scope of its deploy-time service account) wraps an inner solid box (Layer 2: hardcoded payload-intent policy). The Coordinator's inner box is intentionally empty &mdash; it has <em>no</em> mutate caps on <code>payment-demo</code> &mdash; and notes that Developer Knowledge MCP tools attach <em>only</em> at the coordinator. Rows 7&ndash;8 add the infra workers: <code>infra-reader</code> (strictly read-only Cloud Asset Inventory metadata) and <code>tofu-editor</code> (an <code>iac/</code>-only PR author behind the AGENT static gate, holding <em>no</em> GCP role). The final row, <code>tofu-apply</code>, sits below a divider <em>outside the coordinator's reach</em>: it is the sole infra mutator and applies only behind a plan-bound HMAC approval. HITL diamonds gate the drift rollback (left gutter) and the infra apply. Every worker row carries a <em>no MCP</em> badge.</p>
+    <p class="caption">For each service, an outer dashed box (Layer 1: IAM scope of its deploy-time service account) wraps an inner solid box (Layer 2: hardcoded payload-intent policy). The Coordinator's inner box is intentionally empty &mdash; it has <em>no</em> mutate caps on <code>payment-demo</code> &mdash; and notes that Developer Knowledge MCP tools attach <em>only</em> at the coordinator. Rows 7&ndash;8 add the infra workers: <code>infra-reader</code> (strictly read-only Cloud Asset Inventory metadata) and <code>tofu-editor</code> (an <code>iac/</code>-only PR author behind the AGENT static gate, holding <em>no</em> GCP role). The final row, <code>tofu-apply</code>, sits below a divider <em>outside the agent's tool reach</em> (not in <code>WORKER_REGISTRY</code>): it is the sole infra mutator and applies only behind a plan-bound HMAC approval, invoked by the coordinator's <code>/iac-approvals</code> handler. HITL diamonds gate the drift rollback (left gutter) and the infra apply. Every worker row carries a <em>no MCP</em> badge.</p>
     <div class="figure">
-      <svg class="diagram" viewBox="0 0 1000 1490" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Layered safety boundary diagram. For the coordinator and each of the eight workers (drift reader/docs/rollback, upgrade reader/docs, infra-reader, tofu-editor, shared notifier) plus the downstream tofu-apply, an outer dashed box shows the IAM scope and an inner solid box shows the hardcoded payload-intent policy. The coordinator's inner box is empty to show it has no mutation permissions on payment-demo. The infra-reader is read-only Cloud Asset Inventory; tofu-editor authors iac/ PRs and holds no GCP role; tofu-apply is fenced below a divider as the sole infra mutator, gated by a plan-bound HMAC approval and not coordinator-invokable. HITL approval diamonds gate the rollback and the apply. Each worker row carries a no-MCP badge.">
+      <svg class="diagram" viewBox="0 0 1000 1490" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Layered safety boundary diagram. For the coordinator and each of the eight workers (drift reader/docs/rollback, upgrade reader/docs, infra-reader, tofu-editor, shared notifier) plus the downstream tofu-apply, an outer dashed box shows the IAM scope and an inner solid box shows the hardcoded payload-intent policy. The coordinator's inner box is empty to show it has no mutation permissions on payment-demo. The infra-reader is read-only Cloud Asset Inventory; tofu-editor authors iac/ PRs and holds no GCP role; tofu-apply is fenced below a divider as the sole infra mutator, gated by a plan-bound HMAC approval and never an agent tool. HITL approval diamonds gate the rollback and the apply. Each worker row carries a no-MCP badge.">
         <defs>
           <marker id="arrow-ink-2" viewBox="0 0 10 10" refX="9" refY="5"
                   markerWidth="7" markerHeight="7" orient="auto-start-reverse">
@@ -537,7 +538,7 @@
         <rect x="380" y="215" width="560" height="90" rx="3" fill="#fff" stroke="#3b6ea5" stroke-width="1.5"/>
         <text x="660" y="238" text-anchor="middle" font-size="12" font-weight="700" fill="#3b6ea5">policy: target_service = payment-demo</text>
         <text x="660" y="258" text-anchor="middle" font-size="11" fill="#555">region = asia-northeast1 (env, not body)</text>
-        <text x="660" y="276" text-anchor="middle" font-size="11" fill="#555">request body must be empty &lbrace;&rbrace;; extra fields &rarr; 400</text>
+        <text x="660" y="276" text-anchor="middle" font-size="11" fill="#555">request body must be empty &lbrace;&rbrace;; extra fields &rarr; 422</text>
         <text x="660" y="294" text-anchor="middle" font-size="11" fill="#555">no service/region/project override accepted</text>
 
         <!-- ============ Docs (drift) row (T=340) ============ -->
@@ -648,18 +649,18 @@
         <rect x="200" y="1192" width="58" height="14" rx="2" fill="#fff" stroke="#3b6ea5" stroke-width="0.8"/>
         <text x="229" y="1202" text-anchor="middle" font-size="9" fill="#3b6ea5" font-weight="700">no MCP</text>
         <text x="56" y="1244" font-size="10">+ secret accessor: NOTIFY_WEBHOOK_URL</text>
-        <text x="56" y="1258" font-size="10">+ Cloud Run invoker (callers: coordinator SA, all workloads)</text>
+        <text x="56" y="1258" font-size="10">+ Cloud Run invoker (callers: coordinator SA, drift + upgrade)</text>
         <text x="56" y="1272" font-size="10" fill="#555">no GCP write roles; egress only</text>
 
         <rect x="380" y="1195" width="560" height="90" rx="3" fill="#fff" stroke="#3b6ea5" stroke-width="1.5"/>
         <text x="660" y="1218" text-anchor="middle" font-size="12" font-weight="700" fill="#3b6ea5">policy: outbound url = $NOTIFY_WEBHOOK_URL</text>
-        <text x="660" y="1238" text-anchor="middle" font-size="11" fill="#555">caller-supplied `url` is silently dropped</text>
+        <text x="660" y="1238" text-anchor="middle" font-size="11" fill="#555">caller-supplied `url` is rejected (extra=forbid &rarr; 422)</text>
         <text x="660" y="1256" text-anchor="middle" font-size="11" fill="#555">channel constrained to closed enum</text>
         <text x="660" y="1274" text-anchor="middle" font-size="11" fill="#555">the worker's identity IS the URL</text>
 
-        <!-- ============ Divider: downstream / outside coordinator reach ============ -->
+        <!-- ============ Divider: downstream / not an agent tool ============ -->
         <line x1="40" y1="1322" x2="960" y2="1322" stroke="#3b6ea5" stroke-width="1" stroke-dasharray="6 4"/>
-        <text x="40" y="1316" font-size="11" font-weight="700" fill="#3b6ea5">downstream &mdash; outside the coordinator's reach (sole infra mutator; runs after /iac-approvals)</text>
+        <text x="40" y="1316" font-size="11" font-weight="700" fill="#3b6ea5">downstream &mdash; not an agent tool; invoked only via /iac-approvals (sole infra mutator)</text>
 
         <!-- ============ Tofu Apply (downstream) row (T=1340, accent) ============ -->
         <rect x="40" y="1340" width="920" height="120" rx="4" fill="#fff" stroke="#3b6ea5" stroke-width="1.2" stroke-dasharray="5 3"/>
@@ -676,7 +677,7 @@
         <text x="660" y="1378" text-anchor="middle" font-size="12" font-weight="700" fill="#3b6ea5">policy: plan-bound HMAC approval verified before apply</text>
         <text x="660" y="1398" text-anchor="middle" font-size="11" fill="#555">single-use, signed-window TTL; applies trusted C2 plan triplet</text>
         <text x="660" y="1416" text-anchor="middle" font-size="11" fill="#555">the ONE trust boundary where IaC mutations land</text>
-        <text x="660" y="1434" text-anchor="middle" font-size="10" fill="#3b6ea5" font-style="italic">NOT coordinator-invokable &mdash; gated by /iac-approvals/{pr}</text>
+        <text x="660" y="1434" text-anchor="middle" font-size="10" fill="#3b6ea5" font-style="italic">not an agent tool &mdash; invoked only via /iac-approvals/{pr}</text>
 
         <!-- ============ HITL gate annotation — drift rollback (left gutter) ============ -->
         <line x1="20" y1="180" x2="20" y2="462" stroke="#3b6ea5" stroke-width="1.2" stroke-dasharray="4 3"/>
@@ -702,7 +703,7 @@
       validator before any GitHub call; the <code>tofu-editor</code> re-runs the
       AGENT static gate (which bans secret literals, control-plane, and IAM edits)
       before any write; and the downstream <code>tofu-apply</code> &mdash; the sole
-      infra mutator, which the coordinator cannot invoke &mdash; verifies a
+      infra mutator, which is never an agent tool &mdash; verifies a
       plan-bound HMAC approval and applies only the trusted plan triplet. So a
       prompt-injected LLM still cannot smuggle a major-version bump, a downgrade,
       an off-allowlist path, a secret-baring IaC change, or an unapproved apply.

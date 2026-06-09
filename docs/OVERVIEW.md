@@ -55,8 +55,8 @@ by architecture, not by hoping the LLM behaves.**
 (read-only)(opens PR) (needs       (deps)       (opens infra  each does ONE job
             approval)               infra)        PR only)     against ONE hardcoded target
 
-   (tofu-apply — the only thing that runs `tofu apply` — is NOT called by
-    the coordinator; it runs downstream, after a human approves the plan)
+   (tofu-apply — the only thing that runs `tofu apply` — is never an agent
+    tool; the coordinator calls it only after a human approves the plan)
 ```
 
 ---
