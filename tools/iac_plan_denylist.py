@@ -36,6 +36,7 @@ from driftscribe_lib.iac_plan_denylist import (  # noqa: F401  (re-export)
     MUTATION_KNOWN_TUPLES,
     NO_OP_ACTION_TUPLES,
     REPLACE_ACTION_TUPLES,
+    RULE_DESCRIPTIONS,
     Violation,
     WIF_RESOURCE_TYPES,
     evaluate,

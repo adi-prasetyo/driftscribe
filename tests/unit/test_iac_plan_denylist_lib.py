@@ -34,7 +34,7 @@ def _service_change(name: str, actions: list[str]) -> dict:
 def test_canonical_api_importable_from_lib() -> None:
     assert callable(lib.load_plan_json)
     assert callable(lib.evaluate)
-    assert lib.__all__ == ["Violation", "DenylistInput", "load_plan_json", "evaluate"]
+    assert lib.__all__ == ["Violation", "DenylistInput", "load_plan_json", "evaluate", "RULE_DESCRIPTIONS"]
 
 
 def test_load_plan_json_and_evaluate_behave() -> None:
