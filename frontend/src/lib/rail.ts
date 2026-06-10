@@ -14,8 +14,11 @@ export type RailItem =
   | {
       kind: 'group';
       pr: number;
-      /** ≥2 docs, in list (newest-first) order; docs[0] is the face. */
-      docs: Decision[];
+      /** ≥2 docs, in list (newest-first) order; docs[0] is the face.
+       *  Deliberately readonly for consumers: the component derives views off
+       *  this array inside `$derived` and must copy (`[...docs]`) before any
+       *  reorder — never mutate in place. */
+      docs: readonly Decision[];
     };
 
 /**
@@ -94,6 +97,11 @@ export function hasAnomalousStep(earlier: ReadonlyArray<Decision>): boolean {
  * are ordered by first appearance oldest-first and deduped with `×k` counts.
  * Returned as ONE string so the component renders it as a single expression —
  * no markup seams, no whitespace-collapse risk.
+ *
+ * Precondition: callers pass `docs.slice(1)` of a group, so `earlier.length
+ * >= 1` (a group has ≥2 docs by construction — see `groupRailDecisions`). An
+ * empty input would render a malformed `0 earlier steps · ` and is never
+ * produced by the grouping.
  */
 export function lifecycleSummaryLabel(earlier: ReadonlyArray<Decision>): string {
   const n = earlier.length;

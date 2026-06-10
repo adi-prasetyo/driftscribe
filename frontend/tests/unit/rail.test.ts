@@ -40,6 +40,18 @@ describe('groupRailDecisions', () => {
     expect(groupRailDecisions([w])).toEqual([{ kind: 'single', d: w }]);
   });
 
+  it('a lone valid iac doc stays a single alongside a grouped PR (count-then-emit interaction)', () => {
+    // Live shape: PR 68 has a multi-doc lifecycle while PR 71 has exactly one
+    // doc — the count pass must keep 71 a single while 68 folds.
+    const a68 = iac('a68', 68, 'applied');
+    const w68 = iac('w68', 68, 'waiting_for_rebake');
+    const loneW71 = iac('loneW71', 71, 'waiting_for_rebake');
+    expect(groupRailDecisions([a68, w68, loneW71])).toEqual([
+      { kind: 'group', pr: 68, docs: [a68, w68] },
+      { kind: 'single', d: loneW71 },
+    ]);
+  });
+
   it('never groups iac docs with a missing/invalid pr_number (mirrors the iacApprovalHref guard)', () => {
     const bad1 = iac('b1', undefined, 'applied');
     const bad2 = iac('b2', undefined, 'applied');
