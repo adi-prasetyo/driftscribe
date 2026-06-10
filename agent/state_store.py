@@ -31,6 +31,10 @@ class StateStore(Protocol):
         self, trace_id: str
     ) -> dict[str, Any] | None: ...
     def list_decisions(self, *, limit: int = 50) -> list[dict[str, Any]]: ...
+    def get_pause(self) -> dict[str, Any] | None: ...
+    def set_pause(
+        self, *, paused: bool, reason: str | None, actor: str
+    ) -> dict[str, Any]: ...
 
 
 class InMemoryStateStore:
@@ -39,6 +43,9 @@ class InMemoryStateStore:
     def __init__(self) -> None:
         self._events: dict[str, dict[str, Any]] = {}  # event_key -> {payload, decision_id}
         self._decisions: dict[str, dict[str, Any]] = {}  # decision_id -> full decision
+        # Pause flag singleton. None = never written (system is running by default —
+        # the pause doc not existing means the operator has never toggled it).
+        self._pause: dict[str, Any] | None = None
 
     def record_event(self, event_key: str, payload: dict[str, Any]) -> bool:
         if event_key in self._events:
@@ -122,9 +129,40 @@ class InMemoryStateStore:
         )
         return by_time[:limit]
 
+    def get_pause(self) -> dict[str, Any] | None:
+        """Return a defensive copy of the pause document, or None if never set.
+
+        Returns a copy so callers cannot alias or mutate the stored state.
+        Absent doc = not paused: the system predates this feature; the default
+        is always-running.
+        """
+        if self._pause is None:
+            return None
+        return dict(self._pause)
+
+    def set_pause(
+        self, *, paused: bool, reason: str | None, actor: str
+    ) -> dict[str, Any]:
+        """Overwrite the pause document and return a defensive copy.
+
+        Stores a fresh ``updated_at`` timestamp (UTC ``datetime`` — the
+        in-memory equivalent of Firestore's SERVER_TIMESTAMP). Defensive copy
+        on both the stored dict and the returned dict so neither the caller
+        nor a subsequent get_pause caller can alias internal state.
+        """
+        from datetime import datetime, timezone
+
+        self._pause = {
+            "paused": paused,
+            "reason": reason,
+            "actor": actor,
+            "updated_at": datetime.now(timezone.utc),
+        }
+        return dict(self._pause)
+
 
 class FirestoreStateStore:
-    """Cloud Firestore-backed state. Collections: ``events``, ``decisions``."""
+    """Cloud Firestore-backed state. Collections: ``events``, ``decisions``, ``config``."""
 
     def __init__(self, project: str, client: Any = None) -> None:
         # Lazy import so tests that don't use this don't need GCP creds installed
@@ -135,6 +173,10 @@ class FirestoreStateStore:
         self._db = client
         self._events = client.collection("events")
         self._decisions = client.collection("decisions")
+        # ``config`` collection for singleton operator-configuration documents.
+        # Currently only the ``pause`` document (id="pause") lives here.
+        # Separate from ``events``/``decisions`` so IAM and query scopes stay clean.
+        self._config = client.collection("config")
 
     def record_event(self, event_key: str, payload: dict[str, Any]) -> bool:
         # Create-if-absent: succeed only when the doc didn't already exist.
@@ -308,3 +350,43 @@ class FirestoreStateStore:
             d.setdefault("created_at", s.create_time)
             out.append(d)
         return out
+
+    def get_pause(self) -> dict[str, Any] | None:
+        """Point-read the ``config/pause`` document; returns ``to_dict()`` or None.
+
+        Returns None when the document has never been written (the feature was
+        added after the system was deployed; absent = not paused by design).
+        ``to_dict()`` already returns a plain dict copy so no extra defensive copy
+        is needed here — Firestore's client always constructs a fresh object.
+        """
+        snap = self._config.document("pause").get()
+        return snap.to_dict() if snap.exists else None
+
+    def set_pause(
+        self, *, paused: bool, reason: str | None, actor: str
+    ) -> dict[str, Any]:
+        """Full-overwrite the ``config/pause`` document and return the as-written dict.
+
+        Uses ``firestore.SERVER_TIMESTAMP`` for ``updated_at`` so the caller
+        receives the real server-authoritative time (not client-clock time that
+        drifts across Cloud Run instances). One extra point-read after the write
+        is intentional: toggles are rare operator actions, and returning a
+        client-side guess at the server timestamp would silently lie about what
+        Firestore actually stored. The read-after-write is the cheapest way to
+        give the caller — and the audit log — the truthful value.
+        """
+        from google.cloud import firestore
+
+        doc_ref = self._config.document("pause")
+        doc_ref.set(
+            {
+                "paused": paused,
+                "reason": reason,
+                "actor": actor,
+                "updated_at": firestore.SERVER_TIMESTAMP,
+            }
+        )
+        # Read back the written document so the returned dict carries the real
+        # server timestamp rather than the sentinel value.
+        snap = doc_ref.get()
+        return snap.to_dict()

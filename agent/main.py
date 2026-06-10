@@ -13,7 +13,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as _FutureTimeout
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
@@ -22,13 +22,14 @@ from fastapi.templating import Jinja2Templates
 from google.auth import exceptions as google_auth_exceptions
 from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2.id_token import verify_oauth2_token
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from agent import approvals as approval_helpers
 from agent import iac_artifacts
 from agent import iac_csrf
 from agent import worker_client
 from agent.auth import require_cf_operator, verify_token
+from agent.pause import PauseState, read_pause_state
 from agent.classifier import ClassificationInput, classify
 from agent.config import Settings, artifacts_bucket, get_settings
 from agent.worker_client import WorkerClientError
@@ -73,6 +74,11 @@ from agent.workloads import (
 )
 from pydantic import ValidationError as PydanticValidationError
 from driftscribe_lib import github
+from driftscribe_lib.cf_access import (
+    CfAccessJwtError,
+    canonical_operator_email,
+    verify_cf_access_jwt,
+)
 from driftscribe_lib.github import PrMergeBlockedError, PrNotEligibleError
 from driftscribe_lib.infra_graph import build_graph
 from driftscribe_lib.logging import (
@@ -1427,6 +1433,25 @@ class RecheckRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class PauseToggleRequest(BaseModel):
+    """Request body for POST /pause.
+
+    ``extra="forbid"`` surfaces typo'd fields as 422 rather than silently
+    dropping them — critical for an operator-facing toggle where a mistaken
+    field name would otherwise be a silent no-op.
+
+    ``reason`` is capped at 500 chars (arbitrary but generous). Empty or
+    whitespace-only strings are stripped to ``None`` by the route handler so
+    the stored doc is clean (empty reason = no reason provided, not an empty
+    string that clutters the audit log).
+    """
+
+    paused: StrictBool
+    reason: str | None = Field(default=None, max_length=500)
+
+    model_config = ConfigDict(extra="forbid")
+
+
 @app.post("/recheck")
 async def recheck(
     req: RecheckRequest | None = None,
@@ -1807,6 +1832,136 @@ def get_capabilities_route(
     header story consistent with its sibling read routes."""
     response.headers["Cache-Control"] = "no-store"
     return build_capabilities()
+
+
+# --------------------------------------------------------------------------- #
+# Operator pause / kill switch — Wave 2 item 5
+# --------------------------------------------------------------------------- #
+
+
+def _serialize_pause_state(ps: PauseState) -> dict[str, Any]:
+    """Serialize a PauseState to the wire shape shared by GET and POST /pause.
+
+    ``updated_at`` is a ``datetime`` (InMemory) or a Firestore
+    ``DatetimeWithNanoseconds`` — both have ``.isoformat()``, so we try that
+    first and fall back to ``str()`` for any other datetime-like type. ``None``
+    stays ``None`` (flag never written).
+    """
+    if ps.updated_at is None:
+        updated_at_str = None
+    elif hasattr(ps.updated_at, "isoformat"):
+        updated_at_str = ps.updated_at.isoformat()
+    else:
+        updated_at_str = str(ps.updated_at)
+    return {
+        "paused": ps.paused,
+        "reason": ps.reason,
+        "actor": ps.actor,
+        "updated_at": updated_at_str,
+        "read_error": ps.read_error,
+    }
+
+
+@app.get("/pause")
+def get_pause_route(
+    response: Response,
+    _: None = Depends(verify_token),
+    state: StateStore = Depends(get_state),
+) -> dict:
+    """Return the current pause flag state.
+
+    A read failure is NOT an error response — it returns the fail-closed view
+    (paused=True, read_error=True) with 200, because that IS the system's
+    effective state. Callers that distinguish error from intentional-pause
+    must check ``read_error``.
+
+    ``Cache-Control: no-store`` mirrors /capabilities — this is operator
+    safety status that must never be served from a proxy or browser cache.
+    """
+    response.headers["Cache-Control"] = "no-store"
+    ps = read_pause_state(state)
+    return _serialize_pause_state(ps)
+
+
+@app.post("/pause")
+def post_pause_route(
+    req: PauseToggleRequest,
+    response: Response,
+    _: None = Depends(verify_token),
+    cf_access_jwt: str | None = Header(default=None, alias="Cf-Access-Jwt-Assertion"),
+    state: StateStore = Depends(get_state),
+) -> dict:
+    """Toggle the operator pause flag.
+
+    Actor attribution is best-effort: if CF Access is configured AND a
+    ``Cf-Access-Jwt-Assertion`` header verifies, the canonical operator email
+    is used; otherwise falls back to ``"operator-token"``. Silent fallback on
+    any ``CfAccessJwtError`` so a stale CF cookie cannot break a legitimate
+    token-authenticated toggle. This mirrors the verify_token dual-credential
+    pattern while naming the human when possible.
+
+    A WRITE failure raises 502 — the operator must KNOW the toggle did NOT
+    take effect. This is always safe (fail: a failed-pause write leaves the
+    system running, which the operator sees; a failed-resume write leaves it
+    paused, which is also visible) but failing silently would be dangerous
+    for a kill switch.
+
+    ``Cache-Control: no-store`` matches the GET — the response body IS pause
+    status, and a cached copy could mislead the operator about safety state.
+    """
+    response.headers["Cache-Control"] = "no-store"
+    settings = get_settings()
+
+    # --- Actor attribution (best-effort; any failure → fallback) ---
+    actor = "operator-token"
+    if (
+        cf_access_jwt
+        and settings.cf_access_team_domain
+        and settings.cf_access_aud_tag
+    ):
+        try:
+            claims = verify_cf_access_jwt(
+                cf_access_jwt,
+                settings.cf_access_team_domain,
+                settings.cf_access_aud_tag,
+            )
+            actor = canonical_operator_email(claims)
+        except CfAccessJwtError:
+            # Silent fallback — a stale cookie or rotated key shouldn't block
+            # a toggle that is authenticated by the operator token.
+            pass
+
+    # Strip whitespace-only reason to None so the stored doc is clean.
+    reason = req.reason.strip() if req.reason else None
+    reason = reason or None  # empty string after strip → None
+
+    try:
+        doc = state.set_pause(paused=req.paused, reason=reason, actor=actor)
+    except Exception as exc:  # noqa: BLE001
+        # Surface write failures as 502 — the operator must see that the toggle
+        # didn't take effect. Unlike read failures (which fail closed silently),
+        # a silent write failure could leave the operator believing the system
+        # is paused when it is still running (or vice versa).
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"pause toggle did NOT take effect — storage write failed: {exc}"
+            ),
+        ) from exc
+
+    log.info("pause_toggled", extra={"paused": req.paused, "actor": actor, "reason": reason})
+
+    # Build the response from the as-written doc so the caller sees what was
+    # actually persisted (including the server-authoritative updated_at from
+    # Firestore's read-after-write in FirestoreStateStore.set_pause).
+    ps = PauseState(
+        paused=bool(doc.get("paused")),
+        reason=doc.get("reason"),
+        actor=doc.get("actor"),
+        updated_at=doc.get("updated_at"),
+        read_error=False,
+    )
+    return _serialize_pause_state(ps)
 
 
 @app.get("/trace/{trace_id}")
