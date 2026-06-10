@@ -356,8 +356,10 @@ export function toMermaid(graph: InfraGraph, overlay?: PlanOverlay): string {
         drew = true;
       }
       // A reclass can't land on a counts-only/empty group (no nodes to match);
-      // those entries degrade to added ghosts alongside the placeholder.
-      for (const e of reclassByLabel.values()) addGhosts.push(e);
+      // those entries degrade to added ghosts alongside the placeholder. Set
+      // dedupes (like the non-empty branch): an entry whose full name and
+      // shortName differ is stored under TWO keys and must add only ONE ghost.
+      for (const e of new Set(reclassByLabel.values())) addGhosts.push(e);
     } else {
       const reclassed = new Set<OverlayEntry>();
       for (const node of group.nodes) {

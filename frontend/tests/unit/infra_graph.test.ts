@@ -593,6 +593,31 @@ describe('toMermaid — counts-only / empty group arms still receive ghosts', ()
     expect(sub).toContain('3 secrets · hidden');
     expect(sub).toMatch(/Secret #40;name hidden#41; · will be created/);
   });
+
+  it('emits a full-path reclass fall-through into an empty group EXACTLY ONCE (no dup ghosts)', () => {
+    // A reclass-verb entry whose full name and shortName differ is stored under
+    // TWO map keys; the empty-group fall-through must dedupe (Set) like the
+    // non-empty branch does, or one planned change renders as two ghost nodes.
+    const g = graph({
+      groups: [group({ asset_type: SA, label: 'Service account', count: 1, nodes: [] })],
+    });
+    const src = toMermaid(
+      g,
+      overlay({
+        entries: [
+          entry({
+            verb: 'update',
+            rtype: 'google_service_account',
+            type_label: 'Service account',
+            asset_type: SA,
+            name: 'projects/p/serviceAccounts/sa@p.iam.gserviceaccount.com',
+          }),
+        ],
+      }),
+    );
+    const occurrences = src.match(/· will be modified/g) ?? [];
+    expect(occurrences.length).toBe(1);
+  });
 });
 
 describe('toMermaid — degraded / empty live graph still previews ghosts', () => {
