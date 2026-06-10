@@ -82,8 +82,10 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Final, Mapping
 
-__all__ = ["Violation", "DenylistInput", "load_plan_json", "evaluate"]
+__all__ = ["Violation", "DenylistInput", "load_plan_json", "evaluate", "RULE_DESCRIPTIONS"]
 
 
 @dataclass(frozen=True)
@@ -734,3 +736,61 @@ def evaluate(di: DenylistInput) -> list[Violation]:
             _check_wif(rc, rtype, actions, violations)
             _check_iam(rc, rtype, actions, violations)
     return violations
+
+
+# Operator-facing descriptions for every rule ID this module can emit.
+# Serialized by the coordinator's GET /capabilities (the operator UI's
+# capability card). Keyed by the EXACT Violation(...) first-arg literals —
+# tests/unit/test_denylist_rule_descriptions.py extracts those literals via
+# AST and pins set equality, so adding/removing a rule without updating
+# this mapping fails CI. Descriptions are plain language for operators who
+# do not read HCL; keep them honest and specific.
+RULE_DESCRIPTIONS: Final[Mapping[str, str]] = MappingProxyType({
+    "plan-json-unparseable": (
+        "The plan file is not valid JSON — rejected outright (fail-closed)."
+    ),
+    "plan-json-missing-resource-changes": (
+        "The plan has no resource-changes list — rejected outright (fail-closed)."
+    ),
+    "plan-json-malformed-change": (
+        "A change entry is malformed, or a protected resource hides its "
+        "identity — rejected outright (fail-closed)."
+    ),
+    "control-plane-service": (
+        "No change may touch DriftScribe's own Cloud Run services."
+    ),
+    "control-plane-sa": (
+        "No change may touch DriftScribe's own service accounts."
+    ),
+    "control-plane-bucket": (
+        "No change may touch the IaC state or artifact buckets, or any "
+        "object inside them."
+    ),
+    "control-plane-secret": (
+        "No change may touch DriftScribe's secrets (approval keys, GitHub "
+        "token, …) or any of their versions."
+    ),
+    "control-plane-kms": (
+        "No change may touch the state-encryption KMS key or its key ring."
+    ),
+    "wif-config-change": (
+        "No change may touch Workload Identity Federation pools or providers."
+    ),
+    "iam-change-forbidden-v1": (
+        "All IAM changes are refused — even on unrelated resources (v1 floor)."
+    ),
+    "delete-action-forbidden-v1": (
+        "All deletes are refused — the agent cannot destroy any resource "
+        "(v1 floor)."
+    ),
+    "forget-action-forbidden-v1": (
+        "All state-forget actions are refused (v1 floor)."
+    ),
+    "replace-action-forbidden-v1": (
+        "All replacements (destroy-and-recreate) are refused (v1 floor)."
+    ),
+    "unknown-action-forbidden-v1": (
+        "Any action shape not in the audited OpenTofu vocabulary is refused "
+        "(fail-closed against new verbs)."
+    ),
+})

@@ -711,6 +711,74 @@ def _resolve_action(name: str) -> ActionSpec:
     return ACTION_REGISTRY[name]
 
 
+def _parse_spec(
+    yaml_path: Path, *, expected_name: str | None = None
+) -> WorkloadSpec:
+    """Parse a workload manifest and validate its SYMBOLS against the
+    code-side allowlists, WITHOUT resolving worker URLs (no env reads).
+
+    Shared by :func:`_load_from_path` (which additionally resolves workers
+    from env) and :func:`load_workload_spec` (the ``GET /capabilities``
+    serializer, which must work wherever worker URLs are unset). Raises
+    exactly what full resolution would raise for a bad symbol:
+    :class:`UnknownToolError` / :class:`ReservedToolNotImplementedError`
+    (via :func:`_resolve_tool`), :class:`UnknownWorkerError` (membership
+    check ONLY — no env read), :class:`UnknownActionError` (via
+    :func:`_resolve_action`).
+
+    ``expected_name``: if provided, the parsed :class:`WorkloadSpec.name`
+    must match it — otherwise :class:`WorkloadManifestMismatchError` is
+    raised (same semantics as :func:`_load_from_path`).
+
+    Pinned by ``tests/unit/test_capabilities.py::test_parse_spec_*`` —
+    these tests explicitly delete all worker-URL env vars to prove no env
+    is ever read here.
+    """
+    raw = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+    spec = WorkloadSpec.model_validate(raw)
+
+    if expected_name is not None and spec.name != expected_name:
+        raise WorkloadManifestMismatchError(
+            f"workload manifest at {yaml_path} declares "
+            f"name={spec.name!r} but was loaded as {expected_name!r}. "
+            f"The directory name and the YAML ``name:`` field must agree — "
+            f"this is a deploy bug (typo in the YAML, or the file is in "
+            f"the wrong directory)."
+        )
+
+    for tool_name in spec.enabled_tool_names:
+        _resolve_tool(tool_name)  # env-free; raises on unknown/reserved
+    for worker_name in spec.worker_names:
+        if worker_name not in WORKER_REGISTRY:  # membership only — _resolve_worker reads env
+            raise UnknownWorkerError(
+                f"worker {worker_name!r} is not in WORKER_REGISTRY — "
+                f"workload YAML may only reference allowlisted worker names. "
+                f"Known: {sorted(WORKER_REGISTRY)}"
+            )
+    for action_name in spec.action_names:
+        _resolve_action(action_name)  # env-free; raises on unknown
+
+    return spec
+
+
+def load_workload_spec(name: str) -> WorkloadSpec:
+    """Public parse+symbol-validate loader for a named workload.
+
+    Same path-traversal guard and name-match validation as
+    :func:`load_workload`, but never reads worker-URL env vars. Used by
+    the ``GET /capabilities`` route (see :mod:`agent.capabilities`) to
+    describe every workload without requiring the full coordinator
+    deployment environment.
+
+    Raises the same errors as :func:`load_workload` for bad names or
+    bad symbols, but NOT :class:`MissingWorkerEnvError` (worker URL env
+    vars are never consulted).
+
+    Pinned by ``tests/unit/test_capabilities.py::test_load_workload_spec_*``.
+    """
+    return _parse_spec(_workload_yaml_path(name), expected_name=name)
+
+
 def _load_from_path(
     yaml_path: Path, *, expected_name: str | None = None
 ) -> WorkloadResolution:
@@ -727,18 +795,19 @@ def _load_from_path(
     :class:`WorkloadManifestMismatchError` is raised. The public
     :func:`load_workload` always passes this so a typo in the YAML
     ``name:`` field cannot silently mismatch its on-disk location.
-    Phase 17.A Codex review (Fix Important #2b)."""
-    raw = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
-    spec = WorkloadSpec.model_validate(raw)
+    Phase 17.A Codex review (Fix Important #2b).
 
-    if expected_name is not None and spec.name != expected_name:
-        raise WorkloadManifestMismatchError(
-            f"workload manifest at {yaml_path} declares "
-            f"name={spec.name!r} but was loaded as {expected_name!r}. "
-            f"The directory name and the YAML ``name:`` field must agree — "
-            f"this is a deploy bug (typo in the YAML, or the file is in "
-            f"the wrong directory)."
-        )
+    Symbol validation is delegated to :func:`_parse_spec` (which also
+    handles the name-match check). The resolution maps built here
+    (:func:`_resolve_tool` / :func:`_resolve_worker` /
+    :func:`_resolve_action`) call the same helpers a second time — the
+    double call is idempotent and keeps the diff minimal. Note the
+    refactor shifted validation order: symbol validation (via
+    ``_parse_spec``) now precedes the prompt-file existence check, so a
+    YAML tool typo surfaces as :class:`UnknownToolError` rather than
+    ``FileNotFoundError`` — deliberate and more specific.
+    """
+    spec = _parse_spec(yaml_path, expected_name=expected_name)
 
     workload_dir = yaml_path.parent
 

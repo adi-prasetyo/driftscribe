@@ -24,6 +24,7 @@
   import HistoricalBanner from './components/HistoricalBanner.svelte';
   import DecisionsRail from './components/DecisionsRail.svelte';
   import InfraDiagram from './components/InfraDiagram.svelte';
+  import CapabilityCard from './components/CapabilityCard.svelte';
   import Timeline from './components/Timeline.svelte';
 
   // ---- state ----
@@ -354,6 +355,7 @@
 
   <section id="chat-area" class="chat-area" aria-label="Chat and reasoning timeline">
     <InfraDiagram {call} {appliedEpoch} />
+    <CapabilityCard {call} />
     <ChatForm disabled={historicalActive || busy} onSubmit={submitChat} />
     <HistoricalBanner active={historicalActive} traceId={historicalTraceId} onNewChat={newChat} />
     <TraceBadge {traceId} {status} />
