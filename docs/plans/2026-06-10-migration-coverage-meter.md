@@ -454,6 +454,32 @@ git commit -m "feat(ui): coverage meter + summary percentage in the Infrastructu
 
 ---
 
+## Post-review deltas (as shipped)
+
+The two-stage review per task folded the following changes — the code blocks
+above are the *original* spec; the shipped code differs in exactly these ways:
+
+- **Task 1 tests:** + midpoint-rounding pin (`coveragePercent(3, 8) → 38` — kills a
+  `round→floor` mutation), + `coveragePercent(3, Number.NEGATIVE_INFINITY) → null`
+  symmetry case, + a comment on `(15, 10)` attributing the 100 to the
+  exact-endpoint guard (7 tests total).
+- **Task 2 component:** the detail-line separator is rendered via an explicit
+  `{' '}` expression tag — Svelte trims literal leading whitespace at `{#if}`
+  boundaries (even inline), so the spec's template rendered `managed· 37`
+  glued; an expression tag is never trimmed and is prettier-proof. Also added:
+  `aria-valuetext="{pct}% — {managed} of {resources} resources managed"` on the
+  progressbar (screen readers otherwise announce a bare number), and a JSDoc
+  line on the `totals` prop.
+- **Task 2 tests:** detail assertion is a single glued string (pins the
+  separator spacing), + `aria-valuetext` exact assertion, + `0%` fill-width pin
+  in the honest-0% case.
+- **Task 3:** `<CoverageMeter {totals} />` (derived alias, not `graph.totals`)
+  for template consistency; the degraded test uses NON-ZERO totals
+  (`{resources: 5, managed: 3, drift: 2}`) so suppression provably comes from
+  the degraded branch, not an empty estate.
+
+---
+
 ## Task 4: Full verification gates
 
 **Step 1:** `cd frontend && npm run test:unit && npm run check && npm run build` — all green, bundle compiles.
