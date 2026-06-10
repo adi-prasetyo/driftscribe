@@ -589,6 +589,43 @@ off-target-Eventarc-never-reads-the-flag test (get_pause patched to raise);
 CI-equivalent gate commands (`uv run pytest -q`, `uv run ruff check .`,
 `npm run test:unit`, `npm run check`, `npm run build`).
 
+## Post-review deltas (as shipped)
+
+Deviations from the literal plan text, each caught/endorsed in review:
+
+1. **`StrictBool` for `PauseToggleRequest.paused`** — pydantic v2 coerces
+   `"yes"`→True under plain `bool`; the 422-on-non-bool contract needs strict
+   typing (Task 1 implementer).
+2. **iac approval GET wraps its pause read in `try/except`** — the spec's
+   literal `read_pause_state(get_state())` would 500 if `get_state()` ITSELF
+   raises (outside `read_pause_state`'s catch), violating the route's
+   always-200 probe-safe invariant; a failure now fail-closes to the paused
+   display. Same parity guard later added to the rollback approval GET
+   (final-review observation). Pinned by
+   `test_pause_read_failure_suppresses_form_fail_closed` and the rollback
+   twin.
+3. **`tests/integration/test_iac_approval_get.py` updated** — two stale tests
+   encoded the OLD fail-open "StateStore down → still show the form" behavior
+   this spec deliberately overturns; one was re-pointed at its true intent
+   (`find_decision_for_event` tolerance), one now requires a readable running
+   pause state as part of "happy path" (Codex thread 019eb187 endorsed).
+4. **PauseControl hardening beyond spec** — single-flight guard on confirm
+   (`if (saving) return`), App.svelte-style sequence counter so a stale
+   GET/POST response can never clobber fresher state (mutation-tested via a
+   raw-dispatchEvent overlap), bare ds-tokens (no fallback hexes;
+   `--ds-danger-ink` for error text; global `:focus-visible` ring), and
+   `aria-hidden` on the ⏸ glyph.
+5. **Pause outranks the iac resume/reconcile re-POST (documented, accepted)**
+   — the approve-path gate runs before `_handle_existing_iac_decision`, so a
+   merge-only reconcile (`applied` + failed merge) or a `waiting_for_rebake`
+   resume is ALSO refused 423 while paused. Conservative by design: the infra
+   mutation already happened; only an idempotent GitHub merge step waits, and
+   it proceeds on resume. (Final-review observation 1.)
+6. **Eventarc paused-drop emits a structured log**
+   (`eventarc_event_dropped_paused`) so operators can query Cloud Logging for
+   events the kill switch dropped — the access-log 200 alone isn't queryable
+   by cause.
+
 ## Out of scope (deliberate)
 
 - Worker-side pause checks (see Enforcement boundary — deferred until the
