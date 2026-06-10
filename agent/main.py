@@ -2677,8 +2677,12 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
             reason_severity = "pending"
 
     # Blast-radius phrase: computed pre-template so the template gate is a simple
-    # `{% if blast_phrase %}` test.  Non-None summary with entries → phrase; all
-    # other paths (error, empty plan, unverifiable, resolved) → "".
+    # `{% if blast_phrase %}` truthy test. The phrase is non-empty iff the view
+    # has a parsed, non-empty change_summary (i.e. entries exist). On all other
+    # paths — view=None, unverifiable, empty plan, error, resolved — either
+    # change_summary is None/empty and blast_radius_phrase returns "" directly,
+    # or the view is absent; the template {% if blast_phrase %} gate then
+    # suppresses the line entirely on those paths.
     _summary = view.change_summary if view is not None else None
     _blast_phrase = (
         blast_radius_phrase(_summary)
@@ -2700,10 +2704,10 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
         # belt-and-braces re-check of the view's own verdict (Gate 2).
         "show_summary": reason_severity != "error" and not resolved_decision,
         # Blast-radius line (Wave 2 item 8): can-affect phrase + cannot-touch note.
-        # blast_phrase="" on empty/error/unverifiable paths → template gate suppresses
-        # the line entirely.  cannot_touch_note is always the lib constant (POST
-        # re-renders that omit these keys are protected by | default("") in the
-        # template).
+        # blast_phrase="" when the summary is absent/empty (see computation above)
+        # → the {% if blast_phrase %} gate in the template suppresses the line.
+        # cannot_touch_note is always the lib constant (POST re-renders that omit
+        # these keys are protected by | default("") in the template).
         "blast_phrase": _blast_phrase,
         "cannot_touch_note": BLAST_CANNOT_TOUCH_NOTE,
     }

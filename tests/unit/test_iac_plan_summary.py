@@ -569,6 +569,15 @@ class TestPluralize:
     def test_sibilant_sh_gets_es(self):
         assert _pluralize("compute mesh") == "compute meshes"
 
+    def test_consonant_y_gets_ies(self):
+        # google_artifact_registry_repository → "Artifact Registry repository"
+        # → plural "Artifact Registry repositories" (not "repositorys").
+        assert _pluralize("Artifact Registry repository") == "Artifact Registry repositories"
+
+    def test_vowel_y_stays_regular(self):
+        # A label ending in vowel+y (contrived; just ensures we don't over-fire)
+        assert _pluralize("monkey") == "monkeys"
+
 
 class TestBlastRadiusPhrase:
     """blast_radius_phrase — singular/plural/join/empty."""
@@ -614,6 +623,19 @@ class TestBlastRadiusPhrase:
         phrase = blast_radius_phrase(s)
         assert "addresses" in phrase
         assert "addresss" not in phrase
+
+    def test_consonant_y_plural_via_artifact_registry(self):
+        # google_artifact_registry_repository → "Artifact Registry repository"
+        # 2 of them → "2 Artifact Registry repositories" (not "repositorys").
+        rcs = [
+            _rc(["create"], rtype="google_artifact_registry_repository", name=f"r{i}")
+            for i in range(2)
+        ]
+        s = summarize_plan(_plan(*rcs))
+        assert s is not None
+        phrase = blast_radius_phrase(s)
+        assert "repositories" in phrase
+        assert "repositorys" not in phrase
 
 
 class TestBlastCannotTouchNote:

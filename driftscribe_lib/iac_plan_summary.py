@@ -495,13 +495,20 @@ def summarize_plan(plan_json: Any) -> PlanSummary | None:
 # --------------------------------------------------------------------------- #
 
 def _pluralize(label: str) -> str:
-    """Pluralize a type label's final word. +'es' after s/x/z/ch/sh
-    (covers the humanized fallback for e.g. google_compute_address →
-    'compute address' → 'compute addresses' — a bare +'s' would emit
-    'addresss'), else +'s'. Every _TYPE_LABELS value and the fallback
-    end in a regular noun; no irregular plurals needed."""
+    """Pluralize a type label's final word.
+
+    Rules applied in order:
+    - +'es' after s/x/z/ch/sh sibilants (e.g. 'address' → 'addresses')
+    - ies after consonant+y (e.g. 'repository' → 'repositories')
+    - +'s' otherwise (e.g. 'bucket' → 'buckets')
+
+    Covers every _TYPE_LABELS value and the google_-strip fallback; no
+    irregular plurals needed for the current resource-type vocabulary.
+    """
     if label.endswith(("s", "x", "z", "ch", "sh")):
         return label + "es"
+    if label.endswith("y") and len(label) >= 2 and label[-2] not in "aeiou":
+        return label[:-1] + "ies"
     return label + "s"
 
 
