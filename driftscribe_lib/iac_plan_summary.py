@@ -36,10 +36,26 @@ __all__ = [
     "MAX_ATTRS_PER_ENTRY",
     "MAX_ENTRIES",
     "AttrChange",
+    "BLAST_CANNOT_TOUCH_NOTE",
     "ChangeEntry",
     "PlanSummary",
+    "blast_radius_phrase",
     "summarize_plan",
 ]
+
+# One-line operator-facing summary of the denylist cage, rendered next to
+# the per-plan blast radius on the approval page. HONESTY CONTRACT: this
+# sentence may claim ONLY what driftscribe_lib/iac_plan_denylist.py
+# enforces. test_blast_cannot_touch_note_matches_rule_set pins the exact
+# RULE_DESCRIPTIONS key set — any denylist rule change fails that test and
+# forces a re-review of this copy.
+BLAST_CANNOT_TOUCH_NOTE = (
+    "It cannot touch DriftScribe's own control plane (its services, "
+    "service accounts, state/artifact buckets, secrets, or encryption "
+    "keys), cannot change IAM anywhere, and cannot delete, replace, or "
+    "un-manage any resource — denylist-enforced, re-checked by the apply "
+    "worker before apply."
+)
 
 MAX_ENTRIES = 40           # resource rows rendered (counts stay total)
 MAX_ATTRS_PER_ENTRY = 25   # attribute-diff rows per resource
@@ -116,6 +132,11 @@ class PlanSummary:
     n_forget: int = 0  # state mutation (leaves management) — never green
     n_change: int = 0  # unclassifiable action combos — never green
     n_hidden: int = 0  # entries beyond MAX_ENTRIES (counts above include them)
+    # Per-type counts aggregated over ALL entries pre-truncation (same pre-
+    # truncation guarantee as verb counts), sorted by (-count, type_label) for
+    # deterministic rendering. Populated by summarize_plan; default () for tests
+    # that construct PlanSummary directly without a full plan walk.
+    type_counts: tuple[tuple[str, int], ...] = ()
 
     @property
     def destructive(self) -> bool:
@@ -449,6 +470,11 @@ def summarize_plan(plan_json: Any) -> PlanSummary | None:
     except Exception:  # noqa: BLE001 — advisory display: any surprise => no summary
         return None
     counts = Counter(e.verb for e in entries)
+    type_counter = Counter(e.type_label for e in entries)
+    type_counts = tuple(
+        (label, n)
+        for label, n in sorted(type_counter.items(), key=lambda kv: (-kv[1], kv[0]))
+    )
     shown = tuple(entries[:MAX_ENTRIES])
     return PlanSummary(
         entries=shown,
@@ -460,4 +486,39 @@ def summarize_plan(plan_json: Any) -> PlanSummary | None:
         n_forget=counts["forget"],
         n_change=counts["change"],
         n_hidden=len(entries) - len(shown),
+        type_counts=type_counts,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Blast-radius helpers (ClickOps Wave 2 item 8)
+# --------------------------------------------------------------------------- #
+
+def _pluralize(label: str) -> str:
+    """Pluralize a type label's final word.
+
+    Rules applied in order:
+    - +'es' after s/x/z/ch/sh sibilants (e.g. 'address' → 'addresses')
+    - ies after consonant+y (e.g. 'repository' → 'repositories')
+    - +'s' otherwise (e.g. 'bucket' → 'buckets')
+
+    Covers every _TYPE_LABELS value and the google_-strip fallback; no
+    irregular plurals needed for the current resource-type vocabulary.
+    """
+    if label.endswith(("s", "x", "z", "ch", "sh")):
+        return label + "es"
+    if label.endswith("y") and len(label) >= 2 and label[-2] not in "aeiou":
+        return label[:-1] + "ies"
+    return label + "s"
+
+
+def blast_radius_phrase(summary: PlanSummary) -> str:
+    """'1 Pub/Sub topic, 2 Cloud Storage buckets' — the can-affect-at-most
+    half of the blast-radius line. '' for an empty plan (the empty card
+    already says 'no changes'; the line is suppressed there)."""
+    if not summary.type_counts:
+        return ""
+    return ", ".join(
+        f"{n} {label}" if n == 1 else f"{n} {_pluralize(label)}"
+        for label, n in summary.type_counts
     )

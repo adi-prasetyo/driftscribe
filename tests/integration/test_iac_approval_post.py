@@ -1267,3 +1267,29 @@ def test_resume_apply_clean_502_still_freezes_as_state_suspect(_configured, monk
     state = get_state()
     ek = main_mod._iac_event_key("theghostsquad00/driftscribe", 42, _HEAD, _GEN_META)
     assert state.find_decision_for_event(ek)["apply_status"] == "failed_state_suspect"
+
+
+# --------------------------------------------------------------------------- #
+# Blast-radius POST guard (ClickOps Wave 2 item 8)
+#
+# POST re-renders reuse iac_approval.html but do NOT set blast_phrase /
+# cannot_touch_note (those are GET-only ctx keys). The render must stay clean.
+# --------------------------------------------------------------------------- #
+
+
+def test_post_rerender_does_not_500_without_blast_phrase_keys(_configured, monkeypatch):
+    """A reject POST re-renders iac_approval.html without blast_phrase / cannot_touch_note
+    in ctx — the template must still render cleanly (200, no Jinja error)."""
+    _patch_resolve(monkeypatch)
+    _patch_workers(monkeypatch)
+    client = TestClient(app)
+    # A "reject" POST takes the noop path and re-renders the template via
+    # _render_iac_approval_response, which sets NEITHER show_summary NOR the
+    # blast keys.  The outer `{% if (show_summary | default(false)) %}` gate
+    # therefore skips the whole summary block, so the blast guards are never
+    # evaluated on THIS path — this is a belt-and-braces check that the
+    # template still renders.  The | default("") guards on blast_phrase /
+    # cannot_touch_note protect future refactors that set show_summary=True
+    # in a POST context (or a switch to StrictUndefined), not this path.
+    resp = _post(client, token=_mint(), decision="reject")
+    assert resp.status_code == 200

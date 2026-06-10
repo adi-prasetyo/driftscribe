@@ -28,6 +28,15 @@
       target="_blank"
       rel="noopener"
     >Review &amp; approve →</a>
+    <!-- Static cage teaser — the authoritative, drift-pinned copy of this claim
+         lives server-side (BLAST_CANNOT_TOUCH_NOTE in driftscribe_lib/iac_plan_summary.py,
+         rendered on the approval page). This is a teaser whose three claims —
+         no control-plane changes, no IAM changes, no deletes/replacements/un-managing —
+         are the denylist's stable v1 floor (enforced by iac_plan_denylist.py and
+         re-checked by the apply worker before apply). No per-plan counts appear here
+         because no plan exists at done-time: C2 is workflow_dispatch, so the plan is
+         only created after the operator dispatches it, not at PR-open time. -->
+    <p class="iac-cta__cage-note" data-testid="iac-cta-cage-note">Before anything applies, this change must pass the self-protection denylist — no DriftScribe control-plane changes, no IAM changes, no deletes, replacements, or un-managing — and your explicit approval.</p>
   </div>
 {/if}
 
@@ -100,6 +109,17 @@
 
   .iac-cta__btn:active {
     transform: translateY(1px);
+  }
+
+  /* Full-width note sitting below the title + button row. flex-basis: 100%
+     forces a line break inside the flex-wrap container without disrupting
+     the title/button alignment above it. */
+  .iac-cta__cage-note {
+    flex-basis: 100%;
+    margin: 0;
+    color: var(--ds-muted);
+    font-size: var(--ds-fs-1);
+    line-height: var(--ds-lh-body);
   }
 
   @media (max-width: 32rem) {
