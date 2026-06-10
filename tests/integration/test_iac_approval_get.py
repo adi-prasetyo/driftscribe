@@ -496,6 +496,7 @@ _SUMMARY_PLAN = {
                 "actions": ["create"],
                 "before": None,
                 "after": {"name": "orders"},
+                # required by schema; not exercised here
                 "before_sensitive": False,
                 "after_sensitive": False,
                 "after_unknown": {"id": True},
@@ -526,6 +527,8 @@ def test_get_still_200_with_summary_fallback(_configured, monkeypatch):
     body = resp.text
     assert 'data-testid="summary-unavailable"' in body
     assert 'data-testid="change-summary"' not in body
+    # Symmetry with the healthy test — catches a future unconditional render.
+    assert 'data-testid="no-destroy-note"' not in body
 
 
 def test_get_integrity_mismatch_renders_no_summary_card(_configured, monkeypatch):
@@ -545,7 +548,11 @@ def test_get_integrity_mismatch_renders_no_summary_card(_configured, monkeypatch
 def test_get_terminal_applied_merged_renders_no_summary_card(
     _configured, _inmemory, monkeypatch
 ):
-    """Terminal decision applied+merged suppresses the change-summary card."""
+    """Terminal decision applied+merged suppresses the change-summary card.
+
+    Takes _inmemory (unlike the three tests above) because _seed_decision needs
+    the InMemory store to install the terminal decision pointer the GET reads.
+    """
     view = _view(_plan_json=_SUMMARY_PLAN)
     _patch_resolve(monkeypatch, ref=_ref(), view=view)
     _seed_decision(apply_status="applied", merge_state="merged")
@@ -560,7 +567,11 @@ def test_get_terminal_applied_merged_renders_no_summary_card(
 def test_get_terminal_failed_renders_no_summary_card(
     _configured, _inmemory, monkeypatch
 ):
-    """Terminal decision failed_state_suspect+merged suppresses the change-summary card."""
+    """Terminal decision failed_state_suspect+merged suppresses the change-summary card.
+
+    Takes _inmemory (unlike the three tests above) because _seed_decision needs
+    the InMemory store to install the terminal decision pointer the GET reads.
+    """
     view = _view(_plan_json=_SUMMARY_PLAN)
     _patch_resolve(monkeypatch, ref=_ref(), view=view)
     _seed_decision(apply_status="failed_state_suspect", merge_state="merged")
