@@ -1345,7 +1345,8 @@ git commit -m "feat(ui): plain-language change summary card on the IaC approval 
 
 **Files:**
 - Modify: `frontend/src/styles/base.css` (append a new section; reuse `tokens.css` vars only — `--ds-ok-*`, `--ds-warn-*`, `--ds-danger-*`, `--ds-sp-*`, `--ds-fs-1`, `--ds-fw-semibold`, `--ds-tracking-caps`, `--ds-radius-sm`)
-- Regenerates: `agent/static/` hashed bundle (committed)
+- Regenerates: `agent/static/` hashed bundle (gitignored — rebuilt inside
+  `Dockerfile.agent` at deploy, so only `base.css` is committed)
 
 **Step 1: Append the CSS**
 
@@ -1423,7 +1424,7 @@ Expected: PASS (CSS-only change; the Svelte component tests are unaffected).
 **Step 4: Commit**
 
 ```bash
-git add frontend/src/styles/base.css agent/static
+git add frontend/src/styles/base.css
 git commit -m "feat(ui): ds-verb badge + summary-list styles for the approval page"
 ```
 
