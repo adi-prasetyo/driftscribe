@@ -7,6 +7,7 @@
   let {
     totals = null,
   }: {
+    /** The /infra/graph totals; null until the first fetch resolves. */
     totals: { resources: number; managed: number; drift: number } | null;
   } = $props();
 
@@ -26,12 +27,14 @@
       aria-valuemin="0"
       aria-valuemax="100"
       aria-valuenow={pct}
+      aria-valuetext="{pct}% — {totals.managed} of {totals.resources} resources managed"
     >
       <div class="coverage__fill" data-testid="coverage-fill" style:width="{pct}%"></div>
     </div>
+    <!-- {' '} renders the separator space explicitly: Svelte trims literal
+         leading whitespace at {#if} boundaries, but never expression tags. -->
     <p class="coverage__detail" data-testid="coverage-detail">
-      {totals.managed} of {totals.resources} resources managed{#if totals.drift > 0}
-        · {totals.drift} not yet in IaC{/if}
+      {totals.managed} of {totals.resources} resources managed{#if totals.drift > 0}{' '}· {totals.drift} not yet in IaC{/if}
     </p>
   </div>
 {/if}

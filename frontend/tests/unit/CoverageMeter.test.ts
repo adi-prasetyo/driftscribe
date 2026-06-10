@@ -23,8 +23,10 @@ describe('CoverageMeter', () => {
     expect(bar.getAttribute('aria-valuenow')).toBe('26');
     expect(bar.getAttribute('aria-valuemin')).toBe('0');
     expect(bar.getAttribute('aria-valuemax')).toBe('100');
-    expect(getByTestId('coverage-detail').textContent).toContain('13 of 50 resources managed');
-    expect(getByTestId('coverage-detail').textContent).toContain('37 not yet in IaC');
+    expect(bar.getAttribute('aria-valuetext')).toBe('26% — 13 of 50 resources managed');
+    expect(getByTestId('coverage-detail').textContent).toContain(
+      '13 of 50 resources managed · 37 not yet in IaC',
+    );
   });
 
   it('renders the fill at the percentage width', () => {
@@ -62,5 +64,7 @@ describe('CoverageMeter', () => {
     });
     expect(getByTestId('coverage-pct').textContent).toBe('0%');
     expect(getByRole('progressbar').getAttribute('aria-valuenow')).toBe('0');
+    const fill = getByTestId('coverage-fill') as HTMLElement;
+    expect(fill.style.width).toBe('0%');
   });
 });
