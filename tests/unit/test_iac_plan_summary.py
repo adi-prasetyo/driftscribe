@@ -8,8 +8,8 @@ The summary is ADVISORY DISPLAY ONLY, but its failure modes are safety-shaped:
 from __future__ import annotations
 
 from driftscribe_lib.iac_plan_summary import (
-    MAX_ATTRS_PER_ENTRY,  # noqa: F401 — public-API contract, exercised in later tasks
-    MAX_ENTRIES,  # noqa: F401 — public-API contract, exercised in later tasks
+    MAX_ATTRS_PER_ENTRY,
+    MAX_ENTRIES,  # noqa: F401 — exercised in Task 4 (entry truncation test)
     summarize_plan,
 )
 
@@ -173,3 +173,72 @@ def test_pathologically_deep_structures_fall_back_to_none():
     assert summarize_plan(_plan(_rc(["update"], name="b",
                                     before={"k": 1}, after={"k": 2},
                                     b_sens=deep_mask))) is None
+
+
+# ---------------------------------------------------------------------------
+# Task 2: Attribute diff — nested paths, lists, clamping
+# ---------------------------------------------------------------------------
+
+def _one(s):
+    assert s is not None and len(s.entries) == 1
+    return s.entries[0]
+
+
+def test_update_scalar_diff_with_dotted_path():
+    e = _one(summarize_plan(_plan(_rc(
+        ["update"], rtype="google_cloud_run_v2_service", name="svc",
+        before={"template": {"max_instance_request_concurrency": 80}},
+        after={"template": {"max_instance_request_concurrency": 200}},
+    ))))
+    assert e.type_label == "Cloud Run service"
+    (a,) = e.attr_changes
+    assert a.path == "template.max_instance_request_concurrency"
+    assert (a.before, a.after) == ("80", "200")
+
+
+def test_update_list_index_path_and_added_key():
+    e = _one(summarize_plan(_plan(_rc(
+        ["update"], name="svc",
+        before={"env": [{"name": "FOO", "value": "1"}]},
+        after={"env": [{"name": "FOO", "value": "2"}], "labels": {"team": "ops"}},
+    ))))
+    paths = {a.path: (a.before, a.after) for a in e.attr_changes}
+    assert paths["env[0].value"] == ('"1"', '"2"')
+    # Key absent on before side: diffs as null → value at the parent path.
+    assert paths["labels"] == ("null", '{"team": "ops"}')
+
+
+def test_unequal_list_lengths_summarized_as_counts():
+    e = _one(summarize_plan(_plan(_rc(
+        ["update"], name="svc",
+        before={"env": [1]}, after={"env": [1, 2, 3]},
+    ))))
+    (a,) = e.attr_changes
+    assert a.path == "env"
+    assert (a.before, a.after) == ("(1 item(s))", "(3 item(s))")
+
+
+def test_long_value_clamped():
+    e = _one(summarize_plan(_plan(_rc(
+        ["update"], name="b", before={"v": "x" * 500}, after={"v": "y"},
+    ))))
+    (a,) = e.attr_changes
+    assert len(a.before) <= 120 and a.before.endswith("…")
+
+
+def test_unknown_after_renders_known_after_apply():
+    e = _one(summarize_plan(_plan(_rc(
+        ["update"], name="b",
+        before={"etag": "abc"}, after={"etag": None},
+        unknown={"etag": True},
+    ))))
+    (a,) = e.attr_changes
+    assert a.unknown and a.after == "(known after apply)" and a.before == '"abc"'
+
+
+def test_attr_budget_truncates_with_flag():
+    before = {f"k{i:03d}": i for i in range(40)}
+    after = {f"k{i:03d}": i + 1 for i in range(40)}
+    e = _one(summarize_plan(_plan(_rc(["update"], name="b", before=before, after=after))))
+    assert e.attrs_truncated
+    assert len(e.attr_changes) == MAX_ATTRS_PER_ENTRY
