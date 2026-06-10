@@ -23,6 +23,7 @@ describe('coveragePercent', () => {
     expect(coveragePercent(3, Number.POSITIVE_INFINITY)).toBeNull();
     expect(coveragePercent(Number.POSITIVE_INFINITY, 10)).toBeNull();
     expect(coveragePercent(Number.NEGATIVE_INFINITY, 10)).toBeNull();
+    expect(coveragePercent(3, Number.NEGATIVE_INFINITY)).toBeNull();
   });
 
   it('is exact at the endpoints', () => {
@@ -35,8 +36,12 @@ describe('coveragePercent', () => {
     expect(coveragePercent(1, 1000)).toBe(1); // 0.1% — first adoption moves the needle
   });
 
+  it('rounds halves up (away from zero), not down', () => {
+    expect(coveragePercent(3, 8)).toBe(38); // 37.5% → 38, not 37
+  });
+
   it('clamps out-of-range managed counts instead of lying', () => {
     expect(coveragePercent(-3, 10)).toBe(0);
-    expect(coveragePercent(15, 10)).toBe(100);
+    expect(coveragePercent(15, 10)).toBe(100); // 15 clamped to 10 → exact-endpoint guard → 100
   });
 });
