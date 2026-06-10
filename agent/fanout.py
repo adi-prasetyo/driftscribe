@@ -1296,7 +1296,7 @@ async def run_provision_fanout_stream(
     # so a malformed 200 — no pr_number, ``pr_number=True``, an empty pr_url, etc.
     # — fails closed instead of surfacing a fabricated "PR #None"/"#True"/"(...)".
     # The call WAS made → tool_calls records open_infra_pr; no PR is fabricated.
-    from agent.adk_tools import iac_pr_pointer
+    from agent.adk_tools import iac_pr_pointer, notify_iac_pr_pending
 
     iac_pr = iac_pr_pointer(result)
     if iac_pr is None:
@@ -1312,6 +1312,18 @@ async def run_provision_fanout_stream(
             "session_id": sid,
         }
         return
+
+    # Best-effort notification — runs off the event loop (notify_iac_pr_pending
+    # calls the synchronous httpx-based worker_client.call; use to_thread to
+    # match the surrounding async/sync boundary pattern). The helper never raises.
+    # Bounded by worker_client's _HTTPX_TIMEOUT (30 s); acceptable for an
+    # advisory side-channel.
+    await asyncio.to_thread(
+        notify_iac_pr_pending,
+        iac_pr["pr_number"],
+        iac_pr["pr_url"],
+        plan.pr_title,
+    )
 
     # Surface the opened PR + the exact operator next steps. The terminal item
     # carries the structured ``iac_pr`` pointer so the SPA can render a clickable

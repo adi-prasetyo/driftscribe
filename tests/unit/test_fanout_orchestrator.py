@@ -738,3 +738,126 @@ def test_early_generator_close_reaps_author_task(monkeypatch):
     author_task = captured["task"]
     assert author_task.done()
     assert author_task.cancelled()
+
+
+# --------------------------------------------------------------------------- #
+# Pending-approval notifications (Wave 2 item 7) — fanout direct path
+# --------------------------------------------------------------------------- #
+
+
+def test_multi_slice_confirmed_pr_notifies_once(monkeypatch):
+    """A confirmed PR through the direct call_open_infra_pr path triggers
+    exactly ONE notifier call (channel=approval, severity=medium), and the
+    result item still carries iac_pr unchanged."""
+    _patch_decompose(monkeypatch, result=_two_slice_plan())
+    _patch_author(monkeypatch, result=_two_file_author_result())
+    _patch_authority(monkeypatch, target_repo="owner/repo", branch="infra/x-1-ab")
+    _patch_open_pr(monkeypatch)
+
+    notifier_calls = []
+
+    def _fake_call(worker, payload):
+        if worker == "notifier":
+            notifier_calls.append(payload)
+            return {"status": "sent"}
+        return {}
+
+    monkeypatch.setattr(_live("agent.worker_client"), "call", _fake_call)
+
+    items = asyncio.run(_drain())
+
+    assert len(notifier_calls) == 1, f"expected 1 notifier call, got {len(notifier_calls)}"
+    n = notifier_calls[0]
+    assert n["channel"] == "approval"
+    assert n["severity"] == "medium"
+    assert "/iac-approvals/42" in n["body"]
+    # The fanout site must pass the plan's REAL title + the worker's pr_url
+    # (closes the pass-empty-title-at-the-fanout-site hole).
+    assert "Add buckets A and B" in n["body"]
+    assert "https://github.com/owner/repo/pull/42" in n["body"]
+
+    result = _result(items)
+    assert result["iac_pr"] == {
+        "pr_number": 42,
+        "pr_url": "https://github.com/owner/repo/pull/42",
+    }
+
+
+def test_multi_slice_malformed_pr_result_no_notify(monkeypatch):
+    """A malformed/unconfirmed worker response (pointer None) → ZERO notifier
+    calls; the existing fail-closed reply path is unchanged."""
+    _patch_decompose(monkeypatch, result=_two_slice_plan())
+    _patch_author(monkeypatch, result=_two_file_author_result())
+    _patch_authority(monkeypatch)
+    # Worker returns a result with no pr_number/pr_url — unconfirmed
+    _patch_open_pr(monkeypatch, result={"status": "opened"})
+
+    notifier_calls = []
+
+    def _fake_call(worker, payload):
+        if worker == "notifier":
+            notifier_calls.append(payload)
+            return {"status": "sent"}
+        return {}
+
+    monkeypatch.setattr(_live("agent.worker_client"), "call", _fake_call)
+
+    items = asyncio.run(_drain())
+
+    assert notifier_calls == []
+    result = _result(items)
+    assert "iac_pr" not in result
+
+
+def test_multi_slice_editor_worker_error_no_notify(monkeypatch):
+    """Editor worker error → ZERO notifier calls."""
+    from agent import worker_client
+
+    _patch_decompose(monkeypatch, result=_two_slice_plan())
+    _patch_author(monkeypatch, result=_two_file_author_result())
+    _patch_authority(monkeypatch)
+    _patch_open_pr(
+        monkeypatch,
+        exc=worker_client.WorkerClientError(403, "forbidden", "tofu_editor"),
+    )
+
+    notifier_calls = []
+
+    def _fake_call(worker, payload):
+        if worker == "notifier":
+            notifier_calls.append(payload)
+            return {"status": "sent"}
+        return {}
+
+    monkeypatch.setattr(_live("agent.worker_client"), "call", _fake_call)
+
+    asyncio.run(_drain())
+
+    assert notifier_calls == []
+
+
+def test_multi_slice_notifier_failure_suppressed_stream_completes(monkeypatch):
+    """If the notifier itself raises, the exception is suppressed and the
+    stream completes normally (result carries iac_pr)."""
+    from agent import worker_client as wc
+
+    _patch_decompose(monkeypatch, result=_two_slice_plan())
+    _patch_author(monkeypatch, result=_two_file_author_result())
+    _patch_authority(monkeypatch, target_repo="owner/repo", branch="infra/x-1-ab")
+    _patch_open_pr(monkeypatch)
+
+    def _fake_call(worker, payload):
+        if worker == "notifier":
+            raise wc.WorkerClientError(503, "down", "notifier")
+        return {}
+
+    monkeypatch.setattr(_live("agent.worker_client"), "call", _fake_call)
+
+    items = asyncio.run(_drain())
+
+    result = _result(items)
+    # Stream completes normally — iac_pr still present
+    assert result["iac_pr"] == {
+        "pr_number": 42,
+        "pr_url": "https://github.com/owner/repo/pull/42",
+    }
