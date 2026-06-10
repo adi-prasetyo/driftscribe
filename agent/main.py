@@ -61,6 +61,7 @@ from agent.trace_fetcher import (
 )
 from agent.validator import ValidationError as ProposalValidationError
 from agent.validator import validate
+from agent.capabilities import build_capabilities
 from agent.workloads import (
     MissingWorkerEnvError,
     ReservedToolNotImplementedError,
@@ -1792,6 +1793,20 @@ def get_infra_graph(
             extra={"error": inventory.get("error"), "detail": inventory.get("detail")},
         )
     return build_graph(inventory)
+
+
+@app.get("/capabilities")
+def get_capabilities_route(
+    response: Response,
+    _: None = Depends(verify_token),
+) -> dict:
+    """The agent's safety cage, serialized from the same constants the
+    enforcement code imports (agent/capabilities.py — see its module
+    docstring for the drift-pin test inventory). Token-guarded like
+    /decisions and /infra/graph. Static per deploy; no-store keeps the
+    header story consistent with its sibling read routes."""
+    response.headers["Cache-Control"] = "no-store"
+    return build_capabilities()
 
 
 @app.get("/trace/{trace_id}")
