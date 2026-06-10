@@ -384,3 +384,16 @@ def test_unequal_list_with_positional_sensitive_mask_uses_count_display():
     # sensitive flag is False: acceptable here because the count display
     # never surfaces any value regardless of position masks.
     assert not a.sensitive
+
+
+def test_iac_plan_view_change_summary_property():
+    from agent.iac_artifacts import IacPlanView
+
+    v = IacPlanView()
+    v._plan_json = _plan(_rc(["create"], name="b"))
+    s = v.change_summary
+    assert s is not None and s.n_create == 1
+    assert v.change_summary is s  # cached
+
+    v2 = IacPlanView()  # _plan_json stays None (unparsed / unverifiable)
+    assert v2.change_summary is None
