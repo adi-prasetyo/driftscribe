@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from driftscribe_lib.iac_plan_summary import (
     MAX_ATTRS_PER_ENTRY,
-    MAX_ENTRIES,  # noqa: F401 — exercised in Task 4 (entry truncation test)
+    MAX_ENTRIES,
     summarize_plan,
 )
 
@@ -327,3 +327,42 @@ def test_max_depth_wholesale_respects_sensitivity():
         b_sens=sens, a_sens=sens,
     )))
     _assert_secret_nowhere(_one(s) and s)
+
+
+# ---------------------------------------------------------------------------
+# Task 4: Truncation counts + import recognition
+# ---------------------------------------------------------------------------
+
+def test_entry_cap_truncates_display_but_not_counts():
+    rcs = [_rc(["create"], name=f"c{i}") for i in range(45)] + [_rc(["delete"], name="d")]
+    s = summarize_plan(_plan(*rcs))
+    assert len(s.entries) == MAX_ENTRIES
+    assert s.n_hidden == 46 - MAX_ENTRIES
+    # The destroy is beyond the display cap but MUST still be counted/warned.
+    assert s.n_destroy == 1 and s.destructive
+
+
+def test_import_only_change_is_import_verb_not_skipped():
+    rc = _rc(["no-op"], name="adopted",
+             before={"name": "adopted"}, after={"name": "adopted"})
+    rc["change"]["importing"] = {"id": "projects/p/buckets/adopted"}
+    e = _one(summarize_plan(_plan(rc)))
+    assert e.verb == "import" and e.imported
+    assert e.attr_changes == ()
+    assert summarize_plan(_plan(rc)).n_import == 1
+
+
+def test_import_plus_update_keeps_update_verb_with_imported_flag():
+    rc = _rc(["update"], name="adopted", before={"x": 1}, after={"x": 2})
+    rc["change"]["importing"] = {"id": "x"}
+    s = summarize_plan(_plan(rc))
+    e = _one(s)
+    assert e.verb == "update" and e.imported
+    assert s.n_update == 1 and s.n_import == 0
+
+
+def test_action_reason_prettified():
+    rc = _rc(["delete", "create"], name="r")
+    rc["action_reason"] = "replace_because_cannot_update"
+    e = _one(summarize_plan(_plan(rc)))
+    assert e.action_reason == "replace because cannot update"
