@@ -29,6 +29,8 @@
     type InfraGraph,
   } from '../lib/infra_graph';
   import { RefreshScheduler } from '../lib/infra_refresh';
+  import { coveragePercent } from '../lib/coverage';
+  import CoverageMeter from './CoverageMeter.svelte';
 
   let {
     call,
@@ -61,6 +63,7 @@
   const totals = $derived(graph?.totals ?? null);
   const driftCount = $derived(totals?.drift ?? 0);
   const renderable = $derived(graph ? hasRenderableNodes(graph) : false);
+  const pct = $derived(totals ? coveragePercent(totals.managed, totals.resources) : null);
 
   async function refresh(): Promise<void> {
     const myRun = ++fetchRun;
@@ -183,7 +186,9 @@
         {:else}
           <span class="ds-pill ds-pill--ok" data-testid="infra-drift-badge">in sync</span>
         {/if}
-        <span class="infra-summary__count">{totals.managed}/{totals.resources} managed</span>
+        <span class="infra-summary__count" data-testid="infra-coverage-count"
+          >{totals.managed}/{totals.resources} managed{pct === null ? '' : ` · ${pct}%`}</span
+        >
       {/if}
     </span>
   </summary>
@@ -199,6 +204,10 @@
         disabled={loading || mermaidLoading}
       >{loading || mermaidLoading ? 'Refreshing…' : 'Refresh'}</button>
     </div>
+
+    {#if graph && !degraded}
+      <CoverageMeter totals={graph.totals} />
+    {/if}
 
     {#if error}
       <p class="ds-blocked" role="alert">{error}</p>
