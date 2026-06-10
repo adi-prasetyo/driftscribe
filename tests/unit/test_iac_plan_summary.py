@@ -242,3 +242,88 @@ def test_attr_budget_truncates_with_flag():
     e = _one(summarize_plan(_plan(_rc(["update"], name="b", before=before, after=after))))
     assert e.attrs_truncated
     assert len(e.attr_changes) == MAX_ATTRS_PER_ENTRY
+
+
+# ---------------------------------------------------------------------------
+# Task 3: Sensitivity masking (the critical one)
+# ---------------------------------------------------------------------------
+
+SECRET = "hunter2-super-secret"
+
+
+def _assert_secret_nowhere(s):
+    for e in s.entries:
+        for a in e.attr_changes:
+            assert SECRET not in a.before and SECRET not in a.after
+            assert SECRET not in a.path
+        assert SECRET not in e.location
+
+
+def test_sensitive_leaf_masked_both_sides():
+    e = _one(summarize_plan(_plan(_rc(
+        ["update"], name="b",
+        before={"password": SECRET, "x": 1},
+        after={"password": "rotated-" + SECRET, "x": 1},
+        b_sens={"password": True}, a_sens={"password": True},
+    ))))
+    (a,) = e.attr_changes
+    assert a.sensitive and a.path == "password"
+    assert (a.before, a.after) == ("(sensitive)", "(sensitive)")
+
+
+def test_sensitive_subtree_never_descended():
+    s = summarize_plan(_plan(_rc(
+        ["update"], name="b",
+        before={"conn": {"user": "u", "pass": SECRET}},
+        after={"conn": {"user": "u2", "pass": SECRET}},
+        b_sens={"conn": True}, a_sens={"conn": True},
+    )))
+    e = _one(s)
+    (a,) = e.attr_changes
+    assert a.path == "conn" and a.sensitive
+    _assert_secret_nowhere(s)
+
+
+def test_unknown_with_nested_sensitive_before_does_not_leak():
+    # after_unknown=True at the node, before contains a sensitive leaf:
+    # the before display must be masked wholesale, not json-dumped.
+    s = summarize_plan(_plan(_rc(
+        ["update"], name="b",
+        before={"cfg": {"token": SECRET}}, after={"cfg": None},
+        b_sens={"cfg": {"token": True}}, unknown={"cfg": True},
+    )))
+    e = _one(s)
+    (a,) = e.attr_changes
+    assert a.path == "cfg" and a.unknown
+    assert a.before == "(sensitive)" and a.after == "(known after apply)"
+    _assert_secret_nowhere(s)
+
+
+def test_sensitive_unchanged_emits_nothing():
+    s = summarize_plan(_plan(_rc(
+        ["update"], name="b",
+        before={"password": SECRET, "x": 1}, after={"password": SECRET, "x": 2},
+        b_sens={"password": True}, a_sens={"password": True},
+    )))
+    e = _one(s)
+    assert [a.path for a in e.attr_changes] == ["x"]
+    _assert_secret_nowhere(s)
+
+
+def test_sensitive_location_not_surfaced_on_create():
+    e = _one(summarize_plan(_plan(_rc(
+        ["create"], name="b", after={"location": SECRET},
+        a_sens={"location": True},
+    ))))
+    assert e.location == ""
+
+
+def test_max_depth_wholesale_respects_sensitivity():
+    deep_b = {"l1": {"l2": {"l3": {"l4": {"l5": {"l6": {"l7": {"l8": {"l9": SECRET}}}}}}}}}
+    deep_a = {"l1": {"l2": {"l3": {"l4": {"l5": {"l6": {"l7": {"l8": {"l9": "other"}}}}}}}}}
+    sens = {"l1": {"l2": {"l3": {"l4": {"l5": {"l6": {"l7": {"l8": {"l9": True}}}}}}}}}
+    s = summarize_plan(_plan(_rc(
+        ["update"], name="b", before=deep_b, after=deep_a,
+        b_sens=sens, a_sens=sens,
+    )))
+    _assert_secret_nowhere(_one(s) and s)
