@@ -590,6 +590,31 @@ First round: **NO-GO**, 6 findings — all folded before execution:
 5. Sketch rendered `stepStatus || step.action` (could print `iac_apply` where a status belongs), contradicting the design note → neutral `status not recorded` token, used consistently in the step row and the summary helper.
 6. Whitespace-seam risk in the lifecycle markup → summary is ONE expression (helper returns the complete string); step rows are sibling elements spaced by flex `gap` with no text-node separators.
 
+## Post-review deltas (as shipped)
+
+Where the implementation deviates from the sketches above, the cause was a
+review fold — recorded here so the doc stays an accurate as-shipped record:
+
+1. **`RailItem.docs` is `readonly Decision[]`** (sketch showed `Decision[]`) —
+   quality-review fold: closes accidental mutation inside a `$derived`
+   consumer; the component spreads before reversing (`[...lifecycle].reverse()`).
+2. **`rail.test.ts` has 16 tests, not 15** — added a count-then-emit
+   interaction case (a lone valid iac doc alongside a grouped PR stays a
+   single).
+3. **`DecisionsRail.test.ts` grew three fold tests beyond the sketch:** an
+   open-state truth test proving an operator's manual collapse of an anomalous
+   expander SURVIVES a `/decisions` refresh while the history stays anomalous
+   (Svelte 5 dirty-checks the attribute effect — the unchanged
+   `hasAnomalousStep` value is not re-applied; the test rerenders with new
+   array identity and guards against a vacuous pass by also asserting a
+   changed subtitle propagated), plus two mutant kills (3-doc subtitle
+   `find()` fallback; missing-status step renders `status not recorded`,
+   never the action string).
+4. **Lifecycle summary caret matches the repo's `<details>` convention**
+   (InfraDiagram/CapabilityCard): native marker suppressed, `::before`
+   content `▸` rotating 90° on open — not the native disclosure triangle the
+   sketch's CSS note implied.
+
 ## Out of scope (deliberate)
 
 - **No backend change** — grouping is a view concern; the decision docs stay faithful 1-doc-per-attempt.
