@@ -187,21 +187,22 @@ describe('CapabilityCard', () => {
     expect(workloads.textContent).toContain('Explore (chat)');
     expect(workloads.textContent).toContain('Provision (infra edits)');
 
-    // Provision shows "chat-only" pill — exact-string pin on the pill seam.
-    // The pill text must be "chat-only" (not "autonomous + chat").
-    // Svelte 5 whitespace gotcha: the seam uses {' '} so the rendered text
-    // is exactly "<display_name> · chat-only".
+    // Provision shows the "chat-only" pill. GLUED-EXACT-STRING PIN on the
+    // pill seam (Svelte 5 whitespace gotcha, PR #83 lesson): the component
+    // glues the name span and the pill span with {' '} as the ONLY whitespace,
+    // so the rendered text is exactly "<display_name> <pill>" with ONE space.
+    // If the {' '} is dropped (or the seam moves inside an {#if} that trims
+    // it), the strings glue together and this assertion FAILS.
     const provisionSummary = workloads.querySelector('[data-testid="cap-workload-provision-summary"]');
     expect(provisionSummary).not.toBeNull();
-    expect(provisionSummary!.textContent).toContain('Provision (infra edits)');
-    expect(provisionSummary!.textContent).toContain('chat-only');
-    // Glued-exact-string pin on the autonomous pill seam:
+    expect(provisionSummary!.textContent).toContain('Provision (infra edits) chat-only');
+    // And the pill must be chat-only, not the autonomous one:
     expect(provisionSummary!.textContent).not.toContain('autonomous');
 
-    // Drift should show "autonomous + chat"
+    // Same glued pin on the autonomous side of the seam:
     const driftSummary = workloads.querySelector('[data-testid="cap-workload-drift-summary"]');
     expect(driftSummary).not.toBeNull();
-    expect(driftSummary!.textContent).toContain('autonomous + chat');
+    expect(driftSummary!.textContent).toContain('Cloud Run config autonomous + chat');
   });
 
   it('4. write_capable badge: provision_open_infra_pr shows "write-capable", read tool shows "read"', async () => {

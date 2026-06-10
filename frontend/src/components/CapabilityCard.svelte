@@ -112,7 +112,7 @@
               {#each group.rules as rule (rule.id)}
                 <li class="cap-rule">
                   <span class="cap-rule__desc">{rule.description}</span>
-                  {' '}<code class="cap-rule__id ds-muted-code">{rule.id}</code>
+                  {' '}<code class="cap-rule__id">{rule.id}</code>
                 </li>
               {/each}
             </ul>
@@ -132,8 +132,11 @@
               class="cap-workload__summary"
               data-testid="cap-workload-{wl.name}-summary"
             >
-              <span class="cap-workload__name">{wl.display_name}</span>
-              {' '}<span class="ds-pill {wl.autonomous ? 'ds-pill--ok' : 'ds-pill--muted'} cap-workload__pill"
+              <!-- {' '} is the ONLY whitespace at this seam (spans glued): the
+                   rendered text is exactly "<display_name> <pill>", which the
+                   glued-exact-string test pins. -->
+              <span class="cap-workload__name">{wl.display_name}</span>{' '}<span
+                class="ds-pill {wl.autonomous ? 'ds-pill--ok' : 'ds-pill--muted'} cap-workload__pill"
                 >{wl.autonomous ? 'autonomous + chat' : 'chat-only'}</span>
             </summary>
             <div class="cap-workload__body">
