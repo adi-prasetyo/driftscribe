@@ -386,6 +386,99 @@ def test_unequal_list_with_positional_sensitive_mask_uses_count_display():
     assert not a.sensitive
 
 
+# ---------------------------------------------------------------------------
+# Task (ghost-nodes): resource_name extraction (Decision 4)
+# ---------------------------------------------------------------------------
+
+class TestResourceName:
+    def test_create_uses_after_name(self):
+        s = summarize_plan(_plan(_rc(
+            ["create"], rtype="google_pubsub_topic", name="t",
+            after={"name": "order-events"},
+        )))
+        assert s is not None
+        assert s.entries[0].resource_name == "order-events"
+
+    def test_update_prefers_before_name(self):
+        s = summarize_plan(_plan(_rc(
+            ["update"], rtype="google_pubsub_topic", name="t",
+            before={"name": "live-name"}, after={"name": "new-name"},
+        )))
+        assert s.entries[0].resource_name == "live-name"
+
+    def test_update_falls_back_to_after_when_before_has_no_name(self):
+        s = summarize_plan(_plan(_rc(
+            ["update"], rtype="google_pubsub_topic", name="t",
+            before={}, after={"name": "n2"},
+        )))
+        assert s.entries[0].resource_name == "n2"
+
+    def test_destroy_uses_before_only_never_after(self):
+        # after.name must never be used for a destroy row
+        s = summarize_plan(_plan(_rc(
+            ["delete"], rtype="google_pubsub_topic", name="t",
+            before={}, after={"name": "ghost"},
+        )))
+        assert s.entries[0].resource_name == ""
+
+    def test_sensitive_name_is_never_extracted(self):
+        s = summarize_plan(_plan(_rc(
+            ["create"], rtype="google_pubsub_topic", name="t",
+            after={"name": "secret-ish"},
+            a_sens={"name": True},
+        )))
+        assert s.entries[0].resource_name == ""
+
+    def test_non_string_or_empty_name_yields_empty(self):
+        for bad_after in ({"name": 7}, {"name": ""}, {"name": None}, {},
+                          "not-a-dict", None):
+            s = summarize_plan(_plan(_rc(
+                ["create"], rtype="google_pubsub_topic", name="t",
+                after=bad_after,
+            )))
+            assert s is not None, f"summarize_plan returned None for after={bad_after!r}"
+            assert s.entries[0].resource_name == "", f"expected '' for after={bad_after!r}"
+
+    def test_unknown_after_create_yields_empty(self):
+        # name "known after apply": after carries no name value
+        s = summarize_plan(_plan(_rc(
+            ["create"], rtype="google_pubsub_topic", name="t",
+            after={},
+        )))
+        assert s is not None
+        assert s.entries[0].resource_name == ""
+
+    def test_per_rtype_identity_fixtures(self):
+        # Realistic after.name values for the 5 identity-resolver types
+        cases = [
+            ("google_storage_bucket", "my-assets-bucket"),
+            ("google_pubsub_topic", "order-events"),
+            ("google_pubsub_subscription", "order-events-sub"),
+            ("google_cloud_run_v2_service", "storefront"),
+            ("google_service_account",
+             "projects/my-proj/serviceAccounts/worker-sa@my-proj.iam.gserviceaccount.com"),
+        ]
+        for rtype, expected_name in cases:
+            s = summarize_plan(_plan(_rc(
+                ["create"], rtype=rtype, name="x",
+                after={"name": expected_name},
+            )))
+            assert s is not None
+            assert s.entries[0].resource_name == expected_name, (
+                f"rtype={rtype}: expected {expected_name!r}, "
+                f"got {s.entries[0].resource_name!r}"
+            )
+
+    def test_rtype_with_no_name_in_after_yields_empty(self):
+        # A type whose after dict carries no "name" key -> ""
+        s = summarize_plan(_plan(_rc(
+            ["create"], rtype="google_compute_network", name="vpc",
+            after={"auto_create_subnetworks": True},
+        )))
+        assert s is not None
+        assert s.entries[0].resource_name == ""
+
+
 def test_iac_plan_view_change_summary_property():
     from agent.iac_artifacts import IacPlanView
 

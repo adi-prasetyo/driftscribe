@@ -112,6 +112,9 @@
                 No resources will be destroyed or replaced by this plan.
               </p>
             {% endif %}
+            <p class="ds-subtle">
+              <a href="/?preview_pr={{ pr_number }}" data-testid="preview-map-link">See this change on the resource map →</a>
+            </p>
             <ul class="ds-summary-list">
               {% for e in s.entries %}
                 <li class="ds-summary-row">

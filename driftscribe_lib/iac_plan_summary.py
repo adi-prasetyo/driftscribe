@@ -102,6 +102,7 @@ class ChangeEntry:
     action_reason: str = ""   # rc.action_reason, prettified ("replace because cannot update")
     attr_changes: tuple[AttrChange, ...] = ()
     attrs_truncated: bool = False
+    resource_name: str = ""   # real GCP resource name (mask-aware; "" if unknown)
 
 
 @dataclass(frozen=True)
@@ -310,6 +311,32 @@ def _type_label(rtype: str) -> str:
     return stripped or rtype
 
 
+def _extract_name(side: Any, mask: Any) -> str:
+    """change.<side>["name"] for display — only when scalar, non-empty, and
+    its mask position is not sensitive (same discipline as ``location``)."""
+    if isinstance(side, dict):
+        v = side.get("name")
+        if isinstance(v, str) and v and not _mask_any(_sub_mask(mask, "name")):
+            return v
+    return ""
+
+
+def _resource_name(verb: str, change: dict) -> str:
+    """Real GCP resource name for an entry, extracted mask-aware.
+
+    create / import → after["name"]; destroy / replace → before["name"] only;
+    update / change / forget → before["name"] falling back to after["name"].
+    Returns "" whenever the candidate is missing, non-str, empty, or sensitive.
+    """
+    before = _extract_name(change.get("before"), change.get("before_sensitive"))
+    after = _extract_name(change.get("after"), change.get("after_sensitive"))
+    if verb in ("create", "import"):
+        return after
+    if verb in ("destroy", "replace"):
+        return before
+    return before or after  # update / change / forget
+
+
 def _build_entry(rc: Any) -> ChangeEntry | None:
     """One ChangeEntry, None for skippable rows, _Malformed for anything else.
 
@@ -392,6 +419,7 @@ def _build_entry(rc: Any) -> ChangeEntry | None:
         action_reason=reason.replace("_", " ") if isinstance(reason, str) else "",
         attr_changes=tuple(attr_changes),
         attrs_truncated=attrs_truncated,
+        resource_name=_resource_name(verb, change),
     )
 
 

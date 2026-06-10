@@ -25,7 +25,100 @@ DTO the UI renders as an "unavailable" note.
 """
 from __future__ import annotations
 
+from driftscribe_lib.iac_plan_summary import PlanSummary
 from driftscribe_lib.infra_inventory import SENSITIVE_ASSET_TYPES
+
+# Display-only mapping: tofu resource type -> CAI asset type, used to place a
+# planned change in the live map's matching type group. The 5 identity-resolver
+# pairs are mirrored verbatim (drift-pinned in tests); the rest are
+# display-grouping additions. Unmapped types render in a "Planned changes"
+# fallback group client-side — never guessed.
+PLAN_RTYPE_TO_ASSET_TYPE: dict[str, str] = {
+    "google_cloud_run_v2_service": "run.googleapis.com/Service",
+    "google_storage_bucket": "storage.googleapis.com/Bucket",
+    "google_pubsub_topic": "pubsub.googleapis.com/Topic",
+    "google_pubsub_subscription": "pubsub.googleapis.com/Subscription",
+    "google_service_account": "iam.googleapis.com/ServiceAccount",
+    "google_secret_manager_secret": "secretmanager.googleapis.com/Secret",
+    "google_secret_manager_secret_version": "secretmanager.googleapis.com/SecretVersion",
+    "google_artifact_registry_repository": "artifactregistry.googleapis.com/Repository",
+    "google_firestore_database": "firestore.googleapis.com/Database",
+    "google_compute_network": "compute.googleapis.com/Network",
+    "google_compute_subnetwork": "compute.googleapis.com/Subnetwork",
+    "google_compute_firewall": "compute.googleapis.com/Firewall",
+    "google_eventarc_trigger": "eventarc.googleapis.com/Trigger",
+}
+
+# Plan rtypes whose names/addresses must never reach the map. Mirrors the
+# static gate's SECRET_MATERIAL_RESOURCE_TYPES (drift-pinned ⊇ at test time;
+# no runtime import of tools/). The REGIONAL variants are deliberately unmapped
+# above but must still redact — keying redaction only on the mapped asset type
+# would leak a regional secret's block name through the "Planned changes"
+# fallback path.
+SENSITIVE_PLAN_RTYPES: frozenset[str] = frozenset({
+    "google_secret_manager_secret",
+    "google_secret_manager_secret_version",
+    "google_secret_manager_regional_secret",
+    "google_secret_manager_regional_secret_version",
+})
+
+_OVERLAY_VERBS = ("create", "update", "destroy", "replace", "import", "forget", "change")
+
+
+def plan_overlay_unavailable(pr_number: int, reason: str) -> dict:
+    """The not-available overlay DTO (same shape, empty payload)."""
+    return {
+        "pr_number": pr_number,
+        "available": False,
+        "reason": reason,
+        "counts": {v: 0 for v in _OVERLAY_VERBS},
+        "hidden": 0,
+        "entries": [],
+    }
+
+
+def plan_overlay(pr_number: int, summary: PlanSummary) -> dict:
+    """Reshape a PlanSummary into the redaction-safe map-overlay DTO.
+
+    Sensitive parity with build_graph: a planned change whose rtype is in
+    SENSITIVE_PLAN_RTYPES, or whose mapped asset type is in SENSITIVE_ASSET_TYPES,
+    carries NO name, address, or location — block names routinely equal the
+    secret_id, so the address would leak it.
+    """
+    entries: list[dict] = []
+    for e in summary.entries:
+        atype = PLAN_RTYPE_TO_ASSET_TYPE.get(e.rtype)
+        # atype-None short-circuit is explicitness only (None is never in a frozenset).
+        sensitive = e.rtype in SENSITIVE_PLAN_RTYPES or (
+            atype is not None and atype in SENSITIVE_ASSET_TYPES
+        )
+        entries.append({
+            "verb": e.verb,
+            "rtype": e.rtype,
+            "type_label": e.type_label,
+            "name": "" if sensitive else e.resource_name,
+            "address": "" if sensitive else e.address,
+            "asset_type": atype,
+            "sensitive": sensitive,
+            "location": "" if sensitive else e.location,
+        })
+    return {
+        "pr_number": pr_number,
+        "available": True,
+        "reason": None,
+        "counts": {
+            "create": summary.n_create,
+            "update": summary.n_update,
+            "destroy": summary.n_destroy,
+            "replace": summary.n_replace,
+            "import": summary.n_import,
+            "forget": summary.n_forget,
+            "change": summary.n_change,
+        },
+        "hidden": summary.n_hidden,
+        "entries": entries,
+    }
+
 
 # Friendly display labels for the asset types we expect to see. Anything not
 # listed falls back to a humanized form of the CAI type suffix

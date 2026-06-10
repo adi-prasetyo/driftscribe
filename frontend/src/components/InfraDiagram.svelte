@@ -26,7 +26,10 @@
   import {
     toMermaid,
     hasRenderableNodes,
+    overlayRenderable,
+    overlayCountsLine,
     type InfraGraph,
+    type PlanOverlay,
   } from '../lib/infra_graph';
   import { RefreshScheduler } from '../lib/infra_refresh';
   import { coveragePercent } from '../lib/coverage';
@@ -35,25 +38,42 @@
   let {
     call,
     appliedEpoch = 0,
+    previewPr = null,
+    onExitPreview,
   }: {
     /** App's token-aware fetch wrapper. */
     call: (path: string, init?: RequestInit) => Promise<Response>;
     /** Bumps when the parent observes a freshly-`applied` iac_apply decision. */
     appliedEpoch?: number;
+    /** Pending IaC PR to preview (?preview_pr=N), set once at boot. null = no preview. */
+    previewPr?: number | null;
+    /** Called when the operator clicks "Exit preview" (App removes the URL param). */
+    onExitPreview?: () => void;
   } = $props();
 
-  let open = $state(false);
+  // previewPr is set once at boot (App parses it from the URL) and only ever
+  // transitions N → null on exit; capture its boot-time presence non-reactively
+  // to arm preview mode and open the panel.
+  const previewArmedAtBoot = untrack(() => previewPr != null);
+  let previewActive = $state(previewArmedAtBoot);
+  let open = $state(previewArmedAtBoot);
   let graph = $state<InfraGraph | null>(null);
   let loading = $state(false);
   let mermaidLoading = $state(false);
   let error = $state<string | null>(null);
   let svgHtml = $state('');
 
+  // Preview overlay state. `overlayError` is the transport/parse failure flag
+  // (distinct from an `available:false` overlay, which is a calm "unavailable").
+  let overlay = $state<PlanOverlay | null>(null);
+  let overlayError = $state(false);
+
   // Non-reactive locals. The timer/epoch logic lives in a pure RefreshScheduler
   // (lib/infra_refresh) so it is unit-testable independent of this component; the
   // component keeps only the view + the async fetch/render concurrency guards.
   let fetchRun = 0; // guards refresh() — a stale fetch callback bails
   let renderRun = 0; // guards renderDiagram() — independent of fetchRun
+  let overlayRun = 0; // guards fetchOverlay() — a THIRD independent guard (grounding fact 5)
   let mermaidIdSeq = 0; // unique mermaid render id
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let mermaidMod: any = null; // cached after the first lazy import
@@ -64,6 +84,13 @@
   const driftCount = $derived(totals?.drift ?? 0);
   const renderable = $derived(graph ? hasRenderableNodes(graph) : false);
   const pct = $derived(totals ? coveragePercent(totals.managed, totals.resources) : null);
+
+  // The overlay actually drawn (only when preview is active AND it has ghosts).
+  // A plain function (not a $derived) so renderDiagram can read it across an
+  // await boundary without tripping `derived_inert` on a torn-down component.
+  function activeOverlay(): PlanOverlay | null {
+    return previewActive && overlayRenderable(overlay) ? overlay : null;
+  }
 
   async function refresh(): Promise<void> {
     const myRun = ++fetchRun;
@@ -103,7 +130,10 @@
     // Own guard, independent of fetchRun, so a concurrent refresh can't strand
     // mermaidLoading=true (the wedge bug). The latest render owns the flag.
     const myRender = ++renderRun;
-    if (g.degraded || !hasRenderableNodes(g)) {
+    // An available overlay with ghosts keeps the diagram alive even when the
+    // live graph is degraded/empty (a CAI outage must not blind the preview).
+    const ov = activeOverlay();
+    if ((g.degraded || !hasRenderableNodes(g)) && !overlayRenderable(ov)) {
       svgHtml = '';
       mermaidLoading = false;
       return;
@@ -121,7 +151,7 @@
           flowchart: { htmlLabels: false },
         });
       }
-      const src = toMermaid(g);
+      const src = toMermaid(g, ov ?? undefined);
       const { svg } = await mermaidMod.render(`infra-mmd-${++mermaidIdSeq}`, src);
       if (myRender !== renderRun) return;
       svgHtml = svg;
@@ -135,11 +165,75 @@
     }
   }
 
+  // Fetch the preview overlay for `previewPr`. Its OWN monotonic guard
+  // (overlayRun) — never reuse fetchRun/renderRun. Called ONLY from
+  // onMount-activation / Refresh / Retry — NEVER from any RefreshScheduler path
+  // (focus/poll/applied-ladder) so the expensive route never gets polled.
+  async function fetchOverlay(): Promise<void> {
+    if (previewPr == null) return;
+    const myRun = ++overlayRun;
+    overlayError = false;
+    try {
+      let resp: Response;
+      try {
+        resp = await call(`/infra/graph/preview?pr=${previewPr}`);
+      } catch {
+        if (myRun !== overlayRun) return;
+        overlay = null;
+        overlayError = true;
+        return;
+      }
+      if (myRun !== overlayRun) return;
+      if (!resp.ok) {
+        overlay = null;
+        overlayError = true;
+        return;
+      }
+      let body: PlanOverlay;
+      try {
+        body = (await resp.json()) as PlanOverlay;
+      } catch {
+        if (myRun !== overlayRun) return;
+        overlay = null;
+        overlayError = true;
+        return;
+      }
+      if (myRun !== overlayRun) return;
+      overlay = body;
+      // An overlay arriving while open re-composes the (possibly ghost-only) map.
+      if (open && graph) await renderDiagram(graph);
+    } finally {
+      /* overlayError/overlay set above; no shared loading flag */
+    }
+  }
+
+  function exitPreview(): void {
+    // Cancel any in-flight fetchOverlay — its write-back must not survive exit
+    // (a late `overlay = body` would resurrect the banner counts and re-render).
+    ++overlayRun;
+    previewActive = false;
+    overlay = null;
+    overlayError = false;
+    // Re-render without ghosts when the panel is open.
+    if (open && graph) void renderDiagram(graph);
+    onExitPreview?.();
+  }
+
   function onToggle(e: Event): void {
     const d = e.currentTarget as HTMLDetailsElement;
     open = d.open;
     if (open) scheduler.open(appliedEpoch);
     else scheduler.close();
+    // NOTE: the overlay is NEVER fetched here — only from onMount/Refresh/Retry
+    // (Decision 6) — so a browser-fired toggle on the initial mount can't
+    // double-fetch the expensive preview route.
+  }
+
+  // The Refresh button refreshes the cheap graph AND, while preview is active,
+  // re-fetches the overlay (an explicit operator intent — Decision 6).
+  function manualRefresh(): void {
+    void refresh();
+    if (previewActive) void fetchOverlay();
   }
 
   // Hand each appliedEpoch change to the scheduler: while OPEN it rides out the
@@ -166,13 +260,24 @@
   });
 
   // Cheap JSON on mount → powers the glanceable badge while collapsed. The panel
-  // is closed at mount, so this does NOT import mermaid.
+  // is closed at mount (no preview), so this does NOT import mermaid.
+  //
+  // When previewPr is set the panel renders OPEN (initial `open`), but the
+  // browser may not fire a `toggle` for the initial open attribute — so onMount
+  // must itself (a) call scheduler.open(appliedEpoch) so the focus/poll/applied
+  // refresh machinery runs for an initially-open panel, and (b) fetch the
+  // overlay exactly once. Overlay fetches are excluded from onToggle, so a
+  // browser-fired toggle on the same mount cannot double-fetch the preview.
   onMount(() => {
     void refresh();
+    if (previewPr != null) {
+      scheduler.open(appliedEpoch);
+      void fetchOverlay();
+    }
   });
 </script>
 
-<details class="ds-card infra-panel" data-testid="infra-panel" ontoggle={onToggle}>
+<details class="ds-card infra-panel" data-testid="infra-panel" {open} ontoggle={onToggle}>
   <summary class="infra-summary" data-testid="infra-toggle">
     <span class="infra-summary__title ds-label">Infrastructure</span>
     <span class="infra-summary__badges">
@@ -194,13 +299,64 @@
   </summary>
 
   <div class="infra-body">
+    {#if previewActive}
+      <div class="infra-preview" data-testid="preview-banner" role="status">
+        <div class="infra-preview__text">
+          <p class="infra-preview__lead">
+            Previewing PR #{previewPr} — dashed nodes show what approving this change
+            would do. The live map does not change until the change is applied.
+          </p>
+          {#if overlay?.available}
+            <p class="ds-subtle infra-preview__counts" data-testid="preview-counts">
+              {overlayCountsLine(overlay.counts)}{overlay.hidden > 0
+                ? ` · +${overlay.hidden} more not shown`
+                : ''}
+            </p>
+          {/if}
+        </div>
+        <button
+          class="ds-btn ds-btn--ghost infra-preview__exit"
+          type="button"
+          data-testid="preview-exit"
+          onclick={exitPreview}>Exit preview</button
+        >
+      </div>
+
+      {#if overlayError}
+        <p class="ds-note" data-testid="preview-error">
+          Could not load the change preview.
+          <button
+            class="ds-btn ds-btn--ghost infra-preview__retry"
+            type="button"
+            data-testid="preview-retry"
+            onclick={() => void fetchOverlay()}>Retry</button
+          >
+        </p>
+      {:else if overlay && !overlay.available}
+        <p class="ds-note" data-testid="preview-unavailable">
+          {#if overlay.reason === 'no_plan'}
+            No pending plan was found for PR #{previewPr} — nothing to preview.
+          {:else if overlay.reason === 'artifact_error'}
+            The plan for PR #{previewPr} could not be verified, so it cannot be previewed.
+            Open the approval page for details.
+          {:else if overlay.reason === 'resolved'}
+            PR #{previewPr} has already reached a final outcome — the map below shows
+            what is live now.
+          {:else}
+            This plan could not be summarized into a preview. Review the approval page
+            instead.
+          {/if}
+        </p>
+      {/if}
+    {/if}
+
     <div class="infra-toolbar">
       <p class="ds-label infra-caption">Resource map · current project</p>
       <button
         class="ds-btn ds-btn--ghost infra-refresh"
         type="button"
         data-testid="infra-refresh"
-        onclick={() => void refresh()}
+        onclick={manualRefresh}
         disabled={loading || mermaidLoading}
       >{loading || mermaidLoading ? 'Refreshing…' : 'Refresh'}</button>
     </div>
@@ -213,28 +369,42 @@
       <p class="ds-blocked" role="alert">{error}</p>
     {/if}
 
+    <!-- The degraded note renders in its OWN block (not a chain) so it can
+         coexist with a ghost-only preview diagram (Decision 6). -->
     {#if degraded}
       <p class="ds-note" data-testid="infra-degraded">
         Infrastructure inventory is unavailable right now{graph?.degraded_reason
           ? ` (${graph.degraded_reason})`
           : ''}. Cloud Asset Inventory may still be initializing — try refreshing in a moment.
       </p>
-    {:else if graph && !renderable}
-      <p class="ds-note" data-testid="infra-empty">No resources indexed yet.</p>
-    {:else if svgHtml}
+    {/if}
+
+    <!-- Diagram region — independent of the degraded note. -->
+    {#if svgHtml}
       <!-- Mermaid output is sanitized (securityLevel:'strict', htmlLabels:false)
            and every label is entity-escaped upstream in toMermaid. -->
       <div class="infra-diagram" data-testid="infra-diagram">{@html svgHtml}</div>
     {:else if mermaidLoading || loading}
       <p class="ds-subtle">Rendering diagram…</p>
+    {:else if graph && !degraded && !renderable}
+      <p class="ds-note" data-testid="infra-empty">No resources indexed yet.</p>
     {/if}
 
-    {#if graph && !degraded}
+    {#if (graph && !degraded) || previewActive}
       <p class="infra-legend" aria-hidden="true">
-        <span class="infra-key infra-key--managed">managed in IaC</span>
-        <span class="infra-key infra-key--drift">drift (not in IaC)</span>
-        <span class="infra-key infra-key--hidden">counts-only</span>
+        {#if graph && !degraded}
+          <span class="infra-key infra-key--managed">managed in IaC</span>
+          <span class="infra-key infra-key--drift">drift (not in IaC)</span>
+          <span class="infra-key infra-key--hidden">counts-only</span>
+        {/if}
+        {#if previewActive}
+          <span class="infra-key infra-key--ghost-create">will be created</span>
+          <span class="infra-key infra-key--ghost-update">will be modified</span>
+          <span class="infra-key infra-key--ghost-destroy">will be destroyed</span>
+        {/if}
       </p>
+    {/if}
+    {#if graph && !degraded}
       <p class="ds-subtle infra-freshness">{graph.caveat}</p>
     {/if}
   </div>
@@ -284,6 +454,41 @@
   .infra-body {
     padding: 0 var(--ds-sp-5) var(--ds-sp-5);
     border-top: 1px solid var(--ds-border);
+  }
+
+  /* Preview banner — a calm informational block at the top of the body. */
+  .infra-preview {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--ds-sp-4);
+    margin: var(--ds-sp-4) 0 0;
+    padding: var(--ds-sp-3) var(--ds-sp-4);
+    background: var(--ds-surface-2);
+    border: 1px solid var(--ds-border);
+    border-radius: var(--ds-radius);
+  }
+  .infra-preview__text {
+    min-width: 0;
+  }
+  .infra-preview__lead {
+    margin: 0;
+    font-size: var(--ds-fs-2);
+    color: var(--ds-fg-soft);
+  }
+  .infra-preview__counts {
+    margin: var(--ds-sp-1) 0 0;
+    font-variant-numeric: tabular-nums;
+  }
+  .infra-preview__exit {
+    flex: none;
+    padding: 0.3em 0.85em;
+    font-size: var(--ds-fs-1);
+  }
+  .infra-preview__retry {
+    padding: 0.15em 0.6em;
+    font-size: var(--ds-fs-1);
+    margin-left: var(--ds-sp-2);
   }
 
   .infra-toolbar {
@@ -340,6 +545,19 @@
   }
   .infra-key--hidden::before {
     background: var(--ds-neutral-surface);
+  }
+  /* Ghost (preview) keys — dashed swatches, bare design tokens (no fallback hex). */
+  .infra-key--ghost-create::before {
+    background: var(--ds-ok-surface);
+    border: 1px dashed var(--ds-ok-border);
+  }
+  .infra-key--ghost-update::before {
+    background: var(--ds-warn-surface);
+    border: 1px dashed var(--ds-warn-border);
+  }
+  .infra-key--ghost-destroy::before {
+    background: var(--ds-danger-surface);
+    border: 1px dashed var(--ds-danger-border);
   }
 
   .infra-freshness {
