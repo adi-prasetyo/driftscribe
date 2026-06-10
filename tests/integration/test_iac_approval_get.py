@@ -659,3 +659,71 @@ def test_preview_map_link_absent_on_unverifiable(_configured, monkeypatch):
     body = resp.text
     assert "UNVERIFIABLE" in body
     assert 'data-testid="preview-map-link"' not in body
+
+
+# --------------------------------------------------------------------------- #
+# Blast-radius line (ClickOps Wave 2 item 8)
+#
+# The <p data-testid="blast-radius"> lives inside the non-empty change-summary
+# card. It must carry both the per-type phrase AND the cannot-touch note verbatim.
+# Empty-plan, unverifiable, and POST re-render paths must not render or crash.
+# --------------------------------------------------------------------------- #
+
+_BLAST_PLAN = {
+    "format_version": "1.2",
+    "resource_changes": [
+        {
+            "address": "google_pubsub_topic.orders",
+            "mode": "managed",
+            "type": "google_pubsub_topic",
+            "name": "orders",
+            "change": {
+                "actions": ["create"],
+                "before": None,
+                "after": {"name": "orders"},
+                "before_sensitive": False,
+                "after_sensitive": False,
+                "after_unknown": {"id": True},
+            },
+        },
+    ],
+}
+
+# Verbatim fragments from the lib constant — used in two tests below.
+_NOTE_FRAGMENT = "denylist-enforced, re-checked by the apply worker before apply"
+
+
+def test_blast_radius_line_present_on_non_empty_card(_configured, monkeypatch):
+    """Non-empty change-summary card renders the blast-radius line with phrase + note."""
+    view = _view(_plan_json=_BLAST_PLAN)
+    _patch_resolve(monkeypatch, ref=_ref(), view=view)
+    resp = TestClient(app).get("/iac-approvals/42")
+    assert resp.status_code == 200
+    body = resp.text
+    assert 'data-testid="blast-radius"' in body
+    # phrase half: the plan has 1 Pub/Sub topic
+    assert "1 Pub/Sub topic" in body
+    # cannot-touch note verbatim fragment
+    assert _NOTE_FRAGMENT in body
+
+
+def test_blast_radius_line_absent_on_empty_plan(_configured, monkeypatch):
+    """Empty plan renders change-summary-empty — blast-radius line must NOT appear."""
+    empty_plan = {"format_version": "1.2", "resource_changes": []}
+    view = _view(_plan_json=empty_plan)
+    _patch_resolve(monkeypatch, ref=_ref(), view=view)
+    resp = TestClient(app).get("/iac-approvals/42")
+    assert resp.status_code == 200
+    body = resp.text
+    assert 'data-testid="change-summary-empty"' in body
+    assert 'data-testid="blast-radius"' not in body
+
+
+def test_blast_radius_line_absent_on_unverifiable(_configured, monkeypatch):
+    """Unverifiable artifact renders an error page — blast-radius line must NOT appear."""
+    view = _view(unverifiable=True, integrity_ok=False, _plan_json=_BLAST_PLAN)
+    _patch_resolve(monkeypatch, ref=_ref(), view=view)
+    resp = TestClient(app).get("/iac-approvals/42")
+    assert resp.status_code == 200
+    body = resp.text
+    assert 'data-testid="blast-radius"' not in body

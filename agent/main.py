@@ -85,6 +85,7 @@ from driftscribe_lib.cf_access import (
     verify_cf_access_jwt,
 )
 from driftscribe_lib.github import PrMergeBlockedError, PrNotEligibleError
+from driftscribe_lib.iac_plan_summary import BLAST_CANNOT_TOUCH_NOTE, blast_radius_phrase
 from driftscribe_lib.infra_graph import build_graph, plan_overlay, plan_overlay_unavailable
 from driftscribe_lib.logging import (
     current_trace_id_or_new,
@@ -2675,6 +2676,15 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
             reason_blocked = "approvals not configured (server token unset)"
             reason_severity = "pending"
 
+    # Blast-radius phrase: computed pre-template so the template gate is a simple
+    # `{% if blast_phrase %}` test.  Non-None summary with entries → phrase; all
+    # other paths (error, empty plan, unverifiable, resolved) → "".
+    _summary = view.change_summary if view is not None else None
+    _blast_phrase = (
+        blast_radius_phrase(_summary)
+        if (_summary is not None and _summary.entries)
+        else ""
+    )
     ctx = {
         "pr_number": pr_number,
         "view": view,
@@ -2689,6 +2699,13 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
         # on the applied+merged / terminally-failed renders). The template adds a
         # belt-and-braces re-check of the view's own verdict (Gate 2).
         "show_summary": reason_severity != "error" and not resolved_decision,
+        # Blast-radius line (Wave 2 item 8): can-affect phrase + cannot-touch note.
+        # blast_phrase="" on empty/error/unverifiable paths → template gate suppresses
+        # the line entirely.  cannot_touch_note is always the lib constant (POST
+        # re-renders that omit these keys are protected by | default("") in the
+        # template).
+        "blast_phrase": _blast_phrase,
+        "cannot_touch_note": BLAST_CANNOT_TOUCH_NOTE,
     }
     if resolved_decision:
         # Render the terminal-state outcome banner + suppress the bottom form.

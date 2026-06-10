@@ -112,6 +112,12 @@
                 No resources will be destroyed or replaced by this plan.
               </p>
             {% endif %}
+            {% if (blast_phrase | default("")) %}
+            <p class="ds-note" data-testid="blast-radius">
+              This change can affect at most: {{ blast_phrase | default("") }}.
+              {{ cannot_touch_note | default("") }}
+            </p>
+            {% endif %}
             <p class="ds-subtle">
               <a href="/?preview_pr={{ pr_number }}" data-testid="preview-map-link">See this change on the resource map →</a>
             </p>

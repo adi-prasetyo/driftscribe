@@ -1267,3 +1267,25 @@ def test_resume_apply_clean_502_still_freezes_as_state_suspect(_configured, monk
     state = get_state()
     ek = main_mod._iac_event_key("theghostsquad00/driftscribe", 42, _HEAD, _GEN_META)
     assert state.find_decision_for_event(ek)["apply_status"] == "failed_state_suspect"
+
+
+# --------------------------------------------------------------------------- #
+# Blast-radius POST guard (ClickOps Wave 2 item 8)
+#
+# POST re-renders reuse iac_approval.html but do NOT set blast_phrase /
+# cannot_touch_note (those are GET-only ctx keys). The | default("") guards in
+# the template must prevent a TemplateNotFound / UndefinedError 500.
+# --------------------------------------------------------------------------- #
+
+
+def test_post_rerender_does_not_500_without_blast_phrase_keys(_configured, monkeypatch):
+    """A reject POST re-renders iac_approval.html without blast_phrase / cannot_touch_note
+    in ctx — the | default('') guards must prevent any Jinja UndefinedError."""
+    _patch_resolve(monkeypatch)
+    _patch_workers(monkeypatch)
+    client = TestClient(app)
+    # A "reject" POST takes the noop path and immediately re-renders the template
+    # via _render_iac_approval_response, which does NOT set blast_phrase or
+    # cannot_touch_note in ctx.  Without the default() guards this would 500.
+    resp = _post(client, token=_mint(), decision="reject")
+    assert resp.status_code == 200

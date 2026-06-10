@@ -8,8 +8,11 @@ The summary is ADVISORY DISPLAY ONLY, but its failure modes are safety-shaped:
 from __future__ import annotations
 
 from driftscribe_lib.iac_plan_summary import (
+    BLAST_CANNOT_TOUCH_NOTE,
     MAX_ATTRS_PER_ENTRY,
     MAX_ENTRIES,
+    _pluralize,
+    blast_radius_phrase,
     summarize_plan,
 )
 
@@ -491,3 +494,162 @@ def test_iac_plan_view_change_summary_property():
     v2 = IacPlanView()  # _plan_json stays None (unparsed / unverifiable)
     assert v2.change_summary is None
     assert "change_summary" in v2.__dict__  # the None result is cached too
+
+
+# ---------------------------------------------------------------------------
+# Blast-radius line (ClickOps Wave 2 item 8)
+# ---------------------------------------------------------------------------
+
+
+class TestTypeCounts:
+    """PlanSummary.type_counts — pre-truncation aggregation sorted (-count, label)."""
+
+    def test_multi_type_plan_sorted_by_count_desc_then_label(self):
+        # 3 buckets + 1 pubsub topic → sorted by (-count, label):
+        # [("Cloud Storage bucket", 3), ("Pub/Sub topic", 1)]
+        rcs = (
+            [_rc(["create"], rtype="google_storage_bucket", name=f"b{i}") for i in range(3)]
+            + [_rc(["create"], rtype="google_pubsub_topic", name="t")]
+        )
+        s = summarize_plan(_plan(*rcs))
+        assert s is not None
+        assert s.type_counts == (
+            ("Cloud Storage bucket", 3),
+            ("Pub/Sub topic", 1),
+        )
+
+    def test_type_counts_survive_max_entries_truncation(self):
+        # 42 creates of one type — entries capped at MAX_ENTRIES=40, but type_counts
+        # must reflect the true total of 42 (computed pre-truncation).
+        rcs = [_rc(["create"], rtype="google_storage_bucket", name=f"b{i}")
+               for i in range(42)]
+        s = summarize_plan(_plan(*rcs))
+        assert s is not None
+        assert len(s.entries) == MAX_ENTRIES  # display is capped
+        assert s.type_counts == (("Cloud Storage bucket", 42),)  # count is total
+
+    def test_empty_plan_yields_empty_type_counts(self):
+        s = summarize_plan({"format_version": "1.2"})
+        assert s is not None
+        assert s.type_counts == ()
+
+    def test_same_count_sorted_by_label_alphabetically(self):
+        # Two types, equal count (1 each) → sorted by label ascending.
+        rcs = [
+            _rc(["create"], rtype="google_storage_bucket", name="b"),
+            _rc(["create"], rtype="google_pubsub_topic", name="t"),
+        ]
+        s = summarize_plan(_plan(*rcs))
+        assert s is not None
+        labels = [label for label, _ in s.type_counts]
+        assert labels == sorted(labels)
+
+
+class TestPluralize:
+    """_pluralize sibilant helper — exact spec-pinned cases."""
+
+    def test_regular_noun_gets_s(self):
+        assert _pluralize("Cloud Storage bucket") == "Cloud Storage buckets"
+        assert _pluralize("Pub/Sub topic") == "Pub/Sub topics"
+
+    def test_sibilant_ending_s_gets_es(self):
+        # label ending in "address" (from google_compute_address fallback):
+        # bare +'s' would emit "addresss" — must get "addresses".
+        assert _pluralize("compute address") == "compute addresses"
+
+    def test_sibilant_x_gets_es(self):
+        assert _pluralize("compute index") == "compute indexes"
+
+    def test_sibilant_z_gets_es(self):
+        assert _pluralize("topaz") == "topazes"
+
+    def test_sibilant_ch_gets_es(self):
+        assert _pluralize("compute match") == "compute matches"
+
+    def test_sibilant_sh_gets_es(self):
+        assert _pluralize("compute mesh") == "compute meshes"
+
+
+class TestBlastRadiusPhrase:
+    """blast_radius_phrase — singular/plural/join/empty."""
+
+    def test_empty_plan_returns_empty_string(self):
+        s = summarize_plan({"format_version": "1.2"})
+        assert s is not None
+        assert blast_radius_phrase(s) == ""
+
+    def test_singular_one_type(self):
+        s = summarize_plan(_plan(_rc(["create"], rtype="google_pubsub_topic", name="t")))
+        assert s is not None
+        assert blast_radius_phrase(s) == "1 Pub/Sub topic"
+
+    def test_plural_one_type(self):
+        rcs = [_rc(["create"], rtype="google_storage_bucket", name=f"b{i}")
+               for i in range(2)]
+        s = summarize_plan(_plan(*rcs))
+        assert s is not None
+        assert blast_radius_phrase(s) == "2 Cloud Storage buckets"
+
+    def test_multi_type_join(self):
+        # 1 pubsub topic + 2 buckets → "2 Cloud Storage buckets, 1 Pub/Sub topic"
+        # (sorted by -count → buckets first)
+        rcs = (
+            [_rc(["create"], rtype="google_storage_bucket", name=f"b{i}")
+             for i in range(2)]
+            + [_rc(["create"], rtype="google_pubsub_topic", name="t")]
+        )
+        s = summarize_plan(_plan(*rcs))
+        assert s is not None
+        assert blast_radius_phrase(s) == "2 Cloud Storage buckets, 1 Pub/Sub topic"
+
+    def test_uses_plural_label_not_bare_s_for_sibilant(self):
+        # google_compute_address (hypothetical) → fallback label "compute address"
+        # → plural "compute addresses" (not "compute addresss").
+        rcs = [
+            _rc(["create"], rtype="google_compute_address", name=f"a{i}")
+            for i in range(2)
+        ]
+        s = summarize_plan(_plan(*rcs))
+        assert s is not None
+        phrase = blast_radius_phrase(s)
+        assert "addresses" in phrase
+        assert "addresss" not in phrase
+
+
+class TestBlastCannotTouchNote:
+    """BLAST_CANNOT_TOUCH_NOTE — honesty contract and drift pin."""
+
+    def test_note_is_non_empty_and_mentions_denylist(self):
+        assert BLAST_CANNOT_TOUCH_NOTE
+        assert "denylist" in BLAST_CANNOT_TOUCH_NOTE
+
+    def test_note_never_mentions_networks_or_databases(self):
+        # The actual denylist does NOT protect "networks" or "databases" as
+        # classes. These roadmap terms must never creep into the shipped copy.
+        note_lower = BLAST_CANNOT_TOUCH_NOTE.lower()
+        assert "networks" not in note_lower
+        assert "databases" not in note_lower
+
+    def test_rule_descriptions_key_set_drift_pin(self):
+        # FORCING FUNCTION: this assertion pins the EXACT set of RULE_DESCRIPTIONS
+        # keys. Any denylist rule addition/removal fails here and forces a re-review
+        # of BLAST_CANNOT_TOUCH_NOTE (same honesty contract as the capability-card
+        # pin, but scoped to this consumer).
+        from driftscribe_lib.iac_plan_denylist import RULE_DESCRIPTIONS
+
+        assert set(RULE_DESCRIPTIONS) == {
+            "plan-json-unparseable",
+            "plan-json-missing-resource-changes",
+            "plan-json-malformed-change",
+            "control-plane-service",
+            "control-plane-sa",
+            "control-plane-bucket",
+            "control-plane-secret",
+            "control-plane-kms",
+            "wif-config-change",
+            "iam-change-forbidden-v1",
+            "delete-action-forbidden-v1",
+            "forget-action-forbidden-v1",
+            "replace-action-forbidden-v1",
+            "unknown-action-forbidden-v1",
+        }
