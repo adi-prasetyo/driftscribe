@@ -15,12 +15,16 @@ afterEach(cleanup);
 
 // ---------------------------------------------------------------------------
 // Representative fixture — all four workloads, both gates, all four rule
-// categories, at least one rule per category. Tool lists trimmed for brevity.
+// categories, at least one rule per category. Tool/worker LISTS are trimmed
+// for brevity, but every string is VERBATIM from the real GET /capabilities
+// DTO (descriptions truncated only at sentence boundaries) — regenerate with:
+//   .venv/bin/python -c "from agent.capabilities import build_capabilities;
+//   import json; print(json.dumps(build_capabilities(), indent=2))"
 // ---------------------------------------------------------------------------
 const FIXTURE: Capabilities = {
   version: 1,
   provenance: 'Generated from the same constants the enforcement code imports — not hand-written documentation.',
-  iam_note: 'Each worker runs as its own service account with least-privilege IAM, codified in infra/scripts/.',
+  iam_note: 'Each worker runs as its own service account with least-privilege IAM, codified in infra/scripts/. The only identity that can change live infrastructure is the apply worker\'s service account — and only after an operator approves the exact plan.',
   workloads: [
     {
       name: 'drift',
@@ -28,10 +32,10 @@ const FIXTURE: Capabilities = {
       description: 'Detect drift between a Cloud Run service\'s live env vars and the team\'s declared ops-contract.yaml.',
       autonomous: true,
       tools: [
-        { name: 'drift_read_live_env', description: 'Reads the live Cloud Run environment.', write_capable: false },
+        { name: 'drift_read_live_env', description: 'Reads the live Cloud Run environment — deployed image, revision, environment variables, and service configuration.', write_capable: false },
         { name: 'notify', description: 'Sends a notification via the notifier worker (counted as write-capable because it rides a sending credential).', write_capable: true },
       ],
-      workers: [{ name: 'drift_reader', description: 'Reads the live Cloud Run service state.' }],
+      workers: [{ name: 'drift_reader', description: 'Reads the live Cloud Run service state for drift detection. Read-only by the scope of calls it makes.' }],
       actions: [
         { name: 'rollback', display_name: 'Rollback (HITL)', requires_approval: true },
         { name: 'no_op', display_name: 'No action needed', requires_approval: false },
@@ -40,33 +44,33 @@ const FIXTURE: Capabilities = {
     {
       name: 'upgrade',
       display_name: 'Dependencies',
-      description: 'Watch the repo\'s package.json for outdated dependencies.',
+      description: 'Watch the repo\'s package.json for outdated dependencies (or vulnerable versions per advisory feeds) and propose upgrade PRs.',
       autonomous: true,
       tools: [
-        { name: 'upgrade_read_dependencies', description: 'Reads the target repo\'s dependency lockfile.', write_capable: false },
-        { name: 'upgrade_propose_pr', description: 'Opens a dependency-upgrade pull request.', write_capable: true },
+        { name: 'upgrade_read_dependencies', description: 'Reads the target repo\'s dependency lockfile to identify outdated packages.', write_capable: false },
+        { name: 'upgrade_propose_pr', description: 'Opens a dependency-upgrade pull request in the target repo.', write_capable: true },
       ],
-      workers: [{ name: 'upgrade_reader', description: 'Reads dependency lockfiles.' }],
+      workers: [{ name: 'upgrade_reader', description: 'Reads the target repo\'s dependency lockfile. Read-only by the scope of calls it makes.' }],
       actions: [],
     },
     {
       name: 'explore',
-      display_name: 'Explore (chat)',
-      description: 'Answer questions about the project\'s infrastructure using read-only tools.',
+      display_name: 'Explore (read-only)',
+      description: 'Read-only investigation across infra and code. Inspects a Cloud Run service\'s live env vars, the repo\'s declared ops-contract, the dependency lockfile, and authoritative developer docs — then reports. It cannot change anything: no PR, no rollback, no notification.',
       autonomous: false,
       tools: [
-        { name: 'drift_read_live_env', description: 'Reads the live Cloud Run environment.', write_capable: false },
+        { name: 'drift_read_live_env', description: 'Reads the live Cloud Run environment — deployed image, revision, environment variables, and service configuration.', write_capable: false },
       ],
-      workers: [{ name: 'drift_reader', description: 'Reads the live Cloud Run service state.' }],
+      workers: [{ name: 'drift_reader', description: 'Reads the live Cloud Run service state for drift detection. Read-only by the scope of calls it makes.' }],
       actions: [],
     },
     {
       name: 'provision',
       display_name: 'Provision (infra edits)',
-      description: 'Author OpenTofu (IaC) changes from a chat request and open ONE iac/-only pull request.',
+      description: 'Author OpenTofu (IaC) changes from a chat request and open ONE iac/-only pull request for the gated apply pipeline to plan, approve, and apply.',
       autonomous: false,
       tools: [
-        { name: 'drift_read_live_env', description: 'Reads the live Cloud Run environment.', write_capable: false },
+        { name: 'drift_read_live_env', description: 'Reads the live Cloud Run environment — deployed image, revision, environment variables, and service configuration.', write_capable: false },
         { name: 'provision_open_infra_pr', description: 'Authors OpenTofu files under iac/ and opens ONE pull request — never applies anything; applying happens only through the gated approve-then-apply pipeline.', write_capable: true },
       ],
       workers: [{ name: 'infra_reader', description: 'Reads the whole-project GCP asset inventory. Read-only by IAM (asset viewer only).' }],
@@ -77,14 +81,14 @@ const FIXTURE: Capabilities = {
     {
       id: 'iac_apply',
       title: 'IaC plan apply',
-      description: 'Before the apply worker runs tofu apply, an operator must approve the exact stored plan. The approval is bound to the specific plan by a plan-bound HMAC with a signed expiry window.',
+      description: 'Before the apply worker runs ``tofu apply``, an operator must approve the exact stored plan via the approval page. The approval is bound to the specific plan by a plan-bound HMAC with a signed expiry window — approving one plan cannot approve another.',
       route: '/iac-approvals/{pr_number}',
       method: 'POST',
     },
     {
       id: 'rollback',
       title: 'Rollback',
-      description: 'The rollback worker requires a valid operator approval token. The approval is single-use with a 15-minute TTL and bound by HMAC — the worker re-verifies the token at execution time.',
+      description: 'The rollback worker requires a valid operator approval token before it will execute any Cloud Run rollback. The approval is single-use with a 15-minute TTL and bound to the specific rollback request by HMAC — the worker re-verifies the token at execution time.',
       route: '/approvals/{approval_id}',
       method: 'POST',
     },
@@ -184,7 +188,7 @@ describe('CapabilityCard', () => {
     const workloads = getByTestId('cap-workloads');
     expect(workloads.textContent).toContain('Cloud Run config');
     expect(workloads.textContent).toContain('Dependencies');
-    expect(workloads.textContent).toContain('Explore (chat)');
+    expect(workloads.textContent).toContain('Explore (read-only)');
     expect(workloads.textContent).toContain('Provision (infra edits)');
 
     // Provision shows the "chat-only" pill. GLUED-EXACT-STRING PIN on the
@@ -282,5 +286,46 @@ describe('CapabilityCard', () => {
       expect(getByRole('heading', { name: /blocked outright/i })).toBeTruthy();
       expect(getByRole('heading', { name: /what each workload can use/i })).toBeTruthy();
     });
+  });
+
+  it('7. malformed 200 (valid JSON, missing structure) → cap-error + working retry', async () => {
+    // A 200 whose body parses but lacks the load-bearing keys must route to
+    // the error/retry path, NOT set the cache flag: Svelte 5 has no error
+    // boundary, so without the structural check the template would throw on
+    // the missing arrays and leave a blank panel with no way to re-attempt.
+    let callCount = 0;
+    const paths: string[] = [];
+    const call = async (path: string): Promise<Response> => {
+      paths.push(path);
+      callCount++;
+      if (callCount === 1) {
+        return new Response(JSON.stringify({ version: 1 }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify(FIXTURE), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+
+    const { getByTestId } = render(CapabilityCard, { props: { call } });
+    const el = getByTestId('capability-card') as HTMLDetailsElement;
+    el.open = true;
+    await fireEvent(el, new Event('toggle'));
+
+    // Error row appears — the malformed body must not blank the panel
+    await waitFor(() => {
+      expect(getByTestId('cap-error')).toBeTruthy();
+    });
+    expect(paths).toHaveLength(1);
+
+    // Retry refetches and renders the good response
+    await fireEvent.click(getByTestId('cap-retry'));
+    await waitFor(() => {
+      expect(getByTestId('cap-gates')).toBeTruthy();
+    });
+    expect(paths).toHaveLength(2);
   });
 });

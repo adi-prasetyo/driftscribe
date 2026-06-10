@@ -8,7 +8,7 @@
   //  - Render order is anxiety-first: gates → denylist → workloads.
   //  - The `call` prop is the same token-aware fetch wrapper as InfraDiagram.
 
-  import { groupRules, CATEGORY_HEADINGS, type Capabilities } from '../lib/capabilities';
+  import { groupRules, type Capabilities } from '../lib/capabilities';
 
   let {
     call,
@@ -21,6 +21,23 @@
   let loading = $state(false);
   let fetchError = $state(false);
   let fetched = $state(false);
+
+  /** Structural check on the four load-bearing DTO keys. A 200 with valid
+   *  JSON but missing structure must route to the error/retry path: Svelte 5
+   *  has no error boundary, so letting the template iterate a missing array
+   *  would blank the panel with no error row and no way to re-attempt. */
+  function isValidCapabilities(body: unknown): body is Capabilities {
+    if (typeof body !== 'object' || body === null) return false;
+    const b = body as Record<string, unknown>;
+    return (
+      typeof b.version === 'number' &&
+      Array.isArray(b.workloads) &&
+      Array.isArray(b.human_gates) &&
+      typeof b.denylist === 'object' &&
+      b.denylist !== null &&
+      Array.isArray((b.denylist as Record<string, unknown>).rules)
+    );
+  }
 
   async function fetchCapabilities(): Promise<void> {
     loading = true;
@@ -37,10 +54,16 @@
         fetchError = true;
         return;
       }
-      let body: Capabilities;
+      let body: unknown;
       try {
-        body = (await resp.json()) as Capabilities;
+        body = await resp.json();
       } catch {
+        fetchError = true;
+        return;
+      }
+      if (!isValidCapabilities(body)) {
+        // fetched stays false → the Retry button (and a future toggle) can
+        // re-attempt; data stays null so no half-rendered sections.
         fetchError = true;
         return;
       }
@@ -67,7 +90,9 @@
     }
   }
 
-  const ruleGroups = $derived(data ? groupRules(data.denylist.rules) : []);
+  // Defensive ?? []: isValidCapabilities already guarantees rules is an
+  // array, but a throw inside a $derived has no error boundary to catch it.
+  const ruleGroups = $derived(groupRules(data?.denylist?.rules ?? []));
 </script>
 
 <details class="ds-card cap-card" data-testid="capability-card" ontoggle={onToggle}>
@@ -90,9 +115,11 @@
         >Retry</button>
       </div>
     {:else if data}
+      <!-- Heading hierarchy: the page has one h1 (App header); these panel
+           sections are h2, their sub-groups h3 — no skipped levels. -->
       <!-- 1. Gates — anxiety-first: operator wants to know what requires their approval -->
       <section class="cap-section" data-testid="cap-gates" aria-labelledby="cap-gates-heading">
-        <h3 class="cap-section__heading" id="cap-gates-heading">Always needs your approval</h3>
+        <h2 class="cap-section__heading" id="cap-gates-heading">Always needs your approval</h2>
         {#each data.human_gates as gate (gate.id)}
           <div class="cap-gate">
             <p class="cap-gate__title"><strong>{gate.title}</strong></p>
@@ -103,11 +130,11 @@
 
       <!-- 2. Denylist — blocked outright, approval cannot override -->
       <section class="cap-section" data-testid="cap-denylist" aria-labelledby="cap-denylist-heading">
-        <h3 class="cap-section__heading" id="cap-denylist-heading">Blocked outright — approval cannot override these</h3>
+        <h2 class="cap-section__heading" id="cap-denylist-heading">Blocked outright — approval cannot override these</h2>
         <p class="ds-subtle cap-denylist__summary">{data.denylist.summary}</p>
         {#each ruleGroups as group (group.category)}
           <div class="cap-rule-group">
-            <h4 class="cap-rule-group__heading">{group.heading}</h4>
+            <h3 class="cap-rule-group__heading">{group.heading}</h3>
             <ul class="cap-rule-list">
               {#each group.rules as rule (rule.id)}
                 <li class="cap-rule">
@@ -125,7 +152,7 @@
 
       <!-- 3. Workloads — what each workload can use -->
       <section class="cap-section" data-testid="cap-workloads" aria-labelledby="cap-workloads-heading">
-        <h3 class="cap-section__heading" id="cap-workloads-heading">What each workload can use</h3>
+        <h2 class="cap-section__heading" id="cap-workloads-heading">What each workload can use</h2>
         {#each data.workloads as wl (wl.name)}
           <details class="cap-workload">
             <summary
