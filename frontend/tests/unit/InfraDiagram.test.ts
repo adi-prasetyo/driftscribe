@@ -59,8 +59,9 @@ describe('InfraDiagram — coverage treatment', () => {
   });
 
   it('shows no meter when the graph is degraded', async () => {
+    // non-zero totals: suppression must come from the degraded branch, not an empty estate
     const { getByTestId, queryByTestId } = render(InfraDiagram, {
-      props: { call: callWith(graphWith({ resources: 0, managed: 0, drift: 0 }, true)) },
+      props: { call: callWith(graphWith({ resources: 5, managed: 3, drift: 2 }, true)) },
     });
     await waitFor(() => {
       expect(getByTestId('infra-drift-badge').textContent).toBe('unavailable');

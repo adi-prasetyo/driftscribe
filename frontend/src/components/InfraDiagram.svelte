@@ -206,7 +206,7 @@
     </div>
 
     {#if graph && !degraded}
-      <CoverageMeter totals={graph.totals} />
+      <CoverageMeter {totals} />
     {/if}
 
     {#if error}
