@@ -45,6 +45,7 @@ from agent.workloads.registry import (
     WorkloadPathTraversalError,
     WorkloadResolution,
     load_workload,
+    load_workload_spec,
     resolve_upgrade_target,
     workload_contract_path,
 )
@@ -68,6 +69,7 @@ __all__ = [
     "WorkloadSpec",
     "current_workload",
     "load_workload",
+    "load_workload_spec",
     "resolve_upgrade_target",
     "reset_workload",
     "set_workload",
