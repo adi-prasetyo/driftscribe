@@ -238,6 +238,20 @@ floor; `__all__` exports; POST-guard test placement freed. Codex verified
 both honesty corrections (denylist classes; no plan exists at done-time)
 and that the drift pin doesn't conflict with the capability-card pins.
 
+## Post-review deltas (as shipped)
+
+1. `_pluralize` gained a consonant+y → "ies" rule beyond the spec (the
+   implementer caught "Artifact Registry repository" → "repositorys" —
+   missed by both the spec and the Codex review); pinned by tests.
+2. The POST-re-render guard test's comment corrected: POST renders never
+   set `show_summary`, so the blast block is skipped wholesale — the
+   `| default("")` guards protect future refactors/StrictUndefined, not
+   that path (the original comment overclaimed what the test falsifies).
+3. Final-review confirmations worth recording: WIF is covered via the
+   IAM claim (under-claiming, honest); "at most" is defensible because
+   the apply worker applies the SAVED plan.tfplan (never a re-plan) and
+   the freshness gate can only block, never expand, the change set.
+
 ## Final gates
 
 `uv run pytest -q` (+~12) · ruff · `npm run test:unit` (+~2) ·
