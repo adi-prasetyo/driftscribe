@@ -491,4 +491,16 @@ Tests: grouping preserves server order; unknown category → trailing group with
 
 ## Post-review deltas (as shipped)
 
-_To be filled after Codex review and implementation._
+**Codex plan review (thread 019eb069, NO-GO → 4 must-fixes folded → GO):**
+1. `load_workload_spec` validates symbols env-free (a parse-only loader could have advertised manifests `load_workload()` refuses).
+2. The AST rule-ID scan fails loudly on any non-literal `Violation(...)` first arg (positional or `rule=` keyword).
+3. Route tests live in `tests/integration/test_capabilities_endpoint.py` mirroring `test_infra_graph_endpoint.py` (the real precedent; 503-when-token-unset semantics honored).
+4. Human gates carry `method`; the pin test is method-bearing and asserts `require_cf_operator` on the iac-apply POST dependency tree.
+Also from that review: DTO field renamed `writes` → `write_capable` (honest about credential-containment members like `notify`); rule-sort test is a direct sorted-equality; env-free test derives env vars from `WORKER_REGISTRY.values()`; `groupRules` renders unknown categories as a trailing raw-heading group (never drops).
+
+**Implementation-review folds (two-stage review per task, all findings folded):**
+- `HUMAN_GATES` inner dicts frozen with `MappingProxyType` (repo security-boundary convention); validation-order shift and the deliberate no-cache choice documented in docstrings.
+- `require_cf_operator` was confirmed visible at `route.dependant.dependencies` top level — no recursive walk needed; assertion kept flat and load-bearing.
+- The pill-seam `{' '}` is pinned by REAL glued-string assertions on both sides (`…) chat-only` / `… autonomous + chat`); the component spans were glued (`</span>{' '}<span`) because the literal indent otherwise collapsed into a second space — mutation-tested by removing `{' '}`.
+- Test fixture strings are verbatim from the live `build_capabilities()` output (a sweep found 9 invented/trimmed paraphrases — a trust panel's tests must assert true facts); regenerate command documented in the fixture.
+- Headings promoted to h1→h2→h3 (no skipped levels); malformed-200 fail-soft via an `isValidCapabilities` type predicate routing to the error+retry path (new test 7, mutation-tested); unused import and a phantom CSS class dropped.
