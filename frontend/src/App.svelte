@@ -24,6 +24,7 @@
   import HistoricalBanner from './components/HistoricalBanner.svelte';
   import DecisionsRail from './components/DecisionsRail.svelte';
   import InfraDiagram from './components/InfraDiagram.svelte';
+  import { previewPrFromSearch } from './lib/infra_graph';
   import CapabilityCard from './components/CapabilityCard.svelte';
   import PauseControl from './components/PauseControl.svelte';
   import Timeline from './components/Timeline.svelte';
@@ -45,6 +46,19 @@
   // — drives InfraDiagram's delayed resource-map re-fetches (rides out CAI lag).
   let appliedEpoch = $state(0);
   let lastAppliedId: string | null = null;
+
+  // ?preview_pr=N (linked from the IaC approval page) → the Infrastructure panel
+  // opens in ghost-node preview mode. Parsed once at boot; only ever cleared.
+  let previewPr = $state(previewPrFromSearch(window.location.search));
+
+  // Clear the preview and remove ONLY the preview_pr param (preserve any other
+  // query params and the hash) so a reload/share doesn't resurrect the preview.
+  function exitPreview() {
+    previewPr = null;
+    const u = new URL(window.location.href);
+    u.searchParams.delete('preview_pr');
+    history.replaceState(null, '', u);
+  }
 
   let historicalActive = $state(false);
   let historicalTraceId = $state<string | null>(null);
@@ -356,7 +370,7 @@
 
   <section id="chat-area" class="chat-area" aria-label="Chat and reasoning timeline">
     <PauseControl {call} />
-    <InfraDiagram {call} {appliedEpoch} />
+    <InfraDiagram {call} {appliedEpoch} {previewPr} onExitPreview={exitPreview} />
     <CapabilityCard {call} />
     <ChatForm disabled={historicalActive || busy} onSubmit={submitChat} />
     <HistoricalBanner active={historicalActive} traceId={historicalTraceId} onNewChat={newChat} />
