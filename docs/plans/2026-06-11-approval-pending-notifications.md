@@ -355,3 +355,21 @@ Second round: **GO** (no remaining must-fix) + 1 should-fix and 3 nits,
 all folded: fanout test target added to Step 2; architecture line names
 both modules; out-of-scope "plan may take a minute" wording corrected;
 logger convention reference fixed to `adk_agent.py` (fanout has none).
+
+## Post-review deltas (as shipped)
+
+1. `_notify_approval_pending` restructured so NOTHING in it can
+   propagate — the `except Exception` block wraps `_log.warning` in
+   `contextlib.suppress(Exception)` (quality review: the original shape
+   left a pathological raising log handler able to escape, contradicting
+   the docstring contract).
+2. Fanout call-site comment carries the latency bound
+   (`_HTTPX_TIMEOUT` 30 s — verified against worker_client) so the
+   stream-stall ceiling is documented.
+3. The fanout happy-path test also pins the plan title + pr_url in the
+   notified body (closes a pass-empty-title-at-the-call-site hole).
+4. Final-review observations (accepted, no change): `mint_id_token` has
+   no timeout before the httpx block — pre-existing and shared with every
+   worker call; the fanout single-slice fallback's no-double-notify
+   property is structural (`return` before the orchestrator notify), not
+   integration-tested.
