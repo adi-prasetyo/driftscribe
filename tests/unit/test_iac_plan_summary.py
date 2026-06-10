@@ -326,7 +326,8 @@ def test_max_depth_wholesale_respects_sensitivity():
         ["update"], name="b", before=deep_b, after=deep_a,
         b_sens=sens, a_sens=sens,
     )))
-    _assert_secret_nowhere(_one(s) and s)
+    _one(s)
+    _assert_secret_nowhere(s)
 
 
 # ---------------------------------------------------------------------------
@@ -366,3 +367,20 @@ def test_action_reason_prettified():
     rc["action_reason"] = "replace_because_cannot_update"
     e = _one(summarize_plan(_plan(rc)))
     assert e.action_reason == "replace because cannot update"
+
+
+def test_unequal_list_with_positional_sensitive_mask_uses_count_display():
+    # When list lengths differ, counts are emitted regardless of per-position masks.
+    # The sensitive flag is False because no value is surfaced — that is correct.
+    e = _one(summarize_plan(_plan(_rc(
+        ["update"], name="b",
+        before={"env": [SECRET]}, after={"env": [SECRET, "other"]},
+        b_sens={"env": [True]}, a_sens={"env": [True, False]},
+    ))))
+    (a,) = e.attr_changes
+    assert a.path == "env"
+    assert SECRET not in a.before and SECRET not in a.after
+    assert (a.before, a.after) == ("(1 item(s))", "(2 item(s))")
+    # sensitive flag is False: acceptable here because the count display
+    # never surfaces any value regardless of position masks.
+    assert not a.sensitive
