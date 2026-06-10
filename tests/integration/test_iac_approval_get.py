@@ -613,3 +613,49 @@ def test_get_terminal_failed_renders_no_summary_card(
     assert 'data-testid="change-summary"' not in body
     # Sanity guard: red terminal banner is present.
     assert "Terminal state recorded" in body
+
+
+# --------------------------------------------------------------------------- #
+# Preview-map link (ClickOps Wave 2 item 6, Task 2)
+#
+# The "See this change on the resource map" link must appear ONLY on the
+# non-empty change-summary card, not on the empty card or unverifiable pages.
+# --------------------------------------------------------------------------- #
+
+
+def test_preview_map_link_present_on_non_empty_card(_configured, monkeypatch):
+    """Non-empty change-summary card contains the preview link with exact href."""
+    view = _view(_plan_json=_SUMMARY_PLAN)
+    _patch_resolve(monkeypatch, ref=_ref(), view=view)
+    resp = TestClient(app).get("/iac-approvals/42")
+    assert resp.status_code == 200
+    body = resp.text
+    assert 'data-testid="change-summary"' in body
+    assert 'data-testid="preview-map-link"' in body
+    assert 'href="/?preview_pr=42"' in body
+
+
+def test_preview_map_link_absent_on_empty_plan(_configured, monkeypatch):
+    """Empty plan (no entries) renders change-summary-empty — link must NOT appear."""
+    empty_plan = {
+        "format_version": "1.2",
+        "resource_changes": [],
+    }
+    view = _view(_plan_json=empty_plan)
+    _patch_resolve(monkeypatch, ref=_ref(), view=view)
+    resp = TestClient(app).get("/iac-approvals/42")
+    assert resp.status_code == 200
+    body = resp.text
+    assert 'data-testid="change-summary-empty"' in body
+    assert 'data-testid="preview-map-link"' not in body
+
+
+def test_preview_map_link_absent_on_unverifiable(_configured, monkeypatch):
+    """Unverifiable artifact renders an error page — link must NOT appear."""
+    view = _view(unverifiable=True, integrity_ok=False, _plan_json=_SUMMARY_PLAN)
+    _patch_resolve(monkeypatch, ref=_ref(), view=view)
+    resp = TestClient(app).get("/iac-approvals/42")
+    assert resp.status_code == 200
+    body = resp.text
+    assert "UNVERIFIABLE" in body
+    assert 'data-testid="preview-map-link"' not in body

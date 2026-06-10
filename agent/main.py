@@ -15,7 +15,7 @@ from concurrent.futures import TimeoutError as _FutureTimeout
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, Form, Header, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -85,7 +85,7 @@ from driftscribe_lib.cf_access import (
     verify_cf_access_jwt,
 )
 from driftscribe_lib.github import PrMergeBlockedError, PrNotEligibleError
-from driftscribe_lib.infra_graph import build_graph
+from driftscribe_lib.infra_graph import build_graph, plan_overlay, plan_overlay_unavailable
 from driftscribe_lib.logging import (
     current_trace_id_or_new,
     install_trace_middleware,
@@ -1846,6 +1846,67 @@ def get_infra_graph(
             extra={"error": inventory.get("error"), "detail": inventory.get("detail")},
         )
     return build_graph(inventory)
+
+
+@app.get("/infra/graph/preview")
+def get_infra_graph_preview(
+    response: Response,
+    pr: int = Query(ge=1),
+    _: None = Depends(verify_token),
+) -> dict:
+    """Advisory map overlay for a pending IaC PR (ClickOps Wave 2 item 6).
+
+    Resolves the PR's C2 plan artifact through the SAME ladder as the
+    /iac-approvals GET and reshapes its integrity-checked plan summary into
+    the redaction-safe ghost-node overlay DTO
+    (driftscribe_lib.infra_graph.plan_overlay). Read-only and advisory:
+    always 200 with {available: false, reason} for every not-available
+    outcome (probe-safe parity with the approval page); no pause rung
+    (pause gates mutations; this mirrors show_summary, which renders the
+    summary card even while approve is suppressed by pause/dry-run/token).
+
+    NOT wired into any polling path: each call costs a GitHub comment list
+    + two GCS fetches, so the SPA fetches it only on explicit operator
+    intent (preview activation / Refresh / Retry).
+    """
+    response.headers["Cache-Control"] = "no-store"
+    s = get_settings()
+    ref, view = _resolve_iac_plan(s, pr)
+    if view is None:
+        return plan_overlay_unavailable(pr, "no_plan")
+    if (
+        view.unverifiable
+        or not view.integrity_ok
+        or view.denylist_violations
+        or not _iac_artifact_consistent(ref, view, pr)
+    ):
+        return plan_overlay_unavailable(pr, "artifact_error")
+    # Terminal-decision suppression — best-effort, same identity + terminal
+    # set as the approval GET; a lookup failure must not take the preview
+    # down (advisory display). Runs UNCONDITIONALLY (unlike the approval GET,
+    # which only runs this when can_approve — see Decision 2 divergence block).
+    if s.github_repo:
+        existing = None
+        try:
+            _event_key = _iac_event_key(
+                s.github_repo, pr, view.head_sha, view.generation_metadata
+            )
+            existing = get_state().find_decision_for_event(_event_key)
+        except Exception:  # noqa: BLE001 — best-effort, advisory route
+            log.warning(
+                "iac_preview_decision_lookup_failed", extra={"pr_number": pr}
+            )
+        if existing is not None:
+            _st = existing.get("apply_status")
+            _ms = existing.get("merge_state")
+            if (_st == "applied" and _ms == "merged") or _st in {
+                "failed", "failed_state_suspect", "ambiguous",
+            }:
+                return plan_overlay_unavailable(pr, "resolved")
+    summary = view.change_summary
+    if summary is None:
+        return plan_overlay_unavailable(pr, "summary_unavailable")
+    return plan_overlay(pr, summary)
 
 
 @app.get("/capabilities")
