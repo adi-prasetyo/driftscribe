@@ -56,17 +56,25 @@ def read_pause_state(state: Any) -> PauseState:
     ClickOps Wave 2 roadmap.
 
     Absent document (None returned) means the feature was never toggled:
-    the system predates the pause button and defaults to running.
+    the system predates the pause button and defaults to running. A PRESENT
+    but malformed document (not a dict, or ``paused`` missing/non-bool — e.g.
+    a clobbered ``{}``) fails CLOSED: it is evidence of corruption, not of an
+    operator choosing to run, and the previous ``bool(doc.get("paused"))``
+    would have silently read it as unpaused.
     """
     try:
         doc = state.get_pause()
     except Exception:  # noqa: BLE001 — fail-closed by contract, never raise
         log.warning("pause_state_read_failed", exc_info=True)
         return PauseState(paused=True, reason=FAIL_CLOSED_REASON, read_error=True)
-    if not doc:
+    if doc is None:
         return PauseState(paused=False)
+    paused_val = doc.get("paused") if isinstance(doc, dict) else None
+    if not isinstance(paused_val, bool):
+        log.warning("pause_state_malformed", extra={"doc_type": type(doc).__name__})
+        return PauseState(paused=True, reason=FAIL_CLOSED_REASON, read_error=True)
     return PauseState(
-        paused=bool(doc.get("paused")),
+        paused=paused_val,
         reason=doc.get("reason"),
         actor=doc.get("actor"),
         updated_at=doc.get("updated_at"),

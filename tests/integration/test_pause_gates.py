@@ -118,6 +118,24 @@ def test_recheck_fail_closed_when_pause_read_raises():
     mock_recheck.assert_not_awaited()
 
 
+def test_recheck_fail_closed_when_get_state_itself_raises(monkeypatch):
+    """get_state() ITSELF raising (e.g. first-call Firestore client
+    construction) must also fail closed → 423, not a 500 — the
+    _pause_state_fail_closed guard covers store resolution, not just reads."""
+    mock_recheck = AsyncMock()
+
+    def _boom():
+        raise RuntimeError("firestore client construction failed")
+
+    monkeypatch.setattr("agent.main.get_state", _boom)
+    with patch("agent.main._do_recheck", mock_recheck):
+        client = TestClient(app)
+        r = client.post("/recheck")
+    assert r.status_code == 423
+    assert r.json()["detail"] == PAUSED_DETAIL
+    mock_recheck.assert_not_awaited()
+
+
 # --------------------------------------------------------------------------- #
 # POST /eventarc
 # --------------------------------------------------------------------------- #
@@ -216,6 +234,36 @@ def test_eventarc_off_target_never_reads_the_pause_flag(monkeypatch):
     mock_recheck.assert_not_awaited()
 
 
+def test_eventarc_in_scope_fail_closed_when_get_state_itself_raises(monkeypatch):
+    """THE retry-storm case: an in-scope event during a store-INIT failure
+    (get_state() itself raising) must still get the 200-ignored-paused contract,
+    never a 500 — Eventarc retries on non-2xx and would storm for the whole
+    outage window."""
+    _set_audience(monkeypatch)
+    mock_recheck = AsyncMock()
+
+    def _boom():
+        raise RuntimeError("firestore client construction failed")
+
+    monkeypatch.setattr("agent.main.get_state", _boom)
+    with patch("agent.main.verify_oauth2_token") as m_verify, \
+         patch("agent.main._do_recheck", mock_recheck):
+        m_verify.return_value = {"email": _EXPECTED_EMAIL, "aud": _VALID_AUDIENCE}
+        client = TestClient(app)
+        r = client.post(
+            "/eventarc",
+            json=_audit_log_body(),
+            headers={"Authorization": "Bearer fake-token"},
+        )
+    assert r.status_code == 200
+    assert r.json() == {
+        "ignored": "paused",
+        "service": "payment-demo",
+        "region": "asia-northeast1",
+    }
+    mock_recheck.assert_not_awaited()
+
+
 # --------------------------------------------------------------------------- #
 # POST /chat
 # --------------------------------------------------------------------------- #
@@ -277,6 +325,30 @@ def test_chat_fail_closed_reply_when_pause_read_raises(monkeypatch):
     fake = AsyncMock(return_value={"reply": "x", "tool_calls": [], "session_id": "s"})
     with patch.object(state, "get_pause", side_effect=RuntimeError("Firestore down")), \
          patch("agent.adk_agent.run_chat", fake):
+        client = TestClient(app)
+        r = client.post("/chat", json={"prompt": "do a thing"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["paused"] is True
+    assert body["tool_calls"] == []
+    reply = body["reply"].lower()
+    assert "could not be read" in reply
+    assert "fails closed" in reply
+    fake.assert_not_awaited()
+
+
+def test_chat_fail_closed_when_get_state_itself_raises(monkeypatch):
+    """get_state() ITSELF raising must yield the same 200 calm fail-closed
+    reply (paused=True, read_error copy), never a 500; no LLM call."""
+    monkeypatch.setenv("USE_ADK", "true")
+    get_settings.cache_clear()
+    fake = AsyncMock(return_value={"reply": "x", "tool_calls": [], "session_id": "s"})
+
+    def _boom():
+        raise RuntimeError("firestore client construction failed")
+
+    monkeypatch.setattr("agent.main.get_state", _boom)
+    with patch("agent.adk_agent.run_chat", fake):
         client = TestClient(app)
         r = client.post("/chat", json={"prompt": "do a thing"})
     assert r.status_code == 200, r.text

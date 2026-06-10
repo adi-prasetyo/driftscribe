@@ -279,3 +279,42 @@ def test_post_pause_returns_502_when_set_pause_raises():
     assert r.status_code == 502
     # Detail must acknowledge the failure so the operator doesn't assume success.
     assert r.json()["detail"]
+
+
+# --------------------------------------------------------------------------- #
+# get_state() ITSELF raising (first-call store construction) — both routes
+# resolve the store INSIDE the body (no Depends), so the contract holds even
+# then: GET → 200 fail-closed view; POST → the contractual 502.
+# --------------------------------------------------------------------------- #
+
+
+def test_get_pause_fail_closed_when_get_state_itself_raises(monkeypatch):
+    """Store-resolution failure → the same 200 fail-closed view as a read
+    failure (that IS the system's effective state), never a 500."""
+
+    def _boom():
+        raise RuntimeError("firestore client construction failed")
+
+    monkeypatch.setattr("agent.main.get_state", _boom)
+    client = TestClient(app)
+    r = client.get("/pause")
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["paused"] is True
+    assert body["read_error"] is True
+
+
+def test_post_pause_returns_502_when_get_state_itself_raises(monkeypatch):
+    """Store-resolution failure on the toggle → the contractual 502 ("toggle
+    did NOT take effect"), not a generic 500 from a Depends resolution."""
+
+    def _boom():
+        raise RuntimeError("firestore client construction failed")
+
+    monkeypatch.setattr("agent.main.get_state", _boom)
+    client = TestClient(app)
+    r = client.post("/pause", json={"paused": True})
+
+    assert r.status_code == 502
+    assert "did NOT take effect" in r.json()["detail"]

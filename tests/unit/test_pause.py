@@ -65,6 +65,49 @@ def test_read_pause_state_fail_closed_on_store_error():
 
 
 # ---------------------------------------------------------------------------
+# read_pause_state — a PRESENT but malformed doc fails CLOSED (corruption is
+# not an operator choosing to run); only an ABSENT doc (None) means running.
+# ---------------------------------------------------------------------------
+
+
+class _DocStore:
+    """Stub store returning a fixed doc — lets tests feed malformed shapes."""
+
+    def __init__(self, doc):
+        self._doc = doc
+
+    def get_pause(self):
+        return self._doc
+
+
+def test_read_pause_state_empty_doc_fails_closed():
+    """A clobbered ``{}`` is present-but-malformed → fail closed, NOT running."""
+    st = read_pause_state(_DocStore({}))
+    assert st.paused is True and st.read_error is True
+    assert st.reason == FAIL_CLOSED_REASON
+
+
+def test_read_pause_state_non_bool_paused_fails_closed():
+    """``paused`` must be a real bool — a stringly-typed value fails closed."""
+    st = read_pause_state(_DocStore({"paused": "yes"}))
+    assert st.paused is True and st.read_error is True
+    assert st.reason == FAIL_CLOSED_REASON
+
+
+def test_read_pause_state_non_dict_doc_fails_closed():
+    """A non-dict doc (store contract violation) also fails closed, no raise."""
+    st = read_pause_state(_DocStore(["not", "a", "dict"]))
+    assert st.paused is True and st.read_error is True
+
+
+def test_read_pause_state_real_false_bool_is_running():
+    """A well-formed ``paused: False`` doc still reads as running (the malformed
+    check must not over-trigger on a legitimate resume doc)."""
+    st = read_pause_state(_DocStore({"paused": False, "reason": None, "actor": "op"}))
+    assert st.paused is False and st.read_error is False
+
+
+# ---------------------------------------------------------------------------
 # Defensive-copy semantics: mutations to returned/passed dicts don't alias
 # ---------------------------------------------------------------------------
 

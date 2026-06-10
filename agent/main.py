@@ -1469,7 +1469,7 @@ async def recheck(
     # Pause gate (kill switch): refuse 423 before any recheck work. ``force``
     # does NOT bypass — pause outranks force (a kill switch the operator can
     # accidentally override is not a kill switch). Read fail-closed per request.
-    if read_pause_state(get_state()).paused:
+    if _pause_state_fail_closed().paused:
         raise HTTPException(status_code=423, detail=PAUSED_DETAIL)
     workload = (req or RecheckRequest()).workload
     # Serve-time rationale scrub (PR 2): wrapping the handler return covers
@@ -1699,7 +1699,7 @@ async def eventarc(
     # shape as non-target-service — the event is acknowledged and DROPPED, not
     # queued for replay. A drift event that the agent declines to act on while
     # paused is re-discovered by the next manual or scheduled recheck on resume.
-    if read_pause_state(get_state()).paused:
+    if _pause_state_fail_closed().paused:
         # Structured log so operators can query Cloud Logging for events dropped
         # by the kill switch — the access-log 200 alone is not queryable by cause.
         log.info(
@@ -1867,6 +1867,27 @@ def get_capabilities_route(
 # --------------------------------------------------------------------------- #
 
 
+def _pause_state_fail_closed() -> PauseState:
+    """Resolve the StateStore AND read the pause flag, fail-closed end-to-end.
+
+    ``read_pause_state`` never raises on ``get_pause()`` errors, but
+    ``get_state()`` ITSELF can raise (first-call Firestore client construction).
+    Without this guard a store-init failure would 500 the mutation gates —
+    worst case an in-scope /eventarc event 500s and Eventarc RETRIES (storm)
+    instead of getting the 200-ignored contract. ONE mechanism for every
+    pause read (the five gates, the two approval GET displays, GET /pause).
+
+    Lives here, not in :mod:`agent.pause`, because it needs ``get_state`` and
+    pause.py must stay import-free of main (circular import).
+    """
+    try:
+        state = get_state()
+    except Exception:  # noqa: BLE001 — fail-closed by contract, never raise
+        log.warning("pause_state_store_unavailable", exc_info=True)
+        return PauseState(paused=True, reason=FAIL_CLOSED_REASON, read_error=True)
+    return read_pause_state(state)
+
+
 def _serialize_pause_state(ps: PauseState) -> dict[str, Any]:
     """Serialize a PauseState to the wire shape shared by GET and POST /pause.
 
@@ -1894,21 +1915,21 @@ def _serialize_pause_state(ps: PauseState) -> dict[str, Any]:
 def get_pause_route(
     response: Response,
     _: None = Depends(verify_token),
-    state: StateStore = Depends(get_state),
 ) -> dict:
     """Return the current pause flag state.
 
     A read failure is NOT an error response — it returns the fail-closed view
     (paused=True, read_error=True) with 200, because that IS the system's
     effective state. Callers that distinguish error from intentional-pause
-    must check ``read_error``.
+    must check ``read_error``. The state store is resolved INSIDE the body
+    (via :func:`_pause_state_fail_closed`, not ``Depends(get_state)``) so a
+    store-init failure ALSO yields the fail-closed view rather than a 500.
 
     ``Cache-Control: no-store`` mirrors /capabilities — this is operator
     safety status that must never be served from a proxy or browser cache.
     """
     response.headers["Cache-Control"] = "no-store"
-    ps = read_pause_state(state)
-    return _serialize_pause_state(ps)
+    return _serialize_pause_state(_pause_state_fail_closed())
 
 
 @app.post("/pause")
@@ -1917,7 +1938,6 @@ def post_pause_route(
     response: Response,
     _: None = Depends(verify_token),
     cf_access_jwt: str | None = Header(default=None, alias="Cf-Access-Jwt-Assertion"),
-    state: StateStore = Depends(get_state),
 ) -> dict:
     """Toggle the operator pause flag.
 
@@ -1932,7 +1952,9 @@ def post_pause_route(
     take effect. This is always safe (fail: a failed-pause write leaves the
     system running, which the operator sees; a failed-resume write leaves it
     paused, which is also visible) but failing silently would be dangerous
-    for a kill switch.
+    for a kill switch. The state store is resolved INSIDE the try below (not
+    ``Depends(get_state)``) so a store-init failure gets the SAME contractual
+    502 instead of a generic 500 before the body ever runs.
 
     ``Cache-Control: no-store`` matches the GET — the response body IS pause
     status, and a cached copy could mislead the operator about safety state.
@@ -1964,12 +1986,13 @@ def post_pause_route(
     reason = reason or None  # empty string after strip → None
 
     try:
-        doc = state.set_pause(paused=req.paused, reason=reason, actor=actor)
+        doc = get_state().set_pause(paused=req.paused, reason=reason, actor=actor)
     except Exception as exc:  # noqa: BLE001
-        # Surface write failures as 502 — the operator must see that the toggle
-        # didn't take effect. Unlike read failures (which fail closed silently),
-        # a silent write failure could leave the operator believing the system
-        # is paused when it is still running (or vice versa).
+        # Surface BOTH store-resolution and write failures as 502 — the operator
+        # must see that the toggle didn't take effect. Unlike read failures
+        # (which fail closed silently), a silent write failure could leave the
+        # operator believing the system is paused when it is still running (or
+        # vice versa).
         raise HTTPException(
             status_code=502,
             detail=(
@@ -2329,17 +2352,10 @@ def approval_get(request: Request, approval_id: str, t: str = "") -> Response:
     expired = bool(approval) and approval_helpers.is_expired(approval)
     # Pause gate (display): the page shows what its POST would do — Approve
     # disabled + a calm note while paused; Reject stays active (the POST allows
-    # reject while paused). The GET is ALWAYS-200 (probe-safe), so a failure
-    # resolving the StateStore itself must NOT 500 — it fails closed to a paused
-    # display, mirroring the iac approval GET's wrap (read_pause_state already
-    # never raises on get_pause errors; this guards the get_state() call).
-    try:
-        paused = read_pause_state(get_state()).paused
-    except Exception:  # noqa: BLE001 — always-200 GET; fail closed to paused.
-        log.warning(
-            "pause_state_lookup_failed", extra={"approval_id": approval_id}
-        )
-        paused = True
+    # reject while paused). _pause_state_fail_closed keeps the GET ALWAYS-200
+    # (probe-safe): a store-resolution failure fails closed to a paused display,
+    # never a 500.
+    paused = _pause_state_fail_closed().paused
     response = _TEMPLATES.TemplateResponse(
         request,
         "approval.html",
@@ -2478,16 +2494,11 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
     reason_severity = ""  # "" (approvable) | "error" | "pending"
     form_token: str | None = None
 
-    # Pause state for the gate ladder rung below. The GET is ALWAYS-200
-    # (probe-safe), so a failure resolving the StateStore itself must NOT 500 —
-    # it fails closed to a paused DISPLAY (same fail-closed direction as a
-    # get_pause read error). read_pause_state already never raises on get_pause
-    # errors; this guards the get_state() call that precedes it.
-    try:
-        _pause = read_pause_state(get_state())
-    except Exception:  # noqa: BLE001 — always-200 GET; fail closed to paused.
-        log.warning("pause_state_lookup_failed", extra={"pr_number": pr_number})
-        _pause = PauseState(paused=True, reason=FAIL_CLOSED_REASON, read_error=True)
+    # Pause state for the gate ladder rung below. _pause_state_fail_closed keeps
+    # the GET ALWAYS-200 (probe-safe): a failure resolving the StateStore itself
+    # fails closed to a paused DISPLAY (same fail-closed direction as a get_pause
+    # read error), never a 500.
+    _pause = _pause_state_fail_closed()
 
     if view is None:
         reason_blocked = "No verifiable C2 plan artifact."
@@ -2892,7 +2903,7 @@ def iac_approval_post(
     # AFTER Origin+CSRF (so a cross-site probe still gets 403, never a pause
     # hint) and BEFORE _resolve_iac_plan / /propose. The REJECT path above is
     # already a coordinator-side audit no-op and stays UNGATED. Read fail-closed.
-    if read_pause_state(get_state()).paused:
+    if _pause_state_fail_closed().paused:
         raise HTTPException(status_code=423, detail=PAUSED_DETAIL)
 
     # (b) Re-resolve + pin: bind what-you-saw == what's-latest == what-applies.
@@ -3772,11 +3783,10 @@ def approval_post(
     # the page. APPROVE is gated 423 (it drives a real Cloud Run traffic shift);
     # REJECT is ALLOWED while paused — denying a pending rollback is the
     # safety-direction (it prevents action). Blocking reject would keep a live
-    # approval pending, the opposite of what a kill switch is for.
-    # Unguarded get_state() is deliberate (contrast the GET's wrap): a failure
-    # here 500s BEFORE any worker call — already fail-closed — and unlike the
-    # always-200 GET pages this POST has no probe-safe status contract.
-    pause = read_pause_state(get_state())
+    # approval pending, the opposite of what a kill switch is for. The helper
+    # also covers a get_state() failure (fail-closed paused → approve 423,
+    # reject still goes through to the worker — the safety direction holds).
+    pause = _pause_state_fail_closed()
 
     if decision == "reject":
         try:
@@ -4110,7 +4120,7 @@ async def chat(
     # an LLM turn IS agent activity. Deliberate exception to the 423 refusal:
     # /chat returns 200 with a calm reply (+ paused=true) on BOTH the JSON and
     # SSE paths so the operator gets a readable answer, not an error toast.
-    pause = read_pause_state(get_state())
+    pause = _pause_state_fail_closed()
     if pause.paused:
         wants_sse = "text/event-stream" in request.headers.get("accept", "")
         return _paused_chat_response(
