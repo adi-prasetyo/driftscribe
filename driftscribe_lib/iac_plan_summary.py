@@ -32,7 +32,14 @@ from driftscribe_lib.iac_plan_denylist import (
     REPLACE_ACTION_TUPLES,
 )
 
-__all__ = ["AttrChange", "ChangeEntry", "PlanSummary", "summarize_plan"]
+__all__ = [
+    "MAX_ATTRS_PER_ENTRY",
+    "MAX_ENTRIES",
+    "AttrChange",
+    "ChangeEntry",
+    "PlanSummary",
+    "summarize_plan",
+]
 
 MAX_ENTRIES = 40           # resource rows rendered (counts stay total)
 MAX_ATTRS_PER_ENTRY = 25   # attribute-diff rows per resource
@@ -136,6 +143,8 @@ def _sub_mask(mask: Any, key: Any) -> Any:
     return False
 
 
+# Purely recursive; pathological depth raises RecursionError, which
+# summarize_plan converts to the None fallback (never-partial).
 def _mask_any(mask: Any) -> bool:
     """True iff ANY position under ``mask`` is flagged."""
     if mask is True:
@@ -244,7 +253,7 @@ def _diff(
                 _sub_mask(b_sens, i),
                 _sub_mask(a_sens, i),
                 _sub_mask(unknown, i),
-                f"{label if path else ''}[{i}]" if path else f"[{i}]",
+                f"{path}[{i}]" if path else f"[{i}]",
                 depth + 1,
                 out,
             ):

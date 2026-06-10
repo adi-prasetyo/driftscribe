@@ -152,3 +152,24 @@ def test_non_dict_plan_is_none():
     assert summarize_plan(None) is None
     assert summarize_plan([]) is None
     assert summarize_plan({"resource_changes": "nope"}) is None
+
+
+def test_pathologically_deep_structures_fall_back_to_none():
+    # Unbounded nesting (values or masks) must never crash or partially
+    # render — RecursionError is caught by summarize_plan => None.
+    # Depth note: since Python 3.12 the C json encoder recurses far beyond
+    # sys.getrecursionlimit() (real C-stack checks), so the value path needs
+    # to be MUCH deeper than the pure-Python limit: 200_000 raises reliably
+    # (2x margin over the ~100_000 threshold observed on CPython 3.14).
+    deep_val: dict = {"k": 1}
+    deep_mask: dict = {"k": True}
+    for _ in range(200_000):
+        deep_val = {"k": deep_val}
+        deep_mask = {"k": deep_mask}
+    assert summarize_plan(_plan(_rc(["update"], name="b",
+                                    before=deep_val, after={"k": 2}))) is None
+    # The mask must MIRROR the value structure (as tofu emits it) for the
+    # walk to descend into it — key "k" matches, so _mask_any really recurses.
+    assert summarize_plan(_plan(_rc(["update"], name="b",
+                                    before={"k": 1}, after={"k": 2},
+                                    b_sens=deep_mask))) is None
