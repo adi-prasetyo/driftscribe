@@ -282,3 +282,215 @@ def test_caveat_falls_back_when_absent():
     del inv["freshness_caveat"]
     g = build_graph(inv)
     assert "Cloud Asset Inventory" in g["caveat"]
+
+
+# ---------------------------------------------------------------------------
+# Task (ghost-nodes): plan_overlay DTO builder (Decision 3)
+# ---------------------------------------------------------------------------
+
+import pytest  # noqa: E402 — local to the append block; pytest is always available
+
+from driftscribe_lib.iac_plan_summary import summarize_plan  # noqa: E402
+from driftscribe_lib.infra_graph import (  # noqa: E402
+    PLAN_RTYPE_TO_ASSET_TYPE,
+    SENSITIVE_PLAN_RTYPES,
+    plan_overlay,
+    plan_overlay_unavailable,
+)
+from driftscribe_lib.infra_inventory import SENSITIVE_ASSET_TYPES  # noqa: E402
+from driftscribe_lib.iac_hcl import _SUPPORTED_RESOURCE_ASSET_TYPES  # noqa: E402
+
+
+def _rc_for_overlay(actions, *, rtype="google_pubsub_topic", name="t",
+                    address=None, before=None, after=None,
+                    b_sens=False, a_sens=False, mode="managed"):
+    """Minimal resource_change dict for overlay tests."""
+    return {
+        "address": address or f"{rtype}.{name}",
+        "mode": mode,
+        "type": rtype,
+        "name": name,
+        "change": {
+            "actions": list(actions),
+            "before": before,
+            "after": after,
+            "before_sensitive": b_sens,
+            "after_sensitive": a_sens,
+        },
+    }
+
+
+def _plan_for_overlay(*rcs):
+    return {"format_version": "1.2", "resource_changes": list(rcs)}
+
+
+class TestPlanOverlay:
+    def test_shape_and_counts_passthrough(self):
+        # 2-entry plan: create topic + update bucket
+        plan = _plan_for_overlay(
+            _rc_for_overlay(
+                ["create"], rtype="google_pubsub_topic", name="topic-rc",
+                address="google_pubsub_topic.order_events",
+                after={"name": "order-events", "location": "asia-northeast1"},
+            ),
+            _rc_for_overlay(
+                ["update"], rtype="google_storage_bucket", name="bucket-rc",
+                address="google_storage_bucket.assets",
+                before={"name": "my-bucket"}, after={"name": "my-bucket"},
+            ),
+        )
+        s = summarize_plan(plan)
+        assert s is not None
+        g = plan_overlay(47, s)
+
+        assert g["pr_number"] == 47
+        assert g["available"] is True
+        assert g["reason"] is None
+        assert g["counts"]["create"] == 1
+        assert g["counts"]["update"] == 1
+        assert g["hidden"] == 0
+        assert len(g["entries"]) == 2
+
+        e0 = g["entries"][0]
+        assert e0["verb"] == "create"
+        assert e0["rtype"] == "google_pubsub_topic"
+        assert e0["type_label"] == "Pub/Sub topic"
+        assert e0["name"] == "order-events"
+        assert e0["address"] == "google_pubsub_topic.order_events"
+        assert e0["asset_type"] == "pubsub.googleapis.com/Topic"
+        assert e0["sensitive"] is False
+        assert e0["location"] == "asia-northeast1"
+
+        e1 = g["entries"][1]
+        assert e1["verb"] == "update"
+        assert e1["rtype"] == "google_storage_bucket"
+        assert e1["asset_type"] == "storage.googleapis.com/Bucket"
+        assert e1["sensitive"] is False
+
+    def test_hidden_reflects_truncation(self):
+        # 42 create rows -> entries capped at 40, hidden 2, counts["create"]==42
+        rcs = [
+            _rc_for_overlay(
+                ["create"], rtype="google_pubsub_topic", name=f"t{i}",
+                address=f"google_pubsub_topic.t{i}",
+                after={"name": f"topic-{i}"},
+            )
+            for i in range(42)
+        ]
+        s = summarize_plan(_plan_for_overlay(*rcs))
+        assert s is not None
+        assert s.n_hidden == 2
+        g = plan_overlay(1, s)
+        assert len(g["entries"]) == 40
+        assert g["hidden"] == 2
+        assert g["counts"]["create"] == 42
+
+    @pytest.mark.parametrize("rtype,expect_atype", [
+        ("google_secret_manager_secret", "secretmanager.googleapis.com/Secret"),
+        ("google_secret_manager_secret_version", "secretmanager.googleapis.com/SecretVersion"),
+        ("google_secret_manager_regional_secret", None),
+        ("google_secret_manager_regional_secret_version", None),
+    ])
+    def test_sensitive_rtypes_fully_redacted(self, rtype, expect_atype):
+        plan = _plan_for_overlay(
+            _rc_for_overlay(
+                ["create"], rtype=rtype, name="s",
+                address=f"{rtype}.s",
+                after={"name": "my-secret", "location": "asia-northeast1"},
+            ),
+        )
+        s = summarize_plan(plan)
+        assert s is not None
+        g = plan_overlay(7, s)
+        assert len(g["entries"]) == 1
+        e = g["entries"][0]
+        assert e["sensitive"] is True
+        assert e["name"] == ""
+        assert e["address"] == ""
+        assert e["location"] == ""
+        assert e["asset_type"] == expect_atype
+
+    def test_unmapped_rtype_gets_null_asset_type(self):
+        plan = _plan_for_overlay(
+            _rc_for_overlay(
+                ["create"], rtype="google_project_iam_member", name="iam",
+                address="google_project_iam_member.iam",
+                after={"member": "serviceAccount:x@y.iam.gserviceaccount.com"},
+            ),
+        )
+        s = summarize_plan(plan)
+        assert s is not None
+        g = plan_overlay(5, s)
+        assert len(g["entries"]) == 1
+        e = g["entries"][0]
+        assert e["asset_type"] is None
+        assert e["sensitive"] is False
+
+    def test_unavailable_shape(self):
+        g = plan_overlay_unavailable(7, "no_plan")
+        assert g["available"] is False
+        assert g["reason"] == "no_plan"
+        assert g["pr_number"] == 7
+        assert g["hidden"] == 0
+        assert g["entries"] == []
+        # all verbs present with zero counts
+        for verb in ("create", "update", "destroy", "replace", "import", "forget", "change"):
+            assert g["counts"][verb] == 0
+
+    def test_resource_name_fixture_per_identity_rtype(self):
+        # One create row per identity-resolver rtype + one with no name
+        cases = [
+            ("google_storage_bucket", "my-assets-bucket"),
+            ("google_pubsub_topic", "order-events"),
+            ("google_pubsub_subscription", "order-sub"),
+            ("google_cloud_run_v2_service", "storefront"),
+            ("google_service_account",
+             "projects/p/serviceAccounts/worker@p.iam.gserviceaccount.com"),
+        ]
+        rcs = [
+            _rc_for_overlay(
+                ["create"], rtype=rt, name="rc",
+                address=f"{rt}.rc",
+                after={"name": expected_name},
+            )
+            for rt, expected_name in cases
+        ]
+        # One more with no "name" key in after
+        rcs.append(_rc_for_overlay(
+            ["create"], rtype="google_compute_network", name="vpc",
+            address="google_compute_network.vpc",
+            after={"auto_create_subnetworks": True},
+        ))
+        s = summarize_plan(_plan_for_overlay(*rcs))
+        assert s is not None
+        g = plan_overlay(9, s)
+
+        for i, (rt, expected_name) in enumerate(cases):
+            e = g["entries"][i]
+            assert e["name"] == expected_name, f"rtype={rt}: got {e['name']!r}"
+
+        # Last entry: no "name" in after -> resource_name="" -> overlay name=""
+        last_e = g["entries"][len(cases)]
+        assert last_e["name"] == ""
+        assert last_e["address"] == "google_compute_network.vpc"
+
+
+class TestRtypeMapping:
+    def test_iac_hcl_pairs_match(self):
+        for rtype, atype in _SUPPORTED_RESOURCE_ASSET_TYPES.items():
+            assert PLAN_RTYPE_TO_ASSET_TYPE[rtype] == atype, (
+                f"{rtype}: expected {atype!r} "
+                f"but got {PLAN_RTYPE_TO_ASSET_TYPE.get(rtype)!r}"
+            )
+
+    def test_secret_rtypes_map_to_sensitive_asset_types(self):
+        for rtype in ("google_secret_manager_secret",
+                      "google_secret_manager_secret_version"):
+            atype = PLAN_RTYPE_TO_ASSET_TYPE[rtype]
+            assert atype in SENSITIVE_ASSET_TYPES, (
+                f"{rtype} -> {atype!r} not in SENSITIVE_ASSET_TYPES"
+            )
+
+    def test_sensitive_plan_rtypes_cover_static_gate(self):
+        from tools import iac_static_gate
+        assert SENSITIVE_PLAN_RTYPES >= iac_static_gate.SECRET_MATERIAL_RESOURCE_TYPES
