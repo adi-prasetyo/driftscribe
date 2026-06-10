@@ -625,6 +625,18 @@ Deviations from the literal plan text, each caught/endorsed in review:
    (`eventarc_event_dropped_paused`) so operators can query Cloud Logging for
    events the kill switch dropped — the access-log 200 alone isn't queryable
    by cause.
+7. **Fail-closed centralized over `get_state()` failures + malformed docs**
+   (Codex completed-work MUST-FIX) — `read_pause_state` only guarded
+   `get_pause()`; `get_state()` itself can raise (first-call Firestore client
+   construction), which 500'd the gates and `/pause` — worst case an in-scope
+   Eventarc event during store-init failure would RETRY instead of getting
+   the 200-ignored contract. One helper (`_pause_state_fail_closed`, main.py
+   — circular-import constraint keeps it out of pause.py) now wraps every
+   pause-read site (five gates + both approval GETs + GET /pause); POST
+   /pause resolves the store in-body so any failure maps to its contractual
+   502. Also: a PRESENT-but-malformed `config/pause` doc (clobbered `{}`,
+   non-bool `paused`) now fails CLOSED (`pause_state_malformed`); only a
+   truly absent doc reads as running.
 
 ## Out of scope (deliberate)
 
