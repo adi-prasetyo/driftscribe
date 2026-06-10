@@ -44,10 +44,17 @@
       {% endif %}
 
       {% if approval.status == "pending" and not expired %}
+        {% if paused %}
+          {# Pause gate (kill switch): calm note above the form. Approve is
+             disabled (the POST refuses it 423); Reject stays active because the
+             POST allows reject while paused — denying a rollback is the
+             safety-direction. #}
+          <div class="ds-note" data-testid="paused-note">⏸ DriftScribe is paused — Approve is disabled until an operator resumes. Reject still works (it denies this request).</div>
+        {% endif %}
         <form method="post" action="/approvals/{{ approval.approval_id }}">
           <input type="hidden" name="t" data-testid="token-field" value="{{ token }}">
           <div class="ds-actions">
-            <button class="ds-btn ds-btn--approve" data-testid="approve-button" type="submit" name="decision" value="approve">Approve rollback</button>
+            <button class="ds-btn ds-btn--approve" data-testid="approve-button" type="submit" name="decision" value="approve"{% if paused %} disabled{% endif %}>Approve rollback</button>
             <button class="ds-btn ds-btn--reject" data-testid="reject-button" type="submit" name="decision" value="reject">Reject</button>
           </div>
         </form>

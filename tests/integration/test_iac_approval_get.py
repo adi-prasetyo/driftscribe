@@ -119,7 +119,12 @@ def _patch_resolve(monkeypatch, *, ref, view):
     )
 
 
-def test_happy_get_renders_fields_and_form(_configured, monkeypatch):
+def test_happy_get_renders_fields_and_form(_configured, _inmemory, monkeypatch):
+    # _inmemory pins get_state() to the InMemory store. The GET now reads the
+    # pause flag (Wave 2 kill switch) on the approvable path; without an InMemory
+    # store get_state() would hit a (CI-unreachable) Firestore and the pause read
+    # would fail closed, suppressing Approve. A reachable, running pause state is
+    # part of "happy path" here.
     _patch_resolve(monkeypatch, ref=_ref(), view=_view())
     client = TestClient(app)
     resp = client.get("/iac-approvals/42")
@@ -462,6 +467,31 @@ def test_applied_failed_keeps_form(_configured, _inmemory, monkeypatch):
 def test_decision_lookup_failure_falls_back_to_form(_configured, _inmemory, monkeypatch):
     # A decision-store read error must NOT break the always-200 GET — it falls
     # back to the artifact-only view (form shown; POST stays authoritative).
+    #
+    # Wave 2 kill switch: the GET now reads the pause flag BEFORE the best-effort
+    # decision lookup, so this test must fail the DECISION lookup specifically
+    # (find_decision_for_event), not get_state() wholesale — a total get_state()
+    # failure now fails closed to a paused display (pinned separately in
+    # test_pause_read_failure_suppresses_form_fail_closed). Here the pause read
+    # succeeds (running) and only the decision lookup raises.
+    _patch_resolve(monkeypatch, ref=_ref(), view=_view())
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("firestore unavailable")
+
+    monkeypatch.setattr(get_state(), "find_decision_for_event", _boom)
+    resp = TestClient(app).get("/iac-approvals/42")
+    assert resp.status_code == 200
+    body = resp.text
+    assert 'data-testid="approve-button"' in body
+    assert 'name="form_token"' in body
+
+
+def test_pause_read_failure_suppresses_form_fail_closed(_configured, _inmemory, monkeypatch):
+    # Wave 2 kill switch: if the pause flag itself is unreadable (get_state() or
+    # get_pause() raising), the always-200 GET fails CLOSED — Approve suppressed,
+    # NO CSRF token minted — so the display matches the POST (which 423s when the
+    # flag is unreadable). Calm "pending" note, not a red hard-stop.
     _patch_resolve(monkeypatch, ref=_ref(), view=_view())
 
     def _boom():
@@ -471,8 +501,10 @@ def test_decision_lookup_failure_falls_back_to_form(_configured, _inmemory, monk
     resp = TestClient(app).get("/iac-approvals/42")
     assert resp.status_code == 200
     body = resp.text
-    assert 'data-testid="approve-button"' in body
-    assert 'name="form_token"' in body
+    assert 'data-testid="approve-button"' not in body
+    assert 'name="form_token"' not in body
+    assert 'data-testid="approve-pending"' in body
+    assert "paused" in body.lower()
 
 
 # --------------------------------------------------------------------------- #
