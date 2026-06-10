@@ -467,6 +467,8 @@ class IacPlanView:
     # C6 sidecar identity (from the comment ref) + the parsed plan.json (for has_create).
     _generation_iac_tree: str = ""
     _iac_tree_hash: str = ""
+    # Assigned by load_plan_view AFTER construction — reading change_summary
+    # before then caches a stale None.
     _plan_json: dict | None = None
 
 

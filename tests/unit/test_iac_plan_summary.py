@@ -397,3 +397,4 @@ def test_iac_plan_view_change_summary_property():
 
     v2 = IacPlanView()  # _plan_json stays None (unparsed / unverifiable)
     assert v2.change_summary is None
+    assert "change_summary" in v2.__dict__  # the None result is cached too
