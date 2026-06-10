@@ -67,6 +67,103 @@
         </div>
       </div>
 
+      {# Render ONLY for a trustworthy artifact: the route's show_summary flag
+         (false/absent on error-class pages AND on all POST outcome renders)
+         plus belt-and-braces re-checks of the view's own verdict — _plan_json
+         survives an integrity MISMATCH, and this card must never vouch for a
+         tampered artifact or show green reassurance under a red hard-stop. #}
+      {% if (show_summary | default(false)) and not view.unverifiable
+            and view.integrity_ok and not view.denylist_violations %}
+        {% set s = view.change_summary | default(none) %}
+        <h2 class="ds-h2">What this change does</h2>
+        {% if s is none %}
+          <div class="ds-note" data-testid="summary-unavailable">
+            No structured summary is available for this plan — review the raw
+            <code class="ds-code">tofu show</code> output below before approving.
+          </div>
+        {% elif not s.entries %}
+          <div class="ds-card" data-testid="change-summary-empty">
+            <p class="ds-ok">No changes — applying this plan does not modify any infrastructure.</p>
+          </div>
+        {% else %}
+          <div class="ds-card" data-testid="change-summary">
+            <p class="ds-summary-counts">
+              {% if s.n_create %}<span class="ds-verb ds-verb--create">{{ s.n_create }} create</span>{% endif %}
+              {% if s.n_update %}<span class="ds-verb ds-verb--update">{{ s.n_update }} update</span>{% endif %}
+              {% if s.n_replace %}<span class="ds-verb ds-verb--replace">{{ s.n_replace }} replace</span>{% endif %}
+              {% if s.n_destroy %}<span class="ds-verb ds-verb--destroy">{{ s.n_destroy }} destroy</span>{% endif %}
+              {% if s.n_import %}<span class="ds-verb ds-verb--import">{{ s.n_import }} import</span>{% endif %}
+              {% if s.n_forget %}<span class="ds-verb ds-verb--forget">{{ s.n_forget }} forget</span>{% endif %}
+              {% if s.n_change %}<span class="ds-verb ds-verb--change">{{ s.n_change }} other</span>{% endif %}
+            </p>
+            {% if s.destructive %}
+              <div class="ds-blocked" data-testid="destroy-warning">
+                ⚠ {{ s.n_destroy + s.n_replace }} resource(s) will be destroyed or replaced.
+                Check the list below carefully before approving.
+              </div>
+            {% elif not s.all_accounted_safe %}
+              <div class="ds-note">
+                This plan contains state changes or change types the summary
+                cannot fully classify — review the raw plan output below before
+                approving.
+              </div>
+            {% else %}
+              <p class="ds-ok" data-testid="no-destroy-note">
+                No resources will be destroyed or replaced by this plan.
+              </p>
+            {% endif %}
+            <ul class="ds-summary-list">
+              {% for e in s.entries %}
+                <li class="ds-summary-row">
+                  <span class="ds-verb ds-verb--{{ e.verb }}">{{ e.verb }}</span>
+                  {{ e.type_label }} <code class="ds-code">{{ e.name }}</code>
+                  {% if e.location %}<span class="ds-subtle">in {{ e.location }}</span>{% endif %}
+                  {% if e.deposed %}
+                    <span class="ds-subtle">— a leftover copy from an earlier replace
+                    (deposed <code class="ds-code">{{ e.deposed }}</code>), not the current resource</span>
+                  {% endif %}
+                  {% if e.imported %}
+                    <span class="ds-subtle">— imported into management: the live resource is
+                    not changed, it is recorded in OpenTofu state</span>
+                  {% endif %}
+                  {% if e.verb == "forget" %}
+                    <span class="ds-subtle">— removed from OpenTofu state: the live resource
+                    is NOT deleted, it just stops being managed</span>
+                  {% endif %}
+                  <div class="ds-subtle">
+                    <code class="ds-code">{{ e.address }}</code>{% if e.action_reason %} — {{ e.action_reason }}{% endif %}
+                  </div>
+                  {% if e.attr_changes %}
+                    <ul class="ds-attr-list">
+                      {% for a in e.attr_changes %}
+                        <li>
+                          <code class="ds-code">{{ a.path }}</code>:
+                          {% if a.sensitive %}
+                            <span class="ds-subtle">(sensitive value changed — hidden)</span>
+                          {% else %}
+                            <code class="ds-code">{{ a.before }}</code> → <code class="ds-code">{{ a.after }}</code>
+                          {% endif %}
+                        </li>
+                      {% endfor %}
+                      {% if e.attrs_truncated %}
+                        <li class="ds-subtle">…more attribute changes — see the raw plan output below.</li>
+                      {% endif %}
+                    </ul>
+                  {% endif %}
+                </li>
+              {% endfor %}
+            </ul>
+            {% if s.n_hidden %}
+              <p class="ds-subtle">…and {{ s.n_hidden }} more resource change(s) — see the raw plan output below.</p>
+            {% endif %}
+            <p class="ds-subtle">
+              This summary is generated mechanically from the integrity-checked
+              plan file — not written by the AI.
+            </p>
+          </div>
+        {% endif %}
+      {% endif %}
+
       <h2 class="ds-h2">C2 plan artifact (c2.v1)</h2>
       <div class="ds-card">
         <div class="ds-field"><span class="ds-label">schema_version</span> <code class="ds-code">{{ view.metadata.get("schema_version", "") }}</code></div>

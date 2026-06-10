@@ -473,3 +473,111 @@ def test_decision_lookup_failure_falls_back_to_form(_configured, _inmemory, monk
     body = resp.text
     assert 'data-testid="approve-button"' in body
     assert 'name="form_token"' in body
+
+
+# --------------------------------------------------------------------------- #
+# Change-summary card — route-level regression pins (Task 8).
+#
+# The card is gated in the template by (show_summary AND integrity_ok AND no
+# denylist AND not unverifiable). The route sets show_summary = True only when
+# reason_severity != "error" AND not resolved_decision. These tests prove that
+# gate from the outside — through the real GET route.
+# --------------------------------------------------------------------------- #
+
+_SUMMARY_PLAN = {
+    "format_version": "1.2",
+    "resource_changes": [
+        {
+            "address": "google_pubsub_topic.orders",
+            "mode": "managed",
+            "type": "google_pubsub_topic",
+            "name": "orders",
+            "change": {
+                "actions": ["create"],
+                "before": None,
+                "after": {"name": "orders"},
+                # required by schema; not exercised here
+                "before_sensitive": False,
+                "after_sensitive": False,
+                "after_unknown": {"id": True},
+            },
+        },
+    ],
+}
+
+
+def test_get_renders_change_summary_from_plan_json(_configured, monkeypatch):
+    """Healthy, approvable view with a parsed plan renders the change-summary card."""
+    view = _view(_plan_json=_SUMMARY_PLAN)
+    _patch_resolve(monkeypatch, ref=_ref(), view=view)
+    resp = TestClient(app).get("/iac-approvals/42")
+    assert resp.status_code == 200
+    body = resp.text
+    assert 'data-testid="change-summary"' in body
+    assert "Pub/Sub topic" in body
+    assert 'data-testid="no-destroy-note"' in body
+
+
+def test_get_still_200_with_summary_fallback(_configured, monkeypatch):
+    """Healthy view whose plan JSON never parsed renders the summary-unavailable note."""
+    view = _view()  # _plan_json=None (default)
+    _patch_resolve(monkeypatch, ref=_ref(), view=view)
+    resp = TestClient(app).get("/iac-approvals/42")
+    assert resp.status_code == 200
+    body = resp.text
+    assert 'data-testid="summary-unavailable"' in body
+    assert 'data-testid="change-summary"' not in body
+    # Symmetry with the healthy test — catches a future unconditional render.
+    assert 'data-testid="no-destroy-note"' not in body
+
+
+def test_get_integrity_mismatch_renders_no_summary_card(_configured, monkeypatch):
+    """Integrity MISMATCH (error-class) → show_summary=False → card absent even with plan JSON."""
+    view = _view(integrity_ok=False, _plan_json=_SUMMARY_PLAN)
+    _patch_resolve(monkeypatch, ref=_ref(), view=view)
+    resp = TestClient(app).get("/iac-approvals/42")
+    assert resp.status_code == 200
+    body = resp.text
+    # Trust gate fires: summary card must be absent.
+    assert 'data-testid="change-summary"' not in body
+    assert 'data-testid="no-destroy-note"' not in body
+    # The page still renders its normal integrity-mismatch verdict (sanity guard).
+    assert "MISMATCH" in body
+
+
+def test_get_terminal_applied_merged_renders_no_summary_card(
+    _configured, _inmemory, monkeypatch
+):
+    """Terminal decision applied+merged suppresses the change-summary card.
+
+    Takes _inmemory (unlike the three tests above) because _seed_decision needs
+    the InMemory store to install the terminal decision pointer the GET reads.
+    """
+    view = _view(_plan_json=_SUMMARY_PLAN)
+    _patch_resolve(monkeypatch, ref=_ref(), view=view)
+    _seed_decision(apply_status="applied", merge_state="merged")
+    resp = TestClient(app).get("/iac-approvals/42")
+    assert resp.status_code == 200
+    body = resp.text
+    assert 'data-testid="change-summary"' not in body
+    # Sanity guard: green terminal banner is present.
+    assert "Already applied and merged" in body
+
+
+def test_get_terminal_failed_renders_no_summary_card(
+    _configured, _inmemory, monkeypatch
+):
+    """Terminal decision failed_state_suspect+merged suppresses the change-summary card.
+
+    Takes _inmemory (unlike the three tests above) because _seed_decision needs
+    the InMemory store to install the terminal decision pointer the GET reads.
+    """
+    view = _view(_plan_json=_SUMMARY_PLAN)
+    _patch_resolve(monkeypatch, ref=_ref(), view=view)
+    _seed_decision(apply_status="failed_state_suspect", merge_state="merged")
+    resp = TestClient(app).get("/iac-approvals/42")
+    assert resp.status_code == 200
+    body = resp.text
+    assert 'data-testid="change-summary"' not in body
+    # Sanity guard: red terminal banner is present.
+    assert "Terminal state recorded" in body

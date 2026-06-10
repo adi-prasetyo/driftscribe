@@ -39,6 +39,7 @@ import hmac
 import json
 import re
 from dataclasses import dataclass, field
+from functools import cached_property
 from typing import Any
 
 
@@ -443,6 +444,21 @@ class IacPlanView:
 
         return plan_has_create(self._plan_json)
 
+    @cached_property
+    def change_summary(self):
+        """Plain-language summary of the parsed plan (roadmap W1-1), or None.
+
+        None when the plan never parsed (unverifiable / denylist parse error)
+        or when summarize_plan cannot produce a FAITHFUL summary — the template
+        then falls back to the raw tofu-show block. Advisory display only; the
+        worker's authoritative checks are unaffected.
+        """
+        from driftscribe_lib.iac_plan_summary import summarize_plan
+
+        if self._plan_json is None:
+            return None
+        return summarize_plan(self._plan_json)
+
     # The metadata URI + generation are taken from the C2 comment ref (the
     # metadata dict itself does NOT carry artifact_uri_metadata / generation_metadata
     # — those live only in the comment), so load_plan_view stashes them here.
@@ -451,6 +467,8 @@ class IacPlanView:
     # C6 sidecar identity (from the comment ref) + the parsed plan.json (for has_create).
     _generation_iac_tree: str = ""
     _iac_tree_hash: str = ""
+    # Assigned by load_plan_view AFTER construction — reading change_summary
+    # before then caches a stale None.
     _plan_json: dict | None = None
 
 

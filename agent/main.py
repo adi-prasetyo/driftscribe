@@ -2375,6 +2375,13 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
         "can_approve": can_approve,
         "reason_blocked": reason_blocked,
         "reason_severity": reason_severity,
+        # Gate 1 for the plain-language "What this change does" card: render it
+        # only on non-error pages (reason_severity covers unverifiable, integrity
+        # mismatch, denylist, AND the route-only artifact-vs-PR consistency check)
+        # that are NOT a terminal outcome page (resolved_decision is set exactly
+        # on the applied+merged / terminally-failed renders). The template adds a
+        # belt-and-braces re-check of the view's own verdict (Gate 2).
+        "show_summary": reason_severity != "error" and not resolved_decision,
     }
     if resolved_decision:
         # Render the terminal-state outcome banner + suppress the bottom form.
