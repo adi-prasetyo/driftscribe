@@ -2327,6 +2327,19 @@ def approval_get(request: Request, approval_id: str, t: str = "") -> Response:
     store = approval_helpers.get_approval_store()
     approval = store.get(approval_id)
     expired = bool(approval) and approval_helpers.is_expired(approval)
+    # Pause gate (display): the page shows what its POST would do — Approve
+    # disabled + a calm note while paused; Reject stays active (the POST allows
+    # reject while paused). The GET is ALWAYS-200 (probe-safe), so a failure
+    # resolving the StateStore itself must NOT 500 — it fails closed to a paused
+    # display, mirroring the iac approval GET's wrap (read_pause_state already
+    # never raises on get_pause errors; this guards the get_state() call).
+    try:
+        paused = read_pause_state(get_state()).paused
+    except Exception:  # noqa: BLE001 — always-200 GET; fail closed to paused.
+        log.warning(
+            "pause_state_lookup_failed", extra={"approval_id": approval_id}
+        )
+        paused = True
     response = _TEMPLATES.TemplateResponse(
         request,
         "approval.html",
@@ -2335,10 +2348,7 @@ def approval_get(request: Request, approval_id: str, t: str = "") -> Response:
             "approval": approval,
             "token": t,
             "expired": expired,
-            # Pause gate (display): the page shows what its POST would do —
-            # Approve disabled + a calm note while paused; Reject stays active
-            # (the POST allows reject while paused). Read fail-closed.
-            "paused": read_pause_state(get_state()).paused,
+            "paused": paused,
         },
     )
     return _apply_approval_security_headers(response)
@@ -3763,6 +3773,9 @@ def approval_post(
     # REJECT is ALLOWED while paused — denying a pending rollback is the
     # safety-direction (it prevents action). Blocking reject would keep a live
     # approval pending, the opposite of what a kill switch is for.
+    # Unguarded get_state() is deliberate (contrast the GET's wrap): a failure
+    # here 500s BEFORE any worker call — already fail-closed — and unlike the
+    # always-200 GET pages this POST has no probe-safe status contract.
     pause = read_pause_state(get_state())
 
     if decision == "reject":

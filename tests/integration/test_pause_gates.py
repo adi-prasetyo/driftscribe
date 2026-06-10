@@ -420,6 +420,29 @@ def test_approvals_get_not_paused_approve_enabled(_rollback_store):
     assert approve and "disabled" not in approve.group(0)
 
 
+def test_approvals_get_fail_closed_display_when_get_state_raises(
+    _rollback_store, monkeypatch
+):
+    """A get_state() failure must NOT 500 the always-200 probe-safe GET — it
+    fails closed to the paused DISPLAY (paused-note + disabled Approve),
+    mirroring the iac approval GET's guard."""
+    approval = _rollback_store.create_pending(
+        target_revision="payment-demo-00002-bbb", reason="r"
+    )
+
+    def _boom():
+        raise RuntimeError("firestore unavailable")
+
+    monkeypatch.setattr("agent.main.get_state", _boom)
+    client = TestClient(app)
+    r = client.get(f"/approvals/{approval.approval_id}?t=tok")
+    assert r.status_code == 200
+    body = r.text
+    assert 'data-testid="paused-note"' in body
+    approve = re.search(r'data-testid="approve-button"[^>]*>', body)
+    assert approve and "disabled" in approve.group(0)
+
+
 # --------------------------------------------------------------------------- #
 # POST + GET /iac-approvals/{pr_number}
 # --------------------------------------------------------------------------- #
