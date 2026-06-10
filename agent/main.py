@@ -13,7 +13,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as _FutureTimeout
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
@@ -22,13 +22,19 @@ from fastapi.templating import Jinja2Templates
 from google.auth import exceptions as google_auth_exceptions
 from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2.id_token import verify_oauth2_token
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from agent import approvals as approval_helpers
 from agent import iac_artifacts
 from agent import iac_csrf
 from agent import worker_client
 from agent.auth import require_cf_operator, verify_token
+from agent.pause import (
+    FAIL_CLOSED_REASON,
+    PAUSED_DETAIL,
+    PauseState,
+    read_pause_state,
+)
 from agent.classifier import ClassificationInput, classify
 from agent.config import Settings, artifacts_bucket, get_settings
 from agent.worker_client import WorkerClientError
@@ -73,6 +79,11 @@ from agent.workloads import (
 )
 from pydantic import ValidationError as PydanticValidationError
 from driftscribe_lib import github
+from driftscribe_lib.cf_access import (
+    CfAccessJwtError,
+    canonical_operator_email,
+    verify_cf_access_jwt,
+)
 from driftscribe_lib.github import PrMergeBlockedError, PrNotEligibleError
 from driftscribe_lib.infra_graph import build_graph
 from driftscribe_lib.logging import (
@@ -1427,6 +1438,25 @@ class RecheckRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class PauseToggleRequest(BaseModel):
+    """Request body for POST /pause.
+
+    ``extra="forbid"`` surfaces typo'd fields as 422 rather than silently
+    dropping them — critical for an operator-facing toggle where a mistaken
+    field name would otherwise be a silent no-op.
+
+    ``reason`` is capped at 500 chars (arbitrary but generous). Empty or
+    whitespace-only strings are stripped to ``None`` by the route handler so
+    the stored doc is clean (empty reason = no reason provided, not an empty
+    string that clutters the audit log).
+    """
+
+    paused: StrictBool
+    reason: str | None = Field(default=None, max_length=500)
+
+    model_config = ConfigDict(extra="forbid")
+
+
 @app.post("/recheck")
 async def recheck(
     req: RecheckRequest | None = None,
@@ -1436,6 +1466,11 @@ async def recheck(
     # ``verify_token`` runs first and raises 401/403/503 before _do_recheck.
     # The unused-parameter underscore is the standard FastAPI convention for
     # auth deps that only matter for their side effect (raising on failure).
+    # Pause gate (kill switch): refuse 423 before any recheck work. ``force``
+    # does NOT bypass — pause outranks force (a kill switch the operator can
+    # accidentally override is not a kill switch). Read fail-closed per request.
+    if _pause_state_fail_closed().paused:
+        raise HTTPException(status_code=423, detail=PAUSED_DETAIL)
     workload = (req or RecheckRequest()).workload
     # Serve-time rationale scrub (PR 2): wrapping the handler return covers
     # _do_recheck's fresh response, its cached-existing return, AND the rollback
@@ -1655,6 +1690,24 @@ async def eventarc(
             "region": region,
         }
 
+    # Pause gate (kill switch): checked HERE — AFTER the service/region whitelist
+    # so an off-target event NEVER reads the flag (that ordering is load-bearing:
+    # a Firestore outage must not turn every drive-by audit event into a
+    # fail-closed read), and BEFORE _do_recheck so no recheck runs while paused.
+    # 200-ignored (NOT 423): Eventarc retries on non-2xx, so a 423 here would
+    # storm the trigger for the whole pause window. The same retry-storm-safe
+    # shape as non-target-service — the event is acknowledged and DROPPED, not
+    # queued for replay. A drift event that the agent declines to act on while
+    # paused is re-discovered by the next manual or scheduled recheck on resume.
+    if _pause_state_fail_closed().paused:
+        # Structured log so operators can query Cloud Logging for events dropped
+        # by the kill switch — the access-log 200 alone is not queryable by cause.
+        log.info(
+            "eventarc_event_dropped_paused",
+            extra={"service": service, "region": region},
+        )
+        return {"ignored": "paused", "service": service, "region": region}
+
     # In-scope event: dispatch through the same recheck pipeline as the
     # manual /recheck path. ``trigger="eventarc"`` lets ``/runs/{id}`` and
     # the e2e smoke test identify decisions produced by the auto-trigger.
@@ -1807,6 +1860,159 @@ def get_capabilities_route(
     header story consistent with its sibling read routes."""
     response.headers["Cache-Control"] = "no-store"
     return build_capabilities()
+
+
+# --------------------------------------------------------------------------- #
+# Operator pause / kill switch — Wave 2 item 5
+# --------------------------------------------------------------------------- #
+
+
+def _pause_state_fail_closed() -> PauseState:
+    """Resolve the StateStore AND read the pause flag, fail-closed end-to-end.
+
+    ``read_pause_state`` never raises on ``get_pause()`` errors, but
+    ``get_state()`` ITSELF can raise (first-call Firestore client construction).
+    Without this guard a store-init failure would 500 the mutation gates —
+    worst case an in-scope /eventarc event 500s and Eventarc RETRIES (storm)
+    instead of getting the 200-ignored contract. ONE mechanism for every
+    pause read (the five gates, the two approval GET displays, GET /pause).
+
+    Lives here, not in :mod:`agent.pause`, because it needs ``get_state`` and
+    pause.py must stay import-free of main (circular import).
+    """
+    try:
+        state = get_state()
+    except Exception:  # noqa: BLE001 — fail-closed by contract, never raise
+        log.warning("pause_state_store_unavailable", exc_info=True)
+        return PauseState(paused=True, reason=FAIL_CLOSED_REASON, read_error=True)
+    return read_pause_state(state)
+
+
+def _serialize_pause_state(ps: PauseState) -> dict[str, Any]:
+    """Serialize a PauseState to the wire shape shared by GET and POST /pause.
+
+    ``updated_at`` is a ``datetime`` (InMemory) or a Firestore
+    ``DatetimeWithNanoseconds`` — both have ``.isoformat()``, so we try that
+    first and fall back to ``str()`` for any other datetime-like type. ``None``
+    stays ``None`` (flag never written).
+    """
+    if ps.updated_at is None:
+        updated_at_str = None
+    elif hasattr(ps.updated_at, "isoformat"):
+        updated_at_str = ps.updated_at.isoformat()
+    else:
+        updated_at_str = str(ps.updated_at)
+    return {
+        "paused": ps.paused,
+        "reason": ps.reason,
+        "actor": ps.actor,
+        "updated_at": updated_at_str,
+        "read_error": ps.read_error,
+    }
+
+
+@app.get("/pause")
+def get_pause_route(
+    response: Response,
+    _: None = Depends(verify_token),
+) -> dict:
+    """Return the current pause flag state.
+
+    A read failure is NOT an error response — it returns the fail-closed view
+    (paused=True, read_error=True) with 200, because that IS the system's
+    effective state. Callers that distinguish error from intentional-pause
+    must check ``read_error``. The state store is resolved INSIDE the body
+    (via :func:`_pause_state_fail_closed`, not ``Depends(get_state)``) so a
+    store-init failure ALSO yields the fail-closed view rather than a 500.
+
+    ``Cache-Control: no-store`` mirrors /capabilities — this is operator
+    safety status that must never be served from a proxy or browser cache.
+    """
+    response.headers["Cache-Control"] = "no-store"
+    return _serialize_pause_state(_pause_state_fail_closed())
+
+
+@app.post("/pause")
+def post_pause_route(
+    req: PauseToggleRequest,
+    response: Response,
+    _: None = Depends(verify_token),
+    cf_access_jwt: str | None = Header(default=None, alias="Cf-Access-Jwt-Assertion"),
+) -> dict:
+    """Toggle the operator pause flag.
+
+    Actor attribution is best-effort: if CF Access is configured AND a
+    ``Cf-Access-Jwt-Assertion`` header verifies, the canonical operator email
+    is used; otherwise falls back to ``"operator-token"``. Silent fallback on
+    any ``CfAccessJwtError`` so a stale CF cookie cannot break a legitimate
+    token-authenticated toggle. This mirrors the verify_token dual-credential
+    pattern while naming the human when possible.
+
+    A WRITE failure raises 502 — the operator must KNOW the toggle did NOT
+    take effect. This is always safe (fail: a failed-pause write leaves the
+    system running, which the operator sees; a failed-resume write leaves it
+    paused, which is also visible) but failing silently would be dangerous
+    for a kill switch. The state store is resolved INSIDE the try below (not
+    ``Depends(get_state)``) so a store-init failure gets the SAME contractual
+    502 instead of a generic 500 before the body ever runs.
+
+    ``Cache-Control: no-store`` matches the GET — the response body IS pause
+    status, and a cached copy could mislead the operator about safety state.
+    """
+    response.headers["Cache-Control"] = "no-store"
+    settings = get_settings()
+
+    # --- Actor attribution (best-effort; any failure → fallback) ---
+    actor = "operator-token"
+    if (
+        cf_access_jwt
+        and settings.cf_access_team_domain
+        and settings.cf_access_aud_tag
+    ):
+        try:
+            claims = verify_cf_access_jwt(
+                cf_access_jwt,
+                settings.cf_access_team_domain,
+                settings.cf_access_aud_tag,
+            )
+            actor = canonical_operator_email(claims)
+        except CfAccessJwtError:
+            # Silent fallback — a stale cookie or rotated key shouldn't block
+            # a toggle that is authenticated by the operator token.
+            pass
+
+    # Strip whitespace-only reason to None so the stored doc is clean.
+    reason = req.reason.strip() if req.reason else None
+    reason = reason or None  # empty string after strip → None
+
+    try:
+        doc = get_state().set_pause(paused=req.paused, reason=reason, actor=actor)
+    except Exception as exc:  # noqa: BLE001
+        # Surface BOTH store-resolution and write failures as 502 — the operator
+        # must see that the toggle didn't take effect. Unlike read failures
+        # (which fail closed silently), a silent write failure could leave the
+        # operator believing the system is paused when it is still running (or
+        # vice versa).
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"pause toggle did NOT take effect — storage write failed: {exc}"
+            ),
+        ) from exc
+
+    log.info("pause_toggled", extra={"paused": req.paused, "actor": actor, "reason": reason})
+
+    # Build the response from the as-written doc so the caller sees what was
+    # actually persisted (including the server-authoritative updated_at from
+    # Firestore's read-after-write in FirestoreStateStore.set_pause).
+    ps = PauseState(
+        paused=bool(doc.get("paused")),
+        reason=doc.get("reason"),
+        actor=doc.get("actor"),
+        updated_at=doc.get("updated_at"),
+        read_error=False,
+    )
+    return _serialize_pause_state(ps)
 
 
 @app.get("/trace/{trace_id}")
@@ -2144,6 +2350,12 @@ def approval_get(request: Request, approval_id: str, t: str = "") -> Response:
     store = approval_helpers.get_approval_store()
     approval = store.get(approval_id)
     expired = bool(approval) and approval_helpers.is_expired(approval)
+    # Pause gate (display): the page shows what its POST would do — Approve
+    # disabled + a calm note while paused; Reject stays active (the POST allows
+    # reject while paused). _pause_state_fail_closed keeps the GET ALWAYS-200
+    # (probe-safe): a store-resolution failure fails closed to a paused display,
+    # never a 500.
+    paused = _pause_state_fail_closed().paused
     response = _TEMPLATES.TemplateResponse(
         request,
         "approval.html",
@@ -2152,6 +2364,7 @@ def approval_get(request: Request, approval_id: str, t: str = "") -> Response:
             "approval": approval,
             "token": t,
             "expired": expired,
+            "paused": paused,
         },
     )
     return _apply_approval_security_headers(response)
@@ -2281,6 +2494,12 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
     reason_severity = ""  # "" (approvable) | "error" | "pending"
     form_token: str | None = None
 
+    # Pause state for the gate ladder rung below. _pause_state_fail_closed keeps
+    # the GET ALWAYS-200 (probe-safe): a failure resolving the StateStore itself
+    # fails closed to a paused DISPLAY (same fail-closed direction as a get_pause
+    # read error), never a 500.
+    _pause = _pause_state_fail_closed()
+
     if view is None:
         reason_blocked = "No verifiable C2 plan artifact."
         reason_severity = "pending"
@@ -2306,6 +2525,18 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
         # The POST fail-closes under dry-run (it would drive a REAL worker apply
         # while skipping the merge); suppress Approve here so the UI matches.
         reason_blocked = "infra apply disabled (coordinator in dry-run mode)"
+        reason_severity = "pending"
+    elif _pause.paused:
+        # Pause gate (kill switch): one more rung — the POST refuses 423 while
+        # paused, so suppress Approve here and mint NO CSRF form token. "pending"
+        # severity rides the existing calm approve-pending note (not red — pause
+        # is operator intent, not a broken artifact). Read errors take the same
+        # rung so the fail-closed DISPLAY matches the fail-closed POST.
+        reason_blocked = (
+            "DriftScribe is paused (operator kill switch active)"
+            if not _pause.read_error
+            else "DriftScribe is paused (pause state unreadable — failing closed)"
+        )
         reason_severity = "pending"
     else:
         can_approve = True
@@ -2667,6 +2898,13 @@ def iac_approval_post(
             status_code=503,
             detail="infra apply is disabled while the coordinator runs in dry-run mode",
         )
+
+    # Pause gate (kill switch): refuse 423 in the same dry-run-precedent slot —
+    # AFTER Origin+CSRF (so a cross-site probe still gets 403, never a pause
+    # hint) and BEFORE _resolve_iac_plan / /propose. The REJECT path above is
+    # already a coordinator-side audit no-op and stays UNGATED. Read fail-closed.
+    if _pause_state_fail_closed().paused:
+        raise HTTPException(status_code=423, detail=PAUSED_DETAIL)
 
     # (b) Re-resolve + pin: bind what-you-saw == what's-latest == what-applies.
     ref, view = _resolve_iac_plan(s, pr_number)
@@ -3540,6 +3778,16 @@ def approval_post(
     store = approval_helpers.get_approval_store()
     execute_result: dict | None = None
 
+    # Pause gate (kill switch): read ONCE here — the gate below uses it for the
+    # approve refusal AND the re-render context carries it to disable Approve in
+    # the page. APPROVE is gated 423 (it drives a real Cloud Run traffic shift);
+    # REJECT is ALLOWED while paused — denying a pending rollback is the
+    # safety-direction (it prevents action). Blocking reject would keep a live
+    # approval pending, the opposite of what a kill switch is for. The helper
+    # also covers a get_state() failure (fail-closed paused → approve 423,
+    # reject still goes through to the worker — the safety direction holds).
+    pause = _pause_state_fail_closed()
+
     if decision == "reject":
         try:
             execute_result = worker_client.call_deny(approval_id, t)
@@ -3549,6 +3797,8 @@ def approval_post(
             # 502 (see docstring); everything else collapses to 403.
             raise _map_worker_error(e, action="deny") from e
     else:  # approve
+        if pause.paused:
+            raise HTTPException(status_code=423, detail=PAUSED_DETAIL)
         try:
             execute_result = worker_client.call_execute(approval_id, t)
         except worker_client.WorkerClientError as e:
@@ -3570,6 +3820,7 @@ def approval_post(
             "expired": False,
             "decision": decision,
             "decision_result": execute_result,
+            "paused": pause.paused,
         },
     )
     return _apply_approval_security_headers(response)
@@ -3629,6 +3880,72 @@ def _sse_frame(*, event: str | None = None, data: dict) -> str:
     """Serialize one Server-Sent Event frame."""
     head = f"event: {event}\n" if event else ""
     return f"{head}data: {json.dumps(data, default=str)}\n\n"
+
+
+def _paused_chat_reply(pause: PauseState) -> str:
+    """Build the calm operator-facing reply for a /chat turn refused under pause.
+
+    Honest by construction: name the actor / time / reason only when the pause
+    doc actually carries them, and say so plainly when the flag itself could not
+    be read (read_error) — in that case the system is fail-closed paused even
+    though no operator chose it, and the operator deserves to know which.
+    """
+    if pause.read_error:
+        return (
+            "DriftScribe is paused — the pause state could not be read, so the "
+            "system fails closed. No tools were run and no changes were made. "
+            "Resume from the pause control in the operator UI once the pause "
+            "state is readable again."
+        )
+    by = f" by {pause.actor}" if pause.actor else ""
+    # Same timestamp shape as _serialize_pause_state: datetime (InMemory) and
+    # Firestore DatetimeWithNanoseconds both have .isoformat(); str() covers any
+    # other datetime-like — one timestamp format codebase-wide, even in prose.
+    if pause.updated_at is None:
+        at = ""
+    elif hasattr(pause.updated_at, "isoformat"):
+        at = f" at {pause.updated_at.isoformat()}"
+    else:
+        at = f" at {pause.updated_at}"
+    reason = f" — reason: {pause.reason}" if pause.reason else ""
+    return (
+        f"DriftScribe is paused — an operator suspended all agent activity{by}"
+        f"{at}{reason}. No tools were run and no changes were made. Resume from "
+        "the pause control in the operator UI."
+    )
+
+
+def _paused_chat_response(
+    pause: PauseState, *, wants_sse: bool, session_id: str | None
+) -> "dict | StreamingResponse":
+    """Return the calm /chat refusal — 200 on BOTH JSON and SSE paths.
+
+    The deliberate exception to the 423 pause refusal (see the pause plan §3/§4):
+    the operator-facing chat surface gets a readable answer, not an error toast;
+    machine callers detect ``paused: true`` in the body. No LLM call is made.
+
+    SSE: a one-frame stream — a single ``done`` frame carrying the SAME dict and
+    NO ``meta`` frame. There is no trace for a refused turn, so the SPA's
+    traceId stays null and its trace backfill no-ops; the headers below mirror
+    the normal SSE branch minus ``X-Trace-Id``.
+    """
+    payload = {
+        "reply": _paused_chat_reply(pause),
+        "tool_calls": [],
+        "session_id": session_id or "",
+        "paused": True,
+    }
+    if not wants_sse:
+        return payload
+
+    async def _one_done_frame():
+        yield _sse_frame(event="done", data=payload)
+
+    return StreamingResponse(
+        _one_done_frame(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # Heartbeat cadence: emit an SSE comment if no event arrives within this
@@ -3796,6 +4113,18 @@ async def chat(
         raise HTTPException(
             status_code=503,
             detail="ADK not enabled (set USE_ADK=true to enable /chat)",
+        )
+    # Pause gate (kill switch): checked right after the use_adk 503 (a
+    # misconfigured deploy keeps its existing error) and BEFORE workload
+    # resolution / any ADK boot — no LLM call may happen while paused, because
+    # an LLM turn IS agent activity. Deliberate exception to the 423 refusal:
+    # /chat returns 200 with a calm reply (+ paused=true) on BOTH the JSON and
+    # SSE paths so the operator gets a readable answer, not an error toast.
+    pause = _pause_state_fail_closed()
+    if pause.paused:
+        wants_sse = "text/event-stream" in request.headers.get("accept", "")
+        return _paused_chat_response(
+            pause, wants_sse=wants_sse, session_id=req.session_id
         )
     # Phase 17.A.3: pre-resolve the workload so an "undeployed workload"
     # failure (e.g. upgrade before Phase 17.B/17.C/17.E land the tools +

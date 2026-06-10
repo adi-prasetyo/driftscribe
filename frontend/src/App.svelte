@@ -25,6 +25,7 @@
   import DecisionsRail from './components/DecisionsRail.svelte';
   import InfraDiagram from './components/InfraDiagram.svelte';
   import CapabilityCard from './components/CapabilityCard.svelte';
+  import PauseControl from './components/PauseControl.svelte';
   import Timeline from './components/Timeline.svelte';
 
   // ---- state ----
@@ -354,6 +355,7 @@
   <DecisionsRail {decisions} {activeTraceId} onOpenTrace={openTrace} />
 
   <section id="chat-area" class="chat-area" aria-label="Chat and reasoning timeline">
+    <PauseControl {call} />
     <InfraDiagram {call} {appliedEpoch} />
     <CapabilityCard {call} />
     <ChatForm disabled={historicalActive || busy} onSubmit={submitChat} />
