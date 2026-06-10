@@ -13,6 +13,11 @@ the POST outcome path renders a ``decision`` banner. The template must:
 - render a calm grey ``ds-note`` ("Approval not available yet …") for a
   not-ready reason (``reason_severity == "pending"``: not configured / dry-run).
 
+Also covers the "What this change does" change-summary card: per-verb rendering,
+sensitive masking, HTML escaping, and the double trust gate (route
+``show_summary`` flag + the template's own unverifiable / integrity / denylist
+re-checks) that keeps the card off untrustworthy artifacts.
+
 Rendered directly through the app's Jinja env (``ds_css_href`` is an env global)
 with a minimal view stub — no FastAPI request / GitHub / GCS needed.
 """
@@ -238,6 +243,15 @@ def test_unverifiable_view_suppresses_summary_section():
     assert 'data-testid="summary-unavailable"' not in html
 
 
+def test_unverifiable_suppresses_summary_even_if_route_flag_leaks():
+    # Belt-and-braces: the template's own gate must hold without Gate 1.
+    view = _view()
+    view.unverifiable = True
+    view.change_summary = _summary()
+    html = _render(view=view, show_summary=True)
+    assert 'data-testid="change-summary"' not in html
+
+
 def test_integrity_mismatch_suppresses_summary_even_if_route_flag_leaks():
     # Belt-and-braces: _plan_json is populated even on a digest MISMATCH, so
     # the template independently requires integrity_ok — a card claiming
@@ -302,6 +316,16 @@ def test_deposed_marker_rendered():
 
 def test_hidden_entries_note_and_truncated_attrs_note():
     view = _view()
-    view.change_summary = _summary(n_hidden=3)
+    view.change_summary = _summary(
+        entries=(ChangeEntry(
+            verb="update", rtype="google_storage_bucket",
+            type_label="Cloud Storage bucket", name="b",
+            address="google_storage_bucket.b",
+            attr_changes=(AttrChange("x", "1", "2"),),
+            attrs_truncated=True,
+        ),),
+        n_create=0, n_update=1, n_hidden=3,
+    )
     html = _render(view=view)
     assert "3 more resource change(s)" in html
+    assert "more attribute changes" in html
