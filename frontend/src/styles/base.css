@@ -411,3 +411,55 @@ code.ds-code {
     scroll-behavior: auto !important;
   }
 }
+
+/* --- IaC approval: plain-language change summary --------------------------- */
+.ds-verb {
+  display: inline-block;
+  padding: 0 var(--ds-sp-2);
+  border: 1px solid;
+  border-radius: var(--ds-radius-sm);
+  font-size: var(--ds-fs-1);
+  font-weight: var(--ds-fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: var(--ds-tracking-caps);
+}
+.ds-verb--create,
+.ds-verb--import {
+  background: var(--ds-ok-surface);
+  color: var(--ds-ok-ink);
+  border-color: var(--ds-ok-border);
+}
+.ds-verb--update,
+.ds-verb--forget,
+.ds-verb--change {
+  background: var(--ds-warn-surface);
+  color: var(--ds-warn-ink);
+  border-color: var(--ds-warn-border);
+}
+.ds-verb--destroy,
+.ds-verb--replace {
+  background: var(--ds-danger-surface);
+  color: var(--ds-danger-ink);
+  border-color: var(--ds-danger-border);
+}
+.ds-summary-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-sp-2);
+  margin: 0 0 var(--ds-sp-3);
+}
+.ds-summary-list {
+  list-style: none;
+  margin: var(--ds-sp-4) 0 0;
+  padding: 0;
+  display: grid;
+  gap: var(--ds-sp-4);
+}
+.ds-attr-list {
+  list-style: none;
+  margin: var(--ds-sp-2) 0 0;
+  padding-left: var(--ds-sp-5);
+  display: grid;
+  gap: var(--ds-sp-1);
+  font-size: var(--ds-fs-1);
+}
