@@ -148,7 +148,7 @@ def test_load_workload_spec_all_workloads(monkeypatch):
 # agent.capabilities drift-pin tests
 # --------------------------------------------------------------------------- #
 
-from agent.capabilities import (  # noqa: E402  (after fixtures)
+from agent.capabilities import (  # noqa: E402
     CATEGORY_ORDER,
     HUMAN_GATES,
     RULE_CATEGORIES,
@@ -157,7 +157,7 @@ from agent.capabilities import (  # noqa: E402  (after fixtures)
     WORKLOAD_NAMES,
     build_capabilities,
 )
-from agent.workloads.registry import ACTION_REGISTRY, TOOL_REGISTRY
+from agent.workloads.registry import ACTION_REGISTRY, TOOL_REGISTRY  # noqa: E402
 
 
 def test_tool_descriptions_cover_exactly_the_tool_registry():

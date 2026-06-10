@@ -33,7 +33,7 @@ from typing import Final, Mapping, get_args
 from driftscribe_lib.iac_plan_denylist import RULE_DESCRIPTIONS
 
 from agent.fanout import MUTATION_TOOL_NAMES
-from agent.workloads.registry import ACTION_REGISTRY, TOOL_REGISTRY, WORKER_REGISTRY
+from agent.workloads.registry import ACTION_REGISTRY
 from agent.workloads.registry import load_workload_spec
 from agent.workloads.spec import WorkloadSpec
 
