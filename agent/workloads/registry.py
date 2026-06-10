@@ -801,7 +801,11 @@ def _load_from_path(
     handles the name-match check). The resolution maps built here
     (:func:`_resolve_tool` / :func:`_resolve_worker` /
     :func:`_resolve_action`) call the same helpers a second time — the
-    double call is idempotent and keeps the diff minimal.
+    double call is idempotent and keeps the diff minimal. Note the
+    refactor shifted validation order: symbol validation (via
+    ``_parse_spec``) now precedes the prompt-file existence check, so a
+    YAML tool typo surfaces as :class:`UnknownToolError` rather than
+    ``FileNotFoundError`` — deliberate and more specific.
     """
     spec = _parse_spec(yaml_path, expected_name=expected_name)
 

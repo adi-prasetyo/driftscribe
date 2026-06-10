@@ -232,8 +232,11 @@ Keyed by the EXACT rule IDs from ``RULE_DESCRIPTIONS`` — the drift-pin test
 # HUMAN_GATES — approval gates that require operator action
 # --------------------------------------------------------------------------- #
 
+# Inner dicts are frozen with MappingProxyType — same in-place-mutation
+# protection convention as TOOL_REGISTRY / WORKER_REGISTRY / ACTION_REGISTRY
+# (a caller holding a reference cannot poison later build_capabilities() calls).
 HUMAN_GATES: Final[tuple[Mapping[str, str], ...]] = (
-    {
+    MappingProxyType({
         "id": "iac_apply",
         "title": "IaC plan apply",
         "description": (
@@ -244,8 +247,8 @@ HUMAN_GATES: Final[tuple[Mapping[str, str], ...]] = (
         ),
         "route": "/iac-approvals/{pr_number}",
         "method": "POST",
-    },
-    {
+    }),
+    MappingProxyType({
         "id": "rollback",
         "title": "Rollback",
         "description": (
@@ -256,7 +259,7 @@ HUMAN_GATES: Final[tuple[Mapping[str, str], ...]] = (
         ),
         "route": "/approvals/{approval_id}",
         "method": "POST",
-    },
+    }),
 )
 """The two human approval gates, in DTO-ready dict form.
 
@@ -284,6 +287,9 @@ def build_capabilities() -> dict:
     env vars — it uses :func:`agent.workloads.registry.load_workload_spec`
     (env-free symbol validation only) so it works in every deploy
     environment.
+
+    Does not cache; the workload YAML is re-parsed on every call (static
+    per deploy, four small files — deliberate).
 
     Ordering is deterministic:
     - Workloads in ``WORKLOAD_NAMES`` order (Literal declaration order).
