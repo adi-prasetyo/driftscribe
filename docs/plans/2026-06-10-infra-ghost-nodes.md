@@ -1079,6 +1079,47 @@ First round: **NO-GO**, 2 must-fix + 5 should-fix + 1 nit — all folded:
    fixtures + accepted address-fallback documented (Decision 4, Task 1).
 8. NIT — `exitPreview` removes only the `preview_pr` param (Decision 7).
 
+## Post-review deltas (as shipped)
+
+Recorded after implementation; each came out of the two-stage per-task
+reviews or the final whole-branch review, and the tests pin them.
+
+1. **Parity matrix grew to 11 rows** — `inconsistent`, `paused`, and
+   `waiting_for_rebake` were added (spec reviewer: the standalone tests
+   existed but the machine-enforced two-surface agreement didn't cover
+   them); all three `test_terminal_outranks_pending_gates` variants carry
+   the identical full-surface assertion set.
+2. **`(ref, None)` → `no_plan` rationale** documented in the test
+   docstring: the whole resolution failed (transport/GCS), no artifact was
+   characterized — `artifact_error` is reserved for a RESOLVED view that
+   fails verification.
+3. **`exitPreview` bumps `overlayRun`** — an in-flight overlay fetch's
+   write-back must not survive exit (quality review; mutation-verified by
+   a deferred-resolver test mirroring PauseControl's stale-clobber idiom).
+4. **Ghost classDef hexes are pinned** in tests (a fill-swap mutation
+   survived the original suite); banner carries `role="status"` (house
+   a11y convention).
+5. **Component test infrastructure**: preview tests live in
+   `InfraDiagram.test.ts` (appended, not a new file); mermaid is mocked
+   via `vi.spyOn` on the real, stably-cached module instance because a
+   `vi.mock` factory does not reliably intercept the component's LAZY
+   dynamic `import('mermaid')` across tests — the spy records `(id, src)`
+   which the ghost/no-ghost render assertions consume.
+6. **Svelte 5 reactivity details**: `previewArmedAtBoot` captured via
+   `untrack` (boot-once semantics; previewPr only transitions N→null);
+   `activeOverlay()` is a plain function, not `$derived`, to avoid
+   `derived_inert` across awaits.
+7. **Accepted cosmetic change** (final review observation): a degraded
+   panel with an in-flight manual Refresh now shows "Rendering diagram…"
+   alongside the degraded note for the fetch window (the old single-chain
+   template made that arm unreachable while degraded) — kept as the more
+   honest rendering; `mermaidLoading` still can't go true while degraded.
+8. Type annotation `summary: PlanSummary` on `plan_overlay` + a constraint
+   comment on the decorative `atype is not None` short-circuit (quality
+   review nits).
+
+---
+
 Second round: **GO** after three plan cleanups, all folded: parity-matrix
 bullet now excludes the terminal-divergence rows explicitly; Task 1's
 implementation block now contains the actual `SENSITIVE_PLAN_RTYPES`
