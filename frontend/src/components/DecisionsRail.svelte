@@ -174,6 +174,10 @@
     </div>
 
     {#if lifecycle && lifecycle.length > 0}
+      <!-- `open` is the initial state, fail-open for anomalous histories. On a
+           /decisions refresh Svelte re-applies it only if the computed value
+           changes, so an operator's manual collapse survives refreshes while
+           the history stays anomalous (pinned by the rerender test). -->
       <details class="lifecycle" open={hasAnomalousStep(lifecycle)}>
         <!-- ONE expression — lifecycleSummaryLabel returns the complete string,
              so this seam has no whitespace to collapse and the exact-string
@@ -429,12 +433,23 @@
     font-size: var(--ds-fs-1);
     color: var(--ds-muted);
     cursor: pointer;
-    list-style: disclosure-closed;
+    list-style: none;
     user-select: none;
   }
-
-  details[open].lifecycle > summary {
-    list-style: disclosure-open;
+  .lifecycle > summary::-webkit-details-marker {
+    display: none;
+  }
+  /* the same custom disclosure caret InfraDiagram/CapabilityCard render —
+     rotates when open */
+  .lifecycle > summary::before {
+    content: '▸';
+    display: inline-block;
+    margin-right: var(--ds-sp-2);
+    color: var(--ds-faint);
+    transition: transform var(--ds-dur-fast) var(--ds-ease);
+  }
+  .lifecycle[open] > summary::before {
+    transform: rotate(90deg);
   }
 
   .lifecycle-steps {

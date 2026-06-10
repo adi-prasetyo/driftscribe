@@ -192,6 +192,68 @@ describe('DecisionsRail — collapsed iac_apply lifecycle groups', () => {
       .toBe('infra(checkout): storefront + orders-worker');
   });
 
+  it("an operator's manual collapse of an anomalous expander survives a /decisions refresh", async () => {
+    // `open={hasAnomalousStep(lifecycle)}` is a computed attribute. A real
+    // summary click flips `details.open` OUTSIDE Svelte's knowledge — the
+    // question is what a /decisions refresh (new array identity, identical
+    // anomalous content) does to that manual state. Pin the actual behavior
+    // instead of reasoning about Svelte's attribute effects.
+    const mk = (title: string): Decision[] => [
+      iacRow({ decision_id: 'a32', apply_status: 'applied', pr_number: 32, pr_title: title }),
+      iacRow({ decision_id: 'f32', apply_status: 'failed', pr_number: 32 }),
+    ];
+    const { container, rerender } = render(DecisionsRail, {
+      props: { decisions: mk('fix: retry apply'), activeTraceId: null, onOpenTrace: noop },
+    });
+    const details = container.querySelector('details.lifecycle') as HTMLDetailsElement;
+    expect(details.open).toBe(true);
+
+    // Operator collapses the anomalous expander (what a native click does).
+    details.open = false;
+
+    // Refresh: the {#each} key ('g:32') is stable so the <details> node is
+    // reused, and Svelte dirty-checks the attribute effect — the computed
+    // value is still `true`, unchanged since the last render, so it skips the
+    // re-assignment and the operator's collapse stands. The changed pr_title
+    // proves the refresh actually re-rendered (no vacuous pass).
+    await rerender({ decisions: mk('fix: retry apply (amended)') });
+    expect(container.querySelector('.row-subtitle')?.textContent).toBe('fix: retry apply (amended)');
+    const after = container.querySelector('details.lifecycle') as HTMLDetailsElement;
+    expect(after.open).toBe(false);
+  });
+
+  it('subtitle fallback scans the WHOLE group: only the oldest doc carries pr_title', () => {
+    // 3-doc group where docs[0] AND docs[1] lack pr_title — kills a
+    // `docs[1]?.pr_title` mutant that the 2-doc fallback test would let live.
+    const decisions: Decision[] = [
+      iacRow({ decision_id: 'a', apply_status: 'applied', pr_number: 68, pr_title: undefined }),
+      iacRow({ decision_id: 'w1', apply_status: 'waiting_for_rebake', pr_number: 68, pr_title: undefined }),
+      iacRow({ decision_id: 'w2', apply_status: 'waiting_for_rebake', pr_number: 68,
+               pr_title: 'infra(checkout): storefront + orders-worker' }),
+    ];
+    const { container } = render(DecisionsRail, {
+      props: { decisions, activeTraceId: null, onOpenTrace: noop },
+    });
+    expect(container.querySelector('.row-subtitle')?.textContent)
+      .toBe('infra(checkout): storefront + orders-worker');
+  });
+
+  it('a lifecycle step with NO apply_status renders the neutral token, never the action string', () => {
+    // A missing status is anomalous (fail-open ⇒ details defaults open); what
+    // matters here is the step text: the deliberate `status not recorded`
+    // token, NOT `iac_apply` leaking in where a status belongs.
+    const decisions: Decision[] = [
+      iacRow({ decision_id: 'a', apply_status: 'applied', pr_number: 68 }),
+      iacRow({ decision_id: 'm', pr_number: 68 }),
+    ];
+    const { getByTestId } = render(DecisionsRail, {
+      props: { decisions, activeTraceId: null, onOpenTrace: noop },
+    });
+    const step = getByTestId('iac-lifecycle-step');
+    expect(step.textContent).toContain('status not recorded');
+    expect(step.textContent).not.toContain('iac_apply');
+  });
+
   it('a lone iac_apply doc renders exactly as before — single row, no expander', () => {
     const decisions: Decision[] = [
       iacRow({ decision_id: 'w71', apply_status: 'waiting_for_rebake', pr_number: 71 }),
