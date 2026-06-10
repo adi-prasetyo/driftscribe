@@ -24,7 +24,9 @@ inventory test is the safety net.
 """
 from __future__ import annotations
 
+import contextlib
 import functools
+import logging
 import re
 import secrets
 import time
@@ -35,6 +37,8 @@ from agent import worker_client
 from agent.config import get_settings
 from agent.contract import load_contract
 from agent.github_actions import get_repo
+
+_log = logging.getLogger("driftscribe.agent.adk_tools")
 
 
 # --------------------------------------------------------------------------- #
@@ -103,10 +107,41 @@ def propose_rollback_tool(target_revision: str, reason: str) -> dict:
         f"Rollback to {target_revision} proposed via DriftScribe chat; "
         "see the conversation/trace for the rationale."
     )
-    return worker_client.call(
+    resp = worker_client.call(
         "rollback",
         {"target_revision": target_revision, "reason": safe_reason},
     )
+    # Best-effort notification — only if the worker returned usable fields.
+    # Body is built ONLY from target_revision (caller arg) + approval_url +
+    # expires_at (worker-returned). The model-authored ``reason`` NEVER appears
+    # here (same security stance as safe_reason above — the model sees raw env).
+    # Defensive reads: isinstance(v, str) and v — never str()-coerce (a careless
+    # str(None) would interpolate the literal "None").
+    # Contrast with agent/main.py's autonomous rollback: there notify failure
+    # 502s because the webhook is the only surface; here the chat reply already
+    # carries approval_url, so failure just means the operator doesn't get the
+    # extra push notification.
+    approval_url = resp.get("approval_url") if isinstance(resp, dict) else None
+    expires_at = resp.get("expires_at") if isinstance(resp, dict) else None
+    if isinstance(approval_url, str) and approval_url and isinstance(expires_at, str) and expires_at:
+        s = get_settings()
+        notify_body = (
+            f"Rollback approval pending: roll back {s.target_service} to "
+            f"{target_revision}. Approve or deny (expires {expires_at}): "
+            f"{approval_url}"
+        )
+        _notify_approval_pending(
+            notify_body,
+            severity="high",
+            event="rollback_propose_notify_failed",
+            target_revision=target_revision,
+        )
+    else:
+        _log.warning(
+            "rollback_propose_notify_failed",
+            extra={"target_revision": target_revision},
+        )
+    return resp
 
 
 # Match git refspec rules (https://git-scm.com/docs/git-check-ref-format):
@@ -584,6 +619,76 @@ def iac_pr_pointer(result: object) -> dict | None:
     return {"pr_number": pr_number, "pr_url": pr_url}
 
 
+# --------------------------------------------------------------------------- #
+# Pending-approval notifications (Wave 2 item 7)
+# --------------------------------------------------------------------------- #
+
+_NOTIFY_TITLE_CAP = 200
+
+
+def _notify_approval_pending(
+    body: str,
+    *,
+    severity: str,
+    event: str,
+    **log_extra: object,
+) -> None:
+    """Best-effort operator notification — advisory side-channel, never
+    load-bearing here (the chat reply/CTA already carries the link; contrast
+    agent/main.py's autonomous rollback flow where notify failure 502s).
+    Suppresses EVERYTHING — including a (pathological) raising log handler —
+    so NOTHING in this function can propagate to the caller; logs one WARNING
+    with identifying extras only (never the body — it may embed a tokened
+    approval URL)."""
+    try:
+        worker_client.call(
+            "notifier",
+            {"channel": "approval", "severity": severity, "body": body},
+        )
+    except Exception:
+        with contextlib.suppress(Exception):
+            _log.warning(event, extra=log_extra)
+
+
+def notify_iac_pr_pending(pr_number: int, pr_url: str, title: str) -> None:
+    """Best-effort notification that an IaC PR is awaiting operator review.
+
+    Called from both authoring sites (``open_infra_pr_tool`` and the D5
+    multi-slice orchestrator in ``agent.fanout``) after a CONFIRMED PR pointer.
+    Suppresses all exceptions; logs WARNING ``iac_pending_notify_failed`` with
+    pr_number only (never the body — it may embed a tokened approval URL).
+
+    Contrast with agent/main.py's autonomous rollback flow: there the notify is
+    load-bearing (the webhook is the ONLY surface carrying the approval URL);
+    here both flows already show the link in the chat reply/CTA, so failing the
+    notification must not fail the tool.
+    """
+    s = get_settings()
+    approve_url = (
+        f"{s.coordinator_origin}/iac-approvals/{pr_number}"
+        if s.coordinator_origin
+        # dev-only: no origin configured → relative path (prod always carries the origin)
+        else f"/iac-approvals/{pr_number}"
+    )
+    clamped_title = (
+        title[:_NOTIFY_TITLE_CAP] + "…"
+        if len(title) > _NOTIFY_TITLE_CAP
+        else title
+    )
+    body = (
+        f"Infrastructure change awaiting review: {clamped_title!r} "
+        f"(PR #{pr_number}). Next: dispatch the C2 plan-builder for "
+        f"PR #{pr_number}, then review & approve: {approve_url}. "
+        f"GitHub: {pr_url}"
+    )
+    _notify_approval_pending(
+        body,
+        severity="medium",
+        event="iac_pending_notify_failed",
+        pr_number=pr_number,
+    )
+
+
 def open_infra_pr_tool(files: list[dict], title: str, body: str) -> dict:
     """Ask the tofu-editor to open ONE iac/-only infrastructure PR.
 
@@ -625,10 +730,19 @@ def open_infra_pr_tool(files: list[dict], title: str, body: str) -> dict:
     # pr_number is substituted into the /iac-approvals/<N> path so the operator
     # gets a usable link, not a literal placeholder).
     pr_number = result.get("pr_number")
-    return {
+    compact_result = {
         "status": result.get("status"),
         "pr_number": pr_number,
         "pr_url": result.get("pr_url"),
         "branch": result.get("branch", authority.branch),
         "next_steps": "PR opened. " + iac_pr_next_steps(pr_number),
     }
+    # Best-effort notification — only fires for CONFIRMED PRs (same predicate
+    # as the first-authoring approval CTA, so both surfaces agree by construction).
+    if iac_pr_pointer(compact_result) is not None:
+        notify_iac_pr_pending(
+            compact_result["pr_number"],
+            compact_result["pr_url"],
+            title,
+        )
+    return compact_result
