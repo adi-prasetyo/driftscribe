@@ -28,7 +28,7 @@ const structuralRule: CapRule = {
 const unknownRule: CapRule = {
   id: 'some-future-rule',
   description: 'A future rule that has no heading yet.',
-  category: 'experimental' as CapRule['category'],
+  category: 'experimental',
 };
 
 describe('groupRules', () => {

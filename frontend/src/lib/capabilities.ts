@@ -42,9 +42,10 @@ export interface CapGate {
 export interface CapRule {
   id: string;
   description: string;
-  /** Category from CATEGORY_ORDER: "control-plane" | "iam" | "global-v1" | "structural".
-   *  A future server may emit additional categories — callers must not drop unknown ones. */
-  category: 'control-plane' | 'iam' | 'global-v1' | 'structural' | (string & object);
+  /** Category from CATEGORY_ORDER: typically "control-plane" | "iam" | "global-v1" | "structural".
+   *  A future server may emit additional categories — callers must not drop unknown ones.
+   *  Typed as string so the runtime unknown-category path is never unreachable. */
+  category: string;
 }
 
 /** A workload as serialized by the server. */
@@ -87,7 +88,8 @@ export const CATEGORY_HEADINGS: Record<'control-plane' | 'iam' | 'global-v1' | '
 
 /** A single group returned by groupRules. */
 export interface RuleGroup {
-  category: CapRule['category'];
+  /** Category string — one of the known literals or a raw unknown string. */
+  category: string;
   heading: string;
   rules: CapRule[];
 }
