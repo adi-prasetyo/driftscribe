@@ -43,6 +43,9 @@ import {
 """
 
 _GOLDEN_TOPIC = """\
+# Adopted into IaC management by DriftScribe (zero-change import).
+# The import block is retained as a permanent audit record
+# (adopt design 2026-06-11 §3).
 resource "google_pubsub_topic" "adopt_my_topic" {
   project = var.project_id
   name    = "my-topic"
@@ -55,6 +58,9 @@ import {
 """
 
 _GOLDEN_SUB = """\
+# Adopted into IaC management by DriftScribe (zero-change import).
+# The import block is retained as a permanent audit record
+# (adopt design 2026-06-11 §3).
 resource "google_pubsub_subscription" "adopt_my_sub" {
   project = var.project_id
   name    = "my-sub"
@@ -68,6 +74,9 @@ import {
 """
 
 _GOLDEN_RUN = """\
+# Adopted into IaC management by DriftScribe (zero-change import).
+# The import block is retained as a permanent audit record
+# (adopt design 2026-06-11 §3).
 resource "google_cloud_run_v2_service" "adopt_my_svc" {
   name     = "my-svc"
   location = "asia-northeast1"
@@ -186,6 +195,23 @@ def test_subscription_cross_project_topic_rejected():
             "my-sub",
             _PROJECT,
             topic="projects/other-project-12345/topics/my-topic",
+        )
+
+
+def test_subscription_full_path_topic_malformed_segment_rejected():
+    """The extracted topic segment of a full-path input is re-validated.
+
+    ``[^/\\s]+`` alone admits HCL template metacharacters: without the
+    re-validation, ``a%{b`` would render ``topic = "...a%{b"`` — an
+    incomplete template directive that does not parse as HCL (Opus review
+    catch). Must be rejected at render time, not at the worker.
+    """
+    with pytest.raises(AdoptRecipeError, match="not a valid topic name"):
+        render_adoption(
+            "google_pubsub_subscription",
+            "my-sub",
+            _PROJECT,
+            topic=f"projects/{_PROJECT}/topics/a%{{b",
         )
 
 

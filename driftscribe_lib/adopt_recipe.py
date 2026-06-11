@@ -292,6 +292,10 @@ def _normalize_topic(topic: str, project: str) -> str:
                 f"Topic project {given_project!r} differs from the deployment "
                 f"project {project!r}."
             )
+        # The extracted segment must pass the same shape rules as a short-form
+        # topic: [^/\s]+ alone still admits HCL template metacharacters like
+        # "%{" which would render an unparseable file (Opus review catch).
+        _validate_topic_short(topic_name)
         return topic_name
     # Short form
     _validate_topic_short(topic)
@@ -327,6 +331,7 @@ def _render_bucket(name: str, project: str, location: str, slug: str) -> str:
 
 def _render_topic(name: str, project: str, slug: str) -> str:
     return (
+        f"{_HEADER}"
         f'resource "google_pubsub_topic" "adopt_{slug}" {{\n'
         f'  project = var.project_id\n'
         f'  name    = "{name}"\n'
@@ -341,6 +346,7 @@ def _render_topic(name: str, project: str, slug: str) -> str:
 
 def _render_subscription(name: str, project: str, topic_short: str, slug: str) -> str:
     return (
+        f"{_HEADER}"
         f'resource "google_pubsub_subscription" "adopt_{slug}" {{\n'
         f'  project = var.project_id\n'
         f'  name    = "{name}"\n'
@@ -358,6 +364,7 @@ def _render_run_service(
     name: str, project: str, location: str, image: str, slug: str
 ) -> str:
     return (
+        f"{_HEADER}"
         f'resource "google_cloud_run_v2_service" "adopt_{slug}" {{\n'
         f'  name     = "{name}"\n'
         f'  location = "{location}"\n'
