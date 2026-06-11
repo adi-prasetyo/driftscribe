@@ -53,8 +53,10 @@ BLAST_CANNOT_TOUCH_NOTE = (
     "It cannot touch DriftScribe's own control plane (its services, "
     "service accounts, state/artifact buckets, secrets, or encryption "
     "keys), cannot change IAM anywhere, cannot delete, replace, or "
-    "un-manage any resource, and cannot adopt (import) existing resources "
-    "— denylist-enforced, re-checked by the apply worker before apply."
+    "un-manage any resource, and can adopt (import) an existing resource "
+    "only one at a time, from a small allowlist of types, and only when "
+    "nothing would be modified — denylist-enforced, re-checked by the "
+    "apply worker before apply."
 )
 
 MAX_ENTRIES = 40           # resource rows rendered (counts stay total)

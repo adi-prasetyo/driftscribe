@@ -213,12 +213,15 @@ RULE_CATEGORIES: Final[Mapping[str, str]] = MappingProxyType({
     # IAM (access-control changes):
     "wif-config-change":          "iam",
     "iam-change-forbidden-v1":    "iam",
-    # Global v1 floors (structural action bans):
-    "import-forbidden-v1":         "global-v1",
-    "delete-action-forbidden-v1":  "global-v1",
-    "forget-action-forbidden-v1":  "global-v1",
-    "replace-action-forbidden-v1": "global-v1",
-    "unknown-action-forbidden-v1": "global-v1",
+    # Global v1 floors (structural action bans + conditional admit rules):
+    "import-with-changes-forbidden-v1": "global-v1",
+    "import-type-not-adoptable-v1":     "global-v1",
+    "import-mixed-plan-forbidden-v1":   "global-v1",
+    "import-batch-forbidden-v1":        "global-v1",
+    "delete-action-forbidden-v1":       "global-v1",
+    "forget-action-forbidden-v1":       "global-v1",
+    "replace-action-forbidden-v1":      "global-v1",
+    "unknown-action-forbidden-v1":      "global-v1",
 })
 """Category assignment for every rule ID in ``RULE_DESCRIPTIONS``.
 
