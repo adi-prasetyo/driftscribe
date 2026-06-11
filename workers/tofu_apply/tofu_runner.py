@@ -657,9 +657,11 @@ def classify_refresh_drift(show_json: object) -> RefreshDriftVerdict:
 
     Benign ONLY when: no root ``output_changes``; every ``resource_changes``
     entry is no-op/read (a refresh-only plan carries no config-driven actions);
-    and every ``resource_drift`` entry is either no-op/read or an ``update`` whose
-    every changed leaf path is computed-only. Anything else (create/delete/replace
-    drift, a config action, malformed/unexpected structure) ⇒ NOT benign."""
+    and every ``resource_drift`` entry is either no-op/read or an ``update`` on a
+    recognized type whose every GENUINE changed leaf path is computed-only and
+    whose every null↔empty normalization path is approved for that type (or
+    computed-only). Anything else (create/delete/replace drift, a config action,
+    an unrecognized type, malformed/unexpected structure) ⇒ NOT benign."""
     if not isinstance(show_json, dict):
         return RefreshDriftVerdict(False, (), "show-json is not an object")
     # iac/ declares no outputs — any root output change is unexpected → refuse.
