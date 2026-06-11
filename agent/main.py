@@ -2221,6 +2221,23 @@ def _autonomy_state_fail_closed() -> AutonomyState:
     return read_autonomy_state(state)
 
 
+def _autonomy_note_for_display(a: AutonomyState) -> str:
+    """Calm operator-facing dial note for the approval display pages.
+
+    Distinguishes the two Observe causes (Codex should-consider 3): a
+    fail-closed read must NEVER be presented as the operator's choice. A
+    configured restriction names the mode the operator picked; a read failure
+    says the effective mode is Observe and that it is failing closed.
+    """
+    if a.read_error:
+        return (
+            "autonomy state could not be read — the effective mode is Observe "
+            "(failing closed). Applying changes is disabled until the dial can "
+            "be read again."
+        )
+    return autonomy_apply_blocked_detail(a.mode)
+
+
 def _serialize_autonomy_state(a: AutonomyState) -> dict[str, Any]:
     """Serialize an AutonomyState to the wire shape shared by GET and POST.
 
@@ -2659,6 +2676,12 @@ def approval_get(request: Request, approval_id: str, t: str = "") -> Response:
     # (probe-safe): a store-resolution failure fails closed to a paused display,
     # never a 500.
     paused = _pause_state_fail_closed().paused
+    # Autonomy dial (display): mirror the paused treatment — when the dial is
+    # below Propose+Apply, Approve is disabled and a calm note explains the
+    # dial (Reject stays active). Read fail-closed so a store failure shows the
+    # restrictive display, never a 500.
+    autonomy = _autonomy_state_fail_closed()
+    autonomy_blocked = autonomy.mode != "propose_apply"
     response = _TEMPLATES.TemplateResponse(
         request,
         "approval.html",
@@ -2668,6 +2691,8 @@ def approval_get(request: Request, approval_id: str, t: str = "") -> Response:
             "token": t,
             "expired": expired,
             "paused": paused,
+            "autonomy_blocked": autonomy_blocked,
+            "autonomy_detail": _autonomy_note_for_display(autonomy),
         },
     )
     return _apply_approval_security_headers(response)
@@ -2802,6 +2827,9 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
     # fails closed to a paused DISPLAY (same fail-closed direction as a get_pause
     # read error), never a 500.
     _pause = _pause_state_fail_closed()
+    # Autonomy dial state for the gate ladder rung below (after the pause rung).
+    # Read fail-closed so the DISPLAY matches the fail-closed POST gate.
+    _autonomy = _autonomy_state_fail_closed()
 
     if view is None:
         reason_blocked = "No verifiable C2 plan artifact."
@@ -2840,6 +2868,15 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
             if not _pause.read_error
             else "DriftScribe is paused (pause state unreadable — failing closed)"
         )
+        reason_severity = "pending"
+    elif _autonomy.mode != "propose_apply":
+        # Autonomy dial gate (ClickOps item 11): one more rung after pause —
+        # the POST refuses 409 below Propose+Apply, so suppress Approve here and
+        # mint NO CSRF token. "pending" severity (calm — the artifact is fine;
+        # the dial is the operator's choice, NOT a broken plan). Distinguish the
+        # two Observe causes: a fail-closed read must never be presented as the
+        # operator's choice (Codex should-consider 3).
+        reason_blocked = _autonomy_note_for_display(_autonomy)
         reason_severity = "pending"
     else:
         can_approve = True
@@ -3228,6 +3265,19 @@ def iac_approval_post(
     # already a coordinator-side audit no-op and stays UNGATED. Read fail-closed.
     if _pause_state_fail_closed().paused:
         raise HTTPException(status_code=423, detail=PAUSED_DETAIL)
+
+    # Autonomy dial gate (ClickOps item 11): the apply pipeline is
+    # Propose+Apply territory. AFTER the pause gate (pause outranks the dial;
+    # both fail closed) and BEFORE plan re-resolution / _handle_existing_iac_decision
+    # (Codex must-fix 4: the gate must fire before a waiting_for_rebake /
+    # resume-apply re-POST can route into a merge or apply). 409, NOT 423 —
+    # this is the operator's own configured mode, not the kill switch; clients
+    # must not render it as "paused". The REJECT path above stays ungated.
+    _autonomy = _autonomy_state_fail_closed()
+    if _autonomy.mode != "propose_apply":
+        raise HTTPException(
+            status_code=409, detail=autonomy_apply_blocked_detail(_autonomy.mode)
+        )
 
     # (b) Re-resolve + pin: bind what-you-saw == what's-latest == what-applies.
     ref, view = _resolve_iac_plan(s, pr_number)
@@ -4146,6 +4196,11 @@ def approval_post(
     # also covers a get_state() failure (fail-closed paused → approve 423,
     # reject still goes through to the worker — the safety direction holds).
     pause = _pause_state_fail_closed()
+    # Autonomy dial: read once here for the approve gate AND the re-render
+    # context (so the page disables Approve + explains the dial). Reject stays
+    # ungated, same safety direction as pause.
+    autonomy = _autonomy_state_fail_closed()
+    autonomy_blocked = autonomy.mode != "propose_apply"
 
     if decision == "reject":
         try:
@@ -4158,6 +4213,14 @@ def approval_post(
     else:  # approve
         if pause.paused:
             raise HTTPException(status_code=423, detail=PAUSED_DETAIL)
+        # Autonomy dial gate: AFTER the pause gate (pause outranks the dial),
+        # 409 not 423 — the operator's own configured mode, not the kill
+        # switch. Reject above stays ungated.
+        if autonomy_blocked:
+            raise HTTPException(
+                status_code=409,
+                detail=autonomy_apply_blocked_detail(autonomy.mode),
+            )
         try:
             execute_result = worker_client.call_execute(approval_id, t)
         except worker_client.WorkerClientError as e:
@@ -4180,6 +4243,8 @@ def approval_post(
             "decision": decision,
             "decision_result": execute_result,
             "paused": pause.paused,
+            "autonomy_blocked": autonomy_blocked,
+            "autonomy_detail": _autonomy_note_for_display(autonomy),
         },
     )
     return _apply_approval_security_headers(response)

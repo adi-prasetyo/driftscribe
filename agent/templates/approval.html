@@ -50,11 +50,17 @@
              POST allows reject while paused — denying a rollback is the
              safety-direction. #}
           <div class="ds-note" data-testid="paused-note">⏸ DriftScribe is paused — Approve is disabled until an operator resumes. Reject still works (it denies this request).</div>
+        {% elif autonomy_blocked is defined and autonomy_blocked %}
+          {# Autonomy dial: calm note (not an alarm — the dial is the operator's
+             choice). Approve is disabled (the POST refuses it 409); Reject stays
+             active, same safety direction as pause. autonomy_detail distinguishes
+             a configured restriction from a fail-closed read. #}
+          <div class="ds-note" data-testid="autonomy-note">{{ autonomy_detail }} Reject still works (it denies this request).</div>
         {% endif %}
         <form method="post" action="/approvals/{{ approval.approval_id }}">
           <input type="hidden" name="t" data-testid="token-field" value="{{ token }}">
           <div class="ds-actions">
-            <button class="ds-btn ds-btn--approve" data-testid="approve-button" type="submit" name="decision" value="approve"{% if paused %} disabled{% endif %}>Approve rollback</button>
+            <button class="ds-btn ds-btn--approve" data-testid="approve-button" type="submit" name="decision" value="approve"{% if paused or (autonomy_blocked is defined and autonomy_blocked) %} disabled{% endif %}>Approve rollback</button>
             <button class="ds-btn ds-btn--reject" data-testid="reject-button" type="submit" name="decision" value="reject">Reject</button>
           </div>
         </form>

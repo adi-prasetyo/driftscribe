@@ -408,3 +408,485 @@ def test_recheck_fail_closed_read_suppresses(_live_github, monkeypatch):
     body = r.json()
     assert body["suppressed_by_autonomy"] is True
     assert issue_calls == []
+
+
+# --------------------------------------------------------------------------- #
+# Part 2: apply gates (Task 7) — IaC approvals + rollback approvals
+# --------------------------------------------------------------------------- #
+#
+# Modeled on test_pause_gates.py's iac-approval + rollback-approval suites
+# (same _FakeApprovalStore / CSRF / Origin / token arrangements), toggling the
+# dial via _set_mode instead of _pause.
+
+
+class _FakeApprovalStore:
+    def __init__(self) -> None:
+        self.docs: dict[str, dict[str, Any]] = {}
+
+    def create_pending(self, *, target_revision: str, reason: str) -> Approval:
+        approval_id = str(uuid.uuid4())
+        now = dt.datetime.now(dt.timezone.utc)
+        data = {
+            "status": "pending",
+            "target_revision": target_revision,
+            "reason": reason,
+            "token_hmac": "fake-hmac",
+            "expires_at": now + dt.timedelta(minutes=15),
+            "created_at": now,
+            "created_by": "coordinator@test",
+        }
+        self.docs[approval_id] = data
+        return Approval(approval_id=approval_id, **data)
+
+    def get(self, approval_id: str) -> Approval | None:
+        if approval_id not in self.docs:
+            return None
+        return Approval(approval_id=approval_id, **self.docs[approval_id])
+
+    def claim_denied(self, approval_id: str) -> Approval | None:
+        data = self.docs.get(approval_id)
+        if not data or data.get("status") != "pending":
+            return None
+        data["status"] = "denied"
+        return Approval(approval_id=approval_id, **data)
+
+
+@pytest.fixture
+def _rollback_store(monkeypatch):
+    s = _FakeApprovalStore()
+    monkeypatch.setattr(approval_helpers, "get_approval_store", lambda: s)
+    return s
+
+
+# ---- POST /approvals/{id} (rollback HITL) ---------------------------------- #
+
+
+def test_rollback_approval_approve_refused_in_observe_and_propose(
+    _rollback_store, monkeypatch
+):
+    """Approve below Propose+Apply → 409 with the dial detail; call_execute is
+    never invoked. Both observe and propose."""
+    for mode in ("observe", "propose"):
+        calls: list = []
+        monkeypatch.setattr(
+            worker_client, "call_execute",
+            lambda aid, tok: calls.append((aid, tok)) or {"status": "executed"},
+        )
+        approval = _rollback_store.create_pending(
+            target_revision="payment-demo-00002-bbb", reason="r"
+        )
+        client = TestClient(app)
+        _set_mode(client, mode)
+        r = client.post(
+            f"/approvals/{approval.approval_id}",
+            data={"t": "raw-token-abc", "decision": "approve"},
+        )
+        assert r.status_code == 409, (mode, r.text)
+        assert r.json()["detail"] == autonomy_apply_blocked_detail(mode)
+        assert calls == []
+
+
+def test_rollback_approval_reject_allowed_in_observe(_rollback_store, monkeypatch):
+    """Reject below Propose+Apply IS allowed (safety direction) — call_deny IS
+    invoked and the page re-renders 200."""
+    deny_calls: list = []
+
+    def fake_deny(aid, tok):
+        deny_calls.append((aid, tok))
+        _rollback_store.claim_denied(aid)
+        return {"approval_id": aid, "status": "denied"}
+
+    monkeypatch.setattr(worker_client, "call_deny", fake_deny)
+    approval = _rollback_store.create_pending(
+        target_revision="payment-demo-00002-bbb", reason="r"
+    )
+    client = TestClient(app)
+    _set_mode(client, "observe")
+    r = client.post(
+        f"/approvals/{approval.approval_id}",
+        data={"t": "raw-token-abc", "decision": "reject"},
+    )
+    assert r.status_code == 200, r.text
+    assert deny_calls == [(approval.approval_id, "raw-token-abc")]
+
+
+def test_rollback_approval_open_in_propose_apply(_rollback_store, monkeypatch):
+    """Propose+Apply → the gate is invisible: approve passes through to the
+    worker exactly as today."""
+    calls: list = []
+    monkeypatch.setattr(
+        worker_client, "call_execute",
+        lambda aid, tok: calls.append((aid, tok)) or {"status": "executed"},
+    )
+    approval = _rollback_store.create_pending(
+        target_revision="payment-demo-00002-bbb", reason="r"
+    )
+    client = TestClient(app)
+    _set_mode(client, "propose_apply")
+    r = client.post(
+        f"/approvals/{approval.approval_id}",
+        data={"t": "raw-token-abc", "decision": "approve"},
+    )
+    assert r.status_code == 200, r.text
+    assert calls == [(approval.approval_id, "raw-token-abc")]
+
+
+def test_rollback_approval_ordering_pause_outranks_dial(_rollback_store, monkeypatch):
+    """With BOTH paused and mode=observe, the 423 pause response wins (the dial
+    gate sits after the pause gate)."""
+    monkeypatch.setattr(
+        worker_client, "call_execute", lambda aid, tok: {"status": "executed"}
+    )
+    approval = _rollback_store.create_pending(
+        target_revision="payment-demo-00002-bbb", reason="r"
+    )
+    client = TestClient(app)
+    _set_mode(client, "observe")
+    client.post("/pause", json={"paused": True, "reason": "both"})
+    r = client.post(
+        f"/approvals/{approval.approval_id}",
+        data={"t": "raw-token-abc", "decision": "approve"},
+    )
+    assert r.status_code == 423
+    assert r.json()["detail"] == PAUSED_DETAIL
+
+
+def test_rollback_approval_get_shows_dial_note(_rollback_store):
+    """GET while in observe → calm autonomy note above the form, Approve
+    disabled, Reject stays active."""
+    approval = _rollback_store.create_pending(
+        target_revision="payment-demo-00002-bbb", reason="r"
+    )
+    client = TestClient(app)
+    _set_mode(client, "observe")
+    r = client.get(f"/approvals/{approval.approval_id}?t=tok")
+    assert r.status_code == 200
+    body = r.text
+    assert 'data-testid="autonomy-note"' in body
+    approve = re.search(r'data-testid="approve-button"[^>]*>', body)
+    reject = re.search(r'data-testid="reject-button"[^>]*>', body)
+    assert approve and "disabled" in approve.group(0)
+    assert reject and "disabled" not in reject.group(0)
+
+
+def test_rollback_approval_get_fail_closed_read(_rollback_store, monkeypatch):
+    """A fail-closed dial read on the GET → Approve disabled + the note mentions
+    the read failure (read_error variant, not 'the operator set it')."""
+    approval = _rollback_store.create_pending(
+        target_revision="payment-demo-00002-bbb", reason="r"
+    )
+    monkeypatch.setattr(
+        main_mod, "_autonomy_state_fail_closed",
+        lambda: AutonomyState(mode="observe", read_error=True),
+    )
+    client = TestClient(app)
+    r = client.get(f"/approvals/{approval.approval_id}?t=tok")
+    assert r.status_code == 200
+    body = r.text
+    assert 'data-testid="autonomy-note"' in body
+    assert "could not be read" in body.lower()
+    approve = re.search(r'data-testid="approve-button"[^>]*>', body)
+    assert approve and "disabled" in approve.group(0)
+
+
+# ---- IaC approvals (POST + GET /iac-approvals/{pr}) ------------------------ #
+
+_HEAD = "a" * 40
+_PLAN_SHA = "b" * 64
+_PLAN_JSON_SHA = "c" * 64
+_BUCKET = "test-proj-tofu-artifacts"
+_PREFIX = f"gs://{_BUCKET}/pr-42/{_HEAD}/run-7-1/"
+_META_URI = _PREFIX + "metadata.json"
+_GEN_META = "1700000000000003"
+_ORIGIN = "https://driftscribe.adp-app.com"
+_OPERATOR = "operator@example.com"
+_JWT = "raw-cf-access-jwt-value"
+
+
+def _iac_metadata() -> dict:
+    return {
+        "schema_version": "c2.v1",
+        "repo": "theghostsquad00/driftscribe",
+        "pr_number": 42,
+        "head_sha": _HEAD,
+        "base_sha": "d" * 40,
+        "workflow_run_id": "7700000001",
+        "workflow_run_attempt": "1",
+        "artifact_uri_plan": _PREFIX + "plan.tfplan",
+        "artifact_uri_json": _PREFIX + "plan.json",
+        "generation_plan": "1700000000000001",
+        "generation_json": "1700000000000002",
+        "plan_sha256": _PLAN_SHA,
+        "plan_json_sha256": _PLAN_JSON_SHA,
+        "opentofu_version": "1.12.0",
+        "provider_lockfile_sha256": "e" * 64,
+    }
+
+
+def _iac_ref() -> C2CommentRef:
+    return C2CommentRef(
+        head_sha=_HEAD,
+        plan_sha256=_PLAN_SHA,
+        plan_json_sha256=_PLAN_JSON_SHA,
+        generation_plan="1700000000000001",
+        generation_json="1700000000000002",
+        generation_metadata=_GEN_META,
+        artifact_uri_plan=_PREFIX + "plan.tfplan",
+        artifact_uri_json=_PREFIX + "plan.json",
+        artifact_uri_metadata=_META_URI,
+        opentofu_version="1.12.0",
+        comment_id=556677,
+        tofu_show_text="~ image = old -> new",
+    )
+
+
+def _iac_view(**overrides) -> IacPlanView:
+    base = dict(
+        metadata=_iac_metadata(),
+        tofu_show_text=_iac_ref().tofu_show_text,
+        integrity_ok=True,
+        denylist_violations=[],
+        unverifiable=False,
+        _artifact_uri_metadata=_META_URI,
+        _generation_metadata=_GEN_META,
+        _plan_json={
+            "resource_changes": [
+                {"address": "google_cloud_run_v2_service.x",
+                 "type": "google_cloud_run_v2_service",
+                 "change": {"actions": ["update"]}}
+            ]
+        },
+    )
+    base.update(overrides)
+    return IacPlanView(**base)
+
+
+@pytest.fixture
+def _iac_configured(monkeypatch):
+    monkeypatch.setenv("GITHUB_REPO", "theghostsquad00/driftscribe")
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_test_token")
+    monkeypatch.setenv("DRIFTSCRIBE_TOKEN", "static-server-token")
+    monkeypatch.setenv("TOFU_ARTIFACTS_BUCKET", _BUCKET)
+    monkeypatch.setenv("COORDINATOR_ORIGIN", _ORIGIN)
+    monkeypatch.setenv("IAC_REQUIRED_CHECKS", "tofu,static-gate")
+    monkeypatch.setenv("IAC_MERGE_METHOD", "squash")
+    monkeypatch.setenv("CF_ACCESS_TEAM_DOMAIN", "team.cloudflareaccess.com")
+    monkeypatch.setenv("CF_ACCESS_AUD_TAG", "aud-tag")
+    monkeypatch.setenv("DRY_RUN", "false")
+    monkeypatch.setenv("GCP_PROJECT", "")
+    get_settings.cache_clear()
+    _reset_state_for_tests()
+    app.dependency_overrides[require_cf_operator] = lambda: _OPERATOR
+    yield
+    app.dependency_overrides.pop(require_cf_operator, None)
+    get_settings.cache_clear()
+
+
+def _iac_patch_resolve(monkeypatch):
+    ref, view = _iac_ref(), _iac_view()
+    monkeypatch.setattr(main_mod, "_resolve_iac_plan", lambda s, pr: (ref, view))
+
+
+def _iac_patch_get_resolve(monkeypatch):
+    monkeypatch.setattr("agent.main.get_repo", lambda token, repo: object())
+    monkeypatch.setattr(
+        main_mod.iac_artifacts, "find_latest_c2_comment", lambda repo, pr: _iac_ref()
+    )
+    monkeypatch.setattr(
+        main_mod.iac_artifacts,
+        "load_plan_view",
+        lambda r, *, bucket_name, client=None: _iac_view(),
+    )
+
+
+def _iac_mint():
+    return iac_csrf.mint_form_token(
+        get_settings(),
+        pr_number=42,
+        head_sha=_HEAD,
+        artifact_uri_metadata=_META_URI,
+        generation_metadata=_GEN_META,
+        plan_sha256=_PLAN_SHA,
+        plan_json_sha256=_PLAN_JSON_SHA,
+        comment_id=556677,
+    )
+
+
+def test_iac_approval_post_refused_in_observe_and_propose(_iac_configured, monkeypatch):
+    """Approve below Propose+Apply → 409 with the dial detail (in the dry-run
+    precedent slot, after Origin+CSRF, before _resolve_iac_plan). No worker
+    propose/apply calls."""
+    _iac_patch_resolve(monkeypatch)
+    for mode in ("observe", "propose"):
+        propose_calls: list = []
+        monkeypatch.setattr(
+            main_mod.worker_client, "call_propose",
+            lambda *a, **k: propose_calls.append(a) or {"approval_id": "x", "approval_token": "y"},
+        )
+        token = _iac_mint()
+        client = TestClient(app)
+        _set_mode(client, mode)
+        r = client.post(
+            "/iac-approvals/42",
+            data={"form_token": token, "decision": "approve"},
+            headers={"Origin": _ORIGIN, "Cf-Access-Jwt-Assertion": _JWT},
+        )
+        assert r.status_code == 409, (mode, r.text)
+        assert r.json()["detail"] == autonomy_apply_blocked_detail(mode)
+        assert propose_calls == []
+
+
+def test_iac_approval_post_ordering_pause_outranks_dial(_iac_configured, monkeypatch):
+    """BOTH paused and mode=observe → 423 pause wins (dial gate sits after)."""
+    _iac_patch_resolve(monkeypatch)
+    token = _iac_mint()
+    client = TestClient(app)
+    _set_mode(client, "observe")
+    client.post("/pause", json={"paused": True, "reason": "both"})
+    r = client.post(
+        "/iac-approvals/42",
+        data={"form_token": token, "decision": "approve"},
+        headers={"Origin": _ORIGIN, "Cf-Access-Jwt-Assertion": _JWT},
+    )
+    assert r.status_code == 423
+    assert r.json()["detail"] == PAUSED_DETAIL
+
+
+def test_iac_approval_reject_allowed_in_observe(_iac_configured, monkeypatch):
+    """Reject below Propose+Apply stays a 200 audit no-op (mutates nothing)."""
+    _iac_patch_resolve(monkeypatch)
+    client = TestClient(app)
+    _set_mode(client, "observe")
+    r = client.post(
+        "/iac-approvals/42",
+        data={"form_token": _iac_mint(), "decision": "reject"},
+        headers={"Origin": _ORIGIN, "Cf-Access-Jwt-Assertion": _JWT},
+    )
+    assert r.status_code == 200
+    assert "reject" in r.text.lower()
+
+
+def test_iac_approval_post_bad_origin_still_403_in_observe(_iac_configured, monkeypatch):
+    """The dial gate sits AFTER Origin/CSRF, so a cross-site probe still gets
+    403 (not a dial hint) even in observe."""
+    _iac_patch_resolve(monkeypatch)
+    token = _iac_mint()
+    client = TestClient(app)
+    _set_mode(client, "observe")
+    r = client.post(
+        "/iac-approvals/42",
+        data={"form_token": token, "decision": "approve"},
+        headers={"Origin": "https://evil.example.com", "Cf-Access-Jwt-Assertion": _JWT},
+    )
+    assert r.status_code == 403
+
+
+def test_iac_approval_get_shows_dial_note(_iac_configured, monkeypatch):
+    """GET in propose → 200; Approve suppressed (no form token); the calm
+    approve-pending note carries the dial copy (severity pending, not error)."""
+    _iac_patch_get_resolve(monkeypatch)
+    client = TestClient(app)
+    _set_mode(client, "propose")
+    r = client.get("/iac-approvals/42")
+    assert r.status_code == 200
+    body = r.text
+    assert 'data-testid="approve-pending"' in body
+    assert "autonomy is set to" in body.lower()
+    # Calm, not the red error box.
+    assert 'data-testid="approve-blocked"' not in body
+    assert 'name="form_token"' not in body
+
+
+def test_iac_approval_get_fail_closed_read(_iac_configured, monkeypatch):
+    """A fail-closed dial read on the GET → Approve suppressed and the note
+    mentions the read failure (read_error variant)."""
+    _iac_patch_get_resolve(monkeypatch)
+    monkeypatch.setattr(
+        main_mod, "_autonomy_state_fail_closed",
+        lambda: AutonomyState(mode="observe", read_error=True),
+    )
+    client = TestClient(app)
+    r = client.get("/iac-approvals/42")
+    assert r.status_code == 200
+    body = r.text
+    assert 'data-testid="approve-pending"' in body
+    assert "could not be read" in body.lower()
+    assert 'name="form_token"' not in body
+
+
+def test_iac_approval_post_apply_gate_fail_closed_read(_iac_configured, monkeypatch):
+    """A fail-closed dial read on the POST approve → 409 (the fail-closed mode
+    is observe, which is below Propose+Apply)."""
+    _iac_patch_resolve(monkeypatch)
+    propose_calls: list = []
+    monkeypatch.setattr(
+        main_mod.worker_client, "call_propose",
+        lambda *a, **k: propose_calls.append(a) or {"approval_id": "x", "approval_token": "y"},
+    )
+    monkeypatch.setattr(
+        main_mod, "_autonomy_state_fail_closed",
+        lambda: AutonomyState(mode="observe", read_error=True),
+    )
+    token = _iac_mint()
+    client = TestClient(app)
+    r = client.post(
+        "/iac-approvals/42",
+        data={"form_token": token, "decision": "approve"},
+        headers={"Origin": _ORIGIN, "Cf-Access-Jwt-Assertion": _JWT},
+    )
+    assert r.status_code == 409
+    assert propose_calls == []
+
+
+def test_existing_decision_branches_gated(_iac_configured, monkeypatch):
+    """Codex must-fix 4: the dial gate must fire BEFORE
+    _handle_existing_iac_decision can route a waiting_for_rebake re-POST into a
+    merge/apply. Arrange a pending waiting_for_rebake decision, set mode=propose,
+    re-POST → 409; github.merge_pr_at_sha + the apply worker NOT invoked."""
+    _iac_patch_resolve(monkeypatch)
+
+    # Arrange a pending waiting_for_rebake decision under the POST's event key.
+    state = get_state()
+    view = _iac_view()
+    event_key = main_mod._iac_event_key(
+        "theghostsquad00/driftscribe", 42, view.head_sha, view.generation_metadata
+    )
+    state.record_event(event_key, {"trigger": "iac_apply"})
+    state.record_decision(
+        "dec-wfr",
+        event_key,
+        {
+            "decision_id": "dec-wfr",
+            "event_key": event_key,
+            "apply_status": "waiting_for_rebake",
+            "merge_state": "merged",
+            "pr_number": 42,
+        },
+    )
+
+    merge_calls: list = []
+    apply_calls: list = []
+    monkeypatch.setattr(
+        main_mod.github, "merge_pr_at_sha",
+        lambda *a, **k: merge_calls.append(a) or {"merged": True},
+    )
+    monkeypatch.setattr(
+        main_mod.worker_client, "call_apply",
+        lambda *a, **k: apply_calls.append(a) or {"status": "applied"},
+    )
+    monkeypatch.setattr(
+        main_mod.worker_client, "call_propose",
+        lambda *a, **k: {"approval_id": "x", "approval_token": "y"},
+    )
+
+    token = _iac_mint()
+    client = TestClient(app)
+    _set_mode(client, "propose")
+    r = client.post(
+        "/iac-approvals/42",
+        data={"form_token": token, "decision": "approve"},
+        headers={"Origin": _ORIGIN, "Cf-Access-Jwt-Assertion": _JWT},
+    )
+    assert r.status_code == 409, r.text
+    assert merge_calls == []
+    assert apply_calls == []
