@@ -149,10 +149,13 @@ Append to `agent/iac_artifacts.py` (after `find_latest_c2_comment`, before the P
 # (read + list), so a listing-based resolver keeps explore strictly read-only.
 #
 # Divergence (advisory, documented): the approval page binds to the LATEST C2
-# COMMENT; this resolver returns the LATEST UPLOADED artifact, ordered by
-# (run_id, attempt, generation) — GitHub run ids are globally monotonic. The
-# two coincide whenever a C2 run completes normally (upload + comment are one
-# job). Q&A is advisory; the approval page + apply worker stay authoritative.
+# COMMENT; this resolver returns the latest LOGICAL plan-builder artifact,
+# ordered by (run_id, attempt) — GitHub run ids are globally monotonic,
+# attempts monotonic within a run; generation is only an exact-same-path
+# tie-breaker, NOT an upload-time ordering (a re-run of an older run never
+# outranks a newer run). The two coincide whenever a C2 run completes normally
+# (upload + comment are one job). Q&A is advisory; the approval page + apply
+# worker stay authoritative.
 # --------------------------------------------------------------------------- #
 
 _META_NAME_RE = re.compile(
@@ -231,10 +234,12 @@ def _c2v1_metadata(pr=7, *, plan_json_bytes):
         "pr_number": pr,
         "head_sha": sha,
         "base_sha": SHA_B,
-        "workflow_run_id": 100,
-        "workflow_run_attempt": 1,
+        "workflow_run_id": "100",
+        "workflow_run_attempt": "1",
         "artifact_uri_plan": f"gs://driftscribe-hack-2026-tofu-artifacts/pr-{pr}/{sha}/run-100-1/plan.tfplan",
         "artifact_uri_json": f"gs://driftscribe-hack-2026-tofu-artifacts/pr-{pr}/{sha}/run-100-1/plan.json",
+        # NOTE: run id + attempt are STRINGS in c2.v1 (iac_plan_metadata.py
+        # _check "must be a digit string") — int values fail _assert_c2v1_metadata.
         "generation_plan": "1",
         "generation_json": "2",
         "plan_sha256": "c" * 64,
@@ -576,7 +581,8 @@ def load_iac_plan_tool(pr_number: int) -> dict[str, Any]:
         "unverifiable": view.unverifiable,
         "approval_page": f"/iac-approvals/{pr_number}",
         "caveat": (
-            "Advisory: this is the latest plan artifact uploaded for this PR. "
+            "Advisory: this is the plan from the newest plan-builder run for "
+            "this PR. "
             "Nothing can be applied from chat — an operator decides on the "
             "approval page, and the apply worker independently re-verifies "
             "integrity, policy, and plan fidelity before anything applies."
@@ -788,9 +794,9 @@ And to the Rules:
   (/iac-approvals/<pr_number>), where the apply worker independently
   re-verifies the plan before anything runs. Frame this as how the system
   works — the operator stays in charge — not as a safety guarantee from you.
-- The plan you read is the latest one uploaded for that PR. If the PR was
-  just rebuilt, the approval page is authoritative — suggest reloading it
-  if anything looks inconsistent.
+- The plan you read is from the newest plan-builder run for that PR. If
+  the PR was just rebuilt, the approval page is authoritative — suggest
+  reloading it if anything looks inconsistent.
 ```
 
 **Step 3: Run** `.venv/bin/pytest tests/unit/test_explore_workload_loads.py tests/unit/test_coordinator_tool_inventory.py tests/unit/test_capabilities.py tests/unit/test_tool_tiers.py tests/unit/test_workload_registry.py -q`
@@ -866,7 +872,7 @@ git commit -m "feat(ui): ask-about-this-change link on the IaC approval page (it
 **Step 1: Write the failing tests** (vitest, in the existing file's style):
 
 ```ts
-import { askAboutPrPrefill, askPrFromSearch } from '../../src/lib/workloads';
+import { askAboutPrPrefill, askPrFromSearch, initialChatPrefill } from '../../src/lib/workloads';
 
 describe('askPrFromSearch', () => {
   it('parses a positive integer', () => {
