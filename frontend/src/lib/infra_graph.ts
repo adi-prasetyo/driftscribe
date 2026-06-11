@@ -39,6 +39,13 @@ export interface InfraGroup {
   nodes: InfraNode[];
   /** count − shown when the per-type sample was capped server-side. */
   truncated_in_group?: number;
+  /**
+   * Server-marked: this group's type is adoptable into IaC (single source of
+   * truth: driftscribe_lib ADOPTABLE_RESOURCE_TYPES, never sensitive). Optional
+   * — a stale coordinator response without the field simply renders no Adopt
+   * buttons (fail-quiet, not wrong; Phase-4 design, Codex review 019eb572).
+   */
+  adoptable?: boolean;
 }
 
 export interface InfraEdge {
@@ -261,6 +268,80 @@ export function previewPrFromSearch(search: string): number | null {
   if (raw === null || !/^\d+$/.test(raw)) return null;
   const n = Number(raw);
   return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
+// ---------------------------------------------------------------------------
+// Adopt affordance (Phase 4 — adopt button UI). The map's Mermaid SVG is rendered
+// with securityLevel:'strict' / htmlLabels:false, so the Adopt action CANNOT be an
+// in-SVG click target; instead InfraDiagram renders an "Unmanaged resources" action
+// list in normal DOM, derived from the graph DTO by these PURE helpers (keeps the
+// component thin + unit-testable). Design: docs/plans/2026-06-11-adopt-button-ui.md
+// §1 + §2.4; Codex review 019eb572.
+// ---------------------------------------------------------------------------
+
+export interface AdoptRow {
+  nodeId: string;
+  groupLabel: string;
+  nodeLabel: string;
+  adoptable: boolean;
+  /** Chat prefill — composed ONLY for adoptable rows, else ''. */
+  prefill: string;
+}
+
+/**
+ * Normalize an untrusted fragment for inclusion in the agent prompt (Codex
+ * review 019eb572 must-fix 2): strip C0/C1 control chars (incl. CR/LF/tab —
+ * collapse each run to a single space), collapse whitespace runs, trim, and cap
+ * length. The node-label cap (254) is the adopt_recipe name validator's own max,
+ * so a VALID adopt name is never truncated; location/group-label cap at 40. This
+ * is NOT an HTML escape — the only sinks are a text input + a JSON prompt field
+ * (Svelte text interpolation), so backticks/quotes/angle-brackets pass through.
+ */
+export function normalizeForPrompt(raw: string, max: number): string {
+  return raw
+    // C0 (incl. CR/LF/tab/NUL) + DEL + C1 control chars -> space; runs collapse below.
+    .replace(/[\u0000-\u001F\u007F-\u009F]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, max);
+}
+
+/** "Adopt the Storage bucket `name` in asia-northeast1 into IaC management." */
+export function adoptPrefill(
+  groupLabel: string,
+  nodeLabel: string,
+  location: string | null,
+): string {
+  const type = normalizeForPrompt(groupLabel, 40);
+  const name = normalizeForPrompt(nodeLabel, 254);
+  const loc = location ? normalizeForPrompt(location, 40) : '';
+  const where = loc ? ` in ${loc}` : '';
+  return `Adopt the ${type} \`${name}\`${where} into IaC management.`;
+}
+
+/**
+ * Drift (unmanaged) nodes across NON-sensitive groups, in render order. Sensitive
+ * groups are counts-only and carry no node names by design, so they yield no rows.
+ * A row's `adoptable` is `g.adoptable === true` (a stale coordinator response
+ * without the field → false); the prefill is composed ONLY for adoptable rows.
+ */
+export function adoptRows(graph: InfraGraph): AdoptRow[] {
+  const rows: AdoptRow[] = [];
+  for (const g of graph.groups) {
+    if (g.sensitive) continue;
+    const adoptable = g.adoptable === true;
+    for (const n of g.nodes) {
+      if (n.managed) continue;
+      rows.push({
+        nodeId: n.id,
+        groupLabel: g.label,
+        nodeLabel: n.label,
+        adoptable,
+        prefill: adoptable ? adoptPrefill(g.label, n.label, n.location) : '',
+      });
+    }
+  }
+  return rows;
 }
 
 /**
