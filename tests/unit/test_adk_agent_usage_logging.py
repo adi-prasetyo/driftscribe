@@ -47,7 +47,7 @@ async def test_run_chat_emits_llm_usage_log(caplog, drift_workload_env):
     try:
         with patch.object(adk_agent, "Runner") as runner_cls:
             runner_cls.return_value.run_async = _stub_run
-            await adk_agent.run_chat("hi", workload="drift")
+            await adk_agent.run_chat("hi", workload="drift", autonomy_mode="propose_apply")
     finally:
         reset_workload(workload_token)
 
@@ -79,7 +79,7 @@ async def test_run_agent_emits_llm_usage_log(caplog, drift_workload_env):
     try:
         with patch.object(adk_agent, "Runner") as runner_cls:
             runner_cls.return_value.run_async = _stub_run
-            proposal = await adk_agent.run_agent("hi", workload="drift")
+            proposal = await adk_agent.run_agent("hi", workload="drift", autonomy_mode="propose_apply")
     finally:
         reset_workload(workload_token)
 

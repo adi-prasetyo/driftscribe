@@ -132,6 +132,11 @@
       <p class="row-meta">iac_apply{#if st} · {st}{/if}{#if sha} · <span class="row-sha">⎇ {sha}</span>{/if}</p>
     {/if}
 
+    {#if d.suppressed_by_autonomy === true}
+      <span class="rail-status rail-status--muted" data-testid="autonomy-suppressed"
+        >not executed — {d.autonomy_mode === 'observe' ? 'Observe' : d.autonomy_mode} mode</span>
+    {/if}
+
     <div class="row-actions">
       {#if d.trace_id}
         <button
@@ -473,5 +478,25 @@
 
   .step-status {
     flex: 0 0 auto;
+  }
+
+  /* Autonomy-suppressed status token — muted/pending style (not alarm).
+     "Would have" rows are the Observe mode working as designed. */
+  .rail-status {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.1em 0.55em;
+    border-radius: var(--ds-radius-pill);
+    font-size: 0.6875rem; /* 11px — same as expired-badge */
+    font-weight: var(--ds-fw-semibold);
+    text-transform: uppercase;
+    letter-spacing: var(--ds-tracking-caps);
+    line-height: 1.3;
+  }
+
+  .rail-status--muted {
+    background: var(--ds-neutral-surface);
+    border: 1px solid var(--ds-border);
+    color: var(--ds-muted);
   }
 </style>

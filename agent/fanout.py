@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from agent.autonomy import mode_allows
 from driftscribe_lib.iac_editor_policy import (
     EditorPolicyError,
     validate_iac_path,
@@ -1092,6 +1093,8 @@ def _compose_success_reply(
 async def run_provision_fanout_stream(
     prompt: str,
     session_id: str | None = None,
+    *,
+    autonomy_mode: str,
 ) -> AsyncIterator[dict]:
     """Stream a parallel fan-out ``provision`` (IaC-authoring) run end to end.
 
@@ -1173,6 +1176,22 @@ async def run_provision_fanout_stream(
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
+    if autonomy_mode == "observe":
+        # Autonomy dial (ClickOps item 11, Codex must-fix 1): authoring an
+        # infra PR is propose-class work and the whole fan-out exists to make
+        # that ONE coordinator-direct editor call — which never passes through
+        # Layer-0 tool filtering. In Observe, delegate the ENTIRE stream to the
+        # single-agent path at entry (same delegation machinery as the
+        # single-slice and non-policy branches below). The single agent is
+        # Layer-0-filtered, so it still answers provision questions but has no
+        # authoring tool; its instruction note points at the dial. The
+        # delegated run's seq restarts at 1 — documented contract.
+        async for item in run_chat_stream(
+            prompt, sid, workload="provision", autonomy_mode=autonomy_mode
+        ):
+            yield item
+        return
+
     # 1+2. Decompose into a BUFFER (events are not yielded yet — we don't know
     # whether this run commits, single-slice-delegates, or fails).
     decompose_buffer: list = []
@@ -1196,14 +1215,18 @@ async def run_provision_fanout_stream(
         # FAIL OPEN (DECOMPOSE_NON_POLICY etc.): discard the buffer, delegate to
         # the legacy single-agent path. Its own seq restarts at 1 — correct for
         # a fresh delegated run.
-        async for item in run_chat_stream(prompt, sid, workload="provision"):
+        async for item in run_chat_stream(
+            prompt, sid, workload="provision", autonomy_mode=autonomy_mode
+        ):
             yield item
         return
 
     # 3. Single-slice plan → a coupled/simple change. Discard the buffer and
     # delegate to the legacy single-agent path (same as the non-policy branch).
     if len(plan.slices) == 1:
-        async for item in run_chat_stream(prompt, sid, workload="provision"):
+        async for item in run_chat_stream(
+            prompt, sid, workload="provision", autonomy_mode=autonomy_mode
+        ):
             yield item
         return
 
@@ -1284,6 +1307,26 @@ async def run_provision_fanout_stream(
         validate_title_body(plan.pr_title, body)
     except EditorPolicyError as e:
         reply = f"Could not author the infrastructure change: {e.reason}"
+        yield {"type": "event", "event": _stream(_emit_final_response(reply))}
+        yield {
+            "type": "result",
+            "reply": reply,
+            "tool_calls": [],
+            "session_id": sid,
+        }
+        return
+
+    # Pre-editor-call guard (defense in depth, ClickOps item 11). Unreachable
+    # when the entry delegation works (Observe never gets here), but pinned so
+    # a future branch reorder cannot reopen the bypass Codex flagged. The
+    # editor call is propose-class; refuse it whenever the dial does not allow
+    # proposals.
+    if not mode_allows(autonomy_mode, "propose"):
+        reply = (
+            "The infrastructure PR was not opened — the autonomy dial does "
+            "not allow proposals in this mode. Raise the dial in the "
+            "operator UI and ask again."
+        )
         yield {"type": "event", "event": _stream(_emit_final_response(reply))}
         yield {
             "type": "result",

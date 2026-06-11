@@ -403,6 +403,53 @@ TOOL_REGISTRY: Final[Mapping[str, Callable | None]] = MappingProxyType(_TOOL_REG
 
 
 # --------------------------------------------------------------------------- #
+# TOOL_TIERS — autonomy-dial tier per tool (ClickOps item 11)
+# --------------------------------------------------------------------------- #
+#
+# "report" tools are available in every dial mode; "propose" tools may open
+# PRs / issues / approval requests (stripped in Observe); "apply" tools change
+# live state or merge a deploying branch (Propose + Apply only). Consumed by
+# agent.autonomy.filter_tools_for_mode at agent-build time (Layer 0).
+#
+# Drift-pins in tests/unit/test_tool_tiers.py:
+# - set(TOOL_TIERS) == set(TOOL_REGISTRY): a new tool cannot ship untiered.
+# - every non-"report" tool ∈ fanout.MUTATION_TOOL_NAMES (tiers at least as
+#   strict as the existing mutation classifier).
+# - "report"-tier ∩ MUTATION_TOOL_NAMES == {notify, search_recent_prs}.
+#   notify IS a side effect (webhook post) but stays available in Observe
+#   on purpose: it is the report-delivery channel, and Observe is "report
+#   only", not "silent". search_recent_prs is read-only and is in
+#   MUTATION_TOOL_NAMES purely for credential containment.
+#
+# registry.py must NOT import agent.autonomy — the tier *names* are plain
+# strings here; agent.autonomy owns the semantics. Import direction stays
+# acyclic: autonomy ← nothing; registry ← adk_tools; adk_agent → both.
+_TOOL_TIERS: Final[dict[str, str]] = {
+    "drift_read_live_env":        "report",
+    "read_project_inventory":     "report",
+    "drift_patch_docs":           "propose",
+    "drift_propose_rollback":     "propose",
+    "notify":                     "report",
+    "load_contract":              "report",
+    "search_recent_prs":          "report",
+    "upgrade_read_dependencies":  "report",
+    "upgrade_propose_pr":         "propose",
+    "upgrade_close_pr":           "propose",
+    "upgrade_merge_pr":           "apply",
+    "search_developer_docs":      "report",
+    "retrieve_developer_doc":     "report",
+    "provision_open_infra_pr":    "propose",
+    "provision_propose_adoption": "propose",
+    # Reserved (callable None — can never resolve): tier is moot but must
+    # exist so the set-equality drift-pin holds.
+    "get_session_state":          "report",
+    "set_session_state":          "report",
+}
+
+TOOL_TIERS: Final[Mapping[str, str]] = MappingProxyType(_TOOL_TIERS)
+
+
+# --------------------------------------------------------------------------- #
 # WORKER_REGISTRY — the allowlist of callable workers
 # --------------------------------------------------------------------------- #
 #

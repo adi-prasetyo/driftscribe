@@ -105,10 +105,12 @@ from agent.mcp.developer_knowledge import (
     retrieve_developer_doc,
     search_developer_docs,
 )
+from agent.autonomy import autonomy_instruction_note, filter_tools_for_mode
 from agent.models import DecisionProposal
 from agent.secret_guard import redact_dict, redact_event, redact_text
 from agent.workload_context import current_workload
 from agent.workloads import WorkloadResolution, load_workload
+from agent.workloads.registry import TOOL_TIERS
 from driftscribe_lib.logging import current_trace_id_or_new
 
 # Log convention: every structured log record emits its event name in
@@ -391,43 +393,52 @@ def _parse_response(text: str) -> DecisionProposal:
     return DecisionProposal.model_validate(payload)
 
 
-def build_agent(workload: WorkloadResolution) -> Agent:
+def _dial_instruction(base_prompt: str, autonomy_mode: str) -> str:
+    """Append the informational autonomy note when the dial strips tools.
+
+    UX only — enforcement already happened at the registry filter. The note
+    is added for every mode below propose_apply (the modes that actually drop
+    tools); propose_apply leaves the prompt byte-identical.
+    """
+    if autonomy_mode == "propose_apply":
+        return base_prompt
+    return f"{base_prompt}\n\n{autonomy_instruction_note(autonomy_mode)}"
+
+
+def build_agent(workload: WorkloadResolution, *, autonomy_mode: str) -> Agent:
     """Construct the /recheck-flavored ADK Agent for the given workload.
 
     Takes an already-loaded :class:`~agent.workloads.WorkloadResolution`
     so the caller (``agent.main``) controls workload selection per
-    request. The factory itself is a pure function over the resolution —
-    no env reads, no module-level state — so the same resolution always
-    yields an agent with the same prompt and tools.
+    request. The factory itself is a pure function over the resolution +
+    ``autonomy_mode`` — no env reads, no module-level state — so the same
+    inputs always yield an agent with the same prompt and tools.
 
-    Tool set: ``workload.tools.values()`` — the workload-specific list
-    resolved by :func:`agent.workloads.load_workload`. Phase 17.A.3
-    (Codex review): this used to be :data:`COORDINATOR_TOOLS` (the
-    union surface). Switching to the per-workload filtered list makes
-    the capability-bound invariant "the LLM is never even shown a
-    cross-workload tool" hold today — not "once upgrade tools ship".
-    For drift the two surfaces are byte-identical (8 callables either
-    way post-17.B.3); for upgrade the registry refuses to resolve until
-    17.B/17.C flips the reserved ``None`` entries to real callables, so
-    passing ``workload.tools.values()`` to ADK can't accidentally hand
-    the LLM a partial upgrade surface.
+    Tool set: ``workload.tools`` minus the chat-only names (the existing
+    /recheck strip) THEN filtered by the autonomy dial via
+    :func:`agent.autonomy.filter_tools_for_mode` over
+    :data:`agent.workloads.registry.TOOL_TIERS` (Layer 0, ClickOps item 11).
+    Order is preserved through both filters. A tool with no tier assignment
+    fails closed (treated as apply-tier). ``autonomy_mode`` is a REQUIRED
+    keyword arg — a call site that forgets the dial fails loudly at code
+    time, never silently runs at full autonomy.
 
     ADK requires agent names to be valid Python identifiers (letters,
     digits, underscores; no hyphens). The workload name is from the
     closed Literal ``{"drift", "upgrade", "explore", "provision"}``, all
     identifier-safe.
     """
+    recheck_tools = {
+        name: fn
+        for name, fn in workload.tools.items()
+        if name not in CHAT_ONLY_TOOL_NAMES
+    }
+    allowed = filter_tools_for_mode(recheck_tools, TOOL_TIERS, autonomy_mode)
     return Agent(
         name=f"driftscribe_{workload.spec.name}",
         model="gemini-2.5-flash",
-        instruction=workload.system_prompt,
-        # /recheck is autonomous — drop chat-only tools (see
-        # CHAT_ONLY_TOOL_NAMES). Order is otherwise preserved.
-        tools=[
-            fn
-            for name, fn in workload.tools.items()
-            if name not in CHAT_ONLY_TOOL_NAMES
-        ],
+        instruction=_dial_instruction(workload.system_prompt, autonomy_mode),
+        tools=list(allowed.values()),
         # 18.B.1: surface Gemini 2.5 Flash's thought summaries. The model
         # already spends thinking tokens at default-dynamic budget; this
         # only changes whether the summaries are *returned*.
@@ -437,11 +448,12 @@ def build_agent(workload: WorkloadResolution) -> Agent:
     )
 
 
-def build_chat_agent(workload: WorkloadResolution) -> Agent:
+def build_chat_agent(workload: WorkloadResolution, *, autonomy_mode: str) -> Agent:
     """Construct the /chat-flavored ADK Agent for the given workload.
 
-    Same workload parameter as :func:`build_agent`. The system prompt
-    here is :attr:`~agent.workloads.WorkloadResolution.chat_system_prompt`
+    Same workload + ``autonomy_mode`` parameters as :func:`build_agent`. The
+    system prompt here is
+    :attr:`~agent.workloads.WorkloadResolution.chat_system_prompt`
     — Phase 17.C.4 (Option A from the plan) moved the previously
     coordinator-wide ``SYSTEM_PROMPT_CHAT`` constant into per-workload
     files (``workloads/drift/chat_system_prompt.md`` and
@@ -449,16 +461,20 @@ def build_chat_agent(workload: WorkloadResolution) -> Agent:
     surface gets upgrade-flavored instructions, not drift's. Workloads
     that want the same prompt on both surfaces leave
     ``chat_system_prompt_file`` unset in YAML — the registry falls back
-    to ``system_prompt``. Tool list is per-workload — same Phase 17.A.3
-    rationale as :func:`build_agent`.
+    to ``system_prompt``.
+
+    Tool list is the FULL per-workload set (including CHAT_ONLY_TOOL_NAMES),
+    then filtered by the autonomy dial via
+    :func:`agent.autonomy.filter_tools_for_mode` (Layer 0). ``autonomy_mode``
+    is a REQUIRED keyword arg — same loud-fail contract as
+    :func:`build_agent`.
     """
+    allowed = filter_tools_for_mode(workload.tools, TOOL_TIERS, autonomy_mode)
     return Agent(
         name=f"driftscribe_chat_{workload.spec.name}",
         model="gemini-2.5-flash",
-        instruction=workload.chat_system_prompt,
-        # /chat is the interactive operator surface — it keeps the full
-        # workload tool set, including CHAT_ONLY_TOOL_NAMES (e.g. close PR).
-        tools=list(workload.tools.values()),
+        instruction=_dial_instruction(workload.chat_system_prompt, autonomy_mode),
+        tools=list(allowed.values()),
         # 18.B.1: surface Gemini 2.5 Flash's thought summaries. The model
         # already spends thinking tokens at default-dynamic budget; this
         # only changes whether the summaries are *returned*.
@@ -719,7 +735,7 @@ def _emit_final_response(text: str) -> dict:
 
 
 async def run_agent(
-    user_msg: str, *, workload: str = "drift"
+    user_msg: str, *, workload: str = "drift", autonomy_mode: str
 ) -> DecisionProposal:
     """Run the ADK agent against `user_msg` and parse the final response.
 
@@ -729,10 +745,12 @@ async def run_agent(
 
     ``workload`` selects the workload-scoped agent. Defaults to ``"drift"``
     for backward compatibility with pre-17.A.3 callers; new callers pass
-    it explicitly via :func:`agent.main._run_adk_agent`.
+    it explicitly via :func:`agent.main._run_adk_agent`. ``autonomy_mode``
+    is a REQUIRED keyword arg — forwarded to :func:`build_agent` so the dial
+    filters the tool set at Layer 0.
     """
     resolution = load_workload(workload)
-    agent = build_agent(resolution)
+    agent = build_agent(resolution, autonomy_mode=autonomy_mode)
     session_service = InMemorySessionService()
     session_id = str(uuid.uuid4())
     await session_service.create_session(
@@ -834,6 +852,7 @@ async def run_chat_stream(
     session_id: str | None = None,
     *,
     workload: str = "drift",
+    autonomy_mode: str,
 ):
     """Core streaming generator for the chat agent.
 
@@ -857,7 +876,7 @@ async def run_chat_stream(
     never less-redacted than the durable log.
     """
     resolution = load_workload(workload)
-    agent = build_chat_agent(resolution)
+    agent = build_chat_agent(resolution, autonomy_mode=autonomy_mode)
     session_service = InMemorySessionService()
     sid = session_id or str(uuid.uuid4())
     await session_service.create_session(
@@ -943,6 +962,7 @@ async def run_chat(
     session_id: str | None = None,
     *,
     workload: str = "drift",
+    autonomy_mode: str,
 ) -> dict:
     """Run the free-form chat agent against `prompt`.
 
@@ -970,7 +990,8 @@ async def run_chat(
     single source of truth.
     """
     async for item in run_chat_stream(
-        prompt, session_id=session_id, workload=workload
+        prompt, session_id=session_id, workload=workload,
+        autonomy_mode=autonomy_mode,
     ):
         if item["type"] == "result":
             return {

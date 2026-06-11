@@ -63,7 +63,7 @@ async def test_run_chat_dedups_partial_thoughts(caplog, drift_workload_env):
     try:
         with patch.object(adk_agent, "Runner") as runner_cls:
             runner_cls.return_value.run_async = _stub_run
-            result = await adk_agent.run_chat("hi", workload="drift")
+            result = await adk_agent.run_chat("hi", workload="drift", autonomy_mode="propose_apply")
     finally:
         reset_workload(token)
 

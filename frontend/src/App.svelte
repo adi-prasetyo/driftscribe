@@ -29,6 +29,7 @@
   import type { ChatPrefill } from './lib/workloads';
   import CapabilityCard from './components/CapabilityCard.svelte';
   import PauseControl from './components/PauseControl.svelte';
+  import AutonomyControl from './components/AutonomyControl.svelte';
   import Timeline from './components/Timeline.svelte';
 
   // ---- state ----
@@ -386,6 +387,7 @@
 
   <section id="chat-area" class="chat-area" aria-label="Chat and reasoning timeline">
     <PauseControl {call} />
+    <AutonomyControl {call} />
     <InfraDiagram
       {call}
       {appliedEpoch}

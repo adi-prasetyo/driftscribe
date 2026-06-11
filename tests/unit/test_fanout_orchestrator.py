@@ -54,11 +54,19 @@ def _live(dotted: str):
     return importlib.import_module(dotted)
 
 
-async def _drain(prompt="do the thing", session_id="sid-fixed"):
-    """Drain the orchestrator's async generator into a list."""
+async def _drain(prompt="do the thing", session_id="sid-fixed",
+                 autonomy_mode="propose_apply"):
+    """Drain the orchestrator's async generator into a list.
+
+    Defaults to ``autonomy_mode="propose_apply"`` so the existing
+    orchestrator tests exercise today's (full-autonomy) behavior; the
+    dial-specific tests pass an explicit mode.
+    """
     return [
         item
-        async for item in fanout.run_provision_fanout_stream(prompt, session_id)
+        async for item in fanout.run_provision_fanout_stream(
+            prompt, session_id, autonomy_mode=autonomy_mode
+        )
     ]
 
 
@@ -265,7 +273,7 @@ def test_single_slice_delegates_to_run_chat_stream(monkeypatch):
 
     delegated_to: dict = {}
 
-    async def _fake_run_chat_stream(prompt, session_id=None, *, workload="drift"):
+    async def _fake_run_chat_stream(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply"):
         delegated_to["prompt"] = prompt
         delegated_to["session_id"] = session_id
         delegated_to["workload"] = workload
@@ -320,7 +328,7 @@ def test_non_policy_decompose_failure_fails_open(monkeypatch):
 
     delegated: dict = {}
 
-    async def _fake_run_chat_stream(prompt, session_id=None, *, workload="drift"):
+    async def _fake_run_chat_stream(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply"):
         delegated["workload"] = workload
         yield {
             "type": "result",
@@ -724,7 +732,9 @@ def test_early_generator_close_reaps_author_task(monkeypatch):
     monkeypatch.setattr(fanout, "author_slices_parallel", _slow_author)
 
     async def _scenario():
-        gen = fanout.run_provision_fanout_stream("prompt", "sid")
+        gen = fanout.run_provision_fanout_stream(
+            "prompt", "sid", autonomy_mode="propose_apply"
+        )
         # Pull the first author event, then close the generator mid-author and
         # let the finally cancel + reap the in-flight author task.
         first = await gen.__anext__()
@@ -861,3 +871,128 @@ def test_multi_slice_notifier_failure_suppressed_stream_completes(monkeypatch):
         "pr_number": 42,
         "pr_url": "https://github.com/owner/repo/pull/42",
     }
+
+
+# --------------------------------------------------------------------------- #
+# Autonomy dial (ClickOps item 11) — fan-out gating
+# --------------------------------------------------------------------------- #
+
+
+def test_provision_fanout_observe_delegates_without_editor_call(monkeypatch):
+    """Observe: a multi-slice prompt delegates the WHOLE stream to the
+    single-agent run_chat_stream at entry; decompose/author/editor never run."""
+    decompose_called = {"n": 0}
+
+    async def _decompose_should_not_run(*a, **k):
+        decompose_called["n"] += 1
+        raise AssertionError("decompose must not run in Observe (entry-delegated)")
+
+    monkeypatch.setattr(fanout, "decompose", _decompose_should_not_run)
+
+    open_pr_called = {"n": 0}
+    monkeypatch.setattr(
+        _live("agent.worker_client"),
+        "call_open_infra_pr",
+        lambda *a, **k: open_pr_called.__setitem__("n", open_pr_called["n"] + 1),
+    )
+
+    delegated: dict = {}
+
+    async def _fake_run_chat_stream(prompt, session_id=None, *, workload="drift",
+                                    autonomy_mode="propose_apply"):
+        delegated["workload"] = workload
+        delegated["autonomy_mode"] = autonomy_mode
+        yield {
+            "type": "result",
+            "reply": "observe single-agent reply",
+            "tool_calls": [],
+            "session_id": session_id,
+        }
+
+    monkeypatch.setattr(_live("agent.adk_agent"), "run_chat_stream", _fake_run_chat_stream)
+
+    items = asyncio.run(_drain(autonomy_mode="observe"))
+
+    assert decompose_called["n"] == 0
+    assert open_pr_called["n"] == 0
+    assert delegated == {"workload": "provision", "autonomy_mode": "observe"}
+    assert _result(items)["reply"] == "observe single-agent reply"
+
+
+def test_provision_fanout_precall_guard_fails_closed(monkeypatch):
+    """Drive the committed (N>=2) branch directly with autonomy_mode='observe'
+    so the entry delegation is bypassed (monkeypatch the mode check at the
+    seam): the pre-editor-call guard refuses; call_open_infra_pr not called."""
+    _patch_decompose(monkeypatch, result=_two_slice_plan())
+    _patch_author(monkeypatch, result=_two_file_author_result())
+    _patch_authority(monkeypatch)
+
+    open_pr_called = {"n": 0}
+    monkeypatch.setattr(
+        _live("agent.worker_client"),
+        "call_open_infra_pr",
+        lambda *a, **k: open_pr_called.__setitem__("n", open_pr_called["n"] + 1),
+    )
+
+    # Bypass the entry delegation: make the entry mode-check think it's
+    # propose (so it proceeds into the committed branch) but leave the
+    # pre-call guard's mode_allows seeing 'observe'. We do that by patching
+    # mode_allows on the fanout module to return False for the propose tier
+    # while passing autonomy_mode='propose' to skip the entry observe branch.
+    monkeypatch.setattr(fanout, "mode_allows", lambda mode, tier: False)
+
+    items = asyncio.run(_drain(autonomy_mode="propose"))
+
+    assert open_pr_called["n"] == 0
+    result = _result(items)
+    assert "was not opened" in result["reply"]
+    assert result["tool_calls"] == []
+
+
+def test_provision_fanout_single_slice_passes_mode_through(monkeypatch):
+    """A single-slice plan in propose delegates to run_chat_stream WITH the
+    same autonomy_mode."""
+    plan = DecomposeResult(
+        slices=[SliceSpec(goal="one thing", target_path="iac/one.tf")],
+        pr_title="One",
+        pr_body_intro="intro",
+    )
+    _patch_decompose(monkeypatch, result=plan)
+    monkeypatch.setattr(
+        _live("agent.worker_client"),
+        "call_open_infra_pr",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no editor on 1 slice")),
+    )
+
+    delegated: dict = {}
+
+    async def _fake_run_chat_stream(prompt, session_id=None, *, workload="drift",
+                                    autonomy_mode="propose_apply"):
+        delegated["autonomy_mode"] = autonomy_mode
+        yield {
+            "type": "result",
+            "reply": "delegated",
+            "tool_calls": [],
+            "session_id": session_id,
+        }
+
+    monkeypatch.setattr(_live("agent.adk_agent"), "run_chat_stream", _fake_run_chat_stream)
+
+    asyncio.run(_drain(autonomy_mode="propose"))
+    assert delegated["autonomy_mode"] == "propose"
+
+
+def test_provision_fanout_propose_opens_pr(monkeypatch):
+    """propose: the committed branch opens the PR (the dial must not over-block
+    proposals — open_infra_pr is propose-tier)."""
+    _patch_decompose(monkeypatch, result=_two_slice_plan())
+    _patch_author(monkeypatch, result=_two_file_author_result())
+    _patch_authority(monkeypatch, target_repo="owner/repo", branch="infra/x-1-ab")
+    capture: dict = {}
+    _patch_open_pr(monkeypatch, capture=capture)
+
+    items = asyncio.run(_drain(autonomy_mode="propose"))
+
+    assert "call" in capture  # editor WAS called
+    result = _result(items)
+    assert result["tool_calls"] == ["open_infra_pr"]

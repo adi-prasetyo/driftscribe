@@ -35,6 +35,12 @@ from agent.pause import (
     PauseState,
     read_pause_state,
 )
+from agent.autonomy import (
+    AutonomyState,
+    autonomy_apply_blocked_detail,
+    read_autonomy_state,
+)
+from agent.autonomy import FAIL_CLOSED_REASON as AUTONOMY_FAIL_CLOSED_REASON
 from agent.classifier import ClassificationInput, classify
 from agent.config import Settings, artifacts_bucket, get_settings
 from agent.worker_client import WorkerClientError
@@ -824,7 +830,7 @@ def _perform_action(
 
 
 async def _run_adk_agent(
-    user_msg: str, *, workload: str = "drift"
+    user_msg: str, *, workload: str = "drift", autonomy_mode: str
 ) -> DecisionProposal:
     """Thin wrapper so integration tests have a stable patch target.
 
@@ -835,11 +841,13 @@ async def _run_adk_agent(
 
     ``workload`` selects the workload-scoped agent. Defaults to ``"drift"``
     so any pre-17.A.3 patch site that calls this with a positional
-    ``user_msg`` only still works.
+    ``user_msg`` only still works. ``autonomy_mode`` is a REQUIRED keyword
+    arg — forwarded to :func:`agent.adk_agent.run_agent` so the dial filters
+    the tool set at Layer 0.
     """
     from agent.adk_agent import run_agent
 
-    return await run_agent(user_msg, workload=workload)
+    return await run_agent(user_msg, workload=workload, autonomy_mode=autonomy_mode)
 
 
 def _do_rollback(
@@ -847,6 +855,8 @@ def _do_rollback(
     proposal: DecisionProposal,
     event_key: str,
     trigger: str,
+    *,
+    autonomy_mode: str,
 ) -> dict:
     """ROLLBACK control flow: propose-via-worker → render → notify-via-worker.
 
@@ -906,6 +916,45 @@ def _do_rollback(
         if existing:
             return existing
         raise HTTPException(status_code=409, detail="event in-progress, retry")
+
+    if autonomy_mode == "observe":
+        # Observe suppression (ClickOps item 11) — a deliberate DIVERGENCE
+        # from the dry_run behavior documented above. dry_run still calls
+        # /propose so demos get an approval URL; the dial is an operator
+        # trust boundary, not a demo convenience. In Observe NOTHING leaves
+        # the coordinator: no approval doc is minted, no notification is
+        # sent. The decision row below is the only artifact. The event was
+        # claimed above so Eventarc retries don't re-run the LLM.
+        rendered = (
+            f"DriftScribe proposed a rollback to revision "
+            f"{proposal.target_revision} but did not create the approval — "
+            f"the autonomy dial is set to Observe. Raise the dial to Propose "
+            f"to let rollback proposals mint operator approvals.\n\n"
+            f"Rationale: {scrub_rationale_text(proposal.rationale, proposal.env_diffs)}"
+        )
+        decision_id = str(uuid.uuid4())
+        response = {
+            "decision_id": decision_id,
+            "event_key": event_key,
+            "trace_id": current_trace_id_or_new(),
+            "action": "rollback",
+            "decision_path": "adk",
+            "rendered_body": rendered,
+            "rationale": proposal.rationale,
+            "diffs": [d.model_dump(mode="json") for d in proposal.env_diffs],
+            "target_revision": proposal.target_revision,
+            "requires_human_review": True,
+            "dry_run": s.dry_run,
+            # NO "dry_run_effective": that field disambiguates the
+            # propose-despite-dry-run behavior, which did not happen here.
+            # NO "approval": nothing was minted — readers must not see a
+            # null-shaped approval and branch on it.
+            "autonomy_mode": "observe",
+            "suppressed_by_autonomy": True,
+            "trigger": trigger,
+        }
+        state.record_decision(decision_id, event_key, response)
+        return response
 
     # Side effect #1: mint the approval via the Rollback Worker. The worker
     # owns the HMAC key, the Firestore approvals collection write, and the
@@ -1021,6 +1070,9 @@ def _do_rollback(
             "approval_url": approval_url,
             "expires_at": expires_at,
         },
+        # Every new rollback decision records the dial mode it was made under
+        # (propose / propose_apply here — observe short-circuits above).
+        "autonomy_mode": autonomy_mode,
         "trigger": trigger,
     }
     state.record_decision(decision_id, event_key, response)
@@ -1194,6 +1246,14 @@ async def _do_recheck(
         # Bad contract = our deploy is broken, not GCP. 500, not 502.
         raise HTTPException(status_code=500, detail=f"contract load failed: {e}")
 
+    # Autonomy dial (ClickOps item 11): read ONCE here — fail-closed to
+    # observe — and thread the mode through the rest of the pipeline. In
+    # Observe the agent runs (tool-filtered) and the decision is RECORDED,
+    # but the GitHub action / rollback worker calls are SUPPRESSED below.
+    # The /recheck pipeline is NEVER refused by the dial (contrast pause's
+    # full stop); observing is the point of Observe.
+    autonomy = _autonomy_state_fail_closed()
+
     if s.use_adk:
         # ADK path: the agent's own tool calls do the Cloud Run read, so we
         # don't pre-fetch live_env. We still need a live_env-shaped dict for
@@ -1230,7 +1290,9 @@ async def _do_recheck(
         _workload_token = set_workload(workload)
         try:
             try:
-                proposal = await _run_adk_agent(user_msg, workload=workload)
+                proposal = await _run_adk_agent(
+                    user_msg, workload=workload, autonomy_mode=autonomy.mode
+                )
             finally:
                 reset_workload(_workload_token)
         except (
@@ -1363,7 +1425,9 @@ async def _do_recheck(
     # approval — lives in _do_rollback: it only proposes + notifies, never
     # mutates Cloud Run.
     if proposal.action == DecisionAction.ROLLBACK:
-        return _do_rollback(s, proposal, event_key, trigger)
+        return _do_rollback(
+            s, proposal, event_key, trigger, autonomy_mode=autonomy.mode
+        )
 
     rendered = _render_for(proposal.action, proposal)
 
@@ -1377,17 +1441,31 @@ async def _do_recheck(
             return existing
         raise HTTPException(status_code=409, detail="event in-progress, retry")
 
-    try:
-        github_result = _perform_action(s, contract, proposal, rendered)
-    except HTTPException:
-        # Side effect failed — release the claim so retries can proceed.
-        # The patcher's atomic pre-check + branch random suffix mean a retry
-        # won't create duplicate partial state.
-        state.release_event(event_key)
-        raise
-    except Exception as e:
-        state.release_event(event_key)
-        raise HTTPException(status_code=502, detail=f"side effect failed: {e}")
+    # Autonomy dial (ClickOps item 11): in Observe the pipeline observes,
+    # decides, and RECORDS — but does not touch GitHub. The decision row is
+    # the operator-visible "would have" artifact; the rail renders it
+    # distinctly (suppressed_by_autonomy). no_op is never a side effect, so
+    # it is never suppressed (the dry-run preview shape is preserved). In
+    # Propose / Propose+Apply the action executes exactly as before.
+    suppressed = autonomy.mode == "observe" and proposal.action != DecisionAction.NO_OP
+    if suppressed:
+        github_result = {
+            "suppressed_by_autonomy": "observe",
+            "url": None,
+            "action": proposal.action.value,
+        }
+    else:
+        try:
+            github_result = _perform_action(s, contract, proposal, rendered)
+        except HTTPException:
+            # Side effect failed — release the claim so retries can proceed.
+            # The patcher's atomic pre-check + branch random suffix mean a
+            # retry won't create duplicate partial state.
+            state.release_event(event_key)
+            raise
+        except Exception as e:
+            state.release_event(event_key)
+            raise HTTPException(status_code=502, detail=f"side effect failed: {e}")
 
     decision_id = str(uuid.uuid4())
     response = {
@@ -1413,8 +1491,14 @@ async def _do_recheck(
         "requires_human_review": proposal.requires_human_review,
         "dry_run": s.dry_run,
         "github": github_result,
+        # Every new drift decision records the dial mode it was made under.
+        "autonomy_mode": autonomy.mode,
         "trigger": trigger,
     }
+    if suppressed:
+        # Only suppressed rows carry this marker — the rail keys its
+        # "recorded, not executed" treatment off it.
+        response["suppressed_by_autonomy"] = True
     state.record_decision(decision_id, event_key, response)
     return response
 
@@ -1453,6 +1537,22 @@ class PauseToggleRequest(BaseModel):
     """
 
     paused: StrictBool
+    reason: str | None = Field(default=None, max_length=500)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class AutonomyToggleRequest(BaseModel):
+    """Request body for POST /autonomy.
+
+    ``mode`` is Literal-constrained so an unknown mode is a 422 at the edge,
+    never an ambiguous write. ``extra="forbid"`` surfaces typo'd fields as 422
+    rather than silently dropping them. ``reason`` is capped at 500 chars;
+    empty / whitespace-only strings are stripped to ``None`` by the route
+    handler so the stored audit doc stays clean.
+    """
+
+    mode: Literal["observe", "propose", "propose_apply"]
     reason: str | None = Field(default=None, max_length=500)
 
     model_config = ConfigDict(extra="forbid")
@@ -1929,6 +2029,37 @@ def get_capabilities_route(
 # --------------------------------------------------------------------------- #
 
 
+def _operator_actor_from_jwt(cf_access_jwt: str | None) -> str:
+    """Best-effort operator attribution for config toggles (pause, autonomy).
+
+    Extracted verbatim from post_pause_route — behavior unchanged: default
+    ``"operator-token"``; CF-Access JWT upgrade to the canonical operator
+    email when the team domain + aud tag are configured AND the assertion
+    verifies; silent fallback on any ``CfAccessJwtError`` so a stale CF
+    cookie or rotated key cannot break a legitimate token-authenticated
+    toggle.
+    """
+    settings = get_settings()
+    actor = "operator-token"
+    if (
+        cf_access_jwt
+        and settings.cf_access_team_domain
+        and settings.cf_access_aud_tag
+    ):
+        try:
+            claims = verify_cf_access_jwt(
+                cf_access_jwt,
+                settings.cf_access_team_domain,
+                settings.cf_access_aud_tag,
+            )
+            actor = canonical_operator_email(claims)
+        except CfAccessJwtError:
+            # Silent fallback — a stale cookie or rotated key shouldn't block
+            # a toggle that is authenticated by the operator token.
+            pass
+    return actor
+
+
 def _pause_state_fail_closed() -> PauseState:
     """Resolve the StateStore AND read the pause flag, fail-closed end-to-end.
 
@@ -2022,26 +2153,9 @@ def post_pause_route(
     status, and a cached copy could mislead the operator about safety state.
     """
     response.headers["Cache-Control"] = "no-store"
-    settings = get_settings()
 
     # --- Actor attribution (best-effort; any failure → fallback) ---
-    actor = "operator-token"
-    if (
-        cf_access_jwt
-        and settings.cf_access_team_domain
-        and settings.cf_access_aud_tag
-    ):
-        try:
-            claims = verify_cf_access_jwt(
-                cf_access_jwt,
-                settings.cf_access_team_domain,
-                settings.cf_access_aud_tag,
-            )
-            actor = canonical_operator_email(claims)
-        except CfAccessJwtError:
-            # Silent fallback — a stale cookie or rotated key shouldn't block
-            # a toggle that is authenticated by the operator token.
-            pass
+    actor = _operator_actor_from_jwt(cf_access_jwt)
 
     # Strip whitespace-only reason to None so the stored doc is clean.
     reason = req.reason.strip() if req.reason else None
@@ -2075,6 +2189,148 @@ def post_pause_route(
         read_error=False,
     )
     return _serialize_pause_state(ps)
+
+
+# --------------------------------------------------------------------------- #
+# Operator autonomy dial — ClickOps item 11
+# --------------------------------------------------------------------------- #
+
+
+def _autonomy_state_fail_closed() -> AutonomyState:
+    """Resolve the StateStore AND read the dial, fail-closed end-to-end.
+
+    Mirrors _pause_state_fail_closed: read_autonomy_state never raises on
+    get_autonomy() errors, but get_state() ITSELF can raise (first-call
+    Firestore client construction). The fail-closed direction here is
+    mode="observe" — the MOST restrictive — NOT the absent-doc default
+    "propose_apply": an unreadable dial means we cannot KNOW what the
+    operator chose, so the only honest stance is report-only.
+
+    ONE mechanism for every dial read (the Layer-0 reads, the pipeline
+    suppression site, the apply gates, the approval displays, GET /autonomy).
+    """
+    try:
+        state = get_state()
+    except Exception:  # noqa: BLE001 — fail-closed by contract, never raise
+        log.warning("autonomy_state_store_unavailable", exc_info=True)
+        return AutonomyState(
+            mode="observe", reason=AUTONOMY_FAIL_CLOSED_REASON, read_error=True
+        )
+    return read_autonomy_state(state)
+
+
+def _autonomy_note_for_display(a: AutonomyState) -> str:
+    """Calm operator-facing dial note for the approval display pages.
+
+    Distinguishes the two Observe causes (Codex should-consider 3): a
+    fail-closed read must NEVER be presented as the operator's choice. A
+    configured restriction names the mode the operator picked; a read failure
+    says the effective mode is Observe and that it is failing closed.
+    """
+    if a.read_error:
+        return (
+            "autonomy state could not be read — the effective mode is Observe "
+            "(failing closed). Applying changes is disabled until the dial can "
+            "be read again."
+        )
+    return autonomy_apply_blocked_detail(a.mode)
+
+
+def _serialize_autonomy_state(a: AutonomyState) -> dict[str, Any]:
+    """Serialize an AutonomyState to the wire shape shared by GET and POST.
+
+    ``updated_at`` shaping mirrors _serialize_pause_state exactly: a
+    ``datetime`` (InMemory) or Firestore ``DatetimeWithNanoseconds`` both have
+    ``.isoformat()``; fall back to ``str()`` for any other datetime-like type;
+    ``None`` stays ``None`` (dial never written).
+    """
+    if a.updated_at is None:
+        updated_at_str = None
+    elif hasattr(a.updated_at, "isoformat"):
+        updated_at_str = a.updated_at.isoformat()
+    else:
+        updated_at_str = str(a.updated_at)
+    return {
+        "mode": a.mode,
+        "reason": a.reason,
+        "actor": a.actor,
+        "updated_at": updated_at_str,
+        "read_error": a.read_error,
+    }
+
+
+@app.get("/autonomy")
+def get_autonomy_route(
+    response: Response,
+    _: None = Depends(verify_token),
+) -> dict:
+    """Return the current autonomy dial state.
+
+    Fail-closed read serialized at 200 — observe/read_error=True IS the
+    system's effective state, so a read failure is not an error response.
+    The store is resolved INSIDE the body (via _autonomy_state_fail_closed,
+    not Depends(get_state)) so a store-init failure ALSO yields the
+    fail-closed view rather than a 500. ``Cache-Control: no-store`` mirrors
+    GET /pause — operator safety status must never be served from cache.
+    """
+    response.headers["Cache-Control"] = "no-store"
+    return _serialize_autonomy_state(_autonomy_state_fail_closed())
+
+
+@app.post("/autonomy")
+def post_autonomy_route(
+    req: AutonomyToggleRequest,
+    response: Response,
+    _: None = Depends(verify_token),
+    cf_access_jwt: str | None = Header(default=None, alias="Cf-Access-Jwt-Assertion"),
+) -> dict:
+    """Set the autonomy dial. Mirrors POST /pause exactly.
+
+    Token-gated; audited (reason / actor / updated_at). Actor attribution is
+    best-effort via _operator_actor_from_jwt (CF-Access email when configured,
+    else "operator-token"). A WRITE failure raises 502 — the operator must
+    KNOW the toggle did NOT take effect; the store is resolved INSIDE the try
+    so a store-init failure gets the SAME contractual 502 instead of a generic
+    500. The response is built from the as-written document so the caller sees
+    the real server-authoritative updated_at. ``Cache-Control: no-store``
+    matches the GET.
+    """
+    response.headers["Cache-Control"] = "no-store"
+
+    # --- Actor attribution (best-effort; any failure → fallback) ---
+    actor = _operator_actor_from_jwt(cf_access_jwt)
+
+    # Strip whitespace-only reason to None so the stored doc is clean.
+    reason = req.reason.strip() if req.reason else None
+    reason = reason or None  # empty string after strip → None
+
+    try:
+        doc = get_state().set_autonomy(mode=req.mode, reason=reason, actor=actor)
+    except Exception as exc:  # noqa: BLE001
+        # Surface BOTH store-resolution and write failures as 502 — the
+        # operator must see that the toggle didn't take effect. A silent write
+        # failure could leave the operator believing the dial moved when it
+        # did not.
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"autonomy toggle did NOT take effect — storage write failed: {exc}"
+            ),
+        ) from exc
+
+    log.info("autonomy_toggled", extra={"mode": req.mode, "actor": actor, "reason": reason})
+
+    # Build the response from the as-written doc so the caller sees what was
+    # actually persisted (including the server-authoritative updated_at from
+    # Firestore's read-after-write in FirestoreStateStore.set_autonomy).
+    a = AutonomyState(
+        mode=str(doc.get("mode")),
+        reason=doc.get("reason"),
+        actor=doc.get("actor"),
+        updated_at=doc.get("updated_at"),
+        read_error=False,
+    )
+    return _serialize_autonomy_state(a)
 
 
 @app.get("/trace/{trace_id}")
@@ -2418,6 +2674,12 @@ def approval_get(request: Request, approval_id: str, t: str = "") -> Response:
     # (probe-safe): a store-resolution failure fails closed to a paused display,
     # never a 500.
     paused = _pause_state_fail_closed().paused
+    # Autonomy dial (display): mirror the paused treatment — when the dial is
+    # below Propose+Apply, Approve is disabled and a calm note explains the
+    # dial (Reject stays active). Read fail-closed so a store failure shows the
+    # restrictive display, never a 500.
+    autonomy = _autonomy_state_fail_closed()
+    autonomy_blocked = autonomy.mode != "propose_apply"
     response = _TEMPLATES.TemplateResponse(
         request,
         "approval.html",
@@ -2427,6 +2689,8 @@ def approval_get(request: Request, approval_id: str, t: str = "") -> Response:
             "token": t,
             "expired": expired,
             "paused": paused,
+            "autonomy_blocked": autonomy_blocked,
+            "autonomy_detail": _autonomy_note_for_display(autonomy),
         },
     )
     return _apply_approval_security_headers(response)
@@ -2561,6 +2825,9 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
     # fails closed to a paused DISPLAY (same fail-closed direction as a get_pause
     # read error), never a 500.
     _pause = _pause_state_fail_closed()
+    # Autonomy dial state for the gate ladder rung below (after the pause rung).
+    # Read fail-closed so the DISPLAY matches the fail-closed POST gate.
+    _autonomy = _autonomy_state_fail_closed()
 
     if view is None:
         reason_blocked = "No verifiable C2 plan artifact."
@@ -2599,6 +2866,15 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
             if not _pause.read_error
             else "DriftScribe is paused (pause state unreadable — failing closed)"
         )
+        reason_severity = "pending"
+    elif _autonomy.mode != "propose_apply":
+        # Autonomy dial gate (ClickOps item 11): one more rung after pause —
+        # the POST refuses 409 below Propose+Apply, so suppress Approve here and
+        # mint NO CSRF token. "pending" severity (calm — the artifact is fine;
+        # the dial is the operator's choice, NOT a broken plan). Distinguish the
+        # two Observe causes: a fail-closed read must never be presented as the
+        # operator's choice (Codex should-consider 3).
+        reason_blocked = _autonomy_note_for_display(_autonomy)
         reason_severity = "pending"
     else:
         can_approve = True
@@ -2987,6 +3263,19 @@ def iac_approval_post(
     # already a coordinator-side audit no-op and stays UNGATED. Read fail-closed.
     if _pause_state_fail_closed().paused:
         raise HTTPException(status_code=423, detail=PAUSED_DETAIL)
+
+    # Autonomy dial gate (ClickOps item 11): the apply pipeline is
+    # Propose+Apply territory. AFTER the pause gate (pause outranks the dial;
+    # both fail closed) and BEFORE plan re-resolution / _handle_existing_iac_decision
+    # (Codex must-fix 4: the gate must fire before a waiting_for_rebake /
+    # resume-apply re-POST can route into a merge or apply). 409, NOT 423 —
+    # this is the operator's own configured mode, not the kill switch; clients
+    # must not render it as "paused". The REJECT path above stays ungated.
+    _autonomy = _autonomy_state_fail_closed()
+    if _autonomy.mode != "propose_apply":
+        raise HTTPException(
+            status_code=409, detail=autonomy_apply_blocked_detail(_autonomy.mode)
+        )
 
     # (b) Re-resolve + pin: bind what-you-saw == what's-latest == what-applies.
     ref, view = _resolve_iac_plan(s, pr_number)
@@ -3905,6 +4194,11 @@ def approval_post(
     # also covers a get_state() failure (fail-closed paused → approve 423,
     # reject still goes through to the worker — the safety direction holds).
     pause = _pause_state_fail_closed()
+    # Autonomy dial: read once here for the approve gate AND the re-render
+    # context (so the page disables Approve + explains the dial). Reject stays
+    # ungated, same safety direction as pause.
+    autonomy = _autonomy_state_fail_closed()
+    autonomy_blocked = autonomy.mode != "propose_apply"
 
     if decision == "reject":
         try:
@@ -3917,6 +4211,14 @@ def approval_post(
     else:  # approve
         if pause.paused:
             raise HTTPException(status_code=423, detail=PAUSED_DETAIL)
+        # Autonomy dial gate: AFTER the pause gate (pause outranks the dial),
+        # 409 not 423 — the operator's own configured mode, not the kill
+        # switch. Reject above stays ungated.
+        if autonomy_blocked:
+            raise HTTPException(
+                status_code=409,
+                detail=autonomy_apply_blocked_detail(autonomy.mode),
+            )
         try:
             execute_result = worker_client.call_execute(approval_id, t)
         except worker_client.WorkerClientError as e:
@@ -3939,6 +4241,8 @@ def approval_post(
             "decision": decision,
             "decision_result": execute_result,
             "paused": pause.paused,
+            "autonomy_blocked": autonomy_blocked,
+            "autonomy_detail": _autonomy_note_for_display(autonomy),
         },
     )
     return _apply_approval_security_headers(response)
@@ -4073,7 +4377,9 @@ def _paused_chat_response(
 _SSE_HEARTBEAT_S = 15
 
 
-def _chat_stream(workload: str, prompt: str, session_id: str | None):
+def _chat_stream(
+    workload: str, prompt: str, session_id: str | None, *, autonomy_mode: str
+):
     """Select the chat-stream async generator for a workload.
 
     The ``provision`` workload (Phase D5) routes through the parallel
@@ -4084,12 +4390,21 @@ def _chat_stream(workload: str, prompt: str, session_id: str | None):
     ``{"type":"event"|"result"}`` item shapes, so all downstream framing
     (``_chat_sse`` SSE frames, the JSON drain) is workload-agnostic. Imports
     are lazy to avoid pulling ADK/fanout at module import and to dodge an
-    import cycle (``agent.fanout`` imports ``agent.adk_agent``)."""
+    import cycle (``agent.fanout`` imports ``agent.adk_agent``).
+
+    ``autonomy_mode`` is a REQUIRED keyword arg, forwarded to BOTH the fan-out
+    orchestrator (which gates its coordinator-direct editor call) and the
+    single-agent path (Layer-0 tool filtering)."""
     if workload == "provision":
         from agent.fanout import run_provision_fanout_stream
-        return run_provision_fanout_stream(prompt, session_id)
+        return run_provision_fanout_stream(
+            prompt, session_id, autonomy_mode=autonomy_mode
+        )
     from agent.adk_agent import run_chat_stream
-    return run_chat_stream(prompt, session_id=session_id, workload=workload)
+    return run_chat_stream(
+        prompt, session_id=session_id, workload=workload,
+        autonomy_mode=autonomy_mode,
+    )
 
 
 async def _drain_chat_stream_result(agen) -> dict:
@@ -4122,7 +4437,7 @@ async def _drain_chat_stream_result(agen) -> dict:
 
 
 async def _chat_sse(prompt: str, session_id: str | None, workload: str,
-                    trace_id: str):
+                    trace_id: str, *, autonomy_mode: str):
     """SSE generator for the /chat streaming path.
 
     Re-binds the trace_id + workload ContextVars INSIDE the generator
@@ -4146,7 +4461,9 @@ async def _chat_sse(prompt: str, session_id: str | None, workload: str,
 
     async def _produce():
         try:
-            async for item in _chat_stream(workload, prompt, session_id):
+            async for item in _chat_stream(
+                workload, prompt, session_id, autonomy_mode=autonomy_mode
+            ):
                 await queue.put(("item", item))
         except Exception as e:  # noqa: BLE001 - mapped to a status hint
             await queue.put(("error", _chat_error_payload(e, workload=workload)))
@@ -4244,6 +4561,11 @@ async def chat(
         return _paused_chat_response(
             pause, wants_sse=wants_sse, session_id=req.session_id
         )
+    # Autonomy dial (ClickOps item 11): read AFTER the pause gate (pause
+    # outranks the dial). Chat is NEVER refused by the dial — tools are
+    # filtered at Layer 0 instead — so we read the mode once here and thread
+    # it through every streaming/JSON path below.
+    autonomy = _autonomy_state_fail_closed()
     # Phase 17.A.3: pre-resolve the workload so an "undeployed workload"
     # failure (e.g. upgrade before Phase 17.B/17.C/17.E land the tools +
     # worker URLs) surfaces as 503 BEFORE we boot the ADK runner. The
@@ -4306,7 +4628,10 @@ async def chat(
     if wants_sse:
         trace_id = current_trace_id_or_new()
         return StreamingResponse(
-            _chat_sse(req.prompt, req.session_id, req.workload, trace_id),
+            _chat_sse(
+                req.prompt, req.session_id, req.workload, trace_id,
+                autonomy_mode=autonomy.mode,
+            ),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -4342,10 +4667,14 @@ async def chat(
                 # path, so the outer ``except`` + ``_chat_error_payload``
                 # mapping below covers it unchanged.
                 return await _drain_chat_stream_result(
-                    _chat_stream("provision", req.prompt, req.session_id)
+                    _chat_stream(
+                        "provision", req.prompt, req.session_id,
+                        autonomy_mode=autonomy.mode,
+                    )
                 )
             return await run_chat(
-                req.prompt, session_id=req.session_id, workload=req.workload
+                req.prompt, session_id=req.session_id, workload=req.workload,
+                autonomy_mode=autonomy.mode,
             )
         finally:
             reset_workload(_workload_token)

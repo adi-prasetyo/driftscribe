@@ -9,6 +9,8 @@
   //  - The `call` prop is the same token-aware fetch wrapper as InfraDiagram.
 
   import { groupRules, type Capabilities } from '../lib/capabilities';
+  import { parseAutonomyDoc } from '../lib/autonomy';
+  import type { AutonomyDoc } from '../lib/autonomy';
 
   let {
     call,
@@ -21,6 +23,10 @@
   let loading = $state(false);
   let fetchError = $state(false);
   let fetched = $state(false);
+
+  // Best-effort autonomy doc fetched alongside /capabilities on first open.
+  // Null = not yet fetched / fetch failed / malformed body — card stays static.
+  let autonomyDoc = $state<AutonomyDoc | null>(null);
 
   /** Structural check on the four load-bearing DTO keys. A 200 with valid
    *  JSON but missing structure must route to the error/retry path: Svelte 5
@@ -37,6 +43,25 @@
       b.denylist !== null &&
       Array.isArray((b.denylist as Record<string, unknown>).rules)
     );
+  }
+
+  /** Best-effort fetch of /autonomy — fires alongside /capabilities on first
+   *  open; never throws, never blocks the capability render path. */
+  async function fetchAutonomyBestEffort(): Promise<void> {
+    try {
+      const resp = await call('/autonomy');
+      if (!resp.ok) return;
+      let body: unknown;
+      try {
+        body = await resp.json();
+      } catch {
+        return;
+      }
+      const doc = parseAutonomyDoc(body);
+      if (doc) autonomyDoc = doc;
+    } catch {
+      // best-effort: fetch failure → no note, card stays static
+    }
   }
 
   async function fetchCapabilities(): Promise<void> {
@@ -85,7 +110,13 @@
     const d = e.currentTarget as HTMLDetailsElement;
     if (d.open && !fetched && !loading) {
       void fetchCapabilities().then(() => {
-        if (!fetchError) fetched = true;
+        if (!fetchError) {
+          fetched = true;
+          // Fire /autonomy best-effort AFTER /capabilities succeeds — sequential
+          // so the two calls never share a Response body. Best-effort: never
+          // blocks or affects the capability render path.
+          void fetchAutonomyBestEffort();
+        }
       });
     }
   }
@@ -93,6 +124,22 @@
   // Defensive ?? []: isValidCapabilities already guarantees rules is an
   // array, but a throw inside a $derived has no error boundary to catch it.
   const ruleGroups = $derived(groupRules(data?.denylist?.rules ?? []));
+
+  /** Autonomy note copy — null means render nothing (propose_apply, no doc,
+   *  fetch failed). Codex must-fix 2: must NOT say "write-capable tools are
+   *  disabled" (notify/search_recent_prs are write_capable in the DTO but stay
+   *  available in Observe). read_error gets its own honest variant. */
+  const autonomyNote = $derived(
+    autonomyDoc === null
+      ? null
+      : autonomyDoc.read_error
+        ? 'Autonomy state could not be read — the effective mode is Observe (failing closed) until the dial can be read again.'
+        : autonomyDoc.mode === 'observe'
+          ? 'The autonomy dial is currently set to Observe — tools that open pull requests, issues, or approvals, and anything that merges or applies, are disabled until you raise the dial.'
+          : autonomyDoc.mode === 'propose'
+            ? 'The autonomy dial is currently set to Propose — pull requests and issues are enabled; anything that merges or applies is disabled until you raise the dial.'
+            : null, // propose_apply → no note
+  );
 </script>
 
 <details class="ds-card cap-card" data-testid="capability-card" ontoggle={onToggle}>
@@ -154,6 +201,13 @@
           checked at: {data.denylist.enforced_at.join(' → ')}
         </p>
       </section>
+
+      <!-- Autonomy mode note (Task 10) — shown when the dial is below
+           propose_apply; absent for propose_apply and on fetch failure. -->
+      {#if autonomyNote}
+        <p class="cap-autonomy-note ds-subtle" data-testid="capability-autonomy-note"
+          >{autonomyNote}</p>
+      {/if}
 
       <!-- 3. Workloads — what each workload can use -->
       <section class="cap-section" data-testid="cap-workloads" aria-labelledby="cap-workloads-heading">
@@ -282,6 +336,16 @@
   .cap-retry {
     padding: 0.3em 0.85em;
     font-size: var(--ds-fs-1);
+  }
+
+  /* Autonomy note — calm informational line above the workloads section */
+  .cap-autonomy-note {
+    margin: 0 0 var(--ds-sp-4);
+    font-size: var(--ds-fs-1);
+    padding: var(--ds-sp-2) var(--ds-sp-3);
+    background: var(--ds-neutral-surface);
+    border-radius: var(--ds-radius-sm);
+    border: 1px solid var(--ds-border-strong);
   }
 
   .cap-section {

@@ -265,3 +265,53 @@ describe('DecisionsRail — collapsed iac_apply lifecycle groups', () => {
     expect(queryByTestId('iac-lifecycle-summary')).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Task 9 — autonomy-suppressed token
+// ---------------------------------------------------------------------------
+
+describe('DecisionsRail — Observe-mode suppressed decisions', () => {
+  it('suppressed_by_autonomy:true renders autonomy-suppressed token with correct text', () => {
+    const decisions: Decision[] = [
+      {
+        decision_id: 'sup-1',
+        action: 'docs_pr',
+        suppressed_by_autonomy: true,
+        autonomy_mode: 'observe',
+      },
+    ];
+    const { getByTestId } = render(DecisionsRail, {
+      props: { decisions, activeTraceId: null, onOpenTrace: noop },
+    });
+    const token = getByTestId('autonomy-suppressed');
+    expect(token.textContent?.trim()).toBe('not executed — Observe mode');
+  });
+
+  it('decision without suppressed_by_autonomy renders no autonomy-suppressed token (stale-coordinator fail-quiet)', () => {
+    const decisions: Decision[] = [
+      {
+        decision_id: 'normal-1',
+        action: 'docs_pr',
+      },
+    ];
+    const { queryByTestId } = render(DecisionsRail, {
+      props: { decisions, activeTraceId: null, onOpenTrace: noop },
+    });
+    expect(queryByTestId('autonomy-suppressed')).toBeNull();
+  });
+
+  it('suppressed_by_autonomy:false renders no autonomy-suppressed token', () => {
+    const decisions: Decision[] = [
+      {
+        decision_id: 'not-sup-1',
+        action: 'docs_pr',
+        suppressed_by_autonomy: false,
+        autonomy_mode: 'propose',
+      },
+    ];
+    const { queryByTestId } = render(DecisionsRail, {
+      props: { decisions, activeTraceId: null, onOpenTrace: noop },
+    });
+    expect(queryByTestId('autonomy-suppressed')).toBeNull();
+  });
+});

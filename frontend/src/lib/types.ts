@@ -62,6 +62,11 @@ export interface Decision extends Record<string, unknown> {
   // failed_state_suspect / ambiguous). The rail renders it as a meta-line token
   // and uses it to retire the stale "Review & approve →" CTA on superseded rows.
   apply_status?: string;
+  // Autonomy dial fields (ClickOps item 11). Present on decisions created while
+  // the dial is configured; absent on pre-dial decisions (stale-coordinator
+  // fail-quiet: the rail renders nothing when absent).
+  autonomy_mode?: string;
+  suppressed_by_autonomy?: boolean;
 }
 
 /** GET /trace/{id} response (historical replay + post-`done` backfill). */

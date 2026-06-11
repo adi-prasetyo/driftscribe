@@ -614,7 +614,7 @@ def test_drift_workload_tool_order_pin(drift_workload_env):
     from agent.workloads.registry import TOOL_REGISTRY
 
     resolution = load_workload("drift")
-    agent = build_agent(resolution)
+    agent = build_agent(resolution, autonomy_mode="propose_apply")
     actual_callable_order = [t.__name__ for t in agent.tools]
 
     expected_callable_order = [
@@ -644,7 +644,7 @@ def test_explore_workload_tool_order_pin(explore_workload_env):
     from agent.workloads.registry import TOOL_REGISTRY
 
     resolution = load_workload("explore")
-    agent = build_chat_agent(resolution)
+    agent = build_chat_agent(resolution, autonomy_mode="propose_apply")
     actual_callable_order = [t.__name__ for t in agent.tools]
 
     expected_callable_order = [
@@ -683,8 +683,8 @@ def test_close_and_merge_pr_are_chat_only_not_exposed_to_autonomous_recheck(
     assert "upgrade_merge_pr" in CHAT_ONLY_TOOL_NAMES
 
     resolution = load_workload("upgrade")
-    chat_tools = {t.__name__ for t in build_chat_agent(resolution).tools}
-    recheck_tools = {t.__name__ for t in build_agent(resolution).tools}
+    chat_tools = {t.__name__ for t in build_chat_agent(resolution, autonomy_mode="propose_apply").tools}
+    recheck_tools = {t.__name__ for t in build_agent(resolution, autonomy_mode="propose_apply").tools}
 
     for chat_only in ("upgrade_close_pr_tool", "upgrade_merge_pr_tool"):
         assert chat_only in chat_tools, (

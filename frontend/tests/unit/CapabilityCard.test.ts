@@ -378,3 +378,171 @@ describe('CapabilityCard', () => {
     expect(container.querySelector('.cap-denylist__adoptable')).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Task 10 — capability card autonomy-mode note
+// ---------------------------------------------------------------------------
+
+describe('CapabilityCard — autonomy mode note (Task 10)', () => {
+  // Helper: build a call stub that returns capabilities on /capabilities and an
+  // autonomy doc on /autonomy.
+  function makeCallWithAutonomy(
+    paths: string[],
+    autonomyBody: unknown,
+    autonomyStatus = 200,
+  ): (path: string) => Promise<Response> {
+    return async (path: string) => {
+      paths.push(path);
+      if (path === '/autonomy') {
+        return new Response(JSON.stringify(autonomyBody), {
+          status: autonomyStatus,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      // /capabilities
+      return new Response(JSON.stringify(FIXTURE), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+  }
+
+  it('10a. observe mode (configured, read_error:false) → note shown with exact copy (no "write-capable tools are disabled")', async () => {
+    const paths: string[] = [];
+    const call = makeCallWithAutonomy(paths, {
+      mode: 'observe',
+      reason: null,
+      actor: null,
+      updated_at: null,
+      read_error: false,
+    });
+
+    const { getByTestId } = render(CapabilityCard, { props: { call } });
+    const el = getByTestId('capability-card') as HTMLDetailsElement;
+    el.open = true;
+    await fireEvent(el, new Event('toggle'));
+
+    await waitFor(() => {
+      const note = getByTestId('capability-autonomy-note');
+      expect(note.textContent?.trim()).toBe(
+        'The autonomy dial is currently set to Observe — tools that open pull requests, issues, or approvals, and anything that merges or applies, are disabled until you raise the dial.',
+      );
+    });
+
+    // Must NOT say "write-capable tools are disabled"
+    const note = getByTestId('capability-autonomy-note');
+    expect(note.textContent).not.toContain('write-capable tools are disabled');
+  });
+
+  it('10b. propose mode → note shown with exact propose copy', async () => {
+    const paths: string[] = [];
+    const call = makeCallWithAutonomy(paths, {
+      mode: 'propose',
+      reason: null,
+      actor: null,
+      updated_at: null,
+      read_error: false,
+    });
+
+    const { getByTestId } = render(CapabilityCard, { props: { call } });
+    const el = getByTestId('capability-card') as HTMLDetailsElement;
+    el.open = true;
+    await fireEvent(el, new Event('toggle'));
+
+    await waitFor(() => {
+      const note = getByTestId('capability-autonomy-note');
+      expect(note.textContent?.trim()).toBe(
+        'The autonomy dial is currently set to Propose — pull requests and issues are enabled; anything that merges or applies is disabled until you raise the dial.',
+      );
+    });
+  });
+
+  it('10c. read_error:true → fail-closed variant copy (never says "set to Observe")', async () => {
+    const paths: string[] = [];
+    const call = makeCallWithAutonomy(paths, {
+      mode: 'observe',
+      reason: null,
+      actor: null,
+      updated_at: null,
+      read_error: true,
+    });
+
+    const { getByTestId } = render(CapabilityCard, { props: { call } });
+    const el = getByTestId('capability-card') as HTMLDetailsElement;
+    el.open = true;
+    await fireEvent(el, new Event('toggle'));
+
+    await waitFor(() => {
+      const note = getByTestId('capability-autonomy-note');
+      expect(note.textContent?.trim()).toBe(
+        'Autonomy state could not be read — the effective mode is Observe (failing closed) until the dial can be read again.',
+      );
+    });
+
+    // Must NOT claim the operator "set" it
+    const note = getByTestId('capability-autonomy-note');
+    expect(note.textContent).not.toContain('currently set to');
+  });
+
+  it('10d. propose_apply mode → no note rendered', async () => {
+    const paths: string[] = [];
+    const call = makeCallWithAutonomy(paths, {
+      mode: 'propose_apply',
+      reason: null,
+      actor: null,
+      updated_at: null,
+      read_error: false,
+    });
+
+    const { queryByTestId } = render(CapabilityCard, { props: { call } });
+    const el = document.querySelector('[data-testid="capability-card"]') as HTMLDetailsElement;
+    el.open = true;
+    await fireEvent(el, new Event('toggle'));
+
+    // Give the async fetches time to complete
+    await waitFor(() => {
+      expect(document.querySelector('[data-testid="cap-gates"]')).toBeTruthy();
+    });
+
+    expect(queryByTestId('capability-autonomy-note')).toBeNull();
+  });
+
+  it('10e. /autonomy fetch failure → no note rendered (best-effort, card stays static)', async () => {
+    const paths: string[] = [];
+    const call = async (path: string): Promise<Response> => {
+      paths.push(path);
+      if (path === '/autonomy') throw new Error('network error');
+      return new Response(JSON.stringify(FIXTURE), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+
+    const { queryByTestId } = render(CapabilityCard, { props: { call } });
+    const el = document.querySelector('[data-testid="capability-card"]') as HTMLDetailsElement;
+    el.open = true;
+    await fireEvent(el, new Event('toggle'));
+
+    await waitFor(() => {
+      expect(document.querySelector('[data-testid="cap-gates"]')).toBeTruthy();
+    });
+
+    expect(queryByTestId('capability-autonomy-note')).toBeNull();
+  });
+
+  it('10f. /autonomy returns malformed body → no note rendered (best-effort)', async () => {
+    const paths: string[] = [];
+    const call = makeCallWithAutonomy(paths, { mode: 'yolo', read_error: false });
+
+    const { queryByTestId } = render(CapabilityCard, { props: { call } });
+    const el = document.querySelector('[data-testid="capability-card"]') as HTMLDetailsElement;
+    el.open = true;
+    await fireEvent(el, new Event('toggle'));
+
+    await waitFor(() => {
+      expect(document.querySelector('[data-testid="cap-gates"]')).toBeTruthy();
+    });
+
+    expect(queryByTestId('capability-autonomy-note')).toBeNull();
+  });
+});

@@ -68,7 +68,7 @@ async def test_run_chat_tool_call_carries_redacted_tool_args(caplog, drift_workl
     try:
         with patch.object(adk_agent, "Runner") as runner_cls:
             runner_cls.return_value.run_async = _stub_tool_call_with_args
-            await adk_agent.run_chat("hi", workload="drift")
+            await adk_agent.run_chat("hi", workload="drift", autonomy_mode="propose_apply")
     finally:
         reset_workload(token)
 
@@ -101,7 +101,7 @@ async def test_run_chat_tool_call_args_are_redacted_at_emit(caplog, drift_worklo
     try:
         with patch.object(adk_agent, "Runner") as runner_cls:
             runner_cls.return_value.run_async = _stub_tool_call_with_secret_args
-            await adk_agent.run_chat("hi", workload="drift")
+            await adk_agent.run_chat("hi", workload="drift", autonomy_mode="propose_apply")
     finally:
         reset_workload(token)
 
@@ -141,7 +141,7 @@ async def test_run_chat_emits_tool_result_for_function_response(caplog, drift_wo
     try:
         with patch.object(adk_agent, "Runner") as runner_cls:
             runner_cls.return_value.run_async = _stub_tool_result_ok
-            await adk_agent.run_chat("hi", workload="drift")
+            await adk_agent.run_chat("hi", workload="drift", autonomy_mode="propose_apply")
     finally:
         reset_workload(token)
 
@@ -181,7 +181,7 @@ async def test_run_chat_tool_result_marks_error_dicts(caplog, drift_workload_env
     try:
         with patch.object(adk_agent, "Runner") as runner_cls:
             runner_cls.return_value.run_async = _stub_tool_result_error
-            await adk_agent.run_chat("hi", workload="drift")
+            await adk_agent.run_chat("hi", workload="drift", autonomy_mode="propose_apply")
     finally:
         reset_workload(token)
 
@@ -214,7 +214,7 @@ async def test_run_chat_tool_result_marks_errors_plural_dicts(caplog, drift_work
     try:
         with patch.object(adk_agent, "Runner") as runner_cls:
             runner_cls.return_value.run_async = _stub_tool_result_errors_plural
-            await adk_agent.run_chat("hi", workload="drift")
+            await adk_agent.run_chat("hi", workload="drift", autonomy_mode="propose_apply")
     finally:
         reset_workload(token)
 
@@ -251,7 +251,7 @@ async def test_run_chat_tool_result_strips_credentialed_urls(caplog, drift_workl
     try:
         with patch.object(adk_agent, "Runner") as runner_cls:
             runner_cls.return_value.run_async = _stub_tool_result_credentialed_url
-            await adk_agent.run_chat("hi", workload="drift")
+            await adk_agent.run_chat("hi", workload="drift", autonomy_mode="propose_apply")
     finally:
         reset_workload(token)
 
@@ -271,7 +271,7 @@ async def test_run_agent_tool_call_carries_redacted_tool_args(caplog, drift_work
     try:
         with patch.object(adk_agent, "Runner") as runner_cls:
             runner_cls.return_value.run_async = _stub_tool_call_with_secret_args
-            await adk_agent.run_agent("hi", workload="drift")
+            await adk_agent.run_agent("hi", workload="drift", autonomy_mode="propose_apply")
     finally:
         reset_workload(token)
 
@@ -288,7 +288,7 @@ async def test_run_agent_emits_tool_result_for_function_response(caplog, drift_w
     try:
         with patch.object(adk_agent, "Runner") as runner_cls:
             runner_cls.return_value.run_async = _stub_tool_result_ok
-            await adk_agent.run_agent("hi", workload="drift")
+            await adk_agent.run_agent("hi", workload="drift", autonomy_mode="propose_apply")
     finally:
         reset_workload(token)
 
@@ -427,7 +427,7 @@ async def test_run_chat_tool_result_redacts_nested_secret_keys_before_serialize(
     try:
         with patch.object(adk_agent, "Runner") as runner_cls:
             runner_cls.return_value.run_async = _stub_tool_result_nested_secrets
-            await adk_agent.run_chat("hi", workload="drift")
+            await adk_agent.run_chat("hi", workload="drift", autonomy_mode="propose_apply")
     finally:
         reset_workload(token)
 

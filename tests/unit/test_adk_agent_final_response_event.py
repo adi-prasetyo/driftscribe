@@ -64,7 +64,7 @@ async def test_run_chat_emits_exactly_one_final_response(caplog, drift_workload_
     try:
         with patch.object(adk_agent, "Runner") as runner_cls:
             runner_cls.return_value.run_async = _stub_single_turn_json
-            await adk_agent.run_chat("hi", workload="drift")
+            await adk_agent.run_chat("hi", workload="drift", autonomy_mode="propose_apply")
     finally:
         reset_workload(token)
 
@@ -97,7 +97,7 @@ async def test_run_chat_final_response_kind_text(caplog, drift_workload_env):
     try:
         with patch.object(adk_agent, "Runner") as runner_cls:
             runner_cls.return_value.run_async = _stub_single_turn_text
-            await adk_agent.run_chat("hi", workload="drift")
+            await adk_agent.run_chat("hi", workload="drift", autonomy_mode="propose_apply")
     finally:
         reset_workload(token)
 
@@ -140,7 +140,7 @@ async def test_run_chat_multi_turn_emits_exactly_one_final_response(caplog, drif
     try:
         with patch.object(adk_agent, "Runner") as runner_cls:
             runner_cls.return_value.run_async = _stub_multi_turn
-            await adk_agent.run_chat("hi", workload="drift")
+            await adk_agent.run_chat("hi", workload="drift", autonomy_mode="propose_apply")
     finally:
         reset_workload(token)
 
@@ -174,7 +174,7 @@ async def test_run_chat_no_final_response_emit_on_empty_text(caplog, drift_workl
         with patch.object(adk_agent, "Runner") as runner_cls:
             runner_cls.return_value.run_async = _stub_no_text_final
             with pytest.raises(RuntimeError, match="no final response"):
-                await adk_agent.run_chat("hi", workload="drift")
+                await adk_agent.run_chat("hi", workload="drift", autonomy_mode="propose_apply")
     finally:
         reset_workload(token)
 
@@ -201,7 +201,7 @@ async def test_run_chat_no_final_response_emit_on_thought_only_final(caplog, dri
         with patch.object(adk_agent, "Runner") as runner_cls:
             runner_cls.return_value.run_async = _stub_thought_only_final
             with pytest.raises(RuntimeError, match="no final response"):
-                await adk_agent.run_chat("hi", workload="drift")
+                await adk_agent.run_chat("hi", workload="drift", autonomy_mode="propose_apply")
     finally:
         reset_workload(token)
 
@@ -217,7 +217,7 @@ async def test_run_agent_no_final_response_emit_on_empty_text(caplog, drift_work
         with patch.object(adk_agent, "Runner") as runner_cls:
             runner_cls.return_value.run_async = _stub_no_text_final
             with pytest.raises(RuntimeError, match="no final response"):
-                await adk_agent.run_agent("hi", workload="drift")
+                await adk_agent.run_agent("hi", workload="drift", autonomy_mode="propose_apply")
     finally:
         reset_workload(token)
 
@@ -237,7 +237,7 @@ async def test_run_agent_emits_exactly_one_final_response(caplog, drift_workload
     try:
         with patch.object(adk_agent, "Runner") as runner_cls:
             runner_cls.return_value.run_async = _stub_single_turn_json
-            proposal = await adk_agent.run_agent("hi", workload="drift")
+            proposal = await adk_agent.run_agent("hi", workload="drift", autonomy_mode="propose_apply")
     finally:
         reset_workload(token)
 
@@ -256,7 +256,7 @@ async def test_run_agent_multi_turn_emits_exactly_one_final_response(caplog, dri
     try:
         with patch.object(adk_agent, "Runner") as runner_cls:
             runner_cls.return_value.run_async = _stub_multi_turn
-            await adk_agent.run_agent("hi", workload="drift")
+            await adk_agent.run_agent("hi", workload="drift", autonomy_mode="propose_apply")
     finally:
         reset_workload(token)
 
@@ -285,7 +285,7 @@ async def test_run_chat_final_response_preview_truncated_to_2000(caplog, drift_w
     try:
         with patch.object(adk_agent, "Runner") as runner_cls:
             runner_cls.return_value.run_async = _stub_huge_response
-            await adk_agent.run_chat("hi", workload="drift")
+            await adk_agent.run_chat("hi", workload="drift", autonomy_mode="propose_apply")
     finally:
         reset_workload(token)
 
@@ -338,7 +338,7 @@ async def test_run_chat_final_response_redacts_credential_straddling_boundary(
     try:
         with patch.object(adk_agent, "Runner") as runner_cls:
             runner_cls.return_value.run_async = _stub_response_with_credential_near_boundary
-            await adk_agent.run_chat("hi", workload="drift")
+            await adk_agent.run_chat("hi", workload="drift", autonomy_mode="propose_apply")
     finally:
         reset_workload(token)
 
@@ -389,7 +389,7 @@ async def test_run_agent_whitespace_only_final_raises_no_final_response(
         with patch.object(adk_agent, "Runner") as runner_cls:
             runner_cls.return_value.run_async = _stub_whitespace_only_final
             with pytest.raises(RuntimeError, match="no final response"):
-                await adk_agent.run_agent("hi", workload="drift")
+                await adk_agent.run_agent("hi", workload="drift", autonomy_mode="propose_apply")
     finally:
         reset_workload(token)
 
@@ -407,7 +407,7 @@ async def test_run_chat_whitespace_only_final_raises_no_final_response(
         with patch.object(adk_agent, "Runner") as runner_cls:
             runner_cls.return_value.run_async = _stub_whitespace_only_final
             with pytest.raises(RuntimeError, match="no final response"):
-                await adk_agent.run_chat("hi", workload="drift")
+                await adk_agent.run_chat("hi", workload="drift", autonomy_mode="propose_apply")
     finally:
         reset_workload(token)
 
@@ -443,7 +443,7 @@ async def test_run_chat_two_final_events_emit_only_once(caplog, drift_workload_e
     try:
         with patch.object(adk_agent, "Runner") as runner_cls:
             runner_cls.return_value.run_async = _stub_two_final_events
-            await adk_agent.run_chat("hi", workload="drift")
+            await adk_agent.run_chat("hi", workload="drift", autonomy_mode="propose_apply")
     finally:
         reset_workload(token)
 
@@ -460,7 +460,7 @@ async def test_run_agent_two_final_events_emit_only_once(caplog, drift_workload_
     try:
         with patch.object(adk_agent, "Runner") as runner_cls:
             runner_cls.return_value.run_async = _stub_two_final_events
-            await adk_agent.run_agent("hi", workload="drift")
+            await adk_agent.run_agent("hi", workload="drift", autonomy_mode="propose_apply")
     finally:
         reset_workload(token)
 
@@ -515,7 +515,7 @@ async def test_final_response_json_with_secret_keyed_nested_field_redacts_via_re
     try:
         with patch.object(adk_agent, "Runner") as runner_cls:
             runner_cls.return_value.run_async = _stub_final_with_secret_keyed_nested_field
-            await adk_agent.run_chat("hi", workload="drift")
+            await adk_agent.run_chat("hi", workload="drift", autonomy_mode="propose_apply")
     finally:
         reset_workload(token)
 
@@ -560,7 +560,7 @@ async def test_final_response_non_json_falls_back_to_redact_text(
     try:
         with patch.object(adk_agent, "Runner") as runner_cls:
             runner_cls.return_value.run_async = _stub_final_non_json_with_credentialed_url
-            await adk_agent.run_chat("hi", workload="drift")
+            await adk_agent.run_chat("hi", workload="drift", autonomy_mode="propose_apply")
     finally:
         reset_workload(token)
 
@@ -600,7 +600,7 @@ async def test_final_response_malformed_json_falls_back_to_redact_text(
     try:
         with patch.object(adk_agent, "Runner") as runner_cls:
             runner_cls.return_value.run_async = _stub_final_json_shaped_but_unparseable
-            await adk_agent.run_chat("hi", workload="drift")
+            await adk_agent.run_chat("hi", workload="drift", autonomy_mode="propose_apply")
     finally:
         reset_workload(token)
 

@@ -24,7 +24,7 @@ from tests.unit._adk_stubs import StubEvent as _Ev, StubPart as _P
 
 def test_build_agent_has_builtin_planner_with_thoughts_enabled(drift_workload_env):
     resolution = load_workload("drift")
-    agent = adk_agent.build_agent(resolution)
+    agent = adk_agent.build_agent(resolution, autonomy_mode="propose_apply")
     assert isinstance(agent.planner, BuiltInPlanner)
     assert isinstance(agent.planner.thinking_config, ThinkingConfig)
     assert agent.planner.thinking_config.include_thoughts is True
@@ -32,7 +32,7 @@ def test_build_agent_has_builtin_planner_with_thoughts_enabled(drift_workload_en
 
 def test_build_chat_agent_has_builtin_planner_with_thoughts_enabled(drift_workload_env):
     resolution = load_workload("drift")
-    agent = adk_agent.build_chat_agent(resolution)
+    agent = adk_agent.build_chat_agent(resolution, autonomy_mode="propose_apply")
     assert isinstance(agent.planner, BuiltInPlanner)
     assert agent.planner.thinking_config.include_thoughts is True
 
@@ -40,7 +40,7 @@ def test_build_chat_agent_has_builtin_planner_with_thoughts_enabled(drift_worklo
 def test_upgrade_workload_agents_also_have_thoughts_enabled(upgrade_workload_env):
     resolution = load_workload("upgrade")
     for builder in (adk_agent.build_agent, adk_agent.build_chat_agent):
-        agent = builder(resolution)
+        agent = builder(resolution, autonomy_mode="propose_apply")
         assert agent.planner.thinking_config.include_thoughts is True
 
 
@@ -74,7 +74,7 @@ async def test_run_chat_final_text_excludes_thought_parts(drift_workload_env):
     """Thought text MUST NOT contaminate run_chat's reply field."""
     with patch.object(adk_agent, "Runner") as runner_cls:
         runner_cls.return_value.run_async = _stub_run
-        result = await adk_agent.run_chat("hi", workload="drift")
+        result = await adk_agent.run_chat("hi", workload="drift", autonomy_mode="propose_apply")
     assert "ignored-thought-text" not in result["reply"]
     assert "no_op" in result["reply"]
 
@@ -92,7 +92,7 @@ async def test_run_agent_parses_final_response_when_thought_part_present(drift_w
     """
     with patch.object(adk_agent, "Runner") as runner_cls:
         runner_cls.return_value.run_async = _stub_run
-        proposal = await adk_agent.run_agent("hi", workload="drift")
+        proposal = await adk_agent.run_agent("hi", workload="drift", autonomy_mode="propose_apply")
     # Don't pin the exact class — just confirm parsing didn't blow up
     # and the rationale survived. The strong invariant is "no exception".
     assert proposal is not None
