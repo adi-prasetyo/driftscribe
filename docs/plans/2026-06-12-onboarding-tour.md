@@ -27,7 +27,7 @@
 - **T4 — prefill-never-send.** The tour's adopt button calls the same `onAdopt`/`handleAdopt` bridge as the panel button and is disabled under the same `chatDisabled` condition. The card states "nothing is sent until you press Send."
 - **T5 — the all-managed branch must not lie about non-adoptable leftovers.** `drift === 0` → congratulations; `drift > 0` with no adoptable candidate → "remaining unmanaged resources are not adoptable types yet", not "everything is managed".
 - **T6 — the what-next step is scoped to *this adopt request*** (Codex MF1). It must NOT claim "nothing is applied until you approve" in general — in Propose + Apply the upgrade workload may merge its own dependency PR. The claim is: *the infrastructure change* is applied only after review-page approval.
-- **T7 — never name what the graph didn't name** (Codex MF2). A node whose normalized label is empty is skipped as an adopt target — no empty-backtick prefill, no blank resource name in copy.
+- **T7 — never name what the graph didn't name** (Codex MF2 + round-2). A node whose normalized label is empty is skipped as an adopt target — no empty-backtick prefill, no blank resource name in copy. And when adoptable-but-unnamed nodes are all that remain, the copy says "no named adopt target the tour can prefill" — never "not adoptable types" (that would be false).
 
 ## Grounding facts (verified 2026-06-12)
 
@@ -377,10 +377,15 @@ describe('adoptStepState', () => {
     if (s.kind !== 'target') throw new Error('expected target');
     expect(s.prefill).toContain('named-bucket');
 
+    // All adoptable nodes unnamed → the copy must say "no named adopt
+    // target", NOT "not adoptable types" (Codex round-2 must-fix: an
+    // unnamed bucket is still an adoptable type).
     const allUnnamed = adoptStepState(
       makeGraph({ groups: [makeGroup({ nodes: [makeNode({ label: ' ' })] })] }),
     );
     expect(allUnnamed.kind).toBe('none');
+    expect(allUnnamed.line).toContain('named adopt target');
+    expect(allUnnamed.line).not.toContain('not adoptable types');
   });
 
   it('all-managed congratulates; non-adoptable leftovers stay honest (T5)', () => {
@@ -537,19 +542,34 @@ export function adoptStepState(graph: InfraGraph | null): AdoptStepState {
       prefill: adoptPrefill(g.label, node.label, node.location),
     };
   }
-  return graph.totals.drift === 0
+  if (graph.totals.drift === 0) {
+    return {
+      kind: 'none',
+      line:
+        'Everything in your estate is already under IaC management — ' +
+        'there is nothing left to adopt. You are ahead of this tour.',
+    };
+  }
+  // Codex round-2 must-fix: distinguish "no adoptable TYPE" from "adoptable
+  // type exists but no node has a usable name" — calling an unnamed-but-
+  // adoptable bucket "not an adoptable type" would be false.
+  const adoptableUnnamed = candidates.some((c) =>
+    c.g.nodes.some((n) => !n.managed),
+  );
+  return adoptableUnnamed
     ? {
         kind: 'none',
         line:
-          'Everything in your estate is already under IaC management — ' +
-          'there is nothing left to adopt. You are ahead of this tour.',
+          'There are unmanaged resources the agent could adopt, but none ' +
+          'has a named adopt target the tour can prefill. The ' +
+          'Infrastructure panel shows what the live graph can show.',
       }
     : {
         kind: 'none',
         line:
           'Your remaining unmanaged resources are not adoptable types yet. ' +
-          'The Infrastructure panel lists them, and you can ask about any ' +
-          'of them in chat.',
+          'The Infrastructure panel shows what is there, and you can ask ' +
+          'about any of them in chat.',
       };
 }
 ```
