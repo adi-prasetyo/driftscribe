@@ -882,3 +882,14 @@ describe('InfraDiagram — adopt list duplicate group labels (prod crash regress
     expect(getByTestId('infra-panel').textContent).toContain('test caveat');
   });
 });
+
+describe('InfraDiagram — onGraph lift (tour, item 14)', () => {
+  it('reports each applied graph to onGraph', async () => {
+    const onGraph = vi.fn();
+    const graph = liveGraph();
+    const call = vi.fn(async () => jsonResponse(graph));
+    render(InfraDiagram, { props: { call, onGraph } });
+    await waitFor(() => expect(onGraph).toHaveBeenCalledTimes(1));
+    expect(onGraph.mock.calls[0][0].totals).toEqual(graph.totals);
+  });
+});

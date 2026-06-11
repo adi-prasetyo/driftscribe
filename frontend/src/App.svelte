@@ -32,6 +32,10 @@
   import PauseControl from './components/PauseControl.svelte';
   import AutonomyControl from './components/AutonomyControl.svelte';
   import Timeline from './components/Timeline.svelte';
+  import TourBanner from './components/TourBanner.svelte';
+  import TourCard from './components/TourCard.svelte';
+  import { tourDone, markTourDone, shouldOfferTour } from './lib/tour';
+  import type { InfraGraph } from './lib/infra_graph';
 
   // ---- state ----
   let tokenState = $state<TokenState>(getStoredToken() ? 'ok' : 'missing');
@@ -106,6 +110,26 @@
     // Bring the composer into view so the prefilled draft is obvious. Best-effort:
     // the element exists in the live tree; guarded for the historical/SSR-less case.
     document.getElementById('chat-form')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
+  // Onboarding tour (item 14). The offer is decided ONCE at boot — before
+  // onMount strips the intent params — and the header Tour button is the
+  // permanent reopen path. Closing OR dismissing marks the tour done; the
+  // flag is a UI preference, so localStorage (not sessionStorage) is right.
+  let tourGraph = $state<InfraGraph | null>(null);
+  let tourOpen = $state(false);
+  let tourOffered = $state(shouldOfferTour(window.location.search, tourDone()));
+  function startTour(): void {
+    tourOffered = false;
+    tourOpen = true;
+  }
+  function dismissTourOffer(): void {
+    tourOffered = false;
+    markTourDone();
+  }
+  function closeTour(): void {
+    tourOpen = false;
+    markTourDone();
   }
 
   // ---- auth plumbing (replaces window.prompt) ----
@@ -392,25 +416,43 @@
 
 <header class="app-header">
   <h1 class="app-title">DriftScribe <span class="app-title__sub">— Reasoning Timeline</span></h1>
-  <TokenStatus state={tokenState} onChange={onChangeToken} />
+  <div class="app-header__actions">
+    <button
+      class="ds-btn ds-btn--ghost app-tour-btn"
+      type="button"
+      data-testid="tour-open"
+      onclick={startTour}>Tour</button
+    >
+    <TokenStatus state={tokenState} onChange={onChangeToken} />
+  </div>
 </header>
 
 <main class="layout">
   <DecisionsRail {decisions} {activeTraceId} onOpenTrace={openTrace} />
 
   <section id="chat-area" class="chat-area" aria-label="Chat and reasoning timeline">
-    <PauseControl {call} />
-    <AutonomyControl {call} />
-    <InfraDiagram
-      {call}
-      {appliedEpoch}
-      {previewPr}
-      onExitPreview={exitPreview}
-      onAdopt={handleAdopt}
-      adoptDisabled={chatDisabled}
-    />
+    {#if tourOffered && !tourOpen}
+      <TourBanner onStart={startTour} onDismiss={dismissTourOffer} />
+    {/if}
+    <div class="tour-target" data-tour="controls">
+      <PauseControl {call} />
+      <AutonomyControl {call} />
+    </div>
+    <div class="tour-target" data-tour="estate">
+      <InfraDiagram
+        {call}
+        {appliedEpoch}
+        {previewPr}
+        onExitPreview={exitPreview}
+        onAdopt={handleAdopt}
+        adoptDisabled={chatDisabled}
+        onGraph={(g) => (tourGraph = g)}
+      />
+    </div>
     <CapabilityCard {call} />
-    <ChatForm disabled={chatDisabled} onSubmit={submitChat} prefill={chatPrefill} />
+    <div class="tour-target" data-tour="composer">
+      <ChatForm disabled={chatDisabled} onSubmit={submitChat} prefill={chatPrefill} />
+    </div>
     <HistoricalBanner active={historicalActive} traceId={historicalTraceId} onNewChat={newChat} />
     <TraceBadge {traceId} {status} />
     <FinalResponse reply={finalReply} isError={finalIsError} />
@@ -432,15 +474,34 @@
 
 <AuthPanel open={authPanelOpen} onSubmit={onAuthSubmit} onCancel={onAuthCancel} />
 
+{#if tourOpen}
+  <TourCard
+    graph={tourGraph}
+    adoptDisabled={chatDisabled}
+    onAdoptPrefill={handleAdopt}
+    onClose={closeTour}
+  />
+{/if}
+
 <style>
   .app-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    flex-wrap: wrap;
     gap: var(--ds-sp-4);
     padding: var(--ds-sp-3) var(--ds-sp-6);
     border-bottom: 1px solid var(--ds-border);
     background: var(--ds-surface);
+  }
+  .app-header__actions {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--ds-sp-3);
+  }
+  .app-tour-btn {
+    padding: 0.3em 0.85em;
+    font-size: var(--ds-fs-1);
   }
   .app-title {
     font-size: var(--ds-fs-3);
@@ -464,6 +525,17 @@
   }
   .chat-area > :global(*) {
     margin-bottom: var(--ds-sp-4);
+  }
+  /* Wrappers exist only as [data-tour] spotlight targets. flow-root makes
+     each wrapper a BFC so child margins cannot collapse outside it — the
+     spotlight outline must hug the real panels (Codex MF4). The `* + *`
+     rule restores the inter-component spacing the children lost by no
+     longer being .chat-area direct children. */
+  .tour-target {
+    display: flow-root;
+  }
+  .tour-target > :global(* + *) {
+    margin-top: var(--ds-sp-4);
   }
   @media (max-width: 760px) {
     .layout {
