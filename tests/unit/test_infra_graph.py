@@ -631,3 +631,47 @@ class TestAdoptionGuide:
         # The load-bearing phrases every surface pins against.
         assert "same zero-change import" in ADOPTION_ORDER_HONESTY
         assert "not safety" in ADOPTION_ORDER_HONESTY
+
+
+class TestAdoptRankInGraph:
+    def _one_drift_group(self, atype: str) -> dict:
+        return {
+            atype: {
+                "count": 1, "declared_in_iac": 0, "not_in_iac": 1,
+                "sensitive": False,
+                "sample": [{"name": "n", "location": "g", "iac": False,
+                            "match_confidence": None}],
+            }
+        }
+
+    def test_adoptable_group_carries_rank_and_hint(self):
+        g = build_graph(_inventory(by_type=self._one_drift_group(BUCKET_TYPE)))
+        grp = g["groups"][0]
+        assert grp["adoptable"] is True
+        assert grp["adopt_rank"] == 1
+        assert grp["adopt_hint"] == ADOPTION_GUIDE[BUCKET_TYPE][1]
+
+    def test_all_four_adoptable_types_carry_their_guide_rank(self):
+        by_type = {}
+        for t in (BUCKET_TYPE, TOPIC_TYPE, SUB_TYPE, RUN_TYPE):
+            by_type.update(self._one_drift_group(t))
+        g = build_graph(_inventory(by_type=by_type))
+        got = {grp["asset_type"]: grp["adopt_rank"] for grp in g["groups"]}
+        assert got == {t: ADOPTION_GUIDE[t][0]
+                       for t in (BUCKET_TYPE, TOPIC_TYPE, SUB_TYPE, RUN_TYPE)}
+
+    def test_non_adoptable_group_omits_rank_and_hint(self):
+        # Omitted (not None) — mirrors the truncated_in_group convention.
+        g = build_graph(_inventory(by_type=self._one_drift_group(SA_TYPE)))
+        grp = g["groups"][0]
+        assert grp["adoptable"] is False
+        assert "adopt_rank" not in grp and "adopt_hint" not in grp
+
+    def test_sensitive_group_omits_rank_and_hint(self):
+        # adoptable is forced False on sensitive groups; rank must follow it.
+        by_type = self._one_drift_group(BUCKET_TYPE)
+        by_type[BUCKET_TYPE]["sensitive"] = True
+        g = build_graph(_inventory(by_type=by_type))
+        grp = g["groups"][0]
+        assert grp["adoptable"] is False
+        assert "adopt_rank" not in grp and "adopt_hint" not in grp

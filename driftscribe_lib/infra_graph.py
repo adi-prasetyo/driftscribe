@@ -354,6 +354,13 @@ def build_graph(inventory: dict) -> dict:
             "adoptable": atype in ADOPTABLE_ASSET_TYPES and not sensitive,
             "nodes": nodes,
         }
+        if group["adoptable"]:
+            # Guided adoption order (item 10). .get (not [...]) keeps the
+            # "never raises" contract even if the guide/adoptable drift-pin
+            # were somehow violated at runtime.
+            guide = ADOPTION_GUIDE.get(atype)
+            if guide:
+                group["adopt_rank"], group["adopt_hint"] = guide
         if truncated_in_group:
             group["truncated_in_group"] = truncated_in_group
         groups.append(group)
