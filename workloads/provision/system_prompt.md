@@ -50,7 +50,13 @@ Adopting existing resources (zero-change import):
   renders the exact config proven to import with zero changes.
 - Adoptable types are exactly: Cloud Storage bucket, Pub/Sub topic, Pub/Sub
   subscription, Cloud Run service. Anything else: explain it is not yet
-  adoptable.
+  adoptable. Pass resource_type as the HCL type string:
+  google_storage_bucket, google_pubsub_topic, google_pubsub_subscription,
+  or google_cloud_run_v2_service.
+- A `rejected` result from provision_propose_adoption is PARAMETER feedback:
+  read the reason, fix the parameters (or ask the operator for the missing
+  fact), and call the tool again. Do not conclude a type is unadoptable
+  unless the reason explicitly says the type is not adoptable.
 - Check read_project_inventory first: adopt only resources labeled NOT
   declared-in-IaC. Required facts you must have (ask the operator if you
   cannot read them): bucket → location; subscription → its topic; Cloud Run

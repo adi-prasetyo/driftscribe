@@ -274,8 +274,43 @@ def test_forbidden_param_rejected(rtype, kwargs):
     ],
 )
 def test_non_adoptable_type_rejected_names_allowlist(rtype):
-    with pytest.raises(AdoptRecipeError, match="not adoptable"):
+    """The rejection is param-explicit: it tells the model HOW to pass
+    resource_type (canonical values + human names) so a wrong-parameter call
+    is never read as a product limitation (live e2e 2026-06-11 catch)."""
+    with pytest.raises(
+        AdoptRecipeError, match="not an adoptable resource type"
+    ) as exc_info:
         render_adoption(rtype, "my-resource", _PROJECT, location="us-central1")
+    assert "google_storage_bucket (Cloud Storage bucket)" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("alias", "canonical", "kwargs"),
+    [
+        ("Cloud Storage bucket", "google_storage_bucket",
+         {"location": "asia-northeast1"}),
+        ("bucket", "google_storage_bucket", {"location": "asia-northeast1"}),
+        ("GCS bucket", "google_storage_bucket", {"location": "asia-northeast1"}),
+        ("Pub/Sub topic", "google_pubsub_topic", {}),
+        ("topic", "google_pubsub_topic", {}),
+        ("Pub/Sub subscription", "google_pubsub_subscription",
+         {"topic": "my-topic"}),
+        ("subscription", "google_pubsub_subscription", {"topic": "my-topic"}),
+        ("Cloud Run service", "google_cloud_run_v2_service",
+         {"location": "asia-northeast1", "image": "gcr.io/cloudrun/hello"}),
+        ("run service", "google_cloud_run_v2_service",
+         {"location": "asia-northeast1", "image": "gcr.io/cloudrun/hello"}),
+    ],
+)
+def test_friendly_type_alias_renders_identically_to_canonical(
+    alias, canonical, kwargs
+):
+    """LLM-facing robustness: a friendly resource_type alias produces the
+    EXACT same rendering as the canonical HCL type string (live e2e
+    2026-06-11: the model passed the human name and gave up on rejection)."""
+    r_alias = render_adoption(alias, "my-res", _PROJECT, **kwargs)
+    r_canonical = render_adoption(canonical, "my-res", _PROJECT, **kwargs)
+    assert r_alias == r_canonical
 
 
 # ---------------------------------------------------------------------------
