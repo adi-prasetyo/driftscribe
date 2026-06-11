@@ -919,6 +919,45 @@ def _do_rollback(
             return existing
         raise HTTPException(status_code=409, detail="event in-progress, retry")
 
+    if autonomy_mode == "observe":
+        # Observe suppression (ClickOps item 11) — a deliberate DIVERGENCE
+        # from the dry_run behavior documented above. dry_run still calls
+        # /propose so demos get an approval URL; the dial is an operator
+        # trust boundary, not a demo convenience. In Observe NOTHING leaves
+        # the coordinator: no approval doc is minted, no notification is
+        # sent. The decision row below is the only artifact. The event was
+        # claimed above so Eventarc retries don't re-run the LLM.
+        rendered = (
+            f"DriftScribe proposed a rollback to revision "
+            f"{proposal.target_revision} but did not create the approval — "
+            f"the autonomy dial is set to Observe. Raise the dial to Propose "
+            f"to let rollback proposals mint operator approvals.\n\n"
+            f"Rationale: {scrub_rationale_text(proposal.rationale, proposal.env_diffs)}"
+        )
+        decision_id = str(uuid.uuid4())
+        response = {
+            "decision_id": decision_id,
+            "event_key": event_key,
+            "trace_id": current_trace_id_or_new(),
+            "action": "rollback",
+            "decision_path": "adk",
+            "rendered_body": rendered,
+            "rationale": proposal.rationale,
+            "diffs": [d.model_dump(mode="json") for d in proposal.env_diffs],
+            "target_revision": proposal.target_revision,
+            "requires_human_review": True,
+            "dry_run": s.dry_run,
+            # NO "dry_run_effective": that field disambiguates the
+            # propose-despite-dry-run behavior, which did not happen here.
+            # NO "approval": nothing was minted — readers must not see a
+            # null-shaped approval and branch on it.
+            "autonomy_mode": "observe",
+            "suppressed_by_autonomy": True,
+            "trigger": trigger,
+        }
+        state.record_decision(decision_id, event_key, response)
+        return response
+
     # Side effect #1: mint the approval via the Rollback Worker. The worker
     # owns the HMAC key, the Firestore approvals collection write, and the
     # TTL; the coordinator only receives the resulting URL.
@@ -1033,6 +1072,9 @@ def _do_rollback(
             "approval_url": approval_url,
             "expires_at": expires_at,
         },
+        # Every new rollback decision records the dial mode it was made under
+        # (propose / propose_apply here — observe short-circuits above).
+        "autonomy_mode": autonomy_mode,
         "trigger": trigger,
     }
     state.record_decision(decision_id, event_key, response)
@@ -1401,17 +1443,31 @@ async def _do_recheck(
             return existing
         raise HTTPException(status_code=409, detail="event in-progress, retry")
 
-    try:
-        github_result = _perform_action(s, contract, proposal, rendered)
-    except HTTPException:
-        # Side effect failed — release the claim so retries can proceed.
-        # The patcher's atomic pre-check + branch random suffix mean a retry
-        # won't create duplicate partial state.
-        state.release_event(event_key)
-        raise
-    except Exception as e:
-        state.release_event(event_key)
-        raise HTTPException(status_code=502, detail=f"side effect failed: {e}")
+    # Autonomy dial (ClickOps item 11): in Observe the pipeline observes,
+    # decides, and RECORDS — but does not touch GitHub. The decision row is
+    # the operator-visible "would have" artifact; the rail renders it
+    # distinctly (suppressed_by_autonomy). no_op is never a side effect, so
+    # it is never suppressed (the dry-run preview shape is preserved). In
+    # Propose / Propose+Apply the action executes exactly as before.
+    suppressed = autonomy.mode == "observe" and proposal.action != DecisionAction.NO_OP
+    if suppressed:
+        github_result = {
+            "suppressed_by_autonomy": "observe",
+            "url": None,
+            "action": proposal.action.value,
+        }
+    else:
+        try:
+            github_result = _perform_action(s, contract, proposal, rendered)
+        except HTTPException:
+            # Side effect failed — release the claim so retries can proceed.
+            # The patcher's atomic pre-check + branch random suffix mean a
+            # retry won't create duplicate partial state.
+            state.release_event(event_key)
+            raise
+        except Exception as e:
+            state.release_event(event_key)
+            raise HTTPException(status_code=502, detail=f"side effect failed: {e}")
 
     decision_id = str(uuid.uuid4())
     response = {
@@ -1437,8 +1493,14 @@ async def _do_recheck(
         "requires_human_review": proposal.requires_human_review,
         "dry_run": s.dry_run,
         "github": github_result,
+        # Every new drift decision records the dial mode it was made under.
+        "autonomy_mode": autonomy.mode,
         "trigger": trigger,
     }
+    if suppressed:
+        # Only suppressed rows carry this marker — the rail keys its
+        # "recorded, not executed" treatment off it.
+        response["suppressed_by_autonomy"] = True
     state.record_decision(decision_id, event_key, response)
     return response
 
