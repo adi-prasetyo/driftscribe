@@ -1,0 +1,30 @@
+{
+  "_test_intent": "bucket import no-op + unrelated pubsub topic update — must emit import-mixed-plan-forbidden-v1",
+  "format_version": "1.2",
+  "terraform_version": "1.12.0",
+  "resource_changes": [
+    {
+      "address": "google_storage_bucket.my_bucket",
+      "mode": "managed",
+      "type": "google_storage_bucket",
+      "name": "my_bucket",
+      "change": {
+        "actions": ["no-op"],
+        "before": {"name": "my-old-bucket"},
+        "after": {"name": "my-old-bucket"},
+        "importing": {"id": "my-old-bucket"}
+      }
+    },
+    {
+      "address": "google_pubsub_topic.some_topic",
+      "mode": "managed",
+      "type": "google_pubsub_topic",
+      "name": "some_topic",
+      "change": {
+        "actions": ["update"],
+        "before": {"name": "projects/driftscribe-hack-2026/topics/some-topic", "labels": {}},
+        "after": {"name": "projects/driftscribe-hack-2026/topics/some-topic", "labels": {"env": "prod"}}
+      }
+    }
+  ]
+}
