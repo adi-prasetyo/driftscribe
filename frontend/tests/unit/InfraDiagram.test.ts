@@ -460,3 +460,183 @@ describe('InfraDiagram — degraded + available overlay', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Adopt list (Phase 4 — adopt button UI). The "Unmanaged resources" action list
+// rendered below the legend; derived from the graph DTO by lib/infra_graph
+// helpers. Design §1 + §2.5; Codex review 019eb572.
+// ---------------------------------------------------------------------------
+
+const BUCKET = 'storage.googleapis.com/Bucket';
+const SA = 'iam.googleapis.com/ServiceAccount';
+
+function adoptGraph(): InfraGraph {
+  return {
+    generated_at: null,
+    project: 'demo',
+    caveat: 'test caveat',
+    degraded: false,
+    degraded_reason: null,
+    totals: { resources: 3, managed: 1, drift: 2 },
+    groups: [
+      {
+        asset_type: BUCKET,
+        label: 'Storage bucket',
+        adoptable: true,
+        count: 2,
+        managed: 1,
+        drift: 1,
+        sensitive: false,
+        nodes: [
+          { id: 'g0n0', label: 'prod-state', asset_type: BUCKET, managed: true, location: 'asia-northeast1' },
+          { id: 'g0n1', label: 'my-old-uploads', asset_type: BUCKET, managed: false, location: 'asia-northeast1' },
+        ],
+      },
+      {
+        asset_type: SA,
+        label: 'Service account',
+        adoptable: false,
+        count: 1,
+        managed: 0,
+        drift: 1,
+        sensitive: false,
+        nodes: [{ id: 'g1n0', label: 'ci-runner@proj.iam', asset_type: SA, managed: false, location: null }],
+      },
+    ],
+    edges: [],
+  };
+}
+
+function allManagedGraph(): InfraGraph {
+  return {
+    generated_at: null,
+    project: 'demo',
+    caveat: 'test caveat',
+    degraded: false,
+    degraded_reason: null,
+    totals: { resources: 1, managed: 1, drift: 0 },
+    groups: [
+      {
+        asset_type: BUCKET,
+        label: 'Storage bucket',
+        adoptable: true,
+        count: 1,
+        managed: 1,
+        drift: 0,
+        sensitive: false,
+        nodes: [{ id: 'g0n0', label: 'prod-state', asset_type: BUCKET, managed: true, location: null }],
+      },
+    ],
+    edges: [],
+  };
+}
+
+describe('InfraDiagram — adopt list', () => {
+  it('lists one row per unmanaged node (button for adoptable, muted for not), managed absent', async () => {
+    const { getByTestId, getAllByTestId, queryByText } = render(InfraDiagram, {
+      props: { call: callWith(adoptGraph()), onAdopt: () => {} },
+    });
+    await waitFor(() => expect(getByTestId('adopt-list')).toBeTruthy());
+    // Heading copy is honest about exhaustiveness (Codex finding 4). norm()
+    // collapses the multi-line template whitespace before the exact-copy check.
+    expect(norm(getByTestId('adopt-list').textContent)).toContain(
+      'Unmanaged resources shown on the map — they exist in your project but are not under IaC management',
+    );
+    // TWO rows (the managed bucket node is absent).
+    expect(getAllByTestId('adopt-row')).toHaveLength(2);
+    expect(queryByText('prod-state')).toBeNull();
+    // The adoptable row gets a button; the SA row gets the muted span.
+    const buttons = getAllByTestId('adopt-btn');
+    expect(buttons).toHaveLength(1);
+    expect(getByTestId('adopt-unavailable').textContent).toContain('not yet adoptable');
+  });
+
+  it('clicking Adopt fires onAdopt with the exact prefill string', async () => {
+    const onAdopt = vi.fn();
+    const { getByTestId } = render(InfraDiagram, {
+      props: { call: callWith(adoptGraph()), onAdopt },
+    });
+    await waitFor(() => expect(getByTestId('adopt-btn')).toBeTruthy());
+    await fireEvent.click(getByTestId('adopt-btn'));
+    expect(onAdopt).toHaveBeenCalledTimes(1);
+    expect(onAdopt).toHaveBeenCalledWith(
+      'Adopt the Storage bucket `my-old-uploads` in asia-northeast1 into IaC management.',
+    );
+  });
+
+  it('renders NO adopt-list when every node is managed', async () => {
+    const { getByTestId, queryByTestId } = render(InfraDiagram, {
+      props: { call: callWith(allManagedGraph()), onAdopt: () => {} },
+    });
+    await waitFor(() => expect(getByTestId('infra-coverage-count')).toBeTruthy());
+    expect(queryByTestId('adopt-list')).toBeNull();
+  });
+
+  it('disables the buttons and swallows clicks when adoptDisabled', async () => {
+    const onAdopt = vi.fn();
+    const { getByTestId } = render(InfraDiagram, {
+      props: { call: callWith(adoptGraph()), onAdopt, adoptDisabled: true },
+    });
+    await waitFor(() => expect(getByTestId('adopt-btn')).toBeTruthy());
+    const btn = getByTestId('adopt-btn') as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+    expect(btn.title).toBe('Unavailable while the chat is busy or reviewing a past trace.');
+    await fireEvent.click(btn);
+    expect(onAdopt).not.toHaveBeenCalled();
+  });
+
+  it('shows "+N more unmanaged" only when drift exceeds the shown unmanaged rows', async () => {
+    // Group A: drift=5 but only 2 unmanaged nodes sampled → "+3 more".
+    // Group B: all 2 drift nodes shown, but a MANAGED node was truncated
+    //          (truncated_in_group=1, drift=2, shown-unmanaged=2) → NO trailer
+    //          (truncated_in_group counts unsampled resources, not unmanaged ones).
+    const graph: InfraGraph = {
+      generated_at: null,
+      project: 'demo',
+      caveat: 'test caveat',
+      degraded: false,
+      degraded_reason: null,
+      totals: { resources: 12, managed: 5, drift: 7 },
+      groups: [
+        {
+          asset_type: BUCKET,
+          label: 'Storage bucket',
+          adoptable: true,
+          count: 5,
+          managed: 0,
+          drift: 5,
+          sensitive: false,
+          truncated_in_group: 3,
+          nodes: [
+            { id: 'a0', label: 'bucket-a', asset_type: BUCKET, managed: false, location: null },
+            { id: 'a1', label: 'bucket-b', asset_type: BUCKET, managed: false, location: null },
+          ],
+        },
+        {
+          asset_type: 'run.googleapis.com/Service',
+          label: 'Cloud Run service',
+          adoptable: true,
+          count: 3,
+          managed: 1,
+          drift: 2,
+          sensitive: false,
+          truncated_in_group: 1, // a MANAGED node was truncated, not an unmanaged one
+          nodes: [
+            { id: 'b0', label: 'svc-a', asset_type: 'run.googleapis.com/Service', managed: false, location: null },
+            { id: 'b1', label: 'svc-b', asset_type: 'run.googleapis.com/Service', managed: false, location: null },
+          ],
+        },
+      ],
+      edges: [],
+    };
+    const { getByTestId, getAllByTestId } = render(InfraDiagram, {
+      props: { call: callWith(graph), onAdopt: () => {} },
+    });
+    await waitFor(() => expect(getByTestId('adopt-list')).toBeTruthy());
+    const trailers = getAllByTestId('adopt-trailer');
+    // Exactly ONE trailer (group A), and it reads "+3 more".
+    expect(trailers).toHaveLength(1);
+    expect(trailers[0].textContent).toContain('+3 more unmanaged Storage bucket');
+    expect(trailers[0].textContent).toContain('not on the map');
+  });
+});
