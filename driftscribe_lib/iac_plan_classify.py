@@ -30,7 +30,10 @@ def plan_has_create(plan_json: Any) -> bool:
     ``resource_changes``, a non-dict entry, a non-dict ``change``, or a non-list
     ``actions`` ⇒ ``True`` (fail-closed). A ``module.*`` create also returns ``True``
     here (routing/gating only — the worker's ``resource_set_guard`` still REFUSES
-    ``module.*`` regardless)."""
+    ``module.*`` regardless).
+
+    An entry whose ``change`` carries a non-null ``importing`` value also returns
+    ``True`` (imports are create-class — adopt/import design §4.3)."""
     if not isinstance(plan_json, dict):
         return True
     rcs = plan_json.get("resource_changes")
@@ -44,6 +47,14 @@ def plan_has_create(plan_json: Any) -> bool:
             return True
         actions = change.get("actions")
         if not isinstance(actions, list):
+            return True
+        # Adopt/import design §4.3: an entry with `importing` present is
+        # CREATE-CLASS regardless of its actions — the apply writes a NEW
+        # address into state, and the lenient C5 path would leave state
+        # without config on main (next plan from main proposes DELETING the
+        # adopted resource). `importing: null` is treated as absent, same
+        # semantics as iac_plan_summary.
+        if change.get("importing") is not None:
             return True
         if actions in (["no-op"], ["read"]):
             continue

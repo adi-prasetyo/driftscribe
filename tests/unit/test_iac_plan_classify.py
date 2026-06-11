@@ -69,3 +69,38 @@ def test_module_create_is_create_class():
 )
 def test_malformed_fails_closed_to_create(bad):
     assert plan_has_create(bad) is True
+
+
+# --- Adopt/import design §4.3: importing entries are CREATE-CLASS ---
+
+
+def _pj_importing(actions, importing):
+    return {
+        "resource_changes": [
+            {
+                "address": "google_storage_bucket.b",
+                "change": {"actions": actions, "importing": importing},
+            }
+        ]
+    }
+
+
+def test_importing_noop_is_create_class():
+    """A pure import plans as ["no-op"] + importing — it writes a NEW address
+    into state at apply, so it must route through the strict C6 merge-first
+    path (state-without-config is the §2 delete-proposal failure mode)."""
+    assert plan_has_create(_pj_importing(["no-op"], {"id": "b-name"})) is True
+
+
+def test_importing_update_is_create_class():
+    assert plan_has_create(_pj_importing(["update"], {"id": "b-name"})) is True
+
+
+def test_importing_null_is_treated_as_absent():
+    """`importing: null` is NOT an import (same semantics as iac_plan_summary)."""
+    assert plan_has_create(_pj_importing(["no-op"], None)) is False
+
+
+def test_importing_malformed_value_is_still_create_class():
+    """Even a malformed (non-dict) importing value routes strict — fail-closed."""
+    assert plan_has_create(_pj_importing(["no-op"], "not-a-dict")) is True
