@@ -701,3 +701,35 @@ describe('InfraDiagram — refresh livelock regression (last-applied-wins)', () 
     expect(getByTestId('infra-coverage-count').textContent).toBe('3/6 managed · 50%');
   });
 });
+
+describe('InfraDiagram — adopt list duplicate group labels (prod crash regression)', () => {
+  // Prod incident (Phase-4 live e2e, 2026-06-11): cloudresourcemanager…/Project
+  // and compute…/Project BOTH carry the fallback friendly label "Project"; the
+  // adopt list keyed its group each by g.label → each_key_duplicate crashed the
+  // render flush, killing the adopt list AND everything after it in the panel
+  // body. Groups must key by the unique asset_type.
+  it('renders rows for two groups sharing a label without crashing', async () => {
+    const graph: InfraGraph = {
+      ...graphWith({ resources: 2, managed: 0, drift: 2 }),
+      groups: [
+        {
+          asset_type: 'cloudresourcemanager.googleapis.com/Project',
+          label: 'Project',
+          count: 1, managed: 0, drift: 1, sensitive: false,
+          nodes: [{ id: 'g0n0', label: 'proj-a', asset_type: 'cloudresourcemanager.googleapis.com/Project', managed: false, location: null }],
+        },
+        {
+          asset_type: 'compute.googleapis.com/Project',
+          label: 'Project',
+          count: 1, managed: 0, drift: 1, sensitive: false,
+          nodes: [{ id: 'g1n0', label: 'proj-b', asset_type: 'compute.googleapis.com/Project', managed: false, location: null }],
+        },
+      ],
+    };
+    const { getByTestId, getAllByTestId } = render(InfraDiagram, { props: { call: callWith(graph) } });
+    await waitFor(() => expect(getByTestId('adopt-list')).toBeTruthy());
+    expect(getAllByTestId('adopt-row')).toHaveLength(2);
+    // The caveat below the adopt list must also survive (the crash killed it).
+    expect(getByTestId('infra-panel').textContent).toContain('test caveat');
+  });
+});
