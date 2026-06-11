@@ -91,6 +91,15 @@ auto-loads them, and committing one would also leak the path. Keep it local.
 For local `fmt`/`validate` without touching the backend, use
 `tofu init -backend=false` (this is also what CI runs).
 
+**Saved C2 plans are pinned to the state serial.** Any operator-side state
+write — including a `tofu apply -refresh-only` reconcile (apply-failure
+runbook §2) — bumps the serial and makes every outstanding approved
+`plan.tfplan` refuse with "Saved plan is stale" at apply time. Reconcile
+state only AFTER outstanding approved plans have applied, or expect to
+re-plan. The C2 plan-builder only plans OPEN PRs, so for an already-merged
+create-class PR the re-plan needs a NEW `iac/`-only PR off main
+(apply-failure runbook §7b; learned live recovering adopt PR #95).
+
 ---
 
 ## Foundation vs. agent-editable
