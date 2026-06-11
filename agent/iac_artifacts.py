@@ -363,6 +363,63 @@ def find_latest_c2_comment(repo: Any, pr_number: int) -> C2CommentRef | None:
 
 
 # --------------------------------------------------------------------------- #
+# GCS-listing latest-plan resolver (ClickOps item 12 — "ask about this change").
+#
+# The chat tool path: resolve the newest plan artifact for a PR WITHOUT the
+# GitHub C2 comment. Rationale: find_latest_c2_comment rides the coordinator's
+# write-capable GitHub PAT — the exact credential-containment reason
+# search_recent_prs is banned from the read-only explore workload. The
+# coordinator SA holds only roles/storage.objectViewer on the artifact bucket
+# (read + list), so a listing-based resolver keeps explore strictly read-only.
+#
+# Divergence (advisory, documented): the approval page binds to the LATEST C2
+# COMMENT; this resolver returns the latest LOGICAL plan-builder artifact,
+# ordered by (run_id, attempt) — GitHub run ids are globally monotonic,
+# attempts monotonic within a run; generation is only an exact-same-path
+# tie-breaker, NOT an upload-time ordering (a re-run of an older run never
+# outranks a newer run). The two coincide whenever a C2 run completes normally
+# (upload + comment are one job). Q&A is advisory; the approval page + apply
+# worker stay authoritative.
+# --------------------------------------------------------------------------- #
+
+_META_NAME_RE = re.compile(
+    r"^pr-(?P<pr>[1-9][0-9]*)/[0-9a-f]{40}/run-(?P<run>[1-9][0-9]*)-(?P<attempt>[1-9][0-9]*)/metadata\.json$"
+)
+
+
+def find_latest_plan_meta_in_gcs(
+    pr_number: int, *, bucket_name: str, client: Any = None
+) -> tuple[str, int] | None:
+    """Newest ``metadata.json`` object for ``pr_number`` → ``(object_name, generation)``.
+
+    Lists ``pr-{N}/`` (trailing slash — ``pr-7/`` never matches ``pr-77/...``)
+    and keeps only names matching the full artifact scheme with a metadata.json
+    basename AND the exact PR number (defense in depth on top of the prefix).
+    ``None`` when the PR has no plan artifact. Raises ``ValueError`` on a
+    non-positive/non-int ``pr_number`` (the tool layer translates to an error
+    dict); GCS listing errors propagate (the tool layer is fail-soft).
+    """
+    if isinstance(pr_number, bool) or not isinstance(pr_number, int) or pr_number <= 0:
+        raise ValueError(f"pr_number must be a positive int (got {pr_number!r})")
+    if client is None:
+        from google.cloud import storage  # lazy: tests inject a double
+
+        client = storage.Client()
+    best: tuple[tuple[int, int, int], str, int] | None = None
+    for blob in client.list_blobs(bucket_name, prefix=f"pr-{pr_number}/"):
+        m = _META_NAME_RE.fullmatch(blob.name)
+        if m is None or int(m.group("pr")) != pr_number:
+            continue
+        gen = int(getattr(blob, "generation", 0) or 0)
+        key = (int(m.group("run")), int(m.group("attempt")), gen)
+        if best is None or key > best[0]:
+            best = (key, blob.name, gen)
+    if best is None:
+        return None
+    return best[1], best[2]
+
+
+# --------------------------------------------------------------------------- #
 # Plan view — fetch + advisory verify for the GET render.
 # --------------------------------------------------------------------------- #
 
