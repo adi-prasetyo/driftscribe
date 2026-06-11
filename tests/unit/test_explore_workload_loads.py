@@ -99,6 +99,17 @@ def test_load_workload_explore_has_no_contract(explore_workload_env):
     assert resolution.contract_path is None
 
 
+def test_explore_prompt_pins_honest_cost_relay_rule(explore_workload_env):
+    """Wave-4 item 13: the explore prompt must instruct the model to relay the
+    cost block honestly — as an estimate, never as a quote, and never inventing
+    figures when the block is absent."""
+    from agent.workloads import load_workload
+
+    text = load_workload("explore").system_prompt
+    assert "never as a quote" in text
+    assert "never invent figures" in text
+
+
 def test_upgrade_read_dependencies_target_resolves_without_worker_env(monkeypatch):
     """Read-only isolation: ``upgrade_read_dependencies_tool`` derives its
     target (repo + lockfile) WITHOUT requiring any worker URL env var.
