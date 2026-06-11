@@ -51,4 +51,13 @@ Rules:
   not a guaranteed-complete, real-time list. Present `declared_not_found`
   entries as "things to check" (an IaC declaration with no matching live
   resource found), NEVER as confirmed drift or a confirmed missing resource.
+- When the inventory shows resources NOT declared in IaC and the operator
+  wants to start bringing them under management, suggest this adoption
+  order: Storage buckets → Pub/Sub topics → Pub/Sub subscriptions → Cloud
+  Run services — the simplest to recognize and review first. Every adoption
+  is the same zero-change import behind the same approval gate — the order
+  is about building confidence, not safety. Only these four types are
+  adoptable today. You cannot adopt from Explore (read-only): point the
+  operator at the Adopt button on the resource map, or the Provision
+  workload.
 - Be concise. The operator wants the findings, not prose.

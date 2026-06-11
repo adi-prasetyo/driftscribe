@@ -582,3 +582,96 @@ class TestAdoptableFlag:
         assert by_atype[RUN_TYPE] is True
         assert by_atype[BUCKET_TYPE] is True
         assert by_atype[SECRET_TYPE] is False  # sensitive counts-only group
+
+
+# ---------------------------------------------------------------------------
+# Item 10 (guided adoption order): deterministic "what to adopt first" ranking.
+# Single source of truth, drift-pinned to the adoptable set — a new adoptable
+# type CANNOT ship without a rank, a hint, and a plural label.
+# ---------------------------------------------------------------------------
+
+from driftscribe_lib.infra_graph import (  # noqa: E402
+    _ADOPTION_PLURAL_LABELS,
+    ADOPTION_GUIDE,
+    ADOPTION_ORDER_HONESTY,
+    adoption_order_sentence,
+)
+
+
+class TestAdoptionGuide:
+    def test_guide_keys_are_exactly_the_adoptable_asset_types(self):
+        assert set(ADOPTION_GUIDE) == set(ADOPTABLE_ASSET_TYPES)
+
+    def test_plural_labels_keys_match_the_guide(self):
+        assert set(_ADOPTION_PLURAL_LABELS) == set(ADOPTION_GUIDE)
+
+    def test_ranks_are_unique_and_contiguous_from_1(self):
+        ranks = sorted(rank for rank, _ in ADOPTION_GUIDE.values())
+        assert ranks == list(range(1, len(ADOPTION_GUIDE) + 1))
+
+    def test_hints_are_nonempty_and_never_safety_framed(self):
+        # Honesty constraint (Codex must-fix 1): hints guide review comfort,
+        # never imply one type is safer/riskier to adopt.
+        for rank, hint in ADOPTION_GUIDE.values():
+            assert hint and hint == hint.strip()
+            lowered = hint.lower()
+            for banned in ("risk", "danger", "blast", "safe"):
+                assert banned not in lowered
+
+    def test_order_sentence_is_derived_from_rank_order(self):
+        assert adoption_order_sentence() == (
+            "Storage buckets → Pub/Sub topics → Pub/Sub subscriptions → Cloud Run services"
+        )
+
+    def test_bucket_is_rank_1_and_run_service_is_last(self):
+        assert ADOPTION_GUIDE[BUCKET_TYPE][0] == 1
+        assert ADOPTION_GUIDE[RUN_TYPE][0] == len(ADOPTION_GUIDE)
+
+    def test_honesty_note_says_zero_change_and_not_safety(self):
+        # The load-bearing phrases every surface pins against.
+        assert "same zero-change import" in ADOPTION_ORDER_HONESTY
+        assert "not safety" in ADOPTION_ORDER_HONESTY
+
+
+class TestAdoptRankInGraph:
+    def _one_drift_group(self, atype: str) -> dict:
+        return {
+            atype: {
+                "count": 1, "declared_in_iac": 0, "not_in_iac": 1,
+                "sensitive": False,
+                "sample": [{"name": "n", "location": "g", "iac": False,
+                            "match_confidence": None}],
+            }
+        }
+
+    def test_adoptable_group_carries_rank_and_hint(self):
+        g = build_graph(_inventory(by_type=self._one_drift_group(BUCKET_TYPE)))
+        grp = g["groups"][0]
+        assert grp["adoptable"] is True
+        assert grp["adopt_rank"] == 1
+        assert grp["adopt_hint"] == ADOPTION_GUIDE[BUCKET_TYPE][1]
+
+    def test_all_four_adoptable_types_carry_their_guide_rank(self):
+        by_type = {}
+        for t in (BUCKET_TYPE, TOPIC_TYPE, SUB_TYPE, RUN_TYPE):
+            by_type.update(self._one_drift_group(t))
+        g = build_graph(_inventory(by_type=by_type))
+        got = {grp["asset_type"]: grp["adopt_rank"] for grp in g["groups"]}
+        assert got == {t: ADOPTION_GUIDE[t][0]
+                       for t in (BUCKET_TYPE, TOPIC_TYPE, SUB_TYPE, RUN_TYPE)}
+
+    def test_non_adoptable_group_omits_rank_and_hint(self):
+        # Omitted (not None) — mirrors the truncated_in_group convention.
+        g = build_graph(_inventory(by_type=self._one_drift_group(SA_TYPE)))
+        grp = g["groups"][0]
+        assert grp["adoptable"] is False
+        assert "adopt_rank" not in grp and "adopt_hint" not in grp
+
+    def test_sensitive_group_omits_rank_and_hint(self):
+        # adoptable is forced False on sensitive groups; rank must follow it.
+        by_type = self._one_drift_group(BUCKET_TYPE)
+        by_type[BUCKET_TYPE]["sensitive"] = True
+        g = build_graph(_inventory(by_type=by_type))
+        grp = g["groups"][0]
+        assert grp["adoptable"] is False
+        assert "adopt_rank" not in grp and "adopt_hint" not in grp

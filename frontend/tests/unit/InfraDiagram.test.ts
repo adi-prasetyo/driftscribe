@@ -641,6 +641,155 @@ describe('InfraDiagram — adopt list', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Item 10 (guided adoption order): rank-sorted adopt list + Start-here chip +
+// per-group hint lines. The fixture puts the groups in SERVER order (asset_type-
+// sorted by the builder) where rank order DIFFERS from server order, plus an
+// unranked drift group, so the client sort is actually exercised.
+//   pubsub Topic       rank 2 hint 'topic hint'  (1 unmanaged)
+//   run Service        rank 4 hint 'run hint'    (1 unmanaged)
+//   iam ServiceAccount not adoptable             (1 unmanaged)
+//   storage Bucket     rank 1 hint 'bucket hint' (1 unmanaged)
+// After the rank sort: bucket (1) → topic (2) → run (4) → SA (unranked last).
+// ---------------------------------------------------------------------------
+
+function rankedAdoptGraph(): InfraGraph {
+  return {
+    generated_at: null,
+    project: 'demo',
+    caveat: 'test caveat',
+    degraded: false,
+    degraded_reason: null,
+    totals: { resources: 4, managed: 0, drift: 4 },
+    groups: [
+      {
+        asset_type: TOPIC,
+        label: 'Pub/Sub topic',
+        adoptable: true,
+        adopt_rank: 2,
+        adopt_hint: 'topic hint',
+        count: 1,
+        managed: 0,
+        drift: 1,
+        sensitive: false,
+        nodes: [{ id: 't0', label: 'topic-name', asset_type: TOPIC, managed: false, location: null }],
+      },
+      {
+        asset_type: RUN,
+        label: 'Cloud Run service',
+        adoptable: true,
+        adopt_rank: 4,
+        adopt_hint: 'run hint',
+        count: 1,
+        managed: 0,
+        drift: 1,
+        sensitive: false,
+        nodes: [{ id: 'r0', label: 'run-name', asset_type: RUN, managed: false, location: null }],
+      },
+      {
+        asset_type: SA,
+        label: 'Service account',
+        adoptable: false,
+        count: 1,
+        managed: 0,
+        drift: 1,
+        sensitive: false,
+        nodes: [{ id: 's0', label: 'sa-name', asset_type: SA, managed: false, location: null }],
+      },
+      {
+        asset_type: BUCKET,
+        label: 'Storage bucket',
+        adoptable: true,
+        adopt_rank: 1,
+        adopt_hint: 'bucket hint',
+        count: 1,
+        managed: 0,
+        drift: 1,
+        sensitive: false,
+        nodes: [{ id: 'b0', label: 'bucket-name', asset_type: BUCKET, managed: false, location: null }],
+      },
+    ],
+    edges: [],
+  };
+}
+
+// Same fixture stripped of the rank/hint fields — a stale coordinator response
+// that must render exactly today's UI (server order, no chip, no order note).
+function staleAdoptGraph(): InfraGraph {
+  const g = rankedAdoptGraph();
+  for (const grp of g.groups) {
+    delete grp.adopt_rank;
+    delete grp.adopt_hint;
+  }
+  return g;
+}
+
+describe('InfraDiagram — guided adoption order (item 10)', () => {
+  it('orders adopt-list groups by adopt_rank, unranked last', async () => {
+    const { getByTestId, getAllByTestId } = render(InfraDiagram, {
+      props: { call: callWith(rankedAdoptGraph()), onAdopt: () => {} },
+    });
+    await waitFor(() => expect(getByTestId('adopt-list')).toBeTruthy());
+    // Each row's resource name, in DOM order: bucket → topic → run → SA.
+    const names = getAllByTestId('adopt-row').map((r) =>
+      norm(r.querySelector('.infra-adopt__name')?.textContent ?? ''),
+    );
+    expect(names).toEqual(['bucket-name', 'topic-name', 'run-name', 'sa-name']);
+  });
+
+  it('shows the Start-here chip exactly once, on the top-ranked group', async () => {
+    const { getByTestId, getAllByTestId } = render(InfraDiagram, {
+      props: { call: callWith(rankedAdoptGraph()), onAdopt: () => {} },
+    });
+    await waitFor(() => expect(getByTestId('adopt-list')).toBeTruthy());
+    const chips = getAllByTestId('adopt-start-here');
+    expect(chips).toHaveLength(1);
+    // The chip lives inside the bucket group's hint line.
+    const hints = getAllByTestId('adopt-hint');
+    expect(norm(hints[0].textContent)).toContain('Storage bucket: bucket hint');
+    expect(hints[0].contains(chips[0])).toBe(true);
+  });
+
+  it('renders one hint line per ranked group, none for unranked', async () => {
+    const { getByTestId, getAllByTestId } = render(InfraDiagram, {
+      props: { call: callWith(rankedAdoptGraph()), onAdopt: () => {} },
+    });
+    await waitFor(() => expect(getByTestId('adopt-list')).toBeTruthy());
+    const hints = getAllByTestId('adopt-hint').map((h) => norm(h.textContent));
+    expect(hints).toHaveLength(3);
+    expect(hints[0]).toContain('bucket hint');
+    expect(hints[1]).toContain('topic hint');
+    expect(hints[2]).toContain('run hint');
+  });
+
+  it('pins the honesty phrases in the order note', async () => {
+    const { getByTestId } = render(InfraDiagram, {
+      props: { call: callWith(rankedAdoptGraph()), onAdopt: () => {} },
+    });
+    await waitFor(() => expect(getByTestId('adopt-list')).toBeTruthy());
+    const note = norm(getByTestId('adopt-order-note').textContent);
+    expect(note).toContain('same zero-change import');
+    expect(note).toContain('building confidence, not safety');
+    expect(note).toContain('among the unmanaged resources shown');
+  });
+
+  it("renders exactly today's list when rank fields are absent (stale coordinator)", async () => {
+    const { getByTestId, getAllByTestId, queryAllByTestId, queryByTestId } = render(InfraDiagram, {
+      props: { call: callWith(staleAdoptGraph()), onAdopt: () => {} },
+    });
+    await waitFor(() => expect(getByTestId('adopt-list')).toBeTruthy());
+    // No hint lines, no chip, no order note.
+    expect(queryAllByTestId('adopt-hint')).toHaveLength(0);
+    expect(queryByTestId('adopt-start-here')).toBeNull();
+    expect(queryByTestId('adopt-order-note')).toBeNull();
+    // Row order = server (unsorted) order: topic → run → SA → bucket.
+    const names = getAllByTestId('adopt-row').map((r) =>
+      norm(r.querySelector('.infra-adopt__name')?.textContent ?? ''),
+    );
+    expect(names).toEqual(['topic-name', 'run-name', 'sa-name', 'bucket-name']);
+  });
+});
+
 describe('InfraDiagram — refresh livelock regression (last-applied-wins)', () => {
   // Prod incident (Phase-4 live e2e, 2026-06-11): the boot-time applied-epoch
   // ladder fires fetches every 10-30s while a cold CAI-backed /infra/graph takes

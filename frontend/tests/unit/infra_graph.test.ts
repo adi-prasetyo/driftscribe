@@ -8,6 +8,7 @@ import {
   previewPrFromSearch,
   adoptRows,
   adoptPrefill,
+  adoptGroupRank,
   normalizeForPrompt,
   type InfraGraph,
   type InfraGroup,
@@ -907,5 +908,25 @@ describe('adoptRows', () => {
       ],
     });
     expect(adoptRows(g).map((r) => r.nodeId)).toEqual(['b0', 'r0', 'r1']);
+  });
+});
+
+describe('adoptGroupRank', () => {
+  const base = { asset_type: 't', label: 'T', count: 1, managed: 0, drift: 1,
+    sensitive: false, nodes: [] } as unknown as InfraGroup;
+  it('returns the rank for an adoptable ranked group', () => {
+    expect(adoptGroupRank({ ...base, adoptable: true, adopt_rank: 2 })).toBe(2);
+  });
+  it('returns null when not adoptable, even with a rank present', () => {
+    expect(adoptGroupRank({ ...base, adoptable: false, adopt_rank: 1 })).toBeNull();
+    expect(adoptGroupRank({ ...base, adopt_rank: 1 })).toBeNull();
+  });
+  it('returns null when the field is missing (stale coordinator)', () => {
+    expect(adoptGroupRank({ ...base, adoptable: true })).toBeNull();
+  });
+  it('rejects junk ranks: non-number, NaN, zero, negative, non-integer', () => {
+    for (const junk of ['x' as never, NaN, 0, -1, 1.5]) {
+      expect(adoptGroupRank({ ...base, adoptable: true, adopt_rank: junk })).toBeNull();
+    }
   });
 });

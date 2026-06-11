@@ -46,6 +46,13 @@ export interface InfraGroup {
    * buttons (fail-quiet, not wrong; Phase-4 design, Codex review 019eb572).
    */
   adoptable?: boolean;
+  /**
+   * Guided adoption order (item 10): server-assigned rank (1 = start here) and
+   * plain-language hint, present ONLY on adoptable groups. Optional — a stale
+   * coordinator response simply renders the unsorted list with no hints.
+   */
+  adopt_rank?: number;
+  adopt_hint?: string;
 }
 
 export interface InfraEdge {
@@ -342,6 +349,23 @@ export function adoptRows(graph: InfraGraph): AdoptRow[] {
     }
   }
   return rows;
+}
+
+/**
+ * Effective adoption rank of a group, or null when unranked: not adoptable,
+ * field missing (stale coordinator), or junk (this is a fail-quiet client
+ * boundary — only a positive safe integer counts, so a malformed rank can
+ * never sort ahead of the real rank 1 and steal "Start here"; Codex 019eb608).
+ * Sorting with `rank ?? Infinity` keeps unranked groups after ranked ones, in
+ * their original (stable) order.
+ */
+export function adoptGroupRank(g: InfraGroup): number | null {
+  if (g.adoptable !== true) return null;
+  return typeof g.adopt_rank === 'number' &&
+    Number.isSafeInteger(g.adopt_rank) &&
+    g.adopt_rank > 0
+    ? g.adopt_rank
+    : null;
 }
 
 /**

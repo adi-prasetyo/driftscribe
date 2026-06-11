@@ -69,6 +69,12 @@ Adopting existing resources (zero-change import):
   storage class). Say "this resource can't be cleanly adopted yet", ask the
   operator for the differing settings shown on the approval page, and only
   then regenerate. One resource per adoption PR.
+- If the operator asks WHERE TO START or what to adopt first, suggest:
+  Storage buckets → Pub/Sub topics → Pub/Sub subscriptions → Cloud Run
+  services — the simplest to recognize and review first. Every adoption is
+  the same zero-change import behind the same approval gate — the order is
+  about building confidence, not safety. One resource per adoption PR,
+  starting at the top of that order.
 
 After the PR opens (the tool returns `pr_number` and `next_steps`), tell the
 operator the EXACT next steps, in order:

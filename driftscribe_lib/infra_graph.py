@@ -66,6 +66,61 @@ ADOPTABLE_ASSET_TYPES: frozenset[str] = frozenset(
     if rtype in PLAN_RTYPE_TO_ASSET_TYPE
 )
 
+# Guided adoption order (roadmap item 10): deterministic "what to adopt first"
+# ranking over the adoptable types. rank 1 = start here. The simplest configs
+# to recognize and review come first; the largest (a live service definition)
+# last. HONESTY: every adoption is the same zero-change import behind the same
+# approval gate — the order is about building operator confidence, NEVER about
+# one type being safer to adopt (tests ban safety framing in the hints).
+# Drift-pinned: keys == ADOPTABLE_ASSET_TYPES, ranks unique + contiguous (a new
+# adoptable type cannot ship unranked).
+ADOPTION_GUIDE: dict[str, tuple[int, str]] = {
+    "storage.googleapis.com/Bucket": (
+        1,
+        "a simple leaf resource — the easiest place to build confidence",
+    ),
+    "pubsub.googleapis.com/Topic": (
+        2,
+        "small and quick to review — a name and a handful of settings",
+    ),
+    "pubsub.googleapis.com/Subscription": (
+        3,
+        "best adopted after its topic, so the pair reads naturally in IaC",
+    ),
+    "run.googleapis.com/Service": (
+        4,
+        "the largest config to review — most operators adopt these once comfortable",
+    ),
+}
+
+# Plural display labels for the canonical order sentence (prompt surface).
+# Same drift-pin as ADOPTION_GUIDE.
+_ADOPTION_PLURAL_LABELS: dict[str, str] = {
+    "storage.googleapis.com/Bucket": "Storage buckets",
+    "pubsub.googleapis.com/Topic": "Pub/Sub topics",
+    "pubsub.googleapis.com/Subscription": "Pub/Sub subscriptions",
+    "run.googleapis.com/Service": "Cloud Run services",
+}
+
+# Canonical honesty sentence (Codex must-fix 2): pinned verbatim (whitespace-
+# normalized) into both workload prompts; the SPA order note pins the same
+# phrases in its vitest. Never weaken this without updating every surface.
+ADOPTION_ORDER_HONESTY = (
+    "Every adoption is the same zero-change import behind the same approval "
+    "gate — the order is about building confidence, not safety."
+)
+
+
+def adoption_order_sentence() -> str:
+    """Canonical adoption-order phrase, derived from ADOPTION_GUIDE rank order.
+
+    The explore + provision system prompts carry this string verbatim (modulo
+    line wrapping — the pin test whitespace-normalizes both sides), so
+    reordering the guide without updating the prompts fails CI.
+    """
+    ordered = sorted(ADOPTION_GUIDE, key=lambda t: ADOPTION_GUIDE[t][0])
+    return " → ".join(_ADOPTION_PLURAL_LABELS[t] for t in ordered)
+
 # Plan rtypes whose names/addresses must never reach the map. Mirrors the
 # static gate's SECRET_MATERIAL_RESOURCE_TYPES (drift-pinned ⊇ at test time;
 # no runtime import of tools/). The REGIONAL variants are deliberately unmapped
@@ -299,6 +354,13 @@ def build_graph(inventory: dict) -> dict:
             "adoptable": atype in ADOPTABLE_ASSET_TYPES and not sensitive,
             "nodes": nodes,
         }
+        if group["adoptable"]:
+            # Guided adoption order (item 10). .get (not [...]) keeps the
+            # "never raises" contract even if the guide/adoptable drift-pin
+            # were somehow violated at runtime.
+            guide = ADOPTION_GUIDE.get(atype)
+            if guide:
+                group["adopt_rank"], group["adopt_hint"] = guide
         if truncated_in_group:
             group["truncated_in_group"] = truncated_in_group
         groups.append(group)
