@@ -35,6 +35,14 @@ from agent.pause import (
     PauseState,
     read_pause_state,
 )
+from agent.autonomy import (
+    AutonomyState,
+    autonomy_apply_blocked_detail,
+    autonomy_instruction_note,
+    mode_allows,
+    read_autonomy_state,
+)
+from agent.autonomy import FAIL_CLOSED_REASON as AUTONOMY_FAIL_CLOSED_REASON
 from agent.classifier import ClassificationInput, classify
 from agent.config import Settings, artifacts_bucket, get_settings
 from agent.worker_client import WorkerClientError
@@ -1458,6 +1466,22 @@ class PauseToggleRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class AutonomyToggleRequest(BaseModel):
+    """Request body for POST /autonomy.
+
+    ``mode`` is Literal-constrained so an unknown mode is a 422 at the edge,
+    never an ambiguous write. ``extra="forbid"`` surfaces typo'd fields as 422
+    rather than silently dropping them. ``reason`` is capped at 500 chars;
+    empty / whitespace-only strings are stripped to ``None`` by the route
+    handler so the stored audit doc stays clean.
+    """
+
+    mode: Literal["observe", "propose", "propose_apply"]
+    reason: str | None = Field(default=None, max_length=500)
+
+    model_config = ConfigDict(extra="forbid")
+
+
 @app.post("/recheck")
 async def recheck(
     req: RecheckRequest | None = None,
@@ -1929,6 +1953,37 @@ def get_capabilities_route(
 # --------------------------------------------------------------------------- #
 
 
+def _operator_actor_from_jwt(cf_access_jwt: str | None) -> str:
+    """Best-effort operator attribution for config toggles (pause, autonomy).
+
+    Extracted verbatim from post_pause_route — behavior unchanged: default
+    ``"operator-token"``; CF-Access JWT upgrade to the canonical operator
+    email when the team domain + aud tag are configured AND the assertion
+    verifies; silent fallback on any ``CfAccessJwtError`` so a stale CF
+    cookie or rotated key cannot break a legitimate token-authenticated
+    toggle.
+    """
+    settings = get_settings()
+    actor = "operator-token"
+    if (
+        cf_access_jwt
+        and settings.cf_access_team_domain
+        and settings.cf_access_aud_tag
+    ):
+        try:
+            claims = verify_cf_access_jwt(
+                cf_access_jwt,
+                settings.cf_access_team_domain,
+                settings.cf_access_aud_tag,
+            )
+            actor = canonical_operator_email(claims)
+        except CfAccessJwtError:
+            # Silent fallback — a stale cookie or rotated key shouldn't block
+            # a toggle that is authenticated by the operator token.
+            pass
+    return actor
+
+
 def _pause_state_fail_closed() -> PauseState:
     """Resolve the StateStore AND read the pause flag, fail-closed end-to-end.
 
@@ -2022,26 +2077,9 @@ def post_pause_route(
     status, and a cached copy could mislead the operator about safety state.
     """
     response.headers["Cache-Control"] = "no-store"
-    settings = get_settings()
 
     # --- Actor attribution (best-effort; any failure → fallback) ---
-    actor = "operator-token"
-    if (
-        cf_access_jwt
-        and settings.cf_access_team_domain
-        and settings.cf_access_aud_tag
-    ):
-        try:
-            claims = verify_cf_access_jwt(
-                cf_access_jwt,
-                settings.cf_access_team_domain,
-                settings.cf_access_aud_tag,
-            )
-            actor = canonical_operator_email(claims)
-        except CfAccessJwtError:
-            # Silent fallback — a stale cookie or rotated key shouldn't block
-            # a toggle that is authenticated by the operator token.
-            pass
+    actor = _operator_actor_from_jwt(cf_access_jwt)
 
     # Strip whitespace-only reason to None so the stored doc is clean.
     reason = req.reason.strip() if req.reason else None
@@ -2075,6 +2113,131 @@ def post_pause_route(
         read_error=False,
     )
     return _serialize_pause_state(ps)
+
+
+# --------------------------------------------------------------------------- #
+# Operator autonomy dial — ClickOps item 11
+# --------------------------------------------------------------------------- #
+
+
+def _autonomy_state_fail_closed() -> AutonomyState:
+    """Resolve the StateStore AND read the dial, fail-closed end-to-end.
+
+    Mirrors _pause_state_fail_closed: read_autonomy_state never raises on
+    get_autonomy() errors, but get_state() ITSELF can raise (first-call
+    Firestore client construction). The fail-closed direction here is
+    mode="observe" — the MOST restrictive — NOT the absent-doc default
+    "propose_apply": an unreadable dial means we cannot KNOW what the
+    operator chose, so the only honest stance is report-only.
+
+    ONE mechanism for every dial read (the Layer-0 reads, the pipeline
+    suppression site, the apply gates, the approval displays, GET /autonomy).
+    """
+    try:
+        state = get_state()
+    except Exception:  # noqa: BLE001 — fail-closed by contract, never raise
+        log.warning("autonomy_state_store_unavailable", exc_info=True)
+        return AutonomyState(
+            mode="observe", reason=AUTONOMY_FAIL_CLOSED_REASON, read_error=True
+        )
+    return read_autonomy_state(state)
+
+
+def _serialize_autonomy_state(a: AutonomyState) -> dict[str, Any]:
+    """Serialize an AutonomyState to the wire shape shared by GET and POST.
+
+    ``updated_at`` shaping mirrors _serialize_pause_state exactly: a
+    ``datetime`` (InMemory) or Firestore ``DatetimeWithNanoseconds`` both have
+    ``.isoformat()``; fall back to ``str()`` for any other datetime-like type;
+    ``None`` stays ``None`` (dial never written).
+    """
+    if a.updated_at is None:
+        updated_at_str = None
+    elif hasattr(a.updated_at, "isoformat"):
+        updated_at_str = a.updated_at.isoformat()
+    else:
+        updated_at_str = str(a.updated_at)
+    return {
+        "mode": a.mode,
+        "reason": a.reason,
+        "actor": a.actor,
+        "updated_at": updated_at_str,
+        "read_error": a.read_error,
+    }
+
+
+@app.get("/autonomy")
+def get_autonomy_route(
+    response: Response,
+    _: None = Depends(verify_token),
+) -> dict:
+    """Return the current autonomy dial state.
+
+    Fail-closed read serialized at 200 — observe/read_error=True IS the
+    system's effective state, so a read failure is not an error response.
+    The store is resolved INSIDE the body (via _autonomy_state_fail_closed,
+    not Depends(get_state)) so a store-init failure ALSO yields the
+    fail-closed view rather than a 500. ``Cache-Control: no-store`` mirrors
+    GET /pause — operator safety status must never be served from cache.
+    """
+    response.headers["Cache-Control"] = "no-store"
+    return _serialize_autonomy_state(_autonomy_state_fail_closed())
+
+
+@app.post("/autonomy")
+def post_autonomy_route(
+    req: AutonomyToggleRequest,
+    response: Response,
+    _: None = Depends(verify_token),
+    cf_access_jwt: str | None = Header(default=None, alias="Cf-Access-Jwt-Assertion"),
+) -> dict:
+    """Set the autonomy dial. Mirrors POST /pause exactly.
+
+    Token-gated; audited (reason / actor / updated_at). Actor attribution is
+    best-effort via _operator_actor_from_jwt (CF-Access email when configured,
+    else "operator-token"). A WRITE failure raises 502 — the operator must
+    KNOW the toggle did NOT take effect; the store is resolved INSIDE the try
+    so a store-init failure gets the SAME contractual 502 instead of a generic
+    500. The response is built from the as-written document so the caller sees
+    the real server-authoritative updated_at. ``Cache-Control: no-store``
+    matches the GET.
+    """
+    response.headers["Cache-Control"] = "no-store"
+
+    # --- Actor attribution (best-effort; any failure → fallback) ---
+    actor = _operator_actor_from_jwt(cf_access_jwt)
+
+    # Strip whitespace-only reason to None so the stored doc is clean.
+    reason = req.reason.strip() if req.reason else None
+    reason = reason or None  # empty string after strip → None
+
+    try:
+        doc = get_state().set_autonomy(mode=req.mode, reason=reason, actor=actor)
+    except Exception as exc:  # noqa: BLE001
+        # Surface BOTH store-resolution and write failures as 502 — the
+        # operator must see that the toggle didn't take effect. A silent write
+        # failure could leave the operator believing the dial moved when it
+        # did not.
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"autonomy toggle did NOT take effect — storage write failed: {exc}"
+            ),
+        ) from exc
+
+    log.info("autonomy_toggled", extra={"mode": req.mode, "actor": actor, "reason": reason})
+
+    # Build the response from the as-written doc so the caller sees what was
+    # actually persisted (including the server-authoritative updated_at from
+    # Firestore's read-after-write in FirestoreStateStore.set_autonomy).
+    a = AutonomyState(
+        mode=str(doc.get("mode")),
+        reason=doc.get("reason"),
+        actor=doc.get("actor"),
+        updated_at=doc.get("updated_at"),
+        read_error=False,
+    )
+    return _serialize_autonomy_state(a)
 
 
 @app.get("/trace/{trace_id}")
