@@ -495,6 +495,13 @@ BENIGN_DRIFT_ALLOWLISTS: dict[str, DriftAllowlist] = {
         }),
         subtrees=("conditions", "terminal_condition", "traffic_statuses"),
     ),
+    # `updated` is the bucket's RFC3339 metadata-write readback timestamp — it
+    # churns on ANY out-of-band metadata touch. It carries no desired-state
+    # content itself; if the touch changed a REAL attribute, that attribute
+    # drifts too and still refuses. (Live evidence: adopt PR #95 drift_refused
+    # on exactly this field, 2026-06-11.) No normalization_paths: no bucket
+    # null↔empty artifact has been observed live — extend only on evidence.
+    "google_storage_bucket": DriftAllowlist(paths=frozenset({"updated"})),
 }
 
 _LIST_INDEX_RE = re.compile(r"\[\d+\]")

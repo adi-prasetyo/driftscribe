@@ -846,6 +846,50 @@ def test_classify_drift_unknown_type_fails_closed() -> None:
     assert v.benign is False and "type-scoped" in v.reason
 
 
+_BKT = "google_storage_bucket.checkout_assets"
+
+
+def _bucket_drift_show(before, after):  # noqa: ANN001, ANN201
+    return {"resource_drift": [{
+        "address": _BKT, "type": "google_storage_bucket",
+        "change": {"actions": ["update"], "before": before, "after": after},
+    }]}
+
+
+def test_classify_drift_bucket_updated_benign() -> None:
+    """The live PR #95 refusal signature: ONLY `updated` churned → benign now."""
+    v = tofu_runner.classify_refresh_drift(_bucket_drift_show(
+        {"updated": "2026-06-10T00:00:00Z", "force_destroy": False},
+        {"updated": "2026-06-11T05:00:00Z", "force_destroy": False}))
+    assert v.benign is True
+    assert v.paths == (f"{_BKT}:updated",)
+
+
+def test_classify_drift_bucket_material_refuses() -> None:
+    for delta in ({"force_destroy": True}, {"labels": {"x": "y"}},
+                  {"effective_labels": {"x": "y"}}, {"versioning": [{"enabled": False}]}):
+        before = {"updated": "t1", "force_destroy": False, "labels": {},
+                  "effective_labels": {}, "versioning": [{"enabled": True}]}
+        v = tofu_runner.classify_refresh_drift(_bucket_drift_show(before, {**before, "updated": "t2", **delta}))
+        assert v.benign is False, delta
+
+
+def test_classify_drift_bucket_time_created_material() -> None:
+    """A changed creation timestamp signals out-of-band recreate → refuse."""
+    v = tofu_runner.classify_refresh_drift(_bucket_drift_show(
+        {"time_created": "t1"}, {"time_created": "t2"}))
+    assert v.benign is False
+
+
+def test_classify_drift_no_cross_type_path_leakage() -> None:
+    """Cloud-Run-allowlisted paths (etag/update_time) are NOT benign for buckets,
+    and the bucket's `updated` is NOT benign for Cloud Run — per-type scoping."""
+    v = tofu_runner.classify_refresh_drift(_bucket_drift_show({"etag": "a"}, {"etag": "b"}))
+    assert v.benign is False
+    v = tofu_runner.classify_refresh_drift(_drift_show({"updated": "t1"}, {"updated": "t2"}))
+    assert v.benign is False
+
+
 def test_has_true_recurses_only_real_true() -> None:
     assert tofu_runner._has_true({"a": {"b": True}}) is True
     assert tofu_runner._has_true([False, {"x": True}]) is True
