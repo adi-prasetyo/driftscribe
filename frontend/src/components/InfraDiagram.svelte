@@ -106,7 +106,16 @@
   // it must NOT drive the trailer — only this drift-vs-shown delta may, or we'd
   // mislabel hidden MANAGED resources as unmanaged (Codex review 019eb572 round-2).
   type AdoptListRow = { nodeId: string; label: string; adoptable: boolean; prefill: string };
-  type AdoptListGroup = { label: string; rows: AdoptListRow[]; hiddenUnmanaged: number };
+  // assetType is the each-key: friendly labels are NOT unique (live CAI carries
+  // cloudresourcemanager…/Project AND compute…/Project, both labelled "Project";
+  // keying by label crashed the whole panel flush with each_key_duplicate —
+  // found by the Phase-4 live e2e).
+  type AdoptListGroup = {
+    assetType: string;
+    label: string;
+    rows: AdoptListRow[];
+    hiddenUnmanaged: number;
+  };
   const adoptGroups = $derived.by((): AdoptListGroup[] => {
     if (!graph || graph.degraded) return [];
     const out: AdoptListGroup[] = [];
@@ -124,7 +133,12 @@
         });
       }
       if (rows.length === 0) continue;
-      out.push({ label: g.label, rows, hiddenUnmanaged: Math.max(0, g.drift - rows.length) });
+      out.push({
+        assetType: g.asset_type,
+        label: g.label,
+        rows,
+        hiddenUnmanaged: Math.max(0, g.drift - rows.length),
+      });
     }
     return out;
   });
@@ -482,7 +496,7 @@
           under IaC management
         </p>
         <ul class="infra-adopt__list">
-          {#each adoptGroups as g (g.label)}
+          {#each adoptGroups as g (g.assetType)}
             {#each g.rows as row (row.nodeId)}
               <li class="infra-adopt__row" data-testid="adopt-row">
                 <span class="infra-adopt__type">{g.label}</span>
