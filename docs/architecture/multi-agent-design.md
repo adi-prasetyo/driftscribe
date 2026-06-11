@@ -32,10 +32,10 @@ flowchart LR
         subgraph Upgrade["Upgrade agent\n(prompt + 8 tools)"]
             ADKu["ADK Agent"]
         end
-        subgraph Explore["Explore agent — chat-only, read-only\n(prompt + 6 read tools)"]
+        subgraph Explore["Explore agent — chat-only, read-only\n(prompt + 7 read tools)"]
             ADKe["ADK Agent"]
         end
-        subgraph Provision["Provision agent — chat-only, 1 mutation tool\n(prompt + 6 tools)"]
+        subgraph Provision["Provision agent — chat-only, 2 mutation tools\n(prompt + 7 tools)"]
             ADKp["ADK Agent"]
         end
         Chat --> ADKd
@@ -103,7 +103,7 @@ flowchart LR
 
 | Service | Public? | Workload | Owns | Notes |
 | --- | --- | --- | --- | --- |
-| `driftscribe-agent` (coordinator) | Yes — `--allow-unauthenticated` + `X-DriftScribe-Token` | all 4 | ADK agent loop, intent classification, approval HTML/HMAC, Firestore session + approval state, Developer Knowledge MCP attach, infra resource-map serve | Single entrypoint for humans, Eventarc, and demo scripts. 14 wired callables in `TOOL_REGISTRY` (+2 reserved session-memory slots); the LLM only ever sees the per-workload subset — 8 drift, 8 upgrade, 6 explore (all read-only), 6 provision (one of them the `provision_open_infra_pr` mutation tool). See §4. |
+| `driftscribe-agent` (coordinator) | Yes — `--allow-unauthenticated` + `X-DriftScribe-Token` | all 4 | ADK agent loop, intent classification, approval HTML/HMAC, Firestore session + approval state, Developer Knowledge MCP attach, infra resource-map serve | Single entrypoint for humans, Eventarc, and demo scripts. 16 wired callables in `TOOL_REGISTRY` (+2 reserved session-memory slots); the LLM only ever sees the per-workload subset — 8 drift, 8 upgrade, 7 explore (all read-only), 7 provision (two of them mutation tools: `provision_open_infra_pr` + `provision_propose_adoption`). See §4. |
 | `driftscribe-reader` | No | drift | Reading live Cloud Run env + revision of `payment-demo` | Hardcoded target — request body is rejected if it tries to override service/region/project. |
 | `driftscribe-docs` | No | drift | Patching runbook files under `demo/docs/`, opening PRs against a single repo | Path allowlist regex `^demo/docs/[^/]+\.md$`. Refuses `ops-contract.yaml`, `.github/`, `infra/`, anything `.py`. |
 | `driftscribe-rollback` | No | drift | `/propose` → operator approval → `/execute` or `/deny` (HMAC-bound, single-use, 15-min TTL) on `payment-demo` only | Approval UI lives on the **coordinator** so the gated page can be reached by a human. **Both decision paths** verify the HMAC on this worker — the coordinator never validates the approval token itself, by design. |
@@ -229,7 +229,7 @@ Each worker has a tiny REST surface with a hardcoded "payload-intent policy" —
 
 The coordinator's ADK agent operates against an explicit, hardcoded list of tools — `agent.adk_agent.COORDINATOR_TOOLS`. The LLM cannot invoke anything outside this list; no `execute_shell`, no `arbitrary_http_request`, no direct GCP/GitHub SDK calls.
 
-The 15 wired tools (plus 2 reserved session-memory slots, `get_session_state` / `set_session_state`, that fail closed if a YAML enables them before they're implemented):
+The 16 wired tools (plus 2 reserved session-memory slots, `get_session_state` / `set_session_state`, that fail closed if a YAML enables them before they're implemented):
 
 | Tool | Purpose | Routes to | Workload(s) |
 |---|---|---|---|
@@ -246,7 +246,8 @@ The 15 wired tools (plus 2 reserved session-memory slots, `get_session_state` / 
 | `upgrade_close_pr_tool` | Close an upgrade PR this workload opened | Upgrade Docs (`/close`) | upgrade |
 | `upgrade_merge_pr_tool` | CI-gated squash-merge of an upgrade PR | Upgrade Docs (`/merge`) | upgrade |
 | `read_project_inventory_tool` | Whole-project resource inventory (read-only) | Infra Reader (`/describe`) | explore, provision |
-| `open_infra_pr_tool` | Author `iac/`-only HCL + open ONE PR (the only mutation tool outside drift/upgrade) | Tofu Editor (`/open-pr`) | provision |
+| `open_infra_pr_tool` | Author `iac/`-only HCL + open ONE PR | Tofu Editor (`/open-pr`) | provision |
+| `propose_adoption_tool` | Render probe-proven zero-change import HCL + open ONE PR (adopt) | Tofu Editor (`/open-pr`) | provision |
 | `load_iac_plan_tool` | Read latest verified plan artifact for a pending infra PR (read-only; GCS objectViewer only, no GitHub PAT — item 12) | Coordinator-internal (GCS listing) | explore |
 
 **Per-workload tool scoping (Phase 17.A.4):** `COORDINATOR_TOOLS` is the *global registration manifest* — the universe of callables the coordinator may wire to ANY workload. Each workload's YAML (`workloads/<name>/workload.yaml`) carries `enabled_tool_names`, a symbolic filter that picks a per-workload subset from `agent.workloads.registry.TOOL_REGISTRY`. `Agent(tools=...)` receives ONLY the workload-scoped list at runtime, so **the LLM never sees a cross-workload tool**. `tests/unit/test_coordinator_tool_inventory.py` pins a three-way equality: YAML ⇄ the `DRIFT_WORKLOAD_TOOL_NAMES` / `UPGRADE_WORKLOAD_TOOL_NAMES` / `EXPLORE_WORKLOAD_TOOL_NAMES` / `PROVISION_WORKLOAD_TOOL_NAMES` tuples in `agent/adk_agent.py` ⇄ runtime resolution via `load_workload(name)`. The same test pins the **read-only / mutation disjointness** invariants: `explore`'s tools must be disjoint from the mutation-tool set, while `provision`'s set must include `open_infra_pr_tool` (and its `tofu_editor` mutation worker).
@@ -281,7 +282,7 @@ A **workload** is a named bundle of {system prompt, chat system prompt, tool inv
 
 - `WorkloadSpec` — pydantic `BaseModel` with `extra="forbid"`, parsed from `workloads/<name>/workload.yaml`. Carries only *symbolic* names — `enabled_tool_names`, `worker_names`, `action_names`. No URLs, secrets, or repos live in YAML. The `name` field is a `Literal["drift", "upgrade", "explore", "provision"]` so a YAML typo fails at parse time.
 - `WorkloadResolution` — frozen dataclass holding the parsed spec plus resolved callables. The three name→object fields (`tools`, `workers`, `actions`) are exposed as `MappingProxyType` views over private dicts so a caller cannot widen authority by in-place mutation.
-- Three code-side allowlists in `registry.py`: `TOOL_REGISTRY` (16 entries — 14 wired callables plus 2 `None`-reserved session-memory slots, `get_session_state` / `set_session_state`, that fail with `ReservedToolNotImplementedError` if a future YAML enables them before a Phase-N PR flips them to real callables; the manifest the YAML's `enabled_tool_names` resolves against), `WORKER_REGISTRY` (8 entries — `drift_reader`/`drift_docs`/`drift_rollback`/`infra_reader`/`notifier`/`upgrade_reader`/`upgrade_docs`/`tofu_editor`; each carries its URL env var name; note `tofu-apply` is deliberately absent — the LLM never gets a tool for it, and the coordinator reaches it only from its `/iac-approvals` approval handler), `ACTION_REGISTRY` (6 entries; each carries `requires_approval`). The security property is the inverse of "YAML drives behavior": *flipping a YAML value can choose from the allowlist, but it cannot introduce a new URL, secret, repo, or callable.* A fourth allowlist, `UPGRADE_TARGET_REGISTRY`, pins the upgrade workload's `(target_repo, lockfile_path, advisory_source)` for the same reason.
+- Three code-side allowlists in `registry.py`: `TOOL_REGISTRY` (18 entries — 16 wired callables plus 2 `None`-reserved session-memory slots, `get_session_state` / `set_session_state`, that fail with `ReservedToolNotImplementedError` if a future YAML enables them before a Phase-N PR flips them to real callables; the manifest the YAML's `enabled_tool_names` resolves against), `WORKER_REGISTRY` (8 entries — `drift_reader`/`drift_docs`/`drift_rollback`/`infra_reader`/`notifier`/`upgrade_reader`/`upgrade_docs`/`tofu_editor`; each carries its URL env var name; note `tofu-apply` is deliberately absent — the LLM never gets a tool for it, and the coordinator reaches it only from its `/iac-approvals` approval handler), `ACTION_REGISTRY` (6 entries; each carries `requires_approval`). The security property is the inverse of "YAML drives behavior": *flipping a YAML value can choose from the allowlist, but it cannot introduce a new URL, secret, repo, or callable.* A fourth allowlist, `UPGRADE_TARGET_REGISTRY`, pins the upgrade workload's `(target_repo, lockfile_path, advisory_source)` for the same reason.
 
 **Routing.** `agent.main`'s `/chat` and `/recheck` handlers extract the `workload` field, call `load_workload(name)`, and pass the `WorkloadResolution` to `build_chat_agent` / `build_agent` in `agent/adk_agent.py`. The factory hands `Agent(tools=...)` the workload's filtered tool list (`list(workload.tools.values())`), NOT the global union. The system prompt comes from the workload directory: `workloads/<name>/system_prompt.md` for `/recheck` and `workloads/<name>/chat_system_prompt.md` (falling back to `system_prompt.md`) for `/chat`. The LLM literally never sees a cross-workload tool or prompt.
 
