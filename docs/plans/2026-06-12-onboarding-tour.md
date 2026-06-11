@@ -2,6 +2,8 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
+> **Codex plan review (thread 019eb76d):** round 1 NO-GO ×5 — all folded: (MF1) NEXT_LINE scoped to *this adopt request* — the old "Nothing is applied until you approve it" overclaimed vs propose_apply's autonomous dependency merges; (MF2) adoptStepState skips nodes whose normalized label is empty (no empty-backtick prefill); (MF3) honest busy note on the final step when chat is disabled; (MF4) `.tour-target { display: flow-root; }` so child margins can't collapse outside the spotlight box; (MF5) new App.test.ts smoke pinning boot suppression / flag marking / header reopen / graph lift. Should-fixes folded: per-test scrollIntoView mock, localStorage-throws tests, welcomeLine softened ("helps you bring it under IaC management"), header flex-wrap.
+
 **Goal:** A first-run guided tour of the operator SPA — banner-offered, header-button-reopenable — that walks a new ClickOps-migrant operator through their estate, the controls they hold, and ends by prefilling (never sending) their first adopt request.
 
 **Architecture:** Frontend-only. A pure `lib/tour.ts` (step definitions, all copy, localStorage flag, first-adopt-target selection) + two components: `TourBanner.svelte` (dismissible first-visit offer) and `TourCard.svelte` (docked, NON-modal step card that spotlights the *real* panels via `[data-tour]` attributes + a `.tour-spotlight` class — no positioning library). The card reads the same `/infra/graph` payload the Infrastructure panel already fetched, lifted via a new `onGraph` callback prop. The adopt step routes through the existing `handleAdopt` prefill bridge.
@@ -24,6 +26,8 @@
 - **T3 — estate numbers are live or absent, never invented.** `estateLine` renders real totals, an honest "still loading" line, or an honest degraded line. Same for the adopt step (`unavailable` state) — the tour never names a resource it didn't read from the graph.
 - **T4 — prefill-never-send.** The tour's adopt button calls the same `onAdopt`/`handleAdopt` bridge as the panel button and is disabled under the same `chatDisabled` condition. The card states "nothing is sent until you press Send."
 - **T5 — the all-managed branch must not lie about non-adoptable leftovers.** `drift === 0` → congratulations; `drift > 0` with no adoptable candidate → "remaining unmanaged resources are not adoptable types yet", not "everything is managed".
+- **T6 — the what-next step is scoped to *this adopt request*** (Codex MF1). It must NOT claim "nothing is applied until you approve" in general — in Propose + Apply the upgrade workload may merge its own dependency PR. The claim is: *the infrastructure change* is applied only after review-page approval.
+- **T7 — never name what the graph didn't name** (Codex MF2). A node whose normalized label is empty is skipped as an adopt target — no empty-backtick prefill, no blank resource name in copy.
 
 ## Grounding facts (verified 2026-06-12)
 
@@ -48,7 +52,7 @@
 
 ```ts
 // frontend/tests/unit/tour.test.ts
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   TOUR_DONE_KEY,
   tourDone,
@@ -67,6 +71,26 @@ describe('tour done flag (localStorage)', () => {
     markTourDone();
     expect(window.localStorage.getItem(TOUR_DONE_KEY)).toBe('1');
     expect(tourDone()).toBe(true);
+  });
+
+  it('swallows storage failures (strict privacy modes)', () => {
+    const get = vi
+      .spyOn(Storage.prototype, 'getItem')
+      .mockImplementation(() => {
+        throw new Error('denied');
+      });
+    const set = vi
+      .spyOn(Storage.prototype, 'setItem')
+      .mockImplementation(() => {
+        throw new Error('denied');
+      });
+    try {
+      expect(tourDone()).toBe(false);
+      expect(() => markTourDone()).not.toThrow();
+    } finally {
+      get.mockRestore();
+      set.mockRestore();
+    }
   });
 });
 
@@ -109,7 +133,12 @@ Expected: FAIL — module `../../src/lib/tour` not found.
 // always-gated claim to INFRASTRUCTURE edits — in Propose + Apply the
 // upgrade workload may merge its own dependency PR.
 
-import { adoptGroupRank, adoptPrefill, type InfraGraph } from './infra_graph';
+import {
+  adoptGroupRank,
+  adoptPrefill,
+  normalizeForPrompt,
+  type InfraGraph,
+} from './infra_graph';
 import { coveragePercent } from './coverage';
 
 export const TOUR_DONE_KEY = 'driftscribe_tour_done';
@@ -264,10 +293,16 @@ describe('step copy', () => {
     expect(CONTROLS_LINE.toLowerCase()).not.toContain('safety');
   });
 
-  it('NEXT_LINE explains the PR + review-page flow and the reopen path', () => {
+  it('NEXT_LINE is scoped to THIS request and the review-page gate (T6)', () => {
+    expect(NEXT_LINE).toContain('this adopt request');
     expect(NEXT_LINE).toContain('pull request');
-    expect(NEXT_LINE).toContain('Nothing is applied until you approve it');
+    expect(NEXT_LINE).toContain(
+      'applied only after you approve it on the review page',
+    );
     expect(NEXT_LINE).toContain('Tour button');
+    // The old blanket claim must not return — propose_apply may merge
+    // dependency PRs on its own (Codex MF1).
+    expect(NEXT_LINE).not.toContain('Nothing is applied');
   });
 });
 
@@ -327,6 +362,27 @@ describe('adoptStepState', () => {
     expect(s.line).not.toContain('should not show');
   });
 
+  it('skips nodes with an empty normalized label — no empty-backtick prefill (T7)', () => {
+    const g = makeGraph({
+      groups: [
+        makeGroup({
+          nodes: [
+            makeNode({ id: 'g0n0', label: '   ' }), // normalizes to ''
+            makeNode({ id: 'g0n1', label: 'named-bucket' }),
+          ],
+        }),
+      ],
+    });
+    const s = adoptStepState(g);
+    if (s.kind !== 'target') throw new Error('expected target');
+    expect(s.prefill).toContain('named-bucket');
+
+    const allUnnamed = adoptStepState(
+      makeGraph({ groups: [makeGroup({ nodes: [makeNode({ label: ' ' })] })] }),
+    );
+    expect(allUnnamed.kind).toBe('none');
+  });
+
   it('all-managed congratulates; non-adoptable leftovers stay honest (T5)', () => {
     const allManaged = adoptStepState(
       makeGraph({
@@ -378,10 +434,10 @@ export function welcomeLine(graph: InfraGraph | null): string {
     ? `the GCP project ${graph.project}`
     : 'your GCP project';
   return (
-    `DriftScribe watches ${subject} and keeps it in line with ` +
-    'infrastructure-as-code. It explains what it sees, proposes changes as ' +
-    'pull requests you can read, and applies an infrastructure change only ' +
-    'after you approve it.'
+    `DriftScribe watches ${subject} and helps you bring it under ` +
+    'infrastructure-as-code management. It explains what it sees, proposes ' +
+    'changes as pull requests you can read, and applies an infrastructure ' +
+    'change only after you approve it.'
   );
 }
 
@@ -419,13 +475,17 @@ export const CONTROLS_LINE =
   'every setting, infrastructure edits pass your explicit approval gate — ' +
   'and the Pause button suspends all agent activity in one click.';
 
-// Step 5 — what pressing Send actually does, and how to reopen the tour.
+// Step 5 — what sending the prefilled request actually does, and how to
+// reopen the tour. Honesty T6 (Codex MF1): scoped to THIS adopt request —
+// a blanket "nothing is applied until you approve" would overclaim, since
+// Propose + Apply may merge dependency PRs on its own.
 export const NEXT_LINE =
-  'When you press Send, the agent drafts the change as a GitHub pull ' +
+  'When you send this adopt request, the agent drafts it as a GitHub pull ' +
   'request with a plan you can read in plain language — what it changes, ' +
-  'what it can never touch, and what it is estimated to cost. Nothing is ' +
-  'applied until you approve it on the review page. You can reopen this ' +
-  'tour anytime from the Tour button in the header.';
+  'what it can never touch, and what it is estimated to cost. The ' +
+  'infrastructure change is applied only after you approve it on the ' +
+  'review page. You can reopen this tour anytime from the Tour button in ' +
+  'the header.';
 
 export type AdoptStepState =
   | { kind: 'unavailable'; line: string }
@@ -457,7 +517,11 @@ export function adoptStepState(graph: InfraGraph | null): AdoptStepState {
         (b.rank ?? Number.POSITIVE_INFINITY),
     );
   for (const { g, rank } of candidates) {
-    const node = g.nodes.find((n) => !n.managed);
+    // T7 (Codex MF2): never suggest a node the graph didn't name — an empty
+    // normalized label would yield an empty-backtick prefill and blank copy.
+    const node = g.nodes.find(
+      (n) => !n.managed && normalizeForPrompt(n.label, 254) !== '',
+    );
     if (!node) continue;
     const hint =
       rank !== null && typeof g.adopt_hint === 'string' && g.adopt_hint
@@ -622,13 +686,15 @@ describe('TourBanner', () => {
 
 ```ts
 // frontend/tests/unit/TourCard.test.ts
-import { describe, it, expect, vi, afterEach, beforeAll } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/svelte';
 import TourCard from '../../src/components/TourCard.svelte';
 import type { InfraGraph } from '../../src/lib/infra_graph';
 
 // jsdom does not implement scrollIntoView — the spotlight effect calls it.
-beforeAll(() => {
+// Fresh mock per test (Codex should-fix: a shared beforeAll mock leaks call
+// history across cases).
+beforeEach(() => {
   window.HTMLElement.prototype.scrollIntoView = vi.fn();
 });
 afterEach(cleanup);
@@ -754,6 +820,19 @@ describe('TourCard — adopt step (T4: prefill, never send)', () => {
     expect(queryByTestId('tour-adopt-btn')).toBeNull();
     expect(getByTestId('tour-body').textContent).toContain('not available yet');
   });
+
+  it('final step shows the busy note only while chat is disabled (Codex MF3)', async () => {
+    const busy = render(TourCard, {
+      props: { graph: graphWithTarget(), adoptDisabled: true },
+    });
+    await advanceTo(busy.getByTestId, 4);
+    expect(busy.getByTestId('tour-busy-note').textContent).toContain('busy');
+    cleanup();
+
+    const idle = render(TourCard, { props: { graph: graphWithTarget() } });
+    await advanceTo(idle.getByTestId, 4);
+    expect(idle.queryByTestId('tour-busy-note')).toBeNull();
+  });
 });
 ```
 
@@ -868,6 +947,15 @@ describe('TourCard — adopt step (T4: prefill, never send)', () => {
         This only prefills the chat — nothing is sent until you press Send.
       </p>
     </div>
+  {/if}
+
+  {#if step.id === 'next' && adoptDisabled}
+    <!-- Honesty (Codex MF3): the copy says "when you send" but Send is
+         disabled right now (busy stream / historical replay) — say so. -->
+    <p class="ds-subtle tour-card__note" data-testid="tour-busy-note">
+      The chat is busy or showing a past trace right now — sending becomes
+      available when it finishes.
+    </p>
   {/if}
 
   <footer class="tour-card__nav">
@@ -1054,7 +1142,7 @@ and in `refresh()`, immediately after `graph = body; error = null;`:
 **Files:**
 - Modify: `frontend/src/App.svelte`
 
-No App-level component test exists (App mounts the world); the wiring is pinned by the component tests above + svelte-check + the live verify. Changes:
+The wiring itself is pinned by Task 8's new App smoke test (Codex MF5). Changes:
 
 **Step 1: Script additions**
 
@@ -1163,13 +1251,20 @@ After `<AuthPanel … />`:
     padding: 0.3em 0.85em;
     font-size: var(--ds-fs-1);
   }
-  /* Wrappers exist only as [data-tour] spotlight targets; restore the
-     inter-component spacing their children lost by no longer being
-     .chat-area direct children. */
+  /* Wrappers exist only as [data-tour] spotlight targets. flow-root makes
+     each wrapper a BFC so child margins cannot collapse outside it — the
+     spotlight outline must hug the real panels (Codex MF4). The `* + *`
+     rule restores the inter-component spacing the children lost by no
+     longer being .chat-area direct children. */
+  .tour-target {
+    display: flow-root;
+  }
   .tour-target > :global(* + *) {
     margin-top: var(--ds-sp-4);
   }
 ```
+
+Also add `flex-wrap: wrap;` to the existing `.app-header` rule (Codex should-fix: the action cluster must wrap cleanly on narrow screens now that it holds two elements).
 
 **Step 4: Verify**
 
@@ -1180,7 +1275,106 @@ Expected: svelte-check clean, full vitest suite green (490 baseline + new), buil
 
 ---
 
-### Task 8: Full verification
+### Task 8: App smoke test — tour wiring (Codex MF5)
+
+**Files:**
+- Test: `frontend/tests/unit/App.test.ts` (NEW — the repo's first App-level test)
+
+The riskiest tour behavior lives in App: boot-time intent suppression (decided *before* `onMount` strips `ask_pr`), flag marking on dismiss/close, header reopen, and the `onGraph` lift feeding the card. Every panel fetches on mount through `App.call → apiFetch → fetch`, so the smoke stubs global `fetch` with minimal 200 payloads (each component is defensive about shape, best-effort on failure — extend the URL map only if a component actually throws).
+
+**Step 1: Write the failing test**
+
+```ts
+// frontend/tests/unit/App.test.ts
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, cleanup, fireEvent, waitFor } from '@testing-library/svelte';
+import App from '../../src/App.svelte';
+
+function okJson(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+beforeEach(() => {
+  window.localStorage.clear();
+  window.sessionStorage.clear();
+  window.HTMLElement.prototype.scrollIntoView = vi.fn();
+  history.replaceState(null, '', '/');
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/decisions')) return okJson({ decisions: [] });
+      if (url.includes('/infra/graph'))
+        return okJson({
+          generated_at: null,
+          project: 'demo-proj',
+          caveat: '',
+          degraded: false,
+          degraded_reason: null,
+          totals: { resources: 1, managed: 0, drift: 1 },
+          groups: [],
+          edges: [],
+        });
+      return okJson({});
+    }),
+  );
+});
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
+
+describe('App — tour wiring (smoke)', () => {
+  it('offers the banner on a fresh profile; Start opens the card; close marks done', async () => {
+    const { getByTestId, queryByTestId } = render(App);
+    expect(getByTestId('tour-banner')).toBeTruthy();
+    await fireEvent.click(getByTestId('tour-banner-start'));
+    expect(queryByTestId('tour-banner')).toBeNull();
+    expect(getByTestId('tour-card')).toBeTruthy();
+    await fireEvent.click(getByTestId('tour-close'));
+    expect(queryByTestId('tour-card')).toBeNull();
+    expect(window.localStorage.getItem('driftscribe_tour_done')).toBe('1');
+  });
+
+  it('dismissing the banner marks done; the header button reopens the tour', async () => {
+    const { getByTestId, queryByTestId } = render(App);
+    await fireEvent.click(getByTestId('tour-banner-dismiss'));
+    expect(queryByTestId('tour-banner')).toBeNull();
+    expect(window.localStorage.getItem('driftscribe_tour_done')).toBe('1');
+    await fireEvent.click(getByTestId('tour-open'));
+    expect(getByTestId('tour-card')).toBeTruthy();
+  });
+
+  it('suppresses the banner when arriving with ?ask_pr intent', () => {
+    history.replaceState(null, '', '/?ask_pr=102');
+    const { queryByTestId, getByTestId } = render(App);
+    expect(queryByTestId('tour-banner')).toBeNull();
+    // The permanent reopen path still exists.
+    expect(getByTestId('tour-open')).toBeTruthy();
+  });
+
+  it('lifts the fetched graph into the tour (welcome step names the project)', async () => {
+    const { getByTestId } = render(App);
+    await fireEvent.click(getByTestId('tour-banner-start'));
+    await waitFor(() =>
+      expect(getByTestId('tour-body').textContent).toContain('demo-proj'),
+    );
+  });
+});
+```
+
+**Step 2: Run** — `npx vitest run tests/unit/App.test.ts`. Before Task 7's wiring lands this FAILS (no banner testids); after Task 7 it must PASS. (If Tasks 7/8 are built together, write this test FIRST and watch it fail, then wire App.)
+
+**Step 3-4: Make it pass** — fix wiring, not the test, unless a stubbed payload shape is genuinely wrong.
+
+**Step 5: Commit** (`test(ui): App smoke for tour wiring — boot suppression, flag, reopen, graph lift`).
+
+---
+
+### Task 9: Full verification
 
 - `cd frontend && npm run check && npm run test:unit && npm run build` — all green.
 - `cd /home/adi/driftscribe && .venv/bin/pytest -q` — **2824 passed, unchanged** (no backend files touched; this run proves it).
@@ -1191,7 +1385,7 @@ Expected: svelte-check clean, full vitest suite green (490 baseline + new), buil
 
 ## Ship checklist (standard pipeline, after Codex plan GO)
 
-1. Feature branch `feat/onboarding-tour`, tasks 1-8 as individual commits.
+1. Feature branch `feat/onboarding-tour`, tasks 1-9 as individual commits.
 2. PR → CI watch (`while gh pr checks N | grep -qE "pending|in_progress|queued"; do sleep 20; done`; plan-builder check "skipping" is expected).
 3. Codex completed-work review on the same thread; fold should-fixes.
 4. Squash-merge → coordinator rebake (`gcloud builds submit --config=infra/cloudbuild.coordinator-update.yaml --substitutions=_TAG=<short-sha>`) → find revision **by image digest** → `update-traffic --to-revisions=<rev>=100`. **No tofu-editor rebake** (no gate/denylist change).
