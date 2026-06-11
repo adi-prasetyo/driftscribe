@@ -35,6 +35,10 @@ class StateStore(Protocol):
     def set_pause(
         self, *, paused: bool, reason: str | None, actor: str
     ) -> dict[str, Any]: ...
+    def get_autonomy(self) -> dict[str, Any] | None: ...
+    def set_autonomy(
+        self, *, mode: str, reason: str | None, actor: str
+    ) -> dict[str, Any]: ...
 
 
 class InMemoryStateStore:
@@ -46,6 +50,9 @@ class InMemoryStateStore:
         # Pause flag singleton. None = never written (system is running by default —
         # the pause doc not existing means the operator has never toggled it).
         self._pause: dict[str, Any] | None = None
+        # Autonomy dial singleton. None = never written; agent.autonomy maps
+        # absent → the permissive DEFAULT_MODE (system's pre-dial behavior).
+        self._autonomy: dict[str, Any] | None = None
 
     def record_event(self, event_key: str, payload: dict[str, Any]) -> bool:
         if event_key in self._events:
@@ -159,6 +166,30 @@ class InMemoryStateStore:
             "updated_at": datetime.now(timezone.utc),
         }
         return dict(self._pause)
+
+    def get_autonomy(self) -> dict[str, Any] | None:
+        """Return a defensive copy of the autonomy document, or None if never set.
+
+        Mirrors get_pause: absent doc = dial never touched; the caller
+        (agent.autonomy.read_autonomy_state) maps None to the default mode.
+        """
+        if self._autonomy is None:
+            return None
+        return dict(self._autonomy)
+
+    def set_autonomy(
+        self, *, mode: str, reason: str | None, actor: str
+    ) -> dict[str, Any]:
+        """Overwrite the autonomy document and return a defensive copy."""
+        from datetime import datetime, timezone
+
+        self._autonomy = {
+            "mode": mode,
+            "reason": reason,
+            "actor": actor,
+            "updated_at": datetime.now(timezone.utc),
+        }
+        return dict(self._autonomy)
 
 
 class FirestoreStateStore:
@@ -388,5 +419,39 @@ class FirestoreStateStore:
         )
         # Read back the written document so the returned dict carries the real
         # server timestamp rather than the sentinel value.
+        snap = doc_ref.get()
+        return snap.to_dict()
+
+    def get_autonomy(self) -> dict[str, Any] | None:
+        """Point-read the ``config/autonomy`` document; ``to_dict()`` or None.
+
+        Mirrors get_pause: None when the document has never been written
+        (the dial was never touched; agent.autonomy maps that to the
+        permissive default mode). ``to_dict()`` already returns a fresh
+        plain dict so no extra defensive copy is needed.
+        """
+        snap = self._config.document("autonomy").get()
+        return snap.to_dict() if snap.exists else None
+
+    def set_autonomy(
+        self, *, mode: str, reason: str | None, actor: str
+    ) -> dict[str, Any]:
+        """Full-overwrite the ``config/autonomy`` document; return as-written.
+
+        Mirrors set_pause: ``firestore.SERVER_TIMESTAMP`` for ``updated_at``
+        plus a read-after-write so the caller and audit log see the real
+        server-authoritative time rather than the sentinel.
+        """
+        from google.cloud import firestore
+
+        doc_ref = self._config.document("autonomy")
+        doc_ref.set(
+            {
+                "mode": mode,
+                "reason": reason,
+                "actor": actor,
+                "updated_at": firestore.SERVER_TIMESTAMP,
+            }
+        )
         snap = doc_ref.get()
         return snap.to_dict()
