@@ -25,6 +25,7 @@ DTO the UI renders as an "unavailable" note.
 """
 from __future__ import annotations
 
+from driftscribe_lib.iac_plan_denylist import ADOPTABLE_RESOURCE_TYPES
 from driftscribe_lib.iac_plan_summary import PlanSummary
 from driftscribe_lib.infra_inventory import SENSITIVE_ASSET_TYPES
 
@@ -48,6 +49,22 @@ PLAN_RTYPE_TO_ASSET_TYPE: dict[str, str] = {
     "google_compute_firewall": "compute.googleapis.com/Firewall",
     "google_eventarc_trigger": "eventarc.googleapis.com/Trigger",
 }
+
+# Adopt-button UI (Phase 4, adopt design §6): the CAI asset types whose live
+# resources the operator may adopt straight from the map. SINGLE SOURCE OF
+# TRUTH is the denylist's ADOPTABLE_RESOURCE_TYPES (the v1 adoptable HCL-type
+# allowlist) — COMPUTED here by mapping each through PLAN_RTYPE_TO_ASSET_TYPE,
+# never hand-listed, so a denylist allowlist change propagates to the map
+# affordance automatically. A drift-pin test asserts the resolved set is
+# exactly the four. (PLAN_RTYPE_TO_ASSET_TYPE covers all four adoptable
+# rtypes — the .get below would silently drop any that did not map, which a
+# new adoptable type without a CAI mapping would expose; that is acceptable
+# fail-quiet for the map, and the drift pin catches the divergence.)
+ADOPTABLE_ASSET_TYPES: frozenset[str] = frozenset(
+    PLAN_RTYPE_TO_ASSET_TYPE[rtype]
+    for rtype in ADOPTABLE_RESOURCE_TYPES
+    if rtype in PLAN_RTYPE_TO_ASSET_TYPE
+)
 
 # Plan rtypes whose names/addresses must never reach the map. Mirrors the
 # static gate's SECRET_MATERIAL_RESOURCE_TYPES (drift-pinned ⊇ at test time;
@@ -201,6 +218,7 @@ def build_graph(inventory: dict) -> dict:
           degraded: bool, degraded_reason: str|None, detail?: str|None,
           totals: {resources, managed, drift},
           groups: [ { asset_type, label, count, managed, drift, sensitive,
+                      adoptable,
                       nodes: [ {id, label, asset_type, managed, location} ],
                       truncated_in_group? } ],
           edges: [],                      # Phase 1 is node-only
@@ -275,6 +293,10 @@ def build_graph(inventory: dict) -> dict:
             "managed": managed,
             "drift": drift,
             "sensitive": sensitive,
+            # Adopt-button affordance (Phase 4): an adoptable type whose group is
+            # NOT sensitive. Sensitive groups are counts-only (no node names) so
+            # they can never carry an Adopt button regardless of their type.
+            "adoptable": atype in ADOPTABLE_ASSET_TYPES and not sensitive,
             "nodes": nodes,
         }
         if truncated_in_group:

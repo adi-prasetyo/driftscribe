@@ -390,6 +390,100 @@ def test_unequal_list_with_positional_sensitive_mask_uses_count_display():
 
 
 # ---------------------------------------------------------------------------
+# Task (adopt-button-ui Phase 4): PlanSummary.adopt_only — drives the approval
+# page's calm adoption framing (banner + reframed blast line). True IFF the
+# plan does NOTHING except import (adopt). Counts are FULL-PLAN (not display-
+# capped), so a mutation hidden beyond MAX_ENTRIES still falsifies the claim.
+# ---------------------------------------------------------------------------
+
+def _import_rc(name="adopted"):
+    """A pure-import resource_change (["no-op"] + an importing block)."""
+    rc = _rc(["no-op"], name=name,
+             before={"name": name}, after={"name": name})
+    rc["change"]["importing"] = {"id": f"projects/p/buckets/{name}"}
+    return rc
+
+
+class TestAdoptOnly:
+    def test_single_import_only_is_adopt_only(self):
+        s = summarize_plan(_plan(_import_rc()))
+        assert s.n_import == 1 and s.adopt_only is True
+
+    def test_two_imports_only_is_adopt_only(self):
+        # adopt_only is a COUNTS claim (not a batch-policy claim) — two imports
+        # and nothing else still reads as "only puts resources under management".
+        s = summarize_plan(_plan(_import_rc("a"), _import_rc("b")))
+        assert s.n_import == 2 and s.adopt_only is True
+
+    def test_import_plus_create_is_not_adopt_only(self):
+        s = summarize_plan(_plan(_import_rc(), _rc(["create"], name="c")))
+        assert s.n_import == 1 and s.n_create == 1 and s.adopt_only is False
+
+    def test_import_plus_update_is_not_adopt_only(self):
+        s = summarize_plan(_plan(
+            _import_rc(), _rc(["update"], name="u", before={"x": 1}, after={"x": 2}),
+        ))
+        assert s.adopt_only is False
+
+    def test_import_plus_destroy_is_not_adopt_only(self):
+        s = summarize_plan(_plan(_import_rc(), _rc(["delete"], name="d")))
+        assert s.n_destroy == 1 and s.adopt_only is False
+
+    def test_import_plus_replace_is_not_adopt_only(self):
+        s = summarize_plan(_plan(_import_rc(), _rc(["delete", "create"], name="r")))
+        assert s.n_replace == 1 and s.adopt_only is False
+
+    def test_import_plus_forget_is_not_adopt_only(self):
+        s = summarize_plan(_plan(_import_rc(), _rc(["forget"], name="f")))
+        assert s.n_forget == 1 and s.adopt_only is False
+
+    def test_importing_plus_update_row_is_not_adopt_only(self):
+        # An ["update"] row that ALSO carries an importing block is counted as
+        # update (imported=True), NOT import — the plan DOES modify the resource,
+        # so adopt_only must be False even though n_import would tempt it.
+        rc = _rc(["update"], name="adopted", before={"x": 1}, after={"x": 2})
+        rc["change"]["importing"] = {"id": "x"}
+        s = summarize_plan(_plan(rc))
+        assert s.entries[0].verb == "update" and s.entries[0].imported
+        assert s.n_update == 1 and s.n_import == 0
+        assert s.adopt_only is False
+
+    def test_deposed_destroy_alongside_import_is_not_adopt_only(self):
+        rc = _rc(["delete"], name="d")
+        rc["deposed"] = "byebye01"
+        s = summarize_plan(_plan(_import_rc(), rc))
+        assert s.n_destroy == 1 and s.entries[1].deposed == "byebye01"
+        assert s.adopt_only is False
+
+    def test_pure_create_is_not_adopt_only(self):
+        s = summarize_plan(_plan(_rc(["create"], name="c")))
+        assert s.n_import == 0 and s.adopt_only is False
+
+    def test_empty_plan_is_not_adopt_only(self):
+        s = summarize_plan(_plan())
+        assert s.entries == () and s.adopt_only is False
+
+    def test_imports_with_hidden_import_beyond_max_entries_still_adopt_only(self):
+        # 42 imports: display capped at MAX_ENTRIES, n_hidden>0, but every hidden
+        # row is ALSO an import → counts are full-plan import-only → still True.
+        rcs = [_import_rc(f"a{i}") for i in range(MAX_ENTRIES + 2)]
+        s = summarize_plan(_plan(*rcs))
+        assert s.n_import == MAX_ENTRIES + 2 and s.n_hidden == 2
+        assert s.adopt_only is True
+
+    def test_mutation_hidden_beyond_max_entries_falsifies_adopt_only(self):
+        # MAX_ENTRIES imports + one destroy pushed past the display cap: the
+        # destroy never renders but is still COUNTED — adopt_only is full-plan,
+        # so it must be False (a capped summary cannot whitewash a hidden
+        # destroy). Codex test-gap pin.
+        rcs = [_import_rc(f"a{i}") for i in range(MAX_ENTRIES)]
+        rcs.append(_rc(["delete"], name="hidden_destroy"))
+        s = summarize_plan(_plan(*rcs))
+        assert s.n_hidden == 1 and s.n_destroy == 1
+        assert s.adopt_only is False
+
+
+# ---------------------------------------------------------------------------
 # Task (ghost-nodes): resource_name extraction (Decision 4)
 # ---------------------------------------------------------------------------
 

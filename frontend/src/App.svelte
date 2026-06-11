@@ -25,6 +25,7 @@
   import DecisionsRail from './components/DecisionsRail.svelte';
   import InfraDiagram from './components/InfraDiagram.svelte';
   import { previewPrFromSearch } from './lib/infra_graph';
+  import type { ChatPrefill } from './lib/workloads';
   import CapabilityCard from './components/CapabilityCard.svelte';
   import PauseControl from './components/PauseControl.svelte';
   import Timeline from './components/Timeline.svelte';
@@ -81,6 +82,22 @@
   // append into (or backfill over) a newer run. `busy` also disables Send.
   let runSeq = 0;
   let busy = $state(false);
+
+  // The ONE chat-disabled condition (busy live stream OR historical replay), shared
+  // by ChatForm.disabled AND InfraDiagram.adoptDisabled so the two can never diverge
+  // — an Adopt click can never mutate a disabled composer or strand a stale draft
+  // behind a historical view (Codex review 019eb572 must-fix 3).
+  const chatDisabled = $derived(historicalActive || busy);
+
+  // Adopt-button bridge: an Adopt click on the resource map prefills (NOT sends)
+  // the composer. epoch bumps so the same/another Adopt re-applies after an edit.
+  let chatPrefill = $state<ChatPrefill | null>(null);
+  function handleAdopt(text: string) {
+    chatPrefill = { text, workload: 'provision', epoch: (chatPrefill?.epoch ?? 0) + 1 };
+    // Bring the composer into view so the prefilled draft is obvious. Best-effort:
+    // the element exists in the live tree; guarded for the historical/SSR-less case.
+    document.getElementById('chat-form')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
 
   // ---- auth plumbing (replaces window.prompt) ----
   function requestToken(): Promise<string | null> {
@@ -370,9 +387,16 @@
 
   <section id="chat-area" class="chat-area" aria-label="Chat and reasoning timeline">
     <PauseControl {call} />
-    <InfraDiagram {call} {appliedEpoch} {previewPr} onExitPreview={exitPreview} />
+    <InfraDiagram
+      {call}
+      {appliedEpoch}
+      {previewPr}
+      onExitPreview={exitPreview}
+      onAdopt={handleAdopt}
+      adoptDisabled={chatDisabled}
+    />
     <CapabilityCard {call} />
-    <ChatForm disabled={historicalActive || busy} onSubmit={submitChat} />
+    <ChatForm disabled={chatDisabled} onSubmit={submitChat} prefill={chatPrefill} />
     <HistoricalBanner active={historicalActive} traceId={historicalTraceId} onNewChat={newChat} />
     <TraceBadge {traceId} {status} />
     <FinalResponse reply={finalReply} isError={finalIsError} />

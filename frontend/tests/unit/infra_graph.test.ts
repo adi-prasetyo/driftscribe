@@ -6,6 +6,9 @@ import {
   overlayRenderable,
   overlayCountsLine,
   previewPrFromSearch,
+  adoptRows,
+  adoptPrefill,
+  normalizeForPrompt,
   type InfraGraph,
   type InfraGroup,
   type InfraNode,
@@ -742,5 +745,167 @@ describe('toMermaid + mermaid.parse — real grammar validation (Codex plan-revi
     mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: 'neutral', flowchart: { htmlLabels: false } });
     const src = toMermaid(graph({ degraded: true, groups: [] }), overlay({ entries: [entry({ verb: 'create', name: 'order-events' })] }));
     await expect(mermaid.parse(src)).resolves.toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Adopt helpers (Phase 4 — adopt button UI). Pure derivations off the graph DTO
+// that the InfraDiagram component renders as the "Unmanaged resources" action
+// list. Names/locations are UNTRUSTED (they flow into a chat prefill the
+// operator sends to the agent), so normalizeForPrompt is the input-hardening
+// boundary (Codex review 019eb572 must-fix 2).
+// ---------------------------------------------------------------------------
+
+describe('normalizeForPrompt', () => {
+  it('collapses CR/LF/tab/NUL/C1 control chars to single spaces', () => {
+    // C0 controls (NUL, tab, CR, LF) + a C1 control (U+0085 NEL) interleaved.
+    expect(normalizeForPrompt('a\r\nb\tc de', 254)).toBe('a b c d e');
+  });
+
+  it('collapses whitespace runs and trims', () => {
+    expect(normalizeForPrompt('   foo    bar   ', 254)).toBe('foo bar');
+  });
+
+  it('caps a 300-char label at 254', () => {
+    const long = 'x'.repeat(300);
+    expect(normalizeForPrompt(long, 254)).toBe('x'.repeat(254));
+  });
+
+  it('does NOT cap a label at or under the max', () => {
+    expect(normalizeForPrompt('x'.repeat(254), 254)).toBe('x'.repeat(254));
+    expect(normalizeForPrompt('short', 254)).toBe('short');
+  });
+
+  it('passes backticks and quotes through unchanged (NOT an HTML escape)', () => {
+    expect(normalizeForPrompt('a`b"c\'d<e>f&g', 254)).toBe('a`b"c\'d<e>f&g');
+  });
+
+  it('returns "" for an empty / all-control input', () => {
+    expect(normalizeForPrompt('', 254)).toBe('');
+    expect(normalizeForPrompt('\r\n\t', 254)).toBe('');
+  });
+});
+
+describe('adoptPrefill', () => {
+  it('composes the exact canonical string WITH a location', () => {
+    expect(adoptPrefill('Storage bucket', 'my-old-uploads', 'asia-northeast1')).toBe(
+      'Adopt the Storage bucket `my-old-uploads` in asia-northeast1 into IaC management.',
+    );
+  });
+
+  it('composes the exact canonical string WITHOUT a location', () => {
+    expect(adoptPrefill('Pub/Sub topic', 'order-events', null)).toBe(
+      'Adopt the Pub/Sub topic `order-events` into IaC management.',
+    );
+  });
+
+  it('normalizes untrusted fragments (controls/whitespace) before composing', () => {
+    expect(adoptPrefill('Storage  bucket', 'na\tme', '  loc ')).toBe(
+      'Adopt the Storage bucket `na me` in loc into IaC management.',
+    );
+  });
+});
+
+describe('adoptRows', () => {
+  it('returns drift (unmanaged) nodes across non-sensitive groups, in render order', () => {
+    const g = graph({
+      groups: [
+        group({
+          asset_type: BUCKET,
+          label: 'Storage bucket',
+          adoptable: true,
+          count: 2,
+          managed: 1,
+          drift: 1,
+          nodes: [
+            node({ id: 'g0n0', label: 'managed-bucket', asset_type: BUCKET, managed: true }),
+            node({ id: 'g0n1', label: 'my-old-uploads', asset_type: BUCKET, managed: false, location: 'asia-northeast1' }),
+          ],
+        }),
+      ],
+    });
+    const rows = adoptRows(g);
+    // The managed node is skipped; only the drift node yields a row.
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toEqual({
+      nodeId: 'g0n1',
+      groupLabel: 'Storage bucket',
+      nodeLabel: 'my-old-uploads',
+      adoptable: true,
+      prefill: 'Adopt the Storage bucket `my-old-uploads` in asia-northeast1 into IaC management.',
+    });
+  });
+
+  it('skips managed nodes and sensitive groups entirely', () => {
+    const g = graph({
+      groups: [
+        group({
+          asset_type: SECRET,
+          label: 'Secret',
+          adoptable: false,
+          sensitive: true,
+          count: 3,
+          drift: 3,
+          nodes: [],
+        }),
+        group({
+          asset_type: BUCKET,
+          label: 'Storage bucket',
+          adoptable: true,
+          count: 1,
+          managed: 1,
+          drift: 0,
+          nodes: [node({ id: 'g1n0', label: 'all-managed', asset_type: BUCKET, managed: true })],
+        }),
+      ],
+    });
+    expect(adoptRows(g)).toEqual([]);
+  });
+
+  it('marks a row from a group missing the adoptable field as adoptable:false (fail-quiet)', () => {
+    const g = graph({
+      groups: [
+        group({
+          asset_type: 'iam.googleapis.com/ServiceAccount',
+          label: 'Service account',
+          // no `adoptable` field (stale coordinator response)
+          count: 1,
+          drift: 1,
+          nodes: [node({ id: 'g0n0', label: 'ci-runner@proj.iam', managed: false })],
+        }),
+      ],
+    });
+    const rows = adoptRows(g);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].adoptable).toBe(false);
+    // Non-adoptable rows carry NO prefill.
+    expect(rows[0].prefill).toBe('');
+  });
+
+  it('preserves group then node render order across multiple groups', () => {
+    const g = graph({
+      groups: [
+        group({
+          asset_type: BUCKET,
+          label: 'Storage bucket',
+          adoptable: true,
+          count: 1,
+          drift: 1,
+          nodes: [node({ id: 'b0', label: 'bucket-a', asset_type: BUCKET, managed: false })],
+        }),
+        group({
+          asset_type: RUN,
+          label: 'Cloud Run service',
+          adoptable: true,
+          count: 2,
+          drift: 2,
+          nodes: [
+            node({ id: 'r0', label: 'svc-a', asset_type: RUN, managed: false }),
+            node({ id: 'r1', label: 'svc-b', asset_type: RUN, managed: false }),
+          ],
+        }),
+      ],
+    });
+    expect(adoptRows(g).map((r) => r.nodeId)).toEqual(['b0', 'r0', 'r1']);
   });
 });

@@ -18,3 +18,15 @@ export const WORKLOADS: WorkloadOption[] = [
   { value: 'explore', label: 'Explore (read-only)' },
   { value: 'provision', label: 'Provision (infra edits)' },
 ];
+
+/**
+ * Composer prefill (Phase-4 adopt-button bridge): App sets text + workload from an
+ * Adopt click and ChatForm applies it WITHOUT sending. `epoch` lets the same/another
+ * Adopt re-apply after the operator edits the draft. Shared so App and ChatForm can
+ * never disagree on the shape.
+ */
+export interface ChatPrefill {
+  text: string;
+  workload: Workload;
+  epoch: number;
+}

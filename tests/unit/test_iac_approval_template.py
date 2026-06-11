@@ -26,7 +26,12 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from agent.main import _TEMPLATES
-from driftscribe_lib.iac_plan_summary import AttrChange, ChangeEntry, PlanSummary
+from driftscribe_lib.iac_plan_summary import (
+    BLAST_CANNOT_TOUCH_NOTE,
+    AttrChange,
+    ChangeEntry,
+    PlanSummary,
+)
 
 
 def _view() -> SimpleNamespace:
@@ -329,3 +334,130 @@ def test_hidden_entries_note_and_truncated_attrs_note():
     html = _render(view=view)
     assert "3 more resource change(s)" in html
     assert "more attribute changes" in html
+
+
+# --------------------------------------------------------------------------- #
+# Task (adopt-button-ui Phase 4) — calm adoption framing for adopt-only plans:
+# a dedicated `adopt-note` banner (replaces the generic green no-destroy note)
+# and a reframed blast line ("puts under management at most"). Both are guarded
+# by s.adopt_only; the destructive branch stays FIRST and unchanged.
+# --------------------------------------------------------------------------- #
+
+
+def _norm(html: str) -> str:
+    """Collapse all whitespace runs to single spaces — the template wraps copy
+    across indented lines; a browser renders it as one space, so assertions on
+    multi-word phrases must compare the same way."""
+    import re
+    return re.sub(r"\s+", " ", html)
+
+
+def _import_summary(n_import=1, **kw):
+    """An adopt-only summary: one import entry, n_import counts only."""
+    base = dict(
+        entries=(
+            ChangeEntry(
+                verb="import", rtype="google_storage_bucket",
+                type_label="Cloud Storage bucket", name="my-old-uploads",
+                address="google_storage_bucket.my_old_uploads", imported=True,
+            ),
+        ),
+        n_create=0,
+        n_import=n_import,
+    )
+    base.update(kw)
+    return PlanSummary(**base)
+
+
+def test_adopt_only_plan_renders_adopt_note_not_generic_green_note():
+    view = _view()
+    view.change_summary = _import_summary()
+    html = _render(view=view)
+    text = _norm(html)
+    assert 'data-testid="adopt-note"' in html
+    assert "Nothing in your infrastructure will be modified" in text
+    assert "this only puts 1 resource under management" in text
+    assert "count it as managed once the change merges" in text
+    # The generic green no-destroy note must NOT also render (the banner is the
+    # adopt-only branch, not the else branch).
+    assert 'data-testid="no-destroy-note"' not in html
+    # The adopt-note uses the calm OK styling, not the red hard-stop.
+    assert 'data-testid="destroy-warning"' not in html
+
+
+def test_adopt_note_pluralizes_resource_count():
+    view = _view()
+    view.change_summary = _import_summary(
+        n_import=2,
+        entries=(
+            ChangeEntry(verb="import", rtype="google_storage_bucket",
+                        type_label="Cloud Storage bucket", name="a",
+                        address="google_storage_bucket.a", imported=True),
+            ChangeEntry(verb="import", rtype="google_pubsub_topic",
+                        type_label="Pub/Sub topic", name="b",
+                        address="google_pubsub_topic.b", imported=True),
+        ),
+    )
+    html = _render(view=view)
+    assert "this only puts 2 resources under management" in _norm(html)
+
+
+def test_adopt_only_blast_line_is_reframed_with_cannot_touch_note():
+    view = _view()
+    view.change_summary = _import_summary()
+    html = _render(
+        view=view,
+        blast_phrase="1 Cloud Storage bucket",
+        cannot_touch_note=BLAST_CANNOT_TOUCH_NOTE,
+    )
+    text = _norm(html)
+    assert 'data-testid="blast-radius"' in html
+    assert "puts under management at most: 1 Cloud Storage bucket" in text
+    assert "It modifies nothing — the live resource is only recorded in OpenTofu state" in text
+    # The cannot-touch note renders in the adopt variant too (honesty contract).
+    # Jinja HTML-escapes the apostrophe in "DriftScribe's", so assert on a
+    # distinctive apostrophe-free fragment rather than the raw constant.
+    assert "cannot change IAM anywhere, cannot delete, replace, or un-manage" in text
+    # The non-adopt phrasing must NOT appear for an adopt-only plan.
+    assert "can affect at most" not in text
+
+
+def test_import_plus_update_plan_keeps_existing_copy_no_adopt_note():
+    # adopt_only is False for a mixed import+update plan → the generic green
+    # note and the standard "can affect at most" blast copy render unchanged.
+    view = _view()
+    view.change_summary = _summary(
+        entries=(ChangeEntry(
+            verb="update", rtype="google_storage_bucket",
+            type_label="Cloud Storage bucket", name="b",
+            address="google_storage_bucket.b", imported=True,
+        ),),
+        n_create=0, n_update=1, n_import=0,
+    )
+    html = _render(
+        view=view,
+        blast_phrase="1 Cloud Storage bucket",
+        cannot_touch_note=BLAST_CANNOT_TOUCH_NOTE,
+    )
+    text = _norm(html)
+    assert 'data-testid="adopt-note"' not in html
+    assert 'data-testid="no-destroy-note"' in html
+    assert "can affect at most: 1 Cloud Storage bucket" in text
+    assert "puts under management at most" not in text
+
+
+def test_destructive_plan_unchanged_no_adopt_note():
+    # The destructive red warning stays FIRST and wins outright — never an
+    # adopt-note, even if the (impossible-in-practice) plan also had imports.
+    view = _view()
+    view.change_summary = _summary(
+        entries=(ChangeEntry(
+            verb="destroy", rtype="google_pubsub_topic", type_label="Pub/Sub topic",
+            name="orders", address="google_pubsub_topic.orders",
+        ),),
+        n_create=0, n_destroy=1, n_import=1,
+    )
+    html = _render(view=view)
+    assert 'data-testid="destroy-warning"' in html
+    assert 'data-testid="adopt-note"' not in html
+    assert 'data-testid="no-destroy-note"' not in html

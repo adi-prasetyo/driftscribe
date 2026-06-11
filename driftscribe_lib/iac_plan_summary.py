@@ -150,6 +150,16 @@ class PlanSummary:
         no destroys, no replaces, no forgets, no unclassified combos."""
         return (self.n_destroy + self.n_replace + self.n_forget + self.n_change) == 0
 
+    @property
+    def adopt_only(self) -> bool:
+        """True iff the plan does NOTHING except import (adopt) resources —
+        drives the approval page's calm adoption framing. Counts are full-plan
+        (not display-capped), so n_hidden does not weaken the claim."""
+        return self.n_import > 0 and (
+            self.n_create + self.n_update + self.n_destroy
+            + self.n_replace + self.n_forget + self.n_change
+        ) == 0
+
 
 # --------------------------------------------------------------------------- #
 # Masks. tofu's *_sensitive / after_unknown mirror the value structure with

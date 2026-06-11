@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { WORKLOADS, type Workload } from '../lib/workloads';
+  import { untrack } from 'svelte';
+  import { WORKLOADS, type Workload, type ChatPrefill } from '../lib/workloads';
 
   // The prompt composer. A single-row form: a growing prompt input, a compact
   // workload select, and a Send button. In historical mode the whole row is
@@ -8,13 +9,39 @@
   let {
     disabled = false,
     onSubmit,
+    prefill = null,
   }: {
     disabled?: boolean;
     onSubmit: (prompt: string, workload: Workload) => void;
+    /**
+     * Adopt-button bridge (Phase 4): prefill the composer WITHOUT sending — the
+     * operator stays in charge (design §6). `epoch` lets the same/another Adopt
+     * click re-apply after the operator edits; a no-op rerender at the same epoch
+     * never clobbers an edited draft (Codex review 019eb572).
+     */
+    prefill?: ChatPrefill | null;
   } = $props();
 
   let prompt = $state('');
   let workload = $state<Workload>('drift');
+  let inputEl = $state<HTMLInputElement | null>(null);
+
+  // Apply the prefill on each NEW epoch (tracked dependency); set the workload
+  // select and focus the input so the operator can edit / press Send. Keyed on
+  // epoch (not text) so identical re-prefills still re-apply after an edit, and a
+  // same-epoch rerender leaves an edited draft alone. untrack the writes so this
+  // effect depends ONLY on prefill?.epoch.
+  let lastPrefillEpoch = -1;
+  $effect(() => {
+    const p = prefill;
+    if (!p || p.epoch === lastPrefillEpoch) return;
+    lastPrefillEpoch = p.epoch;
+    untrack(() => {
+      prompt = p.text;
+      workload = p.workload;
+      inputEl?.focus();
+    });
+  });
 
   function handle(e: SubmitEvent) {
     e.preventDefault();
@@ -34,6 +61,7 @@
     autocomplete="off"
     placeholder="Ask the coordinator…"
     aria-label="Prompt"
+    bind:this={inputEl}
     bind:value={prompt}
     {disabled}
   />

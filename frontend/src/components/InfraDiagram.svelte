@@ -28,7 +28,9 @@
     hasRenderableNodes,
     overlayRenderable,
     overlayCountsLine,
+    adoptPrefill,
     type InfraGraph,
+    type InfraGroup,
     type PlanOverlay,
   } from '../lib/infra_graph';
   import { RefreshScheduler } from '../lib/infra_refresh';
@@ -40,6 +42,8 @@
     appliedEpoch = 0,
     previewPr = null,
     onExitPreview,
+    onAdopt,
+    adoptDisabled = false,
   }: {
     /** App's token-aware fetch wrapper. */
     call: (path: string, init?: RequestInit) => Promise<Response>;
@@ -49,6 +53,15 @@
     previewPr?: number | null;
     /** Called when the operator clicks "Exit preview" (App removes the URL param). */
     onExitPreview?: () => void;
+    /** Adopt click → App prefills the chat with this string (NOT auto-sent). */
+    onAdopt?: (prefill: string) => void;
+    /**
+     * Disable the Adopt buttons — App passes the SAME condition that disables
+     * ChatForm (busy / historical replay), so an Adopt click can never silently
+     * mutate a disabled input or leave a stale draft behind a historical view
+     * (Codex review 019eb572 must-fix 3).
+     */
+    adoptDisabled?: boolean;
   } = $props();
 
   // previewPr is set once at boot (App parses it from the URL) and only ever
@@ -84,6 +97,42 @@
   const driftCount = $derived(totals?.drift ?? 0);
   const renderable = $derived(graph ? hasRenderableNodes(graph) : false);
   const pct = $derived(totals ? coveragePercent(totals.managed, totals.resources) : null);
+
+  // Adopt list (Phase 4): per-group unmanaged rows + a hidden-unmanaged trailer.
+  // Grouped (not the flat adoptRows helper) because the trailer is per-group:
+  // `hiddenUnmanaged = max(0, group.drift − unmanaged rows actually shown)`.
+  // truncated_in_group counts ALL unsampled resources (managed OR unmanaged), so
+  // it must NOT drive the trailer — only this drift-vs-shown delta may, or we'd
+  // mislabel hidden MANAGED resources as unmanaged (Codex review 019eb572 round-2).
+  type AdoptListRow = { nodeId: string; label: string; adoptable: boolean; prefill: string };
+  type AdoptListGroup = { label: string; rows: AdoptListRow[]; hiddenUnmanaged: number };
+  const adoptGroups = $derived.by((): AdoptListGroup[] => {
+    if (!graph || graph.degraded) return [];
+    const out: AdoptListGroup[] = [];
+    for (const g of graph.groups as InfraGroup[]) {
+      if (g.sensitive) continue;
+      const adoptable = g.adoptable === true;
+      const rows: AdoptListRow[] = [];
+      for (const n of g.nodes) {
+        if (n.managed) continue;
+        rows.push({
+          nodeId: n.id,
+          label: n.label,
+          adoptable,
+          prefill: adoptable ? adoptPrefill(g.label, n.label, n.location) : '',
+        });
+      }
+      if (rows.length === 0) continue;
+      out.push({ label: g.label, rows, hiddenUnmanaged: Math.max(0, g.drift - rows.length) });
+    }
+    return out;
+  });
+  const hasAdoptRows = $derived(adoptGroups.length > 0);
+
+  function clickAdopt(prefill: string): void {
+    if (adoptDisabled) return;
+    onAdopt?.(prefill);
+  }
 
   // The overlay actually drawn (only when preview is active AND it has ghosts).
   // A plain function (not a $derived) so renderDiagram can read it across an
@@ -404,6 +453,52 @@
         {/if}
       </p>
     {/if}
+
+    <!-- Adopt list (Phase 4 — adopt button UI). The map's Mermaid SVG is strict /
+         htmlLabels:false, so the Adopt affordance can't be an in-SVG click target;
+         it's this DOM action list, derived from the graph DTO. Names are UNTRUSTED
+         but reach only Svelte text interpolation + a text input (no HTML sink); the
+         prefill is normalized for the prompt path in lib/infra_graph. Codex 019eb572. -->
+    {#if graph && !degraded && hasAdoptRows}
+      <div class="infra-adopt" data-testid="adopt-list">
+        <p class="ds-label infra-adopt__heading">
+          Unmanaged resources shown on the map — they exist in your project but are not
+          under IaC management
+        </p>
+        <ul class="infra-adopt__list">
+          {#each adoptGroups as g (g.label)}
+            {#each g.rows as row (row.nodeId)}
+              <li class="infra-adopt__row" data-testid="adopt-row">
+                <span class="infra-adopt__type">{g.label}</span>
+                <span class="infra-adopt__name">{row.label}</span>
+                {#if row.adoptable}
+                  <button
+                    class="ds-btn ds-btn--ghost infra-adopt__btn"
+                    type="button"
+                    data-testid="adopt-btn"
+                    disabled={adoptDisabled}
+                    title={adoptDisabled
+                      ? 'Unavailable while the chat is busy or reviewing a past trace.'
+                      : undefined}
+                    onclick={() => clickAdopt(row.prefill)}>Adopt into IaC</button
+                  >
+                {:else}
+                  <span class="ds-subtle infra-adopt__muted" data-testid="adopt-unavailable"
+                    >not yet adoptable</span
+                  >
+                {/if}
+              </li>
+            {/each}
+            {#if g.hiddenUnmanaged > 0}
+              <li class="ds-subtle infra-adopt__trailer" data-testid="adopt-trailer">
+                +{g.hiddenUnmanaged} more unmanaged {g.label}(s) not on the map
+              </li>
+            {/if}
+          {/each}
+        </ul>
+      </div>
+    {/if}
+
     {#if graph && !degraded}
       <p class="ds-subtle infra-freshness">{graph.caveat}</p>
     {/if}
@@ -562,6 +657,56 @@
 
   .infra-freshness {
     margin: 0;
+    font-size: var(--ds-fs-1);
+    font-style: italic;
+  }
+
+  /* Adopt list — a calm "Unmanaged resources" action block below the legend. */
+  .infra-adopt {
+    margin: var(--ds-sp-2) 0 var(--ds-sp-3);
+    padding-top: var(--ds-sp-3);
+    border-top: 1px solid var(--ds-border);
+  }
+  .infra-adopt__heading {
+    margin: 0 0 var(--ds-sp-2);
+    color: var(--ds-muted);
+  }
+  .infra-adopt__list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--ds-sp-1);
+  }
+  .infra-adopt__row {
+    display: flex;
+    align-items: center;
+    gap: var(--ds-sp-3);
+    padding: var(--ds-sp-1) 0;
+  }
+  .infra-adopt__type {
+    flex: 0 0 auto;
+    font-size: var(--ds-fs-1);
+    color: var(--ds-muted);
+  }
+  .infra-adopt__name {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    font-size: var(--ds-fs-2);
+    color: var(--ds-fg-soft);
+  }
+  .infra-adopt__btn {
+    flex: 0 0 auto;
+    padding: 0.25em 0.75em;
+    font-size: var(--ds-fs-1);
+  }
+  .infra-adopt__muted {
+    flex: 0 0 auto;
+    font-size: var(--ds-fs-1);
+  }
+  .infra-adopt__trailer {
     font-size: var(--ds-fs-1);
     font-style: italic;
   }

@@ -494,3 +494,91 @@ class TestRtypeMapping:
     def test_sensitive_plan_rtypes_cover_static_gate(self):
         from tools import iac_static_gate
         assert SENSITIVE_PLAN_RTYPES >= iac_static_gate.SECRET_MATERIAL_RESOURCE_TYPES
+
+
+# ---------------------------------------------------------------------------
+# Task (adopt-button-ui Phase 4): the per-group `adoptable` flag (design §6).
+# A drift node whose group is adoptable gets an "Adopt into IaC" affordance in
+# the map panel; the server is the single source of truth for adoptability —
+# `ADOPTABLE_ASSET_TYPES` is COMPUTED from the denylist's adoptable HCL types
+# (mapped through PLAN_RTYPE_TO_ASSET_TYPE), never hand-listed, so a denylist
+# allowlist change propagates here automatically.
+# ---------------------------------------------------------------------------
+
+from driftscribe_lib.infra_graph import ADOPTABLE_ASSET_TYPES  # noqa: E402
+
+TOPIC_TYPE = "pubsub.googleapis.com/Topic"
+SUB_TYPE = "pubsub.googleapis.com/Subscription"
+SA_TYPE = "iam.googleapis.com/ServiceAccount"
+
+
+class TestAdoptableFlag:
+    def test_adoptable_asset_types_drift_pin(self):
+        # Resolved set must be EXACTLY the four adoptable types' CAI mappings —
+        # catches a denylist-side ADOPTABLE_RESOURCE_TYPES change that the map
+        # forgets to honor (the set is computed, not hand-listed).
+        assert ADOPTABLE_ASSET_TYPES == frozenset({
+            BUCKET_TYPE, TOPIC_TYPE, SUB_TYPE, RUN_TYPE,
+        })
+
+    def test_adoptable_groups_for_the_four_types(self):
+        inv = _inventory(
+            by_type={
+                t: {
+                    "count": 1, "declared_in_iac": 0, "not_in_iac": 1,
+                    "sensitive": False,
+                    "sample": [{"name": "n", "location": "g", "iac": False,
+                                "match_confidence": None}],
+                }
+                for t in (BUCKET_TYPE, TOPIC_TYPE, SUB_TYPE, RUN_TYPE)
+            }
+        )
+        g = build_graph(inv)
+        by_atype = {grp["asset_type"]: grp["adoptable"] for grp in g["groups"]}
+        assert by_atype == {
+            BUCKET_TYPE: True, TOPIC_TYPE: True, SUB_TYPE: True, RUN_TYPE: True,
+        }
+
+    def test_non_adoptable_type_is_false(self):
+        inv = _inventory(
+            by_type={
+                SA_TYPE: {
+                    "count": 1, "declared_in_iac": 0, "not_in_iac": 1,
+                    "sensitive": False,
+                    "sample": [{"name": "ci-runner@p.iam.gserviceaccount.com",
+                                "location": "g", "iac": False,
+                                "match_confidence": None}],
+                },
+            }
+        )
+        g = build_graph(inv)
+        assert g["groups"][0]["adoptable"] is False
+
+    def test_sensitive_group_is_never_adoptable_even_if_type_were(self):
+        # A SENSITIVE group is counts-only (no names) — it can never carry an
+        # Adopt affordance, regardless of its underlying type. Force a bucket
+        # type (adoptable) into the sensitive branch via the flag and confirm
+        # the `and not sensitive` clause overrides the type membership.
+        inv = _inventory(
+            by_type={
+                BUCKET_TYPE: {
+                    "count": 1, "declared_in_iac": 0, "not_in_iac": 1,
+                    "sensitive": True,  # forced sensitive
+                },
+            }
+        )
+        g = build_graph(inv)
+        grp = g["groups"][0]
+        assert grp["sensitive"] is True
+        assert grp["adoptable"] is False
+
+    def test_every_group_carries_the_adoptable_field(self):
+        g = build_graph(_inventory())
+        for grp in g["groups"]:
+            assert "adoptable" in grp
+            assert isinstance(grp["adoptable"], bool)
+        by_atype = {grp["asset_type"]: grp["adoptable"] for grp in g["groups"]}
+        # The default fixture: Cloud Run + bucket adoptable, secret group not.
+        assert by_atype[RUN_TYPE] is True
+        assert by_atype[BUCKET_TYPE] is True
+        assert by_atype[SECRET_TYPE] is False  # sensitive counts-only group
