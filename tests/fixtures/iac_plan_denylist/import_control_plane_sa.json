@@ -1,0 +1,18 @@
+{
+  "_test_intent": "import of the coordinator SA — must emit import-forbidden-v1 + control-plane-sa + iam-change-forbidden-v1",
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "google_service_account.agent",
+      "mode": "managed",
+      "type": "google_service_account",
+      "name": "agent",
+      "change": {
+        "actions": ["no-op"],
+        "before": {"account_id": "driftscribe-agent"},
+        "after": {"account_id": "driftscribe-agent"},
+        "importing": {"id": "projects/driftscribe-hack-2026/serviceAccounts/driftscribe-agent@driftscribe-hack-2026.iam.gserviceaccount.com"}
+      }
+    }
+  ]
+}

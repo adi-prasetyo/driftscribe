@@ -1,0 +1,17 @@
+{
+  "_test_intent": "plain no-op on the coordinator Cloud Run service (no importing key) — REGRESSION PIN: identity checks must NOT fire on plain no-op rows (Codex round-1 Important #2)",
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "google_cloud_run_v2_service.agent",
+      "mode": "managed",
+      "type": "google_cloud_run_v2_service",
+      "name": "agent",
+      "change": {
+        "actions": ["no-op"],
+        "before": {"name": "driftscribe-agent"},
+        "after": {"name": "driftscribe-agent"}
+      }
+    }
+  ]
+}

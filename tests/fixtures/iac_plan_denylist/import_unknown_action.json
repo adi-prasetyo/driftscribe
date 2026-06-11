@@ -1,0 +1,18 @@
+{
+  "_test_intent": "importing row with an unknown action — the floor must fire BEFORE the unknown-action continue; must emit import-forbidden-v1 + unknown-action-forbidden-v1",
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "google_storage_bucket.b",
+      "mode": "managed",
+      "type": "google_storage_bucket",
+      "name": "b",
+      "change": {
+        "actions": ["frobnicate"],
+        "before": {"name": "some-bucket"},
+        "after": {"name": "some-bucket"},
+        "importing": {"id": "some-bucket"}
+      }
+    }
+  ]
+}
