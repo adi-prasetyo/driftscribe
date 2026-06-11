@@ -101,6 +101,16 @@
                 ⚠ {{ s.n_destroy + s.n_replace }} resource(s) will be destroyed or replaced.
                 Check the list below carefully before approving.
               </div>
+            {% elif s.adopt_only %}
+              {# Adopt-button UI Phase 4: an import-only plan modifies nothing — #}
+              {# replace the generic green no-destroy note with calm adoption    #}
+              {# framing. NEVER reachable when destructive (that branch is first).#}
+              <p class="ds-ok" data-testid="adopt-note">
+                Nothing in your infrastructure will be modified — this only puts
+                {{ s.n_import }} resource{{ '' if s.n_import == 1 else 's' }} under
+                management. The resource map and coverage meter count it as managed
+                once the change merges (moments before the apply completes).
+              </p>
             {% elif not s.all_accounted_safe %}
               <div class="ds-note">
                 This plan contains state changes or change types the summary
@@ -114,8 +124,17 @@
             {% endif %}
             {% if (blast_phrase | default("")) %}
             <p class="ds-note" data-testid="blast-radius">
+              {% if s.adopt_only %}
+              {# Adopt-only reframe (Phase 4): an import touches nothing live, so #}
+              {# "can affect at most" overstates it — it only puts resources under #}
+              {# management. cannot_touch_note still renders (honesty contract).   #}
+              This change puts under management at most: {{ blast_phrase | default("") }}.
+              It modifies nothing — the live resource is only recorded in OpenTofu state.
+              {{ cannot_touch_note | default("") }}
+              {% else %}
               This change can affect at most: {{ blast_phrase | default("") }}.
               {{ cannot_touch_note | default("") }}
+              {% endif %}
             </p>
             {% endif %}
             <p class="ds-subtle">
