@@ -67,6 +67,11 @@
         </div>
       </div>
 
+      <p class="ds-subtle">
+        <a href="/?ask_pr={{ pr_number }}" data-testid="ask-about-link">
+          Questions about this change? Ask the read-only assistant →</a>
+      </p>
+
       {# Render ONLY for a trustworthy artifact: the route's show_summary flag
          (false/absent on error-class pages AND on all POST outcome renders)
          plus belt-and-braces re-checks of the view's own verdict — _plan_json
