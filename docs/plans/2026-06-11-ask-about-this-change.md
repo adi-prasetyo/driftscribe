@@ -8,6 +8,8 @@
 
 **Tech Stack:** FastAPI coordinator (`agent/`), google-cloud-storage listing, Jinja2 template, Svelte 5 SPA, pytest + vitest.
 
+**Codex plan review (thread 019eb6d0):** NO-GO as written → both must-fixes folded → GO expected on re-confirm. Folds: (1) **path-bound metadata identity** — `load_plan_view_from_gcs` refuses a metadata doc whose identity fields don't reconstruct the exact listed object path, plus optional `expected_repo` pin (design §5b, Task 2); (2) Task 3 test/impl alignment — module-top loader import (monkeypatchable) + `resource_type` key; (3) should-fixes: `initialChatPrefill` pure helper + ChatForm explore-mount test + App-test scope rationale (Tasks 7–8), `docs/architecture/multi-agent-design.md` Layer 0 update (Task 4), `labels.ts` timeline label (Task 7), "latest" ordering wording precision (design §2).
+
 **Roadmap text (item 12):** "A read-only `explore`-workload chat scoped to the plan artifact … Strict-CSP approval page → link out to the SPA with the PR context prefilled rather than embedding chat in the page." Size M; item 1 (plain-language summary) already shipped and is reused here verbatim (`summarize_plan` + `blast_radius_phrase` + `BLAST_CANNOT_TOUCH_NOTE`).
 
 ---
@@ -15,10 +17,11 @@
 ## Design decisions (the load-bearing ones)
 
 1. **GCS-listing, not GitHub-comment, artifact resolution.** `find_latest_c2_comment` needs the coordinator's write-capable GitHub PAT. Explore's "strictly read-only" label is pinned as *tool-set disjoint from `MUTATION_TOOL_NAMES`*, and `search_recent_prs` sits in that set purely for credential containment (Codex 2026-05-25). The artifact triplet lives at `gs://{project}-tofu-artifacts/pr-{N}/{sha}/run-{id}-{attempt}/…` and the coordinator SA's only grant on that bucket is `objectViewer` (read+list — verified live 2026-06-11). So the tool lists `pr-{N}/` and picks the newest `metadata.json` by `(run_id, attempt, generation)`. **Consequence:** `load_iac_plan` does NOT join `MUTATION_TOOL_NAMES`; every explore pin holds unchanged; the report∩MUTATION pin stays exactly `{notify, search_recent_prs}`.
-2. **Advisory divergence, documented:** the approval page binds to the **latest C2 comment** (`created_at`); the tool reads the **latest uploaded artifact** (`run_id`/`attempt` are GitHub-monotonic). They coincide whenever C2 completes normally (upload and comment are one job). The tool's output carries an explicit advisory caveat and the approval-page path; the system prompt tells the model the approval page is authoritative.
+2. **Advisory divergence, documented:** the approval page binds to the **latest C2 comment** (`created_at`); the tool reads the **latest logical plan-builder artifact, ordered by `(workflow run_id, attempt)`** — GitHub run ids are globally monotonic, attempts monotonic within a run; the object generation is only an exact-same-path tie-breaker, NOT an upload-time ordering (so a re-run of an *older* run never outranks a newer run — force-push/rebake safe). They coincide whenever C2 completes normally (upload and comment are one job). The tool's output carries an explicit advisory caveat and the approval-page path; the system prompt tells the model the approval page is authoritative. *(Codex fold: wording precision.)*
 3. **Tier = `report`.** Asking questions must work in every autonomy mode — an Observe-mode operator is precisely the anxious adopter this feature serves. The tool reads bytes and returns text; no side effects.
 4. **Summary honesty mirrors the page, with one deliberate divergence.** Like the approval page, the tool returns NO summary when the artifact is `unverifiable` or `integrity_ok == False` (never describe a possibly-tampered plan). UNLIKE the page (which also suppresses the summary card on denylist violations), the tool DOES return the summary alongside violations — "what does this blocked plan try to do?" is a legitimate question, the summary is mechanically derived from the integrity-checked bytes, and the violations are surfaced in the same response so the model cannot present the plan as approvable. The system prompt pins the framing.
 5. **Sensitive values never reach the LLM.** `summarize_plan`'s `AttrChange.before/after` are display strings already masked (`(sensitive)`) and clamped (120 chars) — the tool serializes those, never raw plan values. Output is bounded by the lib caps (≤40 entries, ≤25 attr rows each).
+5b. **Metadata identity is path-bound (Codex must-fix 1).** Ordering happens on the *object path*; trusting the fetched metadata's content alone would let a stale/copied metadata object sitting under a newer-looking path redirect the loader to a different run's `plan.json`. So `load_plan_view_from_gcs` fail-closes (`unverifiable=True`) unless the listed object path **equals** `pr-{md.pr_number}/{md.head_sha}/run-{md.workflow_run_id}-{md.workflow_run_attempt}/metadata.json` (all four fields already format-validated by the c2.v1 round-trip), and — when the caller supplies `expected_repo` (the tool passes `settings.github_repo` when set) — unless `md["repo"]` matches it.
 6. **Link-out, not embed.** The IaC CSP is `default-src 'none'` with no `script-src` — a plain same-origin anchor is the only option, and it's the right one (one chat surface, one auth story). The link renders whenever a plan view exists (pending, blocked, AND terminal renders — questions are most valuable when something looks scary). Link copy says "read-only" (honesty: the chat cannot approve or apply).
 7. **No `ChatRequest` change, no new endpoint, no new worker.** The PR number travels in the prefilled prompt text; the model calls `load_iac_plan(pr_number=N)`. `pr_number` is already in the inventory test's safe-params list.
 
@@ -318,6 +321,47 @@ def test_load_from_gcs_unverifiable_on_pr_mismatch():
     assert view is not None and view.unverifiable is True
 
 
+def test_load_from_gcs_unverifiable_on_path_identity_mismatch():
+    # Codex must-fix 1: a (stale/copied) metadata object whose CONTENT is a
+    # valid c2.v1 doc for the right PR but whose identity fields don't match
+    # the object path it was listed at — e.g. run-100-1 content stored under a
+    # newer-looking run-999-1 path. Trusting it would redirect the plan.json
+    # fetch to a different run. Fail-closed unverifiable.
+    bucket = "driftscribe-hack-2026-tofu-artifacts"
+    plan_json_bytes = json.dumps({"resource_changes": []}).encode()
+    md = _c2v1_metadata(7, plan_json_bytes=plan_json_bytes)  # run_id 100, attempt 1
+    meta_name = f"pr-7/{SHA_A}/run-999-1/metadata.json"      # path claims run 999
+    client = FakeGcsClient(
+        blobs=[_blob(meta_name, 3)],
+        objects={(meta_name, 3): json.dumps(md).encode()},
+    )
+    view = load_plan_view_from_gcs(7, bucket_name=bucket, client=client)
+    assert view is not None and view.unverifiable is True
+
+
+def test_load_from_gcs_unverifiable_on_repo_mismatch():
+    bucket = "driftscribe-hack-2026-tofu-artifacts"
+    view = load_plan_view_from_gcs(
+        7, bucket_name=bucket, client=_fixture_client(),
+        expected_repo="someone-else/other-repo",
+    )
+    assert view is not None and view.unverifiable is True
+
+
+def test_load_from_gcs_repo_check_passes_and_is_optional():
+    bucket = "driftscribe-hack-2026-tofu-artifacts"
+    ok = load_plan_view_from_gcs(
+        7, bucket_name=bucket, client=_fixture_client(),
+        expected_repo="adi-prasetyo/driftscribe",
+    )
+    assert ok is not None and ok.unverifiable is False
+    # expected_repo=None (unset GITHUB_REPO, e.g. local dev) skips the check.
+    skipped = load_plan_view_from_gcs(
+        7, bucket_name=bucket, client=_fixture_client(), expected_repo=None,
+    )
+    assert skipped is not None and skipped.unverifiable is False
+
+
 def test_load_from_gcs_integrity_mismatch_flagged():
     bucket = "driftscribe-hack-2026-tofu-artifacts"
     client = _fixture_client()
@@ -349,7 +393,11 @@ def _populate_plan_view_from_metadata(
 
 ```python
 def load_plan_view_from_gcs(
-    pr_number: int, *, bucket_name: str, client: Any = None
+    pr_number: int,
+    *,
+    bucket_name: str,
+    client: Any = None,
+    expected_repo: str | None = None,
 ) -> IacPlanView | None:
     """Fetch + advisory-verify the NEWEST plan artifact for ``pr_number`` by
     GCS listing (no GitHub) — the explore chat tool's loader.
@@ -357,9 +405,16 @@ def load_plan_view_from_gcs(
     ``None`` when the PR has no plan artifact at all. Otherwise the same
     fail-closed IacPlanView contract as :func:`load_plan_view`, with two
     structural differences: ``tofu_show_text`` is always ``""`` (it lives only
-    in the C2 comment) and the metadata identity comes from the listing (the
-    loader additionally refuses, as unverifiable, a metadata doc whose own
-    ``pr_number`` disagrees with the requested one).
+    in the C2 comment) and the metadata identity comes from the listing.
+
+    Path-bound identity (Codex review 019eb6d0 must-fix 1): ordering happens
+    on the OBJECT PATH, so the loader refuses (``unverifiable=True``) any
+    metadata doc whose own identity fields (``pr_number`` / ``head_sha`` /
+    ``workflow_run_id`` / ``workflow_run_attempt``) do not reconstruct the
+    exact object path it was listed at — a stale or copied metadata object
+    under a newer-looking path must not redirect the plan.json fetch to a
+    different run. ``expected_repo`` (when given) additionally pins
+    ``md["repo"]``; ``None`` skips that check (caller has no configured repo).
     """
     if client is None:
         from google.cloud import storage  # lazy: tests inject a double
@@ -381,7 +436,20 @@ def load_plan_view_from_gcs(
     except (IacArtifactError, ValueError, UnicodeDecodeError):
         view.unverifiable = True
         return view
-    if not _assert_c2v1_metadata(md) or md.get("pr_number") != pr_number:
+    if not _assert_c2v1_metadata(md):
+        view.unverifiable = True
+        return view
+    # Identity cross-checks — all fields format-validated by the c2.v1
+    # round-trip above, so plain equality is sufficient and fail-closed.
+    expected_path = (
+        f"pr-{md['pr_number']}/{md['head_sha']}/"
+        f"run-{md['workflow_run_id']}-{md['workflow_run_attempt']}/metadata.json"
+    )
+    if (
+        md.get("pr_number") != pr_number
+        or meta_obj != expected_path
+        or (expected_repo is not None and md.get("repo") != expected_repo)
+    ):
         view.unverifiable = True
         return view
     view.metadata = md
@@ -424,20 +492,30 @@ Pins (item 12 design §4–5):
 """
 ```
 
-Test cases (full code in-file, structure as in Task 1/2 with monkeypatched `agent.adk_tools.load_plan_view_from_gcs` + `get_settings.cache_clear()` and `GCP_PROJECT=testproj` env so `artifacts_bucket` derives `testproj-tofu-artifacts`):
+Test cases (full code in-file, structure as in Task 1/2 with monkeypatched `agent.adk_tools.load_plan_view_from_gcs` — **valid because Task 3 imports the loader at module top, NOT lazily** (Codex must-fix 2) — plus `get_settings.cache_clear()` and `GCP_PROJECT=testproj` env so `artifacts_bucket` derives `testproj-tofu-artifacts`):
 
 1. `test_not_found` — loader returns `None` → `{"found": False, "error": …}` mentioning the plan-builder workflow; `bucket_name` kwarg received `"testproj-tofu-artifacts"`.
 2. `test_invalid_pr_number` — `load_iac_plan_tool(0)` and `load_iac_plan_tool(-3)` → error dict, loader NOT called.
 3. `test_unverifiable_returns_no_summary` — view with `unverifiable=True` → `found=True`, `unverifiable=True`, no `"summary"` key, `error` says the artifact could not be verified.
 4. `test_integrity_mismatch_returns_no_summary` — `integrity_ok=False` → no `"summary"` key, error names the integrity mismatch.
-5. `test_happy_path_summary_shape` — build a real `IacPlanView` whose `_plan_json` is a small two-resource plan (one `create` bucket with `uniform_bucket_level_access` attr, one `update` with a **sensitive** attr change); assert: counts dict, `entries[0]` has `verb/type_label/name/address/location/attr_changes`, the sensitive row renders exactly `"(sensitive)"` on both sides, `blast_radius` equals `blast_radius_phrase(view.change_summary)`, `cannot_touch == BLAST_CANNOT_TOUCH_NOTE`, `approval_page == "/iac-approvals/7"`, and a non-empty `caveat`.
+5. `test_happy_path_summary_shape` — build a real `IacPlanView` whose `_plan_json` is a small two-resource plan (one `create` bucket with `uniform_bucket_level_access` attr, one `update` with a **sensitive** attr change); assert: counts dict, `entries[0]` has `verb/resource_type/name/address/location/attr_changes` (key is `resource_type` — matches the implementation below; Codex must-fix 2), the sensitive row renders exactly `"(sensitive)"` on both sides, `blast_radius` equals `blast_radius_phrase(view.change_summary)`, `cannot_touch == BLAST_CANNOT_TOUCH_NOTE`, `approval_page == "/iac-approvals/7"`, and a non-empty `caveat`.
 6. `test_denylist_violations_with_summary` — view with violations + `integrity_ok=True` → BOTH `denylist_violations` (as `[{"rule","detail"}]`) AND `summary` present, plus `blocked=True`.
 7. `test_summary_unavailable` — `_plan_json` shaped so `summarize_plan` returns `None` → `summary` is `None` + `summary_unavailable` prose.
 8. `test_loader_exception_is_fail_soft` — loader raises `RuntimeError("boom")` → `{"found": False, "error": "..."}`, no exception.
+9. `test_expected_repo_threaded` — with `GITHUB_REPO=adi-prasetyo/driftscribe` set, the loader receives `expected_repo="adi-prasetyo/driftscribe"`; with it unset/empty, `expected_repo=None`.
 
 **Step 2: Run to verify failure** — import error.
 
-**Step 3: Implement** in `agent/adk_tools.py` (imports stay lazy where heavy):
+**Step 3: Implement** in `agent/adk_tools.py`. **Module-top imports** (Codex must-fix 2 — a lazy in-function import would dodge the tests' `agent.adk_tools.load_plan_view_from_gcs` monkeypatch; `iac_artifacts` and `iac_plan_summary` are light, the heavy `google.cloud.storage` stays lazy inside `iac_artifacts`):
+
+```python
+# at module top, alongside the existing agent.* imports:
+from agent.iac_artifacts import load_plan_view_from_gcs
+from driftscribe_lib.iac_plan_summary import (
+    BLAST_CANNOT_TOUCH_NOTE,
+    blast_radius_phrase,
+)
+```
 
 ```python
 def load_iac_plan_tool(pr_number: int) -> dict[str, Any]:
@@ -466,11 +544,6 @@ def load_iac_plan_tool(pr_number: int) -> dict[str, Any]:
     model can relay (explore prompt rule: surface tool errors, don't invent).
     """
     from agent.config import artifacts_bucket
-    from agent.iac_artifacts import load_plan_view_from_gcs
-    from driftscribe_lib.iac_plan_summary import (
-        BLAST_CANNOT_TOUCH_NOTE,
-        blast_radius_phrase,
-    )
 
     if isinstance(pr_number, bool) or not isinstance(pr_number, int) or pr_number <= 0:
         return {
@@ -479,7 +552,11 @@ def load_iac_plan_tool(pr_number: int) -> dict[str, Any]:
         }
     s = get_settings()
     try:
-        view = load_plan_view_from_gcs(pr_number, bucket_name=artifacts_bucket(s))
+        view = load_plan_view_from_gcs(
+            pr_number,
+            bucket_name=artifacts_bucket(s),
+            expected_repo=s.github_repo or None,
+        )
     except Exception as e:  # noqa: BLE001 — advisory read; chat turn must survive
         return {"found": False, "error": f"plan artifact read failed: {e}"}
     if view is None:
@@ -647,6 +724,8 @@ EXPLORE_WORKLOAD_TOOL_NAMES: tuple[str, ...] = (
     "load_iac_plan_tool",
 ```
 
+`docs/architecture/multi-agent-design.md` — the inventory test's failure text demands this doc move in lockstep (Codex should-fix 2): add `load_iac_plan` to the Layer 0 tool inventory section, one line, same read-only/credential note as the registry comment.
+
 **Step 3: Run** `.venv/bin/pytest tests/unit/test_coordinator_tool_inventory.py tests/unit/test_tool_tiers.py tests/unit/test_capabilities.py -q`
 Expected: inventory tests that pin the explore YAML still FAIL (YAML lags until Task 5) — everything else PASS. If the YAML pin is the only red, proceed; commit lands in Task 5 to keep the tree green per-commit. **Alternative (preferred): do Task 4 and Task 5 edits in one commit** — the lockstep pins make them one logical change.
 
@@ -722,7 +801,7 @@ Expected: ALL PASS (the read-only-flavored prompt test greps for read-only langu
 ```bash
 git add agent/workloads/registry.py agent/adk_agent.py agent/capabilities.py \
         workloads/explore/workload.yaml workloads/explore/system_prompt.md \
-        tests/unit/test_coordinator_tool_inventory.py
+        tests/unit/test_coordinator_tool_inventory.py docs/architecture/multi-agent-design.md
 git commit -m "feat(explore): register load_iac_plan (report tier) + prompt rules (item 12)"
 ```
 
@@ -777,11 +856,12 @@ git add agent/templates/iac_approval.html tests/integration/test_iac_approval_ge
 git commit -m "feat(ui): ask-about-this-change link on the IaC approval page (item 12)"
 ```
 
----### Task 7: frontend lib — `askPrFromSearch` + `askAboutPrPrefill`
+---### Task 7: frontend lib — `askPrFromSearch` + `askAboutPrPrefill` + `initialChatPrefill` + timeline label
 
 **Files:**
 - Modify: `frontend/src/lib/workloads.ts`
-- Test: `frontend/tests/unit/workloads.test.ts` (extend)
+- Modify: `frontend/src/lib/labels.ts` (Codex should-fix 3 — timeline label for the new callable)
+- Test: `frontend/tests/unit/workloads.test.ts` (extend), `frontend/tests/unit/labels.test.ts` (extend), `frontend/tests/unit/ChatForm.test.ts` (extend — explore-workload boot prefill)
 
 **Step 1: Write the failing tests** (vitest, in the existing file's style):
 
@@ -808,7 +888,24 @@ describe('askAboutPrPrefill', () => {
     expect(text.toLowerCase()).toContain('plain language');
   });
 });
+
+describe('initialChatPrefill', () => {
+  it('seeds an explore-workload prefill at epoch 1 from ask_pr', () => {
+    const p = initialChatPrefill('?ask_pr=18');
+    expect(p).toEqual({ text: askAboutPrPrefill(18), workload: 'explore', epoch: 1 });
+  });
+  it('is null without a valid ask_pr', () => {
+    expect(initialChatPrefill('')).toBeNull();
+    expect(initialChatPrefill('?ask_pr=junk')).toBeNull();
+    expect(initialChatPrefill('?preview_pr=18')).toBeNull();
+  });
+});
 ```
+
+Plus (Codex should-fix 1, lib-level half — the App-level half is in Task 8):
+
+- `labels.test.ts`: assert `WORKER_LABELS['load_iac_plan_tool'] === 'IaC plan reader'`.
+- `ChatForm.test.ts`: a boot-seeded explore prefill applies on mount — render with `prefill: { text: 'Explain PR #18…', workload: 'explore', epoch: 1 }`, assert textarea text + workload select === `'explore'` and that **no submit happened** (the existing prefill tests' onSubmit-spy pattern).
 
 **Step 2: Run** `npm run test -- workloads` (from `frontend/`) → FAIL (no export).
 
@@ -839,6 +936,25 @@ export function askAboutPrPrefill(pr: number): string {
     'Load its plan and explain what it would change in plain language.'
   );
 }
+
+/**
+ * The whole ask_pr boot decision as a PURE function (App.svelte calls this
+ * once at init) so the seeding rule — explore workload, epoch 1, prefill
+ * only — is unit-testable without mounting App.
+ */
+export function initialChatPrefill(search: string): ChatPrefill | null {
+  const pr = askPrFromSearch(search);
+  return pr === null
+    ? null
+    : { text: askAboutPrPrefill(pr), workload: 'explore', epoch: 1 };
+}
+```
+
+And in `frontend/src/lib/labels.ts`, under the `// Shared` group:
+
+```ts
+  // Item 12 — pending-infra-PR plan Q&A (explore workload).
+  load_iac_plan_tool: 'IaC plan reader',
 ```
 
 **Step 4: Run** → PASS.
@@ -846,8 +962,10 @@ export function askAboutPrPrefill(pr: number): string {
 **Step 5: Commit**
 
 ```bash
-git add frontend/src/lib/workloads.ts frontend/tests/unit/workloads.test.ts
-git commit -m "feat(ui): ask_pr query parsing + explore prefill text (item 12)"
+git add frontend/src/lib/workloads.ts frontend/src/lib/labels.ts \
+        frontend/tests/unit/workloads.test.ts frontend/tests/unit/labels.test.ts \
+        frontend/tests/unit/ChatForm.test.ts
+git commit -m "feat(ui): ask_pr parsing, explore prefill seed + timeline label (item 12)"
 ```
 
 ---
@@ -859,31 +977,24 @@ git commit -m "feat(ui): ask_pr query parsing + explore prefill text (item 12)"
 
 **Step 1: Implement.** Three small edits:
 
-(a) Import: add `askPrFromSearch, askAboutPrPrefill` to the existing `./lib/workloads` import (where `ChatPrefill`/`WORKLOADS` come from).
+(a) Import: add `initialChatPrefill` to the existing `./lib/workloads` import (where `ChatPrefill`/`WORKLOADS` come from).
 
-(b) Below the `previewPr` boot parse (line ~57) and the `chatPrefill` declaration (line ~98), seed the prefill at boot — Svelte 5 `$state` initializers run once:
-
-```ts
-  // ?ask_pr=N (linked from the IaC approval page) → prefill the composer with
-  // an explore-workload question about that PR. PREFILL ONLY (never auto-send)
-  // — the same operator-stays-in-charge contract as the Adopt bridge above.
-  const bootAskPr = askPrFromSearch(window.location.search);
-```
-
-…and change the `chatPrefill` initializer:
+(b) Change the `chatPrefill` declaration (line ~98) to seed at boot — Svelte 5 `$state` initializers run once:
 
 ```ts
+  // Adopt-button bridge + ?ask_pr boot seed (item 12): an Adopt click — or
+  // arriving from the approval page's "ask about this change" link — prefills
+  // (NOT sends) the composer. epoch bumps so the same/another Adopt re-applies
+  // after an edit; a boot seed starts at epoch 1, so a later Adopt bumps to 2.
   let chatPrefill = $state<ChatPrefill | null>(
-    bootAskPr !== null
-      ? { text: askAboutPrPrefill(bootAskPr), workload: 'explore', epoch: 1 }
-      : null
+    initialChatPrefill(window.location.search)
   );
 ```
 
 (c) In the component's existing `onMount` (or alongside the boot code if mount work is done elsewhere — match the file's current pattern), strip the param and reveal the composer:
 
 ```ts
-  if (bootAskPr !== null) {
+  if (chatPrefill !== null) {
     // Remove ONLY ask_pr (preserve other params + hash) so reload/share
     // doesn't re-prefill — mirrors exitPreview()'s surgical removal.
     const u = new URL(window.location.href);
@@ -893,9 +1004,13 @@ git commit -m "feat(ui): ask_pr query parsing + explore prefill text (item 12)"
   }
 ```
 
+(The `chatPrefill !== null` guard is safe at mount: the only boot-time source of a non-null value is `initialChatPrefill`.)
+
 `ChatForm`'s `$effect` applies a non-null prefill whose `epoch` differs from its `lastPrefillEpoch` start value, so a boot-seeded `{epoch: 1}` applies on mount; a later Adopt click bumps from `chatPrefill?.epoch ?? 0`, which now reads 1 → 2 — no collision.
 
 **Step 2: Verify.** `npm run test` (full vitest — ChatForm prefill tests must stay green) and `npm run build` from `frontend/`. Manual reasoning check: `?ask_pr=18&preview_pr=18` → both features engage independently (preview panel + prefill); acceptable and useful.
+
+**App-level test scope (Codex should-fix 1, resolution):** the seeding rule, the epoch arithmetic, the no-auto-send contract, and the apply-on-mount behavior are all covered headlessly (`initialChatPrefill` unit tests + the ChatForm explore-prefill mount test + the existing adopt-epoch tests). A full `App.svelte` mount test is NOT added: App's onMount fans out fetches to /decisions, /capabilities, /infra/graph and pulls in mermaid — the repo has no App-mount test today and building that harness is disproportionate. The two pieces that remain App-only (param strip via `history.replaceState`, scrollIntoView) are exactly what the live Playwright probe (Live verification step 2) asserts end-to-end on the deployed SPA, including "URL param stripped".
 
 **Step 3: Commit**
 
