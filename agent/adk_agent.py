@@ -88,6 +88,7 @@ from google.genai.types import ThinkingConfig
 from agent.adk_tools import (
     iac_pr_pointer,
     load_contract_tool,
+    load_iac_plan_tool,
     notify_tool,
     open_infra_pr_tool,
     patch_docs_tool,
@@ -159,6 +160,12 @@ COORDINATOR_TOOLS = [
     # Authority-clean: takes no args; the worker has the target project
     # pinned via env.
     read_project_inventory_tool,
+    # Item 12 — read the latest verified plan artifact for a pending infra PR.
+    # Coordinator-local, GCS listing only (objectViewer on artifacts bucket;
+    # no GitHub PAT) — read-only by both operation and credential. Exposed by
+    # the chat-only ``explore`` workload; intentionally NOT in
+    # MUTATION_TOOL_NAMES.
+    load_iac_plan_tool,
     # Provision workload (Phase D2) — author OpenTofu (IaC) edits and open
     # ONE iac/-only PR via the tofu-editor worker. Authority-clean LLM-facing
     # surface: the LLM supplies only the file writes + PR title/body; every
@@ -284,6 +291,9 @@ EXPLORE_WORKLOAD_TOOL_NAMES: tuple[str, ...] = (
     "search_developer_docs",
     "retrieve_developer_doc",
     "read_project_inventory",
+    # Item 12 — pending-infra-PR plan Q&A. Read-only by credential
+    # (GCS objectViewer, no GitHub PAT) — see agent/adk_tools.py.
+    "load_iac_plan",
 )
 
 # The chat-only IaC-authoring workload (Phase D2). Its read set is

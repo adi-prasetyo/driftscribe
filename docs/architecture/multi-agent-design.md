@@ -229,7 +229,7 @@ Each worker has a tiny REST surface with a hardcoded "payload-intent policy" —
 
 The coordinator's ADK agent operates against an explicit, hardcoded list of tools — `agent.adk_agent.COORDINATOR_TOOLS`. The LLM cannot invoke anything outside this list; no `execute_shell`, no `arbitrary_http_request`, no direct GCP/GitHub SDK calls.
 
-The 14 wired tools (plus 2 reserved session-memory slots, `get_session_state` / `set_session_state`, that fail closed if a YAML enables them before they're implemented):
+The 15 wired tools (plus 2 reserved session-memory slots, `get_session_state` / `set_session_state`, that fail closed if a YAML enables them before they're implemented):
 
 | Tool | Purpose | Routes to | Workload(s) |
 |---|---|---|---|
@@ -247,6 +247,7 @@ The 14 wired tools (plus 2 reserved session-memory slots, `get_session_state` / 
 | `upgrade_merge_pr_tool` | CI-gated squash-merge of an upgrade PR | Upgrade Docs (`/merge`) | upgrade |
 | `read_project_inventory_tool` | Whole-project resource inventory (read-only) | Infra Reader (`/describe`) | explore, provision |
 | `open_infra_pr_tool` | Author `iac/`-only HCL + open ONE PR (the only mutation tool outside drift/upgrade) | Tofu Editor (`/open-pr`) | provision |
+| `load_iac_plan_tool` | Read latest verified plan artifact for a pending infra PR (read-only; GCS objectViewer only, no GitHub PAT — item 12) | Coordinator-internal (GCS listing) | explore |
 
 **Per-workload tool scoping (Phase 17.A.4):** `COORDINATOR_TOOLS` is the *global registration manifest* — the universe of callables the coordinator may wire to ANY workload. Each workload's YAML (`workloads/<name>/workload.yaml`) carries `enabled_tool_names`, a symbolic filter that picks a per-workload subset from `agent.workloads.registry.TOOL_REGISTRY`. `Agent(tools=...)` receives ONLY the workload-scoped list at runtime, so **the LLM never sees a cross-workload tool**. `tests/unit/test_coordinator_tool_inventory.py` pins a three-way equality: YAML ⇄ the `DRIFT_WORKLOAD_TOOL_NAMES` / `UPGRADE_WORKLOAD_TOOL_NAMES` / `EXPLORE_WORKLOAD_TOOL_NAMES` / `PROVISION_WORKLOAD_TOOL_NAMES` tuples in `agent/adk_agent.py` ⇄ runtime resolution via `load_workload(name)`. The same test pins the **read-only / mutation disjointness** invariants: `explore`'s tools must be disjoint from the mutation-tool set, while `provision`'s set must include `open_infra_pr_tool` (and its `tofu_editor` mutation worker).
 
