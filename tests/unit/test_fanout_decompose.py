@@ -46,6 +46,7 @@ from agent.fanout import (
     FanoutError,
     FanoutFailureKind,
     SliceSpec,
+    _DECOMPOSE_INSTRUCTION,
     decompose,
     make_submit_plan,
 )
@@ -397,3 +398,58 @@ async def test_decompose_agent_tools_all_build_declarations_offline(provision_wo
     decl = FunctionTool(submit)._get_declaration()
     assert decl is not None
     assert decl.name == "submit_plan"
+
+
+# --------------------------------------------------------------------------- #
+# Instruction-text pins (adopt design Phase 3, Task 5)
+# --------------------------------------------------------------------------- #
+
+
+def test_decompose_instruction_contains_adoption_no_split_rule():
+    """The decompose instruction MUST contain the adoption no-split rule.
+
+    LLM behavior is untestable in unit tests — the SAFETY backstop is the
+    Task-3 merged-files import guard (fully tested). This instruction-text
+    pin ensures the UX guidance is present and not accidentally removed.
+    """
+    assert "ADOPTION" in _DECOMPOSE_INSTRUCTION or "adoption" in _DECOMPOSE_INSTRUCTION.lower(), (
+        "The decompose instruction must mention 'ADOPTION' (or 'adoption') "
+        "to guide the model away from decomposing adopt requests."
+    )
+    assert "provision_propose_adoption" in _DECOMPOSE_INSTRUCTION, (
+        "The decompose instruction must name the provision_propose_adoption "
+        "tool so the model knows the single-agent path has the adopt tool."
+    )
+    # The key rule: adopt requests always go to the single-agent path.
+    assert "ONE slice" in _DECOMPOSE_INSTRUCTION or "one slice" in _DECOMPOSE_INSTRUCTION.lower(), (
+        "The decompose instruction must contain 'ONE slice' (the rule that "
+        "adoption requests are never decomposed)."
+    )
+
+
+def test_provision_system_prompt_contains_adoption_guidance():
+    """The provision system prompt must contain the adoption guidance section.
+
+    Pins the section added in Task 5 so it can't be accidentally removed.
+    The key phrases are: the tool name, and the 'NEVER author adopt HCL'
+    rule.
+    """
+    from pathlib import Path
+
+    prompt_path = (
+        Path(__file__).parent.parent.parent
+        / "workloads" / "provision" / "system_prompt.md"
+    )
+    prompt_text = prompt_path.read_text()
+
+    assert "provision_propose_adoption" in prompt_text, (
+        "workloads/provision/system_prompt.md must name provision_propose_adoption "
+        "in the adoption guidance section."
+    )
+    assert "NEVER author adopt HCL" in prompt_text, (
+        "workloads/provision/system_prompt.md must contain 'NEVER author adopt HCL' "
+        "to prevent freehand adopt-block authoring."
+    )
+    assert "Adoptable types" in prompt_text or "Adoptable" in prompt_text, (
+        "workloads/provision/system_prompt.md must list the adoptable types."
+    )

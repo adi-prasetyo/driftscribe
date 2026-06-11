@@ -536,6 +536,11 @@ contain.
 other), OR it is a simple single-file change, return EXACTLY ONE slice. The \
 caller routes a single-slice plan to the legacy single-agent path — so when \
 in doubt, prefer ONE slice.
+   - An ADOPTION request (bringing an existing live resource under IaC \
+management, or importing) is NEVER decomposed: always return exactly ONE slice. \
+The single-agent path holds the provision_propose_adoption tool, which renders \
+the import HCL deterministically — slice sub-agents do not have that tool and \
+must never author import blocks themselves.
 3. Constraints on every slice (the downstream gate enforces these; violating \
 them fails the whole fan-out):
    - Never put two slices on the SAME `target_path`.
