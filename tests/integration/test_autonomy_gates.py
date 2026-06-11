@@ -15,7 +15,6 @@ Part 2 (apply gates) lives below, added in Task 7.
 from __future__ import annotations
 
 import datetime as dt
-import json
 import re
 import uuid
 from typing import Any

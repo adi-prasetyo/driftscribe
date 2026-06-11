@@ -38,8 +38,6 @@ from agent.pause import (
 from agent.autonomy import (
     AutonomyState,
     autonomy_apply_blocked_detail,
-    autonomy_instruction_note,
-    mode_allows,
     read_autonomy_state,
 )
 from agent.autonomy import FAIL_CLOSED_REASON as AUTONOMY_FAIL_CLOSED_REASON
