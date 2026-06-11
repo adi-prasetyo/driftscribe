@@ -67,6 +67,22 @@ def upgrade_workload_env(monkeypatch):
 
 
 @pytest.fixture
+def provision_workload_env(monkeypatch):
+    """Set the worker URL env vars the provision workload resolves at load
+    time: ``drift_reader`` (READER_URL), ``infra_reader`` (INFRA_READER_URL),
+    and ``tofu_editor`` (TOFU_EDITOR_URL). Mirrors the other workload
+    fixtures' cache-clear discipline on setup and teardown.
+    """
+    monkeypatch.setenv("READER_URL", "https://reader.test")
+    monkeypatch.setenv("INFRA_READER_URL", "https://infra-reader.test")
+    monkeypatch.setenv("TOFU_EDITOR_URL", "https://tofu-editor.test")
+    import agent.workloads.registry as registry_mod
+    registry_mod._WORKLOAD_CACHE.clear()
+    yield
+    registry_mod._WORKLOAD_CACHE.clear()
+
+
+@pytest.fixture
 def explore_workload_env(monkeypatch):
     """Set the three read-worker URL env vars the explore workload needs.
 

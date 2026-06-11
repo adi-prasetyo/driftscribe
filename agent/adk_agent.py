@@ -91,6 +91,7 @@ from agent.adk_tools import (
     notify_tool,
     open_infra_pr_tool,
     patch_docs_tool,
+    propose_adoption_tool,
     propose_rollback_tool,
     read_live_env_tool,
     read_project_inventory_tool,
@@ -163,6 +164,11 @@ COORDINATOR_TOOLS = [
     # server-side. The tofu-editor re-validates every file before any GitHub
     # call — see ``agent.adk_tools.open_infra_pr_tool``.
     open_infra_pr_tool,
+    # Adopt tool (adopt design Phase 3) — renders probe-proven zero-change
+    # import HCL for one live resource and opens the PR via the same
+    # tofu-editor path. Authority-clean: no live infra changes; import only.
+    # Symbolic name: ``provision_propose_adoption``.
+    propose_adoption_tool,
 ]
 
 
@@ -297,6 +303,7 @@ PROVISION_WORKLOAD_TOOL_NAMES: tuple[str, ...] = (
     "search_developer_docs",
     "retrieve_developer_doc",
     "provision_open_infra_pr",
+    "provision_propose_adoption",
 )
 
 
@@ -576,9 +583,15 @@ def _emit_event_logs(
             # catches credentialed URLs by regex.
             response = getattr(fr, "response", None) or {}
             # Capture a CONFIRMED first-authoring infra PR for the approval CTA.
-            # Name-matched to open_infra_pr (never shape-matched: an upgrade PR
-            # carries the same pr_number/pr_url but is not an /iac-approvals PR).
-            if iac_pr_sink is not None and fr.name == open_infra_pr_tool.__name__:
+            # Name-matched to the two iac-PR authoring tools (never
+            # shape-matched: an upgrade PR carries the same pr_number/pr_url
+            # but is not an /iac-approvals PR). propose_adoption_tool opens the
+            # same approval-class PR via the shared tail, so its result must
+            # populate the pointer too (Codex Phase-3 completed-work catch).
+            if iac_pr_sink is not None and fr.name in (
+                open_infra_pr_tool.__name__,
+                propose_adoption_tool.__name__,
+            ):
                 pointer = iac_pr_pointer(response)
                 if pointer is not None:
                     iac_pr_sink.clear()

@@ -269,6 +269,10 @@ MUTATION_TOOL_NAMES: frozenset[str] = frozenset({
     # (``open_infra_pr_tool``) — both are filtered below, see the
     # double-filter rationale on resolve_provision_read_tools.
     "provision_open_infra_pr",
+    # Adopt tool: renders probe-proven zero-change import HCL and opens a PR
+    # via the same tofu-editor path. Symbolic name ``provision_propose_adoption``
+    # differs from callable ``__name__`` (``propose_adoption_tool``).
+    "provision_propose_adoption",
 })
 
 # Belt-and-suspenders companion to MUTATION_TOOL_NAMES: the set of *callable*
@@ -281,6 +285,7 @@ MUTATION_TOOL_NAMES: frozenset[str] = frozenset({
 # only; no PR/apply/mutation).
 MUTATION_CALLABLE_NAMES: frozenset[str] = frozenset({
     "open_infra_pr_tool",
+    "propose_adoption_tool",
 })
 
 
@@ -531,6 +536,11 @@ contain.
 other), OR it is a simple single-file change, return EXACTLY ONE slice. The \
 caller routes a single-slice plan to the legacy single-agent path — so when \
 in doubt, prefer ONE slice.
+   - An ADOPTION request (bringing an existing live resource under IaC \
+management, or importing) is NEVER decomposed: always return exactly ONE slice. \
+The single-agent path holds the provision_propose_adoption tool, which renders \
+the import HCL deterministically — slice sub-agents do not have that tool and \
+must never author import blocks themselves.
 3. Constraints on every slice (the downstream gate enforces these; violating \
 them fails the whole fan-out):
    - Never put two slices on the SAME `target_path`.
@@ -965,6 +975,8 @@ def _merge_slice_sinks(pairs: list[tuple[SliceSpec, dict]]) -> AuthorResult:
     """
     from driftscribe_lib.iac_editor_policy import validate_file_writes
 
+    from driftscribe_lib.adopt_recipe import find_import_violations
+
     writes: list[dict] = []
     citations: dict[str, list[str]] = {}
     for spec, sink in pairs:
@@ -978,6 +990,25 @@ def _merge_slice_sinks(pairs: list[tuple[SliceSpec, dict]]) -> AuthorResult:
             )
         writes.append(file_write)
         citations[spec.target_path] = list(sink.get("citations", []))
+
+    # Freehand-import guard (Phase 3 §1.10): reject any merged file set that
+    # contains an import block. Slice sub-agents author HCL text only and must
+    # never produce an import block — adoptions go through propose_adoption_tool
+    # in the single-agent path (a 1-slice result delegates there). Fail-closed:
+    # an unparseable .tf file also triggers a POLICY rejection so a broken HCL
+    # can never silently sneak an import through.
+    import_violations = find_import_violations(writes)
+    if import_violations:
+        raise FanoutError(
+            422,
+            (
+                "Slice-authored files must not contain import blocks — use "
+                "provision_propose_adoption for resource adoptions (import blocks "
+                "are coordinator-side only; the fan-out editor path does not accept "
+                f"them). Violation(s): {'; '.join(import_violations)}"
+            ),
+            kind=FanoutFailureKind.POLICY,
+        )
 
     try:
         validate_file_writes(writes)

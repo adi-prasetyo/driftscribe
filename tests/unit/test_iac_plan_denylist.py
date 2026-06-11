@@ -524,3 +524,38 @@ def test_plain_noop_on_control_plane_identity_still_passes():
     unchanged resources as no-ops."""
     parsed, _ = load_plan_json(_load("noop_control_plane_service_pass.json"))
     assert evaluate(DenylistInput(plan=parsed)) == []
+
+
+# --- Task 2 / Phase 3: real-fixture extension — all four adoptable types ---
+# Provider-real plan.json artifacts from the 2026-06-11 adopt-fidelity probes
+# (docs/plans/2026-06-11-adopt-recipe.md §0.2). Each fixture was produced by
+# ``tofu show -json`` against a live GCP project, google provider 6.50.0,
+# tofu 1.12.0, local backend — no hand-crafting.
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        "real_import_bucket_pure_noop.json",   # existing bucket probe
+        "real_import_topic_pure_noop.json",
+        "real_import_sub_pure_noop.json",
+        "real_import_run_pure_noop.json",
+    ],
+)
+def test_real_provider_import_pure_noop_all_four_types_admitted(fixture):
+    """All four adoptable types: a real tofu-show plan with pure no-op import
+    must pass the denylist with zero violations."""
+    parsed, _ = load_plan_json(_load(fixture))
+    assert parsed is not None, f"{fixture} did not parse"
+    assert _rules(evaluate(DenylistInput(plan=parsed))) == [], (
+        f"{fixture}: expected no violations"
+    )
+
+
+def test_real_provider_import_bucket_nearline_fires_with_changes_rule():
+    """Provider-real fixture: bucket import with NEARLINE storage class deviation
+    (actions=[update]) must fire import-with-changes-forbidden-v1 and ONLY that rule.
+    This is the 'can't cleanly adopt yet' honest failure case (§0.2 deviant probe)."""
+    parsed, _ = load_plan_json(_load("real_import_bucket_storage_class_update.json"))
+    assert parsed is not None
+    assert _rules(evaluate(DenylistInput(plan=parsed))) == ["import-with-changes-forbidden-v1"]

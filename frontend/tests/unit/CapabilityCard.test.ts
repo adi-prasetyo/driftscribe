@@ -72,6 +72,7 @@ const FIXTURE: Capabilities = {
       tools: [
         { name: 'drift_read_live_env', description: 'Reads the live Cloud Run environment — deployed image, revision, environment variables, and service configuration.', write_capable: false },
         { name: 'provision_open_infra_pr', description: 'Authors OpenTofu files under iac/ and opens ONE pull request — never applies anything; applying happens only through the gated approve-then-apply pipeline.', write_capable: true },
+        { name: 'provision_propose_adoption', description: 'Adopt an existing resource into IaC management via a zero-change import PR — renders the config deterministically; cannot modify live infrastructure.', write_capable: true },
       ],
       workers: [{ name: 'infra_reader', description: 'Reads the whole-project GCP asset inventory. Read-only by IAM (asset viewer only).' }],
       actions: [],

@@ -689,35 +689,22 @@ def notify_iac_pr_pending(pr_number: int, pr_url: str, title: str) -> None:
     )
 
 
-def open_infra_pr_tool(files: list[dict], title: str, body: str) -> dict:
-    """Ask the tofu-editor to open ONE iac/-only infrastructure PR.
+def _open_iac_pr_and_notify(
+    files: list[dict], title: str, body: str
+) -> dict:
+    """Shared tail: derive authority, call the worker, compact result, notify.
 
-    The LLM supplies ONLY the decision content: the list of file writes
-    (``{"path","content"}`` under iac/, .tf/.md), the PR title, and the body.
-    Every authority/routing field is derived server-side and the LLM can never
-    influence it:
+    Called by both :func:`open_infra_pr_tool` (after the freehand-import guard)
+    and :func:`propose_adoption_tool` (after render + preflight). Neither tool
+    derives authority independently — this single function is the ONLY place
+    that calls ``call_open_infra_pr`` for iac-editor PRs, so the two authoring
+    paths can never drift on authority derivation or the notification predicate.
 
-    - ``target_repo``: registry pin (IAC_EDITOR_TARGET / override) — never LLM.
-    - ``branch``: computed ``infra/{slug(title)}-{ts}-{hex}`` (collision-safe, and
-      the ``infra/`` prefix scopes the PR to the editor; the worker's
-      ``validate_branch`` re-checks).
-    - ``base``: pinned ``"main"`` inside :func:`call_open_infra_pr`.
-    - ``label``: ``driftscribe-infra``, applied worker-side.
-
-    The tofu-editor worker re-validates every file (iac/-prefix, suffix,
-    foundation, traversal, size, AGENT-mode static gate incl. the secret ban)
-    before any GitHub call, so this tool deliberately does NOT pre-validate — a
-    bad request surfaces the worker's 403/422 to the model as a feedback loop.
-
-    After the PR opens, the operator must: dispatch the C2 plan-builder workflow
-    on the PR number, then review + approve at ``/iac-approvals/<pr_number>``; a
-    PR that CREATES new resources additionally needs an operator re-bake (C6)
-    before it can apply.
+    The guard (no freehand import) is the CALLER's responsibility:
+    - ``open_infra_pr_tool`` runs ``find_import_violations`` before calling here.
+    - ``propose_adoption_tool`` passes a renderer-produced file (always safe) and
+      calls here directly (never runs the violation check on its own output).
     """
-    # Authority/routing fields are derived server-side via the SHARED helper
-    # (see derive_iac_pr_authority) — the same one the D5 fan-out orchestrator
-    # uses, so the two authoring paths can never drift on how they pin the repo
-    # or compute the branch. The LLM influences NONE of these.
     authority = derive_iac_pr_authority(title)
     result = worker_client.call_open_infra_pr(
         target_repo=authority.target_repo,
@@ -746,3 +733,144 @@ def open_infra_pr_tool(files: list[dict], title: str, body: str) -> dict:
             title,
         )
     return compact_result
+
+
+def open_infra_pr_tool(files: list[dict], title: str, body: str) -> dict:
+    """Ask the tofu-editor to open ONE iac/-only infrastructure PR.
+
+    The LLM supplies ONLY the decision content: the list of file writes
+    (``{"path","content"}`` under iac/, .tf/.md), the PR title, and the body.
+    Every authority/routing field is derived server-side and the LLM can never
+    influence it:
+
+    - ``target_repo``: registry pin (IAC_EDITOR_TARGET / override) — never LLM.
+    - ``branch``: computed ``infra/{slug(title)}-{ts}-{hex}`` (collision-safe, and
+      the ``infra/`` prefix scopes the PR to the editor; the worker's
+      ``validate_branch`` re-checks).
+    - ``base``: pinned ``"main"`` inside :func:`call_open_infra_pr`.
+    - ``label``: ``driftscribe-infra``, applied worker-side.
+
+    The tofu-editor worker re-validates every file (iac/-prefix, suffix,
+    foundation, traversal, size, AGENT-mode static gate incl. the secret ban)
+    before any GitHub call, so this tool deliberately does NOT pre-validate — a
+    bad request surfaces the worker's 403/422 to the model as a feedback loop.
+
+    After the PR opens, the operator must: dispatch the C2 plan-builder workflow
+    on the PR number, then review + approve at ``/iac-approvals/<pr_number>``; a
+    PR that CREATES new resources additionally needs an operator re-bake (C6)
+    before it can apply.
+
+    Freehand-import guard (Phase 3 §1.10): any ``.tf`` file with an ``import``
+    block — or that fails to parse as HCL — is rejected coordinator-side with
+    status ``"rejected"`` and a reason directing the LLM to use
+    ``provision_propose_adoption`` instead. Zero worker calls on violation.
+    Only :func:`propose_adoption_tool` may submit an import block (it uses
+    :func:`_open_iac_pr_and_notify` directly, bypassing this guard).
+    """
+    from driftscribe_lib.adopt_recipe import find_import_violations
+
+    violations = find_import_violations(files)
+    if violations:
+        reason = (
+            "Freehand import blocks are not allowed in iac/ files authored by "
+            "provision_open_infra_pr. Adoptions must go through "
+            "provision_propose_adoption — that tool renders the exact probe-proven "
+            "config and import block deterministically. "
+            f"Violation(s): {'; '.join(violations)}"
+        )
+        return {"status": "rejected", "reason": reason}
+    return _open_iac_pr_and_notify(files, title, body)
+
+
+def _fetch_main_iac_tree(target_repo: str) -> dict[str, str]:
+    """Fetch all ``iac/*.tf`` files from the target repo's ``main`` branch.
+
+    Returns a ``{path: content}`` mapping. Any fetch exception propagates to the
+    caller (:func:`propose_adoption_tool`), which treats it as a fail-closed
+    rejection ("couldn't verify the current IaC tree — try again").
+
+    Uses the same GitHub PAT + repo client as ``search_recent_prs_tool`` (grounded
+    from :func:`agent.config.Settings.github_token` / ``.github_repo``) — the
+    coordinator's fine-grained read PAT.
+    """
+    s = get_settings()
+    repo = get_repo(s.github_token or None, target_repo)
+    # get_contents on a directory returns a list of ContentFile objects.
+    # We need all *.tf files under iac/.
+    contents = repo.get_contents("iac", ref="main")
+    result: dict[str, str] = {}
+    if not isinstance(contents, list):
+        contents = [contents]
+    for item in contents:
+        if item.type == "file" and item.path.endswith(".tf"):
+            result[item.path] = item.decoded_content.decode("utf-8")
+    return result
+
+
+def propose_adoption_tool(
+    resource_type: str,
+    name: str,
+    location: str = "",
+    topic: str = "",
+    image: str = "",
+) -> dict:
+    """Adopt ONE existing live resource into IaC management (zero-change import).
+
+    Renders the probe-proven minimal resource block + co-located import block
+    deterministically (driftscribe_lib.adopt_recipe — the LLM never authors
+    adopt HCL) and opens the PR through the same tofu-editor path as
+    provision_open_infra_pr. One resource per PR (design D3). The import id
+    and HCL shape are pre-validated against the same rules the static gate
+    enforces; the C2 plan must still show a pure no-op import or the
+    denylist refuses it (D1 — enforced, never assumed).
+    """
+    from driftscribe_lib.adopt_recipe import (
+        AdoptRecipeError,
+        preflight_conflicts,
+        render_adoption,
+    )
+
+    s = get_settings()
+    try:
+        r = render_adoption(
+            resource_type,
+            name,
+            s.gcp_project,
+            location=location or None,
+            topic=topic or None,
+            image=image or None,
+        )
+    except AdoptRecipeError as exc:
+        return {"status": "rejected", "reason": str(exc)}
+
+    # Main-tree preflight (§1.11): fetch current iac/*.tf@main and check for
+    # path/address/identity/project conflicts before opening the PR.
+    authority = derive_iac_pr_authority(r.title)
+    try:
+        iac_files = _fetch_main_iac_tree(authority.target_repo)
+    except Exception:  # noqa: BLE001 - fail-closed: any fetch failure rejects
+        return {
+            "status": "rejected",
+            "reason": (
+                "Couldn't verify the current IaC tree (GitHub fetch failed). "
+                "Please try again — if the problem persists, check the coordinator's "
+                "GitHub PAT permissions."
+            ),
+        }
+
+    conflict = preflight_conflicts(r, iac_files, s.gcp_project)
+    if conflict is not None:
+        return {"status": "rejected", "reason": conflict}
+
+    result = _open_iac_pr_and_notify(
+        [{"path": r.path, "content": r.content}], r.title, r.body
+    )
+    if result.get("pr_number"):
+        result["next_steps"] = (
+            result.get("next_steps", "")
+            + " NOTE: an adoption is create-class — after approval and merge,"
+            " the apply worker must be RE-BAKED (C6) before the import can"
+            " apply. Applying it changes NOTHING in the cloud; it only"
+            " records the resource in IaC state."
+        )
+    return result

@@ -113,6 +113,11 @@ EXPECTED_TOOL_NAMES = frozenset({
     # symbolic name ``provision_open_infra_pr`` IS in ``_MUTATION_TOOL_NAMES``
     # below. Callable ``__name__`` is ``open_infra_pr_tool``.
     "open_infra_pr_tool",
+    # adopt design Phase 3 — Adoption tool: renders probe-proven zero-change
+    # import HCL and opens a PR via the same tofu-editor path. Symbolic name
+    # ``provision_propose_adoption`` in the workload YAML; callable
+    # ``__name__`` is ``propose_adoption_tool``. MUTATION tool.
+    "propose_adoption_tool",
 })
 
 
@@ -400,36 +405,63 @@ def test_provision_workload_enabled_tools_match_expected_set():
 
 
 def test_provision_workload_carries_mutation_tool_explore_stays_read_only():
-    """Phase D2: the two chat-only workloads diverge on read-only-ness.
+    """Phase D2 / adopt-Phase-3: the two chat-only workloads diverge on read-only-ness.
 
     ``explore`` is strictly read-only — disjoint from
     :data:`_MUTATION_TOOL_NAMES` (pinned in
     :func:`test_explore_workload_is_strictly_read_only`). ``provision``
-    intentionally carries ONE mutation tool (``provision_open_infra_pr``),
-    so it is deliberately NOT asserted read-only and is NOT added to any
-    read-only-disjointness check.
+    intentionally carries mutation tools (``provision_open_infra_pr`` and
+    ``provision_propose_adoption``), so it is deliberately NOT asserted
+    read-only and is NOT added to any read-only-disjointness check.
 
-    Three pins:
+    Pins for each mutation tool:
 
-    1. ``provision_open_infra_pr`` is NOT in ``EXPLORE_WORKLOAD_TOOL_NAMES``
-       (explore must never gain the IaC-authoring tool).
-    2. ``provision_open_infra_pr`` IS in ``PROVISION_WORKLOAD_TOOL_NAMES``
-       (provision intentionally carries it).
-    3. ``provision_open_infra_pr`` IS in ``_MUTATION_TOOL_NAMES`` — i.e. it
-       is recognized as a mutation tool, which is why provision is exempt
-       from the read-only disjointness assertion explore must satisfy.
+    1. Symbolic name NOT in ``EXPLORE_WORKLOAD_TOOL_NAMES`` (explore must
+       never gain the IaC-authoring mutation tools).
+    2. Symbolic name IS in ``PROVISION_WORKLOAD_TOOL_NAMES`` (provision
+       intentionally carries it).
+    3. Symbolic name IS in ``_MUTATION_TOOL_NAMES`` — i.e. it is recognized
+       as a mutation tool, which is why provision is exempt from the
+       read-only disjointness assertion explore must satisfy.
     """
-    assert "provision_open_infra_pr" not in EXPLORE_WORKLOAD_TOOL_NAMES, (
-        "explore (strictly read-only) must NOT carry the IaC-authoring "
-        "mutation tool provision_open_infra_pr."
+    for symbolic in ("provision_open_infra_pr", "provision_propose_adoption"):
+        assert symbolic not in EXPLORE_WORKLOAD_TOOL_NAMES, (
+            f"explore (strictly read-only) must NOT carry the IaC-authoring "
+            f"mutation tool {symbolic}."
+        )
+        assert symbolic in PROVISION_WORKLOAD_TOOL_NAMES, (
+            f"provision must carry its IaC-authoring tool {symbolic}."
+        )
+        assert symbolic in _MUTATION_TOOL_NAMES, (
+            f"{symbolic} opens a PR via a write-capable editor PAT "
+            f"and must be classified as a mutation tool — which is precisely why "
+            f"provision (unlike explore) is NOT asserted read-only."
+        )
+
+
+def test_resolve_provision_read_tools_strips_adoption_tool(provision_workload_env):
+    """``resolve_provision_read_tools()`` must exclude BOTH the symbolic name
+    ``provision_propose_adoption`` AND the callable ``propose_adoption_tool``
+    from the read-tool mapping handed to slice sub-agents.
+
+    Mirrors the existing double-filter guarantee for ``open_infra_pr_tool``:
+    a slice sub-agent is authority-clean (read + author only; no PR/apply/
+    mutation), so neither the symbolic name NOR the callable may leak through.
+    """
+    from agent.fanout import resolve_provision_read_tools
+
+    read_tools = resolve_provision_read_tools()
+
+    assert "provision_propose_adoption" not in read_tools, (
+        "provision_propose_adoption (symbolic) must be stripped from the "
+        "read-tool set given to slice sub-agents."
     )
-    assert "provision_open_infra_pr" in PROVISION_WORKLOAD_TOOL_NAMES, (
-        "provision must carry its IaC-authoring tool provision_open_infra_pr."
-    )
-    assert "provision_open_infra_pr" in _MUTATION_TOOL_NAMES, (
-        "provision_open_infra_pr opens a PR via a write-capable editor PAT "
-        "and must be classified as a mutation tool — which is precisely why "
-        "provision (unlike explore) is NOT asserted read-only."
+    assert all(
+        getattr(fn, "__name__", "") != "propose_adoption_tool"
+        for fn in read_tools.values()
+    ), (
+        "propose_adoption_tool (callable) must be stripped from the "
+        "read-tool set given to slice sub-agents."
     )
 
 

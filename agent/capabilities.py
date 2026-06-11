@@ -115,6 +115,11 @@ TOOL_DESCRIPTIONS: Final[Mapping[str, str]] = MappingProxyType({
         "applies anything; applying happens only through the gated "
         "approve-then-apply pipeline."
     ),
+    "provision_propose_adoption": (
+        "Adopt an existing resource into IaC management via a zero-change "
+        "import PR — renders the config deterministically; cannot modify live "
+        "infrastructure."
+    ),
     "get_session_state": (
         "Reserved — not implemented; no workload can use it."
     ),
