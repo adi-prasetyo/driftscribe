@@ -147,3 +147,40 @@ describe('TourCard — adopt step (T4: prefill, never send)', () => {
     expect(idle.queryByTestId('tour-busy-note')).toBeNull();
   });
 });
+
+describe('TourCard — spotlight', () => {
+  it('toggles .tour-spotlight on the matching [data-tour] element per step', async () => {
+    const estate = document.createElement('div');
+    estate.setAttribute('data-tour', 'estate');
+    document.body.appendChild(estate);
+    try {
+      const { getByTestId } = render(TourCard, { props: { graph: graphWithTarget() } });
+      // step 1 (welcome): no target
+      expect(estate.classList.contains('tour-spotlight')).toBe(false);
+      await fireEvent.click(getByTestId('tour-next')); // → estate
+      expect(estate.classList.contains('tour-spotlight')).toBe(true);
+      expect(window.HTMLElement.prototype.scrollIntoView).toHaveBeenCalled();
+      await fireEvent.click(getByTestId('tour-next')); // → controls (absent in DOM)
+      expect(estate.classList.contains('tour-spotlight')).toBe(false);
+    } finally {
+      estate.remove();
+    }
+  });
+
+  it('removes the spotlight on unmount', async () => {
+    const estate = document.createElement('div');
+    estate.setAttribute('data-tour', 'estate');
+    document.body.appendChild(estate);
+    try {
+      const { getByTestId, unmount } = render(TourCard, {
+        props: { graph: graphWithTarget() },
+      });
+      await fireEvent.click(getByTestId('tour-next'));
+      expect(estate.classList.contains('tour-spotlight')).toBe(true);
+      unmount();
+      expect(estate.classList.contains('tour-spotlight')).toBe(false);
+    } finally {
+      estate.remove();
+    }
+  });
+});
