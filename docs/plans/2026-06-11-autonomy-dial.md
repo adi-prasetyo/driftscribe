@@ -33,13 +33,15 @@
 | Drift pipeline classify + validate + claim + **record decision** | ✓ | ✓ | ✓ |
 | Drift pipeline action execution (`docs_pr`/`drift_issue`/`escalation` GitHub writes) | suppressed + recorded | ✓ | ✓ |
 | Rollback proposal (`_do_rollback` worker `/propose` + notifier) | suppressed + recorded | ✓ | ✓ |
+| Provision fan-out orchestrator (`run_provision_fanout_stream` — multi-slice authoring → ONE coordinator-direct `call_open_infra_pr`) | delegated to single-agent chat (tool-filtered; NO editor call possible) | ✓ | ✓ |
 | `POST /iac-approvals/{pr}` approve (apply pipeline) | 409 | 409 | ✓ |
 | `POST /approvals/{id}` approve (rollback execute) | 409 | 409 | ✓ |
 | All reject paths; `GET` display pages; `/eventarc` event intake; `no_op` | ✓ | ✓ | ✓ |
 
 Key nuances (each gets a dedicated test):
 
-- `notify` and `search_recent_prs` are in `MUTATION_TOOL_NAMES` for **credential containment**, not because they mutate — they are `report`-tier. `notify` is Observe's reporting channel; stripping it would make Observe mute, defeating the mode.
+- `notify` and `search_recent_prs` are in `MUTATION_TOOL_NAMES` but stay `report`-tier, for different reasons (Codex must-fix 3 — word them separately): `notify` IS a side effect (it posts a webhook), and it is **intentionally allowed in Observe** because it is the report-delivery channel — Observe means "report only", not "silent". `search_recent_prs` is read-only; it is in `MUTATION_TOOL_NAMES` purely for credential containment (it rides a repo credential).
+- The provision fan-out orchestrator (`agent/fanout.py run_provision_fanout_stream`, reached via `main.py _chat_stream` for `workload=provision`) makes a coordinator-direct `worker_client.call_open_infra_pr` that NEVER passes through Layer-0 tool filtering (Codex must-fix 1). In Observe the orchestrator delegates the whole stream to the single-agent `run_chat_stream` path at entry (same delegation machinery as its existing single-slice / non-policy branches) — the single agent is tool-filtered, so it can still answer provision questions but cannot author. A defense-in-depth guard sits immediately before the editor call itself.
 - `_do_rollback` deliberately ignores `dry_run` for its worker calls (`dry_run_effective: False` pattern). The dial must NOT inherit that: Observe suppresses the rollback worker `/propose` and the notifier call entirely. Explicit divergence, explicit test.
 - `/eventarc` is NOT dropped in Observe (contrast with pause's 200-ignored drop) — the event flows into `_do_recheck`, which records a suppressed decision. Test pins this.
 - Dial refusals use **409 Conflict** (the request conflicts with the operator-configured mode), NOT 423 — 423 is pause's status and clients map it to pause messaging; conflating them would mislabel the operator's own dial setting as an emergency stop.
@@ -47,7 +49,14 @@ Key nuances (each gets a dedicated test):
 
 ## Codex plan review
 
-(Recorded after review — thread ID, must-fixes, and folds go here before implementation.)
+Thread `019eb685-1fc3-7e33-b5d4-dc33be892b7a` — verdict **GO-with-must-fixes**; all four folded below, GO re-confirmed on the same thread before implementation.
+
+1. **Provision fan-out bypass (folded into the matrix, key nuances, Task 5):** `run_provision_fanout_stream` makes a coordinator-direct `call_open_infra_pr` (fanout.py ~1301) reached via `_chat_stream` (main.py ~4076) — Layer-0 filtering never sees it. Fold: `autonomy_mode` required kwarg on `_chat_stream` + `run_provision_fanout_stream`; Observe delegates to the single-agent path at entry; pre-editor-call guard; tests for multi-slice Observe, single-slice mode pass-through, and a provision JSON-path integration pin.
+2. **Capability-card copy (folded into Task 10):** "write-capable tools are disabled" would be false — `notify`/`search_recent_prs` are `write_capable` in the DTO yet stay available in Observe. Fold: copy now says "tools that open pull requests, issues, or approvals — and anything that merges or applies — are disabled"; `read_error` gets its own honest variant ("could not be read; effective mode is Observe").
+3. **`notify` semantic wording (folded into key nuances, Task 3 comments/tests):** `notify` is a real side effect (webhook post) deliberately allowed in Observe as the report-delivery channel; only `search_recent_prs` is the credential-containment/read-only case. All plan/test/comment wording updated to say the two reasons separately.
+4. **IaC existing-decision branches (folded into Task 7 tests):** add explicit tests that Observe/Propose 409 fires BEFORE `_handle_existing_iac_decision` can route into `_iac_merge_step` / `_iac_create_merge_first` / `_iac_resume_apply` (e.g. a `waiting_for_rebake` re-POST in Propose → 409, no merge attempted).
+
+Should-considers: (a) provision JSON-path test — adopted into Task 5; (b) stamping `autonomy_mode` onto `iac_apply` decision docs — **declined with rationale**: the 409 gate makes `propose_apply` the only mode under which those docs can be written (gate-pinned by tests), so the stamp would be a constant; (c) display copy distinguishing configured-Observe from fail-closed-Observe — adopted into Task 7 templates; (d) coordinator-rebake-only confirmed.
 
 ---
 
@@ -471,10 +480,12 @@ def test_every_propose_or_apply_tool_is_a_known_mutation_tool():
 
 
 def test_report_tier_mutation_names_are_exactly_the_credential_containment_pair():
-    # notify + search_recent_prs are in MUTATION_TOOL_NAMES because they
-    # ride write-capable credentials, NOT because they mutate. They stay
-    # available in Observe (notify IS the reporting channel). This pin makes
-    # adding a third such exception an explicit, reviewed decision.
+    # Two report-tier tools sit in MUTATION_TOOL_NAMES for DIFFERENT reasons:
+    # notify IS a side effect (it posts a webhook) and is intentionally
+    # allowed in Observe because it is the report-delivery channel — Observe
+    # means "report only", not "silent". search_recent_prs is read-only and
+    # is there purely for credential containment. This pin makes adding a
+    # third such exception an explicit, reviewed decision.
     report_but_mutation = {
         n for n, t in TOOL_TIERS.items() if t == "report"
     } & MUTATION_TOOL_NAMES
@@ -503,10 +514,11 @@ def test_apply_tier_is_exactly_merge():
 # - set(TOOL_TIERS) == set(TOOL_REGISTRY): a new tool cannot ship untiered.
 # - every non-"report" tool ∈ fanout.MUTATION_TOOL_NAMES (tiers at least as
 #   strict as the existing mutation classifier).
-# - "report"-tier ∩ MUTATION_TOOL_NAMES == {notify, search_recent_prs} —
-#   the two credential-containment entries that do not themselves mutate.
-#   notify stays available in Observe: it is the reporting channel, and
-#   Observe is "report only", not "silent".
+# - "report"-tier ∩ MUTATION_TOOL_NAMES == {notify, search_recent_prs}.
+#   notify IS a side effect (webhook post) but stays available in Observe
+#   on purpose: it is the report-delivery channel, and Observe is "report
+#   only", not "silent". search_recent_prs is read-only and is in
+#   MUTATION_TOOL_NAMES purely for credential containment.
 _TOOL_TIERS: Final[dict[str, str]] = {
     "drift_read_live_env":        "report",
     "read_project_inventory":     "report",
@@ -749,9 +761,79 @@ def build_agent(workload: WorkloadResolution, *, autonomy_mode: str) -> Agent:
 In `agent/main.py`:
 - `_run_adk_agent(user_msg, *, workload="drift", autonomy_mode: str)` — required keyword, forwarded to `run_agent`. (Integration tests patch `agent.main._run_adk_agent` wholesale; update their fake signatures to accept `**kwargs` or the new kwarg.)
 - `_do_recheck`: read the dial ONCE near the top (after the existing settings/contract setup, before the LLM call): `autonomy = _autonomy_state_fail_closed()`; pass `autonomy_mode=autonomy.mode` to `_run_adk_agent`; thread `autonomy` into the execution branch (Task 6) and `_do_rollback`.
-- `/chat` handler: after the existing pause gate, `autonomy = _autonomy_state_fail_closed()`; pass `autonomy_mode=autonomy.mode` to `run_chat` / `run_chat_stream`. Chat is never refused by the dial — tools are filtered instead.
+- `/chat` handler: after the existing pause gate, `autonomy = _autonomy_state_fail_closed()`; pass `autonomy_mode=autonomy.mode` to `run_chat` / `_chat_stream`. Chat is never refused by the dial — tools are filtered instead.
 
-**Step 4: Run** the new suite + full `tests/unit` → green (fix every call site the required kwarg breaks). **Step 5: Commit** `feat(autonomy): Layer-0 tool filtering — dial-filtered agent builds, mode threaded from handlers`
+**Provision fan-out path (Codex must-fix 1).** `_chat_stream(workload, prompt, session_id)` routes `workload == "provision"` to `agent.fanout.run_provision_fanout_stream`, whose committed (N≥2) branch makes ONE coordinator-direct `worker_client.call_open_infra_pr` — a mutation that never passes Layer-0 filtering. Changes:
+
+- `_chat_stream(workload, prompt, session_id, *, autonomy_mode: str)` — required keyword; forwards to BOTH `run_provision_fanout_stream` and the non-provision `run_chat_stream` branch.
+- `run_provision_fanout_stream(prompt, session_id=None, *, autonomy_mode: str)` — required keyword. Two enforcement points:
+  1. **Entry delegation:** as the FIRST branch, before `decompose`:
+
+```python
+    if autonomy_mode == "observe":
+        # Observe: authoring an infra PR is propose-class work and the whole
+        # fan-out exists to make that ONE editor call — delegate the entire
+        # stream to the single-agent path (same delegation machinery as the
+        # single-slice and non-policy branches). The single agent is
+        # Layer-0-filtered, so it still answers provision questions but has
+        # no authoring tool; its instruction note points at the dial.
+        async for item in run_chat_stream(
+            prompt, workload="provision", session_id=session_id,
+            autonomy_mode=autonomy_mode,
+        ):
+            yield item
+        return
+```
+
+  (match the existing delegate-branch idiom exactly — read it first; the delegated run's `seq` restarting at 1 is the documented contract.)
+  2. **Pre-editor-call guard (defense in depth):** immediately before the `asyncio.to_thread(worker_client.call_open_infra_pr, ...)` call:
+
+```python
+    if not mode_allows(autonomy_mode, "propose"):
+        # Unreachable when the entry delegation works — pinned anyway so a
+        # future branch reorder cannot reopen the bypass Codex flagged.
+        reply = (
+            "The infrastructure PR was not opened — the autonomy dial does "
+            "not allow proposals in this mode. Raise the dial in the "
+            "operator UI and ask again."
+        )
+        yield {"type": "event", "event": _stream(_emit_final_response(reply))}
+        yield {"type": "result", "reply": reply, "tool_calls": [],
+               "session_id": sid}
+        return
+```
+
+  In `propose` and `propose_apply` the fan-out proceeds unchanged (`open_infra_pr` is propose-tier).
+
+Additional tests (same task):
+
+```python
+def test_provision_fanout_observe_delegates_without_editor_call(...):
+    # mode=observe, multi-slice prompt: patch run_chat_stream and assert the
+    # orchestrator delegates to it with autonomy_mode="observe";
+    # worker_client.call_open_infra_pr NEVER called.
+
+def test_provision_fanout_precall_guard_fails_closed(...):
+    # Drive the committed branch directly with autonomy_mode="observe"
+    # (bypassing entry delegation via the test seam) → the result reply says
+    # the PR was not opened; call_open_infra_pr not called.
+
+def test_provision_fanout_single_slice_passes_mode_through(...):
+    # Single-slice plan, mode=propose → delegated run_chat_stream receives
+    # autonomy_mode="propose".
+
+def test_chat_provision_json_path_threads_mode(...):
+    # Integration: POST /chat workload=provision (JSON, not SSE) with
+    # mode=observe → 200; response is the delegated single-agent shape; no
+    # editor call. (Codex should-consider 1 — the provision JSON routing in
+    # the main handler deserves its own pin.)
+
+def test_provision_fanout_propose_opens_pr(...):
+    # mode=propose, committed branch with mocked worker → call_open_infra_pr
+    # IS called (the dial must not over-block proposals).
+```
+
+**Step 4: Run** the new suite + full `tests/unit` → green (fix every call site the required kwarg breaks — including `agent/fanout.py`'s internal delegations and all fanout tests). **Step 5: Commit** `feat(autonomy): Layer-0 tool filtering + provision fan-out gating — mode threaded from handlers`
 
 ---
 
@@ -952,6 +1034,16 @@ def test_apply_gate_fail_closed_read(...):
     # patch _autonomy_state_fail_closed → AutonomyState(mode="observe",
     # read_error=True): approve 409 AND the GET note mentions the
     # fail-closed read (read_error surfaced, mirrors pause display).
+
+def test_existing_decision_branches_gated(...):
+    # Codex must-fix 4: the gate must fire BEFORE _handle_existing_iac_decision
+    # can route into _iac_merge_step / _iac_create_merge_first /
+    # _iac_resume_apply — those branches can merge or apply from prior
+    # waiting_for_rebake / applied+failed state on a re-POST. Arrange a
+    # pending waiting_for_rebake decision exactly as the existing reconcile
+    # tests do, set mode=propose, re-POST → 409; patched
+    # github.merge_pr_at_sha and the apply worker calls NOT invoked. Repeat
+    # for a resume-apply-shaped pending decision in observe.
 ```
 
 **Step 2: Run** → FAIL.
@@ -986,7 +1078,7 @@ def test_apply_gate_fail_closed_read(...):
 
 (Reject branch untouched — denying remains the safety direction, same rationale as pause.)
 
-- `GET /iac-approvals/{pr_number}`: read `_autonomy = _autonomy_state_fail_closed()` next to the existing `_pause` read; add a gate-ladder rung AFTER the pause rung with `reason_severity = "pending"` (calm — the artifact is fine; the dial is a choice) and a reason string built from `autonomy_apply_blocked_detail(_autonomy.mode)`, plus `read_error` mention when set. Thread `autonomy_mode` / `autonomy_blocked` into the template context; in `iac_approval.html`, render the note in the same slot/style as the pause note.
+- `GET /iac-approvals/{pr_number}`: read `_autonomy = _autonomy_state_fail_closed()` next to the existing `_pause` read; add a gate-ladder rung AFTER the pause rung with `reason_severity = "pending"` (calm — the artifact is fine; the dial is a choice) and a reason string built from `autonomy_apply_blocked_detail(_autonomy.mode)`. Thread `autonomy_mode` / `autonomy_blocked` / `autonomy_read_error` into the template context; in `iac_approval.html`, render the note in the same slot/style as the pause note. The copy must distinguish the two Observe causes (Codex should-consider 3): configured → "autonomy is set to Observe…"; `read_error` → "autonomy state could not be read — the effective mode is Observe (failing closed)…". Never present fail-closed as the operator's choice.
 
 - `GET /approvals/{approval_id}`: thread `autonomy_blocked` (bool) + the detail string into the template context next to `paused`; in `approval.html`, disable Approve and show the calm note when set (Reject stays active), mirroring the paused treatment.
 
@@ -1102,12 +1194,15 @@ export function parseAutonomyDoc(body: unknown): AutonomyDoc | null {
 - Modify: `frontend/src/components/CapabilityCard.svelte`
 - Test: extend `frontend/tests/unit/CapabilityCard.test.ts`
 
-On first open (where it lazy-fetches `/capabilities`), additionally fire a best-effort `call('/autonomy')`; parse with `parseAutonomyDoc`. When it resolves to a mode ≠ `propose_apply`, render one line above the workloads section, `data-testid="capability-autonomy-note"`:
+On first open (where it lazy-fetches `/capabilities`), additionally fire a best-effort `call('/autonomy')`; parse with `parseAutonomyDoc`. When it resolves to a mode ≠ `propose_apply`, render one line above the workloads section, `data-testid="capability-autonomy-note"`.
 
-- observe: `The autonomy dial is currently set to Observe — the write-capable tools listed below are disabled until you raise the dial.`
-- propose: `The autonomy dial is currently set to Propose — proposals (pull requests and issues) are enabled, applies are disabled until you raise the dial.`
+Copy (Codex must-fix 2 — must NOT say "write-capable tools are disabled": the DTO's `write_capable` flag includes `notify`/`search_recent_prs`, which stay available in Observe):
 
-Fetch failure or malformed body → render nothing (the card stays the static cage description; `AutonomyControl` is the authoritative live surface). Tests: note shown for observe/propose fixture responses, absent for propose_apply, absent on fetch failure.
+- observe (configured): `The autonomy dial is currently set to Observe — tools that open pull requests, issues, or approvals, and anything that merges or applies, are disabled until you raise the dial.`
+- propose (configured): `The autonomy dial is currently set to Propose — pull requests and issues are enabled; anything that merges or applies is disabled until you raise the dial.`
+- `read_error: true`: `Autonomy state could not be read — the effective mode is Observe (failing closed) until the dial can be read again.` (never claim the operator "set" it)
+
+Fetch failure or malformed body → render nothing (the card stays the static cage description; `AutonomyControl` is the authoritative live surface). Tests: note shown for observe/propose fixture responses with the exact non-"write-capable" copy, the read_error variant, absent for propose_apply, absent on fetch failure.
 
 Commit: `feat(ui): capability card notes the live autonomy mode when restricted`.
 
