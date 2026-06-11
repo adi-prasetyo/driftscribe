@@ -149,9 +149,9 @@ def test_propose_adoption_tool_worker_error_propagates_no_notify(monkeypatch):
 @pytest.mark.parametrize(
     ("resource_type", "name", "kwargs", "match"),
     [
-        # Non-adoptable type
-        ("google_service_account", "my-sa", {}, "not adoptable"),
-        ("google_compute_instance", "my-vm", {}, "not adoptable"),
+        # Non-adoptable type (param-explicit rejection copy — live e2e catch)
+        ("google_service_account", "my-sa", {}, "not an adoptable resource type"),
+        ("google_compute_instance", "my-vm", {}, "not an adoptable resource type"),
         # Missing image for run service
         ("google_cloud_run_v2_service", "my-svc", {"location": "asia-northeast1"}, "image"),
         # Missing topic for subscription

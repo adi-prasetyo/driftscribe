@@ -816,6 +816,23 @@ def propose_adoption_tool(
 ) -> dict:
     """Adopt ONE existing live resource into IaC management (zero-change import).
 
+    ``resource_type`` must be one of EXACTLY these values (common friendly
+    aliases like "bucket" / "Cloud Storage bucket" are accepted and mapped):
+
+    - ``google_storage_bucket`` — Cloud Storage bucket. Requires ``location``.
+    - ``google_pubsub_topic`` — Pub/Sub topic. Name only.
+    - ``google_pubsub_subscription`` — Pub/Sub subscription. Requires
+      ``topic`` (the topic it belongs to — ask the operator if unknown).
+    - ``google_cloud_run_v2_service`` — Cloud Run service. Requires
+      ``location`` AND ``image`` (the exact container image it runs — ask
+      the operator if unknown).
+
+    ``name`` is the resource's short name (bare bucket name, topic/sub short
+    name, service name). On a ``{"status": "rejected"}`` result, read the
+    ``reason`` and retry with corrected parameters — a rejection is parameter
+    feedback, not a product limitation, unless the reason says the TYPE is
+    not adoptable.
+
     Renders the probe-proven minimal resource block + co-located import block
     deterministically (driftscribe_lib.adopt_recipe — the LLM never authors
     adopt HCL) and opens the PR through the same tofu-editor path as

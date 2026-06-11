@@ -36,6 +36,46 @@ _HUMAN: dict[str, str] = {
     "google_cloud_run_v2_service": "Cloud Run service",
 }
 
+# Friendly-name canonicalization for the LLM-facing ``resource_type`` param.
+# Live e2e (2026-06-11) showed the model passing the HUMAN name ("Cloud
+# Storage bucket"), receiving the "'X' is not adoptable yet" rejection, and
+# concluding buckets are a product limitation — a wrong-parameter error read
+# as a capability gap. Aliases are matched on a normalized form (lowercase,
+# spaces/dashes → underscores) and map DETERMINISTICALLY onto the canonical
+# HCL type; anything unmatched still gets the (now param-explicit) rejection.
+_TYPE_ALIASES: dict[str, str] = {
+    "bucket": "google_storage_bucket",
+    "storage_bucket": "google_storage_bucket",
+    "gcs_bucket": "google_storage_bucket",
+    "cloud_storage_bucket": "google_storage_bucket",
+    "storage.googleapis.com/bucket": "google_storage_bucket",
+    "topic": "google_pubsub_topic",
+    "pubsub_topic": "google_pubsub_topic",
+    "pub/sub_topic": "google_pubsub_topic",
+    "pubsub.googleapis.com/topic": "google_pubsub_topic",
+    "subscription": "google_pubsub_subscription",
+    "pubsub_subscription": "google_pubsub_subscription",
+    "pub/sub_subscription": "google_pubsub_subscription",
+    "pubsub.googleapis.com/subscription": "google_pubsub_subscription",
+    "service": "google_cloud_run_v2_service",
+    "run_service": "google_cloud_run_v2_service",
+    "cloud_run_service": "google_cloud_run_v2_service",
+    "cloud_run_v2_service": "google_cloud_run_v2_service",
+    "run.googleapis.com/service": "google_cloud_run_v2_service",
+}
+
+
+def _canonicalize_resource_type(value: str) -> str | None:
+    """Map a canonical HCL type or a friendly alias to the canonical type.
+
+    Returns ``None`` when the value matches neither (the caller raises the
+    param-explicit rejection).
+    """
+    if value in ADOPT_KINDS:
+        return value
+    normalized = re.sub(r"[\s-]+", "_", value.strip().lower())
+    return _TYPE_ALIASES.get(normalized)
+
 # Import-id shapes — DUPLICATED from tools.iac_static_gate.ADOPT_IMPORT_ID_SHAPES
 # to satisfy the layering rule (lib must not import from tools/). The drift-pin
 # test ``test_id_shapes_match_static_gate`` asserts pattern equality.
@@ -176,11 +216,17 @@ def render_adoption(
     image:
         Required for Cloud Run service; forbidden for other types.
     """
-    if resource_type not in ADOPT_KINDS:
-        allowed = ", ".join(sorted(ADOPT_KINDS))
-        raise AdoptRecipeError(
-            f"{resource_type!r} is not adoptable yet. Adoptable types: {allowed}."
+    canonical = _canonicalize_resource_type(resource_type)
+    if canonical is None:
+        choices = ", ".join(
+            f"{t} ({_HUMAN[t]})" for t in sorted(ADOPT_KINDS)
         )
+        raise AdoptRecipeError(
+            f"{resource_type!r} is not an adoptable resource type. Pass "
+            f"resource_type as one of: {choices}. If the operator's resource "
+            "is none of these, it is not yet adoptable."
+        )
+    resource_type = canonical
     if not _PROJECT_RE.fullmatch(project):
         raise AdoptRecipeError("internal: invalid runtime project id")
 
