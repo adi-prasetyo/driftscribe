@@ -311,3 +311,65 @@ def test_expected_repo_threaded(monkeypatch):
     get_settings.cache_clear()
     load_iac_plan_tool(7)
     assert received["expected_repo"] is None
+
+
+# --------------------------------------------------------------------------- #
+# Wave-4 item 13 — cost block in load_iac_plan_tool output
+# --------------------------------------------------------------------------- #
+
+
+def _plan_json_one_warm_service():
+    return {
+        "format_version": "1.2",
+        "resource_changes": [{
+            "address": "google_cloud_run_v2_service.svc",
+            "type": "google_cloud_run_v2_service", "name": "svc",
+            "mode": "managed",
+            "change": {"actions": ["create"], "before": None,
+                       "after": {"scaling": [{"min_instance_count": 1}],
+                                 "template": [{"scaling": [], "containers": [
+                                     {"resources": [{"limits": {"cpu": "1000m",
+                                                                "memory": "512Mi"},
+                                                     "cpu_idle": True}]}]}]},
+                       "before_sensitive": False, "after_sensitive": False},
+        }],
+    }
+
+
+def test_cost_block_present_and_rounded(monkeypatch):
+    view = _make_view()  # verified, no violations
+    view._plan_json = _plan_json_one_warm_service()
+    monkeypatch.setattr(_adk_tools_mod, "load_plan_view_from_gcs",
+                        lambda *a, **k: view)
+    out = _adk_tools_mod.load_iac_plan_tool(7)
+    cost = out["cost"]
+    assert cost["monthly_always_on_change_jpy"] == 1571
+    assert cost["headline"].startswith("Adds about ¥1,571/month")
+    assert cost["entries"][0]["monthly_jpy"] == 1571
+    assert cost["entries"][0]["kind"] == "fixed"
+    assert "not a quote" in cost["disclaimer"]
+    assert cost["n_hidden"] == 0
+
+
+def test_cost_absent_when_summary_unavailable(monkeypatch):
+    view = _make_view()
+    view._plan_json = None  # change_summary → None, cost_summary → None
+    monkeypatch.setattr(_adk_tools_mod, "load_plan_view_from_gcs",
+                        lambda *a, **k: view)
+    out = _adk_tools_mod.load_iac_plan_tool(7)
+    assert out["summary"] is None
+    assert "cost" not in out
+
+
+def test_cost_absent_for_denylist_blocked_plan(monkeypatch):
+    # Codex MF-1 / H1: the item-12 summary IS returned for blocked plans
+    # (explaining a block is the point) — but cost is NOT (pricing a plan
+    # implies viability, and the approval page hides its card anyway).
+    view = _make_view(denylist_violations=[("import-forbidden-v1", "boom")])
+    view._plan_json = _plan_json_one_warm_service()
+    monkeypatch.setattr(_adk_tools_mod, "load_plan_view_from_gcs",
+                        lambda *a, **k: view)
+    out = _adk_tools_mod.load_iac_plan_tool(7)
+    assert out["blocked"] is True
+    assert out["summary"] is not None  # item-12 behavior unchanged
+    assert "cost" not in out

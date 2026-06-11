@@ -923,7 +923,9 @@ def load_iac_plan_tool(pr_number: int) -> dict[str, Any]:
       ``blast_radius`` + ``cannot_touch`` (item-8 reuse), ``denylist_violations``
       (summary INCLUDED alongside violations — explaining a blocked plan is the
       point; ``blocked=True`` keeps the framing honest), ``approval_page`` path,
-      and an advisory ``caveat``.
+      an advisory ``caveat``, and a heuristic ``cost`` block on clean plans only —
+      JPY list-price estimate with disclaimer (never for denylist-blocked plans;
+      a price implies viability).
 
     Fail-soft: never raises — every failure path returns an error dict the
     model can relay (explore prompt rule: surface tool errors, don't invent).
@@ -1031,4 +1033,27 @@ def load_iac_plan_tool(pr_number: int) -> dict[str, Any]:
     }
     out["blast_radius"] = blast_radius_phrase(summary)
     out["cannot_touch"] = BLAST_CANNOT_TOUCH_NOTE
+    # Cost rides ONLY alongside a present summary AND never for a blocked
+    # plan: the summary explains what a blocked plan tried to do (item 12);
+    # a price tag would frame it as a viable change (H1).
+    if not view.denylist_violations:
+        cost = view.cost_summary
+        if cost is not None:
+            out["cost"] = {
+                "headline": cost.headline,
+                "monthly_always_on_change_jpy": round(cost.monthly_fixed_jpy),
+                "entries": [
+                    {
+                        "address": c.address,
+                        "kind": c.kind,
+                        "monthly_jpy": (
+                            round(c.monthly_jpy) if c.monthly_jpy is not None else None
+                        ),
+                        "note": c.note,
+                    }
+                    for c in cost.entries
+                ],
+                "n_hidden": cost.n_hidden,
+                "disclaimer": cost.disclaimer,
+            }
     return out
