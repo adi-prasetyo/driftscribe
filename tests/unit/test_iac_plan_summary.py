@@ -773,3 +773,19 @@ class TestBlastCannotTouchNote:
             "replace-action-forbidden-v1",
             "unknown-action-forbidden-v1",
         }
+
+
+def test_public_aliases_for_cost_lib():
+    """Wave-4 item 13: iac_cost reuses the audited verb classification and
+    sensitivity-mask walkers — public aliases, never a re-derivation."""
+    from driftscribe_lib import iac_plan_summary as m
+
+    assert m.classify_verb is m._verb
+    assert m.mask_any is m._mask_any
+    assert m.sub_mask is m._sub_mask
+    for name in ("classify_verb", "mask_any", "sub_mask"):
+        assert name in m.__all__
+    # behavior smoke (the alias really is the audited function)
+    assert m.classify_verb(("no-op",), True) == "import"
+    assert m.classify_verb(("create",), False) == "create"
+    assert m.classify_verb(("no-op",), False) is None
