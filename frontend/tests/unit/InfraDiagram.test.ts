@@ -640,3 +640,64 @@ describe('InfraDiagram — adopt list', () => {
     expect(trailers[0].textContent).toContain('not on the map');
   });
 });
+
+describe('InfraDiagram — refresh livelock regression (last-applied-wins)', () => {
+  // Prod incident (Phase-4 live e2e, 2026-06-11): the boot-time applied-epoch
+  // ladder fires fetches every 10-30s while a cold CAI-backed /infra/graph takes
+  // 10-30s to answer — under last-STARTED-wins every response arrived "stale",
+  // graph never set, and the panel spun on "Refreshing…" forever. The policy is
+  // now last-APPLIED-wins: a completed 200 applies unless a NEWER fetch's
+  // response already applied.
+  function deferredCall() {
+    const pending: Array<(g: InfraGraph) => void> = [];
+    const call = (_path: string): Promise<Response> =>
+      new Promise<Response>((resolve) => {
+        pending.push((g) =>
+          resolve(
+            new Response(JSON.stringify(g), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            }),
+          ),
+        );
+      });
+    return { call, pending };
+  }
+
+  async function mountWithTwoInFlight() {
+    const { call, pending } = deferredCall();
+    const utils = render(InfraDiagram, { props: { call } });
+    await waitFor(() => expect(pending.length).toBe(1)); // mount fetch in flight
+    const details = utils.container.querySelector('details')!;
+    details.open = true;
+    await fireEvent(details, new Event('toggle')); // scheduler.open → fetch #2
+    await waitFor(() => expect(pending.length).toBe(2));
+    return { ...utils, pending };
+  }
+
+  it('applies an older 200 even when a newer fetch already started (the livelock)', async () => {
+    const { getByTestId, pending } = await mountWithTwoInFlight();
+    // The OLDER fetch completes while the newer is still in flight — it must
+    // apply (under the old policy it was discarded and the panel never loaded).
+    pending[0](graphWith({ resources: 5, managed: 2, drift: 3 }));
+    await waitFor(() => {
+      expect(getByTestId('infra-coverage-count').textContent).toBe('2/5 managed · 40%');
+    });
+    // The newer fetch completing later still supersedes it.
+    pending[1](graphWith({ resources: 6, managed: 3, drift: 3 }));
+    await waitFor(() => {
+      expect(getByTestId('infra-coverage-count').textContent).toBe('3/6 managed · 50%');
+    });
+  });
+
+  it('never lets an out-of-order older response overwrite a newer applied graph', async () => {
+    const { getByTestId, pending } = await mountWithTwoInFlight();
+    pending[1](graphWith({ resources: 6, managed: 3, drift: 3 })); // NEWER lands first
+    await waitFor(() => {
+      expect(getByTestId('infra-coverage-count').textContent).toBe('3/6 managed · 50%');
+    });
+    pending[0](graphWith({ resources: 5, managed: 2, drift: 3 })); // older straggler
+    await new Promise((r) => setTimeout(r, 25));
+    expect(getByTestId('infra-coverage-count').textContent).toBe('3/6 managed · 50%');
+  });
+});
