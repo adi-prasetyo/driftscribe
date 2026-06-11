@@ -10,6 +10,7 @@
   import { consumeSse } from './lib/sse';
   import type { TraceEvent, TimelineStatus } from './lib/timeline';
   import type { Decision, TraceResponse } from './lib/types';
+  import { nextAppliedWatermark, type AppliedWatermark } from './lib/decision';
   import type { Workload } from './lib/workloads';
 
   import TokenStatus from './components/TokenStatus.svelte';
@@ -45,8 +46,10 @@
 
   // Bumps when a freshly-`applied` iac_apply decision is observed in /decisions
   // — drives InfraDiagram's delayed resource-map re-fetches (rides out CAI lag).
+  // The watermark SEEDS on the first load without bumping (lib/decision —
+  // a boot-time historical applied decision must not ride the refresh ladder).
   let appliedEpoch = $state(0);
-  let lastAppliedId: string | null = null;
+  let appliedWatermark: AppliedWatermark = { id: null, seeded: false };
 
   // ?preview_pr=N (linked from the IaC approval page) → the Infrastructure panel
   // opens in ghost-node preview mode. Parsed once at boot; only ever cleared.
@@ -159,15 +162,11 @@
 
   // Detect a freshly-`applied` iac_apply decision (decisions arrive newest-first)
   // so the Infrastructure panel can refresh the resource map after an apply lands.
+  // Pure logic lives in lib/decision.nextAppliedWatermark (boot-seed semantics).
   function noteApplied(ds: Decision[]) {
-    const applied = ds.find(
-      (d) => d.action === 'iac_apply' && d.apply_status === 'applied',
-    );
-    const id = applied?.decision_id ?? null;
-    if (id && id !== lastAppliedId) {
-      lastAppliedId = id;
-      appliedEpoch += 1;
-    }
+    const { next, bump } = nextAppliedWatermark(appliedWatermark, ds);
+    appliedWatermark = next;
+    if (bump) appliedEpoch += 1;
   }
 
   const asString = (v: unknown): string | null =>
