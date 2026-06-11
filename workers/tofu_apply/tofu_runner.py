@@ -460,23 +460,42 @@ def _diagnose_post_failure_state(
 # markers below) since their real value is redacted from before/after. (Codex
 # review 019e7a3f + sole-mutator adversarial review.)
 
-# List-index-stripped attribute paths tolerated as benign drift: server readback
-# (generation, etag, ...) + the two ignore_changes'd gcloud-deploy metadata tags
-# (client, client_version).
-COMPUTED_ONLY_DRIFT_PATHS = frozenset({
-    "generation", "observed_generation", "etag", "update_time", "last_modifier",
-    "client", "client_version", "latest_created_revision", "latest_ready_revision",
-    "reconciling",
-})
-# Whole subtrees that are status/readback only (never desired-state inputs).
-COMPUTED_ONLY_DRIFT_SUBTREES = ("conditions", "terminal_condition", "traffic_statuses")
-# The computed-field allowlist above is Cloud-Run-v2-specific (conditions /
-# terminal_condition / traffic_statuses are Cloud Run status fields) and iac/
-# manages exactly ONE resource today. Benign classification is therefore SCOPED
-# to this type: refresh drift on any OTHER resource type fails closed (refuses)
-# until the allowlist is extended for it (Codex review 019e7a3f — future-proofs
-# the C6 resource-set expansion against a Cloud-Run allowlist misfiring).
-_BENIGN_DRIFT_TYPES = frozenset({"google_cloud_run_v2_service"})
+@dataclass(frozen=True)
+class DriftAllowlist:
+    """Per-resource-type benign-drift allowlist. ``paths``/``subtrees`` admit
+    GENUINE value changes on computed/status fields; ``normalization_paths``
+    admit ONLY the explicit-null↔empty-collection readback artifact at that
+    exact (index-stripped) path — a real value appearing at the same path is a
+    genuine change and is judged by ``paths``/``subtrees`` alone."""
+
+    paths: frozenset[str]
+    subtrees: tuple[str, ...] = ()
+    normalization_paths: frozenset[str] = frozenset()
+
+
+# Benign refresh-drift classification is SCOPED BY RESOURCE TYPE: a type absent
+# from this map fails closed (refuses) until an allowlist is deliberately added
+# for it (Codex review 019e7a3f). Each entry holds ONLY fields with no
+# desired-state security meaning — server-computed readback (plus, for Cloud Run,
+# the two ignore_changes'd gcloud-deploy metadata tags client / client_version).
+# Identity/lifecycle-computed fields (uid, create_time, delete_time,
+# time_created) are deliberately NOT allowlisted: a changed creation identity
+# signals an out-of-band recreate/deletion and MUST refuse. Bucket labels
+# (labels / effective_labels / terraform_labels) are in NEITHER set: an
+# out-of-band label add is operator-visible drift, surfaced by design.
+# normalization_paths entries are the EXACT artifact set observed live
+# 2026-06-11 (adopt PR #95 recovery) on provider hashicorp/google 6.50.0 —
+# revalidate when iac/.terraform.lock.hcl changes.
+BENIGN_DRIFT_ALLOWLISTS: dict[str, DriftAllowlist] = {
+    "google_cloud_run_v2_service": DriftAllowlist(
+        paths=frozenset({
+            "generation", "observed_generation", "etag", "update_time",
+            "last_modifier", "client", "client_version",
+            "latest_created_revision", "latest_ready_revision", "reconciling",
+        }),
+        subtrees=("conditions", "terminal_condition", "traffic_statuses"),
+    ),
+}
 
 _LIST_INDEX_RE = re.compile(r"\[\d+\]")
 
@@ -525,12 +544,13 @@ def _changed_leaf_paths(before: object, after: object, prefix: str = "") -> set[
     return {_normalize_attr_path(prefix)}
 
 
-def _is_computed_only_path(path: str) -> bool:
+def _is_computed_only_path(path: str, allowlist: DriftAllowlist) -> bool:
     """True iff ``path`` is an exact computed leaf OR sits under a status subtree
-    (anchored at the path root — never a same-named field deeper in the tree)."""
-    if path in COMPUTED_ONLY_DRIFT_PATHS:
+    of the given TYPE-SPECIFIC allowlist (anchored at the path root — never a
+    same-named field deeper in the tree)."""
+    if path in allowlist.paths:
         return True
-    return any(path == p or path.startswith(p + ".") for p in COMPUTED_ONLY_DRIFT_SUBTREES)
+    return any(path == p or path.startswith(p + ".") for p in allowlist.subtrees)
 
 
 def _has_true(obj: object) -> bool:
@@ -592,7 +612,8 @@ def classify_refresh_drift(show_json: object) -> RefreshDriftVerdict:
             # create/delete/replace/unknown → resource appeared/vanished/recreated
             # out of band → material, refuse.
             return RefreshDriftVerdict(False, (), f"{addr}: drift action {actions!r} is material")
-        if entry.get("type") not in _BENIGN_DRIFT_TYPES:
+        allowlist = BENIGN_DRIFT_ALLOWLISTS.get(entry.get("type") or "")
+        if allowlist is None:
             # The computed-field allowlist is type-scoped; an unrecognized type's
             # drift cannot be proven benign by it → fail closed.
             return RefreshDriftVerdict(
@@ -611,7 +632,7 @@ def classify_refresh_drift(show_json: object) -> RefreshDriftVerdict:
         if not isinstance(before, dict) or not isinstance(after, dict):
             return RefreshDriftVerdict(False, (), f"{addr}: non-dict before/after on update")
         for p in sorted(_changed_leaf_paths(before, after)):
-            (computed if _is_computed_only_path(p) else material).append(f"{addr}:{p}")
+            (computed if _is_computed_only_path(p, allowlist) else material).append(f"{addr}:{p}")
     if material:
         return RefreshDriftVerdict(False, tuple(material),
                                    "material refresh drift: " + ", ".join(material[:10]))

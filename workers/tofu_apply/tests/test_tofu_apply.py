@@ -742,16 +742,17 @@ def test_changed_leaf_paths_list_index_stripped() -> None:
 
 
 def test_is_computed_only_path_anchoring() -> None:
-    assert tofu_runner._is_computed_only_path("generation")
-    assert tofu_runner._is_computed_only_path("conditions.last_transition_time")
-    assert tofu_runner._is_computed_only_path("terminal_condition")
+    cr = tofu_runner.BENIGN_DRIFT_ALLOWLISTS["google_cloud_run_v2_service"]
+    assert tofu_runner._is_computed_only_path("generation", cr)
+    assert tofu_runner._is_computed_only_path("conditions.last_transition_time", cr)
+    assert tofu_runner._is_computed_only_path("terminal_condition", cr)
     # subtree match is anchored at the path root + a "." boundary
-    assert not tofu_runner._is_computed_only_path("conditionsFoo")
-    assert not tofu_runner._is_computed_only_path("template.conditions.x")
-    assert not tofu_runner._is_computed_only_path("template.service_account")
+    assert not tofu_runner._is_computed_only_path("conditionsFoo", cr)
+    assert not tofu_runner._is_computed_only_path("template.conditions.x", cr)
+    assert not tofu_runner._is_computed_only_path("template.service_account", cr)
     # identity/lifecycle-computed fields are deliberately NOT allowlisted
-    assert not tofu_runner._is_computed_only_path("uid")
-    assert not tofu_runner._is_computed_only_path("create_time")
+    assert not tofu_runner._is_computed_only_path("uid", cr)
+    assert not tofu_runner._is_computed_only_path("create_time", cr)
 
 
 def test_classify_drift_benign_computed_churn() -> None:
@@ -837,9 +838,9 @@ def test_classify_drift_noop_entry_skipped() -> None:
 
 def test_classify_drift_unknown_type_fails_closed() -> None:
     """The computed allowlist is type-scoped: even PURELY computed-looking drift
-    on a NON-Cloud-Run-v2 resource refuses (future C6 resource-set safety)."""
+    on a NON-allowlisted resource refuses (future C6 resource-set safety)."""
     j = {"resource_drift": [{
-        "address": "google_storage_bucket.x", "type": "google_storage_bucket",
+        "address": "google_pubsub_topic.x", "type": "google_pubsub_topic",
         "change": {"actions": ["update"], "before": {"generation": 1}, "after": {"generation": 2}}}]}
     v = tofu_runner.classify_refresh_drift(j)
     assert v.benign is False and "type-scoped" in v.reason
