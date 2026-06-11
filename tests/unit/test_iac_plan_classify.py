@@ -6,7 +6,7 @@ so it lives in the lib both deployables ship. Fail-closed: malformed ⇒ create-
 
 import pytest
 
-from driftscribe_lib.iac_plan_classify import plan_has_create
+from driftscribe_lib.iac_plan_classify import plan_has_create, plan_has_import
 
 
 def _pj(actions, address="google_x.y", typ="google_x"):
@@ -104,3 +104,49 @@ def test_importing_null_is_treated_as_absent():
 def test_importing_malformed_value_is_still_create_class():
     """Even a malformed (non-dict) importing value routes strict — fail-closed."""
     assert plan_has_create(_pj_importing(["no-op"], "not-a-dict")) is True
+
+
+# --- plan_has_import: copy-selection predicate (NOT fail-closed by design) ---
+
+
+def test_plan_has_import_true_for_importing_noop():
+    """importing+no-op → True (the main admission case)."""
+    assert plan_has_import(_pj_importing(["no-op"], {"id": "b-name"})) is True
+
+
+def test_plan_has_import_false_for_plain_create():
+    """Plain create (no importing) → False."""
+    assert plan_has_import(_pj(["create"])) is False
+
+
+def test_plan_has_import_false_for_importing_null():
+    """`importing: null` is treated as absent → False."""
+    assert plan_has_import(_pj_importing(["no-op"], None)) is False
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        None,
+        "not-a-dict",
+        {},
+        {"resource_changes": "not-a-list"},
+        {"resource_changes": [None]},
+        {"resource_changes": [{"address": "a", "change": "not-a-dict"}]},
+    ],
+)
+def test_plan_has_import_not_fail_closed_returns_false(bad):
+    """NOT fail-closed by design (copy-selection only; routing/gating still uses
+    the fail-closed plan_has_create). Malformed structures return False."""
+    # Explicitly assert the NOT-fail-closed contract with a comment:
+    # plan_has_import returns False for malformed inputs (the create copy is
+    # the safe default, and routing/gating uses plan_has_create which IS fail-closed).
+    assert plan_has_import(bad) is False
+
+
+def test_cross_predicate_malformed_has_create_true_has_import_false():
+    """Cross-predicate pin: a malformed plan → plan_has_create True (fail-closed)
+    AND plan_has_import False (not fail-closed). This is the intentional asymmetry."""
+    bad = {"resource_changes": "not-a-list"}
+    assert plan_has_create(bad) is True
+    assert plan_has_import(bad) is False

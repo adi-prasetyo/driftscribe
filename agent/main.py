@@ -3638,9 +3638,19 @@ def _iac_merge_then_wait(
         head_sha=view.head_sha, pr_number=pr_number, approver=operator_email,
         pr_title=pr_title,
     )
-    return _render_iac_outcome(
-        request, pr_number=pr_number, view=view, decision="approve",
-        outcome=(
+    if view.has_import:
+        merge_outcome = (
+            f"Merged to main (PR #{pr_number}, head {view.head_sha[:7]}). This plan "
+            "ADOPTS (imports) an existing resource into IaC management — nothing in "
+            "your infrastructure will be created or modified — but the worker must "
+            "still be RE-BAKED from the new main before it can apply. Operator: run "
+            "`gcloud builds submit --config=infra/cloudbuild.tofu-apply.yaml "
+            "--substitutions=_TAG=$(git rev-parse --short HEAD) "
+            "--project=driftscribe-hack-2026`, then RELOAD this page and click Apply "
+            f"to complete. Expected iac_tree_hash: {view.iac_tree_hash}."
+        )
+    else:
+        merge_outcome = (
             f"Merged to main (PR #{pr_number}, head {view.head_sha[:7]}). This plan "
             "CREATES a resource, so the worker must be RE-BAKED from the new main "
             "before it can apply. Operator: run `gcloud builds submit "
@@ -3648,7 +3658,10 @@ def _iac_merge_then_wait(
             "--substitutions=_TAG=$(git rev-parse --short HEAD) "
             "--project=driftscribe-hack-2026`, then RELOAD this page and click Apply "
             f"to complete. Expected iac_tree_hash: {view.iac_tree_hash}."
-        ),
+        )
+    return _render_iac_outcome(
+        request, pr_number=pr_number, view=view, decision="approve",
+        outcome=merge_outcome,
     )
 
 
@@ -3755,15 +3768,32 @@ def _iac_resume_apply(
             approval_id=approval_id, head_sha=view.head_sha, pr_number=pr_number,
             approver=operator_email, pr_title=pr_title,
         )
-        with contextlib.suppress(Exception):
-            worker_client.call("notifier", {"channel": "approval", "severity": "high", "body": (
+        if view.has_import:
+            _notifier_body = (
+                f"C6 adopt-class apply {apply_status} for PR #{pr_number} (already MERGED to "
+                f"main, head {view.head_sha[:7]}). An import that fails normally writes no state "
+                "and creates nothing, but that is verified, never assumed — run the apply-failure "
+                "recovery runbook before any retry."
+            )
+            _detail_body = (
+                f"tofu-apply {apply_status} on the adopt-class resume; the PR is already merged. "
+                "An import that fails normally writes no state and creates nothing, but that is "
+                "verified, never assumed — run the apply-failure recovery runbook before any retry."
+            )
+        else:
+            _notifier_body = (
                 f"C6 create-class apply {apply_status} for PR #{pr_number} (already MERGED to "
                 f"main, head {view.head_sha[:7]}). A created resource may exist out of state — "
-                "run the apply-failure recovery runbook (orphan check) before any retry.")})
-        raise HTTPException(status_code=(502 if apply_status != "ambiguous" else 504), detail=(
-            f"tofu-apply {apply_status} on the create-class resume; the PR is already merged and a "
-            "created resource may exist out of state — run the apply-failure recovery runbook "
-            "(orphan check) before any retry.")) from e
+                "run the apply-failure recovery runbook (orphan check) before any retry."
+            )
+            _detail_body = (
+                f"tofu-apply {apply_status} on the create-class resume; the PR is already merged and a "
+                "created resource may exist out of state — run the apply-failure recovery runbook "
+                "(orphan check) before any retry."
+            )
+        with contextlib.suppress(Exception):
+            worker_client.call("notifier", {"channel": "approval", "severity": "high", "body": _notifier_body})
+        raise HTTPException(status_code=(502 if apply_status != "ambiguous" else 504), detail=_detail_body) from e
 
     if not (isinstance(apply_res, dict) and apply_res.get("status") == "applied"
             and apply_res.get("approval_id") == approval_id
@@ -3781,9 +3811,15 @@ def _iac_resume_apply(
         head_sha=view.head_sha, pr_number=pr_number, approver=operator_email,
         pr_title=pr_title,
     )
+    success_outcome = (
+        "Applied (adopt) — the existing resource is now under IaC management; "
+        "nothing was modified. The PR was already merged to main. Done."
+        if view.has_import else
+        "Applied (create) — the PR was already merged to main. Done."
+    )
     return _render_iac_outcome(
         request, pr_number=pr_number, view=view, decision="approve",
-        outcome="Applied (create) — the PR was already merged to main. Done.",
+        outcome=success_outcome,
     )
 
 
