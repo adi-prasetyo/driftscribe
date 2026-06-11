@@ -33,6 +33,8 @@ export const WORKER_LABELS: Record<string, string> = {
   propose_adoption_tool: 'Adopt resource (import PR)',
   // Shared
   notify_tool: 'Notifier',
+  // Item 12 — pending-infra-PR plan Q&A (explore workload).
+  load_iac_plan_tool: 'IaC plan reader',
   // MCP — Google Developer Knowledge. Per-tool labels (keyed on ``mcp_tool``)
   // plus the bare server-identity key (``mcp_server`` fallback) yielding the
   // unsuffixed friendly label.
