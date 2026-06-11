@@ -174,6 +174,14 @@ def test_rule_categories_cover_exactly_the_rule_descriptions():
     assert set(RULE_CATEGORIES.values()) <= set(CATEGORY_ORDER)
 
 
+def test_adoptable_type_labels_cover_exactly_the_allowlist():
+    """ADOPTABLE_TYPE_LABELS must have exactly one label per type in
+    ADOPTABLE_RESOURCE_TYPES — no stale, no missing entries."""
+    from agent.capabilities import ADOPTABLE_TYPE_LABELS
+    from driftscribe_lib.iac_plan_denylist import ADOPTABLE_RESOURCE_TYPES
+    assert set(ADOPTABLE_TYPE_LABELS) == ADOPTABLE_RESOURCE_TYPES
+
+
 def test_every_approval_gated_action_has_a_human_gate():
     gated = {n for n, s in ACTION_REGISTRY.items() if s.requires_approval}
     assert gated <= {g["id"] for g in HUMAN_GATES}
@@ -216,6 +224,12 @@ def test_build_capabilities_shape(monkeypatch):
     assert rules == sorted(
         rules, key=lambda r: (CATEGORY_ORDER.index(r["category"]), r["id"])
     )
+    # Adoptable types: 4 entries, sorted, both str fields present.
+    adoptable = dto["denylist"]["adoptable_resource_types"]
+    assert len(adoptable) == 4
+    assert adoptable == sorted(adoptable, key=lambda x: x["type"])
+    for entry in adoptable:
+        assert isinstance(entry["type"], str) and isinstance(entry["label"], str)
 
 
 def test_build_capabilities_is_json_serializable_and_env_free(monkeypatch):

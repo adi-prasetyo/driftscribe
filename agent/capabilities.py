@@ -30,7 +30,7 @@ import dataclasses
 from types import MappingProxyType
 from typing import Final, Mapping, get_args
 
-from driftscribe_lib.iac_plan_denylist import RULE_DESCRIPTIONS
+from driftscribe_lib.iac_plan_denylist import RULE_DESCRIPTIONS, ADOPTABLE_RESOURCE_TYPES
 
 from agent.fanout import MUTATION_TOOL_NAMES
 from agent.workloads.registry import ACTION_REGISTRY
@@ -185,6 +185,19 @@ must mention the operator approval token requirement.
 # --------------------------------------------------------------------------- #
 # CATEGORY_ORDER and RULE_CATEGORIES — denylist rule taxonomy
 # --------------------------------------------------------------------------- #
+
+ADOPTABLE_TYPE_LABELS: Final[Mapping[str, str]] = MappingProxyType({
+    "google_storage_bucket":      "Cloud Storage bucket",
+    "google_pubsub_topic":        "Pub/Sub topic",
+    "google_pubsub_subscription": "Pub/Sub subscription",
+    "google_cloud_run_v2_service": "Cloud Run service",
+})
+"""Human-readable label for every adoptable resource type in ``ADOPTABLE_RESOURCE_TYPES``.
+
+Drift-pinned by ``test_adoptable_type_labels_cover_exactly_the_allowlist``:
+``set(ADOPTABLE_TYPE_LABELS) == set(ADOPTABLE_RESOURCE_TYPES)``.
+"""
+
 
 CATEGORY_ORDER: Final[tuple[str, ...]] = (
     "control-plane",
@@ -373,5 +386,9 @@ def build_capabilities() -> dict:
                 "the tofu-apply worker, immediately before apply (final gate)",
             ],
             "rules": rules,
+            "adoptable_resource_types": [
+                {"type": t, "label": ADOPTABLE_TYPE_LABELS[t]}
+                for t in sorted(ADOPTABLE_RESOURCE_TYPES)
+            ],
         },
     }
