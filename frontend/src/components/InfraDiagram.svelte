@@ -84,7 +84,8 @@
   // Non-reactive locals. The timer/epoch logic lives in a pure RefreshScheduler
   // (lib/infra_refresh) so it is unit-testable independent of this component; the
   // component keeps only the view + the async fetch/render concurrency guards.
-  let fetchRun = 0; // guards refresh() — a stale fetch callback bails
+  let fetchRun = 0; // guards refresh() — error paths bail when a newer fetch started
+  let lastAppliedFetch = 0; // highest run whose RESPONSE was applied (last-applied-wins)
   let renderRun = 0; // guards renderDiagram() — independent of fetchRun
   let overlayRun = 0; // guards fetchOverlay() — a THIRD independent guard (grounding fact 5)
   let mermaidIdSeq = 0; // unique mermaid render id
@@ -154,8 +155,17 @@
         error = 'Could not reach the coordinator.';
         return;
       }
-      if (myRun !== fetchRun) return;
-      if (!resp.ok) {
+      if (myRun !== fetchRun && resp.ok) {
+        // A newer fetch has STARTED but a 200 in hand is still fresher than
+        // anything applied so far — fall through to the apply check below.
+        // (Discarding here livelocked the panel in prod: the boot-time
+        // applied-epoch ladder fires fetches every 10-30s while a cold
+        // CAI-backed /infra/graph takes 10-30s to answer, so EVERY response
+        // arrived "stale", graph never set, and the panel spun on
+        // "Refreshing…" forever — found by the Phase-4 live e2e.)
+      } else if (myRun !== fetchRun) {
+        return;
+      } else if (!resp.ok) {
         error = `Request failed (${resp.status}).`;
         return;
       }
@@ -167,8 +177,14 @@
         error = 'Malformed response.';
         return;
       }
-      if (myRun !== fetchRun) return;
+      // Last-APPLIED-wins (not last-started-wins): apply this response unless a
+      // NEWER fetch's response already applied. The first completion always
+      // lands (no livelock); an out-of-order older completion still can't
+      // overwrite a newer applied graph.
+      if (myRun <= lastAppliedFetch) return;
+      lastAppliedFetch = myRun;
       graph = body;
+      error = null;
       if (open) await renderDiagram(body);
     } finally {
       if (myRun === fetchRun) loading = false;
