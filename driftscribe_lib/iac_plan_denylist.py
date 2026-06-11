@@ -97,9 +97,9 @@ __all__ = ["Violation", "DenylistInput", "load_plan_json", "evaluate", "RULE_DES
 class Violation:
     """A single denylist violation.
 
-    ``rule`` is a short machine identifier (one of the 14 rule IDs listed
-    in the C1 plan §3); ``detail`` is a human-readable message that names
-    the offending resource address + action tuple.
+    ``rule`` is a short machine identifier (one of the 15 rule IDs listed
+    in the module docstring); ``detail`` is a human-readable message that
+    names the offending resource address + action tuple.
     """
 
     rule: str
