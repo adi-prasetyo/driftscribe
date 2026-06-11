@@ -479,8 +479,9 @@ def test_importing_control_plane_identities_fires_identity_rules(fixture, expect
 
 def test_malformed_importing_value_emits_malformed_only():
     """`importing` must be an object — a non-dict value emits
-    plan-json-malformed-change. The conditional import rules may not fire on
-    malformed input (the entry died at the malformed continue)."""
+    plan-json-malformed-change. The entry STILL counts as importing (visible
+    to the batch/mixed accumulators); here no conditional rule happens to fire
+    (no-op actions, adoptable type), so denial rests on the malformed rule."""
     parsed, _ = load_plan_json(_load("import_malformed_importing_string.json"))
     rules = _rules(evaluate(DenylistInput(plan=parsed)))
     assert "plan-json-malformed-change" in rules
