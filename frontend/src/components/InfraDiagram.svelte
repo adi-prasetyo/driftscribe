@@ -45,6 +45,7 @@
     onExitPreview,
     onAdopt,
     adoptDisabled = false,
+    onGraph,
   }: {
     /** App's token-aware fetch wrapper. */
     call: (path: string, init?: RequestInit) => Promise<Response>;
@@ -63,6 +64,12 @@
      * (Codex review 019eb572 must-fix 3).
      */
     adoptDisabled?: boolean;
+    /**
+     * Called with each successfully-applied /infra/graph payload (item 14):
+     * App lifts the graph to the onboarding TourCard so the tour reads the
+     * SAME data as this panel — no duplicate fetch, no second source of truth.
+     */
+    onGraph?: (g: InfraGraph) => void;
   } = $props();
 
   // previewPr is set once at boot (App parses it from the URL) and only ever
@@ -218,6 +225,7 @@
       lastAppliedFetch = myRun;
       graph = body;
       error = null;
+      onGraph?.(body);
       if (open) await renderDiagram(body);
     } finally {
       if (myRun === fetchRun) loading = false;
