@@ -1,0 +1,19 @@
+{
+  "_test_intent": "import of google_compute_instance (not in D2 allowlist) — must emit exactly import-type-not-adoptable-v1",
+  "format_version": "1.2",
+  "terraform_version": "1.12.0",
+  "resource_changes": [
+    {
+      "address": "google_compute_instance.my_vm",
+      "mode": "managed",
+      "type": "google_compute_instance",
+      "name": "my_vm",
+      "change": {
+        "actions": ["no-op"],
+        "before": {"name": "my-vm"},
+        "after": {"name": "my-vm"},
+        "importing": {"id": "projects/driftscribe-hack-2026/zones/asia-northeast1-a/instances/my-vm"}
+      }
+    }
+  ]
+}

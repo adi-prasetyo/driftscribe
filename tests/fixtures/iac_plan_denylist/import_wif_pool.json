@@ -1,5 +1,5 @@
 {
-  "_test_intent": "import of a WIF pool — must emit import-forbidden-v1 + wif-config-change + iam-change-forbidden-v1",
+  "_test_intent": "import of a WIF pool — must emit exactly wif-config-change + iam-change-forbidden-v1 + import-type-not-adoptable-v1",
   "format_version": "1.2",
   "resource_changes": [
     {

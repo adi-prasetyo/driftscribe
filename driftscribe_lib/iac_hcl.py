@@ -282,9 +282,10 @@ def extract_declared_identities(
     # projects/<P>/topics/<N>, projects/<P>/subscriptions/<N>, the SA email path).
     # An alternate OpenTofu import spelling (e.g. `<P>/<bucket>` or a bare topic
     # name) won't match its live resource and surfaces as a declared_not_found
-    # false-drift (format_mismatch). imports.tf is operator-only foundation
-    # (gate-locked; agents cannot add imports), so this is an operator-authoring
-    # contract — documented in docs/runbooks/iac-bootstrap.md.
+    # false-drift (format_mismatch). imports.tf stays operator-only foundation
+    # (gate-locked); agent adopt PRs may carry ONE co-located import block under
+    # the static gate's import-* rules (Phase 2), and the gate enforces this same
+    # CAI-normalized id shape pre-plan (`ADOPT_IMPORT_ID_SHAPES`).
     for parsed in parsed_files.values():
         for imp in iter_blocks(parsed, "import"):
             raw_id = imp.get("id")

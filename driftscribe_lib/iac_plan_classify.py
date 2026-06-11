@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
-__all__ = ["plan_has_create"]
+__all__ = ["plan_has_create", "plan_has_import"]
 
 
 def plan_has_create(plan_json: Any) -> bool:
@@ -59,5 +59,34 @@ def plan_has_create(plan_json: Any) -> bool:
         if actions in (["no-op"], ["read"]):
             continue
         if "create" in actions:
+            return True
+    return False
+
+
+def plan_has_import(plan_json: Any) -> bool:
+    """True iff any managed ``resource_changes`` entry carries a non-null ``importing``
+    value.
+
+    This is a **copy-selection** predicate for C6 message copy only — NOT a routing or
+    gating predicate. It is deliberately NOT fail-closed: malformed structures return
+    ``False`` because the create copy (``plan_has_create`` is fail-closed) is the safe
+    default, and routing/gating is handled by ``plan_has_create``. This asymmetry is
+    intentional — see adopt/import design §4.3.
+
+    ``importing: null`` is treated as absent (same semantics as
+    ``iac_plan_summary.evaluate``).
+    """
+    if not isinstance(plan_json, dict):
+        return False
+    rcs = plan_json.get("resource_changes")
+    if not isinstance(rcs, list):
+        return False
+    for rc in rcs:
+        if not isinstance(rc, dict):
+            continue
+        change = rc.get("change")
+        if not isinstance(change, dict):
+            continue
+        if change.get("importing") is not None:
             return True
     return False

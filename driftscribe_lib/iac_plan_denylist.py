@@ -27,7 +27,7 @@ phase decision; the v1 false-positive trade-off (e.g. a clean IAM grant
 on a payment-demo bucket is also denied) is accepted to keep the gate
 defensible until the C3 human-approval flow lands.
 
-**Rule IDs (15)**:
+**Rule IDs (18)**:
 
 - ``plan-json-unparseable`` — bad JSON or top-level not an object.
 - ``plan-json-missing-resource-changes`` — key missing OR not a list.
@@ -51,11 +51,15 @@ defensible until the C3 human-approval flow lands.
 - ``iam-change-forbidden-v1`` — non-no-op change to any IAM resource
   type (``startswith("google_") and "_iam_" in rtype`` OR membership
   in :data:`IAM_EXTRA_TYPES`).
-- ``import-forbidden-v1`` — any entry whose ``change.importing`` is
-  present (an OpenTofu import block adopting an existing resource into
-  state). Blanket v1 floor — the adopt flow (design
-  2026-06-11-adopt-import-design.md, Phase 2) replaces it with
-  conditional admission rules.
+- ``import-with-changes-forbidden-v1`` — an importing entry whose
+  actions are not exactly ``("no-op",)`` (D1: zero-change adopt only).
+- ``import-type-not-adoptable-v1`` — an importing entry whose resource
+  type is outside the D2 four-type allowlist
+  (:data:`ADOPTABLE_RESOURCE_TYPES`).
+- ``import-mixed-plan-forbidden-v1`` — a plan containing both importing
+  entries AND other mutations (D1: adoption plan only).
+- ``import-batch-forbidden-v1`` — more than one importing entry in a
+  plan (D3: one adoption at a time).
 - ``delete-action-forbidden-v1`` — ``actions == ["delete"]``.
 - ``forget-action-forbidden-v1`` — ``actions == ["forget"]``.
 - ``replace-action-forbidden-v1`` — ``actions in (["delete","create"],
@@ -90,14 +94,21 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Final, Mapping
 
-__all__ = ["Violation", "DenylistInput", "load_plan_json", "evaluate", "RULE_DESCRIPTIONS"]
+__all__ = [
+    "Violation",
+    "DenylistInput",
+    "load_plan_json",
+    "evaluate",
+    "RULE_DESCRIPTIONS",
+    "ADOPTABLE_RESOURCE_TYPES",
+]
 
 
 @dataclass(frozen=True)
 class Violation:
     """A single denylist violation.
 
-    ``rule`` is a short machine identifier (one of the 15 rule IDs listed
+    ``rule`` is a short machine identifier (one of the 18 rule IDs listed
     in the module docstring); ``detail`` is a human-readable message that
     names the offending resource address + action tuple.
     """
@@ -258,6 +269,22 @@ IAM_EXTRA_TYPES: frozenset[str] = (
         }
     )
     | WIF_RESOURCE_TYPES
+)
+
+
+# D2 (adopt design §1): the v1 adoptable-type allowlist — exactly the types
+# both the plan-builder WIF SA and tofu-apply-sa can already read. DELIBERATELY
+# a separate constant from iac_hcl._SUPPORTED_RESOURCE_ASSET_TYPES, which also
+# contains google_service_account (excluded by D2: identities are the most
+# sensitive type). A drift pin asserts this is a STRICT subset of the template
+# types (every adoptable type must be authorable from a template).
+ADOPTABLE_RESOURCE_TYPES: frozenset[str] = frozenset(
+    {
+        "google_storage_bucket",
+        "google_pubsub_topic",
+        "google_pubsub_subscription",
+        "google_cloud_run_v2_service",
+    }
 )
 
 
@@ -673,6 +700,8 @@ def evaluate(di: DenylistInput) -> list[Violation]:
     inspected and cannot cause a denial.
     """
     violations: list[Violation] = []
+    importing_addresses: list[str] = []      # batch rule (D3)
+    other_mutation_addresses: list[str] = [] # mixed rule (D1 plan-wide)
     rcs = di.plan.get("resource_changes")
     if not isinstance(rcs, list):
         violations.append(
@@ -695,14 +724,11 @@ def evaluate(di: DenylistInput) -> list[Violation]:
             )
             violations.append(Violation("plan-json-malformed-change", detail))
             continue
-        # Import floor (adopt/import design §4.2, Phase 1): ANY entry with
-        # `importing` present is denied outright — Phase 2 replaces this
-        # blanket rule with conditional admission (zero-change / type /
-        # mixed / batch). Runs BEFORE the unknown-action continue so an
-        # importing row is always visible as an import. `importing: null`
-        # is treated as absent (same semantics as iac_plan_summary); a
-        # non-dict value is additionally malformed (the JSON-output docs
-        # define an object).
+        # Adopt admission floors (design §4.2, Phase 2 — replaces the Phase-1
+        # blanket import-forbidden-v1). Run BEFORE the unknown-action continue
+        # so an importing row is always visible as an import. `importing: null`
+        # is absent (iac_plan_summary semantics); a non-dict value is
+        # additionally malformed.
         importing = (rc.get("change") or {}).get("importing")
         if importing is not None and not isinstance(importing, dict):
             violations.append(
@@ -712,13 +738,21 @@ def evaluate(di: DenylistInput) -> list[Violation]:
                 )
             )
         if importing is not None:
-            violations.append(
-                Violation(
-                    "import-forbidden-v1",
-                    f"{address}: import of an existing resource into IaC state "
-                    f"(actions={list(actions)}) forbidden in v1",
-                )
-            )
+            importing_addresses.append(address)
+            if actions != ("no-op",):
+                violations.append(Violation(
+                    "import-with-changes-forbidden-v1",
+                    f"{address}: import would also CHANGE the resource "
+                    f"(actions={list(actions)}) — only zero-change adopts are "
+                    f"admitted; regenerate the config to match live reality (D1)",
+                ))
+            if rtype not in ADOPTABLE_RESOURCE_TYPES:
+                violations.append(Violation(
+                    "import-type-not-adoptable-v1",
+                    f"{address}: type {rtype!r} is not in the v1 adoptable allowlist",
+                ))
+        elif actions not in NO_OP_ACTION_TUPLES:
+            other_mutation_addresses.append(address)
         if actions not in ALL_KNOWN_TUPLES:
             violations.append(
                 Violation(
@@ -768,6 +802,19 @@ def evaluate(di: DenylistInput) -> list[Violation]:
             _check_control_plane_kms(rc, rtype, actions, before, after, violations)
             _check_wif(rc, rtype, actions, violations)
             _check_iam(rc, rtype, actions, violations)
+    if len(importing_addresses) > 1:
+        violations.append(Violation(
+            "import-batch-forbidden-v1",
+            f"plan imports {len(importing_addresses)} resources "
+            f"({', '.join(importing_addresses)}) — one adoption per PR (D3)",
+        ))
+    if importing_addresses and other_mutation_addresses:
+        violations.append(Violation(
+            "import-mixed-plan-forbidden-v1",
+            f"plan mixes an import ({', '.join(importing_addresses)}) with other "
+            f"mutations ({', '.join(other_mutation_addresses)}) — an adoption "
+            f"plan may contain nothing but the adoption",
+        ))
     return violations
 
 
@@ -812,10 +859,23 @@ RULE_DESCRIPTIONS: Final[Mapping[str, str]] = MappingProxyType({
     "iam-change-forbidden-v1": (
         "All IAM changes are refused — even on unrelated resources (v1 floor)."
     ),
-    "import-forbidden-v1": (
-        "The agent cannot adopt (import) existing resources into IaC "
-        "management yet — every import is refused (v1 floor; a gated adopt "
-        "flow will admit them deliberately in a later phase)."
+    "import-with-changes-forbidden-v1": (
+        "Adopting a resource must change nothing: if importing it would also "
+        "modify it, the plan is refused and the agent must regenerate config "
+        "that matches live reality exactly."
+    ),
+    "import-type-not-adoptable-v1": (
+        "Only Cloud Storage buckets, Pub/Sub topics and subscriptions, and "
+        "Cloud Run services can be adopted (imported) in v1 — every other "
+        "type is refused."
+    ),
+    "import-mixed-plan-forbidden-v1": (
+        "An adoption plan may contain nothing but the adoption — any other "
+        "change in the same plan is refused."
+    ),
+    "import-batch-forbidden-v1": (
+        "One adoption at a time: a plan importing more than one resource is "
+        "refused."
     ),
     "delete-action-forbidden-v1": (
         "All deletes are refused — the agent cannot destroy any resource "

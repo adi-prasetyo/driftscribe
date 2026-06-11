@@ -1,5 +1,5 @@
 {
-  "_test_intent": "importing value is a string (not an object) — must emit import-forbidden-v1 + plan-json-malformed-change",
+  "_test_intent": "importing value is a string (not an object) — must emit plan-json-malformed-change (denial preserved via malformed; the conditional import rules need not fire)",
   "format_version": "1.2",
   "resource_changes": [
     {

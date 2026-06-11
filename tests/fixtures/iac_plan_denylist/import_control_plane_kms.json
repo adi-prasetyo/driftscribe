@@ -1,5 +1,5 @@
 {
-  "_test_intent": "import of the tofu-state KMS key — must emit import-forbidden-v1 + control-plane-kms",
+  "_test_intent": "import of the tofu-state KMS key — must emit exactly control-plane-kms + import-type-not-adoptable-v1",
   "format_version": "1.2",
   "resource_changes": [
     {

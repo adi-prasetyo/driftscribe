@@ -67,8 +67,8 @@ COPY driftscribe_lib/ ./driftscribe_lib/
 # gate's content policy is identical in-worker and in-CI by construction. Copy
 # it as a PACKAGE (tools/__init__.py + tools/iac_static_gate.py), not a loose
 # module, so `from tools.iac_static_gate import ...` resolves. iac_static_gate
-# imports ONLY driftscribe_lib.iac_hcl (+ stdlib) — no other tools/* submodule —
-# so no other tools/*.py needs bundling.
+# imports driftscribe_lib.iac_hcl AND driftscribe_lib.iac_plan_denylist
+# (ADOPTABLE_RESOURCE_TYPES) plus stdlib — no other tools/* submodule needed.
 COPY tools/__init__.py ./tools/__init__.py
 COPY tools/iac_static_gate.py ./tools/iac_static_gate.py
 

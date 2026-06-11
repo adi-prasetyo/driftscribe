@@ -11,22 +11,29 @@ v1 — ``hcl2.loads`` only parses native-syntax HCL. Such files remain
 hard-rejected in agent mode via the ``disallowed-file-type`` rule; in operator
 mode JSON config is governed by human review + CODEOWNERS (design §5.1). The
 CLI therefore reads only ``.tf`` content (see ``_HCL_CONTENT_SUFFIXES``).
+
+Agent PRs may carry at most one zero-change adopt ``import`` block, target +
+resource co-located, under the import-* rules — design
+2026-06-11-adopt-import-design.md §5.
 """
 from __future__ import annotations
 
 import argparse
 import enum
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
 
 from driftscribe_lib.iac_hcl import (
+    _unwrap_ref as _unwrap_ref,
     block_label as _block_label,
     is_meta_key as _is_meta_key,
     iter_blocks as _iter_blocks,
     parse_hcl,
     unwrap as _unwrap,
 )
+from driftscribe_lib.iac_plan_denylist import ADOPTABLE_RESOURCE_TYPES
 
 # Built-in pseudo-providers OpenTofu/Terraform resolve without a source — they
 # are not real external providers and must not trip the allowlist.
@@ -111,6 +118,21 @@ SECRET_MATERIAL_ATTR_KEY = "secret_data"
 # `dynamic` blocks are banned in v1: a `dynamic "provisioner"` would smuggle
 # execution past a naive key check (design §5.1).
 DYNAMIC_BLOCK_KEY = "dynamic"
+
+# Adopt/import authoring rules (design §5, AGENT mode only). The import `id`
+# must be a plain literal in the CAI-normalized form the declared-identity
+# resolver consumes verbatim (iac_hcl.extract_declared_identities) — any other
+# spelling renders the adopted resource as format-mismatch false-drift.
+ADOPT_IMPORT_ID_SHAPES: dict[str, re.Pattern[str]] = {
+    "google_storage_bucket": re.compile(r"^[^/\s]+$"),  # bare global bucket name
+    "google_pubsub_topic": re.compile(r"^projects/[^/\s]+/topics/[^/\s]+$"),
+    "google_pubsub_subscription": re.compile(r"^projects/[^/\s]+/subscriptions/[^/\s]+$"),
+    "google_cloud_run_v2_service": re.compile(
+        r"^projects/[^/\s]+/locations/[^/\s]+/services/[^/\s]+$"
+    ),
+}
+# A plain `type.name` address: exactly one dot, no index, no module./data. path.
+_PLAIN_ADDRESS_RE = re.compile(r"^[A-Za-z_][\w-]*\.[A-Za-z_][\w-]*$")
 
 
 class GateMode(enum.Enum):
@@ -236,6 +258,99 @@ def _iter_typed_blocks(parsed: dict, kind: str):
         yield rtype, body
 
 
+def _iter_typed_blocks_named(parsed: dict, kind: str):
+    """Yield ``(type, name, body)`` for each ``resource``/``data`` block.
+
+    Thin adapter over :func:`driftscribe_lib.iac_hcl.iter_typed_blocks` that
+    exposes the full 3-tuple (import checks need the local name to build
+    addresses).
+    """
+    from driftscribe_lib.iac_hcl import iter_typed_blocks
+    yield from iter_typed_blocks(parsed, kind)
+
+
+def _check_import_block(
+    path: str, imp: dict, declared: dict[str, dict], violations: list[Violation]
+) -> None:
+    """Emit import-* violations for one import block (AGENT mode only).
+
+    Each independently-detectable violation is emitted separately. Exception:
+    an indexed or unparseable ``to`` skips the undeclared/type/shape checks
+    that would be meaningless without a valid address.
+    """
+    if "for_each" in imp or "count" in imp:
+        violations.append(Violation(
+            "import-foreach-forbidden",
+            f"{path}: import block declares for_each/count (imports must be "
+            "statically analyzable)",
+        ))
+    # --- target address (`to`) ---
+    to_ref = _unwrap_ref(imp.get("to"))
+    rtype: str | None = None
+    if to_ref is None:
+        violations.append(Violation(
+            "import-target-undeclared", f"{path}: import block has no parseable 'to'"
+        ))
+    elif "[" in to_ref or "]" in to_ref:
+        violations.append(Violation(
+            "import-target-indexed",
+            f"{path}: import target {to_ref!r} is indexed — v1 adopts plain "
+            "type.name addresses only",
+        ))
+    elif not _PLAIN_ADDRESS_RE.fullmatch(to_ref):
+        violations.append(Violation(
+            "import-target-undeclared",
+            f"{path}: import target {to_ref!r} is not a plain type.name "
+            "resource address",
+        ))
+    else:
+        rtype = to_ref.split(".", 1)[0]
+        if rtype not in ADOPTABLE_RESOURCE_TYPES:
+            violations.append(Violation(
+                "import-type-not-adoptable",
+                f"{path}: import target type {rtype!r} is not adoptable in v1",
+            ))
+        body = declared.get(to_ref)
+        if body is None:
+            violations.append(Violation(
+                "import-target-undeclared",
+                f"{path}: import target {to_ref!r} has no resource block in "
+                "the PR's changed files (the adopt pair must travel together)",
+            ))
+        elif "count" in body or "for_each" in body:
+            violations.append(Violation(
+                "import-target-indexed",
+                f"{path}: import target {to_ref!r} resource block uses "
+                "count/for_each",
+            ))
+    # --- import id ---
+    if "identity" in imp:
+        violations.append(Violation(
+            "import-id-not-literal",
+            f"{path}: import block uses the 'identity' attribute — unsupported "
+            "(the declared-identity resolver consumes 'id' only)",
+        ))
+    raw_id = imp.get("id")
+    is_literal = (
+        isinstance(raw_id, str) and len(raw_id) >= 2
+        and raw_id[0] == '"' and raw_id[-1] == '"' and "${" not in raw_id
+    )
+    if not is_literal:
+        violations.append(Violation(
+            "import-id-not-literal",
+            f"{path}: import id must be a plain literal string "
+            f"(got {raw_id!r})",
+        ))
+    elif rtype in ADOPT_IMPORT_ID_SHAPES:
+        ident = _unwrap(raw_id)
+        if not ADOPT_IMPORT_ID_SHAPES[rtype].fullmatch(ident):
+            violations.append(Violation(
+                "import-id-not-literal",
+                f"{path}: import id {ident!r} does not match the "
+                f"CAI-normalized shape for {rtype!r}",
+            ))
+
+
 def evaluate(gi: GateInput) -> list[Violation]:
     """Return all violations (empty = pass).
 
@@ -266,11 +381,13 @@ def evaluate(gi: GateInput) -> list[Violation]:
     # Content checks run in BOTH modes against the supplied HCL files (provider
     # declarations legitimately live in foundation files; a clean operator PR
     # with google/hashicorp/google passes). Fail-closed on parse errors.
+    parsed_by_path: dict[str, dict] = {}
     for path, content in gi.hcl_files.items():
         parsed = _parse(path, content)
         if parsed is None:
             violations.append(Violation("hcl-parse-error", path))
             continue
+        parsed_by_path[path] = parsed
 
         for name, source in _collect_providers(parsed):
             if name in BUILTIN_PROVIDERS:
@@ -363,6 +480,27 @@ def evaluate(gi: GateInput) -> list[Violation]:
                         f"{path}: data source {dtype!r} is forbidden",
                     )
                 )
+
+    # Import admission rules (design §5, AGENT mode only). Files that failed to
+    # parse are excluded from `declared` — fail-closed: a target declared only
+    # in an unparseable file reads as undeclared.
+    if gi.mode is GateMode.AGENT:
+        declared: dict[str, dict] = {}
+        for parsed in parsed_by_path.values():
+            for rtype, rname, body in _iter_typed_blocks_named(parsed, "resource"):
+                declared[f"{rtype}.{rname}"] = body
+        import_blocks: list[tuple[str, dict]] = []
+        for path, parsed in parsed_by_path.items():
+            for imp in _iter_blocks(parsed, "import"):
+                import_blocks.append((path, imp))
+        for path, imp in import_blocks:
+            _check_import_block(path, imp, declared, violations)
+        if len(import_blocks) > 1:
+            violations.append(Violation(
+                "import-batch-forbidden",
+                f"{len(import_blocks)} import blocks across the changed files "
+                "(at most one adoption per PR)",
+            ))
 
     return violations
 

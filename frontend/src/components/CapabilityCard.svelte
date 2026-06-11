@@ -145,6 +145,11 @@
             </ul>
           </div>
         {/each}
+        {#if data.denylist.adoptable_resource_types?.length}
+          <p class="ds-subtle cap-denylist__adoptable">
+            Adoptable (import) types: {data.denylist.adoptable_resource_types.map((t) => t.label).join(', ')}
+          </p>
+        {/if}
         <p class="ds-subtle cap-denylist__enforced">
           checked at: {data.denylist.enforced_at.join(' → ')}
         </p>

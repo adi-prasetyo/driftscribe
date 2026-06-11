@@ -71,6 +71,8 @@ export interface Capabilities {
     summary: string;
     enforced_at: string[];
     rules: CapRule[];
+    /** Optional — present from Phase-2 import-admission; absent on older payloads. */
+    adoptable_resource_types?: { type: string; label: string }[];
   };
 }
 

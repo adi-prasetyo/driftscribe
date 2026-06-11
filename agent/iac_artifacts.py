@@ -444,6 +444,18 @@ class IacPlanView:
 
         return plan_has_create(self._plan_json)
 
+    @property
+    def has_import(self) -> bool:
+        """True iff the plan ADOPTS (imports) an existing resource.
+
+        Copy-selection predicate (C6 message copy) — NOT routing or gating.
+        Uses the shared ``plan_has_import`` predicate; not fail-closed by design
+        (malformed ⇒ False; routing/gating uses ``has_create`` which IS
+        fail-closed). See adopt/import design §4.3."""
+        from driftscribe_lib.iac_plan_classify import plan_has_import
+
+        return plan_has_import(self._plan_json)
+
     @cached_property
     def change_summary(self):
         """Plain-language summary of the parsed plan (roadmap W1-1), or None.

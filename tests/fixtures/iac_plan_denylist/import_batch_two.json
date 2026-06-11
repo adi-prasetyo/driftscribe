@@ -1,0 +1,31 @@
+{
+  "_test_intent": "two bucket imports, both pure no-op — must emit import-batch-forbidden-v1 (D3)",
+  "format_version": "1.2",
+  "terraform_version": "1.12.0",
+  "resource_changes": [
+    {
+      "address": "google_storage_bucket.bucket_one",
+      "mode": "managed",
+      "type": "google_storage_bucket",
+      "name": "bucket_one",
+      "change": {
+        "actions": ["no-op"],
+        "before": {"name": "my-first-bucket"},
+        "after": {"name": "my-first-bucket"},
+        "importing": {"id": "my-first-bucket"}
+      }
+    },
+    {
+      "address": "google_storage_bucket.bucket_two",
+      "mode": "managed",
+      "type": "google_storage_bucket",
+      "name": "bucket_two",
+      "change": {
+        "actions": ["no-op"],
+        "before": {"name": "my-second-bucket"},
+        "after": {"name": "my-second-bucket"},
+        "importing": {"id": "my-second-bucket"}
+      }
+    }
+  ]
+}

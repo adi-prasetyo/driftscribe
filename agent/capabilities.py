@@ -30,7 +30,7 @@ import dataclasses
 from types import MappingProxyType
 from typing import Final, Mapping, get_args
 
-from driftscribe_lib.iac_plan_denylist import RULE_DESCRIPTIONS
+from driftscribe_lib.iac_plan_denylist import RULE_DESCRIPTIONS, ADOPTABLE_RESOURCE_TYPES
 
 from agent.fanout import MUTATION_TOOL_NAMES
 from agent.workloads.registry import ACTION_REGISTRY
@@ -186,6 +186,19 @@ must mention the operator approval token requirement.
 # CATEGORY_ORDER and RULE_CATEGORIES — denylist rule taxonomy
 # --------------------------------------------------------------------------- #
 
+ADOPTABLE_TYPE_LABELS: Final[Mapping[str, str]] = MappingProxyType({
+    "google_storage_bucket":      "Cloud Storage bucket",
+    "google_pubsub_topic":        "Pub/Sub topic",
+    "google_pubsub_subscription": "Pub/Sub subscription",
+    "google_cloud_run_v2_service": "Cloud Run service",
+})
+"""Human-readable label for every adoptable resource type in ``ADOPTABLE_RESOURCE_TYPES``.
+
+Drift-pinned by ``test_adoptable_type_labels_cover_exactly_the_allowlist``:
+``set(ADOPTABLE_TYPE_LABELS) == set(ADOPTABLE_RESOURCE_TYPES)``.
+"""
+
+
 CATEGORY_ORDER: Final[tuple[str, ...]] = (
     "control-plane",
     "iam",
@@ -213,12 +226,15 @@ RULE_CATEGORIES: Final[Mapping[str, str]] = MappingProxyType({
     # IAM (access-control changes):
     "wif-config-change":          "iam",
     "iam-change-forbidden-v1":    "iam",
-    # Global v1 floors (structural action bans):
-    "import-forbidden-v1":         "global-v1",
-    "delete-action-forbidden-v1":  "global-v1",
-    "forget-action-forbidden-v1":  "global-v1",
-    "replace-action-forbidden-v1": "global-v1",
-    "unknown-action-forbidden-v1": "global-v1",
+    # Global v1 floors (structural action bans + conditional admit rules):
+    "import-with-changes-forbidden-v1": "global-v1",
+    "import-type-not-adoptable-v1":     "global-v1",
+    "import-mixed-plan-forbidden-v1":   "global-v1",
+    "import-batch-forbidden-v1":        "global-v1",
+    "delete-action-forbidden-v1":       "global-v1",
+    "forget-action-forbidden-v1":       "global-v1",
+    "replace-action-forbidden-v1":      "global-v1",
+    "unknown-action-forbidden-v1":      "global-v1",
 })
 """Category assignment for every rule ID in ``RULE_DESCRIPTIONS``.
 
@@ -370,5 +386,9 @@ def build_capabilities() -> dict:
                 "the tofu-apply worker, immediately before apply (final gate)",
             ],
             "rules": rules,
+            "adoptable_resource_types": [
+                {"type": t, "label": ADOPTABLE_TYPE_LABELS[t]}
+                for t in sorted(ADOPTABLE_RESOURCE_TYPES)
+            ],
         },
     }

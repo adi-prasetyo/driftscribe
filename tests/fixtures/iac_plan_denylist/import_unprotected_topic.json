@@ -1,5 +1,5 @@
 {
-  "_test_intent": "import of an unprotected pubsub topic — must emit exactly import-forbidden-v1 (no identity rules fire)",
+  "_test_intent": "import of an unprotected pubsub topic (adoptable type, pure no-op, single) — ADMITTED ([]) since Phase 2",
   "format_version": "1.2",
   "resource_changes": [
     {

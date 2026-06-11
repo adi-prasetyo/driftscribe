@@ -328,4 +328,52 @@ describe('CapabilityCard', () => {
     });
     expect(paths).toHaveLength(2);
   });
+
+  it('8. adoptable_resource_types field present → labels render in denylist section', async () => {
+    const withAdoptable: Capabilities = {
+      ...FIXTURE,
+      denylist: {
+        ...FIXTURE.denylist,
+        adoptable_resource_types: [
+          { type: 'google_storage_bucket', label: 'Cloud Storage bucket' },
+          { type: 'google_pubsub_topic', label: 'Pub/Sub topic' },
+        ],
+      },
+    };
+    const paths: string[] = [];
+    const call = makeCall(
+      paths,
+      new Response(JSON.stringify(withAdoptable), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const { container } = render(CapabilityCard, { props: { call } });
+    const el = container.querySelector('[data-testid="capability-card"]') as HTMLDetailsElement;
+    el.open = true;
+    await fireEvent(el, new Event('toggle'));
+
+    await waitFor(() => {
+      const p = container.querySelector('.cap-denylist__adoptable');
+      expect(p).toBeTruthy();
+      expect(p!.textContent).toContain('Cloud Storage bucket');
+      expect(p!.textContent).toContain('Pub/Sub topic');
+    });
+  });
+
+  it('9. adoptable_resource_types field absent → card renders without adoptable line (no crash)', async () => {
+    // FIXTURE has no adoptable_resource_types — the {#if} block must be absent, not throw.
+    const paths: string[] = [];
+    const { container } = render(CapabilityCard, { props: { call: makeCall(paths) } });
+    const el = container.querySelector('[data-testid="capability-card"]') as HTMLDetailsElement;
+    el.open = true;
+    await fireEvent(el, new Event('toggle'));
+
+    await waitFor(() => {
+      // The denylist section renders (the enforced_at line is always present)
+      expect(container.querySelector('.cap-denylist__enforced')).toBeTruthy();
+    });
+    // The adoptable line must NOT be present
+    expect(container.querySelector('.cap-denylist__adoptable')).toBeNull();
+  });
 });

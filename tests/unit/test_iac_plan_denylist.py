@@ -12,6 +12,7 @@ import pytest
 
 from tools import iac_plan_denylist  # noqa: F401
 from tools.iac_plan_denylist import (
+    ADOPTABLE_RESOURCE_TYPES,
     DenylistInput,
     Violation,
     evaluate,
@@ -348,6 +349,22 @@ def test_protected_type_with_no_identity_is_malformed():
     assert "plan-json-malformed-change" in _rules(evaluate(DenylistInput(plan=parsed)))
 
 
+# --- Task 1: ADOPTABLE_RESOURCE_TYPES ---
+
+
+def test_adoptable_types_exact_set():
+    assert ADOPTABLE_RESOURCE_TYPES == {
+        "google_storage_bucket", "google_pubsub_topic",
+        "google_pubsub_subscription", "google_cloud_run_v2_service",
+    }
+
+
+def test_adoptable_types_strict_subset_of_identity_templates():
+    from driftscribe_lib.iac_hcl import _SUPPORTED_RESOURCE_ASSET_TYPES
+    assert ADOPTABLE_RESOURCE_TYPES < set(_SUPPORTED_RESOURCE_ASSET_TYPES)
+    assert "google_service_account" not in ADOPTABLE_RESOURCE_TYPES  # D2
+
+
 # --- Constant-shape guards (catch accidental mutation of the allowlists) ---
 
 
@@ -383,59 +400,92 @@ def test_constants_are_frozensets_or_tuples():
     assert isinstance(CONTROL_PLANE_BUCKET_SUFFIXES, tuple)
 
 
-# --- Phase 1 import floor (adopt/import design §4.1–§4.2, 2026-06-11) ---
+# --- Phase 2 import admission (adopt/import design §4.2, 2026-06-11) ---
+# Phase 1 blanket import-forbidden-v1 replaced with conditional rules.
 
 
-def test_real_provider_import_fixture_is_denied_by_the_floor_alone():
-    """THE §4.1/§8 anchor: a REAL `tofu show -json` artifact (live import of
-    the c6e probe bucket, google provider 6.50.0) is denied by exactly the
-    blanket floor — proving (a) the floor sees provider-real `importing`
-    rows, (b) identity checks run on the row without false-firing
-    control-plane rules on an unprotected bucket."""
+def test_real_provider_import_pure_noop_is_admitted():
+    """THE §4.1/§8 anchor (Phase 2 re-pin): a REAL `tofu show -json` artifact
+    (live import of the c6e probe bucket, google provider 6.50.0) is now
+    ADMITTED — allowlisted type + zero-change + single import + unprotected.
+    Identity checks still run (no control-plane rules fire). Proving the
+    conditional rules pass exactly this fixture."""
     parsed, _ = load_plan_json(_load("real_import_bucket_pure_noop.json"))
     assert parsed is not None
-    assert _rules(evaluate(DenylistInput(plan=parsed))) == ["import-forbidden-v1"]
+    assert _rules(evaluate(DenylistInput(plan=parsed))) == []
 
 
-def test_import_alongside_unrelated_noops_fires_the_floor_exactly_once():
+def test_import_alongside_unrelated_noops_is_admitted():
     """The D1-wording regression (design §8): OpenTofu lists EVERY configured
     resource in resource_changes, so unrelated no-op rows accompany any real
-    import — they must not add violations."""
+    import — they must NOT count as 'other mutations' and must not add violations.
+    Phase 2: admitted (zero-change + single + unprotected + allowlisted)."""
     parsed, _ = load_plan_json(_load("import_alongside_unrelated_noops.json"))
-    assert _rules(evaluate(DenylistInput(plan=parsed))) == ["import-forbidden-v1"]
+    assert _rules(evaluate(DenylistInput(plan=parsed))) == []
 
 
-def test_import_of_unprotected_type_is_still_denied():
+def test_import_of_allowlisted_topic_is_admitted():
+    """Pub/Sub topic is in the D2 four-type allowlist — admitted."""
     parsed, _ = load_plan_json(_load("import_unprotected_topic.json"))
-    assert _rules(evaluate(DenylistInput(plan=parsed))) == ["import-forbidden-v1"]
+    assert _rules(evaluate(DenylistInput(plan=parsed))) == []
+
+
+def test_real_provider_import_with_update_fires_with_changes_rule():
+    """Provider-real fixture: bucket import WITH actions=update must fire
+    import-with-changes-forbidden-v1 and ONLY that rule (no type rule, no
+    batch rule)."""
+    parsed, _ = load_plan_json(_load("real_import_bucket_with_update.json"))
+    assert parsed is not None
+    assert _rules(evaluate(DenylistInput(plan=parsed))) == ["import-with-changes-forbidden-v1"]
+
+
+def test_import_type_not_adoptable_fires_type_rule():
+    """google_compute_instance is not in D2 allowlist → import-type-not-adoptable-v1."""
+    parsed, _ = load_plan_json(_load("import_type_not_adoptable.json"))
+    assert _rules(evaluate(DenylistInput(plan=parsed))) == ["import-type-not-adoptable-v1"]
+
+
+def test_import_mixed_with_update_fires_mixed_rule():
+    """Bucket import no-op + unrelated topic update → import-mixed-plan-forbidden-v1."""
+    parsed, _ = load_plan_json(_load("import_mixed_with_update.json"))
+    assert _rules(evaluate(DenylistInput(plan=parsed))) == ["import-mixed-plan-forbidden-v1"]
+
+
+def test_import_batch_two_fires_batch_rule():
+    """Two bucket imports, both pure no-op → import-batch-forbidden-v1 (D3)."""
+    parsed, _ = load_plan_json(_load("import_batch_two.json"))
+    assert _rules(evaluate(DenylistInput(plan=parsed))) == ["import-batch-forbidden-v1"]
 
 
 @pytest.mark.parametrize(
-    ("fixture", "extra_rules"),
+    ("fixture", "expected_rules"),
     [
         ("import_control_plane_state_bucket.json", {"control-plane-bucket"}),
         ("import_control_plane_service.json", {"control-plane-service"}),
-        ("import_control_plane_sa.json", {"control-plane-sa", "iam-change-forbidden-v1"}),
-        ("import_control_plane_secret.json", {"control-plane-secret"}),
-        ("import_control_plane_kms.json", {"control-plane-kms"}),
-        ("import_wif_pool.json", {"wif-config-change", "iam-change-forbidden-v1"}),
+        ("import_control_plane_sa.json", {"control-plane-sa", "iam-change-forbidden-v1", "import-type-not-adoptable-v1"}),
+        ("import_control_plane_secret.json", {"control-plane-secret", "import-type-not-adoptable-v1"}),
+        ("import_control_plane_kms.json", {"control-plane-kms", "import-type-not-adoptable-v1"}),
+        ("import_wif_pool.json", {"wif-config-change", "iam-change-forbidden-v1", "import-type-not-adoptable-v1"}),
     ],
 )
-def test_importing_control_plane_identities_fires_identity_rules(fixture, extra_rules):
-    """§4.1: identity checks now run on importing entries even though a pure
+def test_importing_control_plane_identities_fires_identity_rules(fixture, expected_rules):
+    """§4.1: identity checks run on importing entries even though a pure
     import plans as no-op — adopting DriftScribe into DriftScribe is
-    impossible. Each fixture must fire the floor AND its identity rule(s)."""
+    impossible. Each fixture must fire exactly its expected rule(s)."""
     parsed, _ = load_plan_json(_load(fixture))
     rules = set(_rules(evaluate(DenylistInput(plan=parsed))))
-    assert ({"import-forbidden-v1"} | extra_rules) <= rules, fixture
+    assert rules == expected_rules, fixture
 
 
-def test_malformed_importing_value_is_denied_and_malformed():
-    """`importing` must be an object (docs) — a non-dict value is BOTH an
-    import (floor fires) and structurally malformed (fail-closed)."""
+def test_malformed_importing_value_emits_malformed_only():
+    """`importing` must be an object — a non-dict value emits
+    plan-json-malformed-change. The entry STILL counts as importing (visible
+    to the batch/mixed accumulators); here no conditional rule happens to fire
+    (no-op actions, adoptable type), so denial rests on the malformed rule."""
     parsed, _ = load_plan_json(_load("import_malformed_importing_string.json"))
-    rules = set(_rules(evaluate(DenylistInput(plan=parsed))))
-    assert {"import-forbidden-v1", "plan-json-malformed-change"} <= rules
+    rules = _rules(evaluate(DenylistInput(plan=parsed)))
+    assert "plan-json-malformed-change" in rules
+    assert "import-forbidden-v1" not in rules
 
 
 def test_sparse_protected_import_row_fails_closed():
@@ -444,7 +494,8 @@ def test_sparse_protected_import_row_fails_closed():
     plan-json-malformed-change fires (bias-to-deny), not a silent pass."""
     parsed, _ = load_plan_json(_load("import_sparse_protected_no_identity.json"))
     rules = set(_rules(evaluate(DenylistInput(plan=parsed))))
-    assert {"import-forbidden-v1", "plan-json-malformed-change"} <= rules
+    assert "plan-json-malformed-change" in rules
+    assert "import-forbidden-v1" not in rules
 
 
 def test_importing_null_is_treated_as_absent():
@@ -456,12 +507,14 @@ def test_importing_null_is_treated_as_absent():
 
 
 def test_importing_with_unknown_action_fires_both_rules():
-    """The floor runs BEFORE the unknown-action continue — an importing row
+    """The import checks run BEFORE the unknown-action continue — an importing row
     with an unaudited action tuple is visible as an import, not only as an
-    unknown action (Codex round-1 Important #1)."""
+    unknown action. Phase 2: fires import-with-changes-forbidden-v1 (non-no-op
+    actions) AND unknown-action-forbidden-v1."""
     parsed, _ = load_plan_json(_load("import_unknown_action.json"))
     rules = set(_rules(evaluate(DenylistInput(plan=parsed))))
-    assert {"import-forbidden-v1", "unknown-action-forbidden-v1"} <= rules
+    assert {"import-with-changes-forbidden-v1", "unknown-action-forbidden-v1"} <= rules
+    assert "import-forbidden-v1" not in rules
 
 
 def test_plain_noop_on_control_plane_identity_still_passes():

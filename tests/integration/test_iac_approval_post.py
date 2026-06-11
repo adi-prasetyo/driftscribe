@@ -91,6 +91,23 @@ _CREATE_PLAN_JSON = {
          "change": {"actions": ["create"]}}
     ]
 }
+_IMPORT_PLAN_JSON = {
+    "resource_changes": [
+        {"address": "google_storage_bucket.old_uploads", "type": "google_storage_bucket",
+         "change": {"actions": ["no-op"], "importing": {"id": "my-old-uploads"}}}
+    ]
+}
+
+
+def _import_view(**overrides) -> IacPlanView:
+    """An adopt-class view (has_create=True, has_import=True) WITH a C6 sidecar."""
+    base = dict(
+        _plan_json=_IMPORT_PLAN_JSON,
+        _generation_iac_tree=_GEN_IAC_TREE,
+        _iac_tree_hash=_IAC_TREE_HASH,
+    )
+    base.update(overrides)
+    return _view(**base)
 
 
 def _view(**overrides) -> IacPlanView:
@@ -1293,3 +1310,105 @@ def test_post_rerender_does_not_500_without_blast_phrase_keys(_configured, monke
     # in a POST context (or a switch to StrictUndefined), not this path.
     resp = _post(client, token=_mint(), decision="reject")
     assert resp.status_code == 200
+
+
+# --------------------------------------------------------------------------- #
+# Phase-2 adopt/import: import-aware C6 copy (Task 6)
+# --------------------------------------------------------------------------- #
+
+
+def test_import_class_merge_outcome_says_adopts_not_creates(_configured, monkeypatch):
+    """An adopt-class (importing) plan: the merge-first outcome must say 'ADOPTS'
+    and must NOT say 'CREATES a resource' (regression guard: the create variant still
+    says 'CREATES')."""
+    _patch_resolve(monkeypatch, view=_import_view())
+    _patch_repo(monkeypatch)
+    merge_calls = []
+
+    def _merge(*a, **k):
+        merge_calls.append(k)
+        return {"merged": True, "already_merged": False, "number": 42, "url": "u"}
+
+    _patch_github(monkeypatch, merge=_merge)
+    _patch_workers(monkeypatch)
+    client = TestClient(app)
+    resp = _post(client, token=_create_token())
+    assert resp.status_code == 200, resp.text
+    body = resp.text
+    assert "ADOPTS" in body, "expected 'ADOPTS' in import-class merge outcome"
+    assert "CREATES a resource" not in body, "import outcome must NOT say 'CREATES a resource'"
+    assert "re-bake" in body.lower()
+    assert len(merge_calls) == 1
+
+
+def test_create_class_merge_outcome_regression_still_says_creates(_configured, monkeypatch):
+    """Regression: a plain create-class plan's merge-first outcome must still say
+    'CREATES a resource' (the import branch must not overwrite it)."""
+    _patch_resolve(monkeypatch, view=_create_view())
+    _patch_repo(monkeypatch)
+
+    def _merge(*a, **k):
+        return {"merged": True, "already_merged": False, "number": 42, "url": "u"}
+
+    _patch_github(monkeypatch, merge=_merge)
+    _patch_workers(monkeypatch)
+    client = TestClient(app)
+    resp = _post(client, token=_create_token())
+    assert resp.status_code == 200, resp.text
+    assert "CREATES a resource" in resp.text
+
+
+def test_import_class_5xx_notifier_says_adopt_class_not_orphan(_configured, monkeypatch):
+    """An adopt-class resume 5xx must alert with 'adopt-class … verified, never assumed'
+    and must NOT claim 'created resource may exist out of state' (honest §4.4 framing)."""
+    _patch_resolve(monkeypatch, view=_import_view())
+    _patch_repo(monkeypatch)
+    _patch_github(monkeypatch)
+
+    def _apply_502(aid, tok, jwt, generation_iac_tree=None):
+        raise worker_client.WorkerClientError(502, "tofu apply failed (failed_state_suspect)", "tofu_apply")
+
+    calls = _patch_workers(monkeypatch, apply_=_apply_502)
+    client = TestClient(app)
+    tok = _create_token()
+    assert _post(client, token=tok).status_code == 200  # merge-first
+    r2 = _post(client, token=tok)  # resume → apply 502
+    assert r2.status_code == 502, r2.text
+    detail_lower = r2.text.lower()
+    # Must use honest adopt-class framing
+    assert "adopt-class" in detail_lower or "verified, never assumed" in detail_lower, (
+        "import-class 5xx detail must say adopt-class / verified, never assumed"
+    )
+    assert "created resource may exist out of state" not in detail_lower, (
+        "import-class 5xx must NOT claim orphan resource was created"
+    )
+    # Alert was sent
+    assert any(n[0] == "notifier" for n in calls["notify"])
+    # Terminal status recorded
+    state = get_state()
+    ek = main_mod._iac_event_key("theghostsquad00/driftscribe", 42, _HEAD, _GEN_META)
+    assert state.find_decision_for_event(ek)["apply_status"] == "failed_state_suspect"
+
+
+def test_import_class_resume_success_says_applied_adopt(_configured, monkeypatch):
+    """An adopt-class successful resume must say 'Applied (adopt)' and must NOT say
+    'Applied (create)'."""
+    _patch_resolve(monkeypatch, view=_import_view())
+    _patch_repo(monkeypatch)
+    merge_calls = []
+
+    def _merge(*a, **k):
+        merge_calls.append(k)
+        return {"merged": True, "already_merged": False, "number": 42, "url": "u"}
+
+    _patch_github(monkeypatch, merge=_merge)
+    _patch_workers(monkeypatch)
+    client = TestClient(app)
+    tok = _create_token()
+    assert _post(client, token=tok).status_code == 200  # POST1: merge-first
+    r2 = _post(client, token=tok)  # POST2: resume (operator re-baked)
+    assert r2.status_code == 200, r2.text
+    body = r2.text.lower()
+    assert "applied (adopt)" in body, "expected 'applied (adopt)' in import-class success outcome"
+    assert "applied (create)" not in body, "import success must NOT say 'applied (create)'"
+    assert len(merge_calls) == 1  # NOT merged again on resume
