@@ -4,9 +4,11 @@
 
 **Goal:** A deterministic, honesty-pinned "what will this cost per month" line on the IaC approval page and in the `load_iac_plan` chat tool, computed from the verified plan.json by a pure JPY list-price heuristic table — no external pricing API, no LLM, no new credentials.
 
-**Architecture:** New pure lib `driftscribe_lib/iac_cost.py` walks `plan_json["resource_changes"]` directly (the summary lib's `ChangeEntry` deliberately drops full `after` attrs, but `IacPlanView._plan_json` keeps them), reusing the summary lib's audited verb classification and sensitivity-mask walkers via three new public aliases. A second `cached_property` on `IacPlanView` (`cost_summary`, mirroring `change_summary`) feeds both render surfaces: the trust-gated summary card in `iac_approval.html` and a new `cost` block in `load_iac_plan_tool`. Cost is only ever shown where the plain-language summary is already shown — same integrity/trust gate, zero new gating surface.
+**Architecture:** New pure lib `driftscribe_lib/iac_cost.py` walks `plan_json["resource_changes"]` directly (the summary lib's `ChangeEntry` deliberately drops full `after` attrs, but `IacPlanView._plan_json` keeps them), reusing the summary lib's audited verb classification and sensitivity-mask walkers via three new public aliases, and refusing whenever `summarize_plan` refuses (parity-by-construction). A second `cached_property` on `IacPlanView` (`cost_summary`, mirroring `change_summary`) feeds both render surfaces: the trust-gated summary card in `iac_approval.html` and a new `cost` block in `load_iac_plan_tool`. Cost is only ever shown where the plain-language summary is already shown AND the plan is not denylist-blocked — same integrity/trust gate, zero new gating surface.
 
 **Tech Stack:** Python 3.12 (dataclasses, functools.cached_property), Jinja2 (strict-CSP server-side template), pytest. No frontend changes (approval page is server-rendered; chat renders the tool dict via the model).
+
+**Codex plan review:** thread `019eb729-ec14-7290-af56-d411b6b24859`, round 1 **NO-GO** with 6 must-fixes — ALL folded below: (1) tool cost now gated on `not view.denylist_violations`; (2) never-partial parity-by-construction via a `summarize_plan` guard; (3) unknown bucket storage class → generic note, never a Standard price; (4) `monthly_jpy` numeric ⟺ `kind=="fixed"` (no usage zeros in the contract); (5) `cpu_idle=false` wording fixed (instance-based billing never described as "billed only for traffic"); (6) Secret Manager version costs reframed usage-style (first-6-free tier makes a fixed delta unknowable). Should-fixes folded: whole-walk `try/except`, path-exact `_read` (H11), multi-container summing, exact rate date in the disclaimer, prompt-pin test located at `tests/unit/test_explore_workload_loads.py`, expanded test list.
 
 ---
 
@@ -45,16 +47,19 @@ Worked check: one always-warm Cloud Run instance (1 vCPU, 512 MiB, request-based
 
 | # | Invariant | Where enforced |
 |---|---|---|
-| H1 | Cost is NEVER shown for an unverifiable / integrity-failed plan | template: cost block lives inside the existing trust-gated card; tool: cost added only after the integrity early-returns, alongside `summary` |
-| H2 | Every numeric surface carries the heuristic disclaimer (region, rates-as-of, "not a quote") | `COST_DISCLAIMER` constant rides `PlanCostEstimate.disclaimer`; template footer + tool `cost.disclaimer`; prompt rule pins relay |
+| H1 | Cost is NEVER shown for an unverifiable / integrity-failed / **denylist-blocked** plan | template: cost block lives inside the existing trust-gated card (which already suppresses on all three); tool: integrity early-returns fire first AND the cost block is explicitly gated on `not view.denylist_violations` (the item-12 summary IS shown for blocked plans — explaining a block is legitimate; *pricing* one implies viability, so cost is not) |
+| H2 | Every numeric surface carries the heuristic disclaimer (region, exact rates-as-of date, "not a quote") | `COST_DISCLAIMER` constant rides `PlanCostEstimate.disclaimer`; template footer + tool `cost.disclaimer`; prompt rule pins relay |
 | H3 | Adoption (import) = "no billing change — already billed" — never a scary number, never ¥0-as-savings | `_estimate_rc` import branch; adopt-only headline |
-| H4 | Usage-based resources are framed "¥0 until used", never "free" | per-type notes; `kind="usage"` has `monthly_jpy=None` (no fake zero in totals — but see H7) |
-| H5 | Unknown resource types say "no estimate available" — never invent | `kind="unknown"`, headline appends the count |
-| H6 | Sensitive-masked cost attrs → conservative fallback, never read through the mask | `_read` helper consults the sensitivity mask; sensitive ⇒ treated as unreadable ⇒ defaults/unknown |
-| H7 | The headline's always-on figure sums ONLY computable fixed deltas; usage components are named, not numbered | `monthly_fixed_jpy` accumulation + headline suffix |
+| H4 | Usage-based resources are framed "¥0 until used", never "free" | per-type notes; `kind="usage"` always has `monthly_jpy=None` |
+| H5 | Unknown resource types AND unrecognized attr values say "no estimate available" — never invent (e.g. an unknown storage class is never priced as Standard) | `kind="unknown"`; `_est_bucket.cls()` returns None for present-but-unrecognized classes; headline appends the unknown count |
+| H6 | Sensitive-masked cost attrs → conservative fallback, never read through the mask | `_read` consults the sensitivity mask at every step; sensitive ⇒ `_SENSITIVE` ⇒ defaults/unknown |
+| H7 | `monthly_jpy` is numeric ⟺ `kind == "fixed"` — usage/free/unknown are ALWAYS `None`; the headline's always-on figure sums only fixed deltas; usage components are named, not numbered | EntryCost contract + accumulation; pinned by test |
 | H8 | Totals computed over ALL resource_changes pre-truncation (display capped at 40, `n_hidden` honest) | `estimate_plan_cost` walk vs `entries[:MAX_ENTRIES]` |
 | H9 | `forget` = "no billing change — keeps running, keeps being billed" | `_estimate_rc` forget branch |
-| H10 | Never-partial: any malformed row ⇒ `None` (no cost block), mirroring `summarize_plan` | `estimate_plan_cost` fail-soft validation |
+| H10 | Never-partial parity-by-construction: `estimate_plan_cost` returns `None` whenever `summarize_plan` returns `None` (the cost card can never contradict the summary card about plan validity); whole walk is `try/except → None` | guard at top of `estimate_plan_cost` |
+| H11 | Path-exact sensitivity: an UNRELATED sensitive attr (e.g. a secret env var on a Cloud Run service) must NOT void the cost estimate — only blanket-`True` ancestors or the cost attr's own mask position do | `_read` treats only `m is True` as a blanket at ancestors; leaf reads only |
+
+**Deliberate divergence (documented):** the summary card RENDERS deposed rows (with an explainer); the estimator SKIPS them — a deposed row is the delete half of a replace and the main row carries the whole delta. The template's per-entry join guards `not e.deposed`, so no cost line ever appears on a deposed row.
 
 **Gating/autonomy interplay: none.** No new tool, no tier change, no Layer-0 change, no denylist/gate change (⇒ no tofu-editor rebake; coordinator rebake only). The arch-doc tool tables are untouched.
 
@@ -128,10 +133,16 @@ number. The honest shape for this estate: most resources are usage-based
 (¥0 until used); the one always-on number that matters is Cloud Run
 min-instances, which IS computable from the plan.
 
-Display semantics mirror ``iac_plan_summary``: totals over ALL resource
-changes, display capped at :data:`MAX_ENTRIES`, malformed input ⇒ ``None``
-(never a partial estimate). Deposed rows are skipped — they are the delete
-half of a replace; the main row carries the delta.
+Contract pins (the honesty ledger in the plan doc):
+- ``EntryCost.monthly_jpy`` is numeric ⟺ ``kind == "fixed"`` (H7).
+- ``estimate_plan_cost`` returns ``None`` whenever ``summarize_plan`` returns
+  ``None`` — parity-by-construction (H10); whole walk fail-soft.
+- Deposed rows are skipped (the main replace row carries the whole delta) —
+  the ONE deliberate divergence from the summary walk, render-guarded in the
+  template by ``not e.deposed``.
+- Sensitivity is PATH-EXACT (H11): only a blanket-``True`` ancestor mask or
+  the cost attr's own mask position blocks a read — a sensitive env var never
+  voids a service's estimate.
 """
 
 from __future__ import annotations
@@ -144,6 +155,7 @@ from driftscribe_lib.iac_plan_summary import (
     classify_verb,
     mask_any,
     sub_mask,
+    summarize_plan,
 )
 
 __all__ = [
@@ -154,12 +166,13 @@ __all__ = [
     "estimate_plan_cost",
 ]
 
-RATES_AS_OF = "June 2026"
+RATES_AS_OF = "2026-06-11"
 
 COST_DISCLAIMER = (
     "Cost figures are heuristic estimates from Google Cloud list prices "
-    f"(Tokyo region, {RATES_AS_OF} rates) — not a quote. Usage-based charges "
-    "(storage, messages, requests, network) depend entirely on how much you use."
+    f"(Tokyo region, fetched {RATES_AS_OF}) — not a quote. Usage-based "
+    "charges (storage, messages, requests, network) depend entirely on how "
+    "much you use."
 )
 
 # Google bills the month as 730 hours.
@@ -180,16 +193,14 @@ _GCS_JPY_GIB_MONTH: dict[str, float] = {
     "ARCHIVE": 0.40,
 }
 
-_SECRET_VERSION_JPY_MONTH = 9.56  # per version-replica; first 6 in the project free
-
 
 @dataclass(frozen=True)
 class EntryCost:
     """Cost verdict for one resource change.
 
     ``monthly_jpy`` is the SIGNED always-on delta this change adds (negative =
-    removes); ``None`` whenever the honest answer is not a fixed number
-    (usage-based, unknown type, unreadable attrs). ``kind`` ∈
+    removes) and is numeric ⟺ ``kind == "fixed"`` (H7) — usage/free/unknown
+    entries carry their story in ``note`` only. ``kind`` ∈
     {"fixed", "usage", "free", "unknown"}.
     """
 
@@ -223,7 +234,7 @@ class PlanCostEstimate:
 
 
 # --------------------------------------------------------------------------- #
-# Small parsers + mask-aware reads.
+# Small parsers + path-exact mask-aware reads.
 # --------------------------------------------------------------------------- #
 
 def _fmt_jpy(v: float) -> str:
@@ -262,109 +273,106 @@ _SENSITIVE = object()  # sentinel: the mask says this position is sensitive
 
 
 def _read(side: Any, mask: Any, *path: Any) -> Any:
-    """Walk ``side`` along ``path`` (str keys / int indexes), consulting the
-    sensitivity ``mask`` at every step. Returns the value, ``None`` when the
-    path is absent, or ``_SENSITIVE`` when ANY step is masked (H6 — never read
-    a cost attr through the mask)."""
+    """Walk ``side`` along ``path`` (str keys / int indexes) with PATH-EXACT
+    sensitivity (H11): an ancestor blocks only when its mask is the blanket
+    ``True``; a sibling's sensitivity never voids this read. Returns the
+    value, ``None`` when the path is absent, ``_SENSITIVE`` when the path
+    itself is masked. Use for LEAF reads only — returning a container and
+    then indexing into it manually would bypass the mask."""
     cur, m = side, mask
     for step in path:
-        if mask_any(m):
+        if m is True:
             return _SENSITIVE
         if isinstance(step, str):
             if not isinstance(cur, dict):
                 return None
             cur = cur.get(step)
-            m = sub_mask(m, step)
+            m = sub_mask(m, step) if not isinstance(m, bool) else m
         else:
             if not isinstance(cur, list) or step >= len(cur):
                 return None
             cur = cur[step]
-            m = m[step] if isinstance(m, list) and step < len(m) else m if isinstance(m, bool) else None
-    if mask_any(m) and not isinstance(cur, (dict, list)):
+            if isinstance(m, list):
+                m = m[step] if step < len(m) else None
+            elif not isinstance(m, bool):
+                m = None
+    if m is True:
+        return _SENSITIVE
+    if not isinstance(cur, (dict, list)) and mask_any(m):
         return _SENSITIVE
     return cur
 
 
 # --------------------------------------------------------------------------- #
-# Per-type estimators.
+# Cloud Run.
 # --------------------------------------------------------------------------- #
+
+def _run_cpu_idle(side: Any, mask: Any) -> bool | None:
+    """Billing mode from the serving container (heuristic: container 0).
+    True = request-based (provider default), False = instance-based,
+    None = the flag itself is sensitivity-masked."""
+    if not isinstance(side, dict):
+        return True
+    v = _read(side, mask, "template", 0, "containers", 0, "resources", 0, "cpu_idle")
+    if v is _SENSITIVE:
+        return None
+    return v is not False
+
+
+def _run_container_count(side: Any) -> int:
+    """How many containers to sum (sidecars bill too). Shape-only read —
+    never extracts values, so no mask consultation is needed."""
+    template = side.get("template")
+    if isinstance(template, list) and template and isinstance(template[0], dict):
+        containers = template[0].get("containers")
+        if isinstance(containers, list) and containers:
+            return len(containers)
+    return 1
+
 
 def _run_baseline(side: Any, mask: Any) -> float | None:
     """Always-on JPY/month for one Cloud Run service config side.
 
     0.0 when the service scales to zero (the estate default, ``scaling: []``);
-    ``None`` when a needed attr is sensitivity-masked (conservative, H6).
-    Missing values use the provider defaults: min 0, 1 vCPU, 512 MiB,
-    ``cpu_idle=true`` (request-based billing).
-    """
+    ``None`` when a cost-relevant attr is ITSELF sensitivity-masked (H6 —
+    path-exact per H11, so unrelated sensitive attrs never void this).
+    Missing values use the provider defaults: min 0, 1 vCPU / 512 MiB per
+    container, ``cpu_idle=true`` (request-based billing)."""
     if not isinstance(side, dict):
         return 0.0
-    min_candidates: list[int] = []
+    mins: list[int] = []
     for path in (("scaling", 0, "min_instance_count"),
                  ("template", 0, "scaling", 0, "min_instance_count")):
         v = _read(side, mask, *path)
         if v is _SENSITIVE:
             return None
-        if isinstance(v, bool):
-            continue
-        if isinstance(v, int) and v > 0:
-            min_candidates.append(v)
-    min_inst = max(min_candidates, default=0)
+        if isinstance(v, int) and not isinstance(v, bool) and v > 0:
+            mins.append(v)
+    min_inst = max(mins, default=0)
     if min_inst <= 0:
         return 0.0
-    res = _read(side, mask, "template", 0, "containers", 0, "resources", 0)
-    if res is _SENSITIVE:
+    cpu_idle = _run_cpu_idle(side, mask)
+    if cpu_idle is None:
         return None
-    cpu = mem = None
-    cpu_idle = True
-    if isinstance(res, dict):
-        limits = res.get("limits")
-        if isinstance(limits, dict):
-            cpu = _cpu_vcpus(limits.get("cpu"))
-            mem = _mem_gib(limits.get("memory"))
-        if res.get("cpu_idle") is False:
-            cpu_idle = False
-    cpu = cpu if cpu is not None else 1.0
-    mem = mem if mem is not None else 0.5
     cpu_rate = _RUN_IDLE_CPU_JPY_VCPU_S if cpu_idle else _RUN_INST_CPU_JPY_VCPU_S
     mem_rate = _RUN_IDLE_MEM_JPY_GIB_S if cpu_idle else _RUN_INST_MEM_JPY_GIB_S
-    return min_inst * (cpu * cpu_rate + mem * mem_rate) * _SECONDS_PER_MONTH
+    per_second = 0.0
+    for i in range(_run_container_count(side)):
+        cpu = _read(side, mask, "template", 0, "containers", i,
+                    "resources", 0, "limits", "cpu")
+        mem = _read(side, mask, "template", 0, "containers", i,
+                    "resources", 0, "limits", "memory")
+        if cpu is _SENSITIVE or mem is _SENSITIVE:
+            return None
+        cpu_v = _cpu_vcpus(cpu)
+        mem_v = _mem_gib(mem)
+        per_second += (cpu_v if cpu_v is not None else 1.0) * cpu_rate
+        per_second += (mem_v if mem_v is not None else 0.5) * mem_rate
+    return min_inst * per_second * _SECONDS_PER_MONTH
 
 
-def _est_run(address: str, verb: str, change: dict) -> EntryCost:
-    b = _run_baseline(change.get("before"), change.get("before_sensitive"))
-    a = _run_baseline(change.get("after"), change.get("after_sensitive"))
-    if b is None or a is None:
-        return EntryCost(address, "unknown", None,
-                         "cost attributes are hidden as sensitive — no estimate")
-    delta = (a if verb != "destroy" else 0.0) - (b if verb in ("destroy", "update", "replace", "change") else 0.0)
-    if verb == "create" and a == 0.0:
-        return EntryCost(address, "usage", 0.0,
-                         "¥0/month while idle — scales to zero; billed only for actual traffic")
-    if abs(delta) < 0.5:
-        if a > 0.0:
-            return EntryCost(
-                address, "fixed", 0.0,
-                f"always-warm cost unchanged at about {_fmt_jpy(a)}/month")
-        return EntryCost(address, "usage", 0.0,
-                         "¥0/month while idle — scales to zero; billed only for actual traffic")
-    if verb == "destroy":
-        return EntryCost(address, "fixed", -b,
-                         f"stops being billed — removes about {_fmt_jpy(b)}/month of always-warm cost")
-    if b > 0.0 or verb in ("update", "replace", "change"):
-        return EntryCost(
-            address, "fixed", delta,
-            f"always-warm cost changes by about {_fmt_jpy(delta)}/month "
-            f"({'up' if delta > 0 else 'down'} from about {_fmt_jpy(b)} to about {_fmt_jpy(a)})")
-    n = _min_inst_for_note(change)
-    return EntryCost(
-        address, "fixed", a,
-        f"about {_fmt_jpy(a)}/month — {n} always-warm instance{'s' if n != 1 else ''} kept running")
-
-
-def _min_inst_for_note(change: dict) -> int:
-    side = change.get("after")
-    mask = change.get("after_sensitive")
+def _run_min_inst(side: Any, mask: Any) -> int:
+    """Display-only min-instance count (baseline already vetted sensitivity)."""
     best = 0
     if isinstance(side, dict):
         for path in (("scaling", 0, "min_instance_count"),
@@ -375,27 +383,91 @@ def _min_inst_for_note(change: dict) -> int:
     return best
 
 
+def _run_zero_note(cpu_idle: bool | None) -> str:
+    """Scale-to-zero wording, honest about the billing mode (Codex MF-5):
+    instance-based billing is never described as 'billed only for traffic'."""
+    if cpu_idle is False:
+        return ("scales to zero when idle — instance-based billing: billed "
+                "for the full time instances are running, ¥0/month only "
+                "while fully idle")
+    if cpu_idle is None:
+        return "scales to zero when idle — ¥0/month while idle"
+    return ("¥0/month while idle — scales to zero; billed only while "
+            "handling requests")
+
+
+def _est_run(address: str, verb: str, change: dict) -> EntryCost:
+    before, b_mask = change.get("before"), change.get("before_sensitive")
+    after, a_mask = change.get("after"), change.get("after_sensitive")
+    b = _run_baseline(before, b_mask)
+    a = _run_baseline(after, a_mask) if verb != "destroy" else 0.0
+    if b is None or a is None:
+        return EntryCost(
+            address, "unknown", None,
+            "a cost-relevant attribute is hidden as sensitive — no always-on estimate")
+    delta = a - b
+    if verb == "destroy":
+        if b > 0.5:
+            return EntryCost(
+                address, "fixed", -b,
+                f"stops being billed — removes about {_fmt_jpy(b)}/month "
+                "of always-warm cost")
+        return EntryCost(address, "usage", None, "stops being billed once destroyed")
+    if a < 0.5 and b < 0.5:
+        return EntryCost(address, "usage", None,
+                         _run_zero_note(_run_cpu_idle(after, a_mask)))
+    if abs(delta) < 0.5:
+        return EntryCost(
+            address, "fixed", 0.0,
+            f"always-warm cost unchanged at about {_fmt_jpy(a)}/month")
+    if verb == "create":
+        n = _run_min_inst(after, a_mask)
+        return EntryCost(
+            address, "fixed", a,
+            f"about {_fmt_jpy(a)}/month — {n} always-warm "
+            f"instance{'s' if n != 1 else ''} kept running")
+    return EntryCost(
+        address, "fixed", delta,
+        f"always-warm cost changes by about {_fmt_jpy(delta)}/month "
+        f"({'up' if delta > 0 else 'down'} from about {_fmt_jpy(b)} "
+        f"to about {_fmt_jpy(a)})")
+
+
+# --------------------------------------------------------------------------- #
+# Other estate types.
+# --------------------------------------------------------------------------- #
+
 def _est_bucket(address: str, verb: str, change: dict) -> EntryCost:
+    if verb == "destroy":
+        return EntryCost(
+            address, "usage", None,
+            "stops being billed — note: any data still in it is deleted with it")
+
     def cls(side: Any, mask: Any) -> str | None:
-        v = _read(side, mask, "storage_class") if isinstance(side, dict) else None
+        """Known class; "STANDARD" when ABSENT (the provider default); None
+        when masked OR present-but-unrecognized — an unknown class is never
+        priced as Standard (Codex MF-3, H5)."""
+        if not isinstance(side, dict):
+            return "STANDARD"
+        v = _read(side, mask, "storage_class")
         if v is _SENSITIVE:
             return None
-        return v if isinstance(v, str) and v in _GCS_JPY_GIB_MONTH else "STANDARD"
+        if v is None or v == "":
+            return "STANDARD"
+        return v if isinstance(v, str) and v in _GCS_JPY_GIB_MONTH else None
 
     b_cls = cls(change.get("before"), change.get("before_sensitive"))
     a_cls = cls(change.get("after"), change.get("after_sensitive"))
-    if verb == "destroy":
-        return EntryCost(address, "usage", None,
-                         "stops being billed — note: any data still in it is deleted with it")
     if a_cls is None:
-        return EntryCost(address, "usage", None, "billed per GiB stored — ¥0/month while empty")
+        return EntryCost(address, "usage", None,
+                         "billed per GiB stored — ¥0/month while empty")
     rate = _GCS_JPY_GIB_MONTH[a_cls]
     if verb in ("update", "replace", "change") and b_cls and b_cls != a_cls:
         return EntryCost(
             address, "usage", None,
-            f"storage rate changes from about ¥{_GCS_JPY_GIB_MONTH[b_cls]:.2f} to "
-            f"about ¥{rate:.2f} per GiB-month ({b_cls.title()} → {a_cls.title()}) — "
-            "the monthly total depends on how much is stored")
+            f"storage rate changes from about ¥{_GCS_JPY_GIB_MONTH[b_cls]:.2f} "
+            f"to about ¥{rate:.2f} per GiB-month ({b_cls.title()} → "
+            f"{a_cls.title()}) — the monthly total depends on how much is stored")
     return EntryCost(
         address, "usage", None,
         f"¥0/month while empty — storage billed at about ¥{rate:.2f}/GiB-month "
@@ -404,7 +476,8 @@ def _est_bucket(address: str, verb: str, change: dict) -> EntryCost:
 
 def _est_topic(address: str, verb: str, change: dict) -> EntryCost:
     if verb == "destroy":
-        return EntryCost(address, "usage", None, "stops being billed (it was free to exist)")
+        return EntryCost(address, "usage", None,
+                         "stops being billed (it was free to exist)")
     return EntryCost(
         address, "usage", None,
         "free to exist — messages are billed by data volume "
@@ -413,34 +486,41 @@ def _est_topic(address: str, verb: str, change: dict) -> EntryCost:
 
 def _est_sub(address: str, verb: str, change: dict) -> EntryCost:
     if verb == "destroy":
-        return EntryCost(address, "usage", None, "stops being billed (it was free to exist)")
+        return EntryCost(address, "usage", None,
+                         "stops being billed (it was free to exist)")
     note = ("free to exist — delivery is billed by data volume "
             "(first 10 GiB/month free, then about ¥6,400/TiB)")
-    retain = _read(change.get("after"), change.get("after_sensitive"), "retain_acked_messages")
+    retain = _read(change.get("after"), change.get("after_sensitive"),
+                   "retain_acked_messages")
     if retain is True:
         note += "; retained acknowledged messages add about ¥43/GiB-month while stored"
     return EntryCost(address, "usage", None, note)
 
 
 def _est_secret(address: str, verb: str, change: dict) -> EntryCost:
+    """Version storage is ¥9.56/version-month AFTER the project's first 6 free
+    version-replicas — free-tier exhaustion is unknowable from the plan, so
+    this is never a numeric fixed delta (Codex MF-6)."""
     if verb == "destroy":
-        return EntryCost(address, "usage", None,
-                         "stops being billed — its stored versions stop accruing charges")
+        return EntryCost(
+            address, "usage", None,
+            "stops being billed — its stored versions stop accruing charges")
     return EntryCost(
         address, "usage", None,
-        "about ¥10/month per stored version (the project's first 6 "
-        "version-replicas are free)")
+        "about ¥10/month per stored version, after the project's first 6 free "
+        "version-replicas — the total depends on versions your project already stores")
 
 
 def _est_secret_version(address: str, verb: str, change: dict) -> EntryCost:
     if verb == "destroy":
-        return EntryCost(address, "fixed", -_SECRET_VERSION_JPY_MONTH,
-                         "stops being billed — about ¥10/month less while it was stored")
-    if verb == "create":
-        return EntryCost(address, "fixed", _SECRET_VERSION_JPY_MONTH,
-                         "about ¥10/month while this version is stored "
-                         "(the project's first 6 version-replicas are free)")
-    return EntryCost(address, "fixed", 0.0, "about ¥10/month while stored — unchanged by this")
+        return EntryCost(
+            address, "usage", None,
+            "stops being billed — about ¥10/month less while it was stored "
+            "(unless it fell within the project's first 6 free version-replicas)")
+    return EntryCost(
+        address, "usage", None,
+        "about ¥10/month while stored — free if it falls within the project's "
+        "first 6 free version-replicas")
 
 
 _FREE_GENERIC = "free — this resource itself has no charge"
@@ -479,19 +559,20 @@ _TYPE_ESTIMATORS = {
 def _estimate_rc(address: str, rtype: str, verb: str, change: dict) -> EntryCost:
     if verb == "import":
         return EntryCost(
-            address, "free", 0.0,
+            address, "free", None,
             "no billing change — this resource already exists and is already "
             "being billed; adopting it does not change what you pay")
     if verb == "forget":
         return EntryCost(
-            address, "free", 0.0,
+            address, "free", None,
             "no billing change — the live resource keeps running (and keeps "
             "being billed) exactly as before")
     if rtype in _FREE_TYPES:
-        return EntryCost(address, "free", 0.0, _FREE_TYPES[rtype])
+        return EntryCost(address, "free", None, _FREE_TYPES[rtype])
     if rtype in _USAGE_GENERIC:
         if verb == "destroy":
-            return EntryCost(address, "usage", None, "stops being billed once destroyed")
+            return EntryCost(address, "usage", None,
+                             "stops being billed once destroyed")
         return EntryCost(address, "usage", None, _USAGE_GENERIC[rtype])
     est = _TYPE_ESTIMATORS.get(rtype)
     if est is None:
@@ -523,70 +604,67 @@ def _headline(fixed: float, n_usage: int, n_unknown: int, all_import: bool) -> s
 
 
 def estimate_plan_cost(plan_json: Any) -> PlanCostEstimate | None:
-    """Whole-plan heuristic cost estimate, or ``None`` (malformed ⇒ no estimate,
-    never a partial one — H10). Mirrors ``summarize_plan``'s walk shape: data
-    reads and pure no-ops are skipped only when WELL-FORMED; deposed rows are
-    skipped (the main row carries the replace delta)."""
-    if not isinstance(plan_json, dict):
+    """Whole-plan heuristic cost estimate, or ``None``.
+
+    H10 parity-by-construction: refuses whenever ``summarize_plan`` refuses,
+    so the cost card can never render (or contradict) where the summary card
+    doesn't — the guard inherits ALL of the summary walk's never-partial
+    validation (unknown mode, data-mode mutation rows, malformed importing /
+    deposed / actions, …) without re-deriving any of it. Whole walk fail-soft
+    (any unexpected exception → ``None`` — advisory display must never take
+    the approval page down). After the guard, every skip below is one the
+    summary walk PROVED well-formed; deposed rows are the one deliberate
+    divergence (see module docstring)."""
+    try:
+        if summarize_plan(plan_json) is None:
+            return None
+        rcs = plan_json.get("resource_changes") or []
+        out: list[EntryCost] = []
+        fixed = 0.0
+        n_usage = n_free = n_unknown = 0
+        n_entries = 0
+        all_import = True
+        for rc in rcs:
+            if rc.get("mode") == "data":
+                continue  # guard proved: a well-formed data READ (the only skippable kind)
+            if rc.get("deposed"):
+                continue  # delete half of a replace; the main row carries the delta
+            change = rc["change"]
+            verb = classify_verb(
+                tuple(change["actions"]), change.get("importing") is not None
+            )
+            if verb is None:
+                continue  # pure no-op/read without an import
+            ec = _estimate_rc(rc["address"], rc["type"], verb, change)
+            n_entries += 1
+            if verb != "import":
+                all_import = False
+            if ec.monthly_jpy is not None:
+                fixed += ec.monthly_jpy
+            if ec.kind == "usage":
+                n_usage += 1
+            elif ec.kind == "free":
+                n_free += 1
+            elif ec.kind == "unknown":
+                n_unknown += 1
+            out.append(ec)
+        return PlanCostEstimate(
+            entries=tuple(out[:MAX_ENTRIES]),
+            monthly_fixed_jpy=fixed,
+            n_usage=n_usage,
+            n_free=n_free,
+            n_unknown=n_unknown,
+            n_hidden=max(0, len(out) - MAX_ENTRIES),
+            headline=_headline(fixed, n_usage, n_unknown,
+                               all_import and n_entries > 0),
+        )
+    except Exception:  # noqa: BLE001 — advisory display, fail-soft by contract
         return None
-    rcs = plan_json.get("resource_changes", [])
-    if rcs is None:
-        rcs = []
-    if not isinstance(rcs, list):
-        return None
-    out: list[EntryCost] = []
-    fixed = 0.0
-    n_usage = n_free = n_unknown = 0
-    n_entries = 0
-    all_import = True
-    for rc in rcs:
-        if not isinstance(rc, dict):
-            return None
-        address = rc.get("address")
-        rtype = rc.get("type")
-        change = rc.get("change")
-        if not isinstance(address, str) or not address:
-            return None
-        if not isinstance(rtype, str) or not rtype:
-            return None
-        if not isinstance(change, dict):
-            return None
-        raw_actions = change.get("actions")
-        if not isinstance(raw_actions, list) or not all(isinstance(x, str) for x in raw_actions):
-            return None
-        if rc.get("mode") == "data":
-            continue
-        if rc.get("deposed"):
-            continue
-        verb = classify_verb(tuple(raw_actions), isinstance(change.get("importing"), dict))
-        if verb is None:
-            continue
-        ec = _estimate_rc(address, rtype, verb, change)
-        n_entries += 1
-        if verb != "import":
-            all_import = False
-        if ec.monthly_jpy is not None:
-            fixed += ec.monthly_jpy
-        if ec.kind == "usage":
-            n_usage += 1
-        elif ec.kind == "free":
-            n_free += 1
-        elif ec.kind == "unknown":
-            n_unknown += 1
-        out.append(ec)
-    headline = _headline(fixed, n_usage, n_unknown, all_import and n_entries > 0)
-    return PlanCostEstimate(
-        entries=tuple(out[:MAX_ENTRIES]),
-        monthly_fixed_jpy=fixed,
-        n_usage=n_usage,
-        n_free=n_free,
-        n_unknown=n_unknown,
-        n_hidden=max(0, len(out) - MAX_ENTRIES),
-        headline=headline,
-    )
 ```
 
-Implementation note (verb/`importing` semantics): `classify_verb(("no-op",), importing=True)` → `"import"` exactly as the summary lib does; the `importing` flag is the `change.importing` **dict** presence, matching `_build_entry`.
+Implementation notes:
+- `classify_verb(("no-op",), importing=True)` → `"import"` exactly as the summary lib; `importing` = `change.importing is not None` is safe ONLY because the guard already rejected non-dict `importing` (`_build_entry` raises `_Malformed`).
+- `summarize_plan` is called once more inside `estimate_plan_cost` (3 walks per request including `change_summary`) — plans are ≤ a few hundred rows; cached_property on the view means once per view lifetime anyway.
 
 **Commit** (with Task 3's first tests): `feat(lib): iac_cost — heuristic JPY plan cost estimator`
 
@@ -597,7 +675,7 @@ Implementation note (verb/`importing` semantics): `classify_verb(("no-op",), imp
 **Files:**
 - Create: `tests/unit/test_iac_cost.py`
 
-Use the same `_rc`/`_plan` builder shapes as `test_iac_plan_summary.py` (copy the tiny helpers — they are 15 lines; do NOT import another test module). Key tests (write each, watch it fail, make it pass — the Task-2 code above is the target):
+Use the same `_rc`/`_plan` builder shapes as `test_iac_plan_summary.py` (copy the tiny helpers — they are 15 lines; do NOT import another test module). The full target test file:
 
 ```python
 """Unit tests for driftscribe_lib.iac_cost (ClickOps Wave-4 item 13)."""
@@ -609,8 +687,6 @@ import pytest
 
 from driftscribe_lib.iac_cost import (
     COST_DISCLAIMER,
-    EntryCost,
-    PlanCostEstimate,
     _cpu_vcpus,
     _mem_gib,
     estimate_plan_cost,
@@ -618,10 +694,12 @@ from driftscribe_lib.iac_cost import (
 
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "iac_plan_denylist"
 
+_YEN_PER_WARM_UNIT = 1.5 * 0.000398487 * 2628000  # 1 vCPU + 0.5 GiB, request-based
+
 
 def _rc(actions, *, rtype="google_storage_bucket", name="b", address=None,
         before=None, after=None, b_sens=False, a_sens=False,
-        mode="managed", **extra):
+        mode="managed", importing=None, **extra):
     rc = {
         "address": address or f"{rtype}.{name}",
         "type": rtype,
@@ -635,6 +713,8 @@ def _rc(actions, *, rtype="google_storage_bucket", name="b", address=None,
             "after_sensitive": a_sens,
         },
     }
+    if importing is not None:
+        rc["change"]["importing"] = importing
     rc.update(extra)
     return rc
 
@@ -643,20 +723,21 @@ def _plan(*rcs):
     return {"format_version": "1.2", "resource_changes": list(rcs)}
 
 
-def _run_after(min_inst=0, cpu="1000m", memory="512Mi", cpu_idle=True, where="service"):
+def _run_side(min_inst=0, cpu="1000m", memory="512Mi", cpu_idle=True,
+              where="service", containers=None):
     scaling = [{"min_instance_count": min_inst}] if min_inst else []
-    after = {
+    cont = containers if containers is not None else [{
+        "resources": [{"limits": {"cpu": cpu, "memory": memory},
+                       "cpu_idle": cpu_idle}],
+    }]
+    return {
         "location": "asia-northeast1",
         "scaling": scaling if where == "service" else [],
         "template": [{
             "scaling": scaling if where == "template" else [],
-            "containers": [{
-                "resources": [{"limits": {"cpu": cpu, "memory": memory},
-                               "cpu_idle": cpu_idle}],
-            }],
+            "containers": cont,
         }],
     }
-    return after
 
 
 # ---- parsers ---------------------------------------------------------------
@@ -681,70 +762,107 @@ def test_mem_gib(v, want):
 
 def test_run_one_warm_instance_is_about_1571_yen():
     p = _plan(_rc(["create"], rtype="google_cloud_run_v2_service", name="svc",
-                  after=_run_after(min_inst=1)))
+                  after=_run_side(min_inst=1)))
     est = estimate_plan_cost(p)
     (ec,) = est.entries
     assert ec.kind == "fixed"
-    assert math.isclose(ec.monthly_jpy, 1.5 * 0.000398487 * 2628000, rel_tol=1e-9)
+    assert math.isclose(ec.monthly_jpy, _YEN_PER_WARM_UNIT, rel_tol=1e-9)
     assert "¥1,571" in ec.note and "1 always-warm instance" in ec.note
     assert "¥1,571" in est.headline and est.headline.startswith("Adds about")
 
 
-def test_run_scale_to_zero_is_zero_usage():
+def test_run_scale_to_zero_is_usage_with_no_number():
     p = _plan(_rc(["create"], rtype="google_cloud_run_v2_service", name="svc",
-                  after=_run_after(min_inst=0)))
+                  after=_run_side(min_inst=0)))
     est = estimate_plan_cost(p)
     (ec,) = est.entries
-    assert ec.kind == "usage" and ec.monthly_jpy == 0.0
-    assert "scales to zero" in ec.note
+    assert ec.kind == "usage" and ec.monthly_jpy is None  # H7: no usage zeros
+    assert "scales to zero" in ec.note and "handling requests" in ec.note
     assert est.headline.startswith("Adds no always-on cost")
+    assert est.monthly_fixed_jpy == 0.0
+
+
+def test_run_scale_to_zero_instance_based_wording_is_honest():
+    # Codex MF-5: cpu_idle=false is instance-based billing — never describe
+    # it as "billed only while handling requests".
+    p = _plan(_rc(["create"], rtype="google_cloud_run_v2_service", name="svc",
+                  after=_run_side(min_inst=0, cpu_idle=False)))
+    (ec,) = estimate_plan_cost(p).entries
+    assert ec.kind == "usage" and ec.monthly_jpy is None
+    assert "instance-based" in ec.note
+    assert "handling requests" not in ec.note
 
 
 def test_run_template_level_scaling_counts_too():
     p = _plan(_rc(["create"], rtype="google_cloud_run_v2_service", name="svc",
-                  after=_run_after(min_inst=2, where="template")))
-    est = estimate_plan_cost(p)
-    (ec,) = est.entries
+                  after=_run_side(min_inst=2, where="template")))
+    (ec,) = estimate_plan_cost(p).entries
     assert ec.kind == "fixed"
-    assert math.isclose(ec.monthly_jpy, 2 * 1.5 * 0.000398487 * 2628000, rel_tol=1e-9)
+    assert math.isclose(ec.monthly_jpy, 2 * _YEN_PER_WARM_UNIT, rel_tol=1e-9)
     assert "2 always-warm instances" in ec.note
 
 
 def test_run_instance_based_billing_uses_instance_rates():
     p = _plan(_rc(["create"], rtype="google_cloud_run_v2_service", name="svc",
-                  after=_run_after(min_inst=1, cpu_idle=False)))
-    est = estimate_plan_cost(p)
-    (ec,) = est.entries
-    want = 1 * (1.0 * 0.002869110 + 0.5 * 0.000318790) * 2628000
+                  after=_run_side(min_inst=1, cpu_idle=False)))
+    (ec,) = estimate_plan_cost(p).entries
+    want = (1.0 * 0.002869110 + 0.5 * 0.000318790) * 2628000
+    assert math.isclose(ec.monthly_jpy, want, rel_tol=1e-9)
+
+
+def test_run_sidecar_containers_are_summed():
+    # Codex SF-4: sidecars bill too.
+    containers = [
+        {"resources": [{"limits": {"cpu": "1000m", "memory": "512Mi"},
+                        "cpu_idle": True}]},
+        {"resources": [{"limits": {"cpu": "500m", "memory": "256Mi"},
+                        "cpu_idle": True}]},
+    ]
+    p = _plan(_rc(["create"], rtype="google_cloud_run_v2_service", name="svc",
+                  after=_run_side(min_inst=1, containers=containers)))
+    (ec,) = estimate_plan_cost(p).entries
+    want = ((1.0 + 0.5) * 0.000398487 + (0.5 + 0.25) * 0.000398487) * 2628000
     assert math.isclose(ec.monthly_jpy, want, rel_tol=1e-9)
 
 
 def test_run_update_delta_min_instances_0_to_2():
     p = _plan(_rc(["update"], rtype="google_cloud_run_v2_service", name="svc",
-                  before=_run_after(min_inst=0), after=_run_after(min_inst=2)))
-    est = estimate_plan_cost(p)
-    (ec,) = est.entries
+                  before=_run_side(min_inst=0), after=_run_side(min_inst=2)))
+    (ec,) = estimate_plan_cost(p).entries
     assert ec.kind == "fixed" and ec.monthly_jpy > 3000
     assert "changes by about ¥3,142/month" in ec.note and "up" in ec.note
 
 
 def test_run_destroy_with_min_instances_is_negative():
     p = _plan(_rc(["delete"], rtype="google_cloud_run_v2_service", name="svc",
-                  before=_run_after(min_inst=1)))
+                  before=_run_side(min_inst=1)))
     est = estimate_plan_cost(p)
     (ec,) = est.entries
-    assert ec.monthly_jpy < 0 and "stops being billed" in ec.note
+    assert ec.kind == "fixed" and ec.monthly_jpy < 0
+    assert "stops being billed" in ec.note
     assert est.headline.startswith("Reduces always-on cost by about ¥1,571")
 
 
-def test_run_sensitive_scaling_is_conservative_unknown():
+def test_run_sensitive_cost_attr_is_conservative_unknown():
     p = _plan(_rc(["create"], rtype="google_cloud_run_v2_service", name="svc",
-                  after=_run_after(min_inst=3),
+                  after=_run_side(min_inst=3),
                   a_sens={"scaling": True, "template": True}))
-    est = estimate_plan_cost(p)
-    (ec,) = est.entries
+    (ec,) = estimate_plan_cost(p).entries
     assert ec.kind == "unknown" and ec.monthly_jpy is None
     assert "sensitive" in ec.note
+
+
+def test_run_unrelated_sensitive_attr_does_not_void_estimate():
+    # H11 (Codex SF-2): a sensitive env var must not kill the cost estimate.
+    after = _run_side(min_inst=1)
+    after["template"][0]["containers"][0]["env"] = [
+        {"name": "SECRET", "value": "hunter2"}]
+    a_sens = {"template": [{"containers": [{"env": [{"value": True}]}]}]}
+    p = _plan(_rc(["create"], rtype="google_cloud_run_v2_service", name="svc",
+                  after=after, a_sens=a_sens))
+    (ec,) = estimate_plan_cost(p).entries
+    assert ec.kind == "fixed"
+    assert math.isclose(ec.monthly_jpy, _YEN_PER_WARM_UNIT, rel_tol=1e-9)
 
 
 # ---- other types ------------------------------------------------------------
@@ -755,6 +873,21 @@ def test_bucket_create_standard_note():
     (ec,) = estimate_plan_cost(p).entries
     assert ec.kind == "usage" and ec.monthly_jpy is None
     assert "¥0/month while empty" in ec.note and "¥3.67/GiB-month" in ec.note
+
+
+def test_bucket_unknown_storage_class_gets_no_rate():
+    # Codex MF-3 / H5: never price an unrecognized class as Standard.
+    p = _plan(_rc(["create"], after={"storage_class": "MULTI_REGIONAL"}))
+    (ec,) = estimate_plan_cost(p).entries
+    assert ec.kind == "usage" and ec.monthly_jpy is None
+    assert "¥3.67" not in ec.note and "Standard" not in ec.note
+    assert "billed per GiB stored" in ec.note
+
+
+def test_bucket_missing_storage_class_defaults_to_standard():
+    p = _plan(_rc(["create"], after={"location": "ASIA-NORTHEAST1"}))
+    (ec,) = estimate_plan_cost(p).entries
+    assert "¥3.67/GiB-month" in ec.note and "Standard" in ec.note
 
 
 def test_bucket_storage_class_change_shows_both_rates():
@@ -772,21 +905,27 @@ def test_topic_and_sub_free_to_exist():
         _rc(["create"], rtype="google_pubsub_subscription", name="s",
             after={"retain_acked_messages": True}),
     )
-    est = estimate_plan_cost(p)
-    t, s = est.entries
+    t, s = estimate_plan_cost(p).entries
+    assert t.monthly_jpy is None and s.monthly_jpy is None
     assert "free to exist" in t.note and "10 GiB/month free" in t.note
     assert "¥43/GiB-month" in s.note
 
 
-def test_secret_version_fixed_cost_and_destroy_refund():
+def test_secret_version_is_usage_not_fixed():
+    # Codex MF-6: the project-level first-6-free tier makes a numeric fixed
+    # delta unknowable — both directions stay non-numeric.
     p = _plan(
-        _rc(["create"], rtype="google_secret_manager_secret_version", name="v", after={}),
-        _rc(["delete"], rtype="google_secret_manager_secret_version", name="w", before={}),
+        _rc(["create"], rtype="google_secret_manager_secret_version",
+            name="v", after={}),
+        _rc(["delete"], rtype="google_secret_manager_secret_version",
+            name="w", before={}),
     )
     est = estimate_plan_cost(p)
     a, b = est.entries
-    assert a.monthly_jpy == pytest.approx(9.56) and b.monthly_jpy == pytest.approx(-9.56)
-    assert abs(est.monthly_fixed_jpy) < 0.5
+    assert a.kind == "usage" and a.monthly_jpy is None and "¥10/month" in a.note
+    assert b.kind == "usage" and b.monthly_jpy is None
+    assert est.monthly_fixed_jpy == 0.0
+    assert "first 6 free" in a.note
 
 
 def test_free_types_and_unknown_type():
@@ -796,7 +935,7 @@ def test_free_types_and_unknown_type():
     )
     est = estimate_plan_cost(p)
     sa, bt = est.entries
-    assert sa.kind == "free" and sa.monthly_jpy == 0.0
+    assert sa.kind == "free" and sa.monthly_jpy is None
     assert bt.kind == "unknown" and bt.monthly_jpy is None
     assert "no estimate" in est.headline
 
@@ -805,12 +944,10 @@ def test_free_types_and_unknown_type():
 
 def test_import_is_no_billing_change():
     p = _plan(_rc(["no-op"], name="adopted", after={"name": "adopted"},
-                  change_importing=True))
-    # build importing via raw dict (importing lives under change)
-    p["resource_changes"][0]["change"]["importing"] = {"id": "adopted"}
+                  importing={"id": "adopted"}))
     est = estimate_plan_cost(p)
     (ec,) = est.entries
-    assert ec.kind == "free" and ec.monthly_jpy == 0.0
+    assert ec.kind == "free" and ec.monthly_jpy is None
     assert "already being billed" in ec.note
     assert est.headline.startswith("Adopting costs nothing extra")
 
@@ -834,21 +971,29 @@ def test_deposed_and_data_and_noop_rows_skipped():
     assert [e.address for e in est.entries] == ["google_storage_bucket.new"]
 
 
-def test_malformed_row_voids_whole_estimate():
-    p = _plan(_rc(["create"], after={}))
-    p["resource_changes"].append({"address": "", "type": "x", "change": {"actions": ["create"]}})
-    assert estimate_plan_cost(p) is None
-    assert estimate_plan_cost("nope") is None
-    assert estimate_plan_cost({"resource_changes": "nope"}) is None
+def test_parity_with_summarize_plan_on_malformed_input():
+    # H10: whenever the summary refuses, the cost refuses — same inputs.
+    from driftscribe_lib.iac_plan_summary import summarize_plan
+
+    bad_row = _plan(_rc(["create"], after={}))
+    bad_row["resource_changes"].append(
+        {"address": "", "type": "x", "change": {"actions": ["create"]}})
+    data_mutation = _plan(_rc(["create"], name="dm", mode="data", after={}))
+    bad_importing = _plan(_rc(["no-op"], name="i", importing="yes"))
+    unknown_mode = _plan(_rc(["create"], name="m", mode="weird", after={}))
+    for plan in (bad_row, data_mutation, bad_importing, unknown_mode,
+                 "nope", {"resource_changes": "nope"}):
+        assert summarize_plan(plan) is None
+        assert estimate_plan_cost(plan) is None
 
 
 def test_totals_pre_cap_and_n_hidden():
-    rcs = [_rc(["create"], rtype="google_secret_manager_secret_version",
-               name=f"v{i}", address=f"google_secret_manager_secret_version.v{i}",
-               after={}) for i in range(45)]
+    rcs = [_rc(["create"], rtype="google_cloud_run_v2_service",
+               name=f"s{i}", address=f"google_cloud_run_v2_service.s{i}",
+               after=_run_side(min_inst=1)) for i in range(45)]
     est = estimate_plan_cost(_plan(*rcs))
     assert len(est.entries) == 40 and est.n_hidden == 5
-    assert est.monthly_fixed_jpy == pytest.approx(45 * 9.56)
+    assert est.monthly_fixed_jpy == pytest.approx(45 * _YEN_PER_WARM_UNIT)
 
 
 def test_by_address_and_disclaimer():
@@ -857,6 +1002,27 @@ def test_by_address_and_disclaimer():
     assert est.by_address["google_storage_bucket.b"].kind == "usage"
     assert est.disclaimer == COST_DISCLAIMER
     assert "not a quote" in COST_DISCLAIMER and "Tokyo" in COST_DISCLAIMER
+    assert "2026-06-11" in COST_DISCLAIMER
+
+
+def test_monthly_jpy_numeric_iff_fixed():
+    # H7 contract pin across a mixed plan.
+    p = _plan(
+        _rc(["create"], rtype="google_cloud_run_v2_service", name="warm",
+            after=_run_side(min_inst=1)),
+        _rc(["create"], rtype="google_cloud_run_v2_service", name="cold",
+            after=_run_side(min_inst=0)),
+        _rc(["create"], name="bucket", after={}),
+        _rc(["create"], rtype="google_service_account", name="sa", after={}),
+        _rc(["create"], rtype="google_bigtable_instance", name="bt", after={}),
+    )
+    for ec in estimate_plan_cost(p).entries:
+        assert (ec.monthly_jpy is not None) == (ec.kind == "fixed")
+
+
+def test_empty_plan_has_zero_entries_not_none():
+    est = estimate_plan_cost({"format_version": "1.2", "resource_changes": []})
+    assert est is not None and est.entries == ()
 
 
 # ---- real provider fixtures ---------------------------------------------------
@@ -874,11 +1040,12 @@ def test_real_bucket_storage_class_update_fixture():
     p = json.loads((FIXTURES / "real_import_bucket_storage_class_update.json").read_text())
     est = estimate_plan_cost(p)
     assert est is not None
-    by_kind = {e.kind for e in est.entries}
-    assert "usage" in by_kind
+    assert any(e.kind == "usage" for e in est.entries)
 ```
 
-Note for the implementer: `test_import_is_no_billing_change` sets `importing` directly on the change dict (the `_rc` helper doesn't take it); drop the bogus `change_importing=True` kwarg from the `_rc` call — build the rc then assign `["change"]["importing"]`. The expected Cloud Run delta string in `test_run_update_delta_min_instances_0_to_2` is `¥3,142` (= 2 × 1,570.83 rounded).
+Notes for the implementer:
+- The exact Cloud Run delta string in `test_run_update_delta_min_instances_0_to_2` is `¥3,142` (= 2 × 1,570.84 rounded).
+- If a fixture-shaped expectation fails (e.g. the real fixtures carry an extra rc), adjust the ASSERTION to the fixture's actual content — never the lib — and note it in the commit message.
 
 **Run:** `.venv/bin/pytest tests/unit/test_iac_cost.py -v` → all PASS. **Commit** with Task 2.
 
@@ -890,11 +1057,11 @@ Note for the implementer: `test_import_is_no_billing_change` sets `importing` di
 - Modify: `agent/iac_artifacts.py` (directly below `change_summary`, ~line 529)
 - Test: `tests/unit/test_iac_artifacts.py`
 
-**Step 1: Failing tests**
+**Step 1: Failing tests** (mirror the file's existing `change_summary` tests and view-construction helper):
 
 ```python
 def test_cost_summary_none_without_plan_json():
-    view = _make_minimal_view()          # reuse the file's existing builder pattern
+    view = _make_minimal_view()
     assert view._plan_json is None
     assert view.cost_summary is None
 
@@ -906,8 +1073,6 @@ def test_cost_summary_present_with_plan_json():
     assert cost is not None and cost.entries == ()
 ```
 
-(Adapt to the file's actual view-construction helper; mirror the existing `change_summary` tests.)
-
 **Step 2–4: Implement + run**
 
 ```python
@@ -916,8 +1081,10 @@ def test_cost_summary_present_with_plan_json():
         """Heuristic monthly-cost estimate of the parsed plan (roadmap W4-13),
         or None. Same trust posture as ``change_summary``: advisory display
         only, derived from the integrity-checked plan.json, None when the plan
-        never parsed. Surfaces MUST only render it where the plain-language
-        summary itself renders (cost never vouches for an unverified plan)."""
+        never parsed (estimate_plan_cost itself refuses whenever
+        summarize_plan refuses — parity-by-construction). Surfaces MUST only
+        render it where the plain-language summary itself renders, and never
+        for a denylist-blocked plan (cost implies viability)."""
         from driftscribe_lib.iac_cost import estimate_plan_cost
 
         if self._plan_json is None:
@@ -937,23 +1104,22 @@ def test_cost_summary_present_with_plan_json():
 - Modify: `agent/templates/iac_approval.html`
 - Test: `tests/unit/test_iac_approval_template.py`
 
-**Step 1: Failing tests** (use the file's `_render`/`_summary`/`_view` helpers; the view stub gains a `cost_summary` attribute — `SimpleNamespace` entries):
+**Step 1: Failing tests** (use the file's `_render`/`_summary`/`_view` helpers; the view stub gains a `cost_summary` attribute — `SimpleNamespace` entries). First check the existing `_view()` helper: if it constructs a stub without `cost_summary`, add `cost_summary=None` to its defaults so every existing test keeps passing unmodified.
 
 ```python
 def _cost(headline="Adds no always-on cost — ¥0/month until it is used.",
           entries=(), n_hidden=0):
-    by_addr = {e.address: e for e in entries}
     return SimpleNamespace(
         headline=headline, entries=entries, n_hidden=n_hidden,
-        by_address=by_addr,
+        by_address={e.address: e for e in entries},
         disclaimer=("Cost figures are heuristic estimates from Google Cloud "
-                    "list prices (Tokyo region, June 2026 rates) — not a quote. "
-                    "Usage-based charges (storage, messages, requests, network) "
-                    "depend entirely on how much you use."),
+                    "list prices (Tokyo region, fetched 2026-06-11) — not a "
+                    "quote. Usage-based charges (storage, messages, requests, "
+                    "network) depend entirely on how much you use."),
     )
 
 
-def test_cost_headline_and_disclaimer_render():
+def test_cost_headline_entry_and_disclaimer_render():
     v = _view()
     v.change_summary = _summary()
     ec = SimpleNamespace(address="google_storage_bucket.assets",
@@ -978,20 +1144,27 @@ def test_cost_absent_when_cost_summary_none():
 
 
 def test_cost_never_renders_outside_trust_gate():
-    v = _view()
-    v.change_summary = _summary()
-    v.cost_summary = _cost()
-    v.unverifiable = True
-    html = _render(view=v, show_summary=True)
-    assert 'data-testid="cost-estimate"' not in html
+    # unverifiable / integrity-fail / denylist-blocked all suppress the whole
+    # card today — cost must die with it (H1).
+    for break_it in (
+        lambda v: setattr(v, "unverifiable", True),
+        lambda v: setattr(v, "integrity_ok", False),
+        lambda v: setattr(v, "denylist_violations", [("import-forbidden-v1", "x")]),
+    ):
+        v = _view()
+        v.change_summary = _summary()
+        v.cost_summary = _cost()
+        break_it(v)
+        html = _render(view=v, show_summary=True)
+        assert 'data-testid="cost-estimate"' not in html
 
 
 def test_cost_entry_skipped_for_deposed_row():
-    # deposed entry shares its address with the main row — no cost line on it
-    ...  # build a _summary() with a deposed entry; assert exactly ONE cost-entry div
+    # A deposed entry shares its address with the main row — the join must
+    # not put a cost line on it. Build a summary with a deposed entry plus a
+    # normal one at the same address; assert exactly ONE cost-entry div.
+    ...  # use the file's entry-builder; count html.count('data-testid="cost-entry"') == 1
 ```
-
-Also check the existing `_view()` helper: if it constructs a `SimpleNamespace` without `cost_summary`, add `cost_summary=None` to its defaults so every existing test keeps passing unmodified.
 
 **Step 3: Template changes** — all inside the existing trust-gated card.
 
@@ -1025,6 +1198,8 @@ Also check the existing `_view()` helper: if it constructs a `SimpleNamespace` w
             {% endif %}
 ```
 
+No inline styles, no scripts — strict-CSP (`style-src 'self'`, no script-src) is untouched; only existing `ds-*` classes are used.
+
 **Step 4: Run** `.venv/bin/pytest tests/unit/test_iac_approval_template.py -q` → PASS (every pre-existing test unmodified).
 
 **Step 5: Commit** — `feat(ui): heuristic cost estimate on the IaC approval summary card`
@@ -1040,24 +1215,29 @@ Also check the existing `_view()` helper: if it constructs a `SimpleNamespace` w
 **Step 1: Failing tests** (use the file's `_make_view` helper + `_adk_tools_mod` patching pattern):
 
 ```python
-def test_cost_block_present_and_rounded(monkeypatch):
-    view = _make_view()           # verified, with _plan_json carrying one create
-    view._plan_json = {
+def _plan_json_one_warm_service():
+    return {
         "format_version": "1.2",
         "resource_changes": [{
             "address": "google_cloud_run_v2_service.svc",
             "type": "google_cloud_run_v2_service", "name": "svc",
             "mode": "managed",
             "change": {"actions": ["create"], "before": None,
-                        "after": {"scaling": [{"min_instance_count": 1}],
-                                  "template": [{"scaling": [], "containers": [
-                                      {"resources": [{"limits": {"cpu": "1000m",
-                                                                  "memory": "512Mi"},
-                                                       "cpu_idle": True}]}]}]},
-                        "before_sensitive": False, "after_sensitive": False},
+                       "after": {"scaling": [{"min_instance_count": 1}],
+                                 "template": [{"scaling": [], "containers": [
+                                     {"resources": [{"limits": {"cpu": "1000m",
+                                                                "memory": "512Mi"},
+                                                     "cpu_idle": True}]}]}]},
+                       "before_sensitive": False, "after_sensitive": False},
         }],
     }
-    monkeypatch.setattr(_adk_tools_mod, "load_plan_view_from_gcs", lambda *a, **k: view)
+
+
+def test_cost_block_present_and_rounded(monkeypatch):
+    view = _make_view()  # verified, no violations
+    view._plan_json = _plan_json_one_warm_service()
+    monkeypatch.setattr(_adk_tools_mod, "load_plan_view_from_gcs",
+                        lambda *a, **k: view)
     out = _adk_tools_mod.load_iac_plan_tool(7)
     cost = out["cost"]
     assert cost["monthly_always_on_change_jpy"] == 1571
@@ -1070,56 +1250,76 @@ def test_cost_block_present_and_rounded(monkeypatch):
 
 def test_cost_absent_when_summary_unavailable(monkeypatch):
     view = _make_view()
-    view._plan_json = None        # change_summary → None, cost_summary → None
-    monkeypatch.setattr(_adk_tools_mod, "load_plan_view_from_gcs", lambda *a, **k: view)
+    view._plan_json = None  # change_summary → None, cost_summary → None
+    monkeypatch.setattr(_adk_tools_mod, "load_plan_view_from_gcs",
+                        lambda *a, **k: view)
     out = _adk_tools_mod.load_iac_plan_tool(7)
     assert out["summary"] is None
     assert "cost" not in out
+
+
+def test_cost_absent_for_denylist_blocked_plan(monkeypatch):
+    # Codex MF-1 / H1: the item-12 summary IS returned for blocked plans
+    # (explaining a block is the point) — but cost is NOT (pricing a plan
+    # implies viability, and the approval page hides its card anyway).
+    view = _make_view(denylist_violations=[("import-forbidden-v1", "boom")])
+    view._plan_json = _plan_json_one_warm_service()
+    monkeypatch.setattr(_adk_tools_mod, "load_plan_view_from_gcs",
+                        lambda *a, **k: view)
+    out = _adk_tools_mod.load_iac_plan_tool(7)
+    assert out["blocked"] is True
+    assert out["summary"] is not None  # item-12 behavior unchanged
+    assert "cost" not in out
 ```
 
-(Exact rounding pin: `round(1.5 × 0.000398487 × 2,628,000) = round(1570.84) = 1571`.)
+(Exact rounding pin: `round(1.5 × 0.000398487 × 2,628,000) = round(1570.84) = 1571`. Adapt `_make_view(denylist_violations=...)` to the helper's actual signature — it may take the violations list directly or need attribute assignment after construction.)
 
 **Step 3: Implement** — after `out["cannot_touch"] = BLAST_CANNOT_TOUCH_NOTE`:
 
 ```python
-    cost = view.cost_summary
-    if cost is not None:
-        out["cost"] = {
-            "headline": cost.headline,
-            "monthly_always_on_change_jpy": round(cost.monthly_fixed_jpy),
-            "entries": [
-                {
-                    "address": c.address,
-                    "kind": c.kind,
-                    "monthly_jpy": (
-                        round(c.monthly_jpy) if c.monthly_jpy is not None else None
-                    ),
-                    "note": c.note,
-                }
-                for c in cost.entries
-            ],
-            "n_hidden": cost.n_hidden,
-            "disclaimer": cost.disclaimer,
-        }
+    # Cost rides ONLY alongside a present summary AND never for a blocked
+    # plan: the summary explains what a blocked plan tried to do (item 12);
+    # a price tag would frame it as a viable change (H1).
+    if not view.denylist_violations:
+        cost = view.cost_summary
+        if cost is not None:
+            out["cost"] = {
+                "headline": cost.headline,
+                "monthly_always_on_change_jpy": round(cost.monthly_fixed_jpy),
+                "entries": [
+                    {
+                        "address": c.address,
+                        "kind": c.kind,
+                        "monthly_jpy": (
+                            round(c.monthly_jpy) if c.monthly_jpy is not None else None
+                        ),
+                        "note": c.note,
+                    }
+                    for c in cost.entries
+                ],
+                "n_hidden": cost.n_hidden,
+                "disclaimer": cost.disclaimer,
+            }
     return out
 ```
 
-(The early-returns for unverifiable / integrity-fail / summary-None all fire BEFORE this point, so the cost block automatically obeys H1 and only rides alongside a present summary. Note `summary=None` early-returns at line ~994 — cost is added only on the full-success path, matching the second test.)
+(The early-returns for unverifiable / integrity-fail / summary-None all fire BEFORE this point, so the cost block automatically obeys the rest of H1 and only rides alongside a present summary.)
 
-Docstring: extend the "verified →" bullet with `, and a heuristic ``cost`` block (JPY list-price estimate; disclaimer included — relay it, never as a quote)`.
+Docstring: extend the "verified →" bullet with `, and a heuristic ``cost`` block on clean plans only — JPY list-price estimate with disclaimer (never for denylist-blocked plans; a price implies viability)`.
 
 **Step 4: Run** `.venv/bin/pytest tests/unit/test_load_iac_plan_tool.py -q` → PASS.
 
-**Step 5: Commit** — `feat(agent): cost block in load_iac_plan_tool output`
+**Step 5: Commit** — `feat(agent): cost block in load_iac_plan_tool output (clean plans only)`
 
 ---
 
 ### Task 7: Explore prompt rule
 
 **Files:**
-- Modify: `workloads/explore/system_prompt.md` (the load_iac_plan rules added by item 12)
+- Modify: `workloads/explore/system_prompt.md` (beside the load_iac_plan rules added by item 12)
+- Test: `tests/unit/test_explore_workload_loads.py` (the prompt-pin tests live HERE — not a guessed filename; extend the existing pins)
 
-Add one rule beside the existing load_iac_plan rules:
+Add one rule:
 
 ```markdown
 - When the operator asks what a change will COST, use the `cost` block from
@@ -1130,7 +1330,7 @@ Add one rule beside the existing load_iac_plan rules:
   is the headline's: adopting changes nothing about what they already pay.
 ```
 
-There is a prompt-pin test over the explore system prompt (`tests/unit/test_workload_prompts.py` or similar — find it via `grep -rl "system_prompt" tests/unit/ | xargs grep -l explore`). If it pins exact rule counts/hashes, update it in the same commit; if it pins only the item-12 rules' presence, add a presence assertion for the cost rule.
+Extend the existing prompt-pin test with a presence assertion (match the file's existing style — e.g. asserting key phrases like "never as a quote" and "never invent figures" appear in the explore prompt).
 
 **Commit** — `feat(workloads): explore prompt rule for honest cost relay`
 
@@ -1149,7 +1349,7 @@ There is a prompt-pin test over the explore system prompt (`tests/unit/test_work
 
 1. PR: `feat: cost estimate per change — heuristic JPY list-price line on the approval page + chat tool (ClickOps Wave-4 item 13)`.
 2. CI watch (`gh pr checks N --watch`, background; plan-builder "skipping" expected).
-3. Codex completed-work review on the SAME thread as the plan review.
+3. Codex completed-work review on the SAME thread as the plan review (`019eb729-ec14-7290-af56-d411b6b24859`).
 4. Squash-merge → coordinator rebake (`infra/cloudbuild.coordinator-update.yaml`, `_TAG=<short-sha>`) → find revision **by image digest** → `update-traffic --to-revisions=<rev>=100`. NO tofu-editor rebake (no gate/denylist change).
 5. Live verify:
    - `/iac-approvals/102` (terminal adopt page) — cost headline "Adopting costs nothing extra…" + disclaimer present, card otherwise unchanged.
