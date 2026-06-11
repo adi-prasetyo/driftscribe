@@ -591,6 +591,18 @@ def load_plan_view(
         return view
     view.metadata = md
 
+    _populate_plan_view_from_metadata(view, md, bucket_name=bucket_name, client=client)
+    return view
+
+
+def _populate_plan_view_from_metadata(
+    view: "IacPlanView", md: dict[str, Any], *, bucket_name: str, client: Any
+) -> None:
+    """Steps 3–5 of the plan-view load, shared by the comment path
+    (:func:`load_plan_view`) and the GCS-listing path
+    (:func:`load_plan_view_from_gcs`): fetch plan.json pinned to the
+    validated metadata's generation, recompute the digest, re-run the C1
+    denylist. Mutates ``view`` in place; any failure sets ``unverifiable``."""
     # Step 3: fetch plan.json (URI + generation come from the validated metadata).
     try:
         _bucket, json_obj = validate_artifact_uri(
@@ -603,7 +615,7 @@ def load_plan_view(
         )
     except IacArtifactError:
         view.unverifiable = True
-        return view
+        return
 
     # Step 4: recompute integrity (single-artifact, advisory — see docstring).
     actual = hashlib.sha256(plan_json_bytes).hexdigest()
@@ -627,6 +639,69 @@ def load_plan_view(
         else:
             view.denylist_violations = [(v.rule, v.detail) for v in violations]
 
+
+def load_plan_view_from_gcs(
+    pr_number: int,
+    *,
+    bucket_name: str,
+    client: Any = None,
+    expected_repo: str | None = None,
+) -> "IacPlanView | None":
+    """Fetch + advisory-verify the NEWEST plan artifact for ``pr_number`` by
+    GCS listing (no GitHub) — the explore chat tool's loader.
+
+    ``None`` when the PR has no plan artifact at all. Otherwise the same
+    fail-closed IacPlanView contract as :func:`load_plan_view`, with two
+    structural differences: ``tofu_show_text`` is always ``""`` (it lives only
+    in the C2 comment) and the metadata identity comes from the listing.
+
+    Path-bound identity (Codex review 019eb6d0 must-fix 1): ordering happens
+    on the OBJECT PATH, so the loader refuses (``unverifiable=True``) any
+    metadata doc whose own identity fields (``pr_number`` / ``head_sha`` /
+    ``workflow_run_id`` / ``workflow_run_attempt``) do not reconstruct the
+    exact object path it was listed at — a stale or copied metadata object
+    under a newer-looking path must not redirect the plan.json fetch to a
+    different run. ``expected_repo`` (when given) additionally pins
+    ``md["repo"]``; ``None`` skips that check (caller has no configured repo).
+    """
+    if client is None:
+        from google.cloud import storage  # lazy: tests inject a double
+
+        client = storage.Client()
+    found = find_latest_plan_meta_in_gcs(
+        pr_number, bucket_name=bucket_name, client=client
+    )
+    if found is None:
+        return None
+    meta_obj, generation = found
+    view = IacPlanView(
+        _artifact_uri_metadata=f"gs://{bucket_name}/{meta_obj}",
+        _generation_metadata=str(generation),
+    )
+    try:
+        meta_bytes = fetch_gcs_object(bucket_name, meta_obj, generation, client=client)
+        md = json.loads(meta_bytes.decode("utf-8"))
+    except (IacArtifactError, ValueError, UnicodeDecodeError):
+        view.unverifiable = True
+        return view
+    if not _assert_c2v1_metadata(md):
+        view.unverifiable = True
+        return view
+    # Identity cross-checks — all fields format-validated by the c2.v1
+    # round-trip above, so plain equality is sufficient and fail-closed.
+    expected_path = (
+        f"pr-{md['pr_number']}/{md['head_sha']}/"
+        f"run-{md['workflow_run_id']}-{md['workflow_run_attempt']}/metadata.json"
+    )
+    if (
+        md.get("pr_number") != pr_number
+        or meta_obj != expected_path
+        or (expected_repo is not None and md.get("repo") != expected_repo)
+    ):
+        view.unverifiable = True
+        return view
+    view.metadata = md
+    _populate_plan_view_from_metadata(view, md, bucket_name=bucket_name, client=client)
     return view
 
 
