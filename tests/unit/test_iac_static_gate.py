@@ -418,13 +418,25 @@ def test_import_target_resource_with_for_each_fires_indexed():
 
 
 def test_import_service_account_type_fires_type_not_adoptable():
-    """google_service_account pair → import-type-not-adoptable."""
+    """google_service_account pair → EXACTLY import-type-not-adoptable (the
+    pair is declared, plain-addressed, literal-id — nothing else may fire)."""
     hcl = (
         'resource "google_service_account" "sa" { account_id = "my-sa" }\n'
         'import { to = google_service_account.sa  id = "projects/p/serviceAccounts/my-sa@p.iam.gserviceaccount.com" }\n'
     )
     violations = evaluate(_agent_gi({"iac/x.tf": hcl}))
-    assert any(v.rule == "import-type-not-adoptable" for v in violations)
+    assert [v.rule for v in violations] == ["import-type-not-adoptable"]
+
+
+def test_import_indexed_target_and_bad_id_co_emit():
+    """Each independently-detectable violation is emitted separately — an
+    indexed target does NOT swallow the id check (co-emission contract)."""
+    hcl = (
+        'resource "google_storage_bucket" "b" {}\n'
+        'import { to = google_storage_bucket.b[0]  id = var.bucket_name }\n'
+    )
+    violations = evaluate(_agent_gi({"iac/x.tf": hcl}))
+    assert {v.rule for v in violations} == {"import-target-indexed", "import-id-not-literal"}
 
 
 def test_import_id_var_reference_fires_not_literal():

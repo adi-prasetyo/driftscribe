@@ -1,5 +1,5 @@
 {
-  "_test_intent": "import of the coordinator SA — must emit import-forbidden-v1 + control-plane-sa + iam-change-forbidden-v1",
+  "_test_intent": "import of the coordinator SA — must emit exactly control-plane-sa + iam-change-forbidden-v1 + import-type-not-adoptable-v1",
   "format_version": "1.2",
   "resource_changes": [
     {

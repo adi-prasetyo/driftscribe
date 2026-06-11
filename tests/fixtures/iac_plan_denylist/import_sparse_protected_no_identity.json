@@ -1,5 +1,5 @@
 {
-  "_test_intent": "Cloud Run service import with before/after both empty — must emit import-forbidden-v1 + plan-json-malformed-change (bias-to-deny §4.2)",
+  "_test_intent": "Cloud Run service import with before/after both empty — must emit plan-json-malformed-change (bias-to-deny §4.2)",
   "format_version": "1.2",
   "resource_changes": [
     {

@@ -1,5 +1,5 @@
 {
-  "_test_intent": "import of the tofu-state bucket — must emit import-forbidden-v1 + control-plane-bucket",
+  "_test_intent": "import of the tofu-state bucket — must emit exactly control-plane-bucket (type is adoptable; the §4.1 identity rule still fires)",
   "format_version": "1.2",
   "resource_changes": [
     {

@@ -474,7 +474,7 @@ def test_importing_control_plane_identities_fires_identity_rules(fixture, expect
     impossible. Each fixture must fire exactly its expected rule(s)."""
     parsed, _ = load_plan_json(_load(fixture))
     rules = set(_rules(evaluate(DenylistInput(plan=parsed))))
-    assert expected_rules <= rules, fixture
+    assert rules == expected_rules, fixture
 
 
 def test_malformed_importing_value_emits_malformed_only():
