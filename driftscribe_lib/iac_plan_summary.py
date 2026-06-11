@@ -52,9 +52,9 @@ __all__ = [
 BLAST_CANNOT_TOUCH_NOTE = (
     "It cannot touch DriftScribe's own control plane (its services, "
     "service accounts, state/artifact buckets, secrets, or encryption "
-    "keys), cannot change IAM anywhere, and cannot delete, replace, or "
-    "un-manage any resource — denylist-enforced, re-checked by the apply "
-    "worker before apply."
+    "keys), cannot change IAM anywhere, cannot delete, replace, or "
+    "un-manage any resource, and cannot adopt (import) existing resources "
+    "— denylist-enforced, re-checked by the apply worker before apply."
 )
 
 MAX_ENTRIES = 40           # resource rows rendered (counts stay total)
