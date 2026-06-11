@@ -108,3 +108,40 @@ export function decisionFields(d: Decision | null | undefined): DecisionField[] 
 
   return rows;
 }
+
+// --------------------------------------------------------------------------- //
+// Applied-decision watermark (resource-map refresh trigger).
+// --------------------------------------------------------------------------- //
+
+export interface AppliedWatermark {
+  /** decision_id of the newest applied iac_apply seen so far (null = none). */
+  id: string | null;
+  /** False until the FIRST /decisions load has been observed. */
+  seeded: boolean;
+}
+
+/**
+ * Decide whether a /decisions load contains a FRESHLY-applied iac_apply (one
+ * not seen on a previous load) → `bump: true` drives InfraDiagram's delayed
+ * 0/10/30/60s re-fetch ladder (rides out CAI lag after an apply).
+ *
+ * The FIRST load only SEEDS the watermark — a historical applied decision
+ * present at boot must NOT bump. (Prod incident, Phase-4 live e2e 2026-06-11:
+ * every page boot bumped on a 10-hour-old applied decision, so every boot rode
+ * the full ladder — ~6 /infra/graph fetches in the first minute. Against the
+ * concurrency-1 infra-reader, whose CAI inventory takes 10-15s, the queue
+ * exceeded the coordinator's 30s worker timeout and EVERY map load came back
+ * degraded: the panel DDOSed its own backend on boot.)
+ */
+export function nextAppliedWatermark(
+  prev: AppliedWatermark,
+  decisions: Decision[],
+): { next: AppliedWatermark; bump: boolean } {
+  const applied = decisions.find(
+    (d) => d.action === 'iac_apply' && d.apply_status === 'applied',
+  );
+  const id = applied?.decision_id ?? null;
+  if (!prev.seeded) return { next: { id, seeded: true }, bump: false };
+  if (id !== null && id !== prev.id) return { next: { id, seeded: true }, bump: true };
+  return { next: prev, bump: false };
+}

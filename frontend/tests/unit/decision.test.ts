@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { decisionFields } from '../../src/lib/decision';
+import { decisionFields, nextAppliedWatermark } from '../../src/lib/decision';
 import type { Decision } from '../../src/lib/types';
 
 // A realistic iac_apply decision doc as GET /trace returns it (verified against
@@ -122,5 +122,46 @@ describe('decisionFields — generic / edge cases', () => {
   it('falls back to created_at when applied_at is absent', () => {
     const d = { decision_id: 'x', action: 'iac_apply', created_at: '2026-01-02T03:04:05Z' } as Decision;
     expect(byLabel(d, 'When')?.value).toContain('2026');
+  });
+});
+
+describe('nextAppliedWatermark — boot-seed semantics', () => {
+  // Prod incident (Phase-4 live e2e, 2026-06-11): every page boot bumped the
+  // applied epoch on a HISTORICAL applied decision, riding the 0/10/30/60s
+  // refresh ladder on every load and queue-collapsing the concurrency-1
+  // infra-reader. The first observed load must SEED, never bump.
+  const applied = (id: string) =>
+    ({ decision_id: id, action: 'iac_apply', apply_status: 'applied' }) as never;
+  const other = { decision_id: 'x', action: 'rollback' } as never;
+  const UNSEEDED = { id: null, seeded: false };
+
+  it('first load with a historical applied decision seeds without bumping', () => {
+    const { next, bump } = nextAppliedWatermark(UNSEEDED, [applied('d1'), other]);
+    expect(bump).toBe(false);
+    expect(next).toEqual({ id: 'd1', seeded: true });
+  });
+
+  it('first load with NO applied decision seeds null; a later first apply bumps', () => {
+    const r1 = nextAppliedWatermark(UNSEEDED, [other]);
+    expect(r1.bump).toBe(false);
+    expect(r1.next).toEqual({ id: null, seeded: true });
+    const r2 = nextAppliedWatermark(r1.next, [applied('d1')]);
+    expect(r2.bump).toBe(true);
+    expect(r2.next.id).toBe('d1');
+  });
+
+  it('a NEW applied id after seeding bumps once; the same id never re-bumps', () => {
+    const seeded = { id: 'd1', seeded: true };
+    const r1 = nextAppliedWatermark(seeded, [applied('d2')]);
+    expect(r1.bump).toBe(true);
+    expect(r1.next.id).toBe('d2');
+    const r2 = nextAppliedWatermark(r1.next, [applied('d2')]);
+    expect(r2.bump).toBe(false);
+    expect(r2.next.id).toBe('d2');
+  });
+
+  it('newest-first ordering wins: the first applied entry is the watermark', () => {
+    const { next } = nextAppliedWatermark(UNSEEDED, [applied('newest'), applied('older')]);
+    expect(next.id).toBe('newest');
   });
 });
