@@ -744,7 +744,7 @@ def test_ask_about_link_renders_with_view(_configured, monkeypatch):
     _patch_resolve(monkeypatch, ref=_ref(), view=_view())
     resp = TestClient(app).get("/iac-approvals/42")
     assert resp.status_code == 200
-    assert f'href="/?ask_pr=42"' in resp.text
+    assert 'href="/?ask_pr=42"' in resp.text
     assert 'data-testid="ask-about-link"' in resp.text
 
 
@@ -770,7 +770,7 @@ def test_ask_about_link_renders_on_blocked_view(_configured, monkeypatch):
     assert resp.status_code == 200
     assert "protect-coordinator" in resp.text
     assert 'data-testid="ask-about-link"' in resp.text
-    assert f'href="/?ask_pr=42"' in resp.text
+    assert 'href="/?ask_pr=42"' in resp.text
 
 
 def test_ask_about_link_renders_on_terminal_view(
@@ -784,4 +784,4 @@ def test_ask_about_link_renders_on_terminal_view(
     assert resp.status_code == 200
     assert "Already applied and merged" in resp.text
     assert 'data-testid="ask-about-link"' in resp.text
-    assert f'href="/?ask_pr=42"' in resp.text
+    assert 'href="/?ask_pr=42"' in resp.text

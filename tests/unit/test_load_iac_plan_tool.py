@@ -8,8 +8,23 @@ Pins (item 12 design §4–5):
 - AttrChange display strings pass through ALREADY masked — assert the
   literal "(sensitive)" marker, never a raw value.
 - Fail-soft: every failure path returns an error dict; the tool never raises.
+
+Patching note: these tests use ``monkeypatch.setattr(_adk_tools_mod, attr, value)``
+(module-object form, not the dotted-string form) to avoid a stale-module
+interaction with ``test_adk_agent_imports_cleanly_without_pulling_dangerous_
+sdks``.  That test temporarily pops ``agent.adk_tools`` from ``sys.modules``
+and reimports ``agent.adk_agent``, which makes Python set the ``adk_tools``
+attribute on the parent ``agent`` package to the newly-imported module.  After
+the finally-block restores ``sys.modules["agent.adk_tools"]`` to the original,
+``import agent.adk_tools as …`` inside a test function silently returns the
+stale attribute (``agent.adk_tools``) rather than ``sys.modules["agent.adk_
+tools"]``, landing the patch on the wrong module object.
+
+Capturing the module reference at collection time (``_adk_tools_mod = import
+agent.adk_tools``) is executed *before* any test runs, so it always holds the
+original module whose ``__dict__`` is ``load_iac_plan_tool.__globals__``.
 """
-import os
+import agent.adk_tools as _adk_tools_mod  # captured at collection — always mod1
 
 import pytest
 
@@ -77,7 +92,7 @@ def _clear_settings(monkeypatch):
 
 def test_not_found(monkeypatch):
     """Loader returns None → found=False with helpful error."""
-    monkeypatch.setattr("agent.adk_tools.load_plan_view_from_gcs", lambda *a, **k: None)
+    monkeypatch.setattr(_adk_tools_mod, "load_plan_view_from_gcs", lambda *a, **k: None)
     result = load_iac_plan_tool(7)
     assert result["found"] is False
     assert "error" in result
@@ -92,7 +107,7 @@ def test_not_found_bucket_name(monkeypatch):
         received["bucket_name"] = bucket_name
         return None
 
-    monkeypatch.setattr("agent.adk_tools.load_plan_view_from_gcs", _capture)
+    monkeypatch.setattr(_adk_tools_mod, "load_plan_view_from_gcs", _capture)
     load_iac_plan_tool(7)
     assert received["bucket_name"] == "testproj-tofu-artifacts"
 
@@ -100,7 +115,7 @@ def test_not_found_bucket_name(monkeypatch):
 def test_invalid_pr_number(monkeypatch):
     """Non-positive integer → error dict, loader NOT called."""
     calls = []
-    monkeypatch.setattr("agent.adk_tools.load_plan_view_from_gcs",
+    monkeypatch.setattr(_adk_tools_mod, "load_plan_view_from_gcs",
                         lambda *a, **k: calls.append(1) or None)
     assert load_iac_plan_tool(0)["found"] is False
     assert load_iac_plan_tool(-3)["found"] is False
@@ -110,7 +125,7 @@ def test_invalid_pr_number(monkeypatch):
 def test_unverifiable_returns_no_summary(monkeypatch):
     """View with unverifiable=True → found=True, no summary key, error present."""
     view = _make_view(unverifiable=True, integrity_ok=False, metadata={})
-    monkeypatch.setattr("agent.adk_tools.load_plan_view_from_gcs", lambda *a, **k: view)
+    monkeypatch.setattr(_adk_tools_mod, "load_plan_view_from_gcs", lambda *a, **k: view)
     result = load_iac_plan_tool(7)
     assert result["found"] is True
     assert result["unverifiable"] is True
@@ -122,7 +137,7 @@ def test_unverifiable_returns_no_summary(monkeypatch):
 def test_integrity_mismatch_returns_no_summary(monkeypatch):
     """integrity_ok=False → no summary key, error mentions integrity."""
     view = _make_view(integrity_ok=False)
-    monkeypatch.setattr("agent.adk_tools.load_plan_view_from_gcs", lambda *a, **k: view)
+    monkeypatch.setattr(_adk_tools_mod, "load_plan_view_from_gcs", lambda *a, **k: view)
     result = load_iac_plan_tool(7)
     assert result["found"] is True
     assert "summary" not in result
@@ -132,7 +147,7 @@ def test_integrity_mismatch_returns_no_summary(monkeypatch):
 
 def test_happy_path_summary_shape(monkeypatch):
     """Happy path: verify counts dict, entry keys, sensitive masking, blast, etc."""
-    from driftscribe_lib.iac_plan_summary import BLAST_CANNOT_TOUCH_NOTE, blast_radius_phrase
+    from driftscribe_lib.iac_plan_summary import BLAST_CANNOT_TOUCH_NOTE, blast_radius_phrase  # noqa: F401
 
     # Build a PlanSummary directly with a sensitive AttrChange to avoid
     # depending on summarize_plan parsing logic in this tool test.
@@ -174,7 +189,7 @@ def test_happy_path_summary_shape(monkeypatch):
     # Inject summary via instance __dict__ (bypasses cached_property cache miss).
     view.__dict__["change_summary"] = summary
 
-    monkeypatch.setattr("agent.adk_tools.load_plan_view_from_gcs", lambda *a, **k: view)
+    monkeypatch.setattr(_adk_tools_mod, "load_plan_view_from_gcs", lambda *a, **k: view)
     result = load_iac_plan_tool(7)
 
     assert result["found"] is True
@@ -215,8 +230,6 @@ def test_happy_path_summary_shape(monkeypatch):
 
 def test_denylist_violations_with_summary(monkeypatch):
     """View with violations + integrity_ok → BOTH violations AND summary present."""
-    from driftscribe_lib.iac_plan_summary import PlanSummary
-
     summary = PlanSummary(
         entries=(
             ChangeEntry(
@@ -236,7 +249,7 @@ def test_denylist_violations_with_summary(monkeypatch):
     # Inject a pre-built change_summary by bypassing cached_property
     object.__setattr__(view, "__dict__", {**view.__dict__, "change_summary": summary})
 
-    monkeypatch.setattr("agent.adk_tools.load_plan_view_from_gcs", lambda *a, **k: view)
+    monkeypatch.setattr(_adk_tools_mod, "load_plan_view_from_gcs", lambda *a, **k: view)
     result = load_iac_plan_tool(7)
 
     assert result["found"] is True
@@ -256,7 +269,7 @@ def test_summary_unavailable(monkeypatch):
     if "change_summary" in view.__dict__:
         del view.__dict__["change_summary"]
 
-    monkeypatch.setattr("agent.adk_tools.load_plan_view_from_gcs", lambda *a, **k: view)
+    monkeypatch.setattr(_adk_tools_mod, "load_plan_view_from_gcs", lambda *a, **k: view)
     result = load_iac_plan_tool(7)
 
     # When _plan_json is None, change_summary is None → summary=None in output
@@ -270,7 +283,7 @@ def test_loader_exception_is_fail_soft(monkeypatch):
     def _boom(*a, **k):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr("agent.adk_tools.load_plan_view_from_gcs", _boom)
+    monkeypatch.setattr(_adk_tools_mod, "load_plan_view_from_gcs", _boom)
     result = load_iac_plan_tool(7)
     assert result["found"] is False
     assert "error" in result
@@ -285,7 +298,7 @@ def test_expected_repo_threaded(monkeypatch):
         received["expected_repo"] = expected_repo
         return None
 
-    monkeypatch.setattr("agent.adk_tools.load_plan_view_from_gcs", _capture)
+    monkeypatch.setattr(_adk_tools_mod, "load_plan_view_from_gcs", _capture)
 
     # With GITHUB_REPO set.
     monkeypatch.setenv("GITHUB_REPO", "adi-prasetyo/driftscribe")
