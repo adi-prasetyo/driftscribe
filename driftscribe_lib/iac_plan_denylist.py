@@ -27,7 +27,7 @@ phase decision; the v1 false-positive trade-off (e.g. a clean IAM grant
 on a payment-demo bucket is also denied) is accepted to keep the gate
 defensible until the C3 human-approval flow lands.
 
-**Rule IDs (14)**:
+**Rule IDs (15)**:
 
 - ``plan-json-unparseable`` — bad JSON or top-level not an object.
 - ``plan-json-missing-resource-changes`` — key missing OR not a list.
@@ -51,6 +51,11 @@ defensible until the C3 human-approval flow lands.
 - ``iam-change-forbidden-v1`` — non-no-op change to any IAM resource
   type (``startswith("google_") and "_iam_" in rtype`` OR membership
   in :data:`IAM_EXTRA_TYPES`).
+- ``import-forbidden-v1`` — any entry whose ``change.importing`` is
+  present (an OpenTofu import block adopting an existing resource into
+  state). Blanket v1 floor — the adopt flow (design
+  2026-06-11-adopt-import-design.md, Phase 2) replaces it with
+  conditional admission rules.
 - ``delete-action-forbidden-v1`` — ``actions == ["delete"]``.
 - ``forget-action-forbidden-v1`` — ``actions == ["forget"]``.
 - ``replace-action-forbidden-v1`` — ``actions in (["delete","create"],
@@ -92,9 +97,9 @@ __all__ = ["Violation", "DenylistInput", "load_plan_json", "evaluate", "RULE_DES
 class Violation:
     """A single denylist violation.
 
-    ``rule`` is a short machine identifier (one of the 14 rule IDs listed
-    in the C1 plan §3); ``detail`` is a human-readable message that names
-    the offending resource address + action tuple.
+    ``rule`` is a short machine identifier (one of the 15 rule IDs listed
+    in the module docstring); ``detail`` is a human-readable message that
+    names the offending resource address + action tuple.
     """
 
     rule: str
@@ -690,6 +695,30 @@ def evaluate(di: DenylistInput) -> list[Violation]:
             )
             violations.append(Violation("plan-json-malformed-change", detail))
             continue
+        # Import floor (adopt/import design §4.2, Phase 1): ANY entry with
+        # `importing` present is denied outright — Phase 2 replaces this
+        # blanket rule with conditional admission (zero-change / type /
+        # mixed / batch). Runs BEFORE the unknown-action continue so an
+        # importing row is always visible as an import. `importing: null`
+        # is treated as absent (same semantics as iac_plan_summary); a
+        # non-dict value is additionally malformed (the JSON-output docs
+        # define an object).
+        importing = (rc.get("change") or {}).get("importing")
+        if importing is not None and not isinstance(importing, dict):
+            violations.append(
+                Violation(
+                    "plan-json-malformed-change",
+                    f"{address}: importing is {type(importing).__name__}, expected object",
+                )
+            )
+        if importing is not None:
+            violations.append(
+                Violation(
+                    "import-forbidden-v1",
+                    f"{address}: import of an existing resource into IaC state "
+                    f"(actions={list(actions)}) forbidden in v1",
+                )
+            )
         if actions not in ALL_KNOWN_TUPLES:
             violations.append(
                 Violation(
@@ -723,10 +752,14 @@ def evaluate(di: DenylistInput) -> list[Violation]:
                     f"{address}: action {list(actions)!r} (replace) forbidden in v1",
                 )
             )
-        # Identity-based per-resource rules only run for mutations; a `read`
-        # data-source on a control-plane name is a legitimate no-op
-        # (see read_action_is_pass fixture).
-        if _is_mutation(actions):
+        # Identity-based per-resource rules run for mutations AND for
+        # importing entries (§4.1 — a pure import plans as no-op, but
+        # adopting a control-plane identity must still fire the
+        # control-plane rules). A `read` data-source on a control-plane
+        # name remains a legitimate pass (read_action_is_pass fixture), and
+        # a plain no-op row on a control-plane identity still passes
+        # (noop_control_plane_service_pass fixture).
+        if _is_mutation(actions) or importing is not None:
             before, after = _identity_dicts(rc)
             _check_control_plane_service(rc, rtype, actions, before, after, violations)
             _check_control_plane_sa(rc, rtype, actions, before, after, violations)
@@ -778,6 +811,11 @@ RULE_DESCRIPTIONS: Final[Mapping[str, str]] = MappingProxyType({
     ),
     "iam-change-forbidden-v1": (
         "All IAM changes are refused — even on unrelated resources (v1 floor)."
+    ),
+    "import-forbidden-v1": (
+        "The agent cannot adopt (import) existing resources into IaC "
+        "management yet — every import is refused (v1 floor; a gated adopt "
+        "flow will admit them deliberately in a later phase)."
     ),
     "delete-action-forbidden-v1": (
         "All deletes are refused — the agent cannot destroy any resource "

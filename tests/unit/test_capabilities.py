@@ -210,7 +210,7 @@ def test_build_capabilities_shape(monkeypatch):
     read_env = next(t for t in prov["tools"] if t["name"] == "drift_read_live_env")
     assert read_env["write_capable"] is False
     assert {g["id"] for g in dto["human_gates"]} == {"iac_apply", "rollback"}
-    assert len(dto["denylist"]["rules"]) == 14
+    assert len(dto["denylist"]["rules"]) == 15
     # Pin the FULL promised sort, not just category grouping.
     rules = dto["denylist"]["rules"]
     assert rules == sorted(

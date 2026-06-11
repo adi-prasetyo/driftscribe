@@ -670,6 +670,7 @@ class TestBlastCannotTouchNote:
             "control-plane-kms",
             "wif-config-change",
             "iam-change-forbidden-v1",
+            "import-forbidden-v1",
             "delete-action-forbidden-v1",
             "forget-action-forbidden-v1",
             "replace-action-forbidden-v1",

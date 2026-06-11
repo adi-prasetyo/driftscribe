@@ -1,0 +1,40 @@
+{
+  "_test_intent": "the REAL import row + two plain no-op rows (no importing) — unrelated no-ops must not add violations; exactly import-forbidden-v1",
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "google_storage_bucket.c6e_probe",
+      "mode": "managed",
+      "type": "google_storage_bucket",
+      "name": "c6e_probe",
+      "change": {
+        "actions": ["no-op"],
+        "before": {"name": "driftscribe-hack-2026-c6e-probe"},
+        "after": {"name": "driftscribe-hack-2026-c6e-probe"},
+        "importing": {"id": "driftscribe-hack-2026-c6e-probe"}
+      }
+    },
+    {
+      "address": "google_pubsub_topic.unrelated",
+      "mode": "managed",
+      "type": "google_pubsub_topic",
+      "name": "unrelated",
+      "change": {
+        "actions": ["no-op"],
+        "before": {"name": "projects/driftscribe-hack-2026/topics/unrelated"},
+        "after": {"name": "projects/driftscribe-hack-2026/topics/unrelated"}
+      }
+    },
+    {
+      "address": "google_storage_bucket.other",
+      "mode": "managed",
+      "type": "google_storage_bucket",
+      "name": "other",
+      "change": {
+        "actions": ["no-op"],
+        "before": {"name": "some-other-bucket"},
+        "after": {"name": "some-other-bucket"}
+      }
+    }
+  ]
+}

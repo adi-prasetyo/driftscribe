@@ -1,0 +1,18 @@
+{
+  "_test_intent": "import of the tofu-state bucket — must emit import-forbidden-v1 + control-plane-bucket",
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "google_storage_bucket.smuggle",
+      "mode": "managed",
+      "type": "google_storage_bucket",
+      "name": "smuggle",
+      "change": {
+        "actions": ["no-op"],
+        "before": {"name": "driftscribe-hack-2026-tofu-state"},
+        "after": {"name": "driftscribe-hack-2026-tofu-state"},
+        "importing": {"id": "driftscribe-hack-2026-tofu-state"}
+      }
+    }
+  ]
+}

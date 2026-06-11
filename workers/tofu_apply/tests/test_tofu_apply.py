@@ -2081,3 +2081,66 @@ def test_baked_iac_hash_anomaly_returns_503(client, monkeypatch, tmp_path) -> No
     monkeypatch.setattr(m, "iac_tree_hash", lambda _d: (_ for _ in ()).throw(_E("baked tree boom")))
     r = client.get("/baked-iac-hash")
     assert r.status_code == 503
+
+
+# --- Phase-1 import floor: resource_set_guard + /propose endpoint --------
+
+
+def test_guard_refuses_importing_entry_even_as_noop() -> None:
+    """Phase-1 import floor (adopt design §4.5): an importing row plans as
+    no-op and previously slipped through the no-op `continue`."""
+    pj = {
+        "resource_changes": [
+            {
+                "address": "google_storage_bucket.adopted",
+                "change": {"actions": ["no-op"], "importing": {"id": "some-bucket"}},
+            }
+        ]
+    }
+    reason = tofu_runner.resource_set_guard(pj, {"google_storage_bucket.adopted"})
+    assert reason is not None and "import" in reason
+
+
+def test_guard_refuses_importing_even_with_create_flag() -> None:
+    """The C6 create admission (post tree-hash proof) must NOT admit imports —
+    there is no allow_import_of_declared in Phase 1."""
+    pj = {
+        "resource_changes": [
+            {
+                "address": "google_storage_bucket.adopted",
+                "change": {"actions": ["no-op"], "importing": {"id": "some-bucket"}},
+            }
+        ]
+    }
+    reason = tofu_runner.resource_set_guard(
+        pj, {"google_storage_bucket.adopted"}, allow_create_of_declared=True
+    )
+    assert reason is not None and "import" in reason
+
+
+def test_guard_ignores_importing_null() -> None:
+    pj = {
+        "resource_changes": [
+            {
+                "address": "google_storage_bucket.plain",
+                "change": {"actions": ["no-op"], "importing": None},
+            }
+        ]
+    }
+    assert tofu_runner.resource_set_guard(pj, set()) is None
+
+
+def test_propose_import_plan_refused_by_denylist(client: TestClient, monkeypatch, tmp_path) -> None:
+    """An import plan must 422 at /propose with import-forbidden-v1 in the
+    detail — the worker-side denylist re-run catches it before any gate."""
+    import json as _json
+    _fixture = Path(__file__).parent.parent.parent.parent / "tests" / "fixtures" / "iac_plan_denylist" / "real_import_bucket_pure_noop.json"
+    real_plan_obj = _json.loads(_fixture.read_text(encoding="utf-8"))
+    _wire(monkeypatch, tmp_path, plan_obj=real_plan_obj)
+    resp = client.post("/propose", json={
+        "artifact_uri_metadata": _prefix() + "metadata.json",
+        "generation_metadata": "1700000000000003",
+        "approver": "alice@corp.example",
+    })
+    assert resp.status_code == 422
+    assert "import-forbidden-v1" in resp.json()["detail"]

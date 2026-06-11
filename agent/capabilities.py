@@ -214,6 +214,7 @@ RULE_CATEGORIES: Final[Mapping[str, str]] = MappingProxyType({
     "wif-config-change":          "iam",
     "iam-change-forbidden-v1":    "iam",
     # Global v1 floors (structural action bans):
+    "import-forbidden-v1":         "global-v1",
     "delete-action-forbidden-v1":  "global-v1",
     "forget-action-forbidden-v1":  "global-v1",
     "replace-action-forbidden-v1": "global-v1",

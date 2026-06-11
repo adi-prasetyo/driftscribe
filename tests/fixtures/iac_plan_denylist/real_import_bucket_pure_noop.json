@@ -1,0 +1,162 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.12.0",
+  "resource_changes": [
+    {
+      "address": "google_storage_bucket.c6e_probe",
+      "mode": "managed",
+      "type": "google_storage_bucket",
+      "name": "c6e_probe",
+      "provider_name": "registry.opentofu.org/hashicorp/google",
+      "change": {
+        "actions": [
+          "no-op"
+        ],
+        "before": {
+          "autoclass": [],
+          "cors": [],
+          "custom_placement_config": [],
+          "default_event_based_hold": false,
+          "effective_labels": {
+            "goog-terraform-provisioned": "true",
+            "managed-by": "driftscribe-iac",
+            "purpose": "c6e-create-class-e2e",
+            "throwaway": "true"
+          },
+          "enable_object_retention": false,
+          "encryption": [],
+          "force_destroy": false,
+          "hierarchical_namespace": [
+            {
+              "enabled": false
+            }
+          ],
+          "id": "driftscribe-hack-2026-c6e-probe",
+          "ip_filter": [],
+          "labels": {},
+          "lifecycle_rule": [],
+          "location": "ASIA-NORTHEAST1",
+          "logging": [],
+          "name": "driftscribe-hack-2026-c6e-probe",
+          "project": "driftscribe-hack-2026",
+          "project_number": 1079423440495,
+          "public_access_prevention": "enforced",
+          "requester_pays": false,
+          "retention_policy": [],
+          "rpo": null,
+          "self_link": "https://www.googleapis.com/storage/v1/b/driftscribe-hack-2026-c6e-probe",
+          "soft_delete_policy": [
+            {
+              "effective_time": "2026-05-31T08:27:44.423Z",
+              "retention_duration_seconds": 604800
+            }
+          ],
+          "storage_class": "STANDARD",
+          "terraform_labels": {},
+          "time_created": "2026-05-31T08:27:44.423Z",
+          "timeouts": null,
+          "uniform_bucket_level_access": true,
+          "updated": "2026-05-31T08:27:44.423Z",
+          "url": "gs://driftscribe-hack-2026-c6e-probe",
+          "versioning": [],
+          "website": []
+        },
+        "after": {
+          "autoclass": [],
+          "cors": [],
+          "custom_placement_config": [],
+          "default_event_based_hold": false,
+          "effective_labels": {
+            "goog-terraform-provisioned": "true",
+            "managed-by": "driftscribe-iac",
+            "purpose": "c6e-create-class-e2e",
+            "throwaway": "true"
+          },
+          "enable_object_retention": false,
+          "encryption": [],
+          "force_destroy": false,
+          "hierarchical_namespace": [
+            {
+              "enabled": false
+            }
+          ],
+          "id": "driftscribe-hack-2026-c6e-probe",
+          "ip_filter": [],
+          "labels": {},
+          "lifecycle_rule": [],
+          "location": "ASIA-NORTHEAST1",
+          "logging": [],
+          "name": "driftscribe-hack-2026-c6e-probe",
+          "project": "driftscribe-hack-2026",
+          "project_number": 1079423440495,
+          "public_access_prevention": "enforced",
+          "requester_pays": false,
+          "retention_policy": [],
+          "rpo": null,
+          "self_link": "https://www.googleapis.com/storage/v1/b/driftscribe-hack-2026-c6e-probe",
+          "soft_delete_policy": [
+            {
+              "effective_time": "2026-05-31T08:27:44.423Z",
+              "retention_duration_seconds": 604800
+            }
+          ],
+          "storage_class": "STANDARD",
+          "terraform_labels": {},
+          "time_created": "2026-05-31T08:27:44.423Z",
+          "timeouts": null,
+          "uniform_bucket_level_access": true,
+          "updated": "2026-05-31T08:27:44.423Z",
+          "url": "gs://driftscribe-hack-2026-c6e-probe",
+          "versioning": [],
+          "website": []
+        },
+        "after_unknown": {},
+        "before_sensitive": {
+          "autoclass": [],
+          "cors": [],
+          "custom_placement_config": [],
+          "effective_labels": {},
+          "encryption": [],
+          "hierarchical_namespace": [
+            {}
+          ],
+          "ip_filter": [],
+          "labels": {},
+          "lifecycle_rule": [],
+          "logging": [],
+          "retention_policy": [],
+          "soft_delete_policy": [
+            {}
+          ],
+          "terraform_labels": {},
+          "versioning": [],
+          "website": []
+        },
+        "after_sensitive": {
+          "autoclass": [],
+          "cors": [],
+          "custom_placement_config": [],
+          "effective_labels": {},
+          "encryption": [],
+          "hierarchical_namespace": [
+            {}
+          ],
+          "ip_filter": [],
+          "labels": {},
+          "lifecycle_rule": [],
+          "logging": [],
+          "retention_policy": [],
+          "soft_delete_policy": [
+            {}
+          ],
+          "terraform_labels": {},
+          "versioning": [],
+          "website": []
+        },
+        "importing": {
+          "id": "driftscribe-hack-2026-c6e-probe"
+        }
+      }
+    }
+  ]
+}

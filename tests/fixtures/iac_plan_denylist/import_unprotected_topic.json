@@ -1,0 +1,18 @@
+{
+  "_test_intent": "import of an unprotected pubsub topic — must emit exactly import-forbidden-v1 (no identity rules fire)",
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "google_pubsub_topic.some_old_topic",
+      "mode": "managed",
+      "type": "google_pubsub_topic",
+      "name": "some_old_topic",
+      "change": {
+        "actions": ["no-op"],
+        "before": {"name": "projects/driftscribe-hack-2026/topics/some-old-topic"},
+        "after": {"name": "projects/driftscribe-hack-2026/topics/some-old-topic"},
+        "importing": {"id": "projects/driftscribe-hack-2026/topics/some-old-topic"}
+      }
+    }
+  ]
+}

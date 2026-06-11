@@ -192,10 +192,11 @@ be called from **three** places:
 3. The `tofu-apply` worker re-runs the denylist against the same `plan.json`
    immediately before `tofu apply` (wired in **C4**).
 
-**14 rules** spread across structural fail-closed (`plan-json-unparseable`,
+**15 rules** spread across structural fail-closed (`plan-json-unparseable`,
 `plan-json-missing-resource-changes`, `plan-json-malformed-change`), action-
-floor (`delete-action-forbidden-v1`, `forget-action-forbidden-v1`, `replace-
-action-forbidden-v1`, `unknown-action-forbidden-v1`), control-plane identity
+floor (`import-forbidden-v1`, `delete-action-forbidden-v1`,
+`forget-action-forbidden-v1`, `replace-action-forbidden-v1`,
+`unknown-action-forbidden-v1`), control-plane identity
 (`control-plane-service`, `control-plane-sa`, `control-plane-bucket`, `control-
 plane-secret`, `control-plane-kms`), and IAM/WIF (`wif-config-change`,
 `iam-change-forbidden-v1`). See the module docstring for the exact identity-

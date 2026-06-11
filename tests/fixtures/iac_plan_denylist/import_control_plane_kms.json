@@ -1,0 +1,18 @@
+{
+  "_test_intent": "import of the tofu-state KMS key — must emit import-forbidden-v1 + control-plane-kms",
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "google_kms_crypto_key.tofu_state",
+      "mode": "managed",
+      "type": "google_kms_crypto_key",
+      "name": "tofu_state",
+      "change": {
+        "actions": ["no-op"],
+        "before": {"name": "tofu-state"},
+        "after": {"name": "tofu-state"},
+        "importing": {"id": "projects/driftscribe-hack-2026/locations/asia-northeast1/keyRings/driftscribe-tofu/cryptoKeys/tofu-state"}
+      }
+    }
+  ]
+}

@@ -229,6 +229,8 @@ def resource_set_guard(
     faithfully reproduce, else ``None``.
 
     Per managed ``resource_changes`` entry (``no-op``/``read`` ignored), in order:
+    (0) an ``importing`` entry is refused UNCONDITIONALLY (Phase-1 adopt-design floor
+    — even ``allow_create_of_declared`` does not admit it);
     (a) a ``module.*`` address is refused UNCONDITIONALLY and FIRST — there is no
     module-aware extraction, and re-baking does NOT unlock modules (C6); (b) a
     ``create`` action is refused UNLESS ``allow_create_of_declared`` is True; (c) any
@@ -251,6 +253,18 @@ def resource_set_guard(
         actions = change.get("actions")
         if not isinstance(actions, list):
             return f"{rc.get('address', '<unknown>')}: malformed actions"
+        # Import refusal (adopt/import design §4.5, Phase-1 floor): an
+        # `importing` entry writes a NEW address into state at apply even
+        # when its actions are pure no-op — refuse UNCONDITIONALLY (no
+        # admission flag exists yet; Phase 2 adds allow_import_of_declared
+        # behind the C6 tree-hash proof). `importing: null` is absent. A
+        # leftover-inert import block on a later plan carries no
+        # `importing` in resource_changes and stays a plain no-op.
+        if change.get("importing") is not None:
+            return (
+                f"{rc.get('address', '<unknown>')}: plan imports a resource "
+                f"into state — imports are not admitted (v1 import floor)"
+            )
         if actions in (["no-op"], ["read"]):
             continue
         address = rc.get("address")
