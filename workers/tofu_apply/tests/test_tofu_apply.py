@@ -2083,42 +2083,101 @@ def test_baked_iac_hash_anomaly_returns_503(client, monkeypatch, tmp_path) -> No
     assert r.status_code == 503
 
 
-# --- Phase-1 import floor: resource_set_guard + /propose endpoint --------
+# --- Phase-2 import admission: resource_set_guard + /propose endpoint --------
 
 
-def test_guard_refuses_importing_entry_even_as_noop() -> None:
-    """Phase-1 import floor (adopt design §4.5): an importing row plans as
-    no-op and previously slipped through the no-op `continue`."""
-    pj = {
+def _importing_pj(address: str, actions: list[str] = None, importing_val=None) -> dict:
+    """Build a minimal plan.json with one importing resource_changes entry."""
+    if actions is None:
+        actions = ["no-op"]
+    if importing_val is None:
+        importing_val = {"id": "some-bucket"}
+    return {
         "resource_changes": [
             {
-                "address": "google_storage_bucket.adopted",
-                "change": {"actions": ["no-op"], "importing": {"id": "some-bucket"}},
+                "address": address,
+                "change": {"actions": actions, "importing": importing_val},
             }
         ]
     }
+
+
+def test_guard_importing_noop_flag_false_refuses_with_rebake_hint() -> None:
+    """importing+no-op, flag False → refusal mentions 're-bake from main'."""
+    pj = _importing_pj("google_storage_bucket.adopted")
     reason = tofu_runner.resource_set_guard(pj, {"google_storage_bucket.adopted"})
-    assert reason is not None and "import" in reason
+    assert reason is not None and "re-bake from main" in reason
 
 
-def test_guard_refuses_importing_even_with_create_flag() -> None:
-    """The C6 create admission (post tree-hash proof) must NOT admit imports —
-    there is no allow_import_of_declared in Phase 1."""
-    pj = {
-        "resource_changes": [
-            {
-                "address": "google_storage_bucket.adopted",
-                "change": {"actions": ["no-op"], "importing": {"id": "some-bucket"}},
-            }
-        ]
-    }
+def test_guard_importing_noop_flag_true_declared_admits() -> None:
+    """importing+no-op, flag True, address declared → None (the admission)."""
+    pj = _importing_pj("google_storage_bucket.adopted")
+    reason = tofu_runner.resource_set_guard(
+        pj, {"google_storage_bucket.adopted"}, allow_import_of_declared=True
+    )
+    assert reason is None
+
+
+def test_guard_importing_noop_flag_true_not_declared_refuses() -> None:
+    """importing+no-op, flag True, address NOT declared → refusal."""
+    pj = _importing_pj("google_storage_bucket.adopted")
+    reason = tofu_runner.resource_set_guard(pj, set(), allow_import_of_declared=True)
+    assert reason is not None and "not declared" in reason
+
+
+def test_guard_importing_create_flag_true_import_flag_false_refuses() -> None:
+    """allow_create_of_declared=True but import flag False → refusal.
+    The flags are independent (Phase-1 regression, re-pinned for Phase 2)."""
+    pj = _importing_pj("google_storage_bucket.adopted")
     reason = tofu_runner.resource_set_guard(
         pj, {"google_storage_bucket.adopted"}, allow_create_of_declared=True
     )
-    assert reason is not None and "import" in reason
+    assert reason is not None and "re-bake from main" in reason
 
 
-def test_guard_ignores_importing_null() -> None:
+def test_guard_importing_update_both_flags_true_refuses() -> None:
+    """importing+update, BOTH flags True, declared → refusal ("import with changes")."""
+    pj = _importing_pj("google_storage_bucket.adopted", actions=["update"])
+    reason = tofu_runner.resource_set_guard(
+        pj, {"google_storage_bucket.adopted"},
+        allow_create_of_declared=True, allow_import_of_declared=True,
+    )
+    assert reason is not None and "import with changes" in reason
+
+
+def test_guard_importing_module_address_flag_true_refuses() -> None:
+    """importing on module.x.y, flag True → refusal."""
+    pj = _importing_pj("module.infra.google_storage_bucket.b")
+    reason = tofu_runner.resource_set_guard(
+        pj, {"module.infra.google_storage_bucket.b"}, allow_import_of_declared=True
+    )
+    assert reason is not None and "module" in reason
+
+
+def test_guard_importing_indexed_address_flag_true_refuses() -> None:
+    """importing on google_storage_bucket.b[0], flag True → refusal."""
+    pj = _importing_pj("google_storage_bucket.b[0]")
+    reason = tofu_runner.resource_set_guard(
+        pj, {"google_storage_bucket.b"}, allow_import_of_declared=True
+    )
+    assert reason is not None and "indexed" in reason
+
+
+def test_guard_importing_no_address_flag_true_refuses() -> None:
+    """importing entry with no address, flag True → refusal."""
+    pj = {
+        "resource_changes": [
+            {
+                "change": {"actions": ["no-op"], "importing": {"id": "some-bucket"}},
+            }
+        ]
+    }
+    reason = tofu_runner.resource_set_guard(pj, set(), allow_import_of_declared=True)
+    assert reason is not None
+
+
+def test_guard_importing_null_is_ignored() -> None:
+    """`importing: null` is NOT an import — plain no-op (unchanged)."""
     pj = {
         "resource_changes": [
             {
@@ -2130,9 +2189,12 @@ def test_guard_ignores_importing_null() -> None:
     assert tofu_runner.resource_set_guard(pj, set()) is None
 
 
-def test_propose_import_plan_refused_by_denylist(client: TestClient, monkeypatch, tmp_path) -> None:
-    """An import plan must 422 at /propose with import-forbidden-v1 in the
-    detail — the worker-side denylist re-run catches it before any gate."""
+def test_propose_pure_import_passes_denylist_then_tree_gate(
+    client: TestClient, monkeypatch, tmp_path
+) -> None:
+    """Phase-2 endpoint pin: the real pure-no-op import fixture now clears the
+    denylist and is refused 422 at the iac-tree gate (no generation_iac_tree
+    supplied) — pinning that imports route through the C6 tree-hash proof."""
     import json as _json
     _fixture = Path(__file__).parent.parent.parent.parent / "tests" / "fixtures" / "iac_plan_denylist" / "real_import_bucket_pure_noop.json"
     real_plan_obj = _json.loads(_fixture.read_text(encoding="utf-8"))
@@ -2143,4 +2205,23 @@ def test_propose_import_plan_refused_by_denylist(client: TestClient, monkeypatch
         "approver": "alice@corp.example",
     })
     assert resp.status_code == 422
-    assert "import-forbidden-v1" in resp.json()["detail"]
+    assert "iac-tree gate" in resp.json()["detail"]
+
+
+def test_propose_import_with_update_refused_by_denylist(
+    client: TestClient, monkeypatch, tmp_path
+) -> None:
+    """The real_import_bucket_with_update fixture (importing+update) must still
+    422 at /propose with import-with-changes-forbidden-v1 in the detail —
+    denylist endpoint-level pin survives Phase 2."""
+    import json as _json
+    _fixture = Path(__file__).parent.parent.parent.parent / "tests" / "fixtures" / "iac_plan_denylist" / "real_import_bucket_with_update.json"
+    real_plan_obj = _json.loads(_fixture.read_text(encoding="utf-8"))
+    _wire(monkeypatch, tmp_path, plan_obj=real_plan_obj)
+    resp = client.post("/propose", json={
+        "artifact_uri_metadata": _prefix() + "metadata.json",
+        "generation_metadata": "1700000000000003",
+        "approver": "alice@corp.example",
+    })
+    assert resp.status_code == 422
+    assert "import-with-changes-forbidden-v1" in resp.json()["detail"]

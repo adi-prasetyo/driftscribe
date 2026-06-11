@@ -223,14 +223,17 @@ def _normalize_address(address: str) -> str:
 
 
 def resource_set_guard(
-    plan_json: dict, declared: set[str], *, allow_create_of_declared: bool = False
+    plan_json: dict,
+    declared: set[str],
+    *,
+    allow_create_of_declared: bool = False,
+    allow_import_of_declared: bool = False,
 ) -> str | None:
     """Return a refusal reason if the plan touches anything the baked iac/ can't
     faithfully reproduce, else ``None``.
 
     Per managed ``resource_changes`` entry (``no-op``/``read`` ignored), in order:
-    (0) an ``importing`` entry is refused UNCONDITIONALLY (Phase-1 adopt-design floor
-    — even ``allow_create_of_declared`` does not admit it);
+    (0) an ``importing`` entry is handled by the adopt admission branch (Phase 2);
     (a) a ``module.*`` address is refused UNCONDITIONALLY and FIRST — there is no
     module-aware extraction, and re-baking does NOT unlock modules (C6); (b) a
     ``create`` action is refused UNLESS ``allow_create_of_declared`` is True; (c) any
@@ -253,18 +256,37 @@ def resource_set_guard(
         actions = change.get("actions")
         if not isinstance(actions, list):
             return f"{rc.get('address', '<unknown>')}: malformed actions"
-        # Import refusal (adopt/import design §4.5, Phase-1 floor): an
-        # `importing` entry writes a NEW address into state at apply even
-        # when its actions are pure no-op — refuse UNCONDITIONALLY (no
-        # admission flag exists yet; Phase 2 adds allow_import_of_declared
-        # behind the C6 tree-hash proof). `importing: null` is absent. A
-        # leftover-inert import block on a later plan carries no
-        # `importing` in resource_changes and stays a plain no-op.
+        # Import admission (adopt design §4.5, Phase 2): an importing entry
+        # writes a NEW address into state at apply even when its actions are
+        # pure no-op. Admitted ONLY when (i) allow_import_of_declared — which
+        # the worker sets ONLY after the C6 tree-hash proof — AND (ii) the
+        # address is declared in the baked iac/. Anything else refuses:
+        # import-with-changes and indexed/module addresses are refused even
+        # WITH the flag (the denylist + static gate ban them; the guard must
+        # not silently undo that — defense in depth). `importing: null` is
+        # absent; a leftover-inert import block on a later plan carries no
+        # `importing` and stays a plain no-op.
         if change.get("importing") is not None:
-            return (
-                f"{rc.get('address', '<unknown>')}: plan imports a resource "
-                f"into state — imports are not admitted (v1 import floor)"
-            )
+            address = rc.get("address")
+            if not isinstance(address, str):
+                return "importing resource_changes entry has no address"
+            if actions != ["no-op"]:
+                return (
+                    f"{address}: import with changes (actions={actions}) — "
+                    "only zero-change imports are admitted"
+                )
+            if address.startswith("module."):
+                return f"{address}: module-nested import not supported by the baked-config guard"
+            if "[" in address:
+                return f"{address}: indexed import target not admitted (v1 adopts plain addresses)"
+            if not allow_import_of_declared:
+                return (
+                    f"{address}: plan imports a resource into state "
+                    "(needs the head config — re-bake from main, C6)"
+                )
+            if _normalize_address(address) not in declared:
+                return f"{address}: imported address not declared in the baked iac/"
+            continue
         if actions in (["no-op"], ["read"]):
             continue
         address = rc.get("address")
@@ -295,11 +317,13 @@ def assert_fidelity(
     plan_json: dict,
     declared_addresses: set[str],
     allow_create_of_declared: bool = False,
+    allow_import_of_declared: bool = False,
 ) -> None:
     """Fail-closed fidelity gate — raise :class:`FidelityError` on any mismatch.
     Runs before init/refresh/apply (``tofu version`` itself is a subprocess).
-    ``allow_create_of_declared`` is forwarded to :func:`resource_set_guard` — the
-    worker sets it True ONLY after the C6 hash gate proved baked == approved-head."""
+    ``allow_create_of_declared`` and ``allow_import_of_declared`` are forwarded to
+    :func:`resource_set_guard` — the worker sets both True ONLY after the C6 hash
+    gate proved baked == approved-head."""
     want_version = signed_metadata.get("opentofu_version")
     if want_version != baked_tofu_version:
         raise FidelityError(
@@ -311,7 +335,9 @@ def assert_fidelity(
             f"provider_lockfile_sha256 mismatch: signed {want_lock!r} != baked {baked_lockfile_sha256!r}"
         )
     reason = resource_set_guard(
-        plan_json, declared_addresses, allow_create_of_declared=allow_create_of_declared
+        plan_json, declared_addresses,
+        allow_create_of_declared=allow_create_of_declared,
+        allow_import_of_declared=allow_import_of_declared,
     )
     if reason is not None:
         raise FidelityError(f"resource-set guard: {reason}")

@@ -278,7 +278,10 @@ def _denylist_or_raise(parsed_plan_json: dict) -> None:
 
 
 def _fidelity_or_raise(
-    signed_md: dict, parsed_plan_json: dict, *, allow_create_of_declared: bool = False
+    signed_md: dict, parsed_plan_json: dict,
+    *,
+    allow_create_of_declared: bool = False,
+    allow_import_of_declared: bool = False,
 ) -> None:
     tofu_runner.assert_fidelity(
         signed_metadata=signed_md,
@@ -287,6 +290,7 @@ def _fidelity_or_raise(
         plan_json=parsed_plan_json,
         declared_addresses=tofu_runner.extract_declared_addresses(IAC_DIR),
         allow_create_of_declared=allow_create_of_declared,
+        allow_import_of_declared=allow_import_of_declared,
     )
 
 
@@ -490,7 +494,11 @@ def propose(req: ProposeRequest, caller: str = Depends(_verify_caller_dep)) -> d
                 metadata_uri=req.artifact_uri_metadata,
                 generation_iac_tree=req.generation_iac_tree,
             )
-        _fidelity_or_raise(fetched_md, parsed_plan_json, allow_create_of_declared=has_create)
+        _fidelity_or_raise(
+            fetched_md, parsed_plan_json,
+            allow_create_of_declared=has_create,
+            allow_import_of_declared=has_create,
+        )
     except gcs_fetch.GcsFetchError as e:
         raise HTTPException(status_code=422, detail=f"artifact fetch failed: {e}")
     except ArtifactIntegrityError as e:
@@ -626,7 +634,11 @@ def apply(req: ApplyRequest, caller: str = Depends(_verify_caller_dep)) -> dict:
                 generation_iac_tree=req.generation_iac_tree,
             )
             iac_tree_verified = True
-        _fidelity_or_raise(md, parsed_plan_json, allow_create_of_declared=has_create)  # §3.2 fidelity + resource-set guard
+        _fidelity_or_raise(
+            md, parsed_plan_json,
+            allow_create_of_declared=has_create,
+            allow_import_of_declared=has_create,
+        )  # §3.2 fidelity + resource-set guard
     except gcs_fetch.GcsFetchError as e:
         _fail(store, req.approval_id, attempt_id, "integrity_refused", 422, f"artifact fetch failed: {e}",
               caller_sa=caller, operator_email=operator_email)
