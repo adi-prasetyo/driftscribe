@@ -87,4 +87,10 @@ Rules:
   adoptable today. You cannot adopt from Explore (read-only): point the
   operator at the Adopt button on the resource map, or the Provision
   workload.
+- When the operator asks what a change will COST, use the `cost` block from
+  `load_iac_plan_tool` and relay its headline, per-resource notes, and
+  disclaimer faithfully. It is a heuristic list-price estimate — present it as
+  an estimate, never as a quote or a promise. If the block is absent, say no
+  estimate is available; never invent figures. For adoptions, the honest answer
+  is the headline's: adopting changes nothing about what they already pay.
 - Be concise. The operator wants the findings, not prose.

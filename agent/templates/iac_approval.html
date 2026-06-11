@@ -142,6 +142,12 @@
               {% endif %}
             </p>
             {% endif %}
+            {% set cost = view.cost_summary | default(none) %}
+            {% if cost is not none %}
+            <p class="ds-note" data-testid="cost-estimate">
+              {{ cost.headline }}
+            </p>
+            {% endif %}
             <p class="ds-subtle">
               <a href="/?preview_pr={{ pr_number }}" data-testid="preview-map-link">See this change on the resource map →</a>
             </p>
@@ -166,6 +172,12 @@
                   <div class="ds-subtle">
                     <code class="ds-code">{{ e.address }}</code>{% if e.action_reason %} — {{ e.action_reason }}{% endif %}
                   </div>
+                  {% if cost is not none and not e.deposed %}
+                    {% set ec = cost.by_address.get(e.address) %}
+                    {% if ec %}
+                      <div class="ds-subtle" data-testid="cost-entry">Cost: {{ ec.note }}.</div>
+                    {% endif %}
+                  {% endif %}
                   {% if e.attr_changes %}
                     <ul class="ds-attr-list">
                       {% for a in e.attr_changes %}
@@ -193,6 +205,9 @@
               This summary is generated mechanically from the integrity-checked
               plan file — not written by the AI.
             </p>
+            {% if cost is not none %}
+            <p class="ds-subtle" data-testid="cost-disclaimer">{{ cost.disclaimer }}</p>
+            {% endif %}
           </div>
         {% endif %}
       {% endif %}

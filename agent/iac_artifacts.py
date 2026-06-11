@@ -528,6 +528,21 @@ class IacPlanView:
             return None
         return summarize_plan(self._plan_json)
 
+    @cached_property
+    def cost_summary(self):
+        """Heuristic monthly-cost estimate of the parsed plan (roadmap W4-13),
+        or None. Same trust posture as ``change_summary``: advisory display
+        only, derived from the integrity-checked plan.json, None when the plan
+        never parsed (estimate_plan_cost itself refuses whenever
+        summarize_plan refuses — parity-by-construction). Surfaces MUST only
+        render it where the plain-language summary itself renders, and never
+        for a denylist-blocked plan (cost implies viability)."""
+        from driftscribe_lib.iac_cost import estimate_plan_cost
+
+        if self._plan_json is None:
+            return None
+        return estimate_plan_cost(self._plan_json)
+
     # The metadata URI + generation are taken from the C2 comment ref (the
     # metadata dict itself does NOT carry artifact_uri_metadata / generation_metadata
     # — those live only in the comment), so load_plan_view stashes them here.

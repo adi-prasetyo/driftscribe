@@ -40,6 +40,9 @@ __all__ = [
     "ChangeEntry",
     "PlanSummary",
     "blast_radius_phrase",
+    "classify_verb",
+    "mask_any",
+    "sub_mask",
     "summarize_plan",
 ]
 
@@ -329,6 +332,14 @@ def _verb(actions: tuple[str, ...], importing: bool) -> str | None:
     if actions in FORGET_ACTION_TUPLES:
         return "forget"
     return "change"
+
+
+# Wave-4 item 13 (cost estimate): driftscribe_lib.iac_cost reuses the audited
+# verb classification and the sensitivity-mask walkers. Public aliases so the
+# cost lib never re-derives action-tuple or mask semantics.
+classify_verb = _verb
+mask_any = _mask_any
+sub_mask = _sub_mask
 
 
 def _require_str(v: Any, what: str) -> str:

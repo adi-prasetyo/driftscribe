@@ -594,3 +594,28 @@ def test_duplicate_iac_tree_hash_fails_closed():
         f"- **iac_tree_hash:** `{_C6_TREE_HASH}`\n- **iac_tree_hash:** `{_C6_TREE_HASH}`",
     )
     assert parse_c2_pr_comment(dup) is None
+
+
+# --------------------------------------------------------------------------- #
+# IacPlanView.cost_summary (Wave-4 item 13)
+# --------------------------------------------------------------------------- #
+
+
+def _make_minimal_view():
+    """Minimal IacPlanView with only the fields cost_summary needs."""
+    from agent.iac_artifacts import IacPlanView
+
+    return IacPlanView()
+
+
+def test_cost_summary_none_without_plan_json():
+    view = _make_minimal_view()
+    assert view._plan_json is None
+    assert view.cost_summary is None
+
+
+def test_cost_summary_present_with_plan_json():
+    view = _make_minimal_view()
+    view._plan_json = {"format_version": "1.2", "resource_changes": []}
+    cost = view.cost_summary
+    assert cost is not None and cost.entries == ()
