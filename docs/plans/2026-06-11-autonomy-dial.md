@@ -4,7 +4,7 @@
 
 **Goal:** A global operator autonomy dial — **Observe** (report only, no mutations), **Propose** (PRs/issues/approvals, no applies), **Propose + Apply** (current behavior) — enforced at the tool-registry layer and at every coordinator-initiated mutation site, controlled from the SPA like the pause button. ClickOps roadmap Wave 3 item 11 (`docs/plans/2026-06-10-clickops-audience-roadmap.md` §11).
 
-**Architecture:** A new `agent/autonomy.py` mirrors `agent/pause.py` (fail-closed read, frozen state dataclass, no FastAPI deps) over a new Firestore `config/autonomy` document. Every tool in `TOOL_REGISTRY` gets a **tier** (`report` / `propose` / `apply`) in `agent/workloads/registry.py`, drift-pinned to the registry and cross-checked against `MUTATION_TOOL_NAMES`. Enforcement happens at four seams: (1) Layer 0 — `build_agent` / `build_chat_agent` filter the tool set by tier before the LLM ever sees it; (2) the drift pipeline's coordinator-executed actions (`_perform_action`, `_do_rollback`) are suppressed-but-recorded in Observe; (3) the two human apply gates (`POST /iac-approvals/{pr}` approve, `POST /approvals/{id}` approve) refuse 409 unless the dial is at Propose + Apply (reject paths stay ungated, same safety direction as pause); (4) the SPA gets an `AutonomyControl` next to `PauseControl`, a "not executed — Observe" treatment on suppressed rail rows, and a live-mode note on the capability card.
+**Architecture:** A new `agent/autonomy.py` mirrors `agent/pause.py` (fail-closed read, frozen state dataclass, no FastAPI deps) over a new Firestore `config/autonomy` document. Every tool in `TOOL_REGISTRY` gets a **tier** (`report` / `propose` / `apply`) in `agent/workloads/registry.py`, drift-pinned to the registry and cross-checked against `MUTATION_TOOL_NAMES`. Enforcement happens at five seams: (1) Layer 0 — `build_agent` / `build_chat_agent` filter the tool set by tier before the LLM ever sees it; (2) the drift pipeline's coordinator-executed actions (`_perform_action`, `_do_rollback`) are suppressed-but-recorded in Observe; (3) the provision fan-out orchestrator (`run_provision_fanout_stream`'s coordinator-direct editor call) delegates to the tool-filtered single-agent path in Observe, with a guard before the editor call; (4) the two human apply gates (`POST /iac-approvals/{pr}` approve, `POST /approvals/{id}` approve) refuse 409 unless the dial is at Propose + Apply (reject paths stay ungated, same safety direction as pause); (5) the SPA gets an `AutonomyControl` next to `PauseControl`, a "not executed — Observe" treatment on suppressed rail rows, and a live-mode note on the capability card.
 
 **Tech Stack:** Python/FastAPI/pydantic, Firestore (`config` collection), Google ADK, Svelte 5 + Vite, pytest + vitest/@testing-library/svelte.
 
@@ -688,8 +688,9 @@ def post_autonomy_route(
 
 **Files:**
 - Modify: `agent/adk_agent.py` (`build_agent`, `build_chat_agent`, `run_agent`, `run_chat_stream`, `run_chat`)
-- Modify: `agent/main.py` (`_run_adk_agent`, the `/chat` handler's `run_chat`/`run_chat_stream` call sites)
-- Test: `tests/unit/test_adk_agent_autonomy.py` + extend existing chat/recheck integration tests' patch sites as needed
+- Modify: `agent/main.py` (`_run_adk_agent`, `_chat_stream`, the `/chat` handler's call sites)
+- Modify: `agent/fanout.py` (`run_provision_fanout_stream` — entry delegation + pre-editor-call guard)
+- Test: `tests/unit/test_adk_agent_autonomy.py` + fanout tests + extend existing chat/recheck integration tests' patch sites as needed
 
 **Design rule: `autonomy_mode` is a REQUIRED keyword argument** on `build_agent`, `build_chat_agent`, `run_agent`, `run_chat_stream`, `run_chat`. No permissive default — a call site that forgets the dial must fail loudly at code time, not silently run at full autonomy. Update every existing test call site to pass `autonomy_mode="propose_apply"`.
 
