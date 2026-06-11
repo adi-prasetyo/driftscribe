@@ -965,6 +965,8 @@ def _merge_slice_sinks(pairs: list[tuple[SliceSpec, dict]]) -> AuthorResult:
     """
     from driftscribe_lib.iac_editor_policy import validate_file_writes
 
+    from driftscribe_lib.adopt_recipe import find_import_violations
+
     writes: list[dict] = []
     citations: dict[str, list[str]] = {}
     for spec, sink in pairs:
@@ -978,6 +980,25 @@ def _merge_slice_sinks(pairs: list[tuple[SliceSpec, dict]]) -> AuthorResult:
             )
         writes.append(file_write)
         citations[spec.target_path] = list(sink.get("citations", []))
+
+    # Freehand-import guard (Phase 3 §1.10): reject any merged file set that
+    # contains an import block. Slice sub-agents author HCL text only and must
+    # never produce an import block — adoptions go through propose_adoption_tool
+    # in the single-agent path (a 1-slice result delegates there). Fail-closed:
+    # an unparseable .tf file also triggers a POLICY rejection so a broken HCL
+    # can never silently sneak an import through.
+    import_violations = find_import_violations(writes)
+    if import_violations:
+        raise FanoutError(
+            422,
+            (
+                "Slice-authored files must not contain import blocks — use "
+                "provision_propose_adoption for resource adoptions (import blocks "
+                "are coordinator-side only; the fan-out editor path does not accept "
+                f"them). Violation(s): {'; '.join(import_violations)}"
+            ),
+            kind=FanoutFailureKind.POLICY,
+        )
 
     try:
         validate_file_writes(writes)

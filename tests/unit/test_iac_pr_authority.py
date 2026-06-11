@@ -104,8 +104,9 @@ def test_open_infra_pr_tool_routes_through_shared_helper(monkeypatch):
         adk_tools.worker_client, "call_open_infra_pr", _fake_call_open_infra_pr
     )
 
+    # Content must be valid, import-free HCL so the freehand-import guard passes.
     result = adk_tools.open_infra_pr_tool(
-        files=[{"path": "iac/bucket.tf", "content": "x"}],
+        files=[{"path": "iac/bucket.tf", "content": 'variable "b" {}\n'}],
         title="Add bucket",
         body="body",
     )

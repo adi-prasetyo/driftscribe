@@ -130,9 +130,9 @@ _NO_READ_TOOLS: dict = {}
 
 async def test_three_slices_all_submit_returns_writes_in_order():
     specs = _specs(3)
-    make_runner, captured = _fake_parallel_runner(
-        {0: "content-zero\n", 1: "content-one\n", 2: "content-two\n"}
-    )
+    # Content must be valid, import-free HCL so the freehand-import guard passes.
+    c0, c1, c2 = 'variable "zero" {}\n', 'variable "one" {}\n', 'variable "two" {}\n'
+    make_runner, captured = _fake_parallel_runner({0: c0, 1: c1, 2: c2})
     with patch.object(fanout, "Runner", make_runner):
         result = await author_slices_parallel(specs, read_tools=_NO_READ_TOOLS)
 
@@ -142,11 +142,7 @@ async def test_three_slices_all_submit_returns_writes_in_order():
         "iac/slice_1.tf",
         "iac/slice_2.tf",
     ]
-    assert [w["content"] for w in result.files] == [
-        "content-zero\n",
-        "content-one\n",
-        "content-two\n",
-    ]
+    assert [w["content"] for w in result.files] == [c0, c1, c2]
     # Citations are mapped per target_path.
     assert result.citations == {
         "iac/slice_0.tf": ["doc-0"],
@@ -161,8 +157,9 @@ async def test_parallel_agent_constructed_with_n_sub_agents():
     from google.adk.agents import ParallelAgent
 
     specs = _specs(3)
+    # Content must be valid, import-free HCL so the freehand-import guard passes.
     make_runner, captured = _fake_parallel_runner(
-        {0: "a\n", 1: "b\n", 2: "c\n"}
+        {0: 'variable "a" {}\n', 1: 'variable "b" {}\n', 2: 'variable "c" {}\n'}
     )
     with patch.object(fanout, "Runner", make_runner):
         await author_slices_parallel(specs, read_tools=_NO_READ_TOOLS)
@@ -327,8 +324,10 @@ async def test_post_merge_total_bytes_over_bound_is_authoring_failure(monkeypatc
     monkeypatch.setattr(policy, "MAX_TOTAL_BYTES", 10)
 
     specs = _specs(2)
+    # Content must be valid, import-free HCL (freehand-import guard) and
+    # together exceed MAX_TOTAL_BYTES=10 so the byte-bounds check fires.
     make_runner, _ = _fake_parallel_runner(
-        {0: "aaaaaaaa\n", 1: "bbbbbbbb\n"}  # > 10 bytes combined
+        {0: 'variable "aa" {}\n', 1: 'variable "bb" {}\n'}  # > 10 bytes combined
     )
     with patch.object(fanout, "Runner", make_runner):
         with pytest.raises(FanoutError) as ei:
@@ -359,8 +358,10 @@ async def test_event_sink_receives_tagged_payloads_no_final_response():
         [_P(function_call=SimpleNamespace(name="read_live_env", args={}))],
         branch1,
     )
+    # Content must be valid, import-free HCL so the freehand-import guard passes.
     make_runner, _ = _fake_parallel_runner(
-        {0: "a\n", 1: "b\n"}, extra_events=[thought_ev, tool_ev]
+        {0: 'variable "a" {}\n', 1: 'variable "b" {}\n'},
+        extra_events=[thought_ev, tool_ev],
     )
 
     seen: list = []
