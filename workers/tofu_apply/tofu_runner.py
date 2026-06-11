@@ -494,6 +494,12 @@ BENIGN_DRIFT_ALLOWLISTS: dict[str, DriftAllowlist] = {
             "latest_created_revision", "latest_ready_revision", "reconciling",
         }),
         subtrees=("conditions", "terminal_condition", "traffic_statuses"),
+        normalization_paths=frozenset({
+            "annotations", "custom_audiences", "labels",
+            "template.annotations", "template.labels",
+            "template.containers.args", "template.containers.command",
+            "template.containers.depends_on",
+        }),
     ),
     # `updated` is the bucket's RFC3339 metadata-write readback timestamp — it
     # churns on ANY out-of-band metadata touch. It carries no desired-state
@@ -527,28 +533,63 @@ def _normalize_attr_path(path: str) -> str:
     return _LIST_INDEX_RE.sub("", path)
 
 
-def _changed_leaf_paths(before: object, after: object, prefix: str = "") -> set[str]:
-    """Recursively diff two JSON values → the set of NORMALIZED leaf paths that
-    differ. Added/removed keys (present on one side only) count as a change at
-    that path. Lists are compared element-wise by index (indices are stripped in
-    the normalized leaf path, so per-element churn collapses onto its subtree)."""
+# Sentinel for a key/element present on only ONE side of the diff. Distinct from
+# explicit null: `tofu show -json` emits every schema attribute (null when unset),
+# so a key that genuinely appears/vanishes — or a list that grows/shrinks (block
+# cardinality IS content in provider schemas) — is a real change, never a
+# normalization artifact (Codex must-fix: [] -> [{}] must refuse).
+_MISSING = object()
+
+
+def _is_null_empty_normalization(before: object, after: object) -> bool:
+    """True iff one side is an EXPLICIT ``null`` and the other the EMPTY
+    collection (``{}``/``[]``) — the provider-readback normalization artifact.
+    No attribute values exist on either side, so the delta cannot encode a
+    desired-state change. ``null↔""``, ``null↔0``, ``null↔false``,
+    ``null↔non-empty`` and ``_MISSING↔anything`` are NOT normalization."""
+    if before is None:
+        return isinstance(after, (dict, list)) and len(after) == 0
+    if after is None:
+        return isinstance(before, (dict, list)) and len(before) == 0
+    return False
+
+
+def _diff_leaf_paths(
+    before: object, after: object, prefix: str = ""
+) -> tuple[set[str], set[str]]:
+    """Recursively diff two JSON values → ``(changed, normalized)`` sets of
+    NORMALIZED leaf paths. ``changed`` are genuine value deltas (including any
+    side being ``_MISSING``); ``normalized`` are explicit-null↔empty-collection
+    readback artifacts (benign ONLY if the type's allowlist approves the path).
+    Lists compare element-wise by index (indices stripped in the normalized
+    leaf path); length mismatch puts ``_MISSING`` on the short side."""
+    if before is _MISSING or after is _MISSING:
+        return {_normalize_attr_path(prefix)}, set()
     if before == after:
-        return set()
+        return set(), set()
+    if _is_null_empty_normalization(before, after):
+        return set(), {_normalize_attr_path(prefix)}
     if isinstance(before, dict) and isinstance(after, dict):
-        out: set[str] = set()
+        changed: set[str] = set()
+        normalized: set[str] = set()
         for key in set(before) | set(after):
             sub = f"{prefix}.{key}" if prefix else str(key)
-            out |= _changed_leaf_paths(before.get(key), after.get(key), sub)
-        return out
+            c, n = _diff_leaf_paths(
+                before.get(key, _MISSING), after.get(key, _MISSING), sub)
+            changed |= c
+            normalized |= n
+        return changed, normalized
     if isinstance(before, list) and isinstance(after, list):
-        out = set()
+        changed, normalized = set(), set()
         for i in range(max(len(before), len(after))):
-            b = before[i] if i < len(before) else None
-            a = after[i] if i < len(after) else None
-            out |= _changed_leaf_paths(b, a, f"{prefix}[{i}]")
-        return out
+            b = before[i] if i < len(before) else _MISSING
+            a = after[i] if i < len(after) else _MISSING
+            c, n = _diff_leaf_paths(b, a, f"{prefix}[{i}]")
+            changed |= c
+            normalized |= n
+        return changed, normalized
     # scalar (or type-mismatch) leaf: a genuine value change.
-    return {_normalize_attr_path(prefix)}
+    return {_normalize_attr_path(prefix)}, set()
 
 
 def _is_computed_only_path(path: str, allowlist: DriftAllowlist) -> bool:
@@ -638,8 +679,15 @@ def classify_refresh_drift(show_json: object) -> RefreshDriftVerdict:
         before, after = change.get("before"), change.get("after")
         if not isinstance(before, dict) or not isinstance(after, dict):
             return RefreshDriftVerdict(False, (), f"{addr}: non-dict before/after on update")
-        for p in sorted(_changed_leaf_paths(before, after)):
-            (computed if _is_computed_only_path(p, allowlist) else material).append(f"{addr}:{p}")
+        changed, normalized = _diff_leaf_paths(before, after)
+        for p in sorted(normalized):
+            benign_norm = (p in allowlist.normalization_paths
+                           or _is_computed_only_path(p, allowlist))
+            (computed if benign_norm else material).append(
+                f"{addr}:{p} [null<->empty]")
+        for p in sorted(changed):
+            (computed if _is_computed_only_path(p, allowlist) else material).append(
+                f"{addr}:{p}")
     if material:
         return RefreshDriftVerdict(False, tuple(material),
                                    "material refresh drift: " + ", ".join(material[:10]))

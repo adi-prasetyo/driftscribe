@@ -730,15 +730,18 @@ def _drift_show(before, after, *, address=_PD, actions=None,
     return j
 
 
-def test_changed_leaf_paths_added_removed_nested() -> None:
-    paths = tofu_runner._changed_leaf_paths({"a": 1, "b": {"c": 2}}, {"a": 1, "b": {"c": 3, "d": 4}})
-    assert paths == {"b.c", "b.d"}  # c changed + d added; a unchanged → omitted
+def test_diff_leaf_paths_added_removed_nested() -> None:
+    changed, normalized = tofu_runner._diff_leaf_paths(
+        {"a": 1, "b": {"c": 2}}, {"a": 1, "b": {"c": 3, "d": 4}})
+    assert changed == {"b.c", "b.d"}  # c changed + d added; a unchanged → omitted
+    assert normalized == set()
 
 
-def test_changed_leaf_paths_list_index_stripped() -> None:
-    paths = tofu_runner._changed_leaf_paths(
+def test_diff_leaf_paths_list_index_stripped() -> None:
+    changed, normalized = tofu_runner._diff_leaf_paths(
         {"conditions": [{"t": "t1"}]}, {"conditions": [{"t": "t2"}]})
-    assert paths == {"conditions.t"}  # list index stripped in the normalized path
+    assert changed == {"conditions.t"}  # list index stripped in the normalized path
+    assert normalized == set()
 
 
 def test_is_computed_only_path_anchoring() -> None:
@@ -874,6 +877,16 @@ def test_classify_drift_bucket_material_refuses() -> None:
         assert v.benign is False, delta
 
 
+def test_classify_drift_bucket_label_normalization_still_refuses() -> None:
+    """Buckets have NO approved normalization paths: labels/effective_labels
+    null<->{} refuses (Codex must-fix 1 — label policy is material)."""
+    for field in ("labels", "effective_labels", "terraform_labels"):
+        v = tofu_runner.classify_refresh_drift(_bucket_drift_show(
+            {field: None}, {field: {}}))
+        assert v.benign is False, field
+        assert any("[null<->empty]" in p for p in v.paths), field
+
+
 def test_classify_drift_bucket_time_created_material() -> None:
     """A changed creation timestamp signals out-of-band recreate → refuse."""
     v = tofu_runner.classify_refresh_drift(_bucket_drift_show(
@@ -888,6 +901,106 @@ def test_classify_drift_no_cross_type_path_leakage() -> None:
     assert v.benign is False
     v = tofu_runner.classify_refresh_drift(_drift_show({"updated": "t1"}, {"updated": "t2"}))
     assert v.benign is False
+
+
+def test_is_null_empty_normalization() -> None:
+    f = tofu_runner._is_null_empty_normalization
+    assert f(None, {}) and f({}, None) and f(None, []) and f([], None)
+    assert not f(None, "") and not f(None, 0) and not f(None, False)
+    assert not f(None, {"a": 1}) and not f(None, [1]) and not f({}, []) and not f(1, 2)
+    # _MISSING never normalizes (absent != explicit null)
+    assert not f(tofu_runner._MISSING, {}) and not f({}, tofu_runner._MISSING)
+
+
+def test_diff_leaf_paths_separates_normalization() -> None:
+    changed, normalized = tofu_runner._diff_leaf_paths(
+        {"a": None, "b": {"c": None}, "d": 1}, {"a": {}, "b": {"c": []}, "d": 2})
+    assert changed == {"d"}
+    assert normalized == {"a", "b.c"}
+
+
+def test_diff_leaf_paths_missing_key_is_changed_not_normalized() -> None:
+    """Absent key vs empty collection / null is a GENUINE change (sentinel) —
+    never a normalization artifact (Codex must-fix 2)."""
+    changed, normalized = tofu_runner._diff_leaf_paths({}, {"a": {}})
+    assert changed == {"a"} and normalized == set()
+    changed, normalized = tofu_runner._diff_leaf_paths({"a": None}, {})
+    assert changed == {"a"} and normalized == set()
+
+
+def test_diff_leaf_paths_list_growth_is_changed_not_normalized() -> None:
+    """[] -> [{}] is block-cardinality content, NEVER normalization
+    (Codex must-fix 3)."""
+    changed, normalized = tofu_runner._diff_leaf_paths({"v": []}, {"v": [{}]})
+    assert changed == {"v"} and normalized == set()
+    changed, normalized = tofu_runner._diff_leaf_paths({"v": [{}]}, {"v": []})
+    assert changed == {"v"} and normalized == set()
+
+
+def test_classify_drift_null_empty_normalization_approved_paths_benign() -> None:
+    """The live storefront/orders_worker signature (2026-06-11): null->{}/[] on
+    the approved artifact paths → benign, audited with the [null<->empty] marker
+    (non-empty paths so the run_apply_sequence symmetry guard is satisfied)."""
+    v = tofu_runner.classify_refresh_drift(_drift_show(
+        {"annotations": None, "custom_audiences": None, "labels": None,
+         "template": {"annotations": None, "labels": None,
+                      "containers": [{"args": None, "command": None, "depends_on": None}]}},
+        {"annotations": {}, "custom_audiences": [], "labels": {},
+         "template": {"annotations": {}, "labels": {},
+                      "containers": [{"args": [], "command": [], "depends_on": []}]}}))
+    assert v.benign is True
+    assert all("[null<->empty]" in p for p in v.paths) and len(v.paths) == 8
+
+
+def test_classify_drift_normalization_on_unapproved_path_refuses() -> None:
+    """null->{} on a path NOT in normalization_paths refuses, and the refusal
+    names it with the [null<->empty] marker (Codex must-fix 1)."""
+    v = tofu_runner.classify_refresh_drift(_drift_show(
+        {"template": {"vpc_access": None}}, {"template": {"vpc_access": []}}))
+    assert v.benign is False
+    assert any("template.vpc_access [null<->empty]" in p for p in v.paths)
+
+
+def test_classify_drift_real_value_at_approved_normalization_path_refuses() -> None:
+    """A REAL label appearing is a genuine change (at `labels` — null vs
+    non-empty dict is a type-mismatch leaf) — approval of the empty artifact at
+    `labels` does not cover it."""
+    v = tofu_runner.classify_refresh_drift(_drift_show(
+        {"labels": None}, {"labels": {"x": "y"}}))
+    assert v.benign is False
+
+
+def test_classify_drift_normalization_plus_material_still_refuses() -> None:
+    v = tofu_runner.classify_refresh_drift(_drift_show(
+        {"labels": None, "template": {"service_account": "runtime@"}},
+        {"labels": {}, "template": {"service_account": "evil@"}}))
+    assert v.benign is False
+    assert any("service_account" in p for p in v.paths)
+    assert not any("labels" in p for p in v.paths)
+
+
+def test_classify_drift_normalization_under_status_subtree_benign() -> None:
+    """null<->empty UNDER an allowlisted status subtree (conditions/...) is
+    computed churn regardless of normalization_paths."""
+    v = tofu_runner.classify_refresh_drift(_drift_show(
+        {"conditions": [{"reasons": None}]}, {"conditions": [{"reasons": []}]}))
+    assert v.benign is True
+
+
+def test_classify_drift_live_pr95_combined_signature_benign() -> None:
+    """The full 2026-06-11 PR #95 drift: bucket `updated` + a Cloud Run service
+    with approved null<->empty noise → benign end-to-end."""
+    j = {"resource_drift": [
+        {"address": _BKT, "type": "google_storage_bucket",
+         "change": {"actions": ["update"],
+                    "before": {"updated": "t1"}, "after": {"updated": "t2"}}},
+        {"address": "google_cloud_run_v2_service.storefront",
+         "type": "google_cloud_run_v2_service",
+         "change": {"actions": ["update"],
+                    "before": {"labels": None}, "after": {"labels": {}}}},
+    ]}
+    v = tofu_runner.classify_refresh_drift(j)
+    assert v.benign is True and len(v.paths) == 2
 
 
 def test_has_true_recurses_only_real_true() -> None:
@@ -919,6 +1032,15 @@ def test_classify_drift_after_unknown_marker_fails_closed() -> None:
         "change": {"actions": ["update"], "before": {"generation": 6}, "after": {"generation": 6},
                    "after_unknown": {"uri": True}}}]}
     assert tofu_runner.classify_refresh_drift(j).benign is False
+    # A marker beats normalization: a normalization-shaped (null vs {}) delta on
+    # an APPROVED path STILL refuses when a marker is set, because the marker
+    # check runs BEFORE any diffing.
+    j = {"resource_drift": [{
+        "address": _PD, "type": "google_cloud_run_v2_service",
+        "change": {"actions": ["update"], "before": {"labels": None}, "after": {"labels": {}},
+                   "after_unknown": {"uri": True}}}]}
+    v = tofu_runner.classify_refresh_drift(j)
+    assert v.benign is False and "sensitive" in v.reason
 
 
 def test_classify_drift_all_false_marker_tree_still_benign() -> None:
