@@ -46,6 +46,7 @@ def _view() -> SimpleNamespace:
         generation_metadata="1700000000000003",
         tofu_show_text="# google_storage_bucket.x will be created",
         change_summary=None,
+        cost_summary=None,
     )
 
 
@@ -461,3 +462,87 @@ def test_destructive_plan_unchanged_no_adopt_note():
     assert 'data-testid="destroy-warning"' in html
     assert 'data-testid="adopt-note"' not in html
     assert 'data-testid="no-destroy-note"' not in html
+
+
+# --------------------------------------------------------------------------- #
+# Task 5 (Wave-4 item 13) — heuristic cost estimate card
+# --------------------------------------------------------------------------- #
+
+
+def _cost(headline="Adds no always-on cost — ¥0/month until it is used.",
+          entries=(), n_hidden=0):
+    return SimpleNamespace(
+        headline=headline, entries=entries, n_hidden=n_hidden,
+        by_address={e.address: e for e in entries},
+        disclaimer=("Cost figures are heuristic estimates from Google Cloud "
+                    "list prices (Tokyo region, fetched 2026-06-11) — not a "
+                    "quote. Usage-based charges (storage, messages, requests, "
+                    "network) depend entirely on how much you use."),
+    )
+
+
+def test_cost_headline_entry_and_disclaimer_render():
+    v = _view()
+    v.change_summary = _summary()
+    ec = SimpleNamespace(address="google_storage_bucket.assets",
+                         kind="usage", monthly_jpy=None,
+                         note="¥0/month while empty — storage billed at about "
+                              "¥3.67/GiB-month (Standard, Tokyo list price)")
+    v.cost_summary = _cost(entries=(ec,))
+    html = _render(view=v, show_summary=True)
+    assert 'data-testid="cost-estimate"' in html
+    assert "Adds no always-on cost" in html
+    assert 'data-testid="cost-entry"' in html and "¥3.67/GiB-month" in html
+    assert 'data-testid="cost-disclaimer"' in html and "not a quote" in html
+
+
+def test_cost_absent_when_cost_summary_none():
+    v = _view()
+    v.change_summary = _summary()
+    v.cost_summary = None
+    html = _render(view=v, show_summary=True)
+    assert 'data-testid="cost-estimate"' not in html
+    assert 'data-testid="cost-disclaimer"' not in html
+
+
+def test_cost_never_renders_outside_trust_gate():
+    # unverifiable / integrity-fail / denylist-blocked all suppress the whole
+    # card today — cost must die with it (H1).
+    for break_it in (
+        lambda v: setattr(v, "unverifiable", True),
+        lambda v: setattr(v, "integrity_ok", False),
+        lambda v: setattr(v, "denylist_violations", [("import-forbidden-v1", "x")]),
+    ):
+        v = _view()
+        v.change_summary = _summary()
+        v.cost_summary = _cost()
+        break_it(v)
+        html = _render(view=v, show_summary=True)
+        assert 'data-testid="cost-estimate"' not in html
+
+
+def test_cost_entry_skipped_for_deposed_row():
+    # A deposed entry shares its address with the main row — the join must
+    # not put a cost line on it. Build a summary with a deposed entry plus a
+    # normal one at the same address; assert exactly ONE cost-entry div.
+    shared_address = "google_storage_bucket.assets"
+    normal_entry = ChangeEntry(
+        verb="create", rtype="google_storage_bucket",
+        type_label="Cloud Storage bucket", name="assets",
+        address=shared_address, location="asia-northeast1",
+    )
+    deposed_entry = ChangeEntry(
+        verb="destroy", rtype="google_storage_bucket",
+        type_label="Cloud Storage bucket", name="assets",
+        address=shared_address, deposed="abc123",
+    )
+    v = _view()
+    v.change_summary = _summary(entries=(normal_entry, deposed_entry), n_create=1, n_destroy=1)
+    ec = SimpleNamespace(
+        address=shared_address,
+        kind="usage", monthly_jpy=None,
+        note="¥0/month while empty — storage billed at about ¥3.67/GiB-month (Standard, Tokyo list price)",
+    )
+    v.cost_summary = _cost(entries=(ec,))
+    html = _render(view=v, show_summary=True)
+    assert html.count('data-testid="cost-entry"') == 1
