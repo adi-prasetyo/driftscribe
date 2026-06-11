@@ -299,11 +299,31 @@ async def test_run_agent_emits_tool_result_for_function_response(caplog, drift_w
 
 # --------------------------------------------------------------------------- #
 # Invariant (g): the optional ``iac_pr_sink`` captures a CONFIRMED first-authoring
-# infra PR (open_infra_pr only) so the single-agent stream can surface a clickable
-# approval CTA. It must match on the tool NAME (open_infra_pr_tool), never on the
-# result shape — upgrade_propose_pr returns the same pr_number/pr_url fields but is
-# NOT an /iac-approvals PR.
+# infra PR (open_infra_pr or propose_adoption — both open /iac-approvals-class
+# PRs via the shared tail) so the single-agent stream can surface a clickable
+# approval CTA. It must match on the tool NAME, never on the result shape —
+# upgrade_propose_pr returns the same pr_number/pr_url fields but is NOT an
+# /iac-approvals PR.
 # --------------------------------------------------------------------------- #
+
+
+def test_emit_event_logs_captures_iac_pr_for_propose_adoption():
+    """An adoption PR is approval-class: its confirmed result must populate the
+    iac_pr sink exactly like open_infra_pr (Codex Phase-3 completed-work catch —
+    without this the chat approval CTA never renders for adoptions)."""
+    from agent.adk_tools import propose_adoption_tool
+
+    sink: dict = {}
+    ev = _Ev(
+        [_P(function_response=_fr(
+            propose_adoption_tool.__name__,
+            {"status": "opened", "pr_number": 31,
+             "pr_url": "https://github.com/o/r/pull/31", "branch": "infra/a"},
+        ))],
+        partial=False,
+    )
+    adk_agent._emit_event_logs(ev, iac_pr_sink=sink)
+    assert sink == {"pr_number": 31, "pr_url": "https://github.com/o/r/pull/31"}
 
 
 def test_emit_event_logs_captures_iac_pr_for_open_infra_pr():
