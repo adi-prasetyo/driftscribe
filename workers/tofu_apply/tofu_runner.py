@@ -454,29 +454,95 @@ def _diagnose_post_failure_state(
 # service_account, scaling, ingress, ...) is never allowlisted ⇒ always refuses.
 # An incomplete allowlist can only OVER-refuse (= the old status quo) — it can
 # never introduce a false-clean. Identity/lifecycle-computed fields (uid,
-# create_time, delete_time) are deliberately NOT allowlisted: a changed uid /
-# populated delete_time signals a recreate/deletion and MUST refuse. Sensitive /
+# create_time, delete_time, time_created) are deliberately NOT allowlisted: a
+# changed uid / populated delete_time / moved creation timestamp signals a
+# recreate/deletion and MUST refuse. Sensitive /
 # not-yet-known values are handled separately (the *_sensitive / after_unknown
 # markers below) since their real value is redacted from before/after. (Codex
 # review 019e7a3f + sole-mutator adversarial review.)
+#
+# PER-TYPE SCOPING (Codex review 019eb556): the allowlist is a map keyed by
+# resource type (BENIGN_DRIFT_ALLOWLISTS). A type absent from the map fails
+# closed before ANY path analysis, so a Cloud-Run-only path (etag, update_time)
+# can never be mistaken for benign on a bucket, and the bucket's `updated` is
+# benign ONLY on a bucket. This strengthens the posture: paths benign for one
+# type are no longer even shareable with another by accident.
+#
+# NULL↔EMPTY NORMALIZATION (Codex review 019eb556): provider readback can emit an
+# explicit `null` as the EMPTY collection ({}/[]) on a field the plan set null.
+# This carries NO attribute value on either side, so it cannot encode a
+# desired-state change. _diff_leaf_paths classifies such a delta as a distinct
+# NORMALIZED leaf path, benign ONLY when the (index-stripped) path is in that
+# type's normalization_paths (or already computed-only). `null↔""`, `null↔0`,
+# `null↔false`, `null↔non-empty`, and any UNAPPROVED path stay genuine refusals;
+# a REAL value appearing at an approved path (labels.x for {}→{x:y}, or labels
+# itself for null→{x:y} — a type-mismatch leaf) is a genuine `changed` leaf,
+# judged by paths/subtrees alone, so approval of the empty artifact never covers
+# it. Every benign path (computed or normalization) lands in the success audit;
+# normalization paths carry a `[null<->empty]` marker (in refusal messages too)
+# so an operator extending the allowlist can tell the categories apart.
+#
+# _MISSING SENTINEL (Codex review 019eb556 must-fix 2+3): a key/element present
+# on ONLY one side of the diff is marked with the _MISSING sentinel and read as a
+# GENUINE change, never explicit null — so an appearing/vanishing key, or a list
+# that grows/shrinks ([]→[{}]; block cardinality IS content in provider schemas),
+# is material unless its path is computed-only allowlisted. (In practice
+# `tofu show -json` emits every schema attribute with explicit null and the
+# fidelity gate pins the provider via the signed lockfile SHA, so before/after
+# key sets match — the sentinel is a cheap correctness backstop, not an
+# over-refusal risk.) normalization_paths entries are validated against
+# hashicorp/google 6.50.0 (iac/.terraform.lock.hcl) — revalidate on a lockfile
+# change (the fidelity gate makes that explicit by construction).
 
-# List-index-stripped attribute paths tolerated as benign drift: server readback
-# (generation, etag, ...) + the two ignore_changes'd gcloud-deploy metadata tags
-# (client, client_version).
-COMPUTED_ONLY_DRIFT_PATHS = frozenset({
-    "generation", "observed_generation", "etag", "update_time", "last_modifier",
-    "client", "client_version", "latest_created_revision", "latest_ready_revision",
-    "reconciling",
-})
-# Whole subtrees that are status/readback only (never desired-state inputs).
-COMPUTED_ONLY_DRIFT_SUBTREES = ("conditions", "terminal_condition", "traffic_statuses")
-# The computed-field allowlist above is Cloud-Run-v2-specific (conditions /
-# terminal_condition / traffic_statuses are Cloud Run status fields) and iac/
-# manages exactly ONE resource today. Benign classification is therefore SCOPED
-# to this type: refresh drift on any OTHER resource type fails closed (refuses)
-# until the allowlist is extended for it (Codex review 019e7a3f — future-proofs
-# the C6 resource-set expansion against a Cloud-Run allowlist misfiring).
-_BENIGN_DRIFT_TYPES = frozenset({"google_cloud_run_v2_service"})
+@dataclass(frozen=True)
+class DriftAllowlist:
+    """Per-resource-type benign-drift allowlist. ``paths``/``subtrees`` admit
+    GENUINE value changes on computed/status fields; ``normalization_paths``
+    admit ONLY the explicit-null↔empty-collection readback artifact at that
+    exact (index-stripped) path — a real value appearing at the same path is a
+    genuine change and is judged by ``paths``/``subtrees`` alone."""
+
+    paths: frozenset[str]
+    subtrees: tuple[str, ...] = ()
+    normalization_paths: frozenset[str] = frozenset()
+
+
+# Benign refresh-drift classification is SCOPED BY RESOURCE TYPE: a type absent
+# from this map fails closed (refuses) until an allowlist is deliberately added
+# for it (Codex review 019e7a3f). Each entry holds ONLY fields with no
+# desired-state security meaning — server-computed readback (plus, for Cloud Run,
+# the two ignore_changes'd gcloud-deploy metadata tags client / client_version).
+# Identity/lifecycle-computed fields (uid, create_time, delete_time,
+# time_created) are deliberately NOT allowlisted: a changed creation identity
+# signals an out-of-band recreate/deletion and MUST refuse. Bucket labels
+# (labels / effective_labels / terraform_labels) are in NEITHER set: an
+# out-of-band label add is operator-visible drift, surfaced by design.
+# normalization_paths entries are the EXACT artifact set observed live
+# 2026-06-11 (adopt PR #95 recovery) on provider hashicorp/google 6.50.0 —
+# revalidate when iac/.terraform.lock.hcl changes.
+BENIGN_DRIFT_ALLOWLISTS: dict[str, DriftAllowlist] = {
+    "google_cloud_run_v2_service": DriftAllowlist(
+        paths=frozenset({
+            "generation", "observed_generation", "etag", "update_time",
+            "last_modifier", "client", "client_version",
+            "latest_created_revision", "latest_ready_revision", "reconciling",
+        }),
+        subtrees=("conditions", "terminal_condition", "traffic_statuses"),
+        normalization_paths=frozenset({
+            "annotations", "custom_audiences", "labels",
+            "template.annotations", "template.labels",
+            "template.containers.args", "template.containers.command",
+            "template.containers.depends_on",
+        }),
+    ),
+    # `updated` is the bucket's RFC3339 metadata-write readback timestamp — it
+    # churns on ANY out-of-band metadata touch. It carries no desired-state
+    # content itself; if the touch changed a REAL attribute, that attribute
+    # drifts too and still refuses. (Live evidence: adopt PR #95 drift_refused
+    # on exactly this field, 2026-06-11.) No normalization_paths: no bucket
+    # null↔empty artifact has been observed live — extend only on evidence.
+    "google_storage_bucket": DriftAllowlist(paths=frozenset({"updated"})),
+}
 
 _LIST_INDEX_RE = re.compile(r"\[\d+\]")
 
@@ -501,36 +567,72 @@ def _normalize_attr_path(path: str) -> str:
     return _LIST_INDEX_RE.sub("", path)
 
 
-def _changed_leaf_paths(before: object, after: object, prefix: str = "") -> set[str]:
-    """Recursively diff two JSON values → the set of NORMALIZED leaf paths that
-    differ. Added/removed keys (present on one side only) count as a change at
-    that path. Lists are compared element-wise by index (indices are stripped in
-    the normalized leaf path, so per-element churn collapses onto its subtree)."""
+# Sentinel for a key/element present on only ONE side of the diff. Distinct from
+# explicit null: `tofu show -json` emits every schema attribute (null when unset),
+# so a key that genuinely appears/vanishes — or a list that grows/shrinks (block
+# cardinality IS content in provider schemas) — is a real change, never a
+# normalization artifact (Codex must-fix: [] -> [{}] must refuse).
+_MISSING = object()
+
+
+def _is_null_empty_normalization(before: object, after: object) -> bool:
+    """True iff one side is an EXPLICIT ``null`` and the other the EMPTY
+    collection (``{}``/``[]``) — the provider-readback normalization artifact.
+    No attribute values exist on either side, so the delta cannot encode a
+    desired-state change. ``null↔""``, ``null↔0``, ``null↔false``,
+    ``null↔non-empty`` and ``_MISSING↔anything`` are NOT normalization."""
+    if before is None:
+        return isinstance(after, (dict, list)) and len(after) == 0
+    if after is None:
+        return isinstance(before, (dict, list)) and len(before) == 0
+    return False
+
+
+def _diff_leaf_paths(
+    before: object, after: object, prefix: str = ""
+) -> tuple[set[str], set[str]]:
+    """Recursively diff two JSON values → ``(changed, normalized)`` sets of
+    NORMALIZED leaf paths. ``changed`` are genuine value deltas (including any
+    side being ``_MISSING``); ``normalized`` are explicit-null↔empty-collection
+    readback artifacts (benign ONLY if the type's allowlist approves the path).
+    Lists compare element-wise by index (indices stripped in the normalized
+    leaf path); length mismatch puts ``_MISSING`` on the short side."""
+    if before is _MISSING or after is _MISSING:
+        return {_normalize_attr_path(prefix)}, set()
     if before == after:
-        return set()
+        return set(), set()
+    if _is_null_empty_normalization(before, after):
+        return set(), {_normalize_attr_path(prefix)}
     if isinstance(before, dict) and isinstance(after, dict):
-        out: set[str] = set()
+        changed: set[str] = set()
+        normalized: set[str] = set()
         for key in set(before) | set(after):
             sub = f"{prefix}.{key}" if prefix else str(key)
-            out |= _changed_leaf_paths(before.get(key), after.get(key), sub)
-        return out
+            c, n = _diff_leaf_paths(
+                before.get(key, _MISSING), after.get(key, _MISSING), sub)
+            changed |= c
+            normalized |= n
+        return changed, normalized
     if isinstance(before, list) and isinstance(after, list):
-        out = set()
+        changed, normalized = set(), set()
         for i in range(max(len(before), len(after))):
-            b = before[i] if i < len(before) else None
-            a = after[i] if i < len(after) else None
-            out |= _changed_leaf_paths(b, a, f"{prefix}[{i}]")
-        return out
+            b = before[i] if i < len(before) else _MISSING
+            a = after[i] if i < len(after) else _MISSING
+            c, n = _diff_leaf_paths(b, a, f"{prefix}[{i}]")
+            changed |= c
+            normalized |= n
+        return changed, normalized
     # scalar (or type-mismatch) leaf: a genuine value change.
-    return {_normalize_attr_path(prefix)}
+    return {_normalize_attr_path(prefix)}, set()
 
 
-def _is_computed_only_path(path: str) -> bool:
+def _is_computed_only_path(path: str, allowlist: DriftAllowlist) -> bool:
     """True iff ``path`` is an exact computed leaf OR sits under a status subtree
-    (anchored at the path root — never a same-named field deeper in the tree)."""
-    if path in COMPUTED_ONLY_DRIFT_PATHS:
+    of the given TYPE-SPECIFIC allowlist (anchored at the path root — never a
+    same-named field deeper in the tree)."""
+    if path in allowlist.paths:
         return True
-    return any(path == p or path.startswith(p + ".") for p in COMPUTED_ONLY_DRIFT_SUBTREES)
+    return any(path == p or path.startswith(p + ".") for p in allowlist.subtrees)
 
 
 def _has_true(obj: object) -> bool:
@@ -555,9 +657,11 @@ def classify_refresh_drift(show_json: object) -> RefreshDriftVerdict:
 
     Benign ONLY when: no root ``output_changes``; every ``resource_changes``
     entry is no-op/read (a refresh-only plan carries no config-driven actions);
-    and every ``resource_drift`` entry is either no-op/read or an ``update`` whose
-    every changed leaf path is computed-only. Anything else (create/delete/replace
-    drift, a config action, malformed/unexpected structure) ⇒ NOT benign."""
+    and every ``resource_drift`` entry is either no-op/read or an ``update`` on a
+    recognized type whose every GENUINE changed leaf path is computed-only and
+    whose every null↔empty normalization path is approved for that type (or
+    computed-only). Anything else (create/delete/replace drift, a config action,
+    an unrecognized type, malformed/unexpected structure) ⇒ NOT benign."""
     if not isinstance(show_json, dict):
         return RefreshDriftVerdict(False, (), "show-json is not an object")
     # iac/ declares no outputs — any root output change is unexpected → refuse.
@@ -592,7 +696,8 @@ def classify_refresh_drift(show_json: object) -> RefreshDriftVerdict:
             # create/delete/replace/unknown → resource appeared/vanished/recreated
             # out of band → material, refuse.
             return RefreshDriftVerdict(False, (), f"{addr}: drift action {actions!r} is material")
-        if entry.get("type") not in _BENIGN_DRIFT_TYPES:
+        allowlist = BENIGN_DRIFT_ALLOWLISTS.get(entry.get("type") or "")
+        if allowlist is None:
             # The computed-field allowlist is type-scoped; an unrecognized type's
             # drift cannot be proven benign by it → fail closed.
             return RefreshDriftVerdict(
@@ -610,8 +715,15 @@ def classify_refresh_drift(show_json: object) -> RefreshDriftVerdict:
         before, after = change.get("before"), change.get("after")
         if not isinstance(before, dict) or not isinstance(after, dict):
             return RefreshDriftVerdict(False, (), f"{addr}: non-dict before/after on update")
-        for p in sorted(_changed_leaf_paths(before, after)):
-            (computed if _is_computed_only_path(p) else material).append(f"{addr}:{p}")
+        changed, normalized = _diff_leaf_paths(before, after)
+        for p in sorted(normalized):
+            benign_norm = (p in allowlist.normalization_paths
+                           or _is_computed_only_path(p, allowlist))
+            (computed if benign_norm else material).append(
+                f"{addr}:{p} [null<->empty]")
+        for p in sorted(changed):
+            (computed if _is_computed_only_path(p, allowlist) else material).append(
+                f"{addr}:{p}")
     if material:
         return RefreshDriftVerdict(False, tuple(material),
                                    "material refresh drift: " + ", ".join(material[:10]))
@@ -650,8 +762,10 @@ def run_apply_sequence(
     ``plan.tfplan``. ``kms_key`` is injected as ``TF_VAR_tofu_state_kms_key`` on
     every call (the iac/ encryption block is enforced; ``show``/``plan``/``apply``
     all must decrypt). The refresh-only freshness gate is SEMANTIC: refresh drift
-    that is purely server-computed churn proceeds (still applying the approved
-    saved plan); only MATERIAL desired-state drift raises :class:`FreshnessDrift`.
+    that is purely server-computed churn — per the TYPE-SCOPED
+    ``BENIGN_DRIFT_ALLOWLISTS``, including approved explicit-null↔empty-collection
+    readback normalization — proceeds (still applying the approved saved plan);
+    only MATERIAL desired-state drift raises :class:`FreshnessDrift`.
     On any non-success step raises :class:`LockRefused` if the failure is
     state-lock contention (held/orphaned GCS lock) or :class:`TofuStepError`
     otherwise — all fail-closed (the classification applies to init, refresh-only,
