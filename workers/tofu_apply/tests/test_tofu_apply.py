@@ -1100,6 +1100,20 @@ def test_gate_benign_drift_proceeds_and_records_paths() -> None:
     assert sum(1 for c in calls if c[0] == "apply") == 1  # it DID apply (the saved plan)
 
 
+def test_gate_all_normalization_drift_proceeds_and_records_markers() -> None:
+    """An exit-2 refresh whose drift is ENTIRELY approved null<->empty
+    normalization proceeds (the saved plan still applies), and the recorded
+    benign_drift_paths carry the [null<->empty] marker — so the symmetry guard
+    (exit 2 ⇒ at least one classifiable benign path) is satisfied by a real
+    explanation, not a weakening."""
+    run, calls = _gate_runner(refresh_exit=2, show_json=_drift_show(
+        {"labels": None, "annotations": None}, {"labels": {}, "annotations": {}}))
+    out = tofu_runner.run_apply_sequence(workdir="/x", kms_key="K", base_env={}, run_tofu=run)
+    assert out.apply_exit == 0 and out.freshness_exit == 2
+    assert out.benign_drift_paths and all("[null<->empty]" in p for p in out.benign_drift_paths)
+    assert sum(1 for c in calls if c[0] == "apply") == 1  # it DID apply (the saved plan)
+
+
 def test_gate_material_drift_refuses() -> None:
     run, calls = _gate_runner(refresh_exit=2, show_json=_drift_show(
         {"template": {"service_account": "a"}}, {"template": {"service_account": "b"}}))

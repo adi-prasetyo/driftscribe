@@ -454,11 +454,45 @@ def _diagnose_post_failure_state(
 # service_account, scaling, ingress, ...) is never allowlisted ⇒ always refuses.
 # An incomplete allowlist can only OVER-refuse (= the old status quo) — it can
 # never introduce a false-clean. Identity/lifecycle-computed fields (uid,
-# create_time, delete_time) are deliberately NOT allowlisted: a changed uid /
-# populated delete_time signals a recreate/deletion and MUST refuse. Sensitive /
+# create_time, delete_time, time_created) are deliberately NOT allowlisted: a
+# changed uid / populated delete_time / moved creation timestamp signals a
+# recreate/deletion and MUST refuse. Sensitive /
 # not-yet-known values are handled separately (the *_sensitive / after_unknown
 # markers below) since their real value is redacted from before/after. (Codex
 # review 019e7a3f + sole-mutator adversarial review.)
+#
+# PER-TYPE SCOPING (Codex review 019eb556): the allowlist is a map keyed by
+# resource type (BENIGN_DRIFT_ALLOWLISTS). A type absent from the map fails
+# closed before ANY path analysis, so a Cloud-Run-only path (etag, update_time)
+# can never be mistaken for benign on a bucket, and the bucket's `updated` is
+# benign ONLY on a bucket. This strengthens the posture: paths benign for one
+# type are no longer even shareable with another by accident.
+#
+# NULL↔EMPTY NORMALIZATION (Codex review 019eb556): provider readback can emit an
+# explicit `null` as the EMPTY collection ({}/[]) on a field the plan set null.
+# This carries NO attribute value on either side, so it cannot encode a
+# desired-state change. _diff_leaf_paths classifies such a delta as a distinct
+# NORMALIZED leaf path, benign ONLY when the (index-stripped) path is in that
+# type's normalization_paths (or already computed-only). `null↔""`, `null↔0`,
+# `null↔false`, `null↔non-empty`, and any UNAPPROVED path stay genuine refusals;
+# a REAL value appearing at an approved path (labels.x for {}→{x:y}, or labels
+# itself for null→{x:y} — a type-mismatch leaf) is a genuine `changed` leaf,
+# judged by paths/subtrees alone, so approval of the empty artifact never covers
+# it. Every benign path (computed or normalization) lands in the success audit;
+# normalization paths carry a `[null<->empty]` marker (in refusal messages too)
+# so an operator extending the allowlist can tell the categories apart.
+#
+# _MISSING SENTINEL (Codex review 019eb556 must-fix 2+3): a key/element present
+# on ONLY one side of the diff is marked with the _MISSING sentinel and read as a
+# GENUINE change, never explicit null — so an appearing/vanishing key, or a list
+# that grows/shrinks ([]→[{}]; block cardinality IS content in provider schemas),
+# is material unless its path is computed-only allowlisted. (In practice
+# `tofu show -json` emits every schema attribute with explicit null and the
+# fidelity gate pins the provider via the signed lockfile SHA, so before/after
+# key sets match — the sentinel is a cheap correctness backstop, not an
+# over-refusal risk.) normalization_paths entries are validated against
+# hashicorp/google 6.50.0 (iac/.terraform.lock.hcl) — revalidate on a lockfile
+# change (the fidelity gate makes that explicit by construction).
 
 @dataclass(frozen=True)
 class DriftAllowlist:
@@ -726,8 +760,10 @@ def run_apply_sequence(
     ``plan.tfplan``. ``kms_key`` is injected as ``TF_VAR_tofu_state_kms_key`` on
     every call (the iac/ encryption block is enforced; ``show``/``plan``/``apply``
     all must decrypt). The refresh-only freshness gate is SEMANTIC: refresh drift
-    that is purely server-computed churn proceeds (still applying the approved
-    saved plan); only MATERIAL desired-state drift raises :class:`FreshnessDrift`.
+    that is purely server-computed churn — per the TYPE-SCOPED
+    ``BENIGN_DRIFT_ALLOWLISTS``, including approved explicit-null↔empty-collection
+    readback normalization — proceeds (still applying the approved saved plan);
+    only MATERIAL desired-state drift raises :class:`FreshnessDrift`.
     On any non-success step raises :class:`LockRefused` if the failure is
     state-lock contention (held/orphaned GCS lock) or :class:`TofuStepError`
     otherwise — all fail-closed (the classification applies to init, refresh-only,
