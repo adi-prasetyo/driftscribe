@@ -91,6 +91,7 @@ from agent.adk_tools import (
     notify_tool,
     open_infra_pr_tool,
     patch_docs_tool,
+    propose_adoption_tool,
     propose_rollback_tool,
     read_live_env_tool,
     read_project_inventory_tool,
@@ -163,6 +164,11 @@ COORDINATOR_TOOLS = [
     # server-side. The tofu-editor re-validates every file before any GitHub
     # call — see ``agent.adk_tools.open_infra_pr_tool``.
     open_infra_pr_tool,
+    # Adopt tool (adopt design Phase 3) — renders probe-proven zero-change
+    # import HCL for one live resource and opens the PR via the same
+    # tofu-editor path. Authority-clean: no live infra changes; import only.
+    # Symbolic name: ``provision_propose_adoption``.
+    propose_adoption_tool,
 ]
 
 
@@ -297,6 +303,7 @@ PROVISION_WORKLOAD_TOOL_NAMES: tuple[str, ...] = (
     "search_developer_docs",
     "retrieve_developer_doc",
     "provision_open_infra_pr",
+    "provision_propose_adoption",
 )
 
 

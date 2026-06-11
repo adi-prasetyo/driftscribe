@@ -269,6 +269,10 @@ MUTATION_TOOL_NAMES: frozenset[str] = frozenset({
     # (``open_infra_pr_tool``) — both are filtered below, see the
     # double-filter rationale on resolve_provision_read_tools.
     "provision_open_infra_pr",
+    # Adopt tool: renders probe-proven zero-change import HCL and opens a PR
+    # via the same tofu-editor path. Symbolic name ``provision_propose_adoption``
+    # differs from callable ``__name__`` (``propose_adoption_tool``).
+    "provision_propose_adoption",
 })
 
 # Belt-and-suspenders companion to MUTATION_TOOL_NAMES: the set of *callable*
@@ -281,6 +285,7 @@ MUTATION_TOOL_NAMES: frozenset[str] = frozenset({
 # only; no PR/apply/mutation).
 MUTATION_CALLABLE_NAMES: frozenset[str] = frozenset({
     "open_infra_pr_tool",
+    "propose_adoption_tool",
 })
 
 

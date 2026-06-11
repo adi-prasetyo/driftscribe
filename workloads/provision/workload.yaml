@@ -57,6 +57,7 @@ enabled_tool_names:
   - search_developer_docs
   - retrieve_developer_doc
   - provision_open_infra_pr
+  - provision_propose_adoption
 
 # Read workers (drift_reader / infra_reader) PLUS the tofu_editor worker that
 # backs provision_open_infra_pr. NOTE: worker_names is a manifest/audit field

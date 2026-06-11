@@ -28,6 +28,9 @@ export const WORKER_LABELS: Record<string, string> = {
   // ``open_infra_pr_tool`` (the symbolic workload name is
   // ``provision_open_infra_pr``; the timeline keys on the callable).
   open_infra_pr_tool: 'Open infra PR',
+  // Adoption tool (adopt design Phase 3) — callable ``propose_adoption_tool``;
+  // symbolic workload name is ``provision_propose_adoption``.
+  propose_adoption_tool: 'Adopt resource (import PR)',
   // Shared
   notify_tool: 'Notifier',
   // MCP — Google Developer Knowledge. Per-tool labels (keyed on ``mcp_tool``)

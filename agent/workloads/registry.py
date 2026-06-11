@@ -64,6 +64,7 @@ from agent.adk_tools import (
     notify_tool,
     open_infra_pr_tool,
     patch_docs_tool,
+    propose_adoption_tool,
     propose_rollback_tool,
     read_live_env_tool,
     read_project_inventory_tool,
@@ -384,11 +385,12 @@ _TOOL_REGISTRY: Final[dict[str, Callable | None]] = {
     # base / label are derived server-side (registry pin, never LLM). The
     # tofu-editor re-validates every file (iac/-prefix, foundation ban,
     # secret ban, AGENT-mode static gate) before any GitHub call, so a bad
-    # request surfaces the worker's 403/422 as a model feedback loop. This is
-    # the one MUTATION tool the chat-only ``provision`` workload carries (it
-    # writes HCL + opens a PR; it never touches live infra) — see
-    # ``agent.adk_tools.open_infra_pr_tool``.
+    # request surfaces the worker's 403/422 as a model feedback loop. These are
+    # the two MUTATION tools the chat-only ``provision`` workload carries (they
+    # write HCL + open PRs; they never touch live infra) — see
+    # ``agent.adk_tools.open_infra_pr_tool`` / ``propose_adoption_tool``.
     "provision_open_infra_pr":   open_infra_pr_tool,
+    "provision_propose_adoption": propose_adoption_tool,
     # Coordinator session memory — reserved, implemented in 17.B.
     "get_session_state":         None,
     "set_session_state":         None,
