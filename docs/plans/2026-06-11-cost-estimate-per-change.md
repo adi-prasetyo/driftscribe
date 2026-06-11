@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12 (dataclasses, functools.cached_property), Jinja2 (strict-CSP server-side template), pytest. No frontend changes (approval page is server-rendered; chat renders the tool dict via the model).
 
-**Codex plan review:** thread `019eb729-ec14-7290-af56-d411b6b24859`, round 1 **NO-GO** with 6 must-fixes — ALL folded below: (1) tool cost now gated on `not view.denylist_violations`; (2) never-partial parity-by-construction via a `summarize_plan` guard; (3) unknown bucket storage class → generic note, never a Standard price; (4) `monthly_jpy` numeric ⟺ `kind=="fixed"` (no usage zeros in the contract); (5) `cpu_idle=false` wording fixed (instance-based billing never described as "billed only for traffic"); (6) Secret Manager version costs reframed usage-style (first-6-free tier makes a fixed delta unknowable). Should-fixes folded: whole-walk `try/except`, path-exact `_read` (H11), multi-container summing, exact rate date in the disclaimer, prompt-pin test located at `tests/unit/test_explore_workload_loads.py`, expanded test list.
+**Codex plan review:** thread `019eb729-ec14-7290-af56-d411b6b24859`, round 1 **NO-GO** with 6 must-fixes, round 2 **GO** with 3 should-fixes (destroy-only headline, terminal-page live-verify correction, H4 wording) — ALL folded. Round-1 must-fixes folded below: (1) tool cost now gated on `not view.denylist_violations`; (2) never-partial parity-by-construction via a `summarize_plan` guard; (3) unknown bucket storage class → generic note, never a Standard price; (4) `monthly_jpy` numeric ⟺ `kind=="fixed"` (no usage zeros in the contract); (5) `cpu_idle=false` wording fixed (instance-based billing never described as "billed only for traffic"); (6) Secret Manager version costs reframed usage-style (first-6-free tier makes a fixed delta unknowable). Should-fixes folded: whole-walk `try/except`, path-exact `_read` (H11), multi-container summing, exact rate date in the disclaimer, prompt-pin test located at `tests/unit/test_explore_workload_loads.py`, expanded test list.
 
 ---
 
@@ -50,7 +50,7 @@ Worked check: one always-warm Cloud Run instance (1 vCPU, 512 MiB, request-based
 | H1 | Cost is NEVER shown for an unverifiable / integrity-failed / **denylist-blocked** plan | template: cost block lives inside the existing trust-gated card (which already suppresses on all three); tool: integrity early-returns fire first AND the cost block is explicitly gated on `not view.denylist_violations` (the item-12 summary IS shown for blocked plans — explaining a block is legitimate; *pricing* one implies viability, so cost is not) |
 | H2 | Every numeric surface carries the heuristic disclaimer (region, exact rates-as-of date, "not a quote") | `COST_DISCLAIMER` constant rides `PlanCostEstimate.disclaimer`; template footer + tool `cost.disclaimer`; prompt rule pins relay |
 | H3 | Adoption (import) = "no billing change — already billed" — never a scary number, never ¥0-as-savings | `_estimate_rc` import branch; adopt-only headline |
-| H4 | Usage-based resources are framed "¥0 until used", never "free" | per-type notes; `kind="usage"` always has `monthly_jpy=None` |
+| H4 | Usage-based resources are framed "¥0 until used" / "free to exist, billed by use" — never presented as entirely free | per-type notes; `kind="usage"` always has `monthly_jpy=None` |
 | H5 | Unknown resource types AND unrecognized attr values say "no estimate available" — never invent (e.g. an unknown storage class is never priced as Standard) | `kind="unknown"`; `_est_bucket.cls()` returns None for present-but-unrecognized classes; headline appends the unknown count |
 | H6 | Sensitive-masked cost attrs → conservative fallback, never read through the mask | `_read` consults the sensitivity mask at every step; sensitive ⇒ `_SENSITIVE` ⇒ defaults/unknown |
 | H7 | `monthly_jpy` is numeric ⟺ `kind == "fixed"` — usage/free/unknown are ALWAYS `None`; the headline's always-on figure sums only fixed deltas; usage components are named, not numbered | EntryCost contract + accumulation; pinned by test |
@@ -585,10 +585,16 @@ def _estimate_rc(address: str, rtype: str, verb: str, change: dict) -> EntryCost
 # The public walk.
 # --------------------------------------------------------------------------- #
 
-def _headline(fixed: float, n_usage: int, n_unknown: int, all_import: bool) -> str:
+def _headline(fixed: float, n_usage: int, n_unknown: int,
+              all_import: bool, all_destroy: bool) -> str:
     if all_import:
         return ("Adopting costs nothing extra — these resources already exist "
                 "and are already being billed.")
+    if all_destroy and -0.5 <= fixed <= 0.5:
+        # Codex round-2 SF-1: "adds no cost until used" is odd framing for a
+        # plan that only removes things.
+        return ("Removes resources — no computable always-on cost change; "
+                "usage-based charges stop when the resources are gone.")
     if fixed > 0.5:
         base = f"Adds about {_fmt_jpy(fixed)}/month in always-on cost"
     elif fixed < -0.5:
@@ -624,6 +630,7 @@ def estimate_plan_cost(plan_json: Any) -> PlanCostEstimate | None:
         n_usage = n_free = n_unknown = 0
         n_entries = 0
         all_import = True
+        all_destroy = True
         for rc in rcs:
             if rc.get("mode") == "data":
                 continue  # guard proved: a well-formed data READ (the only skippable kind)
@@ -639,6 +646,8 @@ def estimate_plan_cost(plan_json: Any) -> PlanCostEstimate | None:
             n_entries += 1
             if verb != "import":
                 all_import = False
+            if verb != "destroy":
+                all_destroy = False
             if ec.monthly_jpy is not None:
                 fixed += ec.monthly_jpy
             if ec.kind == "usage":
@@ -656,7 +665,8 @@ def estimate_plan_cost(plan_json: Any) -> PlanCostEstimate | None:
             n_unknown=n_unknown,
             n_hidden=max(0, len(out) - MAX_ENTRIES),
             headline=_headline(fixed, n_usage, n_unknown,
-                               all_import and n_entries > 0),
+                               all_import and n_entries > 0,
+                               all_destroy and n_entries > 0),
         )
     except Exception:  # noqa: BLE001 — advisory display, fail-soft by contract
         return None
@@ -956,6 +966,15 @@ def test_forget_is_no_billing_change():
     p = _plan(_rc(["forget"], name="kept", before={}))
     (ec,) = estimate_plan_cost(p).entries
     assert "keeps being billed" in ec.note
+
+
+def test_destroy_only_usage_plan_headline():
+    # Codex round-2 SF-1: a destroy-only plan must not read "adds no cost
+    # until it is used".
+    p = _plan(_rc(["delete"], name="gone", before={"storage_class": "STANDARD"}))
+    est = estimate_plan_cost(p)
+    assert est.headline.startswith("Removes resources")
+    assert "until it is used" not in est.headline
 
 
 # ---- walk semantics ----------------------------------------------------------
@@ -1351,10 +1370,17 @@ Extend the existing prompt-pin test with a presence assertion (match the file's 
 2. CI watch (`gh pr checks N --watch`, background; plan-builder "skipping" expected).
 3. Codex completed-work review on the SAME thread as the plan review (`019eb729-ec14-7290-af56-d411b6b24859`).
 4. Squash-merge → coordinator rebake (`infra/cloudbuild.coordinator-update.yaml`, `_TAG=<short-sha>`) → find revision **by image digest** → `update-traffic --to-revisions=<rev>=100`. NO tofu-editor rebake (no gate/denylist change).
-5. Live verify:
-   - `/iac-approvals/102` (terminal adopt page) — cost headline "Adopting costs nothing extra…" + disclaimer present, card otherwise unchanged.
-   - Real explore chat turn: "what will PR #102 cost me per month?" → exactly one `load_iac_plan_tool` call → reply relays the adopt headline + disclaimer, no invented figures.
+5. Live verify (Codex round-2 SF-2: PR #102's approval page is TERMINAL — the
+   route suppresses `show_summary` on terminal outcome pages, so the cost card
+   correctly does NOT render there; chat is the live surface for #102):
+   - `/iac-approvals/102` — page renders unchanged, NO cost card (terminal
+     suppression is the correct behavior, assert absence).
+   - Real explore chat turn: "what will PR #102 cost me per month?" → exactly
+     one `load_iac_plan_tool` call → reply relays the adopt headline
+     ("Adopting costs nothing extra…") + disclaimer, no invented figures.
    - Negative: a PR with no artifact still answers honestly (no cost invention).
+   - The pending-page card path is covered by the template unit tests; no live
+     mutation is manufactured just to see it.
 6. Memory + closing report.
 
 ## Mode × surface matrix
