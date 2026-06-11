@@ -21,6 +21,7 @@ import argparse
 import sys
 
 from driftscribe_lib.iac_plan_denylist import (  # noqa: F401  (re-export)
+    ADOPTABLE_RESOURCE_TYPES,
     ALL_KNOWN_TUPLES,
     CLOUD_RUN_SERVICE_TYPES,
     CONTROL_PLANE_BUCKET_SUFFIXES,

@@ -12,6 +12,7 @@ import pytest
 
 from tools import iac_plan_denylist  # noqa: F401
 from tools.iac_plan_denylist import (
+    ADOPTABLE_RESOURCE_TYPES,
     DenylistInput,
     Violation,
     evaluate,
@@ -346,6 +347,22 @@ def test_protected_type_with_no_identity_is_malformed():
     """
     parsed, _ = load_plan_json(_load("malformed_protected_cloud_run_no_name.json"))
     assert "plan-json-malformed-change" in _rules(evaluate(DenylistInput(plan=parsed)))
+
+
+# --- Task 1: ADOPTABLE_RESOURCE_TYPES ---
+
+
+def test_adoptable_types_exact_set():
+    assert ADOPTABLE_RESOURCE_TYPES == {
+        "google_storage_bucket", "google_pubsub_topic",
+        "google_pubsub_subscription", "google_cloud_run_v2_service",
+    }
+
+
+def test_adoptable_types_strict_subset_of_identity_templates():
+    from driftscribe_lib.iac_hcl import _SUPPORTED_RESOURCE_ASSET_TYPES
+    assert ADOPTABLE_RESOURCE_TYPES < set(_SUPPORTED_RESOURCE_ASSET_TYPES)
+    assert "google_service_account" not in ADOPTABLE_RESOURCE_TYPES  # D2
 
 
 # --- Constant-shape guards (catch accidental mutation of the allowlists) ---

@@ -34,7 +34,14 @@ def _service_change(name: str, actions: list[str]) -> dict:
 def test_canonical_api_importable_from_lib() -> None:
     assert callable(lib.load_plan_json)
     assert callable(lib.evaluate)
-    assert lib.__all__ == ["Violation", "DenylistInput", "load_plan_json", "evaluate", "RULE_DESCRIPTIONS"]
+    assert lib.__all__ == [
+        "Violation",
+        "DenylistInput",
+        "load_plan_json",
+        "evaluate",
+        "RULE_DESCRIPTIONS",
+        "ADOPTABLE_RESOURCE_TYPES",
+    ]
 
 
 def test_load_plan_json_and_evaluate_behave() -> None:
@@ -79,3 +86,4 @@ def test_tools_shim_reexports_the_same_objects() -> None:
     # A representative constant must be the SAME object (one definition).
     assert shim.IAM_EXTRA_TYPES is lib.IAM_EXTRA_TYPES
     assert shim.CONTROL_PLANE_SERVICE_NAMES is lib.CONTROL_PLANE_SERVICE_NAMES
+    assert shim.ADOPTABLE_RESOURCE_TYPES is lib.ADOPTABLE_RESOURCE_TYPES

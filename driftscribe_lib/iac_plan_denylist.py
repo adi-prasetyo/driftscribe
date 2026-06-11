@@ -90,7 +90,14 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Final, Mapping
 
-__all__ = ["Violation", "DenylistInput", "load_plan_json", "evaluate", "RULE_DESCRIPTIONS"]
+__all__ = [
+    "Violation",
+    "DenylistInput",
+    "load_plan_json",
+    "evaluate",
+    "RULE_DESCRIPTIONS",
+    "ADOPTABLE_RESOURCE_TYPES",
+]
 
 
 @dataclass(frozen=True)
@@ -258,6 +265,22 @@ IAM_EXTRA_TYPES: frozenset[str] = (
         }
     )
     | WIF_RESOURCE_TYPES
+)
+
+
+# D2 (adopt design §1): the v1 adoptable-type allowlist — exactly the types
+# both the plan-builder WIF SA and tofu-apply-sa can already read. DELIBERATELY
+# a separate constant from iac_hcl._SUPPORTED_RESOURCE_ASSET_TYPES, which also
+# contains google_service_account (excluded by D2: identities are the most
+# sensitive type). A drift pin asserts this is a STRICT subset of the template
+# types (every adoptable type must be authorable from a template).
+ADOPTABLE_RESOURCE_TYPES: frozenset[str] = frozenset(
+    {
+        "google_storage_bucket",
+        "google_pubsub_topic",
+        "google_pubsub_subscription",
+        "google_cloud_run_v2_service",
+    }
 )
 
 
