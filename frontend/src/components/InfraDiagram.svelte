@@ -29,6 +29,7 @@
     overlayRenderable,
     overlayCountsLine,
     adoptPrefill,
+    adoptGroupRank,
     type InfraGraph,
     type InfraGroup,
     type PlanOverlay,
@@ -115,6 +116,8 @@
     label: string;
     rows: AdoptListRow[];
     hiddenUnmanaged: number;
+    rank: number | null; // item 10: guided adoption order (null = unranked)
+    hint: string | null;
   };
   const adoptGroups = $derived.by((): AdoptListGroup[] => {
     if (!graph || graph.degraded) return [];
@@ -133,16 +136,32 @@
         });
       }
       if (rows.length === 0) continue;
+      const rank = adoptGroupRank(g);
       out.push({
         assetType: g.asset_type,
         label: g.label,
         rows,
         hiddenUnmanaged: Math.max(0, g.drift - rows.length),
+        rank,
+        hint:
+          rank !== null && typeof g.adopt_hint === 'string' && g.adopt_hint
+            ? g.adopt_hint
+            : null,
       });
     }
+    // JS sort is stable, so unranked groups keep their server order.
+    out.sort(
+      (a, b) =>
+        (a.rank ?? Number.POSITIVE_INFINITY) - (b.rank ?? Number.POSITIVE_INFINITY),
+    );
     return out;
   });
   const hasAdoptRows = $derived(adoptGroups.length > 0);
+  // First group is the "start here" target iff it is ranked (ranked sort first,
+  // so index 0 unranked ⇒ nothing is ranked ⇒ no chip, no order note).
+  const startHereAssetType = $derived(
+    adoptGroups[0]?.rank != null ? adoptGroups[0].assetType : null,
+  );
 
   function clickAdopt(prefill: string): void {
     if (adoptDisabled) return;
@@ -495,8 +514,24 @@
           Unmanaged resources shown on the map — they exist in your project but are not
           under IaC management
         </p>
+        {#if startHereAssetType !== null}
+          <p class="ds-subtle infra-adopt__order" data-testid="adopt-order-note">
+            Suggested order among the unmanaged resources shown: the simplest to
+            recognize and review come first. Every adoption is the same zero-change
+            import behind the same approval gate — the order is about building
+            confidence, not safety.
+          </p>
+        {/if}
         <ul class="infra-adopt__list">
           {#each adoptGroups as g (g.assetType)}
+            {#if g.hint !== null}
+              <li class="ds-subtle infra-adopt__hint" data-testid="adopt-hint">
+                {#if g.assetType === startHereAssetType}
+                  <span class="infra-adopt__start" data-testid="adopt-start-here">Start here</span>
+                {/if}
+                {g.label}: {g.hint}
+              </li>
+            {/if}
             {#each g.rows as row (row.nodeId)}
               <li class="infra-adopt__row" data-testid="adopt-row">
                 <span class="infra-adopt__type">{g.label}</span>
@@ -739,5 +774,26 @@
   .infra-adopt__trailer {
     font-size: var(--ds-fs-1);
     font-style: italic;
+  }
+  /* Guided adoption order (item 10): the order note + per-group hint lines + the
+     "Start here" chip. The chip mirrors the ds-pill--ok treatment via the shared
+     ok design tokens (--ds-ok / --ds-ok-ink / --ds-ok-surface). */
+  .infra-adopt__order {
+    margin: 0 0 0.4rem;
+  }
+  .infra-adopt__hint {
+    list-style: none;
+    margin-top: 0.45rem;
+  }
+  .infra-adopt__start {
+    display: inline-block;
+    margin-right: 0.45rem;
+    padding: 0.05rem 0.5rem;
+    border: 1px solid var(--ds-ok);
+    border-radius: 999px;
+    color: var(--ds-ok-ink);
+    background: var(--ds-ok-surface);
+    font-size: 0.72rem;
+    font-weight: 600;
   }
 </style>
