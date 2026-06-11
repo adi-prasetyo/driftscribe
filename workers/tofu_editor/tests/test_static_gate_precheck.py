@@ -139,3 +139,47 @@ def test_clean_resource_reaches_github_and_returns_200(client) -> None:
         {"path": "iac/x.tf", "content": CLEAN_RESOURCE}
     ]
     assert r.json()["pr_number"] == 88
+
+
+# ---------------------------------------------------------------------------
+# Phase-2 import admission: in-process gate checks (Codex important #2)
+# ---------------------------------------------------------------------------
+
+# A valid adopt pair (bucket resource + co-located import block, plain literal id).
+CLEAN_ADOPT_PAIR = (
+    'resource "google_storage_bucket" "old_uploads" {\n'
+    '  name     = "my-old-uploads"\n'
+    '  location = "ASIA-NORTHEAST1"\n'
+    '}\n'
+    'import {\n'
+    '  to = google_storage_bucket.old_uploads\n'
+    '  id = "my-old-uploads"\n'
+    '}\n'
+)
+
+# A bad import block: id uses a variable expression → import-id-not-literal.
+BAD_IMPORT_ID_VAR = (
+    'resource "google_storage_bucket" "b" {}\n'
+    'import { to = google_storage_bucket.b  id = var.bucket_name }\n'
+)
+
+
+def test_adopt_pair_reaches_github(client) -> None:
+    """A well-formed adopt pair (import + matching resource, literal id) must
+    pass the in-process gate and reach the fake GitHub client."""
+    tc, captured = client
+    r = tc.post("/open-pr", json=_body_with_tf(CLEAN_ADOPT_PAIR))
+    assert r.status_code == 200, r.text
+    assert len(captured) == 1, "expected exactly one GitHub call"
+
+
+def test_bad_import_id_returns_422_no_github_call(client) -> None:
+    """An import block with a variable id must be rejected with 422 naming
+    import-id-not-literal, and no GitHub call must be made."""
+    tc, captured = client
+    r = tc.post("/open-pr", json=_body_with_tf(BAD_IMPORT_ID_VAR))
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["error"] == "static_gate"
+    assert any(v["rule"] == "import-id-not-literal" for v in detail["violations"])
+    assert captured == [], "no GitHub call should be made when gate rejects"

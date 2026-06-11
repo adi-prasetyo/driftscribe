@@ -287,3 +287,275 @@ def test_real_committed_iac_tf_files_pass_operator_mode():
     }
     gi = GateInput(GateMode.OPERATOR, rel, hcl_files)
     assert evaluate(gi) == []
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 import admission rules (design §5, AGENT mode only)
+# ---------------------------------------------------------------------------
+
+from tools.iac_static_gate import ADOPT_IMPORT_ID_SHAPES  # noqa: E402
+from driftscribe_lib.iac_plan_denylist import ADOPTABLE_RESOURCE_TYPES  # noqa: E402
+
+
+_BUCKET_IMPORT_PAIR = """\
+resource "google_storage_bucket" "old_uploads" {
+  name     = "my-old-uploads"
+  location = "ASIA-NORTHEAST1"
+}
+import {
+  to = google_storage_bucket.old_uploads
+  id = "my-old-uploads"
+}
+"""
+
+_BUCKET_IMPORT_PAIR_FILE_A = """\
+resource "google_storage_bucket" "old_uploads" {
+  name     = "my-old-uploads"
+  location = "ASIA-NORTHEAST1"
+}
+"""
+
+_BUCKET_IMPORT_PAIR_FILE_B = """\
+import {
+  to = google_storage_bucket.old_uploads
+  id = "my-old-uploads"
+}
+"""
+
+
+def _agent_gi(files: dict[str, str]) -> GateInput:
+    return GateInput(
+        mode=GateMode.AGENT,
+        changed_paths=tuple(files.keys()),
+        hcl_files=files,
+    )
+
+
+def _operator_gi(files: dict[str, str]) -> GateInput:
+    return GateInput(
+        mode=GateMode.OPERATOR,
+        changed_paths=tuple(files.keys()),
+        hcl_files=files,
+    )
+
+
+def test_import_shapes_cover_exactly_adoptable_types():
+    """Drift pin: ADOPT_IMPORT_ID_SHAPES must match ADOPTABLE_RESOURCE_TYPES exactly."""
+    assert set(ADOPT_IMPORT_ID_SHAPES) == set(ADOPTABLE_RESOURCE_TYPES)
+
+
+def test_happy_adopt_pair_single_file_passes():
+    """Happy path: import + matching resource in same changed file → no violations."""
+    gi = _agent_gi({"iac/adopt_bucket.tf": _BUCKET_IMPORT_PAIR})
+    assert evaluate(gi) == []
+
+
+def test_happy_adopt_pair_split_across_two_files_passes():
+    """Pair split across two changed files → still passes."""
+    gi = _agent_gi({
+        "iac/bucket.tf": _BUCKET_IMPORT_PAIR_FILE_A,
+        "iac/imports_section.tf": _BUCKET_IMPORT_PAIR_FILE_B,
+    })
+    assert evaluate(gi) == []
+
+
+def test_import_no_to_fires_undeclared():
+    """No 'to' key → import-target-undeclared."""
+    hcl = 'resource "google_storage_bucket" "b" {}\nimport { id = "my-bucket" }\n'
+    violations = evaluate(_agent_gi({"iac/x.tf": hcl}))
+    assert any(v.rule == "import-target-undeclared" for v in violations)
+
+
+def test_import_module_address_fires_undeclared():
+    """module.x.y address → import-target-undeclared (not a plain type.name)."""
+    hcl = (
+        'resource "google_storage_bucket" "b" {}\n'
+        'import { to = module.infra.google_storage_bucket.b  id = "my-bucket" }\n'
+    )
+    violations = evaluate(_agent_gi({"iac/x.tf": hcl}))
+    assert any(v.rule == "import-target-undeclared" for v in violations)
+
+
+def test_import_three_component_address_fires_undeclared():
+    """a.b.c address (three components) → import-target-undeclared."""
+    hcl = (
+        'resource "google_storage_bucket" "b" {}\n'
+        'import { to = google_storage_bucket.b.extra  id = "my-bucket" }\n'
+    )
+    violations = evaluate(_agent_gi({"iac/x.tf": hcl}))
+    assert any(v.rule == "import-target-undeclared" for v in violations)
+
+
+def test_import_indexed_to_fires_indexed():
+    """to = google_storage_bucket.b[0] → import-target-indexed."""
+    hcl = (
+        'resource "google_storage_bucket" "b" {}\n'
+        'import { to = google_storage_bucket.b[0]  id = "my-bucket" }\n'
+    )
+    violations = evaluate(_agent_gi({"iac/x.tf": hcl}))
+    assert any(v.rule == "import-target-indexed" for v in violations)
+    assert not any(v.rule == "import-target-undeclared" for v in violations)
+
+
+def test_import_target_resource_with_count_fires_indexed():
+    """Target resource block uses count → import-target-indexed."""
+    hcl = (
+        'resource "google_storage_bucket" "b" { count = 2 }\n'
+        'import { to = google_storage_bucket.b  id = "my-bucket" }\n'
+    )
+    violations = evaluate(_agent_gi({"iac/x.tf": hcl}))
+    assert any(v.rule == "import-target-indexed" for v in violations)
+
+
+def test_import_target_resource_with_for_each_fires_indexed():
+    """Target resource block uses for_each → import-target-indexed."""
+    hcl = (
+        'resource "google_storage_bucket" "b" { for_each = toset([]) }\n'
+        'import { to = google_storage_bucket.b  id = "my-bucket" }\n'
+    )
+    violations = evaluate(_agent_gi({"iac/x.tf": hcl}))
+    assert any(v.rule == "import-target-indexed" for v in violations)
+
+
+def test_import_service_account_type_fires_type_not_adoptable():
+    """google_service_account pair → import-type-not-adoptable."""
+    hcl = (
+        'resource "google_service_account" "sa" { account_id = "my-sa" }\n'
+        'import { to = google_service_account.sa  id = "projects/p/serviceAccounts/my-sa@p.iam.gserviceaccount.com" }\n'
+    )
+    violations = evaluate(_agent_gi({"iac/x.tf": hcl}))
+    assert any(v.rule == "import-type-not-adoptable" for v in violations)
+
+
+def test_import_id_var_reference_fires_not_literal():
+    """id = var.x → import-id-not-literal."""
+    hcl = (
+        'resource "google_storage_bucket" "b" {}\n'
+        'import { to = google_storage_bucket.b  id = var.bucket_name }\n'
+    )
+    violations = evaluate(_agent_gi({"iac/x.tf": hcl}))
+    assert any(v.rule == "import-id-not-literal" for v in violations)
+
+
+def test_import_id_missing_fires_not_literal():
+    """id missing entirely → import-id-not-literal."""
+    hcl = (
+        'resource "google_storage_bucket" "b" {}\n'
+        'import { to = google_storage_bucket.b }\n'
+    )
+    violations = evaluate(_agent_gi({"iac/x.tf": hcl}))
+    assert any(v.rule == "import-id-not-literal" for v in violations)
+
+
+def test_import_id_with_interpolation_fires_not_literal():
+    """id = "projects/${var.project}/..." → import-id-not-literal (contains ${)."""
+    hcl = (
+        'resource "google_pubsub_topic" "t" {}\n'
+        'import { to = google_pubsub_topic.t  id = "projects/${var.project}/topics/my-t" }\n'
+    )
+    violations = evaluate(_agent_gi({"iac/x.tf": hcl}))
+    assert any(v.rule == "import-id-not-literal" for v in violations)
+
+
+def test_import_identity_attribute_fires_not_literal():
+    """identity = {...} block → import-id-not-literal."""
+    hcl = (
+        'resource "google_storage_bucket" "b" {}\n'
+        'import {\n  to = google_storage_bucket.b\n  id = "my-bucket"\n  identity = {}\n}\n'
+    )
+    violations = evaluate(_agent_gi({"iac/x.tf": hcl}))
+    assert any(v.rule == "import-id-not-literal" for v in violations)
+
+
+def test_import_bucket_id_with_slash_fires_shape():
+    """Bucket id containing '/' doesn't match bare-name shape → import-id-not-literal."""
+    hcl = (
+        'resource "google_storage_bucket" "b" {}\n'
+        'import { to = google_storage_bucket.b  id = "projects/p/buckets/my-bucket" }\n'
+    )
+    violations = evaluate(_agent_gi({"iac/x.tf": hcl}))
+    assert any(v.rule == "import-id-not-literal" for v in violations)
+
+
+def test_import_topic_id_bare_name_fires_shape():
+    """Pub/Sub topic id as bare name (no projects/.../topics/) → import-id-not-literal."""
+    hcl = (
+        'resource "google_pubsub_topic" "t" {}\n'
+        'import { to = google_pubsub_topic.t  id = "my-topic" }\n'
+    )
+    violations = evaluate(_agent_gi({"iac/x.tf": hcl}))
+    assert any(v.rule == "import-id-not-literal" for v in violations)
+
+
+def test_import_run_service_id_missing_locations_fires_shape():
+    """Cloud Run service id without 'locations' component → import-id-not-literal."""
+    hcl = (
+        'resource "google_cloud_run_v2_service" "svc" {}\n'
+        'import { to = google_cloud_run_v2_service.svc  id = "projects/p/services/my-svc" }\n'
+    )
+    violations = evaluate(_agent_gi({"iac/x.tf": hcl}))
+    assert any(v.rule == "import-id-not-literal" for v in violations)
+
+
+def test_import_foreach_on_block_fires_foreach_forbidden():
+    """for_each on the import block → import-foreach-forbidden."""
+    hcl = (
+        'resource "google_storage_bucket" "b" {}\n'
+        'import { for_each = toset(["a"])  to = google_storage_bucket.b  id = "my-bucket" }\n'
+    )
+    violations = evaluate(_agent_gi({"iac/x.tf": hcl}))
+    assert any(v.rule == "import-foreach-forbidden" for v in violations)
+
+
+def test_import_two_blocks_same_file_fires_batch_forbidden():
+    """Two import blocks in same file → import-batch-forbidden."""
+    hcl = (
+        'resource "google_storage_bucket" "b1" {}\n'
+        'resource "google_storage_bucket" "b2" {}\n'
+        'import { to = google_storage_bucket.b1  id = "bucket-one" }\n'
+        'import { to = google_storage_bucket.b2  id = "bucket-two" }\n'
+    )
+    violations = evaluate(_agent_gi({"iac/x.tf": hcl}))
+    assert any(v.rule == "import-batch-forbidden" for v in violations)
+
+
+def test_import_two_blocks_split_files_fires_batch_forbidden():
+    """Two import blocks split across files → import-batch-forbidden."""
+    file_a = (
+        'resource "google_storage_bucket" "b1" {}\n'
+        'import { to = google_storage_bucket.b1  id = "bucket-one" }\n'
+    )
+    file_b = (
+        'resource "google_storage_bucket" "b2" {}\n'
+        'import { to = google_storage_bucket.b2  id = "bucket-two" }\n'
+    )
+    violations = evaluate(_agent_gi({"iac/a.tf": file_a, "iac/b.tf": file_b}))
+    assert any(v.rule == "import-batch-forbidden" for v in violations)
+
+
+def test_import_target_in_unparseable_file_fails_closed():
+    """Import targeting a resource declared only in an unparseable file →
+    hcl-parse-error + import-target-undeclared (fail-closed)."""
+    hcl_good = 'import { to = google_storage_bucket.b  id = "my-bucket" }\n'
+    hcl_bad = "THIS IS NOT VALID HCL {\n"
+    violations = evaluate(_agent_gi({"iac/a.tf": hcl_good, "iac/bad.tf": hcl_bad}))
+    rules = {v.rule for v in violations}
+    assert "hcl-parse-error" in rules
+    assert "import-target-undeclared" in rules
+
+
+def test_operator_mode_no_import_violations():
+    """OPERATOR mode: import blocks in changed files emit no import-* violations."""
+    hcl = (
+        'import { to = google_storage_bucket.b  id = "my-bucket" }\n'
+        'import { to = google_pubsub_topic.t  id = "bare-name" }\n'
+    )
+    violations = evaluate(_operator_gi({"iac/imports.tf": hcl}))
+    assert not any(v.rule.startswith("import-") for v in violations)
+
+
+def test_non_import_agent_pr_emits_no_import_rules():
+    """Regression: a non-import agent PR must not emit any import-* rules."""
+    hcl = 'resource "google_storage_bucket" "b" { name = "my-bucket" }\n'
+    violations = evaluate(_agent_gi({"iac/bucket.tf": hcl}))
+    assert not any(v.rule.startswith("import-") for v in violations)
