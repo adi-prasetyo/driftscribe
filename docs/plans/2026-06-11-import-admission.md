@@ -24,6 +24,13 @@ one small Svelte/TS touch (capability card adoptable-types line) + vitest.
 (copy), §4.5, §5, §7 (Phase 2), §8. Phase 1 shipped as PR #91 → `1e35164`
 (plan: `docs/plans/2026-06-11-import-safety-floor.md`).
 
+**Status: COMPLETE** — Tasks 1–8 all done on branch `feat/import-admission`
+(2026-06-11). 2487 pytest green, ruff clean, 424 vitest green, build clean.
+Commits: bff8b5f (T1) → 8a16cdc (T2) → 831bf5d (T3) → 5f6ec9d (T4) →
+e2f94c8 (T5) → 5b9f4bb (T6) → 1bc6558 (T7) → pending (T8).
+Awaiting: Codex completed-work review, PR open, CI green, squash-merge,
+THREE rebakes (coordinator + tofu-apply + tofu-editor).
+
 ---
 
 ## 0. Grounded facts (verified against main @ `1e35164`, 2026-06-11)
