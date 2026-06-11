@@ -1,0 +1,207 @@
+// tour.ts — pure logic for the first-run onboarding tour (roadmap item 14).
+//
+// The tour is a guided, NON-modal walkthrough of the real UI: a docked step
+// card (TourCard.svelte) spotlights existing panels via [data-tour] markers
+// and ends by prefilling — never sending — an adopt request through the same
+// bridge as the panel's Adopt buttons. ALL step copy lives here (pure,
+// unit-testable); the components only render it.
+//
+// HONESTY (item-10 lesson, pinned by tests): copy is confidence-framing,
+// never a safety promise. The controls step deliberately scopes the
+// always-gated claim to INFRASTRUCTURE edits — in Propose + Apply the
+// upgrade workload may merge its own dependency PR.
+
+import {
+  adoptGroupRank,
+  adoptPrefill,
+  normalizeForPrompt,
+  type InfraGraph,
+} from './infra_graph';
+import { coveragePercent } from './coverage';
+
+export const TOUR_DONE_KEY = 'driftscribe_tour_done';
+
+/** Guarded read — localStorage can throw under strict privacy modes. */
+export function tourDone(): boolean {
+  try {
+    return window.localStorage.getItem(TOUR_DONE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export function markTourDone(): void {
+  try {
+    window.localStorage.setItem(TOUR_DONE_KEY, '1');
+  } catch {
+    /* best-effort — worst case the banner re-offers next visit */
+  }
+}
+
+/**
+ * Offer the banner? Only when the tour was never done AND the operator did
+ * not arrive on an errand (?ask_pr / ?preview_pr deep links from the
+ * approval page) — interrupting intent is worse than not offering.
+ */
+export function shouldOfferTour(search: string, done: boolean): boolean {
+  if (done) return false;
+  const params = new URLSearchParams(search);
+  return params.get('ask_pr') === null && params.get('preview_pr') === null;
+}
+
+export type TourStepId = 'welcome' | 'estate' | 'controls' | 'adopt' | 'next';
+
+export interface TourStep {
+  id: TourStepId;
+  title: string;
+  /** data-tour attribute of the page element to spotlight; null = none. */
+  target: string | null;
+}
+
+export const TOUR_STEPS: readonly TourStep[] = [
+  { id: 'welcome', title: 'Welcome', target: null },
+  { id: 'estate', title: 'Your estate', target: 'estate' },
+  { id: 'controls', title: 'You set the pace', target: 'controls' },
+  { id: 'adopt', title: 'Adopt your first resource', target: 'estate' },
+  { id: 'next', title: 'What happens next', target: 'composer' },
+];
+
+/** Step 1 — the project is unknown until /infra/graph resolves. */
+export function welcomeLine(graph: InfraGraph | null): string {
+  const subject = graph?.project
+    ? `the GCP project ${graph.project}`
+    : 'your GCP project';
+  return (
+    `DriftScribe watches ${subject} and helps you bring it under ` +
+    'infrastructure-as-code management. It explains what it sees, proposes ' +
+    'changes as pull requests you can read, and applies an infrastructure ' +
+    'change only after you approve it.'
+  );
+}
+
+/** Step 2 — live totals, or an honest loading/degraded line (T3). */
+export function estateLine(graph: InfraGraph | null): string {
+  if (graph === null) {
+    return (
+      'Your estate is still loading — the Infrastructure panel below will ' +
+      'fill in shortly.'
+    );
+  }
+  if (graph.degraded) {
+    return (
+      'The resource inventory is unavailable right now (Cloud Asset ' +
+      'Inventory may still be initializing). You can keep going and check ' +
+      'the panel later.'
+    );
+  }
+  const { resources, managed, drift } = graph.totals;
+  const pct = coveragePercent(managed, resources);
+  const pctPart = pct === null ? '' : ` (${pct}%)`;
+  return (
+    `${resources} resources indexed — ${managed} under IaC management` +
+    `${pctPart}, ${drift} not yet. The coverage meter below tracks your ` +
+    'migration.'
+  );
+}
+
+// Step 3 — honesty T2: the always-gated claim is scoped to INFRASTRUCTURE
+// edits; Propose + Apply is allowed to finish routine dependency updates.
+export const CONTROLS_LINE =
+  'You decide how much the agent does on its own: Observe (it only watches ' +
+  'and reports), Propose (it drafts changes for your review), or Propose + ' +
+  'Apply (it may also complete routine dependency updates end-to-end). At ' +
+  'every setting, infrastructure edits pass your explicit approval gate — ' +
+  'and the Pause button suspends all agent activity in one click.';
+
+// Step 5 — what sending the prefilled request actually does, and how to
+// reopen the tour. Honesty T6 (Codex MF1): scoped to THIS adopt request —
+// a blanket "nothing is applied until you approve" would overclaim, since
+// Propose + Apply may merge dependency PRs on its own.
+export const NEXT_LINE =
+  'When you send this adopt request, the agent drafts it as a GitHub pull ' +
+  'request with a plan you can read in plain language — what it changes, ' +
+  'what it can never touch, and what it is estimated to cost. The ' +
+  'infrastructure change is applied only after you approve it on the ' +
+  'review page. You can reopen this tour anytime from the Tour button in ' +
+  'the header.';
+
+export type AdoptStepState =
+  | { kind: 'unavailable'; line: string }
+  | { kind: 'none'; line: string }
+  | { kind: 'target'; line: string; prefill: string };
+
+/**
+ * Step 4 — the first-adoption suggestion. Candidate order mirrors the
+ * panel's adopt list exactly (non-sensitive, adoptable, has an unmanaged
+ * node; sorted by adoptGroupRank with unranked last, stable). The hint is
+ * shown only when the group is RANKED — same rule as InfraDiagram.
+ */
+export function adoptStepState(graph: InfraGraph | null): AdoptStepState {
+  if (graph === null || graph.degraded) {
+    return {
+      kind: 'unavailable',
+      line:
+        'The estate inventory is not available yet, so the tour cannot ' +
+        'suggest a first adoption. When it returns, the Adopt buttons live ' +
+        'in the Infrastructure panel.',
+    };
+  }
+  const candidates = graph.groups
+    .filter((g) => !g.sensitive && g.adoptable === true)
+    .map((g) => ({ g, rank: adoptGroupRank(g) }))
+    .sort(
+      (a, b) =>
+        (a.rank ?? Number.POSITIVE_INFINITY) -
+        (b.rank ?? Number.POSITIVE_INFINITY),
+    );
+  for (const { g, rank } of candidates) {
+    // T7 (Codex MF2): never suggest a node the graph didn't name — an empty
+    // normalized label would yield an empty-backtick prefill and blank copy.
+    const node = g.nodes.find(
+      (n) => !n.managed && normalizeForPrompt(n.label, 254) !== '',
+    );
+    if (!node) continue;
+    const hint =
+      rank !== null && typeof g.adopt_hint === 'string' && g.adopt_hint
+        ? g.adopt_hint
+        : null;
+    return {
+      kind: 'target',
+      line:
+        `A good first adoption: the ${g.label} \`${node.label}\`. Adopting ` +
+        'imports a resource into IaC exactly as it is — a zero-change ' +
+        'import that goes through the same review and approval as any ' +
+        `other change.${hint ? ` ${hint}` : ''}`,
+      prefill: adoptPrefill(g.label, node.label, node.location),
+    };
+  }
+  if (graph.totals.drift === 0) {
+    return {
+      kind: 'none',
+      line:
+        'Everything in your estate is already under IaC management — ' +
+        'there is nothing left to adopt. You are ahead of this tour.',
+    };
+  }
+  // Codex round-2 must-fix: distinguish "no adoptable TYPE" from "adoptable
+  // type exists but no node has a usable name" — calling an unnamed-but-
+  // adoptable bucket "not an adoptable type" would be false.
+  const adoptableUnnamed = candidates.some((c) =>
+    c.g.nodes.some((n) => !n.managed),
+  );
+  return adoptableUnnamed
+    ? {
+        kind: 'none',
+        line:
+          'There are unmanaged resources the agent could adopt, but none ' +
+          'has a named adopt target the tour can prefill. The ' +
+          'Infrastructure panel shows what the live graph can show.',
+      }
+    : {
+        kind: 'none',
+        line:
+          'Your remaining unmanaged resources are not adoptable types yet. ' +
+          'The Infrastructure panel shows what is there, and you can ask ' +
+          'about any of them in chat.',
+      };
+}
