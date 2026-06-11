@@ -727,3 +727,61 @@ def test_blast_radius_line_absent_on_unverifiable(_configured, monkeypatch):
     assert resp.status_code == 200
     body = resp.text
     assert 'data-testid="blast-radius"' not in body
+
+
+# --------------------------------------------------------------------------- #
+# Ask-about-this-change link (ClickOps item 12)
+#
+# A plain same-origin anchor must render whenever a plan view exists —
+# pending, blocked, AND terminal renders — because questions are most valuable
+# when something looks scary. The link must NOT be gated on can_approve or
+# show_summary, and must NOT render when view is None (no artifact to ask about).
+# --------------------------------------------------------------------------- #
+
+
+def test_ask_about_link_renders_with_view(_configured, monkeypatch):
+    """ask-about-link renders on the normal/pending path (view exists)."""
+    _patch_resolve(monkeypatch, ref=_ref(), view=_view())
+    resp = TestClient(app).get("/iac-approvals/42")
+    assert resp.status_code == 200
+    assert 'href="/?ask_pr=42"' in resp.text
+    assert 'data-testid="ask-about-link"' in resp.text
+
+
+def test_ask_about_link_absent_without_artifact(_configured, monkeypatch):
+    """view is None (no C2 artifact) → no ask-about-link."""
+    _patch_resolve(monkeypatch, ref=None, view=None)
+    resp = TestClient(app).get("/iac-approvals/42")
+    assert resp.status_code == 200
+    assert "ask_pr" not in resp.text
+
+
+def test_ask_about_link_renders_on_blocked_view(_configured, monkeypatch):
+    """Blocked (denylist violation) render still shows ask-about-link.
+
+    Questions matter most when something looks scary — the link is intentionally
+    NOT gated on can_approve or show_summary.
+    """
+    view = _view(
+        denylist_violations=[("protect-coordinator", "deletes driftscribe-agent")]
+    )
+    _patch_resolve(monkeypatch, ref=_ref(), view=view)
+    resp = TestClient(app).get("/iac-approvals/42")
+    assert resp.status_code == 200
+    assert "protect-coordinator" in resp.text
+    assert 'data-testid="ask-about-link"' in resp.text
+    assert 'href="/?ask_pr=42"' in resp.text
+
+
+def test_ask_about_link_renders_on_terminal_view(
+    _configured, _inmemory, monkeypatch
+):
+    """Terminal (applied+merged) render still shows ask-about-link."""
+    view = _view(_plan_json=_SUMMARY_PLAN)
+    _patch_resolve(monkeypatch, ref=_ref(), view=view)
+    _seed_decision(apply_status="applied", merge_state="merged")
+    resp = TestClient(app).get("/iac-approvals/42")
+    assert resp.status_code == 200
+    assert "Already applied and merged" in resp.text
+    assert 'data-testid="ask-about-link"' in resp.text
+    assert 'href="/?ask_pr=42"' in resp.text

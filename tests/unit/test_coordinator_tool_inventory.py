@@ -118,6 +118,11 @@ EXPECTED_TOOL_NAMES = frozenset({
     # ``provision_propose_adoption`` in the workload YAML; callable
     # ``__name__`` is ``propose_adoption_tool``. MUTATION tool.
     "propose_adoption_tool",
+    # Item 12 — pending-infra-PR plan Q&A for the explore workload.
+    # Coordinator-local GCS read (objectViewer only, no GitHub PAT) —
+    # deliberately NOT in MUTATION_TOOL_NAMES: both the operation and the
+    # credential are read-only, unlike search_recent_prs.
+    "load_iac_plan_tool",
 })
 
 

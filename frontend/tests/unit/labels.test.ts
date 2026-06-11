@@ -70,4 +70,9 @@ describe('workerLabel', () => {
       expect(workerLabel(key)).toBe(value);
     }
   });
+
+  it('maps load_iac_plan_tool to "IaC plan reader"', () => {
+    // Item 12 — pending-infra-PR plan Q&A (explore workload).
+    expect(WORKER_LABELS['load_iac_plan_tool']).toBe('IaC plan reader');
+  });
 });

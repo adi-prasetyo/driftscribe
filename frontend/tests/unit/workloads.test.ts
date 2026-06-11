@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { WORKLOADS, type Workload, type WorkloadOption } from '../../src/lib/workloads';
+import { WORKLOADS, type Workload, type WorkloadOption, askAboutPrPrefill, askPrFromSearch, initialChatPrefill } from '../../src/lib/workloads';
 
 // Re-homes the workload-option contract previously guarded in
 // tests/integration/test_ui_transparency.py:59-62. The option VALUES
@@ -55,5 +55,38 @@ describe('WORKLOADS contract', () => {
       expect(typeof shaped.value).toBe('string');
       expect(typeof shaped.label).toBe('string');
     }
+  });
+});
+
+describe('askPrFromSearch', () => {
+  it('parses a positive integer', () => {
+    expect(askPrFromSearch('?ask_pr=18')).toBe(18);
+    expect(askPrFromSearch('?preview_pr=3&ask_pr=00012')).toBe(12);
+  });
+  it('rejects junk, zero, negatives, floats, absence', () => {
+    for (const s of ['', '?ask_pr=', '?ask_pr=abc', '?ask_pr=0', '?ask_pr=-3',
+                     '?ask_pr=1.5', '?other=1']) {
+      expect(askPrFromSearch(s)).toBeNull();
+    }
+  });
+});
+
+describe('askAboutPrPrefill', () => {
+  it('names the PR and asks for a plain-language explanation', () => {
+    const text = askAboutPrPrefill(18);
+    expect(text).toContain('PR #18');
+    expect(text.toLowerCase()).toContain('plain language');
+  });
+});
+
+describe('initialChatPrefill', () => {
+  it('seeds an explore-workload prefill at epoch 1 from ask_pr', () => {
+    const p = initialChatPrefill('?ask_pr=18');
+    expect(p).toEqual({ text: askAboutPrPrefill(18), workload: 'explore', epoch: 1 });
+  });
+  it('is null without a valid ask_pr', () => {
+    expect(initialChatPrefill('')).toBeNull();
+    expect(initialChatPrefill('?ask_pr=junk')).toBeNull();
+    expect(initialChatPrefill('?preview_pr=18')).toBeNull();
   });
 });

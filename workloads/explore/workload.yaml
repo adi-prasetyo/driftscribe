@@ -22,7 +22,10 @@
 #   read-only). ``search_recent_prs`` is deliberately EXCLUDED because it
 #   rides the coordinator's write-capable GitHub token — including it
 #   would put a write-capable credential in a "strictly read-only"
-#   workload (Codex review 2026-05-25).
+#   workload (Codex review 2026-05-25). ``load_iac_plan`` is INCLUDED
+#   because it reads GCS artifacts via the coordinator SA's
+#   roles/storage.objectViewer grant only — no GitHub token, no mutation
+#   surface.
 
 name: explore
 display_name: "Explore (read-only)"
@@ -52,6 +55,10 @@ enabled_tool_names:
   - search_developer_docs
   - retrieve_developer_doc
   - read_project_inventory
+  # Item 12 — read the latest verified plan artifact for a pending infra PR
+  # (GCS listing + objectViewer only; no GitHub credential — see the
+  # search_recent_prs exclusion note above, which this tool does NOT trip).
+  - load_iac_plan
 
 # Only read workers. drift_docs / drift_rollback / upgrade_docs (the
 # mutation workers) and notifier are deliberately absent — explore cannot

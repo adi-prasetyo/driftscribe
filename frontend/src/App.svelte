@@ -26,6 +26,7 @@
   import DecisionsRail from './components/DecisionsRail.svelte';
   import InfraDiagram from './components/InfraDiagram.svelte';
   import { previewPrFromSearch } from './lib/infra_graph';
+  import { initialChatPrefill } from './lib/workloads';
   import type { ChatPrefill } from './lib/workloads';
   import CapabilityCard from './components/CapabilityCard.svelte';
   import PauseControl from './components/PauseControl.svelte';
@@ -93,9 +94,13 @@
   // behind a historical view (Codex review 019eb572 must-fix 3).
   const chatDisabled = $derived(historicalActive || busy);
 
-  // Adopt-button bridge: an Adopt click on the resource map prefills (NOT sends)
-  // the composer. epoch bumps so the same/another Adopt re-applies after an edit.
-  let chatPrefill = $state<ChatPrefill | null>(null);
+  // Adopt-button bridge + ?ask_pr boot seed (item 12): an Adopt click — or
+  // arriving from the approval page's "ask about this change" link — prefills
+  // (NOT sends) the composer. epoch bumps so the same/another Adopt re-applies
+  // after an edit; a boot seed starts at epoch 1, so a later Adopt bumps to 2.
+  let chatPrefill = $state<ChatPrefill | null>(
+    initialChatPrefill(window.location.search)
+  );
   function handleAdopt(text: string) {
     chatPrefill = { text, workload: 'provision', epoch: (chatPrefill?.epoch ?? 0) + 1 };
     // Bring the composer into view so the prefilled draft is obvious. Best-effort:
@@ -374,6 +379,14 @@
 
   onMount(() => {
     void loadDecisions();
+    if (chatPrefill !== null) {
+      // Remove ONLY ask_pr (preserve other params + hash) so reload/share
+      // doesn't re-prefill — mirrors exitPreview()'s surgical removal.
+      const u = new URL(window.location.href);
+      u.searchParams.delete('ask_pr');
+      history.replaceState(null, '', u);
+      document.getElementById('chat-form')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
   });
 </script>
 

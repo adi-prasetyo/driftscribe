@@ -61,6 +61,7 @@ from pydantic import BaseModel, ConfigDict
 
 from agent.adk_tools import (
     load_contract_tool,
+    load_iac_plan_tool,
     notify_tool,
     open_infra_pr_tool,
     patch_docs_tool,
@@ -355,6 +356,12 @@ _TOOL_REGISTRY: Final[dict[str, Callable | None]] = {
     "notify":                  notify_tool,
     "load_contract":           load_contract_tool,
     "search_recent_prs":       search_recent_prs_tool,
+    # Read the latest verified tofu-plan artifact for an infra PR (ClickOps
+    # item 12 — "ask about this change"). Coordinator-local, GCS-listing only:
+    # deliberately NEVER the GitHub C2 comment, so it carries no write-capable
+    # credential and stays eligible for the strictly read-only explore
+    # workload (objectViewer on the artifacts bucket is the whole authority).
+    "load_iac_plan":           load_iac_plan_tool,
     # Upgrade workload — implemented in 17.C.4. Both callables are
     # authority-clean: their LLM-facing signatures expose only the
     # decision content (package_name / target_version / advisory_url /
@@ -432,6 +439,7 @@ _TOOL_TIERS: Final[dict[str, str]] = {
     "notify":                     "report",
     "load_contract":              "report",
     "search_recent_prs":          "report",
+    "load_iac_plan":              "report",
     "upgrade_read_dependencies":  "report",
     "upgrade_propose_pr":         "propose",
     "upgrade_close_pr":           "propose",

@@ -37,6 +37,11 @@ from agent import worker_client
 from agent.config import get_settings
 from agent.contract import load_contract
 from agent.github_actions import get_repo
+from agent.iac_artifacts import load_plan_view_from_gcs
+from driftscribe_lib.iac_plan_summary import (
+    BLAST_CANNOT_TOUCH_NOTE,
+    blast_radius_phrase,
+)
 
 _log = logging.getLogger("driftscribe.agent.adk_tools")
 
@@ -891,3 +896,139 @@ def propose_adoption_tool(
             " records the resource in IaC state."
         )
     return result
+
+
+# --------------------------------------------------------------------------- #
+# IaC plan Q&A — read-only explore tool (ClickOps item 12)
+# --------------------------------------------------------------------------- #
+
+
+def load_iac_plan_tool(pr_number: int) -> dict[str, Any]:
+    """Read the latest verified ``tofu plan`` artifact for an infra PR — read-only.
+
+    Coordinator-local (like :func:`load_contract_tool`): resolves the newest
+    c2.v1 artifact for ``pr_number`` by LISTING the artifacts bucket
+    (``agent.iac_artifacts.load_plan_view_from_gcs``) — deliberately NOT via
+    the GitHub C2 comment, which would ride the coordinator's write-capable
+    PAT inside the strictly read-only explore workload. The coordinator SA
+    holds only roles/storage.objectViewer on that bucket.
+
+    Output contract (bounded; values pre-masked by driftscribe_lib —
+    sensitive attribute values arrive as the literal "(sensitive)" marker):
+
+    - not found            → ``{"found": False, "error": ...}``
+    - unverifiable / integrity mismatch → ``found=True`` + ``error``, NO summary
+      (never describe a possibly-tampered plan)
+    - verified             → ``summary`` (plain-language entries + counts),
+      ``blast_radius`` + ``cannot_touch`` (item-8 reuse), ``denylist_violations``
+      (summary INCLUDED alongside violations — explaining a blocked plan is the
+      point; ``blocked=True`` keeps the framing honest), ``approval_page`` path,
+      and an advisory ``caveat``.
+
+    Fail-soft: never raises — every failure path returns an error dict the
+    model can relay (explore prompt rule: surface tool errors, don't invent).
+    """
+    from agent.config import artifacts_bucket
+
+    if isinstance(pr_number, bool) or not isinstance(pr_number, int) or pr_number <= 0:
+        return {
+            "found": False,
+            "error": f"pr_number must be a positive integer (got {pr_number!r})",
+        }
+    s = get_settings()
+    try:
+        view = load_plan_view_from_gcs(
+            pr_number,
+            bucket_name=artifacts_bucket(s),
+            expected_repo=s.github_repo or None,
+        )
+    except Exception as e:  # noqa: BLE001 — advisory read; chat turn must survive
+        return {"found": False, "error": f"plan artifact read failed: {e}"}
+    if view is None:
+        return {
+            "found": False,
+            "error": (
+                f"no plan artifact found for PR #{pr_number} — the plan-builder "
+                "workflow may not have run for it yet, or the PR number is wrong"
+            ),
+        }
+    out: dict[str, Any] = {
+        "found": True,
+        "pr_number": pr_number,
+        "head_sha": view.head_sha,
+        "opentofu_version": str(view.metadata.get("opentofu_version", "")),
+        "integrity_ok": view.integrity_ok,
+        "unverifiable": view.unverifiable,
+        "approval_page": f"/iac-approvals/{pr_number}",
+        "caveat": (
+            "Advisory: this is the plan from the newest plan-builder run for "
+            "this PR. "
+            "Nothing can be applied from chat — an operator decides on the "
+            "approval page, and the apply worker independently re-verifies "
+            "integrity, policy, and plan fidelity before anything applies."
+        ),
+    }
+    if view.unverifiable:
+        out["error"] = (
+            "the plan artifact could not be verified — its contents are "
+            "unavailable; do not describe what this plan does"
+        )
+        return out
+    if not view.integrity_ok:
+        out["error"] = (
+            "plan integrity check FAILED (digest mismatch) — do not describe "
+            "or rely on this plan's contents"
+        )
+        return out
+    out["denylist_violations"] = [
+        {"rule": r, "detail": d} for r, d in view.denylist_violations
+    ]
+    out["blocked"] = bool(view.denylist_violations)
+    summary = view.change_summary
+    if summary is None:
+        out["summary"] = None
+        out["summary_unavailable"] = (
+            "no faithful structured summary could be derived from this plan — "
+            "point the operator at the approval page's raw plan output"
+        )
+        return out
+    out["summary"] = {
+        "counts": {
+            "create": summary.n_create,
+            "update": summary.n_update,
+            "destroy": summary.n_destroy,
+            "replace": summary.n_replace,
+            "import": summary.n_import,
+            "forget": summary.n_forget,
+            "other": summary.n_change,
+        },
+        "destructive": summary.destructive,
+        "adopt_only": summary.adopt_only,
+        "entries": [
+            {
+                "verb": e.verb,
+                "resource_type": e.type_label,
+                "name": e.name,
+                "address": e.address,
+                "location": e.location,
+                "imported": e.imported,
+                "deposed": e.deposed,
+                "action_reason": e.action_reason,
+                "attr_changes": [
+                    {
+                        "path": a.path,
+                        "before": a.before,
+                        "after": a.after,
+                        "sensitive": a.sensitive,
+                    }
+                    for a in e.attr_changes
+                ],
+                "attrs_truncated": e.attrs_truncated,
+            }
+            for e in summary.entries
+        ],
+        "n_hidden": summary.n_hidden,
+    }
+    out["blast_radius"] = blast_radius_phrase(summary)
+    out["cannot_touch"] = BLAST_CANNOT_TOUCH_NOTE
+    return out

@@ -75,4 +75,24 @@ describe('ChatForm — prefill', () => {
     const input = getByTestId('chat-prompt') as HTMLInputElement;
     expect(input.value).toBe('');
   });
+
+  it('applies a boot-seeded explore-workload prefill on mount without submitting', async () => {
+    // Simulates arriving from the approval page's "ask about this change" link:
+    // App boots with initialChatPrefill(?ask_pr=N) → explore workload, epoch 1.
+    // ChatForm must apply text + workload on mount WITHOUT calling onSubmit.
+    const onSubmit = vi.fn();
+    const { getByTestId } = render(ChatForm, {
+      props: {
+        onSubmit,
+        prefill: { text: 'Explain PR #18 in plain language.', workload: 'explore', epoch: 1 },
+      },
+    });
+    const input = getByTestId('chat-prompt') as HTMLInputElement;
+    const select = document.getElementById('workload-select') as HTMLSelectElement;
+    await waitFor(() => {
+      expect(input.value).toBe('Explain PR #18 in plain language.');
+    });
+    expect(select.value).toBe('explore');
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
 });

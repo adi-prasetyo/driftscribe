@@ -89,6 +89,11 @@ TOOL_DESCRIPTIONS: Final[Mapping[str, str]] = MappingProxyType({
         "Searches the target repo's recent pull requests (counted as write-capable "
         "because it rides a repo credential)."
     ),
+    "load_iac_plan": (
+        "Reads the latest verified plan artifact for a pending infrastructure "
+        "PR and summarizes it in plain language — read-only; cannot approve, "
+        "reject, or apply anything."
+    ),
     "upgrade_read_dependencies": (
         "Reads the target repo's dependency lockfile to identify outdated packages."
     ),
