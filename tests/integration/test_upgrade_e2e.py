@@ -466,5 +466,6 @@ def test_chat_upgrade_workload_routes_to_run_chat_with_workload_kwarg(
     # workload kwarg would otherwise silently fall back to drift's
     # default and the contract-resolve eager check would still pass.
     fake_run_chat.assert_awaited_once_with(
-        "triage advisories", session_id=None, workload="upgrade"
+        "triage advisories", session_id=None, workload="upgrade",
+        autonomy_mode="propose_apply"
     )

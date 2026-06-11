@@ -832,7 +832,7 @@ def _perform_action(
 
 
 async def _run_adk_agent(
-    user_msg: str, *, workload: str = "drift"
+    user_msg: str, *, workload: str = "drift", autonomy_mode: str
 ) -> DecisionProposal:
     """Thin wrapper so integration tests have a stable patch target.
 
@@ -843,11 +843,13 @@ async def _run_adk_agent(
 
     ``workload`` selects the workload-scoped agent. Defaults to ``"drift"``
     so any pre-17.A.3 patch site that calls this with a positional
-    ``user_msg`` only still works.
+    ``user_msg`` only still works. ``autonomy_mode`` is a REQUIRED keyword
+    arg — forwarded to :func:`agent.adk_agent.run_agent` so the dial filters
+    the tool set at Layer 0.
     """
     from agent.adk_agent import run_agent
 
-    return await run_agent(user_msg, workload=workload)
+    return await run_agent(user_msg, workload=workload, autonomy_mode=autonomy_mode)
 
 
 def _do_rollback(
@@ -855,6 +857,8 @@ def _do_rollback(
     proposal: DecisionProposal,
     event_key: str,
     trigger: str,
+    *,
+    autonomy_mode: str,
 ) -> dict:
     """ROLLBACK control flow: propose-via-worker → render → notify-via-worker.
 
@@ -1202,6 +1206,14 @@ async def _do_recheck(
         # Bad contract = our deploy is broken, not GCP. 500, not 502.
         raise HTTPException(status_code=500, detail=f"contract load failed: {e}")
 
+    # Autonomy dial (ClickOps item 11): read ONCE here — fail-closed to
+    # observe — and thread the mode through the rest of the pipeline. In
+    # Observe the agent runs (tool-filtered) and the decision is RECORDED,
+    # but the GitHub action / rollback worker calls are SUPPRESSED below.
+    # The /recheck pipeline is NEVER refused by the dial (contrast pause's
+    # full stop); observing is the point of Observe.
+    autonomy = _autonomy_state_fail_closed()
+
     if s.use_adk:
         # ADK path: the agent's own tool calls do the Cloud Run read, so we
         # don't pre-fetch live_env. We still need a live_env-shaped dict for
@@ -1238,7 +1250,9 @@ async def _do_recheck(
         _workload_token = set_workload(workload)
         try:
             try:
-                proposal = await _run_adk_agent(user_msg, workload=workload)
+                proposal = await _run_adk_agent(
+                    user_msg, workload=workload, autonomy_mode=autonomy.mode
+                )
             finally:
                 reset_workload(_workload_token)
         except (
@@ -1371,7 +1385,9 @@ async def _do_recheck(
     # approval — lives in _do_rollback: it only proposes + notifies, never
     # mutates Cloud Run.
     if proposal.action == DecisionAction.ROLLBACK:
-        return _do_rollback(s, proposal, event_key, trigger)
+        return _do_rollback(
+            s, proposal, event_key, trigger, autonomy_mode=autonomy.mode
+        )
 
     rendered = _render_for(proposal.action, proposal)
 
@@ -4236,7 +4252,9 @@ def _paused_chat_response(
 _SSE_HEARTBEAT_S = 15
 
 
-def _chat_stream(workload: str, prompt: str, session_id: str | None):
+def _chat_stream(
+    workload: str, prompt: str, session_id: str | None, *, autonomy_mode: str
+):
     """Select the chat-stream async generator for a workload.
 
     The ``provision`` workload (Phase D5) routes through the parallel
@@ -4247,12 +4265,21 @@ def _chat_stream(workload: str, prompt: str, session_id: str | None):
     ``{"type":"event"|"result"}`` item shapes, so all downstream framing
     (``_chat_sse`` SSE frames, the JSON drain) is workload-agnostic. Imports
     are lazy to avoid pulling ADK/fanout at module import and to dodge an
-    import cycle (``agent.fanout`` imports ``agent.adk_agent``)."""
+    import cycle (``agent.fanout`` imports ``agent.adk_agent``).
+
+    ``autonomy_mode`` is a REQUIRED keyword arg, forwarded to BOTH the fan-out
+    orchestrator (which gates its coordinator-direct editor call) and the
+    single-agent path (Layer-0 tool filtering)."""
     if workload == "provision":
         from agent.fanout import run_provision_fanout_stream
-        return run_provision_fanout_stream(prompt, session_id)
+        return run_provision_fanout_stream(
+            prompt, session_id, autonomy_mode=autonomy_mode
+        )
     from agent.adk_agent import run_chat_stream
-    return run_chat_stream(prompt, session_id=session_id, workload=workload)
+    return run_chat_stream(
+        prompt, session_id=session_id, workload=workload,
+        autonomy_mode=autonomy_mode,
+    )
 
 
 async def _drain_chat_stream_result(agen) -> dict:
@@ -4285,7 +4312,7 @@ async def _drain_chat_stream_result(agen) -> dict:
 
 
 async def _chat_sse(prompt: str, session_id: str | None, workload: str,
-                    trace_id: str):
+                    trace_id: str, *, autonomy_mode: str):
     """SSE generator for the /chat streaming path.
 
     Re-binds the trace_id + workload ContextVars INSIDE the generator
@@ -4309,7 +4336,9 @@ async def _chat_sse(prompt: str, session_id: str | None, workload: str,
 
     async def _produce():
         try:
-            async for item in _chat_stream(workload, prompt, session_id):
+            async for item in _chat_stream(
+                workload, prompt, session_id, autonomy_mode=autonomy_mode
+            ):
                 await queue.put(("item", item))
         except Exception as e:  # noqa: BLE001 - mapped to a status hint
             await queue.put(("error", _chat_error_payload(e, workload=workload)))
@@ -4407,6 +4436,11 @@ async def chat(
         return _paused_chat_response(
             pause, wants_sse=wants_sse, session_id=req.session_id
         )
+    # Autonomy dial (ClickOps item 11): read AFTER the pause gate (pause
+    # outranks the dial). Chat is NEVER refused by the dial — tools are
+    # filtered at Layer 0 instead — so we read the mode once here and thread
+    # it through every streaming/JSON path below.
+    autonomy = _autonomy_state_fail_closed()
     # Phase 17.A.3: pre-resolve the workload so an "undeployed workload"
     # failure (e.g. upgrade before Phase 17.B/17.C/17.E land the tools +
     # worker URLs) surfaces as 503 BEFORE we boot the ADK runner. The
@@ -4469,7 +4503,10 @@ async def chat(
     if wants_sse:
         trace_id = current_trace_id_or_new()
         return StreamingResponse(
-            _chat_sse(req.prompt, req.session_id, req.workload, trace_id),
+            _chat_sse(
+                req.prompt, req.session_id, req.workload, trace_id,
+                autonomy_mode=autonomy.mode,
+            ),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -4505,10 +4542,14 @@ async def chat(
                 # path, so the outer ``except`` + ``_chat_error_payload``
                 # mapping below covers it unchanged.
                 return await _drain_chat_stream_result(
-                    _chat_stream("provision", req.prompt, req.session_id)
+                    _chat_stream(
+                        "provision", req.prompt, req.session_id,
+                        autonomy_mode=autonomy.mode,
+                    )
                 )
             return await run_chat(
-                req.prompt, session_id=req.session_id, workload=req.workload
+                req.prompt, session_id=req.session_id, workload=req.workload,
+                autonomy_mode=autonomy.mode,
             )
         finally:
             reset_workload(_workload_token)

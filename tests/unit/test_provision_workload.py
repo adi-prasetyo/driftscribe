@@ -134,7 +134,7 @@ def test_chat_provision_workload_agent_exposes_open_infra_pr_tool(
     monkeypatch.setenv("DEVELOPER_KNOWLEDGE_API_KEY", "test-key")
     get_settings.cache_clear()
 
-    async def _stub_fanout(prompt, session_id=None):
+    async def _stub_fanout(prompt, session_id=None, *, autonomy_mode="propose_apply"):
         yield {"type": "result", "reply": "ok", "tool_calls": [],
                "session_id": "sid"}
 
@@ -151,7 +151,7 @@ def test_chat_provision_workload_agent_exposes_open_infra_pr_tool(
     from agent.workloads import load_workload
 
     resolution = load_workload("provision")
-    agent = build_chat_agent(resolution)
+    agent = build_chat_agent(resolution, autonomy_mode="propose_apply")
     tool_names = {getattr(t, "__name__", repr(t)) for t in agent.tools}
     assert "open_infra_pr_tool" in tool_names, (
         f"provision chat agent must expose open_infra_pr_tool; "

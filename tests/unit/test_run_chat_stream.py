@@ -41,7 +41,7 @@ async def test_run_chat_stream_order_terminal_and_redaction(drift_workload_env):
     try:
         with patch.object(adk_agent, "Runner") as runner_cls:
             runner_cls.return_value.run_async = _stub_run
-            async for it in adk_agent.run_chat_stream("hi", workload="drift"):
+            async for it in adk_agent.run_chat_stream("hi", workload="drift", autonomy_mode="propose_apply"):
                 items.append(it)
     finally:
         reset_workload(token)
@@ -94,7 +94,7 @@ async def test_run_chat_stream_terminal_carries_iac_pr_for_open_infra_pr(drift_w
     try:
         with patch.object(adk_agent, "Runner") as runner_cls:
             runner_cls.return_value.run_async = _stub_open_infra_pr
-            async for it in adk_agent.run_chat_stream("provision a bucket", workload="drift"):
+            async for it in adk_agent.run_chat_stream("provision a bucket", workload="drift", autonomy_mode="propose_apply"):
                 items.append(it)
     finally:
         reset_workload(token)
@@ -122,7 +122,7 @@ async def test_run_chat_stream_no_iac_pr_for_non_infra_pr(drift_workload_env):
     try:
         with patch.object(adk_agent, "Runner") as runner_cls:
             runner_cls.return_value.run_async = _stub_upgrade_pr
-            async for it in adk_agent.run_chat_stream("upgrade x", workload="drift"):
+            async for it in adk_agent.run_chat_stream("upgrade x", workload="drift", autonomy_mode="propose_apply"):
                 items.append(it)
     finally:
         reset_workload(token)
@@ -138,7 +138,7 @@ async def test_run_chat_stream_no_iac_pr_for_plain_run(drift_workload_env):
     try:
         with patch.object(adk_agent, "Runner") as runner_cls:
             runner_cls.return_value.run_async = _stub_run
-            async for it in adk_agent.run_chat_stream("hi", workload="drift"):
+            async for it in adk_agent.run_chat_stream("hi", workload="drift", autonomy_mode="propose_apply"):
                 items.append(it)
     finally:
         reset_workload(token)
@@ -160,7 +160,7 @@ async def test_run_chat_stream_empty_reply_raises(drift_workload_env):
         with patch.object(adk_agent, "Runner") as runner_cls:
             runner_cls.return_value.run_async = _empty
             with pytest.raises(RuntimeError):
-                async for _ in adk_agent.run_chat_stream("hi", workload="drift"):
+                async for _ in adk_agent.run_chat_stream("hi", workload="drift", autonomy_mode="propose_apply"):
                     pass
     finally:
         reset_workload(token)

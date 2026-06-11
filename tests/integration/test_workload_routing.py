@@ -653,7 +653,7 @@ def test_chat_drift_workload_agent_has_drift_tools_not_upgrade_tools() -> None:
     from agent.workloads import load_workload
 
     drift_resolution = load_workload("drift")
-    agent = build_agent(drift_resolution)
+    agent = build_agent(drift_resolution, autonomy_mode="propose_apply")
 
     tool_names = {
         getattr(t, "__name__", repr(t)) for t in agent.tools

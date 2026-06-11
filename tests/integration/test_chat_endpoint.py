@@ -73,7 +73,8 @@ def test_chat_happy_path_returns_reply_and_tool_calls(monkeypatch) -> None:
     # the full call signature so a future routing-layer regression
     # doesn't silently drop the workload kwarg.
     fake.assert_awaited_once_with(
-        "what's the live state?", session_id=None, workload="drift"
+        "what's the live state?", session_id=None, workload="drift",
+        autonomy_mode="propose_apply",
     )
 
 
@@ -91,7 +92,9 @@ def test_chat_passes_session_id_through(monkeypatch) -> None:
 
     # Phase 17.A.3: workload="drift" is the default; session_id flows
     # through unchanged.
-    fake.assert_awaited_once_with("hi", session_id="s1", workload="drift")
+    fake.assert_awaited_once_with(
+        "hi", session_id="s1", workload="drift", autonomy_mode="propose_apply"
+    )
 
 
 def test_chat_surfaces_runtime_error_as_502(monkeypatch) -> None:

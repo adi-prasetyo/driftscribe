@@ -138,7 +138,7 @@ def test_chat_drift_propagates_workload_to_mcp_log(caplog):
 
     mcp_mock = AsyncMock(return_value=_make_canned_docs_response())
 
-    async def stub_run_chat(prompt: str, *, session_id=None, workload: str = "drift"):
+    async def stub_run_chat(prompt: str, *, session_id=None, workload: str = "drift", autonomy_mode: str = "propose_apply"):
         """Stand in for the LLM. Resolves the workload-scoped MCP
         wrapper and invokes it once. This is the same code path used
         in :mod:`tests.integration.test_drift_uses_mcp`'s positive
@@ -223,7 +223,7 @@ def test_chat_workload_does_not_leak_between_sequential_requests(caplog):
     seen_workloads_during_call: list[str] = []
     mcp_mock = AsyncMock(return_value=_make_canned_docs_response())
 
-    async def stub_run_chat(prompt: str, *, session_id=None, workload: str = "drift"):
+    async def stub_run_chat(prompt: str, *, session_id=None, workload: str = "drift", autonomy_mode: str = "propose_apply"):
         # Sanity: inside the handler frame, the ContextVar IS bound.
         seen_workloads_during_call.append(current_workload())
         resolution = load_workload(workload)
