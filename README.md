@@ -13,10 +13,10 @@ but never applies a risky change on its own.** Four workloads ship today:
 dependencies vs. the GitHub Advisory DB), **explore** (read-only inventory of
 the whole project), and **provision** (agent-authored OpenTofu PRs through a
 gated apply pipeline). The agent — Gemini on Google's Agent Development Kit,
-grounded by the Developer Knowledge MCP — only ever *proposes*: narrow
-single-purpose workers execute, risky actions wait behind single-use human
-approval gates, and every decision lands in the operator UI with its full
-reasoning trace. Submission for the DevOps × AI Agent Hackathon 2026
+grounded by the Developer Knowledge MCP — holds no direct power to act: narrow
+single-purpose workers execute within hardcoded limits, rollbacks and live-infra
+applies always wait behind single-use human approval gates, and every decision
+lands in the operator UI with its reasoning trace. Submission for the DevOps × AI Agent Hackathon 2026
 (Google Cloud Japan / Findy).
 
 **Live demo:** <https://driftscribe.adp-app.com> — the operator UI, open to
