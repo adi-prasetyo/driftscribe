@@ -574,7 +574,7 @@
                   >
                 {:else}
                   <span class="ds-subtle infra-adopt__muted" data-testid="adopt-unavailable"
-                    >not yet adoptable</span
+                    >not an adoptable type</span
                   >
                 {/if}
               </li>

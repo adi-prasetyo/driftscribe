@@ -218,7 +218,7 @@ export function adoptStepState(graph: InfraGraph | null): AdoptStepState {
     : {
         kind: 'none',
         line:
-          'Your remaining unmanaged resources are not adoptable types yet. ' +
+          'Your remaining unmanaged resources are not adoptable types. ' +
           'The Infrastructure panel shows what is there, and you can ask ' +
           'about any of them in chat.',
       };
