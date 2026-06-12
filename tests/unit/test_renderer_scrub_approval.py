@@ -122,3 +122,13 @@ def test_deep_leaves_untokenized_approval_paths_alone():
 def test_deep_scalars_pass_through():
     assert redact_approval_tokens_deep(7) == 7
     assert redact_approval_tokens_deep(None) is None
+
+
+def test_deep_redacts_multiple_links_and_relative_urls():
+    # Two links in ONE string — one absolute, one relative (the rail href is
+    # same-origin relative after safeApprovalHref) — both tokens must go.
+    text = f"first {_URL} then /approvals/ap-999?t=tok-OTHER_SECRET done"
+    out = redact_approval_tokens_deep({"text": text})
+    assert "tok-SECRET" not in out["text"]
+    assert "tok-OTHER_SECRET" not in out["text"]
+    assert out["text"].count("?t=<redacted>") == 2
