@@ -1,6 +1,9 @@
 // Hand-vendored Lucide icon path data.
 // Lucide — https://lucide.dev — ISC License
 // Copyright (c) 2022 Lucide Contributors
+// Vendored from upstream lucide ~0.4xx (2024-era path data; Lucide icon
+// geometry is stable across releases — visual fidelity at 14–16px is the
+// contract here).
 // Markup is hand-vendored from the upstream Lucide SVG sources; only child
 // elements (path|circle|rect|line|polyline|polygon) are stored — no <svg>
 // wrapper. Each icon is 24×24, stroke-based.

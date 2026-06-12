@@ -37,6 +37,10 @@ const EXPECTED_ICON_NAMES = new Set<string>([
 // Registry safety: allowlisted tags and attributes
 // ---------------------------------------------------------------------------
 const ALLOWED_TAGS = new Set(['path', 'circle', 'rect', 'line', 'polyline', 'polygon']);
+// `fill` is allowed because upstream Lucide's key-round genuinely uses
+// fill="currentColor" on its keyhole dot. It is pinned to EXACTLY that value
+// by a dedicated test below — fill can carry script-able values
+// (e.g. url(#...) funcIRI references), so any other value must fail.
 const ALLOWED_ATTRS = new Set([
   'd', 'cx', 'cy', 'r', 'x', 'y', 'x1', 'y1', 'x2', 'y2',
   'width', 'height', 'rx', 'ry', 'points', 'fill',
@@ -110,8 +114,27 @@ describe('Icon registry — markup safety', () => {
   });
 
   it('no icon value contains inline event handlers (on*=)', () => {
+    // Bare `/on[a-z]+=/i` (no quote requirement) so unquoted handlers like
+    // onload=alert(1) are caught too. Verified non-false-positive against the
+    // registry: no allowlisted attr name contains an `on`+letters+`=` substring
+    // (`points=` is o-i, `<polygon points=` is on-space).
     for (const [name, markup] of Object.entries(ICON_PATHS)) {
-      expect(markup, `Icon "${name}" contains inline event handler`).not.toMatch(/on[a-z]+=\s*["']/i);
+      expect(markup, `Icon "${name}" contains inline event handler`).not.toMatch(/on[a-z]+=/i);
+    }
+  });
+
+  it('every fill attribute, if present, is exactly "currentColor"', () => {
+    for (const [name, markup] of Object.entries(ICON_PATHS)) {
+      const { elements } = parseIconMarkup(markup);
+      for (const el of elements) {
+        const fill = el.getAttribute('fill');
+        if (fill !== null) {
+          expect(
+            fill,
+            `Icon "${name}" element <${el.tagName}> has fill="${fill}" — only "currentColor" is allowed`,
+          ).toBe('currentColor');
+        }
+      }
     }
   });
 
