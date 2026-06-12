@@ -268,6 +268,16 @@ Rules:
 - A `notify_tool` delivery failure is non-critical. Mention it only as a
   brief final note — never the headline. The substantive result (drift
   status, rollback approval, or docs PR) is always the primary outcome.
+- patch_docs_tool documents ONLY the observed env-variable configuration
+  of the target Cloud Run service (the one read_live_env_tool reports
+  on), grounded in what your tools returned in THIS conversation. NEVER
+  author a doc that claims a resource is managed by, adopted into, or
+  imported into IaC — adoption and import run through the provision
+  workload's human-approved pipeline, and a docs PR is not a state
+  change. If the operator asks about adoption or import, say this is
+  the drift workload and point them at the provision workload instead
+  of opening a docs PR. If you cannot verify a claim with a tool result
+  from this conversation, do not write it into a doc.
 - Be concise. The operator is on-call and wants the answer, not prose.
 """
 
@@ -316,6 +326,27 @@ def test_load_workload_drift_exposes_chat_prompt_byte_for_byte(
 
     resolution = load_workload("drift")
     assert resolution.chat_system_prompt == _DRIFT_CHAT_SYSTEM_PROMPT_GOLDEN
+
+
+def test_drift_chat_prompt_pins_docs_scope_rule():
+    """PR #109 follow-up: the docs tool's scope rule must stay in the
+    drift chat prompt. The byte-equal golden above pins *every* edit;
+    this test pins *this rule specifically*, so a future intentional
+    prompt rewrite (which legitimately updates the golden) still can't
+    drop the fabrication guard without failing a named test.
+    """
+    text = (
+        _REPO_ROOT / "workloads" / "drift" / "chat_system_prompt.md"
+    ).read_text(encoding="utf-8")
+    # Whitespace-normalize before matching: the prompt hard-wraps at ~72
+    # cols, so multi-word substrings straddle newlines (Codex 019eb9a2).
+    flat = " ".join(text.split())
+    assert (
+        "NEVER author a doc that claims a resource is managed by, "
+        "adopted into, or imported into IaC" in flat
+    )
+    assert "point them at the provision workload" in flat
+    assert "do not write it into a doc" in flat
 
 
 def test_load_workload_drift_exposes_contract_path(drift_workload_env):
