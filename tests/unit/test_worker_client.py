@@ -38,6 +38,7 @@ ROLLBACK_URL = "https://rollback.example.com"
 NOTIFIER_URL = "https://notifier.example.com"
 UPGRADE_DOCS_URL = "https://upgrade-docs.example.com"
 TOFU_APPLY_URL = "https://tofu-apply.example.com"
+INFRA_READER_URL = "https://infra-reader.example.com"
 
 
 @pytest.fixture(autouse=True)
@@ -51,6 +52,7 @@ def _stub_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("NOTIFIER_URL", NOTIFIER_URL)
     monkeypatch.setenv("UPGRADE_DOCS_URL", UPGRADE_DOCS_URL)
     monkeypatch.setenv("TOFU_APPLY_URL", TOFU_APPLY_URL)
+    monkeypatch.setenv("INFRA_READER_URL", INFRA_READER_URL)
 
 
 @pytest.fixture(autouse=True)
@@ -811,6 +813,34 @@ def test_call_default_timeout_when_no_override(_capture_timeout) -> None:
     respx.post(f"{READER_URL}/read").respond(200, json={"ok": True})
     worker_client.call("reader", {})
     assert _capture_timeout == [worker_client._HTTPX_TIMEOUT]
+    assert _capture_timeout[0] is not worker_client._DESCRIBE_HTTPX_TIMEOUT
+
+
+@respx.mock
+def test_call_infra_reader_uses_describe_timeout(_capture_timeout) -> None:
+    """Backlog-3 residual: a solo CAI describe takes ~25-30s, so infra_reader
+    calls get _DESCRIBE_HTTPX_TIMEOUT by default (per-worker map), not the
+    30s _HTTPX_TIMEOUT that misread a successful describe as a failure."""
+    respx.post(f"{INFRA_READER_URL}/describe").respond(200, json={"resources": []})
+    worker_client.call("infra_reader", {})
+    assert len(_capture_timeout) == 1
+    timeout = _capture_timeout[0]
+    assert timeout is worker_client._DESCRIBE_HTTPX_TIMEOUT
+    # Floor: >= 3x the observed solo worst (~25-30s warm describe).
+    # Ceiling: the Cloudflare-proxied operator path allows ~100s total.
+    assert 90.0 <= timeout.read <= 100.0
+    assert timeout.connect == 10.0  # down worker still fails fast
+    assert timeout.write == 30.0
+    assert timeout.pool == 10.0
+
+
+@respx.mock
+def test_call_infra_reader_explicit_override_beats_the_map(_capture_timeout) -> None:
+    """A caller-supplied timeout= wins over the per-worker default map."""
+    respx.post(f"{INFRA_READER_URL}/describe").respond(200, json={"resources": []})
+    custom = httpx.Timeout(connect=1.0, read=2.0, write=3.0, pool=4.0)
+    worker_client.call("infra_reader", {}, timeout=custom)
+    assert _capture_timeout == [custom]
 
 
 def test_tofu_apply_wrappers_are_not_adk_tools() -> None:
