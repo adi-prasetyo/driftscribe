@@ -73,6 +73,29 @@ jobs:
         working-directory: frontend
         run: npm run test:unit
 
+  # Cloudflare Worker (custom-domain proxy): demo-mode unit tests.
+  worker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: infra/cloudflare/worker/package-lock.json
+
+      - name: Install
+        working-directory: infra/cloudflare/worker
+        run: npm ci
+
+      - name: Unit tests (vitest)
+        working-directory: infra/cloudflare/worker
+        run: npm test
+
   # UI smoke: boots the REAL FastAPI app serving the built shell + /static and
   # drives it with a mock-Playwright spec. REQUIRED — this is the pre-merge
   # stand-in for the dispatch-only cloud e2e (.github/workflows/e2e.yml).

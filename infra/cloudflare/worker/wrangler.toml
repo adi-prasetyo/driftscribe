@@ -9,3 +9,13 @@ account_id = "7e8265bd122c779322afe1b236623346"
 routes = [
   { pattern = "driftscribe.adp-app.com/*", zone_name = "adp-app.com" },
 ]
+
+# Demo mode (hackathon judging window): "1" makes the Worker strip any
+# browser-supplied X-DriftScribe-Token and inject the real one (from the
+# DEMO_TOKEN secret) on an allowlist of read routes + POST /chat, so
+# anonymous judges can use the UI while CF Access runs a bypass policy.
+# Open/close the window by flipping this + `wrangler deploy`.
+# One-time secret setup: `wrangler secret put DEMO_TOKEN` (secrets
+# persist across deploys). See src/proxy.js for the allowlist.
+[vars]
+DEMO_MODE = "0"

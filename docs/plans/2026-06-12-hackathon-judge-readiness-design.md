@@ -164,7 +164,8 @@ video; only the *opening* waits for 7/10)
   deliberately) or excluded entirely? Default per Codex: excluded
   (autonomy pinned to observe/propose during the window).
 - Does `/chat` already enforce a prompt max length, or does demo mode need
-  to add one?
+  to add one? **Answered 2026-06-12: no — `ChatRequest.prompt: str` has no
+  `max_length` (`agent/main.py:4256`). Work item A.4 must add the cap.**
 
 ## Review
 
