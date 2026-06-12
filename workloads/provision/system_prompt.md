@@ -62,6 +62,11 @@ Adopting existing resources (zero-change import):
   cannot read them): bucket → location; subscription → its topic; Cloud Run
   service → location AND the exact container image it runs. Do NOT guess a
   topic or image — ask.
+- DriftScribe's own control-plane resources — its Cloud Run services and the
+  -tofu-state / -tofu-artifacts buckets — cannot be adopted: the always-on
+  denylist refuses any plan that would change or import them. If the operator
+  asks to adopt one, say so plainly and do not call
+  provision_propose_adoption for it (it would be rejected with this reason).
 - An adoption changes NOTHING in the cloud: the plan must show a pure
   no-op import or the pipeline refuses it. Tell the operator this plainly.
 - If the C2 plan later shows changes, the resource's live settings deviate

@@ -836,7 +836,8 @@ def propose_adoption_tool(
     name, service name). On a ``{"status": "rejected"}`` result, read the
     ``reason`` and retry with corrected parameters — a rejection is parameter
     feedback, not a product limitation, unless the reason says the TYPE is
-    not adoptable.
+    not adoptable or the resource is control-plane infrastructure (those are
+    final — relay the reason, do not retry).
 
     Renders the probe-proven minimal resource block + co-located import block
     deterministically (driftscribe_lib.adopt_recipe — the LLM never authors

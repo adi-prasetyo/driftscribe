@@ -893,3 +893,108 @@ describe('InfraDiagram — onGraph lift (tour, item 14)', () => {
     expect(onGraph.mock.calls[0][0].totals).toEqual(graph.totals);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Control-plane adopt suppression (2026-06-12 ranking-filter follow-up).
+// ---------------------------------------------------------------------------
+
+function adoptGraphWithControlPlane(): InfraGraph {
+  return {
+    generated_at: null,
+    project: 'demo',
+    caveat: 'test caveat',
+    degraded: false,
+    degraded_reason: null,
+    totals: { resources: 3, managed: 0, drift: 3 },
+    groups: [
+      {
+        asset_type: BUCKET,
+        label: 'Storage bucket',
+        count: 2, managed: 0, drift: 2, sensitive: false,
+        adoptable: true, adopt_rank: 1, adopt_hint: 'a simple leaf resource',
+        nodes: [
+          { id: 'g0n0', label: 'demo-tofu-artifacts', asset_type: BUCKET, managed: false, location: null, control_plane: true },
+          { id: 'g0n1', label: 'demo-assets', asset_type: BUCKET, managed: false, location: null },
+        ],
+      },
+      {
+        asset_type: TOPIC,
+        label: 'Pub/Sub topic',
+        count: 1, managed: 0, drift: 1, sensitive: false,
+        adoptable: true, adopt_rank: 2, adopt_hint: 'small and quick to review',
+        nodes: [{ id: 'g1n0', label: 'orders', asset_type: TOPIC, managed: false, location: null }],
+      },
+    ],
+    edges: [],
+  };
+}
+
+function adoptGraphAllControlPlane(): InfraGraph {
+  return {
+    generated_at: null,
+    project: 'demo',
+    caveat: 'test caveat',
+    degraded: false,
+    degraded_reason: null,
+    totals: { resources: 2, managed: 0, drift: 2 },
+    groups: [
+      {
+        asset_type: BUCKET,
+        label: 'Storage bucket',
+        count: 1, managed: 0, drift: 1, sensitive: false,
+        adoptable: true, adopt_rank: 1, adopt_hint: 'a simple leaf resource',
+        nodes: [
+          { id: 'g0n0', label: 'demo-tofu-state', asset_type: BUCKET, managed: false, location: null, control_plane: true },
+        ],
+      },
+      {
+        asset_type: TOPIC,
+        label: 'Pub/Sub topic',
+        count: 1, managed: 0, drift: 1, sensitive: false,
+        adoptable: true, adopt_rank: 2, adopt_hint: 'small and quick to review',
+        nodes: [{ id: 'g1n0', label: 'orders', asset_type: TOPIC, managed: false, location: null }],
+      },
+    ],
+    edges: [],
+  };
+}
+
+describe('InfraDiagram — control-plane adopt suppression', () => {
+  it('control-plane row shows the denylist note instead of an Adopt button', async () => {
+    const { getByTestId, getAllByTestId, queryByTestId } = render(InfraDiagram, {
+      props: { call: callWith(adoptGraphWithControlPlane()), onAdopt: () => {} },
+    });
+    await waitFor(() => expect(getByTestId('adopt-list')).toBeTruthy());
+    const note = getByTestId('adopt-control-plane');
+    // Codex nit: never claim "DriftScribe's own" for ANY suffix-matched bucket —
+    // an unrelated `acme-tofu-state` would be refused too. The note names the
+    // protection, not ownership.
+    expect(note.textContent).toContain('control-plane');
+    expect(note.textContent).toContain('denylist');
+    // exactly the two non-control-plane rows still get buttons
+    expect(getAllByTestId('adopt-btn')).toHaveLength(2);
+    // it is NOT the generic "not yet adoptable" note
+    expect(queryByTestId('adopt-unavailable')).toBeNull();
+  });
+
+  it('Start here stays on the rank-1 group while it still has an adoptable row', async () => {
+    const { getByTestId } = render(InfraDiagram, {
+      props: { call: callWith(adoptGraphWithControlPlane()), onAdopt: () => {} },
+    });
+    await waitFor(() => expect(getByTestId('adopt-list')).toBeTruthy());
+    // same graph: bucket group has demo-assets adoptable → chip on buckets
+    const chip = getByTestId('adopt-start-here');
+    expect(chip.parentElement?.textContent).toContain('Storage bucket');
+  });
+
+  it('a ranked group whose every row is control-plane cannot claim Start here', async () => {
+    const { getByTestId } = render(InfraDiagram, {
+      props: { call: callWith(adoptGraphAllControlPlane()), onAdopt: () => {} },
+    });
+    await waitFor(() => expect(getByTestId('adopt-list')).toBeTruthy());
+    // graph variant: bucket group has ONLY the control-plane node → chip moves
+    // to the rank-2 topic group
+    const chip = getByTestId('adopt-start-here');
+    expect(chip.parentElement?.textContent).toContain('Pub/Sub topic');
+  });
+});

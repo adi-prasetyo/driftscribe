@@ -157,8 +157,14 @@ export function adoptStepState(graph: InfraGraph | null): AdoptStepState {
   for (const { g, rank } of candidates) {
     // T7 (Codex MF2): never suggest a node the graph didn't name — an empty
     // normalized label would yield an empty-backtick prefill and blank copy.
+    // Control-plane nodes are skipped too: the denylist refuses their
+    // adoption outright (ranking-filter follow-up — the live rank-1 pick was
+    // DriftScribe's own -tofu-artifacts bucket).
     const node = g.nodes.find(
-      (n) => !n.managed && normalizeForPrompt(n.label, 254) !== '',
+      (n) =>
+        !n.managed &&
+        n.control_plane !== true &&
+        normalizeForPrompt(n.label, 254) !== '',
     );
     if (!node) continue;
     const hint =
@@ -183,13 +189,25 @@ export function adoptStepState(graph: InfraGraph | null): AdoptStepState {
         'there is nothing left to adopt. You are ahead of this tour.',
     };
   }
-  // Codex round-2 must-fix: distinguish "no adoptable TYPE" from "adoptable
-  // type exists but no node has a usable name" — calling an unnamed-but-
-  // adoptable bucket "not an adoptable type" would be false.
-  const adoptableUnnamed = candidates.some((c) =>
-    c.g.nodes.some((n) => !n.managed),
+  // Distinguish WHY there is no suggestion (Codex 019eb76d round-2 + the
+  // ranking-filter follow-up): control-plane-only ≠ unnamed ≠ no adoptable
+  // type — each gets its own honest line.
+  const unmanagedShown = candidates.flatMap(({ g }) =>
+    g.nodes.filter((n) => !n.managed),
   );
-  return adoptableUnnamed
+  const nonControlPlane = unmanagedShown.filter((n) => n.control_plane !== true);
+  if (unmanagedShown.length > 0 && nonControlPlane.length === 0) {
+    return {
+      kind: 'none',
+      line:
+        'The unmanaged resources the agent could otherwise adopt are IaC ' +
+        'control-plane infrastructure — DriftScribe services or IaC ' +
+        'state/artifact buckets — which the always-on denylist blocks the ' +
+        'agent from changing, adoption included. The Infrastructure panel ' +
+        'shows everything that is there.',
+    };
+  }
+  return nonControlPlane.length > 0
     ? {
         kind: 'none',
         line:

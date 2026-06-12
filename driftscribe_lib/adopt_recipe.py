@@ -12,6 +12,11 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from driftscribe_lib.iac_plan_denylist import (
+    CONTROL_PLANE_BUCKET_SUFFIXES,
+    CONTROL_PLANE_SERVICE_NAMES,
+)
+
 __all__ = [
     "AdoptRecipeError",
     "AdoptRendering",
@@ -189,6 +194,37 @@ def _validate_topic_short(topic: str) -> None:
         )
 
 
+def _reject_control_plane(resource_type: str, name: str) -> None:
+    """Refuse control-plane identities at the tool boundary (Codex 019eb932).
+
+    Same identity semantics as the denylist rules that would block the C2
+    plan anyway (and as infra_graph's node flag): rejecting HERE means chat
+    gets an immediate, honest refusal instead of authoring a PR that is
+    guaranteed to be blocked at plan evaluation. Type-scoped exactly like
+    the rules — Pub/Sub has no control-plane identity rule, so topics and
+    subscriptions are never rejected by name.
+    """
+    if resource_type == "google_storage_bucket" and name.endswith(
+        CONTROL_PLANE_BUCKET_SUFFIXES
+    ):
+        raise AdoptRecipeError(
+            f"{name!r} cannot be adopted: bucket names ending in -tofu-state "
+            "or -tofu-artifacts are IaC control-plane infrastructure, and "
+            "the always-on denylist refuses any plan that would change or "
+            "import them. This is not a parameter problem — do not retry."
+        )
+    if (
+        resource_type == "google_cloud_run_v2_service"
+        and name in CONTROL_PLANE_SERVICE_NAMES
+    ):
+        raise AdoptRecipeError(
+            f"{name!r} cannot be adopted: it is one of DriftScribe's own "
+            "control-plane services, and the always-on denylist refuses any "
+            "plan that would change or import it. This is not a parameter "
+            "problem — do not retry."
+        )
+
+
 def render_adoption(
     resource_type: str,
     name: str,
@@ -231,6 +267,7 @@ def render_adoption(
         raise AdoptRecipeError("internal: invalid runtime project id")
 
     _validate_name(name, _HUMAN[resource_type] + " name")
+    _reject_control_plane(resource_type, name)
 
     short = _SHORT[resource_type]
     slug = _slug(name)

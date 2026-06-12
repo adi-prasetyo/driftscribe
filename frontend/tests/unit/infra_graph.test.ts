@@ -833,6 +833,7 @@ describe('adoptRows', () => {
       groupLabel: 'Storage bucket',
       nodeLabel: 'my-old-uploads',
       adoptable: true,
+      controlPlane: false,
       prefill: 'Adopt the Storage bucket `my-old-uploads` in asia-northeast1 into IaC management.',
     });
   });
@@ -908,6 +909,45 @@ describe('adoptRows', () => {
       ],
     });
     expect(adoptRows(g).map((r) => r.nodeId)).toEqual(['b0', 'r0', 'r1']);
+  });
+
+  it('control-plane node in an adoptable group is a non-adoptable row with the flag', () => {
+    const g = graph({
+      groups: [
+        group({
+          asset_type: BUCKET,
+          label: 'Storage bucket',
+          adoptable: true,
+          count: 2,
+          drift: 2,
+          nodes: [
+            node({ id: 'g0n0', label: 'acme-tofu-artifacts', asset_type: BUCKET, managed: false, location: null, control_plane: true }),
+            node({ id: 'g0n1', label: 'acme-assets', asset_type: BUCKET, managed: false, location: null }),
+          ],
+        }),
+      ],
+    });
+    const rows = adoptRows(g);
+    expect(rows[0]).toMatchObject({ adoptable: false, controlPlane: true, prefill: '' });
+    expect(rows[1]).toMatchObject({ adoptable: true, controlPlane: false });
+    expect(rows[1].prefill).toContain('`acme-assets`');
+  });
+
+  it('missing control_plane field (stale coordinator) keeps the row adoptable — fail-safe, C2 still blocks', () => {
+    const g = graph({
+      groups: [
+        group({
+          asset_type: BUCKET,
+          label: 'Storage bucket',
+          adoptable: true,
+          count: 1,
+          drift: 1,
+          nodes: [node({ id: 'g0n0', label: 'x', asset_type: BUCKET, managed: false, location: null })],
+        }),
+      ],
+    });
+    expect(adoptRows(g)[0].adoptable).toBe(true);
+    expect(adoptRows(g)[0].controlPlane).toBe(false);
   });
 });
 
