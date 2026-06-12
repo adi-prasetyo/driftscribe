@@ -99,7 +99,11 @@ steps:
       - --service-account=infra-reader-sa@$PROJECT_ID.iam.gserviceaccount.com
       - --min-instances=0
       - --max-instances=1
-      - --concurrency=1
+      # concurrency=8: /describe is a stateless read-only CAI search — no
+      # cross-request state, so serialization only caused head-of-line
+      # blocking under deploy-churn describe traffic. Keep MUTATOR workers
+      # at concurrency=1.
+      - --concurrency=8
       - --set-env-vars=GCP_PROJECT=$PROJECT_ID,OWN_URL=https://placeholder.invalid,ALLOWED_CALLERS=driftscribe-agent@$PROJECT_ID.iam.gserviceaccount.com,IAC_SNAPSHOT_SHA=${_IAC_SNAPSHOT_SHA}
 
   # 3. Post-deploy: read the assigned URL and write it back into OWN_URL.

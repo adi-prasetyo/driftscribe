@@ -687,7 +687,11 @@ steps:
       - --service-account=infra-reader-sa@$PROJECT_ID.iam.gserviceaccount.com
       - --min-instances=0
       - --max-instances=1
-      - --concurrency=1
+      # concurrency=8: /describe is a stateless read-only CAI search — no
+      # cross-request state, so serialization only caused head-of-line
+      # blocking under deploy-churn describe traffic. Keep MUTATOR workers
+      # at concurrency=1.
+      - --concurrency=8
       # OWN_URL placeholder — overwritten by the next step in this same
       # build. If the next step fails, verify_caller rejects every audience
       # (fail-closed).
