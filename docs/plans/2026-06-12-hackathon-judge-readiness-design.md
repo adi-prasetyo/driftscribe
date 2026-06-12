@@ -106,10 +106,31 @@ that closure is already shipped: `POST /approvals/{approval_id}` approve
 refuses **409** below Propose+Apply (`agent/main.py` approval_post — gate
 landed with the ClickOps item-11 dial), the `GET /approvals/{id}` page
 renders the Approve button disabled with the dial note, and reject stays
-allowed (safety direction; a visitor can only deny their own proposal —
-any other approval needs that approval's HMAC token). With
-`POST /autonomy` excluded from Worker injection (A.1), visitors cannot
-raise the dial back. **Window pin = `propose`, not `observe`:** at
+allowed (safety direction). With `POST /autonomy` excluded from Worker
+injection (A.1), visitors cannot raise the dial back.
+
+**Second Codex catch (A.2 completed-work review) — cross-session token
+harvest, closed at A.2:** rollback decisions persist
+`approval.approval_url` (the live single-use `?t=` token) and
+`rendered_body` embeds the same URL, and `GET /decisions` /
+`GET /trace/{id}` / the unauthenticated `GET /runs/{id}` served the doc
+with only a rationale scrub. With anonymous `/decisions` allowlisted
+(A.1), a visitor could harvest OTHER sessions' tokenized links — deny a
+pending operator rollback today, execute one if the dial were ever at
+Propose+Apply. Closed by a serve-time scrub
+(`agent/renderer.py scrub_decision_approval` +
+`redact_approval_tokens_deep`): drops `approval.approval_url` (the rail
+then renders no CTA) and redacts `?t=` values in every doc/event string.
+Applied on `/decisions` + `/trace` when the request carries the
+Worker-injected `X-DriftScribe-Demo-Anonymous` marker (present exactly on
+injected anonymous requests; spoofing it only redacts your own view), and
+ALWAYS on `/runs/{id}` (unauthenticated, decision_ids enumerable via the
+demo-window `/decisions`, no UI consumer). Operators (CF JWT via Access,
+or run.app + token — never marked) keep the rail CTA; the `/trace`
+in-process cache stores unscrubbed and the scrub is per-request
+copy-on-change. A visitor's OWN `/chat` session still receives its own
+approval link in the timeline — accepted: approve 409s at the pin, and
+denying your own proposal is the safety direction. **Window pin = `propose`, not `observe`:** at
 propose the demo stays alive (judges watch investigate→propose, including
 PR authoring on the e2e target), while GCP mutation is impossible —
 rollback execute 409s, `upgrade_merge_pr` (the only `apply`-tier tool) is
@@ -172,7 +193,10 @@ video; only the *opening* waits for 7/10)
    billing alert, Gemini spend check.
 5. Live-verify the anonymous flow (incognito probe: SPA loads, chat works,
    decisions rail renders, IaC approve correctly suppressed, rollback
-   approval not mintable, `POST /pause`/`POST /autonomy` refused).
+   approval not *executable* — minting at dial=propose is expected, the
+   approve must 409 and `/decisions`/`/trace`/`/runs` must serve no `?t=`
+   token (the A.2 serve-time scrub), `POST /pause`/`POST /autonomy`
+   refused).
 
 ### B. Branding (now, before video)
 

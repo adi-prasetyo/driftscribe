@@ -178,6 +178,77 @@ def scrub_rationale_text(rationale: str, env_diffs: list[EnvDiff]) -> str:
     return _scrub_secret_values_from_rationale(rationale, env_diffs)
 
 
+# Tokenized rollback-approval link, wherever it hides in a served string
+# (decision ``rendered_body``, a model reply echoed into a trace event, a
+# tool-result preview). The single-use approval TOKEN is the secret — the
+# ``/approvals/{id}`` path is not — so only the ``?t=`` value is replaced
+# and the surrounding text stays readable.
+_APPROVAL_LINK_TOKEN_RE = re.compile(
+    r"(/approvals/[A-Za-z0-9_-]+\?t=)[^\s&<>\"'()\[\]]+"
+)
+
+# Depth bound mirrors ``secret_guard._REDACT_MAX_DEPTH``: a pathological
+# payload must never RecursionError inside a serve path. Beyond the bound the
+# value is REPLACED (fail-closed — this walker exists to remove secrets).
+_APPROVAL_REDACT_MAX_DEPTH = 64
+
+
+def redact_approval_tokens_deep(payload: object, _depth: int = 0) -> object:
+    """Recursively replace rollback-approval ``?t=`` token values in every
+    string of a JSON-able payload (anonymous-read serve-time defense).
+
+    Conventions mirror :func:`scrub_decision_rationale`: returns the input
+    BY IDENTITY when nothing matches — callers like ``GET /trace`` apply
+    this per-request to payloads that also live in a server-side cache, so
+    the walker must never mutate and never hand back a changed object
+    unnecessarily. Never raises; non-container scalars pass through.
+    """
+    if _depth > _APPROVAL_REDACT_MAX_DEPTH:
+        return "<redacted:depth>"
+    if isinstance(payload, str):
+        scrubbed = _APPROVAL_LINK_TOKEN_RE.sub(r"\1<redacted>", payload)
+        return payload if scrubbed == payload else scrubbed
+    if isinstance(payload, dict):
+        out = {k: redact_approval_tokens_deep(v, _depth + 1) for k, v in payload.items()}
+        return payload if all(out[k] is payload[k] for k in payload) else out
+    if isinstance(payload, list):
+        out = [redact_approval_tokens_deep(v, _depth + 1) for v in payload]
+        return payload if all(a is b for a, b in zip(out, payload)) else out
+    return payload
+
+
+def scrub_decision_approval(decision: object) -> object:
+    """Serve-time, anonymous-read defense: strip the tokenized rollback
+    approval link from a decision doc (hackathon A.2, Codex catch).
+
+    Rollback decisions persist ``approval.approval_url`` carrying the live
+    single-use ``?t=`` token, and ``rendered_body`` embeds the same URL.
+    Anonymous demo-window reads (``GET /decisions`` / ``/trace`` — Worker-
+    marked) and the unauthenticated ``GET /runs/{id}`` must not hand that
+    token out cross-session: with it, a visitor could deny a pending
+    operator rollback — and execute one if the dial were ever at
+    Propose+Apply. The ``approval_url`` KEY is dropped (not token-redacted
+    in place) so the SPA rail renders no dead CTA (``approveHref``
+    null-checks it); ``approval_id``/``expires_at`` stay — they are not
+    secret. Every other string in the doc goes through
+    :func:`redact_approval_tokens_deep` (rendered_body, anything echoed).
+
+    Conventions mirror :func:`scrub_decision_rationale`: identity on
+    no-change, copy-on-change, never mutates the input, never raises,
+    non-dict passthrough.
+    """
+    if not isinstance(decision, dict):
+        return decision
+    out = redact_approval_tokens_deep(decision)
+    approval = out.get("approval") if isinstance(out, dict) else None
+    if isinstance(approval, dict) and "approval_url" in approval:
+        out = {
+            **out,
+            "approval": {k: v for k, v in approval.items() if k != "approval_url"},
+        }
+    return out
+
+
 def attach_iac_pr_link(decision: object, repo: str) -> object:
     """Serve-time: for an ``iac_apply`` decision, attach a ``github.url`` pointing
     at the GitHub PR, derived from the TRUSTED config ``repo`` + the persisted
