@@ -47,7 +47,7 @@ Recorded after PR #108: "KMS key/keyring rows say 'not yet adoptable' (pre-exist
 
 ## Out of scope
 
-- Making any new type adoptable. Per-type explanations of WHY a type isn't adoptable (a richer future copy decision). The infra-reader timeout-edge residual (recorded under backlog 3). Historical docs/plans (they quote old copy as history; not scanned).
+- Making any new type adoptable. Per-type explanations of WHY a type isn't adoptable (a richer future copy decision). The infra-reader timeout-edge residual (recorded under backlog 3). Historical docs/plans (they quote old copy as history; not scanned). **The provision prompt's "this resource can't be cleanly adopted yet" (`:77`) stays** — Codex 019eb9d9 concurs: that "yet" describes a retryable needs-more-settings state on a specific live resource, not a type-support roadmap promise.
 
 ## Tasks
 
@@ -76,6 +76,7 @@ _SCAN_GLOBS = (
     ("frontend/src", "**/*.ts"),
     ("driftscribe_lib", "**/*.py"),
     ("agent", "**/*.py"),
+    ("agent/templates", "**/*.html"),
 )
 
 
@@ -85,7 +86,10 @@ def test_no_future_promising_adoption_copy():
         for path in sorted((_REPO_ROOT / base).glob(glob)):
             if "static" in path.parts:
                 continue
-            text = path.read_text(encoding="utf-8").lower()
+            # Whitespace-normalize: prompts hard-wrap, so a banned phrase can
+            # straddle a newline (Codex 019eb9d9 — the provision prompt's
+            # "not yet\n  adoptable" would otherwise escape a plain substring).
+            text = " ".join(path.read_text(encoding="utf-8").lower().split())
             for phrase in _BANNED:
                 if phrase in text:
                     offenders.append(f"{path.relative_to(_REPO_ROOT)}: {phrase!r}")
