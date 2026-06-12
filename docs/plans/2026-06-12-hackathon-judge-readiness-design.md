@@ -97,12 +97,72 @@ is therefore only true if we close this:
   service is *desired* (it is a bounded, impressive demo) — if so, gate it
   deliberately, don't inherit it by accident.
 
+**Verified at A.2 implementation (2026-06-12), with one correction to the
+assumption above:** `drift_propose_rollback` is tier `propose`
+(`agent/workloads/registry.py` TOOL_TIERS), so at dial=`propose` an
+anonymous `/chat` session CAN still mint a rollback approval and receive
+the tokenized link in its timeline. The hole is closed one step later and
+that closure is already shipped: `POST /approvals/{approval_id}` approve
+refuses **409** below Propose+Apply (`agent/main.py` approval_post — gate
+landed with the ClickOps item-11 dial), the `GET /approvals/{id}` page
+renders the Approve button disabled with the dial note, and reject stays
+allowed (safety direction). With `POST /autonomy` excluded from Worker
+injection (A.1), visitors cannot raise the dial back.
+
+**Second Codex catch (A.2 completed-work review) — cross-session token
+harvest, closed at A.2:** rollback decisions persist
+`approval.approval_url` (the live single-use `?t=` token) and
+`rendered_body` embeds the same URL, and `GET /decisions` /
+`GET /trace/{id}` / the unauthenticated `GET /runs/{id}` served the doc
+with only a rationale scrub. With anonymous `/decisions` allowlisted
+(A.1), a visitor could harvest OTHER sessions' tokenized links — deny a
+pending operator rollback today, execute one if the dial were ever at
+Propose+Apply. Closed by a serve-time scrub
+(`agent/renderer.py scrub_decision_approval` +
+`redact_approval_tokens_deep`): drops `approval.approval_url` (the rail
+then renders no CTA) and redacts `?t=` values in every doc/event string.
+Applied on `/decisions` + `/trace` when the request carries the
+Worker-injected `X-DriftScribe-Demo-Anonymous` marker (present exactly on
+injected anonymous requests; spoofing it only redacts your own view), and
+ALWAYS on `/runs/{id}` (unauthenticated, decision_ids enumerable via the
+demo-window `/decisions`, no UI consumer). Operators (CF JWT via Access,
+or run.app + token — never marked) keep the rail CTA; the `/trace`
+in-process cache stores unscrubbed and the scrub is per-request
+copy-on-change. A visitor's OWN `/chat` session still receives its own
+approval link in the timeline — accepted: approve 409s at the pin, and
+denying your own proposal is the safety direction. **Window pin = `propose`, not `observe`:** at
+propose the demo stays alive (judges watch investigate→propose, including
+PR authoring on the e2e target), while GCP mutation is impossible —
+rollback execute 409s, `upgrade_merge_pr` (the only `apply`-tier tool) is
+stripped from the agent, and the IaC apply needs a CF JWT the Worker
+never fabricates. Residual at propose: judges can drive propose-tier
+GitHub churn (PRs/issues on `driftscribe-e2e-target`) — bounded by the
+A.4 per-IP rate limit, and it IS the demo. Pre-window step (add to the
+A.3 flip runbook): `POST /autonomy {"mode":"propose"}` as the operator
+before enabling `DEMO_MODE`.
+
 ### Judge UX on approval pages
 
 `GET /iac-approvals/{pr_number}` can render an active Approve form that an
 anonymous click then fails with a raw 401. In demo mode, suppress the
 Approve form when the request lacks a CF JWT and show an
 "operator-only — demonstrated in the video" note instead.
+
+**Implemented (A.2, 2026-06-12):** a new `operator_only` rung in the GET's
+gate ladder fires when CF Access is configured AND the request carries no
+`Cf-Access-Jwt-Assertion` header (presence-only by design — cryptographic
+verification stays on the POST; a forged header buys exactly the
+pre-existing behavior, a form whose submit 401s). No coordinator-side
+demo flag needed: the condition is *always* faithful, because the POST
+can never succeed without the JWT — outside the window only direct
+run.app probes hit it, and the note is accurate there too. The rung sits
+*above* the operator-state rungs (token/dry-run/pause/dial) so judges see
+"operator-only" rather than dial-speak while the dial is pinned, *below*
+the artifact hard-stops (a bad artifact is everyone's alarm), and the
+terminal-decision lookup still runs on the anonymous-only path so
+historical rows render their honest "already applied" banner. No CSRF
+form token is minted for anonymous viewers. CF Access unconfigured
+(local dev/tests) → rung inert.
 
 ### Cost/abuse controls (before opening)
 
@@ -133,7 +193,10 @@ video; only the *opening* waits for 7/10)
    billing alert, Gemini spend check.
 5. Live-verify the anonymous flow (incognito probe: SPA loads, chat works,
    decisions rail renders, IaC approve correctly suppressed, rollback
-   approval not mintable, `POST /pause`/`POST /autonomy` refused).
+   approval not *executable* — minting at dial=propose is expected, the
+   approve must 409 and `/decisions`/`/trace`/`/runs` must serve no `?t=`
+   token (the A.2 serve-time scrub), `POST /pause`/`POST /autonomy`
+   refused).
 
 ### B. Branding (now, before video)
 
@@ -167,6 +230,10 @@ video; only the *opening* waits for 7/10)
 - Is a judge-driven rollback of `payment-demo` a desired demo (gated
   deliberately) or excluded entirely? Default per Codex: excluded
   (autonomy pinned to observe/propose during the window).
+  **Resolved at A.2 (2026-06-12): excluded — window pin is `propose`;
+  judges see the full propose flow (including the rollback approval page,
+  Approve disabled) but execution refuses 409. See the rollback-hole
+  section above.**
 - Does `/chat` already enforce a prompt max length, or does demo mode need
   to add one? **Answered 2026-06-12: no — `ChatRequest.prompt: str` has no
   `max_length` (`agent/main.py:4256`). Work item A.4 must add the cap.**

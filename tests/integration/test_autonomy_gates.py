@@ -782,11 +782,16 @@ def test_iac_approval_post_bad_origin_still_403_in_observe(_iac_configured, monk
 
 def test_iac_approval_get_shows_dial_note(_iac_configured, monkeypatch):
     """GET in propose → 200; Approve suppressed (no form token); the calm
-    approve-pending note carries the dial copy (severity pending, not error)."""
+    approve-pending note carries the dial copy (severity pending, not error).
+
+    The GET carries a Cf-Access-Jwt-Assertion header (presence-only at the
+    GET; _iac_configured sets the CF env): this pins the OPERATOR view — a
+    JWT-less GET now renders the anonymous operator-only note instead, which
+    outranks the dial rung (see test_iac_approval_get.py)."""
     _iac_patch_get_resolve(monkeypatch)
     client = TestClient(app)
     _set_mode(client, "propose")
-    r = client.get("/iac-approvals/42")
+    r = client.get("/iac-approvals/42", headers={"Cf-Access-Jwt-Assertion": _JWT})
     assert r.status_code == 200
     body = r.text
     assert 'data-testid="approve-pending"' in body
@@ -798,14 +803,15 @@ def test_iac_approval_get_shows_dial_note(_iac_configured, monkeypatch):
 
 def test_iac_approval_get_fail_closed_read(_iac_configured, monkeypatch):
     """A fail-closed dial read on the GET → Approve suppressed and the note
-    mentions the read failure (read_error variant)."""
+    mentions the read failure (read_error variant). Operator view (JWT header
+    present) — see test_iac_approval_get_shows_dial_note."""
     _iac_patch_get_resolve(monkeypatch)
     monkeypatch.setattr(
         main_mod, "_autonomy_state_fail_closed",
         lambda: AutonomyState(mode="observe", read_error=True),
     )
     client = TestClient(app)
-    r = client.get("/iac-approvals/42")
+    r = client.get("/iac-approvals/42", headers={"Cf-Access-Jwt-Assertion": _JWT})
     assert r.status_code == 200
     body = r.text
     assert 'data-testid="approve-pending"' in body

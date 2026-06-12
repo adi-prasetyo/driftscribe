@@ -57,8 +57,10 @@ from agent.renderer import (
     attach_iac_pr_link,
     render_docs_pr_body,
     render_drift_issue_body,
+    redact_approval_tokens_deep,
     render_escalation_issue_body,
     render_rollback_body,
+    scrub_decision_approval,
     scrub_decision_rationale,
     scrub_rationale_text,
 )
@@ -1827,6 +1829,19 @@ async def eventarc(
     return scrub_decision_rationale(await _do_recheck("eventarc", workload="drift"))
 
 
+# Worker-injected demo marker (see infra/cloudflare/worker/src/proxy.js):
+# present EXACTLY on anonymous, token-injected requests during the hackathon
+# demo window — the Worker strips any inbound copy before injecting its own,
+# and never adds it to CF-JWT-carrying (operator) requests. Spoofing it on a
+# direct run.app call only redacts the spoofer's own view (fail-safe), so a
+# presence check is sufficient.
+_DEMO_ANON_MARKER = "X-DriftScribe-Demo-Anonymous"
+
+
+def _is_demo_anonymous(request: Request) -> bool:
+    return request.headers.get(_DEMO_ANON_MARKER) is not None
+
+
 @app.get("/runs/{decision_id}")
 def get_run(decision_id: str):
     # Sync on purpose — this only reads from the StateStore singleton, no
@@ -1836,11 +1851,18 @@ def get_run(decision_id: str):
         raise HTTPException(status_code=404, detail="decision not found")
     # Serve-time rationale scrub (PR 2) — this read is UNAUTHENTICATED, so a
     # secret quoted in the LLM rationale must not leak by decision_id.
-    return scrub_decision_rationale(d)
+    #
+    # Approval-link scrub (hackathon A.2): ALWAYS here, not demo-marker-gated
+    # like /decisions — this read is unauthenticated, decision_ids become
+    # enumerable through the demo-window /decisions, nothing in the UI
+    # consumes /runs, and the operator's approval click-through paths (rail,
+    # chat timeline, notifier webhook) don't go through it.
+    return scrub_decision_approval(scrub_decision_rationale(d))
 
 
 @app.get("/decisions")
 def list_decisions_endpoint(
+    request: Request,
     response: Response,
     limit: int = 50,
     _: None = Depends(verify_token),
@@ -1880,12 +1902,19 @@ def list_decisions_endpoint(
     #   2. attach_iac_pr_link — derive github.url -> the PR for iac_apply rows, from
     #      the trusted config repo, so the rail can link a row to its GitHub PR.
     repo = get_settings().github_repo
-    return {
-        "decisions": [
-            attach_iac_pr_link(scrub_decision_rationale(d), repo)
-            for d in state.list_decisions(limit=limit)
-        ]
-    }
+    rows = [
+        attach_iac_pr_link(scrub_decision_rationale(d), repo)
+        for d in state.list_decisions(limit=limit)
+    ]
+    #   3. scrub_decision_approval — demo-window anonymous reads only (Worker
+    #      marker): rollback rows persist approval.approval_url with the live
+    #      single-use ?t= token, and an anonymous /decisions would hand it out
+    #      cross-session (Codex A.2 catch). Operators (CF JWT via Access, or
+    #      direct run.app + token) never carry the marker and keep the rail's
+    #      approve CTA.
+    if _is_demo_anonymous(request):
+        rows = [scrub_decision_approval(d) for d in rows]
+    return {"decisions": rows}
 
 
 @app.get("/infra/graph")
@@ -2336,6 +2365,7 @@ def post_autonomy_route(
 @app.get("/trace/{trace_id}")
 def get_trace(
     trace_id: str,
+    request: Request,
     response: Response,
     _: None = Depends(verify_token),
     fetcher: TraceFetcher = Depends(get_trace_fetcher),
@@ -2412,9 +2442,24 @@ def get_trace(
     # legacy template, or a raw API caller. This single var feeds BOTH the
     # cache-hit return and the fresh return below.
     decision = scrub_decision_rationale(state.find_decision_by_trace_id(trace_id))
+    # Demo-window anonymous read (Worker marker, hackathon A.2): strip the
+    # tokenized rollback approval link from the decision AND every event
+    # string. Belt-and-braces for events — redact_event already kills the
+    # approval_url/approval_token KEYS in structured tool results, but a
+    # model reply or rendered_body can embed the URL in free prose. Both
+    # scrubs are copy-on-change, so the in-process timeline cache below is
+    # never poisoned by this per-request view (operator polls keep the link).
+    demo_anon = _is_demo_anonymous(request)
+    if demo_anon:
+        decision = scrub_decision_approval(decision)
 
     cached = _cache_get(trace_id)
     if cached is not None:
+        if demo_anon:
+            cached = {
+                **cached,
+                "events": redact_approval_tokens_deep(cached.get("events", [])),
+            }
         return {**cached, "decision": decision, "fetched_from_cache": True}
 
     # Real timeout via a Future boundary. The google-cloud-logging
@@ -2466,7 +2511,9 @@ def get_trace(
 
     return {
         "trace_id": trace_id,
-        "events": events,
+        # The cache (above) holds the UNscrubbed events; the demo-anonymous
+        # scrub is a per-request view applied at serve only.
+        "events": redact_approval_tokens_deep(events) if demo_anon else events,
         "decision": decision,
         "complete": complete,
         "fetched_from_cache": False,
@@ -2792,7 +2839,12 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
     auth dependency — the whole coordinator sits behind Cloudflare Access at the
     edge, and this read-only page reveals only plan details already visible to a
     signed-in operator. The mandatory operator-identity gate
-    (``require_cf_operator``) lives on the C5e-3 POST, not here.
+    (``require_cf_operator``) lives on the C5e-3 POST, not here. One UX
+    consequence of that split (hackathon A.2, demo window): when CF Access IS
+    configured, a request WITHOUT a ``Cf-Access-Jwt-Assertion`` header can never
+    POST successfully, so the page suppresses the Approve form and renders an
+    operator-only note instead of a button that would 401 (anonymous judges
+    during the open-access window; direct run.app probes any time).
 
     Always returns 200 (probe-safe): missing comment / unverifiable artifact /
     denylist violation all render an informative page with Approve suppressed
@@ -2817,8 +2869,20 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
     # appropriately (see iac_approval.html): "error" = a genuine hard-stop the
     # operator SHOULD be alarmed by (bad/unsafe artifact); "pending" = the gate
     # simply isn't ready yet (no plan, not configured, dry-run) — calm, not red.
-    reason_severity = ""  # "" (approvable) | "error" | "pending"
+    reason_severity = ""  # "" (approvable) | "error" | "pending" | "operator_only"
     form_token: str | None = None
+
+    # Operator-identity presence for the anonymous-viewer rung below (hackathon
+    # A.2). The POST hard-requires a VALID Cf-Access-Jwt-Assertion via
+    # require_cf_operator whenever CF Access is configured, so a GET arriving
+    # WITHOUT that header can never lead to a successful approve. Presence-only
+    # on purpose: cryptographic verification stays on the POST — a forged
+    # header here only buys the same form + CSRF token every request got
+    # before this rung existed, and the POST still rejects it. When CF Access
+    # is NOT configured (local dev / tests), the rung is inert.
+    _cf_anonymous = bool(
+        s.cf_access_team_domain and s.cf_access_aud_tag
+    ) and not request.headers.get("Cf-Access-Jwt-Assertion")
 
     # Pause state for the gate ladder rung below. _pause_state_fail_closed keeps
     # the GET ALWAYS-200 (probe-safe): a failure resolving the StateStore itself
@@ -2847,6 +2911,19 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
         # an artifact for a different PR/head to this page.
         reason_blocked = "artifact does not match this PR"
         reason_severity = "error"
+    elif _cf_anonymous:
+        # Anonymous viewer (no CF Access JWT). Placed BEFORE the operator-state
+        # rungs (token / dry-run / pause / dial) on purpose: an anonymous
+        # viewer should read "operator-only", not dial-speak that invites them
+        # to change settings they cannot reach — during the demo window the
+        # dial is pinned below Propose+Apply, and without this ordering every
+        # judge would land on the autonomy note. The artifact hard-stops above
+        # still render for everyone (a bad artifact is everyone's alarm).
+        reason_blocked = (
+            "approving requires a signed-in operator identity"
+            " (Cloudflare Access), which this request does not carry"
+        )
+        reason_severity = "operator_only"
     elif not s.driftscribe_token:
         reason_blocked = "approvals not configured (server token unset)"
         reason_severity = "pending"
@@ -2893,7 +2970,14 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
     resolved_decision = ""
     resolved_outcome = ""
     resolved_outcome_severity = ""
-    if can_approve and view is not None and s.github_repo:
+    # The lookup also runs when the ONLY blocker is the anonymous-viewer rung
+    # (reason_severity == "operator_only" is set exactly there): a judge
+    # clicking a historical rail row should see the honest "already applied"
+    # / terminal-failure banner, not a generic operator-only note. can_approve
+    # stays False on that path, so the still-actionable states (rebake /
+    # merge-reconcile) keep the form ONLY for identified operators.
+    _anonymous_only = not can_approve and reason_severity == "operator_only"
+    if (can_approve or _anonymous_only) and view is not None and s.github_repo:
         existing = None
         try:
             _event_key = _iac_event_key(

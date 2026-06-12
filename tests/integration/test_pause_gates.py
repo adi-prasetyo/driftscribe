@@ -695,11 +695,16 @@ def test_iac_reject_allowed_while_paused(_iac_configured, monkeypatch):
 
 def test_iac_get_paused_shows_calm_note_no_form(_iac_configured, monkeypatch):
     """GET while paused → calm approve-pending note containing "paused", and
-    NO token-field / approve-button (no CSRF token minted while paused)."""
+    NO token-field / approve-button (no CSRF token minted while paused).
+
+    The GET carries a Cf-Access-Jwt-Assertion header (presence-only at the
+    GET; _iac_configured sets the CF env): this pins the OPERATOR view — a
+    JWT-less GET renders the anonymous operator-only note instead, which
+    outranks the pause rung (see test_iac_approval_get.py)."""
     _iac_patch_get_resolve(monkeypatch)
     client = TestClient(app)
     _pause(client)
-    r = client.get("/iac-approvals/42")
+    r = client.get("/iac-approvals/42", headers={"Cf-Access-Jwt-Assertion": _JWT})
     assert r.status_code == 200
     body = r.text
     assert 'data-testid="approve-pending"' in body
