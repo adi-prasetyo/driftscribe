@@ -58,6 +58,9 @@
   let pillMeasured = $state(false);
   // Whether the first measurement has been placed (gates the CSS transition)
   let pillReady = $state(false);
+  // Pending first-measurement rAF — component-scoped so the $effect cleanup
+  // can actually cancel it (measurePill runs outside the effect closure).
+  let pillRafId: number | undefined;
 
   // --------------------------------------------------------------------------
   // Fetch
@@ -126,7 +129,6 @@
     const mode = currentMode;
 
     let cancelled = false;
-    let rafId: number | undefined;
     let ro: { disconnect(): void } | undefined;
 
     if (kind === 'loaded') {
@@ -148,9 +150,9 @@
     // Synchronous cleanup.
     return () => {
       cancelled = true;
-      if (rafId !== undefined) {
-        cancelAnimationFrame(rafId);
-        rafId = undefined;
+      if (pillRafId !== undefined) {
+        cancelAnimationFrame(pillRafId);
+        pillRafId = undefined;
       }
       ro?.disconnect();
       ro = undefined;
@@ -171,7 +173,8 @@
       // Enable transition only after the first valid measurement (no first-paint slide).
       if (!pillReady) {
         // Use rAF so the initial position is committed before transition kicks in.
-        requestAnimationFrame(() => {
+        pillRafId = requestAnimationFrame(() => {
+          pillRafId = undefined;
           pillReady = true;
         });
       }
