@@ -25,6 +25,15 @@ export interface InfraNode {
   /** Declared-in-IaC (green) vs drift (amber). */
   managed: boolean;
   location: string | null;
+  /**
+   * Server-marked: DriftScribe's own control-plane infrastructure (its Cloud
+   * Run services / the -tofu-state and -tofu-artifacts buckets). The
+   * always-on denylist refuses any plan that would change or import it, so
+   * adopt surfaces suppress the CTA. Optional + fail-safe: a stale
+   * coordinator response without the field shows the button and C2 still
+   * blocks the plan.
+   */
+  control_plane?: boolean;
 }
 
 export interface InfraGroup {
@@ -291,6 +300,8 @@ export interface AdoptRow {
   groupLabel: string;
   nodeLabel: string;
   adoptable: boolean;
+  /** IaC control-plane infrastructure — denylist-refused, so never adoptable. */
+  controlPlane: boolean;
   /** Chat prefill — composed ONLY for adoptable rows, else ''. */
   prefill: string;
 }
@@ -336,14 +347,17 @@ export function adoptRows(graph: InfraGraph): AdoptRow[] {
   const rows: AdoptRow[] = [];
   for (const g of graph.groups) {
     if (g.sensitive) continue;
-    const adoptable = g.adoptable === true;
+    const groupAdoptable = g.adoptable === true;
     for (const n of g.nodes) {
       if (n.managed) continue;
+      const controlPlane = n.control_plane === true;
+      const adoptable = groupAdoptable && !controlPlane;
       rows.push({
         nodeId: n.id,
         groupLabel: g.label,
         nodeLabel: n.label,
         adoptable,
+        controlPlane,
         prefill: adoptable ? adoptPrefill(g.label, n.label, n.location) : '',
       });
     }
