@@ -304,14 +304,14 @@
               data-testid="pause-confirm"
               onclick={() => void onConfirm()}
               disabled={saving}
-            >{confirmLabel}</button>
+            ><Icon name="check" size={14} />{confirmLabel}</button>
             <button
               class="ds-btn ds-btn--ghost pause-cancel-btn"
               type="button"
               data-testid="pause-cancel"
               onclick={onCancel}
               disabled={saving}
-            >Cancel</button>
+            ><Icon name="x" size={14} />Cancel</button>
           </div>
         </div>
       {/if}
@@ -369,14 +369,14 @@
               data-testid="pause-confirm"
               onclick={() => void onConfirm()}
               disabled={saving}
-            >{confirmLabel}</button>
+            ><Icon name="check" size={14} />{confirmLabel}</button>
             <button
               class="ds-btn ds-btn--ghost pause-cancel-btn"
               type="button"
               data-testid="pause-cancel"
               onclick={onCancel}
               disabled={saving}
-            >Cancel</button>
+            ><Icon name="x" size={14} />Cancel</button>
           </div>
         </div>
       {/if}
@@ -507,6 +507,9 @@
     display: flex;
     flex-direction: column;
     gap: var(--ds-sp-2);
+    /* Matches .autonomy-confirm-row — slide injects this inline during the
+       animation; the rule keeps the collapsed state clip consistent. */
+    overflow: hidden;
   }
   .pause-confirm-hint {
     margin: 0;

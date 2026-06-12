@@ -171,8 +171,10 @@
       pillWidth = width;
       pillMeasured = true;
       // Enable transition only after the first valid measurement (no first-paint slide).
-      if (!pillReady) {
-        // Use rAF so the initial position is committed before transition kicks in.
+      if (!pillReady && pillRafId === undefined) {
+        // Use rAF so the initial position is committed before transition kicks
+        // in. The === undefined guard prevents a resize-triggered re-measure
+        // from overwriting (and thereby leaking) an already-pending rAF.
         pillRafId = requestAnimationFrame(() => {
           pillRafId = undefined;
           pillReady = true;
@@ -413,14 +415,14 @@
               data-testid="autonomy-confirm"
               onclick={() => void onConfirm()}
               disabled={saving}
-            >{confirmLabel}</button>
+            ><Icon name="check" size={14} />{confirmLabel}</button>
             <button
               class="ds-btn ds-btn--ghost autonomy-cancel-btn"
               type="button"
               data-testid="autonomy-cancel"
               onclick={onCancel}
               disabled={saving}
-            >Cancel</button>
+            ><Icon name="x" size={14} />Cancel</button>
           </div>
         </div>
       {/if}
