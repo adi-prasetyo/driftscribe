@@ -39,7 +39,7 @@ def test_chat_returns_503_when_use_adk_false(monkeypatch) -> None:
     monkeypatch.setenv("USE_ADK", "false")
     get_settings.cache_clear()
     client = TestClient(app)
-    r = client.post("/chat", json={"prompt": "hi"})
+    r = client.post("/chat", json={"prompt": "hi", "workload": "drift"})
     assert r.status_code == 503
     assert "adk" in r.json()["detail"].lower()
 
@@ -62,7 +62,7 @@ def test_chat_happy_path_returns_reply_and_tool_calls(monkeypatch) -> None:
     )
     with patch("agent.adk_agent.run_chat", fake):
         client = TestClient(app)
-        r = client.post("/chat", json={"prompt": "what's the live state?"})
+        r = client.post("/chat", json={"prompt": "what's the live state?", "workload": "drift"})
 
     assert r.status_code == 200, r.text
     body = r.json()
@@ -88,9 +88,9 @@ def test_chat_passes_session_id_through(monkeypatch) -> None:
     fake = AsyncMock(return_value={"reply": "ok", "tool_calls": [], "session_id": "s1"})
     with patch("agent.adk_agent.run_chat", fake):
         client = TestClient(app)
-        client.post("/chat", json={"prompt": "hi", "session_id": "s1"})
+        client.post("/chat", json={"prompt": "hi", "session_id": "s1", "workload": "drift"})
 
-    # Phase 17.A.3: workload="drift" is the default; session_id flows
+    # Phase 17.A.3: workload="drift" is required; session_id flows
     # through unchanged.
     fake.assert_awaited_once_with(
         "hi", session_id="s1", workload="drift", autonomy_mode="propose_apply"
@@ -108,7 +108,7 @@ def test_chat_surfaces_runtime_error_as_502(monkeypatch) -> None:
     fake = AsyncMock(side_effect=RuntimeError("ADK chat agent produced no final response"))
     with patch("agent.adk_agent.run_chat", fake):
         client = TestClient(app)
-        r = client.post("/chat", json={"prompt": "hi"})
+        r = client.post("/chat", json={"prompt": "hi", "workload": "drift"})
 
     assert r.status_code == 502
     # The chat handler narrows by exception type — RuntimeError from the
@@ -135,7 +135,7 @@ def test_chat_surfaces_worker_client_error_as_502(monkeypatch) -> None:
     )
     with patch("agent.adk_agent.run_chat", fake):
         client = TestClient(app)
-        r = client.post("/chat", json={"prompt": "hi"})
+        r = client.post("/chat", json={"prompt": "hi", "workload": "drift"})
 
     assert r.status_code == 502
     assert "worker call failed" in r.json()["detail"]
@@ -149,7 +149,7 @@ def test_chat_rejects_extra_field_with_422(monkeypatch) -> None:
     client = TestClient(app)
     r = client.post(
         "/chat",
-        json={"prompt": "hi", "unknown_field": "x"},
+        json={"prompt": "hi", "workload": "drift", "unknown_field": "x"},
     )
     assert r.status_code == 422
 

@@ -448,7 +448,7 @@ EOF
   set_env "PAYMENT_MODE=live"
   wait_for_revision
   RESPONSE_BODY="$(call_coordinator /chat \
-    "{\"prompt\":\"payment mode drifted. roll us back to revision ${BEAT_E_TARGET_REVISION}.\"}")"
+    "{\"prompt\":\"payment mode drifted. roll us back to revision ${BEAT_E_TARGET_REVISION}.\",\"workload\":\"drift\"}")"
   echo "$RESPONSE_BODY"
   assert_chat_reply "$RESPONSE_BODY"
 }
