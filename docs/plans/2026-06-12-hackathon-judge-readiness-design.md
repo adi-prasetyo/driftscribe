@@ -137,9 +137,14 @@ rollback execute 409s, `upgrade_merge_pr` (the only `apply`-tier tool) is
 stripped from the agent, and the IaC apply needs a CF JWT the Worker
 never fabricates. Residual at propose: judges can drive propose-tier
 GitHub churn (PRs/issues on `driftscribe-e2e-target`) — bounded by the
-A.4 per-IP rate limit, and it IS the demo. Pre-window step (add to the
+A.4 per-IP rate limit, and it IS the demo. Pre-window steps (add to the
 A.3 flip runbook): `POST /autonomy {"mode":"propose"}` as the operator
-before enabling `DEMO_MODE`.
+before enabling `DEMO_MODE`; and when running the `wrangler deploy` that
+flips `DEMO_MODE="1"`, verify the deploy output lists
+`env.CHAT_RATE_LIMIT` as a first-class **Rate Limit (5 requests/60s)**
+binding — the limiter fails open by design, so a binding that silently
+stopped resolving would silently remove the cost rail (Codex, A.4
+review).
 
 ### Judge UX on approval pages
 
@@ -171,6 +176,36 @@ form token is minted for anonymous viewers. CF Access unconfigured
 - Prompt max-length cap on `/chat` if not already enforced.
 - GCP billing alert + Gemini spend sanity check; the pause button is the
   operator kill-switch (and stays operator-only).
+
+**Implemented (A.4, 2026-06-12):**
+
+- *Rate limit:* a Workers Rate Limiting binding (`CHAT_RATE_LIMIT`,
+  5 requests / 60 s / IP, `wrangler.toml`) rather than a zone WAF rule —
+  the free-plan zone rule offers one rule with 10 s windows and would
+  throttle the operator too. The Worker consults the limiter only on the
+  anonymous demo-mode `POST /chat` token-injection path, *before*
+  granting the token: operators with a CF JWT are never throttled, the
+  cheap read routes stay unthrottled, and outside the window CF Access
+  gates everything anyway. Exceeding it returns 429 + `Retry-After: 60`
+  with a JSON `detail`; the SPA renders a friendly "wait a moment"
+  message. Keyed on `CF-Connecting-IP` (set by Cloudflare, not
+  spoofable). Fail-open on binding absence or limiter outage — it is an
+  abuse rail, not an auth boundary; the limiter is per-colo and
+  approximate, which is fine for that job. Direct `run.app` traffic
+  bypasses the Worker but carries no demo token, so anonymous `/chat`
+  401s there.
+- *Prompt cap:* `ChatRequest.prompt` capped at 8000 chars (~2k tokens —
+  a pasted log or diff fits; only a deliberately huge body 422s, in
+  validation before any run starts). `session_id` capped at 128
+  belt-and-braces so no other field can smuggle an unbounded payload.
+- *Billing alert:* already existed — budget "driftscribe-hack-2026
+  monthly alert" on the billing account, ¥2000/month scoped to this
+  project, 50/90/100% current-spend thresholds, default notifications
+  (billing-admin email).
+- *Gemini spend:* the coordinator runs Gemini via Vertex AI
+  (`GOOGLE_GENAI_USE_VERTEXAI=true`), so model spend bills this project
+  and the budget covers it. June month-to-date (checked 6/12): 91
+  Vertex requests, 325k input + 29k output tokens — well under ¥150.
 
 ## Work items
 

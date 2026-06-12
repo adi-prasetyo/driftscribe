@@ -20,3 +20,17 @@ routes = [
 # persist across deploys). See src/proxy.js for the allowlist.
 [vars]
 DEMO_MODE = "0"
+
+# Per-IP rate limiter for the anonymous demo-mode POST /chat path
+# (hackathon A.4 cost rail — a /chat run holds long Gemini calls, so it
+# is the cost amplifier; the cheap read routes stay unthrottled). This
+# is Cloudflare's Workers Rate Limiting API: per-colo and approximate,
+# which is fine for an abuse rail. Only consulted when DEMO_MODE="1"
+# AND the request is on the anonymous token-injection path — operators
+# with a CF Access JWT are never throttled, and outside the window CF
+# Access gates everything anyway. namespace_id is an arbitrary
+# account-unique integer identifying this limiter's counter space.
+[[ratelimits]]
+name = "CHAT_RATE_LIMIT"
+namespace_id = "1001"
+simple = { limit = 5, period = 60 }

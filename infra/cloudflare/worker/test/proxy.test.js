@@ -189,3 +189,117 @@ describe("demo mode", () => {
     expect(seen.headers.get("X-DriftScribe-Token")).toBeNull();
   });
 });
+
+describe("chat rate limiter (hackathon A.4)", () => {
+  const chatReq = (headers = {}) =>
+    req("/chat", {
+      method: "POST",
+      body: JSON.stringify({ prompt: "hi", workload: "drift" }),
+      duplex: "half",
+      headers: { "Content-Type": "application/json", ...headers },
+    });
+
+  const envWith = (limit) => ({
+    DEMO_MODE: "1",
+    DEMO_TOKEN: "the-real-token",
+    CHAT_RATE_LIMIT: { limit },
+  });
+
+  it("429s anonymous POST /chat when the limiter says no — origin never contacted", async () => {
+    const seen = stubFetch();
+    const limit = vi.fn(async () => ({ success: false }));
+    const resp = await worker.fetch(
+      chatReq({ "CF-Connecting-IP": "203.0.113.9" }),
+      envWith(limit),
+    );
+    expect(resp.status).toBe(429);
+    expect(resp.headers.get("Retry-After")).toBe("60");
+    expect((await resp.json()).detail).toMatch(/rate limit/i);
+    // keyed on the CF-set client IP, not anything client-controlled
+    expect(limit).toHaveBeenCalledWith({ key: "203.0.113.9" });
+    // the token was never granted and the origin never saw the request
+    expect(seen.url).toBeUndefined();
+  });
+
+  it("forwards with token + marker when the limiter allows", async () => {
+    const seen = stubFetch();
+    const limit = vi.fn(async () => ({ success: true }));
+    await worker.fetch(
+      chatReq({ "CF-Connecting-IP": "203.0.113.9" }),
+      envWith(limit),
+    );
+    expect(limit).toHaveBeenCalledOnce();
+    expect(seen.url).toBe(`https://${ORIGIN}/chat`);
+    expect(seen.headers.get("X-DriftScribe-Token")).toBe("the-real-token");
+    expect(seen.headers.get("X-DriftScribe-Demo-Anonymous")).toBe("1");
+  });
+
+  it("keys on 'unknown' when CF-Connecting-IP is absent (vitest has no CF edge)", async () => {
+    stubFetch();
+    const limit = vi.fn(async () => ({ success: true }));
+    await worker.fetch(chatReq(), envWith(limit));
+    expect(limit).toHaveBeenCalledWith({ key: "unknown" });
+  });
+
+  it("never consults the limiter when a CF Access JWT is present (operator unthrottled)", async () => {
+    const seen = stubFetch();
+    const limit = vi.fn(async () => ({ success: false }));
+    await worker.fetch(
+      chatReq({ "Cf-Access-Jwt-Assertion": "real.jwt.value" }),
+      envWith(limit),
+    );
+    expect(limit).not.toHaveBeenCalled();
+    expect(seen.url).toBe(`https://${ORIGIN}/chat`); // forwarded, JWT decides at origin
+  });
+
+  it("never consults the limiter on allowlisted GETs (reads stay unthrottled)", async () => {
+    const seen = stubFetch();
+    const limit = vi.fn(async () => ({ success: false }));
+    await worker.fetch(req("/decisions"), envWith(limit));
+    expect(limit).not.toHaveBeenCalled();
+    expect(seen.headers.get("X-DriftScribe-Token")).toBe("the-real-token");
+  });
+
+  it("never consults the limiter when DEMO_TOKEN is unset (nothing to protect)", async () => {
+    const seen = stubFetch();
+    const limit = vi.fn(async () => ({ success: false }));
+    await worker.fetch(chatReq(), {
+      DEMO_MODE: "1",
+      CHAT_RATE_LIMIT: { limit },
+    });
+    expect(limit).not.toHaveBeenCalled();
+    expect(seen.headers.get("X-DriftScribe-Token")).toBeNull(); // 401s at origin
+  });
+
+  it("never consults the limiter outside demo mode", async () => {
+    const seen = stubFetch();
+    const limit = vi.fn(async () => ({ success: false }));
+    await worker.fetch(chatReq(), {
+      DEMO_MODE: "0",
+      DEMO_TOKEN: "the-real-token",
+      CHAT_RATE_LIMIT: { limit },
+    });
+    expect(limit).not.toHaveBeenCalled();
+    expect(seen.url).toBe(`https://${ORIGIN}/chat`);
+  });
+
+  it("fails open when the binding is missing (older deploy / local dev)", async () => {
+    const seen = stubFetch();
+    await worker.fetch(chatReq(), {
+      DEMO_MODE: "1",
+      DEMO_TOKEN: "the-real-token",
+    });
+    expect(seen.url).toBe(`https://${ORIGIN}/chat`);
+    expect(seen.headers.get("X-DriftScribe-Token")).toBe("the-real-token");
+  });
+
+  it("fails open when the limiter throws (limiter outage must not kill the demo)", async () => {
+    const seen = stubFetch();
+    const limit = vi.fn(async () => {
+      throw new Error("limiter unavailable");
+    });
+    await worker.fetch(chatReq(), envWith(limit));
+    expect(seen.url).toBe(`https://${ORIGIN}/chat`);
+    expect(seen.headers.get("X-DriftScribe-Token")).toBe("the-real-token");
+  });
+});

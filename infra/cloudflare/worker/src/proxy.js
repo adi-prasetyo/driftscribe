@@ -18,7 +18,9 @@
 //      token must never be accepted from the public hostname, and
 //   2. injects the real token from the DEMO_TOKEN Worker secret, but
 //      only on the explicit method+path allowlist below, and only when
-//      the request carries no CF Access JWT.
+//      the request carries no CF Access JWT, and
+//   3. rate-limits the anonymous POST /chat path per IP (hackathon A.4
+//      cost rail) BEFORE injecting the token — 429 with Retry-After.
 // It never strips or synthesizes Cf-Access-Jwt-Assertion: real JWTs flow
 // through untouched for require_cf_operator (the IaC approve), and the
 // injected static token cannot satisfy that check. Injected requests are
@@ -56,6 +58,39 @@ export function demoAllowed(method, pathname) {
   return DEMO_ALLOWLIST.some(([m, re]) => m === method && re.test(pathname));
 }
 
+// Hackathon A.4: per-IP rate limit on the anonymous POST /chat path only —
+// a /chat run holds long Gemini calls, so it is the one allowlisted route
+// where volume costs real money. Keyed on CF-Connecting-IP (set by
+// Cloudflare, not spoofable from the client). Fail-open by design: the
+// limiter is best-effort defense-in-depth, and a limiter outage must not
+// take the demo down. The binding lives in wrangler.toml (CHAT_RATE_LIMIT).
+async function chatRateLimited(request, env) {
+  if (!env.CHAT_RATE_LIMIT) return false;
+  try {
+    const key = request.headers.get("CF-Connecting-IP") || "unknown";
+    const { success } = await env.CHAT_RATE_LIMIT.limit({ key });
+    return !success;
+  } catch {
+    return false;
+  }
+}
+
+function rateLimitResponse() {
+  return new Response(
+    JSON.stringify({
+      detail:
+        "Rate limit: the demo allows a few chat runs per minute per visitor. Please wait a moment and try again.",
+    }),
+    {
+      status: 429,
+      headers: {
+        "Content-Type": "application/json",
+        "Retry-After": "60",
+      },
+    },
+  );
+}
+
 export default {
   async fetch(request, env) {
     // new URL() normalizes the path (e.g. /chat/../pause -> /pause), and
@@ -81,6 +116,15 @@ export default {
       !proxied.headers.has(CF_JWT_HEADER) &&
       demoAllowed(request.method, url.pathname)
     ) {
+      // Rate-limit BEFORE granting the token, and only on the anonymous
+      // /chat path — operator (CF JWT) traffic never reaches this branch.
+      if (
+        request.method === "POST" &&
+        url.pathname === "/chat" &&
+        (await chatRateLimited(request, env))
+      ) {
+        return rateLimitResponse();
+      }
       proxied.headers.set(TOKEN_HEADER, env.DEMO_TOKEN);
       proxied.headers.set(MARKER_HEADER, "1");
     }
