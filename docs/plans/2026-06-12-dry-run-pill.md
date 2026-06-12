@@ -62,19 +62,25 @@ describe('DecisionsRail — dry-run preview pill', () => {
     } as Decision;
   }
 
-  it('renders the pill on a drift row whose GitHub action was dry-run-skipped', () => {
-    const decisions = [
-      driftRow({ dry_run: true, github: { url: null, dry_run: true } }),
-    ];
-    const { getByTestId, queryByTestId } = render(DecisionsRail, {
-      props: { decisions, activeTraceId: null, onOpenTrace: noop },
-    });
-    expect(getByTestId('decision-dry-run').textContent?.trim()).toBe(
-      'dry run — not created on GitHub',
-    );
-    // url is null on a dry-run row, so no GitHub link renders beside the pill.
-    expect(queryByTestId('decision-github-link')).toBeNull();
-  });
+  // Parameterized over the full GITHUB_LINK_LABEL action set (Codex plan-review
+  // nit): pins the pill's action gate to exactly the actions that perform
+  // GitHub side effects, incl. the upgrade_pr forward-compat entry.
+  it.each(['drift_issue', 'escalation', 'docs_pr', 'upgrade_pr'])(
+    'renders the pill on a %s row whose GitHub action was dry-run-skipped',
+    (action) => {
+      const decisions = [
+        driftRow({ action, dry_run: true, github: { url: null, dry_run: true } }),
+      ];
+      const { getByTestId, queryByTestId } = render(DecisionsRail, {
+        props: { decisions, activeTraceId: null, onOpenTrace: noop },
+      });
+      expect(getByTestId('decision-dry-run').textContent?.trim()).toBe(
+        'dry run — not created on GitHub',
+      );
+      // url is null on a dry-run row, so no GitHub link renders beside the pill.
+      expect(queryByTestId('decision-github-link')).toBeNull();
+    },
+  );
 
   it('no pill when the GitHub action really ran (github.dry_run false)', () => {
     const decisions = [
@@ -193,7 +199,7 @@ git commit -m "feat(ui): dry-run pill on preview decisions in the rail (ClickOps
 
 ### Task 3: Full gates
 
-**Step 1:** `cd frontend && npm run test:unit` — expected 540 vitest (535 + 5).
+**Step 1:** `cd frontend && npm run test:unit` — expected 543 vitest (535 + 8: 4 parameterized positives + 4 negatives).
 **Step 2:** `cd frontend && npm run check` — expected 0 errors / 0 warnings.
 **Step 3:** `cd frontend && npm run build` — expected clean; grep the bundle for the pill string: `grep -rl "not created on GitHub" dist/assets/`.
 **Step 4:** `.venv/bin/ruff check --no-cache . && .venv/bin/pytest -q` from repo root — expected clean / 2847 passed (no backend change; run as regression proof for the PR record).
