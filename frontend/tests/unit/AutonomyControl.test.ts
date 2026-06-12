@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { render, cleanup, fireEvent, waitFor } from '@testing-library/svelte';
+import { tick } from 'svelte';
 import AutonomyControl from '../../src/components/AutonomyControl.svelte';
 import type { AutonomyDoc } from '../../src/lib/autonomy';
 
@@ -411,6 +412,141 @@ describe('AutonomyControl', () => {
       ).toBe('true');
     });
     expect(records.filter((r) => r.init?.method === 'POST')).toHaveLength(1);
+  });
+
+  // ---------------------------------------------------------------------------
+  // New tests — sliding pill, armed state, animated confirm row (plan §2)
+  // ---------------------------------------------------------------------------
+
+  // 13. Armed state: clicking a non-active segment arms it; aria-pressed stays on old segment
+  it('clicking Propose segment arms it with .autonomy-segment--armed; aria-pressed stays on propose_apply', async () => {
+    const records: CallRecord[] = [];
+    const { getByTestId } = render(AutonomyControl, {
+      props: { call: makeCall(records, makeResponse(PROPOSE_APPLY_DOC)) },
+    });
+
+    // Wait for loaded state
+    await waitFor(() => {
+      expect(
+        (getByTestId('autonomy-mode-propose_apply') as HTMLButtonElement).getAttribute('aria-pressed'),
+      ).toBe('true');
+    });
+
+    // Click propose segment (not the active one)
+    await fireEvent.click(getByTestId('autonomy-mode-propose'));
+
+    // After click: propose should be armed
+    const proposeBtn = getByTestId('autonomy-mode-propose') as HTMLButtonElement;
+    expect(proposeBtn.classList.contains('autonomy-segment--armed')).toBe(true);
+
+    // aria-pressed stays on propose_apply — NO optimistic update
+    expect(
+      (getByTestId('autonomy-mode-propose_apply') as HTMLButtonElement).getAttribute('aria-pressed'),
+    ).toBe('true');
+    expect(proposeBtn.getAttribute('aria-pressed')).toBe('false');
+  });
+
+  // 14. Armed state: clicking Observe arms it; propose_apply remains aria-pressed=true
+  it('clicking Observe arms it with .autonomy-segment--armed; propose_apply aria-pressed stays true', async () => {
+    const records: CallRecord[] = [];
+    const { getByTestId } = render(AutonomyControl, {
+      props: { call: makeCall(records, makeResponse(PROPOSE_APPLY_DOC)) },
+    });
+
+    await waitFor(() => {
+      expect(
+        (getByTestId('autonomy-mode-propose_apply') as HTMLButtonElement).getAttribute('aria-pressed'),
+      ).toBe('true');
+    });
+
+    await fireEvent.click(getByTestId('autonomy-mode-observe'));
+
+    const observeBtn = getByTestId('autonomy-mode-observe') as HTMLButtonElement;
+    expect(observeBtn.classList.contains('autonomy-segment--armed')).toBe(true);
+    expect(
+      (getByTestId('autonomy-mode-propose_apply') as HTMLButtonElement).getAttribute('aria-pressed'),
+    ).toBe('true');
+  });
+
+  // 15. Armed state clears on cancel
+  it('armed class is removed after clicking Cancel', async () => {
+    const records: CallRecord[] = [];
+    const { getByTestId } = render(AutonomyControl, {
+      props: { call: makeCall(records, makeResponse(PROPOSE_APPLY_DOC)) },
+    });
+
+    await waitFor(() => {
+      expect(
+        (getByTestId('autonomy-mode-propose_apply') as HTMLButtonElement).getAttribute('aria-pressed'),
+      ).toBe('true');
+    });
+
+    await fireEvent.click(getByTestId('autonomy-mode-observe'));
+
+    // Observe should be armed
+    const observeBtn = getByTestId('autonomy-mode-observe') as HTMLButtonElement;
+    expect(observeBtn.classList.contains('autonomy-segment--armed')).toBe(true);
+
+    // Cancel
+    await fireEvent.click(getByTestId('autonomy-cancel'));
+
+    await waitFor(() => {
+      expect(observeBtn.classList.contains('autonomy-segment--armed')).toBe(false);
+    });
+  });
+
+  // 16. Pill element is present in the loaded state and is aria-hidden
+  it('pill element exists in the loaded state and is aria-hidden', async () => {
+    const records: CallRecord[] = [];
+    const { container } = render(AutonomyControl, {
+      props: { call: makeCall(records, makeResponse(PROPOSE_APPLY_DOC)) },
+    });
+
+    await waitFor(() => {
+      const pill = container.querySelector('.autonomy-segments__pill');
+      expect(pill).not.toBeNull();
+      expect(pill?.getAttribute('aria-hidden')).toBe('true');
+    });
+  });
+
+  // 17. Confirm row appears on click and disappears on cancel
+  it('confirm row appears after click and disappears on cancel (with tick)', async () => {
+    const records: CallRecord[] = [];
+    const { getByTestId, queryByTestId } = render(AutonomyControl, {
+      props: { call: makeCall(records, makeResponse(PROPOSE_APPLY_DOC)) },
+    });
+
+    await waitFor(() => {
+      expect(
+        (getByTestId('autonomy-mode-propose_apply') as HTMLButtonElement).getAttribute('aria-pressed'),
+      ).toBe('true');
+    });
+
+    // Confirm row should not be visible yet
+    expect(queryByTestId('autonomy-confirm')).toBeNull();
+
+    // Click to arm
+    await fireEvent.click(getByTestId('autonomy-mode-observe'));
+    // Tick to let Svelte flush any async state updates
+    await tick();
+
+    // Confirm row should now be visible
+    await waitFor(() => {
+      expect(getByTestId('autonomy-confirm')).toBeTruthy();
+      expect(getByTestId('autonomy-cancel')).toBeTruthy();
+    });
+
+    // Cancel — row should disappear
+    await fireEvent.click(getByTestId('autonomy-cancel'));
+    await tick();
+
+    await waitFor(() => {
+      expect(queryByTestId('autonomy-confirm')).toBeNull();
+    });
+
+    // No POST should have been made
+    const posts = records.filter((r) => r.init?.method === 'POST');
+    expect(posts).toHaveLength(0);
   });
 
   // 12. Stale-GET seq guard
