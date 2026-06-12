@@ -137,9 +137,14 @@ rollback execute 409s, `upgrade_merge_pr` (the only `apply`-tier tool) is
 stripped from the agent, and the IaC apply needs a CF JWT the Worker
 never fabricates. Residual at propose: judges can drive propose-tier
 GitHub churn (PRs/issues on `driftscribe-e2e-target`) — bounded by the
-A.4 per-IP rate limit, and it IS the demo. Pre-window step (add to the
+A.4 per-IP rate limit, and it IS the demo. Pre-window steps (add to the
 A.3 flip runbook): `POST /autonomy {"mode":"propose"}` as the operator
-before enabling `DEMO_MODE`.
+before enabling `DEMO_MODE`; and when running the `wrangler deploy` that
+flips `DEMO_MODE="1"`, verify the deploy output lists
+`env.CHAT_RATE_LIMIT` as a first-class **Rate Limit (5 requests/60s)**
+binding — the limiter fails open by design, so a binding that silently
+stopped resolving would silently remove the cost rail (Codex, A.4
+review).
 
 ### Judge UX on approval pages
 
