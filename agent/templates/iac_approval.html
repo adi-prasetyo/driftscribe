@@ -264,6 +264,16 @@
         <div class="ds-blocked" data-testid="approve-blocked">
           Approve disabled: {{ reason_blocked if reason_blocked else "this artifact cannot be approved." }}
         </div>
+      {% elif reason_severity == "operator_only" %}
+        {# Anonymous viewer (no CF Access JWT — hackathon demo window, or a
+           direct run.app probe): the POST would 401, so render a calm
+           read-only note instead of a form that fails on click. #}
+        <div class="ds-note" data-testid="approve-operator-only">
+          Approving is <strong>operator-only</strong> — it requires a signed-in
+          operator identity (Cloudflare Access), which this request does not
+          carry. This page is read-only; the approve &rarr; apply step is
+          demonstrated in the demo video.
+        </div>
       {% else %}
         {# Not an error — the gate just isn't ready yet (no plan, approvals not
            configured, dry-run). Calm/neutral, not red. #}

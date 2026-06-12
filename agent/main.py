@@ -2792,7 +2792,12 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
     auth dependency — the whole coordinator sits behind Cloudflare Access at the
     edge, and this read-only page reveals only plan details already visible to a
     signed-in operator. The mandatory operator-identity gate
-    (``require_cf_operator``) lives on the C5e-3 POST, not here.
+    (``require_cf_operator``) lives on the C5e-3 POST, not here. One UX
+    consequence of that split (hackathon A.2, demo window): when CF Access IS
+    configured, a request WITHOUT a ``Cf-Access-Jwt-Assertion`` header can never
+    POST successfully, so the page suppresses the Approve form and renders an
+    operator-only note instead of a button that would 401 (anonymous judges
+    during the open-access window; direct run.app probes any time).
 
     Always returns 200 (probe-safe): missing comment / unverifiable artifact /
     denylist violation all render an informative page with Approve suppressed
@@ -2817,8 +2822,20 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
     # appropriately (see iac_approval.html): "error" = a genuine hard-stop the
     # operator SHOULD be alarmed by (bad/unsafe artifact); "pending" = the gate
     # simply isn't ready yet (no plan, not configured, dry-run) — calm, not red.
-    reason_severity = ""  # "" (approvable) | "error" | "pending"
+    reason_severity = ""  # "" (approvable) | "error" | "pending" | "operator_only"
     form_token: str | None = None
+
+    # Operator-identity presence for the anonymous-viewer rung below (hackathon
+    # A.2). The POST hard-requires a VALID Cf-Access-Jwt-Assertion via
+    # require_cf_operator whenever CF Access is configured, so a GET arriving
+    # WITHOUT that header can never lead to a successful approve. Presence-only
+    # on purpose: cryptographic verification stays on the POST — a forged
+    # header here only buys the same form + CSRF token every request got
+    # before this rung existed, and the POST still rejects it. When CF Access
+    # is NOT configured (local dev / tests), the rung is inert.
+    _cf_anonymous = bool(
+        s.cf_access_team_domain and s.cf_access_aud_tag
+    ) and not request.headers.get("Cf-Access-Jwt-Assertion")
 
     # Pause state for the gate ladder rung below. _pause_state_fail_closed keeps
     # the GET ALWAYS-200 (probe-safe): a failure resolving the StateStore itself
@@ -2847,6 +2864,19 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
         # an artifact for a different PR/head to this page.
         reason_blocked = "artifact does not match this PR"
         reason_severity = "error"
+    elif _cf_anonymous:
+        # Anonymous viewer (no CF Access JWT). Placed BEFORE the operator-state
+        # rungs (token / dry-run / pause / dial) on purpose: an anonymous
+        # viewer should read "operator-only", not dial-speak that invites them
+        # to change settings they cannot reach — during the demo window the
+        # dial is pinned below Propose+Apply, and without this ordering every
+        # judge would land on the autonomy note. The artifact hard-stops above
+        # still render for everyone (a bad artifact is everyone's alarm).
+        reason_blocked = (
+            "approving requires a signed-in operator identity"
+            " (Cloudflare Access), which this request does not carry"
+        )
+        reason_severity = "operator_only"
     elif not s.driftscribe_token:
         reason_blocked = "approvals not configured (server token unset)"
         reason_severity = "pending"
@@ -2893,7 +2923,14 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
     resolved_decision = ""
     resolved_outcome = ""
     resolved_outcome_severity = ""
-    if can_approve and view is not None and s.github_repo:
+    # The lookup also runs when the ONLY blocker is the anonymous-viewer rung
+    # (reason_severity == "operator_only" is set exactly there): a judge
+    # clicking a historical rail row should see the honest "already applied"
+    # / terminal-failure banner, not a generic operator-only note. can_approve
+    # stays False on that path, so the still-actionable states (rebake /
+    # merge-reconcile) keep the form ONLY for identified operators.
+    _anonymous_only = not can_approve and reason_severity == "operator_only"
+    if (can_approve or _anonymous_only) and view is not None and s.github_repo:
         existing = None
         try:
             _event_key = _iac_event_key(

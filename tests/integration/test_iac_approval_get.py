@@ -785,3 +785,122 @@ def test_ask_about_link_renders_on_terminal_view(
     assert "Already applied and merged" in resp.text
     assert 'data-testid="ask-about-link"' in resp.text
     assert 'href="/?ask_pr=42"' in resp.text
+
+
+# --------------------------------------------------------------------------- #
+# Anonymous-viewer suppression (hackathon A.2). When CF Access is configured,
+# the POST hard-requires a valid Cf-Access-Jwt-Assertion (require_cf_operator),
+# so a GET WITHOUT that header can never lead to a successful approve: the page
+# must suppress the form (and mint NO CSRF token) and render the operator-only
+# note instead. Presence-only check by design — verification stays on the POST.
+# Without CF Access configured the rung is inert (every test above proves it:
+# none set the CF env vars and all render the form on the happy path).
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def _cf_configured(monkeypatch):
+    """Configure CF Access so the anonymous-viewer rung is live."""
+    monkeypatch.setenv("CF_ACCESS_TEAM_DOMAIN", "adp-app.cloudflareaccess.com")
+    monkeypatch.setenv("CF_ACCESS_AUD_TAG", "a" * 64)
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+def test_anonymous_suppresses_form_renders_operator_only_note(
+    _configured, _cf_configured, _inmemory, monkeypatch
+):
+    _patch_resolve(monkeypatch, ref=_ref(), view=_view())
+    resp = TestClient(app).get("/iac-approvals/42")
+    assert resp.status_code == 200
+    body = resp.text
+    # Form suppressed; NO CSRF token minted for an anonymous viewer.
+    assert 'data-testid="approve-button"' not in body
+    assert 'name="form_token"' not in body
+    # The dedicated note, not the generic pending/blocked callouts.
+    assert 'data-testid="approve-operator-only"' in body
+    assert "operator-only" in body
+    assert 'data-testid="approve-pending"' not in body
+    assert 'data-testid="approve-blocked"' not in body
+    # The plain-language summary section still renders (read-only page stays
+    # informative for judges).
+    assert "What this change does" in body
+
+
+def test_cf_jwt_presence_keeps_form(_configured, _cf_configured, _inmemory, monkeypatch):
+    # Presence-only contract: ANY Cf-Access-Jwt-Assertion value renders the
+    # form — the POST (require_cf_operator) does the cryptographic verify. A
+    # forged header buys exactly what every request got before the rung
+    # existed: a form whose submit is rejected.
+    _patch_resolve(monkeypatch, ref=_ref(), view=_view())
+    resp = TestClient(app).get(
+        "/iac-approvals/42", headers={"Cf-Access-Jwt-Assertion": "not-verified-here"}
+    )
+    assert resp.status_code == 200
+    body = resp.text
+    assert 'data-testid="approve-button"' in body
+    assert 'name="form_token"' in body
+    assert 'data-testid="approve-operator-only"' not in body
+
+
+def test_anonymous_outranks_autonomy_note(
+    _configured, _cf_configured, _inmemory, monkeypatch
+):
+    # During the demo window the dial is pinned below Propose+Apply. An
+    # anonymous judge must see "operator-only", NOT dial-speak inviting them
+    # to change a setting they cannot reach (rung-ordering pin).
+    _patch_resolve(monkeypatch, ref=_ref(), view=_view())
+    get_state().set_autonomy(mode="observe", reason="window pin", actor="op")
+    resp = TestClient(app).get("/iac-approvals/42")
+    assert resp.status_code == 200
+    body = resp.text
+    assert 'data-testid="approve-operator-only"' in body
+    assert 'data-testid="approve-pending"' not in body
+
+
+def test_anonymous_artifact_hardstop_still_red(
+    _configured, _cf_configured, monkeypatch
+):
+    # A bad artifact is everyone's alarm: the error rungs sit ABOVE the
+    # anonymous rung, so the red hard-stop renders even without a CF JWT.
+    view = _view(integrity_ok=False)
+    _patch_resolve(monkeypatch, ref=_ref(), view=view)
+    resp = TestClient(app).get("/iac-approvals/42")
+    assert resp.status_code == 200
+    body = resp.text
+    assert 'data-testid="approve-blocked"' in body
+    assert 'data-testid="approve-operator-only"' not in body
+
+
+def test_anonymous_terminal_state_shows_outcome_banner(
+    _configured, _cf_configured, _inmemory, monkeypatch
+):
+    # A judge clicking a historical rail row sees the honest terminal banner
+    # (the decision lookup runs on the anonymous-only path), not the generic
+    # operator-only note — and still no form, no token.
+    _patch_resolve(monkeypatch, ref=_ref(), view=_view())
+    _seed_decision(apply_status="applied", merge_state="merged")
+    resp = TestClient(app).get("/iac-approvals/42")
+    assert resp.status_code == 200
+    body = resp.text
+    assert "Already applied and merged" in body
+    assert 'data-testid="approve-button"' not in body
+    assert 'name="form_token"' not in body
+    assert 'data-testid="approve-operator-only"' not in body
+
+
+def test_anonymous_still_actionable_state_keeps_form_suppressed(
+    _configured, _cf_configured, _inmemory, monkeypatch
+):
+    # waiting_for_rebake keeps the form for OPERATORS (see
+    # test_waiting_for_rebake_keeps_form) — but an anonymous viewer must not
+    # get it back through the decision-lookup path.
+    _patch_resolve(monkeypatch, ref=_ref(), view=_view())
+    _seed_decision(apply_status="waiting_for_rebake", merge_state="merged")
+    resp = TestClient(app).get("/iac-approvals/42")
+    assert resp.status_code == 200
+    body = resp.text
+    assert 'data-testid="approve-button"' not in body
+    assert 'name="form_token"' not in body
+    assert 'data-testid="approve-operator-only"' in body
