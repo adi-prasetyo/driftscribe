@@ -99,9 +99,9 @@ def test_chat_missing_workload_is_422() -> None:
 
 
 def test_chat_explicit_drift_workload_routes_to_drift() -> None:
-    """``POST /chat`` with ``workload="drift"`` explicitly named routes
-    the same as the default. Same assertion as the default test — pins
-    that the explicit form has no separate code path."""
+    """``POST /chat`` with ``workload="drift"`` routes to the drift
+    workload — pins the explicit form (the only form, since the PR #109
+    follow-up removed the default)."""
     fake = AsyncMock(return_value=_ok_chat_return("drift"))
     with patch("agent.adk_agent.run_chat", fake):
         client = TestClient(app)
