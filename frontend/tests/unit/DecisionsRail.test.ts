@@ -315,3 +315,90 @@ describe('DecisionsRail — Observe-mode suppressed decisions', () => {
     expect(queryByTestId('autonomy-suppressed')).toBeNull();
   });
 });
+
+describe('DecisionsRail — dry-run preview pill', () => {
+  /** A drift-class decision row (github sidecar shaped like agent/main.py). */
+  function driftRow(over: Partial<Decision>): Decision {
+    return {
+      decision_id: `d-${Math.random().toString(36).slice(2)}`,
+      action: 'drift_issue',
+      ...over,
+    } as Decision;
+  }
+
+  // Parameterized over the full GITHUB_LINK_LABEL action set (Codex plan-review
+  // nit): pins the pill's action gate to exactly the actions that perform
+  // GitHub side effects, incl. the upgrade_pr forward-compat entry.
+  it.each(['drift_issue', 'escalation', 'docs_pr', 'upgrade_pr'])(
+    'renders the pill on a %s row whose GitHub action was dry-run-skipped',
+    (action) => {
+      const decisions = [
+        driftRow({ action, dry_run: true, github: { url: null, dry_run: true } }),
+      ];
+      const { getByTestId, queryByTestId } = render(DecisionsRail, {
+        props: { decisions, activeTraceId: null, onOpenTrace: noop },
+      });
+      expect(getByTestId('decision-dry-run').textContent?.trim()).toBe(
+        'dry run — not created on GitHub',
+      );
+      // url is null on a dry-run row, so no GitHub link renders beside the pill.
+      expect(queryByTestId('decision-github-link')).toBeNull();
+    },
+  );
+
+  it('no pill when the GitHub action really ran (github.dry_run false)', () => {
+    const decisions = [
+      driftRow({
+        dry_run: false,
+        github: { url: 'https://github.com/adi-prasetyo/driftscribe/issues/99', dry_run: false },
+      }),
+    ];
+    const { queryByTestId, getByTestId } = render(DecisionsRail, {
+      props: { decisions, activeTraceId: null, onOpenTrace: noop },
+    });
+    expect(queryByTestId('decision-dry-run')).toBeNull();
+    expect(getByTestId('decision-github-link')).toBeTruthy();
+  });
+
+  it('no pill on a rollback row with top-level dry_run:true — a REAL approval was minted (agent/main.py dry_run_effective)', () => {
+    const decisions: Decision[] = [
+      {
+        decision_id: 'rb-1',
+        action: 'rollback',
+        dry_run: true,
+        dry_run_effective: false,
+        approval: { approval_url: `${location.origin}/approvals/abc?t=x` },
+      } as Decision,
+    ];
+    const { queryByTestId } = render(DecisionsRail, {
+      props: { decisions, activeTraceId: null, onOpenTrace: noop },
+    });
+    expect(queryByTestId('decision-dry-run')).toBeNull();
+  });
+
+  it('no pill on a no_op row even though its sidecar mirrors the setting (nothing was skipped)', () => {
+    const decisions = [
+      driftRow({ action: 'no_op', dry_run: true, github: { url: null, dry_run: true } }),
+    ];
+    const { queryByTestId } = render(DecisionsRail, {
+      props: { decisions, activeTraceId: null, onOpenTrace: noop },
+    });
+    expect(queryByTestId('decision-dry-run')).toBeNull();
+  });
+
+  it('Observe-suppressed row shows the autonomy token, never the dry-run pill (sidecar has no dry_run key)', () => {
+    const decisions = [
+      driftRow({
+        dry_run: true,
+        suppressed_by_autonomy: true,
+        autonomy_mode: 'observe',
+        github: { url: null }, // agent/main.py:1451-1456 — no dry_run key when suppressed
+      }),
+    ];
+    const { getByTestId, queryByTestId } = render(DecisionsRail, {
+      props: { decisions, activeTraceId: null, onOpenTrace: noop },
+    });
+    expect(getByTestId('autonomy-suppressed')).toBeTruthy();
+    expect(queryByTestId('decision-dry-run')).toBeNull();
+  });
+});
