@@ -716,3 +716,59 @@ def test_find_import_violations_multiple_files():
     violations = find_import_violations([clean, bad])
     assert len(violations) == 1
     assert "iac/bad.tf" in violations[0]
+
+
+class TestControlPlaneRefusal:
+    def test_control_plane_bucket_is_rejected_with_explicit_reason(self):
+        with pytest.raises(AdoptRecipeError) as ei:
+            render_adoption(
+                "google_storage_bucket",
+                "driftscribe-hack-2026-tofu-artifacts",
+                "driftscribe-hack-2026",
+                location="asia-northeast1",
+            )
+        msg = str(ei.value)
+        assert "cannot be adopted" in msg
+        assert "denylist" in msg
+        # Explicitly NOT parameter feedback — the model must not retry.
+        assert "not a parameter problem" in msg
+
+    def test_state_bucket_suffix_also_rejected(self):
+        with pytest.raises(AdoptRecipeError):
+            render_adoption(
+                "google_storage_bucket",
+                "acme-prod-tofu-state",
+                "driftscribe-hack-2026",
+                location="asia-northeast1",
+            )
+
+    def test_control_plane_service_is_rejected(self):
+        with pytest.raises(AdoptRecipeError) as ei:
+            render_adoption(
+                "google_cloud_run_v2_service",
+                "driftscribe-agent",
+                "driftscribe-hack-2026",
+                location="asia-northeast1",
+                image="gcr.io/x/y:z",
+            )
+        msg = str(ei.value)
+        assert "cannot be adopted" in msg
+        assert "not a parameter problem" in msg
+
+    def test_topic_named_like_a_service_still_renders(self):
+        # Type-scoped, exactly like the denylist: no control-plane Pub/Sub
+        # identity rule exists, so this import is admitted — and the recipe
+        # must keep rendering it.
+        r = render_adoption(
+            "google_pubsub_topic", "driftscribe-agent", "driftscribe-hack-2026"
+        )
+        assert "import" in r.content
+
+    def test_ordinary_bucket_still_renders(self):
+        r = render_adoption(
+            "google_storage_bucket",
+            "acme-assets",
+            "driftscribe-hack-2026",
+            location="asia-northeast1",
+        )
+        assert "acme-assets" in r.content
