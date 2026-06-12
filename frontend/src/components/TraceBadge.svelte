@@ -1,6 +1,7 @@
 <script lang="ts">
   import { shortTrace } from '../lib/format';
   import type { TimelineStatus } from '../lib/timeline';
+  import Icon from './Icon.svelte';
 
   // The live identity strip for the current run: a copy-to-clipboard trace
   // pill + a lifecycle status pill. Rendered into <section id="trace-badge"
@@ -66,6 +67,7 @@
       title="click to copy trace id"
       onclick={copyTrace}
     >
+      <Icon name="copy" size={12} />
       <span class="trace-pill__id">{shortTrace(traceId)}</span>
       <span class="trace-pill__hint" aria-hidden="true">{copied ? 'copied' : 'copy'}</span>
     </button>

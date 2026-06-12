@@ -110,6 +110,7 @@
   <Group
     key="coordinator"
     title={titleFor.coordinator}
+    icon="brain"
     count={groups.coordinator.length}
     open={true}
     empty={groups.coordinator.length === 0}
@@ -131,6 +132,7 @@
   <Group
     key="tools"
     title={titleFor.tools}
+    icon="wrench"
     count={groups.tools.length}
     empty={groups.tools.length === 0}
   >
@@ -154,6 +156,7 @@
   <Group
     key="mcp"
     title={titleFor.mcp}
+    icon="cable"
     count={groups.mcp.length}
     empty={groups.mcp.length === 0}
   >

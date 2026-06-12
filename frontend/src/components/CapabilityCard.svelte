@@ -11,6 +11,7 @@
   import { groupRules, type Capabilities } from '../lib/capabilities';
   import { parseAutonomyDoc } from '../lib/autonomy';
   import type { AutonomyDoc } from '../lib/autonomy';
+  import Icon from './Icon.svelte';
 
   let {
     call,
@@ -144,7 +145,7 @@
 
 <details class="ds-card cap-card" data-testid="capability-card" ontoggle={onToggle}>
   <summary class="cap-summary" data-testid="cap-summary">
-    <span class="cap-summary__title ds-label">What this agent can — and cannot — do</span>
+    <span class="cap-summary__title ds-label"><Icon name="shield" size={14} extraClass="cap-eyebrow-icon" />What this agent can — and cannot — do</span>
     <span class="cap-summary__hint">safety cage, generated from enforcement code</span>
   </summary>
 
@@ -301,6 +302,16 @@
   }
   .cap-summary::-webkit-details-marker {
     display: none;
+  }
+  /* Eyebrow tint: title text bumped to fg-soft, icon stays at muted (§6) */
+  .cap-summary__title {
+    color: var(--ds-fg-soft);
+    display: inline-flex;
+    align-items: center;
+    gap: var(--ds-sp-2);
+  }
+  .cap-summary__title :global(.cap-eyebrow-icon) {
+    color: var(--ds-muted);
   }
   .cap-summary__title::before {
     content: '▸';

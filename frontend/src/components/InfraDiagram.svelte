@@ -37,6 +37,7 @@
   import { RefreshScheduler } from '../lib/infra_refresh';
   import { coveragePercent } from '../lib/coverage';
   import CoverageMeter from './CoverageMeter.svelte';
+  import Icon from './Icon.svelte';
 
   let {
     call,
@@ -406,7 +407,7 @@
 
 <details class="ds-card infra-panel" data-testid="infra-panel" {open} ontoggle={onToggle}>
   <summary class="infra-summary" data-testid="infra-toggle">
-    <span class="infra-summary__title ds-label">Infrastructure</span>
+    <span class="infra-summary__title ds-label"><Icon name="boxes" size={14} extraClass="infra-eyebrow-icon" />Infrastructure</span>
     <span class="infra-summary__badges">
       {#if loading && !graph}
         <span class="ds-pill ds-pill--muted">loading…</span>
@@ -622,6 +623,16 @@
     display: none;
   }
   /* a small disclosure caret that rotates when open */
+  /* Eyebrow tint: title text bumped to fg-soft, icon stays at muted (§6) */
+  .infra-summary__title {
+    color: var(--ds-fg-soft);
+    display: inline-flex;
+    align-items: center;
+    gap: var(--ds-sp-2);
+  }
+  .infra-summary__title :global(.infra-eyebrow-icon) {
+    color: var(--ds-muted);
+  }
   .infra-summary__title::before {
     content: '▸';
     display: inline-block;
