@@ -124,7 +124,11 @@ video; only the *opening* waits for 7/10)
    requests; verify the rollback-approval hole is closed (autonomy pinned,
    `POST /autonomy` excluded).
 3. CF Access: add the time-boxed bypass policy (flip on 7/10, off ~7/30,
-   on again for 8/19 finals if selected).
+   on again for 8/19 finals if selected). **Note (Codex, A.1 review):** an
+   Everyone-bypass removes the CF JWT for *operators* on this hostname
+   too, so `POST /iac-approvals/{n}` 401s for everyone during the window.
+   Acceptable — the approve is demonstrated in the video; if an approve is
+   needed mid-window, flip bypass off briefly or wait for close.
 4. Rails: per-IP rate limit on `POST /chat`, prompt length cap, GCP
    billing alert, Gemini spend check.
 5. Live-verify the anonymous flow (incognito probe: SPA loads, chat works,
@@ -164,7 +168,8 @@ video; only the *opening* waits for 7/10)
   deliberately) or excluded entirely? Default per Codex: excluded
   (autonomy pinned to observe/propose during the window).
 - Does `/chat` already enforce a prompt max length, or does demo mode need
-  to add one?
+  to add one? **Answered 2026-06-12: no — `ChatRequest.prompt: str` has no
+  `max_length` (`agent/main.py:4256`). Work item A.4 must add the cap.**
 
 ## Review
 

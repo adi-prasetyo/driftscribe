@@ -17,6 +17,10 @@ node_modules/
 package-lock.json
 # frontend/ uses `npm ci`, which REQUIRES a committed lockfile — re-include it.
 !frontend/package-lock.json
+# same for the Cloudflare Worker proxy tests
+!infra/cloudflare/worker/package-lock.json
+# wrangler local state (tmp dirs from dev/deploy)
+.wrangler/
 playwright-report/
 test-results/
 
