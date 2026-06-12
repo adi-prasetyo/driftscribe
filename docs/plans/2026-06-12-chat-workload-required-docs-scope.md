@@ -16,7 +16,7 @@ A live probe POSTed `/chat` with only `prompt` — no `workload` field. `ChatReq
 
 Two distinct defects:
 
-1. **Ambiguous routing.** `workload` selects which agent and which tool set answer the request — the single most capability-relevant field in the API — and it silently defaults. The default's recorded rationale ("pre-17 callers that omit the field route as they always did", `main.py` ChatRequest docstring) is dead: the SPA always sends `workload` explicitly (`frontend/src/App.svelte:224`), and no script/CI caller in the repo posts `/chat` without it. The only beneficiaries of the default are ad-hoc curl probes — exactly the path that produced PR #109.
+1. **Ambiguous routing.** `workload` selects which agent and which tool set answer the request — the single most capability-relevant field in the API — and it silently defaults. The default's recorded rationale ("pre-17 callers that omit the field route as they always did", `main.py` ChatRequest docstring) is obsolete for every interactive surface: the SPA always sends `workload` explicitly (`frontend/src/App.svelte:224`), and so does the legacy HTML template (`agent/templates/transparency_legacy.html:541`, workload `<select>`). Two repo scripts DO still post workload-less — `infra/scripts/e2e_smoke.sh:105,184` and `scripts/demo.sh:451` (Beat E) — both drift-targeted probes that this plan updates to say so explicitly (Codex review 019eb9a2 caught these; the plan's original "no script caller" claim was wrong). After that, the only beneficiaries of the default are ad-hoc curl probes — exactly the path that produced PR #109.
 2. **Unscoped docs authoring.** Nothing in `workloads/drift/chat_system_prompt.md` says what `patch_docs_tool` is *for* (documenting the observed env-var configuration of the drift target service). Faced with an out-of-domain request, the agent's "helpful" move was to author fiction inside its path allowlist.
 
 ## Grounding facts
@@ -29,8 +29,13 @@ Two distinct defects:
 6. `workloads/drift/workload.yaml:44` — `drift_patch_docs` enabled for drift; `agent/workloads/registry.py:437` — tier `"propose"`, so under prod's `propose_apply` autonomy it runs without approval. Docs PRs are still human-merged (the action's blast radius is "a PR exists").
 7. `workloads/upgrade/chat_system_prompt.md:52-54` — upgrade chat has NO docs tool (`docs_pr` explicitly "out of scope for /chat today"); explore/provision don't wire `drift_patch_docs`. The fabrication fix is drift-only.
 8. `tests/unit/test_drift_workload_loads.py` `_DRIFT_CHAT_SYSTEM_PROMPT_GOLDEN` — byte-equal golden pin on the chat prompt; intentional edits must update file + literal together (the test's own docstring says so).
-9. Workload-less `/chat` POSTs in tests (must gain `"workload": "drift"`): `tests/integration/test_chat_endpoint.py:42,65,91,111,138` and `tests/integration/test_pause_gates.py:281,329,353`. `test_chat_endpoint.py:161` POSTs `{}` expecting 422 — stays valid (now doubly-422). All other `/chat` tests already pass `workload`.
+9. Workload-less `/chat` callers — the COMPLETE list (Codex 019eb9a2 extended the original audit):
+   - Tests gaining `"workload": "drift"`: `tests/integration/test_chat_endpoint.py:42,65,91,111,138` + the extra-field test at `:152` (keeps it focused on `extra="forbid"`); `tests/integration/test_pause_gates.py:281,302,329,353` (`:302` is the paused-SSE call the original audit missed); `tests/integration/test_workload_routing.py:199,244` (DK error-mapping tests).
+   - `tests/integration/test_workload_routing.py:81` `test_chat_default_workload_is_drift` pins the OLD default outright — it is REPLACED by the new missing-workload-422 test (its module docstring/comments documenting the default get updated too).
+   - Scripts gaining `"workload":"drift"` in their JSON bodies: `infra/scripts/e2e_smoke.sh:105` (positive chat probe) and `:184` (prompt-injection probe — it targets drift's patch_docs tool, so drift is the honest workload); `scripts/demo.sh:451` (Beat E rollback ask).
+   - `test_chat_endpoint.py:161` POSTs `{}` expecting 422 — stays valid (now doubly-422).
 10. `Dockerfile.agent:36` — `COPY workloads/ ./workloads/`: prompt edits ship only via coordinator rebake.
+11. `agent/templates/transparency_legacy.html:541` — the legacy operator page sends `workload` from a `<select>`; unaffected.
 
 ## Design decisions
 
@@ -55,19 +60,21 @@ Two distinct defects:
 
 **Files:**
 - Modify: `agent/main.py:4256-4279` (ChatRequest)
-- Test: `tests/integration/test_chat_endpoint.py`
-- Modify: `tests/integration/test_chat_endpoint.py:42,65,91,111,138`, `tests/integration/test_pause_gates.py:281,329,353` (add explicit `"workload": "drift"`)
+- Test: `tests/integration/test_workload_routing.py` (replace `test_chat_default_workload_is_drift` at :81; update the module/section comments that document the old default)
+- Modify (add explicit `"workload": "drift"`): `tests/integration/test_chat_endpoint.py:42,65,91,111,138,152`, `tests/integration/test_pause_gates.py:281,302,329,353`, `tests/integration/test_workload_routing.py:199,244`, `infra/scripts/e2e_smoke.sh:105,184`, `scripts/demo.sh:451`
 
-**Step 1: Write the failing test** (in `tests/integration/test_chat_endpoint.py`, near the existing 422 test at :161):
+**Step 1: Write the failing test** — REPLACE `test_chat_default_workload_is_drift` (`tests/integration/test_workload_routing.py:81`, which pins the old default) with:
 
 ```python
-def test_chat_missing_workload_is_422(client):
+def test_chat_missing_workload_is_422() -> None:
     """PR #109 follow-up: ``workload`` selects which agent and tool set
     answer the request — it must be explicit. A workload-less POST used
     to silently default to the mutation-capable drift workload; that
     default routed an adoption-flavored probe to an agent whose only
-    authoring tool is docs, which fabricated junk PR #109. Now: 422.
+    authoring tool is docs, which fabricated junk PR #109. Now: 422,
+    before any handler/agent code runs.
     """
+    client = TestClient(app)
     r = client.post("/chat", json={"prompt": "hi"})
     assert r.status_code == 422
     detail = r.json()["detail"]
@@ -77,7 +84,9 @@ def test_chat_missing_workload_is_422(client):
     )
 ```
 
-**Step 2: Run it — expect FAIL** (currently 200/502-ish, not 422): `.venv/bin/pytest tests/integration/test_chat_endpoint.py::test_chat_missing_workload_is_422 -q`
+(Match the file's existing client/headers idiom — if its other tests send the operator token header, send it here too so the 422 is unambiguously the schema's.) Also update the module docstring / section comments in this file that still describe the drift default.
+
+**Step 2: Run it — expect FAIL** (currently 200, not 422): `.venv/bin/pytest tests/integration/test_workload_routing.py::test_chat_missing_workload_is_422 -q`
 
 **Step 3: Implement.** In `ChatRequest`: change
 
@@ -106,9 +115,9 @@ and replace the docstring's Phase-17.A.3 default paragraph with:
     autonomous surfaces, not this one.
 ```
 
-**Step 4: Update the eight legacy call sites** (fact 9) — add `"workload": "drift"` to each `client.post("/chat", json={...})` body. Do NOT touch `test_chat_endpoint.py:161` (`json={}` — still 422).
+**Step 4: Update every legacy call site** (fact 9, complete list) — add `"workload": "drift"` to each test `client.post("/chat", json={...})` body AND to the curl `-d` JSON bodies in `infra/scripts/e2e_smoke.sh:105,184` and the Beat-E payload in `scripts/demo.sh:451`. Do NOT touch `test_chat_endpoint.py:161` (`json={}` — still 422).
 
-**Step 5: Run the affected files, expect PASS:** `.venv/bin/pytest tests/integration/test_chat_endpoint.py tests/integration/test_pause_gates.py -q` — then the full suite: `.venv/bin/pytest -q` (catches any straggler call site the grep missed).
+**Step 5: Run the affected files, expect PASS:** `.venv/bin/pytest tests/integration/test_chat_endpoint.py tests/integration/test_pause_gates.py tests/integration/test_workload_routing.py -q` — then the full suite: `.venv/bin/pytest -q` (catches any straggler call site the grep missed). Sanity-check the shell edits with `bash -n infra/scripts/e2e_smoke.sh scripts/demo.sh`.
 
 **Step 6: Commit:** `feat(chat): require explicit workload on /chat — no silent drift default (PR #109 follow-up)`
 
@@ -131,9 +140,15 @@ def test_drift_chat_prompt_pins_docs_scope_rule():
     text = (
         _REPO_ROOT / "workloads" / "drift" / "chat_system_prompt.md"
     ).read_text(encoding="utf-8")
-    assert "NEVER author a doc that claims a resource is managed by" in text
-    assert "adoption or import" in text
-    assert "do not write it into a doc" in text
+    # Whitespace-normalize before matching: the prompt hard-wraps at ~72
+    # cols, so multi-word substrings straddle newlines (Codex 019eb9a2).
+    flat = " ".join(text.split())
+    assert (
+        "NEVER author a doc that claims a resource is managed by, "
+        "adopted into, or imported into IaC" in flat
+    )
+    assert "point them at the provision workload" in flat
+    assert "do not write it into a doc" in flat
 ```
 
 **Step 2: Run — expect FAIL.**
@@ -168,15 +183,20 @@ def test_drift_chat_prompt_pins_docs_scope_rule():
 **Step 1: Write the failing pin test:**
 
 ```python
+from agent.adk_tools import patch_docs_tool
+
+
 def test_patch_docs_tool_docstring_pins_scope_carve_out():
     """The docstring is the model-facing tool description (ADK reads it
     at tool-choice time) — same pattern as propose_adoption_tool's
     control-plane carve-out (PR #108). Pin the PR #109 scope language.
     """
-    doc = adk_tools.patch_docs_tool.__doc__ or ""
-    assert "observed env-variable configuration" in doc
-    assert "never" in doc.lower() and "IaC-managed" in doc
+    flat = " ".join((patch_docs_tool.__doc__ or "").split())
+    assert "observed env-variable configuration" in flat
+    assert "Never use it to describe a resource as IaC-managed" in flat
 ```
+
+(Place the import with the test file's existing imports, matching its idiom.)
 
 **Step 2: Run — expect FAIL.**
 
