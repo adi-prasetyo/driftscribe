@@ -28,20 +28,17 @@ Recorded during item-9 Phase 4 live work (2026-06-11): "concurrency-1 infra-read
 ## Design decisions
 
 1. **`--concurrency=8`, nothing else.** Keep `--max-instances=1` (the problem is head-of-line blocking, not throughput; a second instance would double cold-start surface and CAI traffic for no observed need), `--min-instances=0`, memory/CPU unchanged. 8 = comfortably above the realistic concurrent caller count (graph poll + a chat call + a deploy-churn burst) while keeping the single 1-vCPU instance honest for thread-pooled sync handlers.
-2. **Change BOTH deploy files** and add the missing **parity pin test**: parse both YAMLs, locate the infra-reader `run deploy` step in each, and assert (a) the flag args (everything except `--set-env-vars`, which legitimately differs: `${_IAC_SNAPSHOT_SHA}` vs `$COMMIT_SHA`, and `--image`) are EQUAL between the two files, and (b) `--concurrency=8` is among them. This turns the header's "mirrors" claim into an enforced invariant and pins the new value.
-3. **Comment at both flag sites** (same wording, hard-wrapped to file style):
+2. **Change BOTH deploy files** and add the missing **parity pin test** (design per Codex 019eb9ca must-fix 1+2 — no blanket exclusions): parse both YAMLs, locate the infra-reader `run deploy` step in each, split args into a `--flag → value` mapping plus a parsed `--set-env-vars` key/value dict, **normalize `${NAME}` references through each file's own `substitutions` defaults** (so `--region=${_REGION}` in the targeted file compares equal to the full file's literal `asia-northeast1`; both files default `_TAG: manual` so `--image` compares equal too). Assert: (a) the flag mappings are EQUAL — including `--image` and `--region`; (b) env-var KEY sets are equal and every value is equal EXCEPT `IAC_SNAPSHOT_SHA` (legitimately `${_IAC_SNAPSHOT_SHA}` vs the `$COMMIT_SHA` builtin, which substitutions can't normalize); (c) `--concurrency` is `8` in both. This turns the header's "mirrors" claim into an enforced invariant for the auth-critical env config (`GCP_PROJECT`/`OWN_URL`/`ALLOWED_CALLERS`) as well as the flags, and pins the new value.
+3. **Comment at both flag sites** (short — per Codex nit):
    ```
-   # concurrency=8 (was 1): /describe is stateless per request — fresh
-   # AssetServiceClient, read-only iac/ parse, no module-level mutable
-   # state — so cross-request serialization only created head-of-line
-   # blocking under deploy-churn describe traffic (graph polling + chat
-   # inventory calls queueing behind one ~seconds CAI search). Mutator
-   # workers keep concurrency=1 deliberately; do not copy this value
-   # to them.
+   # concurrency=8: /describe is a stateless read-only CAI search — no
+   # cross-request state, so serialization only caused head-of-line
+   # blocking under deploy-churn describe traffic. Keep MUTATOR workers
+   # at concurrency=1.
    ```
 4. **Other workers untouched** (fact 5). The reader worker's possible same-shape lift is explicitly out of scope — no observed degradation, and per-service reasoning is the doctrine.
 5. **Live apply = flags-only update after merge** (`gcloud run services update driftscribe-infra-reader --region=asia-northeast1 --project=driftscribe-hack-2026 --concurrency=8`), so live state matches the codified files and the next full deploy preserves it. No image rebuild, no coordinator rebake (no code or prompt changed anywhere).
-6. **Live verify:** (a) service describe shows `containerConcurrency: 8` on the new serving revision; (b) functional: authenticated `/infra/graph` fetch via the coordinator returns 200 with the usual totals; (c) concurrency: 4 parallel authenticated `/infra/graph` fetches all return 200 with total wall time well under 4× a single cold fetch (qualitative overlap check — exact timing is load-dependent; the structural claim is "no longer strictly serial").
+6. **Live verify (Codex must-fix 3 — 200 alone proves nothing):** `/infra/graph` soft-fails to a degraded 200 (`degraded: true`, `error: infra_reader_unavailable`) on `WorkerClientError`, and `worker_client` has a 30s timeout — a burst that times out would still look "all 200". So: (a) `gcloud run services describe` pre/post diff confirms ONLY `containerConcurrency` changed (1 → 8) on the new serving revision, same image, same env; (b) single authenticated `/infra/graph` fetch returns 200 with `degraded` falsy and plausible totals; (c) 4 parallel authenticated `/infra/graph` fetches: ALL four have `degraded` falsy + real totals, wall time well under 4× the single fetch (qualitative overlap check).
 
 ## Out of scope
 
@@ -59,51 +56,77 @@ Recorded during item-9 Phase 4 live work (2026-06-11): "concurrency-1 infra-read
 infra/cloudbuild.infra-reader.yaml's header claims it "mirrors the
 infra-reader deploy step in infra/cloudbuild.yaml" — these pins enforce
 the claim, and pin the deploy-churn fix (concurrency=8, 2026-06-12 plan).
-``--image`` and ``--set-env-vars`` legitimately differ between the two
-files (different tag/SHA substitution variables), so they are excluded
-from the parity set.
+
+Comparison semantics (Codex 019eb9ca): flags are compared as a mapping
+after normalizing ``${NAME}`` through each file's own ``substitutions``
+defaults (so ``--region=${_REGION}`` equals the literal region, and
+``--image=...:${_TAG}`` compares equal since both files default ``_TAG``).
+``--set-env-vars`` is parsed into key/value pairs: key sets must match
+and every VALUE must match except ``IAC_SNAPSHOT_SHA``, which is
+legitimately ``${_IAC_SNAPSHOT_SHA}`` vs the ``$COMMIT_SHA`` builtin —
+that one key's value is the only thing this pin does not see.
 """
+import re
 from pathlib import Path
 
 import yaml
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
-_EXCLUDED_PREFIXES = ("--image=", "--set-env-vars=")
 
-
-def _infra_reader_deploy_flags(cloudbuild_path: Path) -> list[str]:
+def _infra_reader_deploy(cloudbuild_path: Path) -> tuple[dict, dict]:
+    """Return (flags, env_vars) for the infra-reader gcloud run deploy step."""
     doc = yaml.safe_load(cloudbuild_path.read_text(encoding="utf-8"))
+    subs = doc.get("substitutions") or {}
+
+    def _normalize(value: str) -> str:
+        return re.sub(
+            r"\$\{(\w+)\}", lambda m: subs.get(m.group(1), m.group(0)), value
+        )
+
     for step in doc["steps"]:
         args = step.get("args") or []
-        if (
-            "deploy" in args
+        if not (
+            step.get("entrypoint") == "gcloud"
+            and "deploy" in args
             and "driftscribe-infra-reader" in args
-            and step.get("entrypoint") == "gcloud"
         ):
-            return [
-                a
-                for a in args
-                if a.startswith("--") and not a.startswith(_EXCLUDED_PREFIXES)
-            ]
+            continue
+        flags: dict[str, str] = {}
+        env: dict[str, str] = {}
+        for a in args:
+            if not isinstance(a, str) or not a.startswith("--"):
+                continue
+            key, _, value = a.partition("=")
+            value = _normalize(value)
+            if key == "--set-env-vars":
+                env = dict(kv.split("=", 1) for kv in value.split(","))
+            else:
+                flags[key] = value
+        return flags, env
     raise AssertionError(f"no infra-reader deploy step found in {cloudbuild_path}")
 
 
 def test_infra_reader_deploy_flags_match_between_files():
-    targeted = _infra_reader_deploy_flags(
+    t_flags, t_env = _infra_reader_deploy(
         _REPO_ROOT / "infra" / "cloudbuild.infra-reader.yaml"
     )
-    full = _infra_reader_deploy_flags(_REPO_ROOT / "infra" / "cloudbuild.yaml")
-    assert targeted == full
+    f_flags, f_env = _infra_reader_deploy(_REPO_ROOT / "infra" / "cloudbuild.yaml")
+    assert t_flags == f_flags
+    assert set(t_env) == set(f_env)
+    for key in t_env:
+        if key == "IAC_SNAPSHOT_SHA":
+            continue  # ${_IAC_SNAPSHOT_SHA} vs $COMMIT_SHA builtin — see module doc
+        assert t_env[key] == f_env[key], key
 
 
 def test_infra_reader_concurrency_is_8():
     for fname in ("cloudbuild.infra-reader.yaml", "cloudbuild.yaml"):
-        flags = _infra_reader_deploy_flags(_REPO_ROOT / "infra" / fname)
-        assert "--concurrency=8" in flags, fname
+        flags, _ = _infra_reader_deploy(_REPO_ROOT / "infra" / fname)
+        assert flags.get("--concurrency") == "8", fname
 ```
 
-Steps: write the test → run `.venv/bin/pytest tests/unit/test_worker_deploy_flags.py -q` → expect **the concurrency test to FAIL** (`--concurrency=1` today). NOTE the parity test may already pass — confirm it runs green on current files BEFORE the flag edit (if it fails, the two files have drifted somewhere else; STOP and report rather than "fixing" silently). The region flag differs in FORM (`--region=${_REGION}` vs `--region=asia-northeast1`) — if the parity assertion trips on that, exclude `--region=` the same way as `--image=` with a comment, since region equality is substitution-time, not text-time.
+Steps: write the test → run `.venv/bin/pytest tests/unit/test_worker_deploy_flags.py -q` → expect **the concurrency test to FAIL** (`--concurrency=1` today) and **the parity test to PASS on current files** — confirm this BEFORE the flag edit (if parity fails, the two files have drifted somewhere real, or the normalization is wrong; STOP and report rather than "fixing" silently).
 
 ### Task 2: flip the flag in both files
 
