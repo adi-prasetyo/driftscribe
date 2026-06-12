@@ -278,7 +278,7 @@ def test_chat_paused_json_returns_calm_reply(monkeypatch):
     client = TestClient(app)
     _pause(client)
     with patch("agent.adk_agent.run_chat", fake):
-        r = client.post("/chat", json={"prompt": "do a thing", "session_id": "sess-1"})
+        r = client.post("/chat", json={"prompt": "do a thing", "session_id": "sess-1", "workload": "drift"})
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["paused"] is True
@@ -299,7 +299,7 @@ def test_chat_paused_sse_emits_single_done_frame(monkeypatch):
     with patch("agent.adk_agent.run_chat_stream", fake_stream):
         r = client.post(
             "/chat",
-            json={"prompt": "do a thing"},
+            json={"prompt": "do a thing", "workload": "drift"},
             headers={"Accept": "text/event-stream"},
         )
     assert r.status_code == 200
@@ -326,7 +326,7 @@ def test_chat_fail_closed_reply_when_pause_read_raises(monkeypatch):
     with patch.object(state, "get_pause", side_effect=RuntimeError("Firestore down")), \
          patch("agent.adk_agent.run_chat", fake):
         client = TestClient(app)
-        r = client.post("/chat", json={"prompt": "do a thing"})
+        r = client.post("/chat", json={"prompt": "do a thing", "workload": "drift"})
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["paused"] is True
@@ -350,7 +350,7 @@ def test_chat_fail_closed_when_get_state_itself_raises(monkeypatch):
     monkeypatch.setattr("agent.main.get_state", _boom)
     with patch("agent.adk_agent.run_chat", fake):
         client = TestClient(app)
-        r = client.post("/chat", json={"prompt": "do a thing"})
+        r = client.post("/chat", json={"prompt": "do a thing", "workload": "drift"})
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["paused"] is True

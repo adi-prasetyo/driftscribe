@@ -4262,17 +4262,21 @@ class ChatRequest(BaseModel):
     memory is out of scope for 11.7 — see ``docs/architecture/multi-agent-design.md``
     §"session memory").
 
-    Phase 17.A.3: ``workload`` selects the workload-scoped agent. The
-    Literal closes the set to ``{"drift", "upgrade", "explore", "provision"}`` —
-    pydantic rejects any other value with 422 before the handler body
-    runs, which prevents a malformed request from reaching the workload
-    loader's exception path. Defaults to ``"drift"`` so pre-17 callers
-    that omit the field route as they always did.
+    Phase 17.A.3 introduced ``workload``; the PR #109 follow-up made it
+    REQUIRED. ``workload`` selects which agent — and therefore which
+    tool set, including mutation tools — answers the request, so it
+    must be explicit: a workload-less POST once defaulted to the
+    mutation-capable drift workload and an out-of-domain probe prompt
+    became fabricated docs PR #109. The Literal closes the set; pydantic
+    422s both a missing field and an unknown value before the handler
+    body runs. The SPA always sends workload (App.svelte); /recheck and
+    /eventarc keep their own documented drift defaults — those are
+    autonomous surfaces, not this one.
     """
 
     prompt: str
     session_id: str | None = None
-    workload: Literal["drift", "upgrade", "explore", "provision"] = "drift"
+    workload: Literal["drift", "upgrade", "explore", "provision"]
 
     model_config = ConfigDict(extra="forbid")
 

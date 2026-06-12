@@ -7,10 +7,12 @@ tries to say otherwise is ignored.
 
 Coverage:
 
-- ``/chat`` defaults to ``workload="drift"`` when the field is omitted —
-  the coordinator loads the drift spec and the agent built for the call
-  carries drift tools.
-- ``/chat`` with an explicit ``workload="drift"`` does the same.
+- ``/chat`` without a ``workload`` field → 422 (PR #109 follow-up:
+  ``workload`` is now REQUIRED — the field selects which agent and which
+  tool set answer the request, so omitting it is a schema error, not a
+  back-compat default).
+- ``/chat`` with an explicit ``workload="drift"`` routes to the drift
+  workload.
 - ``/chat`` with ``workload="upgrade"`` — drift workers' env vars are
   set, but upgrade workers' URL env vars are NOT. ``load_workload``
   raises :class:`agent.workloads.MissingWorkerEnvError`; the handler
@@ -78,34 +80,28 @@ def _ok_chat_return(workload_label: str) -> dict:
 # --------------------------------------------------------------------------- #
 
 
-def test_chat_default_workload_is_drift() -> None:
-    """``POST /chat`` with no ``workload`` field defaults to ``"drift"``.
-
-    Backward-compat: every pre-17 /chat caller (curl in the demo script,
-    test clients in test_chat_endpoint.py) omits the field. They MUST
-    keep working without modification.
+def test_chat_missing_workload_is_422() -> None:
+    """PR #109 follow-up: ``workload`` selects which agent and tool set
+    answer the request — it must be explicit. A workload-less POST used
+    to silently default to the mutation-capable drift workload; that
+    default routed an adoption-flavored probe to an agent whose only
+    authoring tool is docs, which fabricated junk PR #109. Now: 422,
+    before any handler/agent code runs.
     """
-    fake = AsyncMock(return_value=_ok_chat_return("drift"))
-    with patch("agent.adk_agent.run_chat", fake):
-        client = TestClient(app)
-        r = client.post("/chat", json={"prompt": "hi"})
-
-    assert r.status_code == 200, r.text
-    # Routing assertion: the handler resolved workload="drift" and passed
-    # the resulting WorkloadResolution into run_chat. We don't inspect the
-    # resolution's contents here (the 17.A.1/17.A.2 tests already pin its
-    # shape); we just confirm the workload string flowed through.
-    fake.assert_awaited_once()
-    _, kwargs = fake.call_args
-    assert kwargs.get("workload") == "drift", (
-        f"default workload should route as 'drift', got {kwargs.get('workload')!r}"
+    client = TestClient(app)
+    r = client.post("/chat", json={"prompt": "hi"})
+    assert r.status_code == 422
+    detail = r.json()["detail"]
+    assert any(
+        e.get("loc") == ["body", "workload"] and e.get("type") == "missing"
+        for e in detail
     )
 
 
 def test_chat_explicit_drift_workload_routes_to_drift() -> None:
-    """``POST /chat`` with ``workload="drift"`` explicitly named routes
-    the same as the default. Same assertion as the default test — pins
-    that the explicit form has no separate code path."""
+    """``POST /chat`` with ``workload="drift"`` routes to the drift
+    workload — pins the explicit form (the only form, since the PR #109
+    follow-up removed the default)."""
     fake = AsyncMock(return_value=_ok_chat_return("drift"))
     with patch("agent.adk_agent.run_chat", fake):
         client = TestClient(app)
@@ -196,7 +192,7 @@ def test_chat_missing_developer_knowledge_api_key_returns_503(monkeypatch) -> No
         patch("agent.adk_agent.run_chat", fake_run_chat),
     ):
         client = TestClient(app)
-        r = client.post("/chat", json={"prompt": "hi"})
+        r = client.post("/chat", json={"prompt": "hi", "workload": "drift"})
 
     assert r.status_code == 503, r.text
     detail = r.json()["detail"].lower()
@@ -241,7 +237,7 @@ def test_chat_run_chat_missing_developer_knowledge_api_key_returns_503() -> None
     )
     with patch("agent.adk_agent.run_chat", fake):
         client = TestClient(app)
-        r = client.post("/chat", json={"prompt": "hi"})
+        r = client.post("/chat", json={"prompt": "hi", "workload": "drift"})
 
     assert r.status_code == 503, r.text
     detail = r.json()["detail"].lower()

@@ -174,6 +174,13 @@ def patch_docs_tool(
     (timestamp + random suffix) — letting the LLM pick a branch name
     is a foot-gun that yields ``branch="../../etc/passwd"`` exploits
     at worst and noisy unmemorable branch names at best.
+
+    Scope carve-out (PR #109 follow-up): this tool documents the
+    observed env-variable configuration of the drift target service —
+    nothing else. Never use it to describe a resource as IaC-managed,
+    adopted, or imported; adoption runs through the provision
+    workload's human-approved pipeline, and a docs PR must never be
+    offered as a substitute for a state change.
     """
     slug = _BRANCH_SLUG.sub("-", Path(file_path).name.lower()).strip("-") or "docs"
     branch = f"driftscribe/{slug}-{int(time.time())}-{secrets.token_hex(2)}"
