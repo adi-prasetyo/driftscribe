@@ -464,3 +464,6 @@ code.ds-code {
   gap: var(--ds-sp-1);
   font-size: var(--ds-fs-1);
 }
+
+/* --- Icon (ds-icon) -------------------------------------------------------- */
+.ds-icon { flex-shrink: 0; vertical-align: -0.125em; }
