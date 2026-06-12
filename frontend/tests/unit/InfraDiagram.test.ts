@@ -790,13 +790,19 @@ describe('InfraDiagram — guided adoption order (item 10)', () => {
   });
 });
 
-describe('InfraDiagram — refresh livelock regression (last-applied-wins)', () => {
+describe('InfraDiagram — refresh coalescing + last-applied-wins (livelock regression)', () => {
   // Prod incident (Phase-4 live e2e, 2026-06-11): the boot-time applied-epoch
   // ladder fires fetches every 10-30s while a cold CAI-backed /infra/graph takes
   // 10-30s to answer — under last-STARTED-wins every response arrived "stale",
   // graph never set, and the panel spun on "Refreshing…" forever. The policy is
   // now last-APPLIED-wins: a completed 200 applies unless a NEWER fetch's
   // response already applied.
+  //
+  // Backlog-3 residual (2026-06-12): the infra-reader describe budget is now 90s
+  // (up from 30s), so a stacked poll or ladder rung could hold both coordinator
+  // concurrency-2 slots. refresh() now coalesces: if a fetch is already in flight
+  // a new trigger returns immediately — one in-flight request per open panel.
+  // Last-applied-wins remains the response-application policy as defense-in-depth.
   function deferredCall() {
     const pending: Array<(g: InfraGraph) => void> = [];
     const call = (_path: string): Promise<Response> =>
@@ -813,41 +819,45 @@ describe('InfraDiagram — refresh livelock regression (last-applied-wins)', () 
     return { call, pending };
   }
 
-  async function mountWithTwoInFlight() {
+  it('coalesces a trigger while a fetch is in flight — and the pending fetch still applies', async () => {
+    // Mount: fetch #1 starts, pending.length === 1.
     const { call, pending } = deferredCall();
     const utils = render(InfraDiagram, { props: { call } });
-    await waitFor(() => expect(pending.length).toBe(1)); // mount fetch in flight
+    await waitFor(() => expect(pending.length).toBe(1)); // fetch #1 in flight
+    // Fire a second trigger (expand toggle) while #1 is still pending.
     const details = utils.container.querySelector('details')!;
     details.open = true;
-    await fireEvent(details, new Event('toggle')); // scheduler.open → fetch #2
-    await waitFor(() => expect(pending.length).toBe(2));
-    return { ...utils, pending };
-  }
-
-  it('applies an older 200 even when a newer fetch already started (the livelock)', async () => {
-    const { getByTestId, pending } = await mountWithTwoInFlight();
-    // The OLDER fetch completes while the newer is still in flight — it must
-    // apply (under the old policy it was discarded and the panel never loaded).
+    await fireEvent(details, new Event('toggle'));
+    // Coalescing: the in-flight count must stay at 1, not grow to 2.
+    await new Promise((r) => setTimeout(r, 25));
+    expect(pending.length).toBe(1); // this assertion FAILS pre-implementation (observes 2)
+    // The pending fetch still applies — no livelock.
     pending[0](graphWith({ resources: 5, managed: 2, drift: 3 }));
     await waitFor(() => {
-      expect(getByTestId('infra-coverage-count').textContent).toBe('2/5 managed · 40%');
-    });
-    // The newer fetch completing later still supersedes it.
-    pending[1](graphWith({ resources: 6, managed: 3, drift: 3 }));
-    await waitFor(() => {
-      expect(getByTestId('infra-coverage-count').textContent).toBe('3/6 managed · 50%');
+      expect(utils.getByTestId('infra-coverage-count').textContent).toBe('2/5 managed · 40%');
     });
   });
 
-  it('never lets an out-of-order older response overwrite a newer applied graph', async () => {
-    const { getByTestId, pending } = await mountWithTwoInFlight();
-    pending[1](graphWith({ resources: 6, managed: 3, drift: 3 })); // NEWER lands first
+  it('a trigger after completion fetches fresh and supersedes', async () => {
+    // After the first fetch completes a subsequent trigger starts a new one.
+    const { call, pending } = deferredCall();
+    const utils = render(InfraDiagram, { props: { call } });
+    await waitFor(() => expect(pending.length).toBe(1));
+    // Let fetch #1 complete first.
+    pending[0](graphWith({ resources: 5, managed: 2, drift: 3 }));
     await waitFor(() => {
-      expect(getByTestId('infra-coverage-count').textContent).toBe('3/6 managed · 50%');
+      expect(utils.getByTestId('infra-coverage-count').textContent).toBe('2/5 managed · 40%');
     });
-    pending[0](graphWith({ resources: 5, managed: 2, drift: 3 })); // older straggler
-    await new Promise((r) => setTimeout(r, 25));
-    expect(getByTestId('infra-coverage-count').textContent).toBe('3/6 managed · 50%');
+    // Now fire a new trigger — with no fetch in flight it should start a new one.
+    const details = utils.container.querySelector('details')!;
+    details.open = true;
+    await fireEvent(details, new Event('toggle'));
+    await waitFor(() => expect(pending.length).toBe(2));
+    // The second response supersedes (last-applied-wins).
+    pending[1](graphWith({ resources: 6, managed: 3, drift: 3 }));
+    await waitFor(() => {
+      expect(utils.getByTestId('infra-coverage-count').textContent).toBe('3/6 managed · 50%');
+    });
   });
 });
 
