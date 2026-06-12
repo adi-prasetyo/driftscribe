@@ -420,7 +420,7 @@
 </script>
 
 <header class="app-header">
-  <h1 class="app-title">DriftScribe <span class="app-title__sub">— Reasoning Timeline</span></h1>
+  <h1 class="app-title">DriftScribe <span class="app-title__sub">— the agent proposes, you approve</span></h1>
   <div class="app-header__actions">
     <button
       class="ds-btn ds-btn--ghost app-tour-btn"

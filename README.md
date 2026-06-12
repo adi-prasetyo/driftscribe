@@ -1,16 +1,27 @@
 # DriftScribe
+
+**The agent proposes, you approve.**
+
 > [日本語版はこちら](README.ja.md)
 
 [![CI](https://github.com/adi-prasetyo/driftscribe/actions/workflows/ci.yml/badge.svg)](https://github.com/adi-prasetyo/driftscribe/actions/workflows/ci.yml)
 [![E2E](https://github.com/adi-prasetyo/driftscribe/actions/workflows/e2e.yml/badge.svg?event=workflow_dispatch)](https://github.com/adi-prasetyo/driftscribe/actions/workflows/e2e.yml)
 
-A multi-agent coordinator/worker pattern for safe AI-driven DevOps on Cloud Run.
-Four workloads ship today: live drift detection (`payment-demo` Cloud Run env vs
-an ops contract), dependency upgrade reviews (npm `package.json` vs GitHub
-Advisory DB), read-only project exploration, and agent-authored
-infrastructure-as-code (OpenTofu PRs through a gated apply pipeline). The
-reasoning loops are grounded by Google's Developer Knowledge MCP. Submission for
-DevOps × AI Agent Hackathon 2026 (Google Cloud Japan / Findy).
+**An AI DevOps agent that watches your Google Cloud estate and proposes fixes —
+but never applies a risky change on its own.** Four workloads ship today:
+**drift** (live Cloud Run config vs. an ops contract), **upgrade** (npm
+dependencies vs. the GitHub Advisory DB), **explore** (read-only inventory of
+the whole project), and **provision** (agent-authored OpenTofu PRs through a
+gated apply pipeline). The agent — Gemini on Google's Agent Development Kit,
+grounded by the Developer Knowledge MCP — holds no direct power to act: narrow
+single-purpose workers execute within hardcoded limits, rollbacks and live-infra
+applies always wait behind single-use human approval gates, and every decision
+lands in the operator UI with its reasoning trace. Submission for the DevOps × AI Agent Hackathon 2026
+(Google Cloud Japan / Findy).
+
+**Live demo:** <https://driftscribe.adp-app.com> — the operator UI, open to
+anonymous visitors during the hackathon judging window (behind Cloudflare
+Access otherwise).
 
 **New here?** Start with [`docs/OVERVIEW.md`](docs/OVERVIEW.md) — a plain-English, ~10-minute tour of the whole system.
 

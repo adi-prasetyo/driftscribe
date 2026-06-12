@@ -1,15 +1,30 @@
 # DriftScribe
+
+**エージェントが提案し、人間が承認する。**
+
 > [English version](README.md)
 
 [![CI](https://github.com/adi-prasetyo/driftscribe/actions/workflows/ci.yml/badge.svg)](https://github.com/adi-prasetyo/driftscribe/actions/workflows/ci.yml)
 [![E2E](https://github.com/adi-prasetyo/driftscribe/actions/workflows/e2e.yml/badge.svg?event=workflow_dispatch)](https://github.com/adi-prasetyo/driftscribe/actions/workflows/e2e.yml)
 
-Cloud Run 上で安全に AI 駆動 DevOps を行うための、マルチエージェント
-コーディネーター/ワーカーパターンです。デモワークロードは現在 2 つ:
-ライブのドリフト検知 (`payment-demo` Cloud Run の環境変数 vs ops コントラクト) と、
-依存パッケージのアップグレードレビュー (npm `package.json` vs GitHub Advisory DB) です。
-どちらの推論ループも Google の Developer Knowledge MCP によって裏付けされます。
-DevOps × AI Agent Hackathon 2026 (Google Cloud Japan / Findy) への提出作品です。
+**Google Cloud 上のインフラを監視し、修正を提案する AI DevOps エージェント —
+ただし、リスクのある変更を自分の判断だけで適用することは決してありません。**
+現在 4 つのワークロードが動いています: **drift** (Cloud Run のライブ設定 vs ops
+コントラクト)、**upgrade** (npm 依存パッケージ vs GitHub Advisory DB)、
+**explore** (プロジェクト全体の読み取り専用インベントリ)、**provision**
+(エージェントが OpenTofu を書き、ゲート付き apply パイプラインを通る PR を作成)。
+エージェント (Google の Agent Development Kit 上の Gemini、Developer Knowledge
+MCP による裏付け) は、自らインフラに手を下す力を持ちません: 実行はハードコード
+された制約の中で動く単一目的のワーカーが担い、ロールバックとライブインフラへの
+apply は必ず一回限り有効な人間の承認ゲートで待ち、すべての判断は推論トレースと
+ともにオペレーター UI に記録されます。DevOps × AI Agent Hackathon 2026
+(Google Cloud Japan / Findy) への提出作品です。
+
+**ライブデモ:** <https://driftscribe.adp-app.com> — オペレーター UI。ハッカソンの
+審査期間中は誰でもアクセスできます (期間外は Cloudflare Access で保護)。
+
+**はじめての方へ:** [`docs/OVERVIEW.md`](docs/OVERVIEW.md) — システム全体を
+約 10 分で読める平易な解説です (英語)。
 
 **アーキテクチャ図:** [`docs/architecture/architecture.html`](docs/architecture/architecture.html) — 単体ファイルで完結しており、ブラウザで開けます (英語版のみ)。
 
@@ -39,6 +54,16 @@ DriftScribe はどのワークロードにも共通する 4 つの不変条件 (
 - アクション: `no_op` / `docs_pr` / `upgrade_pr` / `escalation`。
 - ワーカー: `upgrade-reader` (lockfile + advisory の読み取り専用)、`upgrade-docs` (upgrade PR の作成)、加えて共有の `notifier`。
 - 書き込み経路に対する決定論的な post-LLM バリデータ: lockfile path の regex、`package_name` が現在の lockfile に存在すること、`target_version` が現在より新しいこと (ダウングレード不可)、バージョンジャンプが {patch, minor} のいずれかであること、`advisory_url` が `https://github.com/advisories/GHSA-...` の形であること。メジャーバンプはバリデータが拒否します — LLM 側にもメジャーは `escalation` に回すよう指示してあり、それを破った場合でもバリデータが fail-closed で防ぎます。
+- PR ライフサイクルのツール (`upgrade-close-pr`、`upgrade-merge-pr`) も備えており、エージェントは自分が開いた upgrade PR をクローズしたり、CI ゲート付きでマージしたりできます。`upgrade-docs` ワーカーは実行前に適格性を再検証します (driftscribe ラベル + `upgrade/` ブランチ + base が `main` + 必須チェックが green であること)。
+
+### Workload 3 & 4: インフラストラクチャ (読み取り + オーサリング)
+
+infrastructure-as-code を扱う 2 つの**チャット専用**ワークロードです (infra-IaC イニシアチブ):
+
+- **`explore`** (読み取り専用) — Cloud Asset Inventory (`infra-reader` ワーカー) によるプロジェクト全体のリソース調査に加えて、Cloud Run のライブ環境変数、ops コントラクト、依存パッケージの lockfile、開発者ドキュメントを参照します。**ミューテーションツールはゼロ** — すべてを読めて、何も変更できません (この読み取り専用保証は、ツール集合がミューテーション集合と交わらないことを検証するテストで保証されています)。
+- **`provision`** (インフラ編集) — チャットのリクエストから OpenTofu の変更を書き、`tofu-editor` ワーカー経由で **`iac/` のみを変更する PR を 1 つ**開きます (ワーカーは全ファイルを再検証: `iac/` プレフィックス、foundation 禁止、シークレット禁止、AGENT モードの静的ゲート)。ライブインフラには一切触れません。実際の `tofu apply` は**下流**の `tofu-apply` ワーカー (ライブインフラを変更できる唯一のサービス) が、プランに紐付いた HMAC 署名付きオペレーター承認の背後で実行します — チャットエージェントが直接呼び出すことはできない経路です。
+
+どちらもチャット専用です: `/recheck` はこの 2 つを拒否します (自律的な観測ソースがないため)。オペレーター UI は、判断タイムラインと並べてライブのインフラリソースマップ (管理下 vs ドリフト) を表示します。
 
 ## デモ
 
@@ -103,7 +128,7 @@ LLM 利用量レコードを含む) は 1 年間保持され、Logs Explorer か
 | 多層防御 (OS + ポリシー) | ✓ | ✗ | ✗ | partial | partial |
 | マルチクラウド対応 | ✗ (GCP のみ) | ✓ (Terraform-aware, multi) | ✓ | ✓ (AWS-primary) | ✗ (AWS) |
 | オープンソース | ✓ | ✓ | ✓ | ✓ | ✗ |
-| デプロイ形態 | Cloud Run (Phase 17 完了後: DriftScribe 7 サービス + デモターゲット 1) | Terraform | Plugin host | Lambda | Managed service |
+| デプロイ形態 | Cloud Run (DriftScribe 10 サービス + デモ 3 サービス) | Terraform | Plugin host | Lambda | Managed service |
 | 想定ユーザー | GCP 上の DevOps + SRE | IaC プラットフォームチーム | SQL に明るい運用者 | AWS 運用者 | AWS コンプライアンスチーム |
 
 DriftScribe はマルチクラウドの幅広さを犠牲にして、単一プラットフォーム上での多層防御を選びました。
@@ -112,32 +137,47 @@ DriftScribe はその中間に位置します: エージェントが提案し、
 
 ## リポジトリ構成
 
-- [`agent/`](agent/) — コーディネーターサービス (ADK エージェント、分類器、承認、認証、MCP アタッチ)
-- [`workloads/`](workloads/) — ワークロードごとのマニフェスト (drift、upgrade): システムプロンプト、コントラクト、アクション一覧
-- [`workers/`](workers/) — 実行専用のワーカーサービス: ワークロード別のワーカーセット (drift `reader` / `docs` / `rollback`、upgrade `upgrade-reader` / `upgrade-docs`) と共有の `notifier`
+- [`agent/`](agent/) — コーディネーターサービス (ADK エージェント、分類器、承認、認証、MCP アタッチ、IaC オーサリング)
+- [`workloads/`](workloads/) — ワークロードごとのマニフェスト (`drift`、`upgrade`、`explore`、`provision`): システムプロンプト、コントラクト、ツール/ワーカー/アクション一覧
+- [`workers/`](workers/) — 実行専用のワーカーサービス: ドリフト `reader` / `docs` / `rollback`、アップグレード `upgrade-reader` / `upgrade-docs`、インフラ `infra-reader` / `tofu-editor` / `tofu-apply`、加えて共有の `notifier`
+- [`driftscribe_lib/`](driftscribe_lib/) — 共有ライブラリ (構造化ログ + トレース ID、GitHub ヘルパー、HCL パーサー、プラン承認スキーマ)
+- [`iac/`](iac/) — エージェントが読み、書く OpenTofu (このデモ自身のインフラ)
+- [`frontend/`](frontend/) — オペレーター UI (Svelte + Vite SPA、`/` で配信)
 - [`demo/`](demo/) — `payment-demo` ドリフトターゲット + ops コントラクト、`upgrade-target` の npm lockfile (ピン留め)
-- [`docs/architecture/`](docs/architecture/) — 図、マルチエージェント設計、IAM マトリクス
-- [`docs/runbooks/`](docs/runbooks/) — デプロイ + 運用手順
-- [`docs/plans/`](docs/plans/) — フェーズ別の実装計画
+- [`docs/`](docs/) — [`OVERVIEW.md`](docs/OVERVIEW.md) (まずはここから)、`architecture/`、`runbooks/`、`plans/`
 - [`scripts/`](scripts/) — デモランナー
 - [`infra/`](infra/) — Cloud Build + smoke テスト
 - [`tests/`](tests/) — ユニット + 統合テストスイート
 
 ## ステータス
 
-Phase 20 (アサーション付き E2E スイート — ドリフトは `/recheck` 経由、
-アップグレードは GitHub ブランチ観測経由、HITL は明示的なリビジョン
-キャプチャを伴う form-POST フロー、UI は安定した `data-testid` セレクタ上の
-Playwright — 専用の `driftscribe-e2e` GCP プロジェクトで WIF +
-Required-reviewer ゲートのもとに実行) 完了。Phase 19.B (透明性 UI)、
-Phase 18.A (Cloud Logging 365 日保持)、Phase 17 (マルチエージェント
-フレームワーク) の上に積まれています。ハッカソンの提出締切は 2026-07-10。
-最新の実装計画:
-[`docs/plans/2026-05-24-driftscribe-phase20-e2e-testing.md`](docs/plans/2026-05-24-driftscribe-phase20-e2e-testing.md)。
+ハッカソンの MVP を超えて作り込みが進んでいます。Phase 17 のマルチエージェント
+フレームワークの上に、2 つのイニシアチブが載っています:
 
+- **Infra-IaC エージェント** — プロジェクト全体のインベントリリーダー
+  (`infra-reader`、Cloud Asset Inventory)、`tofu-editor` ワーカーによる
+  エージェント主導の OpenTofu オーサリング、そしてプランに紐付いた HMAC 署名付き
+  承認の背後にあるゲート付き `tofu-apply` ワーカー (ライブインフラを変更できる
+  唯一のサービス)。`explore` と `provision` ワークロードが読み取り側と
+  オーサリング側を公開します。DriftScribe はこのパイプライン
+  (author → approve → apply) を自分自身で駆動して、チェックアウトデモ
+  (`storefront` + `orders-worker`) をプロビジョニングしました。
+- **オペレーター UI** — Svelte + Vite SPA として再構築され、サイトルート `/` で
+  配信されます (オペレータートークンが必要)。ライブのインフラリソースマップ
+  (管理下 vs ドリフト) と、判断ごとのトレース + 環境差分ビューを備えます。
+
+この土台は Phase 20 (アサーション付き E2E スイート — ドリフトは `/recheck` 経由、
+アップグレードは GitHub ブランチ観測経由、HITL は明示的なリビジョンキャプチャを
+伴う form-POST フロー、UI は安定した `data-testid` セレクタ上の Playwright —
+専用の `driftscribe-e2e` GCP プロジェクトで WIF + Required-reviewer ゲートの
+もとに実行)、Phase 19.B (透明性 UI)、Phase 18.A (Cloud Logging 365 日保持)、
+Phase 17 (マルチエージェントフレームワーク) です。ハッカソンの提出締切は
+2026-07-10。
+
+実装計画は [`docs/plans/`](docs/plans/) にあります (日付つき、新しいものが後ろ)。
 E2E ランブック: [`docs/runbooks/e2e-environment.md`](docs/runbooks/e2e-environment.md)
 (プロジェクト + シークレット + cloudbuild) と
 [`docs/runbooks/e2e-ci.md`](docs/runbooks/e2e-ci.md)
 (WIF + GitHub Environment)。
 
-透明性 UI: コーディネーターのルート `/` (オペレータートークンが必要)。ウォークスルーは [`docs/demo-script.ja.md`](docs/demo-script.ja.md#透明性-ui-ウォークスルー) を参照。
+オペレーター UI: `/` (コーディネーターのルート; オペレータートークンが必要)。ウォークスルーは [`docs/demo-script.ja.md`](docs/demo-script.ja.md#透明性-ui-ウォークスルー) を参照。
