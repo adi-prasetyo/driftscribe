@@ -15,6 +15,7 @@ import pytest
 
 from driftscribe_lib.adopt_recipe import (
     AdoptRecipeError,
+    FINAL_REFUSAL_MARKER,
     _ID_SHAPES,
     _RTYPE_TO_ASSET_TYPE,
     render_adoption,
@@ -731,7 +732,7 @@ class TestControlPlaneRefusal:
         assert "cannot be adopted" in msg
         assert "denylist" in msg
         # Explicitly NOT parameter feedback — the model must not retry.
-        assert "not a parameter problem" in msg
+        assert msg.endswith(FINAL_REFUSAL_MARKER)
 
     def test_state_bucket_suffix_also_rejected(self):
         with pytest.raises(AdoptRecipeError):
@@ -753,7 +754,7 @@ class TestControlPlaneRefusal:
             )
         msg = str(ei.value)
         assert "cannot be adopted" in msg
-        assert "not a parameter problem" in msg
+        assert msg.endswith(FINAL_REFUSAL_MARKER)
 
     def test_topic_named_like_a_service_still_renders(self):
         # Type-scoped, exactly like the denylist: no control-plane Pub/Sub

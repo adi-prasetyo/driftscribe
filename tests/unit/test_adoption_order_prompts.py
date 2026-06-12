@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from driftscribe_lib.adopt_recipe import FINAL_REFUSAL_MARKER
 from driftscribe_lib.infra_graph import (
     ADOPTION_CONTROL_PLANE_NOTE,
     ADOPTION_ORDER_HONESTY,
@@ -39,3 +40,13 @@ def test_prompt_carries_the_honesty_note(workload):
 def test_prompt_carries_the_control_plane_note(workload):
     text = _normalized(WORKLOADS / workload / "system_prompt.md")
     assert " ".join(ADOPTION_CONTROL_PLANE_NOTE.split()) in text
+
+
+def test_provision_prompt_quotes_the_final_refusal_marker():
+    """PR #108 papercut: the prompt's "rejected = parameter feedback,
+    call again" bullet contradicted the control-plane refusals whose
+    reason says do-not-retry. The bullet now quotes the exact marker
+    sentence; this pin keeps the quote and the lib constant in sync.
+    """
+    text = _normalized(WORKLOADS / "provision" / "system_prompt.md")
+    assert " ".join(FINAL_REFUSAL_MARKER.split()) in text
