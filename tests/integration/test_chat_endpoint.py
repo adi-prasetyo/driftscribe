@@ -160,3 +160,58 @@ def test_chat_requires_prompt_field(monkeypatch) -> None:
     client = TestClient(app)
     r = client.post("/chat", json={})
     assert r.status_code == 422
+
+
+def test_chat_rejects_oversized_prompt_with_422(monkeypatch) -> None:
+    """Hackathon A.4 cost rail: ``prompt`` is capped at 8000 chars so a
+    deliberately huge body 422s in validation, before any run starts or
+    any model call is made. The error names the field."""
+    monkeypatch.setenv("USE_ADK", "true")
+    get_settings.cache_clear()
+
+    fake = AsyncMock()
+    with patch("agent.adk_agent.run_chat", fake):
+        client = TestClient(app)
+        r = client.post(
+            "/chat",
+            json={"prompt": "x" * 8001, "workload": "drift"},
+        )
+
+    assert r.status_code == 422
+    locs = [tuple(err["loc"]) for err in r.json()["detail"]]
+    assert ("body", "prompt") in locs
+    fake.assert_not_awaited()
+
+
+def test_chat_accepts_prompt_at_cap(monkeypatch) -> None:
+    """Boundary: exactly 8000 chars passes validation — the cap bounds
+    abuse, it must not clip honest long prompts a character early."""
+    monkeypatch.setenv("USE_ADK", "true")
+    get_settings.cache_clear()
+
+    fake = AsyncMock(
+        return_value={"reply": "ok", "tool_calls": [], "session_id": "s-1"}
+    )
+    with patch("agent.adk_agent.run_chat", fake):
+        client = TestClient(app)
+        r = client.post(
+            "/chat",
+            json={"prompt": "x" * 8000, "workload": "drift"},
+        )
+
+    assert r.status_code == 200, r.text
+
+
+def test_chat_rejects_oversized_session_id_with_422(monkeypatch) -> None:
+    """``session_id`` is an opaque UUID-sized id; its 128-char cap is the
+    same A.4 rail (no other field may smuggle an unbounded payload)."""
+    monkeypatch.setenv("USE_ADK", "true")
+    get_settings.cache_clear()
+    client = TestClient(app)
+    r = client.post(
+        "/chat",
+        json={"prompt": "hi", "workload": "drift", "session_id": "s" * 129},
+    )
+    assert r.status_code == 422
+    locs = [tuple(err["loc"]) for err in r.json()["detail"]]
+    assert ("body", "session_id") in locs

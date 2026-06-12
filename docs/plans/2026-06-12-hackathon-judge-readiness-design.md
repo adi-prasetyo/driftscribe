@@ -172,6 +172,36 @@ form token is minted for anonymous viewers. CF Access unconfigured
 - GCP billing alert + Gemini spend sanity check; the pause button is the
   operator kill-switch (and stays operator-only).
 
+**Implemented (A.4, 2026-06-12):**
+
+- *Rate limit:* a Workers Rate Limiting binding (`CHAT_RATE_LIMIT`,
+  5 requests / 60 s / IP, `wrangler.toml`) rather than a zone WAF rule —
+  the free-plan zone rule offers one rule with 10 s windows and would
+  throttle the operator too. The Worker consults the limiter only on the
+  anonymous demo-mode `POST /chat` token-injection path, *before*
+  granting the token: operators with a CF JWT are never throttled, the
+  cheap read routes stay unthrottled, and outside the window CF Access
+  gates everything anyway. Exceeding it returns 429 + `Retry-After: 60`
+  with a JSON `detail`; the SPA renders a friendly "wait a moment"
+  message. Keyed on `CF-Connecting-IP` (set by Cloudflare, not
+  spoofable). Fail-open on binding absence or limiter outage — it is an
+  abuse rail, not an auth boundary; the limiter is per-colo and
+  approximate, which is fine for that job. Direct `run.app` traffic
+  bypasses the Worker but carries no demo token, so anonymous `/chat`
+  401s there.
+- *Prompt cap:* `ChatRequest.prompt` capped at 8000 chars (~2k tokens —
+  a pasted log or diff fits; only a deliberately huge body 422s, in
+  validation before any run starts). `session_id` capped at 128
+  belt-and-braces so no other field can smuggle an unbounded payload.
+- *Billing alert:* already existed — budget "driftscribe-hack-2026
+  monthly alert" on the billing account, ¥2000/month scoped to this
+  project, 50/90/100% current-spend thresholds, default notifications
+  (billing-admin email).
+- *Gemini spend:* the coordinator runs Gemini via Vertex AI
+  (`GOOGLE_GENAI_USE_VERTEXAI=true`), so model spend bills this project
+  and the budget covers it. June month-to-date (checked 6/12): 91
+  Vertex requests, 325k input + 29k output tokens — well under ¥150.
+
 ## Work items
 
 ### A. Access window (implement in June — staging + smoke well before the

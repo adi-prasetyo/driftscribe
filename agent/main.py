@@ -4356,10 +4356,18 @@ class ChatRequest(BaseModel):
     body runs. The SPA always sends workload (App.svelte); /recheck and
     /eventarc keep their own documented drift defaults — those are
     autonomous surfaces, not this one.
+
+    Hackathon A.4 added the length caps — cost rails for the anonymous
+    judging window. ``prompt`` is bounded far above honest chat use (a
+    pasted log or diff fits; ~2k tokens of model input) so the only thing
+    the cap ever rejects is a deliberately huge body, before it reaches
+    Gemini. ``session_id`` is an opaque id (UUID-sized in practice), so
+    its cap is tighter. Validation runs before the handler body, so an
+    over-cap request never starts a run.
     """
 
-    prompt: str
-    session_id: str | None = None
+    prompt: str = Field(max_length=8000)
+    session_id: str | None = Field(default=None, max_length=128)
     workload: Literal["drift", "upgrade", "explore", "provision"]
 
     model_config = ConfigDict(extra="forbid")

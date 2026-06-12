@@ -234,7 +234,12 @@
 
       if (!resp.ok) {
         status = 'error';
-        finalReply = `Request failed (${resp.status}).`;
+        // 429 comes from the demo-window per-IP rate limiter (CF Worker);
+        // judges should see "wait", not a bare status code.
+        finalReply =
+          resp.status === 429
+            ? 'Rate limit reached — the demo allows a few chat runs per minute per visitor. Please wait a moment and try again.'
+            : `Request failed (${resp.status}).`;
         finalIsError = true;
         return;
       }
