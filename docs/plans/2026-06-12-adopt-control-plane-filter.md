@@ -4,7 +4,7 @@
 
 **Goal:** Stop every adoption surface (panel adopt list, Start-here pick, onboarding-tour step 4, chat) from suggesting or accepting DriftScribe's OWN control-plane resources — whose adoption the denylist is guaranteed to refuse — by flagging those nodes server-side with the denylist's own identity constants and refusing them deterministically at the adoption-tool boundary.
 
-**Architecture:** `build_graph` adds an additive, only-when-true `control_plane: true` flag to nodes whose (asset type, name) matches a denylist control-plane identity rule; the three client adopt surfaces suppress the CTA for flagged nodes with an honest note; `render_adoption` (the single choke point both `propose_adoption_tool` and the fanout path go through) rejects control-plane identities with an honest reason; the two workload prompts gain a pinned canonical sentence. No denylist change, no inventory change — coordinator rebake only.
+**Architecture:** `build_graph` adds an additive, only-when-true `control_plane: true` flag to nodes whose (asset type, name) matches a denylist control-plane identity rule; the three client adopt surfaces suppress the CTA for flagged nodes with an honest note; `render_adoption` (the single choke point — the fanout path entry-delegates adoption to the same `propose_adoption_tool` path) rejects control-plane identities with an honest reason; the two workload prompts gain a pinned canonical sentence. No denylist change, no inventory change — coordinator rebake only.
 
 **Tech Stack:** Python (driftscribe_lib + pytest), TypeScript/Svelte 5 (vitest + @testing-library/svelte), static prompt .md files with lib-pinned copy.
 
@@ -23,7 +23,7 @@ This is worse than an odd ranking. The denylist **hard-refuses importing control
 3. **Parity-by-construction.** The flag is computed from the denylist's own public constants (`CONTROL_PLANE_BUCKET_SUFFIXES`, `CONTROL_PLANE_SERVICE_NAMES`) with the same matching semantics as the rules (`str.endswith(suffixes)` == `_is_protected_bucket_name`; name-in-set == `_check_control_plane_service`). A parity test drives `build_graph` and `evaluate` with the same identity and asserts flag ⟺ blocked. Only Bucket and Run Service get matchers — **Pub/Sub has no control-plane identity rule**, so its nodes are never flagged (their import is admitted; flagging them would be the dishonest direction).
 4. **Failure direction is safe.** A stale coordinator response without the field → the button shows → C2 still blocks the plan (annoying, never dangerous). A name the constants miss → same. A false positive is impossible without the denylist also refusing that identity (same constants, same semantics).
 5. **Safety framing is CORRECT here.** Item 10's rule (confidence-framing, never safety) governs the adoption-ORDER copy. This note states what the always-on gate actually does — like the capability card's rule descriptions, it is a gate fact, and tests pin it as such. **Precision (Codex 019eb932 MF1):** the denylist refuses plans that would CHANGE OR IMPORT a control-plane identity — a plain no-op row on one passes (`noop_control_plane_service_pass` fixture). All new copy says "change or import", never "any plan that touches".
-6. **Deterministic tool-boundary refusal (Codex 019eb932 MF2).** Prompts alone don't guarantee chat refuses: `provision_propose_adoption` would happily render the recipe and the refusal would only land at C2, after a PR exists. `render_adoption` in `driftscribe_lib/adopt_recipe.py` is the single choke point (both `agent/adk_tools.py:propose_adoption_tool` AND the `agent/fanout.py` coordinator-direct path go through it — the item-11 fanout-bypass lesson) and already maps `AdoptRecipeError` → an honest `{"status": "rejected", "reason": …}`. A control-plane identity check there, using the same constants, makes the refusal immediate and reliable. The rejection reason must be explicit that this is NOT parameter feedback (the tool docstring tells the model rejections are retryable parameter problems — that sentence gets amended too).
+6. **Deterministic tool-boundary refusal (Codex 019eb932 MF2).** Prompts alone don't guarantee chat refuses: `provision_propose_adoption` would happily render the recipe and the refusal would only land at C2, after a PR exists. `render_adoption` in `driftscribe_lib/adopt_recipe.py` is the single choke point (adoption is routed to the single-agent `provision_propose_adoption` path — fanout entry-delegates rather than calling the editor directly, the item-11 lesson — and that path calls `render_adoption`) and already maps `AdoptRecipeError` → an honest `{"status": "rejected", "reason": …}`. A control-plane identity check there, using the same constants, makes the refusal immediate and reliable. The rejection reason must be explicit that this is NOT parameter feedback (the tool docstring tells the model rejections are retryable parameter problems — that sentence gets amended too).
 7. **No denylist / inventory / worker changes.** `infra_graph.py` and `adopt_recipe.py` already live in `driftscribe_lib` and (with their consumers) ship in the coordinator image; `adopt_recipe`'s consumers are `agent/adk_tools.py` + `agent/fanout.py` only. **Coordinator rebake only** — no tofu-editor, tofu-apply, or infra-reader rebake.
 
 ## 3. Out of scope
@@ -417,7 +417,7 @@ git commit -m "feat(prompts): pin control-plane adoption refusal into explore + 
 
 ### Task 3: deterministic tool-boundary refusal (Codex 019eb932 MF2)
 
-Prompts instruct, but only the tool can guarantee: `render_adoption` is the single choke point both `propose_adoption_tool` (agent/adk_tools.py) and the provision fanout path (agent/fanout.py) go through, and `AdoptRecipeError` already becomes `{"status": "rejected", "reason": str(exc)}` (adk_tools.py:865-866). Reject control-plane identities there, with a reason that is explicitly NOT parameter feedback.
+Prompts instruct, but only the tool can guarantee: `render_adoption` is the single choke point: `propose_adoption_tool` (agent/adk_tools.py) calls it, and the provision fanout path entry-delegates adoption to that same single-agent path. And `AdoptRecipeError` already becomes `{"status": "rejected", "reason": str(exc)}` (adk_tools.py:865-866). Reject control-plane identities there, with a reason that is explicitly NOT parameter feedback.
 
 **Files:**
 - Modify: `driftscribe_lib/adopt_recipe.py`
@@ -613,7 +613,7 @@ Expected: FAIL — `controlPlane` missing from rows / TS error on `control_plane
   /**
    * Server-marked: DriftScribe's own control-plane infrastructure (its Cloud
    * Run services / the -tofu-state and -tofu-artifacts buckets). The
-   * always-on denylist refuses any plan touching it — imports included — so
+   * always-on denylist refuses any plan that would change or import it, so
    * adopt surfaces suppress the CTA. Optional + fail-safe: a stale
    * coordinator response without the field shows the button and C2 still
    * blocks the plan.
@@ -629,7 +629,7 @@ export interface AdoptRow {
   groupLabel: string;
   nodeLabel: string;
   adoptable: boolean;
-  /** DriftScribe's own infrastructure — denylist-refused, so never adoptable. */
+  /** IaC control-plane infrastructure — denylist-refused, so never adoptable. */
   controlPlane: boolean;
   /** Chat prefill — composed ONLY for adoptable rows, else ''. */
   prefill: string;
