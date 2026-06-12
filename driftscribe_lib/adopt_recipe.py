@@ -21,6 +21,7 @@ __all__ = [
     "AdoptRecipeError",
     "AdoptRendering",
     "ADOPT_KINDS",
+    "FINAL_REFUSAL_MARKER",
     "render_adoption",
     "find_import_violations",
     "preflight_conflicts",
@@ -40,6 +41,13 @@ _HUMAN: dict[str, str] = {
     "google_pubsub_subscription": "Pub/Sub subscription",
     "google_cloud_run_v2_service": "Cloud Run service",
 }
+
+# The terminal sentence of every tool-boundary refusal that is FINAL —
+# i.e. NOT retryable parameter feedback. The provision system prompt
+# quotes this sentence verbatim so the model can classify a rejected
+# result by its reason text; tests/unit/test_adoption_order_prompts.py
+# pins the duplication in both directions.
+FINAL_REFUSAL_MARKER = "This is not a parameter problem — do not retry."
 
 # Friendly-name canonicalization for the LLM-facing ``resource_type`` param.
 # Live e2e (2026-06-11) showed the model passing the HUMAN name ("Cloud
@@ -211,7 +219,7 @@ def _reject_control_plane(resource_type: str, name: str) -> None:
             f"{name!r} cannot be adopted: bucket names ending in -tofu-state "
             "or -tofu-artifacts are IaC control-plane infrastructure, and "
             "the always-on denylist refuses any plan that would change or "
-            "import them. This is not a parameter problem — do not retry."
+            f"import them. {FINAL_REFUSAL_MARKER}"
         )
     if (
         resource_type == "google_cloud_run_v2_service"
@@ -220,8 +228,7 @@ def _reject_control_plane(resource_type: str, name: str) -> None:
         raise AdoptRecipeError(
             f"{name!r} cannot be adopted: it is one of DriftScribe's own "
             "control-plane services, and the always-on denylist refuses any "
-            "plan that would change or import it. This is not a parameter "
-            "problem — do not retry."
+            f"plan that would change or import it. {FINAL_REFUSAL_MARKER}"
         )
 
 
