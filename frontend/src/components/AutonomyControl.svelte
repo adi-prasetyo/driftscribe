@@ -8,9 +8,12 @@
   // Visual: ds-* token palette only; Observe segment is NOT styled as a warning —
   // modes are operator choices, not alarms.
 
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
+  import { slide } from 'svelte/transition';
   import { AUTONOMY_MODES, MODE_LABELS, MODE_BLURBS, parseAutonomyDoc } from '../lib/autonomy';
   import type { AutonomyDoc, AutonomyMode } from '../lib/autonomy';
+  import { motionMs } from '../lib/motion';
+  import Icon from './Icon.svelte';
 
   let {
     call,
@@ -39,6 +42,25 @@
 
   // Monotonic seq guard — mirrors PauseControl exactly.
   let seq = 0;
+
+  // --------------------------------------------------------------------------
+  // Sliding pill state
+  // --------------------------------------------------------------------------
+
+  // Per-segment element refs (indexed by AUTONOMY_MODES order)
+  let segmentEls = $state<(HTMLElement | null)[]>([null, null, null]);
+  let containerEl = $state<HTMLElement | null>(null);
+
+  // Pill geometry (in px)
+  let pillLeft = $state(0);
+  let pillWidth = $state(0);
+  // Whether we have a valid nonzero measurement — gates the --measured class
+  let pillMeasured = $state(false);
+  // Whether the first measurement has been placed (gates the CSS transition)
+  let pillReady = $state(false);
+  // Pending first-measurement rAF — component-scoped so the $effect cleanup
+  // can actually cancel it (measurePill runs outside the effect closure).
+  let pillRafId: number | undefined;
 
   // --------------------------------------------------------------------------
   // Fetch
@@ -90,6 +112,76 @@
   onMount(() => {
     void fetchAutonomy();
   });
+
+  // --------------------------------------------------------------------------
+  // Sliding pill: measurement effect
+  // --------------------------------------------------------------------------
+  // Must read BOTH stateKind AND currentMode as reactive deps:
+  //   - currentMode defaults to 'propose_apply'; if the GET returns that same
+  //     value, the state never changes and an effect keyed only on currentMode
+  //     fires once against the loading branch (no segment DOM) and never again.
+  //   - By tracking stateKind we re-fire when the loaded branch mounts its DOM.
+  // The callback is synchronous: reads deps, kicks tick().then(...) internally.
+
+  $effect(() => {
+    // Read both reactive deps unconditionally so Svelte tracks them.
+    const kind = stateKind;
+    const mode = currentMode;
+
+    let cancelled = false;
+    let ro: { disconnect(): void } | undefined;
+
+    if (kind === 'loaded') {
+      tick().then(() => {
+        if (cancelled) return;
+        measurePill();
+
+        // Re-measure on container resize — guarded: jsdom has no ResizeObserver.
+        if (typeof ResizeObserver !== 'undefined' && containerEl) {
+          const observer = new ResizeObserver(() => {
+            if (!cancelled) measurePill();
+          });
+          observer.observe(containerEl);
+          ro = observer;
+        }
+      });
+    }
+
+    // Synchronous cleanup.
+    return () => {
+      cancelled = true;
+      if (pillRafId !== undefined) {
+        cancelAnimationFrame(pillRafId);
+        pillRafId = undefined;
+      }
+      ro?.disconnect();
+      ro = undefined;
+    };
+  });
+
+  function measurePill(): void {
+    const modeIndex = AUTONOMY_MODES.indexOf(currentMode);
+    const el = modeIndex >= 0 ? segmentEls[modeIndex] : null;
+    if (!el) return;
+
+    const left = el.offsetLeft;
+    const width = el.offsetWidth;
+    if (width > 0) {
+      pillLeft = left;
+      pillWidth = width;
+      pillMeasured = true;
+      // Enable transition only after the first valid measurement (no first-paint slide).
+      if (!pillReady && pillRafId === undefined) {
+        // Use rAF so the initial position is committed before transition kicks
+        // in. The === undefined guard prevents a resize-triggered re-measure
+        // from overwriting (and thereby leaking) an already-pending rAF.
+        pillRafId = requestAnimationFrame(() => {
+          pillRafId = undefined;
+          pillReady = true;
+        });
+      }
+    }
+  }
 
   // --------------------------------------------------------------------------
   // Segment click → arm confirm row
@@ -211,6 +303,13 @@
   }
 
   const confirmLabel = $derived(saving ? 'Saving…' : 'Confirm');
+
+  // Mode → icon mapping
+  const MODE_ICONS = {
+    observe: 'eye',
+    propose: 'git-pull-request',
+    propose_apply: 'zap',
+  } as const;
 </script>
 
 <div
@@ -238,17 +337,33 @@
   {:else if stateKind === 'loaded'}
     <div class="autonomy-card autonomy-card--loaded">
       <!-- Three-segment control -->
-      <div class="autonomy-segments" role="group" aria-label="Autonomy mode">
-        {#each AUTONOMY_MODES as mode (mode)}
+      <div
+        class="autonomy-segments"
+        class:autonomy-segments--measured={pillMeasured}
+        role="group"
+        aria-label="Autonomy mode"
+        bind:this={containerEl}
+      >
+        <!-- Sliding active pill (decorative, aria-hidden) -->
+        <div
+          class="autonomy-segments__pill"
+          class:autonomy-segments__pill--ready={pillReady}
+          aria-hidden="true"
+          style="transform: translateX({pillLeft}px); width: {pillWidth}px;"
+        ></div>
+
+        {#each AUTONOMY_MODES as mode, i (mode)}
           <button
             class="autonomy-segment"
             class:autonomy-segment--active={mode === currentMode}
+            class:autonomy-segment--armed={confirming && pendingMode === mode}
             type="button"
             data-testid="autonomy-mode-{mode}"
             aria-pressed={mode === currentMode ? 'true' : 'false'}
             disabled={saving}
             onclick={() => onSegmentClick(mode)}
-          >{MODE_LABELS[mode]}</button>
+            bind:this={segmentEls[i]}
+          ><Icon name={MODE_ICONS[mode]} size={14} />{MODE_LABELS[mode]}</button>
         {/each}
       </div>
 
@@ -278,7 +393,7 @@
 
       <!-- Confirm row (appears when a different segment is clicked) -->
       {#if confirming && pendingMode}
-        <div class="autonomy-confirm-row">
+        <div class="autonomy-confirm-row" transition:slide={{ duration: motionMs(200) }}>
           <p class="autonomy-confirm-hint">
             Switch to <strong>{MODE_LABELS[pendingMode]}</strong>? {MODE_BLURBS[pendingMode]}
           </p>
@@ -300,14 +415,14 @@
               data-testid="autonomy-confirm"
               onclick={() => void onConfirm()}
               disabled={saving}
-            >{confirmLabel}</button>
+            ><Icon name="check" size={14} />{confirmLabel}</button>
             <button
               class="ds-btn ds-btn--ghost autonomy-cancel-btn"
               type="button"
               data-testid="autonomy-cancel"
               onclick={onCancel}
               disabled={saving}
-            >Cancel</button>
+            ><Icon name="x" size={14} />Cancel</button>
           </div>
         </div>
       {/if}
@@ -330,8 +445,9 @@
     flex-direction: column;
     gap: var(--ds-sp-3);
     padding: var(--ds-sp-3) var(--ds-sp-4);
-    border-radius: var(--ds-radius-sm);
+    border-radius: var(--ds-radius);
     border: 1px solid var(--ds-border);
+    box-shadow: var(--ds-shadow-sm);
   }
 
   .autonomy-card--loaded {
@@ -372,6 +488,26 @@
     border-radius: var(--ds-radius-sm);
     overflow: hidden;
     width: fit-content;
+    position: relative;
+  }
+
+  /* Sliding active pill — positioned behind the segment buttons */
+  .autonomy-segments__pill {
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 100%;
+    background: var(--ds-stream-surface);
+    border-radius: inherit;
+    z-index: 0;
+    /* Transition is opt-in: added only after first measurement via --ready class */
+    pointer-events: none;
+  }
+
+  .autonomy-segments__pill--ready {
+    transition:
+      transform var(--ds-dur) var(--ds-ease),
+      width var(--ds-dur) var(--ds-ease);
   }
 
   .autonomy-segment {
@@ -384,6 +520,11 @@
     color: var(--ds-muted);
     cursor: pointer;
     border-right: 1px solid var(--ds-border-strong);
+    position: relative;
+    z-index: 1;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35em;
     transition:
       background-color var(--ds-dur-fast) var(--ds-ease),
       color var(--ds-dur-fast) var(--ds-ease);
@@ -396,6 +537,29 @@
   /* Active mode — neutral/calm emphasis, NOT warn/danger */
   .autonomy-segment--active {
     background: var(--ds-stream-surface);
+    color: var(--ds-stream-ink);
+  }
+
+  /*
+   * When the pill has valid nonzero geometry (--measured class on container),
+   * let the pill carry the active highlight; make the active segment bg transparent.
+   * Measurement failure (jsdom, edge cases) falls back to the solid active style above.
+   */
+  .autonomy-segments--measured .autonomy-segment--active {
+    background: transparent;
+    color: var(--ds-stream-ink);
+  }
+
+  /* Armed state: segment was clicked but not yet confirmed */
+  .autonomy-segment--armed {
+    box-shadow: inset 0 0 0 1px var(--ds-stream);
+    background: color-mix(in srgb, var(--ds-stream-surface) 60%, transparent);
+    color: var(--ds-stream-ink);
+  }
+
+  /* Armed takes precedence over measured-transparent-active */
+  .autonomy-segments--measured .autonomy-segment--armed {
+    background: color-mix(in srgb, var(--ds-stream-surface) 60%, transparent);
     color: var(--ds-stream-ink);
   }
 
@@ -451,6 +615,7 @@
     display: flex;
     flex-direction: column;
     gap: var(--ds-sp-2);
+    overflow: hidden;
   }
 
   .autonomy-confirm-hint {

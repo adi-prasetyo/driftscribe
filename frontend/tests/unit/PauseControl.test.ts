@@ -106,11 +106,12 @@ describe('PauseControl', () => {
     });
 
     // Exact-string pin (mutation detection): the pause-state element renders
-    // the FULL banner copy as a single text node — not substring-soup.
+    // the FULL banner copy. The ⏸ glyph was replaced by an aria-hidden SVG
+    // icon that contributes no textContent — the string starts with the prose.
     await waitFor(() => {
       const state = getByTestId('pause-state');
-      expect(state.textContent).toBe(
-        '⏸ DriftScribe is paused — no new agent activity will start.',
+      expect(state.textContent?.trim()).toBe(
+        'DriftScribe is paused — no new agent activity will start.',
       );
     });
 

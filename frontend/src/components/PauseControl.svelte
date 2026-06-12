@@ -13,6 +13,9 @@
   // across {#if} boundaries).
 
   import { onMount } from 'svelte';
+  import { slide } from 'svelte/transition';
+  import { motionMs } from '../lib/motion';
+  import Icon from './Icon.svelte';
 
   let {
     call,
@@ -276,12 +279,12 @@
             type="button"
             data-testid="pause-toggle"
             onclick={onToggle}
-          >{toggleLabel}</button>
+          ><Icon name="pause" size={14} />{toggleLabel}</button>
         {/if}
       </div>
 
       {#if confirming}
-        <div class="pause-confirm-row">
+        <div class="pause-confirm-row" transition:slide={{ duration: motionMs(200) }}>
           <p class="pause-confirm-hint">Pause all agent activity? New chats, rechecks, and approvals will be refused until you resume.</p>
           <div class="pause-confirm-actions">
             <label class="pause-reason-label" for="pause-reason-input">reason (optional)</label>
@@ -301,14 +304,14 @@
               data-testid="pause-confirm"
               onclick={() => void onConfirm()}
               disabled={saving}
-            >{confirmLabel}</button>
+            ><Icon name="check" size={14} />{confirmLabel}</button>
             <button
               class="ds-btn ds-btn--ghost pause-cancel-btn"
               type="button"
               data-testid="pause-cancel"
               onclick={onCancel}
               disabled={saving}
-            >Cancel</button>
+            ><Icon name="x" size={14} />Cancel</button>
           </div>
         </div>
       {/if}
@@ -322,17 +325,18 @@
     <!-- Paused — prominent but calm full-width banner -->
     <div class="pause-card pause-card--paused" role="status" aria-live="polite">
       <div class="pause-row">
-        <!-- {' '} is the ONLY whitespace at the emoji seam (CapabilityCard
-             convention) — textContent stays exactly "⏸ DriftScribe is paused…"
-             (textContent ignores aria-hidden), which the exact-string test pins. -->
-        <span class="pause-state pause-state--paused" data-testid="pause-state"><span aria-hidden="true">⏸</span>{' '}DriftScribe is paused — no new agent activity will start.</span>
+        <!-- Icon is aria-hidden SVG — it contributes NO textContent.
+             Exact-string contract: pause-state textContent is
+             "DriftScribe is paused — no new agent activity will start."
+             (the ⏸ glyph was retired in favour of the decorative SVG icon). -->
+        <span class="pause-state pause-state--paused" data-testid="pause-state"><Icon name="pause" size={14} />DriftScribe is paused — no new agent activity will start.</span>
         {#if !confirming}
           <button
             class="ds-btn ds-btn--ghost pause-toggle"
             type="button"
             data-testid="pause-toggle"
             onclick={onToggle}
-          >{toggleLabel}</button>
+          ><Icon name="play" size={14} />{toggleLabel}</button>
         {/if}
       </div>
 
@@ -356,7 +360,7 @@
       </div>
 
       {#if confirming}
-        <div class="pause-confirm-row">
+        <div class="pause-confirm-row" transition:slide={{ duration: motionMs(200) }}>
           <p class="pause-confirm-hint">Resume agent activity? DriftScribe will be able to start new chats, rechecks, and approvals.</p>
           <div class="pause-confirm-actions">
             <button
@@ -365,14 +369,14 @@
               data-testid="pause-confirm"
               onclick={() => void onConfirm()}
               disabled={saving}
-            >{confirmLabel}</button>
+            ><Icon name="check" size={14} />{confirmLabel}</button>
             <button
               class="ds-btn ds-btn--ghost pause-cancel-btn"
               type="button"
               data-testid="pause-cancel"
               onclick={onCancel}
               disabled={saving}
-            >Cancel</button>
+            ><Icon name="x" size={14} />Cancel</button>
           </div>
         </div>
       {/if}
@@ -395,8 +399,9 @@
     flex-direction: column;
     gap: var(--ds-sp-3);
     padding: var(--ds-sp-3) var(--ds-sp-4);
-    border-radius: var(--ds-radius-sm);
+    border-radius: var(--ds-radius);
     border: 1px solid var(--ds-border);
+    box-shadow: var(--ds-shadow-sm);
   }
 
   .pause-card--running {
@@ -445,6 +450,10 @@
   }
   .pause-state--paused {
     font-weight: var(--ds-fw-bold);
+    /* The leading pause icon sits inline before the text — flex it apart. */
+    display: inline-flex;
+    align-items: center;
+    gap: var(--ds-sp-2);
   }
   .pause-state--unknown {
     color: var(--ds-muted);
@@ -502,6 +511,9 @@
     display: flex;
     flex-direction: column;
     gap: var(--ds-sp-2);
+    /* Matches .autonomy-confirm-row — slide injects this inline during the
+       animation; the rule keeps the collapsed state clip consistent. */
+    overflow: hidden;
   }
   .pause-confirm-hint {
     margin: 0;

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { groupRailDecisions, lifecycleSummaryLabel, hasAnomalousStep } from '../../src/lib/rail';
+import { groupRailDecisions, lifecycleSummaryLabel, hasAnomalousStep, railRowIcon } from '../../src/lib/rail';
 import type { Decision } from '../../src/lib/types';
 
 // Fixture shapes mirror live /decisions data (2026-06-10): newest-first,
@@ -137,5 +137,76 @@ describe('hasAnomalousStep', () => {
 
   it('empty list is calm', () => {
     expect(hasAnomalousStep([])).toBe(false);
+  });
+});
+
+describe('railRowIcon', () => {
+  // Fail-safe: null / undefined / empty → file-text
+  it('returns file-text for null', () => {
+    expect(railRowIcon(null)).toBe('file-text');
+  });
+  it('returns file-text for undefined', () => {
+    expect(railRowIcon(undefined)).toBe('file-text');
+  });
+  it('returns file-text for empty string', () => {
+    expect(railRowIcon('')).toBe('file-text');
+  });
+
+  // rollback branch
+  it('returns rotate-ccw for "rollback"', () => {
+    expect(railRowIcon('rollback')).toBe('rotate-ccw');
+  });
+  it('returns rotate-ccw for an action that contains "rollback" (e.g. "auto_rollback")', () => {
+    expect(railRowIcon('auto_rollback')).toBe('rotate-ccw');
+  });
+
+  // iac branch
+  it('returns git-merge for "iac_apply"', () => {
+    expect(railRowIcon('iac_apply')).toBe('git-merge');
+  });
+  it('returns git-merge for any action containing "iac"', () => {
+    expect(railRowIcon('check_iac')).toBe('git-merge');
+  });
+
+  // upgrade / pr branch
+  it('returns git-pull-request for "upgrade_pr"', () => {
+    expect(railRowIcon('upgrade_pr')).toBe('git-pull-request');
+  });
+  it('returns git-pull-request for "docs_pr" (contains "pr")', () => {
+    expect(railRowIcon('docs_pr')).toBe('git-pull-request');
+  });
+  it('returns git-pull-request for an action that contains "upgrade"', () => {
+    expect(railRowIcon('upgrade')).toBe('git-pull-request');
+  });
+
+  // issue / drift / report branch
+  it('returns alert-triangle for "drift_issue"', () => {
+    expect(railRowIcon('drift_issue')).toBe('alert-triangle');
+  });
+  it('returns alert-triangle for "escalation" (contains "issue" — no, but word "report"/"drift"?)', () => {
+    // "escalation" matches none of the keywords → file-text
+    expect(railRowIcon('escalation')).toBe('file-text');
+  });
+  it('returns alert-triangle for an action containing "drift"', () => {
+    expect(railRowIcon('drift')).toBe('alert-triangle');
+  });
+  it('returns alert-triangle for an action containing "report"', () => {
+    expect(railRowIcon('cost_report')).toBe('alert-triangle');
+  });
+  it('returns alert-triangle for an action containing "issue"', () => {
+    expect(railRowIcon('open_issue')).toBe('alert-triangle');
+  });
+
+  // rollback takes priority over pr (e.g. if action were "rollback_pr")
+  it('rollback keyword beats pr keyword (priority: first-match)', () => {
+    expect(railRowIcon('rollback_pr')).toBe('rotate-ccw');
+  });
+
+  // default fallback
+  it('returns file-text for an unrecognised action like "no_op"', () => {
+    expect(railRowIcon('no_op')).toBe('file-text');
+  });
+  it('returns file-text for "observe"', () => {
+    expect(railRowIcon('observe')).toBe('file-text');
   });
 });

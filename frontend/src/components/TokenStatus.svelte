@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { TokenState } from '../lib/api';
+  import Icon from './Icon.svelte';
 
   // Operator auth indicator (plan Appendix B). Renders #token-status as a
   // ds-pill whose label + variant map off the current TokenState, followed by a
@@ -25,7 +26,7 @@
 
 <span class="token-status">
   <span id="token-status" class={'ds-pill ' + variant.pillClass} aria-live="polite"
-    >{variant.label}</span
+    ><Icon name="key-round" size={12} />{variant.label}</span
   >
   <button id="change-token-btn" type="button" class="change-token" onclick={onChange}
     >change token</button

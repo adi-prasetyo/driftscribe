@@ -36,6 +36,7 @@
   import TourCard from './components/TourCard.svelte';
   import { tourDone, markTourDone, shouldOfferTour } from './lib/tour';
   import type { InfraGraph } from './lib/infra_graph';
+  import Icon from './components/Icon.svelte';
 
   // ---- state ----
   let tokenState = $state<TokenState>(getStoredToken() ? 'ok' : 'missing');
@@ -420,13 +421,18 @@
 </script>
 
 <header class="app-header">
-  <h1 class="app-title">DriftScribe <span class="app-title__sub">— the agent proposes, you approve</span></h1>
+  <div class="app-header__brand">
+    <span class="app-logo-mark" aria-hidden="true">
+      <Icon name="radar" size={16} extraClass="app-logo-mark__icon" />
+    </span>
+    <h1 class="app-title">DriftScribe <span class="app-title__sub">— the agent proposes, you approve</span></h1>
+  </div>
   <div class="app-header__actions">
     <button
       class="ds-btn ds-btn--ghost app-tour-btn"
       type="button"
       data-testid="tour-open"
-      onclick={startTour}>Tour</button
+      onclick={startTour}><Icon name="compass" size={14} />Tour</button
     >
     <TokenStatus state={tokenState} onChange={onChangeToken} />
   </div>
@@ -498,6 +504,26 @@
     padding: var(--ds-sp-3) var(--ds-sp-6);
     border-bottom: 1px solid var(--ds-border);
     background: var(--ds-surface);
+    box-shadow: var(--ds-shadow-sm);
+  }
+  .app-header__brand {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--ds-sp-3);
+  }
+  .app-logo-mark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    background: var(--ds-stream-surface);
+    color: var(--ds-stream-ink);
+    flex-shrink: 0;
+  }
+  .app-logo-mark :global(.app-logo-mark__icon) {
+    display: block;
   }
   .app-header__actions {
     display: inline-flex;
@@ -505,6 +531,9 @@
     gap: var(--ds-sp-3);
   }
   .app-tour-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--ds-sp-2);
     padding: 0.3em 0.85em;
     font-size: var(--ds-fs-1);
   }

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { WORKLOADS, type Workload, type ChatPrefill } from '../lib/workloads';
+  import Icon from './Icon.svelte';
 
   // The prompt composer. A single-row form: a growing prompt input, a compact
   // workload select, and a Send button. In historical mode the whole row is
@@ -85,7 +86,7 @@
     type="submit"
     {disabled}
   >
-    Send
+    <Icon name="send" size={14} />Send
   </button>
 </form>
 
@@ -169,6 +170,9 @@
 
   .chat-form__send {
     flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--ds-sp-2);
     background: var(--ds-stream);
     border-color: var(--ds-stream-ink);
     color: #fff;

@@ -1,6 +1,8 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import type { GroupKey } from '../lib/timeline';
+  import type { IconName } from '../lib/icons';
+  import Icon from './Icon.svelte';
 
   // One of the three top-level reasoning groups. MUST be a real <details> with
   // id="group-{key}" and a direct child <div class="events" data-group="{key}">
@@ -9,6 +11,7 @@
   let {
     key,
     title,
+    icon,
     count = 0,
     open = false,
     empty = false,
@@ -16,6 +19,8 @@
   }: {
     key: GroupKey;
     title: string;
+    /** Optional decorative icon rendered before the title. */
+    icon?: IconName;
     count?: number;
     open?: boolean;
     empty?: boolean;
@@ -25,7 +30,7 @@
 
 <details id={`group-${key}`} class="group" {open}>
   <summary class="group__summary">
-    <span class="group__title">{title}</span>
+    <span class="group__title">{#if icon}<Icon name={icon} size={14} extraClass="group__title-icon" />{/if}{title}</span>
     {#if count > 0}
       <span class="ds-pill ds-pill--muted group__count">{count}</span>
     {/if}
@@ -71,6 +76,12 @@
   }
   .group__title {
     flex: 1 1 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--ds-sp-2);
+  }
+  .group__title :global(.group__title-icon) {
+    color: var(--ds-muted);
   }
   .events {
     padding: var(--ds-sp-2) var(--ds-sp-4) var(--ds-sp-4);
