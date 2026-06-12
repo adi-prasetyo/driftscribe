@@ -46,6 +46,38 @@ for anonymous visitors.
 a Worker secret, behavior gated by a Worker env flag so the window is one
 config flip). The token never reaches the browser.
 
+**Implemented (A.3, 2026-06-12):** `infra/cloudflare/demo-window.sh
+<on|off|status>` — idempotent toggle for the bypass policy
+(`driftscribe-demo-bypass`, decision `bypass`, include Everyone) on the
+Access app gating the custom domain; same CF API token/patterns as
+`setup-access.sh`. Live-smoked 2026-06-12: window opened ~2 minutes with
+`DEMO_MODE="0"`, probed, closed, edge-verified shut. Findings and rails:
+
+- The policies API **rejects** a duplicate `precedence` and app-scoped
+  policies don't auto-shift, so the bypass is created without explicit
+  precedence and lands after the allowlist numerically — harmless:
+  Cloudflare evaluates Bypass-decision policies before Allow ones
+  regardless of precedence (confirmed live — anonymous `/` served 200
+  with the allowlist still at precedence 1).
+- Safety rails (Codex plan review): `on` refuses a same-named policy
+  whose shape isn't exactly `{bypass, Everyone}`; name lookups fail on
+  duplicates rather than guessing; any *foreign* bypass-decision policy
+  raises a warning (bypass evaluates first, so an unexpected one
+  un-gates the host on its own); both flips edge-verify with an
+  anonymous cache-busted probe loop (~30 s) — `off` does not trust the
+  DELETE alone, it waits for the Access redirect to return and fails
+  loudly otherwise.
+- Probes report three states: **closed** (`/` 302 to the team domain),
+  **half-open** (`/` 200 but `/decisions` 401 — bypass live, Worker not
+  injecting; loud warning naming the missing `DEMO_MODE="1"` deploy),
+  **open** (`/decisions` 200). Half-open detection catches the flip-day
+  mistake of opening the edge without the demo-mode deploy.
+- Smoke caveat (Codex wording fix): during a bypass interval with
+  `DEMO_MODE="0"` the Worker is a passthrough and does not strip a
+  browser-supplied operator token, so a caller who already knows the
+  static token can use it via the hostname — identical exposure to the
+  public `run.app` URL, not a new one.
+
 Worker hardening (Codex must-fix, thread 019ebb82):
 
 - **Sanitize inbound headers.** The current proxy forwards everything.
@@ -206,6 +238,30 @@ form token is minted for anonymous viewers. CF Access unconfigured
   (`GOOGLE_GENAI_USE_VERTEXAI=true`), so model spend bills this project
   and the budget covers it. June month-to-date (checked 6/12): 91
   Vertex requests, 325k input + 29k output tokens — well under ¥150.
+
+## Window flip runbook (consolidated)
+
+Open (7/10; again 8/19 if selected for finals):
+
+1. Operator: `POST /autonomy {"mode":"propose"}` — pin the dial FIRST.
+2. `infra/cloudflare/worker/wrangler.toml` → `DEMO_MODE = "1"`, then
+   `wrangler deploy`. The deploy output MUST list `env.CHAT_RATE_LIMIT`
+   as a first-class **Rate Limit (5 requests/60s)** binding — the
+   limiter fails open, so a silently-unbound stanza silently removes
+   the A.4 cost rail.
+3. `infra/cloudflare/demo-window.sh on` — must end **OPEN**, not
+   HALF-OPEN (the script verifies and warns).
+4. Run the A.5 incognito probe list (work item 5 below).
+
+Close (~7/30):
+
+1. `infra/cloudflare/demo-window.sh off` — edge gate back FIRST; the
+   script fails loudly unless the Access redirect returns.
+2. `DEMO_MODE = "0"` + `wrangler deploy`.
+3. Restore the autonomy dial as desired.
+
+Mid-window IaC approve: flip `off` briefly (the Everyone-bypass strips
+operator CF JWTs on this hostname too), approve, flip back `on`.
 
 ## Work items
 
