@@ -4,8 +4,9 @@ compatibility_date = "2026-05-01"
 account_id = "7e8265bd122c779322afe1b236623346"
 
 # Bind the Worker to all traffic on the gated subdomain. Cloudflare Access
-# (configured separately) runs BEFORE the Worker, so the Worker only sees
-# requests from authenticated users.
+# (configured separately) runs BEFORE the Worker. Outside the demo window
+# the Worker only sees authenticated users; during the window a bypass
+# policy lets anonymous traffic through and demo mode (below) takes over.
 routes = [
   { pattern = "driftscribe.adp-app.com/*", zone_name = "adp-app.com" },
 ]
