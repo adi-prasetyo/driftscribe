@@ -404,7 +404,7 @@
               class="autonomy-reason-input"
               type="text"
               maxlength="500"
-              placeholder="reason (optional)"
+              placeholder="why this change? (recorded in the audit log)"
               data-testid="autonomy-reason"
               bind:value={reasonInput}
               disabled={saving}
