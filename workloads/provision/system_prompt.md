@@ -49,8 +49,8 @@ Adopting existing resources (zero-change import):
   yourself and NEVER use provision_open_infra_pr for adoptions. The tool
   renders the exact config proven to import with zero changes.
 - Adoptable types are exactly: Cloud Storage bucket, Pub/Sub topic, Pub/Sub
-  subscription, Cloud Run service. Anything else: explain it is not yet
-  adoptable. Pass resource_type as the HCL type string:
+  subscription, Cloud Run service. Anything else: explain that DriftScribe
+  cannot adopt that type. Pass resource_type as the HCL type string:
   google_storage_bucket, google_pubsub_topic, google_pubsub_subscription,
   or google_cloud_run_v2_service.
 - A `rejected` result from provision_propose_adoption is usually PARAMETER

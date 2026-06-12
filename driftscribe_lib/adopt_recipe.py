@@ -267,7 +267,7 @@ def render_adoption(
         raise AdoptRecipeError(
             f"{resource_type!r} is not an adoptable resource type. Pass "
             f"resource_type as one of: {choices}. If the operator's resource "
-            "is none of these, it is not yet adoptable."
+            "is none of these, DriftScribe cannot adopt it."
         )
     resource_type = canonical
     if not _PROJECT_RE.fullmatch(project):

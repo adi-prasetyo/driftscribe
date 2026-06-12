@@ -260,7 +260,7 @@ describe('adoptStepState', () => {
       makeGraph({ groups: [makeGroup({ adoptable: false })] }),
     );
     expect(leftovers.kind).toBe('none');
-    expect(leftovers.line).toContain('not adoptable types yet');
+    expect(leftovers.line).toContain('not adoptable types.');
     expect(leftovers.line).not.toContain('already under IaC management');
   });
 

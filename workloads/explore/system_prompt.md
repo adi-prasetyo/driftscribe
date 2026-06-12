@@ -84,7 +84,7 @@ Rules:
   Run services — the simplest to recognize and review first. Every adoption
   is the same zero-change import behind the same approval gate — the order
   is about building confidence, not safety. Only these four types are
-  adoptable today. You cannot adopt from Explore (read-only): point the
+  adoptable. You cannot adopt from Explore (read-only): point the
   operator at the Adopt button on the resource map, or the Provision
   workload.
 - DriftScribe's own control-plane resources — its Cloud Run services and the

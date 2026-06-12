@@ -548,7 +548,7 @@ describe('InfraDiagram — adopt list', () => {
     // The adoptable row gets a button; the SA row gets the muted span.
     const buttons = getAllByTestId('adopt-btn');
     expect(buttons).toHaveLength(1);
-    expect(getByTestId('adopt-unavailable').textContent).toContain('not yet adoptable');
+    expect(getByTestId('adopt-unavailable').textContent).toContain('not an adoptable type');
   });
 
   it('clicking Adopt fires onAdopt with the exact prefill string', async () => {
@@ -973,7 +973,7 @@ describe('InfraDiagram — control-plane adopt suppression', () => {
     expect(note.textContent).toContain('denylist');
     // exactly the two non-control-plane rows still get buttons
     expect(getAllByTestId('adopt-btn')).toHaveLength(2);
-    // it is NOT the generic "not yet adoptable" note
+    // it is NOT the generic "not an adoptable type" note
     expect(queryByTestId('adopt-unavailable')).toBeNull();
   });
 
