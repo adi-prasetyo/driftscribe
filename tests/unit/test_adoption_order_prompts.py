@@ -10,7 +10,11 @@ from pathlib import Path
 
 import pytest
 
-from driftscribe_lib.infra_graph import ADOPTION_ORDER_HONESTY, adoption_order_sentence
+from driftscribe_lib.infra_graph import (
+    ADOPTION_CONTROL_PLANE_NOTE,
+    ADOPTION_ORDER_HONESTY,
+    adoption_order_sentence,
+)
 
 WORKLOADS = Path(__file__).resolve().parents[2] / "workloads"
 
@@ -29,3 +33,9 @@ def test_prompt_carries_the_canonical_order_sentence(workload):
 def test_prompt_carries_the_honesty_note(workload):
     text = _normalized(WORKLOADS / workload / "system_prompt.md")
     assert " ".join(ADOPTION_ORDER_HONESTY.split()) in text
+
+
+@pytest.mark.parametrize("workload", ["explore", "provision"])
+def test_prompt_carries_the_control_plane_note(workload):
+    text = _normalized(WORKLOADS / workload / "system_prompt.md")
+    assert " ".join(ADOPTION_CONTROL_PLANE_NOTE.split()) in text
