@@ -8,8 +8,14 @@ pass-through, sample-cap truncation surfacing, and total-ness (a malformed
 inventory degrades instead of raising).
 """
 import json
+from pathlib import Path
 
-from driftscribe_lib.infra_graph import build_graph
+from driftscribe_lib.iac_plan_denylist import DenylistInput, evaluate
+from driftscribe_lib.infra_graph import _CONTROL_PLANE_NODE_MATCHERS, build_graph
+
+FIXTURES_DENYLIST = (
+    Path(__file__).resolve().parents[1] / "fixtures" / "iac_plan_denylist"
+)
 
 RUN_TYPE = "run.googleapis.com/Service"
 BUCKET_TYPE = "storage.googleapis.com/Bucket"
@@ -675,3 +681,171 @@ class TestAdoptRankInGraph:
         grp = g["groups"][0]
         assert grp["adoptable"] is False
         assert "adopt_rank" not in grp and "adopt_hint" not in grp
+
+
+# --------------------------------------------------------------------------- #
+# Control-plane adopt suppression (2026-06-12 ranking-filter follow-up to the
+# item-14 tour): nodes whose identity the denylist's control-plane rules would
+# refuse to import carry `control_plane: True` so adopt surfaces suppress the
+# guaranteed-dead-end CTA. PARITY: same public constants, same semantics as
+# the denylist; the parity test below drives both libraries with the same
+# identity and asserts flag ⟺ import-blocked.
+# --------------------------------------------------------------------------- #
+
+
+def _one_node_inventory(atype: str, name: str) -> dict:
+    return _inventory(
+        total_resources=1,
+        declared_in_iac=0,
+        not_in_iac=1,
+        by_type={
+            atype: {
+                "count": 1,
+                "declared_in_iac": 0,
+                "not_in_iac": 1,
+                "sensitive": False,
+                "sample": [
+                    {"name": name, "location": "asia-northeast1", "iac": False,
+                     "match_confidence": None},
+                ],
+            },
+        },
+    )
+
+
+def _single_import_plan(rtype: str, attrs: dict) -> dict:
+    """A minimal plan.json: ONE pure (no-op) import of the given identity."""
+    return {
+        "format_version": "1.2",
+        "resource_changes": [
+            {
+                "address": f"{rtype}.adopt",
+                "type": rtype,
+                "name": "adopt",
+                "change": {
+                    "actions": ["no-op"],
+                    "before": attrs,
+                    "after": attrs,
+                    "importing": {"id": "whatever"},
+                },
+            },
+        ],
+    }
+
+
+class TestControlPlaneNodeFlag:
+    def test_protected_bucket_node_is_flagged(self):
+        g = build_graph(_one_node_inventory(BUCKET_TYPE, "acme-prod-tofu-artifacts"))
+        assert g["groups"][0]["nodes"][0]["control_plane"] is True
+
+    def test_state_bucket_suffix_also_flagged(self):
+        g = build_graph(_one_node_inventory(BUCKET_TYPE, "acme-prod-tofu-state"))
+        assert g["groups"][0]["nodes"][0]["control_plane"] is True
+
+    def test_ordinary_bucket_node_carries_no_key(self):
+        # Only-when-true (truncated_in_group style): non-control-plane graphs
+        # stay byte-identical to the pre-flag era.
+        g = build_graph(_one_node_inventory(BUCKET_TYPE, "acme-assets"))
+        assert "control_plane" not in g["groups"][0]["nodes"][0]
+
+    def test_control_plane_service_node_is_flagged(self):
+        g = build_graph(_one_node_inventory(RUN_TYPE, "driftscribe-agent"))
+        assert g["groups"][0]["nodes"][0]["control_plane"] is True
+
+    def test_workload_service_node_carries_no_key(self):
+        g = build_graph(_one_node_inventory(RUN_TYPE, "storefront"))
+        assert "control_plane" not in g["groups"][0]["nodes"][0]
+
+    def test_type_scoped_a_topic_named_like_a_service_is_not_flagged(self):
+        # Name collisions across types must not flag: there is no control-plane
+        # Pub/Sub identity rule, so a topic named "driftscribe-agent" is
+        # adoptable and its import is admitted.
+        g = build_graph(_one_node_inventory(TOPIC_TYPE, "driftscribe-agent"))
+        assert "control_plane" not in g["groups"][0]["nodes"][0]
+
+    def test_matchers_cover_only_adoptable_types(self):
+        # The flag exists to suppress adopt CTAs; a matcher on a non-adoptable
+        # type would be dead code. Exactly Bucket + Run Service have
+        # control-plane identity rules among the adoptable four.
+        assert set(_CONTROL_PLANE_NODE_MATCHERS) == {
+            "storage.googleapis.com/Bucket",
+            "run.googleapis.com/Service",
+        }
+        assert set(_CONTROL_PLANE_NODE_MATCHERS) <= ADOPTABLE_ASSET_TYPES
+
+    @pytest.mark.parametrize(
+        ("atype", "rtype", "attrs", "name", "expect_blocked"),
+        [
+            ("storage.googleapis.com/Bucket", "google_storage_bucket",
+             {"name": "acme-prod-tofu-artifacts"}, "acme-prod-tofu-artifacts", True),
+            ("storage.googleapis.com/Bucket", "google_storage_bucket",
+             {"name": "acme-prod-tofu-state"}, "acme-prod-tofu-state", True),
+            ("storage.googleapis.com/Bucket", "google_storage_bucket",
+             {"name": "acme-assets"}, "acme-assets", False),
+            ("run.googleapis.com/Service", "google_cloud_run_v2_service",
+             {"name": "driftscribe-agent"}, "driftscribe-agent", True),
+            ("run.googleapis.com/Service", "google_cloud_run_v2_service",
+             {"name": "storefront"}, "storefront", False),
+        ],
+    )
+    def test_flag_parity_with_denylist_import_admission(
+        self, atype, rtype, attrs, name, expect_blocked
+    ):
+        # THE invariant this feature rests on: the node is flagged exactly when
+        # a pure single import of that identity is denylist-blocked by a
+        # control-plane rule. Drives both libraries end-to-end via their
+        # public surfaces.
+        g = build_graph(_one_node_inventory(atype, name))
+        flagged = g["groups"][0]["nodes"][0].get("control_plane") is True
+
+        violations = evaluate(DenylistInput(plan=_single_import_plan(rtype, attrs)))
+        blocked = any(v.rule.startswith("control-plane-") for v in violations)
+
+        assert flagged is expect_blocked
+        assert blocked is expect_blocked
+        # A pure import of a NON-control-plane adoptable identity must be
+        # fully admitted — no other rule may fire either.
+        if not expect_blocked:
+            assert violations == []
+
+    @pytest.mark.parametrize(
+        ("fixture", "atype", "expect_blocked"),
+        [
+            # REAL provider-generated plans (Codex 019eb932): better pins of
+            # provider attribute shape than the synthetic ones above.
+            ("import_control_plane_state_bucket.json",
+             "storage.googleapis.com/Bucket", True),
+            ("real_import_bucket_pure_noop.json",
+             "storage.googleapis.com/Bucket", False),
+            ("real_import_run_pure_noop.json",
+             "run.googleapis.com/Service", False),
+        ],
+    )
+    def test_flag_parity_on_real_import_fixtures(self, fixture, atype, expect_blocked):
+        plan = json.loads(
+            (FIXTURES_DENYLIST / fixture).read_text(encoding="utf-8")
+        )
+        # Identity name as the provider emitted it — the graph node label for
+        # the same live resource (infra_inventory uses the short name).
+        rc = plan["resource_changes"][0]
+        name = rc["change"]["after"]["name"]
+
+        g = build_graph(_one_node_inventory(atype, name))
+        flagged = g["groups"][0]["nodes"][0].get("control_plane") is True
+        blocked = any(
+            v.rule.startswith("control-plane-")
+            for v in evaluate(DenylistInput(plan=plan))
+        )
+        assert flagged is expect_blocked
+        assert blocked is expect_blocked
+
+    def test_managed_control_plane_node_still_flagged(self):
+        # The flag describes IDENTITY, not adoptability — a (hypothetically)
+        # already-managed control-plane node keeps it; clients only consult it
+        # on unmanaged rows anyway.
+        inv = _one_node_inventory(BUCKET_TYPE, "acme-prod-tofu-state")
+        inv["by_type"][BUCKET_TYPE]["sample"][0]["iac"] = True
+        inv["by_type"][BUCKET_TYPE]["declared_in_iac"] = 1
+        inv["by_type"][BUCKET_TYPE]["not_in_iac"] = 0
+        g = build_graph(inv)
+        assert g["groups"][0]["nodes"][0]["control_plane"] is True

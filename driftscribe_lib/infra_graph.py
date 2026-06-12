@@ -25,7 +25,13 @@ DTO the UI renders as an "unavailable" note.
 """
 from __future__ import annotations
 
-from driftscribe_lib.iac_plan_denylist import ADOPTABLE_RESOURCE_TYPES
+from collections.abc import Callable
+
+from driftscribe_lib.iac_plan_denylist import (
+    ADOPTABLE_RESOURCE_TYPES,
+    CONTROL_PLANE_BUCKET_SUFFIXES,
+    CONTROL_PLANE_SERVICE_NAMES,
+)
 from driftscribe_lib.iac_plan_summary import PlanSummary
 from driftscribe_lib.infra_inventory import SENSITIVE_ASSET_TYPES
 
@@ -120,6 +126,55 @@ def adoption_order_sentence() -> str:
     """
     ordered = sorted(ADOPTION_GUIDE, key=lambda t: ADOPTION_GUIDE[t][0])
     return " → ".join(_ADOPTION_PLURAL_LABELS[t] for t in ordered)
+
+
+# Canonical control-plane adoption refusal (same prompt-pin pattern as
+# ADOPTION_ORDER_HONESTY — the static .md prompts duplicate it by hand and the
+# pin test keeps the duplication safe). Unlike the order hints, this IS safety
+# framing — accurately: it states what the always-on gate does, mirroring the
+# capability card's rule descriptions. Precision (Codex 019eb932 MF1): the
+# gate refuses CHANGES and IMPORTS — a plain no-op on a control-plane
+# identity passes — so the copy says "change or import", never "touches".
+ADOPTION_CONTROL_PLANE_NOTE = (
+    "DriftScribe's own control-plane resources — its Cloud Run services and "
+    "the -tofu-state / -tofu-artifacts buckets — cannot be adopted: the "
+    "always-on denylist refuses any plan that would change or import them."
+)
+
+# Control-plane adopt suppression (2026-06-12, ranking-filter follow-up found
+# live during the item-14 tour verify: the rank-1 "start here" suggestion was
+# DriftScribe's OWN -tofu-artifacts bucket). The denylist refuses any plan
+# that would CHANGE OR IMPORT a control-plane identity (evaluate runs the
+# identity rules `if _is_mutation(actions) or importing is not None`; a plain
+# no-op row on one passes) — so an Adopt button on such a node is a
+# guaranteed dead end at C2 evaluation. Nodes
+# matching a control-plane identity carry `control_plane: True` so every adopt
+# surface (panel list, Start-here pick, tour step 4) suppresses the CTA with
+# an honest note. The node itself stays on the map: it IS unmanaged drift, and
+# hiding it would misreport the estate.
+#
+# PARITY-BY-CONSTRUCTION: the matchers are the denylist's own public identity
+# constants for the two adoptable types that HAVE control-plane rules — bucket
+# name suffix (same semantics as _is_protected_bucket_name) and Cloud Run
+# service name (CONTROL_PLANE_SERVICE_NAMES). Pub/Sub has no control-plane
+# identity rule, so its nodes are never flagged. test_infra_graph pins the
+# parity by driving build_graph and evaluate with the same identity. Failure
+# direction is safe: an unflagged protected name only shows a button whose
+# plan C2 then blocks; a false positive cannot happen without the denylist
+# also refusing that same identity.
+_CONTROL_PLANE_NODE_MATCHERS: dict[str, Callable[[str], bool]] = {
+    "storage.googleapis.com/Bucket": lambda name: name.endswith(
+        CONTROL_PLANE_BUCKET_SUFFIXES
+    ),
+    "run.googleapis.com/Service": lambda name: name in CONTROL_PLANE_SERVICE_NAMES,
+}
+
+
+def _is_control_plane_node(atype: str, label: str) -> bool:
+    """True iff a node of ``atype`` named ``label`` is DriftScribe control plane."""
+    matcher = _CONTROL_PLANE_NODE_MATCHERS.get(atype)
+    return bool(matcher is not None and label and matcher(label))
+
 
 # Plan rtypes whose names/addresses must never reach the map. Mirrors the
 # static gate's SECRET_MATERIAL_RESOURCE_TYPES (drift-pinned ⊇ at test time;
@@ -274,7 +329,7 @@ def build_graph(inventory: dict) -> dict:
           totals: {resources, managed, drift},
           groups: [ { asset_type, label, count, managed, drift, sensitive,
                       adoptable,
-                      nodes: [ {id, label, asset_type, managed, location} ],
+                      nodes: [ {id, label, asset_type, managed, location, control_plane?} ],
                       truncated_in_group? } ],
           edges: [],                      # Phase 1 is node-only
           truncated: {...},
@@ -328,15 +383,19 @@ def build_graph(inventory: dict) -> dict:
                     # dict.get's default only fires on a MISSING key; a present
                     # name=None would otherwise stringify to the literal "None".
                     name = sample.get("name")
-                    nodes.append(
-                        {
-                            "id": f"g{gi}n{ni}",
-                            "label": str(name) if name is not None else "",
-                            "asset_type": atype,
-                            "managed": bool(sample.get("iac")),
-                            "location": location if isinstance(location, str) else None,
-                        }
-                    )
+                    label = str(name) if name is not None else ""
+                    node = {
+                        "id": f"g{gi}n{ni}",
+                        "label": label,
+                        "asset_type": atype,
+                        "managed": bool(sample.get("iac")),
+                        "location": location if isinstance(location, str) else None,
+                    }
+                    if _is_control_plane_node(atype, label):
+                        # Only-when-true (truncated_in_group style) so every
+                        # non-control-plane graph stays byte-identical.
+                        node["control_plane"] = True
+                    nodes.append(node)
             shown = len(nodes)
             if count > shown:
                 truncated_in_group = count - shown
