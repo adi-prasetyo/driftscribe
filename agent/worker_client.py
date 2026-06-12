@@ -119,7 +119,9 @@ _ERROR_BODY_TRUNCATE: Final[int] = 500
 # Outbound HTTP timeout. Cloud Run cold starts on workers can take a
 # couple of seconds, and the docs worker's PR creation hits the GitHub
 # API, but 30s is plenty headroom — anything past that is almost
-# certainly a hang we'd rather fail fast on.
+# certainly a hang we'd rather fail fast on. Workers that legitimately
+# take longer get a per-worker default via ``_WORKER_DEFAULT_TIMEOUTS``
+# below; only the "short" workers with no entry in that map keep this value.
 _HTTPX_TIMEOUT: Final[float] = 30.0
 
 
@@ -135,6 +137,31 @@ _HTTPX_TIMEOUT: Final[float] = 30.0
 _APPLY_HTTPX_TIMEOUT: Final = httpx.Timeout(
     connect=10.0, read=920.0, write=30.0, pool=10.0
 )
+
+
+# Backlog-3 residual (2026-06-12): the infra-reader's /describe pages the
+# whole CAI estate (~467 resources today) and legitimately takes ~25-30s
+# solo — one live fetch was misread as a transport failure at 30.1s
+# against the 30s default. Same misclassification class as C5e/apply, at
+# lower stakes: describe is read-only and RECOVERABLE, so we size the read
+# budget from observed wall clock (~3x worst, headroom for loaded slots +
+# estate growth), NOT from the worker's Cloud Run ceiling the way /apply
+# must. Upper bound: the operator-facing /infra/graph rides the
+# Cloudflare-proxied custom domain (~100s proxied-response budget — see
+# the SSE heartbeat comment in agent/main.py), so the coordinator's
+# response must finish under ~100s; 90s read + overhead fits, 120 would
+# not. connect stays tight so a down worker still fails fast.
+_DESCRIBE_HTTPX_TIMEOUT: Final = httpx.Timeout(
+    connect=10.0, read=90.0, write=30.0, pool=10.0
+)
+
+# Per-worker DEFAULT timeouts, consulted by ``call`` only when the caller
+# passes no explicit ``timeout=``. Keyed like WORKER_ENDPOINTS; any worker
+# not listed gets _HTTPX_TIMEOUT. Endpoint-specific overrides (call_apply)
+# keep passing explicitly and win over this map by construction.
+_WORKER_DEFAULT_TIMEOUTS: Final[dict[str, "float | httpx.Timeout"]] = {
+    "infra_reader": _DESCRIBE_HTTPX_TIMEOUT,
+}
 
 
 class WorkerClientError(Exception):
@@ -343,10 +370,13 @@ def call(
             directly — they go through a wrapper, so the LLM can't pick
             an arbitrary endpoint.
         timeout: per-call httpx timeout override. ``None`` (the default)
-            uses :data:`_HTTPX_TIMEOUT` (30s) — fine for every short worker
-            call. Only :func:`call_apply` passes a longer value
-            (:data:`_APPLY_HTTPX_TIMEOUT`) because ``tofu apply`` can run for
-            minutes; see that wrapper's docstring for why.
+            consults :data:`_WORKER_DEFAULT_TIMEOUTS` for a per-worker
+            budget; if the worker has no entry there the fallback is
+            :data:`_HTTPX_TIMEOUT` (30s). Long-budget cases: infra_reader
+            gets :data:`_DESCRIBE_HTTPX_TIMEOUT` (90s read — CAI estate
+            paging); call_apply passes :data:`_APPLY_HTTPX_TIMEOUT`
+            explicitly (920s read — ``tofu apply`` can run for minutes). An
+            explicit ``timeout=`` argument always wins over the map.
 
     Raises:
         WorkerClientError: with status_code preserved from the worker
@@ -372,7 +402,7 @@ def call(
     }
     try:
         with httpx.Client(
-            timeout=timeout if timeout is not None else _HTTPX_TIMEOUT
+            timeout=timeout if timeout is not None else _WORKER_DEFAULT_TIMEOUTS.get(worker, _HTTPX_TIMEOUT)
         ) as client:
             r = client.post(f"{base}{path}", json=payload, headers=headers)
     except httpx.RequestError as e:
