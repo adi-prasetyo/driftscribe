@@ -149,6 +149,18 @@ def test_patch_docs_tool_branch_slug_is_sanitized():
     assert "/" not in after_prefix
 
 
+def test_patch_docs_tool_docstring_pins_scope_carve_out():
+    """The docstring is the model-facing tool description (ADK reads it
+    at tool-choice time) — same pattern as propose_adoption_tool's
+    control-plane carve-out (PR #108). Pin the PR #109 scope language.
+    """
+    from agent.adk_tools import patch_docs_tool
+
+    flat = " ".join((patch_docs_tool.__doc__ or "").split())
+    assert "observed env-variable configuration" in flat
+    assert "Never use it to describe a resource as IaC-managed" in flat
+
+
 def test_notify_tool_calls_notifier_with_full_payload():
     from agent.adk_tools import notify_tool
 
