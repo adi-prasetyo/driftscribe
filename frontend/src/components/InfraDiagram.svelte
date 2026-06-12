@@ -113,7 +113,13 @@
   // truncated_in_group counts ALL unsampled resources (managed OR unmanaged), so
   // it must NOT drive the trailer — only this drift-vs-shown delta may, or we'd
   // mislabel hidden MANAGED resources as unmanaged (Codex review 019eb572 round-2).
-  type AdoptListRow = { nodeId: string; label: string; adoptable: boolean; prefill: string };
+  type AdoptListRow = {
+    nodeId: string;
+    label: string;
+    adoptable: boolean;
+    controlPlane: boolean;
+    prefill: string;
+  };
   // assetType is the each-key: friendly labels are NOT unique (live CAI carries
   // cloudresourcemanager…/Project AND compute…/Project, both labelled "Project";
   // keying by label crashed the whole panel flush with each_key_duplicate —
@@ -135,11 +141,14 @@
       const rows: AdoptListRow[] = [];
       for (const n of g.nodes) {
         if (n.managed) continue;
+        const controlPlane = n.control_plane === true;
+        const rowAdoptable = adoptable && !controlPlane;
         rows.push({
           nodeId: n.id,
           label: n.label,
-          adoptable,
-          prefill: adoptable ? adoptPrefill(g.label, n.label, n.location) : '',
+          adoptable: rowAdoptable,
+          controlPlane,
+          prefill: rowAdoptable ? adoptPrefill(g.label, n.label, n.location) : '',
         });
       }
       if (rows.length === 0) continue;
@@ -164,10 +173,13 @@
     return out;
   });
   const hasAdoptRows = $derived(adoptGroups.length > 0);
-  // First group is the "start here" target iff it is ranked (ranked sort first,
-  // so index 0 unranked ⇒ nothing is ranked ⇒ no chip, no order note).
+  // First group that is ranked AND still has a clickable Adopt row — a ranked
+  // group whose every shown row is control-plane (denylist-refused) must not
+  // claim "Start here": the chip would sit on a group with no button. Ranked
+  // groups sort first, so the scan walks the guide order.
   const startHereAssetType = $derived(
-    adoptGroups[0]?.rank != null ? adoptGroups[0].assetType : null,
+    adoptGroups.find((g) => g.rank != null && g.rows.some((r) => r.adoptable))
+      ?.assetType ?? null,
   );
 
   function clickAdopt(prefill: string): void {
@@ -554,6 +566,11 @@
                       ? 'Unavailable while the chat is busy or reviewing a past trace.'
                       : undefined}
                     onclick={() => clickAdopt(row.prefill)}>Adopt into IaC</button
+                  >
+                {:else if row.controlPlane}
+                  <span class="ds-subtle infra-adopt__muted" data-testid="adopt-control-plane"
+                    >IaC control-plane infrastructure — the always-on denylist blocks changes
+                    to it, adoption included</span
                   >
                 {:else}
                   <span class="ds-subtle infra-adopt__muted" data-testid="adopt-unavailable"
