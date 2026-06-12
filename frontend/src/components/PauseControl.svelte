@@ -450,6 +450,10 @@
   }
   .pause-state--paused {
     font-weight: var(--ds-fw-bold);
+    /* The leading pause icon sits inline before the text — flex it apart. */
+    display: inline-flex;
+    align-items: center;
+    gap: var(--ds-sp-2);
   }
   .pause-state--unknown {
     color: var(--ds-muted);
