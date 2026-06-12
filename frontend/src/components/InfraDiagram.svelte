@@ -94,6 +94,12 @@
   // component keeps only the view + the async fetch/render concurrency guards.
   let fetchRun = 0; // guards refresh() — error paths bail when a newer fetch started
   let lastAppliedFetch = 0; // highest run whose RESPONSE was applied (last-applied-wins)
+  // Backlog-3 residual (2026-06-12): the describe budget is now 90s and the
+  // coordinator runs concurrency=2, so stacked poll/ladder triggers must coalesce
+  // — one in-flight /infra/graph request per open panel. Response-application
+  // logic (fetchRun/lastAppliedFetch — PR #99 last-applied-wins) unchanged as
+  // defense-in-depth.
+  let refreshInFlight = false;
   let renderRun = 0; // guards renderDiagram() — independent of fetchRun
   let overlayRun = 0; // guards fetchOverlay() — a THIRD independent guard (grounding fact 5)
   let mermaidIdSeq = 0; // unique mermaid render id
@@ -195,6 +201,8 @@
   }
 
   async function refresh(): Promise<void> {
+    if (refreshInFlight) return;
+    refreshInFlight = true;
     const myRun = ++fetchRun;
     loading = true;
     error = null;
@@ -240,6 +248,7 @@
       onGraph?.(body);
       if (open) await renderDiagram(body);
     } finally {
+      refreshInFlight = false;
       if (myRun === fetchRun) loading = false;
     }
   }
