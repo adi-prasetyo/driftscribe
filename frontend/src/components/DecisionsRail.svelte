@@ -9,7 +9,8 @@
     iacApproveLabel,
   } from '../lib/approval';
   import { shortSha, iacStatusLabel } from '../lib/format';
-  import { groupRailDecisions, hasAnomalousStep, lifecycleSummaryLabel } from '../lib/rail';
+  import { groupRailDecisions, hasAnomalousStep, lifecycleSummaryLabel, railRowIcon } from '../lib/rail';
+  import Icon from './Icon.svelte';
   import type { Decision } from '../lib/types';
 
   let {
@@ -116,6 +117,7 @@
     class:active={isActive}
   >
     <div class="row-summary">
+      <span class="row-icon"><Icon name={railRowIcon(d.action)} size={14} /></span>
       {#if prHref}
         <!-- iac_apply: the PR # IS the title and links to the GitHub PR
              (host-allowlisted via iacPrHref/safeGithubHref). -->
@@ -228,7 +230,7 @@
 {/snippet}
 
 <aside id="decisions-rail" data-testid="past-decisions-pane" aria-label="Past decisions">
-  <h2 class="ds-label">Past decisions</h2>
+  <h2 class="ds-label rail-eyebrow"><span class="eyebrow-icon"><Icon name="history" size={14} /></span>Past decisions</h2>
 
   {#if decisions.length === 0}
     <p class="empty ds-subtle">No decisions yet.</p>
@@ -260,6 +262,30 @@
 
   #decisions-rail > .ds-label {
     padding: 0 var(--ds-sp-1);
+  }
+
+  /* Eyebrow tint: §6 — text shifts from --ds-muted to --ds-fg-soft; icon stays --ds-muted.
+     Component-scoped; base.css .ds-label is untouched. */
+  .rail-eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--ds-sp-2);
+    color: var(--ds-fg-soft);
+  }
+
+  .eyebrow-icon {
+    display: inline-flex;
+    align-items: center;
+    color: var(--ds-muted);
+    flex-shrink: 0;
+  }
+
+  /* Leading icon in .row-summary — muted color, aligned with first text line */
+  .row-icon {
+    display: inline-flex;
+    align-items: center;
+    color: var(--ds-muted);
+    flex-shrink: 0;
   }
 
   .empty {
@@ -295,13 +321,15 @@
     transition:
       border-color var(--ds-dur) var(--ds-ease),
       background-color var(--ds-dur) var(--ds-ease),
-      box-shadow var(--ds-dur) var(--ds-ease);
+      box-shadow var(--ds-dur) var(--ds-ease),
+      transform var(--ds-dur-fast) var(--ds-ease);
   }
 
   .decision-row:hover {
     background: var(--ds-surface-2);
     border-color: var(--ds-border-strong);
     box-shadow: var(--ds-shadow-sm);
+    transform: translateY(-1px);
   }
 
   .decision-row.active {

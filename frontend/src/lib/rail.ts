@@ -8,6 +8,28 @@
 
 import type { Decision } from './types';
 import { iacStatusLabel } from './format';
+import type { IconName } from './icons';
+
+/**
+ * Maps a decision action string to a leading icon for the rail row.
+ * Fail-safe: null/undefined/empty/unrecognised action all return 'file-text'.
+ *
+ * Priority (first match wins):
+ *   rollback          → rotate-ccw
+ *   iac               → git-merge
+ *   upgrade | pr      → git-pull-request
+ *   issue | drift | report → alert-triangle
+ *   anything else     → file-text
+ */
+export function railRowIcon(action: string | null | undefined): IconName {
+  if (!action) return 'file-text';
+  const a = action.toLowerCase();
+  if (a.includes('rollback')) return 'rotate-ccw';
+  if (a.includes('iac')) return 'git-merge';
+  if (a.includes('upgrade') || a.includes('pr')) return 'git-pull-request';
+  if (a.includes('issue') || a.includes('drift') || a.includes('report')) return 'alert-triangle';
+  return 'file-text';
+}
 
 export type RailItem =
   | { kind: 'single'; d: Decision }
