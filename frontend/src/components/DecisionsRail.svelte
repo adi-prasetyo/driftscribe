@@ -76,6 +76,19 @@
       : 'View on GitHub →';
   }
 
+  // Dry-run preview pill: ONLY on rows whose GitHub side effect was skipped
+  // because the coordinator runs DRY_RUN=true (github.dry_run === true on a
+  // GitHub-action row). Deliberately NOT keyed on the decision's top-level
+  // `dry_run`: on rollback rows dry_run=true does NOT suppress the worker
+  // calls — a real approval is minted (agent/main.py, dry_run_effective) —
+  // so a "dry run" token there would falsely say nothing happened. The
+  // GITHUB_LINK_LABEL gate also excludes no_op (its sidecar mirrors the
+  // setting but nothing was skipped); Observe-suppressed sidecars carry no
+  // dry_run key at all, so the autonomy token renders instead, alone.
+  function dryRunPill(d: Decision): boolean {
+    return Object.hasOwn(GITHUB_LINK_LABEL, d.action) && d.github?.dry_run === true;
+  }
+
   // Render `created_at` as a compact, readable wall-clock string. Falls back to
   // the raw value when it doesn't parse, and to '' when absent.
   function fmtCreatedAt(iso: string | undefined): string {
@@ -135,6 +148,11 @@
     {#if d.suppressed_by_autonomy === true}
       <span class="rail-status rail-status--muted" data-testid="autonomy-suppressed"
         >not executed — {d.autonomy_mode === 'observe' ? 'Observe' : d.autonomy_mode} mode</span>
+    {/if}
+
+    {#if dryRunPill(d)}
+      <span class="rail-status rail-status--muted" data-testid="decision-dry-run"
+        >dry run — not created on GitHub</span>
     {/if}
 
     <div class="row-actions">
