@@ -228,6 +228,11 @@ cmd_on() {
   if [[ "$state" == "half-open" ]]; then
     echo "WARNING: to fully open the window, deploy the Worker with DEMO_MODE=\"1\" (step 2 above)."
   fi
+  # half-open is a legitimate staging state (June smoke); an odd:* edge
+  # must not look like a successful toggle.
+  if [[ "$state" == odd:* ]]; then
+    exit 1
+  fi
 }
 
 cmd_off() {
