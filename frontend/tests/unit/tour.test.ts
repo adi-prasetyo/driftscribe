@@ -263,4 +263,88 @@ describe('adoptStepState', () => {
     expect(leftovers.line).toContain('not adoptable types yet');
     expect(leftovers.line).not.toContain('already under IaC management');
   });
+
+  it('skips control-plane nodes — the live papercut: rank-1 must not be our own bucket', () => {
+    const g = makeGraph({
+      groups: [
+        makeGroup({
+          adoptable: true,
+          adopt_rank: 1,
+          nodes: [
+            makeNode({ label: 'demo-tofu-artifacts', managed: false, control_plane: true }),
+            makeNode({ id: 'n2', label: 'demo-assets', managed: false }),
+          ],
+        }),
+      ],
+    });
+    const s = adoptStepState(g);
+    expect(s.kind).toBe('target');
+    if (s.kind === 'target') {
+      expect(s.prefill).toContain('`demo-assets`');
+      expect(s.prefill).not.toContain('tofu-artifacts');
+    }
+  });
+
+  it('falls through to the NEXT group when a whole group is control-plane', () => {
+    const g = makeGraph({
+      groups: [
+        makeGroup({
+          adoptable: true,
+          adopt_rank: 1,
+          nodes: [makeNode({ label: 'demo-tofu-state', managed: false, control_plane: true })],
+        }),
+        makeGroup({
+          asset_type: 'pubsub.googleapis.com/Topic',
+          label: 'Pub/Sub topic',
+          adoptable: true,
+          adopt_rank: 2,
+          nodes: [makeNode({ id: 'n2', label: 'orders', managed: false })],
+        }),
+      ],
+    });
+    const s = adoptStepState(g);
+    expect(s.kind).toBe('target');
+    if (s.kind === 'target') expect(s.prefill).toContain('`orders`');
+  });
+
+  it('all-control-plane estate gets the honest denylist line, not the unnamed line', () => {
+    const g = makeGraph({
+      totals: { resources: 1, managed: 0, drift: 1 },
+      groups: [
+        makeGroup({
+          adoptable: true,
+          adopt_rank: 1,
+          nodes: [makeNode({ label: 'demo-tofu-artifacts', managed: false, control_plane: true })],
+        }),
+      ],
+    });
+    const s = adoptStepState(g);
+    expect(s.kind).toBe('none');
+    if (s.kind === 'none') {
+      expect(s.line).toContain('control-plane');
+      expect(s.line).toContain('denylist');
+      // honesty: not misdescribed as a naming problem or a type problem
+      expect(s.line).not.toContain('named adopt target');
+      expect(s.line).not.toContain('not adoptable types');
+    }
+  });
+
+  it('control-plane plus unnamed still reports the unnamed line (non-CP nodes exist)', () => {
+    const g = makeGraph({
+      totals: { resources: 2, managed: 0, drift: 2 },
+      groups: [
+        makeGroup({
+          adoptable: true,
+          adopt_rank: 1,
+          nodes: [
+            makeNode({ label: 'demo-tofu-state', managed: false, control_plane: true }),
+            makeNode({ id: 'n2', label: '   ', managed: false }),
+          ],
+        }),
+      ],
+    });
+    const s = adoptStepState(g);
+    expect(s.kind).toBe('none');
+    if (s.kind === 'none') expect(s.line).toContain('named adopt target');
+  });
 });
