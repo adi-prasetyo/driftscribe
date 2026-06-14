@@ -1025,3 +1025,13 @@ def merge_pr_at_sha(
         "number": pr_number,
         "url": pr.html_url,
     }
+
+
+def dispatch_workflow(repo, workflow_filename: str, ref: str, inputs: dict[str, str]) -> None:
+    """Fire a workflow_dispatch on ``workflow_filename`` at ``ref`` with ``inputs``.
+
+    Thin PyGithub wrapper (``Workflow.create_dispatch``). Requires the token to
+    carry ``actions: write``. Raises on any failure — callers decide whether to
+    fail soft. ``inputs`` values must be strings (GitHub coerces workflow inputs
+    from strings)."""
+    repo.get_workflow(workflow_filename).create_dispatch(ref, inputs)

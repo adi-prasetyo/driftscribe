@@ -1066,7 +1066,8 @@ def _compose_fanout_pr_body(plan: DecomposeResult, author_result: AuthorResult) 
 
 
 def _compose_success_reply(
-    worker_result: dict, plan: DecomposeResult, author_result: AuthorResult
+    worker_result: dict, plan: DecomposeResult, author_result: AuthorResult,
+    *, plan_builder_dispatched: bool = False
 ) -> str:
     """Compose the operator-facing success reply for a fan-out PR.
 
@@ -1076,6 +1077,9 @@ def _compose_success_reply(
     :func:`agent.adk_tools.iac_pr_next_steps` helper so the two authoring paths
     give identical next steps (the real pr_number is substituted into the
     /iac-approvals/<N> approval link).
+
+    When ``plan_builder_dispatched=True``, the next-steps copy tells the operator
+    the plan-builder has already been started for this PR.
     """
     # Lazy import keeps this module's pure SliceSpec core import-light (adk_tools
     # pulls worker_client/config); only the reply composer needs the helper.
@@ -1086,7 +1090,7 @@ def _compose_success_reply(
     paths = ", ".join(f["path"] for f in author_result.files)
     return (
         f"Opened infrastructure PR #{pr_number} ({pr_url}) with {len(author_result.files)} "
-        f"authored file(s): {paths}.\n\n{iac_pr_next_steps(pr_number)}"
+        f"authored file(s): {paths}.\n\n{iac_pr_next_steps(pr_number, plan_builder_dispatched=plan_builder_dispatched)}"
     )
 
 
@@ -1347,6 +1351,7 @@ async def run_provision_fanout_stream(
             plan.pr_title,
             body,
             author_result.files,
+            dispatch_plan_builder=(autonomy_mode == "propose_apply"),
         )
     except worker_client.WorkerClientError as e:
         # The call WAS attempted → tool_calls records the synthetic open_infra_pr.
@@ -1397,12 +1402,13 @@ async def run_provision_fanout_stream(
         iac_pr["pr_number"],
         iac_pr["pr_url"],
         plan.pr_title,
+        plan_builder_dispatched=result.get("plan_builder_dispatched", False),
     )
 
     # Surface the opened PR + the exact operator next steps. The terminal item
     # carries the structured ``iac_pr`` pointer so the SPA can render a clickable
     # first-authoring "Review & approve" CTA (the reply text alone is not a link).
-    reply = _compose_success_reply(result, plan, author_result)
+    reply = _compose_success_reply(result, plan, author_result, plan_builder_dispatched=result.get("plan_builder_dispatched", False))
     yield {"type": "event", "event": _stream(_emit_final_response(reply))}
     yield {
         "type": "result",

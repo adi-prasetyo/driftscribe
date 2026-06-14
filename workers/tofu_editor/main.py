@@ -205,11 +205,19 @@ class FileWrite(BaseModel):
 class OpenIacPrRequest(BaseModel):
     """Closed schema for ``/open-pr`` — see module docstring, Layer 2.
 
-    All fields REQUIRED. ``target_repo`` is re-validated against the
-    env-pinned :data:`TARGET_REPO`. ``branch`` / ``base`` / ``files`` pass
-    through :mod:`driftscribe_lib.iac_editor_policy`. ``title`` / ``body`` are
+    All fields REQUIRED except ``dispatch_plan_builder`` (defaults to False).
+    ``target_repo`` is re-validated against the env-pinned :data:`TARGET_REPO`.
+    ``branch`` / ``base`` / ``files`` pass through
+    :mod:`driftscribe_lib.iac_editor_policy`. ``title`` / ``body`` are
     size-bounded against ``MAX_TITLE`` / ``MAX_BODY``. ``extra="forbid"`` makes
     pydantic raise on any unexpected field (FastAPI → HTTP 422).
+
+    ``dispatch_plan_builder``: when True AND the PR is newly opened (not reused),
+    the worker fires a ``workflow_dispatch`` on the C2 plan-builder (``iac.yml``
+    at ``main``) for the new PR number.  Dispatch is fail-soft: any exception
+    leaves ``plan_builder_dispatched=False`` in the response but the PR is
+    still returned. The worker hardcodes the workflow filename, ref, and inputs
+    — the request body cannot influence them.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -219,6 +227,7 @@ class OpenIacPrRequest(BaseModel):
     title: str
     body: str
     files: list[FileWrite]
+    dispatch_plan_builder: bool = False
 
 
 app = FastAPI(title="DriftScribe tofu-editor Agent")
@@ -341,9 +350,29 @@ def open_pr(
         body=req.body,
         files=committed_files,
     )
+
+    # Fail-soft C2 plan-builder auto-dispatch: only fires when the request
+    # opts in AND the PR is newly opened (not reused). The worker hardcodes
+    # the workflow filename, ref, and inputs — the request body cannot influence
+    # them. Any exception is caught so the PR response is never lost.
+    plan_builder_dispatched = False
+    if req.dispatch_plan_builder and not result.get("reused"):
+        try:
+            ds_github.dispatch_workflow(
+                repo, "iac.yml", "main", {"pr_number": str(result["number"])}
+            )
+            plan_builder_dispatched = True
+            log.info(
+                "c2_plan_builder_auto_dispatched",
+                extra={"pr_number": result["number"]},
+            )
+        except Exception:  # noqa: BLE001
+            log.warning("c2_plan_builder_dispatch_failed", exc_info=True)
+
     return {
         "status": "opened",
         "pr_number": result["number"],
         "pr_url": result["url"],
         "branch": result["branch"],
+        "plan_builder_dispatched": plan_builder_dispatched,
     }

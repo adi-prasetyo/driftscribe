@@ -170,7 +170,7 @@ def test_no_plan_comment_renders_run_c2(_configured, monkeypatch):
     resp = client.get("/iac-approvals/42")
     assert resp.status_code == 200
     body = resp.text
-    assert "Run the C2 plan-builder" in body
+    assert "No plan has been built for PR" in body
     assert 'data-testid="approve-button"' not in body
     assert 'name="form_token"' not in body
 
