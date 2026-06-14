@@ -595,4 +595,81 @@ describe('AutonomyControl', () => {
       (getByTestId('autonomy-mode-propose_apply') as HTMLButtonElement).getAttribute('aria-pressed'),
     ).toBe('true');
   });
+
+  // ---- Current-mode caption (names the active mode in words) ----
+
+  it('current-mode caption names the active mode (Propose + Apply)', async () => {
+    const records: CallRecord[] = [];
+    const { getByTestId } = render(AutonomyControl, {
+      props: { call: makeCall(records, makeResponse(PROPOSE_APPLY_DOC)) },
+    });
+    await waitFor(() => {
+      expect(getByTestId('autonomy-current-mode').textContent?.trim()).toBe('Propose + Apply');
+    });
+  });
+
+  it('current-mode caption reflects observe mode exactly', async () => {
+    const records: CallRecord[] = [];
+    const { getByTestId } = render(AutonomyControl, {
+      props: { call: makeCall(records, makeResponse(OBSERVE_DOC)) },
+    });
+    await waitFor(() => {
+      expect(getByTestId('autonomy-current-mode').textContent?.trim()).toBe('Observe');
+    });
+  });
+
+  it('current-mode caption stays on the committed mode while a switch is armed (not the pending one)', async () => {
+    const records: CallRecord[] = [];
+    const { getByTestId } = render(AutonomyControl, {
+      props: { call: makeCall(records, makeResponse(PROPOSE_APPLY_DOC)) },
+    });
+    await waitFor(() => {
+      expect(getByTestId('autonomy-current-mode').textContent?.trim()).toBe('Propose + Apply');
+    });
+
+    // Arm a switch to observe (clicked, not yet confirmed)
+    await fireEvent.click(getByTestId('autonomy-mode-observe'));
+    await waitFor(() => expect(getByTestId('autonomy-cancel')).toBeTruthy());
+
+    // Caption must still name the committed mode — the dial has not changed yet
+    expect(getByTestId('autonomy-current-mode').textContent?.trim()).toBe('Propose + Apply');
+  });
+
+  // Encodes the operator's requirement: after switching, the formerly-active tab
+  // returns to normal (loses --active, so it regains the click/hover affordance).
+  it('after a confirmed switch the caption + active segment move on, freeing the old tab', async () => {
+    const records: CallRecord[] = [];
+    const postResponse: AutonomyDoc = {
+      mode: 'observe',
+      reason: null,
+      actor: null,
+      updated_at: null,
+      read_error: false,
+    };
+    const { getByTestId } = render(AutonomyControl, {
+      props: {
+        call: makeCall(records, makeResponse(PROPOSE_APPLY_DOC), makeResponse(postResponse)),
+      },
+    });
+    await waitFor(() => {
+      expect(getByTestId('autonomy-current-mode').textContent?.trim()).toBe('Propose + Apply');
+    });
+
+    await fireEvent.click(getByTestId('autonomy-mode-observe'));
+    await waitFor(() => expect(getByTestId('autonomy-confirm')).toBeTruthy());
+    await fireEvent.click(getByTestId('autonomy-confirm'));
+
+    // Caption + active state land on the new mode
+    await waitFor(() => {
+      expect(getByTestId('autonomy-current-mode').textContent?.trim()).toBe('Observe');
+    });
+    const observeBtn = getByTestId('autonomy-mode-observe');
+    const paBtn = getByTestId('autonomy-mode-propose_apply');
+    expect(observeBtn.classList.contains('autonomy-segment--active')).toBe(true);
+    expect(observeBtn.getAttribute('aria-pressed')).toBe('true');
+
+    // The formerly-active tab is no longer settled — switchable again
+    expect(paBtn.classList.contains('autonomy-segment--active')).toBe(false);
+    expect(paBtn.getAttribute('aria-pressed')).toBe('false');
+  });
 });

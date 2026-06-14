@@ -367,8 +367,18 @@
         {/each}
       </div>
 
-      <!-- Blurb for current mode -->
-      <p class="autonomy-blurb">{MODE_BLURBS[currentMode]}</p>
+      <!-- Current mode, named in words, then its blurb. Bound to currentMode
+           (the committed mode) — NOT pendingMode — so an armed-but-unconfirmed
+           switch does not move the "Current" label early. -->
+      <div class="autonomy-mode-summary">
+        <p class="autonomy-current" data-testid="autonomy-current">
+          <span class="autonomy-current__label">Current</span>
+          <span class="autonomy-current__sep" aria-hidden="true">·</span>
+          <span class="autonomy-current__mode" data-testid="autonomy-current-mode"
+            >{MODE_LABELS[currentMode]}</span>
+        </p>
+        <p class="autonomy-blurb">{MODE_BLURBS[currentMode]}</p>
+      </div>
 
       <!-- Meta line: actor · time · reason -->
       {#if currentReadError}
@@ -534,10 +544,23 @@
     border-right: none;
   }
 
+  /*
+   * Hover affordance — ONLY the switchable segments react: the active one is
+   * settled (excluded below) and an armed one keeps its own emphasis. A NEUTRAL
+   * gray fill (muted → ink) signals "clickable" without borrowing the blue that
+   * is reserved for the active/selected state, so hover never reads as selected.
+   */
+  .autonomy-segment:not(.autonomy-segment--active):not(.autonomy-segment--armed):not(:disabled):hover {
+    background: var(--ds-surface-2);
+    color: var(--ds-fg);
+  }
+
   /* Active mode — neutral/calm emphasis, NOT warn/danger */
   .autonomy-segment--active {
     background: var(--ds-stream-surface);
     color: var(--ds-stream-ink);
+    /* Already-on: settled, not an action. No click affordance, no hover. */
+    cursor: default;
   }
 
   /*
@@ -568,7 +591,32 @@
     opacity: 0.6;
   }
 
-  /* ---- Blurb ---- */
+  /* ---- Current-mode caption + blurb ---- */
+  /* Tight grouping so the named mode and its description read as one block. */
+  .autonomy-mode-summary {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+
+  .autonomy-current {
+    margin: 0;
+    display: flex;
+    align-items: baseline;
+    gap: 0.4em;
+    font-size: var(--ds-fs-1);
+  }
+
+  .autonomy-current__label,
+  .autonomy-current__sep {
+    color: var(--ds-muted);
+  }
+
+  .autonomy-current__mode {
+    color: var(--ds-fg);
+    font-weight: var(--ds-fw-semibold);
+  }
+
   .autonomy-blurb {
     margin: 0;
     font-size: var(--ds-fs-1);
