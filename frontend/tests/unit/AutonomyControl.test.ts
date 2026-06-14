@@ -3,6 +3,7 @@ import { render, cleanup, fireEvent, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import AutonomyControl from '../../src/components/AutonomyControl.svelte';
 import type { AutonomyDoc } from '../../src/lib/autonomy';
+import { AUTONOMY_EXPLAINER_HEADING, AUTONOMY_EXPLAINER_BODY } from '../../src/lib/autonomy';
 
 // Component tests for AutonomyControl — the operator autonomy dial.
 //
@@ -671,5 +672,52 @@ describe('AutonomyControl', () => {
     // The formerly-active tab is no longer settled — switchable again
     expect(paBtn.classList.contains('autonomy-segment--active')).toBe(false);
     expect(paBtn.getAttribute('aria-pressed')).toBe('false');
+  });
+
+  // ---- Progressive-disclosure explainer ("How does the agent act on its own?") ----
+
+  it('explainer is collapsed by default — toggle present + aria-expanded=false, body absent', async () => {
+    const records: CallRecord[] = [];
+    const { getByTestId, queryByTestId } = render(AutonomyControl, {
+      props: { call: makeCall(records, makeResponse(PROPOSE_APPLY_DOC)) },
+    });
+    const toggle = await waitFor(() => getByTestId('autonomy-explainer-toggle'));
+    expect(toggle.textContent).toContain(AUTONOMY_EXPLAINER_HEADING);
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    // Body is conditionally rendered — not in the DOM while collapsed.
+    expect(queryByTestId('autonomy-explainer-body')).toBeNull();
+  });
+
+  it('clicking the toggle expands the explainer — body appears with the copy, aria-expanded=true', async () => {
+    const records: CallRecord[] = [];
+    const { getByTestId } = render(AutonomyControl, {
+      props: { call: makeCall(records, makeResponse(PROPOSE_APPLY_DOC)) },
+    });
+    const toggle = await waitFor(() => getByTestId('autonomy-explainer-toggle'));
+
+    await fireEvent.click(toggle);
+
+    await waitFor(() => {
+      const body = getByTestId('autonomy-explainer-body');
+      expect(body.textContent?.trim()).toBe(AUTONOMY_EXPLAINER_BODY);
+    });
+    expect(getByTestId('autonomy-explainer-toggle').getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('clicking the toggle twice collapses the explainer again', async () => {
+    const records: CallRecord[] = [];
+    const { getByTestId, queryByTestId } = render(AutonomyControl, {
+      props: { call: makeCall(records, makeResponse(PROPOSE_APPLY_DOC)) },
+    });
+    const toggle = await waitFor(() => getByTestId('autonomy-explainer-toggle'));
+
+    // open
+    await fireEvent.click(toggle);
+    await waitFor(() => expect(getByTestId('autonomy-explainer-body')).toBeTruthy());
+
+    // close — the slide-out transition unmounts the node, so wait for it to go
+    await fireEvent.click(toggle);
+    await waitFor(() => expect(queryByTestId('autonomy-explainer-body')).toBeNull());
+    expect(getByTestId('autonomy-explainer-toggle').getAttribute('aria-expanded')).toBe('false');
   });
 });
