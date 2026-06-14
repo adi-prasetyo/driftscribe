@@ -38,6 +38,7 @@ from agent.config import get_settings
 from agent.contract import load_contract
 from agent.github_actions import get_repo
 from agent.iac_artifacts import load_plan_view_from_gcs
+from agent.request_context import get_current_autonomy_mode
 from driftscribe_lib.iac_plan_summary import (
     BLAST_CANNOT_TOUCH_NOTE,
     blast_radius_phrase,
@@ -579,7 +580,7 @@ def derive_iac_pr_authority(
     return IacPrAuthority(target_repo=target_repo, branch=branch)
 
 
-def iac_pr_next_steps(pr_number: object) -> str:
+def iac_pr_next_steps(pr_number: object, *, plan_builder_dispatched: bool = False) -> str:
     """The operator next-steps reminder appended after an infra PR opens.
 
     Shared by the single-agent :func:`open_infra_pr_tool` and the D5 fan-out
@@ -589,6 +590,11 @@ def iac_pr_next_steps(pr_number: object) -> str:
     ``/iac-approvals/<N>`` link instead of the literal ``<pr_number>``
     placeholder — falling back to the placeholder when the worker did not
     return a number. (``bool`` is excluded explicitly: it subclasses ``int``.)
+
+    When ``plan_builder_dispatched=True``, the instructions tell the operator
+    the plan-builder has been started (not that it will succeed — GitHub
+    accepted the dispatch, but the run can still fail). When False, the
+    existing manual-dispatch instruction is used.
     """
     where = (
         f"/iac-approvals/{pr_number}"
@@ -597,10 +603,19 @@ def iac_pr_next_steps(pr_number: object) -> str:
         and pr_number > 0
         else "/iac-approvals/<pr_number>"
     )
+    rebake = (
+        " A PR that creates NEW resources also needs an operator "
+        "re-bake (C6) before it can apply."
+    )
+    if plan_builder_dispatched:
+        return (
+            f"I've started the plan-builder for this PR. When it finishes (usually a "
+            f"minute or two), review & approve the plan at {where} — reload if it "
+            f"isn't there yet." + rebake
+        )
     return (
         "Operator: dispatch the C2 plan-builder on this PR number, then review & "
-        f"approve at {where}. A PR that creates NEW resources also needs an "
-        "operator re-bake (C6) before it can apply."
+        f"approve at {where}." + rebake
     )
 
 
@@ -662,13 +677,17 @@ def _notify_approval_pending(
             _log.warning(event, extra=log_extra)
 
 
-def notify_iac_pr_pending(pr_number: int, pr_url: str, title: str) -> None:
+def notify_iac_pr_pending(pr_number: int, pr_url: str, title: str, *, plan_builder_dispatched: bool = False) -> None:
     """Best-effort notification that an IaC PR is awaiting operator review.
 
     Called from both authoring sites (``open_infra_pr_tool`` and the D5
     multi-slice orchestrator in ``agent.fanout``) after a CONFIRMED PR pointer.
     Suppresses all exceptions; logs WARNING ``iac_pending_notify_failed`` with
     pr_number only (never the body — it may embed a tokened approval URL).
+
+    When ``plan_builder_dispatched=True``, the notification body tells the
+    operator the plan-builder has already been started for this PR. When False,
+    the existing manual-dispatch instruction is used.
 
     Contrast with agent/main.py's autonomous rollback flow: there the notify is
     load-bearing (the webhook is the ONLY surface carrying the approval URL);
@@ -687,12 +706,20 @@ def notify_iac_pr_pending(pr_number: int, pr_url: str, title: str) -> None:
         if len(title) > _NOTIFY_TITLE_CAP
         else title
     )
-    body = (
-        f"Infrastructure change awaiting review: {clamped_title!r} "
-        f"(PR #{pr_number}). Next: dispatch the C2 plan-builder for "
-        f"PR #{pr_number}, then review & approve: {approve_url}. "
-        f"GitHub: {pr_url}"
-    )
+    if plan_builder_dispatched:
+        body = (
+            f"Infrastructure change awaiting review: {clamped_title!r} "
+            f"(PR #{pr_number}). I've started the plan-builder for PR #{pr_number}. "
+            f"Review & approve at {approve_url} — reload if it isn't there yet. "
+            f"GitHub: {pr_url}"
+        )
+    else:
+        body = (
+            f"Infrastructure change awaiting review: {clamped_title!r} "
+            f"(PR #{pr_number}). Next: dispatch the C2 plan-builder for "
+            f"PR #{pr_number}, then review & approve: {approve_url}. "
+            f"GitHub: {pr_url}"
+        )
     _notify_approval_pending(
         body,
         severity="medium",
@@ -718,13 +745,16 @@ def _open_iac_pr_and_notify(
       calls here directly (never runs the violation check on its own output).
     """
     authority = derive_iac_pr_authority(title)
+    dispatch_plan_builder = get_current_autonomy_mode() == "propose_apply"
     result = worker_client.call_open_infra_pr(
         target_repo=authority.target_repo,
         branch=authority.branch,
         title=title,
         body=body,
         files=files,
+        dispatch_plan_builder=dispatch_plan_builder,
     )
+    plan_builder_dispatched = result.get("plan_builder_dispatched", False)
     # Compact, LLM-useful result + the required next-steps reminder (the real
     # pr_number is substituted into the /iac-approvals/<N> path so the operator
     # gets a usable link, not a literal placeholder).
@@ -734,7 +764,8 @@ def _open_iac_pr_and_notify(
         "pr_number": pr_number,
         "pr_url": result.get("pr_url"),
         "branch": result.get("branch", authority.branch),
-        "next_steps": "PR opened. " + iac_pr_next_steps(pr_number),
+        "next_steps": "PR opened. " + iac_pr_next_steps(pr_number, plan_builder_dispatched=plan_builder_dispatched),
+        "plan_builder_dispatched": plan_builder_dispatched,
     }
     # Best-effort notification — only fires for CONFIRMED PRs (same predicate
     # as the first-authoring approval CTA, so both surfaces agree by construction).
@@ -743,6 +774,7 @@ def _open_iac_pr_and_notify(
             compact_result["pr_number"],
             compact_result["pr_url"],
             title,
+            plan_builder_dispatched=plan_builder_dispatched,
         )
     return compact_result
 

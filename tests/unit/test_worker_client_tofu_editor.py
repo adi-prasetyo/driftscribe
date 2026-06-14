@@ -145,6 +145,7 @@ def test_call_open_infra_pr_payload_passthrough_base_pinned_main() -> None:
         "title": "Add a bucket",
         "body": "Body of the PR.",
         "files": files,
+        "dispatch_plan_builder": False,
     }
     # The multi-file list is preserved (two distinct iac/ writes in one PR).
     assert sent["base"] == "main"

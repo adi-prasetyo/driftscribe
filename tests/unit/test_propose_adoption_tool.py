@@ -24,7 +24,7 @@ def _make_fake_worker(pr_number: int = 42, pr_url: str = "https://github.com/adi
     """Return a fake call_open_infra_pr that records calls and returns a success result."""
     calls = []
 
-    def _fake(*, target_repo, branch, title, body, files):
+    def _fake(*, target_repo, branch, title, body, files, dispatch_plan_builder=False):
         calls.append(dict(target_repo=target_repo, branch=branch, title=title, body=body, files=files))
         return {"status": "opened", "pr_number": pr_number, "pr_url": pr_url, "branch": branch}
 
@@ -119,7 +119,7 @@ def test_propose_adoption_tool_worker_error_propagates_no_notify(monkeypatch):
     from agent import adk_tools
     from agent.worker_client import WorkerClientError
 
-    def _error_worker(*, target_repo, branch, title, body, files):
+    def _error_worker(*, target_repo, branch, title, body, files, dispatch_plan_builder=False):
         raise WorkerClientError(422, "gate violation", "tofu_editor")
 
     fake_fetch, _ = _make_fetch_iac_tree()
@@ -241,7 +241,7 @@ def test_open_infra_pr_tool_allows_clean_file(monkeypatch):
 
     worker_calls = []
 
-    def _fake(*, target_repo, branch, title, body, files):
+    def _fake(*, target_repo, branch, title, body, files, dispatch_plan_builder=False):
         worker_calls.append(files)
         return {"status": "opened", "pr_number": 5, "pr_url": "https://u", "branch": branch}
 
@@ -390,7 +390,7 @@ def test_open_infra_pr_tool_existing_tests_still_pass(monkeypatch):
 
     captured: dict = {}
 
-    def _fake(*, target_repo, branch, title, body, files):
+    def _fake(*, target_repo, branch, title, body, files, dispatch_plan_builder=False):
         captured.update(target_repo=target_repo, branch=branch, title=title, body=body, files=files)
         return {"status": "opened", "pr_number": 7, "pr_url": "https://x/pull/7", "branch": branch}
 

@@ -76,7 +76,7 @@ def test_open_infra_pr_tool_happy_path_routes_with_derived_authority(monkeypatch
 
     captured: dict = {}
 
-    def _fake_call_open_infra_pr(*, target_repo, branch, title, body, files):
+    def _fake_call_open_infra_pr(*, target_repo, branch, title, body, files, dispatch_plan_builder=False):
         captured.update(
             target_repo=target_repo,
             branch=branch,
@@ -190,7 +190,7 @@ def test_open_infra_pr_tool_result_falls_back_to_derived_branch(monkeypatch):
 
     captured: dict = {}
 
-    def _fake(*, target_repo, branch, title, body, files):
+    def _fake(*, target_repo, branch, title, body, files, dispatch_plan_builder=False):
         captured["branch"] = branch
         return {"status": "opened", "pr_number": 9, "pr_url": "https://x/pull/9"}
 
@@ -212,7 +212,7 @@ def _capture_branch(monkeypatch, *, title: str) -> str:
 
     captured: dict = {}
 
-    def _fake(*, target_repo, branch, title, body, files):
+    def _fake(*, target_repo, branch, title, body, files, dispatch_plan_builder=False):
         captured["branch"] = branch
         return {"status": "opened", "pr_number": 1, "pr_url": "u", "branch": branch}
 
@@ -289,7 +289,7 @@ def test_open_infra_pr_tool_honors_target_repo_override(monkeypatch):
 
     captured: dict = {}
 
-    def _fake(*, target_repo, branch, title, body, files):
+    def _fake(*, target_repo, branch, title, body, files, dispatch_plan_builder=False):
         captured["target_repo"] = target_repo
         return {"status": "opened", "pr_number": 3, "pr_url": "u", "branch": branch}
 

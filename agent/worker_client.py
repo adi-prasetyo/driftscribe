@@ -504,7 +504,8 @@ def call_merge_pr(target_repo: str, pr_number: int) -> dict:
 
 
 def call_open_infra_pr(
-    target_repo: str, branch: str, title: str, body: str, files: list[dict]
+    target_repo: str, branch: str, title: str, body: str, files: list[dict],
+    *, dispatch_plan_builder: bool = False
 ) -> dict:
     """Wrapper for the tofu-editor worker's ``/open-pr`` endpoint (Phase D2).
 
@@ -524,6 +525,13 @@ def call_open_infra_pr(
     ``iac/``-path / branch / static-gate policy check BEFORE any GitHub call;
     this wrapper just routes.
 
+    ``dispatch_plan_builder``: when True, the worker will fire a
+    ``workflow_dispatch`` on the C2 plan-builder (``iac.yml`` at ``main``) for
+    the new PR number — fail-soft if the dispatch fails. The worker hardcodes the
+    workflow filename, ref, and inputs; this flag is the only caller-controlled
+    gate. Pass ``True`` when the autonomy mode is ``propose_apply`` (auto-dispatch
+    is appropriate); leave False (the default) for all other modes.
+
     Uses the DEFAULT endpoint (``/open-pr``) — no ``endpoint=`` override, since
     it is the editor's only path.
     """
@@ -536,6 +544,7 @@ def call_open_infra_pr(
             "title": title,
             "body": body,
             "files": files,
+            "dispatch_plan_builder": dispatch_plan_builder,
         },
     )
 

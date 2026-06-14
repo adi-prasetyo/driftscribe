@@ -350,7 +350,7 @@ def _patch_open_infra_pr_call(monkeypatch, *, result=None, exc=None):
     """Patch the call_open_infra_pr seam used by open_infra_pr_tool."""
     import importlib
 
-    def _fake(target_repo, branch, title, body, files):
+    def _fake(target_repo, branch, title, body, files, *, dispatch_plan_builder=False):
         if exc is not None:
             raise exc
         return result or _confirmed_open_pr_result()

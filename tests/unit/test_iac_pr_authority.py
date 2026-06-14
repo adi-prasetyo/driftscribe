@@ -94,7 +94,7 @@ def test_open_infra_pr_tool_routes_through_shared_helper(monkeypatch):
 
     captured: dict = {}
 
-    def _fake_call_open_infra_pr(*, target_repo, branch, title, body, files):
+    def _fake_call_open_infra_pr(*, target_repo, branch, title, body, files, dispatch_plan_builder=False):
         captured.update(
             target_repo=target_repo, branch=branch, title=title, body=body, files=files
         )

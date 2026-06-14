@@ -114,6 +114,7 @@ def test_open_pr_happy_multi_file_returns_200(client) -> None:
         "pr_number": 123,
         "pr_url": "https://github.com/adi-prasetyo/driftscribe/pull/123",
         "branch": "infra/add-two-files",
+        "plan_builder_dispatched": False,
     }
 
 

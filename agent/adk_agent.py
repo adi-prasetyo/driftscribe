@@ -108,6 +108,7 @@ from agent.mcp.developer_knowledge import (
 )
 from agent.autonomy import autonomy_instruction_note, filter_tools_for_mode
 from agent.models import DecisionProposal
+from agent.request_context import autonomy_mode_scope
 from agent.secret_guard import redact_dict, redact_event, redact_text
 from agent.workload_context import current_workload
 from agent.workloads import WorkloadResolution, load_workload
@@ -922,35 +923,36 @@ async def run_chat_stream(
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
-    async for event in runner.run_async(
-        user_id="driftscribe-runtime",
-        session_id=sid,
-        new_message=msg,
-    ):
-        # Same partial-event dedup gate as run_chat (18.B.2): only merged
-        # non-partial events are eligible to log/stream.
-        if event.content and event.content.parts and getattr(event, "partial", None) is not True:
-            for payload in _emit_event_logs(
-                event, tool_calls=tool_calls, iac_pr_sink=iac_pr
-            ):
-                yield {"type": "event", "event": _stream(payload)}
-        # Collect + emit the final natural-language response. This is the
-        # SAME emit that lived in run_chat pre-Phase-22 — moved here so the
-        # drain path stays byte-identical. run_agent keeps its own emit.
-        if event.is_final_response() and event.content and event.content.parts:
-            for part in event.content.parts:
-                if getattr(part, "thought", False):
-                    continue
-                if getattr(part, "text", None):
-                    reply_chunks.append(part.text)
-            accepted_text = "".join(reply_chunks)
-            if accepted_text.strip() and not final_response_logged:
-                fr_payload = _emit_final_response(accepted_text)
-                final_response_logged = True
-                yield {"type": "event", "event": _stream(fr_payload)}
-        usage_payload = _emit_llm_usage(event)
-        if usage_payload is not None:
-            yield {"type": "event", "event": _stream(usage_payload)}
+    with autonomy_mode_scope(autonomy_mode):
+        async for event in runner.run_async(
+            user_id="driftscribe-runtime",
+            session_id=sid,
+            new_message=msg,
+        ):
+            # Same partial-event dedup gate as run_chat (18.B.2): only merged
+            # non-partial events are eligible to log/stream.
+            if event.content and event.content.parts and getattr(event, "partial", None) is not True:
+                for payload in _emit_event_logs(
+                    event, tool_calls=tool_calls, iac_pr_sink=iac_pr
+                ):
+                    yield {"type": "event", "event": _stream(payload)}
+            # Collect + emit the final natural-language response. This is the
+            # SAME emit that lived in run_chat pre-Phase-22 — moved here so the
+            # drain path stays byte-identical. run_agent keeps its own emit.
+            if event.is_final_response() and event.content and event.content.parts:
+                for part in event.content.parts:
+                    if getattr(part, "thought", False):
+                        continue
+                    if getattr(part, "text", None):
+                        reply_chunks.append(part.text)
+                accepted_text = "".join(reply_chunks)
+                if accepted_text.strip() and not final_response_logged:
+                    fr_payload = _emit_final_response(accepted_text)
+                    final_response_logged = True
+                    yield {"type": "event", "event": _stream(fr_payload)}
+            usage_payload = _emit_llm_usage(event)
+            if usage_payload is not None:
+                yield {"type": "event", "event": _stream(usage_payload)}
 
     reply = "".join(reply_chunks).strip()
     if not reply:

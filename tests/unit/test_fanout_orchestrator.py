@@ -160,7 +160,7 @@ def _patch_authority(monkeypatch, target_repo="owner/repo", branch="infra/x-1-ab
 
 
 def _patch_open_pr(monkeypatch, *, capture=None, result=None, exc=None):
-    def _fake(target_repo, branch, title, body, files):
+    def _fake(target_repo, branch, title, body, files, *, dispatch_plan_builder=False):
         if capture is not None:
             capture["call"] = {
                 "target_repo": target_repo,
