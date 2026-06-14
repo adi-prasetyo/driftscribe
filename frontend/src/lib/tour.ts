@@ -111,7 +111,7 @@ export const CONTROLS_LINE =
   'and reports), Propose (it drafts changes for your review), or Propose + ' +
   'Apply (it may also complete routine dependency updates end-to-end). At ' +
   'every setting, infrastructure edits pass your explicit approval gate — ' +
-  'and the Pause button suspends all agent activity in one click.';
+  'and the Pause control in the top bar suspends all agent activity in one click.';
 
 // Step 5 — what sending the prefilled request actually does, and how to
 // reopen the tour. Honesty T6 (Codex MF1): scoped to THIS adopt request —

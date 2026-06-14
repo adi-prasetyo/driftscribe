@@ -29,7 +29,9 @@
   import { initialChatPrefill } from './lib/workloads';
   import type { ChatPrefill } from './lib/workloads';
   import CapabilityCard from './components/CapabilityCard.svelte';
-  import PauseControl from './components/PauseControl.svelte';
+  import PausePill from './components/PausePill.svelte';
+  import PauseBanner from './components/PauseBanner.svelte';
+  import { createPauseStore } from './lib/pauseStore';
   import AutonomyControl from './components/AutonomyControl.svelte';
   import Timeline from './components/Timeline.svelte';
   import TourBanner from './components/TourBanner.svelte';
@@ -175,6 +177,10 @@
     }
     return resp;
   }
+
+  // ---- pause kill-switch (one shared store → header PausePill + content
+  // PauseBanner, so the two surfaces can never diverge or double-fetch) ----
+  const pause = createPauseStore(call);
 
   // ---- decisions rail ----
   async function loadDecisions() {
@@ -409,6 +415,7 @@
 
   onMount(() => {
     void loadDecisions();
+    void pause.fetchPause();
     if (chatPrefill !== null) {
       // Remove ONLY ask_pr (preserve other params + hash) so reload/share
       // doesn't re-prefill — mirrors exitPreview()'s surgical removal.
@@ -428,6 +435,7 @@
     <h1 class="app-title">DriftScribe <span class="app-title__sub">— the agent proposes, you approve</span></h1>
   </div>
   <div class="app-header__actions">
+    <PausePill {pause} />
     <button
       class="ds-btn ds-btn--ghost app-tour-btn"
       type="button"
@@ -446,7 +454,7 @@
       <TourBanner onStart={startTour} onDismiss={dismissTourOffer} />
     {/if}
     <div class="tour-target" data-tour="controls">
-      <PauseControl {call} />
+      <PauseBanner {pause} />
       <AutonomyControl {call} />
     </div>
     <div class="tour-target" data-tour="estate">
