@@ -149,6 +149,8 @@ describe('step copy', () => {
     expect(CONTROLS_LINE).toContain('routine dependency updates');
     expect(CONTROLS_LINE).toContain('Pause');
     expect(CONTROLS_LINE.toLowerCase()).not.toContain('safety');
+    // Pause now lives in the header pill, not a content card — copy points there.
+    expect(CONTROLS_LINE).toContain('top bar');
   });
 
   it('NEXT_LINE is scoped to THIS request and the review-page gate (T6)', () => {
