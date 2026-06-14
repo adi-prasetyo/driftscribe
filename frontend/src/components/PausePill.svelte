@@ -135,7 +135,7 @@
           class="pause-popover__reason"
           type="text"
           maxlength="500"
-          placeholder="reason (optional)"
+          placeholder="e.g. scheduled maintenance"
           data-testid="pause-popover-reason"
           bind:this={reasonEl}
           bind:value={reasonInput}
