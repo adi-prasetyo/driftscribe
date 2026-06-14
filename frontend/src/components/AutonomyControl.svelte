@@ -10,7 +10,14 @@
 
   import { onMount, tick } from 'svelte';
   import { slide } from 'svelte/transition';
-  import { AUTONOMY_MODES, MODE_LABELS, MODE_BLURBS, parseAutonomyDoc } from '../lib/autonomy';
+  import {
+    AUTONOMY_MODES,
+    MODE_LABELS,
+    MODE_BLURBS,
+    AUTONOMY_EXPLAINER_HEADING,
+    AUTONOMY_EXPLAINER_BODY,
+    parseAutonomyDoc,
+  } from '../lib/autonomy';
   import type { AutonomyDoc, AutonomyMode } from '../lib/autonomy';
   import { motionMs } from '../lib/motion';
   import Icon from './Icon.svelte';
@@ -32,6 +39,11 @@
   let currentActor = $state<string | null>(null);
   let currentUpdatedAt = $state<string | null>(null);
   let currentReadError = $state(false);
+
+  // Progressive-disclosure explainer ("How does the agent act on its own?").
+  // Collapsed by default — the dial works without it; it's there for operators
+  // who wonder what the dial governs beyond the chat box.
+  let explainerOpen = $state(false);
 
   // Confirm-row state: pendingMode is the mode the user clicked but hasn't confirmed.
   let confirming = $state(false);
@@ -380,6 +392,31 @@
         <p class="autonomy-blurb">{MODE_BLURBS[currentMode]}</p>
       </div>
 
+      <!-- Progressive-disclosure explainer: how the dial relates to the agent's
+           autonomous (no-human) path, and that it's global — not scoped to the
+           chat composer's workload picker. Collapsed by default. No aria-controls:
+           the body is conditionally rendered (for the slide transition), so a
+           dangling ID reference would be worse than omitting it — aria-expanded
+           on the button is a complete disclosure pattern and the body follows it
+           directly in DOM order. -->
+      <div class="autonomy-explainer">
+        <button
+          class="autonomy-explainer__toggle"
+          class:autonomy-explainer__toggle--open={explainerOpen}
+          type="button"
+          data-testid="autonomy-explainer-toggle"
+          aria-expanded={explainerOpen}
+          onclick={() => (explainerOpen = !explainerOpen)}
+        ><Icon name="chevron-down" size={14} extraClass="autonomy-explainer__chev" />{AUTONOMY_EXPLAINER_HEADING}</button>
+        {#if explainerOpen}
+          <p
+            class="autonomy-explainer__body"
+            data-testid="autonomy-explainer-body"
+            transition:slide={{ duration: motionMs(200) }}
+          >{AUTONOMY_EXPLAINER_BODY}</p>
+        {/if}
+      </div>
+
       <!-- Meta line: actor · time · reason -->
       {#if currentReadError}
         <span class="autonomy-meta__warn" data-testid="autonomy-read-error"
@@ -620,6 +657,52 @@
   .autonomy-blurb {
     margin: 0;
     font-size: var(--ds-fs-1);
+    color: var(--ds-muted);
+  }
+
+  /* ---- Progressive-disclosure explainer ---- */
+  .autonomy-explainer {
+    display: flex;
+    flex-direction: column;
+    gap: var(--ds-sp-2);
+  }
+
+  /* A quiet, link-like toggle — it must not compete with the dial itself. */
+  .autonomy-explainer__toggle {
+    appearance: none;
+    border: none;
+    background: none;
+    padding: 0;
+    width: fit-content;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35em;
+    font-size: var(--ds-fs-1);
+    color: var(--ds-muted);
+    cursor: pointer;
+    text-align: left;
+    transition: color var(--ds-dur-fast) var(--ds-ease);
+  }
+
+  .autonomy-explainer__toggle:hover {
+    color: var(--ds-fg);
+  }
+
+  /* Chevron points down when collapsed, flips up when open. The icon is a child
+     <svg class="ds-icon autonomy-explainer__chev"> from Icon.svelte (global class). */
+  .autonomy-explainer__toggle :global(.autonomy-explainer__chev) {
+    transition: transform var(--ds-dur-fast) var(--ds-ease);
+  }
+
+  .autonomy-explainer__toggle--open :global(.autonomy-explainer__chev) {
+    transform: rotate(180deg);
+  }
+
+  .autonomy-explainer__body {
+    margin: 0;
+    max-width: 46ch;
+    font-size: var(--ds-fs-1);
+    line-height: 1.5;
     color: var(--ds-muted);
   }
 

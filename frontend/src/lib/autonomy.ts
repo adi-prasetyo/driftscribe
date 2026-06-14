@@ -18,6 +18,20 @@ export const MODE_BLURBS: Record<AutonomyMode, string> = {
   propose_apply: 'Propose changes and apply them after your approval (current default).',
 };
 
+// Progressive-disclosure explainer copy (AutonomyControl). Names the mechanism
+// operators kept missing — the dial governs the AUTONOMOUS, no-human path (a
+// watched service changes → a drift check runs on its own), and it is GLOBAL,
+// not scoped to the per-message workload picker in the chat composer. Kept here
+// (pure/testable) beside the mode copy; the component only renders it. Phrased
+// to describe the designed behavior without implying the agent continuously
+// polls — the check is event-triggered, not a watcher loop.
+export const AUTONOMY_EXPLAINER_HEADING = 'How does the agent act on its own?';
+export const AUTONOMY_EXPLAINER_BODY =
+  'When a watched service changes — including changes made outside DriftScribe — a ' +
+  'drift check runs automatically; no one has to ask for it. This dial sets what the ' +
+  "agent may do in response, and it applies to all of the agent's activity, not just " +
+  'the chat requests you make here.';
+
 export interface AutonomyDoc {
   mode: AutonomyMode;
   reason: string | null;

@@ -6,7 +6,7 @@ import { ICON_PATHS, type IconName } from '../../src/lib/icons';
 afterEach(cleanup);
 
 // ---------------------------------------------------------------------------
-// Documented 22-icon set — drift-pin
+// Documented 23-icon set — drift-pin
 // ---------------------------------------------------------------------------
 const EXPECTED_ICON_NAMES = new Set<string>([
   'eye',
@@ -31,6 +31,7 @@ const EXPECTED_ICON_NAMES = new Set<string>([
   'git-merge',
   'alert-triangle',
   'file-text',
+  'chevron-down',
 ]);
 
 // ---------------------------------------------------------------------------
@@ -70,7 +71,7 @@ function parseIconMarkup(markup: string): { elements: Element[] } {
 // ---------------------------------------------------------------------------
 
 describe('Icon registry — drift-pin', () => {
-  it('contains exactly the documented 22 icon names', () => {
+  it('contains exactly the documented 23 icon names', () => {
     const registryNames = new Set(Object.keys(ICON_PATHS));
     const missing = [...EXPECTED_ICON_NAMES].filter((n) => !registryNames.has(n));
     const extra = [...registryNames].filter((n) => !EXPECTED_ICON_NAMES.has(n));
