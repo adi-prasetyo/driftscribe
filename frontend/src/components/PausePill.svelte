@@ -183,10 +183,6 @@
     align-items: center;
   }
 
-  .pause-pill__status {
-    /* span pills inherit .ds-pill geometry; icon/dot already gap-spaced */
-  }
-
   /* The running pill is a button — strip native chrome, keep .ds-pill look. */
   .pause-pill__btn {
     appearance: none;
