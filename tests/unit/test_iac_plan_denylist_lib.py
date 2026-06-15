@@ -87,3 +87,8 @@ def test_tools_shim_reexports_the_same_objects() -> None:
     assert shim.IAM_EXTRA_TYPES is lib.IAM_EXTRA_TYPES
     assert shim.CONTROL_PLANE_SERVICE_NAMES is lib.CONTROL_PLANE_SERVICE_NAMES
     assert shim.ADOPTABLE_RESOURCE_TYPES is lib.ADOPTABLE_RESOURCE_TYPES
+    # service-managed-bucket additions — pin identity so a local re-definition
+    # in tools/ (not a re-export) is caught, not just a type mismatch.
+    assert shim.SERVICE_MANAGED_BUCKET_SUFFIXES is lib.SERVICE_MANAGED_BUCKET_SUFFIXES
+    assert shim.SERVICE_MANAGED_BUCKET_PREFIXES is lib.SERVICE_MANAGED_BUCKET_PREFIXES
+    assert shim.is_service_managed_bucket_name is lib.is_service_managed_bucket_name

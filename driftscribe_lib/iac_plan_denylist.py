@@ -572,9 +572,10 @@ def _check_service_managed_bucket(
     to DriftScribe — adopting one into operator IaC is meaningless and was the
     original homepage-tour papercut. Bucket-only: unlike the control-plane rule
     there is no OBJECT case, because a Google staging bucket carries no
-    state/artifact trust dependency to smuggle into. A nameless bucket is
-    already reported as plan-json-malformed-change by _check_control_plane_bucket
-    (which runs first), so this check stays silent on a missing name.
+    state/artifact trust dependency to smuggle into. This check is silent on a
+    nameless bucket because is_service_managed_bucket_name is None/non-str-safe;
+    the single plan-json-malformed-change for such a row is owned by
+    _check_control_plane_bucket (dispatched first), so nothing is added here.
     """
     if rtype != "google_storage_bucket":
         return

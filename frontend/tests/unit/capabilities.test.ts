@@ -61,7 +61,7 @@ describe('groupRules', () => {
     expect(groups[0].heading).not.toBe('service-managed');
   });
 
-  it('produces all four known categories as proper headings', () => {
+  it('produces the four originally-known categories as proper headings', () => {
     const rules: CapRule[] = [controlPlaneRule, iamRule, globalRule, structuralRule];
     const groups = groupRules(rules);
     const categories = groups.map(g => g.category);

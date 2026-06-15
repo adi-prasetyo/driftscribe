@@ -42,7 +42,7 @@ export interface CapGate {
 export interface CapRule {
   id: string;
   description: string;
-  /** Category from CATEGORY_ORDER: typically "control-plane" | "iam" | "global-v1" | "structural".
+  /** Category from CATEGORY_ORDER: typically "control-plane" | "service-managed" | "iam" | "global-v1" | "structural".
    *  A future server may emit additional categories — callers must not drop unknown ones.
    *  Typed as string so the runtime unknown-category path is never unreachable. */
   category: string;

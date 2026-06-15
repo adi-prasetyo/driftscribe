@@ -227,6 +227,24 @@ allow); the adopt_recipe rejection is a UX nicety whose miss is equally fail-saf
 - Per-row distinct copy for the two reasons (shared-flag decision — one
   unified honest note).
 
+## Accepted tradeoffs & known limitations (adversarial review)
+- **Bounded-set false positives (accepted).** `endswith("_cloudbuild")` and
+  `startswith("run-sources-")` would also match a deliberately-named operator
+  bucket (`my-data_cloudbuild`, `run-sources-staging`) and block its adoption.
+  This is the SAME tradeoff already accepted for the control-plane suffixes
+  (an operator `acme-tofu-state` is likewise blocked). Probability is very low
+  (these are unusual, self-inflicted names), and tightening — e.g. requiring a
+  project-id shape or trailing digits — would need brittle per-pattern regex
+  that breaks the simple, auditable tuple design and risks false NEGATIVES.
+  Kept as-is by design.
+- **Cloud Composer false negative (known limitation).** Composer's
+  auto-created environment bucket is `<region>-<env>-<uuid>-bucket` — the
+  embedded UUID is unfit for a prefix/suffix match, so the bounded set cannot
+  catch it. It is NOT in DriftScribe's own estate (no Composer), so it is moot
+  for this deployment; catching UUID-named service buckets in general would
+  need a different signal (CAI labels / owning-service metadata), out of scope
+  for this bounded-name approach.
+
 ## Codex plan review (thread 019eca9c)
 Adopted: tighten `gcf-v2-` → `gcf-v2-sources-`/`gcf-v2-uploads-` (#1);
 "auto-created" copy framing, not "Google manages every byte" (#2); parity
