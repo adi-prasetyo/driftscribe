@@ -329,6 +329,14 @@ def build_capabilities() -> dict:
     Pinned by ``tests/unit/test_capabilities.py::test_build_capabilities_shape``
     and ``test_build_capabilities_is_json_serializable_and_env_free``.
     """
+    # The "autonomous" signal is the explicit trigger set owned in
+    # agent.main (NOT derived from observation_kind, which is intent not a
+    # wired trigger — only drift actually fires on its own). Imported lazily
+    # here, mirroring tests/unit/test_capabilities.py::
+    # test_chat_only_coherence_with_main, so this module never imports the
+    # heavy FastAPI app at load time (no cycle: main imports capabilities).
+    from agent.main import AUTONOMOUS_TRIGGER_WORKLOADS
+
     workloads = []
     for name in WORKLOAD_NAMES:
         spec = load_workload_spec(name)
@@ -354,8 +362,9 @@ def build_capabilities() -> dict:
         workloads.append({
             "name": spec.name,
             "display_name": spec.display_name,
+            "descriptor": spec.descriptor,
             "description": spec.description,
-            "autonomous": spec.observation_kind != "none",
+            "autonomous": spec.name in AUTONOMOUS_TRIGGER_WORKLOADS,
             "tools": tools,
             "workers": workers,
             "actions": actions,

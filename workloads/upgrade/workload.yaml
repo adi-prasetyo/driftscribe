@@ -24,7 +24,15 @@
 #   17.E owns UPGRADE_READER_URL / UPGRADE_DOCS_URL deploy wiring.
 
 name: upgrade
-display_name: Dependencies
+# Operator-facing identity (Phase 17.G crew rename). "Patch" = the punchy,
+# dev-native action word for keeping dependencies current. Despite this
+# workload's ``observation_kind: repo_lockfile`` (intent), it is NOT
+# autonomous in this build: ``/recheck workload=upgrade`` returns 503 and
+# no trigger is wired — so it is on-demand / chat-only, and the descriptor
+# stays always-visible to disambiguate "Patch" from HTTP PATCH. See
+# ``AUTONOMOUS_TRIGGER_WORKLOADS`` in agent/main.py (Patch is NOT in it).
+display_name: Patch
+descriptor: dependencies
 description: >
   Watch the repo's package.json for outdated dependencies (or
   vulnerable versions per advisory feeds) and propose upgrade PRs.

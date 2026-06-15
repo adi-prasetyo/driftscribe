@@ -67,29 +67,33 @@ A **workload** is one job the agent knows how to do: its own prompt, its own too
 workers. The coordinator routes each request to the right workload, and the LLM *only ever sees
 the tools for that one workload* — it can't reach across.
 
-Three areas exist today:
+Four workloads exist today, organised as a crew:
 
-1. **Drift** — watches the demo `payment-demo` Cloud Run service's live env vars against a written
-   "ops contract" (`demo/ops-contract.yaml`). If reality has drifted from the contract, it can:
-   do nothing, open a docs PR, file a drift issue, or **roll back** the service — and a rollback
-   always requires a human to approve via a signed, one-time, 15-minute link.
+1. **Anchor** (the `drift` workload) — the only one that runs **autonomously**. A live Eventarc
+   trigger fires whenever the `payment-demo` Cloud Run service config changes, waking Anchor
+   automatically. Anchor watches the live env vars against a written "ops contract"
+   (`demo/ops-contract.yaml`). If reality has drifted from the contract, it can: do nothing, open
+   a docs PR, file a drift issue, or **roll back** the service — and a rollback always requires a
+   human to approve via a signed, one-time, 15-minute link.
 
-2. **Dependency upgrades** — watches a demo `package.json` against GitHub's security Advisory DB.
-   If a dependency has a known vulnerability, it can open an **upgrade PR** bumping it. A strict
-   non-LLM validator runs before any write: no downgrades, no new deps, only patch/minor jumps,
-   the advisory URL must be real. Major version bumps are refused and routed to a human.
+2. **Patch** (the `upgrade` workload) — watches a demo `package.json` against GitHub's security
+   Advisory DB. If a dependency has a known vulnerability, it can open an **upgrade PR** bumping
+   it. A strict non-LLM validator runs before any write: no downgrades, no new deps, only
+   patch/minor jumps, the advisory URL must be real. Major version bumps are refused and routed to
+   a human. Patch runs **on demand** from chat; its autonomous trigger is future work and is not
+   wired up in this build.
 
-3. **Infrastructure as code (the newer work)** — this is actually *two* chat-only workloads plus a
-   downstream pipeline:
-   - **`explore`** is strictly read-only: it can read your *whole* GCP project's resources (via
-     Cloud Asset Inventory) and the live resource map shown in the UI. Zero mutation tools — not
-     even "notify."
-   - **`provision`** can **author OpenTofu/Terraform changes**, but only as a *proposal*: its one
-     mutation tool writes `iac/`-only HCL and opens a single PR through the `tofu-editor` worker.
-     It **never touches live infrastructure.**
-   - The actual `tofu apply` happens **downstream, in a separate pipeline**, behind a plan-bound,
-     HMAC-signed operator approval — run by the `tofu-apply` worker, which is the *only* thing
-     allowed to mutate live infra and is *not* something the chat agent can invoke directly.
+3. **Explore** (the `explore` workload) — an on-demand, **chat-only** workload that is strictly
+   read-only: it can read your *whole* GCP project's resources (via Cloud Asset Inventory) and the
+   live resource map shown in the UI. Zero mutation tools — not even "notify."
+
+4. **Provision** (the `provision` workload) — an on-demand, **chat-only** workload that can
+   **author OpenTofu/Terraform changes**, but only as a *proposal*: its one mutation tool writes
+   `iac/`-only HCL and opens a single PR through the `tofu-editor` worker. It **never touches live
+   infrastructure.** The actual `tofu apply` happens **downstream, in a separate pipeline**, behind
+   a plan-bound, HMAC-signed operator approval — run by the `tofu-apply` worker, which is the
+   *only* thing allowed to mutate live infra and is *not* something the chat agent can invoke
+   directly.
 
    So the shape is the same as everywhere else: **the agent proposes (a PR), a human approves, and
    one isolated worker applies — the agent itself can never apply.**
@@ -143,7 +147,7 @@ minted per-worker. Neither one unlocks the other.
    single Firestore transaction (so it can't be replayed), and *only then* tells Cloud Run to
    shift traffic to the target revision.
 
-The upgrade and infra flows are the same shape: **agent proposes → human approves (or a strict
+The Patch and Provision flows are the same shape: **agent proposes → human approves (or a strict
 validator gates) → one locked worker executes.**
 
 ---

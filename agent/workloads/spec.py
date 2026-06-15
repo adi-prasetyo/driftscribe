@@ -29,6 +29,16 @@ class WorkloadSpec(BaseModel):
             never touches live infra directly, so it likewise has no
             ``/recheck`` path.
         display_name: short human-readable label (operator-facing).
+            Phase 17.G renamed these from domain labels to a "crew" of
+            named agent identities (``drift`` → ``Anchor``, ``upgrade``
+            → ``Patch``, plus ``Provision`` / ``Explore``). The symbolic
+            ``name`` above is FROZEN; only this display identity changes.
+        descriptor: the one-or-two-word domain subtitle shown under the
+            identity (e.g. ``Anchor`` + ``Cloud Run config``). Operator
+            UI renders ``display_name`` as the bold identity and this as
+            the gray descriptor; docs lead with the identity and gloss
+            the domain. Required — a workload with no descriptor is a
+            manifest bug.
         description: one-paragraph description of what this workload
             detects and acts on. Surfaces in operator UI / docs.
         system_prompt_file: path *relative to this workload's
@@ -76,6 +86,7 @@ class WorkloadSpec(BaseModel):
 
     name: Literal["drift", "upgrade", "explore", "provision"]
     display_name: str
+    descriptor: str
     description: str
     system_prompt_file: str
     chat_system_prompt_file: str | None = None

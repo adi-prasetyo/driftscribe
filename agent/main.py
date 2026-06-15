@@ -1091,6 +1091,27 @@ def _do_rollback(
 CHAT_ONLY_WORKLOAD_NAMES: frozenset[str] = frozenset({"explore", "provision"})
 
 
+# Workloads that have a LIVE autonomous trigger — they run without anyone
+# asking. This is the source of truth for the operator-facing "Autonomous"
+# vs "On-demand" signal (GET /capabilities ``autonomous`` field; the crew
+# picker's group + badge). It is deliberately NOT derived from a workload's
+# ``observation_kind`` (which encodes *intent*, not a wired trigger): only
+# ``drift`` actually fires on its own in this build —
+#   * Eventarc audit-log events hit ``/eventarc`` with workload HARDCODED to
+#     "drift" (see the eventarc handler below); no other workload has a
+#     trigger bound to it.
+#   * ``/recheck workload="upgrade"`` returns 503 (the upgrade autonomous
+#     pipeline is unimplemented, post-Phase-17), and explore/provision are
+#     chat-only (CHAT_ONLY_WORKLOAD_NAMES above) — so none of the other
+#     three can run unprompted.
+# Honest labelling beats aspirational labelling: if an upgrade/Patch trigger
+# is ever wired (a real ``/eventarc-upgrade`` or scheduler), add it here and
+# the UI follows automatically. Both this set and CHAT_ONLY_WORKLOAD_NAMES
+# are routing/trigger facts owned in this module; ``agent.capabilities``
+# imports this lazily (mirroring ``test_chat_only_coherence_with_main``).
+AUTONOMOUS_TRIGGER_WORKLOADS: frozenset[str] = frozenset({"drift"})
+
+
 async def _do_recheck(
     trigger: str, force: bool = False, *, workload: str = "drift"
 ) -> dict:

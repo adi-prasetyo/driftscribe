@@ -1,0 +1,6 @@
+[
+  { "value": "drift",     "name": "Anchor",    "descriptor": "Cloud Run config", "group": "autonomous" },
+  { "value": "upgrade",   "name": "Patch",     "descriptor": "dependencies",     "group": "on-demand" },
+  { "value": "explore",   "name": "Explore",   "descriptor": "read-only",        "group": "on-demand" },
+  { "value": "provision", "name": "Provision", "descriptor": "infra edits",      "group": "on-demand" }
+]

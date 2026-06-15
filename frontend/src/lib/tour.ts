@@ -72,10 +72,13 @@ export function welcomeLine(graph: InfraGraph | null): string {
     ? `the GCP project ${graph.project}`
     : 'your GCP project';
   return (
-    `DriftScribe watches ${subject} and helps you bring it under ` +
-    'infrastructure-as-code management. It explains what it sees, proposes ' +
-    'changes as pull requests you can read, and applies an infrastructure ' +
-    'change only after you approve it.'
+    `DriftScribe is a small crew watching ${subject}. Anchor runs on its ` +
+    'own — it keeps your live Cloud Run config true to its contract, reacting ' +
+    'the moment something changes. Three more wait for you to ask: Patch keeps ' +
+    'your dependencies current, Provision authors infrastructure changes, and ' +
+    'Explore answers questions read-only. Infrastructure applies and rollbacks ' +
+    'always wait for your approval; only routine dependency updates can run ' +
+    'end-to-end, and only at the Propose + Apply setting.'
   );
 }
 
@@ -107,11 +110,12 @@ export function estateLine(graph: InfraGraph | null): string {
 // Step 3 — honesty T2: the always-gated claim is scoped to INFRASTRUCTURE
 // edits; Propose + Apply is allowed to finish routine dependency updates.
 export const CONTROLS_LINE =
-  'You decide how much the agent does on its own: Observe (it only watches ' +
-  'and reports), Propose (it drafts changes for your review), or Propose + ' +
-  'Apply (it may also complete routine dependency updates end-to-end). At ' +
-  'every setting, infrastructure edits pass your explicit approval gate — ' +
-  'and the Pause control in the top bar suspends all agent activity in one click.';
+  'This dial governs what Anchor does on its own when it spots a change, and ' +
+  'what the other agents may do when you ask: Observe (they only watch and ' +
+  'report), Propose (they draft changes for your review), or Propose + Apply ' +
+  '(they may also complete routine dependency updates end-to-end). At every ' +
+  'setting, infrastructure edits pass your explicit approval gate — and the ' +
+  'Pause control in the top bar suspends all agent activity in one click.';
 
 // Step 5 — what sending the prefilled request actually does, and how to
 // reopen the tour. Honesty T6 (Codex MF1): scoped to THIS adopt request —

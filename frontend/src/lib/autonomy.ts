@@ -27,10 +27,10 @@ export const MODE_BLURBS: Record<AutonomyMode, string> = {
 // polls — the check is event-triggered, not a watcher loop.
 export const AUTONOMY_EXPLAINER_HEADING = 'How does the agent act on its own?';
 export const AUTONOMY_EXPLAINER_BODY =
-  'When a watched service changes — including changes made outside DriftScribe — a ' +
-  'drift check runs automatically; no one has to ask for it. This dial sets what the ' +
-  "agent may do in response, and it applies to all of the agent's activity, not just " +
-  'the chat requests you make here.';
+  'When a watched service changes — including changes made outside DriftScribe — ' +
+  'Anchor runs automatically; no one has to ask. This dial sets what it may do in ' +
+  "response, and it applies to all of the agent's activity, not just the chat " +
+  'requests you make here.';
 
 export interface AutonomyDoc {
   mode: AutonomyMode;

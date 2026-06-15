@@ -32,6 +32,7 @@ from agent.workloads.registry import (
 _MINIMAL_DRIFT_YAML = """\
 name: drift
 display_name: Cloud Run env drift
+descriptor: Cloud Run config
 description: test
 system_prompt_file: system_prompt.txt
 contract_file: null
@@ -213,6 +214,22 @@ def test_build_capabilities_shape(monkeypatch):
     assert [w["name"] for w in dto["workloads"]] == list(WORKLOAD_NAMES)
     prov = next(w for w in dto["workloads"] if w["name"] == "provision")
     assert prov["autonomous"] is False
+    # Autonomy-truth (Phase 17.G crew rename): ONLY drift/Anchor is autonomous.
+    # upgrade/Patch's observation_kind is ``repo_lockfile`` (intent) but it has
+    # no wired trigger — /recheck upgrade 503s — so the DTO flag must be False.
+    # This is the bug the rename fixes: the flag was derived from
+    # observation_kind != "none", which wrongly marked Patch autonomous.
+    by_name = {w["name"]: w for w in dto["workloads"]}
+    assert by_name["drift"]["autonomous"] is True
+    assert by_name["upgrade"]["autonomous"] is False
+    assert by_name["explore"]["autonomous"] is False
+    # Identity rename + descriptor landed in the DTO.
+    assert by_name["drift"]["display_name"] == "Anchor"
+    assert by_name["upgrade"]["display_name"] == "Patch"
+    for w in dto["workloads"]:
+        assert isinstance(w["descriptor"], str) and w["descriptor"].strip(), (
+            f"workload {w['name']!r} missing a non-empty descriptor"
+        )
     open_pr = next(t for t in prov["tools"] if t["name"] == "provision_open_infra_pr")
     assert open_pr["write_capable"] is True
     read_env = next(t for t in prov["tools"] if t["name"] == "drift_read_live_env")
@@ -230,6 +247,59 @@ def test_build_capabilities_shape(monkeypatch):
     assert adoptable == sorted(adoptable, key=lambda x: x["type"])
     for entry in adoptable:
         assert isinstance(entry["type"], str) and isinstance(entry["label"], str)
+
+
+def test_autonomous_trigger_workloads_is_exactly_drift(monkeypatch):
+    """Autonomy-truth guard (Phase 17.G). The operator-facing "Autonomous"
+    badge must mean a WIRED trigger, not aspiration. Only ``drift`` has one
+    (Eventarc → /eventarc, hardcoded drift); ``upgrade``'s /recheck 503s and
+    explore/provision are chat-only — so the set is exactly {"drift"}. If a
+    Patch trigger is ever wired, this test (and the badge) move together."""
+    for spec in WORKER_REGISTRY.values():
+        monkeypatch.delenv(spec.url_env, raising=False)
+    from agent.main import AUTONOMOUS_TRIGGER_WORKLOADS, CHAT_ONLY_WORKLOAD_NAMES
+
+    assert AUTONOMOUS_TRIGGER_WORKLOADS == frozenset({"drift"})
+    assert "upgrade" not in AUTONOMOUS_TRIGGER_WORKLOADS
+    # Triggered and chat-only are disjoint camps.
+    assert AUTONOMOUS_TRIGGER_WORKLOADS.isdisjoint(CHAT_ONLY_WORKLOAD_NAMES)
+    # The full taxonomy: every workload is either autonomously triggered,
+    # chat-only, or the special unwired case (upgrade — intent-only /recheck
+    # that 503s, pinned by test_recheck_upgrade_* and the main.py:1233 guard).
+    assert (
+        set(AUTONOMOUS_TRIGGER_WORKLOADS)
+        | set(CHAT_ONLY_WORKLOAD_NAMES)
+        | {"upgrade"}
+    ) == set(WORKLOAD_NAMES)
+
+
+def test_frontend_catalog_matches_backend(monkeypatch):
+    """Cross-surface sync: the checked-in SPA crew catalog
+    (frontend/src/lib/workloads.catalog.json) must match the backend YAML
+    ``display_name``/``descriptor`` and the derived autonomy group. This is
+    the single guard against the picker and /capabilities drifting apart.
+    Reads the JSON (not the .ts) so Python never regex-parses TypeScript."""
+    for spec in WORKER_REGISTRY.values():
+        monkeypatch.delenv(spec.url_env, raising=False)
+    from agent.main import AUTONOMOUS_TRIGGER_WORKLOADS
+
+    repo_root = Path(__file__).resolve().parents[2]
+    catalog_path = repo_root / "frontend" / "src" / "lib" / "workloads.catalog.json"
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+
+    # Same workloads on both surfaces — no missing, no extra.
+    assert {e["value"] for e in catalog} == set(WORKLOAD_NAMES)
+    assert len(catalog) == len(WORKLOAD_NAMES)
+    for entry in catalog:
+        spec = load_workload_spec(entry["value"])
+        assert entry["name"] == spec.display_name, entry["value"]
+        assert entry["descriptor"] == spec.descriptor, entry["value"]
+        expected_group = (
+            "autonomous"
+            if entry["value"] in AUTONOMOUS_TRIGGER_WORKLOADS
+            else "on-demand"
+        )
+        assert entry["group"] == expected_group, entry["value"]
 
 
 def test_build_capabilities_is_json_serializable_and_env_free(monkeypatch):

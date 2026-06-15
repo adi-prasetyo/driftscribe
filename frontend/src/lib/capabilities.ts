@@ -51,9 +51,14 @@ export interface CapRule {
 /** A workload as serialized by the server. */
 export interface CapWorkload {
   name: string;
+  /** Crew identity (e.g. "Anchor"). */
   display_name: string;
+  /** Domain subtitle (e.g. "Cloud Run config"). */
+  descriptor: string;
   description: string;
-  /** True when observation_kind != "none" (the workload runs autonomously). */
+  /** True only when the workload has a LIVE autonomous trigger — derived
+   *  server-side from AUTONOMOUS_TRIGGER_WORKLOADS (only `drift`/Anchor
+   *  today), NOT from observation_kind. */
   autonomous: boolean;
   tools: CapTool[];
   workers: CapWorker[];

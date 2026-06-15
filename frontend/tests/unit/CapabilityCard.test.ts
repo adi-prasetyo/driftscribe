@@ -28,7 +28,8 @@ const FIXTURE: Capabilities = {
   workloads: [
     {
       name: 'drift',
-      display_name: 'Cloud Run config',
+      display_name: 'Anchor',
+      descriptor: 'Cloud Run config',
       description: 'Detect drift between a Cloud Run service\'s live env vars and the team\'s declared ops-contract.yaml.',
       autonomous: true,
       tools: [
@@ -43,9 +44,12 @@ const FIXTURE: Capabilities = {
     },
     {
       name: 'upgrade',
-      display_name: 'Dependencies',
+      display_name: 'Patch',
+      descriptor: 'dependencies',
       description: 'Watch the repo\'s package.json for outdated dependencies (or vulnerable versions per advisory feeds) and propose upgrade PRs.',
-      autonomous: true,
+      // Phase 17.G: Patch is NOT autonomous — /recheck upgrade 503s, no wired
+      // trigger. The DTO's autonomous flag now reflects that (was wrongly true).
+      autonomous: false,
       tools: [
         { name: 'upgrade_read_dependencies', description: 'Reads the target repo\'s dependency lockfile to identify outdated packages.', write_capable: false },
         { name: 'upgrade_propose_pr', description: 'Opens a dependency-upgrade pull request in the target repo.', write_capable: true },
@@ -55,7 +59,8 @@ const FIXTURE: Capabilities = {
     },
     {
       name: 'explore',
-      display_name: 'Explore (read-only)',
+      display_name: 'Explore',
+      descriptor: 'read-only',
       description: 'Read-only investigation across infra and code. Inspects a Cloud Run service\'s live env vars, the repo\'s declared ops-contract, the dependency lockfile, and authoritative developer docs — then reports. It cannot change anything: no PR, no rollback, no notification.',
       autonomous: false,
       tools: [
@@ -66,7 +71,8 @@ const FIXTURE: Capabilities = {
     },
     {
       name: 'provision',
-      display_name: 'Provision (infra edits)',
+      display_name: 'Provision',
+      descriptor: 'infra edits',
       description: 'Author OpenTofu (IaC) changes from a chat request and open ONE iac/-only pull request for the gated apply pipeline to plan, approve, and apply.',
       autonomous: false,
       tools: [
@@ -185,29 +191,29 @@ describe('CapabilityCard', () => {
     expect(denylist.textContent).toContain('No change may touch DriftScribe\'s own Cloud Run services.');
     expect(denylist.textContent).toContain('Its own control plane is untouchable');
 
-    // Workloads section — all four display names
+    // Workloads section — all four crew identities AND their descriptors
     const workloads = getByTestId('cap-workloads');
+    for (const crew of ['Anchor', 'Patch', 'Explore', 'Provision']) {
+      expect(workloads.textContent).toContain(crew);
+    }
     expect(workloads.textContent).toContain('Cloud Run config');
-    expect(workloads.textContent).toContain('Dependencies');
-    expect(workloads.textContent).toContain('Explore (read-only)');
-    expect(workloads.textContent).toContain('Provision (infra edits)');
+    expect(workloads.textContent).toContain('infra edits');
 
-    // Provision shows the "chat-only" pill. GLUED-EXACT-STRING PIN on the
-    // pill seam (Svelte 5 whitespace gotcha, PR #83 lesson): the component
-    // glues the name span and the pill span with {' '} as the ONLY whitespace,
-    // so the rendered text is exactly "<display_name> <pill>" with ONE space.
-    // If the {' '} is dropped (or the seam moves inside an {#if} that trims
-    // it), the strings glue together and this assertion FAILS.
+    // Provision shows the "On-demand · chat only" pill. GLUED-EXACT-STRING PIN
+    // on the seam (Svelte 5 whitespace gotcha, PR #83 lesson): the component
+    // glues name → descriptor → pill with explicit {' '} so the rendered text
+    // is exactly "<name> — <descriptor> <pill>". If a {' '} is dropped the
+    // strings glue and this assertion FAILS.
     const provisionSummary = workloads.querySelector('[data-testid="cap-workload-provision-summary"]');
     expect(provisionSummary).not.toBeNull();
-    expect(provisionSummary!.textContent).toContain('Provision (infra edits) chat-only');
-    // And the pill must be chat-only, not the autonomous one:
-    expect(provisionSummary!.textContent).not.toContain('autonomous');
+    expect(provisionSummary!.textContent).toContain('Provision — infra edits On-demand · chat only');
+    // And the pill must be the on-demand one, never the autonomous label:
+    expect(provisionSummary!.textContent).not.toContain('Autonomous');
 
-    // Same glued pin on the autonomous side of the seam:
+    // Same glued pin on the autonomous side of the seam (Anchor/drift):
     const driftSummary = workloads.querySelector('[data-testid="cap-workload-drift-summary"]');
     expect(driftSummary).not.toBeNull();
-    expect(driftSummary!.textContent).toContain('Cloud Run config autonomous + chat');
+    expect(driftSummary!.textContent).toContain('Anchor — Cloud Run config Autonomous · also chat');
   });
 
   it('4. write_capable badge: provision_open_infra_pr shows "write-capable", read tool shows "read"', async () => {

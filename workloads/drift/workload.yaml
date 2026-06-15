@@ -10,7 +10,15 @@
 # / ACTION_REGISTRY fails coordinator boot loudly.
 
 name: drift
-display_name: Cloud Run config
+# Operator-facing identity (Phase 17.G crew rename). The symbolic ``name``
+# above is FROZEN; ``display_name`` is the agent's human identity and
+# ``descriptor`` its domain subtitle (rendered "Anchor — Cloud Run config").
+# "Anchor" = keeps the live service true to its contract (the positive of
+# "drift"). This is the ONLY workload with a live autonomous trigger
+# (Eventarc → /eventarc, hardcoded workload=drift); see
+# ``AUTONOMOUS_TRIGGER_WORKLOADS`` in agent/main.py.
+display_name: Anchor
+descriptor: Cloud Run config
 description: >
   Detect drift between a Cloud Run service's live env vars and the
   team's declared ops-contract.yaml. Propose docs PRs (for sanctioned
