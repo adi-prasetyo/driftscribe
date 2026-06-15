@@ -26,6 +26,7 @@ from agent.workloads.spec import WorkloadSpec
 VALID_DRIFT_YAML = """\
 name: drift
 display_name: Cloud Run env drift
+descriptor: Cloud Run config
 description: Detect drift between live Cloud Run env vars and the declared contract.
 system_prompt_file: system_prompt.txt
 contract_file: ../../demo/ops-contract.yaml
@@ -59,6 +60,7 @@ def test_valid_drift_yaml_parses():
     spec = _parse(VALID_DRIFT_YAML)
     assert spec.name == "drift"
     assert spec.display_name == "Cloud Run env drift"
+    assert spec.descriptor == "Cloud Run config"
     assert spec.system_prompt_file == "system_prompt.txt"
     assert spec.contract_file == "../../demo/ops-contract.yaml"
     assert "drift_read_live_env" in spec.enabled_tool_names
@@ -83,6 +85,14 @@ def test_missing_required_field_raises_validation_error():
         "display_name: Cloud Run env drift\n", "",
     )
     with pytest.raises(ValidationError, match="display_name"):
+        _parse(bad)
+
+
+def test_missing_descriptor_raises_validation_error():
+    # descriptor is required (Phase 17.G crew rename) — a workload with no
+    # domain subtitle is a manifest bug, not a silent empty string.
+    bad = VALID_DRIFT_YAML.replace("descriptor: Cloud Run config\n", "")
+    with pytest.raises(ValidationError, match="descriptor"):
         _parse(bad)
 
 

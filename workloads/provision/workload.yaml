@@ -28,7 +28,12 @@
 #   current state before authoring minimal edits.
 
 name: provision
-display_name: "Provision (infra edits)"
+# Operator-facing identity (Phase 17.G crew rename). "Provision" keeps its
+# own name; ``descriptor`` carries the domain (rendered "Provision — infra
+# edits"). Chat-only / on-demand by design — not in
+# ``AUTONOMOUS_TRIGGER_WORKLOADS`` (agent/main.py).
+display_name: Provision
+descriptor: infra edits
 description: >
   Author OpenTofu (IaC) changes from a chat request and open ONE iac/-only
   pull request for the gated apply pipeline to plan, approve, and apply. It

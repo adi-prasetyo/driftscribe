@@ -127,9 +127,20 @@ describe('step copy', () => {
       'the GCP project driftscribe-hack-2026',
     );
     expect(welcomeLine(null)).toContain('your GCP project');
-    // Honesty T1/T2: approval framing without a safety promise.
-    expect(welcomeLine(null)).toContain('only after you approve it');
+    // Honesty T1/T2: approval framing without a blanket safety promise.
+    expect(welcomeLine(null)).toContain('wait for your approval');
     expect(welcomeLine(null).toLowerCase()).not.toContain('safe');
+  });
+
+  it('welcomeLine introduces the crew honestly — only Anchor is autonomous', () => {
+    const line = welcomeLine(null);
+    // All four crew identities are named.
+    for (const name of ['Anchor', 'Patch', 'Provision', 'Explore']) {
+      expect(line).toContain(name);
+    }
+    // Anchor is the one that runs on its own; the rest wait to be asked.
+    expect(line).toContain('Anchor runs on its');
+    expect(line).toContain('wait for you to ask');
   });
 
   it('estateLine renders live totals with coverage percent', () => {

@@ -182,6 +182,7 @@ def test_load_workload_unknown_name_raises():
 _MINIMAL_DRIFT_YAML = """\
 name: drift
 display_name: Cloud Run env drift
+descriptor: Cloud Run config
 description: test
 system_prompt_file: system_prompt.txt
 contract_file: null

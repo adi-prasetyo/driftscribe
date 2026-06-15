@@ -28,7 +28,12 @@
 #   surface.
 
 name: explore
-display_name: "Explore (read-only)"
+# Operator-facing identity (Phase 17.G crew rename). "Explore" keeps its own
+# name; ``descriptor`` carries the domain (rendered "Explore — read-only").
+# Chat-only / on-demand by design — not in ``AUTONOMOUS_TRIGGER_WORKLOADS``
+# (agent/main.py).
+display_name: Explore
+descriptor: read-only
 description: >
   Read-only investigation across infra and code. Inspects a Cloud Run
   service's live env vars, the repo's declared ops-contract, the

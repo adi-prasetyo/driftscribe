@@ -27,6 +27,18 @@
   let workload = $state<Workload>('drift');
   let inputEl = $state<HTMLInputElement | null>(null);
 
+  // Crew picker grouping (Phase 17.G). The dropdown is split into an
+  // "Autonomous" optgroup (runs without being asked — only Anchor in this
+  // build) and an "On-demand" optgroup. A COLLAPSED native <select> shows only
+  // the selected option, not its optgroup header, so grouping alone is not
+  // enough — we ALSO render an adjacent badge that tracks the selection. The
+  // autonomy signal must be unmistakable whether the dropdown is open or shut.
+  const autonomousOptions = WORKLOADS.filter((o) => o.group === 'autonomous');
+  const onDemandOptions = WORKLOADS.filter((o) => o.group === 'on-demand');
+  const selectedIsAutonomous = $derived(
+    WORKLOADS.find((o) => o.value === workload)?.group === 'autonomous',
+  );
+
   // Apply the prefill on each NEW epoch (tracked dependency); set the workload
   // select and focus the input so the operator can edit / press Send. Keyed on
   // epoch (not text) so identical re-prefills still re-apply after an edit, and a
@@ -74,10 +86,27 @@
     bind:value={workload}
     {disabled}
   >
-    {#each WORKLOADS as option (option.value)}
-      <option value={option.value}>{option.label}</option>
-    {/each}
+    <optgroup label="Autonomous · runs without being asked">
+      {#each autonomousOptions as option (option.value)}
+        <option value={option.value}>{option.label}</option>
+      {/each}
+    </optgroup>
+    <optgroup label="On-demand · runs only when you ask">
+      {#each onDemandOptions as option (option.value)}
+        <option value={option.value}>{option.label}</option>
+      {/each}
+    </optgroup>
   </select>
+
+  <!-- Adjacent autonomy badge: tracks the selected workload because a
+       collapsed <select> hides the optgroup header (Codex must-fix #3). -->
+  <span
+    class="chat-form__camp ds-pill {selectedIsAutonomous ? 'ds-pill--ok' : 'ds-pill--muted'}"
+    data-testid="workload-camp"
+    title={selectedIsAutonomous
+      ? 'Runs on its own — a live trigger reacts the moment something changes, no one has to ask.'
+      : 'Runs only when you ask, from this chat.'}
+  >{selectedIsAutonomous ? 'Autonomous' : 'On-demand'}</span>
 
   <button
     id="send-btn"
@@ -166,6 +195,16 @@
   }
   .chat-form__select:hover {
     border-color: var(--ds-muted);
+  }
+
+  /* Adjacent autonomy badge — sits beside the select and tracks the
+     selection so the Autonomous/On-demand signal is visible while the
+     dropdown is collapsed. Reuses the shared .ds-pill ok/muted tones. */
+  .chat-form__camp {
+    flex: 0 0 auto;
+    align-self: center;
+    white-space: nowrap;
+    cursor: default;
   }
 
   .chat-form__send {

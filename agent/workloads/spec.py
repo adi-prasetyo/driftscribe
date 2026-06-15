@@ -29,6 +29,16 @@ class WorkloadSpec(BaseModel):
             never touches live infra directly, so it likewise has no
             ``/recheck`` path.
         display_name: short human-readable label (operator-facing).
+            Phase 17.G renamed these from domain labels to a "crew" of
+            named agent identities (``drift`` → ``Anchor``, ``upgrade``
+            → ``Patch``, plus ``Provision`` / ``Explore``). The symbolic
+            ``name`` above is FROZEN; only this display identity changes.
+        descriptor: the one-or-two-word domain subtitle shown under the
+            identity (e.g. ``Anchor`` + ``Cloud Run config``). Operator
+            UI renders ``display_name`` as the bold identity and this as
+            the gray descriptor; docs lead with the identity and gloss
+            the domain. Required — a workload with no descriptor is a
+            manifest bug.
         description: one-paragraph description of what this workload
             detects and acts on. Surfaces in operator UI / docs.
         system_prompt_file: path *relative to this workload's
@@ -57,13 +67,20 @@ class WorkloadSpec(BaseModel):
             which the registry's loader enforces.
         worker_names: list of *symbolic* worker names. Each must be a
             key in :data:`agent.workloads.registry.WORKER_REGISTRY`.
-        observation_kind: the shape of input data this workload
-            ingests for its autonomous ``/recheck`` pass. Constrained to
-            a closed set so adding a new observation type requires an
-            explicit schema change. ``"none"`` marks a chat-only
-            workload (``explore``) that has no autonomous observation
-            source — ``/recheck`` is route-refused for it, so this field
-            is declarative only.
+        observation_kind: the shape/type of input data this workload's
+            decision logic is *designed* to ingest (intent), NOT proof of
+            a wired autonomous trigger. Constrained to a closed set so
+            adding a new observation type requires an explicit schema
+            change. ``"none"`` marks a chat-only workload (``explore`` /
+            ``provision``) with no observation source — ``/recheck`` is
+            route-refused for it. IMPORTANT: a non-``"none"`` value does
+            NOT mean the workload runs on its own — ``upgrade`` declares
+            ``repo_lockfile`` but its ``/recheck`` returns 503 and no
+            trigger is bound to it. The single source of truth for "runs
+            autonomously" is ``AUTONOMOUS_TRIGGER_WORKLOADS`` in
+            ``agent.main`` (only ``drift`` today); the operator-facing
+            "Autonomous" signal is derived from that set, never from this
+            field.
         action_names: list of *symbolic* action names. Each must be a
             key in :data:`agent.workloads.registry.ACTION_REGISTRY`.
             Used to populate operator-facing pickers and to gate which
@@ -76,6 +93,7 @@ class WorkloadSpec(BaseModel):
 
     name: Literal["drift", "upgrade", "explore", "provision"]
     display_name: str
+    descriptor: str
     description: str
     system_prompt_file: str
     chat_system_prompt_file: str | None = None

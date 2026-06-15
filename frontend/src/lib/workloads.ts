@@ -5,7 +5,20 @@
 // This re-homes the contract previously guarded in the Jinja template via
 // tests/integration/test_ui_transparency.py:59-62 — see plan §3 and Appendix B.
 
+import workloadCatalog from './workloads.catalog.json';
+
 export type Workload = 'drift' | 'upgrade' | 'explore' | 'provision';
+
+/**
+ * Autonomy camp for the crew picker. ``autonomous`` = has a live trigger that
+ * runs without being asked (only Anchor/`drift` in this build); ``on-demand`` =
+ * runs only when the operator asks. This is the operator-facing distinction the
+ * picker's optgroup + adjacent badge make unmistakable. The backend owns the
+ * truth (agent/main.py::AUTONOMOUS_TRIGGER_WORKLOADS); the cross-surface
+ * tests/unit/test_capabilities.py::test_frontend_catalog_matches_backend pins
+ * this catalog's ``group`` to it so the two can never silently disagree.
+ */
+export type WorkloadGroup = 'autonomous' | 'on-demand';
 
 /**
  * Parse `ask_pr` from a `location.search` string (the approval page's
@@ -34,15 +47,38 @@ export function askAboutPrPrefill(pr: number): string {
 
 export interface WorkloadOption {
   value: Workload;
+  /** Crew identity — the bold name, e.g. "Anchor". */
+  name: string;
+  /** Domain subtitle — the gray descriptor, e.g. "Cloud Run config". */
+  descriptor: string;
+  /** Autonomy camp — drives the picker's optgroup + adjacent badge. */
+  group: WorkloadGroup;
+  /** Combined "Name — descriptor" label rendered in the native <option>. */
   label: string;
 }
 
-export const WORKLOADS: WorkloadOption[] = [
-  { value: 'drift', label: 'Cloud Run config' },
-  { value: 'upgrade', label: 'Dependencies' },
-  { value: 'explore', label: 'Explore (read-only)' },
-  { value: 'provision', label: 'Provision (infra edits)' },
-];
+/**
+ * The crew picker contract, derived from the single checked-in catalog
+ * (workloads.catalog.json) so the SPA, the backend YAML display_name/
+ * descriptor, and GET /capabilities can never silently disagree (the cross-
+ * surface guard test reads that same JSON). The option VALUES
+ * (drift/upgrade/explore/provision) are the /chat API contract sent to the
+ * coordinator and are FROZEN; only the human-facing name/descriptor change.
+ */
+export const WORKLOADS: WorkloadOption[] = (
+  workloadCatalog as ReadonlyArray<{
+    value: string;
+    name: string;
+    descriptor: string;
+    group: string;
+  }>
+).map((e) => ({
+  value: e.value as Workload,
+  name: e.name,
+  descriptor: e.descriptor,
+  group: e.group as WorkloadGroup,
+  label: `${e.name} — ${e.descriptor}`,
+}));
 
 /**
  * Composer prefill (Phase-4 adopt-button bridge): App sets text + workload from an

@@ -219,12 +219,16 @@
               class="cap-workload__summary"
               data-testid="cap-workload-{wl.name}-summary"
             >
-              <!-- {' '} is the ONLY whitespace at this seam (spans glued): the
-                   rendered text is exactly "<display_name> <pill>", which the
-                   glued-exact-string test pins. -->
-              <span class="cap-workload__name">{wl.display_name}</span>{' '}<span
+              <!-- Crew identity + domain descriptor + autonomy pill. Each seam
+                   is glued with an explicit {' '} (the Svelte-5 whitespace
+                   gotcha, PR #83 lesson): the rendered text is exactly
+                   "<display_name> — <descriptor> <pill>", pinned by the
+                   glued-exact-string test. The pill vocabulary is the honest
+                   one — only a wired trigger reads "Autonomous". -->
+              <span class="cap-workload__name">{wl.display_name}</span>{#if wl.descriptor}<span
+                class="cap-workload__descriptor">{' '}— {wl.descriptor}</span>{/if}{' '}<span
                 class="ds-pill {wl.autonomous ? 'ds-pill--ok' : 'ds-pill--muted'} cap-workload__pill"
-                >{wl.autonomous ? 'autonomous + chat' : 'chat-only'}</span>
+                >{wl.autonomous ? 'Autonomous · also chat' : 'On-demand · chat only'}</span>
             </summary>
             <div class="cap-workload__body">
               <p class="ds-subtle cap-workload__desc">{wl.description}</p>
@@ -444,6 +448,11 @@
   .cap-workload__name {
     font-weight: 600;
     font-size: var(--ds-fs-2);
+  }
+  .cap-workload__descriptor {
+    font-weight: 400;
+    font-size: var(--ds-fs-2);
+    color: var(--ds-muted);
   }
   .cap-workload__pill {
     font-size: var(--ds-fs-1);

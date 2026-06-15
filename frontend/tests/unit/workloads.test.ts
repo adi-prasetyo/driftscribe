@@ -1,17 +1,25 @@
 import { describe, it, expect } from 'vitest';
-import { WORKLOADS, type Workload, type WorkloadOption, askAboutPrPrefill, askPrFromSearch, initialChatPrefill } from '../../src/lib/workloads';
+import { WORKLOADS, type Workload, type WorkloadOption, type WorkloadGroup, askAboutPrPrefill, askPrFromSearch, initialChatPrefill } from '../../src/lib/workloads';
 
-// Re-homes the workload-option contract previously guarded in
-// tests/integration/test_ui_transparency.py:59-62. The option VALUES
-// (drift/upgrade/explore/provision) are the /chat API contract; the visible
-// labels are operator-facing. Pin BOTH value/label and ORDER so a label
-// rename or a dropped/reordered option is a reviewed change.
+// The crew picker contract, derived from frontend/src/lib/workloads.catalog.json
+// (the single source the backend cross-surface test also reads). The option
+// VALUES (drift/upgrade/explore/provision) are the /chat API contract and are
+// FROZEN; the name/descriptor/group are operator-facing. Pin the full records
+// + ORDER so a rename, a regrouping, or a dropped/reordered option is a
+// reviewed change. The autonomy GROUP is the honest 1/3 split: only Anchor
+// (`drift`) has a live trigger.
 
-const EXPECTED: ReadonlyArray<readonly [Workload, string]> = [
-  ['drift', 'Cloud Run config'],
-  ['upgrade', 'Dependencies'],
-  ['explore', 'Explore (read-only)'],
-  ['provision', 'Provision (infra edits)'],
+const EXPECTED: ReadonlyArray<{
+  value: Workload;
+  name: string;
+  descriptor: string;
+  group: WorkloadGroup;
+  label: string;
+}> = [
+  { value: 'drift', name: 'Anchor', descriptor: 'Cloud Run config', group: 'autonomous', label: 'Anchor — Cloud Run config' },
+  { value: 'upgrade', name: 'Patch', descriptor: 'dependencies', group: 'on-demand', label: 'Patch — dependencies' },
+  { value: 'explore', name: 'Explore', descriptor: 'read-only', group: 'on-demand', label: 'Explore — read-only' },
+  { value: 'provision', name: 'Provision', descriptor: 'infra edits', group: 'on-demand', label: 'Provision — infra edits' },
 ];
 
 describe('WORKLOADS contract', () => {
@@ -19,10 +27,8 @@ describe('WORKLOADS contract', () => {
     expect(WORKLOADS).toHaveLength(4);
   });
 
-  it('matches the exact value/label pairs in order', () => {
-    expect(WORKLOADS).toEqual(
-      EXPECTED.map(([value, label]) => ({ value, label })),
-    );
+  it('matches the exact catalog records in order', () => {
+    expect(WORKLOADS).toEqual(EXPECTED);
   });
 
   it('preserves the value order (drift, upgrade, explore, provision)', () => {
@@ -34,18 +40,28 @@ describe('WORKLOADS contract', () => {
     ]);
   });
 
-  it('preserves the operator-facing labels in order', () => {
-    expect(WORKLOADS.map((o) => o.label)).toEqual([
-      'Cloud Run config',
-      'Dependencies',
-      'Explore (read-only)',
-      'Provision (infra edits)',
+  it('renders the label as "Name — descriptor"', () => {
+    for (const opt of WORKLOADS) {
+      expect(opt.label).toBe(`${opt.name} — ${opt.descriptor}`);
+    }
+  });
+
+  it('puts ONLY Anchor (drift) in the autonomous camp (honest 1/3 split)', () => {
+    const autonomous = WORKLOADS.filter((o) => o.group === 'autonomous');
+    expect(autonomous.map((o) => o.value)).toEqual(['drift']);
+    expect(WORKLOADS.filter((o) => o.group === 'on-demand').map((o) => o.value)).toEqual([
+      'upgrade',
+      'explore',
+      'provision',
     ]);
   });
 
-  it.each(EXPECTED)('maps %s -> "%s"', (value, label) => {
+  it.each(EXPECTED)('maps $value -> "$label" in group $group', ({ value, name, descriptor, group, label }) => {
     const opt = WORKLOADS.find((o) => o.value === value);
     expect(opt).toBeDefined();
+    expect(opt?.name).toBe(name);
+    expect(opt?.descriptor).toBe(descriptor);
+    expect(opt?.group).toBe(group);
     expect(opt?.label).toBe(label);
   });
 
@@ -53,6 +69,9 @@ describe('WORKLOADS contract', () => {
     for (const opt of WORKLOADS) {
       const shaped: WorkloadOption = opt;
       expect(typeof shaped.value).toBe('string');
+      expect(typeof shaped.name).toBe('string');
+      expect(typeof shaped.descriptor).toBe('string');
+      expect(['autonomous', 'on-demand']).toContain(shaped.group);
       expect(typeof shaped.label).toBe('string');
     }
   });

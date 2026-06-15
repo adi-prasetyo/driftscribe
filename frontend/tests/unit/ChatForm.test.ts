@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { render, cleanup, waitFor } from '@testing-library/svelte';
+import { render, cleanup, waitFor, fireEvent } from '@testing-library/svelte';
 import ChatForm from '../../src/components/ChatForm.svelte';
 
 // Prefill is the Phase-4 adopt-button bridge: the Adopt affordance on the resource
@@ -94,5 +94,39 @@ describe('ChatForm — prefill', () => {
     });
     expect(select.value).toBe('explore');
     expect(onSubmit).not.toHaveBeenCalled();
+  });
+});
+
+describe('ChatForm — crew picker autonomy signal', () => {
+  it('splits the picker into Autonomous / On-demand optgroups (only Anchor is autonomous)', () => {
+    const { container } = render(ChatForm, { props: { onSubmit: noop } });
+    const groups = Array.from(
+      container.querySelectorAll('#workload-select optgroup'),
+    ) as HTMLOptGroupElement[];
+    expect(groups.map((g) => g.label)).toEqual([
+      'Autonomous · runs without being asked',
+      'On-demand · runs only when you ask',
+    ]);
+    // Only Anchor (drift) lives in the autonomous group; the rest are on-demand.
+    expect(
+      Array.from(groups[0].querySelectorAll('option')).map((o) => o.value),
+    ).toEqual(['drift']);
+    expect(
+      Array.from(groups[1].querySelectorAll('option')).map((o) => o.value),
+    ).toEqual(['upgrade', 'explore', 'provision']);
+  });
+
+  it('the adjacent badge tracks the selection — Autonomous for Anchor, On-demand otherwise', async () => {
+    const { getByTestId } = render(ChatForm, { props: { onSubmit: noop } });
+    // Default workload is drift/Anchor → Autonomous.
+    expect(getByTestId('workload-camp').textContent?.trim()).toBe('Autonomous');
+
+    // Selecting a chat-only workload flips the badge to On-demand.
+    const select = document.getElementById('workload-select') as HTMLSelectElement;
+    select.value = 'explore';
+    await fireEvent.change(select);
+    await waitFor(() =>
+      expect(getByTestId('workload-camp').textContent?.trim()).toBe('On-demand'),
+    );
   });
 });

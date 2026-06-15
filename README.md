@@ -8,12 +8,17 @@
 [![E2E](https://github.com/adi-prasetyo/driftscribe/actions/workflows/e2e.yml/badge.svg?event=workflow_dispatch)](https://github.com/adi-prasetyo/driftscribe/actions/workflows/e2e.yml)
 
 **An AI DevOps agent that watches your Google Cloud estate and proposes fixes —
-but never applies a risky change on its own.** Four workloads ship today:
-**drift** (live Cloud Run config vs. an ops contract), **upgrade** (npm
-dependencies vs. the GitHub Advisory DB), **explore** (read-only inventory of
-the whole project), and **provision** (agent-authored OpenTofu PRs through a
-gated apply pipeline). The agent — Gemini on Google's Agent Development Kit,
-grounded by the Developer Knowledge MCP — holds no direct power to act: narrow
+but never applies a risky change on its own.** A crew of four ships today:
+**Anchor** (the `drift` workload — live Cloud Run config vs. an ops contract),
+**Patch** (the `upgrade` workload — npm dependencies vs. the GitHub Advisory
+DB), **Explore** (the `explore` workload — read-only inventory of the whole
+project), and **Provision** (the `provision` workload — agent-authored OpenTofu
+PRs through a gated apply pipeline). Anchor runs autonomously: a live Eventarc
+trigger fires on every Cloud Run config change. Patch, Explore, and Provision
+run on demand from chat. (Patch is a dependency watcher whose autonomous trigger
+is future work — today you invoke it in chat; its `/recheck` path is
+unimplemented.) The agent — Gemini on Google's Agent Development Kit, grounded
+by the Developer Knowledge MCP — holds no direct power to act: narrow
 single-purpose workers execute within hardcoded limits, rollbacks and live-infra
 applies always wait behind single-use human approval gates, and every decision
 lands in the operator UI with its reasoning trace. Submission for the DevOps × AI Agent Hackathon 2026
@@ -41,14 +46,21 @@ The full topology and the IAM boundaries are documented in
 
 ## Workloads
 
-### Workload 1: Drift
+### Anchor — Cloud Run config drift (`drift`)
+
+Anchor runs autonomously: a live Eventarc trigger reacts to every Cloud Run
+config change, no chat invocation needed.
 
 - Watches the `payment-demo` Cloud Run service env vs [`demo/ops-contract.yaml`](demo/ops-contract.yaml).
 - Actions: `no_op` / `docs_pr` / `drift_issue` / `rollback` / `escalation`.
 - Workers: `reader` (read-only Cloud Run state), `docs` (open docs PR), `rollback` (revision rollback), plus the shared `notifier`.
-- HITL approval gate on `rollback`: HMAC-signed one-shot link, 15-minute TTL, single-use Firestore transaction. The coordinator never executes a rollback itself — it only mints the approval URL.
+- HITL approval gate on `rollback`: HMAC-signed one-shot link, 15-minute TTL, single-use Firestore transaction. Anchor never executes a rollback itself — it only mints the approval URL.
 
-### Workload 2: Dependency Upgrades
+### Patch — dependency upgrades (`upgrade`)
+
+Patch runs on demand from chat. Its autonomous trigger (a `/recheck` observation
+loop analogous to Anchor's Eventarc trigger) is future work — today `/recheck`
+returns 503 (unimplemented) and Patch is chat-only.
 
 - Watches [`demo/upgrade-target/package.json`](demo/upgrade-target/package.json) vs the GitHub Advisory DB.
 - Actions: `no_op` / `docs_pr` / `upgrade_pr` / `escalation`.
@@ -56,14 +68,15 @@ The full topology and the IAM boundaries are documented in
 - Post-LLM deterministic validator on the write path: lockfile path regex, `package_name` must exist in the current lockfile, `target_version` must be greater than current (no downgrades), version jump ∈ {patch, minor}, `advisory_url` must match `https://github.com/advisories/GHSA-...`. Major bumps are refused at the validator — the LLM is instructed to route those to `escalation`; if it doesn't, the validator fails closed.
 - Also carries PR-lifecycle tools (`upgrade-close-pr`, `upgrade-merge-pr`) so the agent can close or CI-gated-merge an upgrade PR it opened; the `upgrade-docs` worker re-validates eligibility (driftscribe label + `upgrade/` branch + `main` base, green required check) before acting.
 
-### Workloads 3 & 4: Infrastructure (read + author)
+### Explore + Provision — infrastructure read + author (`explore`, `provision`)
 
-Two **chat-only** workloads cover infrastructure-as-code (the infra-IaC initiative):
+Both are on-demand: Explore and Provision run from chat only. `/recheck`
+refuses them — neither has an autonomous observation source.
 
-- **`explore`** (read-only) — whole-project resource inspection via Cloud Asset Inventory (`infra-reader` worker), plus live Cloud Run env, the ops contract, the dependency lockfile, and developer docs. Lists **zero mutation tools** — it can read everything and change nothing (the read-only guarantee is pinned by a test that asserts its tools are disjoint from the mutation set).
-- **`provision`** (infra edits) — authors OpenTofu changes from a chat request and opens **one `iac/`-only PR** via the `tofu-editor` worker (which re-validates every file: `iac/` prefix, foundation ban, secret ban, AGENT-mode static gate). It never touches live infra. The actual `tofu apply` runs **downstream** in the `tofu-apply` worker — the sole live-infra mutator — behind a plan-bound, HMAC-signed operator approval, a path the chat agent cannot invoke directly.
+- **Explore** (the `explore` workload, read-only) — whole-project resource inspection via Cloud Asset Inventory (`infra-reader` worker), plus live Cloud Run env, the ops contract, the dependency lockfile, and developer docs. Explore lists **zero mutation tools** — it can read everything and change nothing (the read-only guarantee is pinned by a test that asserts its tools are disjoint from the mutation set).
+- **Provision** (the `provision` workload, infra edits) — authors OpenTofu changes from a chat request and opens **one `iac/`-only PR** via the `tofu-editor` worker (which re-validates every file: `iac/` prefix, foundation ban, secret ban, AGENT-mode static gate). Provision never touches live infra. The actual `tofu apply` runs **downstream** in the `tofu-apply` worker — the sole live-infra mutator — behind a plan-bound, HMAC-signed operator approval, a path the chat agent cannot invoke directly.
 
-Both are chat-only: `/recheck` refuses them (no autonomous observation source). The operator UI renders a live infra resource map (managed vs. drift) alongside the decisions timeline.
+The operator UI renders a live infra resource map (managed vs. drift) alongside the decisions timeline.
 
 ## Demo
 
@@ -118,11 +131,11 @@ for the verification step and a sample query.
 
 ## How DriftScribe's drift workload compares to other drift tools
 
-The table below scopes the comparison to Workload 1 (drift). The upgrade
-workload sits in a different category (Dependabot- / Renovate-shaped) and is
-not compared here.
+The table below scopes the comparison to Anchor (the `drift` workload). Patch
+(the `upgrade` workload) sits in a different category (Dependabot- /
+Renovate-shaped) and is not compared here.
 
-| | DriftScribe (Workload 1) | Drift (CloudPosse) | Steampipe | Cloud Custodian | AWS Config Rules |
+| | DriftScribe — Anchor | Drift (CloudPosse) | Steampipe | Cloud Custodian | AWS Config Rules |
 | --- | --- | --- | --- | --- | --- |
 | AI-driven decisions | ✓ | ✗ | ✗ | ✗ | ✗ |
 | HITL approval gates | ✓ | ✗ | ✗ | ✗ | ✗ |
