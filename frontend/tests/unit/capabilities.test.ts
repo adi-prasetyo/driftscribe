@@ -25,6 +25,11 @@ const structuralRule: CapRule = {
   description: 'The plan file is not valid JSON — rejected outright (fail-closed).',
   category: 'structural',
 };
+const serviceManagedRule: CapRule = {
+  id: 'service-managed-bucket',
+  description: 'No change may adopt or modify a bucket that a Google service auto-creates.',
+  category: 'service-managed',
+};
 const unknownRule: CapRule = {
   id: 'some-future-rule',
   description: 'A future rule that has no heading yet.',
@@ -45,6 +50,14 @@ describe('groupRules', () => {
     expect(cpGroup).toBeDefined();
     expect(cpGroup!.rules).toEqual([controlPlaneRule]);
     expect(cpGroup!.heading).toBe(CATEGORY_HEADINGS['control-plane']);
+  });
+
+  it('renders the service-managed category under its human heading (not the raw key)', () => {
+    const groups = groupRules([serviceManagedRule]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].category).toBe('service-managed');
+    expect(groups[0].heading).toBe(CATEGORY_HEADINGS['service-managed']);
+    expect(groups[0].heading).not.toBe('service-managed');
   });
 
   it('produces all four known categories as proper headings', () => {

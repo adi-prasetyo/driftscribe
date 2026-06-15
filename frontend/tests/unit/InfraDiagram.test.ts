@@ -969,6 +969,48 @@ function adoptGraphAllControlPlane(): InfraGraph {
   };
 }
 
+function adoptGraphWithServiceManagedBucket(): InfraGraph {
+  // Server marks a Google-service-managed bucket (Cloud Build staging) with the
+  // SAME control_plane flag — the frontend needs no second signal.
+  return {
+    generated_at: null,
+    project: 'demo',
+    caveat: 'test caveat',
+    degraded: false,
+    degraded_reason: null,
+    totals: { resources: 2, managed: 0, drift: 2 },
+    groups: [
+      {
+        asset_type: BUCKET,
+        label: 'Storage bucket',
+        count: 2, managed: 0, drift: 2, sensitive: false,
+        adoptable: true, adopt_rank: 1, adopt_hint: 'a simple leaf resource',
+        nodes: [
+          { id: 'g0n0', label: 'demo_cloudbuild', asset_type: BUCKET, managed: false, location: null, control_plane: true },
+          { id: 'g0n1', label: 'demo-assets', asset_type: BUCKET, managed: false, location: null },
+        ],
+      },
+    ],
+    edges: [],
+  };
+}
+
+describe('InfraDiagram — service-managed bucket adopt suppression', () => {
+  it('a Google-service-managed bucket row is suppressed with the broadened note', async () => {
+    const { getByTestId, getAllByTestId } = render(InfraDiagram, {
+      props: { call: callWith(adoptGraphWithServiceManagedBucket()), onAdopt: () => {} },
+    });
+    await waitFor(() => expect(getByTestId('adopt-list')).toBeTruthy());
+    const note = getByTestId('adopt-control-plane');
+    // The single unified note honestly covers BOTH kinds — assert the
+    // service-managed clause landed (the control-plane tokens are pinned above).
+    expect(note.textContent).toContain('Google service');
+    expect(note.textContent).toContain('denylist');
+    // only the genuinely adoptable demo-assets row keeps its button
+    expect(getAllByTestId('adopt-btn')).toHaveLength(1);
+  });
+});
+
 describe('InfraDiagram — control-plane adopt suppression', () => {
   it('control-plane row shows the denylist note instead of an Adopt button', async () => {
     const { getByTestId, getAllByTestId, queryByTestId } = render(InfraDiagram, {

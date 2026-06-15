@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from driftscribe_lib.iac_plan_denylist import (
     CONTROL_PLANE_BUCKET_SUFFIXES,
     CONTROL_PLANE_SERVICE_NAMES,
+    is_service_managed_bucket_name,
 )
 
 __all__ = [
@@ -203,14 +204,16 @@ def _validate_topic_short(topic: str) -> None:
 
 
 def _reject_control_plane(resource_type: str, name: str) -> None:
-    """Refuse control-plane identities at the tool boundary (Codex 019eb932).
+    """Refuse non-adoptable identities at the tool boundary (Codex 019eb932).
 
-    Same identity semantics as the denylist rules that would block the C2
-    plan anyway (and as infra_graph's node flag): rejecting HERE means chat
-    gets an immediate, honest refusal instead of authoring a PR that is
-    guaranteed to be blocked at plan evaluation. Type-scoped exactly like
-    the rules — Pub/Sub has no control-plane identity rule, so topics and
-    subscriptions are never rejected by name.
+    Covers DriftScribe's own control-plane identities AND buckets a Google
+    service auto-creates (the service-managed-bucket denylist rule). Same
+    identity semantics as the denylist rules that would block the C2 plan
+    anyway (and as infra_graph's node flag): rejecting HERE means chat gets an
+    immediate, honest refusal instead of authoring a PR that is guaranteed to
+    be blocked at plan evaluation. Type-scoped exactly like the rules — Pub/Sub
+    has no identity rule, so topics and subscriptions are never rejected by
+    name.
     """
     if resource_type == "google_storage_bucket" and name.endswith(
         CONTROL_PLANE_BUCKET_SUFFIXES
@@ -220,6 +223,16 @@ def _reject_control_plane(resource_type: str, name: str) -> None:
             "or -tofu-artifacts are IaC control-plane infrastructure, and "
             "the always-on denylist refuses any plan that would change or "
             f"import them. {FINAL_REFUSAL_MARKER}"
+        )
+    if resource_type == "google_storage_bucket" and is_service_managed_bucket_name(
+        name
+    ):
+        raise AdoptRecipeError(
+            f"{name!r} cannot be adopted: it is a bucket that a Google service "
+            "auto-creates (Cloud Build, App Engine, Cloud Functions, or Cloud "
+            "Run source deploys), not a resource you provisioned — the "
+            "always-on denylist refuses any plan that would change or import "
+            f"it. {FINAL_REFUSAL_MARKER}"
         )
     if (
         resource_type == "google_cloud_run_v2_service"

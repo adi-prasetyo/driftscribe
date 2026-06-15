@@ -748,6 +748,48 @@ class TestControlPlaneNodeFlag:
         g = build_graph(_one_node_inventory(BUCKET_TYPE, "acme-assets"))
         assert "control_plane" not in g["groups"][0]["nodes"][0]
 
+    def test_service_managed_cloudbuild_bucket_is_flagged(self):
+        # The original homepage-tour papercut: <project>_cloudbuild is Cloud
+        # Build's auto-created staging bucket — flagged so its CTA is suppressed.
+        g = build_graph(_one_node_inventory(BUCKET_TYPE, "acme-project_cloudbuild"))
+        assert g["groups"][0]["nodes"][0]["control_plane"] is True
+
+    def test_service_managed_prefix_bucket_is_flagged(self):
+        g = build_graph(
+            _one_node_inventory(BUCKET_TYPE, "gcf-v2-sources-12345-asia-northeast1")
+        )
+        assert g["groups"][0]["nodes"][0]["control_plane"] is True
+
+    def test_gcf_v2_near_miss_bucket_carries_no_key(self):
+        # Codex #1: the prefix set is the specific source/upload families, not a
+        # bare "gcf-v2-", so an operator bucket like gcf-v2-assets stays adoptable.
+        g = build_graph(_one_node_inventory(BUCKET_TYPE, "gcf-v2-assets"))
+        assert "control_plane" not in g["groups"][0]["nodes"][0]
+
+    def test_service_managed_bucket_flagged_through_full_cai_normalization(self):
+        # Codex #3: the denylist matches the provider `name` attribute while the
+        # graph matches the CAI-derived bare label. Pin they agree for buckets by
+        # flowing a real CAI bucket resource name — the dotted .appspot.com case,
+        # the trickiest for rsplit-based normalization — through build_inventory
+        # into build_graph and asserting the flag survives.
+        from driftscribe_lib.infra_inventory import CaiResource, build_inventory
+
+        inv = build_inventory(
+            [
+                CaiResource(
+                    name="//storage.googleapis.com/staging.my-project.appspot.com",
+                    asset_type=BUCKET_TYPE,
+                    location="asia-northeast1",
+                )
+            ],
+            [],
+            project="my-project",
+            iac_snapshot_sha="sha1",
+        )
+        node = build_graph(inv)["groups"][0]["nodes"][0]
+        assert node["label"] == "staging.my-project.appspot.com"
+        assert node["control_plane"] is True
+
     def test_control_plane_service_node_is_flagged(self):
         g = build_graph(_one_node_inventory(RUN_TYPE, "driftscribe-agent"))
         assert g["groups"][0]["nodes"][0]["control_plane"] is True
@@ -782,6 +824,16 @@ class TestControlPlaneNodeFlag:
              {"name": "acme-prod-tofu-state"}, "acme-prod-tofu-state", True),
             ("storage.googleapis.com/Bucket", "google_storage_bucket",
              {"name": "acme-assets"}, "acme-assets", False),
+            # service-managed buckets: flagged AND blocked, same as control-plane
+            ("storage.googleapis.com/Bucket", "google_storage_bucket",
+             {"name": "acme-project_cloudbuild"}, "acme-project_cloudbuild", True),
+            ("storage.googleapis.com/Bucket", "google_storage_bucket",
+             {"name": "gcf-v2-sources-12345-asia-northeast1"},
+             "gcf-v2-sources-12345-asia-northeast1", True),
+            # tightened-prefix near-miss (Codex #1): a legitimate operator bucket
+            # that merely starts with "gcf-v2-" must be neither flagged nor blocked
+            ("storage.googleapis.com/Bucket", "google_storage_bucket",
+             {"name": "gcf-v2-assets"}, "gcf-v2-assets", False),
             ("run.googleapis.com/Service", "google_cloud_run_v2_service",
              {"name": "driftscribe-agent"}, "driftscribe-agent", True),
             ("run.googleapis.com/Service", "google_cloud_run_v2_service",
@@ -792,14 +844,17 @@ class TestControlPlaneNodeFlag:
         self, atype, rtype, attrs, name, expect_blocked
     ):
         # THE invariant this feature rests on: the node is flagged exactly when
-        # a pure single import of that identity is denylist-blocked by a
-        # control-plane rule. Drives both libraries end-to-end via their
-        # public surfaces.
+        # a pure single import of that identity is denylist-blocked by an
+        # identity rule (control-plane OR service-managed). Drives both
+        # libraries end-to-end via their public surfaces.
         g = build_graph(_one_node_inventory(atype, name))
         flagged = g["groups"][0]["nodes"][0].get("control_plane") is True
 
         violations = evaluate(DenylistInput(plan=_single_import_plan(rtype, attrs)))
-        blocked = any(v.rule.startswith("control-plane-") for v in violations)
+        blocked = any(
+            v.rule.startswith("control-plane-") or v.rule == "service-managed-bucket"
+            for v in violations
+        )
 
         assert flagged is expect_blocked
         assert blocked is expect_blocked
@@ -814,6 +869,8 @@ class TestControlPlaneNodeFlag:
             # REAL provider-generated plans (Codex 019eb932): better pins of
             # provider attribute shape than the synthetic ones above.
             ("import_control_plane_state_bucket.json",
+             "storage.googleapis.com/Bucket", True),
+            ("import_service_managed_bucket.json",
              "storage.googleapis.com/Bucket", True),
             ("real_import_bucket_pure_noop.json",
              "storage.googleapis.com/Bucket", False),
@@ -833,7 +890,7 @@ class TestControlPlaneNodeFlag:
         g = build_graph(_one_node_inventory(atype, name))
         flagged = g["groups"][0]["nodes"][0].get("control_plane") is True
         blocked = any(
-            v.rule.startswith("control-plane-")
+            v.rule.startswith("control-plane-") or v.rule == "service-managed-bucket"
             for v in evaluate(DenylistInput(plan=plan))
         )
         assert flagged is expect_blocked

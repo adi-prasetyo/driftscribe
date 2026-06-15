@@ -211,6 +211,7 @@ Drift-pinned by ``test_adoptable_type_labels_cover_exactly_the_allowlist``:
 
 CATEGORY_ORDER: Final[tuple[str, ...]] = (
     "control-plane",
+    "service-managed",
     "iam",
     "global-v1",
     "structural",
@@ -233,6 +234,8 @@ RULE_CATEGORIES: Final[Mapping[str, str]] = MappingProxyType({
     "control-plane-bucket":   "control-plane",
     "control-plane-secret":   "control-plane",
     "control-plane-kms":      "control-plane",
+    # Service-managed (buckets other Google services auto-create):
+    "service-managed-bucket": "service-managed",
     # IAM (access-control changes):
     "wif-config-change":          "iam",
     "iam-change-forbidden-v1":    "iam",

@@ -31,6 +31,7 @@ from driftscribe_lib.iac_plan_denylist import (
     ADOPTABLE_RESOURCE_TYPES,
     CONTROL_PLANE_BUCKET_SUFFIXES,
     CONTROL_PLANE_SERVICE_NAMES,
+    is_service_managed_bucket_name,
 )
 from driftscribe_lib.iac_plan_summary import PlanSummary
 from driftscribe_lib.infra_inventory import SENSITIVE_ASSET_TYPES
@@ -137,8 +138,10 @@ def adoption_order_sentence() -> str:
 # identity passes — so the copy says "change or import", never "touches".
 ADOPTION_CONTROL_PLANE_NOTE = (
     "DriftScribe's own control-plane resources — its Cloud Run services and "
-    "the -tofu-state / -tofu-artifacts buckets — cannot be adopted: the "
-    "always-on denylist refuses any plan that would change or import them."
+    "the -tofu-state / -tofu-artifacts buckets — cannot be adopted, and "
+    "neither can buckets that a Google service auto-creates (Cloud Build, App "
+    "Engine, Cloud Functions, or Cloud Run source deploys): the always-on "
+    "denylist refuses any plan that would change or import them."
 )
 
 # Control-plane adopt suppression (2026-06-12, ranking-filter follow-up found
@@ -153,25 +156,35 @@ ADOPTION_CONTROL_PLANE_NOTE = (
 # an honest note. The node itself stays on the map: it IS unmanaged drift, and
 # hiding it would misreport the estate.
 #
-# PARITY-BY-CONSTRUCTION: the matchers are the denylist's own public identity
-# constants for the two adoptable types that HAVE control-plane rules — bucket
-# name suffix (same semantics as _is_protected_bucket_name) and Cloud Run
-# service name (CONTROL_PLANE_SERVICE_NAMES). Pub/Sub has no control-plane
-# identity rule, so its nodes are never flagged. test_infra_graph pins the
+# PARITY-BY-CONSTRUCTION: the matchers reuse the denylist's OWN identity
+# predicates/constants for the adoptable types that have an identity rule —
+# the bucket matcher fires on the control-plane suffix (same semantics as
+# _is_protected_bucket_name) OR is_service_managed_bucket_name (the shared
+# predicate the denylist's service-managed-bucket rule uses), and the Cloud Run
+# matcher on CONTROL_PLANE_SERVICE_NAMES. Pub/Sub has no identity rule, so its
+# nodes are never flagged. A flagged bucket node therefore corresponds to
+# EITHER a control-plane-bucket OR a service-managed-bucket denylist refusal —
+# both suppress the same `control_plane` CTA flag (no second signal). The
+# operator-facing note broadens to name both kinds. test_infra_graph pins the
 # parity by driving build_graph and evaluate with the same identity. Failure
 # direction is safe: an unflagged protected name only shows a button whose
 # plan C2 then blocks; a false positive cannot happen without the denylist
 # also refusing that same identity.
 _CONTROL_PLANE_NODE_MATCHERS: dict[str, Callable[[str], bool]] = {
-    "storage.googleapis.com/Bucket": lambda name: name.endswith(
-        CONTROL_PLANE_BUCKET_SUFFIXES
+    "storage.googleapis.com/Bucket": lambda name: (
+        name.endswith(CONTROL_PLANE_BUCKET_SUFFIXES)
+        or is_service_managed_bucket_name(name)
     ),
     "run.googleapis.com/Service": lambda name: name in CONTROL_PLANE_SERVICE_NAMES,
 }
 
 
 def _is_control_plane_node(atype: str, label: str) -> bool:
-    """True iff a node of ``atype`` named ``label`` is DriftScribe control plane."""
+    """True iff a node of ``atype`` named ``label`` is non-adoptable by identity.
+
+    Covers DriftScribe's own control plane AND buckets a Google service
+    auto-creates — both carry the same ``control_plane`` CTA-suppression flag.
+    """
     matcher = _CONTROL_PLANE_NODE_MATCHERS.get(atype)
     return bool(matcher is not None and label and matcher(label))
 
