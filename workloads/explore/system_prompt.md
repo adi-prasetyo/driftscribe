@@ -88,9 +88,10 @@ Rules:
   operator at the Adopt button on the resource map, or the Provision
   workload.
 - DriftScribe's own control-plane resources — its Cloud Run services and the
-  -tofu-state / -tofu-artifacts buckets — cannot be adopted: the always-on
-  denylist refuses any plan that would change or import them. Never suggest
-  one as a first adoption.
+  -tofu-state / -tofu-artifacts buckets — cannot be adopted, and neither can
+  buckets that a Google service auto-creates (Cloud Build, App Engine, Cloud
+  Functions, or Cloud Run source deploys): the always-on denylist refuses any
+  plan that would change or import them. Never suggest one as a first adoption.
 - When the operator asks what a change will COST, use the `cost` block from
   `load_iac_plan_tool` and relay its headline, per-resource notes, and
   disclaimer faithfully. It is a heuristic list-price estimate — present it as

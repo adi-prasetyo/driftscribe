@@ -2,8 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { groupRules, CATEGORY_HEADINGS } from '../../src/lib/capabilities';
 import type { CapRule } from '../../src/lib/capabilities';
 
-// Representative subset of the real DTO — keeps all four categories and both
-// known + unknown category scenarios. Server ordering preserved.
+// Representative subset of the real DTO — exercises the known categories
+// (control-plane, service-managed, iam, global-v1, structural) plus the
+// unknown-category fallback. Server ordering preserved.
 
 const controlPlaneRule: CapRule = {
   id: 'control-plane-service',
@@ -24,6 +25,11 @@ const structuralRule: CapRule = {
   id: 'plan-json-unparseable',
   description: 'The plan file is not valid JSON — rejected outright (fail-closed).',
   category: 'structural',
+};
+const serviceManagedRule: CapRule = {
+  id: 'service-managed-bucket',
+  description: 'No change may adopt or modify a bucket that a Google service auto-creates.',
+  category: 'service-managed',
 };
 const unknownRule: CapRule = {
   id: 'some-future-rule',
@@ -47,7 +53,15 @@ describe('groupRules', () => {
     expect(cpGroup!.heading).toBe(CATEGORY_HEADINGS['control-plane']);
   });
 
-  it('produces all four known categories as proper headings', () => {
+  it('renders the service-managed category under its human heading (not the raw key)', () => {
+    const groups = groupRules([serviceManagedRule]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].category).toBe('service-managed');
+    expect(groups[0].heading).toBe(CATEGORY_HEADINGS['service-managed']);
+    expect(groups[0].heading).not.toBe('service-managed');
+  });
+
+  it('produces the four originally-known categories as proper headings', () => {
     const rules: CapRule[] = [controlPlaneRule, iamRule, globalRule, structuralRule];
     const groups = groupRules(rules);
     const categories = groups.map(g => g.category);

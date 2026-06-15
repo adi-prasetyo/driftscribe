@@ -42,7 +42,7 @@ export interface CapGate {
 export interface CapRule {
   id: string;
   description: string;
-  /** Category from CATEGORY_ORDER: typically "control-plane" | "iam" | "global-v1" | "structural".
+  /** Category from CATEGORY_ORDER: typically "control-plane" | "service-managed" | "iam" | "global-v1" | "structural".
    *  A future server may emit additional categories — callers must not drop unknown ones.
    *  Typed as string so the runtime unknown-category path is never unreachable. */
   category: string;
@@ -80,9 +80,13 @@ export interface Capabilities {
 // Display helpers
 // ---------------------------------------------------------------------------
 
-/** Human-readable headings for the four known denylist categories. */
-export const CATEGORY_HEADINGS: Record<'control-plane' | 'iam' | 'global-v1' | 'structural', string> = {
+/** Human-readable headings for the known denylist categories. */
+export const CATEGORY_HEADINGS: Record<
+  'control-plane' | 'service-managed' | 'iam' | 'global-v1' | 'structural',
+  string
+> = {
   'control-plane': 'Its own control plane is untouchable',
+  'service-managed': 'It leaves Google-created buckets alone',
   iam: 'It cannot change who has access',
   'global-v1': 'It cannot destroy or replace anything',
   structural: 'Malformed plans are rejected outright',

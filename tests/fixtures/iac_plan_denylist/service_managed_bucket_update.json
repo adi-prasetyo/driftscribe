@@ -1,0 +1,17 @@
+{
+  "_test_intent": "update of a Google-service-managed bucket (Cloud Functions gen2 source) — must emit service-managed-bucket, not control-plane-bucket",
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "google_storage_bucket.gcf_sources",
+      "mode": "managed",
+      "type": "google_storage_bucket",
+      "name": "gcf_sources",
+      "change": {
+        "actions": ["update"],
+        "before": {"name": "gcf-v2-sources-123456789-asia-northeast1"},
+        "after": {"name": "gcf-v2-sources-123456789-asia-northeast1"}
+      }
+    }
+  ]
+}

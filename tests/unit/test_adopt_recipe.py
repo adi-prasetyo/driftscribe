@@ -743,6 +743,33 @@ class TestControlPlaneRefusal:
                 location="asia-northeast1",
             )
 
+    def test_service_managed_bucket_is_rejected(self):
+        # A Google-service-managed bucket (Cloud Build staging) is refused at
+        # the tool boundary with an HONEST reason — auto-CREATED by a Google
+        # service, NOT framed as DriftScribe's own control plane.
+        with pytest.raises(AdoptRecipeError) as ei:
+            render_adoption(
+                "google_storage_bucket",
+                "driftscribe-hack-2026_cloudbuild",
+                "driftscribe-hack-2026",
+                location="us",
+            )
+        msg = str(ei.value)
+        assert "cannot be adopted" in msg
+        assert "denylist" in msg
+        assert "Google service" in msg
+        assert "control plane" not in msg.lower()  # honest framing, not borrowed
+        assert msg.endswith(FINAL_REFUSAL_MARKER)
+
+    def test_service_managed_prefix_bucket_is_rejected(self):
+        with pytest.raises(AdoptRecipeError):
+            render_adoption(
+                "google_storage_bucket",
+                "gcf-v2-sources-12345-asia-northeast1",
+                "driftscribe-hack-2026",
+                location="asia-northeast1",
+            )
+
     def test_control_plane_service_is_rejected(self):
         with pytest.raises(AdoptRecipeError) as ei:
             render_adoption(

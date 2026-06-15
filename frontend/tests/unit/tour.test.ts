@@ -349,4 +349,46 @@ describe('adoptStepState', () => {
     expect(s.kind).toBe('none');
     if (s.kind === 'none') expect(s.line).toContain('named adopt target');
   });
+
+  it('skips a Google-service-managed bucket — never prefills _cloudbuild', () => {
+    // The same control_plane flag covers service-managed buckets, so the tour
+    // must skip demo_cloudbuild exactly as it skips our own -tofu-* buckets.
+    const g = makeGraph({
+      groups: [
+        makeGroup({
+          adoptable: true,
+          adopt_rank: 1,
+          nodes: [
+            makeNode({ label: 'demo_cloudbuild', managed: false, control_plane: true }),
+            makeNode({ id: 'n2', label: 'demo-assets', managed: false }),
+          ],
+        }),
+      ],
+    });
+    const s = adoptStepState(g);
+    expect(s.kind).toBe('target');
+    if (s.kind === 'target') {
+      expect(s.prefill).toContain('`demo-assets`');
+      expect(s.prefill).not.toContain('cloudbuild');
+    }
+  });
+
+  it('all-suppressed line honestly names Google-service-managed buckets too', () => {
+    const g = makeGraph({
+      totals: { resources: 1, managed: 0, drift: 1 },
+      groups: [
+        makeGroup({
+          adoptable: true,
+          adopt_rank: 1,
+          nodes: [makeNode({ label: 'demo_cloudbuild', managed: false, control_plane: true })],
+        }),
+      ],
+    });
+    const s = adoptStepState(g);
+    expect(s.kind).toBe('none');
+    if (s.kind === 'none') {
+      expect(s.line).toContain('Google service');
+      expect(s.line).toContain('denylist');
+    }
+  });
 });

@@ -159,7 +159,9 @@ export function adoptStepState(graph: InfraGraph | null): AdoptStepState {
     // normalized label would yield an empty-backtick prefill and blank copy.
     // Control-plane nodes are skipped too: the denylist refuses their
     // adoption outright (ranking-filter follow-up — the live rank-1 pick was
-    // DriftScribe's own -tofu-artifacts bucket).
+    // DriftScribe's own -tofu-artifacts bucket). The same control_plane flag
+    // also covers buckets a Google service auto-creates (e.g. _cloudbuild),
+    // so those are skipped here as well.
     const node = g.nodes.find(
       (n) =>
         !n.managed &&
@@ -200,11 +202,12 @@ export function adoptStepState(graph: InfraGraph | null): AdoptStepState {
     return {
       kind: 'none',
       line:
-        'The unmanaged resources the agent could otherwise adopt are IaC ' +
-        'control-plane infrastructure — DriftScribe services or IaC ' +
-        'state/artifact buckets — which the always-on denylist blocks the ' +
-        'agent from changing, adoption included. The Infrastructure panel ' +
-        'shows everything that is there.',
+        'The unmanaged resources the agent could otherwise adopt are ' +
+        'system-managed infrastructure — DriftScribe control-plane services ' +
+        'and IaC state/artifact buckets, or buckets a Google service ' +
+        'auto-creates — which the always-on denylist blocks the agent from ' +
+        'changing, adoption included. The Infrastructure panel shows ' +
+        'everything that is there.',
     };
   }
   return nonControlPlane.length > 0

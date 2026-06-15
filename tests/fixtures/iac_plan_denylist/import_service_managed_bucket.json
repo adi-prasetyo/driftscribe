@@ -1,0 +1,18 @@
+{
+  "_test_intent": "import of a Google-service-managed bucket (Cloud Build staging) — must emit exactly service-managed-bucket (type is adoptable, so import-type-not-adoptable does NOT fire; control-plane-bucket must NOT fire)",
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "google_storage_bucket.cloudbuild",
+      "mode": "managed",
+      "type": "google_storage_bucket",
+      "name": "cloudbuild",
+      "change": {
+        "actions": ["no-op"],
+        "before": {"name": "driftscribe-hack-2026_cloudbuild"},
+        "after": {"name": "driftscribe-hack-2026_cloudbuild"},
+        "importing": {"id": "driftscribe-hack-2026_cloudbuild"}
+      }
+    }
+  ]
+}

@@ -579,8 +579,9 @@
                   >
                 {:else if row.controlPlane}
                   <span class="ds-subtle infra-adopt__muted" data-testid="adopt-control-plane"
-                    >IaC control-plane infrastructure — the always-on denylist blocks changes
-                    to it, adoption included</span
+                    >System-managed infrastructure — DriftScribe's own control-plane
+                    resources, or a bucket a Google service auto-creates — which the
+                    always-on denylist blocks from changes, adoption included</span
                   >
                 {:else}
                   <span class="ds-subtle infra-adopt__muted" data-testid="adopt-unavailable"

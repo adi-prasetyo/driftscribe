@@ -230,6 +230,58 @@ def test_unprotected_bucket_object_passes():
     assert evaluate(DenylistInput(plan=parsed)) == []
 
 
+# --- service-managed-bucket: buckets OTHER Google services auto-create ---
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        "service_managed_bucket_update.json",
+        "import_service_managed_bucket.json",
+    ],
+)
+def test_service_managed_bucket_change_or_import_is_denied(fixture):
+    """A bucket a Google service auto-creates (e.g. <project>_cloudbuild) must
+    fire service-managed-bucket on BOTH a change and a zero-change import —
+    and must NOT be mislabelled control-plane-bucket (DriftScribe's own)."""
+    parsed, _ = load_plan_json(_load(fixture))
+    rules = _rules(evaluate(DenylistInput(plan=parsed)))
+    assert "service-managed-bucket" in rules, fixture
+    assert "control-plane-bucket" not in rules, fixture
+
+
+def test_import_service_managed_bucket_fires_only_that_rule():
+    """The import is a zero-change adopt of an adoptable type, so ONLY the
+    service-managed-bucket identity rule fires (no import-type-not-adoptable,
+    no control-plane-bucket)."""
+    parsed, _ = load_plan_json(_load("import_service_managed_bucket.json"))
+    assert set(_rules(evaluate(DenylistInput(plan=parsed)))) == {"service-managed-bucket"}
+
+
+def test_is_service_managed_bucket_name_matches_known_families_only():
+    """Bounded set: Cloud Build / App Engine + legacy GCR / Cloud Functions /
+    Cloud Run source buckets match; operator buckets (incl. Google-ish
+    near-misses) do NOT — the false-positive direction would wrongly block a
+    legitimate adoption (Codex 019eca9c #1)."""
+    from driftscribe_lib.iac_plan_denylist import is_service_managed_bucket_name as f
+
+    assert f("driftscribe-hack-2026_cloudbuild")
+    assert f("my-project.appspot.com")
+    assert f("staging.my-project.appspot.com")
+    assert f("us.artifacts.my-project.appspot.com")
+    assert f("gcf-sources-123456-us-central1")
+    assert f("gcf-v2-sources-123456-us-central1")
+    assert f("gcf-v2-uploads-123456-us-central1")
+    assert f("run-sources-my-project-us-central1")
+    # Near-misses an operator might legitimately own — NOT blocked:
+    assert not f("gcf-v2-assets")  # the tightened-prefix win
+    assert not f("driftscribe-hack-2026-assets")
+    assert not f("my-tofu-state")
+    assert not f("cloudbuild-logs")  # `_cloudbuild` is a SUFFIX, not a token
+    assert not f(None)
+    assert not f(123)
+
+
 # --- Task 6d: control-plane secret (+ secret_version) + KMS rules ---
 
 
@@ -382,6 +434,8 @@ def test_constants_are_frozensets_or_tuples():
         CONTROL_PLANE_SECRET_IDS,
         CONTROL_PLANE_SERVICE_NAMES,
         IAM_EXTRA_TYPES,
+        SERVICE_MANAGED_BUCKET_PREFIXES,
+        SERVICE_MANAGED_BUCKET_SUFFIXES,
         WIF_RESOURCE_TYPES,
     )
 
@@ -397,7 +451,12 @@ def test_constants_are_frozensets_or_tuples():
         WIF_RESOURCE_TYPES,
     ):
         assert isinstance(c, frozenset), c
-    assert isinstance(CONTROL_PLANE_BUCKET_SUFFIXES, tuple)
+    for t in (
+        CONTROL_PLANE_BUCKET_SUFFIXES,
+        SERVICE_MANAGED_BUCKET_SUFFIXES,
+        SERVICE_MANAGED_BUCKET_PREFIXES,
+    ):
+        assert isinstance(t, tuple), t
 
 
 # --- Phase 2 import admission (adopt/import design §4.2, 2026-06-11) ---

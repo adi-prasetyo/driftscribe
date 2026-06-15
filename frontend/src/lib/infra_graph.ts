@@ -26,12 +26,13 @@ export interface InfraNode {
   managed: boolean;
   location: string | null;
   /**
-   * Server-marked: DriftScribe's own control-plane infrastructure (its Cloud
-   * Run services / the -tofu-state and -tofu-artifacts buckets). The
-   * always-on denylist refuses any plan that would change or import it, so
-   * adopt surfaces suppress the CTA. Optional + fail-safe: a stale
-   * coordinator response without the field shows the button and C2 still
-   * blocks the plan.
+   * Server-marked: non-adoptable by identity — either DriftScribe's own
+   * control-plane infrastructure (its Cloud Run services / the -tofu-state and
+   * -tofu-artifacts buckets) OR a bucket a Google service auto-creates (Cloud
+   * Build / App Engine / Cloud Functions / Cloud Run source-deploy staging).
+   * The always-on denylist refuses any plan that would change or import it, so
+   * adopt surfaces suppress the CTA. Optional + fail-safe: a stale coordinator
+   * response without the field shows the button and C2 still blocks the plan.
    */
   control_plane?: boolean;
 }

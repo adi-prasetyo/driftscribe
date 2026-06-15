@@ -4,8 +4,10 @@ Pure, deterministic, fail-closed policy over an OpenTofu
 ``tofu show -json plan.tfplan`` document. Refuses any non-no-op change
 targeting the DriftScribe control plane (Cloud Run services + their SAs,
 state/artifact buckets and their objects, control-plane secrets and their
-versions, the plan-builder KMS key + key ring), any IAM/WIF change, and
-any state-mutating action (``delete`` / ``forget`` / replace) — even on
+versions, the plan-builder KMS key + key ring), any bucket a Google service
+auto-creates (Cloud Build / App Engine / Cloud Functions / Cloud Run source
+staging — not the operator's to adopt), any IAM/WIF change, and any
+state-mutating action (``delete`` / ``forget`` / replace) — even on
 unrelated resources, in v1.
 
 This is the canonical, lib-owned definition (Phase C4 promoted it out of
@@ -27,7 +29,7 @@ phase decision; the v1 false-positive trade-off (e.g. a clean IAM grant
 on a payment-demo bucket is also denied) is accepted to keep the gate
 defensible until the C3 human-approval flow lands.
 
-**Rule IDs (18)**:
+**Rule IDs (19)**:
 
 - ``plan-json-unparseable`` — bad JSON or top-level not an object.
 - ``plan-json-missing-resource-changes`` — key missing OR not a list.
@@ -41,6 +43,11 @@ defensible until the C3 human-approval flow lands.
   (matched on ``account_id`` OR the local part of ``email``).
 - ``control-plane-bucket`` — non-no-op change to a ``-tofu-state`` /
   ``-tofu-artifacts`` bucket or an OBJECT inside one.
+- ``service-managed-bucket`` — non-no-op change to (or import of) a
+  bucket a Google service auto-creates (Cloud Build ``*_cloudbuild``,
+  App Engine / legacy GCR ``*.appspot.com``, Cloud Functions
+  ``gcf-sources-*`` / ``gcf-v2-{sources,uploads}-*``, Cloud Run
+  ``run-sources-*``); bucket-only, no OBJECT case.
 - ``control-plane-secret`` — non-no-op change to a protected secret
   (matched on ``secret_id``) or one of its versions (parent id
   extracted from the resource path).
@@ -108,7 +115,7 @@ __all__ = [
 class Violation:
     """A single denylist violation.
 
-    ``rule`` is a short machine identifier (one of the 18 rule IDs listed
+    ``rule`` is a short machine identifier (one of the 19 rule IDs listed
     in the module docstring); ``detail`` is a human-readable message that
     names the offending resource address + action tuple.
     """
@@ -217,6 +224,22 @@ CONTROL_PLANE_SA_ACCOUNT_IDS: frozenset[str] = frozenset(
 # Codex Blocker #5) redirects the IaC backend or smuggles a payload into the
 # trusted artifact store, so both must be denied even on a green PR.
 CONTROL_PLANE_BUCKET_SUFFIXES: tuple[str, ...] = ("-tofu-state", "-tofu-artifacts")
+
+# Buckets that a GOOGLE SERVICE auto-creates as a side effect of using that
+# service (NOT provisioned by the operator) — distinct from DriftScribe's own
+# control-plane buckets above. Adopting one into operator IaC is nonsense (it
+# is not theirs to track) and was the original homepage-tour papercut: the
+# rank-1 "start here" suggestion was `<project>_cloudbuild`, Cloud Build's
+# staging bucket. A bounded, well-known set (NOT a heuristic). The `gcf-v2-`
+# prefixes are the specific source/upload families, not a bare `gcf-v2-`, so an
+# operator bucket like `gcf-v2-assets` is not wrongly blocked (Codex 019eca9c).
+SERVICE_MANAGED_BUCKET_SUFFIXES: tuple[str, ...] = ("_cloudbuild", ".appspot.com")
+SERVICE_MANAGED_BUCKET_PREFIXES: tuple[str, ...] = (
+    "gcf-sources-",  # Cloud Functions gen1 source
+    "gcf-v2-sources-",  # Cloud Functions gen2 source
+    "gcf-v2-uploads-",  # Cloud Functions gen2 upload staging
+    "run-sources-",  # Cloud Run source deploys
+)
 
 # Operational secrets that the denylist protects. Per Codex Important #4 the
 # v1 list is intentionally broader than just the design-mandated HMAC keys —
@@ -463,6 +486,21 @@ def _is_protected_bucket_name(name: object) -> bool:
     return isinstance(name, str) and any(name.endswith(s) for s in CONTROL_PLANE_BUCKET_SUFFIXES)
 
 
+def is_service_managed_bucket_name(name: object) -> bool:
+    """True iff ``name`` is a bucket auto-created by a Google service.
+
+    PUBLIC and shared across the three surfaces that must agree — this denylist
+    check, ``infra_graph``'s node-flag matcher, and ``adopt_recipe``'s
+    tool-boundary rejection — so the multi-dimensional (prefix OR suffix) match
+    lives in exactly one place and the surfaces cannot drift. ``None``/non-str
+    safe (``str.endswith``/``startswith`` accept a tuple natively).
+    """
+    return isinstance(name, str) and (
+        name.endswith(SERVICE_MANAGED_BUCKET_SUFFIXES)
+        or name.startswith(SERVICE_MANAGED_BUCKET_PREFIXES)
+    )
+
+
 def _check_control_plane_bucket(
     rc: dict,
     rtype: str,
@@ -516,6 +554,43 @@ def _check_control_plane_bucket(
                     f"{(after_bucket or before_bucket)!r} (actions={list(actions)})",
                 )
             )
+
+
+def _check_service_managed_bucket(
+    rc: dict,
+    rtype: str,
+    actions: tuple[str, ...],
+    before: dict,
+    after: dict,
+    violations: list[Violation],
+) -> None:
+    """Emit service-managed-bucket on a non-no-op change to (or import of) a
+    bucket that a Google service auto-creates.
+
+    Distinct from control-plane-bucket: these belong to OTHER Google services
+    (Cloud Build, App Engine, Cloud Functions, Cloud Run source deploys), not
+    to DriftScribe — adopting one into operator IaC is meaningless and was the
+    original homepage-tour papercut. Bucket-only: unlike the control-plane rule
+    there is no OBJECT case, because a Google staging bucket carries no
+    state/artifact trust dependency to smuggle into. This check is silent on a
+    nameless bucket because is_service_managed_bucket_name is None/non-str-safe;
+    the single plan-json-malformed-change for such a row is owned by
+    _check_control_plane_bucket (dispatched first), so nothing is added here.
+    """
+    if rtype != "google_storage_bucket":
+        return
+    before_name = before.get("name")
+    after_name = after.get("name")
+    if is_service_managed_bucket_name(before_name) or is_service_managed_bucket_name(
+        after_name
+    ):
+        violations.append(
+            Violation(
+                "service-managed-bucket",
+                f"{rc.get('address', '<unknown>')}: Google-service-managed bucket "
+                f"{(after_name or before_name)!r} (actions={list(actions)})",
+            )
+        )
 
 
 def _secret_id_from_version_path(value: object) -> str | None:
@@ -798,6 +873,7 @@ def evaluate(di: DenylistInput) -> list[Violation]:
             _check_control_plane_service(rc, rtype, actions, before, after, violations)
             _check_control_plane_sa(rc, rtype, actions, before, after, violations)
             _check_control_plane_bucket(rc, rtype, actions, before, after, violations)
+            _check_service_managed_bucket(rc, rtype, actions, before, after, violations)
             _check_control_plane_secret(rc, rtype, actions, before, after, violations)
             _check_control_plane_kms(rc, rtype, actions, before, after, violations)
             _check_wif(rc, rtype, actions, violations)
@@ -845,6 +921,11 @@ RULE_DESCRIPTIONS: Final[Mapping[str, str]] = MappingProxyType({
     "control-plane-bucket": (
         "No change may touch the IaC state or artifact buckets, or any "
         "object inside them."
+    ),
+    "service-managed-bucket": (
+        "No change may adopt or modify a bucket that a Google service "
+        "auto-creates — Cloud Build, App Engine, Cloud Functions, or Cloud Run "
+        "source-deploy staging buckets are not yours to track in IaC."
     ),
     "control-plane-secret": (
         "No change may touch DriftScribe's secrets (approval keys, GitHub "
