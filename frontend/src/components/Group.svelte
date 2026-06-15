@@ -15,6 +15,7 @@
     count = 0,
     open = false,
     empty = false,
+    hint,
     children,
   }: {
     key: GroupKey;
@@ -24,13 +25,19 @@
     count?: number;
     open?: boolean;
     empty?: boolean;
+    /**
+     * Optional explanatory hover-help. When set, a small help-circle icon is
+     * rendered next to the title with this text as its tooltip + aria-label.
+     * Supplementary operator hint (hover/SR), not focus/touch-robust help.
+     */
+    hint?: string;
     children?: Snippet;
   } = $props();
 </script>
 
 <details id={`group-${key}`} class="group" {open}>
   <summary class="group__summary">
-    <span class="group__title">{#if icon}<Icon name={icon} size={14} extraClass="group__title-icon" />{/if}{title}</span>
+    <span class="group__title">{#if icon}<Icon name={icon} size={14} extraClass="group__title-icon" />{/if}{title}{#if hint}<span class="group__hint" title={hint} aria-label={hint} role="img"><Icon name="help-circle" size={13} /></span>{/if}</span>
     {#if count > 0}
       <span class="ds-pill ds-pill--muted group__count">{count}</span>
     {/if}
@@ -82,6 +89,12 @@
   }
   .group__title :global(.group__title-icon) {
     color: var(--ds-muted);
+  }
+  .group__hint {
+    display: inline-flex;
+    align-items: center;
+    color: var(--ds-faint);
+    cursor: help;
   }
   .events {
     padding: var(--ds-sp-2) var(--ds-sp-4) var(--ds-sp-4);

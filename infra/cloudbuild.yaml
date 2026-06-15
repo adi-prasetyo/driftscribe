@@ -293,6 +293,15 @@ steps:
       # (Phase 14.5) flip the google-genai SDK from AI Studio (API-key auth)
       # to Vertex AI (ADC via the coordinator's runtime SA). These are stamped
       # at deploy time, not post-deploy — they don't depend on any worker URL.
+      # GOOGLE_CLOUD_LOCATION is `global` (NOT asia-northeast1) deliberately:
+      # empirically (5-region probe, 2026-06-15) Gemini 2.5 Flash returns
+      # `thought=True` reasoning-SUMMARY parts ONLY from `global` / us-central1 —
+      # asia-northeast1 spends thinking tokens but returns zero summaries, so the
+      # operator UI's "Coordinator reasoning" panel was empty there. `global`
+      # surfaces the summaries at a modest per-call latency cost (accepted).
+      # NOTE: TARGET_REGION + the Cloud Run --region stay asia-northeast1 — only
+      # the Vertex inference location moves. The `global` endpoint gives no
+      # Japan-region data-processing guarantee (demo data is synthetic).
       # Phase 20: TARGET_SERVICE / GITHUB_REPO / USE_ADK / DRY_RUN are
       # substituted so the E2E build can flip them without forking this file. The
       # new UPGRADE_TARGET_REPO_OVERRIDE pins the coordinator-side
@@ -318,7 +327,7 @@ steps:
       # ignores stray Cf-Access-Jwt-Assertion headers when these values
       # don't match a real CF Access deployment (e.g. on the E2E project,
       # which doesn't have CF Access in front of it) — see agent/auth.py.
-      - --set-env-vars=DRY_RUN=$_DRY_RUN,GCP_PROJECT=$PROJECT_ID,TARGET_SERVICE=$_TARGET_SERVICE,TARGET_REGION=asia-northeast1,GITHUB_REPO=$_TARGET_GITHUB_REPO,USE_ADK=$_USE_ADK,UPGRADE_TARGET_REPO_OVERRIDE=$_UPGRADE_TARGET_REPO,READER_URL=https://placeholder.invalid,DOCS_URL=https://placeholder.invalid,ROLLBACK_URL=https://placeholder.invalid,NOTIFIER_URL=https://placeholder.invalid,UPGRADE_READER_URL=https://placeholder.invalid,UPGRADE_DOCS_URL=https://placeholder.invalid,INFRA_READER_URL=https://placeholder.invalid,GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=asia-northeast1,CF_ACCESS_TEAM_DOMAIN=adp-app.cloudflareaccess.com,CF_ACCESS_AUD_TAG=5e6a20fe63e5fb03a742eeb0623e216ad4c837413d2afa9885a79b1091016262
+      - --set-env-vars=DRY_RUN=$_DRY_RUN,GCP_PROJECT=$PROJECT_ID,TARGET_SERVICE=$_TARGET_SERVICE,TARGET_REGION=asia-northeast1,GITHUB_REPO=$_TARGET_GITHUB_REPO,USE_ADK=$_USE_ADK,UPGRADE_TARGET_REPO_OVERRIDE=$_UPGRADE_TARGET_REPO,READER_URL=https://placeholder.invalid,DOCS_URL=https://placeholder.invalid,ROLLBACK_URL=https://placeholder.invalid,NOTIFIER_URL=https://placeholder.invalid,UPGRADE_READER_URL=https://placeholder.invalid,UPGRADE_DOCS_URL=https://placeholder.invalid,INFRA_READER_URL=https://placeholder.invalid,GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=global,CF_ACCESS_TEAM_DOMAIN=adp-app.cloudflareaccess.com,CF_ACCESS_AUD_TAG=5e6a20fe63e5fb03a742eeb0623e216ad4c837413d2afa9885a79b1091016262
       # DRIFTSCRIBE_TOKEN (Phase 11.1) gates /recheck via the X-DriftScribe-Token
       # header. The `coordinator-shared-token` secret MUST exist in Secret
       # Manager BEFORE the first build that includes this line — Cloud Run

@@ -70,6 +70,15 @@
     tools: 'Tools & workers',
     mcp: 'MCP traffic',
   };
+
+  // Self-documents why responses can feel slow: Gemini only returns its
+  // reasoning summaries from Vertex AI's `global` region, so inference is
+  // routed there (Tokyo returns none) at a small latency cost. Shown as a
+  // hover-help icon next to the coordinator group only.
+  const COORDINATOR_HINT =
+    "Gemini's reasoning summaries are only returned by Vertex AI's 'global' " +
+    'region, so this deployment routes inference there — which adds a little ' +
+    'latency per turn.';
 </script>
 
 {#snippet toolPair(pair: { call?: TraceEvent; result?: TraceEvent })}
@@ -111,6 +120,7 @@
     key="coordinator"
     title={titleFor.coordinator}
     icon="brain"
+    hint={COORDINATOR_HINT}
     count={groups.coordinator.length}
     open={true}
     empty={groups.coordinator.length === 0}
