@@ -21,8 +21,12 @@ could silently drift. The coupling is verified by the drift-pin tests in
 Import direction: this module imports FROM ``agent.workloads.registry``,
 ``agent.workloads.spec``, ``agent.fanout``, and
 ``driftscribe_lib.iac_plan_denylist``. It MUST NOT import ``agent.main``
-— main imports us (the coherence test imports main from the test side
-only, not from here).
+AT MODULE LOAD — main imports us, so a top-level import would cycle.
+``build_capabilities()`` does take a single deliberate function-scope
+import of ``agent.main.AUTONOMOUS_TRIGGER_WORKLOADS`` at call time (when
+main is already fully loaded), mirroring the test side's lazy
+``from agent.main import CHAT_ONLY_WORKLOAD_NAMES`` — see the comment at
+the import site for why the autonomy signal is owned in main.
 """
 from __future__ import annotations
 
