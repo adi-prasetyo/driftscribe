@@ -2,8 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { groupRules, CATEGORY_HEADINGS } from '../../src/lib/capabilities';
 import type { CapRule } from '../../src/lib/capabilities';
 
-// Representative subset of the real DTO — keeps all four categories and both
-// known + unknown category scenarios. Server ordering preserved.
+// Representative subset of the real DTO — exercises the known categories
+// (control-plane, service-managed, iam, global-v1, structural) plus the
+// unknown-category fallback. Server ordering preserved.
 
 const controlPlaneRule: CapRule = {
   id: 'control-plane-service',

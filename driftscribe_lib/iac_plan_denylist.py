@@ -4,8 +4,10 @@ Pure, deterministic, fail-closed policy over an OpenTofu
 ``tofu show -json plan.tfplan`` document. Refuses any non-no-op change
 targeting the DriftScribe control plane (Cloud Run services + their SAs,
 state/artifact buckets and their objects, control-plane secrets and their
-versions, the plan-builder KMS key + key ring), any IAM/WIF change, and
-any state-mutating action (``delete`` / ``forget`` / replace) — even on
+versions, the plan-builder KMS key + key ring), any bucket a Google service
+auto-creates (Cloud Build / App Engine / Cloud Functions / Cloud Run source
+staging — not the operator's to adopt), any IAM/WIF change, and any
+state-mutating action (``delete`` / ``forget`` / replace) — even on
 unrelated resources, in v1.
 
 This is the canonical, lib-owned definition (Phase C4 promoted it out of
@@ -113,7 +115,7 @@ __all__ = [
 class Violation:
     """A single denylist violation.
 
-    ``rule`` is a short machine identifier (one of the 18 rule IDs listed
+    ``rule`` is a short machine identifier (one of the 19 rule IDs listed
     in the module docstring); ``detail`` is a human-readable message that
     names the offending resource address + action tuple.
     """

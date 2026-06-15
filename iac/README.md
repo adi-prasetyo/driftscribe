@@ -201,16 +201,18 @@ be called from **three** places:
 3. The `tofu-apply` worker re-runs the denylist against the same `plan.json`
    immediately before `tofu apply` (wired in **C4**).
 
-**18 rules** spread across structural fail-closed (`plan-json-unparseable`,
+**19 rules** spread across structural fail-closed (`plan-json-unparseable`,
 `plan-json-missing-resource-changes`, `plan-json-malformed-change`), action-
 floor (`delete-action-forbidden-v1`, `forget-action-forbidden-v1`,
 `replace-action-forbidden-v1`, `unknown-action-forbidden-v1`), adopt/import
 admission (`import-with-changes-forbidden-v1`, `import-type-not-adoptable-v1`,
 `import-mixed-plan-forbidden-v1`, `import-batch-forbidden-v1`), control-plane
 identity (`control-plane-service`, `control-plane-sa`, `control-plane-bucket`,
-`control-plane-secret`, `control-plane-kms`), and IAM/WIF (`wif-config-change`,
-`iam-change-forbidden-v1`). See the module docstring for the exact identity-
-matching strategy and the full C4 worker contract.
+`control-plane-secret`, `control-plane-kms`), service-managed buckets
+(`service-managed-bucket` — buckets a Google service auto-creates, e.g. Cloud
+Build / App Engine / Cloud Functions / Cloud Run source staging), and IAM/WIF
+(`wif-config-change`, `iam-change-forbidden-v1`). See the module docstring for
+the exact identity-matching strategy and the full C4 worker contract.
 
 The CLI form is:
 
