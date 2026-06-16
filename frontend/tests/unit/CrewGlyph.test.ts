@@ -95,6 +95,30 @@ describe('CrewGlyph — verb routing', () => {
   });
 });
 
+describe('CrewGlyph — animated gate', () => {
+  // jsdom can't run keyframes, but the gate is purely a class toggle: present =
+  // loops, absent = the specificity-winning :not() rule rests every element on
+  // its base/healthy frame. We assert the class, which IS the contract the
+  // CrewPicker relies on to make "selected = alive, the rest = static".
+  it('carries crew-glyph--animated by default (CapabilityCard keeps looping)', () => {
+    for (const verb of VERBS) {
+      const { container } = render(CrewGlyph, { props: { verb } });
+      const svg = container.querySelector('svg')!;
+      expect(svg.getAttribute('class')).toContain('crew-glyph--animated');
+      cleanup();
+    }
+  });
+
+  it('omits crew-glyph--animated when animated=false (the static, unselected frame)', () => {
+    for (const verb of VERBS) {
+      const { container } = render(CrewGlyph, { props: { verb, animated: false } });
+      const svg = container.querySelector('svg')!;
+      expect(svg.getAttribute('class')).not.toContain('crew-glyph--animated');
+      cleanup();
+    }
+  });
+});
+
 describe('CrewGlyph — unknown verb fallback', () => {
   it('degrades an unrecognized verb to a static node, not a blank/broken glyph', () => {
     const { container } = render(CrewGlyph, { props: { verb: 'totally-unknown' } });

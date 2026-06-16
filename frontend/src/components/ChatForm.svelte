@@ -1,12 +1,13 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { WORKLOADS, type Workload, type ChatPrefill } from '../lib/workloads';
+  import { type Workload, type ChatPrefill } from '../lib/workloads';
   import Icon from './Icon.svelte';
+  import CrewPicker from './CrewPicker.svelte';
 
-  // The prompt composer. A single-row form: a growing prompt input, a compact
-  // workload select, and a Send button. In historical mode the whole row is
-  // dimmed (.historical) and every control is disabled — the operator is
-  // reviewing a past trace, not starting a new one.
+  // The prompt composer. A crew-card workload picker sits above a growing
+  // prompt input + Send button. In historical mode the whole form is dimmed
+  // (.historical) and every control is disabled — the operator is reviewing a
+  // past trace, not starting a new one.
   let {
     disabled = false,
     onSubmit,
@@ -27,17 +28,9 @@
   let workload = $state<Workload>('drift');
   let inputEl = $state<HTMLInputElement | null>(null);
 
-  // Crew picker grouping (Phase 17.G). The dropdown is split into an
-  // "Autonomous" optgroup (runs without being asked — only Anchor in this
-  // build) and an "On-demand" optgroup. A COLLAPSED native <select> shows only
-  // the selected option, not its optgroup header, so grouping alone is not
-  // enough — we ALSO render an adjacent badge that tracks the selection. The
-  // autonomy signal must be unmistakable whether the dropdown is open or shut.
-  const autonomousOptions = WORKLOADS.filter((o) => o.group === 'autonomous');
-  const onDemandOptions = WORKLOADS.filter((o) => o.group === 'on-demand');
-  const selectedIsAutonomous = $derived(
-    WORKLOADS.find((o) => o.value === workload)?.group === 'autonomous',
-  );
+  // The workload picker is the CrewPicker (four mini crew cards) bound to
+  // `workload` below; the autonomy signal + Autonomous/On-demand grouping it
+  // used to carry as optgroups + an adjacent badge now live on the cards.
 
   // Apply the prefill on each NEW epoch (tracked dependency); set the workload
   // select and focus the input so the operator can edit / press Send. Keyed on
@@ -66,6 +59,12 @@
 </script>
 
 <form id="chat-form" class="chat-form" class:historical={disabled} onsubmit={handle}>
+  <!-- Crew-card workload picker, above the input ("who → what"). The selected
+       card's glyph loops; the rest are static. Bound to `workload`. -->
+  <div class="chat-form__crew">
+    <CrewPicker bind:value={workload} {disabled} />
+  </div>
+
   <input
     id="prompt-input"
     data-testid="chat-prompt"
@@ -78,35 +77,6 @@
     bind:value={prompt}
     {disabled}
   />
-
-  <select
-    id="workload-select"
-    class="chat-form__select"
-    aria-label="Workload"
-    bind:value={workload}
-    {disabled}
-  >
-    <optgroup label="Autonomous · runs without being asked">
-      {#each autonomousOptions as option (option.value)}
-        <option value={option.value}>{option.label}</option>
-      {/each}
-    </optgroup>
-    <optgroup label="On-demand · runs only when you ask">
-      {#each onDemandOptions as option (option.value)}
-        <option value={option.value}>{option.label}</option>
-      {/each}
-    </optgroup>
-  </select>
-
-  <!-- Adjacent autonomy badge: tracks the selected workload because a
-       collapsed <select> hides the optgroup header (Codex must-fix #3). -->
-  <span
-    class="chat-form__camp ds-pill {selectedIsAutonomous ? 'ds-pill--ok' : 'ds-pill--muted'}"
-    data-testid="workload-camp"
-    title={selectedIsAutonomous
-      ? 'Runs on its own — a live trigger reacts the moment something changes, no one has to ask.'
-      : 'Runs only when you ask, from this chat.'}
-  >{selectedIsAutonomous ? 'Autonomous' : 'On-demand'}</span>
 
   <button
     id="send-btn"
@@ -153,6 +123,12 @@
     box-shadow: none;
   }
 
+  /* The crew picker owns its own full-width row above the input. */
+  .chat-form__crew {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+
   /* The prompt input is the protagonist: it grows to fill the row. */
   .chat-form__input {
     flex: 1 1 16rem;
@@ -173,40 +149,6 @@
     box-shadow: none;
   }
 
-  /* Compact supporting controls. */
-  .chat-form__select {
-    flex: 0 0 auto;
-    padding: 0.55em 2em 0.55em 0.7em;
-    border: 1px solid var(--ds-border-strong);
-    border-radius: var(--ds-radius-sm);
-    background-color: var(--ds-surface);
-    color: var(--ds-fg-soft);
-    font-size: var(--ds-fs-1);
-    font-weight: var(--ds-fw-medium);
-    cursor: pointer;
-    /* hand-rolled caret so the control reads as part of the editorial set */
-    appearance: none;
-    -webkit-appearance: none;
-    background-image: linear-gradient(45deg, transparent 50%, var(--ds-muted) 50%),
-      linear-gradient(135deg, var(--ds-muted) 50%, transparent 50%);
-    background-position: calc(100% - 1.05em) center, calc(100% - 0.75em) center;
-    background-size: 0.3em 0.3em, 0.3em 0.3em;
-    background-repeat: no-repeat;
-  }
-  .chat-form__select:hover {
-    border-color: var(--ds-muted);
-  }
-
-  /* Adjacent autonomy badge — sits beside the select and tracks the
-     selection so the Autonomous/On-demand signal is visible while the
-     dropdown is collapsed. Reuses the shared .ds-pill ok/muted tones. */
-  .chat-form__camp {
-    flex: 0 0 auto;
-    align-self: center;
-    white-space: nowrap;
-    cursor: default;
-  }
-
   .chat-form__send {
     flex: 0 0 auto;
     display: inline-flex;
@@ -220,22 +162,17 @@
     background: var(--ds-stream-ink);
   }
 
-  /* When the row is dimmed for historical mode the disabled controls don't
-     need their own greyed-out treatment fighting the parent opacity. */
-  .chat-form__input:disabled,
-  .chat-form__select:disabled {
+  /* When the row is dimmed for historical mode the disabled input doesn't
+     need its own greyed-out treatment fighting the parent opacity. */
+  .chat-form__input:disabled {
     cursor: not-allowed;
     color: var(--ds-muted);
   }
 
-  /* Narrow widths: stack the controls; the input keeps the top row, the
-     select + Send share the next line. */
+  /* Narrow widths: the input takes the full row above Send. */
   @media (max-width: 30rem) {
     .chat-form__input {
       flex: 1 1 100%;
-    }
-    .chat-form__select {
-      flex: 1 1 auto;
     }
   }
 </style>

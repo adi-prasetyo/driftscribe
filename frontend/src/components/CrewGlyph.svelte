@@ -1,9 +1,12 @@
 <script lang="ts">
   /**
    * CrewGlyph — a small looping "one estate, four verbs" animation, one per
-   * crew agent, shown in its CapabilityCard summary row.
+   * crew agent. Shown in the CapabilityCard summary row (all four always
+   * looping) AND in the chat-composer CrewPicker, where only the SELECTED
+   * card loops — the `animated` prop gates motion off for the rest.
    *
-   * Design: docs/plans/2026-06-16-workload-rename-design.md §5.
+   * Design: docs/plans/2026-06-16-workload-rename-design.md §5 (glyph) +
+   * docs/plans/2026-06-17-crew-picker-cards-design.md (selection-driven motion).
    *
    * Every glyph shares the same service-node (a rounded square in
    * `currentColor`); each agent performs its one verb against it. Autonomy is
@@ -22,8 +25,17 @@
    * `verb` is the frozen symbolic workload value (drift / upgrade / provision /
    * explore — i.e. CapWorkload.name), NOT the display name. Unknown values fall
    * back to a static node.
+   *
+   * `animated` (default true) gates the loop: when false the `crew-glyph--
+   * animated` class is absent and a specificity-winning `:not()` rule sets
+   * `animation: none` on every element, so the glyph rests on its base =
+   * healthy frame (identical to the reduced-motion picture).
    */
-  let { verb, size = 24 }: { verb: string; size?: number } = $props();
+  let {
+    verb,
+    size = 24,
+    animated = true,
+  }: { verb: string; size?: number; animated?: boolean } = $props();
 
   const KNOWN = new Set(['drift', 'upgrade', 'provision', 'explore']);
   const v = $derived(KNOWN.has(verb) ? verb : 'unknown');
@@ -40,6 +52,7 @@
   aria-hidden="true"
   focusable="false"
   class="crew-glyph crew-glyph--{v}"
+  class:crew-glyph--animated={animated}
   data-testid="crew-glyph-{v}"
 >
   {#if v === 'drift'}
@@ -97,6 +110,27 @@
   }
   .is-faint {
     opacity: 0.32;
+  }
+
+  /* Selection-driven motion (CrewPicker): when the host omits
+     `crew-glyph--animated`, gate every loop off. This override carries more
+     class-specificity than the bare `.anchor-node { animation }` rules below,
+     so each element falls back to its base = healthy frame — the same static
+     picture prefers-reduced-motion lands on. `.prov-block` / `.scan-dot` match
+     the base class, covering their --a/--b/--c / --2/--3 variants too. */
+  .crew-glyph:not(.crew-glyph--animated)
+    :is(
+      .anchor-node,
+      .patch-crack,
+      .patch-bandage,
+      .patch-check,
+      .prov-block,
+      .prov-branch,
+      .prov-commit,
+      .scan-dot,
+      .scan-band
+    ) {
+    animation: none;
   }
 
   /* Each animated element scales/rotates about its own box centre. */
