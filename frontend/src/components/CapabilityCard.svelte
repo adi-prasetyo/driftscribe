@@ -12,6 +12,7 @@
   import { parseAutonomyDoc } from '../lib/autonomy';
   import type { AutonomyDoc } from '../lib/autonomy';
   import Icon from './Icon.svelte';
+  import CrewGlyph from './CrewGlyph.svelte';
 
   let {
     call,
@@ -219,6 +220,11 @@
               class="cap-workload__summary"
               data-testid="cap-workload-{wl.name}-summary"
             >
+              <!-- The crew agent's verb, as a small looping glyph (decorative;
+                   aria-hidden). `verb` is the frozen symbolic value (wl.name),
+                   not the display name. It slots in as the first flex item; the
+                   text seams below are untouched. -->
+              <CrewGlyph verb={wl.name} />
               <!-- Crew identity + domain descriptor + autonomy pill. Each seam
                    is glued with an explicit {' '} (the Svelte-5 whitespace
                    gotcha, PR #83 lesson): the rendered text is exactly
