@@ -11,6 +11,11 @@ afterEach(cleanup);
 
 const noop = () => {};
 
+/** The workload the crew picker currently has selected (its checked radio). */
+function checkedWorkload(): string | undefined {
+  return (document.querySelector('input[type="radio"]:checked') as HTMLInputElement | null)?.value;
+}
+
 describe('ChatForm — prefill', () => {
   it('applies the prefilled text + workload and focuses the input', async () => {
     const { getByTestId } = render(ChatForm, {
@@ -20,11 +25,10 @@ describe('ChatForm — prefill', () => {
       },
     });
     const input = getByTestId('chat-prompt') as HTMLInputElement;
-    const select = document.getElementById('workload-select') as HTMLSelectElement;
     await waitFor(() => {
       expect(input.value).toBe('Adopt the Storage bucket `x` into IaC management.');
     });
-    expect(select.value).toBe('provision');
+    expect(checkedWorkload()).toBe('provision');
     // The $effect focuses the input so the operator can edit / press Send.
     expect(document.activeElement).toBe(input);
   });
@@ -44,8 +48,7 @@ describe('ChatForm — prefill', () => {
       prefill: { text: 'second', workload: 'drift', epoch: 2 },
     });
     await waitFor(() => expect(input.value).toBe('second'));
-    const select = document.getElementById('workload-select') as HTMLSelectElement;
-    expect(select.value).toBe('drift');
+    expect(checkedWorkload()).toBe('drift');
   });
 
   it('does NOT re-apply when prefill stays the same epoch (operator edits survive)', async () => {
@@ -88,45 +91,45 @@ describe('ChatForm — prefill', () => {
       },
     });
     const input = getByTestId('chat-prompt') as HTMLInputElement;
-    const select = document.getElementById('workload-select') as HTMLSelectElement;
     await waitFor(() => {
       expect(input.value).toBe('Explain PR #18 in plain language.');
     });
-    expect(select.value).toBe('explore');
+    expect(checkedWorkload()).toBe('explore');
     expect(onSubmit).not.toHaveBeenCalled();
   });
 });
 
-describe('ChatForm — crew picker autonomy signal', () => {
-  it('splits the picker into Autonomous / On-demand optgroups (only Anchor is autonomous)', () => {
+describe('ChatForm — crew picker integration', () => {
+  it('renders the four crew cards, each describing itself for assistive tech', () => {
     const { container } = render(ChatForm, { props: { onSubmit: noop } });
-    const groups = Array.from(
-      container.querySelectorAll('#workload-select optgroup'),
-    ) as HTMLOptGroupElement[];
-    expect(groups.map((g) => g.label)).toEqual([
-      'Autonomous · runs without being asked',
-      'On-demand · runs only when you ask',
-    ]);
-    // Only Anchor (drift) lives in the autonomous group; the rest are on-demand.
-    expect(
-      Array.from(groups[0].querySelectorAll('option')).map((o) => o.value),
-    ).toEqual(['drift']);
-    expect(
-      Array.from(groups[1].querySelectorAll('option')).map((o) => o.value),
-    ).toEqual(['upgrade', 'explore', 'provision']);
+    for (const v of ['drift', 'upgrade', 'explore', 'provision']) {
+      const card = container.querySelector(`[data-testid="crew-card-${v}"]`);
+      expect(card, `crew card for ${v}`).not.toBeNull();
+      // The radio carries an aria-describedby pointing at its descriptor hint.
+      const radio = card!.querySelector('input[type="radio"]') as HTMLInputElement;
+      expect(radio.getAttribute('aria-describedby')).toBeTruthy();
+    }
   });
 
-  it('the adjacent badge tracks the selection — Autonomous for Anchor, On-demand otherwise', async () => {
-    const { getByTestId } = render(ChatForm, { props: { onSubmit: noop } });
-    // Default workload is drift/Anchor → Autonomous.
-    expect(getByTestId('workload-camp').textContent?.trim()).toBe('Autonomous');
-
-    // Selecting a chat-only workload flips the badge to On-demand.
-    const select = document.getElementById('workload-select') as HTMLSelectElement;
-    select.value = 'explore';
-    await fireEvent.change(select);
-    await waitFor(() =>
-      expect(getByTestId('workload-camp').textContent?.trim()).toBe('On-demand'),
+  it('submits the prompt with whichever crew card is selected (binding round-trips)', async () => {
+    const onSubmit = vi.fn();
+    const { container, getByTestId } = render(ChatForm, { props: { onSubmit } });
+    // Pick Provision via its card, type, and send.
+    await fireEvent.click(
+      container.querySelector('[data-testid="crew-card-provision"] input')!,
     );
+    const input = getByTestId('chat-prompt') as HTMLInputElement;
+    await fireEvent.input(input, { target: { value: 'provision please' } });
+    await fireEvent.submit(document.getElementById('chat-form')!);
+    expect(onSubmit).toHaveBeenCalledWith('provision please', 'provision');
+  });
+
+  it('defaults to Anchor (drift) when the picker is left untouched', async () => {
+    const onSubmit = vi.fn();
+    const { getByTestId } = render(ChatForm, { props: { onSubmit } });
+    const input = getByTestId('chat-prompt') as HTMLInputElement;
+    await fireEvent.input(input, { target: { value: 'hello' } });
+    await fireEvent.submit(document.getElementById('chat-form')!);
+    expect(onSubmit).toHaveBeenCalledWith('hello', 'drift');
   });
 });
