@@ -103,8 +103,11 @@ describe('CrewGlyph — unknown verb fallback', () => {
     expect(svg.getAttribute('data-testid')).toBe('crew-glyph-unknown');
     expect(svg.getAttribute('aria-hidden')).toBe('true');
     // A node is still drawn (the shared service-node rect) so the row never
-    // shows an empty box.
-    expect(container.querySelector('.anchor-node')).not.toBeNull();
+    // shows an empty box — and it is the GENUINELY-STATIC node, never the
+    // animated `.anchor-node`, so an unknown workload is not misrepresented as
+    // Anchor drifting.
+    expect(container.querySelector('.static-node')).not.toBeNull();
+    expect(container.querySelector('.anchor-node')).toBeNull();
     // None of the verb-specific animated parts are present.
     for (const sig of Object.values(SIGNATURE)) {
       expect(container.querySelector(sig)).toBeNull();

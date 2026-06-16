@@ -62,7 +62,7 @@
     <rect class="prov-block prov-block--b" x="22" y="32" width="9" height="10" rx="3" />
     <rect class="prov-block prov-block--c" x="33" y="32" width="9" height="10" rx="3" />
     <line class="prov-branch is-accent" x1="42" y1="34" x2="51" y2="34" />
-    <circle class="prov-commit is-accent" cx="53" cy="34" r="2.6" />
+    <circle class="prov-commit" cx="53" cy="34" r="2.6" />
   {:else if v === 'explore'}
     <!-- Explore: a scan band sweeps the node left-to-right; detail dots light up
          as it passes. Read-only — nothing is mutated. -->
@@ -72,8 +72,10 @@
     <circle class="scan-dot scan-dot--3" cx="37" cy="32" r="1.7" />
     <line class="scan-band is-accent" x1="20" y1="20" x2="20" y2="44" />
   {:else}
-    <!-- Unknown verb: static node only. -->
-    <rect class="anchor-node" x="22" y="22" width="20" height="20" rx="5" />
+    <!-- Unknown verb: a genuinely static node (no animation) so a future
+         workload we don't recognise is never visually misrepresented as Anchor
+         drifting. -->
+    <rect class="static-node" x="22" y="22" width="20" height="20" rx="5" />
   {/if}
 </svg>
 
@@ -234,6 +236,10 @@
     animation: crew-glyph-prov-branch var(--glyph-dur) var(--ds-ease) infinite;
   }
   .prov-commit {
+    /* A solid accent dot reads as a commit; also sidesteps SVG's default
+       stroke-width:1 (the shared stroke-width rule covers rect/line/polyline). */
+    fill: var(--crew-accent);
+    stroke: none;
     animation: crew-glyph-prov-commit var(--glyph-dur) var(--ds-ease) infinite;
   }
   @keyframes crew-glyph-prov-a {
