@@ -216,6 +216,33 @@ describe('CapabilityCard', () => {
     expect(driftSummary!.textContent).toContain('Anchor — Cloud Run config Autonomous · also chat');
   });
 
+  it('3b. each workload summary leads with its verb glyph (decorative, aria-hidden, keyed on the symbolic value)', async () => {
+    const paths: string[] = [];
+    const { getByTestId } = render(CapabilityCard, {
+      props: { call: makeCall(paths) },
+    });
+    const card = getByTestId('capability-card') as HTMLDetailsElement;
+    card.open = true;
+    await fireEvent(card, new Event('toggle'));
+
+    const workloads = await waitFor(() => getByTestId('cap-workloads'));
+    // One glyph per workload, keyed on the FROZEN symbolic value (wl.name),
+    // never the display name. The glyph is the first child of the summary so it
+    // does not disturb the glued name → descriptor → pill text seams.
+    for (const verb of ['drift', 'upgrade', 'explore', 'provision']) {
+      const summary = workloads.querySelector(
+        `[data-testid="cap-workload-${verb}-summary"]`,
+      ) as HTMLElement;
+      expect(summary).not.toBeNull();
+      const glyph = summary.querySelector(`[data-testid="crew-glyph-${verb}"]`);
+      expect(glyph).not.toBeNull();
+      // Decorative only — meaning lives in the card text, not the SVG.
+      expect(glyph!.getAttribute('aria-hidden')).toBe('true');
+      // First element child of the summary (leads the flex row, before the name).
+      expect(summary.firstElementChild).toBe(glyph);
+    }
+  });
+
   it('4. write_capable badge: provision_open_infra_pr shows "write-capable", read tool shows "read"', async () => {
     const paths: string[] = [];
     const { getByTestId } = render(CapabilityCard, {
