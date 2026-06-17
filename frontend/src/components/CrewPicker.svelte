@@ -17,16 +17,17 @@
    * crew cards instead of a native <select>. The SELECTED card's CrewGlyph
    * loops; the rest rest on their static frame, so the motion signals "this is
    * the active crew member" (design: docs/plans/2026-06-17-crew-picker-cards-
-   * design.md). The cards are compact (glyph + name); each card's domain
-   * descriptor surfaces as a tooltip on hover / keyboard focus.
+   * design.md). The cards are compact (glyph + name); each card's one-sentence
+   * `summary` surfaces as a tooltip on hover / keyboard focus.
    *
    * Accessibility: each card is a <label> wrapping a visually-hidden native
    * <input type="radio">, so keyboard arrow-nav + screen-reader semantics come
    * for free (what the old <select> gave). The card shows a focus ring via
-   * :has(input:focus-visible). The descriptor tooltip is wired as the radio's
-   * `aria-describedby`, so assistive tech announces e.g. "Anchor, Cloud Run
-   * config" regardless of hover state. Autonomy is intentionally NOT signalled
-   * here — it lives in the "what this agent can — and cannot — do" card.
+   * :has(input:focus-visible). The summary tooltip is wired as the radio's
+   * `aria-describedby`, so assistive tech announces e.g. "Anchor, Detects
+   * drift between a Cloud Run service's live env vars…" regardless of hover
+   * state. Autonomy is intentionally NOT signalled here — it lives in the
+   * "what this agent can — and cannot — do" card.
    *
    * `value` is the frozen symbolic workload (drift/upgrade/explore/provision);
    * the /chat contract is unchanged.
@@ -71,9 +72,9 @@
              the descriptor (also inside the label) isn't duplicated into the
              name AND the description (Codex review 019ed108). -->
         <span class="crew-card__name" id={nameId}>{wl.name}</span>
-        <!-- Domain descriptor — a tooltip on hover/focus, and the radio's
+        <!-- One-sentence summary — a tooltip on hover/focus, and the radio's
              accessible DESCRIPTION via aria-describedby. -->
-        <span class="crew-card__hint" id={hintId} role="tooltip">{wl.descriptor}</span>
+        <span class="crew-card__hint" id={hintId} role="tooltip">{wl.summary}</span>
       </label>
     {/each}
   </fieldset>
@@ -136,16 +137,22 @@
     white-space: nowrap;
   }
 
-  /* Descriptor tooltip — hidden until hover or keyboard focus, floating above
+  /* Summary tooltip — hidden until hover or keyboard focus, floating above
      the card. Decorative-position only; the text is also the radio's
-     aria-describedby, so assistive tech gets it without hover. */
+     aria-describedby, so assistive tech gets it without hover. The summary is
+     a full sentence, so it WRAPS (white-space: normal) inside a capped width —
+     min() keeps it from clipping the viewport edge on a narrow screen. */
   .crew-card__hint {
     position: absolute;
     bottom: calc(100% + 6px);
     left: 50%;
     transform: translateX(-50%) translateY(3px);
-    white-space: nowrap;
-    padding: 0.28em 0.5em;
+    width: max-content;
+    max-width: min(20rem, 78vw);
+    white-space: normal;
+    text-align: left;
+    line-height: 1.4;
+    padding: 0.4em 0.6em;
     font-size: var(--ds-fs-1);
     font-weight: 400;
     color: var(--ds-fg-soft);
@@ -194,6 +201,20 @@
     .crew-card {
       flex: 1 1 auto;
       justify-content: center;
+      /* Re-anchor the tooltip to the full-width picker instead of the card
+         (below): a one-sentence tooltip centered on an EDGE card would clip
+         the viewport here (and the cards can wrap to two rows, so :first/
+         :last-child can't reliably pick the edges). Making the card static
+         lets the hint resolve to .crew-picker. */
+      position: static;
+    }
+    .crew-picker {
+      position: relative;
+    }
+    /* Centered over the full-width picker + capped to the viewport, so it
+       stays on-screen whichever card is hovered. */
+    .crew-card__hint {
+      max-width: 92vw;
     }
   }
 </style>
