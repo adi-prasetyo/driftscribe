@@ -58,7 +58,7 @@ describe('DecisionsRail — iac_apply CTA supersession + status token', () => {
     expect(link.getAttribute('href')).toBe('/iac-approvals/71');
   });
 
-  it('renders the apply_status token on the meta line (applied + awaiting re-bake)', () => {
+  it('renders the apply_status token on the meta line (applied + awaiting rebuild)', () => {
     const decisions: Decision[] = [
       iacRow({ decision_id: 'applied-68', apply_status: 'applied', pr_number: 68, head_sha: '0496b305deadbeef' }),
       iacRow({ decision_id: 'wait-71', apply_status: 'waiting_for_rebake', pr_number: 71, head_sha: '0496b305deadbeef' }),
@@ -76,12 +76,53 @@ describe('DecisionsRail — iac_apply CTA supersession + status token', () => {
     const metas = Array.from(container.querySelectorAll('.row-meta')).map((n) =>
       n.textContent?.trim(),
     );
+    // The HelpHint panel is collapsed by default (icon-only button, no text),
+    // so both meta lines are the exact token string: action · status · ⎇ sha.
     expect(metas).toContain('iac_apply· applied· ⎇ 0496b30');
-    expect(metas).toContain('iac_apply· awaiting re-bake· ⎇ 0496b30');
-    // The status token sits BETWEEN the action tag and the SHA.
+    expect(metas).toContain('iac_apply· awaiting rebuild· ⎇ 0496b30');
     const applied = metas.find((t) => t?.includes('applied'))!;
     expect(applied.indexOf('applied')).toBeGreaterThan(applied.indexOf('iac_apply'));
     expect(applied.indexOf('applied')).toBeLessThan(applied.indexOf('⎇'));
+  });
+});
+
+describe('DecisionsRail — status help affordance', () => {
+  it('renders a focusable help button only for cryptic statuses; click reveals the explanation', async () => {
+    const decisions: Decision[] = [
+      iacRow({ decision_id: 'applied-68', apply_status: 'applied', pr_number: 68 }),
+      iacRow({ decision_id: 'wait-71', apply_status: 'waiting_for_rebake', pr_number: 71 }),
+    ];
+    const { getAllByTestId, getByTestId, queryByTestId } = render(DecisionsRail, {
+      props: { decisions, activeTraceId: null, onOpenTrace: noop },
+    });
+    // Exactly ONE help button — on the awaiting-rebuild row, not the applied one.
+    const hints = getAllByTestId('status-help');
+    expect(hints).toHaveLength(1);
+    // Reachable by keyboard/touch: a real <button>, not a title-only span.
+    expect(hints[0].tagName).toBe('BUTTON');
+    expect(hints[0].getAttribute('aria-expanded')).toBe('false');
+    // Collapsed by default — no panel in the DOM until activated.
+    expect(queryByTestId('status-help-panel')).toBeNull();
+
+    await fireEvent.click(hints[0]);
+    expect(hints[0].getAttribute('aria-expanded')).toBe('true');
+    const panel = getByTestId('status-help-panel');
+    // The explanation says rebuild-of-what (the worker), not a circular "re-bake".
+    expect(panel.textContent?.toLowerCase()).toContain('worker');
+    expect(panel.textContent?.toLowerCase()).not.toContain('re-bake');
+    // aria-controls points at the revealed panel.
+    expect(hints[0].getAttribute('aria-controls')).toBe(panel.getAttribute('id'));
+  });
+
+  it('renders no help button when every row is self-evident (applied/failed)', () => {
+    const decisions: Decision[] = [
+      iacRow({ decision_id: 'applied-68', apply_status: 'applied', pr_number: 68 }),
+      iacRow({ decision_id: 'failed-71', apply_status: 'failed', pr_number: 71 }),
+    ];
+    const { queryAllByTestId } = render(DecisionsRail, {
+      props: { decisions, activeTraceId: null, onOpenTrace: noop },
+    });
+    expect(queryAllByTestId('status-help')).toHaveLength(0);
   });
 });
 
@@ -107,12 +148,12 @@ describe('DecisionsRail — collapsed iac_apply lifecycle groups', () => {
     // Face = newest doc: applied status on the meta line, PR link title.
     const meta = container.querySelector('.row-meta')?.textContent;
     expect(meta).toContain('applied');
-    expect(meta).not.toContain('awaiting re-bake');
+    expect(meta).not.toContain('awaiting rebuild');
 
     // The summary carries the status COMPOSITION (exact single-expression
     // string — lifecycleSummaryLabel), never a bare count that hides state.
     const summary = getByTestId('iac-lifecycle-summary');
-    expect(summary.textContent?.trim()).toBe('2 earlier steps · awaiting re-bake ×2');
+    expect(summary.textContent?.trim()).toBe('2 earlier steps · awaiting rebuild ×2');
 
     // Calm history (waiting steps only) ⇒ the expander defaults to CLOSED, and
     // the step nodes sit structurally INSIDE it so the native expander gates
@@ -130,7 +171,9 @@ describe('DecisionsRail — collapsed iac_apply lifecycle groups', () => {
       '2026-06-04T14:53:29Z',
       '2026-06-04T14:53:36Z',
     ]);
-    for (const s of steps) expect(s.textContent).toContain('awaiting re-bake');
+    for (const s of steps) expect(s.textContent).toContain('awaiting rebuild');
+    // Each cryptic step also carries the focusable help affordance.
+    expect(getAllByTestId('status-help')).toHaveLength(2);
 
     // Per-step open-trace works — both steps share the live-faithful trace id.
     const btns = getAllByTestId('lifecycle-open-trace');
