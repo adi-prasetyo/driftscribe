@@ -61,7 +61,7 @@ describe('CrewPicker — card group', () => {
     expect(exploreRadio.checked).toBe(true);
   });
 
-  it('exposes each card\'s descriptor as a tooltip AND the radio\'s accessible description', () => {
+  it('exposes each card\'s summary as a tooltip AND the radio\'s accessible description', () => {
     const { container } = render(CrewPicker, { props: { value: 'drift' } });
     for (const wl of WORKLOADS) {
       const card = container.querySelector(`[data-testid="crew-card-${wl.value}"]`)!;
@@ -71,8 +71,8 @@ describe('CrewPicker — card group', () => {
       const hint = card.querySelector(`#${CSS.escape(hintId!)}`) as HTMLElement;
       expect(hint, `${wl.value} hint element should exist`).not.toBeNull();
       expect(hint.getAttribute('role')).toBe('tooltip');
-      expect(hint.textContent).toBe(wl.descriptor);
-      // The accessible NAME is pinned to just the crew name (so the descriptor
+      expect(hint.textContent).toBe(wl.summary);
+      // The accessible NAME is pinned to just the crew name (so the summary
       // isn't duplicated into name + description) — Codex review 019ed108.
       const nameId = radio.getAttribute('aria-labelledby');
       const nameEl = card.querySelector(`#${CSS.escape(nameId!)}`) as HTMLElement;

@@ -51,6 +51,11 @@ export interface WorkloadOption {
   name: string;
   /** Domain subtitle — the gray descriptor, e.g. "Cloud Run config". */
   descriptor: string;
+  /** One-sentence summary of the workload's full description, surfaced as the
+   *  crew-card hover/focus tooltip. Longer than ``descriptor`` (which stays the
+   *  terse "Name — descriptor" label); a condensed form of the canonical
+   *  backend ``description`` (rendered in full by CapabilityCard). */
+  summary: string;
   /** Autonomy camp — drives the picker's optgroup + adjacent badge. */
   group: WorkloadGroup;
   /** Combined "Name — descriptor" label rendered in the native <option>. */
@@ -70,12 +75,14 @@ export const WORKLOADS: WorkloadOption[] = (
     value: string;
     name: string;
     descriptor: string;
+    summary: string;
     group: string;
   }>
 ).map((e) => ({
   value: e.value as Workload,
   name: e.name,
   descriptor: e.descriptor,
+  summary: e.summary,
   group: e.group as WorkloadGroup,
   label: `${e.name} — ${e.descriptor}`,
 }));
