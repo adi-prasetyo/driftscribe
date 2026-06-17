@@ -24,7 +24,9 @@
    */
   import Icon from './Icon.svelte';
 
-  let { text }: { text: string } = $props();
+  // `label` (optional): the status this hint explains, so each button gets a
+  // distinct accessible name when several appear in one lifecycle.
+  let { text, label }: { text: string; label?: string } = $props();
   let open = $state(false);
   const panelId = `help-hint-${nextHintId()}`;
 </script>
@@ -32,9 +34,9 @@
 <button
   type="button"
   class="help-hint__btn"
-  aria-label="Explain this status"
+  aria-label={label ? `Explain the “${label}” status` : 'Explain this status'}
   aria-expanded={open}
-  aria-controls={panelId}
+  aria-controls={open ? panelId : undefined}
   title={text}
   data-testid="status-help"
   onclick={() => (open = !open)}

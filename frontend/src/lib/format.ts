@@ -85,10 +85,14 @@ export function iacStatusLabel(status: string | null | undefined): string {
  * same input iacStatusLabel takes.
  */
 const IAC_STATUS_HELP: Record<string, string> = {
+  // Accurate for BOTH waiting_for_rebake variants — recorded with
+  // merge_state="pending" (before the irreversible merge / kept on merge
+  // failure) AND merge_state="merged" (after) — so it must NOT assert the merge
+  // already happened (agent/main.py records the pending pointer pre-merge).
   waiting_for_rebake:
-    "Merged to the repo. This change can't finish applying until the agent's " +
-    'apply worker is rebuilt from the merged code and re-checks the plan — a ' +
-    "later 'applied' step confirms it completed.",
+    'Create/adopt changes apply in two steps: the PR is merged, then the ' +
+    "agent's apply worker is rebuilt from the merged code and re-checks the " +
+    "plan before applying. A later 'applied' step confirms completion.",
   failed_state_suspect:
     "The apply didn't finish cleanly and the live infrastructure state may have " +
     'changed (or a lock was held), so the result is uncertain. Re-running ' +

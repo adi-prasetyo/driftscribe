@@ -148,7 +148,7 @@
       {@const help = iacStatusHelp(d.apply_status)}
       <!-- HelpHint sits at the END so its opened inline panel breaks cleanly
            onto its own line below the meta (never mid-line, never clipped). -->
-      <p class="row-meta">iac_apply{#if st} · {st}{/if}{#if sha} · <span class="row-sha">⎇ {sha}</span>{/if}{#if help}<HelpHint text={help} />{/if}</p>
+      <p class="row-meta">iac_apply{#if st} · {st}{/if}{#if sha} · <span class="row-sha">⎇ {sha}</span>{/if}{#if help}<HelpHint text={help} label={st} />{/if}</p>
     {/if}
 
     {#if d.suppressed_by_autonomy === true}
@@ -227,7 +227,7 @@
                 <button class="open-trace-btn" data-testid="lifecycle-open-trace" type="button"
                   onclick={() => onOpenTrace(step.trace_id as string)}>open trace →</button>
               {/if}
-              {#if stepHelp}<HelpHint text={stepHelp} />{/if}
+              {#if stepHelp}<HelpHint text={stepHelp} label={stepStatus} />{/if}
             </li>
           {/each}
         </ol>
