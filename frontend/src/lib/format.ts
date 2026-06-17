@@ -60,7 +60,10 @@ export function fmtPreview(s: string, max: number = DEFAULT_PREVIEW_MAX): string
  */
 const IAC_STATUS_LABELS: Record<string, string> = {
   applied: 'applied',
-  waiting_for_rebake: 'awaiting re-bake',
+  // "rebuild" not "re-bake": the operator-facing label uses plain language —
+  // the internal enum stays `waiting_for_rebake`. The help text (iacStatusHelp)
+  // explains rebuild-of-what (the apply worker, from merged code).
+  waiting_for_rebake: 'awaiting rebuild',
   failed: 'failed',
   failed_state_suspect: 'failed (state suspect)',
   ambiguous: 'ambiguous',
@@ -71,6 +74,33 @@ export function iacStatusLabel(status: string | null | undefined): string {
   const known = IAC_STATUS_LABELS[status];
   if (known) return known;
   return status.length > IAC_STATUS_MAX ? status.slice(0, IAC_STATUS_MAX) + ELLIPSIS : status;
+}
+
+/**
+ * Plain-language help for the iac_apply statuses a non-engineer operator can't
+ * decode from the label alone. Surfaced as the HelpHint tooltip/accessible
+ * description next to the status token (DecisionsRail face-meta + lifecycle
+ * steps). Self-evident statuses (`applied`/`failed`) and unknown values return
+ * null → no help affordance is rendered. Keyed on the raw backend enum, the
+ * same input iacStatusLabel takes.
+ */
+const IAC_STATUS_HELP: Record<string, string> = {
+  waiting_for_rebake:
+    "Merged to the repo. This change can't finish applying until the agent's " +
+    'apply worker is rebuilt from the merged code and re-checks the plan — a ' +
+    "later 'applied' step confirms it completed.",
+  failed_state_suspect:
+    "The apply didn't finish cleanly and the live infrastructure state may have " +
+    'changed (or a lock was held), so the result is uncertain. Re-running ' +
+    're-checks the live state before retrying.',
+  ambiguous:
+    "DriftScribe couldn't confirm the final result of this apply (e.g. the change " +
+    'merged but the apply outcome was unclear). Open the trace to see what ' +
+    'happened before retrying.',
+};
+export function iacStatusHelp(status: string | null | undefined): string | null {
+  if (typeof status !== 'string') return null;
+  return IAC_STATUS_HELP[status] ?? null;
 }
 
 /**

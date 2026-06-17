@@ -100,7 +100,7 @@ describe('lifecycleSummaryLabel', () => {
   // the oldest-first presentation ordering.
   it('renders count + status composition for the live create-class shape', () => {
     const earlier = [iac('w1', 68, 'waiting_for_rebake'), iac('w2', 68, 'waiting_for_rebake')];
-    expect(lifecycleSummaryLabel(earlier)).toBe('2 earlier steps · awaiting re-bake ×2');
+    expect(lifecycleSummaryLabel(earlier)).toBe('2 earlier steps · awaiting rebuild ×2');
   });
 
   it('singular wording + bare label for one step (PR-32 failed→applied shape)', () => {
@@ -110,7 +110,7 @@ describe('lifecycleSummaryLabel', () => {
   it('multi-status composition is ordered by first appearance oldest-first', () => {
     // newest-first input: waiting (newer), failed (oldest) → oldest-first = failed first.
     const earlier = [iac('w', 9, 'waiting_for_rebake'), iac('f', 9, 'failed')];
-    expect(lifecycleSummaryLabel(earlier)).toBe('2 earlier steps · failed, awaiting re-bake');
+    expect(lifecycleSummaryLabel(earlier)).toBe('2 earlier steps · failed, awaiting rebuild');
   });
 
   it('a missing/empty status renders the neutral token, never the action string', () => {

@@ -8,9 +8,10 @@
     resolvedIacPrNumbers,
     iacApproveLabel,
   } from '../lib/approval';
-  import { shortSha, iacStatusLabel } from '../lib/format';
+  import { shortSha, iacStatusLabel, iacStatusHelp } from '../lib/format';
   import { groupRailDecisions, hasAnomalousStep, lifecycleSummaryLabel, railRowIcon } from '../lib/rail';
   import Icon from './Icon.svelte';
+  import HelpHint from './HelpHint.svelte';
   import type { Decision } from '../lib/types';
 
   let {
@@ -144,7 +145,10 @@
     {#if d.action === 'iac_apply'}
       {@const sha = shortSha(d.head_sha)}
       {@const st = iacStatusLabel(d.apply_status)}
-      <p class="row-meta">iac_apply{#if st} · {st}{/if}{#if sha} · <span class="row-sha">⎇ {sha}</span>{/if}</p>
+      {@const help = iacStatusHelp(d.apply_status)}
+      <!-- HelpHint sits at the END so its opened inline panel breaks cleanly
+           onto its own line below the meta (never mid-line, never clipped). -->
+      <p class="row-meta">iac_apply{#if st} · {st}{/if}{#if sha} · <span class="row-sha">⎇ {sha}</span>{/if}{#if help}<HelpHint text={help} />{/if}</p>
     {/if}
 
     {#if d.suppressed_by_autonomy === true}
@@ -211,16 +215,19 @@
         <ol class="lifecycle-steps">
           {#each [...lifecycle].reverse() as step (step.decision_id)}
             {@const stepStatus = iacStatusLabel(step.apply_status)}
+            {@const stepHelp = iacStatusHelp(step.apply_status)}
             <li class="lifecycle-step" data-testid="iac-lifecycle-step">
-              <!-- Three sibling ELEMENTS spaced by flex gap — no text-node
-                   separators, hence no seam-gluing needed (grounding fact 10
-                   applies only where text nodes meet). -->
+              <!-- Inline siblings spaced by flex gap — no text-node separators,
+                   hence no seam-gluing needed (grounding fact 10 applies only
+                   where text nodes meet). HelpHint is LAST so its flex-basis:100%
+                   panel wraps onto its own line below when opened. -->
               <span class="step-status">{stepStatus || 'status not recorded'}</span>
               {#if step.created_at}<time class="row-time" datetime={step.created_at}>{fmtCreatedAt(step.created_at)}</time>{/if}
               {#if step.trace_id}
                 <button class="open-trace-btn" data-testid="lifecycle-open-trace" type="button"
                   onclick={() => onOpenTrace(step.trace_id as string)}>open trace →</button>
               {/if}
+              {#if stepHelp}<HelpHint text={stepHelp} />{/if}
             </li>
           {/each}
         </ol>
@@ -516,6 +523,7 @@
      separator, no text nodes between elements (grounding fact 10). */
   .lifecycle-step {
     display: flex;
+    flex-wrap: wrap;
     align-items: baseline;
     gap: var(--ds-sp-2);
     font-size: var(--ds-fs-1);

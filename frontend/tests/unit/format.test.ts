@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { fmtTokens, shortTrace, fmtPreview, fmtWhen, shortSha, iacStatusLabel } from '../../src/lib/format';
+import { fmtTokens, shortTrace, fmtPreview, fmtWhen, shortSha, iacStatusLabel, iacStatusHelp } from '../../src/lib/format';
 
 describe('fmtTokens', () => {
   it('formats a present total with comma grouping and " tok" suffix', () => {
@@ -142,7 +142,9 @@ describe('fmtWhen', () => {
 describe('iacStatusLabel', () => {
   it('maps each known apply_status to its readable phrase', () => {
     expect(iacStatusLabel('applied')).toBe('applied');
-    expect(iacStatusLabel('waiting_for_rebake')).toBe('awaiting re-bake');
+    // Operator-facing label is plain "rebuild" (the internal enum stays
+    // `waiting_for_rebake`); the cryptic insider term "re-bake" is gone.
+    expect(iacStatusLabel('waiting_for_rebake')).toBe('awaiting rebuild');
     expect(iacStatusLabel('failed')).toBe('failed');
     // Codex must-fix: failed_state_suspect is a real backend-emitted status.
     expect(iacStatusLabel('failed_state_suspect')).toBe('failed (state suspect)');
@@ -169,5 +171,35 @@ describe('iacStatusLabel', () => {
     expect(iacStatusLabel('')).toBe('');
     expect(iacStatusLabel(null)).toBe('');
     expect(iacStatusLabel(undefined)).toBe('');
+  });
+});
+
+describe('iacStatusHelp', () => {
+  it('returns plain-language help for the cryptic statuses', () => {
+    for (const status of ['waiting_for_rebake', 'failed_state_suspect', 'ambiguous']) {
+      const help = iacStatusHelp(status);
+      expect(typeof help).toBe('string');
+      expect((help as string).length).toBeGreaterThan(20);
+    }
+  });
+
+  it('explains rebuild-of-what for waiting_for_rebake (not a circular "re-bake")', () => {
+    const help = iacStatusHelp('waiting_for_rebake') as string;
+    expect(help.toLowerCase()).toContain('rebuilt');
+    expect(help.toLowerCase()).toContain('worker');
+    // Must not define the term using the very jargon we removed from the label.
+    expect(help.toLowerCase()).not.toContain('re-bake');
+  });
+
+  it('returns null for self-evident statuses and unknown values', () => {
+    expect(iacStatusHelp('applied')).toBeNull();
+    expect(iacStatusHelp('failed')).toBeNull();
+    expect(iacStatusHelp('some_new_status')).toBeNull();
+  });
+
+  it('returns null for empty / null / undefined', () => {
+    expect(iacStatusHelp('')).toBeNull();
+    expect(iacStatusHelp(null)).toBeNull();
+    expect(iacStatusHelp(undefined)).toBeNull();
   });
 });
