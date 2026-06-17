@@ -19,18 +19,24 @@ export const MODE_BLURBS: Record<AutonomyMode, string> = {
 };
 
 // Progressive-disclosure explainer copy (AutonomyControl). Names the mechanism
-// operators kept missing — the dial governs the AUTONOMOUS, no-human path (a
-// watched service changes → a drift check runs on its own), and it is GLOBAL,
-// not scoped to the per-message workload picker in the chat composer. Kept here
-// (pure/testable) beside the mode copy; the component only renders it. Phrased
-// to describe the designed behavior without implying the agent continuously
-// polls — the check is event-triggered, not a watcher loop.
+// operators kept missing, in two parts that mirror tour.ts CONTROLS_LINE:
+// (1) Anchor is the ONLY workload that self-triggers (a watched service changes
+//     → a drift check runs with no human; AUTONOMOUS_TRIGGER_WORKLOADS={"drift"});
+// (2) the dial is GLOBAL — the same ceiling also bounds the rest of the crew on
+//     the chat requests you make here, so it is NOT scoped to the per-message
+//     workload picker in the composer. The earlier copy stated (2) abstractly
+//     ("all of the agent's activity") and read as Anchor-only; this names the
+//     scope concretely. Kept here (pure/testable) beside the mode copy; the
+//     component only renders it. Phrased to describe the designed behavior
+//     without implying the agent continuously polls — the check is
+//     event-triggered, not a watcher loop.
 export const AUTONOMY_EXPLAINER_HEADING = 'How does the agent act on its own?';
 export const AUTONOMY_EXPLAINER_BODY =
   'When a watched service changes — including changes made outside DriftScribe — ' +
-  'Anchor runs automatically; no one has to ask. This dial sets what it may do in ' +
-  "response, and it applies to all of the agent's activity, not just the chat " +
-  'requests you make here.';
+  'Anchor runs automatically; no one has to ask, and this dial sets how far it may ' +
+  'go in response. The dial is global: the same ceiling also bounds what the rest ' +
+  'of the crew may do on the chat requests you make here — Anchor is just the only ' +
+  'one that starts a run on its own.';
 
 export interface AutonomyDoc {
   mode: AutonomyMode;
