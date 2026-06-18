@@ -114,7 +114,7 @@ export function hasAnomalousStep(earlier: ReadonlyArray<Decision>): boolean {
 /**
  * The complete `<summary>` text for a lifecycle expander: a count plus a
  * status composition, so the collapsed row never hides WHAT the earlier steps
- * were — e.g. `2 earlier steps · awaiting re-bake ×2`, `1 earlier step ·
+ * were — e.g. `2 earlier steps · awaiting rebuild ×2`, `1 earlier step ·
  * failed`. `earlier` arrives in list (newest-first) order; composition labels
  * are ordered by first appearance oldest-first and deduped with `×k` counts.
  * Returned as ONE string so the component renders it as a single expression —
