@@ -5,6 +5,7 @@ import datetime as dt
 import hashlib
 import hmac
 import json
+import math
 import re
 import secrets
 import time
@@ -66,6 +67,11 @@ from agent.renderer import (
 )
 from agent.runbook_patcher import patch_runbook
 from agent.secret_guard import redact_event
+from agent.infra_graph_cache_store import (
+    FirestoreInfraGraphCacheStore,
+    InfraGraphCacheStore,
+    InMemoryInfraGraphCacheStore,
+)
 from agent.state_store import FirestoreStateStore, InMemoryStateStore, StateStore
 from agent.trace_fetcher import (
     CloudLoggingFetcher,
@@ -87,6 +93,7 @@ from agent.workloads import (
 )
 from pydantic import ValidationError as PydanticValidationError
 from driftscribe_lib import github
+from driftscribe_lib.auth import verify_oidc_caller
 from driftscribe_lib.cf_access import (
     CfAccessJwtError,
     canonical_operator_email,
@@ -1938,6 +1945,141 @@ def list_decisions_endpoint(
     return {"decisions": rows}
 
 
+# In-process inventory cache for GET /infra/graph (perf). One live Cloud Asset
+# Inventory enumeration takes ~25-35s for a real estate, and the Infrastructure
+# panel re-fetches on every page load, so without a cache every load spins for
+# ~half a minute (measured live). Caching the SUCCESSFUL inventory for a short
+# TTL makes reloads instant. Mirrors the ``_TRACE_CACHE`` pattern and is
+# deliberately LOCK-FREE: the GIL makes the single tuple read/assign atomic, and
+# at the demo's single-operator scale a couple of concurrent misses issuing
+# parallel fetches is harmless — herd-coalescing is NOT part of the contract.
+# Only successes are cached (see the assignment guard below): a degraded/error
+# inventory is never stored, so a transient CAI/worker outage retries on the
+# next request instead of being pinned stale for the whole TTL.
+# ---- L2 (Firestore) cache store: survives scale-to-zero cold starts -------- #
+# Backend selection is gated on gcp_project ALONE — deliberately NOT on dry_run
+# like get_state(). The live demo runs DRY_RUN=true (the "Option C" stance),
+# under which get_state() picks the in-process InMemoryStateStore; mirroring that
+# here would make the Firestore cache in-memory in prod and defeat the whole
+# cold-start-survival goal. A read-only resource-map cache has no side effects,
+# so DRY_RUN's no-mutations stance is irrelevant to it.
+_infra_graph_cache_store_singleton: "InfraGraphCacheStore | None" = None
+# Test injection seam (see _set_infra_graph_cache_store_for_tests): plugs an
+# in-process / fake store so tests never construct a real Firestore client.
+_infra_graph_cache_store_override: "InfraGraphCacheStore | None" = None
+
+# Bump when the persisted payload contract changes so a deploy ignores
+# stale-shaped docs written by an older revision. L1 is naturally cleared by an
+# instance recycle; L2 survives deploys, so it needs an explicit version gate.
+_INFRA_GRAPH_L2_FORMAT_VERSION = 1
+# A written_at more than this far in the FUTURE is distrusted (clock skew /
+# hand-edited doc) and treated as a miss rather than served stale forever.
+_INFRA_GRAPH_L2_CLOCK_SKEW_TOLERANCE_S = 60.0
+
+
+def get_infra_graph_cache_store() -> InfraGraphCacheStore:
+    """Return the process-wide L2 cache store singleton — Firestore when a
+    project is configured, else an in-process double."""
+    global _infra_graph_cache_store_singleton
+    if _infra_graph_cache_store_override is not None:
+        return _infra_graph_cache_store_override
+    if _infra_graph_cache_store_singleton is None:
+        s = get_settings()
+        if s.gcp_project:
+            _infra_graph_cache_store_singleton = FirestoreInfraGraphCacheStore(
+                project=s.gcp_project
+            )
+        else:
+            _infra_graph_cache_store_singleton = InMemoryInfraGraphCacheStore()
+    return _infra_graph_cache_store_singleton
+
+
+def _set_infra_graph_cache_store_for_tests(store: InfraGraphCacheStore) -> None:
+    """Test-only: inject an L2 store (in-process / fake) via the override seam."""
+    global _infra_graph_cache_store_override
+    _infra_graph_cache_store_override = store
+
+
+_INFRA_INVENTORY_CACHE: "tuple[float, dict] | None" = None
+
+
+def _reset_infra_graph_cache_for_tests() -> None:
+    """Clear BOTH cache layers (the in-process L1 tuple and the L2 store
+    singleton + injection override). Test-only seam — an autouse fixture calls
+    this between cases so a cached success (or an injected store) can't leak
+    across tests."""
+    global _INFRA_INVENTORY_CACHE, _infra_graph_cache_store_singleton
+    global _infra_graph_cache_store_override
+    _INFRA_INVENTORY_CACHE = None
+    _infra_graph_cache_store_singleton = None
+    _infra_graph_cache_store_override = None
+
+
+def _read_l2_cache(l2_ttl: float) -> "tuple[dict, float] | None":
+    """Return ``(inventory, age_s)`` from the L2 store if a fresh, valid record
+    exists, else None.
+
+    Validates defensively (Codex review): a record is honored only if it's a
+    dict with the exact ``format_version``, a finite numeric ``written_at`` that
+    isn't far in the future, and a non-``error`` dict payload. Any other shape —
+    including a Firestore read error, which the store swallows to ``None`` —
+    is a miss, so the caller falls through to a live fetch."""
+    try:
+        record = get_infra_graph_cache_store().get()
+    except Exception as e:  # noqa: BLE001 — a misbehaving store must never break the request
+        # The Firestore store already swallows its own errors to None; this is
+        # belt-and-suspenders so the request handler's fail-soft holds for ANY
+        # store impl (the cache must never turn /infra/graph into a 5xx).
+        log.warning("infra_graph_l2_read_error", extra={"error": type(e).__name__})
+        return None
+    if not isinstance(record, dict):
+        return None
+    if record.get("format_version") != _INFRA_GRAPH_L2_FORMAT_VERSION:
+        return None
+    written_at = record.get("written_at")
+    payload = record.get("payload")
+    if not isinstance(written_at, (int, float)) or not math.isfinite(written_at):
+        return None
+    if not isinstance(payload, dict) or payload.get("error"):
+        return None
+    age = time.time() - written_at
+    if age < -_INFRA_GRAPH_L2_CLOCK_SKEW_TOLERANCE_S:
+        return None  # stamped in the future → distrust rather than serve stale
+    if age > l2_ttl:
+        return None
+    return payload, max(0.0, age)
+
+
+def _persist_infra_inventory(inventory: dict, *, l1_ttl: float, l2_ttl: float) -> bool:
+    """Cache a SUCCESSFUL inventory in both layers; return whether the PERSISTENT
+    L2 layer was durably written.
+
+    The return value is the meaningful signal for the pre-warm endpoint: ``cached``
+    must mean "the cold-start cache was actually warmed", so it tracks L2 only
+    (Codex review). L1 is per-instance / best-effort and never makes ``cached``
+    true on its own; an L2 disabled (``l2_ttl <= 0``) or a swallowed Firestore
+    write failure both return False.
+
+    Strips ``declared_not_found`` (the only field carrying full declared-vs-live
+    resource paths; ``build_graph`` never reads it) before persisting, so the
+    at-rest L2 doc — and the L1 copy, via this single write path — omits it. L1
+    stamps a monotonic clock; L2 stamps wall-clock + the format version."""
+    global _INFRA_INVENTORY_CACHE
+    stripped = {k: v for k, v in inventory.items() if k != "declared_not_found"}
+    if l1_ttl > 0:
+        _INFRA_INVENTORY_CACHE = (time.monotonic(), stripped)
+    l2_written = False
+    if l2_ttl > 0:
+        l2_written = get_infra_graph_cache_store().set(
+            {
+                "format_version": _INFRA_GRAPH_L2_FORMAT_VERSION,
+                "written_at": time.time(),
+                "payload": stripped,
+            }
+        )
+    return l2_written
+
+
 @app.get("/infra/graph")
 def get_infra_graph(
     response: Response,
@@ -1955,8 +2097,14 @@ def get_infra_graph(
 
     Token-guarded via :func:`verify_token` exactly like ``/decisions`` /
     ``/trace`` (header only). ``Cache-Control: no-store`` — the inventory
-    reflects mutable live state, and CAI is eventually consistent, so no
-    proxy/browser cache should hold a stale resource map.
+    reflects mutable live state, so no proxy/browser cache should hold a stale
+    resource map. Freshness is instead managed by a short SERVER-side TTL cache
+    (``INFRA_GRAPH_CACHE_TTL_S``, default 60s; ``<= 0`` disables): a single CAI
+    enumeration takes ~25-35s, so caching the inventory makes the panel's
+    every-page-load re-fetch instant within the window. The
+    ``X-Infra-Graph-Cache: hit|miss|disabled`` response header (with
+    ``X-Infra-Graph-Cache-Age-S`` on a hit) makes the cache observable to an
+    operator inspecting headers, even though ``Cache-Control`` stays no-store.
 
     Degradation (soft-fail to 200, never 5xx): the panel is best-effort, so a
     failure becomes a ``degraded`` DTO the UI renders as an "unavailable" note
@@ -1969,14 +2117,61 @@ def get_infra_graph(
       worker down) is caught here and mapped to a synthetic
       ``infra_reader_unavailable`` degraded DTO (the status code is preserved
       in the ``detail`` for diagnosis).
+
+    Neither degraded outcome is cached, so an outage clears as soon as the
+    underlying problem does.
     """
+    global _INFRA_INVENTORY_CACHE
     response.headers["Cache-Control"] = "no-store"
+    s = get_settings()
+    l1_ttl = s.infra_graph_cache_ttl_s
+    l2_ttl = s.infra_graph_l2_cache_ttl_s
+
+    # L1 — in-process, per-instance, monotonic clock. Fastest path; dies on
+    # scale-to-zero recycle.
+    if l1_ttl > 0:
+        cached = _INFRA_INVENTORY_CACHE
+        if cached is not None:
+            written_at, cached_inventory = cached
+            age = time.monotonic() - written_at
+            if age <= l1_ttl:
+                response.headers["X-Infra-Graph-Cache"] = "hit"
+                response.headers["X-Infra-Graph-Cache-Age-S"] = f"{age:.1f}"
+                # build_graph is a pure read over the inventory, so re-running it
+                # on the cached dict each request keeps the DTO shaped by current
+                # code without mutating what we cached.
+                return build_graph(cached_inventory)
+
+    # L2 — Firestore, shared/persistent, wall clock. Survives the cold start that
+    # L1 can't: a freshly-recycled instance reads the doc and serves a warm map.
+    if l2_ttl > 0:
+        l2 = _read_l2_cache(l2_ttl)
+        if l2 is not None:
+            l2_inventory, l2_age = l2
+            # Read-through: promote into L1 so subsequent requests on this
+            # instance serve from memory instead of re-reading Firestore on every
+            # poll. Worst-case staleness rises from L2_TTL to L2_TTL + L1_TTL —
+            # bounded, and well within the panel's tolerance (CAI is eventually
+            # consistent and the SPA shows a freshness caveat).
+            if l1_ttl > 0:
+                _INFRA_INVENTORY_CACHE = (time.monotonic(), l2_inventory)
+            response.headers["X-Infra-Graph-Cache"] = "hit-l2"
+            response.headers["X-Infra-Graph-Cache-Age-S"] = f"{l2_age:.1f}"
+            return build_graph(l2_inventory)
+
+    # Neither layer served. Distinguish a genuine miss (some caching is enabled)
+    # from caching being fully disabled, for an operator inspecting headers.
+    response.headers["X-Infra-Graph-Cache"] = (
+        "miss" if (l1_ttl > 0 or l2_ttl > 0) else "disabled"
+    )
+
     try:
         inventory = worker_client.call("infra_reader", {})
     except WorkerClientError as e:
         # Soft-fail to a degraded 200 so the panel degrades instead of erroring,
         # but log at WARNING so a real worker outage (e.g. INFRA_READER_URL unset)
         # is visible server-side rather than hidden behind the friendly UI note.
+        # NOT cached — a transport failure must retry on the next request.
         log.warning(
             "infra_graph_worker_unavailable",
             extra={"status_code": e.status_code, "error": str(e)},
@@ -1996,7 +2191,86 @@ def get_infra_graph(
             "infra_graph_inventory_error",
             extra={"error": inventory.get("error"), "detail": inventory.get("detail")},
         )
+    elif isinstance(inventory, dict):
+        # Success only: cache in both layers (never an error/degraded payload,
+        # never a non-dict) so a healthy map is reused but an outage isn't pinned.
+        _persist_infra_inventory(inventory, l1_ttl=l1_ttl, l2_ttl=l2_ttl)
     return build_graph(inventory)
+
+
+@app.post("/internal/infra-graph/refresh")
+def refresh_infra_graph(request: Request) -> dict:
+    """Pre-warm hook: force a live ``infra_reader`` fetch and repopulate the cache.
+
+    The activation point for the OPTIONAL Cloud Scheduler pre-warm (see
+    docs/plans/2026-06-18-infra-graph-l2-firestore-cache.md and the
+    ``SETUP_INFRA_PREWARM`` block in infra/scripts/setup_secrets.sh). Keeping the
+    L2 Firestore doc fresh means even a true cold open (fresh instance, empty L1,
+    no previously-rendered graph) is instant instead of paying the ~30s CAI fetch.
+
+    Auth mirrors ``/eventarc``: OIDC-verified against ``infra_prewarm_audience``
+    with a dedicated ``infra-prewarm-sa`` allowlist. 503 if unconfigured (dormant
+    until provisioned), 401 on token failure, 403 on a non-allowlisted caller.
+
+    On success: 200 ``{"cached": true, "resource_count": N}``. On a worker/CAI
+    error: fail-SOFT 200 ``{"cached": false, "reason": ...}`` (logged) — a non-2xx
+    would make Cloud Scheduler retry and risk storming the slow CAI worker; the
+    next scheduled tick warms it instead.
+    """
+    s = get_settings()
+    # 503 canaries — fail-closed if pre-warm wasn't provisioned (same shape as
+    # /eventarc). An unset audience leaves the endpoint dormant.
+    if not s.infra_prewarm_audience:
+        raise HTTPException(
+            status_code=503,
+            detail="auth not configured: INFRA_PREWARM_AUDIENCE unset",
+        )
+    if not s.gcp_project:
+        raise HTTPException(
+            status_code=503,
+            detail="auth not configured: GCP_PROJECT unset (cannot build expected SA email)",
+        )
+    # 401 on token failure / 403 on a caller that isn't the dedicated prewarm SA.
+    verify_oidc_caller(
+        request,
+        audience=s.infra_prewarm_audience,
+        allowed_emails={f"infra-prewarm-sa@{s.gcp_project}.iam.gserviceaccount.com"},
+        transport=_GOOGLE_AUTH_TRANSPORT,
+    )
+
+    try:
+        inventory = worker_client.call("infra_reader", {})
+    except WorkerClientError as e:
+        log.warning(
+            "infra_graph_prewarm_worker_unavailable",
+            extra={"status_code": e.status_code, "error": str(e)},
+        )
+        return {"cached": False, "reason": "infra_reader_unavailable"}
+    if not isinstance(inventory, dict) or inventory.get("error"):
+        reason = (
+            inventory.get("error") if isinstance(inventory, dict) else "non_dict_inventory"
+        )
+        log.warning("infra_graph_prewarm_inventory_error", extra={"error": reason})
+        return {"cached": False, "reason": "inventory_error"}
+
+    l2_written = _persist_infra_inventory(
+        inventory,
+        l1_ttl=s.infra_graph_cache_ttl_s,
+        l2_ttl=s.infra_graph_l2_cache_ttl_s,
+    )
+    resource_count = inventory.get("total_resources")
+    if not l2_written:
+        # cached==true must mean the PERSISTENT cold-start cache was warmed. If L2
+        # is disabled or the Firestore write was swallowed, say so plainly rather
+        # than report a healthy pre-warm that didn't actually persist anything.
+        reason = (
+            "l2_disabled"
+            if s.infra_graph_l2_cache_ttl_s <= 0
+            else "l2_write_failed"
+        )
+        log.warning("infra_graph_prewarm_not_persisted", extra={"reason": reason})
+        return {"cached": False, "reason": reason, "resource_count": resource_count}
+    return {"cached": True, "resource_count": resource_count}
 
 
 @app.get("/infra/graph/preview")

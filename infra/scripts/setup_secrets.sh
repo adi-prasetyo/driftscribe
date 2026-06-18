@@ -874,6 +874,109 @@ else
 fi
 
 # --------------------------------------------------------------------------
+# 10b. OPTIONAL infra-graph pre-warm (Cloud Scheduler) — gated, OFF by default.
+# --------------------------------------------------------------------------
+# Tier 3 of the /infra/graph cache (docs/plans/2026-06-18-infra-graph-l2-
+# firestore-cache.md). The coordinator's L2 Firestore cache ALREADY survives a
+# scale-to-zero cold start within INFRA_GRAPH_L2_CACHE_TTL_S on its own. This
+# OPTIONAL block adds a Cloud Scheduler job that POSTs
+# /internal/infra-graph/refresh every ~10 min so the L2 doc is ALWAYS fresh —
+# making even a true cold open (fresh instance, empty L1, no prior render)
+# instant instead of paying the ~25-35s live CAI enumeration.
+#
+# Costs/consequences (Codex review #7): a 10-min job sends enough traffic to keep
+# the coordinator — and likely infra_reader — from scaling to zero, an effective
+# warm-floor with a small always-on cost. Skip this block (the default) if that
+# tradeoff isn't wanted; the L2 cache still helps cold starts without it.
+#
+# OFF by default: set SETUP_INFRA_PREWARM=1 to provision (mirrors SETUP_EVENTARC).
+if [[ "${SETUP_INFRA_PREWARM:-0}" == "1" ]]; then
+  # Cloud Scheduler API is enabled only inside this gate (not in the always-on
+  # API list) so the default surface stays minimal — pre-warm is opt-in.
+  gcloud services enable cloudscheduler.googleapis.com --project "$PROJECT"
+
+  PREWARM_SA="infra-prewarm-sa@${PROJECT}.iam.gserviceaccount.com"
+  create_service_account_idempotent "$PROJECT" infra-prewarm-sa \
+    "DriftScribe infra-graph pre-warm scheduler SA"
+
+  # The SA grant + scheduler job both need the coordinator to exist (its URL is
+  # the scheduler target + OIDC audience). On a first-ever run this is a no-op;
+  # re-run after the coordinator is deployed.
+  if gcloud run services describe driftscribe-agent \
+     --region="$REGION" --project="$PROJECT" >/dev/null 2>&1; then
+    COORD_URL="$(gcloud run services describe driftscribe-agent \
+      --region="$REGION" --project="$PROJECT" --format='value(status.url)')"
+    REFRESH_URL="${COORD_URL}/internal/infra-graph/refresh"
+
+    # The scheduler SA invokes the coordinator (run.invoker), exactly like the
+    # eventarc trigger SA. The endpoint ALSO verifies the OIDC email claim is
+    # this SA — defense-in-depth on top of the IAM binding.
+    gcloud run services add-iam-policy-binding driftscribe-agent \
+      --project="$PROJECT" --region="$REGION" \
+      --member="serviceAccount:${PREWARM_SA}" --role="roles/run.invoker" >/dev/null
+    echo "driftscribe-agent: granted run.invoker on infra-prewarm-sa"
+
+    # Wire the endpoint's expected OIDC audience to the FULL refresh URL — the
+    # exact value the Scheduler stamps as --oidc-token-audience (the /eventarc
+    # path-suffix lesson: verify_oauth2_token does an EXACT aud match). Set via
+    # --update-env-vars (NOT the deploy baseline) so a full coordinator deploy
+    # can't clobber it with an empty value (Codex review #2).
+    #
+    # Describe-then-act: the coordinator's traffic is PINNED to a specific
+    # revision, so EVERY `gcloud run services update` lands a NEW revision at 0%
+    # traffic. Skip the update (and its spurious dead revision) when the value is
+    # already correct on the live revision.
+    current_aud="$(gcloud run services describe driftscribe-agent \
+      --region="$REGION" --project="$PROJECT" \
+      --flatten="spec.template.spec.containers[0].env" \
+      --filter="spec.template.spec.containers[0].env.name=INFRA_PREWARM_AUDIENCE" \
+      --format="value(spec.template.spec.containers[0].env.value)" 2>/dev/null || true)"
+    if [ "$current_aud" != "$REFRESH_URL" ]; then
+      gcloud run services update driftscribe-agent \
+        --project="$PROJECT" --region="$REGION" \
+        --update-env-vars="INFRA_PREWARM_AUDIENCE=${REFRESH_URL}" >/dev/null
+      # Traffic is pinned, so the update created the new revision at 0% — promote
+      # it, else the scheduler keeps POSTing the OLD (serving) revision, which
+      # still has INFRA_PREWARM_AUDIENCE unset and 503s every tick. The traffic
+      # shift is MANDATORY (see MEMORY: coordinator-deploy traffic pinning).
+      NEW_REV="$(gcloud run services describe driftscribe-agent \
+        --region="$REGION" --project="$PROJECT" \
+        --format='value(status.latestCreatedRevisionName)')"
+      gcloud run services update-traffic driftscribe-agent \
+        --project="$PROJECT" --region="$REGION" \
+        --to-revisions="${NEW_REV}=100" >/dev/null
+      echo "driftscribe-agent: INFRA_PREWARM_AUDIENCE set; traffic shifted to ${NEW_REV}"
+    else
+      echo "driftscribe-agent: INFRA_PREWARM_AUDIENCE already ${REFRESH_URL} — skipping update"
+    fi
+
+    # Create-or-update the job. --max-retry-attempts=1: auth/config bugs surface
+    # as 401/403/503 we DON'T want retried into a storm (a transient CAI/worker
+    # blip is a soft 200 anyway). --attempt-deadline=120s covers the ~30s fetch.
+    if gcloud scheduler jobs describe infra-graph-prewarm \
+       --location="$REGION" --project="$PROJECT" >/dev/null 2>&1; then
+      SCHED_VERB=update
+    else
+      SCHED_VERB=create
+    fi
+    gcloud scheduler jobs "$SCHED_VERB" http infra-graph-prewarm \
+      --location="$REGION" --project="$PROJECT" \
+      --schedule="*/10 * * * *" \
+      --uri="$REFRESH_URL" \
+      --http-method=POST \
+      --oidc-service-account-email="$PREWARM_SA" \
+      --oidc-token-audience="$REFRESH_URL" \
+      --max-retry-attempts=1 \
+      --attempt-deadline=120s >/dev/null
+    echo "  infra-graph-prewarm scheduler job: ${SCHED_VERB}d (every 10 min)"
+  else
+    echo "driftscribe-agent not deployed yet — skipping pre-warm SA grant + scheduler job"
+  fi
+else
+  echo "SETUP_INFRA_PREWARM != 1 — skipping infra-graph pre-warm (Cloud Scheduler) setup"
+fi
+
+# --------------------------------------------------------------------------
 # 11. Log retention — extend `_Default` bucket to 365 days (Phase 18.A)
 # --------------------------------------------------------------------------
 # Default Cloud Logging `_Default` bucket retention is 30 days. After that,
