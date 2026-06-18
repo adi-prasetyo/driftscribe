@@ -1,6 +1,17 @@
+import math
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Default TTL for the GET /infra/graph inventory cache. Named so the field
+# default and the non-finite fallback can't drift apart.
+_DEFAULT_INFRA_GRAPH_CACHE_TTL_S = 60.0
+# Default TTL for the L2 (Firestore) layer of the /infra/graph cache. Longer than
+# L1 because L2's job is to survive a scale-to-zero instance recycle: a freshly
+# spun coordinator with an empty in-process L1 reads the Firestore doc and serves
+# a warm map for this window instead of paying the ~25-35s live CAI enumeration.
+_DEFAULT_INFRA_GRAPH_L2_CACHE_TTL_S = 900.0
 
 
 class Settings(BaseSettings):
@@ -75,6 +86,47 @@ class Settings(BaseSettings):
     # compares the request Origin to this value exactly. EMPTY ⇒ the POST refuses
     # with 403 (fail-closed — an unconfigured origin must never accept a POST).
     coordinator_origin: str = ""
+
+    # In-process TTL (seconds) for the GET /infra/graph inventory cache. One live
+    # Cloud Asset Inventory enumeration takes ~25-35s for a real estate, and the
+    # Infrastructure panel re-fetches on every page load, so without a cache every
+    # load spins for ~half a minute (measured live). Successful inventories are
+    # cached for this window so reloads return instantly; <= 0 disables the cache
+    # entirely (every request fetches live). See agent/main.py get_infra_graph.
+    infra_graph_cache_ttl_s: float = _DEFAULT_INFRA_GRAPH_CACHE_TTL_S
+
+    # In-process L1 (above) is per-instance and dies with the instance. L2 is a
+    # Firestore-backed layer that survives scale-to-zero cold starts (see
+    # _DEFAULT_INFRA_GRAPH_L2_CACHE_TTL_S). <= 0 disables L2 (every L1 miss falls
+    # straight through to a live fetch). See agent/main.py get_infra_graph and
+    # agent/infra_graph_cache_store.py.
+    infra_graph_l2_cache_ttl_s: float = _DEFAULT_INFRA_GRAPH_L2_CACHE_TTL_S
+
+    # OIDC audience the POST /internal/infra-graph/refresh pre-warm endpoint
+    # expects (the full endpoint URL Cloud Scheduler stamps as
+    # --oidc-token-audience). EMPTY ⇒ the endpoint 503s (fail-closed, dormant
+    # until pre-warm is provisioned — see infra/scripts/setup_secrets.sh
+    # SETUP_INFRA_PREWARM). Set post-deploy like EVENTARC_AUDIENCE, never baked
+    # empty into the deploy baseline (a full deploy would clobber an activated value).
+    infra_prewarm_audience: str = ""
+
+    @field_validator("infra_graph_cache_ttl_s")
+    @classmethod
+    def _finite_infra_graph_cache_ttl(cls, v: float) -> float:
+        # nan/inf are valid floats but poison the monotonic expiry comparison
+        # (`now - written_at > nan` is always False → the cache would never
+        # expire, pinning a stale map forever). Fall back to the default rather
+        # than trusting a non-finite TTL. A non-numeric env value still raises a
+        # ValidationError, consistent with every other typed Settings field.
+        return v if math.isfinite(v) else _DEFAULT_INFRA_GRAPH_CACHE_TTL_S
+
+    @field_validator("infra_graph_l2_cache_ttl_s")
+    @classmethod
+    def _finite_infra_graph_l2_cache_ttl(cls, v: float) -> float:
+        # Same non-finite footgun as L1 (`age > nan` is always False → never
+        # expires), but for the persisted Firestore layer the stale-forever blast
+        # radius is worse (it survives restarts), so coerce nan/inf to the default.
+        return v if math.isfinite(v) else _DEFAULT_INFRA_GRAPH_L2_CACHE_TTL_S
 
 
 def artifacts_bucket(settings: "Settings") -> str:
