@@ -36,14 +36,23 @@ def verify_caller(
 ) -> str:
     """FastAPI dependency-style helper that verifies the inbound Bearer token.
 
-    - 401 if Authorization header missing / malformed / wrong audience / expired.
-    - 403 if token is valid but the caller's email isn't in ``allowed_callers``.
+    - **401** if the Authorization header is missing / not Bearer-shaped / empty,
+      or the token fails verification (wrong audience, expired, bad signature, or
+      a JWKS ``GoogleAuthError`` — all collapse to a uniform detail so a probe
+      can't tell which check failed; the detail never echoes the exception).
+    - **403** if the token is valid but the caller's email isn't in
+      ``allowed_callers`` (the detail never echoes the presented email; an
+      off-spec non-string email claim is a 403, not a 500).
 
     Returns the verified caller email on success.
 
     ``own_url`` must be the worker's own root URL (no trailing slash, no path).
     ``allowed_callers`` is the set of service-account emails the worker accepts —
     typically just ``{coordinator-sa@<project>.iam.gserviceaccount.com}``.
+
+    Hardened to mirror :func:`verify_oidc_caller`; the only intended difference is
+    the return type — this returns the caller email ``str`` (the 9 worker
+    ``_verify_caller_dep`` wrappers depend on that), not the claims dict.
     """
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
@@ -51,19 +60,32 @@ def verify_caller(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="missing bearer token",
         )
-    token = auth_header.removeprefix("Bearer ").strip()
-    try:
-        claims = id_token.verify_oauth2_token(token, gar.Request(), audience=own_url)
-    except ValueError as e:
+    token = auth_header[len("Bearer ") :].strip()
+    if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"invalid token: {e}",
+            detail="empty bearer token",
         )
+    try:
+        claims = id_token.verify_oauth2_token(token, gar.Request(), audience=own_url)
+    except (ValueError, google_auth_exceptions.GoogleAuthError):
+        # Uniform 401 — don't disclose which check failed (mirrors verify_oidc_caller).
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="invalid token",
+        )
+
+    allowed = set(allowed_callers)
     email = claims.get("email")
-    if email not in set(allowed_callers):
+    # isinstance check BEFORE compare_digest: an off-spec non-str email would
+    # raise TypeError in compare_digest (→ 500). The correct outcome is 403.
+    # The detail never echoes ``email`` (no caller-identity disclosure).
+    if not isinstance(email, str) or not any(
+        hmac.compare_digest(email, a) for a in allowed
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"caller {email!r} not in allowed_callers",
+            detail="caller service account not allowed",
         )
     return email
 

@@ -207,7 +207,7 @@ def test_patch_wrong_audience_returns_401(client) -> None:
     def deny_audience():
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="invalid token: audience mismatch",
+            detail="invalid token",
         )
 
     app.dependency_overrides[_verify_caller_dep] = deny_audience
@@ -221,7 +221,7 @@ def test_patch_caller_not_in_allowlist_returns_403(client) -> None:
     def deny_caller():
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="caller 'nope@example.com' not in allowed_callers",
+            detail="caller service account not allowed",
         )
 
     app.dependency_overrides[_verify_caller_dep] = deny_caller

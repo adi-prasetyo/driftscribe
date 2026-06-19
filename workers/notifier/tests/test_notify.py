@@ -357,7 +357,7 @@ def test_caller_not_in_allowlist_returns_403(client):
     def deny_caller():
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="caller 'nope@example.com' not in allowed_callers",
+            detail="caller service account not allowed",
         )
 
     app.dependency_overrides[_verify_caller_dep] = deny_caller
