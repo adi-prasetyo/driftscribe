@@ -238,6 +238,35 @@
         <pre class="ds-pre">{{ view.tofu_show_text }}</pre>
       </details>
 
+      {# "View source" (PR1): the actual OpenTofu the PR adds/changes, fetched at
+         the verified head_sha and read-through cached. tofu show above is the PLAN
+         diff (a no-op import for an adoption); THIS is the source itself. Rendered
+         only when iac_source_files is non-empty (resolved server-side only for a
+         trustworthy, PR-consistent artifact). Content is HTML-escaped by Jinja
+         autoescape; the form-action is same-origin (allowed by the IaC CSP). #}
+      {% if iac_source_files %}
+      <details class="ds-disclosure" data-testid="iac-source">
+        <summary>Source (.tf) — {{ iac_source_files | length }} file(s)</summary>
+        <p class="ds-subtle" data-testid="iac-source-demo-note">{{ iac_source_demo_note }}</p>
+        {% if iac_source_refresh_available %}
+        <form method="post" action="/iac-approvals/{{ pr_number }}/refresh-source">
+          <button class="ds-btn" type="submit" data-testid="refresh-source">↻ refresh source</button>
+        </form>
+        {% endif %}
+        {% for f in iac_source_files %}
+          <div class="ds-field"><span class="ds-label">file</span> <code class="ds-code">{{ f.path }}</code></div>
+          {% if f.content is none %}
+            <p class="ds-subtle">(omitted — file too large to show here; view it on the PR in GitHub)</p>
+          {% else %}
+            <pre class="ds-pre">{{ f.content }}</pre>
+          {% endif %}
+        {% endfor %}
+        {% if iac_source_truncated %}
+          <p class="ds-subtle">…more files in this PR are not shown here — view the full diff on the PR in GitHub.</p>
+        {% endif %}
+      </details>
+      {% endif %}
+
       <div class="ds-note">
         Required CI checks must be green on this exact <code class="ds-code">head_sha</code>; final
         acceptance happens when you click Approve — the tofu-apply worker
