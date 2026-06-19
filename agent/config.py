@@ -13,6 +13,13 @@ _DEFAULT_INFRA_GRAPH_CACHE_TTL_S = 60.0
 # a warm map for this window instead of paying the ~25-35s live CAI enumeration.
 _DEFAULT_INFRA_GRAPH_L2_CACHE_TTL_S = 900.0
 
+# Default TTL for the IaC PR-source cache (the "view source" affordance on the
+# /iac-approvals page). The real freshness key is the PR head_sha (a new commit
+# changes it → miss → refetch), so this is just a backstop that lets a long-idle
+# doc be re-pulled eventually; default one day. <= 0 disables the cache (every
+# load fetches the source live from GitHub).
+_DEFAULT_IAC_PR_SOURCE_CACHE_TTL_S = 86400.0
+
 
 class Settings(BaseSettings):
     # extra="ignore" so .env files can carry unrelated keys (notes, sibling-tool
@@ -102,6 +109,12 @@ class Settings(BaseSettings):
     # agent/infra_graph_cache_store.py.
     infra_graph_l2_cache_ttl_s: float = _DEFAULT_INFRA_GRAPH_L2_CACHE_TTL_S
 
+    # TTL (seconds) for the IaC PR-source cache backing the approval page's "view
+    # source" affordance. See _DEFAULT_IAC_PR_SOURCE_CACHE_TTL_S and
+    # agent/iac_pr_source_cache.py. <= 0 disables the cache (every load fetches
+    # the .tf source live from the GitHub API).
+    iac_pr_source_cache_ttl_s: float = _DEFAULT_IAC_PR_SOURCE_CACHE_TTL_S
+
     # OIDC audience the POST /internal/infra-graph/refresh pre-warm endpoint
     # expects (the full endpoint URL Cloud Scheduler stamps as
     # --oidc-token-audience). EMPTY ⇒ the endpoint 503s (fail-closed, dormant
@@ -127,6 +140,13 @@ class Settings(BaseSettings):
         # expires), but for the persisted Firestore layer the stale-forever blast
         # radius is worse (it survives restarts), so coerce nan/inf to the default.
         return v if math.isfinite(v) else _DEFAULT_INFRA_GRAPH_L2_CACHE_TTL_S
+
+    @field_validator("iac_pr_source_cache_ttl_s")
+    @classmethod
+    def _finite_iac_pr_source_cache_ttl(cls, v: float) -> float:
+        # Same non-finite footgun as the infra-graph TTLs (`age > nan` is always
+        # False → never expires); coerce nan/inf to the default.
+        return v if math.isfinite(v) else _DEFAULT_IAC_PR_SOURCE_CACHE_TTL_S
 
 
 def artifacts_bucket(settings: "Settings") -> str:

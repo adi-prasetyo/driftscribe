@@ -809,6 +809,78 @@ def get_pr_head_sha(repo: Repository, pr_number: int) -> str:
     return repo.get_pull(pr_number).head.sha
 
 
+# Defaults for list_pr_iac_tf_files: a Firestore cache doc must stay under the
+# 1 MiB limit, and IaC files are small, so these caps are generous-but-bounded.
+_PR_SOURCE_MAX_FILES = 25
+_PR_SOURCE_MAX_BYTES_PER_FILE = 256 * 1024
+_PR_SOURCE_MAX_TOTAL_BYTES = 768 * 1024
+
+
+def list_pr_iac_tf_files(
+    repo: Repository,
+    pr_number: int,
+    head_sha: str,
+    *,
+    max_files: int = _PR_SOURCE_MAX_FILES,
+    max_bytes_per_file: int = _PR_SOURCE_MAX_BYTES_PER_FILE,
+    max_total_bytes: int = _PR_SOURCE_MAX_TOTAL_BYTES,
+) -> dict[str, Any]:
+    """Return the OpenTofu source files a PR adds/modifies under ``iac/``.
+
+    Read-only; for the approval page's "view source" affordance. Returns::
+
+        {"files": [{"path": str, "content": str | None, "bytes": int}, ...],
+         "truncated": bool}
+
+    - Only changed files whose status is ``added``/``modified``, whose path is
+      under ``iac/``, ends in ``.tf``, and contains no ``..`` segment
+      (path-traversal guard). Sorted by path for a deterministic, cache-stable
+      document.
+    - Content is fetched at the PR ``head_sha`` (the exact commit being approved —
+      so it reflects the committed, post-``tofu fmt`` bytes, not a branch tip that
+      could move). Decoded UTF-8 with ``errors="replace"`` so odd bytes never raise.
+    - **Size caps** keep the cached doc under Firestore's 1 MiB limit: a single
+      file over ``max_bytes_per_file`` is still listed but with ``content=None``
+      (the page renders an "omitted — view on GitHub" marker); exceeding the file
+      COUNT cap or the running TOTAL-bytes cap drops whole files and sets
+      ``truncated=True`` (the page renders a "more files not shown" note).
+    """
+    pull = repo.get_pull(pr_number)
+    candidates = sorted(
+        f.filename
+        for f in pull.get_files()
+        if getattr(f, "status", "") in ("added", "modified")
+        and f.filename.startswith("iac/")
+        and f.filename.endswith(".tf")
+        and ".." not in f.filename.split("/")
+    )
+
+    truncated = False
+    if len(candidates) > max_files:
+        truncated = True
+        candidates = candidates[:max_files]
+
+    files: list[dict[str, Any]] = []
+    total = 0
+    for path in candidates:
+        raw = repo.get_contents(path, ref=head_sha).decoded_content
+        size = len(raw)
+        if size > max_bytes_per_file:
+            # Listed but content omitted — keeps the doc small without hiding that
+            # the file exists in the change set.
+            files.append({"path": path, "content": None, "bytes": size})
+            continue
+        if total + size > max_total_bytes:
+            truncated = True
+            break
+        files.append(
+            {"path": path, "content": raw.decode("utf-8", errors="replace"), "bytes": size}
+        )
+        total += size
+
+    return {"files": files, "truncated": truncated}
+
+
 def assert_pr_ready_at_sha(
     repo: Repository,
     *,

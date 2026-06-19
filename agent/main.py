@@ -17,7 +17,12 @@ from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, Form, Header, HTTPException, Query, Request, Response
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from google.auth import exceptions as google_auth_exceptions
@@ -71,6 +76,11 @@ from agent.infra_graph_cache_store import (
     FirestoreInfraGraphCacheStore,
     InfraGraphCacheStore,
     InMemoryInfraGraphCacheStore,
+)
+from agent.iac_pr_source_cache import (
+    FirestoreIacPrSourceCacheStore,
+    IacPrSourceCacheStore,
+    InMemoryIacPrSourceCacheStore,
 )
 from agent.state_store import FirestoreStateStore, InMemoryStateStore, StateStore
 from agent.trace_fetcher import (
@@ -2000,6 +2010,46 @@ def _set_infra_graph_cache_store_for_tests(store: InfraGraphCacheStore) -> None:
     _infra_graph_cache_store_override = store
 
 
+# IaC PR-source cache (the approval page "view source" affordance). Same
+# backend-selection posture as the infra-graph cache: Firestore when a project is
+# configured, else an in-process double. Gating on gcp_project ALONE (not dry_run)
+# is deliberate — prod runs DRY_RUN=true, and a read-only cache has no side
+# effects, so it must persist regardless (the lesson from the infra-graph L2 cache).
+_iac_pr_source_cache_store_singleton: "IacPrSourceCacheStore | None" = None
+_iac_pr_source_cache_store_override: "IacPrSourceCacheStore | None" = None
+_IAC_PR_SOURCE_FORMAT_VERSION = 1
+_IAC_PR_SOURCE_CLOCK_SKEW_TOLERANCE_S = 60.0
+
+
+def get_iac_pr_source_cache_store() -> IacPrSourceCacheStore:
+    """Return the process-wide IaC PR-source cache store singleton."""
+    global _iac_pr_source_cache_store_singleton
+    if _iac_pr_source_cache_store_override is not None:
+        return _iac_pr_source_cache_store_override
+    if _iac_pr_source_cache_store_singleton is None:
+        s = get_settings()
+        if s.gcp_project:
+            _iac_pr_source_cache_store_singleton = FirestoreIacPrSourceCacheStore(
+                project=s.gcp_project
+            )
+        else:
+            _iac_pr_source_cache_store_singleton = InMemoryIacPrSourceCacheStore()
+    return _iac_pr_source_cache_store_singleton
+
+
+def _set_iac_pr_source_cache_store_for_tests(store: IacPrSourceCacheStore) -> None:
+    """Test-only: inject an IaC PR-source store via the override seam."""
+    global _iac_pr_source_cache_store_override
+    _iac_pr_source_cache_store_override = store
+
+
+def _reset_iac_pr_source_cache_for_tests() -> None:
+    """Test-only: clear the IaC PR-source store singleton + injection override."""
+    global _iac_pr_source_cache_store_singleton, _iac_pr_source_cache_store_override
+    _iac_pr_source_cache_store_singleton = None
+    _iac_pr_source_cache_store_override = None
+
+
 _INFRA_INVENTORY_CACHE: "tuple[float, dict] | None" = None
 
 
@@ -3048,6 +3098,101 @@ def approval_get(request: Request, approval_id: str, t: str = "") -> Response:
 # --------------------------------------------------------------------------- #
 
 
+# "View source" affordance: the .tf source a PR adds/changes, shown on the
+# approval page. During the hackathon demo it is visible to EVERYONE (so judges
+# can inspect what the agent authored); the page labels this as a demo posture.
+_IAC_SOURCE_DEMO_NOTE = (
+    "Demo: the generated OpenTofu source is shown to everyone here so judges can "
+    "inspect exactly what the agent authored. Outside the demo this view would be "
+    "operator-only."
+)
+
+
+def _read_iac_source_cache(
+    pr_number: int, head_sha: str, ttl: float
+) -> "tuple[list, bool] | None":
+    """Return ``(files, truncated)`` from the IaC PR-source cache if a fresh,
+    valid record for THIS head_sha exists, else None (a miss → caller refetches).
+
+    Validates defensively (mirrors ``_read_l2_cache``): honoured only if it's a
+    dict with the exact ``format_version``, a ``head_sha`` matching the PR's
+    current head (a moved PR is a miss), a finite ``written_at`` that isn't far in
+    the future, within ``ttl``, and a list ``files`` payload. Any other shape — or
+    a store read error the store already swallowed to None — is a miss."""
+    try:
+        record = get_iac_pr_source_cache_store().get(pr_number)
+    except Exception as e:  # noqa: BLE001 — a misbehaving store must never break the GET
+        log.warning("iac_pr_source_read_error", extra={"error": type(e).__name__})
+        return None
+    if not isinstance(record, dict):
+        return None
+    if record.get("format_version") != _IAC_PR_SOURCE_FORMAT_VERSION:
+        return None
+    if record.get("head_sha") != head_sha:
+        return None  # PR head moved (new commit / force-push) → refetch + overwrite
+    written_at = record.get("written_at")
+    files = record.get("files")
+    if not isinstance(written_at, (int, float)) or not math.isfinite(written_at):
+        return None
+    if not isinstance(files, list):
+        return None
+    age = time.time() - written_at
+    if age < -_IAC_PR_SOURCE_CLOCK_SKEW_TOLERANCE_S:
+        return None  # stamped in the future → distrust
+    if age > ttl:
+        return None
+    return files, bool(record.get("truncated", False))
+
+
+def _resolve_iac_source(
+    s: Settings, pr_number: int, head_sha: str, *, force: bool = False
+) -> "tuple[list, bool]":
+    """Resolve the PR's changed ``.tf`` source for the approval page, read-through
+    cached on the verified ``head_sha``.
+
+    Returns ``(files, truncated)`` — always fail-soft: GitHub unconfigured, a fetch
+    error, or a misbehaving cache all degrade to ``([], False)`` so the always-200
+    GET simply omits the source block. ``force=True`` (the refresh endpoint) skips
+    the cache read and always refetches + resaves. The fetched content is pinned to
+    ``head_sha`` (the exact commit being approved)."""
+    if not (s.github_token and s.github_repo):
+        return [], False
+    ttl = s.iac_pr_source_cache_ttl_s
+    if not force and ttl > 0:
+        cached = _read_iac_source_cache(pr_number, head_sha, ttl)
+        if cached is not None:
+            return cached
+    try:
+        repo = get_repo(s.github_token, s.github_repo)
+        result = github.list_pr_iac_tf_files(repo, pr_number, head_sha)
+    except Exception as e:  # noqa: BLE001 — never turn the read-only GET into a 5xx
+        log.warning(
+            "iac_pr_source_fetch_failed",
+            extra={"pr_number": pr_number, "error": type(e).__name__},
+        )
+        return [], False
+    files = result.get("files", [])
+    truncated = bool(result.get("truncated", False))
+    if ttl > 0:
+        try:
+            get_iac_pr_source_cache_store().set(
+                pr_number,
+                {
+                    "format_version": _IAC_PR_SOURCE_FORMAT_VERSION,
+                    "written_at": time.time(),
+                    "head_sha": head_sha,
+                    "files": files,
+                    "truncated": truncated,
+                },
+            )
+        except Exception as e:  # noqa: BLE001 — a cache-write failure must not fail the GET
+            log.warning(
+                "iac_pr_source_persist_failed",
+                extra={"pr_number": pr_number, "error": type(e).__name__},
+            )
+    return files, truncated
+
+
 def _resolve_iac_plan(
     s: Settings, pr_number: int
 ) -> tuple["iac_artifacts.C2CommentRef | None", "iac_artifacts.IacPlanView | None"]:
@@ -3344,6 +3489,27 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
         if (_summary is not None and _summary.entries)
         else ""
     )
+
+    # "View source" affordance: the .tf the PR adds/changes, shown in-app (read-
+    # through cached on the verified head_sha). Resolved ONLY for a trustworthy,
+    # PR-consistent artifact — so the head_sha we key/fetch on provably belongs to
+    # THIS PR (no cross-PR fetch) and we never render source for a tampered or
+    # mismatched artifact. Independent of can_approve: source is visible even when
+    # Approve is suppressed for a non-artifact reason (anonymous / dial / pause /
+    # dry-run). Fail-soft inside _resolve_iac_source → ([], False) keeps the GET 200.
+    iac_source_files: list = []
+    iac_source_truncated = False
+    _artifact_trustworthy = (
+        view is not None
+        and not view.unverifiable
+        and view.integrity_ok
+        and _iac_artifact_consistent(ref, view, pr_number)
+    )
+    if _artifact_trustworthy:
+        iac_source_files, iac_source_truncated = _resolve_iac_source(
+            s, pr_number, view.head_sha
+        )
+
     ctx = {
         "pr_number": pr_number,
         "view": view,
@@ -3365,6 +3531,15 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
         # these keys are protected by | default("") in the template).
         "blast_phrase": _blast_phrase,
         "cannot_touch_note": BLAST_CANNOT_TOUCH_NOTE,
+        # "View source" block (PR1). Files is a list of {path, content|None, bytes};
+        # the demo note is always shown with the block; the refresh control is shown
+        # only to a request carrying a CF Access identity (the POST crypto-verifies
+        # it). _cf_anonymous is True exactly for a no-JWT viewer when CF Access is
+        # configured (demo window) — they see source but not the refresh button.
+        "iac_source_files": iac_source_files,
+        "iac_source_truncated": iac_source_truncated,
+        "iac_source_demo_note": _IAC_SOURCE_DEMO_NOTE,
+        "iac_source_refresh_available": not _cf_anonymous,
     }
     if resolved_decision:
         # Render the terminal-state outcome banner + suppress the bottom form.
@@ -3375,6 +3550,39 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
     _apply_approval_security_headers(response)
     _apply_iac_csp(response)
     return response
+
+
+@app.post("/iac-approvals/{pr_number}/refresh-source")
+def iac_refresh_source(
+    request: Request,
+    pr_number: int,
+    operator_email: str = Depends(require_cf_operator),
+) -> Response:
+    """Force a re-fetch + re-save of the PR's ``.tf`` source cache, then redirect
+    back to the approval GET.
+
+    Operator-gated on purpose: VIEWING source is open to everyone (incl. the demo's
+    anonymous viewers, served from cache / a fetch-on-miss), but the manual refresh
+    drives a GitHub fetch + a Firestore write, so it requires a verified Cloudflare
+    Access operator (``require_cf_operator``: 503 if CF Access unconfigured, 401/403
+    on a bad/missing JWT) plus the same-origin CSRF check the approval POST uses
+    (``_check_iac_origin``). It cannot approve/apply/merge anything — it only
+    re-reads public PR content the operator can already see — so no plan-bound CSRF
+    token is needed. Best-effort: a fetch/cache error is swallowed by
+    ``_resolve_iac_source`` and the redirect still happens (the page just shows
+    whatever it can)."""
+    s = get_settings()
+    if not _check_iac_origin(request, s):
+        raise HTTPException(status_code=403, detail="cross-site POST refused")
+    ref, view = _resolve_iac_plan(s, pr_number)
+    if (
+        view is not None
+        and not view.unverifiable
+        and view.integrity_ok
+        and _iac_artifact_consistent(ref, view, pr_number)
+    ):
+        _resolve_iac_source(s, pr_number, view.head_sha, force=True)
+    return RedirectResponse(url=f"/iac-approvals/{pr_number}", status_code=303)
 
 
 # --------------------------------------------------------------------------- #
