@@ -3108,6 +3108,31 @@ _IAC_SOURCE_DEMO_NOTE = (
 )
 
 
+def _valid_iac_source_files(files: object) -> bool:
+    """True iff ``files`` is a well-formed source payload — a list of dicts each
+    with a ``path`` that is an ``iac/**.tf`` (no ``..`` segment) string and a
+    ``content`` that is ``None`` or a str. Guards the cache read against a
+    tampered / old-shaped Firestore doc whose ``format_version`` happens to match
+    (a malformed entry → miss → refetch + overwrite the bad doc)."""
+    if not isinstance(files, list):
+        return False
+    for f in files:
+        if not isinstance(f, dict):
+            return False
+        p = f.get("path")
+        if (
+            not isinstance(p, str)
+            or not p.startswith("iac/")
+            or not p.endswith(".tf")
+            or ".." in p.split("/")
+        ):
+            return False
+        c = f.get("content")
+        if c is not None and not isinstance(c, str):
+            return False
+    return True
+
+
 def _read_iac_source_cache(
     pr_number: int, head_sha: str, ttl: float
 ) -> "tuple[list, bool] | None":
@@ -3134,7 +3159,7 @@ def _read_iac_source_cache(
     files = record.get("files")
     if not isinstance(written_at, (int, float)) or not math.isfinite(written_at):
         return None
-    if not isinstance(files, list):
+    if not _valid_iac_source_files(files):
         return None
     age = time.time() - written_at
     if age < -_IAC_PR_SOURCE_CLOCK_SKEW_TOLERANCE_S:
@@ -3320,9 +3345,10 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
     # header here only buys the same form + CSRF token every request got
     # before this rung existed, and the POST still rejects it. When CF Access
     # is NOT configured (local dev / tests), the rung is inert.
-    _cf_anonymous = bool(
-        s.cf_access_team_domain and s.cf_access_aud_tag
-    ) and not request.headers.get("Cf-Access-Jwt-Assertion")
+    _cf_configured = bool(s.cf_access_team_domain and s.cf_access_aud_tag)
+    _cf_anonymous = _cf_configured and not request.headers.get(
+        "Cf-Access-Jwt-Assertion"
+    )
 
     # Pause state for the gate ladder rung below. _pause_state_fail_closed keeps
     # the GET ALWAYS-200 (probe-safe): a failure resolving the StateStore itself
@@ -3532,14 +3558,16 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
         "blast_phrase": _blast_phrase,
         "cannot_touch_note": BLAST_CANNOT_TOUCH_NOTE,
         # "View source" block (PR1). Files is a list of {path, content|None, bytes};
-        # the demo note is always shown with the block; the refresh control is shown
-        # only to a request carrying a CF Access identity (the POST crypto-verifies
-        # it). _cf_anonymous is True exactly for a no-JWT viewer when CF Access is
-        # configured (demo window) — they see source but not the refresh button.
+        # the demo note is always shown with the block. The refresh control shows
+        # ONLY when the POST could plausibly succeed — i.e. CF Access is configured
+        # AND the request carries a JWT (presence-checked here; the POST
+        # crypto-verifies it). With CF unconfigured (local/dev) the POST 503s, so
+        # the button is hidden; for a no-JWT demo viewer it is hidden too (they see
+        # source, just not the refresh control).
         "iac_source_files": iac_source_files,
         "iac_source_truncated": iac_source_truncated,
         "iac_source_demo_note": _IAC_SOURCE_DEMO_NOTE,
-        "iac_source_refresh_available": not _cf_anonymous,
+        "iac_source_refresh_available": _cf_configured and not _cf_anonymous,
     }
     if resolved_decision:
         # Render the terminal-state outcome banner + suppress the bottom form.

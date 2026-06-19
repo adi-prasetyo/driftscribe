@@ -203,6 +203,35 @@ def test_head_sha_mismatch_refetches(_configured, _src_store, monkeypatch):
     assert _src_store.get(42)["head_sha"] == _HEAD  # overwritten
 
 
+def test_corrupt_cached_entry_is_ignored_and_refetched(
+    _configured, _src_store, monkeypatch
+):
+    import time as _t
+
+    # Same head_sha + format_version, but a malformed entry (path not iac/**.tf):
+    # a tampered/old-shaped doc must be treated as a miss and refetched, never
+    # rendered as-is.
+    _src_store.set(
+        42,
+        {
+            "format_version": _IAC_PR_SOURCE_FORMAT_VERSION,
+            "written_at": _t.time(),
+            "head_sha": _HEAD,
+            "files": [{"path": "../etc/passwd", "content": "root:x:0:0"}],
+            "truncated": False,
+        },
+    )
+    _patch_resolve(monkeypatch, ref=_ref(), view=_view())
+    calls = []
+    _patch_source_fetch(monkeypatch, files=[_FILE], calls=calls)
+
+    resp = TestClient(app).get("/iac-approvals/42")
+    assert resp.status_code == 200
+    assert "../etc/passwd" not in resp.text  # the bad entry is never rendered
+    assert calls == [(42, _HEAD)], "a corrupt cached doc must trigger a refetch"
+    assert _src_store.get(42)["files"] == [_FILE]  # overwritten with valid data
+
+
 def test_fetch_failure_is_fail_soft(_configured, _src_store, monkeypatch):
     _patch_resolve(monkeypatch, ref=_ref(), view=_view())
     _patch_source_fetch(monkeypatch, files=[], raises=RuntimeError("github down"))
@@ -224,11 +253,27 @@ def test_source_not_rendered_for_unverifiable_view(_configured, _src_store, monk
 
 
 def test_refresh_button_shown_for_operator_present(_configured, _src_store, monkeypatch):
-    # CF Access NOT configured ⇒ _cf_anonymous is False ⇒ refresh control shown.
+    # CF Access configured + a JWT header present (presence-checked here; the POST
+    # crypto-verifies) ⇒ refresh control shown.
+    monkeypatch.setenv("CF_ACCESS_TEAM_DOMAIN", "team.cloudflareaccess.com")
+    monkeypatch.setenv("CF_ACCESS_AUD_TAG", "aud-tag")
+    get_settings.cache_clear()
+    _patch_resolve(monkeypatch, ref=_ref(), view=_view())
+    _patch_source_fetch(monkeypatch, files=[_FILE])
+    resp = TestClient(app).get(
+        "/iac-approvals/42", headers={"Cf-Access-Jwt-Assertion": "dummy.jwt.token"}
+    )
+    assert 'data-testid="iac-source"' in resp.text
+    assert 'data-testid="refresh-source"' in resp.text
+
+
+def test_refresh_button_hidden_when_cf_unconfigured(_configured, _src_store, monkeypatch):
+    # CF Access unconfigured (local/dev): the POST would 503, so hide the control.
     _patch_resolve(monkeypatch, ref=_ref(), view=_view())
     _patch_source_fetch(monkeypatch, files=[_FILE])
     resp = TestClient(app).get("/iac-approvals/42")
-    assert 'data-testid="refresh-source"' in resp.text
+    assert 'data-testid="iac-source"' in resp.text  # source still shown
+    assert 'data-testid="refresh-source"' not in resp.text
 
 
 def test_refresh_button_hidden_for_anonymous_demo_viewer(

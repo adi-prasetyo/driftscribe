@@ -838,7 +838,10 @@ def list_pr_iac_tf_files(
       document.
     - Content is fetched at the PR ``head_sha`` (the exact commit being approved —
       so it reflects the committed, post-``tofu fmt`` bytes, not a branch tip that
-      could move). Decoded UTF-8 with ``errors="replace"`` so odd bytes never raise.
+      could move). Decoded as **strict** UTF-8: a non-UTF-8 file is listed with
+      ``content=None`` (a ``.tf`` should be text) rather than lossy-replaced — that
+      keeps the stored size equal to the raw size, so the byte caps below are a
+      true bound on the cached document.
     - **Size caps** keep the cached doc under Firestore's 1 MiB limit: a single
       file over ``max_bytes_per_file`` is still listed but with ``content=None``
       (the page renders an "omitted — view on GitHub" marker); exceeding the file
@@ -873,9 +876,15 @@ def list_pr_iac_tf_files(
         if total + size > max_total_bytes:
             truncated = True
             break
-        files.append(
-            {"path": path, "content": raw.decode("utf-8", errors="replace"), "bytes": size}
-        )
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            # Not UTF-8 text — omit content. A ``.tf`` is text; omitting (rather
+            # than lossy errors="replace") keeps the stored size == the raw size,
+            # so the byte caps stay a true bound on the cached document.
+            files.append({"path": path, "content": None, "bytes": size})
+            continue
+        files.append({"path": path, "content": text, "bytes": size})
         total += size
 
     return {"files": files, "truncated": truncated}

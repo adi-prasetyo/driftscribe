@@ -115,6 +115,17 @@ def test_file_count_cap_truncates():
     assert [f["path"] for f in out["files"]] == ["iac/f0.tf", "iac/f1.tf"]
 
 
+def test_non_utf8_file_is_listed_with_none_content():
+    # A non-UTF-8 .tf is omitted (content=None), not lossy-decoded — keeps the
+    # stored size == raw size so the byte caps stay a true bound.
+    contents = {"iac/bin.tf": b"\xff\xfe\x00bad", "iac/ok.tf": b"ok\n"}
+    repo = _FakeRepo([_FakeFile("iac/bin.tf"), _FakeFile("iac/ok.tf")], contents)
+    out = gh.list_pr_iac_tf_files(repo, 42, _HEAD)
+    by_path = {f["path"]: f for f in out["files"]}
+    assert by_path["iac/bin.tf"]["content"] is None
+    assert by_path["iac/ok.tf"]["content"] == "ok\n"
+
+
 def test_path_traversal_segments_are_skipped():
     repo = _FakeRepo(
         [_FakeFile("iac/../secrets/evil.tf"), _FakeFile("iac/ok.tf")],
