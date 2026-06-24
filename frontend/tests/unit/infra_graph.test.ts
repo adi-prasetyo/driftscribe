@@ -762,7 +762,7 @@ describe('toMermaid + mermaid.parse — real grammar validation (Codex plan-revi
 describe('normalizeForPrompt', () => {
   it('collapses CR/LF/tab/NUL/C1 control chars to single spaces', () => {
     // C0 controls (NUL, tab, CR, LF) + a C1 control (U+0085 NEL) interleaved.
-    expect(normalizeForPrompt('a\r\nb\tc de', 254)).toBe('a b c d e');
+    expect(normalizeForPrompt('a\r\nb\tc\u0000d\u0085e', 254)).toBe('a b c d e');
   });
 
   it('collapses whitespace runs and trims', () => {
@@ -1158,6 +1158,21 @@ describe('resourceCards — ordering (drift-first, rank within, sensitive last)'
     // No ranks: drift tier keeps server order (Run, Bucket, SA), then in-sync Topic, then Secret.
     const cards = resourceCards(g);
     expect(cards.map((c) => c.assetType)).toEqual([RUN, BUCKET, SA, TOPIC, SECRET]);
+  });
+
+  it('keeps in-sync (tier 1) cards in server order even when the server ranked them', () => {
+    // The backend can emit adopt_rank on an adoptable type whose drift is 0. Rank
+    // orders only the drift tier; in-sync cards must keep their server order.
+    const cards = resourceCards(
+      graph({
+        groups: [
+          group({ asset_type: RUN, label: 'Cloud Run service', adoptable: true, adopt_rank: 5, count: 1, managed: 1, drift: 0, nodes: [node({ id: 'r0', label: 'svc', asset_type: RUN, managed: true })] }),
+          group({ asset_type: BUCKET, label: 'Storage bucket', adoptable: true, adopt_rank: 1, count: 1, managed: 1, drift: 0, nodes: [node({ id: 'b0', label: 'bkt', asset_type: BUCKET, managed: true })] }),
+        ],
+      }),
+    );
+    // Server order [RUN, BUCKET], NOT rank order [BUCKET, RUN].
+    expect(cards.map((c) => c.assetType)).toEqual([RUN, BUCKET]);
   });
 });
 

@@ -497,13 +497,18 @@ export function resourceCards(graph: InfraGraph): ResourceCard[] {
       rank: adoptGroupRank(g),
     });
   }
-  // Stable sort by (tier, rank ?? +Infinity) — JS sort is stable, so unranked
-  // cards within a tier keep their server order.
-  cards.sort(
-    (a, b) =>
-      cardTier(a) - cardTier(b) ||
-      (a.rank ?? Number.POSITIVE_INFINITY) - (b.rank ?? Number.POSITIVE_INFINITY),
-  );
+  // Sort by tier, then by adopt_rank WITHIN the drift tier only. JS sort is
+  // stable, so unranked drift cards — and every in-sync / counts-only card — keep
+  // their server order. Rank is deliberately ignored outside tier 0: the backend
+  // can emit adopt_rank on an adoptable type whose drift is currently 0, and an
+  // in-sync card must not jump its neighbours by adoption guide (Codex 019ef9e9).
+  cards.sort((a, b) => {
+    const ta = cardTier(a);
+    const tb = cardTier(b);
+    if (ta !== tb) return ta - tb;
+    if (ta !== 0) return 0;
+    return (a.rank ?? Number.POSITIVE_INFINITY) - (b.rank ?? Number.POSITIVE_INFINITY);
+  });
   return cards;
 }
 
