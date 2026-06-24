@@ -37,6 +37,7 @@
   import { RefreshScheduler } from '../lib/infra_refresh';
   import { coveragePercent } from '../lib/coverage';
   import CoverageMeter from './CoverageMeter.svelte';
+  import HelpHint from './HelpHint.svelte';
   import Icon from './Icon.svelte';
 
   let {
@@ -107,6 +108,15 @@
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let mermaidMod: any = null; // cached after the first lazy import
   const scheduler = new RefreshScheduler({ onFetch: () => void refresh() });
+
+  // One inline explanation for the three legend colors (HelpHint ⓘ). Voice
+  // matches the de-AI copy pass (PR #144): colons, no em dashes.
+  const LEGEND_HELP =
+    'Every box is a real resource in your project. Green means managed in IaC: ' +
+    'it is defined in OpenTofu, so DriftScribe tracks it and can change it through ' +
+    'the approval flow. Yellow means drift: the resource exists but is not in any ' +
+    '.tf file, so it is outside management. Grey means counts-only: sensitive types ' +
+    'such as secrets, shown as a number with no name.';
 
   const degraded = $derived(graph?.degraded ?? false);
   const totals = $derived(graph?.totals ?? null);
@@ -180,6 +190,19 @@
     return out;
   });
   const hasAdoptRows = $derived(adoptGroups.length > 0);
+  // The count shown on the adopt-zone header. Sum of the named rows actually
+  // rendered PLUS each group's "+N more" trailer, so it is provably equal to
+  // everything the zone accounts for (a reader can add the visible rows and the
+  // trailer numbers and land on exactly this badge). It diverges below
+  // totals.drift in two cases, in both of which it still equals exactly what the
+  // zone renders: (1) totals.drift counts sensitive / counts-only types (e.g.
+  // secrets) this section deliberately does not list; (2) a non-sensitive group
+  // whose g.drift > 0 but whose sampled nodes are all managed contributes zero
+  // rows and no trailer, so it is excluded here. The hero's "not yet in IaC" line
+  // carries the global drift number in either case.
+  const adoptShownTotal = $derived(
+    adoptGroups.reduce((acc, g) => acc + g.rows.length + g.hiddenUnmanaged, 0),
+  );
   // First group that is ranked AND still has a clickable Adopt row — a ranked
   // group whose every shown row is control-plane (denylist-refused) must not
   // claim "Start here": the chip would sit on a group with no button. Ranked
@@ -478,8 +501,33 @@
       {/if}
     {/if}
 
-    <div class="infra-toolbar">
-      <p class="ds-label infra-caption">Resource map · current project</p>
+    <!-- Zone 1 — hero band: the coverage headline (or degraded / loading state)
+         is the panel's lead stat; Refresh always lives here so it is reachable
+         in every state. The degraded note lives INSIDE the hero (it replaces the
+         coverage meter) yet the diagram region below stays independent, so a
+         ghost-only preview can still render under a degraded live graph. -->
+    <div class="infra-hero" data-testid="infra-hero">
+      <div class="infra-hero__main">
+        {#if graph && !degraded && pct !== null}
+          <CoverageMeter {totals} />
+        {:else if graph && !degraded}
+          <p class="ds-subtle infra-hero__msg">No resources indexed yet.</p>
+        {:else if degraded}
+          <!-- A plain muted line (NOT .ds-note): inside the framed hero a
+               boxed callout would read as a frame-within-a-frame. -->
+          <p class="ds-subtle infra-hero__msg" data-testid="infra-degraded">
+            Infrastructure inventory is unavailable right now{graph?.degraded_reason
+              ? ` (${graph.degraded_reason})`
+              : ''}. Cloud Asset Inventory may still be initializing. Try refreshing in a moment.
+          </p>
+        {:else if loading}
+          <p class="ds-subtle infra-hero__msg">Loading inventory…</p>
+        {:else}
+          <!-- Fetch failed before any graph arrived: keep the framed hero from
+               rendering hollow (the error alert itself shows below). -->
+          <p class="ds-subtle infra-hero__msg">Inventory unavailable.</p>
+        {/if}
+      </div>
       <button
         class="ds-btn ds-btn--ghost infra-refresh"
         type="button"
@@ -489,22 +537,8 @@
       >{loading || mermaidLoading ? 'Refreshing…' : 'Refresh'}</button>
     </div>
 
-    {#if graph && !degraded}
-      <CoverageMeter {totals} />
-    {/if}
-
     {#if error}
       <p class="ds-blocked" role="alert">{error}</p>
-    {/if}
-
-    <!-- The degraded note renders in its OWN block (not a chain) so it can
-         coexist with a ghost-only preview diagram (Decision 6). -->
-    {#if degraded}
-      <p class="ds-note" data-testid="infra-degraded">
-        Infrastructure inventory is unavailable right now{graph?.degraded_reason
-          ? ` (${graph.degraded_reason})`
-          : ''}. Cloud Asset Inventory may still be initializing. Try refreshing in a moment.
-      </p>
     {/if}
 
     <!-- Diagram region — independent of the degraded note. -->
@@ -519,7 +553,12 @@
     {/if}
 
     {#if (graph && !degraded) || previewActive}
-      <p class="infra-legend" aria-hidden="true">
+      <!-- Legend is now real a11y content (no aria-hidden): the text labels carry
+           the meaning, the ::before swatches are decorative. The single HelpHint
+           sits LAST so its inline flex-basis:100% panel drops onto its own row
+           below all the keys rather than splitting them. -->
+      <p class="infra-legend" data-testid="infra-legend">
+        <span class="infra-legend__lead ds-label">Legend</span>
         {#if graph && !degraded}
           <span class="infra-key infra-key--managed">managed in IaC</span>
           <span class="infra-key infra-key--drift">drift (not in IaC)</span>
@@ -529,6 +568,13 @@
           <span class="infra-key infra-key--ghost-create">will be created</span>
           <span class="infra-key infra-key--ghost-update">will be modified</span>
           <span class="infra-key infra-key--ghost-destroy">will be destroyed</span>
+        {/if}
+        {#if graph && !degraded}
+          <HelpHint
+            text={LEGEND_HELP}
+            ariaLabel="Explain the resource map colors"
+            testid="legend-help"
+          />
         {/if}
       </p>
     {/if}
@@ -540,9 +586,17 @@
          prefill is normalized for the prompt path in lib/infra_graph. Codex 019eb572. -->
     {#if graph && !degraded && hasAdoptRows}
       <div class="infra-adopt" data-testid="adopt-list">
-        <p class="ds-label infra-adopt__heading">
-          Unmanaged resources shown on the map. These exist in your project but are not
-          under IaC management.
+        <div class="infra-adopt__head">
+          <span class="ds-label infra-adopt__title">Unmanaged resources</span>
+          <span
+            class="ds-pill ds-pill--muted infra-adopt__count"
+            data-testid="adopt-count"
+            aria-label={`${adoptShownTotal} unmanaged ${adoptShownTotal === 1 ? 'resource' : 'resources'}`}
+            >{adoptShownTotal}</span
+          >
+        </div>
+        <p class="ds-subtle infra-adopt__heading">
+          These exist in your project but are not under IaC management.
         </p>
         {#if startHereAssetType !== null}
           <p class="ds-subtle infra-adopt__order" data-testid="adopt-order-note">
@@ -697,17 +751,37 @@
     margin-left: var(--ds-sp-2);
   }
 
-  .infra-toolbar {
+  /* Zone 1 — hero band. A framed lead-stat header: the coverage meter (or the
+     degraded / loading state) on the left, Refresh pinned top-right. The frame
+     (surface-2 + border) gives the headline its own weight and visually brackets
+     the map together with the matching adopt zone below. */
+  .infra-hero {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: space-between;
-    gap: var(--ds-sp-3);
-    padding: var(--ds-sp-4) 0 var(--ds-sp-3);
+    gap: var(--ds-sp-4);
+    margin: var(--ds-sp-4) 0 var(--ds-sp-3);
+    padding: var(--ds-sp-3) var(--ds-sp-4);
+    background: var(--ds-surface-2);
+    border: 1px solid var(--ds-border);
+    border-radius: var(--ds-radius);
   }
-  .infra-caption {
+  .infra-hero__main {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  /* The meter owns the hero's left column; drop its trailing margin so the band
+     hugs its content (the band's own padding frames it). */
+  .infra-hero__main :global(.coverage) {
+    margin-bottom: 0;
+  }
+  /* All hero text-states (loading / zero-resource / degraded / error) share this
+     plain muted line so they read consistently inside the framed band. */
+  .infra-hero__msg {
     margin: 0;
   }
   .infra-refresh {
+    flex: none;
     padding: 0.3em 0.85em;
     font-size: var(--ds-fs-1);
   }
@@ -724,8 +798,12 @@
   .infra-legend {
     display: flex;
     flex-wrap: wrap;
+    align-items: center;
     gap: var(--ds-sp-2) var(--ds-sp-4);
     margin: var(--ds-sp-3) 0 var(--ds-sp-2);
+  }
+  .infra-legend__lead {
+    color: var(--ds-muted);
   }
   .infra-key {
     display: inline-flex;
@@ -772,11 +850,27 @@
     font-style: italic;
   }
 
-  /* Adopt list — a calm "Unmanaged resources" action block below the legend. */
+  /* Zone 3 — adopt zone. Framed to match the hero (surface-2 + border), so the
+     two weighted zones bracket the map and the "what is not managed yet" action
+     block reads as a distinct, deliberate section rather than a trailing list. */
   .infra-adopt {
     margin: var(--ds-sp-2) 0 var(--ds-sp-3);
-    padding-top: var(--ds-sp-3);
-    border-top: 1px solid var(--ds-border);
+    padding: var(--ds-sp-3) var(--ds-sp-4);
+    background: var(--ds-surface-2);
+    border: 1px solid var(--ds-border);
+    border-radius: var(--ds-radius);
+  }
+  .infra-adopt__head {
+    display: flex;
+    align-items: center;
+    gap: var(--ds-sp-2);
+    margin-bottom: var(--ds-sp-1);
+  }
+  .infra-adopt__title {
+    color: var(--ds-fg-soft);
+  }
+  .infra-adopt__count {
+    font-variant-numeric: tabular-nums;
   }
   .infra-adopt__heading {
     margin: 0 0 var(--ds-sp-2);
@@ -792,6 +886,7 @@
   }
   .infra-adopt__row {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: var(--ds-sp-3);
     padding: var(--ds-sp-1) 0;
@@ -814,7 +909,11 @@
     font-size: var(--ds-fs-1);
   }
   .infra-adopt__muted {
-    flex: 0 0 auto;
+    /* Shrink + wrap: the control-plane note is long, and the framed adopt zone's
+       padding leaves little room on narrow widths (Codex review). */
+    flex: 1 1 14rem;
+    min-width: 0;
+    overflow-wrap: anywhere;
     font-size: var(--ds-fs-1);
   }
   .infra-adopt__trailer {
