@@ -53,7 +53,7 @@ WORKLOAD_NAMES: Final[tuple[str, ...]] = get_args(
 
 The Literal IS the enumeration — we never hand-list workload names here.
 Order follows the Literal declaration in ``agent/workloads/spec.py``
-(currently ``("drift", "upgrade", "explore", "provision")``).
+(currently ``("drift", "upgrade", "provision", "explore")``).
 
 Pinned by ``test_build_capabilities_shape``: ``[w["name"] for w in dto["workloads"]]``
 must equal ``list(WORKLOAD_NAMES)``.

@@ -91,7 +91,7 @@ class WorkloadSpec(BaseModel):
     # point of the manifest schema is to keep the surface narrow.
     model_config = ConfigDict(extra="forbid")
 
-    name: Literal["drift", "upgrade", "explore", "provision"]
+    name: Literal["drift", "upgrade", "provision", "explore"]
     display_name: str
     descriptor: str
     description: str
