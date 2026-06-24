@@ -107,7 +107,7 @@
       data-testid="pause-pill-toggle"
       aria-haspopup="dialog"
       aria-expanded={open}
-      aria-label="DriftScribe is active — agent activity allowed within guardrails. Pause DriftScribe."
+      aria-label="DriftScribe is active. Agent activity allowed within guardrails. Pause DriftScribe."
       bind:this={toggleEl}
       onclick={onToggle}
       ><span class="pause-pill__dot pause-pill__dot--ok" aria-hidden="true"></span>Active<Icon
@@ -159,7 +159,7 @@
         </div>
         {#if postError}
           <p class="pause-popover__error" data-testid="pause-popover-error">
-            Could not pause — state unchanged. Please try again.
+            Could not pause. State unchanged. Please try again.
           </p>
         {/if}
       </div>

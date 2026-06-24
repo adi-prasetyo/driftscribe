@@ -20,7 +20,7 @@
 
 {#if href}
   <div class="iac-cta" data-testid="iac-approval-cta">
-    <strong class="iac-cta__title">Infra apply needs your approval — PR #{prNumber}</strong>
+    <strong class="iac-cta__title">Infra apply needs your approval (PR #{prNumber})</strong>
     <a
       class="iac-cta__btn"
       data-testid="iac-approval-cta-link"
@@ -36,7 +36,7 @@
          re-checked by the apply worker before apply). No per-plan counts appear here
          because no plan exists at done-time: C2 is workflow_dispatch, so the plan is
          only created after the operator dispatches it, not at PR-open time. -->
-    <p class="iac-cta__cage-note" data-testid="iac-cta-cage-note">Before anything applies, this change must pass the self-protection denylist — no DriftScribe control-plane changes, no IAM changes, no deletes, replacements, or un-managing — and your explicit approval.</p>
+    <p class="iac-cta__cage-note" data-testid="iac-cta-cage-note">Before anything applies, this change must pass the self-protection denylist and get your explicit approval. The denylist blocks any DriftScribe control-plane changes, any IAM changes, and any deletes, replacements, or un-managing.</p>
   </div>
 {/if}
 

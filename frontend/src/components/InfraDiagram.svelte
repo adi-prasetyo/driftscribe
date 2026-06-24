@@ -431,7 +431,7 @@
       <div class="infra-preview" data-testid="preview-banner" role="status">
         <div class="infra-preview__text">
           <p class="infra-preview__lead">
-            Previewing PR #{previewPr} — dashed nodes show what approving this change
+            Previewing PR #{previewPr}. Dashed nodes show what approving this change
             would do. The live map does not change until the change is applied.
           </p>
           {#if overlay?.available}
@@ -463,12 +463,12 @@
       {:else if overlay && !overlay.available}
         <p class="ds-note" data-testid="preview-unavailable">
           {#if overlay.reason === 'no_plan'}
-            No pending plan was found for PR #{previewPr} — nothing to preview.
+            No pending plan was found for PR #{previewPr}. Nothing to preview.
           {:else if overlay.reason === 'artifact_error'}
             The plan for PR #{previewPr} could not be verified, so it cannot be previewed.
             Open the approval page for details.
           {:else if overlay.reason === 'resolved'}
-            PR #{previewPr} has already reached a final outcome — the map below shows
+            PR #{previewPr} has already reached a final outcome. The map below shows
             what is live now.
           {:else}
             This plan could not be summarized into a preview. Review the approval page
@@ -503,7 +503,7 @@
       <p class="ds-note" data-testid="infra-degraded">
         Infrastructure inventory is unavailable right now{graph?.degraded_reason
           ? ` (${graph.degraded_reason})`
-          : ''}. Cloud Asset Inventory may still be initializing — try refreshing in a moment.
+          : ''}. Cloud Asset Inventory may still be initializing. Try refreshing in a moment.
       </p>
     {/if}
 
@@ -541,14 +541,14 @@
     {#if graph && !degraded && hasAdoptRows}
       <div class="infra-adopt" data-testid="adopt-list">
         <p class="ds-label infra-adopt__heading">
-          Unmanaged resources shown on the map — they exist in your project but are not
-          under IaC management
+          Unmanaged resources shown on the map. These exist in your project but are not
+          under IaC management.
         </p>
         {#if startHereAssetType !== null}
           <p class="ds-subtle infra-adopt__order" data-testid="adopt-order-note">
             Suggested order among the unmanaged resources shown: the simplest to
             recognize and review come first. Every adoption is the same zero-change
-            import behind the same approval gate — the order is about building
+            import behind the same approval gate. The order is about building
             confidence, not safety.
           </p>
         {/if}
@@ -579,9 +579,9 @@
                   >
                 {:else if row.controlPlane}
                   <span class="ds-subtle infra-adopt__muted" data-testid="adopt-control-plane"
-                    >System-managed infrastructure — DriftScribe's own control-plane
-                    resources, or a bucket a Google service auto-creates — which the
-                    always-on denylist blocks from changes, adoption included</span
+                    >System-managed infrastructure (DriftScribe's own control-plane
+                    resources, or a bucket a Google service auto-creates). The
+                    always-on denylist blocks changes and adoption for these.</span
                   >
                 {:else}
                   <span class="ds-subtle infra-adopt__muted" data-testid="adopt-unavailable"

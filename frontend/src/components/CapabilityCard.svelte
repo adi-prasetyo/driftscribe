@@ -163,18 +163,18 @@
     autonomyDoc === null
       ? null
       : autonomyDoc.read_error
-        ? 'Autonomy state could not be read — the effective mode is Observe (failing closed) until the dial can be read again.'
+        ? 'Autonomy state could not be read. The effective mode is Observe (failing closed) until the dial can be read again.'
         : autonomyDoc.mode === 'observe'
-          ? 'The autonomy dial is currently set to Observe — tools that open pull requests, issues, or approvals, and anything that merges or applies, are disabled until you raise the dial.'
+          ? 'The autonomy dial is currently set to Observe. Tools that open pull requests, issues, or approvals, and anything that merges or applies, are disabled until you raise the dial.'
           : autonomyDoc.mode === 'propose'
-            ? 'The autonomy dial is currently set to Propose — pull requests and issues are enabled; anything that merges or applies is disabled until you raise the dial.'
+            ? 'The autonomy dial is currently set to Propose. Pull requests and issues are enabled; anything that merges or applies is disabled until you raise the dial.'
             : null, // propose_apply → no note
   );
 </script>
 
 <details class="ds-card cap-card" data-testid="capability-card" ontoggle={onToggle}>
   <summary class="cap-summary" data-testid="cap-summary">
-    <span class="cap-summary__title ds-label"><Icon name="shield" size={14} extraClass="cap-eyebrow-icon" />What this agent can — and cannot — do</span>
+    <span class="cap-summary__title ds-label"><Icon name="shield" size={14} extraClass="cap-eyebrow-icon" />What this agent can and cannot do</span>
     <span class="cap-summary__hint">safety cage, generated from enforcement code</span>
   </summary>
 
@@ -207,7 +207,7 @@
 
       <!-- 2. Denylist — blocked outright, approval cannot override -->
       <section class="cap-section" data-testid="cap-denylist" aria-labelledby="cap-denylist-heading">
-        <h2 class="cap-section__heading" id="cap-denylist-heading">Blocked outright — approval cannot override these</h2>
+        <h2 class="cap-section__heading" id="cap-denylist-heading">Blocked outright. Approval cannot override these</h2>
         <p class="ds-subtle cap-denylist__summary">{data.denylist.summary}</p>
         {#each ruleGroups as group (group.category)}
           <div class="cap-rule-group">
@@ -331,7 +331,7 @@
                     <div class="ds-field"><span class="ds-label">chat prompt</span></div>
                     <pre class="ds-pre cap-prompt-pre">{p.chat_prompt}</pre>
                   {:else}
-                    <p class="ds-subtle">This crew has no separate chat prompt — it ships a single system prompt file.</p>
+                    <p class="ds-subtle">This crew has no separate chat prompt. It ships a single system prompt file.</p>
                   {/if}
                 {:else}
                   <p class="ds-subtle">Loading…</p>

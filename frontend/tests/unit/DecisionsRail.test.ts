@@ -330,7 +330,7 @@ describe('DecisionsRail — Observe-mode suppressed decisions', () => {
       props: { decisions, activeTraceId: null, onOpenTrace: noop },
     });
     const token = getByTestId('autonomy-suppressed');
-    expect(token.textContent?.trim()).toBe('not executed — Observe mode');
+    expect(token.textContent?.trim()).toBe('not executed in Observe mode');
   });
 
   it('decision without suppressed_by_autonomy renders no autonomy-suppressed token (stale-coordinator fail-quiet)', () => {
@@ -385,7 +385,7 @@ describe('DecisionsRail — dry-run preview pill', () => {
         props: { decisions, activeTraceId: null, onOpenTrace: noop },
       });
       expect(getByTestId('decision-dry-run').textContent?.trim()).toBe(
-        'dry run — not created on GitHub',
+        'dry run, not created on GitHub',
       );
       // url is null on a dry-run row, so no GitHub link renders beside the pill.
       expect(queryByTestId('decision-github-link')).toBeNull();

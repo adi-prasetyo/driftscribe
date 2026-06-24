@@ -13,8 +13,8 @@ export const MODE_LABELS: Record<AutonomyMode, string> = {
 };
 
 export const MODE_BLURBS: Record<AutonomyMode, string> = {
-  observe: 'Watch and report only — no pull requests, no issues, no applies.',
-  propose: 'Open pull requests and issues for your review — applies stay off.',
+  observe: 'Watch and report only. No pull requests, no issues, no applies.',
+  propose: 'Open pull requests and issues for your review. Applies stay off.',
   propose_apply: 'Propose changes and apply them after your approval (current default).',
 };
 
@@ -32,10 +32,10 @@ export const MODE_BLURBS: Record<AutonomyMode, string> = {
 //     event-triggered, not a watcher loop.
 export const AUTONOMY_EXPLAINER_HEADING = 'How does the agent act on its own?';
 export const AUTONOMY_EXPLAINER_BODY =
-  'When a watched service changes — including changes made outside DriftScribe — ' +
-  'Anchor runs automatically; no one has to ask, and this dial sets how far it may ' +
+  'When a watched service changes (including changes made outside DriftScribe), ' +
+  'Anchor runs automatically. No one has to ask, and this dial sets how far it may ' +
   'go in response. The dial is global: the same ceiling also bounds what the rest ' +
-  'of the crew may do on the chat requests you make here — Anchor is just the only ' +
+  'of the crew may do on the chat requests you make here. Anchor is just the only ' +
   'one that starts a run on its own.';
 
 export interface AutonomyDoc {

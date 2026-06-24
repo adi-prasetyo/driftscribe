@@ -164,12 +164,12 @@
 
     {#if d.suppressed_by_autonomy === true}
       <span class="rail-status rail-status--muted" data-testid="autonomy-suppressed"
-        >not executed — {d.autonomy_mode === 'observe' ? 'Observe' : d.autonomy_mode} mode</span>
+        >not executed in {d.autonomy_mode === 'observe' ? 'Observe' : d.autonomy_mode} mode</span>
     {/if}
 
     {#if dryRunPill(d)}
       <span class="rail-status rail-status--muted" data-testid="decision-dry-run"
-        >dry run — not created on GitHub</span>
+        >dry run, not created on GitHub</span>
     {/if}
 
     <div class="row-actions">
@@ -254,7 +254,7 @@
       <HelpHint
         testid="rail-gap-help"
         ariaLabel="About these pull-request numbers"
-        text="These are real GitHub pull-request numbers, and only infrastructure changes show up here. Pull requests for UI, docs, and other code are left out — so the numbers can skip values."
+        text="These are real GitHub pull-request numbers, and only infrastructure changes show up here. Pull requests for UI, docs, and other code are left out, so the numbers can skip values."
       />
     {/if}
   </div>

@@ -23,7 +23,7 @@ describe('CoverageMeter', () => {
     expect(bar.getAttribute('aria-valuenow')).toBe('26');
     expect(bar.getAttribute('aria-valuemin')).toBe('0');
     expect(bar.getAttribute('aria-valuemax')).toBe('100');
-    expect(bar.getAttribute('aria-valuetext')).toBe('26% — 13 of 50 resources managed');
+    expect(bar.getAttribute('aria-valuetext')).toBe('26%, 13 of 50 resources managed');
     expect(getByTestId('coverage-detail').textContent).toContain(
       '13 of 50 resources managed · 37 not yet in IaC',
     );

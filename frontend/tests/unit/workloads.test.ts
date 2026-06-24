@@ -22,7 +22,7 @@ const EXPECTED: ReadonlyArray<{
     name: 'Anchor',
     descriptor: 'Cloud Run config',
     summary:
-      "Detects drift between a Cloud Run service's live env vars and the declared ops-contract.yaml, then proposes docs PRs for sanctioned changes or rollbacks for unsanctioned ones. Event-triggered via Eventarc — it runs when the service changes, not on a polling loop.",
+      "Detects drift between a Cloud Run service's live env vars and the declared ops-contract.yaml, then proposes docs PRs for sanctioned changes or rollbacks for unsanctioned ones. Event-triggered via Eventarc: it runs when the service changes, not on a polling loop.",
     group: 'autonomous',
     label: 'Anchor — Cloud Run config',
   },
@@ -40,7 +40,7 @@ const EXPECTED: ReadonlyArray<{
     name: 'Explore',
     descriptor: 'read-only',
     summary:
-      'Read-only investigation across infra and code — inspects live env vars, the ops-contract, the dependency lockfile, and developer docs, then reports. Changes nothing.',
+      'Read-only investigation across infra and code. Inspects live env vars, the ops-contract, the dependency lockfile, and developer docs, then reports. Changes nothing.',
     group: 'on-demand',
     label: 'Explore — read-only',
   },

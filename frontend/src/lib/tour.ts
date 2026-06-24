@@ -73,11 +73,11 @@ export function welcomeLine(graph: InfraGraph | null): string {
     : 'your GCP project';
   return (
     `DriftScribe is a small crew watching ${subject}. Anchor runs on its ` +
-    'own — it keeps your live Cloud Run config true to its contract, reacting ' +
+    'own. It keeps your live Cloud Run config true to its contract, reacting ' +
     'the moment something changes. Three more wait for you to ask: Patch keeps ' +
     'your dependencies current, Provision authors infrastructure changes, and ' +
     'Explore answers questions read-only. Infrastructure applies and rollbacks ' +
-    'always wait for your approval; only routine dependency updates can run ' +
+    'always wait for your approval. Only routine dependency updates can run ' +
     'end-to-end, and only at the Propose + Apply setting.'
   );
 }
@@ -86,7 +86,7 @@ export function welcomeLine(graph: InfraGraph | null): string {
 export function estateLine(graph: InfraGraph | null): string {
   if (graph === null) {
     return (
-      'Your estate is still loading — the Infrastructure panel below will ' +
+      'Your estate is still loading. The Infrastructure panel below will ' +
       'fill in shortly.'
     );
   }
@@ -101,7 +101,7 @@ export function estateLine(graph: InfraGraph | null): string {
   const pct = coveragePercent(managed, resources);
   const pctPart = pct === null ? '' : ` (${pct}%)`;
   return (
-    `${resources} resources indexed — ${managed} under IaC management` +
+    `${resources} resources indexed: ${managed} under IaC management` +
     `${pctPart}, ${drift} not yet. The coverage meter below tracks your ` +
     'migration.'
   );
@@ -114,7 +114,7 @@ export const CONTROLS_LINE =
   'what the other agents may do when you ask: Observe (they only watch and ' +
   'report), Propose (they draft changes for your review), or Propose + Apply ' +
   '(they may also complete routine dependency updates end-to-end). At every ' +
-  'setting, infrastructure edits pass your explicit approval gate — and the ' +
+  'setting, infrastructure edits pass your explicit approval gate. The ' +
   'Pause control in the top bar suspends all agent activity in one click.';
 
 // Step 5 — what sending the prefilled request actually does, and how to
@@ -123,7 +123,7 @@ export const CONTROLS_LINE =
 // Propose + Apply may merge dependency PRs on its own.
 export const NEXT_LINE =
   'When you send this adopt request, the agent drafts it as a GitHub pull ' +
-  'request with a plan you can read in plain language — what it changes, ' +
+  'request with a plan you can read in plain language: what it changes, ' +
   'what it can never touch, and what it is estimated to cost. The ' +
   'infrastructure change is applied only after you approve it on the ' +
   'review page. You can reopen this tour anytime from the Tour button in ' +
@@ -181,8 +181,8 @@ export function adoptStepState(graph: InfraGraph | null): AdoptStepState {
       kind: 'target',
       line:
         `A good first adoption: the ${g.label} \`${node.label}\`. Adopting ` +
-        'imports a resource into IaC exactly as it is — a zero-change ' +
-        'import that goes through the same review and approval as any ' +
+        'imports a resource into IaC exactly as it is. This zero-change ' +
+        'import goes through the same review and approval as any ' +
         `other change.${hint ? ` ${hint}` : ''}`,
       prefill: adoptPrefill(g.label, node.label, node.location),
     };
@@ -191,7 +191,7 @@ export function adoptStepState(graph: InfraGraph | null): AdoptStepState {
     return {
       kind: 'none',
       line:
-        'Everything in your estate is already under IaC management — ' +
+        'Everything in your estate is already under IaC management, so ' +
         'there is nothing left to adopt. You are ahead of this tour.',
     };
   }
@@ -207,10 +207,10 @@ export function adoptStepState(graph: InfraGraph | null): AdoptStepState {
       kind: 'none',
       line:
         'The unmanaged resources the agent could otherwise adopt are ' +
-        'system-managed infrastructure — DriftScribe control-plane services ' +
+        'system-managed infrastructure: DriftScribe control-plane services ' +
         'and IaC state/artifact buckets, or buckets a Google service ' +
-        'auto-creates — which the always-on denylist blocks the agent from ' +
-        'changing, adoption included. The Infrastructure panel shows ' +
+        'auto-creates. The always-on denylist blocks the agent from ' +
+        'changing these, adoption included. The Infrastructure panel shows ' +
         'everything that is there.',
     };
   }

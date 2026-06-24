@@ -27,7 +27,7 @@
       aria-valuemin="0"
       aria-valuemax="100"
       aria-valuenow={pct}
-      aria-valuetext="{pct}% — {totals.managed} of {totals.resources} resources managed"
+      aria-valuetext="{pct}%, {totals.managed} of {totals.resources} resources managed"
     >
       <div class="coverage__fill" data-testid="coverage-fill" style:width="{pct}%"></div>
     </div>

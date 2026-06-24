@@ -23,8 +23,8 @@ afterEach(cleanup);
 // ---------------------------------------------------------------------------
 const FIXTURE: Capabilities = {
   version: 1,
-  provenance: 'Generated from the same constants the enforcement code imports — not hand-written documentation.',
-  iam_note: 'Each worker runs as its own service account with least-privilege IAM, codified in infra/scripts/. The only identity that can change live infrastructure is the apply worker\'s service account — and only after an operator approves the exact plan.',
+  provenance: 'Generated from the same constants the enforcement code imports, not hand-written documentation.',
+  iam_note: 'Each worker runs as its own service account with least-privilege IAM, codified in infra/scripts/. The only identity that can change live infrastructure is the apply worker\'s service account, and only after an operator approves the exact plan.',
   workloads: [
     {
       name: 'drift',
@@ -33,7 +33,7 @@ const FIXTURE: Capabilities = {
       description: 'Detect drift between a Cloud Run service\'s live env vars and the team\'s declared ops-contract.yaml.',
       autonomous: true,
       tools: [
-        { name: 'drift_read_live_env', description: 'Reads the live Cloud Run environment — deployed image, revision, environment variables, and service configuration.', write_capable: false },
+        { name: 'drift_read_live_env', description: 'Reads the live Cloud Run environment: deployed image, revision, environment variables, and service configuration.', write_capable: false },
         { name: 'notify', description: 'Sends a notification via the notifier worker (counted as write-capable because it rides a sending credential).', write_capable: true },
       ],
       workers: [{ name: 'drift_reader', description: 'Reads the live Cloud Run service state for drift detection. Read-only by the scope of calls it makes.' }],
@@ -64,7 +64,7 @@ const FIXTURE: Capabilities = {
       description: 'Read-only investigation across infra and code. Inspects a Cloud Run service\'s live env vars, the repo\'s declared ops-contract, the dependency lockfile, and authoritative developer docs — then reports. It cannot change anything: no PR, no rollback, no notification.',
       autonomous: false,
       tools: [
-        { name: 'drift_read_live_env', description: 'Reads the live Cloud Run environment — deployed image, revision, environment variables, and service configuration.', write_capable: false },
+        { name: 'drift_read_live_env', description: 'Reads the live Cloud Run environment: deployed image, revision, environment variables, and service configuration.', write_capable: false },
       ],
       workers: [{ name: 'drift_reader', description: 'Reads the live Cloud Run service state for drift detection. Read-only by the scope of calls it makes.' }],
       actions: [],
@@ -76,9 +76,9 @@ const FIXTURE: Capabilities = {
       description: 'Author OpenTofu (IaC) changes from a chat request and open ONE iac/-only pull request for the gated apply pipeline to plan, approve, and apply.',
       autonomous: false,
       tools: [
-        { name: 'drift_read_live_env', description: 'Reads the live Cloud Run environment — deployed image, revision, environment variables, and service configuration.', write_capable: false },
-        { name: 'provision_open_infra_pr', description: 'Authors OpenTofu files under iac/ and opens ONE pull request — never applies anything; applying happens only through the gated approve-then-apply pipeline.', write_capable: true },
-        { name: 'provision_propose_adoption', description: 'Adopt an existing resource into IaC management via a zero-change import PR — renders the config deterministically; cannot modify live infrastructure.', write_capable: true },
+        { name: 'drift_read_live_env', description: 'Reads the live Cloud Run environment: deployed image, revision, environment variables, and service configuration.', write_capable: false },
+        { name: 'provision_open_infra_pr', description: 'Authors OpenTofu files under iac/ and opens ONE pull request. Never applies anything; applying happens only through the gated approve-then-apply pipeline.', write_capable: true },
+        { name: 'provision_propose_adoption', description: 'Adopt an existing resource into IaC management via a zero-change import PR. Renders the config deterministically; cannot modify live infrastructure.', write_capable: true },
       ],
       workers: [{ name: 'infra_reader', description: 'Reads the whole-project GCP asset inventory. Read-only by IAM (asset viewer only).' }],
       actions: [],
@@ -88,20 +88,20 @@ const FIXTURE: Capabilities = {
     {
       id: 'iac_apply',
       title: 'IaC plan apply',
-      description: 'Before the apply worker runs ``tofu apply``, an operator must approve the exact stored plan via the approval page. The approval is bound to the specific plan by a plan-bound HMAC with a signed expiry window — approving one plan cannot approve another.',
+      description: 'Before the apply worker runs ``tofu apply``, an operator must approve the exact stored plan via the approval page. The approval is bound to the specific plan by a plan-bound HMAC with a signed expiry window. Approving one plan cannot approve another.',
       route: '/iac-approvals/{pr_number}',
       method: 'POST',
     },
     {
       id: 'rollback',
       title: 'Rollback',
-      description: 'The rollback worker requires a valid operator approval token before it will execute any Cloud Run rollback. The approval is single-use with a 15-minute TTL and bound to the specific rollback request by HMAC — the worker re-verifies the token at execution time.',
+      description: 'The rollback worker requires a valid operator approval token before it will execute any Cloud Run rollback. The approval is single-use with a 15-minute TTL and bound to the specific rollback request by HMAC. The worker re-verifies the token at execution time.',
       route: '/approvals/{approval_id}',
       method: 'POST',
     },
   ],
   denylist: {
-    summary: 'Before any apply, the plan is checked against a fail-closed denylist. A violation blocks the apply — operator approval cannot override it.',
+    summary: 'Before any apply, the plan is checked against a fail-closed denylist. A violation blocks the apply; operator approval cannot override it.',
     enforced_at: [
       'the trusted plan-builder CI, before a plan is ever stored',
       'the approval page, as an advisory check before you approve',
@@ -458,7 +458,7 @@ describe('CapabilityCard — autonomy mode note (Task 10)', () => {
     await waitFor(() => {
       const note = getByTestId('capability-autonomy-note');
       expect(note.textContent?.trim()).toBe(
-        'The autonomy dial is currently set to Observe — tools that open pull requests, issues, or approvals, and anything that merges or applies, are disabled until you raise the dial.',
+        'The autonomy dial is currently set to Observe. Tools that open pull requests, issues, or approvals, and anything that merges or applies, are disabled until you raise the dial.',
       );
     });
 
@@ -485,7 +485,7 @@ describe('CapabilityCard — autonomy mode note (Task 10)', () => {
     await waitFor(() => {
       const note = getByTestId('capability-autonomy-note');
       expect(note.textContent?.trim()).toBe(
-        'The autonomy dial is currently set to Propose — pull requests and issues are enabled; anything that merges or applies is disabled until you raise the dial.',
+        'The autonomy dial is currently set to Propose. Pull requests and issues are enabled; anything that merges or applies is disabled until you raise the dial.',
       );
     });
   });
@@ -508,7 +508,7 @@ describe('CapabilityCard — autonomy mode note (Task 10)', () => {
     await waitFor(() => {
       const note = getByTestId('capability-autonomy-note');
       expect(note.textContent?.trim()).toBe(
-        'Autonomy state could not be read — the effective mode is Observe (failing closed) until the dial can be read again.',
+        'Autonomy state could not be read. The effective mode is Observe (failing closed) until the dial can be read again.',
       );
     });
 
