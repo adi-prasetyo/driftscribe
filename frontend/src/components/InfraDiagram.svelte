@@ -549,13 +549,15 @@
           <div class="infra-card" data-testid="infra-card">
             <div class="infra-card__head">
               <span class="infra-card__type" data-testid="infra-card-type">{card.label}</span>
-              {#if card.assetType === startHere}
-                <span class="infra-card__start" data-testid="card-start-here">Start here</span>
-              {/if}
-              <span
-                class="ds-pill infra-card__badge {badge.warn ? 'ds-pill--warn' : 'ds-pill--muted'}"
-                data-testid="infra-card-badge">{badge.text}</span
-              >
+              <span class="infra-card__head-meta">
+                {#if card.assetType === startHere}
+                  <span class="infra-card__start" data-testid="card-start-here">Start here</span>
+                {/if}
+                <span
+                  class="ds-pill infra-card__badge {badge.warn ? 'ds-pill--warn' : 'ds-pill--muted'}"
+                  data-testid="infra-card-badge">{badge.text}</span
+                >
+              </span>
             </div>
             <ul class="infra-card__body">
               {#if card.sensitive}
@@ -853,18 +855,32 @@
   .infra-card__head {
     display: flex;
     align-items: center;
+    justify-content: space-between;
     gap: var(--ds-sp-2);
     padding: var(--ds-sp-2) var(--ds-sp-3);
     background: var(--ds-surface-2);
     border-bottom: 1px solid var(--ds-border);
   }
   .infra-card__type {
+    /* Grow to push the chip/badge meta to the right edge, and wrap at spaces when
+       the title can't share the line with the meta (e.g. "Storage / bucket" next
+       to the Start-here chip). NO min-width:0 — that let the title shrink to a
+       mid-word break ("Stora ge bucke t"); keeping the longest word as the min
+       size wraps cleanly instead. break-word is a safety net for a pathological
+       single long word (local visual verify w4jj7t4a5). */
     flex: 1 1 auto;
-    min-width: 0;
-    overflow-wrap: anywhere;
+    overflow-wrap: break-word;
     font-size: var(--ds-fs-2);
     font-weight: var(--ds-fw-semibold);
     color: var(--ds-fg-soft);
+  }
+  /* Chip + badge grouped on the right of the title; the title grows to push this
+     unit right, and it wraps below the title as ONE unit only when crowded. */
+  .infra-card__head-meta {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--ds-sp-2);
   }
   .infra-card__badge {
     flex: none;
@@ -923,8 +939,10 @@
     font-size: var(--ds-fs-1);
   }
   .infra-card__muted {
-    /* Shrink + wrap: the control-plane note is long and the card is narrow. */
-    flex: 1 1 9rem;
+    /* The note takes its own line below the dot + name (flex-basis 100% forces the
+       wrap), so dot + name read as the row and the long denylist note sits under
+       them instead of vertically centring them against a tall block. */
+    flex: 1 1 100%;
     min-width: 0;
     overflow-wrap: anywhere;
     font-size: var(--ds-fs-1);
