@@ -383,6 +383,140 @@ export function adoptGroupRank(g: InfraGroup): number | null {
     : null;
 }
 
+// ---------------------------------------------------------------------------
+// Resource cards (card-grid view; design 2026-06-24-infra-resource-cards). One
+// card per group: managed AND drift nodes become rows in the same card, drift
+// rows carrying the Adopt affordance. This replaces the Mermaid resource map on
+// the normal path (Mermaid is kept only for the PR-preview ghost overlay). PURE —
+// InfraDiagram renders the returned model; the security note above (untrusted
+// names → text interpolation only, never an HTML sink) applies unchanged.
+// ---------------------------------------------------------------------------
+
+export type ResourceRowStatus = 'managed' | 'drift' | 'control_plane';
+
+export interface ResourceCardRow {
+  /** each-key — server-assigned, unique. */
+  nodeId: string;
+  /** UNTRUSTED resource name — reaches Svelte text interpolation + the chat input only. */
+  label: string;
+  status: ResourceRowStatus;
+  /** drift AND the group is adoptable AND the node is not control-plane. */
+  adoptable: boolean;
+  /** Chat prefill — composed ONLY for adoptable rows, else ''. */
+  prefill: string;
+}
+
+export interface ResourceCard {
+  /** each-key — UNIQUE (the friendly label is not: two "Project" asset types share one). */
+  assetType: string;
+  label: string;
+  /** Counts-only secret card: rows === [], a "N … hidden" line stands in. */
+  sensitive: boolean;
+  count: number;
+  managed: number;
+  drift: number;
+  rows: ResourceCardRow[];
+  /** max(0, drift − unmanaged rows shown) — the "+N more unmanaged not shown" trailer. */
+  hiddenUnmanaged: number;
+  /** Guided-order rank (1 = start here), or null when unranked. */
+  rank: number | null;
+}
+
+// Sort tier: drift-bearing non-sensitive cards first (rank-ordered within), then
+// in-sync non-sensitive, then counts-only sensitive last. NB tier 0 is "non-
+// sensitive with drift" — it also holds control-plane / non-adoptable drift, not
+// only adoptable rows.
+function cardTier(card: ResourceCard): number {
+  if (card.sensitive) return 2;
+  return card.drift > 0 ? 0 : 1;
+}
+
+/**
+ * One card per group, derived from the /infra/graph DTO. Managed and drift nodes
+ * become rows in the same card; sensitive groups become counts-only cards. Cards
+ * are sorted drift-first then by adopt rank (stable for ties → server order for
+ * unranked). A degraded graph yields []. An empty non-sensitive group (no rows
+ * and nothing hidden) is dropped so the grid never paints a hollow card.
+ *
+ * `hiddenUnmanaged` counts only the UNMANAGED delta (drift − unmanaged rows
+ * shown). Managed rows never enter that subtraction, so showing managed rows
+ * cannot inflate or deflate the "+N more unmanaged" figure (parity with the old
+ * adopt trailer; Codex review 019eb572 round-2 invariant).
+ */
+export function resourceCards(graph: InfraGraph): ResourceCard[] {
+  if (graph.degraded) return [];
+  const cards: ResourceCard[] = [];
+  for (const g of graph.groups) {
+    if (g.sensitive) {
+      cards.push({
+        assetType: g.asset_type,
+        label: g.label,
+        sensitive: true,
+        count: g.count,
+        managed: g.managed,
+        drift: g.drift,
+        rows: [],
+        hiddenUnmanaged: 0,
+        rank: null,
+      });
+      continue;
+    }
+    const groupAdoptable = g.adoptable === true;
+    const rows: ResourceCardRow[] = [];
+    let unmanagedShown = 0;
+    for (const n of g.nodes) {
+      if (n.managed) {
+        rows.push({ nodeId: n.id, label: n.label, status: 'managed', adoptable: false, prefill: '' });
+        continue;
+      }
+      unmanagedShown += 1;
+      if (n.control_plane === true) {
+        rows.push({ nodeId: n.id, label: n.label, status: 'control_plane', adoptable: false, prefill: '' });
+        continue;
+      }
+      rows.push({
+        nodeId: n.id,
+        label: n.label,
+        status: 'drift',
+        adoptable: groupAdoptable,
+        prefill: groupAdoptable ? adoptPrefill(g.label, n.label, n.location) : '',
+      });
+    }
+    const hiddenUnmanaged = Math.max(0, g.drift - unmanagedShown);
+    // Drop an empty non-sensitive card: nothing to list and nothing hidden.
+    if (rows.length === 0 && hiddenUnmanaged === 0) continue;
+    cards.push({
+      assetType: g.asset_type,
+      label: g.label,
+      sensitive: false,
+      count: g.count,
+      managed: g.managed,
+      drift: g.drift,
+      rows,
+      hiddenUnmanaged,
+      rank: adoptGroupRank(g),
+    });
+  }
+  // Stable sort by (tier, rank ?? +Infinity) — JS sort is stable, so unranked
+  // cards within a tier keep their server order.
+  cards.sort(
+    (a, b) =>
+      cardTier(a) - cardTier(b) ||
+      (a.rank ?? Number.POSITIVE_INFINITY) - (b.rank ?? Number.POSITIVE_INFINITY),
+  );
+  return cards;
+}
+
+/**
+ * The asset_type of the first card (in sorted order) that is ranked AND still has
+ * a clickable Adopt row → the "Start here" chip target. A ranked card whose every
+ * drift row is control-plane (denylist-refused) cannot claim it. null when the
+ * server sent no ranks (stale coordinator).
+ */
+export function startHereAssetType(cards: ResourceCard[]): string | null {
+  return cards.find((c) => c.rank != null && c.rows.some((r) => r.adoptable))?.assetType ?? null;
+}
+
 /**
  * Compose a Mermaid `flowchart` source string from the graph DTO. Pure — no DOM,
  * no Mermaid runtime (the component lazy-imports mermaid and feeds it this

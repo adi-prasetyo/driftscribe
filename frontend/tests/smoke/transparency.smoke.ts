@@ -250,28 +250,27 @@ test.describe('transparency UI (mock smoke)', () => {
     await expect(page.locator(`[data-testid="${TESTIDS.finalResponse}"]`)).toBeHidden();
   });
 
-  test('infrastructure panel: glanceable drift badge, then expand lazy-renders the resource map', async ({ page }) => {
+  test('infrastructure panel: glanceable drift badge, then expand renders the resource cards', async ({ page }) => {
     await seedToken(page);
     await mockData(page, freshState());
     await page.goto('/');
 
-    // Collapsed panel shows a glanceable drift badge (data fetched on mount —
-    // no Mermaid loaded yet).
+    // Collapsed panel shows a glanceable drift badge (data fetched on mount).
     const panel = page.locator(`[data-testid="${TESTIDS.infraPanel}"]`);
     await expect(panel).toBeVisible();
     const badge = page.locator(`[data-testid="${TESTIDS.infraDriftBadge}"]`);
     await expect(badge).toBeVisible();
     await expect(badge).toHaveText(/2 drift/);
 
-    // Expand → Mermaid is lazy-imported and renders an <svg> resource map.
+    // Expand → the resource card grid renders (no Mermaid on the normal path).
     await page.locator(`[data-testid="${TESTIDS.infraToggle}"]`).click();
-    const diagram = page.locator(`[data-testid="${TESTIDS.infraDiagram}"]`);
-    await expect(diagram).toBeVisible();
-    await expect(diagram.locator('svg')).toBeVisible();
-    await expect(diagram).toContainText('payment-demo');
-    await expect(diagram).toContainText('storefront');
+    const cards = page.locator(`[data-testid="${TESTIDS.infraCards}"]`);
+    await expect(cards).toBeVisible();
+    await expect(cards.locator('svg')).toHaveCount(0);
+    await expect(cards).toContainText('payment-demo');
+    await expect(cards).toContainText('storefront');
     // The secret group is counts-only — its name never appears, just the count.
-    await expect(diagram).toContainText('1 secret');
+    await expect(cards).toContainText('1 secret');
   });
 
   test('open-trace enters historical mode; new chat exits', async ({ page }) => {

@@ -15,7 +15,7 @@ export const TESTIDS = {
   historicalBanner: 'historical-banner',
   infraPanel: 'infra-panel',
   infraToggle: 'infra-toggle',
-  infraDiagram: 'infra-diagram',
+  infraCards: 'infra-cards',
   infraDriftBadge: 'infra-drift-badge',
   infraRefresh: 'infra-refresh',
 } as const;
