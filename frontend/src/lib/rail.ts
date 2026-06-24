@@ -8,6 +8,7 @@
 
 import type { Decision } from './types';
 import { iacStatusLabel } from './format';
+import { iacPrHref } from './approval';
 import type { IconName } from './icons';
 
 /**
@@ -92,6 +93,39 @@ export function groupRailDecisions(
     }
   }
   return items;
+}
+
+/**
+ * Whether to show the rail-header PR-numbering hint (explains why the numbers
+ * skip values). The numbered rows are iac_apply decisions whose `pr_number`
+ * comes straight from GitHub, so they skip every non-infra PR (UI, docs, code)
+ * in between. Surface the note only once there are ≥2 DISTINCT numbered rows —
+ * with 0 or 1 there is no sequence to explain, so it would be noise. Counts
+ * DISTINCT numbers (via the same `groupablePr` guard the grouping uses), so one
+ * PR's multi-doc lifecycle never trips it.
+ *
+ * (A stricter span-vs-count "is there literally a gap" test would, in this app,
+ * almost never differ — infra applies are sparse among many dev PRs, so any two
+ * are essentially always non-contiguous — so the distinct-count threshold is
+ * the honest, non-brittle trigger; the copy says "can skip", not "do skip".)
+ *
+ * Counts only rows that actually render a linked `PR #n`: the render gate is the
+ * GitHub href (`iacPrHref`, off `github.url`), the displayed value is a valid
+ * `pr_number` (`groupablePr`). Requiring BOTH keeps the hint in lockstep with
+ * the numbered rows the operator sees — a fail-soft row with a number but no
+ * usable GitHub link renders as plain `iac_apply` and must not inflate the
+ * count. Tolerates a null/undefined list + entries.
+ */
+export function showPrNumberingHint(
+  decisions: ReadonlyArray<Decision | null | undefined> | null | undefined,
+): boolean {
+  const prs = new Set<number>();
+  for (const d of decisions ?? []) {
+    if (d == null) continue;
+    const pr = groupablePr(d);
+    if (pr !== null && iacPrHref(d) !== null) prs.add(pr);
+  }
+  return prs.size >= 2;
 }
 
 // Statuses that read as a normal in-flight/terminal lifecycle. Anything else —

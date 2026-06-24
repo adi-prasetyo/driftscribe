@@ -9,7 +9,13 @@
     iacApproveLabel,
   } from '../lib/approval';
   import { shortSha, iacStatusLabel, iacStatusHelp } from '../lib/format';
-  import { groupRailDecisions, hasAnomalousStep, lifecycleSummaryLabel, railRowIcon } from '../lib/rail';
+  import {
+    groupRailDecisions,
+    hasAnomalousStep,
+    lifecycleSummaryLabel,
+    railRowIcon,
+    showPrNumberingHint,
+  } from '../lib/rail';
   import Icon from './Icon.svelte';
   import HelpHint from './HelpHint.svelte';
   import type { Decision } from '../lib/types';
@@ -33,6 +39,11 @@
   // from the raw list (App.svelte noteApplied also reads the raw list) — only
   // the render loop changes.
   const railItems = $derived(groupRailDecisions(decisions));
+
+  // Show the header PR-numbering hint (why the numbers skip values) once ≥2
+  // distinct iac_apply PR numbers are on screen — the numbers are real GitHub
+  // PRs, so they skip every non-infra PR in between.
+  const showPrHint = $derived(showPrNumberingHint(decisions));
 
   // Resolve the rollback approval link for a row, same-origin-guarded. Returns
   // the safe RELATIVE href, or null when there is no approval / it fails the
@@ -237,7 +248,16 @@
 {/snippet}
 
 <aside id="decisions-rail" data-testid="past-decisions-pane" aria-label="Past decisions">
-  <h2 class="ds-label rail-eyebrow"><span class="eyebrow-icon"><Icon name="history" size={14} /></span>Past decisions</h2>
+  <div class="rail-header">
+    <h2 class="ds-label rail-eyebrow"><span class="eyebrow-icon"><Icon name="history" size={14} /></span>Past decisions</h2>
+    {#if showPrHint}
+      <HelpHint
+        testid="rail-gap-help"
+        ariaLabel="About these pull-request numbers"
+        text="These are real GitHub pull-request numbers, and only infrastructure changes show up here. Pull requests for UI, docs, and other code are left out — so the numbers can skip values."
+      />
+    {/if}
+  </div>
 
   {#if decisions.length === 0}
     <p class="empty ds-subtle">No decisions yet.</p>
@@ -267,7 +287,12 @@
     min-height: 0;
   }
 
-  #decisions-rail > .ds-label {
+  /* Header row: title + the optional numbering hint sit inline; the hint's
+     opened panel (flex-basis:100%) wraps cleanly onto its own line below. */
+  .rail-header {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
     padding: 0 var(--ds-sp-1);
   }
 

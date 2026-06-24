@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { groupRailDecisions, lifecycleSummaryLabel, hasAnomalousStep, railRowIcon } from '../../src/lib/rail';
+import {
+  groupRailDecisions,
+  lifecycleSummaryLabel,
+  hasAnomalousStep,
+  railRowIcon,
+  showPrNumberingHint,
+} from '../../src/lib/rail';
 import type { Decision } from '../../src/lib/types';
 
 // Fixture shapes mirror live /decisions data (2026-06-10): newest-first,
@@ -8,7 +14,17 @@ import type { Decision } from '../../src/lib/types';
 // (written seconds apart in the same request) — faithful, not a test shortcut.
 
 function iac(id: string, pr: number | undefined, status: string, over: Partial<Decision> = {}): Decision {
-  return { decision_id: id, action: 'iac_apply', pr_number: pr, apply_status: status, ...over } as Decision;
+  return {
+    decision_id: id,
+    action: 'iac_apply',
+    pr_number: pr,
+    apply_status: status,
+    // Real /decisions rows always carry the server-derived GitHub link; include
+    // it so showPrNumberingHint (gated on iacPrHref) sees a numbered row. Tests
+    // that exercise the missing-link path override `github` via `over`.
+    github: { url: `https://github.com/adi-prasetyo/driftscribe/pull/${pr ?? 'x'}` },
+    ...over,
+  } as Decision;
 }
 const other = (id: string): Decision => ({ decision_id: id, action: 'drift_issue' } as Decision);
 
@@ -208,5 +224,60 @@ describe('railRowIcon', () => {
   });
   it('returns file-text for "observe"', () => {
     expect(railRowIcon('observe')).toBe('file-text');
+  });
+});
+
+describe('showPrNumberingHint', () => {
+  // The header PR-numbering hint (why the numbers skip values) shows only once
+  // there are ≥2 DISTINCT iac_apply PR numbers — with 0 or 1 there is no
+  // sequence to explain. Counts DISTINCT numbers so a multi-doc lifecycle for
+  // one PR (applied + waiting×2) does not, by itself, trip the hint.
+  it('is false for an empty list (nothing to explain)', () => {
+    expect(showPrNumberingHint([])).toBe(false);
+  });
+
+  it('is false for a single numbered row', () => {
+    expect(showPrNumberingHint([iac('a', 68, 'applied')])).toBe(false);
+  });
+
+  it('is false when several docs all share ONE pr_number (distinct count is 1)', () => {
+    const lifecycle = [
+      iac('a', 68, 'applied'),
+      iac('w1', 68, 'waiting_for_rebake'),
+      iac('w2', 68, 'waiting_for_rebake'),
+    ];
+    expect(showPrNumberingHint(lifecycle)).toBe(false);
+  });
+
+  it('is true once there are two distinct iac_apply PR numbers', () => {
+    expect(showPrNumberingHint([iac('a', 68, 'applied'), iac('b', 71, 'applied')])).toBe(true);
+  });
+
+  it('ignores non-iac_apply decisions when counting distinct numbers', () => {
+    // drift_issue has no pr_number; with only ONE real iac number, no hint.
+    expect(showPrNumberingHint([other('o'), iac('a', 68, 'applied')])).toBe(false);
+    // …but two real iac numbers alongside other rows DO trip it.
+    expect(showPrNumberingHint([other('o'), iac('a', 68, 'applied'), iac('b', 102, 'applied')])).toBe(
+      true,
+    );
+  });
+
+  it('ignores iac rows with a missing/invalid pr_number (mirrors the grouping guard)', () => {
+    expect(showPrNumberingHint([iac('a', 68, 'applied'), iac('b', undefined, 'applied')])).toBe(false);
+    expect(showPrNumberingHint([iac('a', 68, 'applied'), iac('z', 0, 'applied')])).toBe(false);
+  });
+
+  it('counts only rows that render a linked PR # — a number with no usable GitHub link is excluded', () => {
+    // Fail-soft attach_iac_pr_link shape: pr_number present, github.url null ⇒
+    // the row renders as plain `iac_apply`, so it must not inflate the count.
+    const linked = iac('a', 68, 'applied');
+    const noLink = iac('b', 71, 'applied', { github: { url: null } });
+    expect(showPrNumberingHint([linked, noLink])).toBe(false); // only #68 is numbered
+    expect(showPrNumberingHint([linked, noLink, iac('c', 95, 'applied')])).toBe(true); // #68 + #95
+  });
+
+  it('tolerates null/undefined input', () => {
+    expect(showPrNumberingHint(null as unknown as Decision[])).toBe(false);
+    expect(showPrNumberingHint(undefined as unknown as Decision[])).toBe(false);
   });
 });
