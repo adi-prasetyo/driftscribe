@@ -14,7 +14,7 @@ import { WORKLOADS } from '../../src/lib/workloads';
 
 afterEach(cleanup);
 
-const VALUES = ['drift', 'upgrade', 'explore', 'provision'] as const;
+const VALUES = ['drift', 'upgrade', 'provision', 'explore'] as const;
 
 function glyphAnimated(container: HTMLElement, verb: string): boolean {
   const svg = container.querySelector(`[data-testid="crew-glyph-${verb}"]`);

@@ -36,15 +36,6 @@ const EXPECTED: ReadonlyArray<{
     label: 'Patch — dependencies',
   },
   {
-    value: 'explore',
-    name: 'Explore',
-    descriptor: 'read-only',
-    summary:
-      'Read-only investigation across infra and code. Inspects live env vars, the ops-contract, the dependency lockfile, and developer docs, then reports. Changes nothing.',
-    group: 'on-demand',
-    label: 'Explore — read-only',
-  },
-  {
     value: 'provision',
     name: 'Provision',
     descriptor: 'infra edits',
@@ -52,6 +43,15 @@ const EXPECTED: ReadonlyArray<{
       'Authors OpenTofu (IaC) changes from a chat request and opens one iac/-only PR for the gated apply pipeline. Never touches live infra directly.',
     group: 'on-demand',
     label: 'Provision — infra edits',
+  },
+  {
+    value: 'explore',
+    name: 'Explore',
+    descriptor: 'read-only',
+    summary:
+      'Read-only investigation across infra and code. Inspects live env vars, the ops-contract, the dependency lockfile, and developer docs, then reports. Changes nothing.',
+    group: 'on-demand',
+    label: 'Explore — read-only',
   },
 ];
 
@@ -64,12 +64,12 @@ describe('WORKLOADS contract', () => {
     expect(WORKLOADS).toEqual(EXPECTED);
   });
 
-  it('preserves the value order (drift, upgrade, explore, provision)', () => {
+  it('preserves the value order (drift, upgrade, provision, explore)', () => {
     expect(WORKLOADS.map((o) => o.value)).toEqual([
       'drift',
       'upgrade',
-      'explore',
       'provision',
+      'explore',
     ]);
   });
 
@@ -84,8 +84,8 @@ describe('WORKLOADS contract', () => {
     expect(autonomous.map((o) => o.value)).toEqual(['drift']);
     expect(WORKLOADS.filter((o) => o.group === 'on-demand').map((o) => o.value)).toEqual([
       'upgrade',
-      'explore',
       'provision',
+      'explore',
     ]);
   });
 

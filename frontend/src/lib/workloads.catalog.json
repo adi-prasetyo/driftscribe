@@ -14,17 +14,17 @@
     "group": "on-demand"
   },
   {
-    "value": "explore",
-    "name": "Explore",
-    "descriptor": "read-only",
-    "summary": "Read-only investigation across infra and code. Inspects live env vars, the ops-contract, the dependency lockfile, and developer docs, then reports. Changes nothing.",
-    "group": "on-demand"
-  },
-  {
     "value": "provision",
     "name": "Provision",
     "descriptor": "infra edits",
     "summary": "Authors OpenTofu (IaC) changes from a chat request and opens one iac/-only PR for the gated apply pipeline. Never touches live infra directly.",
+    "group": "on-demand"
+  },
+  {
+    "value": "explore",
+    "name": "Explore",
+    "descriptor": "read-only",
+    "summary": "Read-only investigation across infra and code. Inspects live env vars, the ops-contract, the dependency lockfile, and developer docs, then reports. Changes nothing.",
     "group": "on-demand"
   }
 ]
