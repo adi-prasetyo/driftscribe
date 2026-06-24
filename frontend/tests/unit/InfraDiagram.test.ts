@@ -447,7 +447,7 @@ describe('InfraDiagram — no previewPr (regression)', () => {
 describe('InfraDiagram — degraded + available overlay', () => {
   it('shows the degraded note AND a rendered diagram region together', async () => {
     const paths: string[] = [];
-    const { getByTestId } = render(InfraDiagram, {
+    const { getByTestId, queryByTestId, container } = render(InfraDiagram, {
       props: { call: makeCall(paths, degradedGraph(), overlay()), previewPr: 47 },
     });
     // The degraded note is present...
@@ -458,6 +458,11 @@ describe('InfraDiagram — degraded + available overlay', () => {
     await waitFor(() => {
       expect(getByTestId('infra-diagram')).toBeTruthy();
     });
+    // Legend gating in the degraded + ghost-preview state: ghost keys render
+    // (previewActive) but the live-color legend help ⓘ does NOT (it is gated on
+    // graph && !degraded — there are no live colors to explain).
+    expect(container.querySelector('.infra-key--ghost-create')).toBeTruthy();
+    expect(queryByTestId('legend-help')).toBeNull();
   });
 });
 
@@ -537,10 +542,13 @@ describe('InfraDiagram — adopt list', () => {
       props: { call: callWith(adoptGraph()), onAdopt: () => {} },
     });
     await waitFor(() => expect(getByTestId('adopt-list')).toBeTruthy());
-    // Heading copy is honest about exhaustiveness (Codex finding 4). norm()
-    // collapses the multi-line template whitespace before the exact-copy check.
-    expect(norm(getByTestId('adopt-list').textContent)).toContain(
-      'Unmanaged resources shown on the map. These exist in your project but are not under IaC management',
+    // Heading copy is honest about exhaustiveness (Codex finding 4). The 2026-06-24
+    // hierarchy rework split the title ("Unmanaged resources" + count badge) from
+    // the explanatory sentence; norm() collapses the multi-line template whitespace.
+    const adoptText = norm(getByTestId('adopt-list').textContent);
+    expect(adoptText).toContain('Unmanaged resources');
+    expect(adoptText).toContain(
+      'These exist in your project but are not under IaC management',
     );
     // TWO rows (the managed bucket node is absent).
     expect(getAllByTestId('adopt-row')).toHaveLength(2);
@@ -1048,5 +1056,188 @@ describe('InfraDiagram — control-plane adopt suppression', () => {
     // to the rank-2 topic group
     const chip = getByTestId('adopt-start-here');
     expect(chip.parentElement?.textContent).toContain('Pub/Sub topic');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Visual-hierarchy rework (2026-06-24): three weighted zones + legend help.
+// Design: docs/plans/2026-06-24-infra-panel-hierarchy.md.
+//   Zone 1 hero  — coverage meter / degraded note + Refresh, framed.
+//   Zone 2 map   — diagram + legend with a single HelpHint explaining colors.
+//   Zone 3 adopt — framed "Unmanaged resources" block with a glanceable count.
+// ---------------------------------------------------------------------------
+
+describe('InfraDiagram — hero band (zone 1)', () => {
+  it('nests the coverage meter and the Refresh button inside the hero band (healthy)', async () => {
+    const { getByTestId } = render(InfraDiagram, {
+      props: { call: callWith(graphWith({ resources: 9, managed: 7, drift: 2 })) },
+    });
+    await waitFor(() => expect(getByTestId('coverage-meter')).toBeTruthy());
+    const hero = getByTestId('infra-hero');
+    expect(hero.contains(getByTestId('coverage-meter'))).toBe(true);
+    expect(hero.contains(getByTestId('infra-refresh'))).toBe(true);
+  });
+
+  it('moves the degraded note into the hero band, with no coverage meter', async () => {
+    const { getByTestId, queryByTestId } = render(InfraDiagram, {
+      props: { call: callWith(graphWith({ resources: 5, managed: 3, drift: 2 }, true)) },
+    });
+    await waitFor(() => expect(getByTestId('infra-degraded')).toBeTruthy());
+    expect(getByTestId('infra-hero').contains(getByTestId('infra-degraded'))).toBe(true);
+    expect(queryByTestId('coverage-meter')).toBeNull();
+  });
+
+  it('renders the hero with a reachable Refresh while the first fetch is still loading', async () => {
+    // A call that never resolves: graph stays null and loading stays true.
+    const call = (): Promise<Response> => new Promise<Response>(() => {});
+    const { getByTestId } = render(InfraDiagram, { props: { call } });
+    await waitFor(() => expect(getByTestId('infra-hero')).toBeTruthy());
+    const hero = getByTestId('infra-hero');
+    expect(hero.contains(getByTestId('infra-refresh'))).toBe(true);
+    expect(hero.textContent).toContain('Loading inventory');
+  });
+});
+
+describe('InfraDiagram — legend help (zone 2)', () => {
+  it('reveals the managed/drift/counts-only explanation when the legend help is clicked', async () => {
+    const { getByTestId, queryByTestId } = render(InfraDiagram, {
+      props: { call: callWith(graphWith({ resources: 9, managed: 7, drift: 2 })) },
+    });
+    await waitFor(() => expect(getByTestId('legend-help')).toBeTruthy());
+    // The panel is hidden until the help button is clicked.
+    expect(queryByTestId('legend-help-panel')).toBeNull();
+    await fireEvent.click(getByTestId('legend-help'));
+    const panel = getByTestId('legend-help-panel');
+    expect(panel.textContent).toContain('managed in IaC');
+    expect(panel.textContent).toContain('drift');
+    expect(panel.textContent).toContain('counts-only');
+  });
+
+  it('exposes the legend to assistive tech (no aria-hidden)', async () => {
+    const { getByTestId } = render(InfraDiagram, {
+      props: { call: callWith(graphWith({ resources: 9, managed: 7, drift: 2 })) },
+    });
+    await waitFor(() => expect(getByTestId('infra-legend')).toBeTruthy());
+    expect(getByTestId('infra-legend').getAttribute('aria-hidden')).toBeNull();
+  });
+});
+
+describe('InfraDiagram — adopt zone framing (zone 3)', () => {
+  it('shows a count equal to the shown rows when there are no trailers', async () => {
+    const { getByTestId } = render(InfraDiagram, {
+      props: { call: callWith(adoptGraph()), onAdopt: () => {} },
+    });
+    await waitFor(() => expect(getByTestId('adopt-list')).toBeTruthy());
+    // adoptGraph: one unmanaged bucket + one unmanaged SA, no trailers → 2.
+    expect(getByTestId('adopt-count').textContent).toBe('2');
+  });
+
+  it('counts shown rows PLUS the "+N more" trailers, not just visible rows', async () => {
+    // Group A: drift 5, 2 unmanaged sampled → 2 rows + "+3 more".
+    // Group B: drift 2, 2 unmanaged sampled → 2 rows, no trailer.
+    // adopt-count must read 7 (2 + 3 + 2), proving it equals everything the zone
+    // accounts for, not only the visible rows.
+    const graph: InfraGraph = {
+      generated_at: null,
+      project: 'demo',
+      caveat: 'test caveat',
+      degraded: false,
+      degraded_reason: null,
+      totals: { resources: 12, managed: 5, drift: 7 },
+      groups: [
+        {
+          asset_type: BUCKET,
+          label: 'Storage bucket',
+          adoptable: true,
+          count: 5,
+          managed: 0,
+          drift: 5,
+          sensitive: false,
+          truncated_in_group: 3,
+          nodes: [
+            { id: 'a0', label: 'bucket-a', asset_type: BUCKET, managed: false, location: null },
+            { id: 'a1', label: 'bucket-b', asset_type: BUCKET, managed: false, location: null },
+          ],
+        },
+        {
+          asset_type: RUN,
+          label: 'Cloud Run service',
+          adoptable: true,
+          count: 2,
+          managed: 0,
+          drift: 2,
+          sensitive: false,
+          nodes: [
+            { id: 'b0', label: 'svc-a', asset_type: RUN, managed: false, location: null },
+            { id: 'b1', label: 'svc-b', asset_type: RUN, managed: false, location: null },
+          ],
+        },
+      ],
+      edges: [],
+    };
+    const { getByTestId } = render(InfraDiagram, {
+      props: { call: callWith(graph), onAdopt: () => {} },
+    });
+    await waitFor(() => expect(getByTestId('adopt-list')).toBeTruthy());
+    expect(getByTestId('adopt-count').textContent).toBe('7');
+  });
+
+  it('counts only what the zone lists, diverging from totals.drift when a sensitive group is skipped', async () => {
+    // totals.drift = 4 but one of those is a counts-only (sensitive) secret the
+    // adopt zone deliberately does NOT list. The badge reflects what the zone
+    // accounts for: 2 bucket rows + 1 Cloud Run row = 3 (NOT 4). This pins the
+    // deliberate adoptShownTotal-vs-totals.drift product decision.
+    const graph: InfraGraph = {
+      generated_at: null,
+      project: 'demo',
+      caveat: 'test caveat',
+      degraded: false,
+      degraded_reason: null,
+      totals: { resources: 6, managed: 2, drift: 4 },
+      groups: [
+        {
+          asset_type: BUCKET,
+          label: 'Storage bucket',
+          adoptable: true,
+          count: 3,
+          managed: 1,
+          drift: 2,
+          sensitive: false,
+          nodes: [
+            { id: 'b0', label: 'prod-state', asset_type: BUCKET, managed: true, location: null },
+            { id: 'b1', label: 'my-old-uploads', asset_type: BUCKET, managed: false, location: null },
+            { id: 'b2', label: 'demo_cloudbuild', asset_type: BUCKET, managed: false, location: null, control_plane: true },
+          ],
+        },
+        {
+          asset_type: RUN,
+          label: 'Cloud Run service',
+          adoptable: true,
+          count: 2,
+          managed: 1,
+          drift: 1,
+          sensitive: false,
+          nodes: [
+            { id: 'r0', label: 'payment-demo', asset_type: RUN, managed: true, location: null },
+            { id: 'r1', label: 'storefront', asset_type: RUN, managed: false, location: null },
+          ],
+        },
+        {
+          asset_type: 'secretmanager.googleapis.com/Secret',
+          label: 'Secret',
+          count: 1,
+          managed: 0,
+          drift: 1,
+          sensitive: true,
+          nodes: [],
+        },
+      ],
+      edges: [],
+    };
+    const { getByTestId } = render(InfraDiagram, {
+      props: { call: callWith(graph), onAdopt: () => {} },
+    });
+    await waitFor(() => expect(getByTestId('adopt-list')).toBeTruthy());
+    expect(getByTestId('adopt-count').textContent).toBe('3');
   });
 });
