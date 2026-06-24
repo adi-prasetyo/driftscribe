@@ -49,7 +49,8 @@ The full topology and the IAM boundaries are documented in
 ### Anchor — Cloud Run config drift (`drift`)
 
 Anchor runs autonomously: a live Eventarc trigger reacts to every Cloud Run
-config change, no chat invocation needed.
+config change — event-driven, not a polling loop — so no chat invocation is
+needed.
 
 - Watches the `payment-demo` Cloud Run service env vs [`demo/ops-contract.yaml`](demo/ops-contract.yaml).
 - Actions: `no_op` / `docs_pr` / `drift_issue` / `rollback` / `escalation`.

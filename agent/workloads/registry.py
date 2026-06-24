@@ -836,6 +836,65 @@ def load_workload_spec(name: str) -> WorkloadSpec:
     return _parse_spec(_workload_yaml_path(name), expected_name=name)
 
 
+@dataclass(frozen=True)
+class WorkloadPrompts:
+    """Resolved prompt text for one workload — env-free (no worker URLs)."""
+
+    recheck_prompt: str
+    chat_prompt: str | None       # None when no distinct chat prompt file exists
+    chat_prompt_distinct: bool
+
+
+def _contained_prompt_path(workload_dir: Path, filename: str) -> Path:
+    """Resolve ``filename`` against ``workload_dir`` and require the result to
+    stay inside it. Prompt-file names come from the (trusted, golden-tested)
+    workload manifest, but ``resolve_workload_prompts`` now backs an
+    UNAUTHENTICATED endpoint, so a future bad manifest value (``../`` or an
+    absolute path) must not become a public file-disclosure gadget. The
+    manifests remain the real control; this is the floor (defense-in-depth).
+    """
+    base = workload_dir.resolve()
+    candidate = (workload_dir / filename).resolve()
+    if not candidate.is_relative_to(base):
+        raise ValueError(
+            f"prompt file {filename!r} escapes workload dir {base} "
+            f"(resolved to {candidate})"
+        )
+    return candidate
+
+
+def resolve_workload_prompts(name: str) -> WorkloadPrompts:
+    """Read a workload's prompt file(s) directly, without resolving worker
+    URL env vars (so this never raises MissingWorkerEnvError and is testable
+    env-free). Reuses the same guarded path resolver as ``load_workload_spec``
+    and mirrors the missing-file messages in ``_load_from_path``.
+    """
+    yaml_path = _workload_yaml_path(name)          # owns traversal/existence guard; raises on unknown name
+    spec = _parse_spec(yaml_path, expected_name=name)
+    workload_dir = yaml_path.parent
+
+    prompt_path = _contained_prompt_path(workload_dir, spec.system_prompt_file)
+    if not prompt_path.exists():
+        raise FileNotFoundError(
+            f"system prompt for workload {spec.name!r} not found: {prompt_path}"
+        )
+    recheck = prompt_path.read_text(encoding="utf-8")
+
+    if spec.chat_system_prompt_file is not None:
+        chat_path = _contained_prompt_path(workload_dir, spec.chat_system_prompt_file)
+        if not chat_path.exists():
+            raise RuntimeError(
+                f"chat system prompt for workload {spec.name!r} not found: "
+                f"{chat_path} (declared via chat_system_prompt_file in {yaml_path})"
+            )
+        return WorkloadPrompts(
+            recheck_prompt=recheck,
+            chat_prompt=chat_path.read_text(encoding="utf-8"),
+            chat_prompt_distinct=True,
+        )
+    return WorkloadPrompts(recheck_prompt=recheck, chat_prompt=None, chat_prompt_distinct=False)
+
+
 def _load_from_path(
     yaml_path: Path, *, expected_name: str | None = None
 ) -> WorkloadResolution:

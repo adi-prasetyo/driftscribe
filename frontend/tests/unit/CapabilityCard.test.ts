@@ -579,3 +579,79 @@ describe('CapabilityCard — autonomy mode note (Task 10)', () => {
     expect(queryByTestId('capability-autonomy-note')).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Task 4 — per-crew lazy prompt disclosure in CapabilityCard
+// ---------------------------------------------------------------------------
+
+describe('CapabilityCard — per-crew prompt disclosure (Task 4)', () => {
+  it('lazy-loads and renders a crew prompt with distinct chat prompt', async () => {
+    const PROMPTS = {
+      workload: 'drift', display_name: 'Anchor', descriptor: 'Cloud Run config',
+      recheck_prompt: 'RECHECK-PROMPT-TEXT', chat_prompt: 'CHAT-PROMPT-TEXT',
+      chat_prompt_distinct: true, source_dir: 'workloads/drift',
+      revision: 'driftscribe-agent-00094-7cr', demo_note: 'Demo: prompts are soft guidance.',
+    };
+    const call = async (path: string) => {
+      if (path === '/capabilities') return new Response(JSON.stringify(FIXTURE), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (path === '/autonomy') return new Response(JSON.stringify({ mode: 'propose_apply' }), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (path === '/workloads/drift/prompts') return new Response(JSON.stringify(PROMPTS), { status: 200, headers: { 'content-type': 'application/json' } });
+      return new Response('not found', { status: 404 });
+    };
+    const { getByTestId } = render(CapabilityCard, { props: { call } });
+    const card = getByTestId('capability-card') as HTMLDetailsElement;
+    card.open = true; await fireEvent(card, new Event('toggle'));
+    await waitFor(() => getByTestId('cap-workload-drift-summary'));
+    const promptsDetails = getByTestId('cap-workload-drift-prompts') as HTMLDetailsElement;
+    promptsDetails.open = true; await fireEvent(promptsDetails, new Event('toggle'));
+    await waitFor(() => {
+      expect(getByTestId('cap-workload-drift-prompts').textContent).toContain('RECHECK-PROMPT-TEXT');
+      expect(getByTestId('cap-workload-drift-prompts').textContent).toContain('CHAT-PROMPT-TEXT');
+      expect(getByTestId('cap-workload-drift-prompts').textContent).toContain('Demo: prompts are soft guidance.');
+    });
+  });
+
+  it('renders single-prompt crew branch (chat_prompt_distinct=false): recheck renders, no-separate-chat copy shown, exactly one <pre>', async () => {
+    const PROMPTS = {
+      workload: 'explore', display_name: 'Explore', descriptor: 'read-only',
+      recheck_prompt: 'EXPLORE-PROMPT-TEXT', chat_prompt: null,
+      chat_prompt_distinct: false, source_dir: 'workloads/explore',
+      revision: 'driftscribe-agent-00094-7cr', demo_note: 'Demo: prompts are soft guidance.',
+    };
+    const call = async (path: string) => {
+      if (path === '/capabilities') return new Response(JSON.stringify(FIXTURE), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (path === '/autonomy') return new Response(JSON.stringify({ mode: 'propose_apply' }), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (path === '/workloads/explore/prompts') return new Response(JSON.stringify(PROMPTS), { status: 200, headers: { 'content-type': 'application/json' } });
+      return new Response('not found', { status: 404 });
+    };
+    const { getByTestId } = render(CapabilityCard, { props: { call } });
+    const card = getByTestId('capability-card') as HTMLDetailsElement;
+    card.open = true; await fireEvent(card, new Event('toggle'));
+    await waitFor(() => getByTestId('cap-workload-explore-summary'));
+    const promptsDetails = getByTestId('cap-workload-explore-prompts') as HTMLDetailsElement;
+    promptsDetails.open = true; await fireEvent(promptsDetails, new Event('toggle'));
+    await waitFor(() => {
+      // (a) recheck prompt text renders
+      expect(promptsDetails.textContent).toContain('EXPLORE-PROMPT-TEXT');
+      // (b) no-separate-chat-prompt copy shown
+      expect(promptsDetails.textContent).toContain('no separate chat prompt');
+      // (c) exactly one <pre> — no chat prompt leaks
+      expect(promptsDetails.querySelectorAll('pre')).toHaveLength(1);
+    });
+  });
+
+  it('fails soft when the prompt fetch errors (no red error, no throw)', async () => {
+    const call = async (path: string) => {
+      if (path === '/capabilities') return new Response(JSON.stringify(FIXTURE), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (path === '/autonomy') return new Response(JSON.stringify({ mode: 'propose_apply' }), { status: 200, headers: { 'content-type': 'application/json' } });
+      return new Response('boom', { status: 500 });   // prompts fetch fails
+    };
+    const { getByTestId } = render(CapabilityCard, { props: { call } });
+    const card = getByTestId('capability-card') as HTMLDetailsElement;
+    card.open = true; await fireEvent(card, new Event('toggle'));
+    await waitFor(() => getByTestId('cap-workload-drift-summary'));
+    const promptsDetails = getByTestId('cap-workload-drift-prompts') as HTMLDetailsElement;
+    promptsDetails.open = true; await fireEvent(promptsDetails, new Event('toggle'));
+    await waitFor(() => expect(promptsDetails.textContent?.toLowerCase()).toContain('unavailable'));
+  });
+});
