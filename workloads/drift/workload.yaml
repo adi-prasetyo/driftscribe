@@ -23,7 +23,8 @@ description: >
   Detect drift between a Cloud Run service's live env vars and the
   team's declared ops-contract.yaml. Propose docs PRs (for sanctioned
   changes) or HITL rollbacks (for unsanctioned drift on
-  allow_manual_change=false vars).
+  allow_manual_change=false vars). Event-triggered via Eventarc — it
+  runs when the service changes, not on a polling loop.
 
 # Relative to this workload's directory (workloads/drift/).
 system_prompt_file: system_prompt.md
