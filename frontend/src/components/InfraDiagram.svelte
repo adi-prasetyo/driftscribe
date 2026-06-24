@@ -219,6 +219,15 @@
   }
 
   async function renderDiagram(g: InfraGraph): Promise<void> {
+    // Mermaid is preview-only now. Bail (and clear any prior svg) if we are not
+    // in preview — this centralizes the invariant so a late call from fetchOverlay
+    // racing an exitPreview can't import Mermaid or strand stale svgHtml on the
+    // normal path (5-lens adversarial review w4jj7t4a5).
+    if (!previewActive) {
+      svgHtml = '';
+      mermaidLoading = false;
+      return;
+    }
     // Own guard, independent of fetchRun, so a concurrent refresh can't strand
     // mermaidLoading=true (the wedge bug). The latest render owns the flag.
     const myRender = ++renderRun;
@@ -526,6 +535,12 @@
         <div class="infra-diagram" data-testid="infra-diagram">{@html svgHtml}</div>
       {:else if mermaidLoading || loading}
         <p class="ds-subtle">Rendering diagram…</p>
+      {:else if graph && !degraded}
+        <!-- Preview with no renderable live map AND no ghosts (e.g. a resolved
+             overlay over an empty live estate): the banner says "the map below
+             shows what is live now", so the honest empty note belongs below it
+             rather than a blank gap (5-lens review w4jj7t4a5). -->
+        <p class="ds-note" data-testid="infra-empty">No resources indexed yet.</p>
       {/if}
     {:else if graph && !degraded && cards.length > 0}
       <div class="infra-cards" data-testid="infra-cards">
@@ -542,14 +557,22 @@
                 data-testid="infra-card-badge">{badge.text}</span
               >
             </div>
-            <div class="infra-card__body">
+            <ul class="infra-card__body">
               {#if card.sensitive}
-                <p class="infra-card__counts" data-testid="card-counts-only">
+                <li class="infra-card__counts" data-testid="card-counts-only">
                   <span class="infra-dot infra-dot--hidden"></span>{countsLine(card)}
-                </p>
+                </li>
+              {:else if card.rows.length === 0}
+                <!-- Defensive: a non-sensitive type with resources but no sampled
+                     nodes (every node truncated). Summarize rather than render a
+                     hollow card or collapse the whole grid to "nothing here". -->
+                <li class="infra-card__counts" data-testid="card-summary">
+                  <span class="infra-dot infra-dot--hidden"></span>{card.count}
+                  {card.label.toLowerCase()}{card.count === 1 ? '' : 's'} · not individually listed
+                </li>
               {:else}
                 {#each card.rows as row (row.nodeId)}
-                  <div class="infra-card__row infra-card__row--{row.status}" data-testid="infra-card-row">
+                  <li class="infra-card__row infra-card__row--{row.status}" data-testid="infra-card-row">
                     <span class="infra-dot infra-dot--{dotClass(row.status)}"></span>
                     <span class="infra-card__name">{row.label}</span>
                     {#if row.status === 'managed'}
@@ -577,15 +600,15 @@
                         >not an adoptable type</span
                       >
                     {/if}
-                  </div>
+                  </li>
                 {/each}
                 {#if card.hiddenUnmanaged > 0}
-                  <p class="ds-subtle infra-card__trailer" data-testid="card-trailer">
+                  <li class="ds-subtle infra-card__trailer" data-testid="card-trailer">
                     +{card.hiddenUnmanaged} more unmanaged {card.label}(s) not shown
-                  </p>
+                  </li>
                 {/if}
               {/if}
-            </div>
+            </ul>
           </div>
         {/each}
       </div>
@@ -858,11 +881,18 @@
     font-size: 0.72rem;
     font-weight: var(--ds-fw-semibold);
   }
+  /* <ul> — list semantics for AT; reset the default list chrome. */
   .infra-card__body {
+    list-style: none;
+    margin: 0;
     padding: var(--ds-sp-1) 0;
   }
   .infra-card__row {
     display: flex;
+    /* Wrap so a long control-plane note drops to its own line at the 208px
+       minimum card width instead of vertically centring the dot + name against a
+       tall multi-line note (5-lens review w4jj7t4a5). */
+    flex-wrap: wrap;
     align-items: center;
     gap: var(--ds-sp-2);
     padding: var(--ds-sp-2) var(--ds-sp-3);

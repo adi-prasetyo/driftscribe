@@ -902,6 +902,54 @@ describe('InfraDiagram — normal path skips Mermaid', () => {
   });
 });
 
+describe('InfraDiagram — card edge cases (5-lens review w4jj7t4a5)', () => {
+  it('renders a summary line (not a hollow card or empty note) for a count>0 type whose nodes were all sampled out', async () => {
+    const graph: InfraGraph = {
+      generated_at: null, project: 'demo', caveat: 'test caveat',
+      degraded: false, degraded_reason: null,
+      totals: { resources: 3, managed: 3, drift: 0 },
+      groups: [
+        { asset_type: BUCKET, label: 'Storage bucket', count: 3, managed: 3, drift: 0, sensitive: false, nodes: [] },
+      ],
+      edges: [],
+    };
+    const { getByTestId, queryByTestId } = render(InfraDiagram, { props: { call: callWith(graph) } });
+    await waitFor(() => expect(getByTestId('infra-cards')).toBeTruthy());
+    expect(queryByTestId('infra-empty')).toBeNull();
+    expect(norm(getByTestId('card-summary').textContent)).toContain('3 storage buckets · not individually listed');
+  });
+
+  it('gives each card body list semantics (ul/li) for assistive tech', async () => {
+    const { getByTestId, getAllByRole } = render(InfraDiagram, {
+      props: { call: callWith(adoptGraph()), onAdopt: () => {} },
+    });
+    await waitFor(() => expect(getByTestId('infra-cards')).toBeTruthy());
+    // adoptGraph: bucket card (2 rows) + SA card (1 row) = 3 listitems, 2 lists.
+    expect(getAllByRole('listitem')).toHaveLength(3);
+    expect(getAllByRole('list')).toHaveLength(2);
+  });
+
+  it('shows the empty note (not a blank gap) under a resolved-overlay preview over an empty live estate', async () => {
+    const emptyGraph: InfraGraph = {
+      generated_at: null, project: 'demo', caveat: 'test caveat',
+      degraded: false, degraded_reason: null,
+      totals: { resources: 0, managed: 0, drift: 0 },
+      groups: [], edges: [],
+    };
+    const resolved = overlay({
+      available: false,
+      reason: 'resolved',
+      counts: { create: 0, update: 0, destroy: 0, replace: 0, import: 0, forget: 0, change: 0 },
+      entries: [],
+    });
+    const { getByTestId } = render(InfraDiagram, {
+      props: { call: makeCall([], emptyGraph, resolved), previewPr: 47 },
+    });
+    await waitFor(() => expect(getByTestId('preview-unavailable')).toBeTruthy());
+    await waitFor(() => expect(getByTestId('infra-empty')).toBeTruthy());
+  });
+});
+
 describe('InfraDiagram — onGraph lift (tour, item 14)', () => {
   it('reports each applied graph to onGraph', async () => {
     const onGraph = vi.fn();

@@ -435,8 +435,10 @@ function cardTier(card: ResourceCard): number {
  * One card per group, derived from the /infra/graph DTO. Managed and drift nodes
  * become rows in the same card; sensitive groups become counts-only cards. Cards
  * are sorted drift-first then by adopt rank (stable for ties → server order for
- * unranked). A degraded graph yields []. An empty non-sensitive group (no rows
- * and nothing hidden) is dropped so the grid never paints a hollow card.
+ * unranked). A degraded graph yields []. Every group the backend reports with at
+ * least one resource (count > 0) yields a card — matching hasRenderableNodes, so
+ * a type with resources never collapses to the "No resources indexed yet" note;
+ * a count === 0 group (pathological) is dropped (5-lens review w4jj7t4a5).
  *
  * `hiddenUnmanaged` counts only the UNMANAGED delta (drift − unmanaged rows
  * shown). Managed rows never enter that subtraction, so showing managed rows
@@ -447,6 +449,7 @@ export function resourceCards(graph: InfraGraph): ResourceCard[] {
   if (graph.degraded) return [];
   const cards: ResourceCard[] = [];
   for (const g of graph.groups) {
+    if (g.count === 0) continue; // a type the backend reported with no resources
     if (g.sensitive) {
       cards.push({
         assetType: g.asset_type,
@@ -483,8 +486,6 @@ export function resourceCards(graph: InfraGraph): ResourceCard[] {
       });
     }
     const hiddenUnmanaged = Math.max(0, g.drift - unmanagedShown);
-    // Drop an empty non-sensitive card: nothing to list and nothing hidden.
-    if (rows.length === 0 && hiddenUnmanaged === 0) continue;
     cards.push({
       assetType: g.asset_type,
       label: g.label,

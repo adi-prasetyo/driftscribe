@@ -1116,18 +1116,35 @@ describe('resourceCards — hidden-unmanaged honesty', () => {
     expect(cards[0].hiddenUnmanaged).toBe(3);
   });
 
-  it('skips an empty non-sensitive card (no rows, nothing hidden) but keeps an empty sensitive card', () => {
+  it('keeps a card for every group with resources (count>0), even when all nodes were sampled out', () => {
+    // A type with resources must always show a card (matching hasRenderableNodes),
+    // so a fully-managed estate whose sample was truncated to zero never collapses
+    // to the "No resources indexed yet" note (5-lens review w4jj7t4a5).
     const cards = resourceCards(
       graph({
         groups: [
-          // count>0 but every node sampled out AND drift 0 → nothing to show.
           group({ asset_type: BUCKET, label: 'Storage bucket', adoptable: true, count: 3, managed: 3, drift: 0, nodes: [] }),
           group({ asset_type: SECRET, label: 'Secret', sensitive: true, count: 1, managed: 0, drift: 1, nodes: [] }),
         ],
       }),
     );
-    expect(cards).toHaveLength(1);
-    expect(cards[0].assetType).toBe(SECRET);
+    // BUCKET is in-sync (tier 1), SECRET counts-only (tier 2): both kept, in order.
+    expect(cards.map((c) => c.assetType)).toEqual([BUCKET, SECRET]);
+    const bucket = cards.find((c) => c.assetType === BUCKET);
+    expect(bucket?.rows).toEqual([]);
+    expect(bucket?.count).toBe(3);
+  });
+
+  it('drops a group the backend reported with zero resources (count===0)', () => {
+    const cards = resourceCards(
+      graph({
+        groups: [
+          group({ asset_type: BUCKET, label: 'Storage bucket', count: 0, managed: 0, drift: 0, nodes: [] }),
+          group({ asset_type: SECRET, label: 'Secret', sensitive: true, count: 0, managed: 0, drift: 0, nodes: [] }),
+        ],
+      }),
+    );
+    expect(cards).toEqual([]);
   });
 });
 
