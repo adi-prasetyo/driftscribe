@@ -168,6 +168,26 @@ the worker boundary makes "propose" safe to expose.
 - [`infra/`](infra/) — Cloud Build + smoke tests
 - [`tests/`](tests/) — unit + integration suite
 
+## Scope & roadmap
+
+**Current scope.** DriftScribe runs single-tenant — bound to one GitHub repo and
+one Google Cloud project. This is a deliberate choice: we shipped a fully
+working, secure, end-to-end agent loop (detect drift → propose IaC PR → human
+approves → apply) rather than a thin multi-tenant shell. Single-tenancy is what
+lets us enforce strong guarantees — every infra change passes a human approval
+gate, workers authorize each other by service-account identity, and the
+`tofu-apply` worker only runs plans whose IaC matches a hash baked into its own
+image.
+
+**Path to product.** Letting other users run DriftScribe on their own GitHub and
+their own cloud is a clear next step, reachable either as isolated per-customer
+deployments or as a shared multi-tenant service. We scoped that productization
+out of the hackathon *deliberately* — the multi-tenant identity and cross-project
+access it requires is security-sensitive work we'd rather do right than rush —
+so we could keep the core agent loop solid and fully working end-to-end. The full
+single-tenant coupling map and the productization paths are written up in
+[`docs/plans/2026-06-24-multi-tenant-productization-scope.md`](docs/plans/2026-06-24-multi-tenant-productization-scope.md).
+
 ## Status
 
 Built out past the hackathon MVP. Two initiatives landed on top of the Phase 17
