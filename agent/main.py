@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import math
+import os
 import re
 import secrets
 import time
@@ -91,7 +92,7 @@ from agent.trace_fetcher import (
 )
 from agent.validator import ValidationError as ProposalValidationError
 from agent.validator import validate
-from agent.capabilities import build_capabilities
+from agent.capabilities import build_capabilities, WORKLOAD_NAMES
 from agent.workloads import (
     MissingWorkerEnvError,
     ReservedToolNotImplementedError,
@@ -101,6 +102,7 @@ from agent.workloads import (
     reset_workload,
     set_workload,
 )
+from agent.workloads.registry import load_workload_spec, resolve_workload_prompts
 from pydantic import ValidationError as PydanticValidationError
 from driftscribe_lib import github
 from driftscribe_lib.auth import verify_oidc_caller
@@ -2396,6 +2398,46 @@ def get_capabilities_route(
     header story consistent with its sibling read routes."""
     response.headers["Cache-Control"] = "no-store"
     return build_capabilities()
+
+
+# --------------------------------------------------------------------------- #
+# Open crew-prompt viewer — no auth; prompts are baked from the public repo
+# --------------------------------------------------------------------------- #
+
+_PROMPTS_DEMO_NOTE = (
+    "Demo: each crew's system prompt is shown to everyone here so judges can read "
+    "exactly what instructions the agent runs under. The prompts are baked into the "
+    "running image from the public repo — and they are soft guidance: the "
+    "deterministic post-LLM validators, the fail-closed denylist, and the human "
+    "approval gates (not the prompt) are the real safety boundary."
+)
+
+
+@app.get("/workloads/{name}/prompts")
+def get_workload_prompts(name: str, response: Response) -> dict:
+    """Open, read-only view of a crew's system prompt(s).
+
+    No auth — mirrors the /iac-approvals GET and /runs: the prompts are baked
+    from the public repo, so there is nothing to hide and showing them is the
+    feature. Served from local disk (no GitHub fetch, no cache); the prompt is
+    NOT the enforcement boundary (see the demo note).
+    """
+    if name not in WORKLOAD_NAMES:
+        raise HTTPException(status_code=404, detail=f"unknown workload {name!r}")
+    spec = load_workload_spec(name)
+    prompts = resolve_workload_prompts(name)
+    response.headers["Cache-Control"] = "no-store"
+    return {
+        "workload": spec.name,
+        "display_name": spec.display_name,
+        "descriptor": spec.descriptor,
+        "recheck_prompt": prompts.recheck_prompt,
+        "chat_prompt": prompts.chat_prompt,
+        "chat_prompt_distinct": prompts.chat_prompt_distinct,
+        "source_dir": f"workloads/{spec.name}",
+        "revision": os.environ.get("K_REVISION", "local"),
+        "demo_note": _PROMPTS_DEMO_NOTE,
+    }
 
 
 # --------------------------------------------------------------------------- #
