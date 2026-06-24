@@ -246,38 +246,31 @@ describe('InfraDiagram — preview mode activation', () => {
 });
 
 describe('InfraDiagram — exit preview', () => {
-  it('clears the banner, calls onExitPreview once, and re-renders WITHOUT ghosts', async () => {
+  it('clears the banner + the ghost map, calls onExitPreview once, and shows the card grid', async () => {
     const paths: string[] = [];
     const onExitPreview = vi.fn();
     const { getByTestId, queryByTestId } = render(InfraDiagram, {
       props: { call: makeCall(paths, liveGraph(), overlay()), previewPr: 47, onExitPreview },
     });
-    // Synchronize on THIS component's completed ghost render before clicking:
-    // the diagram is in the DOM and the LATEST composed Mermaid src carries a
-    // ghost class (guards the post-exit assertion against a vacuous pass; the
-    // banner alone renders before any fetch resolves, so waiting only for it
-    // would let the click race the component's own render chain).
+    // Synchronize on THIS component's completed ghost render before clicking: the
+    // ghost map is in the DOM and the LATEST composed Mermaid src carries a ghost
+    // class (guards against a vacuous pass; the banner renders before any fetch).
     await waitFor(() => expect(queryByTestId('infra-diagram')).toBeTruthy());
     await waitFor(() => {
       const calls = renderSpy.mock.calls;
       expect(calls.length).toBeGreaterThan(0);
       expect(calls[calls.length - 1][1]).toContain('ghost');
     });
-    const preExitRenders = renderSpy.mock.calls.length;
 
     await fireEvent.click(getByTestId('preview-exit'));
     await waitFor(() => {
       expect(queryByTestId('preview-banner')).toBeNull();
     });
     expect(onExitPreview).toHaveBeenCalledTimes(1);
-    // Exit triggered a FRESH render (the open panel re-composes the map)...
-    await waitFor(() => {
-      expect(renderSpy.mock.calls.length).toBeGreaterThan(preExitRenders);
-    });
-    // ...and the last composed src carries NO ghost class tokens.
-    const calls = renderSpy.mock.calls;
-    const [, lastSrc] = calls[calls.length - 1];
-    expect(lastSrc).not.toContain('ghost');
+    // Exiting preview clears the Mermaid map (no re-render) and the normal-path
+    // card grid takes over for the live graph.
+    await waitFor(() => expect(queryByTestId('infra-diagram')).toBeNull());
+    expect(getByTestId('infra-cards')).toBeTruthy();
   });
 
   // Pins exitPreview's `++overlayRun;`: an overlay fetch still in flight at
@@ -536,27 +529,20 @@ function allManagedGraph(): InfraGraph {
   };
 }
 
-describe('InfraDiagram — adopt list', () => {
-  it('lists one row per unmanaged node (button for adoptable, muted for not), managed absent', async () => {
-    const { getByTestId, getAllByTestId, queryByText } = render(InfraDiagram, {
+describe('InfraDiagram — resource cards', () => {
+  it('renders one card per group with a row per node (managed shown too); adoptable→button, non-adoptable→muted', async () => {
+    const { getByTestId, getAllByTestId, getByText } = render(InfraDiagram, {
       props: { call: callWith(adoptGraph()), onAdopt: () => {} },
     });
-    await waitFor(() => expect(getByTestId('adopt-list')).toBeTruthy());
-    // Heading copy is honest about exhaustiveness (Codex finding 4). The 2026-06-24
-    // hierarchy rework split the title ("Unmanaged resources" + count badge) from
-    // the explanatory sentence; norm() collapses the multi-line template whitespace.
-    const adoptText = norm(getByTestId('adopt-list').textContent);
-    expect(adoptText).toContain('Unmanaged resources');
-    expect(adoptText).toContain(
-      'These exist in your project but are not under IaC management',
-    );
-    // TWO rows (the managed bucket node is absent).
-    expect(getAllByTestId('adopt-row')).toHaveLength(2);
-    expect(queryByText('prod-state')).toBeNull();
-    // The adoptable row gets a button; the SA row gets the muted span.
-    const buttons = getAllByTestId('adopt-btn');
-    expect(buttons).toHaveLength(1);
-    expect(getByTestId('adopt-unavailable').textContent).toContain('not an adoptable type');
+    await waitFor(() => expect(getByTestId('infra-cards')).toBeTruthy());
+    // Two cards (Storage bucket, Service account).
+    expect(getAllByTestId('infra-card')).toHaveLength(2);
+    // THREE rows: the managed bucket node is now SHOWN (cards list managed too).
+    expect(getAllByTestId('infra-card-row')).toHaveLength(3);
+    expect(getByText('prod-state')).toBeTruthy();
+    // The adoptable drift row gets a button; the SA drift row gets the muted note.
+    expect(getAllByTestId('card-adopt-btn')).toHaveLength(1);
+    expect(getByTestId('card-not-adoptable').textContent).toContain('not an adoptable type');
   });
 
   it('clicking Adopt fires onAdopt with the exact prefill string', async () => {
@@ -564,40 +550,63 @@ describe('InfraDiagram — adopt list', () => {
     const { getByTestId } = render(InfraDiagram, {
       props: { call: callWith(adoptGraph()), onAdopt },
     });
-    await waitFor(() => expect(getByTestId('adopt-btn')).toBeTruthy());
-    await fireEvent.click(getByTestId('adopt-btn'));
+    await waitFor(() => expect(getByTestId('card-adopt-btn')).toBeTruthy());
+    await fireEvent.click(getByTestId('card-adopt-btn'));
     expect(onAdopt).toHaveBeenCalledTimes(1);
     expect(onAdopt).toHaveBeenCalledWith(
       'Adopt the Storage bucket `my-old-uploads` in asia-northeast1 into IaC management.',
     );
   });
 
-  it('renders NO adopt-list when every node is managed', async () => {
-    const { getByTestId, queryByTestId } = render(InfraDiagram, {
+  it('shows the managed resource in a card with no Adopt button when every node is managed', async () => {
+    const { getByTestId, getByText, queryByTestId } = render(InfraDiagram, {
       props: { call: callWith(allManagedGraph()), onAdopt: () => {} },
     });
-    await waitFor(() => expect(getByTestId('infra-coverage-count')).toBeTruthy());
-    expect(queryByTestId('adopt-list')).toBeNull();
+    await waitFor(() => expect(getByTestId('infra-cards')).toBeTruthy());
+    expect(getByText('prod-state')).toBeTruthy();
+    expect(getByTestId('card-managed-tag')).toBeTruthy();
+    expect(queryByTestId('card-adopt-btn')).toBeNull();
   });
 
-  it('disables the buttons and swallows clicks when adoptDisabled', async () => {
+  it('disables the Adopt buttons and swallows clicks when adoptDisabled', async () => {
     const onAdopt = vi.fn();
     const { getByTestId } = render(InfraDiagram, {
       props: { call: callWith(adoptGraph()), onAdopt, adoptDisabled: true },
     });
-    await waitFor(() => expect(getByTestId('adopt-btn')).toBeTruthy());
-    const btn = getByTestId('adopt-btn') as HTMLButtonElement;
+    await waitFor(() => expect(getByTestId('card-adopt-btn')).toBeTruthy());
+    const btn = getByTestId('card-adopt-btn') as HTMLButtonElement;
     expect(btn.disabled).toBe(true);
     expect(btn.title).toBe('Unavailable while the chat is busy or reviewing a past trace.');
     await fireEvent.click(btn);
     expect(onAdopt).not.toHaveBeenCalled();
   });
 
+  it('renders a counts-only card for a sensitive group (no rows, just the hidden count)', async () => {
+    const graph: InfraGraph = {
+      generated_at: null, project: 'demo', caveat: 'test caveat',
+      degraded: false, degraded_reason: null,
+      totals: { resources: 2, managed: 0, drift: 2 },
+      groups: [
+        {
+          asset_type: 'secretmanager.googleapis.com/Secret', label: 'Secret',
+          count: 2, managed: 0, drift: 2, sensitive: true, nodes: [],
+        },
+      ],
+      edges: [],
+    };
+    const { getByTestId, queryAllByTestId } = render(InfraDiagram, { props: { call: callWith(graph) } });
+    await waitFor(() => expect(getByTestId('infra-cards')).toBeTruthy());
+    expect(norm(getByTestId('card-counts-only').textContent)).toContain('2 secrets · hidden');
+    // A counts-only card has no per-resource rows and no Adopt button.
+    expect(queryAllByTestId('infra-card-row')).toHaveLength(0);
+    expect(queryAllByTestId('card-adopt-btn')).toHaveLength(0);
+  });
+
   it('shows "+N more unmanaged" only when drift exceeds the shown unmanaged rows', async () => {
     // Group A: drift=5 but only 2 unmanaged nodes sampled → "+3 more".
     // Group B: all 2 drift nodes shown, but a MANAGED node was truncated
     //          (truncated_in_group=1, drift=2, shown-unmanaged=2) → NO trailer
-    //          (truncated_in_group counts unsampled resources, not unmanaged ones).
+    //          (managed rows never enter the hidden-unmanaged subtraction).
     const graph: InfraGraph = {
       generated_at: null,
       project: 'demo',
@@ -640,12 +649,12 @@ describe('InfraDiagram — adopt list', () => {
     const { getByTestId, getAllByTestId } = render(InfraDiagram, {
       props: { call: callWith(graph), onAdopt: () => {} },
     });
-    await waitFor(() => expect(getByTestId('adopt-list')).toBeTruthy());
-    const trailers = getAllByTestId('adopt-trailer');
+    await waitFor(() => expect(getByTestId('infra-cards')).toBeTruthy());
+    const trailers = getAllByTestId('card-trailer');
     // Exactly ONE trailer (group A), and it reads "+3 more".
     expect(trailers).toHaveLength(1);
     expect(trailers[0].textContent).toContain('+3 more unmanaged Storage bucket');
-    expect(trailers[0].textContent).toContain('not on the map');
+    expect(trailers[0].textContent).toContain('not shown');
   });
 });
 
@@ -732,69 +741,49 @@ function staleAdoptGraph(): InfraGraph {
   return g;
 }
 
-describe('InfraDiagram — guided adoption order (item 10)', () => {
-  it('orders adopt-list groups by adopt_rank, unranked last', async () => {
+describe('InfraDiagram — card order (light-touch guided order)', () => {
+  it('orders cards by adopt_rank within the drift tier, unranked last', async () => {
     const { getByTestId, getAllByTestId } = render(InfraDiagram, {
       props: { call: callWith(rankedAdoptGraph()), onAdopt: () => {} },
     });
-    await waitFor(() => expect(getByTestId('adopt-list')).toBeTruthy());
-    // Each row's resource name, in DOM order: bucket → topic → run → SA.
-    const names = getAllByTestId('adopt-row').map((r) =>
-      norm(r.querySelector('.infra-adopt__name')?.textContent ?? ''),
-    );
-    expect(names).toEqual(['bucket-name', 'topic-name', 'run-name', 'sa-name']);
+    await waitFor(() => expect(getByTestId('infra-cards')).toBeTruthy());
+    // bucket (rank1) → topic (rank2) → run (rank4) → SA (unranked, last).
+    const types = getAllByTestId('infra-card-type').map((t) => norm(t.textContent));
+    expect(types).toEqual(['Storage bucket', 'Pub/Sub topic', 'Cloud Run service', 'Service account']);
   });
 
-  it('shows the Start-here chip exactly once, on the top-ranked group', async () => {
+  it('shows the Start-here chip exactly once, on the top-ranked card', async () => {
     const { getByTestId, getAllByTestId } = render(InfraDiagram, {
       props: { call: callWith(rankedAdoptGraph()), onAdopt: () => {} },
     });
-    await waitFor(() => expect(getByTestId('adopt-list')).toBeTruthy());
-    const chips = getAllByTestId('adopt-start-here');
+    await waitFor(() => expect(getByTestId('infra-cards')).toBeTruthy());
+    const chips = getAllByTestId('card-start-here');
     expect(chips).toHaveLength(1);
-    // The chip lives inside the bucket group's hint line.
-    const hints = getAllByTestId('adopt-hint');
-    expect(norm(hints[0].textContent)).toContain('Storage bucket: bucket hint');
-    expect(hints[0].contains(chips[0])).toBe(true);
+    // The chip sits in the first card (Storage bucket, rank 1).
+    const firstCard = getAllByTestId('infra-card')[0];
+    expect(firstCard.contains(chips[0])).toBe(true);
+    expect(norm(firstCard.textContent)).toContain('Storage bucket');
   });
 
-  it('renders one hint line per ranked group, none for unranked', async () => {
-    const { getByTestId, getAllByTestId } = render(InfraDiagram, {
+  it('renders no per-type hint lines and no order-note paragraph (light-touch)', async () => {
+    const { getByTestId, queryByTestId } = render(InfraDiagram, {
       props: { call: callWith(rankedAdoptGraph()), onAdopt: () => {} },
     });
-    await waitFor(() => expect(getByTestId('adopt-list')).toBeTruthy());
-    const hints = getAllByTestId('adopt-hint').map((h) => norm(h.textContent));
-    expect(hints).toHaveLength(3);
-    expect(hints[0]).toContain('bucket hint');
-    expect(hints[1]).toContain('topic hint');
-    expect(hints[2]).toContain('run hint');
+    await waitFor(() => expect(getByTestId('infra-cards')).toBeTruthy());
+    // The verbose guided-order prose was dropped in the card rework.
+    expect(queryByTestId('adopt-hint')).toBeNull();
+    expect(queryByTestId('adopt-order-note')).toBeNull();
   });
 
-  it('pins the honesty phrases in the order note', async () => {
-    const { getByTestId } = render(InfraDiagram, {
-      props: { call: callWith(rankedAdoptGraph()), onAdopt: () => {} },
-    });
-    await waitFor(() => expect(getByTestId('adopt-list')).toBeTruthy());
-    const note = norm(getByTestId('adopt-order-note').textContent);
-    expect(note).toContain('same zero-change import');
-    expect(note).toContain('building confidence, not safety');
-    expect(note).toContain('among the unmanaged resources shown');
-  });
-
-  it("renders exactly today's list when rank fields are absent (stale coordinator)", async () => {
-    const { getByTestId, getAllByTestId, queryAllByTestId, queryByTestId } = render(InfraDiagram, {
+  it('renders server order with no chip when rank fields are absent (stale coordinator)', async () => {
+    const { getByTestId, getAllByTestId, queryByTestId } = render(InfraDiagram, {
       props: { call: callWith(staleAdoptGraph()), onAdopt: () => {} },
     });
-    await waitFor(() => expect(getByTestId('adopt-list')).toBeTruthy());
-    // No hint lines, no chip, no order note.
-    expect(queryAllByTestId('adopt-hint')).toHaveLength(0);
-    expect(queryByTestId('adopt-start-here')).toBeNull();
-    expect(queryByTestId('adopt-order-note')).toBeNull();
-    // Row order = server (unsorted) order: topic → run → SA → bucket.
-    const names = getAllByTestId('adopt-row').map((r) =>
-      norm(r.querySelector('.infra-adopt__name')?.textContent ?? ''),
-    );
-    expect(names).toEqual(['topic-name', 'run-name', 'sa-name', 'bucket-name']);
+    await waitFor(() => expect(getByTestId('infra-cards')).toBeTruthy());
+    expect(queryByTestId('card-start-here')).toBeNull();
+    // Server order within the drift tier: topic → run → SA → bucket.
+    const types = getAllByTestId('infra-card-type').map((t) => norm(t.textContent));
+    expect(types).toEqual(['Pub/Sub topic', 'Cloud Run service', 'Service account', 'Storage bucket']);
   });
 });
 
@@ -869,13 +858,12 @@ describe('InfraDiagram — refresh coalescing + last-applied-wins (livelock regr
   });
 });
 
-describe('InfraDiagram — adopt list duplicate group labels (prod crash regression)', () => {
+describe('InfraDiagram — card duplicate group labels (prod crash regression)', () => {
   // Prod incident (Phase-4 live e2e, 2026-06-11): cloudresourcemanager…/Project
-  // and compute…/Project BOTH carry the fallback friendly label "Project"; the
-  // adopt list keyed its group each by g.label → each_key_duplicate crashed the
-  // render flush, killing the adopt list AND everything after it in the panel
-  // body. Groups must key by the unique asset_type.
-  it('renders rows for two groups sharing a label without crashing', async () => {
+  // and compute…/Project BOTH carry the fallback friendly label "Project"; keying
+  // the each by g.label → each_key_duplicate crashed the render flush, killing the
+  // panel body. Cards must key by the unique asset_type.
+  it('renders a card for two groups sharing a label without crashing', async () => {
     const graph: InfraGraph = {
       ...graphWith({ resources: 2, managed: 0, drift: 2 }),
       groups: [
@@ -894,10 +882,71 @@ describe('InfraDiagram — adopt list duplicate group labels (prod crash regress
       ],
     };
     const { getByTestId, getAllByTestId } = render(InfraDiagram, { props: { call: callWith(graph) } });
-    await waitFor(() => expect(getByTestId('adopt-list')).toBeTruthy());
-    expect(getAllByTestId('adopt-row')).toHaveLength(2);
-    // The caveat below the adopt list must also survive (the crash killed it).
+    await waitFor(() => expect(getByTestId('infra-cards')).toBeTruthy());
+    expect(getAllByTestId('infra-card')).toHaveLength(2);
+    // The caveat below the grid must also survive (the crash killed it).
     expect(getByTestId('infra-panel').textContent).toContain('test caveat');
+  });
+});
+
+describe('InfraDiagram — normal path skips Mermaid', () => {
+  it('never calls mermaid.render when there is no previewPr (cards only)', async () => {
+    const { getByTestId } = render(InfraDiagram, {
+      props: { call: callWith(liveGraph()), onAdopt: () => {} },
+    });
+    await waitFor(() => expect(getByTestId('infra-cards')).toBeTruthy());
+    // Give any stray render chain a chance to fire, then assert none did: the
+    // ~500KB Mermaid bundle is never imported on the normal (non-preview) path.
+    await new Promise((r) => setTimeout(r, 40));
+    expect(renderSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('InfraDiagram — card edge cases (5-lens review w4jj7t4a5)', () => {
+  it('renders a summary line (not a hollow card or empty note) for a count>0 type whose nodes were all sampled out', async () => {
+    const graph: InfraGraph = {
+      generated_at: null, project: 'demo', caveat: 'test caveat',
+      degraded: false, degraded_reason: null,
+      totals: { resources: 3, managed: 3, drift: 0 },
+      groups: [
+        { asset_type: BUCKET, label: 'Storage bucket', count: 3, managed: 3, drift: 0, sensitive: false, nodes: [] },
+      ],
+      edges: [],
+    };
+    const { getByTestId, queryByTestId } = render(InfraDiagram, { props: { call: callWith(graph) } });
+    await waitFor(() => expect(getByTestId('infra-cards')).toBeTruthy());
+    expect(queryByTestId('infra-empty')).toBeNull();
+    expect(norm(getByTestId('card-summary').textContent)).toContain('3 storage buckets · not individually listed');
+  });
+
+  it('gives each card body list semantics (ul/li) for assistive tech', async () => {
+    const { getByTestId, getAllByRole } = render(InfraDiagram, {
+      props: { call: callWith(adoptGraph()), onAdopt: () => {} },
+    });
+    await waitFor(() => expect(getByTestId('infra-cards')).toBeTruthy());
+    // adoptGraph: bucket card (2 rows) + SA card (1 row) = 3 listitems, 2 lists.
+    expect(getAllByRole('listitem')).toHaveLength(3);
+    expect(getAllByRole('list')).toHaveLength(2);
+  });
+
+  it('shows the empty note (not a blank gap) under a resolved-overlay preview over an empty live estate', async () => {
+    const emptyGraph: InfraGraph = {
+      generated_at: null, project: 'demo', caveat: 'test caveat',
+      degraded: false, degraded_reason: null,
+      totals: { resources: 0, managed: 0, drift: 0 },
+      groups: [], edges: [],
+    };
+    const resolved = overlay({
+      available: false,
+      reason: 'resolved',
+      counts: { create: 0, update: 0, destroy: 0, replace: 0, import: 0, forget: 0, change: 0 },
+      entries: [],
+    });
+    const { getByTestId } = render(InfraDiagram, {
+      props: { call: makeCall([], emptyGraph, resolved), previewPr: 47 },
+    });
+    await waitFor(() => expect(getByTestId('preview-unavailable')).toBeTruthy());
+    await waitFor(() => expect(getByTestId('infra-empty')).toBeTruthy());
   });
 });
 
@@ -1004,67 +1053,68 @@ function adoptGraphWithServiceManagedBucket(): InfraGraph {
 }
 
 describe('InfraDiagram — service-managed bucket adopt suppression', () => {
-  it('a Google-service-managed bucket row is suppressed with the broadened note', async () => {
+  it('a Google-service-managed bucket row is suppressed with the denylist note', async () => {
     const { getByTestId, getAllByTestId } = render(InfraDiagram, {
       props: { call: callWith(adoptGraphWithServiceManagedBucket()), onAdopt: () => {} },
     });
-    await waitFor(() => expect(getByTestId('adopt-list')).toBeTruthy());
-    const note = getByTestId('adopt-control-plane');
+    await waitFor(() => expect(getByTestId('infra-cards')).toBeTruthy());
+    const note = getByTestId('card-control-plane');
     // The single unified note honestly covers BOTH kinds — assert the
-    // service-managed clause landed (the control-plane tokens are pinned above).
+    // service-managed clause landed alongside the denylist protection.
     expect(note.textContent).toContain('Google service');
     expect(note.textContent).toContain('denylist');
     // only the genuinely adoptable demo-assets row keeps its button
-    expect(getAllByTestId('adopt-btn')).toHaveLength(1);
+    expect(getAllByTestId('card-adopt-btn')).toHaveLength(1);
   });
 });
 
 describe('InfraDiagram — control-plane adopt suppression', () => {
-  it('control-plane row shows the denylist note instead of an Adopt button', async () => {
+  it('a control-plane row shows the denylist note instead of an Adopt button', async () => {
     const { getByTestId, getAllByTestId, queryByTestId } = render(InfraDiagram, {
       props: { call: callWith(adoptGraphWithControlPlane()), onAdopt: () => {} },
     });
-    await waitFor(() => expect(getByTestId('adopt-list')).toBeTruthy());
-    const note = getByTestId('adopt-control-plane');
-    // Codex nit: never claim "DriftScribe's own" for ANY suffix-matched bucket —
-    // an unrelated `acme-tofu-state` would be refused too. The note names the
-    // protection, not ownership.
+    await waitFor(() => expect(getByTestId('infra-cards')).toBeTruthy());
+    const note = getByTestId('card-control-plane');
+    // The note names the protection, not ownership (an unrelated `acme-tofu-state`
+    // is refused too), and keeps the "denylist" word.
     expect(note.textContent).toContain('control-plane');
     expect(note.textContent).toContain('denylist');
-    // exactly the two non-control-plane rows still get buttons
-    expect(getAllByTestId('adopt-btn')).toHaveLength(2);
+    // exactly the two non-control-plane drift rows (demo-assets, orders) get buttons
+    expect(getAllByTestId('card-adopt-btn')).toHaveLength(2);
     // it is NOT the generic "not an adoptable type" note
-    expect(queryByTestId('adopt-unavailable')).toBeNull();
+    expect(queryByTestId('card-not-adoptable')).toBeNull();
   });
 
-  it('Start here stays on the rank-1 group while it still has an adoptable row', async () => {
-    const { getByTestId } = render(InfraDiagram, {
+  it('Start here stays on the rank-1 card while it still has an adoptable row', async () => {
+    const { getByTestId, getAllByTestId } = render(InfraDiagram, {
       props: { call: callWith(adoptGraphWithControlPlane()), onAdopt: () => {} },
     });
-    await waitFor(() => expect(getByTestId('adopt-list')).toBeTruthy());
-    // same graph: bucket group has demo-assets adoptable → chip on buckets
-    const chip = getByTestId('adopt-start-here');
-    expect(chip.parentElement?.textContent).toContain('Storage bucket');
+    await waitFor(() => expect(getByTestId('infra-cards')).toBeTruthy());
+    // bucket group (rank1) has demo-assets adoptable → chip on the buckets card (first).
+    const chip = getByTestId('card-start-here');
+    const firstCard = getAllByTestId('infra-card')[0];
+    expect(firstCard.contains(chip)).toBe(true);
+    expect(norm(firstCard.textContent)).toContain('Storage bucket');
   });
 
-  it('a ranked group whose every row is control-plane cannot claim Start here', async () => {
-    const { getByTestId } = render(InfraDiagram, {
+  it('a ranked card whose every row is control-plane cannot claim Start here', async () => {
+    const { getByTestId, getAllByTestId } = render(InfraDiagram, {
       props: { call: callWith(adoptGraphAllControlPlane()), onAdopt: () => {} },
     });
-    await waitFor(() => expect(getByTestId('adopt-list')).toBeTruthy());
-    // graph variant: bucket group has ONLY the control-plane node → chip moves
-    // to the rank-2 topic group
-    const chip = getByTestId('adopt-start-here');
-    expect(chip.parentElement?.textContent).toContain('Pub/Sub topic');
+    await waitFor(() => expect(getByTestId('infra-cards')).toBeTruthy());
+    // bucket group has ONLY the control-plane node → chip moves to the rank-2 topic card.
+    const chip = getByTestId('card-start-here');
+    const topicCard = getAllByTestId('infra-card').find((c) => norm(c.textContent).includes('Pub/Sub topic'))!;
+    expect(topicCard.contains(chip)).toBe(true);
   });
 });
 
 // ---------------------------------------------------------------------------
-// Visual-hierarchy rework (2026-06-24): three weighted zones + legend help.
-// Design: docs/plans/2026-06-24-infra-panel-hierarchy.md.
-//   Zone 1 hero  — coverage meter / degraded note + Refresh, framed.
-//   Zone 2 map   — diagram + legend with a single HelpHint explaining colors.
-//   Zone 3 adopt — framed "Unmanaged resources" block with a glanceable count.
+// Hero band + legend (kept from the 2026-06-24 hierarchy rework; the Mermaid map
+// and the standalone adopt zone were replaced by the resource card grid in the
+// 2026-06-24-infra-resource-cards design).
+//   Hero   — coverage meter / degraded note + Refresh, framed.
+//   Legend — explains the card colors with a single HelpHint.
 // ---------------------------------------------------------------------------
 
 describe('InfraDiagram — hero band (zone 1)', () => {
@@ -1119,125 +1169,5 @@ describe('InfraDiagram — legend help (zone 2)', () => {
     });
     await waitFor(() => expect(getByTestId('infra-legend')).toBeTruthy());
     expect(getByTestId('infra-legend').getAttribute('aria-hidden')).toBeNull();
-  });
-});
-
-describe('InfraDiagram — adopt zone framing (zone 3)', () => {
-  it('shows a count equal to the shown rows when there are no trailers', async () => {
-    const { getByTestId } = render(InfraDiagram, {
-      props: { call: callWith(adoptGraph()), onAdopt: () => {} },
-    });
-    await waitFor(() => expect(getByTestId('adopt-list')).toBeTruthy());
-    // adoptGraph: one unmanaged bucket + one unmanaged SA, no trailers → 2.
-    expect(getByTestId('adopt-count').textContent).toBe('2');
-  });
-
-  it('counts shown rows PLUS the "+N more" trailers, not just visible rows', async () => {
-    // Group A: drift 5, 2 unmanaged sampled → 2 rows + "+3 more".
-    // Group B: drift 2, 2 unmanaged sampled → 2 rows, no trailer.
-    // adopt-count must read 7 (2 + 3 + 2), proving it equals everything the zone
-    // accounts for, not only the visible rows.
-    const graph: InfraGraph = {
-      generated_at: null,
-      project: 'demo',
-      caveat: 'test caveat',
-      degraded: false,
-      degraded_reason: null,
-      totals: { resources: 12, managed: 5, drift: 7 },
-      groups: [
-        {
-          asset_type: BUCKET,
-          label: 'Storage bucket',
-          adoptable: true,
-          count: 5,
-          managed: 0,
-          drift: 5,
-          sensitive: false,
-          truncated_in_group: 3,
-          nodes: [
-            { id: 'a0', label: 'bucket-a', asset_type: BUCKET, managed: false, location: null },
-            { id: 'a1', label: 'bucket-b', asset_type: BUCKET, managed: false, location: null },
-          ],
-        },
-        {
-          asset_type: RUN,
-          label: 'Cloud Run service',
-          adoptable: true,
-          count: 2,
-          managed: 0,
-          drift: 2,
-          sensitive: false,
-          nodes: [
-            { id: 'b0', label: 'svc-a', asset_type: RUN, managed: false, location: null },
-            { id: 'b1', label: 'svc-b', asset_type: RUN, managed: false, location: null },
-          ],
-        },
-      ],
-      edges: [],
-    };
-    const { getByTestId } = render(InfraDiagram, {
-      props: { call: callWith(graph), onAdopt: () => {} },
-    });
-    await waitFor(() => expect(getByTestId('adopt-list')).toBeTruthy());
-    expect(getByTestId('adopt-count').textContent).toBe('7');
-  });
-
-  it('counts only what the zone lists, diverging from totals.drift when a sensitive group is skipped', async () => {
-    // totals.drift = 4 but one of those is a counts-only (sensitive) secret the
-    // adopt zone deliberately does NOT list. The badge reflects what the zone
-    // accounts for: 2 bucket rows + 1 Cloud Run row = 3 (NOT 4). This pins the
-    // deliberate adoptShownTotal-vs-totals.drift product decision.
-    const graph: InfraGraph = {
-      generated_at: null,
-      project: 'demo',
-      caveat: 'test caveat',
-      degraded: false,
-      degraded_reason: null,
-      totals: { resources: 6, managed: 2, drift: 4 },
-      groups: [
-        {
-          asset_type: BUCKET,
-          label: 'Storage bucket',
-          adoptable: true,
-          count: 3,
-          managed: 1,
-          drift: 2,
-          sensitive: false,
-          nodes: [
-            { id: 'b0', label: 'prod-state', asset_type: BUCKET, managed: true, location: null },
-            { id: 'b1', label: 'my-old-uploads', asset_type: BUCKET, managed: false, location: null },
-            { id: 'b2', label: 'demo_cloudbuild', asset_type: BUCKET, managed: false, location: null, control_plane: true },
-          ],
-        },
-        {
-          asset_type: RUN,
-          label: 'Cloud Run service',
-          adoptable: true,
-          count: 2,
-          managed: 1,
-          drift: 1,
-          sensitive: false,
-          nodes: [
-            { id: 'r0', label: 'payment-demo', asset_type: RUN, managed: true, location: null },
-            { id: 'r1', label: 'storefront', asset_type: RUN, managed: false, location: null },
-          ],
-        },
-        {
-          asset_type: 'secretmanager.googleapis.com/Secret',
-          label: 'Secret',
-          count: 1,
-          managed: 0,
-          drift: 1,
-          sensitive: true,
-          nodes: [],
-        },
-      ],
-      edges: [],
-    };
-    const { getByTestId } = render(InfraDiagram, {
-      props: { call: callWith(graph), onAdopt: () => {} },
-    });
-    await waitFor(() => expect(getByTestId('adopt-list')).toBeTruthy());
-    expect(getByTestId('adopt-count').textContent).toBe('3');
   });
 });

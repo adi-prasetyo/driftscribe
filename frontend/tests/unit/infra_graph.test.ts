@@ -9,6 +9,8 @@ import {
   adoptRows,
   adoptPrefill,
   adoptGroupRank,
+  resourceCards,
+  startHereAssetType,
   normalizeForPrompt,
   type InfraGraph,
   type InfraGroup,
@@ -760,7 +762,7 @@ describe('toMermaid + mermaid.parse — real grammar validation (Codex plan-revi
 describe('normalizeForPrompt', () => {
   it('collapses CR/LF/tab/NUL/C1 control chars to single spaces', () => {
     // C0 controls (NUL, tab, CR, LF) + a C1 control (U+0085 NEL) interleaved.
-    expect(normalizeForPrompt('a\r\nb\tc de', 254)).toBe('a b c d e');
+    expect(normalizeForPrompt('a\r\nb\tc\u0000d\u0085e', 254)).toBe('a b c d e');
   });
 
   it('collapses whitespace runs and trims', () => {
@@ -968,5 +970,262 @@ describe('adoptGroupRank', () => {
     for (const junk of ['x' as never, NaN, 0, -1, 1.5]) {
       expect(adoptGroupRank({ ...base, adoptable: true, adopt_rank: junk })).toBeNull();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resourceCards / startHereAssetType (card-grid view; design 2026-06-24-infra-
+// resource-cards). One card per group: managed + drift rows together, drift rows
+// carrying the Adopt affordance. Pure derivation of the same /infra/graph DTO.
+// (BUCKET / TOPIC / SA / SECRET / RUN asset-type consts declared at the top.)
+// ---------------------------------------------------------------------------
+
+describe('resourceCards — row mapping', () => {
+  it('maps a managed node to a non-adoptable managed row', () => {
+    const cards = resourceCards(
+      graph({
+        groups: [
+          group({
+            asset_type: BUCKET,
+            label: 'Storage bucket',
+            adoptable: true,
+            count: 1,
+            managed: 1,
+            drift: 0,
+            nodes: [node({ id: 'b0', label: 'prod-state', managed: true })],
+          }),
+        ],
+      }),
+    );
+    expect(cards).toHaveLength(1);
+    const [row] = cards[0].rows;
+    expect(row.status).toBe('managed');
+    expect(row.adoptable).toBe(false);
+    expect(row.prefill).toBe('');
+  });
+
+  it('maps an unmanaged node in an adoptable group to a drift row with a prefill', () => {
+    const cards = resourceCards(
+      graph({
+        groups: [
+          group({
+            asset_type: BUCKET,
+            label: 'Storage bucket',
+            adoptable: true,
+            count: 1,
+            managed: 0,
+            drift: 1,
+            nodes: [node({ id: 'b0', label: 'my-old-uploads', managed: false, location: 'asia-northeast1' })],
+          }),
+        ],
+      }),
+    );
+    const [row] = cards[0].rows;
+    expect(row.status).toBe('drift');
+    expect(row.adoptable).toBe(true);
+    expect(row.prefill).toBe('Adopt the Storage bucket `my-old-uploads` in asia-northeast1 into IaC management.');
+  });
+
+  it('maps a control-plane unmanaged node to a control_plane row (never adoptable)', () => {
+    const cards = resourceCards(
+      graph({
+        groups: [
+          group({
+            asset_type: BUCKET,
+            label: 'Storage bucket',
+            adoptable: true,
+            count: 1,
+            managed: 0,
+            drift: 1,
+            nodes: [node({ id: 'b0', label: 'demo-tofu-state', managed: false, control_plane: true })],
+          }),
+        ],
+      }),
+    );
+    const [row] = cards[0].rows;
+    expect(row.status).toBe('control_plane');
+    expect(row.adoptable).toBe(false);
+    expect(row.prefill).toBe('');
+  });
+
+  it('maps an unmanaged node in a NON-adoptable group to a non-adoptable drift row', () => {
+    const cards = resourceCards(
+      graph({
+        groups: [
+          group({
+            asset_type: SA,
+            label: 'Service account',
+            adoptable: false,
+            count: 1,
+            managed: 0,
+            drift: 1,
+            nodes: [node({ id: 's0', label: 'ci-runner@proj.iam', asset_type: SA, managed: false })],
+          }),
+        ],
+      }),
+    );
+    const [row] = cards[0].rows;
+    expect(row.status).toBe('drift');
+    expect(row.adoptable).toBe(false);
+    expect(row.prefill).toBe('');
+  });
+
+  it('makes a sensitive group a counts-only card (no rows, count preserved)', () => {
+    const cards = resourceCards(
+      graph({
+        groups: [
+          group({ asset_type: SECRET, label: 'Secret', sensitive: true, count: 2, managed: 0, drift: 2, nodes: [] }),
+        ],
+      }),
+    );
+    expect(cards).toHaveLength(1);
+    expect(cards[0].sensitive).toBe(true);
+    expect(cards[0].rows).toEqual([]);
+    expect(cards[0].count).toBe(2);
+  });
+
+  it('returns [] for a degraded graph', () => {
+    expect(resourceCards(graph({ degraded: true, groups: [] }))).toEqual([]);
+  });
+});
+
+describe('resourceCards — hidden-unmanaged honesty', () => {
+  it('counts only the unmanaged delta, never the managed rows shown', () => {
+    // drift=5, two unmanaged sampled + one managed sampled → +3 hidden (managed
+    // row must NOT reduce the hidden-unmanaged figure).
+    const cards = resourceCards(
+      graph({
+        groups: [
+          group({
+            asset_type: BUCKET,
+            label: 'Storage bucket',
+            adoptable: true,
+            count: 6,
+            managed: 1,
+            drift: 5,
+            nodes: [
+              node({ id: 'm0', label: 'prod-state', managed: true }),
+              node({ id: 'd0', label: 'b-a', managed: false }),
+              node({ id: 'd1', label: 'b-b', managed: false }),
+            ],
+          }),
+        ],
+      }),
+    );
+    expect(cards[0].rows).toHaveLength(3);
+    expect(cards[0].hiddenUnmanaged).toBe(3);
+  });
+
+  it('keeps a card for every group with resources (count>0), even when all nodes were sampled out', () => {
+    // A type with resources must always show a card (matching hasRenderableNodes),
+    // so a fully-managed estate whose sample was truncated to zero never collapses
+    // to the "No resources indexed yet" note (5-lens review w4jj7t4a5).
+    const cards = resourceCards(
+      graph({
+        groups: [
+          group({ asset_type: BUCKET, label: 'Storage bucket', adoptable: true, count: 3, managed: 3, drift: 0, nodes: [] }),
+          group({ asset_type: SECRET, label: 'Secret', sensitive: true, count: 1, managed: 0, drift: 1, nodes: [] }),
+        ],
+      }),
+    );
+    // BUCKET is in-sync (tier 1), SECRET counts-only (tier 2): both kept, in order.
+    expect(cards.map((c) => c.assetType)).toEqual([BUCKET, SECRET]);
+    const bucket = cards.find((c) => c.assetType === BUCKET);
+    expect(bucket?.rows).toEqual([]);
+    expect(bucket?.count).toBe(3);
+  });
+
+  it('drops a group the backend reported with zero resources (count===0)', () => {
+    const cards = resourceCards(
+      graph({
+        groups: [
+          group({ asset_type: BUCKET, label: 'Storage bucket', count: 0, managed: 0, drift: 0, nodes: [] }),
+          group({ asset_type: SECRET, label: 'Secret', sensitive: true, count: 0, managed: 0, drift: 0, nodes: [] }),
+        ],
+      }),
+    );
+    expect(cards).toEqual([]);
+  });
+});
+
+describe('resourceCards — ordering (drift-first, rank within, sensitive last)', () => {
+  function mixedGraph(): InfraGraph {
+    return graph({
+      groups: [
+        group({ asset_type: TOPIC, label: 'Pub/Sub topic', count: 1, managed: 1, drift: 0, nodes: [node({ id: 't0', label: 'orders', asset_type: TOPIC, managed: true })] }),
+        group({ asset_type: RUN, label: 'Cloud Run service', adoptable: true, adopt_rank: 4, count: 1, managed: 0, drift: 1, nodes: [node({ id: 'r0', label: 'svc', asset_type: RUN, managed: false })] }),
+        group({ asset_type: SECRET, label: 'Secret', sensitive: true, count: 1, managed: 0, drift: 1, nodes: [] }),
+        group({ asset_type: BUCKET, label: 'Storage bucket', adoptable: true, adopt_rank: 1, count: 1, managed: 0, drift: 1, nodes: [node({ id: 'b0', label: 'bkt', asset_type: BUCKET, managed: false })] }),
+        group({ asset_type: SA, label: 'Service account', adoptable: false, count: 1, managed: 0, drift: 1, nodes: [node({ id: 's0', label: 'sa', asset_type: SA, managed: false })] }),
+      ],
+    });
+  }
+
+  it('orders drift cards (rank, then stable) before in-sync, before counts-only', () => {
+    const cards = resourceCards(mixedGraph());
+    expect(cards.map((c) => c.assetType)).toEqual([BUCKET, RUN, SA, TOPIC, SECRET]);
+  });
+
+  it('falls back to server order within the drift tier when ranks are absent (stale coordinator)', () => {
+    const g = mixedGraph();
+    for (const grp of g.groups) {
+      delete grp.adopt_rank;
+      delete grp.adoptable;
+    }
+    // No ranks: drift tier keeps server order (Run, Bucket, SA), then in-sync Topic, then Secret.
+    const cards = resourceCards(g);
+    expect(cards.map((c) => c.assetType)).toEqual([RUN, BUCKET, SA, TOPIC, SECRET]);
+  });
+
+  it('keeps in-sync (tier 1) cards in server order even when the server ranked them', () => {
+    // The backend can emit adopt_rank on an adoptable type whose drift is 0. Rank
+    // orders only the drift tier; in-sync cards must keep their server order.
+    const cards = resourceCards(
+      graph({
+        groups: [
+          group({ asset_type: RUN, label: 'Cloud Run service', adoptable: true, adopt_rank: 5, count: 1, managed: 1, drift: 0, nodes: [node({ id: 'r0', label: 'svc', asset_type: RUN, managed: true })] }),
+          group({ asset_type: BUCKET, label: 'Storage bucket', adoptable: true, adopt_rank: 1, count: 1, managed: 1, drift: 0, nodes: [node({ id: 'b0', label: 'bkt', asset_type: BUCKET, managed: true })] }),
+        ],
+      }),
+    );
+    // Server order [RUN, BUCKET], NOT rank order [BUCKET, RUN].
+    expect(cards.map((c) => c.assetType)).toEqual([RUN, BUCKET]);
+  });
+});
+
+describe('startHereAssetType', () => {
+  it('picks the top-ranked card that still has an adoptable row', () => {
+    const cards = resourceCards(
+      graph({
+        groups: [
+          group({ asset_type: BUCKET, label: 'Storage bucket', adoptable: true, adopt_rank: 1, count: 1, managed: 0, drift: 1, nodes: [node({ id: 'b0', label: 'bkt', asset_type: BUCKET, managed: false })] }),
+          group({ asset_type: TOPIC, label: 'Pub/Sub topic', adoptable: true, adopt_rank: 2, count: 1, managed: 0, drift: 1, nodes: [node({ id: 't0', label: 'orders', asset_type: TOPIC, managed: false })] }),
+        ],
+      }),
+    );
+    expect(startHereAssetType(cards)).toBe(BUCKET);
+  });
+
+  it('skips a ranked card whose every row is control-plane', () => {
+    const cards = resourceCards(
+      graph({
+        groups: [
+          group({ asset_type: BUCKET, label: 'Storage bucket', adoptable: true, adopt_rank: 1, count: 1, managed: 0, drift: 1, nodes: [node({ id: 'b0', label: 'demo-tofu-state', asset_type: BUCKET, managed: false, control_plane: true })] }),
+          group({ asset_type: TOPIC, label: 'Pub/Sub topic', adoptable: true, adopt_rank: 2, count: 1, managed: 0, drift: 1, nodes: [node({ id: 't0', label: 'orders', asset_type: TOPIC, managed: false })] }),
+        ],
+      }),
+    );
+    expect(startHereAssetType(cards)).toBe(TOPIC);
+  });
+
+  it('returns null when no card carries a rank (stale coordinator)', () => {
+    const cards = resourceCards(
+      graph({
+        groups: [
+          group({ asset_type: BUCKET, label: 'Storage bucket', count: 1, managed: 0, drift: 1, nodes: [node({ id: 'b0', label: 'bkt', asset_type: BUCKET, managed: false })] }),
+        ],
+      }),
+    );
+    expect(startHereAssetType(cards)).toBeNull();
   });
 });

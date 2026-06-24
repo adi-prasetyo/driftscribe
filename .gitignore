@@ -43,3 +43,4 @@ agent/static/
 *.tfplan
 crash.log
 crash.*.log
+.playwright-mcp/

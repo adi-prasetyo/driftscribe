@@ -28,10 +28,11 @@
     hasRenderableNodes,
     overlayRenderable,
     overlayCountsLine,
-    adoptPrefill,
-    adoptGroupRank,
+    resourceCards,
+    startHereAssetType,
     type InfraGraph,
-    type InfraGroup,
+    type ResourceCard,
+    type ResourceRowStatus,
     type PlanOverlay,
   } from '../lib/infra_graph';
   import { RefreshScheduler } from '../lib/infra_refresh';
@@ -121,96 +122,33 @@
   const degraded = $derived(graph?.degraded ?? false);
   const totals = $derived(graph?.totals ?? null);
   const driftCount = $derived(totals?.drift ?? 0);
-  const renderable = $derived(graph ? hasRenderableNodes(graph) : false);
   const pct = $derived(totals ? coveragePercent(totals.managed, totals.resources) : null);
 
-  // Adopt list (Phase 4): per-group unmanaged rows + a hidden-unmanaged trailer.
-  // Grouped (not the flat adoptRows helper) because the trailer is per-group:
-  // `hiddenUnmanaged = max(0, group.drift − unmanaged rows actually shown)`.
-  // truncated_in_group counts ALL unsampled resources (managed OR unmanaged), so
-  // it must NOT drive the trailer — only this drift-vs-shown delta may, or we'd
-  // mislabel hidden MANAGED resources as unmanaged (Codex review 019eb572 round-2).
-  type AdoptListRow = {
-    nodeId: string;
-    label: string;
-    adoptable: boolean;
-    controlPlane: boolean;
-    prefill: string;
-  };
-  // assetType is the each-key: friendly labels are NOT unique (live CAI carries
-  // cloudresourcemanager…/Project AND compute…/Project, both labelled "Project";
-  // keying by label crashed the whole panel flush with each_key_duplicate —
-  // found by the Phase-4 live e2e).
-  type AdoptListGroup = {
-    assetType: string;
-    label: string;
-    rows: AdoptListRow[];
-    hiddenUnmanaged: number;
-    rank: number | null; // item 10: guided adoption order (null = unranked)
-    hint: string | null;
-  };
-  const adoptGroups = $derived.by((): AdoptListGroup[] => {
-    if (!graph || graph.degraded) return [];
-    const out: AdoptListGroup[] = [];
-    for (const g of graph.groups as InfraGroup[]) {
-      if (g.sensitive) continue;
-      const adoptable = g.adoptable === true;
-      const rows: AdoptListRow[] = [];
-      for (const n of g.nodes) {
-        if (n.managed) continue;
-        const controlPlane = n.control_plane === true;
-        const rowAdoptable = adoptable && !controlPlane;
-        rows.push({
-          nodeId: n.id,
-          label: n.label,
-          adoptable: rowAdoptable,
-          controlPlane,
-          prefill: rowAdoptable ? adoptPrefill(g.label, n.label, n.location) : '',
-        });
-      }
-      if (rows.length === 0) continue;
-      const rank = adoptGroupRank(g);
-      out.push({
-        assetType: g.asset_type,
-        label: g.label,
-        rows,
-        hiddenUnmanaged: Math.max(0, g.drift - rows.length),
-        rank,
-        hint:
-          rank !== null && typeof g.adopt_hint === 'string' && g.adopt_hint
-            ? g.adopt_hint
-            : null,
-      });
-    }
-    // JS sort is stable, so unranked groups keep their server order.
-    out.sort(
-      (a, b) =>
-        (a.rank ?? Number.POSITIVE_INFINITY) - (b.rank ?? Number.POSITIVE_INFINITY),
-    );
-    return out;
-  });
-  const hasAdoptRows = $derived(adoptGroups.length > 0);
-  // The count shown on the adopt-zone header. Sum of the named rows actually
-  // rendered PLUS each group's "+N more" trailer, so it is provably equal to
-  // everything the zone accounts for (a reader can add the visible rows and the
-  // trailer numbers and land on exactly this badge). It diverges below
-  // totals.drift in two cases, in both of which it still equals exactly what the
-  // zone renders: (1) totals.drift counts sensitive / counts-only types (e.g.
-  // secrets) this section deliberately does not list; (2) a non-sensitive group
-  // whose g.drift > 0 but whose sampled nodes are all managed contributes zero
-  // rows and no trailer, so it is excluded here. The hero's "not yet in IaC" line
-  // carries the global drift number in either case.
-  const adoptShownTotal = $derived(
-    adoptGroups.reduce((acc, g) => acc + g.rows.length + g.hiddenUnmanaged, 0),
-  );
-  // First group that is ranked AND still has a clickable Adopt row — a ranked
-  // group whose every shown row is control-plane (denylist-refused) must not
-  // claim "Start here": the chip would sit on a group with no button. Ranked
-  // groups sort first, so the scan walks the guide order.
-  const startHereAssetType = $derived(
-    adoptGroups.find((g) => g.rank != null && g.rows.some((r) => r.adoptable))
-      ?.assetType ?? null,
-  );
+  // Resource cards (card-grid view; design 2026-06-24-infra-resource-cards): one
+  // card per group, managed AND drift rows together, drift rows carrying the
+  // inline Adopt button. Pure derivation in lib/infra_graph keeps this component
+  // thin and the model (row mapping, hidden-unmanaged honesty, drift-first + rank
+  // ordering, the each-key by unique assetType) unit-tested in isolation.
+  const cards = $derived<ResourceCard[]>(graph ? resourceCards(graph) : []);
+  // The top adoptable card gets the "Start here" chip (light-touch guided order:
+  // the chip + drift-first ordering replace the dropped hint/order-note prose).
+  const startHere = $derived(startHereAssetType(cards));
+
+  // Header pill per card: drift count (warn) / in sync / counts-only (neutral).
+  function cardBadge(card: ResourceCard): { text: string; warn: boolean } {
+    if (card.sensitive) return { text: 'counts-only', warn: false };
+    if (card.drift > 0) return { text: `${card.drift} drift`, warn: true };
+    return { text: 'in sync', warn: false };
+  }
+  // Status-dot tint: managed → ok, drift → warn, control-plane → neutral.
+  function dotClass(status: ResourceRowStatus): string {
+    return status === 'managed' ? 'ok' : status === 'drift' ? 'drift' : 'hidden';
+  }
+  // Counts-only line for a sensitive card: "N secrets · hidden" (no name, ever).
+  function countsLine(card: ResourceCard): string {
+    const word = card.label.toLowerCase();
+    return `${card.count} ${card.count === 1 ? word : `${word}s`} · hidden`;
+  }
 
   function clickAdopt(prefill: string): void {
     if (adoptDisabled) return;
@@ -270,7 +208,10 @@
       graph = body;
       error = null;
       onGraph?.(body);
-      if (open) await renderDiagram(body);
+      // Mermaid is only used for the preview ghost map. On the normal path the
+      // card grid renders reactively from `cards`, so the ~500KB Mermaid bundle
+      // is never imported (Codex review 019ef9e9).
+      if (open && previewActive) await renderDiagram(body);
     } finally {
       refreshInFlight = false;
       if (myRun === fetchRun) loading = false;
@@ -278,6 +219,15 @@
   }
 
   async function renderDiagram(g: InfraGraph): Promise<void> {
+    // Mermaid is preview-only now. Bail (and clear any prior svg) if we are not
+    // in preview — this centralizes the invariant so a late call from fetchOverlay
+    // racing an exitPreview can't import Mermaid or strand stale svgHtml on the
+    // normal path (5-lens adversarial review w4jj7t4a5).
+    if (!previewActive) {
+      svgHtml = '';
+      mermaidLoading = false;
+      return;
+    }
     // Own guard, independent of fetchRun, so a concurrent refresh can't strand
     // mermaidLoading=true (the wedge bug). The latest render owns the flag.
     const myRender = ++renderRun;
@@ -359,14 +309,18 @@
   }
 
   function exitPreview(): void {
-    // Cancel any in-flight fetchOverlay — its write-back must not survive exit
-    // (a late `overlay = body` would resurrect the banner counts and re-render).
+    // Cancel any in-flight fetchOverlay AND any in-flight Mermaid render. A late
+    // `overlay = body` would resurrect the banner counts; a straggling
+    // renderDiagram continuation could set `error`, restore stale svgHtml, or
+    // leave mermaidLoading wedging the Refresh button (Codex review 019ef9e9).
     ++overlayRun;
+    ++renderRun;
     previewActive = false;
     overlay = null;
     overlayError = false;
-    // Re-render without ghosts when the panel is open.
-    if (open && graph) void renderDiagram(graph);
+    // Leaving preview drops the Mermaid map; the normal-path card grid takes over.
+    svgHtml = '';
+    mermaidLoading = false;
     onExitPreview?.();
   }
 
@@ -541,22 +495,12 @@
       <p class="ds-blocked" role="alert">{error}</p>
     {/if}
 
-    <!-- Diagram region — independent of the degraded note. -->
-    {#if svgHtml}
-      <!-- Mermaid output is sanitized (securityLevel:'strict', htmlLabels:false)
-           and every label is entity-escaped upstream in toMermaid. -->
-      <div class="infra-diagram" data-testid="infra-diagram">{@html svgHtml}</div>
-    {:else if mermaidLoading || loading}
-      <p class="ds-subtle">Rendering diagram…</p>
-    {:else if graph && !degraded && !renderable}
-      <p class="ds-note" data-testid="infra-empty">No resources indexed yet.</p>
-    {/if}
-
+    <!-- Zone 2 — legend: the key for the card colors (and, in preview, the ghost
+         overlay colors). Placed above the grid/map so it reads as the key for what
+         follows. Real a11y content (no aria-hidden); the dot swatches are
+         decorative. The single HelpHint sits LAST so its flex-basis:100% panel
+         drops onto its own row below the keys. -->
     {#if (graph && !degraded) || previewActive}
-      <!-- Legend is now real a11y content (no aria-hidden): the text labels carry
-           the meaning, the ::before swatches are decorative. The single HelpHint
-           sits LAST so its inline flex-basis:100% panel drops onto its own row
-           below all the keys rather than splitting them. -->
       <p class="infra-legend" data-testid="infra-legend">
         <span class="infra-legend__lead ds-label">Legend</span>
         {#if graph && !degraded}
@@ -572,86 +516,106 @@
         {#if graph && !degraded}
           <HelpHint
             text={LEGEND_HELP}
-            ariaLabel="Explain the resource map colors"
+            ariaLabel="Explain the resource colors"
             testid="legend-help"
           />
         {/if}
       </p>
     {/if}
 
-    <!-- Adopt list (Phase 4 — adopt button UI). The map's Mermaid SVG is strict /
-         htmlLabels:false, so the Adopt affordance can't be an in-SVG click target;
-         it's this DOM action list, derived from the graph DTO. Names are UNTRUSTED
-         but reach only Svelte text interpolation + a text input (no HTML sink); the
-         prefill is normalized for the prompt path in lib/infra_graph. Codex 019eb572. -->
-    {#if graph && !degraded && hasAdoptRows}
-      <div class="infra-adopt" data-testid="adopt-list">
-        <div class="infra-adopt__head">
-          <span class="ds-label infra-adopt__title">Unmanaged resources</span>
-          <span
-            class="ds-pill ds-pill--muted infra-adopt__count"
-            data-testid="adopt-count"
-            aria-label={`${adoptShownTotal} unmanaged ${adoptShownTotal === 1 ? 'resource' : 'resources'}`}
-            >{adoptShownTotal}</span
-          >
-        </div>
-        <p class="ds-subtle infra-adopt__heading">
-          These exist in your project but are not under IaC management.
-        </p>
-        {#if startHereAssetType !== null}
-          <p class="ds-subtle infra-adopt__order" data-testid="adopt-order-note">
-            Suggested order among the unmanaged resources shown: the simplest to
-            recognize and review come first. Every adoption is the same zero-change
-            import behind the same approval gate. The order is about building
-            confidence, not safety.
-          </p>
-        {/if}
-        <ul class="infra-adopt__list">
-          {#each adoptGroups as g (g.assetType)}
-            {#if g.hint !== null}
-              <li class="ds-subtle infra-adopt__hint" data-testid="adopt-hint">
-                {#if g.assetType === startHereAssetType}
-                  <span class="infra-adopt__start" data-testid="adopt-start-here">Start here</span>
+    <!-- Preview keeps the lazy Mermaid ghost map (its one genuine use — a card
+         grid can't draw dashed will-be-created/destroyed nodes); the normal path
+         renders the resource card grid, importing no Mermaid. Resource names are
+         UNTRUSTED but reach only Svelte text interpolation + the chat input (no
+         HTML sink); the Adopt prefill is normalized in lib/infra_graph. -->
+    {#if previewActive}
+      {#if svgHtml}
+        <!-- Mermaid output is sanitized (securityLevel:'strict', htmlLabels:false)
+             and every label is entity-escaped upstream in toMermaid. -->
+        <div class="infra-diagram" data-testid="infra-diagram">{@html svgHtml}</div>
+      {:else if mermaidLoading || loading}
+        <p class="ds-subtle">Rendering diagram…</p>
+      {:else if graph && !degraded}
+        <!-- Preview with no renderable live map AND no ghosts (e.g. a resolved
+             overlay over an empty live estate): the banner says "the map below
+             shows what is live now", so the honest empty note belongs below it
+             rather than a blank gap (5-lens review w4jj7t4a5). -->
+        <p class="ds-note" data-testid="infra-empty">No resources indexed yet.</p>
+      {/if}
+    {:else if graph && !degraded && cards.length > 0}
+      <div class="infra-cards" data-testid="infra-cards">
+        {#each cards as card (card.assetType)}
+          {@const badge = cardBadge(card)}
+          <div class="infra-card" data-testid="infra-card">
+            <div class="infra-card__head">
+              <span class="infra-card__type" data-testid="infra-card-type">{card.label}</span>
+              <span class="infra-card__head-meta">
+                {#if card.assetType === startHere}
+                  <span class="infra-card__start" data-testid="card-start-here">Start here</span>
                 {/if}
-                {g.label}: {g.hint}
-              </li>
-            {/if}
-            {#each g.rows as row (row.nodeId)}
-              <li class="infra-adopt__row" data-testid="adopt-row">
-                <span class="infra-adopt__type">{g.label}</span>
-                <span class="infra-adopt__name">{row.label}</span>
-                {#if row.adoptable}
-                  <button
-                    class="ds-btn ds-btn--ghost infra-adopt__btn"
-                    type="button"
-                    data-testid="adopt-btn"
-                    disabled={adoptDisabled}
-                    title={adoptDisabled
-                      ? 'Unavailable while the chat is busy or reviewing a past trace.'
-                      : undefined}
-                    onclick={() => clickAdopt(row.prefill)}>Adopt into IaC</button
-                  >
-                {:else if row.controlPlane}
-                  <span class="ds-subtle infra-adopt__muted" data-testid="adopt-control-plane"
-                    >System-managed infrastructure (DriftScribe's own control-plane
-                    resources, or a bucket a Google service auto-creates). The
-                    always-on denylist blocks changes and adoption for these.</span
-                  >
-                {:else}
-                  <span class="ds-subtle infra-adopt__muted" data-testid="adopt-unavailable"
-                    >not an adoptable type</span
-                  >
+                <span
+                  class="ds-pill infra-card__badge {badge.warn ? 'ds-pill--warn' : 'ds-pill--muted'}"
+                  data-testid="infra-card-badge">{badge.text}</span
+                >
+              </span>
+            </div>
+            <ul class="infra-card__body">
+              {#if card.sensitive}
+                <li class="infra-card__counts" data-testid="card-counts-only">
+                  <span class="infra-dot infra-dot--hidden"></span>{countsLine(card)}
+                </li>
+              {:else if card.rows.length === 0}
+                <!-- Defensive: a non-sensitive type with resources but no sampled
+                     nodes (every node truncated). Summarize rather than render a
+                     hollow card or collapse the whole grid to "nothing here". -->
+                <li class="infra-card__counts" data-testid="card-summary">
+                  <span class="infra-dot infra-dot--hidden"></span>{card.count}
+                  {card.label.toLowerCase()}{card.count === 1 ? '' : 's'} · not individually listed
+                </li>
+              {:else}
+                {#each card.rows as row (row.nodeId)}
+                  <li class="infra-card__row infra-card__row--{row.status}" data-testid="infra-card-row">
+                    <span class="infra-dot infra-dot--{dotClass(row.status)}"></span>
+                    <span class="infra-card__name">{row.label}</span>
+                    {#if row.status === 'managed'}
+                      <span class="infra-card__tag infra-card__tag--ok" data-testid="card-managed-tag"
+                        >managed</span
+                      >
+                    {:else if row.adoptable}
+                      <button
+                        class="ds-btn ds-btn--ghost infra-card__btn"
+                        type="button"
+                        data-testid="card-adopt-btn"
+                        disabled={adoptDisabled}
+                        title={adoptDisabled
+                          ? 'Unavailable while the chat is busy or reviewing a past trace.'
+                          : undefined}
+                        onclick={() => clickAdopt(row.prefill)}>Adopt into IaC</button
+                      >
+                    {:else if row.status === 'control_plane'}
+                      <span class="ds-subtle infra-card__muted" data-testid="card-control-plane"
+                        >System-managed. The always-on denylist blocks changes and adoption for
+                        control-plane resources and for buckets a Google service auto-creates.</span
+                      >
+                    {:else}
+                      <span class="ds-subtle infra-card__muted" data-testid="card-not-adoptable"
+                        >not an adoptable type</span
+                      >
+                    {/if}
+                  </li>
+                {/each}
+                {#if card.hiddenUnmanaged > 0}
+                  <li class="ds-subtle infra-card__trailer" data-testid="card-trailer">
+                    +{card.hiddenUnmanaged} more unmanaged {card.label}(s) not shown
+                  </li>
                 {/if}
-              </li>
-            {/each}
-            {#if g.hiddenUnmanaged > 0}
-              <li class="ds-subtle infra-adopt__trailer" data-testid="adopt-trailer">
-                +{g.hiddenUnmanaged} more unmanaged {g.label}(s) not on the map
-              </li>
-            {/if}
-          {/each}
-        </ul>
+              {/if}
+            </ul>
+          </div>
+        {/each}
       </div>
+    {:else if graph && !degraded}
+      <p class="ds-note" data-testid="infra-empty">No resources indexed yet.</p>
     {/if}
 
     {#if graph && !degraded}
@@ -812,20 +776,21 @@
     font-size: var(--ds-fs-1);
     color: var(--ds-muted);
   }
+  /* Round swatches matching the card row dots (visual consistency). */
   .infra-key::before {
     content: '';
-    width: 0.75rem;
-    height: 0.75rem;
-    border-radius: var(--ds-radius-sm);
+    width: 0.7rem;
+    height: 0.7rem;
+    border-radius: 50%;
     border: 1px solid var(--ds-border-strong);
   }
   .infra-key--managed::before {
     background: var(--ds-ok-surface);
-    border-color: var(--ds-ok-border);
+    border-color: var(--ds-ok);
   }
   .infra-key--drift::before {
     background: var(--ds-warn-surface);
-    border-color: var(--ds-warn-border);
+    border-color: var(--ds-warn);
   }
   .infra-key--hidden::before {
     background: var(--ds-neutral-surface);
@@ -850,95 +815,151 @@
     font-style: italic;
   }
 
-  /* Zone 3 — adopt zone. Framed to match the hero (surface-2 + border), so the
-     two weighted zones bracket the map and the "what is not managed yet" action
-     block reads as a distinct, deliberate section rather than a trailing list. */
-  .infra-adopt {
-    margin: var(--ds-sp-2) 0 var(--ds-sp-3);
-    padding: var(--ds-sp-3) var(--ds-sp-4);
-    background: var(--ds-surface-2);
+  /* Status dots — round swatches shared by the card rows and the legend keys.
+     managed=ok, drift=warn, control-plane/counts-only=neutral. */
+  .infra-dot {
+    flex: none;
+    width: 0.7rem;
+    height: 0.7rem;
+    border-radius: 50%;
+    border: 1px solid var(--ds-border-strong);
+  }
+  .infra-dot--ok {
+    background: var(--ds-ok-surface);
+    border-color: var(--ds-ok);
+  }
+  .infra-dot--drift {
+    background: var(--ds-warn-surface);
+    border-color: var(--ds-warn);
+  }
+  .infra-dot--hidden {
+    background: var(--ds-neutral-surface);
+  }
+
+  /* Resource card grid (design 2026-06-24-infra-resource-cards): one card per
+     resource type, uniform width, 2-col → 1-col responsive. Replaces the Mermaid
+     map on the normal path; each card lists its resources with drift rows tinted
+     and the inline Adopt affordance. */
+  .infra-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(208px, 1fr));
+    gap: var(--ds-sp-3);
+    margin: var(--ds-sp-3) 0;
+  }
+  .infra-card {
     border: 1px solid var(--ds-border);
     border-radius: var(--ds-radius);
+    background: var(--ds-surface);
+    overflow: hidden;
   }
-  .infra-adopt__head {
+  .infra-card__head {
     display: flex;
     align-items: center;
+    justify-content: space-between;
     gap: var(--ds-sp-2);
-    margin-bottom: var(--ds-sp-1);
+    padding: var(--ds-sp-2) var(--ds-sp-3);
+    background: var(--ds-surface-2);
+    border-bottom: 1px solid var(--ds-border);
   }
-  .infra-adopt__title {
+  .infra-card__type {
+    /* Grow to push the chip/badge meta to the right edge, and wrap at spaces when
+       the title can't share the line with the meta (e.g. "Storage / bucket" next
+       to the Start-here chip). NO min-width:0 — that let the title shrink to a
+       mid-word break ("Stora ge bucke t"); keeping the longest word as the min
+       size wraps cleanly instead. break-word is a safety net for a pathological
+       single long word (local visual verify w4jj7t4a5). */
+    flex: 1 1 auto;
+    overflow-wrap: break-word;
+    font-size: var(--ds-fs-2);
+    font-weight: var(--ds-fw-semibold);
     color: var(--ds-fg-soft);
   }
-  .infra-adopt__count {
+  /* Chip + badge grouped on the right of the title; the title grows to push this
+     unit right, and it wraps below the title as ONE unit only when crowded. */
+  .infra-card__head-meta {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--ds-sp-2);
+  }
+  .infra-card__badge {
+    flex: none;
     font-variant-numeric: tabular-nums;
   }
-  .infra-adopt__heading {
-    margin: 0 0 var(--ds-sp-2);
-    color: var(--ds-muted);
+  /* "Start here" chip — mirrors the ds-pill--ok treatment via the ok tokens. */
+  .infra-card__start {
+    flex: none;
+    padding: 0.05rem 0.5rem;
+    border: 1px solid var(--ds-ok);
+    border-radius: var(--ds-radius-pill);
+    color: var(--ds-ok-ink);
+    background: var(--ds-ok-surface);
+    font-size: 0.72rem;
+    font-weight: var(--ds-fw-semibold);
   }
-  .infra-adopt__list {
+  /* <ul> — list semantics for AT; reset the default list chrome. */
+  .infra-card__body {
     list-style: none;
     margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: var(--ds-sp-1);
-  }
-  .infra-adopt__row {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: var(--ds-sp-3);
     padding: var(--ds-sp-1) 0;
   }
-  .infra-adopt__type {
-    flex: 0 0 auto;
-    font-size: var(--ds-fs-1);
-    color: var(--ds-muted);
+  .infra-card__row {
+    display: flex;
+    /* Wrap so a long control-plane note drops to its own line at the 208px
+       minimum card width instead of vertically centring the dot + name against a
+       tall multi-line note (5-lens review w4jj7t4a5). */
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--ds-sp-2);
+    padding: var(--ds-sp-2) var(--ds-sp-3);
   }
-  .infra-adopt__name {
+  /* Drift rows are tinted so the unmanaged resources read at a glance. */
+  .infra-card__row--drift {
+    background: var(--ds-warn-surface);
+  }
+  .infra-card__name {
     flex: 1 1 auto;
     min-width: 0;
     overflow-wrap: anywhere;
     font-size: var(--ds-fs-2);
-    color: var(--ds-fg-soft);
+    color: var(--ds-fg);
   }
-  .infra-adopt__btn {
-    flex: 0 0 auto;
-    padding: 0.25em 0.75em;
+  .infra-card__tag {
+    flex: none;
+    font-size: var(--ds-fs-1);
+    color: var(--ds-muted);
+    white-space: nowrap;
+  }
+  .infra-card__tag--ok {
+    color: var(--ds-ok-ink);
+  }
+  .infra-card__btn {
+    flex: none;
+    padding: 0.2em 0.7em;
     font-size: var(--ds-fs-1);
   }
-  .infra-adopt__muted {
-    /* Shrink + wrap: the control-plane note is long, and the framed adopt zone's
-       padding leaves little room on narrow widths (Codex review). */
-    flex: 1 1 14rem;
+  .infra-card__muted {
+    /* The note takes its own line below the dot + name (flex-basis 100% forces the
+       wrap), so dot + name read as the row and the long denylist note sits under
+       them instead of vertically centring them against a tall block. */
+    flex: 1 1 100%;
     min-width: 0;
     overflow-wrap: anywhere;
     font-size: var(--ds-fs-1);
   }
-  .infra-adopt__trailer {
+  .infra-card__counts {
+    display: flex;
+    align-items: center;
+    gap: var(--ds-sp-2);
+    margin: 0;
+    padding: var(--ds-sp-3);
+    font-size: var(--ds-fs-2);
+    color: var(--ds-muted);
+  }
+  .infra-card__trailer {
+    margin: 0;
+    padding: var(--ds-sp-1) var(--ds-sp-3) var(--ds-sp-2);
     font-size: var(--ds-fs-1);
     font-style: italic;
-  }
-  /* Guided adoption order (item 10): the order note + per-group hint lines + the
-     "Start here" chip. The chip mirrors the ds-pill--ok treatment via the shared
-     ok design tokens (--ds-ok / --ds-ok-ink / --ds-ok-surface). */
-  .infra-adopt__order {
-    margin: 0 0 0.4rem;
-  }
-  .infra-adopt__hint {
-    list-style: none;
-    margin-top: 0.45rem;
-  }
-  .infra-adopt__start {
-    display: inline-block;
-    margin-right: 0.45rem;
-    padding: 0.05rem 0.5rem;
-    border: 1px solid var(--ds-ok);
-    border-radius: 999px;
-    color: var(--ds-ok-ink);
-    background: var(--ds-ok-surface);
-    font-size: 0.72rem;
-    font-weight: 600;
   }
 </style>
