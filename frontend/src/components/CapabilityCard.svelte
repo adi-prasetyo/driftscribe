@@ -11,6 +11,8 @@
   import { groupRules, type Capabilities } from '../lib/capabilities';
   import { parseAutonomyDoc } from '../lib/autonomy';
   import type { AutonomyDoc } from '../lib/autonomy';
+  import { parseWorkloadPrompts } from '../lib/prompts';
+  import type { WorkloadPrompts } from '../lib/prompts';
   import Icon from './Icon.svelte';
   import CrewGlyph from './CrewGlyph.svelte';
 
@@ -120,6 +122,32 @@
           void fetchAutonomyBestEffort();
         }
       });
+    }
+  }
+
+  // Per-crew lazy prompt state — keyed by workload name.
+  // A fetch in flight (promptLoading[name]) blocks duplicate calls; a prior
+  // error does NOT block — closing and reopening the disclosure retries
+  // (transient failures shouldn't require a page reload).
+  let promptsByName = $state<Record<string, WorkloadPrompts>>({});
+  let promptLoading = $state<Record<string, boolean>>({});
+  let promptError = $state<Record<string, boolean>>({});
+
+  async function onPromptsToggle(name: string, el: HTMLDetailsElement): Promise<void> {
+    if (!el.open) return;
+    if (promptsByName[name] || promptLoading[name]) return;
+    promptLoading = { ...promptLoading, [name]: true };
+    promptError = { ...promptError, [name]: false };
+    try {
+      const resp = await call('/workloads/' + encodeURIComponent(name) + '/prompts');
+      if (!resp.ok) { promptError = { ...promptError, [name]: true }; return; }
+      const parsed = parseWorkloadPrompts(await resp.json());
+      if (!parsed) { promptError = { ...promptError, [name]: true }; return; }
+      promptsByName = { ...promptsByName, [name]: parsed };
+    } catch {
+      promptError = { ...promptError, [name]: true };
+    } finally {
+      promptLoading = { ...promptLoading, [name]: false };
     }
   }
 
@@ -282,6 +310,33 @@
                   {/each}
                 </ul>
               {/if}
+
+              <details
+                class="ds-disclosure cap-workload__prompts"
+                data-testid="cap-workload-{wl.name}-prompts"
+                ontoggle={(e) => onPromptsToggle(wl.name, e.currentTarget as HTMLDetailsElement)}
+              >
+                <summary class="cap-workload__prompts-summary">
+                  <Icon name="file-text" size={14} /> View system prompt{wl.name === 'drift' || wl.name === 'upgrade' ? 's' : ''}
+                </summary>
+                {#if promptError[wl.name]}
+                  <p class="ds-subtle">Prompt source is unavailable right now.</p>
+                {:else if promptsByName[wl.name]}
+                  {@const p = promptsByName[wl.name]}
+                  <p class="ds-subtle" data-testid="cap-workload-{wl.name}-prompts-note">{p.demo_note}</p>
+                  <p class="ds-subtle">Running artifact · <code class="ds-code">{p.source_dir}</code> @ <code class="ds-code">{p.revision}</code></p>
+                  <div class="ds-field"><span class="ds-label">recheck prompt</span></div>
+                  <pre class="ds-pre cap-prompt-pre">{p.recheck_prompt}</pre>
+                  {#if p.chat_prompt_distinct && p.chat_prompt}
+                    <div class="ds-field"><span class="ds-label">chat prompt</span></div>
+                    <pre class="ds-pre cap-prompt-pre">{p.chat_prompt}</pre>
+                  {:else}
+                    <p class="ds-subtle">This crew has no separate chat prompt — it ships a single system prompt file.</p>
+                  {/if}
+                {:else}
+                  <p class="ds-subtle">Loading…</p>
+                {/if}
+              </details>
             </div>
           </details>
         {/each}
@@ -511,4 +566,8 @@
   .cap-footer p:last-child {
     margin-bottom: 0;
   }
+
+  /* Prompt disclosure — cap height so a long prompt scrolls rather than
+     dominating the workload card. */
+  .cap-prompt-pre { max-height: 24rem; overflow-y: auto; }
 </style>
