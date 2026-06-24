@@ -14,13 +14,16 @@ afterEach(cleanup);
 
 const noop = () => {};
 
-/** Build an iac_apply decision row with sane defaults. */
+/** Build an iac_apply decision row with sane defaults. The GitHub link tracks
+ *  the effective pr_number (real /decisions rows are written that way), so the
+ *  link-gated header hint sees each distinct number faithfully. */
 function iacRow(over: Partial<Decision>): Decision {
+  const prNumber = over.pr_number ?? 68;
   return {
     decision_id: `d-${Math.random().toString(36).slice(2)}`,
     action: 'iac_apply',
     pr_number: 68,
-    github: { url: 'https://github.com/adi-prasetyo/driftscribe/pull/68' },
+    github: { url: `https://github.com/adi-prasetyo/driftscribe/pull/${prNumber}` },
     ...over,
   } as Decision;
 }
@@ -443,5 +446,72 @@ describe('DecisionsRail — dry-run preview pill', () => {
     });
     expect(getByTestId('autonomy-suppressed')).toBeTruthy();
     expect(queryByTestId('decision-dry-run')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Header hint — "why aren't the PR numbers consecutive?"
+// ---------------------------------------------------------------------------
+
+// The header PR-numbering hint shows only once there are ≥2 distinct, linked
+// iac_apply PR numbers on screen — explaining why the numbers skip values.
+describe('DecisionsRail — PR-numbering header hint', () => {
+  it('shows no hint when only one numbered row exists (no sequence to explain)', () => {
+    const decisions: Decision[] = [iacRow({ decision_id: 'a', apply_status: 'applied', pr_number: 68 })];
+    const { queryByTestId } = render(DecisionsRail, {
+      props: { decisions, activeTraceId: null, onOpenTrace: noop },
+    });
+    expect(queryByTestId('rail-gap-help')).toBeNull();
+  });
+
+  it('reveals a GitHub-numbering explanation when ≥2 distinct PR numbers are shown', async () => {
+    const decisions: Decision[] = [
+      iacRow({ decision_id: 'a', apply_status: 'applied', pr_number: 102 }),
+      iacRow({ decision_id: 'b', apply_status: 'applied', pr_number: 68 }),
+    ];
+    const { getByTestId, queryByTestId } = render(DecisionsRail, {
+      props: { decisions, activeTraceId: null, onOpenTrace: noop },
+    });
+    const hint = getByTestId('rail-gap-help');
+    // A real, keyboard/touch-reachable button with its own (non-"status") name.
+    expect(hint.tagName).toBe('BUTTON');
+    expect(hint.getAttribute('aria-label')?.toLowerCase()).toContain('pull-request');
+    expect(hint.getAttribute('aria-label')?.toLowerCase()).not.toContain('status');
+    // Collapsed by default — no panel until activated.
+    expect(queryByTestId('rail-gap-help-panel')).toBeNull();
+    expect(hint.getAttribute('aria-expanded')).toBe('false');
+
+    await fireEvent.click(hint);
+    expect(hint.getAttribute('aria-expanded')).toBe('true');
+    const panel = getByTestId('rail-gap-help-panel');
+    // The explanation grounds the gaps in real GitHub PR numbering.
+    expect(panel.textContent?.toLowerCase()).toContain('github');
+    expect(hint.getAttribute('aria-controls')).toBe(panel.getAttribute('id'));
+  });
+
+  it('counts DISTINCT PR numbers — a multi-doc lifecycle for one PR shows no hint', () => {
+    const decisions: Decision[] = [
+      iacRow({ decision_id: 'a', apply_status: 'applied', pr_number: 68 }),
+      iacRow({ decision_id: 'w1', apply_status: 'waiting_for_rebake', pr_number: 68 }),
+      iacRow({ decision_id: 'w2', apply_status: 'waiting_for_rebake', pr_number: 68 }),
+    ];
+    const { queryByTestId } = render(DecisionsRail, {
+      props: { decisions, activeTraceId: null, onOpenTrace: noop },
+    });
+    expect(queryByTestId('rail-gap-help')).toBeNull();
+  });
+
+  it('the header hint uses its own testid — it never inflates the per-row status-help count', () => {
+    // Two self-evident statuses (no status-help) but two distinct PR numbers
+    // (header hint present). Proves the two affordances are independent.
+    const decisions: Decision[] = [
+      iacRow({ decision_id: 'a', apply_status: 'applied', pr_number: 68 }),
+      iacRow({ decision_id: 'b', apply_status: 'failed', pr_number: 71 }),
+    ];
+    const { getByTestId, queryAllByTestId } = render(DecisionsRail, {
+      props: { decisions, activeTraceId: null, onOpenTrace: noop },
+    });
+    expect(getByTestId('rail-gap-help')).toBeTruthy();
+    expect(queryAllByTestId('status-help')).toHaveLength(0);
   });
 });

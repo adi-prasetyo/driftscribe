@@ -26,7 +26,17 @@
 
   // `label` (optional): the status this hint explains, so each button gets a
   // distinct accessible name when several appear in one lifecycle.
-  let { text, label }: { text: string; label?: string } = $props();
+  // `ariaLabel` (optional): overrides the status-phrased accessible name for
+  // uses outside the iac_apply-status context (e.g. the rail-header numbering
+  // hint, where "…status" would read wrong).
+  // `testid` (optional): namespaces the button + panel testids so multiple
+  // distinct hints on one screen never collide (defaults to the status hint).
+  let {
+    text,
+    label,
+    ariaLabel,
+    testid = 'status-help',
+  }: { text: string; label?: string; ariaLabel?: string; testid?: string } = $props();
   let open = $state(false);
   const panelId = `help-hint-${nextHintId()}`;
 </script>
@@ -34,17 +44,17 @@
 <button
   type="button"
   class="help-hint__btn"
-  aria-label={label ? `Explain the “${label}” status` : 'Explain this status'}
+  aria-label={ariaLabel ?? (label ? `Explain the “${label}” status` : 'Explain this status')}
   aria-expanded={open}
   aria-controls={open ? panelId : undefined}
   title={text}
-  data-testid="status-help"
+  data-testid={testid}
   onclick={() => (open = !open)}
 >
   <Icon name="help-circle" size={13} />
 </button>
 {#if open}
-  <span class="help-hint__panel" id={panelId} role="note" data-testid="status-help-panel"
+  <span class="help-hint__panel" id={panelId} role="note" data-testid={`${testid}-panel`}
     >{text}</span>
 {/if}
 
