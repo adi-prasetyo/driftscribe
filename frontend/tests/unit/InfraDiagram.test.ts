@@ -195,7 +195,7 @@ function makeCall(
 
 const PREVIEW = '/infra/graph/preview?pr=47';
 const LINE1 =
-  'Previewing PR #47 — dashed nodes show what approving this change would do. The live map does not change until the change is applied.';
+  'Previewing PR #47. Dashed nodes show what approving this change would do. The live map does not change until the change is applied.';
 
 /** Collapse template whitespace (multi-line copy renders with newlines/indent). */
 function norm(s: string | null): string {
@@ -339,12 +339,12 @@ describe('InfraDiagram — exit preview', () => {
 
 describe('InfraDiagram — unavailable reasons (exact copies)', () => {
   const cases: Array<[string, string]> = [
-    ['no_plan', 'No pending plan was found for PR #47 — nothing to preview.'],
+    ['no_plan', 'No pending plan was found for PR #47. Nothing to preview.'],
     [
       'artifact_error',
       'The plan for PR #47 could not be verified, so it cannot be previewed. Open the approval page for details.',
     ],
-    ['resolved', 'PR #47 has already reached a final outcome — the map below shows what is live now.'],
+    ['resolved', 'PR #47 has already reached a final outcome. The map below shows what is live now.'],
     ['summary_unavailable', 'This plan could not be summarized into a preview. Review the approval page instead.'],
     // unknown token → summary_unavailable copy
     ['something_new', 'This plan could not be summarized into a preview. Review the approval page instead.'],
@@ -540,7 +540,7 @@ describe('InfraDiagram — adopt list', () => {
     // Heading copy is honest about exhaustiveness (Codex finding 4). norm()
     // collapses the multi-line template whitespace before the exact-copy check.
     expect(norm(getByTestId('adopt-list').textContent)).toContain(
-      'Unmanaged resources shown on the map — they exist in your project but are not under IaC management',
+      'Unmanaged resources shown on the map. These exist in your project but are not under IaC management',
     );
     // TWO rows (the managed bucket node is absent).
     expect(getAllByTestId('adopt-row')).toHaveLength(2);

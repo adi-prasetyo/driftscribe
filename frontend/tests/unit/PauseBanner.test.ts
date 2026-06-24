@@ -57,7 +57,7 @@ describe('PauseBanner', () => {
     const { getByTestId } = await mount(res(PAUSED));
     await waitFor(() => {
       expect(getByTestId('pause-state').textContent?.trim()).toBe(
-        'DriftScribe is paused — no new agent activity will start.',
+        'DriftScribe is paused. No new agent activity will start.',
       );
     });
     const banner = getByTestId('pause-banner');
@@ -75,7 +75,7 @@ describe('PauseBanner', () => {
       expect(getByTestId('pause-state').textContent).toContain('DriftScribe is paused');
     });
     expect(getByTestId('pause-banner').textContent).toContain(
-      'pause state could not be read — failing closed',
+      'pause state could not be read, failing closed',
     );
   });
 

@@ -10,8 +10,9 @@ afterEach(cleanup);
 
 const CAGE_NOTE =
   "Before anything applies, this change must pass the self-protection " +
-  "denylist — no DriftScribe control-plane changes, no IAM changes, no " +
-  "deletes, replacements, or un-managing — and your explicit approval.";
+  "denylist and get your explicit approval. The denylist blocks any " +
+  "DriftScribe control-plane changes, any IAM changes, and any deletes, " +
+  "replacements, or un-managing.";
 
 describe('IacApprovalCta — denylist cage teaser note', () => {
   it('renders iac-cta-cage-note with the exact sentence when prNumber is valid', () => {

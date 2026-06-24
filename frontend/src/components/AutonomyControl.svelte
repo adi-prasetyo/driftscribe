@@ -337,7 +337,7 @@
 
   {:else if stateKind === 'unknown'}
     <div class="autonomy-card autonomy-card--unknown" role="alert">
-      <span class="autonomy-state autonomy-state--unknown">Autonomy state unknown — could not read the dial setting.</span>
+      <span class="autonomy-state autonomy-state--unknown">Autonomy state unknown. Could not read the dial setting.</span>
       <button
         class="ds-btn ds-btn--ghost autonomy-retry"
         type="button"
@@ -420,7 +420,7 @@
       <!-- Meta line: actor · time · reason -->
       {#if currentReadError}
         <span class="autonomy-meta__warn" data-testid="autonomy-read-error"
-          >autonomy state could not be read — failing closed to Observe</span>
+          >autonomy state could not be read, failing closed to Observe</span>
       {:else}
         <div class="autonomy-meta">
           {#if currentActor}
@@ -476,7 +476,7 @@
 
       {#if postError}
         <p class="autonomy-error" data-testid="autonomy-error"
-          >Could not save — autonomy state unchanged. Please try again.</p>
+          >Could not save. Autonomy state unchanged. Please try again.</p>
       {/if}
     </div>
   {/if}

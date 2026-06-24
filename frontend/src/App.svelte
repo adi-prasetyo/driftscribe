@@ -245,7 +245,7 @@
         // judges should see "wait", not a bare status code.
         finalReply =
           resp.status === 429
-            ? 'Rate limit reached — the demo allows a few chat runs per minute per visitor. Please wait a moment and try again.'
+            ? 'Rate limit reached. The demo allows a few chat runs per minute per visitor. Please wait a moment and try again.'
             : `Request failed (${resp.status}).`;
         finalIsError = true;
         return;
@@ -432,7 +432,7 @@
     <span class="app-logo-mark" aria-hidden="true">
       <Icon name="radar" size={16} extraClass="app-logo-mark__icon" />
     </span>
-    <h1 class="app-title">DriftScribe <span class="app-title__sub">— the agent proposes, you approve</span></h1>
+    <h1 class="app-title">DriftScribe<span class="app-title__sub">. The agent proposes, you approve.</span></h1>
   </div>
   <div class="app-header__actions">
     <PausePill {pause} />

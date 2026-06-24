@@ -77,8 +77,8 @@
   // hover-help icon next to the coordinator group only.
   const COORDINATOR_HINT =
     "Gemini's reasoning summaries are only returned by Vertex AI's 'global' " +
-    'region, so this deployment routes inference there — which adds a little ' +
-    'latency per turn.';
+    'region, so this deployment routes inference there. Expect a little ' +
+    'extra latency per turn.';
 </script>
 
 {#snippet toolPair(pair: { call?: TraceEvent; result?: TraceEvent })}
@@ -112,7 +112,7 @@
 <div class="timeline">
   {#if status === 'historical' && events.length === 0}
     <p class="timeline-empty ds-subtle" data-testid="timeline-empty">
-      No reasoning timeline for this decision — it was recorded directly, not
+      No reasoning timeline for this decision. It was recorded directly, not
       produced by an agent reasoning run.
     </p>
   {/if}

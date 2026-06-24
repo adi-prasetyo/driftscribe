@@ -16,14 +16,14 @@ export const WORKER_LABELS: Record<string, string> = {
   // Drift workload
   read_live_env_tool: 'Reader (drift)',
   patch_docs_tool: 'Docs (drift)',
-  propose_rollback_tool: 'Rollback (drift) — HITL',
+  propose_rollback_tool: 'Rollback (drift) · HITL',
   // Upgrade workload — tool names must match the exposed surface in
   // ``agent/adk_tools.py`` (the ``_tool`` suffix is part of the function
   // name the ADK runner sees).
   upgrade_read_dependencies_tool: 'Upgrade Reader',
   upgrade_propose_pr_tool: 'Upgrade Docs',
-  upgrade_close_pr_tool: 'Upgrade Docs — close PR',
-  upgrade_merge_pr_tool: 'Upgrade Docs — merge PR',
+  upgrade_close_pr_tool: 'Upgrade Docs · close PR',
+  upgrade_merge_pr_tool: 'Upgrade Docs · merge PR',
   // Provision workload (Phase D) — the callable __name__ is
   // ``open_infra_pr_tool`` (the symbolic workload name is
   // ``provision_open_infra_pr``; the timeline keys on the callable).
@@ -39,9 +39,9 @@ export const WORKER_LABELS: Record<string, string> = {
   // plus the bare server-identity key (``mcp_server`` fallback) yielding the
   // unsuffixed friendly label.
   developer_knowledge: 'Developer Knowledge MCP',
-  answer_query: 'Developer Knowledge MCP — answer',
-  search_documents: 'Developer Knowledge MCP — search',
-  get_documents: 'Developer Knowledge MCP — get',
+  answer_query: 'Developer Knowledge MCP · answer',
+  search_documents: 'Developer Knowledge MCP · search',
+  get_documents: 'Developer Knowledge MCP · get',
 };
 
 /** Friendly label for a tool/MCP key, falling back to the raw key. */

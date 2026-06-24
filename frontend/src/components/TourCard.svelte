@@ -101,7 +101,7 @@
         onclick={prefillAdopt}>Prefill the request</button
       >
       <p class="ds-subtle tour-card__note">
-        This only prefills the chat — nothing is sent until you press Send.
+        This only prefills the chat. Nothing is sent until you press Send.
       </p>
     </div>
   {/if}
@@ -110,7 +110,7 @@
     <!-- Honesty (Codex MF3): the copy says "when you send" but Send is
          disabled right now (busy stream / historical replay) — say so. -->
     <p class="ds-subtle tour-card__note" data-testid="tour-busy-note">
-      The chat is busy or showing a past trace right now — sending becomes
+      The chat is busy or showing a past trace right now, so sending becomes
       available when it finishes.
     </p>
   {/if}

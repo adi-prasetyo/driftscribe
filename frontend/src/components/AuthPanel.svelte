@@ -64,9 +64,8 @@
     >
       <h2 id="authpanel-title" class="ds-h2 authpanel__title">Operator token</h2>
       <p id="authpanel-desc" class="ds-subtle authpanel__desc">
-        Stored in <code class="ds-code">sessionStorage</code> for this tab only —
-        it is cleared when you close the tab and never sent anywhere but the
-        coordinator.
+        Stored in <code class="ds-code">sessionStorage</code> for this tab only.
+        Cleared when you close the tab, never sent anywhere but the coordinator.
       </p>
 
       <input

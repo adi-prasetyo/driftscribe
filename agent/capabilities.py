@@ -66,19 +66,19 @@ must equal ``list(WORKLOAD_NAMES)``.
 
 TOOL_DESCRIPTIONS: Final[Mapping[str, str]] = MappingProxyType({
     "drift_read_live_env": (
-        "Reads the live Cloud Run environment — deployed image, revision, "
+        "Reads the live Cloud Run environment: deployed image, revision, "
         "environment variables, and service configuration."
     ),
     "read_project_inventory": (
         "Reads a read-only whole-project asset inventory via the infra-reader "
-        "worker (Cloud Asset Viewer only — no write access)."
+        "worker (Cloud Asset Viewer only, no write access)."
     ),
     "drift_patch_docs": (
         "Updates the ops-contract documentation to record the current observed "
         "state after a drift detection run."
     ),
     "drift_propose_rollback": (
-        "Proposes a rollback — never executes one; it creates an approval that "
+        "Proposes a rollback; never executes one. It creates an approval that "
         "waits for an operator."
     ),
     "notify": (
@@ -95,7 +95,7 @@ TOOL_DESCRIPTIONS: Final[Mapping[str, str]] = MappingProxyType({
     ),
     "load_iac_plan": (
         "Reads the latest verified plan artifact for a pending infrastructure "
-        "PR and summarizes it in plain language — read-only; cannot approve, "
+        "PR and summarizes it in plain language. Read-only: cannot approve, "
         "reject, or apply anything."
     ),
     "upgrade_read_dependencies": (
@@ -105,12 +105,12 @@ TOOL_DESCRIPTIONS: Final[Mapping[str, str]] = MappingProxyType({
         "Opens a dependency-upgrade pull request in the target repo."
     ),
     "upgrade_close_pr": (
-        "Closes an upgrade PR this agent opened — only when it is safe to do so "
+        "Closes an upgrade PR this agent opened, only when it is safe to do so "
         "(driftscribe label, upgrade/ branch, correct base)."
     ),
     "upgrade_merge_pr": (
-        "Merges an upgrade PR this agent opened — only after CI is green on the "
-        "exact head commit; fails closed."
+        "Merges an upgrade PR this agent opened, only after CI is green on the "
+        "exact head commit. Fails closed."
     ),
     "search_developer_docs": (
         "Searches the developer knowledge base for documentation relevant to the "
@@ -120,20 +120,20 @@ TOOL_DESCRIPTIONS: Final[Mapping[str, str]] = MappingProxyType({
         "Retrieves a specific document from the developer knowledge base by ID."
     ),
     "provision_open_infra_pr": (
-        "Authors OpenTofu files under iac/ and opens ONE pull request — never "
+        "Authors OpenTofu files under iac/ and opens ONE pull request. Never "
         "applies anything; applying happens only through the gated "
         "approve-then-apply pipeline."
     ),
     "provision_propose_adoption": (
         "Adopt an existing resource into IaC management via a zero-change "
-        "import PR — renders the config deterministically; cannot modify live "
+        "import PR. Renders the config deterministically; cannot modify live "
         "infrastructure."
     ),
     "get_session_state": (
-        "Reserved — not implemented; no workload can use it."
+        "Reserved; not implemented. No workload can use it."
     ),
     "set_session_state": (
-        "Reserved — not implemented; no workload can use it."
+        "Reserved; not implemented. No workload can use it."
     ),
 })
 """Operator-facing description of every tool in ``TOOL_REGISTRY``.
@@ -277,7 +277,7 @@ HUMAN_GATES: Final[tuple[Mapping[str, str], ...]] = (
             "Before the apply worker runs ``tofu apply``, an operator must "
             "approve the exact stored plan via the approval page. The approval "
             "is bound to the specific plan by a plan-bound HMAC with a signed "
-            "expiry window — approving one plan cannot approve another."
+            "expiry window. Approving one plan cannot approve another."
         ),
         "route": "/iac-approvals/{pr_number}",
         "method": "POST",
@@ -289,7 +289,7 @@ HUMAN_GATES: Final[tuple[Mapping[str, str], ...]] = (
             "The rollback worker requires a valid operator approval token before "
             "it will execute any Cloud Run rollback. The approval is single-use "
             "with a 15-minute TTL and bound to the specific rollback request by "
-            "HMAC — the worker re-verifies the token at execution time."
+            "HMAC. The worker re-verifies the token at execution time."
         ),
         "route": "/approvals/{approval_id}",
         "method": "POST",
@@ -389,13 +389,13 @@ def build_capabilities() -> dict:
     return {
         "version": 1,
         "provenance": (
-            "Generated from the same constants the enforcement code imports "
-            "— not hand-written documentation."
+            "Generated from the same constants the enforcement code imports, "
+            "not hand-written documentation."
         ),
         "iam_note": (
             "Each worker runs as its own service account with least-privilege "
             "IAM, codified in infra/scripts/. The only identity that can change "
-            "live infrastructure is the apply worker's service account — and "
+            "live infrastructure is the apply worker's service account, and "
             "only after an operator approves the exact plan."
         ),
         "workloads": workloads,
@@ -403,7 +403,7 @@ def build_capabilities() -> dict:
         "denylist": {
             "summary": (
                 "Before any apply, the plan is checked against a fail-closed "
-                "denylist. A violation blocks the apply — operator approval "
+                "denylist. A violation blocks the apply; operator approval "
                 "cannot override it."
             ),
             "enforced_at": [

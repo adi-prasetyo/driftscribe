@@ -145,7 +145,7 @@ describe('step copy', () => {
 
   it('estateLine renders live totals with coverage percent', () => {
     expect(estateLine(makeGraph())).toBe(
-      '12 resources indexed — 9 under IaC management (75%), 3 not yet. ' +
+      '12 resources indexed: 9 under IaC management (75%), 3 not yet. ' +
         'The coverage meter below tracks your migration.',
     );
   });

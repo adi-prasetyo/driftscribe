@@ -32,12 +32,12 @@ describe('WORKER_LABELS', () => {
   // upgrade reader/docs/close/merge, provision, notifier, MCP per-tool).
   it('preserves the full legacy drift-workload labels', () => {
     expect(WORKER_LABELS['patch_docs_tool']).toBe('Docs (drift)');
-    expect(WORKER_LABELS['propose_rollback_tool']).toBe('Rollback (drift) — HITL');
+    expect(WORKER_LABELS['propose_rollback_tool']).toBe('Rollback (drift) · HITL');
   });
 
   it('preserves the full legacy upgrade-workload labels', () => {
-    expect(WORKER_LABELS['upgrade_close_pr_tool']).toBe('Upgrade Docs — close PR');
-    expect(WORKER_LABELS['upgrade_merge_pr_tool']).toBe('Upgrade Docs — merge PR');
+    expect(WORKER_LABELS['upgrade_close_pr_tool']).toBe('Upgrade Docs · close PR');
+    expect(WORKER_LABELS['upgrade_merge_pr_tool']).toBe('Upgrade Docs · merge PR');
   });
 
   it('preserves the shared notifier label', () => {
@@ -45,9 +45,9 @@ describe('WORKER_LABELS', () => {
   });
 
   it('preserves the legacy per-tool MCP labels', () => {
-    expect(WORKER_LABELS['answer_query']).toBe('Developer Knowledge MCP — answer');
-    expect(WORKER_LABELS['search_documents']).toBe('Developer Knowledge MCP — search');
-    expect(WORKER_LABELS['get_documents']).toBe('Developer Knowledge MCP — get');
+    expect(WORKER_LABELS['answer_query']).toBe('Developer Knowledge MCP · answer');
+    expect(WORKER_LABELS['search_documents']).toBe('Developer Knowledge MCP · search');
+    expect(WORKER_LABELS['get_documents']).toBe('Developer Knowledge MCP · get');
   });
 });
 

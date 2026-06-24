@@ -78,7 +78,7 @@
   <!-- Unknown / fetch error — amber fail-closed note -->
   <div class="pause-card pause-card--unknown" data-testid="pause-banner" role="alert">
     <span class="pause-state pause-state--unknown" data-testid="pause-state"
-      >Pause state unknown — DriftScribe fails closed: changes are blocked until this resolves.</span
+      >Pause state unknown. DriftScribe fails closed: changes are blocked until this resolves.</span
     >
     <button
       class="ds-btn ds-btn--ghost pause-retry"
@@ -98,9 +98,9 @@
     <div class="pause-row">
       <!-- Icon is aria-hidden SVG — contributes NO textContent. Exact-string
            contract: pause-state textContent is
-           "DriftScribe is paused — no new agent activity will start." -->
+           "DriftScribe is paused. No new agent activity will start." -->
       <span class="pause-state pause-state--paused" data-testid="pause-state"
-        ><Icon name="pause" size={14} />DriftScribe is paused — no new agent activity will start.</span
+        ><Icon name="pause" size={14} />DriftScribe is paused. No new agent activity will start.</span
       >
       {#if !confirming}
         <button
@@ -115,7 +115,7 @@
     <!-- Meta line: actor · time · reason — sibling spans + CSS gap (no text seams) -->
     <div class="pause-meta">
       {#if st.readError}
-        <span class="pause-meta__warn">pause state could not be read — failing closed</span>
+        <span class="pause-meta__warn">pause state could not be read, failing closed</span>
       {:else}
         {#if st.actor}
           <span class="pause-meta__label">Paused by</span>
@@ -157,7 +157,7 @@
 
     {#if postError}
       <p class="pause-error" data-testid="pause-error">
-        Could not save — pause state unchanged. Please try again.
+        Could not save. Pause state unchanged. Please try again.
       </p>
     {/if}
   </div>
