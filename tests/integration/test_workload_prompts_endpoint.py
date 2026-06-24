@@ -8,6 +8,7 @@ from agent.main import app
 def test_drift_prompts_ok_and_shaped():
     r = TestClient(app).get("/workloads/drift/prompts")
     assert r.status_code == 200
+    assert r.headers.get("cache-control") == "no-store"
     b = r.json()
     assert b["workload"] == "drift"
     assert b["display_name"] == "Anchor"

@@ -845,6 +845,24 @@ class WorkloadPrompts:
     chat_prompt_distinct: bool
 
 
+def _contained_prompt_path(workload_dir: Path, filename: str) -> Path:
+    """Resolve ``filename`` against ``workload_dir`` and require the result to
+    stay inside it. Prompt-file names come from the (trusted, golden-tested)
+    workload manifest, but ``resolve_workload_prompts`` now backs an
+    UNAUTHENTICATED endpoint, so a future bad manifest value (``../`` or an
+    absolute path) must not become a public file-disclosure gadget. The
+    manifests remain the real control; this is the floor (defense-in-depth).
+    """
+    base = workload_dir.resolve()
+    candidate = (workload_dir / filename).resolve()
+    if not candidate.is_relative_to(base):
+        raise ValueError(
+            f"prompt file {filename!r} escapes workload dir {base} "
+            f"(resolved to {candidate})"
+        )
+    return candidate
+
+
 def resolve_workload_prompts(name: str) -> WorkloadPrompts:
     """Read a workload's prompt file(s) directly, without resolving worker
     URL env vars (so this never raises MissingWorkerEnvError and is testable
@@ -855,7 +873,7 @@ def resolve_workload_prompts(name: str) -> WorkloadPrompts:
     spec = _parse_spec(yaml_path, expected_name=name)
     workload_dir = yaml_path.parent
 
-    prompt_path = workload_dir / spec.system_prompt_file
+    prompt_path = _contained_prompt_path(workload_dir, spec.system_prompt_file)
     if not prompt_path.exists():
         raise FileNotFoundError(
             f"system prompt for workload {spec.name!r} not found: {prompt_path}"
@@ -863,7 +881,7 @@ def resolve_workload_prompts(name: str) -> WorkloadPrompts:
     recheck = prompt_path.read_text(encoding="utf-8")
 
     if spec.chat_system_prompt_file is not None:
-        chat_path = workload_dir / spec.chat_system_prompt_file
+        chat_path = _contained_prompt_path(workload_dir, spec.chat_system_prompt_file)
         if not chat_path.exists():
             raise RuntimeError(
                 f"chat system prompt for workload {spec.name!r} not found: "
