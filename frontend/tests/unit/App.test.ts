@@ -77,3 +77,66 @@ describe('App — tour wiring (smoke)', () => {
     );
   });
 });
+
+describe('App — open-trace scrolls the historical region into view', () => {
+  // The historical replay renders at the BOTTOM of the chat column (below the
+  // estate panel + composer), so without this the click looks dead. The button
+  // is in the left rail; the banner it scrolls to is #historical-badge.
+  function stubFetchWithIacDecision(): void {
+    const iac = {
+      decision_id: 'd1',
+      trace_id: 'tid-iac-1',
+      action: 'iac_apply',
+      pr_number: 47,
+      apply_status: 'applied',
+      approver: 'op@example.com',
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/trace/'))
+          return okJson({ trace_id: 'tid-iac-1', complete: true, events: [], decision: iac });
+        if (url.includes('/decisions')) return okJson({ decisions: [iac] });
+        if (url.includes('/infra/graph'))
+          return okJson({
+            generated_at: null,
+            project: 'demo-proj',
+            caveat: '',
+            degraded: false,
+            degraded_reason: null,
+            totals: { resources: 1, managed: 0, drift: 1 },
+            groups: [],
+            edges: [],
+          });
+        return okJson({});
+      }),
+    );
+  }
+
+  it('clicking open-trace scrolls #historical-badge into view (block:start, reduced-motion → auto)', async () => {
+    window.sessionStorage.setItem('driftscribe_token', 'tok');
+    stubFetchWithIacDecision();
+    const scrollSpy = vi.fn();
+    window.HTMLElement.prototype.scrollIntoView = scrollSpy;
+
+    const { findByTestId, getByTestId } = render(App);
+
+    // Wait for the rail to load the decision, then open its trace.
+    const btn = await findByTestId('open-trace-button');
+    await fireEvent.click(btn);
+
+    // The banner enters the DOM (proves historicalActive flipped + tick flushed).
+    await waitFor(() => expect(getByTestId('historical-banner')).toBeTruthy());
+
+    // The scroll fired with the historical-region options. setup.ts forces
+    // matchMedia('reduce') → matches:true, so prefersReducedMotion() picks 'auto'.
+    await waitFor(() => expect(scrollSpy).toHaveBeenCalled());
+    expect(scrollSpy).toHaveBeenCalledWith({ behavior: 'auto', block: 'start' });
+    // ...and it scrolled the historical banner (scrollIntoView's `this` is the
+    // element it was invoked on).
+    expect(scrollSpy.mock.contexts.at(-1)).toBe(
+      document.getElementById('historical-badge'),
+    );
+  });
+});

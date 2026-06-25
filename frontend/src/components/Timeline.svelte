@@ -23,6 +23,15 @@
 
   const groups = $derived(groupEvents(events));
 
+  // A replayed decision that was recorded directly (e.g. an iac_apply approval)
+  // carries no reasoning events. In that case show ONLY the explanatory note
+  // below and suppress the three group accordions, which would otherwise render
+  // as three redundant "No X yet." panels. Same condition gates the note and the
+  // suppression, so they can never disagree. Live/pending/streaming empty states
+  // keep the groups (events are still arriving), and a historical trace that
+  // does carry events renders the full grouped timeline.
+  const historicalEmpty = $derived(status === 'historical' && events.length === 0);
+
   interface Sub {
     key: string;
     label: string;
@@ -110,12 +119,12 @@
 {/snippet}
 
 <div class="timeline">
-  {#if status === 'historical' && events.length === 0}
+  {#if historicalEmpty}
     <p class="timeline-empty ds-subtle" data-testid="timeline-empty">
       No reasoning timeline for this decision. It was recorded directly, not
       produced by an agent reasoning run.
     </p>
-  {/if}
+  {:else}
   <Group
     key="coordinator"
     title={titleFor.coordinator}
@@ -190,6 +199,7 @@
       </details>
     {/each}
   </Group>
+  {/if}
 </div>
 
 <style>
