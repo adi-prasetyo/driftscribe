@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
+import { render, cleanup } from '@testing-library/svelte';
 import {
   groupOf,
   subKey,
@@ -8,6 +9,7 @@ import {
   type GroupKey,
   type TraceEvent,
 } from '../../src/lib/timeline';
+import Timeline from '../../src/components/Timeline.svelte';
 
 // Re-homes the event-classification + sub-grouping + tool-pairing logic that
 // lived inline in agent/templates/transparency.html (~1282-1400 + the
@@ -233,5 +235,53 @@ describe('eventKey — stable per-event DOM key', () => {
     const k = eventKey(ev({ event: 'llm_thought' }));
     expect(k).not.toBe('evt:');
     expect(k).not.toBe('');
+  });
+});
+
+describe('Timeline — historical-empty state', () => {
+  afterEach(cleanup);
+
+  it('historical + no events: shows only the empty note, suppresses the three group accordions', () => {
+    const { getByTestId, queryByText, container } = render(Timeline, {
+      props: { events: [], status: 'historical' },
+    });
+    // The one accurate explanatory note stays.
+    expect(getByTestId('timeline-empty')).toBeTruthy();
+    // The redundant empty group accordions are gone (no #group-* at all).
+    expect(container.querySelector('#group-coordinator')).toBeNull();
+    expect(container.querySelector('#group-tools')).toBeNull();
+    expect(container.querySelector('#group-mcp')).toBeNull();
+    // ...and so is the misleading "No coordinator reasoning yet." placeholder.
+    expect(queryByText('No coordinator reasoning yet.')).toBeNull();
+  });
+
+  it('historical WITH events: still renders the grouped timeline, no empty note', () => {
+    const { queryByTestId, container } = render(Timeline, {
+      props: {
+        events: [ev({ event: 'llm_thought', thought_text: 'considering drift' })],
+        status: 'historical',
+      },
+    });
+    expect(container.querySelector('#group-coordinator')).not.toBeNull();
+    expect(queryByTestId('timeline-empty')).toBeNull();
+  });
+
+  it('live/pending + no events: keeps the groups + the "yet" placeholder (regression guard)', () => {
+    const { getByText, queryByTestId, container } = render(Timeline, {
+      props: { events: [], status: 'pending' },
+    });
+    expect(container.querySelector('#group-coordinator')).not.toBeNull();
+    expect(getByText('No coordinator reasoning yet.')).toBeTruthy();
+    expect(queryByTestId('timeline-empty')).toBeNull();
+  });
+
+  it('streaming + no events: keeps the groups (live-chat waiting path regression guard)', () => {
+    // Suppression must stay gated on 'historical' only — the live chat column
+    // streams into empty groups while events arrive.
+    const { queryByTestId, container } = render(Timeline, {
+      props: { events: [], status: 'streaming' },
+    });
+    expect(container.querySelector('#group-coordinator')).not.toBeNull();
+    expect(queryByTestId('timeline-empty')).toBeNull();
   });
 });

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import {
     apiFetch,
     getStoredToken,
@@ -32,6 +32,7 @@
   import PausePill from './components/PausePill.svelte';
   import PauseBanner from './components/PauseBanner.svelte';
   import { createPauseStore } from './lib/pauseStore';
+  import { prefersReducedMotion } from './lib/motion';
   import AutonomyControl from './components/AutonomyControl.svelte';
   import Timeline from './components/Timeline.svelte';
   import TourBanner from './components/TourBanner.svelte';
@@ -367,6 +368,26 @@
     iacPr = null;
     historicalDecision = null;
     status = 'pending';
+    // The historical replay renders at the BOTTOM of the chat column (below the
+    // estate panel + composer), so without this the click looks dead — the new
+    // content lands below the fold and nothing visibly happens. Bring the banner
+    // (and the region beneath it) into view. #historical-badge — HistoricalBanner's
+    // root, a hard e2e-contract id — only exists once historicalActive flips true
+    // AND Svelte flushes the {#if active} block, so await tick() first. Reuse the
+    // existing getElementById(...).scrollIntoView idiom (handleAdopt/onMount).
+    // Scrolling here (pre-fetch) gives instant feedback; the trace body fills in
+    // below the already-pinned banner when /trace resolves.
+    await tick();
+    if (myRun !== runSeq) return; // a newer run superseded us during the tick
+    const banner = document.getElementById('historical-badge');
+    banner?.scrollIntoView({
+      behavior: prefersReducedMotion() ? 'auto' : 'smooth',
+      block: 'start',
+    });
+    // Move focus into the region too (banner is tabindex=-1) so keyboard/SR
+    // users aren't left on the rail button. preventScroll: scrollIntoView above
+    // already positioned it; don't fight that with a second jump.
+    banner?.focus({ preventScroll: true });
     try {
       const resp = await call('/trace/' + encodeURIComponent(tid));
       if (myRun !== runSeq) return;

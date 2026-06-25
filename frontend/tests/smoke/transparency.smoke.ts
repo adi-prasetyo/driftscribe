@@ -231,6 +231,11 @@ test.describe('transparency UI (mock smoke)', () => {
 
     await expect(page.locator(`[data-testid="${TESTIDS.historicalBanner}"]`)).toBeVisible();
 
+    // (openTrace scrolls #historical-badge into view — a layout/viewport effect
+    // that this short mock fixture can't meaningfully assert, since the banner is
+    // already in view here. The scroll call itself is locked in App.test.ts and
+    // the real-viewport behavior is confirmed by a live Playwright check.)
+
     // The status pill reads "historical" — NOT the regressed "streaming".
     const pill = page.locator('#status-pill');
     await expect(pill).toHaveText(/historical/);
@@ -243,8 +248,10 @@ test.describe('transparency UI (mock smoke)', () => {
     await expect(summary).toContainText('#47');
     await expect(summary).toContainText('op@example.com');
 
-    // The empty-timeline note explains why there's no reasoning stream.
+    // The empty-timeline note explains why there's no reasoning stream — and the
+    // three redundant empty group accordions are suppressed in this state.
     await expect(page.locator('[data-testid="timeline-empty"]')).toBeVisible();
+    await expect(page.locator('#group-coordinator')).toHaveCount(0);
 
     // The hero stays hidden — this decision carries no prose.
     await expect(page.locator(`[data-testid="${TESTIDS.finalResponse}"]`)).toBeHidden();

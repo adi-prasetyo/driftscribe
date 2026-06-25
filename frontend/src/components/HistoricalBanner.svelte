@@ -17,11 +17,15 @@
 </script>
 
 {#if active}
+  <!-- tabindex=-1 so openTrace can move focus here after scrolling the replay
+       into view (keyboard/SR users land in the region, not stranded on the rail
+       button). Not in the tab order; reachable only programmatically. -->
   <div
     id="historical-badge"
     data-testid="historical-banner"
     data-active="1"
     aria-live="polite"
+    tabindex="-1"
     class="historical-banner"
   >
     <span class="historical-banner__label">
