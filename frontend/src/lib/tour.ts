@@ -15,6 +15,8 @@ import {
   adoptGroupRank,
   adoptPrefill,
   normalizeForPrompt,
+  resourceCards,
+  scopeTotals,
   type InfraGraph,
 } from './infra_graph';
 import { coveragePercent } from './coverage';
@@ -97,14 +99,33 @@ export function estateLine(graph: InfraGraph | null): string {
       'the panel later.'
     );
   }
-  const { resources, managed, drift } = graph.totals;
-  const pct = coveragePercent(managed, resources);
+  // Scope-aware to match the panel (design 2026-06-25 scope-split, Codex MF2):
+  // coverage is over the resource types DriftScribe manages, with the rest
+  // (Cloud Run revisions, container images, …) called out as out-of-scope so the
+  // tour never contradicts the meter below it.
+  const s = scopeTotals(resourceCards(graph), graph.totals.resources);
+  const tail = 'The coverage meter below tracks your migration.';
+  // Nothing in scope: a single clean clause (avoid "None… The other N", which
+  // contradicts itself — Workflow finding).
+  if (s.resources === 0) {
+    const body =
+      s.otherResources > 0
+        ? 'none are in resource types DriftScribe supports — they are types like ' +
+          'Cloud Run revisions and container images it does not manage'
+        : 'none are in resource types DriftScribe supports yet';
+    return `${s.totalResources} resources indexed, ${body}. ${tail}`;
+  }
+  const pct = coveragePercent(s.managed, s.resources);
   const pctPart = pct === null ? '' : ` (${pct}%)`;
-  return (
-    `${resources} resources indexed: ${managed} under IaC management` +
-    `${pctPart}, ${drift} not yet. The coverage meter below tracks your ` +
-    'migration.'
-  );
+  const scopeSentence =
+    `In the resource types DriftScribe supports, ${s.managed} of ${s.resources} ` +
+    `are under IaC management${pctPart}, ${s.drift} not yet.`;
+  const otherSentence =
+    s.otherResources > 0
+      ? ` The other ${s.otherResources} are types it does not manage, like Cloud Run ` +
+        'revisions and container images.'
+      : '';
+  return `${s.totalResources} resources indexed. ${scopeSentence}${otherSentence} ${tail}`;
 }
 
 // Step 3 — honesty T2: the always-gated claim is scoped to INFRASTRUCTURE

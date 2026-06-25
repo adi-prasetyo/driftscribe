@@ -10,6 +10,8 @@ import {
   adoptPrefill,
   adoptGroupRank,
   resourceCards,
+  splitCards,
+  scopeTotals,
   startHereAssetType,
   normalizeForPrompt,
   type InfraGraph,
@@ -1227,5 +1229,149 @@ describe('startHereAssetType', () => {
       }),
     );
     expect(startHereAssetType(cards)).toBeNull();
+  });
+});
+
+describe('resourceCards — adoptable field', () => {
+  it('sets adoptable=true on an adoptable group card', () => {
+    const cards = resourceCards(
+      graph({
+        groups: [group({ asset_type: BUCKET, label: 'Storage bucket', adoptable: true, count: 1, drift: 1, nodes: [node({ id: 'b0', label: 'bkt', asset_type: BUCKET })] })],
+      }),
+    );
+    expect(cards[0].adoptable).toBe(true);
+  });
+
+  it('sets adoptable=false on a non-adoptable group card', () => {
+    const cards = resourceCards(
+      graph({
+        groups: [group({ asset_type: SA, label: 'Service account', count: 1, drift: 1, nodes: [node({ id: 's0', label: 'ci@p', asset_type: SA })] })],
+      }),
+    );
+    expect(cards[0].adoptable).toBe(false);
+  });
+
+  it('treats a missing adoptable flag (stale coordinator) as false', () => {
+    const cards = resourceCards(
+      graph({ groups: [group({ asset_type: SECRET, label: 'Secret', sensitive: true, count: 2, drift: 2 })] }),
+    );
+    expect(cards[0].adoptable).toBe(false);
+  });
+});
+
+describe('splitCards — primary (in DriftScribe scope) vs other', () => {
+  // primary := adoptable OR managed > 0; everything else (incl. sensitive
+  // secrets) is other → folded behind the disclosure.
+  function mkCards(): InfraGraph {
+    return graph({
+      groups: [
+        group({ asset_type: BUCKET, label: 'Storage bucket', adoptable: true, adopt_rank: 1, count: 2, managed: 1, drift: 1, nodes: [node({ id: 'b0', label: 'mgd', asset_type: BUCKET, managed: true }), node({ id: 'b1', label: 'drift', asset_type: BUCKET, managed: false })] }),
+        group({ asset_type: SA, label: 'Service account', count: 1, drift: 1, nodes: [node({ id: 's0', label: 'ci@p', asset_type: SA })] }),
+        group({ asset_type: SECRET, label: 'Secret', sensitive: true, count: 3, drift: 3 }),
+      ],
+    });
+  }
+
+  it('puts an adoptable card in primary', () => {
+    const { primary, other } = splitCards(resourceCards(mkCards()));
+    expect(primary.map((c) => c.assetType)).toContain(BUCKET);
+    expect(other.map((c) => c.assetType)).not.toContain(BUCKET);
+  });
+
+  it('puts a non-adoptable, all-drift card in other', () => {
+    const { primary, other } = splitCards(resourceCards(mkCards()));
+    expect(other.map((c) => c.assetType)).toContain(SA);
+    expect(primary.map((c) => c.assetType)).not.toContain(SA);
+  });
+
+  it('puts a sensitive (secret) card in other', () => {
+    const { other } = splitCards(resourceCards(mkCards()));
+    expect(other.map((c) => c.assetType)).toContain(SECRET);
+  });
+
+  it('keeps a managed-but-NON-adoptable card in primary (never hide a managed resource)', () => {
+    // Defensive: a future .tf declares a non-adoptable type. managed>0 must
+    // keep its card in the default view even though adoptable is false.
+    const cards = resourceCards(
+      graph({
+        groups: [group({ asset_type: SA, label: 'Service account', adoptable: false, count: 2, managed: 1, drift: 1, nodes: [node({ id: 's0', label: 'mgd@p', asset_type: SA, managed: true }), node({ id: 's1', label: 'drift@p', asset_type: SA, managed: false })] })],
+      }),
+    );
+    const { primary, other } = splitCards(cards);
+    expect(primary.map((c) => c.assetType)).toContain(SA);
+    expect(other).toHaveLength(0);
+  });
+
+  it('preserves the resourceCards sort order within each list', () => {
+    const cards = resourceCards(mkCards());
+    const { primary, other } = splitCards(cards);
+    // The split is a stable partition: concatenating primary then other does
+    // not reorder relative to the source filtered by membership.
+    const primaryFromSource = cards.filter((c) => c.adoptable || c.managed > 0).map((c) => c.assetType);
+    const otherFromSource = cards.filter((c) => !(c.adoptable || c.managed > 0)).map((c) => c.assetType);
+    expect(primary.map((c) => c.assetType)).toEqual(primaryFromSource);
+    expect(other.map((c) => c.assetType)).toEqual(otherFromSource);
+  });
+
+  it('returns empty lists for a degraded graph', () => {
+    expect(splitCards(resourceCards(graph({ degraded: true, groups: [] })))).toEqual({ primary: [], other: [] });
+  });
+});
+
+describe('scopeTotals — coverage within the adoptable scope', () => {
+  // A live-shaped slice: 1 adoptable type (2 res, 1 managed, 1 drift) + 2
+  // non-adoptable noise types (10 + 3 res, all drift). Project total 15.
+  function liveSlice(): InfraGraph {
+    return graph({
+      totals: { resources: 15, managed: 1, drift: 14 },
+      groups: [
+        group({ asset_type: BUCKET, label: 'Storage bucket', adoptable: true, count: 2, managed: 1, drift: 1, nodes: [node({ id: 'b0', label: 'm', asset_type: BUCKET, managed: true }), node({ id: 'b1', label: 'd', asset_type: BUCKET, managed: false })] }),
+        group({ asset_type: 'run.googleapis.com/Revision', label: 'Revision', count: 10, managed: 0, drift: 10, nodes: [node({ id: 'r0', label: 'rev', asset_type: 'run.googleapis.com/Revision', managed: false })] }),
+        group({ asset_type: SECRET, label: 'Secret', sensitive: true, count: 3, managed: 0, drift: 3 }),
+      ],
+    });
+  }
+
+  it('computes managed/resources/drift over the PRIMARY (adoptable) cards only', () => {
+    const g = liveSlice();
+    const s = scopeTotals(resourceCards(g), g.totals.resources);
+    expect(s.managed).toBe(1);
+    expect(s.resources).toBe(2);
+    expect(s.drift).toBe(1);
+  });
+
+  it('reads the project-wide total from graph.totals.resources, not card sums (Codex MF1)', () => {
+    const g = liveSlice();
+    // Force a divergence: backend total higher than the sum of group counts
+    // (e.g. server-side truncation). The honest "indexed total" is the
+    // authoritative backend number.
+    const s = scopeTotals(resourceCards(g), 99);
+    expect(s.totalResources).toBe(99);
+  });
+
+  it('derives outOfScope from the authoritative total minus the scope', () => {
+    const g = liveSlice();
+    const s = scopeTotals(resourceCards(g), g.totals.resources);
+    expect(s.outOfScope).toBe(13); // 15 total − 2 in scope
+  });
+
+  it('counts otherResources (Σ other-card counts) and otherTypes', () => {
+    const g = liveSlice();
+    const s = scopeTotals(resourceCards(g), g.totals.resources);
+    expect(s.otherResources).toBe(13); // Revision 10 + Secret 3
+    expect(s.otherTypes).toBe(2);
+  });
+
+  it('never returns a negative outOfScope', () => {
+    const g = liveSlice();
+    // Pathological: authoritative total below the in-scope sum → clamp at 0.
+    const s = scopeTotals(resourceCards(g), 1);
+    expect(s.outOfScope).toBe(0);
+  });
+
+  it('is all-zero for a degraded graph', () => {
+    const g = graph({ degraded: true, groups: [] });
+    const s = scopeTotals(resourceCards(g), g.totals.resources);
+    expect(s).toEqual({ resources: 0, managed: 0, drift: 0, totalResources: 0, outOfScope: 0, otherResources: 0, otherTypes: 0 });
   });
 });

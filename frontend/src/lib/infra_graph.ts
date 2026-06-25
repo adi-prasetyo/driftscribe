@@ -412,6 +412,13 @@ export interface ResourceCard {
   label: string;
   /** Counts-only secret card: rows === [], a "N … hidden" line stands in. */
   sensitive: boolean;
+  /**
+   * The group's `adoptable` flag (an adoptable resource TYPE — single source of
+   * truth: ADOPTABLE_RESOURCE_TYPES). NB this is type-level: an adoptable card
+   * can still hold control-plane rows whose individual Adopt CTA is suppressed.
+   * Drives the scope split (see :func:`splitCards`).
+   */
+  adoptable: boolean;
   count: number;
   managed: number;
   drift: number;
@@ -455,6 +462,7 @@ export function resourceCards(graph: InfraGraph): ResourceCard[] {
         assetType: g.asset_type,
         label: g.label,
         sensitive: true,
+        adoptable: false,
         count: g.count,
         managed: g.managed,
         drift: g.drift,
@@ -490,6 +498,7 @@ export function resourceCards(graph: InfraGraph): ResourceCard[] {
       assetType: g.asset_type,
       label: g.label,
       sensitive: false,
+      adoptable: groupAdoptable,
       count: g.count,
       managed: g.managed,
       drift: g.drift,
@@ -521,6 +530,85 @@ export function resourceCards(graph: InfraGraph): ResourceCard[] {
  */
 export function startHereAssetType(cards: ResourceCard[]): string | null {
   return cards.find((c) => c.rank != null && c.rows.some((r) => r.adoptable))?.assetType ?? null;
+}
+
+/**
+ * A card is PRIMARY (in DriftScribe's scope, shown by default) iff its type is
+ * adoptable OR it holds at least one managed resource. The `managed > 0` arm is
+ * a defensive invariant: a managed resource is NEVER folded out of the default
+ * view, even if a future `.tf` declares a type DriftScribe can't yet adopt.
+ * Everything else (incl. sensitive secrets, which are never adopted) is OTHER —
+ * folded behind the "Other resources" disclosure (design 2026-06-25 scope-split).
+ */
+function isPrimaryCard(card: ResourceCard): boolean {
+  return card.adoptable || card.managed > 0;
+}
+
+export interface CardSplit {
+  primary: ResourceCard[];
+  other: ResourceCard[];
+}
+
+/**
+ * Partition the cards into the default-shown PRIMARY set and the folded-away
+ * OTHER set, preserving the `resourceCards` sort order within each (so the
+ * drift-first + adopt-rank ordering still drives the primary grid and
+ * `startHereAssetType` is unaffected). Pure — degraded → both empty.
+ */
+export function splitCards(cards: ResourceCard[]): CardSplit {
+  const primary: ResourceCard[] = [];
+  const other: ResourceCard[] = [];
+  for (const card of cards) {
+    (isPrimaryCard(card) ? primary : other).push(card);
+  }
+  return { primary, other };
+}
+
+export interface ScopeTotals {
+  /** Σ count over PRIMARY cards — the coverage-meter denominator. */
+  resources: number;
+  /** Σ managed over PRIMARY cards. */
+  managed: number;
+  /** Σ drift over PRIMARY cards — matches the per-card drift badges. */
+  drift: number;
+  /** Authoritative project-wide indexed total (graph.totals.resources, Codex MF1). */
+  totalResources: number;
+  /** max(0, totalResources − resources) — resources outside DriftScribe's scope. */
+  outOfScope: number;
+  /** Σ count over OTHER cards — what the disclosure actually lists. */
+  otherResources: number;
+  /** Number of OTHER cards (resource types DriftScribe doesn't manage). */
+  otherTypes: number;
+}
+
+/**
+ * Scope-aware totals for the panel headline (design 2026-06-25 scope-split Q2):
+ * coverage is computed over the PRIMARY (in-scope) cards, while the project-wide
+ * `totalResources` comes from the authoritative backend total — NOT the card
+ * sums — so a server-side truncation can't make the muted "indexed total"
+ * under-report (Codex plan-review MF1). `outOfScope` is the honest "not in
+ * DriftScribe's managed scope" figure (total − scope, clamped ≥ 0);
+ * `otherResources` is the sum the disclosure itself lists. Pure.
+ */
+export function scopeTotals(cards: ResourceCard[], totalResources: number): ScopeTotals {
+  const { primary, other } = splitCards(cards);
+  const sum = (cs: ResourceCard[], pick: (c: ResourceCard) => number): number =>
+    cs.reduce((acc, c) => acc + pick(c), 0);
+  const resources = sum(primary, (c) => c.count);
+  const managed = sum(primary, (c) => c.managed);
+  const total = Number.isFinite(totalResources) ? Math.max(0, totalResources) : 0;
+  return {
+    resources,
+    managed,
+    // Σ primary.drift (not resources − managed): matches the per-card drift
+    // badges even if a malformed group violates count == managed + drift
+    // (Codex completed-work review, nice-to-have 1).
+    drift: sum(primary, (c) => c.drift),
+    totalResources: total,
+    outOfScope: Math.max(0, total - resources),
+    otherResources: sum(other, (c) => c.count),
+    otherTypes: other.length,
+  };
 }
 
 /**

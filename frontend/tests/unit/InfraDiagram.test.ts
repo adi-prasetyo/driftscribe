@@ -31,6 +31,26 @@ afterEach(cleanup);
 beforeEach(() => vi.clearAllMocks());
 
 function graphWith(totals: InfraGraph['totals'], degraded = false): InfraGraph {
+  // Carry the totals in a single ADOPTABLE group so the scope-aware badge/meter
+  // (design 2026-06-25 scope-split) read these numbers directly — scope === the
+  // whole estate when the one type is adoptable. Empty for a zero/degraded
+  // estate. Real /infra/graph responses always carry groups; this keeps the
+  // coverage + concurrency fixtures representative under the new semantics.
+  const groups: InfraGraph['groups'] =
+    !degraded && totals.resources > 0
+      ? [
+          {
+            asset_type: 'storage.googleapis.com/Bucket',
+            label: 'Storage bucket',
+            adoptable: true,
+            count: totals.resources,
+            managed: totals.managed,
+            drift: totals.drift,
+            sensitive: false,
+            nodes: [],
+          },
+        ]
+      : [];
   return {
     generated_at: null,
     project: 'demo',
@@ -38,7 +58,7 @@ function graphWith(totals: InfraGraph['totals'], degraded = false): InfraGraph {
     degraded,
     degraded_reason: degraded ? 'cai_unavailable' : null,
     totals,
-    groups: [],
+    groups,
     edges: [],
   };
 }
@@ -595,7 +615,9 @@ describe('InfraDiagram — resource cards', () => {
       edges: [],
     };
     const { getByTestId, queryAllByTestId } = render(InfraDiagram, { props: { call: callWith(graph) } });
-    await waitFor(() => expect(getByTestId('infra-cards')).toBeTruthy());
+    // A secret type is non-adoptable, so its counts-only card folds into the
+    // "Other resources" disclosure (no in-scope primary grid here).
+    await waitFor(() => expect(getByTestId('infra-other-cards')).toBeTruthy());
     expect(norm(getByTestId('card-counts-only').textContent)).toContain('2 secrets · hidden');
     // A counts-only card has no per-resource rows and no Adopt button.
     expect(queryAllByTestId('infra-card-row')).toHaveLength(0);
@@ -781,9 +803,11 @@ describe('InfraDiagram — card order (light-touch guided order)', () => {
     });
     await waitFor(() => expect(getByTestId('infra-cards')).toBeTruthy());
     expect(queryByTestId('card-start-here')).toBeNull();
-    // Server order within the drift tier: topic → run → SA → bucket.
+    // No rank sort: the three adoptable types keep server order in the primary
+    // grid (topic → run → bucket); the non-adoptable Service account folds into
+    // the "Other resources" disclosure, which renders after the grid.
     const types = getAllByTestId('infra-card-type').map((t) => norm(t.textContent));
-    expect(types).toEqual(['Pub/Sub topic', 'Cloud Run service', 'Service account', 'Storage bucket']);
+    expect(types).toEqual(['Pub/Sub topic', 'Cloud Run service', 'Storage bucket', 'Service account']);
   });
 });
 
@@ -882,10 +906,217 @@ describe('InfraDiagram — card duplicate group labels (prod crash regression)',
       ],
     };
     const { getByTestId, getAllByTestId } = render(InfraDiagram, { props: { call: callWith(graph) } });
-    await waitFor(() => expect(getByTestId('infra-cards')).toBeTruthy());
+    // Both "Project" types are non-adoptable + unmanaged, so they fold into the
+    // "Other resources" disclosure — the unique-each-key regression is exercised
+    // there now (the grid keys by assetType in both grids).
+    await waitFor(() => expect(getByTestId('infra-other-cards')).toBeTruthy());
     expect(getAllByTestId('infra-card')).toHaveLength(2);
     // The caveat below the grid must also survive (the crash killed it).
     expect(getByTestId('infra-panel').textContent).toContain('test caveat');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scope split (design 2026-06-25): the default grid shows only PRIMARY cards
+// (adoptable types + anything managed); non-adoptable noise folds into a
+// collapsed "Other resources" disclosure. The headline coverage + drift describe
+// the scope, with the project-wide total as muted context.
+// ---------------------------------------------------------------------------
+
+// An adoptable Storage bucket (in scope) + two non-adoptable noise types: a big
+// Cloud Run revision history + a sensitive Secret group. Scope = bucket only.
+function scopeSplitGraph(): InfraGraph {
+  return {
+    generated_at: null,
+    project: 'demo',
+    caveat: 'test caveat',
+    degraded: false,
+    degraded_reason: null,
+    totals: { resources: 23, managed: 2, drift: 21 },
+    groups: [
+      {
+        asset_type: BUCKET,
+        label: 'Storage bucket',
+        adoptable: true,
+        count: 3,
+        managed: 2,
+        drift: 1,
+        sensitive: false,
+        nodes: [
+          { id: 'b0', label: 'prod-state', asset_type: BUCKET, managed: true, location: null },
+          { id: 'b1', label: 'my-old-uploads', asset_type: BUCKET, managed: false, location: 'asia-northeast1' },
+        ],
+      },
+      {
+        asset_type: 'run.googleapis.com/Revision',
+        label: 'Revision',
+        adoptable: false,
+        count: 18,
+        managed: 0,
+        drift: 18,
+        sensitive: false,
+        nodes: [{ id: 'r0', label: 'demo-00018-abc', asset_type: 'run.googleapis.com/Revision', managed: false, location: null }],
+      },
+      {
+        asset_type: 'secretmanager.googleapis.com/Secret',
+        label: 'Secret',
+        adoptable: false,
+        count: 2,
+        managed: 0,
+        drift: 2,
+        sensitive: true,
+        nodes: [],
+      },
+    ],
+    edges: [],
+  };
+}
+
+describe('InfraDiagram — scope split (adoptable vs. other)', () => {
+  it('renders only PRIMARY (adoptable) cards in the default grid', async () => {
+    const { getByTestId, getAllByTestId } = render(InfraDiagram, {
+      props: { call: callWith(scopeSplitGraph()), onAdopt: () => {} },
+    });
+    await waitFor(() => expect(getByTestId('infra-cards')).toBeTruthy());
+    const primaryTypes = getAllByTestId('infra-card-type')
+      .filter((el) => getByTestId('infra-cards').contains(el))
+      .map((t) => norm(t.textContent));
+    expect(primaryTypes).toEqual(['Storage bucket']);
+  });
+
+  it('folds non-adoptable types into the "Other resources" disclosure', async () => {
+    const { getByTestId } = render(InfraDiagram, {
+      props: { call: callWith(scopeSplitGraph()), onAdopt: () => {} },
+    });
+    await waitFor(() => expect(getByTestId('infra-other-cards')).toBeTruthy());
+    const otherGrid = getByTestId('infra-other-cards');
+    expect(otherGrid.textContent).toContain('Revision');
+    expect(otherGrid.textContent).toContain('Secret');
+    // The disclosure is collapsed by default (a <details> with no `open`).
+    const details = getByTestId('infra-other') as HTMLDetailsElement;
+    expect(details.open).toBe(false);
+  });
+
+  it('summarizes the disclosure: N types · M resources', async () => {
+    const { getByTestId } = render(InfraDiagram, {
+      props: { call: callWith(scopeSplitGraph()), onAdopt: () => {} },
+    });
+    await waitFor(() => expect(getByTestId('infra-other')).toBeTruthy());
+    const summary = norm(getByTestId('infra-other-summary').textContent);
+    expect(summary).toContain('2 types');
+    expect(summary).toContain('20 resources'); // Revision 18 + Secret 2
+    expect(summary.toLowerCase()).toContain("doesn't manage");
+  });
+
+  it('headline badge + meter show SCOPE numbers, not the project total', async () => {
+    const { getByTestId } = render(InfraDiagram, {
+      props: { call: callWith(scopeSplitGraph()), onAdopt: () => {} },
+    });
+    // scope: 2 managed of 3 in-scope resources (67%), 1 drift — NOT 2/23 or 21 drift.
+    await waitFor(() => expect(getByTestId('infra-coverage-count').textContent).toBe('2/3 managed · 67%'));
+    expect(getByTestId('infra-drift-badge').textContent).toBe('1 drift');
+    expect(getByTestId('coverage-pct').textContent).toBe('67%');
+  });
+
+  it('shows the muted out-of-scope context line (total + not-managed count)', async () => {
+    const { getByTestId } = render(InfraDiagram, {
+      props: { call: callWith(scopeSplitGraph()), onAdopt: () => {} },
+    });
+    await waitFor(() => expect(getByTestId('infra-scope-note')).toBeTruthy());
+    const note = norm(getByTestId('infra-scope-note').textContent);
+    expect(note).toContain('23 total resources indexed');
+    expect(note).toContain('20'); // out of scope = 23 − 3
+  });
+
+  it('the supported-infrastructure subject reaches the coverage headline', async () => {
+    const { getByTestId } = render(InfraDiagram, {
+      props: { call: callWith(scopeSplitGraph()), onAdopt: () => {} },
+    });
+    await waitFor(() => expect(getByTestId('coverage-meter')).toBeTruthy());
+    expect(getByTestId('coverage-meter').textContent).toContain('supported infrastructure');
+  });
+
+  it('renders NO disclosure when every type is in scope', async () => {
+    const { getByTestId, queryByTestId } = render(InfraDiagram, {
+      props: { call: callWith(allManagedGraph()), onAdopt: () => {} },
+    });
+    await waitFor(() => expect(getByTestId('infra-cards')).toBeTruthy());
+    expect(queryByTestId('infra-other')).toBeNull();
+    expect(queryByTestId('infra-scope-note')).toBeNull();
+  });
+
+  it('keeps a managed-but-non-adoptable type in the default grid (never hidden)', async () => {
+    const graph: InfraGraph = {
+      generated_at: null, project: 'demo', caveat: 'test caveat',
+      degraded: false, degraded_reason: null,
+      totals: { resources: 2, managed: 1, drift: 1 },
+      groups: [
+        {
+          asset_type: SA, label: 'Service account', adoptable: false,
+          count: 2, managed: 1, drift: 1, sensitive: false,
+          nodes: [
+            { id: 's0', label: 'mgd@p', asset_type: SA, managed: true, location: null },
+            { id: 's1', label: 'drift@p', asset_type: SA, managed: false, location: null },
+          ],
+        },
+      ],
+      edges: [],
+    };
+    const { getByTestId, queryByTestId } = render(InfraDiagram, { props: { call: callWith(graph) } });
+    await waitFor(() => expect(getByTestId('infra-cards')).toBeTruthy());
+    expect(getByTestId('infra-cards').textContent).toContain('Service account');
+    expect(queryByTestId('infra-other')).toBeNull();
+  });
+
+  it('gives the Adopt button an opaque (non-ghost) treatment so it lifts off the drift row', async () => {
+    const { getByTestId } = render(InfraDiagram, {
+      props: { call: callWith(scopeSplitGraph()), onAdopt: () => {} },
+    });
+    await waitFor(() => expect(getByTestId('card-adopt-btn')).toBeTruthy());
+    const btn = getByTestId('card-adopt-btn');
+    expect(btn.classList.contains('ds-btn--ghost')).toBe(false);
+    expect(btn.classList.contains('ds-btn')).toBe(true);
+  });
+
+  it('shows an "out of scope" badge (not a false "in sync") when resources exist but none are in scope', async () => {
+    // Every indexed resource is a non-adoptable, non-managed type → no primary
+    // cards. The badge must NOT read green "in sync" (Workflow finding).
+    const graph: InfraGraph = {
+      generated_at: null, project: 'demo', caveat: 'test caveat',
+      degraded: false, degraded_reason: null,
+      totals: { resources: 5, managed: 0, drift: 5 },
+      groups: [
+        {
+          asset_type: 'run.googleapis.com/Revision', label: 'Revision', adoptable: false,
+          count: 5, managed: 0, drift: 5, sensitive: false,
+          nodes: [{ id: 'r0', label: 'rev-1', asset_type: 'run.googleapis.com/Revision', managed: false, location: null }],
+        },
+      ],
+      edges: [],
+    };
+    const { getByTestId } = render(InfraDiagram, { props: { call: callWith(graph) } });
+    await waitFor(() => expect(getByTestId('infra-other')).toBeTruthy());
+    expect(norm(getByTestId('infra-drift-badge').textContent)).toBe('out of scope');
+    expect(getByTestId('infra-hero').textContent).toContain('No resources in supported types yet');
+  });
+
+  it('uses the plain "your infrastructure" subject when the whole estate is in scope', async () => {
+    // allManagedGraph: one adoptable bucket, nothing out of scope → "supported"
+    // qualifier would be unexplained (no scope note), so fall back to plain copy.
+    const { getByTestId } = render(InfraDiagram, { props: { call: callWith(allManagedGraph()) } });
+    await waitFor(() => expect(getByTestId('coverage-meter')).toBeTruthy());
+    const txt = getByTestId('coverage-meter').textContent ?? '';
+    expect(txt).toContain('of your infrastructure is under IaC management');
+    expect(txt).not.toContain('supported infrastructure');
+  });
+
+  it('shows the empty-estate note exactly once (hero only, no duplicate card-zone note)', async () => {
+    const { getAllByText, queryByTestId } = render(InfraDiagram, {
+      props: { call: callWith(graphWith({ resources: 0, managed: 0, drift: 0 })) },
+    });
+    await waitFor(() => expect(getAllByText('No resources indexed yet.').length).toBeGreaterThan(0));
+    expect(getAllByText('No resources indexed yet.')).toHaveLength(1);
+    expect(queryByTestId('infra-empty')).toBeNull();
   });
 });
 

@@ -256,21 +256,34 @@ test.describe('transparency UI (mock smoke)', () => {
     await page.goto('/');
 
     // Collapsed panel shows a glanceable drift badge (data fetched on mount).
+    // Scope-aware: 1 drift in the adoptable Cloud Run type (NOT the secret, which
+    // is out of scope), so the badge reads "1 drift", not the raw total of 2.
     const panel = page.locator(`[data-testid="${TESTIDS.infraPanel}"]`);
     await expect(panel).toBeVisible();
     const badge = page.locator(`[data-testid="${TESTIDS.infraDriftBadge}"]`);
     await expect(badge).toBeVisible();
-    await expect(badge).toHaveText(/2 drift/);
+    await expect(badge).toHaveText(/1 drift/);
 
-    // Expand → the resource card grid renders (no Mermaid on the normal path).
+    // Expand → the in-scope resource card grid renders (no Mermaid on the normal
+    // path). The adoptable Cloud Run services show by default.
     await page.locator(`[data-testid="${TESTIDS.infraToggle}"]`).click();
     const cards = page.locator(`[data-testid="${TESTIDS.infraCards}"]`);
     await expect(cards).toBeVisible();
     await expect(cards.locator('svg')).toHaveCount(0);
     await expect(cards).toContainText('payment-demo');
     await expect(cards).toContainText('storefront');
-    // The secret group is counts-only — its name never appears, just the count.
-    await expect(cards).toContainText('1 secret');
+
+    // The muted context line keeps the full estate honest (3 indexed, 1 of which
+    // is a type DriftScribe doesn't manage).
+    await expect(panel).toContainText('3 total resources indexed');
+
+    // The non-adoptable secret folds into the "Other resources" disclosure, not
+    // the default grid; open it and confirm the counts-only card is in there.
+    const other = page.locator(`[data-testid="${TESTIDS.infraOther}"]`);
+    await expect(other).toBeVisible();
+    await expect(cards).not.toContainText('1 secret');
+    await other.locator('summary').click();
+    await expect(page.locator(`[data-testid="${TESTIDS.infraOtherCards}"]`)).toContainText('1 secret');
   });
 
   test('open-trace enters historical mode; new chat exits', async ({ page }) => {

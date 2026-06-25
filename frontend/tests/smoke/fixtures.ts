@@ -16,6 +16,8 @@ export const TESTIDS = {
   infraPanel: 'infra-panel',
   infraToggle: 'infra-toggle',
   infraCards: 'infra-cards',
+  infraOther: 'infra-other',
+  infraOtherCards: 'infra-other-cards',
   infraDriftBadge: 'infra-drift-badge',
   infraRefresh: 'infra-refresh',
 } as const;
@@ -140,6 +142,7 @@ export function infraGraphResponse() {
       {
         asset_type: 'run.googleapis.com/Service',
         label: 'Cloud Run service',
+        adoptable: true,
         count: 2,
         managed: 1,
         drift: 1,
