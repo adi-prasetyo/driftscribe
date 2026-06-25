@@ -132,11 +132,17 @@ describe('App — open-trace scrolls the historical region into view', () => {
     // The scroll fired with the historical-region options. setup.ts forces
     // matchMedia('reduce') → matches:true, so prefersReducedMotion() picks 'auto'.
     await waitFor(() => expect(scrollSpy).toHaveBeenCalled());
+    // Exactly one scroll per open-trace — locks mock.contexts.at(-1) to the one
+    // expected call so a future second scroll on this path can't make the
+    // receiver assertion silently test the wrong call.
+    expect(scrollSpy).toHaveBeenCalledTimes(1);
     expect(scrollSpy).toHaveBeenCalledWith({ behavior: 'auto', block: 'start' });
     // ...and it scrolled the historical banner (scrollIntoView's `this` is the
     // element it was invoked on).
-    expect(scrollSpy.mock.contexts.at(-1)).toBe(
-      document.getElementById('historical-badge'),
-    );
+    const banner = document.getElementById('historical-badge');
+    expect(scrollSpy.mock.contexts.at(-1)).toBe(banner);
+    // Focus follows the scroll so keyboard/SR users land in the replay region
+    // instead of being stranded on the rail button they just clicked.
+    expect(document.activeElement).toBe(banner);
   });
 });

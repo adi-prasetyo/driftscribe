@@ -379,10 +379,15 @@
     // below the already-pinned banner when /trace resolves.
     await tick();
     if (myRun !== runSeq) return; // a newer run superseded us during the tick
-    document.getElementById('historical-badge')?.scrollIntoView({
+    const banner = document.getElementById('historical-badge');
+    banner?.scrollIntoView({
       behavior: prefersReducedMotion() ? 'auto' : 'smooth',
       block: 'start',
     });
+    // Move focus into the region too (banner is tabindex=-1) so keyboard/SR
+    // users aren't left on the rail button. preventScroll: scrollIntoView above
+    // already positioned it; don't fight that with a second jump.
+    banner?.focus({ preventScroll: true });
     try {
       const resp = await call('/trace/' + encodeURIComponent(tid));
       if (myRun !== runSeq) return;

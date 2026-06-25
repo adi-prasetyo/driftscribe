@@ -274,4 +274,14 @@ describe('Timeline — historical-empty state', () => {
     expect(getByText('No coordinator reasoning yet.')).toBeTruthy();
     expect(queryByTestId('timeline-empty')).toBeNull();
   });
+
+  it('streaming + no events: keeps the groups (live-chat waiting path regression guard)', () => {
+    // Suppression must stay gated on 'historical' only — the live chat column
+    // streams into empty groups while events arrive.
+    const { queryByTestId, container } = render(Timeline, {
+      props: { events: [], status: 'streaming' },
+    });
+    expect(container.querySelector('#group-coordinator')).not.toBeNull();
+    expect(queryByTestId('timeline-empty')).toBeNull();
+  });
 });
