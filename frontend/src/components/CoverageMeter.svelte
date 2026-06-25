@@ -6,9 +6,16 @@
 
   let {
     totals = null,
+    subject = 'your infrastructure',
   }: {
     /** The /infra/graph totals; null until the first fetch resolves. */
     totals: { resources: number; managed: number; drift: number } | null;
+    /**
+     * What the percentage is "of" in the headline. Default "your
+     * infrastructure"; the Infrastructure panel passes a scope-aware subject
+     * ("your supported infrastructure") when it feeds scope totals.
+     */
+    subject?: string;
   } = $props();
 
   const pct = $derived(totals ? coveragePercent(totals.managed, totals.resources) : null);
@@ -18,7 +25,7 @@
   <div class="coverage" data-testid="coverage-meter">
     <p class="coverage__headline">
       <strong class="coverage__pct" data-testid="coverage-pct">{pct}%</strong>
-      of your infrastructure is under IaC management
+      of {subject} is under IaC management
     </p>
     <div
       class="coverage__bar"
@@ -27,7 +34,7 @@
       aria-valuemin="0"
       aria-valuemax="100"
       aria-valuenow={pct}
-      aria-valuetext="{pct}%, {totals.managed} of {totals.resources} resources managed"
+      aria-valuetext="{pct}% of {subject}, {totals.managed} of {totals.resources} resources managed"
     >
       <div class="coverage__fill" data-testid="coverage-fill" style:width="{pct}%"></div>
     </div>

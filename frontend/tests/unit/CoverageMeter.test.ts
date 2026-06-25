@@ -23,7 +23,7 @@ describe('CoverageMeter', () => {
     expect(bar.getAttribute('aria-valuenow')).toBe('26');
     expect(bar.getAttribute('aria-valuemin')).toBe('0');
     expect(bar.getAttribute('aria-valuemax')).toBe('100');
-    expect(bar.getAttribute('aria-valuetext')).toBe('26%, 13 of 50 resources managed');
+    expect(bar.getAttribute('aria-valuetext')).toBe('26% of your infrastructure, 13 of 50 resources managed');
     expect(getByTestId('coverage-detail').textContent).toContain(
       '13 of 50 resources managed · 37 not yet in IaC',
     );
@@ -56,6 +56,25 @@ describe('CoverageMeter', () => {
     expect(getByTestId('coverage-pct').textContent).toBe('100%');
     expect(getByTestId('coverage-detail').textContent).toContain('7 of 7 resources managed');
     expect(getByTestId('coverage-detail').textContent).not.toContain('not yet in IaC');
+  });
+
+  it('interpolates a custom subject into the headline', () => {
+    const { getByTestId } = render(CoverageMeter, {
+      props: { totals: totals(9, 29, 20), subject: 'your supported infrastructure' },
+    });
+    expect(getByTestId('coverage-meter').textContent).toContain(
+      'of your supported infrastructure is under IaC management',
+    );
+    expect(getByTestId('coverage-meter').textContent).not.toContain('of your infrastructure is');
+  });
+
+  it('carries the subject scope into the progressbar aria-valuetext for screen readers', () => {
+    const { getByRole } = render(CoverageMeter, {
+      props: { totals: totals(9, 9, 0), subject: 'your supported infrastructure' },
+    });
+    expect(getByRole('progressbar').getAttribute('aria-valuetext')).toBe(
+      '100% of your supported infrastructure, 9 of 9 resources managed',
+    );
   });
 
   it('shows an honest 0% when nothing is managed yet', () => {

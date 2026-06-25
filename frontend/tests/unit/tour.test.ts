@@ -143,11 +143,76 @@ describe('step copy', () => {
     expect(line).toContain('wait for you to ask');
   });
 
-  it('estateLine renders live totals with coverage percent', () => {
-    expect(estateLine(makeGraph())).toBe(
-      '12 resources indexed: 9 under IaC management (75%), 3 not yet. ' +
-        'The coverage meter below tracks your migration.',
-    );
+  it('estateLine reports SCOPE coverage (matches the panel), not raw totals', () => {
+    // 13 indexed: an adoptable Bucket type (3 res, 2 managed, 1 drift) + a
+    // non-adoptable Revision type (10, all noise). The line must mirror the
+    // panel's scope numbers (2 of 3 · 67%), never "9 of 13".
+    const g = makeGraph({
+      totals: { resources: 13, managed: 2, drift: 11 },
+      groups: [
+        makeGroup({
+          count: 3,
+          managed: 2,
+          drift: 1,
+          nodes: [
+            makeNode({ id: 'b0', label: 'm', managed: true }),
+            makeNode({ id: 'b1', label: 'd', managed: false }),
+          ],
+        }),
+        makeGroup({
+          asset_type: 'run.googleapis.com/Revision',
+          label: 'Revision',
+          adoptable: false,
+          count: 10,
+          managed: 0,
+          drift: 10,
+          nodes: [makeNode({ id: 'r0', label: 'rev', asset_type: 'run.googleapis.com/Revision', managed: false })],
+        }),
+      ],
+    });
+    const line = estateLine(g);
+    expect(line).toContain('13 resources indexed');
+    expect(line).toContain('2 of 3'); // scope managed / scope resources
+    expect(line).toContain('(67%)');
+    expect(line).toContain('10'); // out-of-scope count
+    expect(line).toContain('The coverage meter below tracks your migration.');
+    expect(line).not.toContain('9 of 13');
+    expect(line).not.toContain('2 of 13');
+  });
+
+  it('estateLine omits the out-of-scope sentence when the whole estate is in scope', () => {
+    const g = makeGraph({
+      totals: { resources: 3, managed: 2, drift: 1 },
+      groups: [makeGroup({ count: 3, managed: 2, drift: 1, nodes: [makeNode({ id: 'b0', label: 'm', managed: true })] })],
+    });
+    const line = estateLine(g);
+    expect(line).toContain('2 of 3');
+    expect(line).not.toMatch(/doesn't manage|does not manage|other/i);
+  });
+
+  it('estateLine stays grammatical when NOTHING is in scope (no "The other N")', () => {
+    // All indexed resources are types DriftScribe doesn't support → no in-scope
+    // group. The old phrasing produced "None of them are supported… The other N",
+    // which contradicts itself (Workflow finding).
+    const g = makeGraph({
+      totals: { resources: 10, managed: 0, drift: 10 },
+      groups: [
+        makeGroup({
+          asset_type: 'run.googleapis.com/Revision',
+          label: 'Revision',
+          adoptable: false,
+          count: 10,
+          managed: 0,
+          drift: 10,
+          nodes: [makeNode({ id: 'r0', label: 'rev', asset_type: 'run.googleapis.com/Revision', managed: false })],
+        }),
+      ],
+    });
+    const line = estateLine(g);
+    expect(line).toContain('10 resources indexed');
+    expect(line).toContain('none are in resource types DriftScribe supports');
+    expect(line).not.toContain('The other');
+    expect(line).toContain('The coverage meter below tracks your migration.');
   });
 
   it('estateLine is honest while loading and when degraded (T3)', () => {

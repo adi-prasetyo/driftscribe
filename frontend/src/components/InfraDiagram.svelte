@@ -29,6 +29,8 @@
     overlayRenderable,
     overlayCountsLine,
     resourceCards,
+    splitCards,
+    scopeTotals,
     startHereAssetType,
     type InfraGraph,
     type ResourceCard,
@@ -121,8 +123,6 @@
 
   const degraded = $derived(graph?.degraded ?? false);
   const totals = $derived(graph?.totals ?? null);
-  const driftCount = $derived(totals?.drift ?? 0);
-  const pct = $derived(totals ? coveragePercent(totals.managed, totals.resources) : null);
 
   // Resource cards (card-grid view; design 2026-06-24-infra-resource-cards): one
   // card per group, managed AND drift rows together, drift rows carrying the
@@ -133,6 +133,17 @@
   // The top adoptable card gets the "Start here" chip (light-touch guided order:
   // the chip + drift-first ordering replace the dropped hint/order-note prose).
   const startHere = $derived(startHereAssetType(cards));
+
+  // Scope split (design 2026-06-25): PRIMARY cards (adoptable types + anything
+  // managed) show by default; the rest fold into a collapsed disclosure. The
+  // headline coverage + drift describe the SCOPE, with the project-wide total as
+  // muted context — totalResources comes from the authoritative backend total,
+  // not the card sums (Codex plan-review MF1).
+  const split = $derived(splitCards(cards));
+  const scope = $derived(scopeTotals(cards, totals?.resources ?? 0));
+  const scopePct = $derived(
+    scope.resources > 0 ? coveragePercent(scope.managed, scope.resources) : null,
+  );
 
   // Header pill per card: drift count (warn) / in sync / counts-only (neutral).
   function cardBadge(card: ResourceCard): { text: string; warn: boolean } {
@@ -391,13 +402,31 @@
       {:else if degraded}
         <span class="ds-pill ds-pill--muted" data-testid="infra-drift-badge">unavailable</span>
       {:else if totals}
-        {#if driftCount > 0}
-          <span class="ds-pill ds-pill--warn" data-testid="infra-drift-badge">{driftCount} drift</span>
+        {#if scope.drift > 0}
+          <span
+            class="ds-pill ds-pill--warn"
+            data-testid="infra-drift-badge"
+            title="Drift in supported resource types">{scope.drift} drift</span
+          >
+        {:else if scope.resources > 0}
+          <span
+            class="ds-pill ds-pill--ok"
+            data-testid="infra-drift-badge"
+            title="In supported resource types">in sync</span
+          >
+        {:else if totals.resources > 0}
+          <!-- Resources exist, but none in a type DriftScribe manages: a green
+               "in sync" here would falsely read as "all managed" (Workflow). -->
+          <span
+            class="ds-pill ds-pill--muted"
+            data-testid="infra-drift-badge"
+            title="These resources are in types DriftScribe doesn't manage">out of scope</span
+          >
         {:else}
           <span class="ds-pill ds-pill--ok" data-testid="infra-drift-badge">in sync</span>
         {/if}
         <span class="infra-summary__count" data-testid="infra-coverage-count"
-          >{totals.managed}/{totals.resources} managed{pct === null ? '' : ` · ${pct}%`}</span
+          >{scope.managed}/{scope.resources} managed{scopePct === null ? '' : ` · ${scopePct}%`}</span
         >
       {/if}
     </span>
@@ -462,8 +491,29 @@
          ghost-only preview can still render under a degraded live graph. -->
     <div class="infra-hero" data-testid="infra-hero">
       <div class="infra-hero__main">
-        {#if graph && !degraded && pct !== null}
-          <CoverageMeter {totals} />
+        {#if graph && !degraded && scopePct !== null}
+          <!-- Coverage is scoped to the resource types DriftScribe manages (the
+               primary cards), so the headline isn't dragged to ~2% by Cloud Run
+               revisions, container images, and other types nobody puts in IaC. -->
+          <!-- "supported" only when there's an out-of-scope set to contrast with
+               (the muted note below explains it); otherwise scope == the whole
+               estate, so the plain default subject is clearer (Workflow). -->
+          <CoverageMeter
+            totals={{ resources: scope.resources, managed: scope.managed, drift: scope.drift }}
+            subject={scope.otherResources > 0 ? 'your supported infrastructure' : 'your infrastructure'}
+          />
+          {#if scope.otherResources > 0}
+            <!-- otherResources (the disclosure's own sum), NOT outOfScope: the
+                 two reconcile only when the backend total equals Σ card counts,
+                 so attributing a number to "types DriftScribe doesn't manage"
+                 must use what those cards actually total (Codex MF). -->
+            <p class="ds-subtle infra-hero__scope-note" data-testid="infra-scope-note">
+              {scope.totalResources} total resources indexed · {scope.otherResources} in types
+              DriftScribe doesn't manage
+            </p>
+          {/if}
+        {:else if graph && !degraded && scope.totalResources > 0}
+          <p class="ds-subtle infra-hero__msg">No resources in supported types yet.</p>
         {:else if graph && !degraded}
           <p class="ds-subtle infra-hero__msg">No resources indexed yet.</p>
         {:else if degraded}
@@ -542,80 +592,108 @@
              rather than a blank gap (5-lens review w4jj7t4a5). -->
         <p class="ds-note" data-testid="infra-empty">No resources indexed yet.</p>
       {/if}
-    {:else if graph && !degraded && cards.length > 0}
-      <div class="infra-cards" data-testid="infra-cards">
-        {#each cards as card (card.assetType)}
-          {@const badge = cardBadge(card)}
-          <div class="infra-card" data-testid="infra-card">
-            <div class="infra-card__head">
-              <span class="infra-card__type" data-testid="infra-card-type">{card.label}</span>
-              <span class="infra-card__head-meta">
-                {#if card.assetType === startHere}
-                  <span class="infra-card__start" data-testid="card-start-here">Start here</span>
-                {/if}
-                <span
-                  class="ds-pill infra-card__badge {badge.warn ? 'ds-pill--warn' : 'ds-pill--muted'}"
-                  data-testid="infra-card-badge">{badge.text}</span
-                >
-              </span>
-            </div>
-            <ul class="infra-card__body">
-              {#if card.sensitive}
-                <li class="infra-card__counts" data-testid="card-counts-only">
-                  <span class="infra-dot infra-dot--hidden"></span>{countsLine(card)}
-                </li>
-              {:else if card.rows.length === 0}
-                <!-- Defensive: a non-sensitive type with resources but no sampled
-                     nodes (every node truncated). Summarize rather than render a
-                     hollow card or collapse the whole grid to "nothing here". -->
-                <li class="infra-card__counts" data-testid="card-summary">
-                  <span class="infra-dot infra-dot--hidden"></span>{card.count}
-                  {card.label.toLowerCase()}{card.count === 1 ? '' : 's'} · not individually listed
-                </li>
-              {:else}
-                {#each card.rows as row (row.nodeId)}
-                  <li class="infra-card__row infra-card__row--{row.status}" data-testid="infra-card-row">
-                    <span class="infra-dot infra-dot--{dotClass(row.status)}"></span>
-                    <span class="infra-card__name">{row.label}</span>
-                    {#if row.status === 'managed'}
-                      <span class="infra-card__tag infra-card__tag--ok" data-testid="card-managed-tag"
-                        >managed</span
-                      >
-                    {:else if row.adoptable}
-                      <button
-                        class="ds-btn ds-btn--ghost infra-card__btn"
-                        type="button"
-                        data-testid="card-adopt-btn"
-                        disabled={adoptDisabled}
-                        title={adoptDisabled
-                          ? 'Unavailable while the chat is busy or reviewing a past trace.'
-                          : undefined}
-                        onclick={() => clickAdopt(row.prefill)}>Adopt into IaC</button
-                      >
-                    {:else if row.status === 'control_plane'}
-                      <span class="ds-subtle infra-card__muted" data-testid="card-control-plane"
-                        >System-managed. The always-on denylist blocks changes and adoption for
-                        control-plane resources and for buckets a Google service auto-creates.</span
-                      >
-                    {:else}
-                      <span class="ds-subtle infra-card__muted" data-testid="card-not-adoptable"
-                        >not an adoptable type</span
-                      >
-                    {/if}
-                  </li>
-                {/each}
-                {#if card.hiddenUnmanaged > 0}
-                  <li class="ds-subtle infra-card__trailer" data-testid="card-trailer">
-                    +{card.hiddenUnmanaged} more unmanaged {card.label}(s) not shown
-                  </li>
-                {/if}
-              {/if}
-            </ul>
-          </div>
-        {/each}
-      </div>
     {:else if graph && !degraded}
-      <p class="ds-note" data-testid="infra-empty">No resources indexed yet.</p>
+      <!-- One card renderer, shared by the in-scope grid and the "Other
+           resources" disclosure (a Svelte snippet keeps the two grids identical). -->
+      {#snippet cardView(card: ResourceCard)}
+        {@const badge = cardBadge(card)}
+        <div class="infra-card" data-testid="infra-card">
+          <div class="infra-card__head">
+            <span class="infra-card__type" data-testid="infra-card-type">{card.label}</span>
+            <span class="infra-card__head-meta">
+              {#if card.assetType === startHere}
+                <span class="infra-card__start" data-testid="card-start-here">Start here</span>
+              {/if}
+              <span
+                class="ds-pill infra-card__badge {badge.warn ? 'ds-pill--warn' : 'ds-pill--muted'}"
+                data-testid="infra-card-badge">{badge.text}</span
+              >
+            </span>
+          </div>
+          <ul class="infra-card__body">
+            {#if card.sensitive}
+              <li class="infra-card__counts" data-testid="card-counts-only">
+                <span class="infra-dot infra-dot--hidden"></span>{countsLine(card)}
+              </li>
+            {:else if card.rows.length === 0}
+              <!-- Defensive: a non-sensitive type with resources but no sampled
+                   nodes (every node truncated). Summarize rather than render a
+                   hollow card or collapse the whole grid to "nothing here". -->
+              <li class="infra-card__counts" data-testid="card-summary">
+                <span class="infra-dot infra-dot--hidden"></span>{card.count}
+                {card.label.toLowerCase()}{card.count === 1 ? '' : 's'} · not individually listed
+              </li>
+            {:else}
+              {#each card.rows as row (row.nodeId)}
+                <li class="infra-card__row infra-card__row--{row.status}" data-testid="infra-card-row">
+                  <span class="infra-dot infra-dot--{dotClass(row.status)}"></span>
+                  <span class="infra-card__name">{row.label}</span>
+                  {#if row.status === 'managed'}
+                    <span class="infra-card__tag infra-card__tag--ok" data-testid="card-managed-tag"
+                      >managed</span
+                    >
+                  {:else if row.adoptable}
+                    <button
+                      class="ds-btn infra-card__btn"
+                      type="button"
+                      data-testid="card-adopt-btn"
+                      disabled={adoptDisabled}
+                      title={adoptDisabled
+                        ? 'Unavailable while the chat is busy or reviewing a past trace.'
+                        : undefined}
+                      onclick={() => clickAdopt(row.prefill)}>Adopt into IaC</button
+                    >
+                  {:else if row.status === 'control_plane'}
+                    <span class="ds-subtle infra-card__muted" data-testid="card-control-plane"
+                      >System-managed. The always-on denylist blocks changes and adoption for
+                      control-plane resources and for buckets a Google service auto-creates.</span
+                    >
+                  {:else}
+                    <span class="ds-subtle infra-card__muted" data-testid="card-not-adoptable"
+                      >not an adoptable type</span
+                    >
+                  {/if}
+                </li>
+              {/each}
+              {#if card.hiddenUnmanaged > 0}
+                <li class="ds-subtle infra-card__trailer" data-testid="card-trailer">
+                  +{card.hiddenUnmanaged} more unmanaged {card.label}(s) not shown
+                </li>
+              {/if}
+            {/if}
+          </ul>
+        </div>
+      {/snippet}
+
+      {#if split.primary.length > 0}
+        <div class="infra-cards" data-testid="infra-cards">
+          {#each split.primary as card (card.assetType)}
+            {@render cardView(card)}
+          {/each}
+        </div>
+      {/if}
+
+      {#if split.other.length > 0}
+        <!-- Non-adoptable types DriftScribe can't manage (Cloud Run revisions,
+             container images, secrets, …): real, but not actionable here. Folded
+             into a collapsed disclosure so the default view stays on-scope. -->
+        <details class="infra-other" data-testid="infra-other">
+          <summary class="infra-other__summary" data-testid="infra-other-summary">
+            <span class="infra-other__lead ds-label">Other resources DriftScribe doesn't manage</span>
+            <span class="infra-other__meta"
+              >{scope.otherTypes} {scope.otherTypes === 1 ? 'type' : 'types'} · {scope.otherResources}
+              {scope.otherResources === 1 ? 'resource' : 'resources'}</span
+            >
+          </summary>
+          <div class="infra-cards" data-testid="infra-other-cards">
+            {#each split.other as card (card.assetType)}
+              {@render cardView(card)}
+            {/each}
+          </div>
+        </details>
+      {/if}
+      <!-- The empty-estate note lives in the hero band (which always renders a
+           state line), so no duplicate is emitted here (Workflow finding). -->
     {/if}
 
     {#if graph && !degraded}
@@ -743,6 +821,13 @@
      plain muted line so they read consistently inside the framed band. */
   .infra-hero__msg {
     margin: 0;
+  }
+  /* Muted project-wide context under the scoped coverage meter: the meter speaks
+     to the adoptable scope, this line keeps the full estate honest. */
+  .infra-hero__scope-note {
+    margin: var(--ds-sp-2) 0 0;
+    font-size: var(--ds-fs-1);
+    font-variant-numeric: tabular-nums;
   }
   .infra-refresh {
     flex: none;
@@ -937,6 +1022,17 @@
     flex: none;
     padding: 0.2em 0.7em;
     font-size: var(--ds-fs-1);
+    /* The opaque base ds-btn fixes label legibility, but its --ds-border-strong
+       (#d8d7d1) hairline is only ~1.3:1 against the beige drift row (#fcf3dc) —
+       below WCAG 1.4.11's 3:1 for the button's own boundary. The --ds-warn border
+       (#9a6b00, ~4.2:1 on beige) makes the button shape perceptible AND ties it
+       to the drift category (Workflow finding, a11y lens). */
+    border-color: var(--ds-warn);
+    color: var(--ds-warn-ink);
+  }
+  .infra-card__btn:hover {
+    background: var(--ds-warn-surface);
+    border-color: var(--ds-warn);
   }
   .infra-card__muted {
     /* The note takes its own line below the dot + name (flex-basis 100% forces the
@@ -961,5 +1057,50 @@
     padding: var(--ds-sp-1) var(--ds-sp-3) var(--ds-sp-2);
     font-size: var(--ds-fs-1);
     font-style: italic;
+  }
+
+  /* "Other resources" disclosure (design 2026-06-25 scope-split): the
+     non-adoptable types DriftScribe can't manage (Cloud Run revisions, container
+     images, secrets, …), folded out of the default view. A quiet full-width
+     summary row; the revealed grid reuses .infra-cards. */
+  .infra-other {
+    margin: var(--ds-sp-3) 0 0;
+    border-top: 1px dashed var(--ds-border);
+  }
+  .infra-other__summary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--ds-sp-1) var(--ds-sp-3);
+    padding: var(--ds-sp-3) 0 var(--ds-sp-1);
+    cursor: pointer;
+    list-style: none;
+  }
+  .infra-other__summary::-webkit-details-marker {
+    display: none;
+  }
+  .infra-other__lead {
+    color: var(--ds-fg-soft);
+    flex: 1 1 auto;
+  }
+  .infra-other__lead::before {
+    content: '▸';
+    display: inline-block;
+    margin-right: var(--ds-sp-2);
+    color: var(--ds-faint);
+    transition: transform var(--ds-dur-fast) var(--ds-ease);
+  }
+  .infra-other[open] .infra-other__lead::before {
+    transform: rotate(90deg);
+  }
+  .infra-other__meta {
+    flex: none;
+    font-size: var(--ds-fs-1);
+    color: var(--ds-muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .infra-other .infra-cards {
+    margin-top: var(--ds-sp-1);
   }
 </style>
