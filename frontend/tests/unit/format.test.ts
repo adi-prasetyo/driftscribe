@@ -176,7 +176,7 @@ describe('iacStatusLabel', () => {
 
 describe('iacStatusHelp', () => {
   it('returns plain-language help for the cryptic statuses', () => {
-    for (const status of ['waiting_for_rebake', 'failed_state_suspect', 'ambiguous']) {
+    for (const status of ['waiting_for_rebake', 'failed_state_suspect', 'ambiguous', 'failed']) {
       const help = iacStatusHelp(status);
       expect(typeof help).toBe('string');
       expect((help as string).length).toBeGreaterThan(20);
@@ -191,9 +191,21 @@ describe('iacStatusHelp', () => {
     expect(help.toLowerCase()).not.toContain('re-bake');
   });
 
+  it('explains failed as state-proven-clean with a clear retry next-step', () => {
+    const help = iacStatusHelp('failed') as string;
+    expect(typeof help).toBe('string');
+    // The distinguishing fact vs failed_state_suspect: live state was left untouched...
+    expect(help.toLowerCase()).toContain('unchanged');
+    // ...with an actionable next step.
+    expect(help.toLowerCase()).toContain('retry');
+    // The OpenTofu error is surfaced nowhere operator-facing (captured stderr, only a
+    // 500-char tail in the isolated apply-audit), so the copy must not promise a
+    // location — not the coordinator-scoped trace.
+    expect(help.toLowerCase()).not.toContain('open the trace');
+  });
+
   it('returns null for self-evident statuses and unknown values', () => {
     expect(iacStatusHelp('applied')).toBeNull();
-    expect(iacStatusHelp('failed')).toBeNull();
     expect(iacStatusHelp('some_new_status')).toBeNull();
   });
 

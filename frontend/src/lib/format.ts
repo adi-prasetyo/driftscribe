@@ -80,8 +80,8 @@ export function iacStatusLabel(status: string | null | undefined): string {
  * Plain-language help for the iac_apply statuses a non-engineer operator can't
  * decode from the label alone. Surfaced as the HelpHint tooltip/accessible
  * description next to the status token (DecisionsRail face-meta + lifecycle
- * steps). Self-evident statuses (`applied`/`failed`) and unknown values return
- * null → no help affordance is rendered. Keyed on the raw backend enum, the
+ * steps). The self-evident status `applied` and unknown values return null →
+ * no help affordance is rendered. Keyed on the raw backend enum, the
  * same input iacStatusLabel takes.
  */
 const IAC_STATUS_HELP: Record<string, string> = {
@@ -93,6 +93,17 @@ const IAC_STATUS_HELP: Record<string, string> = {
     'Create/adopt changes apply in two steps: the PR is merged, then the ' +
     "agent's apply worker is rebuilt from the merged code and re-checks the " +
     "plan before applying. A later 'applied' step confirms completion.",
+  // Plain `failed` (NOT the state-suspect variant): the apply aborted but the
+  // tofu-apply worker PROVED the live state stayed clean (TofuStepError, vs
+  // ApplyStateSuspect's "may be mutated"). We deliberately do NOT point the
+  // operator at the underlying OpenTofu error: the worker captures stderr
+  // (capture_output) and persists only a 500-char tail to the isolated
+  // apply-audit, so it is surfaced nowhere operator-facing — promising a
+  // location (logs or /trace) would be false.
+  failed:
+    "The apply didn't complete, but DriftScribe verified your live infrastructure " +
+    'was left unchanged, so it is safe to fix the cause and retry. (Unlike "failed ' +
+    '(state suspect)", the state was proven clean.)',
   failed_state_suspect:
     "The apply didn't finish cleanly and the live infrastructure state may have " +
     'changed (or a lock was held), so the result is uncertain. Re-running ' +
