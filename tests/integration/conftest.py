@@ -9,6 +9,8 @@ import pytest
 from agent.auth import verify_token
 from agent.config import get_settings
 from agent.main import (
+    _reset_iac_pr_body_cache_for_tests,
+    _reset_iac_pr_merge_cache_for_tests,
     _reset_iac_pr_source_cache_for_tests,
     _reset_infra_graph_cache_for_tests,
     _reset_state_for_tests,
@@ -72,6 +74,10 @@ def _agent_settings(monkeypatch, request):
     # Drop the IaC PR-source cache store singleton/override so a test that injects
     # an in-process store (or constructs one against GCP_PROJECT) can't leak it.
     _reset_iac_pr_source_cache_for_tests()
+    # Same for the merge-status + PR-body per-PR caches (open-trace follow-up):
+    # a merged=True cached in one test must not leak a reconcile into the next.
+    _reset_iac_pr_merge_cache_for_tests()
+    _reset_iac_pr_body_cache_for_tests()
     # Clear the workload cache so each test gets a fresh resolution
     # against the env state above. Without this, a test that delenv'd a
     # worker URL would still get the previously-cached resolution.
@@ -98,6 +104,8 @@ def _agent_settings(monkeypatch, request):
     _reset_trace_state_for_tests()
     _reset_infra_graph_cache_for_tests()
     _reset_iac_pr_source_cache_for_tests()
+    _reset_iac_pr_merge_cache_for_tests()
+    _reset_iac_pr_body_cache_for_tests()
     _registry_mod._WORKLOAD_CACHE.clear()
 
 

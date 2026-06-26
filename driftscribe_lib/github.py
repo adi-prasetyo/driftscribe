@@ -809,6 +809,43 @@ def get_pr_head_sha(repo: Repository, pr_number: int) -> str:
     return repo.get_pull(pr_number).head.sha
 
 
+# Open-trace follow-up (2026-06-27): two read-only probes. Both do a single
+# get_pull; callers in agent/main own the fail-soft wrapping + caching.
+
+def get_pr_body(
+    repo: Repository, pr_number: int, *, max_chars: int = 16384
+) -> dict[str, Any]:
+    """Return the PR's (agent-authored) description for the open-trace
+    "what this change did" disclosure::
+
+        {"body": str | None, "truncated": bool}
+
+    An empty or missing body normalises to ``None`` (no explanation to show, so
+    the UI omits the section). Capped at ``max_chars`` — a GitHub PR body can be
+    up to 65536 chars; the cache doc must stay well under Firestore's 1 MiB
+    limit and the card only needs the gist — over-length is truncated + flagged.
+    """
+    body = repo.get_pull(pr_number).body
+    if not body:  # None or "" — nothing worth surfacing
+        return {"body": None, "truncated": False}
+    if len(body) > max_chars:
+        return {"body": body[:max_chars], "truncated": True}
+    return {"body": body, "truncated": False}
+
+
+def is_pr_merged_at_head(repo: Repository, pr_number: int, head_sha: str) -> bool:
+    """True ONLY when the PR is merged AND its head still equals ``head_sha``.
+
+    The head check mirrors :func:`merge_pr_at_sha`'s head-first invariant
+    (line ~1005): a PR force-pushed to a NEW head and then merged is NOT a
+    reconcile of the OLDER applied artifact, so it must never promote a stale
+    ``merge_state`` to ``merged``. For the normal squash/merge-commit case the
+    branch tip (``pr.head.sha``) is unchanged and equals the as-applied
+    ``head_sha``, so a genuinely-merged PR reconciles correctly."""
+    pull = repo.get_pull(pr_number)
+    return bool(pull.merged) and pull.head.sha == head_sha
+
+
 # Defaults for list_pr_iac_tf_files: a Firestore cache doc must stay under the
 # 1 MiB limit, and IaC files are small, so these caps are generous-but-bounded.
 _PR_SOURCE_MAX_FILES = 25

@@ -453,8 +453,10 @@ def test_waiting_for_rebake_keeps_form(_configured, _inmemory, monkeypatch):
 
 
 def test_applied_failed_keeps_form(_configured, _inmemory, monkeypatch):
-    # applied + merge FAILED → the POST does a merge-only reconcile, so this is
-    # still actionable: the form must stay (Codex review).
+    # applied + merge FAILED, and GitHub does NOT confirm a merge (the default
+    # _patch_resolve get_repo is a bare object() whose merge probe fails soft) →
+    # the serve-time reconcile is a no-op, so this is still actionable and the
+    # form stays (the POST does the merge-only reconcile on click).
     _patch_resolve(monkeypatch, ref=_ref(), view=_view())
     _seed_decision(apply_status="applied", merge_state="failed")
     resp = TestClient(app).get("/iac-approvals/42")
@@ -462,6 +464,29 @@ def test_applied_failed_keeps_form(_configured, _inmemory, monkeypatch):
     body = resp.text
     assert 'data-testid="approve-button"' in body
     assert 'name="form_token"' in body
+
+
+def test_applied_failed_reconciles_to_merged_suppresses_form(
+    _configured, _inmemory, monkeypatch
+):
+    # applied + merge FAILED, but the PR was merged OUT-OF-BAND at the as-applied
+    # head: the serve-time merge_state reconcile (2026-06-27, Codex MF3) promotes
+    # it to merged so the page suppresses the form instead of inviting a click
+    # whose POST would write a new applied+merged doc.
+    from types import SimpleNamespace
+
+    _patch_resolve(monkeypatch, ref=_ref(), view=_view())
+    merged_repo = SimpleNamespace(
+        get_pull=lambda n: SimpleNamespace(merged=True, head=SimpleNamespace(sha=_HEAD))
+    )
+    monkeypatch.setattr("agent.main.get_repo", lambda token, repo: merged_repo)
+    _seed_decision(apply_status="applied", merge_state="failed")
+    resp = TestClient(app).get("/iac-approvals/42")
+    assert resp.status_code == 200
+    body = resp.text
+    assert 'data-testid="approve-button"' not in body
+    assert 'name="form_token"' not in body
+    assert "Already applied and merged" in body
 
 
 def test_decision_lookup_failure_falls_back_to_form(_configured, _inmemory, monkeypatch):
