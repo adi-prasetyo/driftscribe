@@ -146,3 +146,129 @@ describe('App — open-trace scrolls the historical region into view', () => {
     expect(document.activeElement).toBe(banner);
   });
 });
+
+describe('App — open-trace surfaces the PR body ("what this change did")', () => {
+  // For an iac_apply replay, openTrace fetches GET /trace/{id}/pr-body and shows
+  // the agent-authored PR description in a disclosure below the decision card.
+  function stubFetch(opts: { body: string | null; action?: string }) {
+    const action = opts.action ?? 'iac_apply';
+    const iac = {
+      decision_id: 'd1',
+      trace_id: 'tid-iac-1',
+      action,
+      pr_number: 47,
+      head_sha: 'a'.repeat(40),
+      apply_status: 'applied',
+      merge_state: 'merged',
+      approver: 'op@example.com',
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      // pr-body MUST be checked before the generic /trace/ branch (both match).
+      if (url.includes('/pr-body'))
+        return okJson({
+          pr_number: 47,
+          head_sha: 'a'.repeat(40),
+          body: opts.body,
+          body_truncated: false,
+          cached: false,
+        });
+      if (url.includes('/trace/'))
+        return okJson({ trace_id: 'tid-iac-1', complete: true, events: [], decision: iac });
+      if (url.includes('/decisions')) return okJson({ decisions: [iac] });
+      if (url.includes('/infra/graph'))
+        return okJson({
+          generated_at: null,
+          project: 'demo-proj',
+          caveat: '',
+          degraded: false,
+          degraded_reason: null,
+          totals: { resources: 1, managed: 0, drift: 1 },
+          groups: [],
+          edges: [],
+        });
+      return okJson({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+
+  it('shows the PR-body disclosure with the fetched body for an iac_apply trace', async () => {
+    window.sessionStorage.setItem('driftscribe_token', 'tok');
+    stubFetch({ body: '## Repoints payment-demo\n\nWhy: completes the C5f isolation.' });
+    const { findByTestId } = render(App);
+    await fireEvent.click(await findByTestId('open-trace-button'));
+    const panel = await findByTestId('pr-body-disclosure');
+    expect(panel.querySelector('pre')?.textContent).toContain('Repoints payment-demo');
+  });
+
+  it('hides the disclosure when the PR has no body (fail-soft)', async () => {
+    window.sessionStorage.setItem('driftscribe_token', 'tok');
+    stubFetch({ body: null });
+    const { findByTestId, queryByTestId } = render(App);
+    await fireEvent.click(await findByTestId('open-trace-button'));
+    // The decision card settles, but no PR-body panel renders for a null body.
+    await findByTestId('decision-summary');
+    expect(queryByTestId('pr-body-disclosure')).toBeNull();
+  });
+
+  it('does not fetch the PR body for a non-iac trace', async () => {
+    window.sessionStorage.setItem('driftscribe_token', 'tok');
+    const fetchMock = stubFetch({ body: 'x', action: 'drift_issue' });
+    const { findByTestId } = render(App);
+    await fireEvent.click(await findByTestId('open-trace-button'));
+    await findByTestId('decision-summary'); // settle
+    expect(fetchMock.mock.calls.some(([u]) => String(u).includes('/pr-body'))).toBe(false);
+  });
+
+  it('drops a stale PR-body response when a newer open-trace supersedes it', async () => {
+    // loadPrBody is runSeq-guarded: a slow /pr-body from an earlier open-trace
+    // must NOT overwrite a newer trace's body. Open A (its /pr-body blocked),
+    // open B (resolves), then release A — the guard must drop A's late response.
+    window.sessionStorage.setItem('driftscribe_token', 'tok');
+    const decA = {
+      decision_id: 'dA', trace_id: 'tid-a', action: 'iac_apply',
+      pr_number: 1, head_sha: 'a'.repeat(40), apply_status: 'applied', approver: 'op',
+    };
+    const decB = {
+      decision_id: 'dB', trace_id: 'tid-b', action: 'iac_apply',
+      pr_number: 2, head_sha: 'b'.repeat(40), apply_status: 'applied', approver: 'op',
+    };
+    let releaseA: () => void = () => {};
+    const aGate = new Promise<void>((r) => (releaseA = r));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/pr-body')) {
+          if (url.includes('tid-a')) {
+            await aGate; // A's body is held until we release it
+            return okJson({ pr_number: 1, head_sha: 'a'.repeat(40), body: 'A-BODY', body_truncated: false, cached: false });
+          }
+          return okJson({ pr_number: 2, head_sha: 'b'.repeat(40), body: 'B-BODY', body_truncated: false, cached: false });
+        }
+        if (url.includes('/trace/tid-a')) return okJson({ trace_id: 'tid-a', complete: true, events: [], decision: decA });
+        if (url.includes('/trace/tid-b')) return okJson({ trace_id: 'tid-b', complete: true, events: [], decision: decB });
+        if (url.includes('/decisions')) return okJson({ decisions: [decA, decB] });
+        if (url.includes('/infra/graph'))
+          return okJson({ generated_at: null, project: 'demo-proj', caveat: '', degraded: false, degraded_reason: null, totals: { resources: 1, managed: 0, drift: 1 }, groups: [], edges: [] });
+        return okJson({});
+      }),
+    );
+
+    const { findAllByTestId, findByTestId } = render(App);
+    const buttons = await findAllByTestId('open-trace-button');
+    await fireEvent.click(buttons[0]); // open A (newest first) — loadPrBody A blocks on aGate
+    await fireEvent.click(buttons[1]); // open B — supersedes; loadPrBody B resolves
+
+    const panel = await findByTestId('pr-body-disclosure');
+    expect(panel.querySelector('pre')?.textContent).toContain('B-BODY');
+
+    releaseA(); // A's stale response resolves now
+    await Promise.resolve();
+    await Promise.resolve();
+    // The runSeq guard dropped A — B's body must remain, A's must never appear.
+    expect(panel.querySelector('pre')?.textContent).toContain('B-BODY');
+    expect(panel.querySelector('pre')?.textContent).not.toContain('A-BODY');
+  });
+});

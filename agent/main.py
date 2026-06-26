@@ -69,6 +69,7 @@ from agent.renderer import (
     render_rollback_body,
     scrub_decision_approval,
     scrub_decision_rationale,
+    scrub_pr_body,
     scrub_rationale_text,
 )
 from agent.runbook_patcher import patch_runbook
@@ -82,6 +83,11 @@ from agent.iac_pr_source_cache import (
     FirestoreIacPrSourceCacheStore,
     IacPrSourceCacheStore,
     InMemoryIacPrSourceCacheStore,
+)
+from agent.per_pr_cache import (
+    FirestorePerPrCacheStore,
+    InMemoryPerPrCacheStore,
+    PerPrCacheStore,
 )
 from agent.state_store import FirestoreStateStore, InMemoryStateStore, StateStore
 from agent.trace_fetcher import (
@@ -1937,13 +1943,23 @@ def list_decisions_endpoint(
             headers={"Cache-Control": "no-store"},
         )
     response.headers["Cache-Control"] = "no-store"
-    # Per-row serve-time transforms (both pure, copy-on-change, never-mutate):
+    # Per-row serve-time transforms (all copy-on-change, never-mutate):
     #   1. scrub_decision_rationale — strip secret-like values from the rationale.
     #   2. attach_iac_pr_link — derive github.url -> the PR for iac_apply rows, from
     #      the trusted config repo, so the rail can link a row to its GitHub PR.
-    repo = get_settings().github_repo
+    #   3. reconcile_merge_state — promote a stale applied+merge=failed row to
+    #      merged when GitHub confirms the PR merged out-of-band (compute-only, no
+    #      persist). The provider memoizes the github client so a window with N
+    #      stale rows builds it once, and a warm merge-cache makes zero GitHub calls.
+    settings = get_settings()
+    repo = settings.github_repo
+    repo_provider = _memoized_repo_provider(settings)
     rows = [
-        attach_iac_pr_link(scrub_decision_rationale(d), repo)
+        reconcile_merge_state(
+            attach_iac_pr_link(scrub_decision_rationale(d), repo),
+            repo_provider=repo_provider,
+            settings=settings,
+        )
         for d in state.list_decisions(limit=limit)
     ]
     #   3. scrub_decision_approval — demo-window anonymous reads only (Worker
@@ -2050,6 +2066,221 @@ def _reset_iac_pr_source_cache_for_tests() -> None:
     global _iac_pr_source_cache_store_singleton, _iac_pr_source_cache_store_override
     _iac_pr_source_cache_store_singleton = None
     _iac_pr_source_cache_store_override = None
+
+
+# --- Open-trace follow-up (2026-06-27): two more per-PR read-through caches. -- #
+# Same gcp_project-only gating posture as the source cache (read-only, must
+# persist through DRY_RUN=true + scale-to-zero). Both store ONE doc per PR.
+
+# (a) Merge-status reconcile cache: "is PR #n merged at the as-applied head?".
+_iac_pr_merge_cache_store_singleton: "PerPrCacheStore | None" = None
+_iac_pr_merge_cache_store_override: "PerPrCacheStore | None" = None
+_IAC_PR_MERGE_FORMAT_VERSION = 1
+_IAC_PR_MERGE_CLOCK_SKEW_TOLERANCE_S = 60.0
+# merged=True is TERMINAL (a PR never un-merges) → no TTL expiry while the
+# head_sha still matches. merged=False is transient → re-probe after this.
+_IAC_PR_MERGE_UNMERGED_TTL_S = 120.0
+
+
+def get_iac_pr_merge_cache_store() -> PerPrCacheStore:
+    """Return the process-wide merge-status cache store singleton."""
+    global _iac_pr_merge_cache_store_singleton
+    if _iac_pr_merge_cache_store_override is not None:
+        return _iac_pr_merge_cache_store_override
+    if _iac_pr_merge_cache_store_singleton is None:
+        s = get_settings()
+        if s.gcp_project:
+            _iac_pr_merge_cache_store_singleton = FirestorePerPrCacheStore(
+                collection="iac_pr_merge_status", project=s.gcp_project
+            )
+        else:
+            _iac_pr_merge_cache_store_singleton = InMemoryPerPrCacheStore()
+    return _iac_pr_merge_cache_store_singleton
+
+
+def _set_iac_pr_merge_cache_store_for_tests(store: "PerPrCacheStore | None") -> None:
+    """Test-only: inject (or, with None, clear) the merge-status store override."""
+    global _iac_pr_merge_cache_store_override
+    _iac_pr_merge_cache_store_override = store
+
+
+def _reset_iac_pr_merge_cache_for_tests() -> None:
+    """Test-only: clear the merge-status store singleton + injection override."""
+    global _iac_pr_merge_cache_store_singleton, _iac_pr_merge_cache_store_override
+    _iac_pr_merge_cache_store_singleton = None
+    _iac_pr_merge_cache_store_override = None
+
+
+# (b) PR-body cache: the agent-authored description shown in the open-trace card.
+_iac_pr_body_cache_store_singleton: "PerPrCacheStore | None" = None
+_iac_pr_body_cache_store_override: "PerPrCacheStore | None" = None
+_IAC_PR_BODY_FORMAT_VERSION = 1
+_IAC_PR_BODY_CLOCK_SKEW_TOLERANCE_S = 60.0
+# A PR body is mutable but stable for merged historical PRs; head_sha is the
+# real freshness key, this TTL is only a long backstop.
+_IAC_PR_BODY_TTL_S = 86400.0
+
+
+def get_iac_pr_body_cache_store() -> PerPrCacheStore:
+    """Return the process-wide PR-body cache store singleton."""
+    global _iac_pr_body_cache_store_singleton
+    if _iac_pr_body_cache_store_override is not None:
+        return _iac_pr_body_cache_store_override
+    if _iac_pr_body_cache_store_singleton is None:
+        s = get_settings()
+        if s.gcp_project:
+            _iac_pr_body_cache_store_singleton = FirestorePerPrCacheStore(
+                collection="iac_pr_body", project=s.gcp_project
+            )
+        else:
+            _iac_pr_body_cache_store_singleton = InMemoryPerPrCacheStore()
+    return _iac_pr_body_cache_store_singleton
+
+
+def _set_iac_pr_body_cache_store_for_tests(store: "PerPrCacheStore | None") -> None:
+    """Test-only: inject (or, with None, clear) the PR-body store override."""
+    global _iac_pr_body_cache_store_override
+    _iac_pr_body_cache_store_override = store
+
+
+def _reset_iac_pr_body_cache_for_tests() -> None:
+    """Test-only: clear the PR-body store singleton + injection override."""
+    global _iac_pr_body_cache_store_singleton, _iac_pr_body_cache_store_override
+    _iac_pr_body_cache_store_singleton = None
+    _iac_pr_body_cache_store_override = None
+
+
+def _memoized_repo_provider(settings: Settings):
+    """Return a 0-arg callable that builds the github ``Repo`` AT MOST ONCE per
+    request and memoizes it (so GET /decisions with N stale rows constructs the
+    client once, not per row — ``get_repo`` is uncached and costs a REST call).
+    Fail-soft: a construction error memoizes ``None`` so callers degrade to a
+    miss rather than 5xx."""
+    box: dict[str, object] = {}
+
+    def provider():
+        if "repo" not in box:
+            try:
+                box["repo"] = get_repo(settings.github_token, settings.github_repo)
+            except Exception as e:  # noqa: BLE001 — fail-soft; reconcile must never break a serve path
+                log.warning("reconcile_get_repo_failed", extra={"error": type(e).__name__})
+                box["repo"] = None
+        return box["repo"]
+
+    return provider
+
+
+def _read_merge_status_cache(pr_number: int, head_sha: str) -> "bool | None":
+    """Return the cached merged verdict for ``(pr_number, head_sha)`` or None on a
+    miss. Validates defensively (mirrors ``_read_iac_source_cache``): exact
+    ``format_version``, head_sha match (a moved/force-pushed head is a miss), a
+    bool ``merged``, a finite ``written_at`` not far in the future, and — for a
+    transient ``merged=False`` — within the short TTL. ``merged=True`` never
+    expires (terminal + head-pinned)."""
+    try:
+        record = get_iac_pr_merge_cache_store().get(pr_number)
+    except Exception as e:  # noqa: BLE001 — a misbehaving store is a miss, never a 5xx
+        log.warning("iac_pr_merge_read_error", extra={"error": type(e).__name__})
+        return None
+    if not isinstance(record, dict):
+        return None
+    if record.get("format_version") != _IAC_PR_MERGE_FORMAT_VERSION:
+        return None
+    if record.get("head_sha") != head_sha:
+        return None
+    merged = record.get("merged")
+    if not isinstance(merged, bool):
+        return None
+    written_at = record.get("written_at")
+    if not isinstance(written_at, (int, float)) or not math.isfinite(written_at):
+        return None
+    age = time.time() - written_at
+    if age < -_IAC_PR_MERGE_CLOCK_SKEW_TOLERANCE_S:
+        return None  # stamped in the future → distrust
+    if merged is False and age > _IAC_PR_MERGE_UNMERGED_TTL_S:
+        return None  # a not-yet-merged result is stale → re-probe
+    return merged
+
+
+def _resolve_pr_merged(
+    pr_number: int, head_sha: str, *, repo_provider, settings: Settings
+) -> "bool | None":
+    """Whether PR #``pr_number`` is merged at ``head_sha`` — from cache, else one
+    GitHub probe. ``None`` when indeterminate (no token/repo, or a fail-soft
+    error). Caches ``True`` ~permanently (terminal) and ``False`` briefly. The
+    ``repo_provider`` is only called on a cache miss (so a warm cache makes zero
+    GitHub calls)."""
+    if not (settings.github_token and settings.github_repo):
+        return None
+    cached = _read_merge_status_cache(pr_number, head_sha)
+    if cached is not None:
+        return cached
+    repo = repo_provider()
+    if repo is None:
+        return None
+    try:
+        merged = bool(github.is_pr_merged_at_head(repo, pr_number, head_sha))
+    except Exception as e:  # noqa: BLE001 — GitHub hiccup must not break the serve path
+        log.warning(
+            "pr_merge_status_probe_failed",
+            extra={"error": type(e).__name__, "pr_number": pr_number},
+        )
+        return None
+    # Best-effort persist: the store already swallows write errors, but wrap the
+    # call too so even a misbehaving store object can't break the serve path
+    # (Codex review — mirrors the _resolve_iac_source caller-side guard).
+    try:
+        get_iac_pr_merge_cache_store().set(
+            pr_number,
+            {
+                "format_version": _IAC_PR_MERGE_FORMAT_VERSION,
+                "head_sha": head_sha,
+                "merged": merged,
+                "written_at": time.time(),
+            },
+        )
+    except Exception as e:  # noqa: BLE001 — a cache-write failure must not fail the serve
+        log.warning("iac_pr_merge_write_error", extra={"error": type(e).__name__})
+    return merged
+
+
+def reconcile_merge_state(decision: object, *, repo_provider, settings: Settings) -> object:
+    """Serve-time, COMPUTE-ONLY merge_state reconcile (2026-06-27 follow-up).
+
+    Promote a stale ``apply_status="applied"`` + ``merge_state="failed"`` decision
+    to ``merged`` when GitHub confirms the PR is merged AT THE AS-APPLIED
+    ``head_sha`` (the out-of-band manual-merge case). NEVER persists: the
+    StateStore is append-only and a write from a GET would (a) be a side-effecting
+    read and (b) look like a fresh apply to the SPA watermark. The stored doc
+    stays faithful to what happened at the time; the UI shows current truth.
+
+    Conventions mirror :func:`scrub_decision_rationale`: returns the input
+    unchanged BY IDENTITY for any ineligible decision (non-dict, non-iac_apply,
+    not applied, not merge=failed, invalid pr_number/head_sha) and when GitHub
+    does not confirm a head-matching merge; copy-on-change otherwise; never
+    mutates the input; never raises. ``merge_reconciled: True`` is added as a
+    cosmetic marker (the SPA can note "confirmed on GitHub")."""
+    if not isinstance(decision, dict):
+        return decision
+    if decision.get("action") != "iac_apply":
+        return decision
+    if decision.get("apply_status") != "applied":
+        return decision
+    if decision.get("merge_state") != "failed":
+        return decision
+    pr_number = decision.get("pr_number")
+    head_sha = decision.get("head_sha")
+    # ``type(...) is int`` excludes bool (True/False) from passing as a PR number.
+    if type(pr_number) is not int or pr_number <= 0:
+        return decision
+    if not isinstance(head_sha, str) or not head_sha:
+        return decision
+    merged = _resolve_pr_merged(
+        pr_number, head_sha, repo_provider=repo_provider, settings=settings
+    )
+    if merged is True:
+        return {**decision, "merge_state": "merged", "merge_reconciled": True}
+    return decision
 
 
 _INFRA_INVENTORY_CACHE: "tuple[float, dict] | None" = None
@@ -2829,6 +3060,16 @@ def get_trace(
     # legacy template, or a raw API caller. This single var feeds BOTH the
     # cache-hit return and the fresh return below.
     decision = scrub_decision_rationale(state.find_decision_by_trace_id(trace_id))
+    # Serve-time merge_state reconcile (2026-06-27): apply the SAME compute-only
+    # transform the rail (/decisions) uses, so the open-trace card and the rail
+    # never disagree on a stale applied+merge=failed row. Compute-only — no
+    # persist; warm merge-cache → no GitHub call.
+    _trace_settings = get_settings()
+    decision = reconcile_merge_state(
+        decision,
+        repo_provider=_memoized_repo_provider(_trace_settings),
+        settings=_trace_settings,
+    )
     # Demo-window anonymous read (Worker marker, hackathon A.2): strip the
     # tokenized rollback approval link from the decision AND every event
     # string. Belt-and-braces for events — redact_event already kills the
@@ -2904,6 +3145,150 @@ def get_trace(
         "decision": decision,
         "complete": complete,
         "fetched_from_cache": False,
+    }
+
+
+def _read_pr_body_cache(pr_number: int, head_sha: str) -> "dict | None":
+    """Return ``{"body": str|None, "truncated": bool}`` from the PR-body cache for
+    THIS head_sha, else None (a miss → caller refetches). Validates defensively
+    (mirrors ``_read_iac_source_cache``): exact ``format_version``, head_sha
+    match, a str-or-None ``body`` (a tampered non-str is a miss), a bool
+    ``truncated``, and a finite ``written_at`` within TTL + clock-skew."""
+    try:
+        record = get_iac_pr_body_cache_store().get(pr_number)
+    except Exception as e:  # noqa: BLE001 — a misbehaving store is a miss, never a 5xx
+        log.warning("iac_pr_body_read_error", extra={"error": type(e).__name__})
+        return None
+    if not isinstance(record, dict):
+        return None
+    if record.get("format_version") != _IAC_PR_BODY_FORMAT_VERSION:
+        return None
+    if record.get("head_sha") != head_sha:
+        return None
+    body = record.get("body")
+    if body is not None and not isinstance(body, str):
+        return None  # tampered doc
+    truncated = record.get("truncated")
+    if not isinstance(truncated, bool):
+        return None
+    written_at = record.get("written_at")
+    if not isinstance(written_at, (int, float)) or not math.isfinite(written_at):
+        return None
+    age = time.time() - written_at
+    if age < -_IAC_PR_BODY_CLOCK_SKEW_TOLERANCE_S:
+        return None
+    if age > _IAC_PR_BODY_TTL_S:
+        return None
+    return {"body": body, "truncated": truncated}
+
+
+def _resolve_pr_body(
+    pr_number: int, head_sha: str, *, repo_provider, settings: Settings
+) -> "tuple[str | None, bool, bool]":
+    """Resolve the SCRUBBED PR body for the open-trace card, read-through cache.
+
+    Returns ``(body, truncated, cached)``. Fail-soft: an indeterminate result
+    (no token/repo, fetch error) is ``(None, False, False)`` — the endpoint stays
+    200 and the UI omits the section. Scrub happens BEFORE the cache write so the
+    stored doc never holds an un-scrubbed body."""
+    # Gate on github config BEFORE the cache read (Codex completed-work review):
+    # mirrors _resolve_pr_merged and honours the documented "no token -> body:null"
+    # contract — a warm cache must not leak a body when GitHub is unconfigured.
+    if not (settings.github_token and settings.github_repo):
+        return None, False, False
+    cached = _read_pr_body_cache(pr_number, head_sha)
+    if cached is not None:
+        return cached["body"], cached["truncated"], True
+    repo = repo_provider()
+    if repo is None:
+        return None, False, False
+    try:
+        fetched = github.get_pr_body(repo, pr_number)
+    except Exception as e:  # noqa: BLE001 — GitHub hiccup must not break the always-200 serve
+        log.warning(
+            "pr_body_fetch_failed",
+            extra={"error": type(e).__name__, "pr_number": pr_number},
+        )
+        return None, False, False
+    scrubbed = scrub_pr_body(fetched.get("body"))
+    body = scrubbed if (scrubbed is None or isinstance(scrubbed, str)) else None
+    truncated = bool(fetched.get("truncated"))
+    # Best-effort persist: the store swallows write errors, but wrap the call too
+    # so even a misbehaving store object can't break the always-200 serve (Codex
+    # review — mirrors the _resolve_iac_source caller-side guard).
+    try:
+        get_iac_pr_body_cache_store().set(
+            pr_number,
+            {
+                "format_version": _IAC_PR_BODY_FORMAT_VERSION,
+                "head_sha": head_sha,
+                "body": body,
+                "truncated": truncated,
+                "written_at": time.time(),
+            },
+        )
+    except Exception as e:  # noqa: BLE001 — a cache-write failure must not fail the GET
+        log.warning("iac_pr_body_write_error", extra={"error": type(e).__name__})
+    return body, truncated, False
+
+
+@app.get("/trace/{trace_id}/pr-body")
+def get_trace_pr_body(
+    trace_id: str,
+    response: Response,
+    _: None = Depends(verify_token),
+    state: StateStore = Depends(get_state),
+) -> dict:
+    """The agent-authored PR body for the iac_apply decision behind ``trace_id``,
+    for the open-trace "what this change did" disclosure.
+
+    Token-gated like ``/trace``. Binds to the PERSISTED decision (Codex MF4 — a
+    bare ``pr_number`` couldn't safely pick among a PR's multiple lifecycle docs)
+    and derives ``head_sha`` server-side from it (never trusts a client SHA).
+
+    * 400 — ``trace_id`` is not 32-char lowercase hex.
+    * 404 — no decision for the trace, or it isn't an ``iac_apply`` with a
+      resolvable PR.
+    * 200 ``{pr_number, head_sha, body: str|null, body_truncated, cached}`` — for
+      a valid iac_apply decision; ``body`` is null on a fail-soft GitHub/cache
+      miss (the UI just omits the section)."""
+    if not _HEX32_RE.fullmatch(trace_id):
+        raise HTTPException(
+            status_code=400,
+            detail="trace_id must be 32-char lowercase hex",
+            headers={"Cache-Control": "no-store"},
+        )
+    response.headers["Cache-Control"] = "no-store"
+    decision = state.find_decision_by_trace_id(trace_id)
+    if not isinstance(decision, dict) or decision.get("action") != "iac_apply":
+        raise HTTPException(
+            status_code=404,
+            detail="no iac_apply decision for this trace",
+            headers={"Cache-Control": "no-store"},
+        )
+    pr_number = decision.get("pr_number")
+    head_sha = decision.get("head_sha")
+    if (
+        type(pr_number) is not int
+        or pr_number <= 0
+        or not isinstance(head_sha, str)
+        or not head_sha
+    ):
+        raise HTTPException(
+            status_code=404,
+            detail="decision has no resolvable PR",
+            headers={"Cache-Control": "no-store"},
+        )
+    s = get_settings()
+    body, truncated, cached = _resolve_pr_body(
+        pr_number, head_sha, repo_provider=_memoized_repo_provider(s), settings=s
+    )
+    return {
+        "pr_number": pr_number,
+        "head_sha": head_sha,
+        "body": body,
+        "body_truncated": truncated,
+        "cached": cached,
     }
 
 
@@ -3498,6 +3883,15 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
             )
             existing = None
         if existing is not None:
+            # Serve-time merge_state reconcile (2026-06-27, Codex MF3): if the
+            # PR was merged out-of-band, promote the stale applied+merge=failed
+            # decision to merged so this page suppresses the Approve form. Without
+            # this, the page would keep inviting a click whose POST writes a NEW
+            # applied+merged doc — exactly the mutation the compute-only reconcile
+            # exists to avoid. Identity for any other state; fail-soft.
+            existing = reconcile_merge_state(
+                existing, repo_provider=_memoized_repo_provider(s), settings=s
+            )
             _st = existing.get("apply_status")
             _ms = existing.get("merge_state")
             if _st == "applied" and _ms == "merged":

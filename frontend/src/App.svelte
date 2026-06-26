@@ -9,7 +9,7 @@
   } from './lib/api';
   import { consumeSse } from './lib/sse';
   import type { TraceEvent, TimelineStatus } from './lib/timeline';
-  import type { Decision, TraceResponse } from './lib/types';
+  import type { Decision, PrBody, TraceResponse } from './lib/types';
   import { nextAppliedWatermark, type AppliedWatermark } from './lib/decision';
   import type { Workload } from './lib/workloads';
 
@@ -21,6 +21,7 @@
   import IacApprovalCta from './components/IacApprovalCta.svelte';
   import ReplyPending from './components/ReplyPending.svelte';
   import DecisionSummary from './components/DecisionSummary.svelte';
+  import PrBodyDisclosure from './components/PrBodyDisclosure.svelte';
   import DriftDiffCard from './components/DriftDiffCard.svelte';
   import HistoricalBanner from './components/HistoricalBanner.svelte';
   import DecisionsRail from './components/DecisionsRail.svelte';
@@ -80,6 +81,11 @@
   // The decision doc of the trace being replayed — drives the DecisionSummary
   // card when the replayed decision carries no prose (e.g. an iac_apply).
   let historicalDecision = $state<Decision | null>(null);
+  // The agent-authored PR body for an iac_apply replay (fetched lazily from
+  // /trace/{id}/pr-body) — drives the "what this change did" disclosure. null
+  // hides the panel (no description / fail-soft miss).
+  let historicalPrBody = $state<string | null>(null);
+  let historicalPrBodyTruncated = $state(false);
 
   let authPanelOpen = $state(false);
   let authResolver: ((t: string | null) => void) | null = null;
@@ -221,6 +227,8 @@
     finalIsError = false;
     iacPr = null;
     historicalDecision = null;
+    historicalPrBody = null;
+    historicalPrBodyTruncated = false;
     status = 'pending';
 
     try {
@@ -367,6 +375,8 @@
     finalIsError = false;
     iacPr = null;
     historicalDecision = null;
+    historicalPrBody = null;
+    historicalPrBodyTruncated = false;
     status = 'pending';
     // The historical replay renders at the BOTTOM of the chat column (below the
     // estate panel + composer), so without this the click looks dead — the new
@@ -407,6 +417,14 @@
         // traces never have a final_response, and a cold post-restart
         // observation cache returns complete=false on a single fetch.)
         status = 'historical';
+        // Open-trace PR-body disclosure (iac_apply only): fetch the agent-authored
+        // PR description for the "what this change did" panel. A separate,
+        // fail-soft call — a miss/error just leaves the panel hidden. Fire-and-
+        // forget (the panel fills in when it resolves), runSeq-guarded so a
+        // superseding open-trace/newChat drops a late response.
+        if (historicalDecision?.action === 'iac_apply') {
+          void loadPrBody(tid, myRun);
+        }
       } else {
         historicalDecision = null;
         status = 'error';
@@ -416,6 +434,26 @@
         historicalDecision = null;
         status = 'error';
       }
+    }
+  }
+
+  // Fetch the agent-authored PR body for an iac_apply replay. Fail-soft: any
+  // miss/non-ok/error/throw just leaves historicalPrBody null (panel hidden).
+  // runSeq-guarded at every await so a superseding open-trace/newChat wins.
+  async function loadPrBody(tid: string, myRun: number) {
+    try {
+      const resp = await call('/trace/' + encodeURIComponent(tid) + '/pr-body');
+      if (myRun !== runSeq || !resp.ok) return;
+      const b = (await resp.json()) as PrBody;
+      if (myRun !== runSeq) return;
+      // Trim ONLY for the empty-check (a whitespace-only body has no content to
+      // show); keep the original body so edge whitespace in a real description
+      // survives in the <pre>.
+      historicalPrBody =
+        typeof b.body === 'string' && b.body.trim() ? b.body : null;
+      historicalPrBodyTruncated = b.body_truncated === true;
+    } catch {
+      /* fail-soft — leave the disclosure hidden */
     }
   }
 
@@ -431,6 +469,8 @@
     finalIsError = false;
     iacPr = null;
     historicalDecision = null;
+    historicalPrBody = null;
+    historicalPrBodyTruncated = false;
     status = 'pending';
   }
 
@@ -507,6 +547,7 @@
     {/if}
     {#if historicalActive && finalReply == null && historicalDecision}
       <DecisionSummary decision={historicalDecision} />
+      <PrBodyDisclosure body={historicalPrBody} truncated={historicalPrBodyTruncated} />
     {/if}
     <Timeline {events} {status} />
   </section>

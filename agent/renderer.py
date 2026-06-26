@@ -1,7 +1,7 @@
 import re
 
 from agent.models import ContractStatus, DecisionProposal, EnvDiff
-from agent.secret_guard import should_redact, value_looks_credentialed
+from agent.secret_guard import redact_text, should_redact, value_looks_credentialed
 
 # A conservative ``owner/repo`` shape (exactly one slash, GitHub-legal chars) so a
 # misconfigured ``github_repo`` can't form a surprising URL. Defense in depth: the
@@ -247,6 +247,27 @@ def scrub_decision_approval(decision: object) -> object:
             "approval": {k: v for k, v in approval.items() if k != "approval_url"},
         }
     return out
+
+
+def scrub_pr_body(body: object) -> object:
+    """Serve-time scrub for an iac PR body before it is cached/served in the
+    open-trace "what this change did" disclosure (2026-06-27 follow-up).
+
+    The body is AGENT-authored markdown (rendered from a template, not user
+    free-text — see ``render_iac_pr_body``/``render_docs_pr_body``), so the
+    secret risk is low. This is belt-and-braces, NOT robust arbitrary-secret
+    redaction: it strips credentialed-URL userinfo (:func:`redact_text`) and any
+    rollback approval ``?t=`` token (:func:`redact_approval_tokens_deep`). The
+    real containment is that the body is template-authored, the endpoint is
+    token-gated, and the SPA renders it as escaped ``<pre>`` (no XSS).
+
+    Conventions mirror :func:`scrub_decision_rationale`: None / non-str / empty
+    pass through unchanged; never raises. Scrub happens BEFORE the cache write,
+    so the stored doc never holds an un-scrubbed body."""
+    if not isinstance(body, str) or not body:
+        return body
+    out = redact_text(body)  # credentialed-URL userinfo → <redacted>@
+    return redact_approval_tokens_deep(out)  # rollback ?t= token → <redacted>
 
 
 def attach_iac_pr_link(decision: object, repo: str) -> object:

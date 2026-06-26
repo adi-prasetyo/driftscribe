@@ -62,6 +62,13 @@ export interface Decision extends Record<string, unknown> {
   // failed_state_suspect / ambiguous). The rail renders it as a meta-line token
   // and uses it to retire the stale "Review & approve →" CTA on superseded rows.
   apply_status?: string;
+  // iac_apply merge state (merged / failed / pending / n/a). May be reconciled
+  // at serve time: when the PR was merged out-of-band, the coordinator promotes
+  // a stale merge_state="failed" to "merged" and sets merge_reconciled (a
+  // cosmetic marker — the SPA can note "confirmed on GitHub"). See GET /decisions
+  // / /trace reconcile_merge_state.
+  merge_state?: string;
+  merge_reconciled?: boolean;
   // Autonomy dial fields (ClickOps item 11). Present on decisions created while
   // the dial is configured; absent on pre-dial decisions (stale-coordinator
   // fail-quiet: the rail renders nothing when absent).
@@ -76,4 +83,15 @@ export interface TraceResponse {
   decision?: Decision | null;
   complete: boolean;
   fetched_from_cache?: boolean;
+}
+
+/** GET /trace/{id}/pr-body response — the agent-authored PR description for the
+ *  open-trace "what this change did" disclosure (iac_apply only). `body` is the
+ *  scrubbed description or null (no description / fail-soft GitHub miss). */
+export interface PrBody {
+  pr_number: number;
+  head_sha: string;
+  body: string | null;
+  body_truncated: boolean;
+  cached: boolean;
 }
