@@ -30,6 +30,7 @@ import logging
 import re
 import secrets
 import time
+import unicodedata
 from pathlib import Path
 from typing import Any, Callable, NamedTuple
 
@@ -1164,18 +1165,27 @@ _TEAM_LOG_SCALAR_FIELDS = (
 )
 _TEAM_LOG_TIME_FIELDS = ("created_at", "applied_at", "expires_at")
 
-# Strip C0/C1-ish control chars (incl. newlines/tabs) from any free text so a
-# crafted ``pr_title`` can't forge a fake instruction line in the tool result.
-_TEAM_LOG_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
-
-
 def _team_log_sanitize(value: object, cap: int) -> str:
-    """Flatten + length-cap a free-text value: replace control chars with
-    spaces, collapse whitespace runs, strip, truncate with an ellipsis. Defeats
-    newline-injection and bounds the model's exposure to attacker text."""
+    """Flatten + length-cap a free-text value so a crafted ``pr_title`` can't
+    forge a fake instruction line OR visually spoof the text when the crew
+    relays it. Strips ALL Unicode control (``Cc``) and format (``Cf``) chars —
+    ``Cf`` covers zero-width joiners and bidi overrides/isolates
+    (U+202E, U+2066–2069) that could reorder/hide characters in the operator
+    reply (Codex review). ``Cc`` → space (a newline becomes a separator, not a
+    word-join); ``Cf`` → dropped (zero-width, no separator needed). Then collapse
+    whitespace, strip, and truncate with an ellipsis. Bounds the model's
+    exposure to attacker-controlled text."""
     text = value if isinstance(value, str) else str(value)
-    cleaned = _TEAM_LOG_CONTROL_RE.sub(" ", text)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    chars: list[str] = []
+    for ch in text:
+        category = unicodedata.category(ch)
+        if category == "Cc":
+            chars.append(" ")
+        elif category == "Cf":
+            continue
+        else:
+            chars.append(ch)
+    cleaned = re.sub(r"\s+", " ", "".join(chars)).strip()
     if len(cleaned) > cap:
         cleaned = cleaned[: cap - 1].rstrip() + "…"
     return cleaned

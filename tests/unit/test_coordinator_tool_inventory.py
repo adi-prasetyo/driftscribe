@@ -647,7 +647,7 @@ def test_explore_workload_tool_order_pin(explore_workload_env):
 
     Explore is chat-only, so it is served via :func:`build_chat_agent`
     (not :func:`build_agent`) — this also confirms the chat builder
-    surfaces exactly the five read tools, in order, for a workload that
+    surfaces exactly the read tools, in order, for a workload that
     happens to list no CHAT_ONLY_TOOL_NAMES tools to filter.
     """
     from agent.workloads import load_workload

@@ -26,6 +26,27 @@ import pytest
 import agent.main as _main_mod
 from agent.adk_tools import read_team_log_tool
 
+# The COMPLETE set of keys the allowlist projection is permitted to emit. The
+# strict-subset test below pins this contract: a future "just one more field"
+# addition that isn't deliberately added here fails loudly (Codex review).
+_EXPECTED_SAFE_KEYS = {
+    "decision_id",
+    "trace_id",
+    "action",
+    "pr_number",
+    "apply_status",
+    "approver",
+    "autonomy_mode",
+    "requires_human_review",
+    "suppressed_by_autonomy",
+    "approval_id",
+    "created_at",
+    "applied_at",
+    "expires_at",
+    "head_sha",
+    "title",
+}
+
 
 # --------------------------------------------------------------------------- #
 # Fakes / helpers
@@ -168,6 +189,41 @@ def test_rollback_decision_leaks_no_secret_or_token(monkeypatch):
     d = out["decisions"][0]
     assert d["action"] == "rollback"
     assert d["decision_id"] == "dec-rb-1"
+
+
+def test_projection_never_emits_a_key_outside_the_allowlist(monkeypatch):
+    """Future-proofing the security contract: feed a kitchen-sink doc with extra
+    + secret-shaped fields; every emitted key MUST be in the allowlist, so a
+    later 'just one more field' can't silently widen the surface (Codex)."""
+    doc = {
+        **_iac_decision(),
+        "rationale": "secret stuff",
+        "diffs": [{"name": "X", "live": "SECRET"}],
+        "rendered_body": "/approvals/a?t=TOK",
+        "reason": "because",
+        "target_revision": "rev-1",
+        "merge_state": "merged",
+        "some_future_field": "SHOULD_NOT_APPEAR",
+    }
+    _use_store(monkeypatch, [doc])
+    out = read_team_log_tool()
+    for projected in out["decisions"]:
+        extra = set(projected) - _EXPECTED_SAFE_KEYS
+        assert not extra, f"projection emitted non-allowlisted keys: {extra}"
+
+
+def test_pr_title_strips_unicode_bidi_and_zero_width(monkeypatch):
+    """Unicode format/control chars (bidi overrides, zero-width) must be stripped
+    so a crafted title can't visually spoof the text the crew relays (Codex)."""
+    # U+202E RLO (bidi override), U+200B ZWSP, U+2066 LRI — all category Cf.
+    nasty = "Adopt ‮bucket​ probe⁦"
+    _use_store(monkeypatch, [_iac_decision(pr_title=nasty)])
+    out = read_team_log_tool()
+    title = out["decisions"][0]["title"]
+    for ch in ("‮", "​", "⁦"):
+        assert ch not in title
+    # Visible content survives.
+    assert "Adopt" in title and "bucket" in title and "probe" in title
 
 
 # --------------------------------------------------------------------------- #

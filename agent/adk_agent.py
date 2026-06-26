@@ -299,8 +299,8 @@ UPGRADE_WORKLOAD_TOOL_NAMES: tuple[str, ...] = (
 # PAT). The read-only guarantee is pinned in
 # ``tests/unit/test_coordinator_tool_inventory.py`` as a disjointness
 # assertion against the mutation-tool set — see ``_MUTATION_TOOL_NAMES``
-# there. Order mirrors ``workloads/explore/workload.yaml`` (tool-order pin)
-# — ``read_project_inventory`` is appended LAST to match the YAML.
+# there. Order mirrors ``workloads/explore/workload.yaml`` (tool-order pin) —
+# tools are appended in YAML order; ``read_team_log`` is currently last.
 EXPLORE_WORKLOAD_TOOL_NAMES: tuple[str, ...] = (
     "drift_read_live_env",
     "upgrade_read_dependencies",
