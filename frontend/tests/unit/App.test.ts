@@ -199,7 +199,10 @@ describe('App — open-trace surfaces the PR body ("what this change did")', () 
     const { findByTestId } = render(App);
     await fireEvent.click(await findByTestId('open-trace-button'));
     const panel = await findByTestId('pr-body-disclosure');
-    expect(panel.querySelector('pre')?.textContent).toContain('Repoints payment-demo');
+    const md = panel.querySelector('[data-testid="pr-body-md"]');
+    // Rendered as Markdown now: the `##` heading marker is gone, text survives.
+    expect(md?.textContent).toContain('Repoints payment-demo');
+    expect(md?.textContent).not.toContain('##');
   });
 
   it('hides the disclosure when the PR has no body (fail-soft)', async () => {
@@ -262,13 +265,14 @@ describe('App — open-trace surfaces the PR body ("what this change did")', () 
     await fireEvent.click(buttons[1]); // open B — supersedes; loadPrBody B resolves
 
     const panel = await findByTestId('pr-body-disclosure');
-    expect(panel.querySelector('pre')?.textContent).toContain('B-BODY');
+    expect(panel.querySelector('[data-testid="pr-body-md"]')?.textContent).toContain('B-BODY');
 
     releaseA(); // A's stale response resolves now
     await Promise.resolve();
     await Promise.resolve();
     // The runSeq guard dropped A — B's body must remain, A's must never appear.
-    expect(panel.querySelector('pre')?.textContent).toContain('B-BODY');
-    expect(panel.querySelector('pre')?.textContent).not.toContain('A-BODY');
+    const md = panel.querySelector('[data-testid="pr-body-md"]');
+    expect(md?.textContent).toContain('B-BODY');
+    expect(md?.textContent).not.toContain('A-BODY');
   });
 });
