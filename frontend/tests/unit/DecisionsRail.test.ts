@@ -117,10 +117,29 @@ describe('DecisionsRail — status help affordance', () => {
     expect(hints[0].getAttribute('aria-controls')).toBe(panel.getAttribute('id'));
   });
 
-  it('renders no help button when every row is self-evident (applied/failed)', () => {
+  it('renders the help button on a failed row and reveals the state-proven-clean note', async () => {
+    const decisions: Decision[] = [
+      iacRow({ decision_id: 'failed-71', apply_status: 'failed', pr_number: 71 }),
+    ];
+    const { getAllByTestId, getByTestId } = render(DecisionsRail, {
+      props: { decisions, activeTraceId: null, onOpenTrace: noop },
+    });
+    const hints = getAllByTestId('status-help');
+    expect(hints).toHaveLength(1);
+    await fireEvent.click(hints[0]);
+    const panel = getByTestId('status-help-panel');
+    // The distinguishing reassurance: live state was left untouched...
+    expect(panel.textContent?.toLowerCase()).toContain('unchanged');
+    // ...and it must NOT point the operator at the trace for the OpenTofu error.
+    expect(panel.textContent?.toLowerCase()).not.toContain('open the trace');
+  });
+
+  it('renders no help button when every row is self-evident (applied)', () => {
+    // `applied` is the only self-evident apply_status now that `failed` carries
+    // help (state-proven-clean note); both rows must produce zero status-help ⓘ.
     const decisions: Decision[] = [
       iacRow({ decision_id: 'applied-68', apply_status: 'applied', pr_number: 68 }),
-      iacRow({ decision_id: 'failed-71', apply_status: 'failed', pr_number: 71 }),
+      iacRow({ decision_id: 'applied-71', apply_status: 'applied', pr_number: 71 }),
     ];
     const { queryAllByTestId } = render(DecisionsRail, {
       props: { decisions, activeTraceId: null, onOpenTrace: noop },
@@ -502,11 +521,11 @@ describe('DecisionsRail — PR-numbering header hint', () => {
   });
 
   it('the header hint uses its own testid — it never inflates the per-row status-help count', () => {
-    // Two self-evident statuses (no status-help) but two distinct PR numbers
-    // (header hint present). Proves the two affordances are independent.
+    // Two self-evident `applied` rows (no status-help) but two distinct PR
+    // numbers (header hint present). Proves the two affordances are independent.
     const decisions: Decision[] = [
       iacRow({ decision_id: 'a', apply_status: 'applied', pr_number: 68 }),
-      iacRow({ decision_id: 'b', apply_status: 'failed', pr_number: 71 }),
+      iacRow({ decision_id: 'b', apply_status: 'applied', pr_number: 71 }),
     ];
     const { getByTestId, queryAllByTestId } = render(DecisionsRail, {
       props: { decisions, activeTraceId: null, onOpenTrace: noop },
