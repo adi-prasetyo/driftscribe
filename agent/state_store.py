@@ -31,6 +31,9 @@ class StateStore(Protocol):
         self, trace_id: str
     ) -> dict[str, Any] | None: ...
     def list_decisions(self, *, limit: int = 50) -> list[dict[str, Any]]: ...
+    def list_decisions_for_pr(
+        self, pr_number: int, *, limit: int = 50
+    ) -> list[dict[str, Any]]: ...
     def get_pause(self) -> dict[str, Any] | None: ...
     def set_pause(
         self, *, paused: bool, reason: str | None, actor: str
@@ -135,6 +138,26 @@ class InMemoryStateStore:
             reverse=True,
         )
         return by_time[:limit]
+
+    def list_decisions_for_pr(
+        self, pr_number: int, *, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        """Return up to ``limit`` decisions for ``pr_number``, newest first.
+
+        Backs ``read_team_log_tool(pr_number=N)``. Filtering happens BEFORE
+        the limit (unlike ``list_decisions(limit)`` + a caller-side filter,
+        which trims the global newest ``limit`` first and so misses an older
+        PR's rows). Same missing-``created_at`` sentinel tolerance as
+        :meth:`list_decisions`.
+        """
+        from datetime import datetime, timezone
+
+        sentinel = datetime.min.replace(tzinfo=timezone.utc)
+        matching = [
+            d for d in self._decisions.values() if d.get("pr_number") == pr_number
+        ]
+        matching.sort(key=lambda d: d.get("created_at") or sentinel, reverse=True)
+        return matching[:limit]
 
     def get_pause(self) -> dict[str, Any] | None:
         """Return a defensive copy of the pause document, or None if never set.
@@ -375,6 +398,32 @@ class FirestoreStateStore:
             key=lambda s: s.create_time,
             reverse=True,
         )
+        out: list[dict[str, Any]] = []
+        for s in snaps[:limit]:
+            d = s.to_dict() or {}
+            d.setdefault("created_at", s.create_time)
+            out.append(d)
+        return out
+
+    def list_decisions_for_pr(
+        self, pr_number: int, *, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        """Return up to ``limit`` decisions for ``pr_number``, newest first.
+
+        Backs ``read_team_log_tool(pr_number=N)``. A single equality filter
+        ``where("pr_number", "==", n)`` uses Firestore's automatic
+        single-field index — no composite index needed. We deliberately do
+        NOT add ``order_by`` (it would EXCLUDE any matched doc missing the
+        sort field — the same trap :meth:`list_decisions` documents) and do
+        NOT ``.limit(N)`` the stream (limit-before-sort picks an arbitrary
+        subset by doc id). Filter server-side, then sort CLIENT-SIDE on
+        ``snapshot.create_time`` and trim — so the per-PR view is exact
+        regardless of how many newer unrelated decisions exist. Per-PR row
+        counts are tiny (a PR's apply lifecycle is a handful of docs), so
+        fetching all matches before trimming is cheap.
+        """
+        snaps = list(self._decisions.where("pr_number", "==", pr_number).stream())
+        snaps.sort(key=lambda s: s.create_time, reverse=True)
         out: list[dict[str, Any]] = []
         for s in snaps[:limit]:
             d = s.to_dict() or {}
