@@ -1,5 +1,5 @@
 """Conversation persistence on the StateStore (P1 multi-turn chat)."""
-from datetime import datetime, timezone
+from datetime import datetime
 
 import pytest
 

@@ -205,7 +205,7 @@ def test_drift_chat_docs_pr_calls_mcp_before_delegating_to_docs(monkeypatch):
             "branch": "driftscribe/payment-mode-1234-ab",
         }
 
-    async def stub_run_chat(prompt: str, *, session_id=None, workload: str = "drift", autonomy_mode: str = "propose_apply"):
+    async def stub_run_chat(prompt: str, *, session_id=None, workload: str = "drift", autonomy_mode: str = "propose_apply", prior_turns=None):
         """Stand in for the LLM. Resolves the workload, then calls the
         workload-scoped tools in the order the drift system_prompt.md
         instructs: search_developer_docs FIRST (to ground the docs PR
@@ -313,7 +313,7 @@ def test_drift_chat_no_op_does_not_call_mcp(monkeypatch):
 
     mcp_spy = AsyncMock(return_value=_make_canned_docs_response())
 
-    async def stub_run_chat(prompt: str, *, session_id=None, workload: str = "drift", autonomy_mode: str = "propose_apply"):
+    async def stub_run_chat(prompt: str, *, session_id=None, workload: str = "drift", autonomy_mode: str = "propose_apply", prior_turns=None):
         """Stand in for the LLM on the no_op path. Does NOT invoke any
         MCP wrapper — matches the system prompt's instruction (only
         call search_developer_docs WHEN proposing a docs_pr)."""
@@ -407,7 +407,7 @@ def test_drift_chat_docs_pr_exercises_real_mcp_wire_format(monkeypatch):
             "branch": "driftscribe/runbook-1234-cd",
         }
 
-    async def stub_run_chat(prompt: str, *, session_id=None, workload: str = "drift", autonomy_mode: str = "propose_apply"):
+    async def stub_run_chat(prompt: str, *, session_id=None, workload: str = "drift", autonomy_mode: str = "propose_apply", prior_turns=None):
         """Same canonical sequence as the (b)-seam positive test —
         search_developer_docs first, then patch_docs_tool. The
         difference is that search here actually runs through the real
