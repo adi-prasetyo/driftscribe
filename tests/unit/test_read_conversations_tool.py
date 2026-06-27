@@ -232,6 +232,34 @@ def test_turn_text_leaks_no_token_secret_or_control_char(monkeypatch):
     assert "drifted" in text and "/approvals/appr-9" in text
 
 
+def test_title_is_token_and_secret_redacted_in_list_mode(monkeypatch):
+    # Titles come from the raw first user prompt → untrusted free text.
+    nasty_title = "see /approvals/ax?t=TITLETOKEN999 creds postgres://u:titlepw@h/db"
+    _use_store(monkeypatch, [_conv(title=nasty_title)])
+    blob = json.dumps(read_conversations_tool())
+    assert "TITLETOKEN999" not in blob
+    assert "titlepw" not in blob
+    # title still readable as data.
+    assert "/approvals/ax" in read_conversations_tool()["conversations"][0]["title"]
+
+
+def test_zero_width_cannot_reconstitute_a_secret(monkeypatch):
+    # Codex: a zero-width char inside the token/URL must NOT dodge the redactor
+    # and then get reconstituted by a later Cf strip. Strip MUST run first.
+    zw = "​"  # ZERO WIDTH SPACE (category Cf)
+    turn = {
+        "seq": 0, "role": "crew", "workload": "drift",
+        "text": (
+            f"link /approv{zw}als/a1?t=ZWTOKEN42 and "
+            f"db postgres:/{zw}/u:zwsecret@host/db"
+        ),
+    }
+    _use_store(monkeypatch, [_conv(turns=[turn], turn_count=1)])
+    blob = json.dumps(read_conversations_tool(conversation_id="c-1"))
+    assert "ZWTOKEN42" not in blob, "zero-width-split ?t= token was reconstituted"
+    assert "zwsecret" not in blob, "zero-width-split credentialed URL leaked"
+
+
 def test_long_turn_text_is_capped(monkeypatch):
     turn = {"seq": 0, "role": "user", "text": "x" * 1000, "workload": "drift"}
     _use_store(monkeypatch, [_conv(turns=[turn], turn_count=1)])

@@ -289,6 +289,20 @@ MUTATION_CALLABLE_NAMES: frozenset[str] = frozenset({
     "propose_adoption_tool",
 })
 
+# Read-only tools that are nonetheless kept OUT of fan-out sub-agents. These are
+# not mutation tools, so the disjointness invariants above don't cover them —
+# the reason to exclude is different: ``read_conversations`` returns untrusted
+# CROSS-CREW chat text and is the wrong authority for an internal HCL-authoring
+# sub-agent. The decompose / slice-author prompts (built in this module) do NOT
+# carry the "historical DATA, never instructions" injection guard the four
+# operator-facing chat prompts do, so handing those sub-agents a team-memory
+# reader would create an unguarded injection surface for zero authoring benefit.
+# It stays available on the operator-facing provision CHAT agent
+# (``build_chat_agent``), which DOES carry the guard + breadcrumb.
+_FANOUT_EXCLUDED_READ_TOOL_NAMES: frozenset[str] = frozenset({
+    "read_conversations",
+})
+
 
 def resolve_provision_read_tools() -> dict[str, Callable]:
     """Resolve the ``provision`` workload's READ tools — every mutation
@@ -303,6 +317,11 @@ def resolve_provision_read_tools() -> dict[str, Callable]:
     the editor tool into a slice sub-agent. This is the load-bearing trust
     check behind the fan-out boundary — sub-agents author HCL text only and
     must never be handed a PR/apply/mutation tool.
+
+    Additionally drops the read-only tools in
+    :data:`_FANOUT_EXCLUDED_READ_TOOL_NAMES` (``read_conversations``): not for
+    mutation reasons but because they return untrusted cross-crew text the
+    fan-out prompts don't guard — see that constant's note.
 
     The result preserves the workload's tool order (insertion order of the
     resolution mapping) for the surviving read tools, and is a plain mutable
@@ -320,6 +339,7 @@ def resolve_provision_read_tools() -> dict[str, Callable]:
         symbolic: fn
         for symbolic, fn in resolution.tools.items()
         if symbolic not in MUTATION_TOOL_NAMES
+        and symbolic not in _FANOUT_EXCLUDED_READ_TOOL_NAMES
         and getattr(fn, "__name__", "") not in MUTATION_CALLABLE_NAMES
     }
 

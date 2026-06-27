@@ -65,6 +65,17 @@ def test_sanitizes_untrusted_title(monkeypatch):
     assert "‮" not in out and "​" not in out
 
 
+def test_breadcrumb_redacts_token_and_secret_in_title(monkeypatch):
+    # The breadcrumb is injected into EVERY other crew's instruction, so an
+    # untrusted title must not leak a ?t= token or credentialed URL there.
+    _use(monkeypatch, [
+        _row("provision", "see /approvals/ax?t=BCTOKEN777 db postgres://u:bcpw@h/db"),
+    ])
+    out = build_conversations_breadcrumb("drift", now=_NOW)
+    assert "BCTOKEN777" not in out
+    assert "bcpw" not in out
+
+
 def test_limit_caps_line_count(monkeypatch):
     rows = [_row("provision", f"t{i}", minutes_ago=i + 1) for i in range(20)]
     _use(monkeypatch, rows)

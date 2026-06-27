@@ -1372,21 +1372,34 @@ def _project_conversation_meta(conv: object) -> dict[str, Any]:
             out[key] = _team_log_iso(conv[key])
     title = conv.get("title")
     if isinstance(title, str) and title.strip():
-        out["title"] = _team_log_sanitize(title, _CONV_TITLE_CAP)
+        # Titles come from the raw first user prompt — untrusted free text that
+        # may carry a ?t= token or credentialed URL — so run the FULL redaction
+        # pipeline, not just the sanitizer (Codex review).
+        out["title"] = _redact_untrusted_text(title, _CONV_TITLE_CAP)
     return out
 
 
-def _redact_turn_text(text: object, cap: int) -> str:
-    """Run untrusted turn text through the full redaction pipeline (see the block
-    comment): rollback ?t= token strip -> credentialed-URL redaction -> Cc/Cf
-    strip + collapse + cap."""
+def _redact_untrusted_text(text: object, cap: int) -> str:
+    """Redact untrusted free text (a turn body OR a conversation title) for
+    cross-crew exposure.
+
+    ORDER MATTERS (Codex review): strip Cc/Cf FIRST — with NO truncation — so a
+    zero-width char planted inside a token/URL (e.g. ``/approv​als/a?t=X``
+    or ``postgres:/​/u:pw@h``) can't dodge the redactor regexes and then get
+    reconstituted into a clean secret by a later strip. Only then run the
+    rollback ``?t=`` token redactor + the credentialed-URL redactor, and finally
+    collapse + cap."""
     from agent.renderer import redact_approval_tokens_deep
     from agent.secret_guard import redact_text
 
     raw = text if isinstance(text, str) else ""
-    detokened = redact_approval_tokens_deep(raw)
+    # No-truncation normalize: cap == len(raw) can never truncate (Cc->space is
+    # 1:1, Cf is dropped, whitespace collapses — the result only ever shrinks),
+    # so this step ONLY drops control/format chars + collapses whitespace.
+    normalized = _team_log_sanitize(raw, max(len(raw), 1))
+    detokened = redact_approval_tokens_deep(normalized)
     if not isinstance(detokened, str):  # defensive — str in => str out
-        detokened = raw
+        detokened = normalized
     return _team_log_sanitize(redact_text(detokened) or "", cap)
 
 
@@ -1405,7 +1418,7 @@ def _project_conversation_turn(turn: object, *, text_cap: int) -> dict[str, Any]
             out[key] = _team_log_sanitize(value, 64)
     if turn.get("created_at") is not None:
         out["created_at"] = _team_log_iso(turn["created_at"])
-    out["text"] = _redact_turn_text(turn.get("text"), text_cap)
+    out["text"] = _redact_untrusted_text(turn.get("text"), text_cap)
     iac_pr = turn.get("iac_pr")
     if isinstance(iac_pr, dict):
         pr_number = iac_pr.get("pr_number")
@@ -1559,7 +1572,10 @@ def build_conversations_breadcrumb(
                 continue
             wl = r.get("workload")
             wl = _team_log_sanitize(wl, 32) if isinstance(wl, str) and wl else "?"
-            title = _team_log_sanitize(r.get("title") or "(untitled)", 60)
+            # Title is untrusted (raw first prompt) and this breadcrumb is
+            # injected into EVERY other crew's instruction — redact it fully so a
+            # ?t= token / credentialed URL can't leak via the always-on nudge.
+            title = _redact_untrusted_text(r.get("title") or "(untitled)", 60)
             lines.append(
                 f'• {wl} · "{title}" · {_relative_time(r.get("updated_at"), ref)}'
             )
