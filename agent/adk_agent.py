@@ -37,7 +37,7 @@ Worker-delegating tools (4 drift + 4 upgrade = 8):
   Chat-only. Authority-clean: pr_number only; squash + required-check
   allowlist pinned server-side. The one tool that mutates ``main``.
 
-Coordinator-internal read-only tools (3):
+Coordinator-internal read-only tools (4):
 - ``search_recent_prs_tool`` (read-only GitHub via coordinator PAT)
 - ``load_contract_tool`` (reads baked-in ops contract)
 - ``read_team_log_tool`` (reads the durable decision log as "team memory";
@@ -45,6 +45,10 @@ Coordinator-internal read-only tools (3):
   approval tokens. Coordinator-local StateStore read, no worker, no PAT —
   read-only by operation AND credential; exposed by the chat-only ``explore``
   workload).
+- ``read_conversations_tool`` (reads recent chat conversations across crews as
+  cross-crew "team memory"; allowlist-projected, untrusted turn text
+  secret-redacted + snippet-capped. Coordinator-local StateStore read, no
+  worker, no PAT — read-only; exposed by ALL four crews).
 
 Developer Knowledge MCP wrappers (2, Phase 17.B.3):
 - ``search_developer_docs`` → Developer Knowledge MCP ``search_documents``

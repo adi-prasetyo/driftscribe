@@ -112,3 +112,9 @@ def test_relative_time_accepts_iso_string_and_naive():
     # unparseable / wrong type -> "recently", never raises.
     assert _relative_time(12345, _NOW) == "recently"
     assert _relative_time(None, _NOW) == "recently"
+
+
+def test_relative_time_tolerates_naive_now():
+    # A tz-aware dt with a tz-NAIVE now must not raise / degrade to "recently".
+    naive_now = _NOW.replace(tzinfo=None)
+    assert _relative_time(_NOW - timedelta(hours=3), naive_now) == "~3h ago"

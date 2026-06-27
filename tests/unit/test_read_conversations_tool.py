@@ -260,6 +260,25 @@ def test_zero_width_cannot_reconstitute_a_secret(monkeypatch):
     assert "zwsecret" not in blob, "zero-width-split credentialed URL leaked"
 
 
+def test_single_component_userinfo_url_is_redacted(monkeypatch):
+    # secret_guard.redact_text only catches scheme://user:PASS@host; a token-only
+    # userinfo (scheme://TOKEN@host) must still be redacted on this surface.
+    turn = {
+        "seq": 0, "role": "crew", "workload": "drift",
+        "text": "cache redis://ghp_LIVETOKEN123@redis.internal:6379/0 down",
+    }
+    _use_store(monkeypatch, [_conv(turns=[turn], turn_count=1)])
+    blob = json.dumps(read_conversations_tool(conversation_id="c-1"))
+    assert "ghp_LIVETOKEN123" not in blob
+    assert "<redacted>@redis.internal" in blob
+
+
+def test_single_component_userinfo_url_redacted_in_title(monkeypatch):
+    _use_store(monkeypatch, [_conv(title="prod amqp://APIKEY999@rabbit.internal/vh")])
+    blob = json.dumps(read_conversations_tool())
+    assert "APIKEY999" not in blob
+
+
 def test_long_turn_text_is_capped(monkeypatch):
     turn = {"seq": 0, "role": "user", "text": "x" * 1000, "workload": "drift"}
     _use_store(monkeypatch, [_conv(turns=[turn], turn_count=1)])

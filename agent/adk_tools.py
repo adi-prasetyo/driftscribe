@@ -1354,6 +1354,11 @@ _CONV_TURN_TEXT_CAP = 400
 _CONV_MAX_TURNS = 40            # full-thread mode: keep the newest N, mark the rest
 _CONV_LIST_LIMIT_DEFAULT = 10
 
+# Redact ANY ``scheme://userinfo@host`` userinfo (with OR without a colon) on the
+# untrusted cross-crew surface — see :func:`_redact_untrusted_text`. The shared
+# ``secret_guard.redact_text`` only catches the ``user:PASS@`` (colon) form.
+_USERINFO_URL_RE = re.compile(r"(?i)([a-z][a-z0-9+.\-]*://)[^/@\s]+@")
+
 
 def _project_conversation_meta(conv: object) -> dict[str, Any]:
     """Allowlist-project ONE conversation's metadata into a fresh dict (NO turns,
@@ -1400,7 +1405,14 @@ def _redact_untrusted_text(text: object, cap: int) -> str:
     detokened = redact_approval_tokens_deep(normalized)
     if not isinstance(detokened, str):  # defensive — str in => str out
         detokened = normalized
-    return _team_log_sanitize(redact_text(detokened) or "", cap)
+    redacted = redact_text(detokened) or ""
+    # secret_guard.redact_text only strips scheme://user:PASS@host (colon
+    # required). A single-component userinfo (scheme://TOKEN@host — e.g. a PAT
+    # used as the git/redis username) slips through. For this untrusted
+    # cross-crew surface, redact ANY userinfo segment (adversarial-review
+    # hardening — scoped here, not in the shared redactor).
+    redacted = _USERINFO_URL_RE.sub(r"\1<redacted>@", redacted)
+    return _team_log_sanitize(redacted, cap)
 
 
 def _project_conversation_turn(turn: object, *, text_cap: int) -> dict[str, Any]:
@@ -1535,6 +1547,11 @@ def _relative_time(value: object, now) -> str:
     try:
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
+        # Guard `now` too: a future caller passing a naive `now` would otherwise
+        # raise on the aware/naive subtraction (caught below, but this keeps the
+        # relative time correct rather than degrading to "recently").
+        if getattr(now, "tzinfo", None) is None:
+            now = now.replace(tzinfo=timezone.utc)
         secs = (now - dt).total_seconds()
     except Exception:  # noqa: BLE001
         return "recently"
