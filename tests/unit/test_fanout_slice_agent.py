@@ -52,6 +52,9 @@ _READ_TOOL_SYMBOLIC_NAMES = frozenset({
     "load_contract",
     "search_developer_docs",
     "retrieve_developer_doc",
+    # Cross-crew "team memory" (P3) — read-only, so by resolve_provision_read_tools'
+    # contract ("every mutation tool stripped") it flows through to slice agents.
+    "read_conversations",
 })
 
 # The callable __name__ that backs the provision mutation tool. It DIFFERS
@@ -100,13 +103,13 @@ def _slice_spec(path: str = "iac/bucket.tf", goal: str = "create a GCS bucket") 
 # --------------------------------------------------------------------------- #
 
 
-def test_resolve_provision_read_tools_returns_the_five_read_tools(
+def test_resolve_provision_read_tools_returns_the_read_tools(
     provision_workload_env,
 ):
     read_tools = resolve_provision_read_tools()
     symbolic = set(read_tools.keys())
     assert symbolic == set(_READ_TOOL_SYMBOLIC_NAMES), (
-        f"expected exactly the 5 provision read tools, got {sorted(symbolic)}"
+        f"expected exactly the provision read tools, got {sorted(symbolic)}"
     )
 
 

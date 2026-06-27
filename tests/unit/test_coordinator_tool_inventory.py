@@ -128,6 +128,12 @@ EXPECTED_TOOL_NAMES = frozenset({
     # deliberately NOT in MUTATION_TOOL_NAMES: read-only by operation AND
     # credential. Allowlist-projected (status tokens + pointers only).
     "read_team_log_tool",
+    # Cross-crew "team memory" over the conversations log — enabled on ALL four
+    # crews (unlike read_team_log, which is explore-only). Coordinator-local
+    # StateStore read (no worker, no GitHub PAT) — read-only by operation AND
+    # credential, so deliberately NOT in MUTATION_TOOL_NAMES. Allowlist-projected
+    # + untrusted turn text secret-redacted/snippet-capped.
+    "read_conversations_tool",
 })
 
 
@@ -850,6 +856,9 @@ def test_dangerous_param_regex_smoke_test():
         "pr_number",
         # read_team_log tool param (pr_number is already covered above).
         "limit",
+        # read_conversations tool params (query/limit already covered above).
+        "crew",
+        "conversation_id",
     ):
         assert not _DANGEROUS_PARAM_RE.search(safe), (
             f"Regex unexpectedly matched safe parameter name {safe!r}. "

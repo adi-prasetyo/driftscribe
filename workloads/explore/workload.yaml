@@ -68,6 +68,9 @@ enabled_tool_names:
   # tokens + pointers). Coordinator-local StateStore read; no worker, no GitHub
   # credential, no mutation surface — read-only by operation AND credential.
   - read_team_log
+  # Cross-crew "team memory" over the conversations log (read-only). Appended
+  # LAST to match EXPLORE_WORKLOAD_TOOL_NAMES (tool-order pin).
+  - read_conversations
 
 # Only read workers. drift_docs / drift_rollback / upgrade_docs (the
 # mutation workers) and notifier are deliberately absent — explore cannot

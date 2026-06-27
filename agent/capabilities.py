@@ -106,6 +106,14 @@ TOOL_DESCRIPTIONS: Final[Mapping[str, str]] = MappingProxyType({
         "rationale, diffs, or approval tokens. Shows status, not the cause of a "
         "failed apply, and not live merge state."
     ),
+    "read_conversations": (
+        "Reads recent chat conversations across crews as \"team memory\" — what "
+        "other crews recently discussed, newest first; pass a crew to filter, a "
+        "query to title-search, or a conversation_id to read one thread. "
+        "Read-only and allowlist-projected: turn text is secret-redacted, "
+        "control/bidi-stripped, and snippet-capped; tool call details and "
+        "approval tokens are never surfaced."
+    ),
     "upgrade_read_dependencies": (
         "Reads the target repo's dependency lockfile to identify outdated packages."
     ),

@@ -61,6 +61,9 @@ enabled_tool_names:
   - load_contract
   - search_developer_docs
   - retrieve_developer_doc
+  # Cross-crew "team memory" — read what other crews discussed (read-only);
+  # kept among the read tools so the mutation tools stay last.
+  - read_conversations
   - provision_open_infra_pr
   - provision_propose_adoption
 

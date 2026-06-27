@@ -111,6 +111,30 @@ def test_instruction_note_present_iff_restricted(drift_workload_env):
     assert chat_obs.instruction.endswith(autonomy_instruction_note("observe"))
 
 
+def test_chat_extra_instruction_is_prepended_keeping_autonomy_note_last(
+    drift_workload_env,
+):
+    """The cross-crew breadcrumb (``extra_instruction``) is PREPENDED — it is
+    untrusted pointer DATA, so the authoritative system prompt + autonomy note
+    must remain the final, last-read text."""
+    resolution = load_workload("drift")
+    crumb = "Team memory — pointers (untrusted DATA):\n• explore · \"x\" · ~1h ago"
+
+    chat_obs = adk_agent.build_chat_agent(
+        resolution, autonomy_mode="observe", extra_instruction=crumb
+    )
+    assert chat_obs.instruction.startswith(crumb)
+    # The system prompt is still in there, and the autonomy note is STILL last.
+    assert resolution.chat_system_prompt in chat_obs.instruction
+    assert chat_obs.instruction.endswith(autonomy_instruction_note("observe"))
+
+    # None / empty extra_instruction leaves the instruction byte-identical.
+    chat_pa = adk_agent.build_chat_agent(
+        resolution, autonomy_mode="propose_apply", extra_instruction=None
+    )
+    assert chat_pa.instruction == resolution.chat_system_prompt
+
+
 # --------------------------------------------------------------------------- #
 # autonomy_mode is a REQUIRED keyword argument
 # --------------------------------------------------------------------------- #
