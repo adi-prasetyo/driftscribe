@@ -112,14 +112,20 @@
   let mermaidMod: any = null; // cached after the first lazy import
   const scheduler = new RefreshScheduler({ onFetch: () => void refresh() });
 
-  // One inline explanation for the three legend colors (HelpHint ⓘ). Voice
-  // matches the de-AI copy pass (PR #144): colons, no em dashes.
+  // One inline explanation for the legend colors AND the system-managed tag
+  // (HelpHint ⓘ). The grey dot is shared by counts-only rows and named
+  // system-managed rows, so the copy disambiguates both. Voice matches the
+  // de-AI copy pass (PR #144): colons, no em dashes.
   const LEGEND_HELP =
     'Every box is a real resource in your project. Green means managed in IaC: ' +
     'it is defined in OpenTofu, so DriftScribe tracks it and can change it through ' +
     'the approval flow. Yellow means drift: the resource exists but is not in any ' +
-    '.tf file, so it is outside management. Grey means counts-only: sensitive types ' +
-    'such as secrets, shown as a number with no name.';
+    '.tf file, so it is outside management. Grey is neutral: counts-only rows hide ' +
+    'sensitive names such as secrets and show only a number, while named rows ' +
+    'tagged system-managed are protected. Those are the OpenTofu state and ' +
+    'artifact buckets DriftScribe owns, or buckets a Google service creates ' +
+    'automatically: the ' +
+    'denylist blocks changing or adopting them, so they have no Adopt button.';
 
   const degraded = $derived(graph?.degraded ?? false);
   const totals = $derived(graph?.totals ?? null);
@@ -566,7 +572,7 @@
         {#if graph && !degraded}
           <HelpHint
             text={LEGEND_HELP}
-            ariaLabel="Explain the resource colors"
+            ariaLabel="Explain the resource colors and tags"
             testid="legend-help"
           />
         {/if}
@@ -644,9 +650,11 @@
                       onclick={() => clickAdopt(row.prefill)}>Adopt into IaC</button
                     >
                   {:else if row.status === 'control_plane'}
-                    <span class="ds-subtle infra-card__muted" data-testid="card-control-plane"
-                      >System-managed. The always-on denylist blocks changes and adoption for
-                      control-plane resources and for buckets a Google service auto-creates.</span
+                    <!-- Compact tag in the same slot as the green "managed" tag; the
+                         denylist reasoning lives once in the legend ⓘ (LEGEND_HELP)
+                         instead of repeating a paragraph on every system-managed row. -->
+                    <span class="infra-card__tag" data-testid="card-control-plane"
+                      >system-managed</span
                     >
                   {:else}
                     <span class="ds-subtle infra-card__muted" data-testid="card-not-adoptable"
@@ -990,9 +998,10 @@
   }
   .infra-card__row {
     display: flex;
-    /* Wrap so a long control-plane note drops to its own line at the 208px
-       minimum card width instead of vertically centring the dot + name against a
-       tall multi-line note (5-lens review w4jj7t4a5). */
+    /* Wrap so the muted "not an adoptable type" note (or a tag that cannot fit
+       beside a long name) drops to its own line at the 208px minimum card width
+       instead of vertically centring the dot + name against it (5-lens review
+       w4jj7t4a5). */
     flex-wrap: wrap;
     align-items: center;
     gap: var(--ds-sp-2);
@@ -1035,9 +1044,8 @@
     border-color: var(--ds-warn);
   }
   .infra-card__muted {
-    /* The note takes its own line below the dot + name (flex-basis 100% forces the
-       wrap), so dot + name read as the row and the long denylist note sits under
-       them instead of vertically centring them against a tall block. */
+    /* The "not an adoptable type" note takes its own line below the dot + name
+       (flex-basis 100% forces the wrap) so the dot + name still read as the row. */
     flex: 1 1 100%;
     min-width: 0;
     overflow-wrap: anywhere;
