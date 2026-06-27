@@ -141,6 +141,9 @@ describe('step copy', () => {
     // Anchor is the one that runs on its own; the rest wait to be asked.
     expect(line).toContain('Anchor runs on its');
     expect(line).toContain('wait for you to ask');
+    // Explore is surfaced as the crew you ask to understand the system itself
+    // (the read-only crew that carries the whole-system overview).
+    expect(line).toContain('how DriftScribe itself works');
   });
 
   it('estateLine reports SCOPE coverage (matches the panel), not raw totals', () => {

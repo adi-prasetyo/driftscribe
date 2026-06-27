@@ -411,8 +411,9 @@ PROVISION_WORKLOAD_TOOL_NAMES: tuple[str, ...] = (
 #
 # Phase 17.C.4 (Option A from the plan): the ``/chat`` system prompt is
 # now per-workload. Drift's prompt lives in
-# ``workloads/drift/chat_system_prompt.md`` (byte-identical to the
-# pre-17.C.4 ``SYSTEM_PROMPT_CHAT`` constant — pinned by
+# ``workloads/drift/chat_system_prompt.md`` (it started byte-identical to
+# the pre-17.C.4 ``SYSTEM_PROMPT_CHAT`` constant and has since evolved —
+# e.g. the 2026-06-28 sibling-crew routing block — but stays byte-pinned by
 # ``tests/unit/test_drift_workload_loads.py::test_drift_chat_system_prompt_file_matches_pre17c4_constant``);
 # upgrade's lives in ``workloads/upgrade/chat_system_prompt.md`` and
 # describes the upgrade tool surface in operator-facing terms. The

@@ -49,7 +49,7 @@ const EXPECTED: ReadonlyArray<{
     name: 'Explore',
     descriptor: 'read-only',
     summary:
-      'Read-only investigation across infra and code. Inspects live env vars, the ops-contract, the dependency lockfile, and developer docs, then reports. Changes nothing.',
+      'Read-only investigation across infra and code — and the crew to ask when you just want to understand how DriftScribe itself works. Inspects live env vars, the ops-contract, the dependency lockfile, and developer docs, then reports. Changes nothing.',
     group: 'on-demand',
     label: 'Explore — read-only',
   },

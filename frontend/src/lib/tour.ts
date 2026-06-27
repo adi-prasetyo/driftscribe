@@ -78,7 +78,8 @@ export function welcomeLine(graph: InfraGraph | null): string {
     'own. It keeps your live Cloud Run config true to its contract, reacting ' +
     'the moment something changes. Three more wait for you to ask: Patch keeps ' +
     'your dependencies current, Provision authors infrastructure changes, and ' +
-    'Explore answers questions read-only. Infrastructure applies and rollbacks ' +
+    'Explore answers questions read-only, including how DriftScribe itself ' +
+    'works. Infrastructure applies and rollbacks ' +
     'always wait for your approval. Only routine dependency updates can run ' +
     'end-to-end, and only at the Propose + Apply setting.'
   );
