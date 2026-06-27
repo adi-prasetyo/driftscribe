@@ -59,6 +59,33 @@
   let pillReady = $state(false);
   let pillRafId: number | undefined;
 
+  // Popover placement. The pill is the LEFT-most header action and the header
+  // wraps the actions onto their own (left-aligned) row on sub-wide viewports, so
+  // a pill-anchored `right: 0` dropdown overflows the viewport's left edge. We
+  // instead place the popover relative to the VIEWPORT on open and clamp it
+  // on-screen: right edge aligned to the pill's right edge, but if that pushes the
+  // left edge off-screen, pin the left edge to the inset. position:fixed so the
+  // (wrapping) header height never matters.
+  let popoverStyle = $state('');
+  const POPOVER_INSET = 12; // ~ var(--ds-sp-3)
+  const POPOVER_MAX_W = 384; // 24rem
+
+  function positionPopover(): void {
+    if (!toggleEl || typeof window === 'undefined') return;
+    const r = toggleEl.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const width = Math.min(POPOVER_MAX_W, vw - 2 * POPOVER_INSET);
+    // default: right edge under the pill's right edge
+    let right = Math.max(POPOVER_INSET, vw - r.right);
+    // if the left edge would fall off-screen, pin the left edge to the inset
+    if (vw - right - width < POPOVER_INSET) {
+      right = Math.max(POPOVER_INSET, vw - POPOVER_INSET - width);
+    }
+    popoverStyle =
+      `position:fixed; top:${Math.round(r.bottom + 6)}px; right:${Math.round(right)}px; ` +
+      `left:auto; bottom:auto; width:${Math.round(width)}px;`;
+  }
+
   // Pill label: name the mode in words. read_error is a degraded signal, not a
   // per-mode alarm — show "Observe · fail-closed" (the server fails closed to
   // Observe) on a warn tint.
@@ -95,9 +122,15 @@
       closePopover();
     } else {
       resetPopover();
+      positionPopover(); // place before paint so it never flashes pill-anchored
       open = true;
       announceHeaderPopoverOpen('autonomy');
     }
+  }
+
+  // Keep the popover on-screen if the viewport resizes while it is open.
+  function onWindowResize(): void {
+    if (open) positionPopover();
   }
 
   // Focus the ACTIVE segment on open (Codex plan-review #2): type-safe via the
@@ -231,7 +264,10 @@
 
   onMount(() => {
     const onForeign = (e: Event) => {
-      // a foreign open closes us WITHOUT returning focus (Codex plan-review #1)
+      // A foreign open (the Pause pill) closes us WITHOUT returning focus (so we
+      // don't yank it off the pill the user just opened). Gated on !saving: never
+      // tear down mid-POST — so both popovers may be open ONLY transiently while
+      // one is committing (the documented saving-exception invariant).
       if ((e as CustomEvent).detail?.id !== 'autonomy' && open && !saving) closePopover(false);
     };
     window.addEventListener(HEADER_POPOVER_EVENT, onForeign);
@@ -239,7 +275,7 @@
   });
 </script>
 
-<svelte:window onkeydown={onWindowKeydown} onpointerdown={onWindowPointerDown} />
+<svelte:window onkeydown={onWindowKeydown} onpointerdown={onWindowPointerDown} onresize={onWindowResize} />
 
 <div class="autonomy-pill" bind:this={containerEl}>
   {#if st.kind === 'loading'}
@@ -280,6 +316,7 @@
         data-testid="autonomy-popover"
         role="dialog"
         aria-label="Autonomy mode"
+        style={popoverStyle}
         transition:slide={{ duration: motionMs(160) }}
       >
         <!-- Three-segment control -->
@@ -467,6 +504,10 @@
     overflow: hidden;
     text-align: left;
   }
+  /* NB: the actual position (position:fixed; top/right/width) is set inline by
+     positionPopover() on open — it is viewport-anchored + clamped on-screen
+     because the pill is the left-most action and the header wraps. The absolute
+     right:0 above is only a no-JS fallback. */
 
   /* ---- Three-segment control (ported from AutonomyControl; segments stretch to
        fill the narrower popover so they never overflow) ---- */

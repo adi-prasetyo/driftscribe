@@ -71,7 +71,9 @@
 
   onMount(() => {
     const onForeign = (e: Event) => {
-      // a foreign open (Autonomy) closes us, without stealing focus
+      // A foreign open (the Autonomy pill) closes us without stealing focus.
+      // Gated on !saving: never tear down mid-POST, so both popovers may overlap
+      // ONLY transiently while one is committing (the saving-exception invariant).
       if ((e as CustomEvent).detail?.id !== 'pause' && open && !saving) closePopover(false);
     };
     window.addEventListener(HEADER_POPOVER_EVENT, onForeign);
