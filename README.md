@@ -7,21 +7,25 @@
 [![CI](https://github.com/adi-prasetyo/driftscribe/actions/workflows/ci.yml/badge.svg)](https://github.com/adi-prasetyo/driftscribe/actions/workflows/ci.yml)
 [![E2E](https://github.com/adi-prasetyo/driftscribe/actions/workflows/e2e.yml/badge.svg?event=workflow_dispatch)](https://github.com/adi-prasetyo/driftscribe/actions/workflows/e2e.yml)
 
-**An AI DevOps agent that watches your Google Cloud estate and proposes fixes,
-but never applies a risky change on its own.** A crew of four ships today.
-**Anchor** (the `drift` workload) checks live Cloud Run config against an ops
-contract. **Patch** (the `upgrade` workload) checks npm dependencies against the
-GitHub Advisory DB. **Explore** (the `explore` workload) is a read-only inventory
-of the whole project. **Provision** (the `provision` workload) opens
-agent-authored OpenTofu PRs through a gated apply pipeline. Anchor runs
-autonomously: a live Eventarc trigger fires on every Cloud Run config change.
-Patch, Explore, and Provision run on demand from chat. (Patch is a dependency
-watcher whose autonomous trigger is future work. Today you invoke it in chat;
-its `/recheck` path is unimplemented.) The agent is Gemini on Google's Agent
-Development Kit, grounded by the Developer Knowledge MCP, and it holds no direct
-power to act. Narrow single-purpose workers execute within hardcoded limits,
-rollbacks and live-infra applies always wait behind single-use human approval
-gates, and every decision lands in the operator UI with its reasoning trace.
+**An AI DevOps agent that watches your Google Cloud estate and proposes fixes —
+but never applies a risky change on its own.** A crew of four ships today — each a
+workload-scoped agent that reads everything in its lane, proposes rather than
+applies, and is held to the safety boundary in the last column:
+
+| Crew | Trigger | Scope | Safety boundary |
+| --- | --- | --- | --- |
+| **Anchor** (`drift`) | Autonomous (Eventarc) | Live Cloud Run config vs ops contract → docs PR, drift issue, or rollback | Rollback waits behind a single-use HITL approval |
+| **Patch** (`upgrade`) | On demand (chat) | npm deps vs GitHub Advisory DB → upgrade PR | Major bumps refused by a deterministic validator |
+| **Provision** (`provision`) | On demand (chat) | Authors `iac/`-only OpenTofu PRs | Never touches live infra; apply is a separate gated worker |
+| **Explore** (`explore`) | On demand (chat) | Read-only inventory of the whole project; also explains how DriftScribe works | Zero mutation tools (pinned by a test) |
+
+The coordinator is Gemini on Google's Agent Development Kit, grounded by the
+Developer Knowledge MCP; it holds no direct power to act. Narrow single-purpose
+workers execute within hardcoded limits, rollbacks and live-infra applies always
+wait behind single-use human approval gates, and every decision lands in the
+operator UI with its reasoning trace. (Patch's autonomous trigger is future work;
+today it runs from chat, and its `/recheck` path is unimplemented.)
+
 Submission for the DevOps × AI Agent Hackathon 2026 (Google Cloud Japan / Findy).
 
 **Live demo:** <https://driftscribe.adp-app.com>. The operator UI is open to
@@ -74,7 +78,7 @@ returns 503 (unimplemented) and Patch is chat-only.
 Both are on-demand: Explore and Provision run from chat only. `/recheck`
 refuses them, since neither has an autonomous observation source.
 
-- **Explore** (the `explore` workload, read-only): whole-project resource inspection via Cloud Asset Inventory (`infra-reader` worker), plus live Cloud Run env, the ops contract, the dependency lockfile, and developer docs. Explore lists zero mutation tools. It can read everything and change nothing (the read-only guarantee is pinned by a test that asserts its tools are disjoint from the mutation set).
+- **Explore** (the `explore` workload, read-only): whole-project resource inspection via Cloud Asset Inventory (`infra-reader` worker), plus live Cloud Run env, the ops contract, the dependency lockfile, and developer docs. It's also the crew to ask how DriftScribe itself works — its prompt carries a whole-system overview, so a newcomer can get oriented in chat without reading the docs first. Explore lists zero mutation tools. It can read everything and change nothing (the read-only guarantee is pinned by a test that asserts its tools are disjoint from the mutation set).
 - **Provision** (the `provision` workload, infra edits): authors OpenTofu changes from a chat request and opens one `iac/`-only PR via the `tofu-editor` worker (which re-validates every file: `iac/` prefix, foundation ban, secret ban, AGENT-mode static gate). Provision never touches live infra. The actual `tofu apply` runs downstream in the `tofu-apply` worker, the sole live-infra mutator, behind a plan-bound, HMAC-signed operator approval, a path the chat agent cannot invoke directly.
 
 The operator UI renders a live infra resource map (managed vs. drift) alongside the decisions timeline.
@@ -108,19 +112,31 @@ Full operator runbook (screen layout, timing, expected outputs, cleanup):
 
 ## Cost & latency
 
-Per `/chat` call: ~$0.0002 GCP + ~$0.0001 Gemini = ~$0.0003 (estimated; verify
-with the 20-call benchmark below). The Developer Knowledge MCP call adds ~1
-round-trip per `docs_pr` / `upgrade_pr` path; the coordinator caches MCP
-results for 60s in-process, so repeated mentions within a session don't
-multiply. p50 latency: TBD ms classifier-path, TBD ms ADK-path. p95: TBD ms.
-Idle cost at `min-instances=0`: $0. Demo total spend over hackathon: TBD (pull
-from GCP billing breakdown before submission).
+Per `/chat` call: ~$0.0002 GCP + ~$0.0001 Gemini = ~$0.0003 (estimated). The
+Developer Knowledge MCP call adds ~1 round-trip per `docs_pr` / `upgrade_pr`
+path; the coordinator caches MCP results for 60s in-process, so repeated
+mentions within a session don't multiply.
 
-To collect real numbers, run 20 back-to-back `/chat` calls against the deployed
+**Latency** (measured: 20 back-to-back warm `/chat` calls to the live
+coordinator, Explore explainer path, fixed prompt, warm-ups discarded):
+**p50 ≈ 3.2 s, p95 ≈ 5.5 s** (min 2.2 s, max 5.6 s). This covers the interactive
+ADK chat path; autonomous drift detection runs on the `/recheck` path, which is
+event-driven (Eventarc) and exercised separately by the E2E suite. With
+`min-instances=0`, the first call after the service scales to zero adds a
+container + model-client cold start on top of these warm figures.
+
+**Spend.** Idle cost at `min-instances=0` is $0. No BigQuery billing export was
+enabled for the demo project, so this README doesn't report a precise project
+total — billing exports aren't retroactive, and we won't publish a fabricated
+figure. Demo volume is low: tens of `/chat` calls plus a handful of Cloud Build
+deploys. For an exact number, the GCP Billing console → Reports, filtered to
+project `driftscribe-hack-2026` over the hackathon window, is authoritative.
+
+To reproduce the latency numbers, run 20 back-to-back `/chat` calls (after 3
+discarded warm-ups, using the same Explore explainer prompt) against the deployed
 coordinator and record the `X-Trace-Id` + wall-clock for each; compute p50/p95
-from the resulting series. Procedure lives alongside the demo runner. See
-[`scripts/demo.sh`](scripts/demo.sh) for the request shape and operator-token
-resolution.
+from the resulting series. See [`scripts/demo.sh`](scripts/demo.sh) for the
+request shape and operator-token resolution.
 
 **Log retention:** Cloud Logging's `_Default` bucket is extended to 365 days
 by `infra/scripts/setup_secrets.sh`. All DriftScribe logs (including the
