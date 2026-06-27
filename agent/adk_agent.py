@@ -37,9 +37,14 @@ Worker-delegating tools (4 drift + 4 upgrade = 8):
   Chat-only. Authority-clean: pr_number only; squash + required-check
   allowlist pinned server-side. The one tool that mutates ``main``.
 
-Coordinator-internal read-only tools (2):
+Coordinator-internal read-only tools (3):
 - ``search_recent_prs_tool`` (read-only GitHub via coordinator PAT)
 - ``load_contract_tool`` (reads baked-in ops contract)
+- ``read_team_log_tool`` (reads the durable decision log as "team memory";
+  allowlist-projected status tokens + pointers — no rationale / diffs /
+  approval tokens. Coordinator-local StateStore read, no worker, no PAT —
+  read-only by operation AND credential; exposed by the chat-only ``explore``
+  workload).
 
 Developer Knowledge MCP wrappers (2, Phase 17.B.3):
 - ``search_developer_docs`` → Developer Knowledge MCP ``search_documents``
@@ -50,10 +55,14 @@ Infra-IaC read-only inventory (1):
   Read-only (cloudasset.viewer + serviceUsageConsumer); exposed by the
   chat-only ``explore`` workload. Authority-clean: takes no args.
 
-That's 13 tools, period (8 → 10 in 17.C.4 with the upgrade reader/proposer;
+That's 14 tools, period (8 → 10 in 17.C.4 with the upgrade reader/proposer;
 → 11 with close; → 12 in 20.9 with merge; → 13 with the infra-IaC inventory
-reader). Anything else the model wants to do is denied by capability —
-there is no general "execute shell" or "make HTTP request" surface.
+reader; → 14 with the read_team_log decision-log reader). Anything else the
+model wants to do is denied by capability — there is no general "execute
+shell" or "make HTTP request" surface. (This enumeration omits the
+later-added ``load_iac_plan_tool`` and the two ``provision`` mutation tools,
+``open_infra_pr_tool`` / ``propose_adoption_tool`` — the authoritative,
+test-pinned surface is ``EXPECTED_TOOL_NAMES`` in the inventory test.)
 
 **Per-workload tool inventories (Phase 17.A.4):**
 :data:`DRIFT_WORKLOAD_TOOL_NAMES`, :data:`UPGRADE_WORKLOAD_TOOL_NAMES`, and
@@ -65,11 +74,12 @@ the constants below for the rationale, the tuple-vs-frozenset choice, and
 the three-way YAML ⇄ code ⇄ runtime equality enforced by
 ``tests/unit/test_coordinator_tool_inventory.py``. ``explore`` is the
 chat-only, strictly read-only workload: its inventory is a read-only
-SUBSET of the others PLUS the one read-only callable it introduces,
+SUBSET of the others PLUS the read-only callables it introduces:
 ``read_project_inventory`` (infra-IaC initiative) — backed by the
-infra_reader worker (cloudasset.viewer + serviceUsageConsumer), so the
-addition is strictly read-only and does not widen the mutation surface. That
-callable is what bumps the count above from 12 to 13.
+infra_reader worker (cloudasset.viewer + serviceUsageConsumer) — and
+``read_team_log`` (coordinator-local decision-log read; no worker). Both are
+strictly read-only and do not widen the mutation surface. Those two callables
+are what bump the count above from 12 to 14.
 """
 
 import json
@@ -96,6 +106,7 @@ from agent.adk_tools import (
     propose_rollback_tool,
     read_live_env_tool,
     read_project_inventory_tool,
+    read_team_log_tool,
     search_recent_prs_tool,
     upgrade_close_pr_tool,
     upgrade_merge_pr_tool,
@@ -167,6 +178,11 @@ COORDINATOR_TOOLS = [
     # the chat-only ``explore`` workload; intentionally NOT in
     # MUTATION_TOOL_NAMES.
     load_iac_plan_tool,
+    # "Team memory" — read the durable decision log (allowlist-projected status
+    # tokens + pointers). Coordinator-local StateStore read; no worker, no
+    # GitHub PAT — read-only by operation AND credential. Exposed by the
+    # chat-only ``explore`` workload; intentionally NOT in MUTATION_TOOL_NAMES.
+    read_team_log_tool,
     # Provision workload (Phase D2) — author OpenTofu (IaC) edits and open
     # ONE iac/-only PR via the tofu-editor worker. Authority-clean LLM-facing
     # surface: the LLM supplies only the file writes + PR title/body; every
@@ -283,8 +299,8 @@ UPGRADE_WORKLOAD_TOOL_NAMES: tuple[str, ...] = (
 # PAT). The read-only guarantee is pinned in
 # ``tests/unit/test_coordinator_tool_inventory.py`` as a disjointness
 # assertion against the mutation-tool set — see ``_MUTATION_TOOL_NAMES``
-# there. Order mirrors ``workloads/explore/workload.yaml`` (tool-order pin)
-# — ``read_project_inventory`` is appended LAST to match the YAML.
+# there. Order mirrors ``workloads/explore/workload.yaml`` (tool-order pin) —
+# tools are appended in YAML order; ``read_team_log`` is currently last.
 EXPLORE_WORKLOAD_TOOL_NAMES: tuple[str, ...] = (
     "drift_read_live_env",
     "upgrade_read_dependencies",
@@ -295,6 +311,10 @@ EXPLORE_WORKLOAD_TOOL_NAMES: tuple[str, ...] = (
     # Item 12 — pending-infra-PR plan Q&A. Read-only by credential
     # (GCS objectViewer, no GitHub PAT) — see agent/adk_tools.py.
     "load_iac_plan",
+    # "Team memory" — read the durable decision log (allowlist-projected).
+    # Coordinator-local StateStore read; no worker, no GitHub PAT — read-only
+    # by operation AND credential. Appended LAST to match the YAML tool-order.
+    "read_team_log",
 )
 
 # The chat-only IaC-authoring workload (Phase D2). Its read set is

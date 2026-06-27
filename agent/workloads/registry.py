@@ -69,6 +69,7 @@ from agent.adk_tools import (
     propose_rollback_tool,
     read_live_env_tool,
     read_project_inventory_tool,
+    read_team_log_tool,
     search_recent_prs_tool,
     upgrade_close_pr_tool,
     upgrade_merge_pr_tool,
@@ -362,6 +363,14 @@ _TOOL_REGISTRY: Final[dict[str, Callable | None]] = {
     # credential and stays eligible for the strictly read-only explore
     # workload (objectViewer on the artifacts bucket is the whole authority).
     "load_iac_plan":           load_iac_plan_tool,
+    # Read the durable decision log as agent-readable "team memory" (a crew can
+    # reference what the team did/decided). Coordinator-LOCAL StateStore read —
+    # no worker, no GitHub token — and read-only by both operation and
+    # credential, so it's eligible for the strictly read-only explore workload.
+    # Allowlist-projected: surfaces status tokens + pointers only, never
+    # rationale / diffs / approval tokens. See
+    # :func:`agent.adk_tools.read_team_log_tool`.
+    "read_team_log":           read_team_log_tool,
     # Upgrade workload — implemented in 17.C.4. Both callables are
     # authority-clean: their LLM-facing signatures expose only the
     # decision content (package_name / target_version / advisory_url /
@@ -440,6 +449,7 @@ _TOOL_TIERS: Final[dict[str, str]] = {
     "load_contract":              "report",
     "search_recent_prs":          "report",
     "load_iac_plan":              "report",
+    "read_team_log":              "report",
     "upgrade_read_dependencies":  "report",
     "upgrade_propose_pr":         "propose",
     "upgrade_close_pr":           "propose",

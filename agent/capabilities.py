@@ -98,6 +98,14 @@ TOOL_DESCRIPTIONS: Final[Mapping[str, str]] = MappingProxyType({
         "PR and summarizes it in plain language. Read-only: cannot approve, "
         "reject, or apply anything."
     ),
+    "read_team_log": (
+        "Reads DriftScribe's own decision log as \"team memory\" — what the "
+        "crews recently did or decided (adoptions, docs PRs, rollbacks, "
+        "upgrades), newest first, optionally filtered to one PR. Read-only and "
+        "allowlist-projected: surfaces recorded status and pointers only, never "
+        "rationale, diffs, or approval tokens. Shows status, not the cause of a "
+        "failed apply, and not live merge state."
+    ),
     "upgrade_read_dependencies": (
         "Reads the target repo's dependency lockfile to identify outdated packages."
     ),

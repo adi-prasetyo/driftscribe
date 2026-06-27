@@ -64,6 +64,10 @@ enabled_tool_names:
   # (GCS listing + objectViewer only; no GitHub credential — see the
   # search_recent_prs exclusion note above, which this tool does NOT trip).
   - load_iac_plan
+  # "Team memory" — read the durable decision log (allowlist-projected status
+  # tokens + pointers). Coordinator-local StateStore read; no worker, no GitHub
+  # credential, no mutation surface — read-only by operation AND credential.
+  - read_team_log
 
 # Only read workers. drift_docs / drift_rollback / upgrade_docs (the
 # mutation workers) and notifier are deliberately absent — explore cannot

@@ -123,6 +123,11 @@ EXPECTED_TOOL_NAMES = frozenset({
     # deliberately NOT in MUTATION_TOOL_NAMES: both the operation and the
     # credential are read-only, unlike search_recent_prs.
     "load_iac_plan_tool",
+    # "Team memory" — read the durable decision log for the explore workload.
+    # Coordinator-local StateStore read (no worker, no GitHub PAT) —
+    # deliberately NOT in MUTATION_TOOL_NAMES: read-only by operation AND
+    # credential. Allowlist-projected (status tokens + pointers only).
+    "read_team_log_tool",
 })
 
 
@@ -642,7 +647,7 @@ def test_explore_workload_tool_order_pin(explore_workload_env):
 
     Explore is chat-only, so it is served via :func:`build_chat_agent`
     (not :func:`build_agent`) — this also confirms the chat builder
-    surfaces exactly the five read tools, in order, for a workload that
+    surfaces exactly the read tools, in order, for a workload that
     happens to list no CHAT_ONLY_TOOL_NAMES tools to filter.
     """
     from agent.workloads import load_workload
@@ -843,6 +848,8 @@ def test_dangerous_param_regex_smoke_test():
         "target_version",
         # Upgrade PR close tool param.
         "pr_number",
+        # read_team_log tool param (pr_number is already covered above).
+        "limit",
     ):
         assert not _DANGEROUS_PARAM_RE.search(safe), (
             f"Regex unexpectedly matched safe parameter name {safe!r}. "
