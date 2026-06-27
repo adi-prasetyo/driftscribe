@@ -83,7 +83,7 @@ def _adk_enabled(monkeypatch):
     agent_main.get_settings.cache_clear()
 
 
-async def _stub_fanout(prompt, session_id=None, *, autonomy_mode="propose_apply"):
+async def _stub_fanout(prompt, session_id=None, *, autonomy_mode="propose_apply", prior_turns=None):
     """Stub orchestrator: provision-only, so NO ``workload`` kwarg.
 
     Matches :func:`agent.fanout.run_provision_fanout_stream`'s
@@ -97,7 +97,7 @@ async def _stub_fanout(prompt, session_id=None, *, autonomy_mode="propose_apply"
            "tool_calls": ["open_infra_pr"], "session_id": "sid-prov"}
 
 
-async def _stub_chat(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply"):
+async def _stub_chat(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply", prior_turns=None):
     """Stub single-agent stream: keeps the ``workload`` kwarg ``run_chat_stream``
     actually carries, so a mis-route to it would still produce a usable stream
     (the tests assert on the *reply* text, not the shape, to distinguish)."""
@@ -167,7 +167,7 @@ def test_chat_provision_does_not_invoke_run_chat_stream(_adk_enabled):
     is ever called for provision (it must not be)."""
     chat_stream_called = Mock()
 
-    def _forbidden_chat_stream(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply"):
+    def _forbidden_chat_stream(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply", prior_turns=None):
         chat_stream_called(workload)
         raise AssertionError(
             "run_chat_stream must NOT be invoked for workload=provision; "
@@ -198,11 +198,11 @@ def test_chat_drift_json_still_goes_through_run_chat_not_fanout(_adk_enabled):
     run_chat_called = Mock()
     fanout_called = Mock()
 
-    async def _run_chat(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply"):
+    async def _run_chat(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply", prior_turns=None):
         run_chat_called(workload)
         return {"reply": "drift reply", "tool_calls": [], "session_id": "sid-d"}
 
-    async def _spy_fanout(prompt, session_id=None, *, autonomy_mode="propose_apply"):
+    async def _spy_fanout(prompt, session_id=None, *, autonomy_mode="propose_apply", prior_turns=None):
         fanout_called()
         yield {"type": "result", "reply": "x", "tool_calls": [],
                "session_id": "s"}
@@ -227,7 +227,7 @@ def test_chat_drift_sse_still_goes_through_run_chat_stream_not_fanout(
     never the fan-out orchestrator (the SSE byte-compat regression guard)."""
     fanout_called = Mock()
 
-    async def _spy_fanout(prompt, session_id=None, *, autonomy_mode="propose_apply"):
+    async def _spy_fanout(prompt, session_id=None, *, autonomy_mode="propose_apply", prior_turns=None):
         fanout_called()
         yield {"type": "result", "reply": "x", "tool_calls": [],
                "session_id": "s"}
