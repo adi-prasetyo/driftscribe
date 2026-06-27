@@ -503,8 +503,12 @@ async def _persisting_chat_stream(
         prior_turns=conv["prior_turns"],
     ):
         if item.get("type") == "result":
-            if _persist_chat_turn(
-                state, conv=conv, prompt=prompt, trace_id=trace_id, result=item
+            # Off-load the (possibly Firestore-transactional) write to a thread
+            # so a slow commit can't stall the SSE done/heartbeat frames or
+            # other async requests on the event loop.
+            if await asyncio.to_thread(
+                _persist_chat_turn, state, conv=conv, prompt=prompt,
+                trace_id=trace_id, result=item,
             ):
                 item = {**item, "conversation_id": conv["conversation_id"]}
         yield item
@@ -5891,9 +5895,9 @@ async def chat(
                 req.prompt, session_id=req.session_id, workload=req.workload,
                 autonomy_mode=autonomy.mode, prior_turns=conv["prior_turns"],
             )
-            if _persist_chat_turn(
-                state, conv=conv, prompt=req.prompt, trace_id=trace_id,
-                result=result,
+            if await asyncio.to_thread(
+                _persist_chat_turn, state, conv=conv, prompt=req.prompt,
+                trace_id=trace_id, result=result,
             ):
                 result["conversation_id"] = conv["conversation_id"]
             return result
