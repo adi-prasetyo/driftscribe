@@ -371,6 +371,9 @@ class FirestoreStateStore:
         # Currently only the ``pause`` document (id="pause") lives here.
         # Separate from ``events``/``decisions`` so IAM and query scopes stay clean.
         self._config = client.collection("config")
+        # Multi-turn chat (P1): one doc per conversation; turns live in a
+        # ``turns`` subcollection under each conversation doc.
+        self._conversations = client.collection("conversations")
 
     def record_event(self, event_key: str, payload: dict[str, Any]) -> bool:
         # Create-if-absent: succeed only when the doc didn't already exist.
@@ -570,6 +573,151 @@ class FirestoreStateStore:
             d.setdefault("created_at", s.create_time)
             out.append(d)
         return out
+
+    # --- Multi-turn chat conversations (P1) ---------------------------------
+
+    def create_conversation(
+        self, conversation_id: str, *, workload: str, title: str
+    ) -> dict[str, Any]:
+        from google.cloud import firestore
+
+        doc = {
+            "conversation_id": conversation_id,
+            "workload": workload,
+            "title": title,
+            "created_at": firestore.SERVER_TIMESTAMP,
+            "updated_at": firestore.SERVER_TIMESTAMP,
+            "turn_count": 0,
+            "last_trace_id": None,
+        }
+        self._conversations.document(conversation_id).set(doc)
+        return doc
+
+    def append_turn(
+        self,
+        conversation_id: str,
+        *,
+        role: str,
+        text: str,
+        workload: str,
+        trace_id: str | None = None,
+        iac_pr: dict[str, Any] | None = None,
+        tool_calls: list[Any] | None = None,
+    ) -> int:
+        return self.append_turns(
+            conversation_id,
+            [{
+                "role": role, "text": text, "workload": workload,
+                "trace_id": trace_id, "iac_pr": iac_pr, "tool_calls": tool_calls,
+            }],
+        )[0]
+
+    def append_turns(
+        self,
+        conversation_id: str,
+        turns: list[dict[str, Any]],
+        *,
+        create_with: dict[str, Any] | None = None,
+    ) -> list[int]:
+        """Append ``turns`` atomically, allocating contiguous ``seq`` values.
+
+        One transaction: read the conversation doc's ``turn_count`` (the seq
+        cursor), then write every turn doc + the bumped parent doc. A plain
+        batch — unlike ``record_decision`` whose ids are pre-known — would let
+        two concurrent posts pick the same ``seq``. When ``create_with`` is set
+        and the conversation does not exist, the doc is created INSIDE the same
+        transaction so a new conversation + its first turns persist all-or-
+        nothing (no empty-doc / half-turn windows). Mirrors the read-before-
+        write shape of :meth:`evict_cached_decision`.
+        """
+        from google.cloud import firestore
+
+        conv_ref = self._conversations.document(conversation_id)
+
+        @firestore.transactional
+        def _txn(transaction) -> list[int]:
+            # READS FIRST (Firestore requires all reads before any writes).
+            snap = conv_ref.get(transaction=transaction)
+            if not snap.exists:
+                if create_with is None:
+                    raise KeyError(f"conversation {conversation_id!r} not found")
+                base = {
+                    "conversation_id": conversation_id,
+                    "workload": create_with["workload"],
+                    "title": create_with["title"],
+                    "created_at": firestore.SERVER_TIMESTAMP,
+                    "last_trace_id": None,
+                }
+                start, last_trace, is_create = 0, None, True
+            else:
+                data = snap.to_dict() or {}
+                start = int(data.get("turn_count", 0))
+                last_trace = data.get("last_trace_id")
+                base, is_create = {}, False
+            # WRITES.
+            seqs: list[int] = []
+            for i, t in enumerate(turns):
+                seq = start + i
+                turn = {
+                    "seq": seq,
+                    "role": t["role"],
+                    "text": t.get("text") or "",
+                    "workload": t["workload"],
+                    "trace_id": t.get("trace_id"),
+                    "created_at": firestore.SERVER_TIMESTAMP,
+                }
+                if t.get("iac_pr"):
+                    turn["iac_pr"] = t["iac_pr"]
+                if t.get("tool_calls"):
+                    turn["tool_calls"] = t["tool_calls"]
+                transaction.set(
+                    conv_ref.collection("turns").document(f"{seq:06d}"), turn
+                )
+                if t.get("trace_id"):
+                    last_trace = t["trace_id"]
+                seqs.append(seq)
+            doc_fields = {
+                "turn_count": start + len(turns),
+                "updated_at": firestore.SERVER_TIMESTAMP,
+                "last_trace_id": last_trace,
+            }
+            if is_create:
+                transaction.set(conv_ref, {**base, **doc_fields})
+            else:
+                transaction.update(conv_ref, doc_fields)
+            return seqs
+
+        return _txn(self._db.transaction())
+
+    def get_conversation(self, conversation_id: str) -> dict[str, Any] | None:
+        conv_ref = self._conversations.document(conversation_id)
+        snap = conv_ref.get()
+        if not snap.exists:
+            return None
+        data = snap.to_dict() or {}
+        data.setdefault("created_at", snap.create_time)
+        turns = [s.to_dict() or {} for s in conv_ref.collection("turns").stream()]
+        turns.sort(key=lambda t: t.get("seq", 0))
+        data["turns"] = turns
+        return data
+
+    def list_conversations(
+        self, *, limit: int = 50, workload: str | None = None
+    ) -> list[dict[str, Any]]:
+        query = (
+            self._conversations.where("workload", "==", workload)
+            if workload is not None
+            else self._conversations
+        )
+        snaps = list(query.stream())
+        rows: list[dict[str, Any]] = []
+        for s in snaps:
+            d = s.to_dict() or {}
+            d.setdefault("created_at", s.create_time)
+            d.setdefault("updated_at", d.get("created_at"))
+            rows.append(d)
+        rows.sort(key=lambda d: d.get("updated_at") or 0, reverse=True)
+        return rows[:limit]
 
     def get_pause(self) -> dict[str, Any] | None:
         """Point-read the ``config/pause`` document; returns ``to_dict()`` or None.
