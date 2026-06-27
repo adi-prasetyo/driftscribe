@@ -227,6 +227,10 @@ describe('step copy', () => {
     expect(CONTROLS_LINE.toLowerCase()).not.toContain('safety');
     // Pause now lives in the header pill, not a content card — copy points there.
     expect(CONTROLS_LINE).toContain('top bar');
+    // Reworded for the header-pill redesign: name the visible "Mode control",
+    // not a "dial" (the spotlit element is now a compact pill).
+    expect(CONTROLS_LINE).toContain('Mode control');
+    expect(CONTROLS_LINE.toLowerCase()).not.toContain('dial');
   });
 
   it('NEXT_LINE is scoped to THIS request and the review-page gate (T6)', () => {
