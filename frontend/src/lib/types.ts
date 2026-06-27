@@ -76,6 +76,50 @@ export interface Decision extends Record<string, unknown> {
   suppressed_by_autonomy?: boolean;
 }
 
+/** One persisted turn in a multi-turn conversation (P2). Mirrors a Firestore
+ *  `conversations/{id}/turns/{seq}` doc. `role` is the AUTHOR axis — `"user"`
+ *  for the operator's prompt, `"crew"` for the agent reply (NOT the ADK
+ *  `model` role; the backend stores the human-facing label). `text` is rendered
+ *  as ESCAPED PLAIN TEXT in the thread (deliberate XSS stance — see the chat
+ *  reply-plain-text decision); never route it through a Markdown renderer. */
+export interface ConversationTurn {
+  seq: number;
+  role: 'user' | 'crew' | string;
+  text: string;
+  workload?: string;
+  trace_id?: string | null;
+  created_at?: string;
+  // Crew turns only: present when that turn opened an infrastructure PR.
+  iac_pr?: { pr_number: number; pr_url: string } | null;
+  tool_calls?: string[];
+}
+
+/** One conversation's metadata row in the history rail (GET /conversations).
+ *  Turns are NOT embedded — the rail only needs title/crew/timestamps; fetch a
+ *  single conversation's full turns via GET /conversations/{id}. */
+export interface Conversation {
+  conversation_id: string;
+  /** Crew lock — every turn in this thread runs against this one workload. */
+  workload: string;
+  /** Truncated first prompt (no LLM summary). May be "(untitled)". */
+  title: string;
+  created_at?: string;
+  updated_at?: string;
+  turn_count?: number;
+  last_trace_id?: string | null;
+}
+
+/** GET /conversations/{id} response: the conversation doc + its ordered turns
+ *  (oldest-first by seq), used to rehydrate the thread on resume. */
+export interface ConversationDetail extends Conversation {
+  turns: ConversationTurn[];
+}
+
+/** GET /conversations response shape. */
+export interface ConversationsResponse {
+  conversations: Conversation[];
+}
+
 /** GET /trace/{id} response (historical replay + post-`done` backfill). */
 export interface TraceResponse {
   trace_id: string;

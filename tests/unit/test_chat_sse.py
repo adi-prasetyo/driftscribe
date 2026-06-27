@@ -53,7 +53,7 @@ def _adk_enabled(monkeypatch):
     agent_main.get_settings.cache_clear()
 
 
-async def _stub_stream(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply"):
+async def _stub_stream(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply", prior_turns=None):
     yield {"type": "event", "event": {
         "event": "tool_call", "tool_name": "read_drift", "tool_args": {},
         "seq": 1, "insert_id": "stream-1", "timestamp": "t"}}
@@ -80,7 +80,7 @@ def test_chat_streams_sse_when_accept_header(_adk_enabled):
     assert done[0]["tool_calls"] == ["read_drift"]
 
 
-async def _stub_stream_with_iac_pr(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply"):
+async def _stub_stream_with_iac_pr(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply", prior_turns=None):
     yield {"type": "event", "event": {
         "event": "tool_call", "tool_name": "open_infra_pr", "tool_args": {},
         "seq": 1, "insert_id": "stream-1", "timestamp": "t"}}
@@ -136,7 +136,7 @@ async def test_drain_chat_stream_result_preserves_iac_pr():
 
 
 def test_chat_returns_json_without_accept_header(_adk_enabled):
-    async def _run_chat(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply"):
+    async def _run_chat(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply", prior_turns=None):
         return {"reply": "all good", "tool_calls": [], "session_id": "sid"}
 
     with patch("agent.adk_agent.run_chat", _run_chat), \
@@ -163,7 +163,7 @@ def test_chat_sse_rebinds_contextvars_for_the_stream_body(_adk_enabled):
     from agent.workload_context import current_workload
     from driftscribe_lib.logging import get_trace_id
 
-    async def _ctx_echo_stream(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply"):
+    async def _ctx_echo_stream(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply", prior_turns=None):
         yield {"type": "event", "event": {
             "event": "tool_call", "tool_name": "x", "tool_args": {},
             "bound_trace_id": get_trace_id(),
@@ -187,7 +187,7 @@ def test_chat_sse_rebinds_contextvars_for_the_stream_body(_adk_enabled):
 
 
 def test_chat_sse_emits_error_frame_on_inloop_failure(_adk_enabled):
-    async def _boom(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply"):
+    async def _boom(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply", prior_turns=None):
         raise RuntimeError("model misbehaved")
         yield  # pragma: no cover — makes this an async generator
 

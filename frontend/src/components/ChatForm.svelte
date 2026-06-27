@@ -12,6 +12,7 @@
     disabled = false,
     onSubmit,
     prefill = null,
+    workload = $bindable('drift'),
   }: {
     disabled?: boolean;
     onSubmit: (prompt: string, workload: Workload) => void;
@@ -22,10 +23,17 @@
      * never clobbers an edited draft (Codex review 019eb572).
      */
     prefill?: ChatPrefill | null;
+    /**
+     * The selected crew, lifted to a two-way binding (P2): App reads it for the
+     * crew-lock check on a multi-turn thread, and SETS it when the operator
+     * resumes a conversation from the rail so the composer lands on that
+     * thread's locked crew. Defaults to Anchor (drift); the CrewPicker still
+     * drives it via `bind:value`, and the prefill effect still overrides it.
+     */
+    workload?: Workload;
   } = $props();
 
   let prompt = $state('');
-  let workload = $state<Workload>('drift');
   let inputEl = $state<HTMLInputElement | null>(null);
 
   // The workload picker is the CrewPicker (four mini crew cards) bound to

@@ -399,6 +399,121 @@ def _reset_state_for_tests() -> None:
     _state_singleton = None
 
 
+# --- Multi-turn chat conversations (P1) ------------------------------------
+
+_CONVERSATION_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,128}")
+
+
+def _derive_conversation_title(prompt: str) -> str:
+    """First-prompt title: sanitize control/bidi + truncate. No LLM call."""
+    from agent.adk_tools import _team_log_sanitize
+
+    return _team_log_sanitize(prompt, 60) or "(untitled)"
+
+
+def _resolve_chat_conversation(
+    state: StateStore, conversation_id: str | None, workload: str
+) -> dict:
+    """Resolve the conversation for a /chat turn (crew-lock enforced).
+
+    Absent id  -> new conversation (created lazily at persist time).
+    Unknown id -> 404 (never silently fork on a typo / stale client).
+    Crew-lock mismatch -> 409.
+    Returns ``{conversation_id, workload, is_new, prior_turns}``.
+    """
+    if conversation_id is None:
+        return {
+            "conversation_id": str(uuid.uuid4()),
+            "workload": workload,
+            "is_new": True,
+            "prior_turns": [],
+        }
+    conv = state.get_conversation(conversation_id)
+    if conv is None:
+        raise HTTPException(
+            status_code=404,
+            detail="conversation not found",
+            headers={"Cache-Control": "no-store"},
+        )
+    if conv.get("workload") != workload:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"conversation is locked to crew {conv.get('workload')!r}; "
+                f"start a new chat to talk to {workload!r}"
+            ),
+            headers={"Cache-Control": "no-store"},
+        )
+    return {
+        "conversation_id": conversation_id,
+        "workload": workload,
+        "is_new": False,
+        "prior_turns": conv.get("turns", []),
+    }
+
+
+def _persist_chat_turn(
+    state: StateStore, *, conv: dict, prompt: str, trace_id: str | None,
+    result: dict,
+) -> bool:
+    """Atomically append the user+crew turn pair. Fail-soft.
+
+    Returns True iff the pair persisted — the caller attaches ``conversation_id``
+    to the response ONLY on True, so we never hand the client an id that resolves
+    to nothing. The whole exchange (incl. lazy creation for a new conversation)
+    is one transaction, so there are no half-turns.
+    """
+    try:
+        turns = [
+            {"role": "user", "text": prompt, "workload": conv["workload"],
+             "trace_id": trace_id},
+            {"role": "crew", "text": result.get("reply") or "",
+             "workload": conv["workload"], "trace_id": trace_id,
+             "iac_pr": result.get("iac_pr"),
+             "tool_calls": result.get("tool_calls")},
+        ]
+        create_with = (
+            {"workload": conv["workload"],
+             "title": _derive_conversation_title(prompt)}
+            if conv.get("is_new") else None
+        )
+        state.append_turns(conv["conversation_id"], turns, create_with=create_with)
+        conv["is_new"] = False
+        return True
+    except Exception:  # noqa: BLE001 — reply already produced; never break it
+        log.warning("chat_turn_persist_failed", exc_info=True)
+        return False
+
+
+async def _persisting_chat_stream(
+    workload: str, prompt: str, conv: dict, trace_id: str | None,
+    session_id: str | None, *, autonomy_mode: str,
+):
+    """Wrap _chat_stream: seed prior turns in, persist the new turn out.
+
+    Single persist site for the SSE path (all crews) and the JSON provision path
+    (both already route through _chat_stream). The fan-out's internal delegation
+    to run_chat_stream is invisible here, so we persist exactly once. The
+    caller-supplied ADK session_id is forwarded unchanged (separate concept from
+    conversation_id).
+    """
+    state = get_state()
+    async for item in _chat_stream(
+        workload, prompt, session_id, autonomy_mode=autonomy_mode,
+        prior_turns=conv["prior_turns"],
+    ):
+        if item.get("type") == "result":
+            # Off-load the (possibly Firestore-transactional) write to a thread
+            # so a slow commit can't stall the SSE done/heartbeat frames or
+            # other async requests on the event loop.
+            if await asyncio.to_thread(
+                _persist_chat_turn, state, conv=conv, prompt=prompt,
+                trace_id=trace_id, result=item,
+            ):
+                item = {**item, "conversation_id": conv["conversation_id"]}
+        yield item
+
+
 _trace_fetcher_singleton: TraceFetcher | None = None
 
 
@@ -5335,6 +5450,13 @@ class ChatRequest(BaseModel):
 
     prompt: str = Field(max_length=8000)
     session_id: str | None = Field(default=None, max_length=128)
+    # Durable multi-turn thread id (P1). Distinct from the inert ADK
+    # ``session_id``: this is the conversation the turn belongs to, crew-locked
+    # to ``workload``. Server-generated UUIDs; the pattern rejects path escapes
+    # so a client echo can't smuggle a ``/`` into a Firestore doc id.
+    conversation_id: str | None = Field(
+        default=None, max_length=128, pattern=r"^[A-Za-z0-9_-]{1,128}$"
+    )
     workload: Literal["drift", "upgrade", "explore", "provision"]
 
     model_config = ConfigDict(extra="forbid")
@@ -5401,7 +5523,8 @@ def _paused_chat_reply(pause: PauseState) -> str:
 
 
 def _paused_chat_response(
-    pause: PauseState, *, wants_sse: bool, session_id: str | None
+    pause: PauseState, *, wants_sse: bool, session_id: str | None,
+    conversation_id: str | None = None,
 ) -> "dict | StreamingResponse":
     """Return the calm /chat refusal — 200 on BOTH JSON and SSE paths.
 
@@ -5420,6 +5543,8 @@ def _paused_chat_response(
         "session_id": session_id or "",
         "paused": True,
     }
+    if conversation_id:
+        payload["conversation_id"] = conversation_id
     if not wants_sse:
         return payload
 
@@ -5441,7 +5566,8 @@ _SSE_HEARTBEAT_S = 15
 
 
 def _chat_stream(
-    workload: str, prompt: str, session_id: str | None, *, autonomy_mode: str
+    workload: str, prompt: str, session_id: str | None, *, autonomy_mode: str,
+    prior_turns: list[dict] | None = None,
 ):
     """Select the chat-stream async generator for a workload.
 
@@ -5461,12 +5587,13 @@ def _chat_stream(
     if workload == "provision":
         from agent.fanout import run_provision_fanout_stream
         return run_provision_fanout_stream(
-            prompt, session_id, autonomy_mode=autonomy_mode
+            prompt, session_id, autonomy_mode=autonomy_mode,
+            prior_turns=prior_turns,
         )
     from agent.adk_agent import run_chat_stream
     return run_chat_stream(
         prompt, session_id=session_id, workload=workload,
-        autonomy_mode=autonomy_mode,
+        autonomy_mode=autonomy_mode, prior_turns=prior_turns,
     )
 
 
@@ -5495,12 +5622,15 @@ async def _drain_chat_stream_result(agen) -> dict:
             # through when a first-authoring infra run produced one.
             if item.get("iac_pr"):
                 out["iac_pr"] = item["iac_pr"]
+            # Multi-turn (P1): echo the durable thread id when the turn persisted.
+            if item.get("conversation_id"):
+                out["conversation_id"] = item["conversation_id"]
             return out
     raise RuntimeError("ADK chat agent produced no final response")
 
 
-async def _chat_sse(prompt: str, session_id: str | None, workload: str,
-                    trace_id: str, *, autonomy_mode: str):
+async def _chat_sse(prompt: str, session_id: str | None, conv: dict,
+                    workload: str, trace_id: str, *, autonomy_mode: str):
     """SSE generator for the /chat streaming path.
 
     Re-binds the trace_id + workload ContextVars INSIDE the generator
@@ -5524,8 +5654,9 @@ async def _chat_sse(prompt: str, session_id: str | None, workload: str,
 
     async def _produce():
         try:
-            async for item in _chat_stream(
-                workload, prompt, session_id, autonomy_mode=autonomy_mode
+            async for item in _persisting_chat_stream(
+                workload, prompt, conv, trace_id, session_id,
+                autonomy_mode=autonomy_mode,
             ):
                 await queue.put(("item", item))
         except Exception as e:  # noqa: BLE001 - mapped to a status hint
@@ -5558,6 +5689,11 @@ async def _chat_sse(prompt: str, session_id: str | None, workload: str,
                     # reads it to render a clickable "Review & approve" CTA.
                     if item.get("iac_pr"):
                         done_data["iac_pr"] = item["iac_pr"]
+                    # Multi-turn (P1): the durable thread id the client stores +
+                    # replays on the next turn. Present only when the turn
+                    # persisted.
+                    if item.get("conversation_id"):
+                        done_data["conversation_id"] = item["conversation_id"]
                     yield _sse_frame(event="done", data=done_data)
             elif kind == "error":
                 status, detail = payload
@@ -5621,8 +5757,16 @@ async def chat(
     pause = _pause_state_fail_closed()
     if pause.paused:
         wants_sse = "text/event-stream" in request.headers.get("accept", "")
+        # Crew-lock invariant still holds while paused: a supplied conversation
+        # id must exist and match the workload (404/409). No conversation is
+        # created and no turn persists on the paused path.
+        if req.conversation_id is not None:
+            _resolve_chat_conversation(
+                get_state(), req.conversation_id, req.workload
+            )
         return _paused_chat_response(
-            pause, wants_sse=wants_sse, session_id=req.session_id
+            pause, wants_sse=wants_sse, session_id=req.session_id,
+            conversation_id=req.conversation_id,
         )
     # Autonomy dial (ClickOps item 11): read AFTER the pause gate (pause
     # outranks the dial). Chat is NEVER refused by the dial — tools are
@@ -5680,19 +5824,26 @@ async def chat(
     # see :func:`_eager_resolve_upgrade_contract`.
     _eager_resolve_upgrade_contract(resolution)
 
+    # Multi-turn (P1): resolve the conversation ONCE here — before the SSE/JSON
+    # branch — so the crew-lock 404/409 fires uniformly for both transports
+    # before any streaming starts. Absent id → a new conversation (created
+    # lazily at persist time). Capture the trace_id here too so both transports
+    # link the persisted crew turn to the same /trace/{id}.
+    state = get_state()
+    conv = _resolve_chat_conversation(state, req.conversation_id, req.workload)
+    trace_id = current_trace_id_or_new()
+
     # Phase 22: SSE streaming path. Content-negotiated on Accept — the
     # operator UI sends ``text/event-stream``; tests, /recheck, and API
-    # callers that don't get the unchanged JSON dict below. Capture the
-    # trace_id NOW (before returning the StreamingResponse) and re-bind it
-    # inside the generator — see :func:`_chat_sse` for why. Streaming is
-    # ADDITIVE: ``run_chat_stream`` still logs every event to Cloud
-    # Logging exactly as the JSON path does.
+    # callers that don't get the unchanged JSON dict below. The trace_id is
+    # captured above and re-bound inside the generator — see :func:`_chat_sse`
+    # for why. Streaming is ADDITIVE: ``run_chat_stream`` still logs every
+    # event to Cloud Logging exactly as the JSON path does.
     wants_sse = "text/event-stream" in request.headers.get("accept", "")
     if wants_sse:
-        trace_id = current_trace_id_or_new()
         return StreamingResponse(
             _chat_sse(
-                req.prompt, req.session_id, req.workload, trace_id,
+                req.prompt, req.session_id, conv, req.workload, trace_id,
                 autonomy_mode=autonomy.mode,
             ),
             media_type="text/event-stream",
@@ -5730,15 +5881,26 @@ async def chat(
                 # path, so the outer ``except`` + ``_chat_error_payload``
                 # mapping below covers it unchanged.
                 return await _drain_chat_stream_result(
-                    _chat_stream(
-                        "provision", req.prompt, req.session_id,
+                    _persisting_chat_stream(
+                        "provision", req.prompt, conv, trace_id, req.session_id,
                         autonomy_mode=autonomy.mode,
                     )
                 )
-            return await run_chat(
+            # JSON-others STILL goes through run_chat (pinned by
+            # test_provision_fanout_route / test_chat_endpoint) with the
+            # caller's session_id; multi-turn seeding rides the prior_turns
+            # kwarg and persistence wraps around it, attaching conversation_id
+            # only when the write succeeded.
+            result = await run_chat(
                 req.prompt, session_id=req.session_id, workload=req.workload,
-                autonomy_mode=autonomy.mode,
+                autonomy_mode=autonomy.mode, prior_turns=conv["prior_turns"],
             )
+            if await asyncio.to_thread(
+                _persist_chat_turn, state, conv=conv, prompt=req.prompt,
+                trace_id=trace_id, result=result,
+            ):
+                result["conversation_id"] = conv["conversation_id"]
+            return result
         finally:
             reset_workload(_workload_token)
     except (
@@ -5757,3 +5919,57 @@ async def chat(
         # 502 (ADK parse/response failure).
         status, detail = _chat_error_payload(e, workload=req.workload)
         raise HTTPException(status_code=status, detail=detail) from e
+
+
+@app.get("/conversations")
+def list_conversations_endpoint(
+    response: Response,
+    limit: int = 50,
+    workload: str | None = None,
+    _: None = Depends(verify_token),
+    state: StateStore = Depends(get_state),
+) -> dict:
+    """List recent conversations (metadata only), newest-updated first.
+
+    Backs the operator's conversation history rail (P2). Token-guarded like
+    /decisions; bounded by ``limit`` (1..200) so a misconfigured caller can't
+    pull the whole collection. Turns are NOT embedded — the rail only needs
+    title/crew/timestamps; fetch a single conversation's turns via
+    ``GET /conversations/{id}``.
+    """
+    if limit < 1 or limit > 200:
+        raise HTTPException(
+            status_code=400,
+            detail="limit must be 1..200",
+            headers={"Cache-Control": "no-store"},
+        )
+    response.headers["Cache-Control"] = "no-store"
+    rows = state.list_conversations(limit=limit, workload=workload)
+    return {"conversations": rows}
+
+
+@app.get("/conversations/{conversation_id}")
+def get_conversation_endpoint(
+    conversation_id: str,
+    response: Response,
+    _: None = Depends(verify_token),
+    state: StateStore = Depends(get_state),
+) -> dict:
+    """Full ordered turns for rehydrating a conversation on reload (P2)."""
+    response.headers["Cache-Control"] = "no-store"
+    # Path-safe id guard (Firestore doc id; reject path escapes). A malformed
+    # id is treated as not-found rather than reaching ``.document()``.
+    if not _CONVERSATION_ID_RE.fullmatch(conversation_id):
+        raise HTTPException(
+            status_code=404,
+            detail="conversation not found",
+            headers={"Cache-Control": "no-store"},
+        )
+    conv = state.get_conversation(conversation_id)
+    if conv is None:
+        raise HTTPException(
+            status_code=404,
+            detail="conversation not found",
+            headers={"Cache-Control": "no-store"},
+        )
+    return conv

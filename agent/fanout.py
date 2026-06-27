@@ -1099,6 +1099,7 @@ async def run_provision_fanout_stream(
     session_id: str | None = None,
     *,
     autonomy_mode: str,
+    prior_turns: list[dict] | None = None,
 ) -> AsyncIterator[dict]:
     """Stream a parallel fan-out ``provision`` (IaC-authoring) run end to end.
 
@@ -1191,7 +1192,8 @@ async def run_provision_fanout_stream(
         # authoring tool; its instruction note points at the dial. The
         # delegated run's seq restarts at 1 — documented contract.
         async for item in run_chat_stream(
-            prompt, sid, workload="provision", autonomy_mode=autonomy_mode
+            prompt, sid, workload="provision", autonomy_mode=autonomy_mode,
+            prior_turns=prior_turns,
         ):
             yield item
         return
@@ -1220,7 +1222,8 @@ async def run_provision_fanout_stream(
         # the legacy single-agent path. Its own seq restarts at 1 — correct for
         # a fresh delegated run.
         async for item in run_chat_stream(
-            prompt, sid, workload="provision", autonomy_mode=autonomy_mode
+            prompt, sid, workload="provision", autonomy_mode=autonomy_mode,
+            prior_turns=prior_turns,
         ):
             yield item
         return
@@ -1229,7 +1232,8 @@ async def run_provision_fanout_stream(
     # delegate to the legacy single-agent path (same as the non-policy branch).
     if len(plan.slices) == 1:
         async for item in run_chat_stream(
-            prompt, sid, workload="provision", autonomy_mode=autonomy_mode
+            prompt, sid, workload="provision", autonomy_mode=autonomy_mode,
+            prior_turns=prior_turns,
         ):
             yield item
         return
