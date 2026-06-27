@@ -114,6 +114,40 @@ def test_explore_prompt_pins_honest_cost_relay_rule(explore_workload_env):
     assert "disclaimer faithfully" in text
 
 
+def test_explore_prompt_carries_whole_system_overview(explore_workload_env):
+    """Explore is the read-only crew operators reach for to understand the
+    system, so its prompt must carry an accurate WHOLE-SYSTEM overview — not
+    just its own job. Pins the load-bearing facts so a reword can't quietly
+    drop or distort them:
+
+    - all four crews named by their display names;
+    - Anchor framed as the only autonomous (Eventarc) crew;
+    - the gated IaC pipeline (plan-builder -> approval page -> apply worker);
+    - the sole-mutator claim scoped to IaC applies (tofu-apply), with the
+      separate approval-gated rollback worker named (the overclaim Codex
+      flagged: apply is NOT the only path that changes live infra);
+    - the autonomy-dial labels.
+    """
+    from agent.workloads import load_workload
+
+    text = load_workload("explore").system_prompt
+    assert "About DriftScribe" in text
+    for crew in ("Anchor", "Patch", "Provision", "Explore"):
+        assert crew in text, f"overview must name the {crew} crew"
+    # Only Anchor is autonomous, and it is event-triggered (not polling);
+    # the other crews — Patch here — run on demand, "never on its own".
+    assert "Eventarc" in text
+    assert "never on its own" in text
+    # The gated pipeline and the correctly-scoped sole-mutator framing.
+    assert "plan-builder" in text
+    assert "/iac-approvals/" in text
+    assert "tofu-apply" in text
+    assert "rollback worker" in text
+    # The autonomy dial, by its operator-facing labels.
+    for mode in ("Observe", "Propose + Apply"):
+        assert mode in text
+
+
 def test_upgrade_read_dependencies_target_resolves_without_worker_env(monkeypatch):
     """Read-only isolation: ``upgrade_read_dependencies_tool`` derives its
     target (repo + lockfile) WITHOUT requiring any worker URL env var.
