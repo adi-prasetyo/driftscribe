@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { fmtTokens, shortTrace, fmtPreview, fmtWhen, shortSha, iacStatusLabel, iacStatusHelp } from '../../src/lib/format';
+import { fmtTokens, shortTrace, fmtPreview, fmtWhen, shortSha, iacStatusLabel, iacStatusHelp, decisionActionLabel, decisionActionHelp } from '../../src/lib/format';
 
 describe('fmtTokens', () => {
   it('formats a present total with comma grouping and " tok" suffix', () => {
@@ -213,5 +213,55 @@ describe('iacStatusHelp', () => {
     expect(iacStatusHelp('')).toBeNull();
     expect(iacStatusHelp(null)).toBeNull();
     expect(iacStatusHelp(undefined)).toBeNull();
+  });
+});
+
+describe('decisionActionLabel', () => {
+  it('remaps no_op from the bare enum to plain language', () => {
+    expect(decisionActionLabel('no_op')).toBe('No action needed');
+  });
+
+  it('passes other action tokens through verbatim (those rows carry their own CTA)', () => {
+    expect(decisionActionLabel('docs_pr')).toBe('docs_pr');
+    expect(decisionActionLabel('drift_issue')).toBe('drift_issue');
+    expect(decisionActionLabel('escalation')).toBe('escalation');
+    expect(decisionActionLabel('rollback')).toBe('rollback');
+  });
+
+  it('clamps an over-long unknown action to 40 chars + ellipsis', () => {
+    const long = 'x'.repeat(60);
+    const out = decisionActionLabel(long);
+    expect(out).toBe('x'.repeat(40) + '…');
+    expect(out.length).toBe(41);
+  });
+
+  it('returns "" for empty / null / undefined', () => {
+    expect(decisionActionLabel('')).toBe('');
+    expect(decisionActionLabel(null)).toBe('');
+    expect(decisionActionLabel(undefined)).toBe('');
+  });
+});
+
+describe('decisionActionHelp', () => {
+  it('explains the no_op "checked, all clear" receipt in plain language', () => {
+    const help = decisionActionHelp('no_op') as string;
+    expect(typeof help).toBe('string');
+    expect(help.length).toBeGreaterThan(20);
+    // The core reassurance: nothing was wrong / matched what was expected...
+    expect(help.toLowerCase()).toContain('matched');
+    // ...and it explicitly names that no side effect was produced.
+    expect(help.toLowerCase()).toContain('nothing');
+  });
+
+  it('returns null for actions that need no explanation', () => {
+    expect(decisionActionHelp('docs_pr')).toBeNull();
+    expect(decisionActionHelp('iac_apply')).toBeNull();
+    expect(decisionActionHelp('rollback')).toBeNull();
+  });
+
+  it('returns null for empty / null / undefined', () => {
+    expect(decisionActionHelp('')).toBeNull();
+    expect(decisionActionHelp(null)).toBeNull();
+    expect(decisionActionHelp(undefined)).toBeNull();
   });
 });

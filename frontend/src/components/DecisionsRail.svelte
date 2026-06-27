@@ -8,7 +8,7 @@
     resolvedIacPrNumbers,
     iacApproveLabel,
   } from '../lib/approval';
-  import { shortSha, iacStatusLabel, iacStatusHelp } from '../lib/format';
+  import { shortSha, iacStatusLabel, iacStatusHelp, decisionActionLabel, decisionActionHelp } from '../lib/format';
   import {
     groupRailDecisions,
     hasAnomalousStep,
@@ -140,7 +140,10 @@
           target="_blank"
           rel="noopener noreferrer">PR #{d.pr_number} →</a>
       {:else}
-        <span class="row-action" title={d.action}>{d.action}</span>
+        <!-- Non-iac headline: friendly label (no_op → "No action needed"); the
+             raw enum stays as the hover tooltip. decisionActionLabel passes
+             every other action through verbatim. -->
+        <span class="row-action" title={d.action}>{decisionActionLabel(d.action)}</span>
       {/if}
       {#if d.created_at}
         <time class="row-time" datetime={d.created_at}>{fmtCreatedAt(d.created_at)}</time>
@@ -160,6 +163,18 @@
       <!-- HelpHint sits at the END so its opened inline panel breaks cleanly
            onto its own line below the meta (never mid-line, never clipped). -->
       <p class="row-meta">iac_apply{#if st} · {st}{/if}{#if sha} · <span class="row-sha">⎇ {sha}</span>{/if}{#if help}<HelpHint text={help} label={st} />{/if}</p>
+    {/if}
+
+    {#if d.action === 'no_op'}
+      {@const noOpHelp = decisionActionHelp(d.action)}
+      <!-- The "checked, all clear" receipt surprises operators (nothing visibly
+           happened). A faint meta line + HelpHint explains why the row is here.
+           Lead is crew-neutral ("all clear", not "no drift") so it stays true if
+           a non-drift crew ever writes a no_op row here. HelpHint is LAST so its
+           opened panel flows onto its own line below — it lives in a <p> (block,
+           full width), so it breaks below the icon instead of being clipped like
+           a floating tooltip, the same reason the iac meta line hosts its hint. -->
+      <p class="row-meta">Checked · all clear{#if noOpHelp}<HelpHint testid="action-help" text={noOpHelp} ariaLabel="What “No action needed” means" />{/if}</p>
     {/if}
 
     {#if d.suppressed_by_autonomy === true}

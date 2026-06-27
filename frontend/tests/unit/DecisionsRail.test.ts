@@ -148,6 +148,63 @@ describe('DecisionsRail — status help affordance', () => {
   });
 });
 
+describe('DecisionsRail — no_op headline + help affordance', () => {
+  /** A plain (non-iac) decision row — no pr_number, so it renders via the
+   *  `{:else}` headline branch, not the PR-link branch. */
+  function plainRow(over: Partial<Decision>): Decision {
+    return {
+      decision_id: `d-${Math.random().toString(36).slice(2)}`,
+      action: 'no_op',
+      created_at: '2026-05-30T01:00:00Z',
+      ...over,
+    } as Decision;
+  }
+
+  it('renders the friendly "No action needed" headline, not the bare no_op token', () => {
+    const { getByTestId } = render(DecisionsRail, {
+      props: { decisions: [plainRow({})], activeTraceId: null, onOpenTrace: noop },
+    });
+    const row = getByTestId('past-decision-item');
+    const headline = row.querySelector('.row-action');
+    expect(headline?.textContent?.trim()).toBe('No action needed');
+    // The raw enum stays available as the hover tooltip for the curious.
+    expect(headline?.getAttribute('title')).toBe('no_op');
+    // The faint meta lead is crew-neutral (not drift-specific) so it stays
+    // accurate if a non-drift crew ever writes a no_op row to this rail.
+    const meta = row.querySelector('.row-meta');
+    expect(meta?.textContent).toContain('Checked · all clear');
+    expect(meta?.textContent?.toLowerCase()).not.toContain('drift');
+  });
+
+  it('shows a help button on a no_op row; click reveals the "checked, all clear" explanation', async () => {
+    const { getAllByTestId, getByTestId, queryByTestId } = render(DecisionsRail, {
+      props: { decisions: [plainRow({})], activeTraceId: null, onOpenTrace: noop },
+    });
+    const hints = getAllByTestId('action-help');
+    expect(hints).toHaveLength(1);
+    expect(hints[0].tagName).toBe('BUTTON');
+    // Collapsed by default — panel absent until activated.
+    expect(queryByTestId('action-help-panel')).toBeNull();
+
+    await fireEvent.click(hints[0]);
+    const panel = getByTestId('action-help-panel');
+    expect(panel.textContent?.toLowerCase()).toContain('matched');
+    expect(panel.textContent?.toLowerCase()).toContain('nothing');
+    expect(hints[0].getAttribute('aria-controls')).toBe(panel.getAttribute('id'));
+  });
+
+  it('renders no action-help button on a non-no_op plain row (e.g. docs_pr)', () => {
+    const { queryAllByTestId } = render(DecisionsRail, {
+      props: {
+        decisions: [plainRow({ action: 'docs_pr', github: { url: 'https://github.com/x/y/pull/9' } })],
+        activeTraceId: null,
+        onOpenTrace: noop,
+      },
+    });
+    expect(queryAllByTestId('action-help')).toHaveLength(0);
+  });
+});
+
 describe('DecisionsRail — collapsed iac_apply lifecycle groups', () => {
   it('face shows the newest doc; expander (closed for a calm history) lists earlier steps oldest-first with status + per-step open trace', async () => {
     const decisions: Decision[] = [
