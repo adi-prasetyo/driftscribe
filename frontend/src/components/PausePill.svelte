@@ -10,8 +10,10 @@
   // Server-truth state + the confirm POST live in the shared pauseStore; only
   // the transient popover UI (open/saving/postError/reasonInput) is local.
 
+  import { onMount } from 'svelte';
   import { slide } from 'svelte/transition';
   import { motionMs } from '../lib/motion';
+  import { announceHeaderPopoverOpen, HEADER_POPOVER_EVENT } from '../lib/headerPopover';
   import Icon from './Icon.svelte';
   import type { PauseStore } from '../lib/pauseStore';
 
@@ -46,13 +48,15 @@
     if (open && reasonEl) reasonEl.focus();
   });
 
-  function closePopover(): void {
+  // returnFocus=false for foreign-bus closes (the Autonomy pill opened) so we
+  // don't yank focus back to this now-closed toggle (autonomy-pill plan-review #1).
+  function closePopover(returnFocus = true): void {
     open = false;
     postError = false;
     reasonInput = '';
     // Return focus to the toggle if it still exists (after a successful pause
     // the running button unmounts — guard handles that).
-    toggleEl?.focus();
+    if (returnFocus) toggleEl?.focus();
   }
 
   function onToggle(): void {
@@ -61,8 +65,18 @@
     } else {
       open = true;
       postError = false;
+      announceHeaderPopoverOpen('pause');
     }
   }
+
+  onMount(() => {
+    const onForeign = (e: Event) => {
+      // a foreign open (Autonomy) closes us, without stealing focus
+      if ((e as CustomEvent).detail?.id !== 'pause' && open && !saving) closePopover(false);
+    };
+    window.addEventListener(HEADER_POPOVER_EVENT, onForeign);
+    return () => window.removeEventListener(HEADER_POPOVER_EVENT, onForeign);
+  });
 
   async function onConfirm(): Promise<void> {
     if (saving) return;
