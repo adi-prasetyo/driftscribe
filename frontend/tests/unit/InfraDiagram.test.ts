@@ -1284,32 +1284,30 @@ function adoptGraphWithServiceManagedBucket(): InfraGraph {
 }
 
 describe('InfraDiagram — service-managed bucket adopt suppression', () => {
-  it('a Google-service-managed bucket row is suppressed with the denylist note', async () => {
+  it('a Google-service-managed bucket row is tagged system-managed, not adoptable', async () => {
     const { getByTestId, getAllByTestId } = render(InfraDiagram, {
       props: { call: callWith(adoptGraphWithServiceManagedBucket()), onAdopt: () => {} },
     });
     await waitFor(() => expect(getByTestId('infra-cards')).toBeTruthy());
-    const note = getByTestId('card-control-plane');
-    // The single unified note honestly covers BOTH kinds — assert the
-    // service-managed clause landed alongside the denylist protection.
-    expect(note.textContent).toContain('Google service');
-    expect(note.textContent).toContain('denylist');
+    // The compact tag replaces the old repeated denylist sentence; the "why"
+    // now lives once in the legend help (asserted in the legend-help suite).
+    const tag = getByTestId('card-control-plane');
+    expect(tag.textContent?.trim()).toBe('system-managed');
     // only the genuinely adoptable demo-assets row keeps its button
     expect(getAllByTestId('card-adopt-btn')).toHaveLength(1);
   });
 });
 
 describe('InfraDiagram — control-plane adopt suppression', () => {
-  it('a control-plane row shows the denylist note instead of an Adopt button', async () => {
+  it('a control-plane row is tagged system-managed instead of an Adopt button', async () => {
     const { getByTestId, getAllByTestId, queryByTestId } = render(InfraDiagram, {
       props: { call: callWith(adoptGraphWithControlPlane()), onAdopt: () => {} },
     });
     await waitFor(() => expect(getByTestId('infra-cards')).toBeTruthy());
-    const note = getByTestId('card-control-plane');
-    // The note names the protection, not ownership (an unrelated `acme-tofu-state`
-    // is refused too), and keeps the "denylist" word.
-    expect(note.textContent).toContain('control-plane');
-    expect(note.textContent).toContain('denylist');
+    // Compact tag in place of the old per-row sentence (the denylist reasoning
+    // is asserted once in the legend-help suite).
+    const tag = getByTestId('card-control-plane');
+    expect(tag.textContent?.trim()).toBe('system-managed');
     // exactly the two non-control-plane drift rows (demo-assets, orders) get buttons
     expect(getAllByTestId('card-adopt-btn')).toHaveLength(2);
     // it is NOT the generic "not an adoptable type" note
@@ -1392,6 +1390,10 @@ describe('InfraDiagram — legend help (zone 2)', () => {
     expect(panel.textContent).toContain('managed in IaC');
     expect(panel.textContent).toContain('drift');
     expect(panel.textContent).toContain('counts-only');
+    // The system-managed-tag reasoning relocated here from the per-row note.
+    expect(panel.textContent).toContain('system-managed');
+    expect(panel.textContent).toContain('denylist');
+    expect(panel.textContent).toContain('Google service');
   });
 
   it('exposes the legend to assistive tech (no aria-hidden)', async () => {
