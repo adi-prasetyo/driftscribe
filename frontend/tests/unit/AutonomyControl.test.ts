@@ -143,7 +143,7 @@ describe('AutonomyControl', () => {
     });
 
     const control = getByTestId('autonomy-control');
-    expect(control.textContent).toContain('Propose changes and apply them');
+    expect(control.textContent).toContain('Routine dependency updates can run end-to-end');
   });
 
   // 4. Fetch failure → unknown + retry

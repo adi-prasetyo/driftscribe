@@ -15,7 +15,9 @@ export const MODE_LABELS: Record<AutonomyMode, string> = {
 export const MODE_BLURBS: Record<AutonomyMode, string> = {
   observe: 'Watch and report only. No pull requests, no issues, no applies.',
   propose: 'Open pull requests and issues for your review. Applies stay off.',
-  propose_apply: 'Propose changes and apply them after your approval (current default).',
+  propose_apply:
+    'Routine dependency updates can run end-to-end. Infrastructure changes still ' +
+    'wait for your approval (current default).',
 };
 
 // Progressive-disclosure explainer copy (AutonomyControl). Names the mechanism
