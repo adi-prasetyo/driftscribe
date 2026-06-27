@@ -181,4 +181,20 @@ describe('PausePill', () => {
     });
     expect(getByTestId('pause-pill-state').textContent).toContain('State unknown');
   });
+
+  it('opening announces "pause"; a foreign open closes the popover (Codex #7)', async () => {
+    const { getByTestId, queryByTestId } = await mount(res(RUNNING));
+    const seen: string[] = [];
+    const h = (e: Event) => seen.push((e as CustomEvent).detail?.id);
+    window.addEventListener('ds:header-popover-open', h);
+    const toggle = getByTestId('pause-pill-toggle');
+    await fireEvent.click(toggle);
+    await waitFor(() => expect(getByTestId('pause-popover')).toBeTruthy());
+    expect(seen).toContain('pause');
+    // a foreign open (autonomy) closes us without stealing focus back
+    window.dispatchEvent(new CustomEvent('ds:header-popover-open', { detail: { id: 'autonomy' } }));
+    await waitFor(() => expect(queryByTestId('pause-popover')).toBeNull());
+    expect(document.activeElement).not.toBe(toggle);
+    window.removeEventListener('ds:header-popover-open', h);
+  });
 });

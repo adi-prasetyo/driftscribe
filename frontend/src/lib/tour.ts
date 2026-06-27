@@ -132,12 +132,13 @@ export function estateLine(graph: InfraGraph | null): string {
 // Step 3 — honesty T2: the always-gated claim is scoped to INFRASTRUCTURE
 // edits; Propose + Apply is allowed to finish routine dependency updates.
 export const CONTROLS_LINE =
-  'This dial governs what Anchor does on its own when it spots a change, and ' +
-  'what the other agents may do when you ask: Observe (they only watch and ' +
-  'report), Propose (they draft changes for your review), or Propose + Apply ' +
-  '(they may also complete routine dependency updates end-to-end). At every ' +
-  'setting, infrastructure edits pass your explicit approval gate. The ' +
-  'Pause control in the top bar suspends all agent activity in one click.';
+  'The Mode control in the top bar governs what Anchor does on its own when it ' +
+  'spots a change, and what the other agents may do when you ask: Observe (they ' +
+  'only watch and report), Propose (they draft changes for your review), or ' +
+  'Propose + Apply (they may also complete routine dependency updates ' +
+  'end-to-end). At every setting, infrastructure edits pass your explicit ' +
+  'approval gate. The Pause control sits next to it in the top bar and suspends ' +
+  'all agent activity in one click.';
 
 // Step 5 — what sending the prefilled request actually does, and how to
 // reopen the tour. Honesty T6 (Codex MF1): scoped to THIS adopt request —

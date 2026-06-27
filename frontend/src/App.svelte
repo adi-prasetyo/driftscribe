@@ -43,8 +43,9 @@
   import PausePill from './components/PausePill.svelte';
   import PauseBanner from './components/PauseBanner.svelte';
   import { createPauseStore } from './lib/pauseStore';
+  import AutonomyPill from './components/AutonomyPill.svelte';
+  import { createAutonomyStore, autonomyNoteFor } from './lib/autonomyStore';
   import { prefersReducedMotion } from './lib/motion';
-  import AutonomyControl from './components/AutonomyControl.svelte';
   import Timeline from './components/Timeline.svelte';
   import TourBanner from './components/TourBanner.svelte';
   import TourCard from './components/TourCard.svelte';
@@ -210,6 +211,11 @@
   // ---- pause kill-switch (one shared store → header PausePill + content
   // PauseBanner, so the two surfaces can never diverge or double-fetch) ----
   const pause = createPauseStore(call);
+
+  // ---- autonomy dial (one shared store → header AutonomyPill + the capability
+  // card note, so the two surfaces never diverge or double-fetch) ----
+  const autonomy = createAutonomyStore(call);
+  const capabilityAutonomyNote = $derived(autonomyNoteFor($autonomy));
 
   // ---- decisions rail ----
   async function loadDecisions() {
@@ -657,6 +663,7 @@
     void loadDecisions();
     void loadConversations();
     void pause.fetchPause();
+    void autonomy.fetchAutonomy();
     if (chatPrefill !== null) {
       // Remove ONLY ask_pr (preserve other params + hash) so reload/share
       // doesn't re-prefill — mirrors exitPreview()'s surgical removal.
@@ -676,6 +683,12 @@
     <h1 class="app-title">DriftScribe<span class="app-title__sub">. The agent proposes, you approve.</span></h1>
   </div>
   <div class="app-header__actions">
+    <!-- data-tour="controls" lives on this always-rendered wrapper (not the
+         loaded-only pill button) so the tour spotlight resolves even while
+         /autonomy is loading or unknown. -->
+    <div class="header-tour-anchor" data-tour="controls">
+      <AutonomyPill {autonomy} />
+    </div>
     <PausePill {pause} />
     <button
       class="ds-btn ds-btn--ghost app-tour-btn"
@@ -701,10 +714,9 @@
     {#if tourOffered && !tourOpen}
       <TourBanner onStart={startTour} onDismiss={dismissTourOffer} />
     {/if}
-    <div class="tour-target" data-tour="controls">
-      <PauseBanner {pause} />
-      <AutonomyControl {call} />
-    </div>
+    <!-- The autonomy dial moved to the header pill; the "controls" spotlight
+         marker moved with it. PauseBanner stays here (only shown when paused). -->
+    <PauseBanner {pause} />
     <div class="tour-target" data-tour="estate">
       <InfraDiagram
         {call}
@@ -716,7 +728,7 @@
         onGraph={(g) => (tourGraph = g)}
       />
     </div>
-    <CapabilityCard {call} />
+    <CapabilityCard {call} autonomyNote={capabilityAutonomyNote} />
     <div class="tour-target" data-tour="composer">
       <ChatForm
         disabled={chatDisabled}
@@ -794,6 +806,21 @@
     display: inline-flex;
     align-items: center;
     gap: var(--ds-sp-3);
+    /* A third (and the widest) control now lives here — let the cluster wrap to
+       a second line on narrow viewports rather than overflow (Codex #6). */
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+  .header-tour-anchor {
+    display: inline-flex;
+    align-items: center;
+  }
+  /* Give the safety controls room before shrinking them: drop the title
+     subtitle first on narrow screens (Codex #6). */
+  @media (max-width: 640px) {
+    .app-title__sub {
+      display: none;
+    }
   }
   .app-tour-btn {
     display: inline-flex;

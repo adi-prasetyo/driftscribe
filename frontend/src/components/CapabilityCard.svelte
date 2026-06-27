@@ -9,8 +9,6 @@
   //  - The `call` prop is the same token-aware fetch wrapper as InfraDiagram.
 
   import { groupRules, type Capabilities } from '../lib/capabilities';
-  import { parseAutonomyDoc } from '../lib/autonomy';
-  import type { AutonomyDoc } from '../lib/autonomy';
   import { parseWorkloadPrompts } from '../lib/prompts';
   import type { WorkloadPrompts } from '../lib/prompts';
   import Icon from './Icon.svelte';
@@ -18,19 +16,20 @@
 
   let {
     call,
+    autonomyNote = null,
   }: {
     /** App's token-aware fetch wrapper. */
     call: (path: string, init?: RequestInit) => Promise<Response>;
+    /** Autonomy-mode note, derived by App from the shared autonomyStore via
+     *  autonomyNoteFor(); null = render nothing (loading/unknown/propose_apply).
+     *  The card is a dumb renderer — best-effort silence lives in the selector. */
+    autonomyNote?: string | null;
   } = $props();
 
   let data = $state<Capabilities | null>(null);
   let loading = $state(false);
   let fetchError = $state(false);
   let fetched = $state(false);
-
-  // Best-effort autonomy doc fetched alongside /capabilities on first open.
-  // Null = not yet fetched / fetch failed / malformed body — card stays static.
-  let autonomyDoc = $state<AutonomyDoc | null>(null);
 
   /** Structural check on the four load-bearing DTO keys. A 200 with valid
    *  JSON but missing structure must route to the error/retry path: Svelte 5
@@ -47,25 +46,6 @@
       b.denylist !== null &&
       Array.isArray((b.denylist as Record<string, unknown>).rules)
     );
-  }
-
-  /** Best-effort fetch of /autonomy — fires alongside /capabilities on first
-   *  open; never throws, never blocks the capability render path. */
-  async function fetchAutonomyBestEffort(): Promise<void> {
-    try {
-      const resp = await call('/autonomy');
-      if (!resp.ok) return;
-      let body: unknown;
-      try {
-        body = await resp.json();
-      } catch {
-        return;
-      }
-      const doc = parseAutonomyDoc(body);
-      if (doc) autonomyDoc = doc;
-    } catch {
-      // best-effort: fetch failure → no note, card stays static
-    }
   }
 
   async function fetchCapabilities(): Promise<void> {
@@ -114,13 +94,7 @@
     const d = e.currentTarget as HTMLDetailsElement;
     if (d.open && !fetched && !loading) {
       void fetchCapabilities().then(() => {
-        if (!fetchError) {
-          fetched = true;
-          // Fire /autonomy best-effort AFTER /capabilities succeeds — sequential
-          // so the two calls never share a Response body. Best-effort: never
-          // blocks or affects the capability render path.
-          void fetchAutonomyBestEffort();
-        }
+        if (!fetchError) fetched = true;
       });
     }
   }
@@ -154,22 +128,6 @@
   // Defensive ?? []: isValidCapabilities already guarantees rules is an
   // array, but a throw inside a $derived has no error boundary to catch it.
   const ruleGroups = $derived(groupRules(data?.denylist?.rules ?? []));
-
-  /** Autonomy note copy — null means render nothing (propose_apply, no doc,
-   *  fetch failed). Codex must-fix 2: must NOT say "write-capable tools are
-   *  disabled" (notify/search_recent_prs are write_capable in the DTO but stay
-   *  available in Observe). read_error gets its own honest variant. */
-  const autonomyNote = $derived(
-    autonomyDoc === null
-      ? null
-      : autonomyDoc.read_error
-        ? 'Autonomy state could not be read. The effective mode is Observe (failing closed) until the dial can be read again.'
-        : autonomyDoc.mode === 'observe'
-          ? 'The autonomy dial is currently set to Observe. Tools that open pull requests, issues, or approvals, and anything that merges or applies, are disabled until you raise the dial.'
-          : autonomyDoc.mode === 'propose'
-            ? 'The autonomy dial is currently set to Propose. Pull requests and issues are enabled; anything that merges or applies is disabled until you raise the dial.'
-            : null, // propose_apply → no note
-  );
 </script>
 
 <details class="ds-card cap-card" data-testid="capability-card" ontoggle={onToggle}>
