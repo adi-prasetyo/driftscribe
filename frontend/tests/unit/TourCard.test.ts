@@ -167,6 +167,29 @@ describe('TourCard — spotlight', () => {
     }
   });
 
+  it('spotlights the controls element when present, then clears it on the next step', async () => {
+    // The header-pill redesign moved data-tour="controls" onto an always-rendered
+    // header wrapper. Pin the positive path: the controls step finds + outlines it.
+    const estate = document.createElement('div');
+    estate.setAttribute('data-tour', 'estate');
+    const controls = document.createElement('div');
+    controls.setAttribute('data-tour', 'controls');
+    document.body.append(estate, controls);
+    try {
+      const { getByTestId } = render(TourCard, { props: { graph: graphWithTarget() } });
+      await fireEvent.click(getByTestId('tour-next')); // → estate
+      expect(controls.classList.contains('tour-spotlight')).toBe(false);
+      await fireEvent.click(getByTestId('tour-next')); // → controls
+      expect(controls.classList.contains('tour-spotlight')).toBe(true);
+      expect(estate.classList.contains('tour-spotlight')).toBe(false);
+      await fireEvent.click(getByTestId('tour-next')); // → adopt (estate target)
+      expect(controls.classList.contains('tour-spotlight')).toBe(false);
+    } finally {
+      estate.remove();
+      controls.remove();
+    }
+  });
+
   it('removes the spotlight on unmount', async () => {
     const estate = document.createElement('div');
     estate.setAttribute('data-tour', 'estate');
