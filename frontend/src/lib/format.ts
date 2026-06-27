@@ -119,6 +119,50 @@ export function iacStatusHelp(status: string | null | undefined): string | null 
 }
 
 /**
+ * Friendly headline label for a decision's `action`, shown on the rail's
+ * non-iac rows (the `{:else}` branch). Today only `no_op` is remapped — from
+ * the bare backend enum to plain language — because that row produces no
+ * GitHub side effect and so has no "View PR/issue →" CTA to give it context;
+ * the operator just sees a token. Every other action passes through verbatim
+ * (those rows carry their own CTA). Defensively clamps an unexpected long value
+ * to 40 chars + '…', matching iacStatusLabel's forward-compat style.
+ * null/undefined/'' → '' (the caller then renders nothing).
+ */
+const DECISION_ACTION_LABELS: Record<string, string> = {
+  no_op: 'No action needed',
+};
+const DECISION_ACTION_MAX = 40;
+export function decisionActionLabel(action: string | null | undefined): string {
+  if (typeof action !== 'string' || action === '') return '';
+  const known = DECISION_ACTION_LABELS[action];
+  if (known) return known;
+  return action.length > DECISION_ACTION_MAX
+    ? action.slice(0, DECISION_ACTION_MAX) + ELLIPSIS
+    : action;
+}
+
+/**
+ * Plain-language help for a decision `action` a non-engineer can't decode from
+ * the label alone. Today only `no_op` — the "checked, all clear, nothing to
+ * fix" receipt that surprises operators by appearing in the log when nothing
+ * visibly happened: it means the live state already matched the contract, so
+ * no PR / issue / rollback was created, and the row is the record that the
+ * check ran. Returns null for every other action (and for null/undefined/'')
+ * → no help affordance is rendered. Keyed on the raw backend enum, the same
+ * input decisionActionLabel takes.
+ */
+const DECISION_ACTION_HELP: Record<string, string> = {
+  no_op:
+    'DriftScribe checked and the live state already matched what was expected, ' +
+    'so there was nothing to fix — no pull request, issue, or rollback was needed. ' +
+    'This entry is the record that the check ran and found everything in order.',
+};
+export function decisionActionHelp(action: string | null | undefined): string | null {
+  if (typeof action !== 'string') return null;
+  return DECISION_ACTION_HELP[action] ?? null;
+}
+
+/**
  * Render an ISO timestamp as a readable absolute wall-clock string with the
  * year (used by the DecisionSummary card — a historical decision can be from
  * any date, so unlike the rail's compact no-year form we include the year).
