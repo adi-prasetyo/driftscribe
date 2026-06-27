@@ -59,6 +59,8 @@ enabled_tool_names:
   # docs PR body wording in authoritative Cloud Run env-variable docs.
   - search_developer_docs
   - retrieve_developer_doc
+  # Cross-crew "team memory" — read what other crews discussed (read-only).
+  - read_conversations
 
 # Symbolic worker names — resolved to WorkerEndpoint via WORKER_REGISTRY.
 # Each maps to a Cloud Run worker the coordinator may call (audience-

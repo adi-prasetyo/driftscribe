@@ -110,6 +110,16 @@ def test_resolve_provision_read_tools_returns_the_five_read_tools(
     )
 
 
+def test_resolve_provision_read_tools_excludes_read_conversations(
+    provision_workload_env,
+):
+    """``read_conversations`` is read-only but deliberately kept OUT of the
+    fan-out sub-agents: it returns untrusted cross-crew text and the fan-out
+    decompose/slice prompts don't carry the injection guard (Codex review). It
+    stays on the operator-facing provision CHAT agent, which does."""
+    assert "read_conversations" not in resolve_provision_read_tools()
+
+
 def test_resolve_provision_read_tools_excludes_the_mutation_tool(
     provision_workload_env,
 ):

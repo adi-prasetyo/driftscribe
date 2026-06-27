@@ -37,7 +37,7 @@ Worker-delegating tools (4 drift + 4 upgrade = 8):
   Chat-only. Authority-clean: pr_number only; squash + required-check
   allowlist pinned server-side. The one tool that mutates ``main``.
 
-Coordinator-internal read-only tools (3):
+Coordinator-internal read-only tools (4):
 - ``search_recent_prs_tool`` (read-only GitHub via coordinator PAT)
 - ``load_contract_tool`` (reads baked-in ops contract)
 - ``read_team_log_tool`` (reads the durable decision log as "team memory";
@@ -45,6 +45,10 @@ Coordinator-internal read-only tools (3):
   approval tokens. Coordinator-local StateStore read, no worker, no PAT —
   read-only by operation AND credential; exposed by the chat-only ``explore``
   workload).
+- ``read_conversations_tool`` (reads recent chat conversations across crews as
+  cross-crew "team memory"; allowlist-projected, untrusted turn text
+  secret-redacted + snippet-capped. Coordinator-local StateStore read, no
+  worker, no PAT — read-only; exposed by ALL four crews).
 
 Developer Knowledge MCP wrappers (2, Phase 17.B.3):
 - ``search_developer_docs`` → Developer Knowledge MCP ``search_documents``
@@ -55,12 +59,13 @@ Infra-IaC read-only inventory (1):
   Read-only (cloudasset.viewer + serviceUsageConsumer); exposed by the
   chat-only ``explore`` workload. Authority-clean: takes no args.
 
-That's 14 tools, period (8 → 10 in 17.C.4 with the upgrade reader/proposer;
+That's 15 tools, period (8 → 10 in 17.C.4 with the upgrade reader/proposer;
 → 11 with close; → 12 in 20.9 with merge; → 13 with the infra-IaC inventory
-reader; → 14 with the read_team_log decision-log reader). Anything else the
-model wants to do is denied by capability — there is no general "execute
-shell" or "make HTTP request" surface. (This enumeration omits the
-later-added ``load_iac_plan_tool`` and the two ``provision`` mutation tools,
+reader; → 14 with the read_team_log decision-log reader; → 15 with the
+read_conversations cross-crew team-memory reader). Anything else the model
+wants to do is denied by capability — there is no general "execute shell" or
+"make HTTP request" surface. (This enumeration omits the later-added
+``load_iac_plan_tool`` and the two ``provision`` mutation tools,
 ``open_infra_pr_tool`` / ``propose_adoption_tool`` — the authoritative,
 test-pinned surface is ``EXPECTED_TOOL_NAMES`` in the inventory test.)
 
@@ -82,6 +87,7 @@ strictly read-only and do not widen the mutation surface. Those two callables
 are what bump the count above from 12 to 14.
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -97,6 +103,7 @@ from google.genai import types
 from google.genai.types import ThinkingConfig
 
 from agent.adk_tools import (
+    build_conversations_breadcrumb,
     iac_pr_pointer,
     load_contract_tool,
     load_iac_plan_tool,
@@ -105,6 +112,7 @@ from agent.adk_tools import (
     patch_docs_tool,
     propose_adoption_tool,
     propose_rollback_tool,
+    read_conversations_tool,
     read_live_env_tool,
     read_project_inventory_tool,
     read_team_log_tool,
@@ -184,6 +192,11 @@ COORDINATOR_TOOLS = [
     # GitHub PAT — read-only by operation AND credential. Exposed by the
     # chat-only ``explore`` workload; intentionally NOT in MUTATION_TOOL_NAMES.
     read_team_log_tool,
+    # Cross-crew "team memory" over the conversations log — any crew can read
+    # what OTHER crews recently discussed. Coordinator-local StateStore read; no
+    # worker, no GitHub PAT — read-only by operation AND credential. Untrusted
+    # turn text is secret-redacted + snippet-capped. NOT in MUTATION_TOOL_NAMES.
+    read_conversations_tool,
     # Provision workload (Phase D2) — author OpenTofu (IaC) edits and open
     # ONE iac/-only PR via the tofu-editor worker. Authority-clean LLM-facing
     # surface: the LLM supplies only the file writes + PR title/body; every
@@ -264,6 +277,8 @@ DRIFT_WORKLOAD_TOOL_NAMES: tuple[str, ...] = (
     # Cloud Run env-variable guidance in its docs PR bodies.
     "search_developer_docs",
     "retrieve_developer_doc",
+    # Cross-crew "team memory" — read what other crews discussed (read-only).
+    "read_conversations",
 )
 
 UPGRADE_WORKLOAD_TOOL_NAMES: tuple[str, ...] = (
@@ -285,6 +300,8 @@ UPGRADE_WORKLOAD_TOOL_NAMES: tuple[str, ...] = (
     # the reserved-tool inventory test still pins their names — if ADK
     # session-state becomes a real requirement, the same PR that flips
     # their registry entries to callables can re-add them here.
+    # Cross-crew "team memory" — read what other crews discussed (read-only).
+    "read_conversations",
 )
 
 # The chat-only, strictly read-only workload. Its tools are a read-only
@@ -314,8 +331,11 @@ EXPLORE_WORKLOAD_TOOL_NAMES: tuple[str, ...] = (
     "load_iac_plan",
     # "Team memory" — read the durable decision log (allowlist-projected).
     # Coordinator-local StateStore read; no worker, no GitHub PAT — read-only
-    # by operation AND credential. Appended LAST to match the YAML tool-order.
+    # by operation AND credential. Appended to match the YAML tool-order.
     "read_team_log",
+    # Cross-crew "team memory" over the conversations log (read-only). LAST to
+    # match the YAML tool-order.
+    "read_conversations",
 )
 
 # The chat-only IaC-authoring workload (Phase D2). Its read set is
@@ -336,6 +356,9 @@ PROVISION_WORKLOAD_TOOL_NAMES: tuple[str, ...] = (
     "load_contract",
     "search_developer_docs",
     "retrieve_developer_doc",
+    # Cross-crew "team memory" — read what other crews discussed (read-only);
+    # kept among the read tools so the mutation tools stay last.
+    "read_conversations",
     "provision_open_infra_pr",
     "provision_propose_adoption",
 )
@@ -480,7 +503,12 @@ def build_agent(workload: WorkloadResolution, *, autonomy_mode: str) -> Agent:
     )
 
 
-def build_chat_agent(workload: WorkloadResolution, *, autonomy_mode: str) -> Agent:
+def build_chat_agent(
+    workload: WorkloadResolution,
+    *,
+    autonomy_mode: str,
+    extra_instruction: str | None = None,
+) -> Agent:
     """Construct the /chat-flavored ADK Agent for the given workload.
 
     Same workload + ``autonomy_mode`` parameters as :func:`build_agent`. The
@@ -500,12 +528,25 @@ def build_chat_agent(workload: WorkloadResolution, *, autonomy_mode: str) -> Age
     :func:`agent.autonomy.filter_tools_for_mode` (Layer 0). ``autonomy_mode``
     is a REQUIRED keyword arg — same loud-fail contract as
     :func:`build_agent`.
+
+    ``extra_instruction`` is an optional per-request prefix (the cross-crew
+    conversations breadcrumb). It is PREPENDED to the instruction so the
+    authoritative system prompt + autonomy note remain the final, last-read
+    text. It is composed per-request and never mutates the cached
+    :class:`WorkloadResolution`.
     """
     allowed = filter_tools_for_mode(workload.tools, TOOL_TIERS, autonomy_mode)
+    instruction = _dial_instruction(workload.chat_system_prompt, autonomy_mode)
+    # ``extra_instruction`` (e.g. the cross-crew conversations breadcrumb) is
+    # PREPENDED: it is untrusted, pointer-only DATA, so it must sit BEFORE the
+    # authoritative system prompt + autonomy note (which stay last). Never
+    # mutate the cached WorkloadResolution — this composes per-request only.
+    if extra_instruction:
+        instruction = f"{extra_instruction}\n\n{instruction}"
     return Agent(
         name=f"driftscribe_chat_{workload.spec.name}",
         model="gemini-2.5-flash",
-        instruction=_dial_instruction(workload.chat_system_prompt, autonomy_mode),
+        instruction=instruction,
         tools=list(allowed.values()),
         # 18.B.1: surface Gemini 2.5 Flash's thought summaries. The model
         # already spends thinking tokens at default-dynamic budget; this
@@ -934,7 +975,14 @@ async def run_chat_stream(
     never less-redacted than the durable log.
     """
     resolution = load_workload(workload)
-    agent = build_chat_agent(resolution, autonomy_mode=autonomy_mode)
+    # Cross-crew "team memory" breadcrumb (P3): a cheap always-on pointer to
+    # OTHER crews' recent conversations, prepended to the chat instruction so the
+    # crew knows team history exists. Off-loaded to a thread (a StateStore read)
+    # to avoid blocking the event loop; doubly fail-soft (None => no breadcrumb).
+    breadcrumb = await asyncio.to_thread(build_conversations_breadcrumb, workload)
+    agent = build_chat_agent(
+        resolution, autonomy_mode=autonomy_mode, extra_instruction=breadcrumb
+    )
     session_service = InMemorySessionService()
     sid = session_id or str(uuid.uuid4())
     session = await session_service.create_session(

@@ -80,6 +80,8 @@ enabled_tool_names:
   - search_recent_prs
   - search_developer_docs
   - retrieve_developer_doc
+  # Cross-crew "team memory" — read what other crews discussed (read-only).
+  - read_conversations
 
 # Symbolic worker names. Drift workers are excluded — upgrade has its
 # own reader/docs workers (different IAM, different repo path
