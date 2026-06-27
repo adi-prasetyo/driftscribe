@@ -167,7 +167,7 @@
             class="ds-btn ds-btn--ghost pause-popover__cancel"
             type="button"
             data-testid="pause-popover-cancel"
-            onclick={closePopover}
+            onclick={() => closePopover()}
             disabled={saving}><Icon name="x" size={14} />Cancel</button
           >
         </div>
