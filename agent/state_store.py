@@ -34,6 +34,33 @@ class StateStore(Protocol):
     def list_decisions_for_pr(
         self, pr_number: int, *, limit: int = 50
     ) -> list[dict[str, Any]]: ...
+    def create_conversation(
+        self, conversation_id: str, *, workload: str, title: str
+    ) -> dict[str, Any]: ...
+    def append_turn(
+        self,
+        conversation_id: str,
+        *,
+        role: str,
+        text: str,
+        workload: str,
+        trace_id: str | None = None,
+        iac_pr: dict[str, Any] | None = None,
+        tool_calls: list[Any] | None = None,
+    ) -> int: ...
+    def append_turns(
+        self,
+        conversation_id: str,
+        turns: list[dict[str, Any]],
+        *,
+        create_with: dict[str, Any] | None = None,
+    ) -> list[int]: ...
+    def get_conversation(
+        self, conversation_id: str
+    ) -> dict[str, Any] | None: ...
+    def list_conversations(
+        self, *, limit: int = 50, workload: str | None = None
+    ) -> list[dict[str, Any]]: ...
     def get_pause(self) -> dict[str, Any] | None: ...
     def set_pause(
         self, *, paused: bool, reason: str | None, actor: str
@@ -56,6 +83,10 @@ class InMemoryStateStore:
         # Autonomy dial singleton. None = never written; agent.autonomy maps
         # absent → the permissive DEFAULT_MODE (system's pre-dial behavior).
         self._autonomy: dict[str, Any] | None = None
+        # Multi-turn chat (P1). conversation_id -> conversation doc (metadata);
+        # turns kept in a parallel dict so list_conversations stays metadata-only.
+        self._conversations: dict[str, dict[str, Any]] = {}
+        self._conversation_turns: dict[str, list[dict[str, Any]]] = {}
 
     def record_event(self, event_key: str, payload: dict[str, Any]) -> bool:
         if event_key in self._events:
@@ -158,6 +189,115 @@ class InMemoryStateStore:
         ]
         matching.sort(key=lambda d: d.get("created_at") or sentinel, reverse=True)
         return matching[:limit]
+
+    # --- Multi-turn chat conversations (P1) ---------------------------------
+
+    def create_conversation(
+        self, conversation_id: str, *, workload: str, title: str
+    ) -> dict[str, Any]:
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc)
+        doc = {
+            "conversation_id": conversation_id,
+            "workload": workload,
+            "title": title,
+            "created_at": now,
+            "updated_at": now,
+            "turn_count": 0,
+            "last_trace_id": None,
+        }
+        self._conversations[conversation_id] = doc
+        self._conversation_turns.setdefault(conversation_id, [])
+        return dict(doc)
+
+    def append_turn(
+        self,
+        conversation_id: str,
+        *,
+        role: str,
+        text: str,
+        workload: str,
+        trace_id: str | None = None,
+        iac_pr: dict[str, Any] | None = None,
+        tool_calls: list[Any] | None = None,
+    ) -> int:
+        # Thin single-turn wrapper over the atomic append_turns.
+        return self.append_turns(
+            conversation_id,
+            [{
+                "role": role, "text": text, "workload": workload,
+                "trace_id": trace_id, "iac_pr": iac_pr, "tool_calls": tool_calls,
+            }],
+        )[0]
+
+    def append_turns(
+        self,
+        conversation_id: str,
+        turns: list[dict[str, Any]],
+        *,
+        create_with: dict[str, Any] | None = None,
+    ) -> list[int]:
+        from datetime import datetime, timezone
+
+        conv = self._conversations.get(conversation_id)
+        if conv is None:
+            if create_with is None:
+                raise KeyError(f"conversation {conversation_id!r} not found")
+            self.create_conversation(conversation_id, **create_with)
+            conv = self._conversations[conversation_id]
+        start = int(conv["turn_count"])
+        now = datetime.now(timezone.utc)
+        last_trace = conv.get("last_trace_id")
+        seqs: list[int] = []
+        for i, t in enumerate(turns):
+            seq = start + i
+            turn = {
+                "seq": seq,
+                "role": t["role"],
+                "text": t.get("text") or "",
+                "workload": t["workload"],
+                "trace_id": t.get("trace_id"),
+                "created_at": now,
+            }
+            if t.get("iac_pr"):
+                turn["iac_pr"] = t["iac_pr"]
+            if t.get("tool_calls"):
+                turn["tool_calls"] = t["tool_calls"]
+            self._conversation_turns.setdefault(conversation_id, []).append(turn)
+            if t.get("trace_id"):
+                last_trace = t["trace_id"]
+            seqs.append(seq)
+        conv["turn_count"] = start + len(turns)
+        conv["updated_at"] = now
+        conv["last_trace_id"] = last_trace
+        return seqs
+
+    def get_conversation(self, conversation_id: str) -> dict[str, Any] | None:
+        conv = self._conversations.get(conversation_id)
+        if conv is None:
+            return None
+        out = dict(conv)
+        turns = sorted(
+            self._conversation_turns.get(conversation_id, []),
+            key=lambda t: t.get("seq", 0),
+        )
+        out["turns"] = [dict(t) for t in turns]
+        return out
+
+    def list_conversations(
+        self, *, limit: int = 50, workload: str | None = None
+    ) -> list[dict[str, Any]]:
+        from datetime import datetime, timezone
+
+        sentinel = datetime.min.replace(tzinfo=timezone.utc)
+        rows = [
+            dict(c)
+            for c in self._conversations.values()
+            if workload is None or c.get("workload") == workload
+        ]
+        rows.sort(key=lambda c: c.get("updated_at") or sentinel, reverse=True)
+        return rows[:limit]
 
     def get_pause(self) -> dict[str, Any] | None:
         """Return a defensive copy of the pause document, or None if never set.
