@@ -20,9 +20,55 @@ export const TESTIDS = {
   infraOtherCards: 'infra-other-cards',
   infraDriftBadge: 'infra-drift-badge',
   infraRefresh: 'infra-refresh',
+  conversationsPane: 'conversations-pane',
+  conversationOpen: 'conversation-open',
+  conversationThread: 'conversation-thread',
 } as const;
 
 export const TRACE_ID = 'abcdef0123456789abcdef0123456789';
+
+// A persisted multi-turn conversation for the resume-from-rail smoke (P2).
+export const CONVERSATION_ID = 'conv-smoke-0001';
+
+// GET /conversations — the history rail's metadata list (no turns embedded).
+export function conversationsListResponse() {
+  return {
+    conversations: [
+      {
+        conversation_id: CONVERSATION_ID,
+        workload: 'explore',
+        title: 'prior chat about drift',
+        created_at: '2026-06-27T10:00:00Z',
+        updated_at: '2026-06-27T10:05:00Z',
+        turn_count: 2,
+        last_trace_id: TRACE_ID,
+      },
+    ],
+  };
+}
+
+// GET /conversations/{id} — the full ordered turns used to rehydrate the thread.
+export function conversationDetailResponse() {
+  return {
+    conversation_id: CONVERSATION_ID,
+    workload: 'explore',
+    title: 'prior chat about drift',
+    created_at: '2026-06-27T10:00:00Z',
+    updated_at: '2026-06-27T10:05:00Z',
+    turn_count: 2,
+    last_trace_id: TRACE_ID,
+    turns: [
+      { seq: 0, role: 'user', text: 'what changed on payment-demo?', workload: 'explore' },
+      {
+        seq: 1,
+        role: 'crew',
+        text: 'the env var EXTRA drifted from the contract',
+        workload: 'explore',
+        trace_id: TRACE_ID,
+      },
+    ],
+  };
+}
 
 // A historical iac_apply trace: produced by the HITL approval handler, NOT the
 // reasoning loop — so its /trace has a decision doc but ZERO `event` entries.

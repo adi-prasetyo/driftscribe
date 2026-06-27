@@ -61,6 +61,16 @@ export interface ChatDone {
   // The SPA reads `pr_number` to render a clickable /iac-approvals/<N> CTA;
   // `pr_url` is carried for context but is never used to build the href.
   iac_pr?: { pr_number: number; pr_url: string } | null;
+  // The durable multi-turn thread id (P2). Echoed by the coordinator ONLY when
+  // the user+crew turn pair persisted — so its presence is the signal that this
+  // exchange is now part of a resumable conversation. Absent on the one-shot
+  // path (persistence disabled / failed): the SPA then behaves as before.
+  conversation_id?: string;
+  // True on the kill-switch refusal frame: a calm "paused" reply that ran no
+  // tools and persisted NO turn. The paused payload still echoes the supplied
+  // conversation_id (for crew-lock symmetry), so the SPA MUST check this flag
+  // and NOT settle a paused reply into the thread (it would vanish on reload).
+  paused?: boolean;
 }
 
 export interface ChatError {

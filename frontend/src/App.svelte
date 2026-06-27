@@ -9,7 +9,15 @@
   } from './lib/api';
   import { consumeSse } from './lib/sse';
   import type { TraceEvent, TimelineStatus } from './lib/timeline';
-  import type { Decision, PrBody, TraceResponse } from './lib/types';
+  import type {
+    Conversation,
+    ConversationDetail,
+    ConversationTurn,
+    ConversationsResponse,
+    Decision,
+    PrBody,
+    TraceResponse,
+  } from './lib/types';
   import { nextAppliedWatermark, type AppliedWatermark } from './lib/decision';
   import type { Workload } from './lib/workloads';
 
@@ -25,6 +33,8 @@
   import DriftDiffCard from './components/DriftDiffCard.svelte';
   import HistoricalBanner from './components/HistoricalBanner.svelte';
   import DecisionsRail from './components/DecisionsRail.svelte';
+  import ConversationsRail from './components/ConversationsRail.svelte';
+  import ConversationThread from './components/ConversationThread.svelte';
   import InfraDiagram from './components/InfraDiagram.svelte';
   import { previewPrFromSearch } from './lib/infra_graph';
   import { initialChatPrefill } from './lib/workloads';
@@ -54,6 +64,18 @@
   let iacPr = $state<{ pr_number: number; pr_url: string } | null>(null);
 
   let decisions = $state<Decision[]>([]);
+
+  // ---- multi-turn conversations (P2) ----
+  // The history rail's list (metadata only). The currently-open thread's id +
+  // crew-lock + rehydrated turns. `conversationId === null` = a fresh, not-yet-
+  // persisted chat (today's one-shot behaviour until the first reply lands).
+  let conversations = $state<Conversation[]>([]);
+  let conversationId = $state<string | null>(null);
+  let conversationWorkload = $state<Workload | null>(null);
+  let conversationTurns = $state<ConversationTurn[]>([]);
+  // The composer's selected crew, lifted out of ChatForm so resuming a thread
+  // can snap it to that thread's locked crew (bind:workload on ChatForm).
+  let composerWorkload = $state<Workload>('drift');
 
   // Bumps when a freshly-`applied` iac_apply decision is observed in /decisions
   // — drives InfraDiagram's delayed resource-map re-fetches (rides out CAI lag).
@@ -216,6 +238,101 @@
   const asString = (v: unknown): string | null =>
     typeof v === 'string' && v.length > 0 ? v : null;
 
+  // ---- conversations rail + thread (P2) ----
+  // List of recent conversations for the rail (metadata only). Mirrors
+  // loadDecisions: best-effort, single-flight-friendly, refreshed at mount and
+  // after each successful chat turn (a new/updated thread re-sorts to the top).
+  async function loadConversations() {
+    try {
+      const resp = await call('/conversations?limit=50');
+      if (!resp.ok) return;
+      const body = (await resp.json()) as ConversationsResponse;
+      if (Array.isArray(body?.conversations)) {
+        conversations = body.conversations;
+      }
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  // Resume a conversation from the rail: load its full ordered turns and snap
+  // the composer to its locked crew so the next prompt continues the thread.
+  // Bumps runSeq (cancels any in-flight live stream / historical replay) and
+  // clears the live-run surfaces, then scrolls the thread into view. Guarded so
+  // a superseding open/newChat drops a late response.
+  async function openConversation(id: string) {
+    const myRun = ++runSeq;
+    busy = false;
+    historicalActive = false;
+    historicalTraceId = null;
+    activeTraceId = null;
+    historicalDecision = null;
+    historicalPrBody = null;
+    historicalPrBodyTruncated = false;
+    traceId = null;
+    events = [];
+    finalReply = null;
+    finalIsError = false;
+    iacPr = null;
+    status = 'pending';
+    conversationId = id;
+    // Clear the prior thread's crew NOW so a failed rehydrate can't leave a
+    // stale lock paired with the new id (which would slip the crew-change guard
+    // and 409 on the next submit). Re-set from the detail on success.
+    conversationWorkload = null;
+    conversationTurns = [];
+    try {
+      const resp = await call('/conversations/' + encodeURIComponent(id));
+      if (myRun !== runSeq) return;
+      if (!resp.ok) {
+        // Abandon the half-open thread — don't leave an id with no crew/turns.
+        conversationId = null;
+        return;
+      }
+      const detail = (await resp.json()) as ConversationDetail;
+      if (myRun !== runSeq) return;
+      conversationTurns = Array.isArray(detail.turns) ? detail.turns : [];
+      const wl = detail.workload as Workload | undefined;
+      if (wl) {
+        conversationWorkload = wl;
+        composerWorkload = wl; // land the composer on this thread's locked crew
+      }
+    } catch {
+      // A failed rehydrate abandons the thread rather than leaving it half-open.
+      if (myRun === runSeq) conversationId = null;
+    }
+    await tick();
+    if (myRun !== runSeq) return;
+    // Scroll the COMPOSER into view (not the thread top) so it stays on screen —
+    // the rehydrated history flows directly below it. Then move focus into the
+    // thread region (tabindex=-1) so keyboard / screen-reader users are told the
+    // conversation loaded, instead of being stranded on the rail button — the
+    // same scroll-then-focus pattern openTrace uses for #historical-badge.
+    const reduced = prefersReducedMotion();
+    document
+      .getElementById('chat-form')
+      ?.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' });
+    document.getElementById('conversation-thread')?.focus({ preventScroll: true });
+  }
+
+  // Append the just-completed exchange to the open thread optimistically — we
+  // already hold the prompt + reply, so there's no need to re-fetch the whole
+  // conversation. Called ONLY when persistence succeeded (the coordinator
+  // echoed conversation_id), so the local thread never drifts ahead of the
+  // store. The user+crew pair mirrors the backend's persisted turn shape.
+  function appendLocalTurns(prompt: string, reply: string | null, tid: string | null) {
+    const base = conversationTurns.length;
+    const crew = conversationWorkload ?? composerWorkload;
+    const userTurn: ConversationTurn = {
+      seq: base, role: 'user', text: prompt, workload: crew, trace_id: tid,
+    };
+    const crewTurn: ConversationTurn = {
+      seq: base + 1, role: 'crew', text: reply ?? '', workload: crew,
+      trace_id: tid, iac_pr: iacPr,
+    };
+    conversationTurns = [...conversationTurns, userTurn, crewTurn];
+  }
+
   // ---- live chat (SSE) ----
   async function submitChat(prompt: string, workload: Workload) {
     if (historicalActive || busy) return;
@@ -231,13 +348,48 @@
     historicalPrBodyTruncated = false;
     status = 'pending';
 
+    // Threads are crew-locked. If the operator switched crews on an open
+    // thread, start a NEW conversation instead of sending the locked id (which
+    // the backend would 409) — the old thread stays in the rail. Detect before
+    // we send; clear the displayed thread since it belonged to the other crew.
+    if (
+      conversationId !== null &&
+      conversationWorkload !== null &&
+      workload !== conversationWorkload
+    ) {
+      conversationId = null;
+      conversationWorkload = null;
+      conversationTurns = [];
+    }
+    const sendConversationId = conversationId;
+
+    // Once the coordinator echoes a conversation_id (persist succeeded), fold
+    // the exchange into the open thread optimistically and let the reply settle
+    // there instead of the standalone hero — no second round-trip, no
+    // duplication. rcid absent (one-shot path / error frame) → unchanged.
+    const settleConversation = (rcid: string | undefined) => {
+      if (myRun !== runSeq) return;
+      if (typeof rcid !== 'string' || rcid.length === 0) return;
+      conversationId = rcid;
+      conversationWorkload = workload;
+      appendLocalTurns(prompt, finalReply, traceId);
+      finalReply = null; // now the last bubble in the thread above
+      finalIsError = false;
+      iacPr = null; // the thread's crew bubble carries the PR CTA
+      void loadConversations(); // the new/updated thread floats to the rail top
+    };
+
     try {
       let resp: Response;
       try {
         resp = await call('/chat', {
           method: 'POST',
           headers: { Accept: 'text/event-stream', 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt, workload }),
+          body: JSON.stringify(
+            sendConversationId
+              ? { prompt, workload, conversation_id: sendConversationId }
+              : { prompt, workload },
+          ),
         });
       } catch {
         if (myRun !== runSeq) return;
@@ -279,6 +431,19 @@
                 }
               : null;
           status = 'complete';
+          // Mirror the SSE done frame: the JSON path echoes conversation_id
+          // when the turn persisted. Settle after the backfill resolves traceId.
+          await backfillTrace(myRun);
+          if (myRun !== runSeq) return;
+          await loadDecisions();
+          // Skip settle for a paused refusal (echoes conversation_id but
+          // persists nothing) — leave the paused reply in the hero.
+          settleConversation(
+            !body?.paused && typeof body?.conversation_id === 'string'
+              ? body.conversation_id
+              : undefined,
+          );
+          return;
         } catch {
           if (myRun !== runSeq) return;
           status = 'error';
@@ -291,6 +456,7 @@
       }
 
       let streamErrored = false;
+      let doneConversationId: string | undefined;
       try {
         await consumeSse(resp, {
           onMeta: (m) => {
@@ -307,6 +473,10 @@
             finalReply = d.reply;
             finalIsError = false;
             iacPr = d.iac_pr ?? null;
+            // A paused refusal echoes conversation_id for crew-lock symmetry but
+            // persists NO turn — never settle it into the thread (it would
+            // vanish on reload); leave the calm paused reply in the hero.
+            doneConversationId = d.paused ? undefined : d.conversation_id;
             status = 'complete';
           },
           onError: (er) => {
@@ -341,6 +511,10 @@
         finalIsError = true;
       }
       await loadDecisions();
+      // Settle AFTER the recovery guard so a stream that produced a real reply
+      // (doneConversationId set) folds into the thread; an interrupted stream
+      // leaves doneConversationId undefined and the error stays in the hero.
+      settleConversation(doneConversationId);
     } finally {
       if (myRun === runSeq) busy = false;
     }
@@ -472,10 +646,16 @@
     historicalPrBody = null;
     historicalPrBodyTruncated = false;
     status = 'pending';
+    // Drop out of the open thread too — "new chat" is a clean slate. The thread
+    // is still reachable from the rail (its id lives in /conversations).
+    conversationId = null;
+    conversationWorkload = null;
+    conversationTurns = [];
   }
 
   onMount(() => {
     void loadDecisions();
+    void loadConversations();
     void pause.fetchPause();
     if (chatPrefill !== null) {
       // Remove ONLY ask_pr (preserve other params + hash) so reload/share
@@ -508,7 +688,14 @@
 </header>
 
 <main class="layout">
-  <DecisionsRail {decisions} {activeTraceId} onOpenTrace={openTrace} />
+  <div class="rails">
+    <ConversationsRail
+      {conversations}
+      activeConversationId={conversationId}
+      onOpen={openConversation}
+    />
+    <DecisionsRail {decisions} {activeTraceId} onOpenTrace={openTrace} />
+  </div>
 
   <section id="chat-area" class="chat-area" aria-label="Chat and reasoning timeline">
     {#if tourOffered && !tourOpen}
@@ -531,8 +718,16 @@
     </div>
     <CapabilityCard {call} />
     <div class="tour-target" data-tour="composer">
-      <ChatForm disabled={chatDisabled} onSubmit={submitChat} prefill={chatPrefill} />
+      <ChatForm
+        disabled={chatDisabled}
+        onSubmit={submitChat}
+        prefill={chatPrefill}
+        bind:workload={composerWorkload}
+      />
     </div>
+    {#if !historicalActive && conversationTurns.length > 0}
+      <ConversationThread turns={conversationTurns} onOpenTrace={openTrace} />
+    {/if}
     <HistoricalBanner active={historicalActive} traceId={historicalTraceId} onNewChat={newChat} />
     <TraceBadge {traceId} {status} />
     <FinalResponse reply={finalReply} isError={finalIsError} />
@@ -623,6 +818,16 @@
     align-items: start;
     min-height: calc(100vh - 56px);
   }
+  /* Left column holds two stacked rails: conversation history above past
+     decisions. Each owns its own internal scroll; the column spaces + insets
+     them so neither hugs the very edge. */
+  .rails {
+    display: flex;
+    flex-direction: column;
+    gap: var(--ds-sp-6);
+    padding: var(--ds-sp-5) var(--ds-sp-3) var(--ds-sp-8) var(--ds-sp-5);
+    min-height: 0;
+  }
   .chat-area {
     padding: var(--ds-sp-5) var(--ds-sp-6) var(--ds-sp-8);
     max-width: var(--ds-page-max);
@@ -644,6 +849,15 @@
   @media (max-width: 760px) {
     .layout {
       grid-template-columns: 1fr;
+    }
+    /* Single column: put the chat + composer FIRST so the operator isn't forced
+       to scroll past the full conversations + decisions lists to reach it. The
+       rails (history / past decisions) drop below as secondary navigation. */
+    .chat-area {
+      order: 1;
+    }
+    .rails {
+      order: 2;
     }
   }
 </style>

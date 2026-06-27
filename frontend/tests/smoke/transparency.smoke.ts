@@ -10,6 +10,8 @@ import {
   driftCardTraceResponse,
   decisionsResponse,
   infraGraphResponse,
+  conversationsListResponse,
+  conversationDetailResponse,
   SECRET_TOKEN_VALUE_OLD,
   SECRET_TOKEN_VALUE_NEW,
   SECRET_URL_VALUE_OLD,
@@ -343,5 +345,50 @@ test.describe('transparency UI (mock smoke)', () => {
       expect(html, `raw secret must not appear in DOM html: ${secret}`).not.toContain(secret);
       await expect(body, `raw secret must not appear in body text: ${secret}`).not.toContainText(secret);
     }
+  });
+
+  test('conversations: resume a thread from the rail; it survives a reload (P2)', async ({ page }) => {
+    await seedToken(page);
+    await mockData(page, freshState());
+    // Detail route is registered LAST so it wins for `/conversations/<id>`;
+    // the list glob (registered first here) handles `/conversations?limit=...`
+    // (the `**/conversations/**` glob needs a trailing `/`, which the query
+    // form doesn't have, so the two never collide).
+    await page.route('**/conversations**', (route: Route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(conversationsListResponse()),
+      }),
+    );
+    await page.route('**/conversations/**', (route: Route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(conversationDetailResponse()),
+      }),
+    );
+    await page.goto('/');
+
+    // The rail lists the persisted conversation.
+    const pane = page.locator(`[data-testid="${TESTIDS.conversationsPane}"]`);
+    await expect(pane).toBeVisible();
+    await expect(pane).toContainText('prior chat about drift');
+
+    // Resume it → the thread rehydrates with both turns.
+    await page.locator(`[data-testid="${TESTIDS.conversationOpen}"]`).first().click();
+    const thread = page.locator(`[data-testid="${TESTIDS.conversationThread}"]`);
+    await expect(thread).toBeVisible();
+    await expect(thread).toContainText('what changed on payment-demo?');
+    await expect(thread).toContainText('the env var EXTRA drifted from the contract');
+
+    // Resume-after-reload: the rail rehydrates from /conversations and the
+    // thread is reachable again (the durable-thread contract P2 is about).
+    await page.reload();
+    await expect(pane).toContainText('prior chat about drift');
+    await page.locator(`[data-testid="${TESTIDS.conversationOpen}"]`).first().click();
+    await expect(
+      page.locator(`[data-testid="${TESTIDS.conversationThread}"]`),
+    ).toContainText('the env var EXTRA drifted from the contract');
   });
 });
