@@ -5915,3 +5915,57 @@ async def chat(
         # 502 (ADK parse/response failure).
         status, detail = _chat_error_payload(e, workload=req.workload)
         raise HTTPException(status_code=status, detail=detail) from e
+
+
+@app.get("/conversations")
+def list_conversations_endpoint(
+    response: Response,
+    limit: int = 50,
+    workload: str | None = None,
+    _: None = Depends(verify_token),
+    state: StateStore = Depends(get_state),
+) -> dict:
+    """List recent conversations (metadata only), newest-updated first.
+
+    Backs the operator's conversation history rail (P2). Token-guarded like
+    /decisions; bounded by ``limit`` (1..200) so a misconfigured caller can't
+    pull the whole collection. Turns are NOT embedded — the rail only needs
+    title/crew/timestamps; fetch a single conversation's turns via
+    ``GET /conversations/{id}``.
+    """
+    if limit < 1 or limit > 200:
+        raise HTTPException(
+            status_code=400,
+            detail="limit must be 1..200",
+            headers={"Cache-Control": "no-store"},
+        )
+    response.headers["Cache-Control"] = "no-store"
+    rows = state.list_conversations(limit=limit, workload=workload)
+    return {"conversations": rows}
+
+
+@app.get("/conversations/{conversation_id}")
+def get_conversation_endpoint(
+    conversation_id: str,
+    response: Response,
+    _: None = Depends(verify_token),
+    state: StateStore = Depends(get_state),
+) -> dict:
+    """Full ordered turns for rehydrating a conversation on reload (P2)."""
+    response.headers["Cache-Control"] = "no-store"
+    # Path-safe id guard (Firestore doc id; reject path escapes). A malformed
+    # id is treated as not-found rather than reaching ``.document()``.
+    if not _CONVERSATION_ID_RE.fullmatch(conversation_id):
+        raise HTTPException(
+            status_code=404,
+            detail="conversation not found",
+            headers={"Cache-Control": "no-store"},
+        )
+    conv = state.get_conversation(conversation_id)
+    if conv is None:
+        raise HTTPException(
+            status_code=404,
+            detail="conversation not found",
+            headers={"Cache-Control": "no-store"},
+        )
+    return conv
