@@ -32,8 +32,10 @@ system_prompt_file: system_prompt.md
 # Phase 17.C.4 (Option A): the /chat surface uses a separate prompt
 # from /recheck. Drift's chat prompt was historically the
 # coordinator-wide ``SYSTEM_PROMPT_CHAT`` constant in
-# ``agent/adk_agent.py``; the 17.C.4 move preserves it byte-for-byte
-# (pinned by ``tests/unit/test_drift_workload_loads.py``).
+# ``agent/adk_agent.py``; the 17.C.4 move preserved it byte-for-byte, and
+# it has since evolved intentionally (e.g. the 2026-06-28 sibling-crew
+# routing block). Still byte-pinned by
+# ``tests/unit/test_drift_workload_loads.py``.
 chat_system_prompt_file: chat_system_prompt.md
 
 # Path to the workload's declarative contract, relative to this
