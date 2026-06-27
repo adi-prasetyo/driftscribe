@@ -89,6 +89,7 @@ import uuid
 from datetime import datetime, timezone
 
 from google.adk import Agent
+from google.adk.events import Event
 from google.adk.planners.built_in_planner import BuiltInPlanner
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
@@ -878,12 +879,38 @@ async def run_agent(
     return _parse_response(final_text)
 
 
+# Cap how many prior turns we replay into a fresh session — bounds prompt cost.
+# ~10 exchanges. Older turns are dropped with a single marker line.
+MAX_SEED_TURNS = 20
+
+
+def _seed_event_from_turn(turn: dict, *, agent_name: str) -> Event:
+    """Build an ADK event replaying ONE stored turn into a fresh session.
+
+    User turns are authored ``"user"``; crew turns are authored with the
+    *current agent's name* so ADK renders them as model turns. Any other author
+    makes ``google/adk/flows/llm_flows/contents.py`` rewrite them into
+    user-role "For context: ... said" messages, corrupting role fidelity.
+    """
+    text = turn.get("text") or ""
+    if turn.get("role") == "user":
+        return Event(
+            author="user",
+            content=types.Content(role="user", parts=[types.Part(text=text)]),
+        )
+    return Event(
+        author=agent_name,
+        content=types.Content(role="model", parts=[types.Part(text=text)]),
+    )
+
+
 async def run_chat_stream(
     prompt: str,
     session_id: str | None = None,
     *,
     workload: str = "drift",
     autonomy_mode: str,
+    prior_turns: list[dict] | None = None,
 ):
     """Core streaming generator for the chat agent.
 
@@ -910,11 +937,35 @@ async def run_chat_stream(
     agent = build_chat_agent(resolution, autonomy_mode=autonomy_mode)
     session_service = InMemorySessionService()
     sid = session_id or str(uuid.uuid4())
-    await session_service.create_session(
+    session = await session_service.create_session(
         app_name="driftscribe",
         user_id="driftscribe-runtime",
         session_id=sid,
     )
+    # Multi-turn (P1): replay prior turns into the fresh session as ADK events
+    # so the model has the conversation context. append_event always updates the
+    # stored session that Runner reads. Cap to MAX_SEED_TURNS; drop the oldest
+    # with one marker so prompt cost stays bounded.
+    turns_to_seed = list(prior_turns or [])
+    if len(turns_to_seed) > MAX_SEED_TURNS:
+        omitted = len(turns_to_seed) - MAX_SEED_TURNS
+        turns_to_seed = turns_to_seed[-MAX_SEED_TURNS:]
+        await session_service.append_event(
+            session,
+            Event(
+                author="user",
+                content=types.Content(
+                    role="user",
+                    parts=[types.Part(
+                        text=f"[{omitted} earlier turn(s) omitted for brevity]"
+                    )],
+                ),
+            ),
+        )
+    for _turn in turns_to_seed:
+        await session_service.append_event(
+            session, _seed_event_from_turn(_turn, agent_name=agent.name)
+        )
     runner = Runner(
         agent=agent,
         app_name="driftscribe",
@@ -995,6 +1046,7 @@ async def run_chat(
     *,
     workload: str = "drift",
     autonomy_mode: str,
+    prior_turns: list[dict] | None = None,
 ) -> dict:
     """Run the free-form chat agent against `prompt`.
 
@@ -1023,7 +1075,7 @@ async def run_chat(
     """
     async for item in run_chat_stream(
         prompt, session_id=session_id, workload=workload,
-        autonomy_mode=autonomy_mode,
+        autonomy_mode=autonomy_mode, prior_turns=prior_turns,
     ):
         if item["type"] == "result":
             return {
