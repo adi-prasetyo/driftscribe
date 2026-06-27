@@ -51,7 +51,7 @@ DriftScribe はどのワークロードにも共通する 4 つの不変条件 (
 
 ### Anchor — Cloud Run config ドリフト (`drift`)
 
-自律的に動作します。Cloud Run config の変更に反応するライブ Eventarc トリガーが組み込まれており（ポーリングではなくイベント駆動）、チャットから呼び出すことも可能です。
+自律的に動作します。Cloud Run config の変更に反応するライブ Eventarc トリガーが組み込まれており（ポーリングループではなくイベント駆動）、チャットから呼び出す必要はありません。
 
 - `payment-demo` Cloud Run サービスの環境変数を [`demo/ops-contract.yaml`](demo/ops-contract.yaml) と照合します。
 - アクション: `no_op` / `docs_pr` / `drift_issue` / `rollback` / `escalation`。
