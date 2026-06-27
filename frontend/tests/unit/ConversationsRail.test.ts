@@ -16,8 +16,30 @@ describe('ConversationsRail', () => {
     const { getByText, queryByTestId } = render(ConversationsRail, {
       props: { conversations: [], activeConversationId: null, onOpen: noop },
     });
-    expect(getByText('No conversations yet.')).toBeTruthy();
+    // Substring match — the empty state now carries a fuller resume hint.
+    expect(
+      getByText((t) => t.startsWith('No conversations yet.')),
+    ).toBeTruthy();
     expect(queryByTestId('conversation-item')).toBeNull();
+  });
+
+  it('explains the chat features through a header help hint (collapsed by default, trust boundary pinned)', async () => {
+    const { getByTestId, queryByTestId } = render(ConversationsRail, {
+      // Present even with zero conversations — it explains what the rail is for.
+      props: { conversations: [], activeConversationId: null, onOpen: noop },
+    });
+    const btn = getByTestId('conversations-help');
+    // Non-status accessible name (this hint is not an iac_apply-status hint).
+    expect(btn.getAttribute('aria-label')).toBe('About conversations');
+    // Collapsed by default — no panel until the operator opens it.
+    expect(queryByTestId('conversations-help-panel')).toBeNull();
+    await fireEvent.click(btn);
+    const panel = getByTestId('conversations-help-panel');
+    const text = panel.textContent ?? '';
+    // The resume story AND the cross-crew trust boundary must both survive edits.
+    expect(text).toContain('reopen');
+    expect(text).toContain('team memory');
+    expect(text).toContain('redacted');
   });
 
   it('renders one card per conversation with its title and crew', () => {

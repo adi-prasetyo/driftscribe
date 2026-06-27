@@ -191,7 +191,7 @@ single-tenant coupling map and the productization paths are written up in
 
 ## Status
 
-Built out past the hackathon MVP. Two initiatives landed on top of the Phase 17
+Built out past the hackathon MVP. Three initiatives landed on top of the Phase 17
 multi-agent framework:
 
 - **Infra-IaC agent:** a whole-project inventory reader (`infra-reader`, Cloud
@@ -203,6 +203,11 @@ multi-agent framework:
 - **Operator UI:** rebuilt as a Svelte + Vite SPA, now served at the site root
   `/` (operator token required), with a live infra resource-map panel
   (managed vs. drift) and a per-decision trace + env-diff view.
+- **Multi-turn chat + team memory:** operator chats with each crew are persisted
+  and resumable from a history rail in the operator UI. Crews can also read each
+  other's recent conversations as shared, read-only "team memory" (turn text is
+  secret-redacted and snippet-capped), so a question asked of one crew can help
+  inform the others.
 
 This sits on Phase 20 (assertive E2E suite: drift via `/recheck`, upgrade via
 GitHub branch observation, HITL form-POST flow with explicit revision capture,

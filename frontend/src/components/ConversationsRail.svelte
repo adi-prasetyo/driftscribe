@@ -5,6 +5,7 @@
   // is pure (lib/conversations.groupConversations); this component only renders.
   import { groupConversations } from '../lib/conversations';
   import CrewGlyph from './CrewGlyph.svelte';
+  import HelpHint from './HelpHint.svelte';
   import Icon from './Icon.svelte';
   import type { Conversation } from '../lib/types';
 
@@ -53,10 +54,18 @@
     <h2 class="ds-label rail-eyebrow">
       <span class="eyebrow-icon"><Icon name="message-square" size={14} /></span>Conversations
     </h2>
+    <!-- Always shown — it explains what the rail is and where the cross-crew
+         "team memory" boundary sits. Mirrors DecisionsRail's header hint; the
+         flex-wrap header + HelpHint's flex-basis:100% panel wrap it cleanly. -->
+    <HelpHint
+      testid="conversations-help"
+      ariaLabel="About conversations"
+      text="Your chats are saved here, so you can reopen any thread and pick up where you left off. Each conversation stays with the crew that started it. Crews can also look back at redacted snippets of each other's recent chats as shared team memory."
+    />
   </div>
 
   {#if conversations.length === 0}
-    <p class="empty ds-subtle">No conversations yet.</p>
+    <p class="empty ds-subtle">No conversations yet. Chats you start are saved here, so you can reopen any thread and keep going.</p>
   {:else}
     {#each groups as group (group.label)}
       <div class="conv-group" data-testid="conv-group">

@@ -182,6 +182,10 @@ validator gates) → one locked worker executes.**
 - **It provisions its own demo.** The infra-graph / checkout demo was actually built *by
   DriftScribe itself* going through its own author → approve → apply loop — the agent dogfoods
   its own infrastructure pipeline.
+- **Chat has memory, and so does the crew.** Conversations with each crew are saved and
+  resumable from a history rail in the UI, and each thread stays with the crew that started it.
+  Crews can also read redacted snippets of each other's recent chats as shared, read-only "team
+  memory," so context carries across the team.
 
 ---
 
