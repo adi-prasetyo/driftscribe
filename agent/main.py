@@ -29,7 +29,7 @@ from fastapi.templating import Jinja2Templates
 from google.auth import exceptions as google_auth_exceptions
 from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2.id_token import verify_oauth2_token
-from pydantic import BaseModel, ConfigDict, Field, StrictBool
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 from agent import approvals as approval_helpers
 from agent import iac_artifacts
@@ -412,21 +412,26 @@ def _derive_conversation_title(prompt: str) -> str:
 
 
 def _resolve_chat_conversation(
-    state: StateStore, conversation_id: str | None, workload: str
+    state: StateStore, conversation_id: str | None, workload: str,
+    *, ephemeral: bool = False,
 ) -> dict:
     """Resolve the conversation for a /chat turn (crew-lock enforced).
 
     Absent id  -> new conversation (created lazily at persist time).
     Unknown id -> 404 (never silently fork on a typo / stale client).
     Crew-lock mismatch -> 409.
-    Returns ``{conversation_id, workload, is_new, prior_turns}``.
+    ``ephemeral`` -> a throwaway turn that never persists (the model validator
+    already forbids pairing it with a conversation_id, so this always takes the
+    fresh-conversation branch). The id is minted but never written.
+    Returns ``{conversation_id, workload, is_new, prior_turns, ephemeral}``.
     """
-    if conversation_id is None:
+    if ephemeral or conversation_id is None:
         return {
             "conversation_id": str(uuid.uuid4()),
             "workload": workload,
             "is_new": True,
             "prior_turns": [],
+            "ephemeral": ephemeral,
         }
     conv = state.get_conversation(conversation_id)
     if conv is None:
@@ -449,6 +454,7 @@ def _resolve_chat_conversation(
         "workload": workload,
         "is_new": False,
         "prior_turns": conv.get("turns", []),
+        "ephemeral": False,
     }
 
 
@@ -462,7 +468,13 @@ def _persist_chat_turn(
     to the response ONLY on True, so we never hand the client an id that resolves
     to nothing. The whole exchange (incl. lazy creation for a new conversation)
     is one transaction, so there are no half-turns.
+
+    An ``ephemeral`` turn writes nothing and returns False, so both transports
+    (JSON + SSE) omit the conversation_id automatically — the single place that
+    keeps probe traffic out of the operator's conversation history.
     """
+    if conv.get("ephemeral"):
+        return False
     try:
         turns = [
             {"role": "user", "text": prompt, "workload": conv["workload"],
@@ -5458,8 +5470,26 @@ class ChatRequest(BaseModel):
         default=None, max_length=128, pattern=r"^[A-Za-z0-9_-]{1,128}$"
     )
     workload: Literal["drift", "upgrade", "explore", "provision"]
+    # Opt-in throwaway turn: run the chat and return the reply, but persist NO
+    # conversation doc and echo NO conversation_id. For health/verification
+    # probes so repeated identical checks don't pile up in the operator's
+    # conversation history. It suppresses ONLY conversation persistence — traces,
+    # tool calls, decisions, and PRs still happen, so use it for read-only probes
+    # (a fresh-conversation flood from authenticated verification traffic via the
+    # run.app URL is the gap the CF demo rate-limiter doesn't cover).
+    ephemeral: StrictBool = Field(default=False)
 
     model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _ephemeral_excludes_conversation(self) -> "ChatRequest":
+        # An ephemeral one-shot persists nothing, so continuing a durable thread
+        # is contradictory — surface it as 422 rather than silently dropping one.
+        if self.ephemeral and self.conversation_id is not None:
+            raise ValueError(
+                "ephemeral chats cannot continue a conversation_id"
+            )
+        return self
 
 
 def _chat_error_payload(e: Exception, *, workload: str) -> tuple[int, str]:
@@ -5830,7 +5860,9 @@ async def chat(
     # lazily at persist time). Capture the trace_id here too so both transports
     # link the persisted crew turn to the same /trace/{id}.
     state = get_state()
-    conv = _resolve_chat_conversation(state, req.conversation_id, req.workload)
+    conv = _resolve_chat_conversation(
+        state, req.conversation_id, req.workload, ephemeral=req.ephemeral
+    )
     trace_id = current_trace_id_or_new()
 
     # Phase 22: SSE streaming path. Content-negotiated on Accept — the
