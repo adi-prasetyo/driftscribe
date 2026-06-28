@@ -903,42 +903,39 @@ def evaluate(di: DenylistInput) -> list[Violation]:
 # do not read HCL; keep them honest and specific.
 RULE_DESCRIPTIONS: Final[Mapping[str, str]] = MappingProxyType({
     "plan-json-unparseable": (
-        "The plan file is not valid JSON — rejected outright (fail-closed)."
+        "The plan file isn't valid JSON (fail-closed)."
     ),
     "plan-json-missing-resource-changes": (
-        "The plan has no resource-changes list — rejected outright (fail-closed)."
+        "The plan has no resource-changes list (fail-closed)."
     ),
     "plan-json-malformed-change": (
         "A change entry is malformed, or a protected resource hides its "
-        "identity — rejected outright (fail-closed)."
+        "identity (fail-closed)."
     ),
     "control-plane-service": (
-        "No change may touch DriftScribe's own Cloud Run services."
+        "Its Cloud Run services."
     ),
     "control-plane-sa": (
-        "No change may touch DriftScribe's own service accounts."
+        "Its service accounts."
     ),
     "control-plane-bucket": (
-        "No change may touch the IaC state or artifact buckets, or any "
-        "object inside them."
+        "The IaC state and artifact buckets — and every object inside them."
     ),
     "service-managed-bucket": (
-        "No change may adopt or modify a bucket that a Google service "
-        "auto-creates — Cloud Build, App Engine, Cloud Functions, or Cloud Run "
-        "source-deploy staging buckets are not yours to track in IaC."
+        "Cloud Build, App Engine, Cloud Functions, and Cloud Run source-deploy "
+        "each auto-create their own buckets — not DriftScribe's to track in IaC."
     ),
     "control-plane-secret": (
-        "No change may touch DriftScribe's secrets (approval keys, GitHub "
-        "token, …) or any of their versions."
+        "Its secrets — approval keys, GitHub token, and every version."
     ),
     "control-plane-kms": (
-        "No change may touch the state-encryption KMS key or its key ring."
+        "The state-encryption KMS key and its key ring."
     ),
     "wif-config-change": (
-        "No change may touch Workload Identity Federation pools or providers."
+        "Workload Identity Federation pools and providers."
     ),
     "iam-change-forbidden-v1": (
-        "All IAM changes are refused — even on unrelated resources (v1 floor)."
+        "Any IAM change at all — even on unrelated resources (v1 floor)."
     ),
     "import-with-changes-forbidden-v1": (
         "Adopting a resource must change nothing: if importing it would also "
@@ -947,8 +944,7 @@ RULE_DESCRIPTIONS: Final[Mapping[str, str]] = MappingProxyType({
     ),
     "import-type-not-adoptable-v1": (
         "Only Cloud Storage buckets, Pub/Sub topics and subscriptions, and "
-        "Cloud Run services can be adopted (imported) in v1 — every other "
-        "type is refused."
+        "Cloud Run services can be adopted in v1 — every other type is refused."
     ),
     "import-mixed-plan-forbidden-v1": (
         "An adoption plan may contain nothing but the adoption — any other "
@@ -959,17 +955,16 @@ RULE_DESCRIPTIONS: Final[Mapping[str, str]] = MappingProxyType({
         "refused."
     ),
     "delete-action-forbidden-v1": (
-        "All deletes are refused — the agent cannot destroy any resource "
-        "(v1 floor)."
+        "Deleting any resource (v1 floor)."
     ),
     "forget-action-forbidden-v1": (
-        "All state-forget actions are refused (v1 floor)."
+        "Forgetting a resource from state (v1 floor)."
     ),
     "replace-action-forbidden-v1": (
-        "All replacements (destroy-and-recreate) are refused (v1 floor)."
+        "Replacing a resource — destroy-and-recreate (v1 floor)."
     ),
     "unknown-action-forbidden-v1": (
-        "Any action shape not in the audited OpenTofu vocabulary is refused "
-        "(fail-closed against new verbs)."
+        "Any action outside the audited OpenTofu vocabulary (fail-closed "
+        "against new verbs)."
     ),
 })

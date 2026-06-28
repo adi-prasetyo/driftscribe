@@ -8,27 +8,27 @@ import type { CapRule } from '../../src/lib/capabilities';
 
 const controlPlaneRule: CapRule = {
   id: 'control-plane-service',
-  description: 'No change may touch DriftScribe\'s own Cloud Run services.',
+  description: 'Its Cloud Run services.',
   category: 'control-plane',
 };
 const iamRule: CapRule = {
   id: 'iam-change-forbidden-v1',
-  description: 'All IAM changes are refused — even on unrelated resources (v1 floor).',
+  description: 'Any IAM change at all — even on unrelated resources (v1 floor).',
   category: 'iam',
 };
 const globalRule: CapRule = {
   id: 'delete-action-forbidden-v1',
-  description: 'All deletes are refused — the agent cannot destroy any resource (v1 floor).',
+  description: 'Deleting any resource (v1 floor).',
   category: 'global-v1',
 };
 const structuralRule: CapRule = {
   id: 'plan-json-unparseable',
-  description: 'The plan file is not valid JSON — rejected outright (fail-closed).',
+  description: 'The plan file isn\'t valid JSON (fail-closed).',
   category: 'structural',
 };
 const serviceManagedRule: CapRule = {
   id: 'service-managed-bucket',
-  description: 'No change may adopt or modify a bucket that a Google service auto-creates.',
+  description: 'Cloud Build, App Engine, Cloud Functions, and Cloud Run source-deploy each auto-create their own buckets — not DriftScribe\'s to track in IaC.',
   category: 'service-managed',
 };
 const unknownRule: CapRule = {

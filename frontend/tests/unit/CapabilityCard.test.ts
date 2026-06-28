@@ -108,11 +108,11 @@ const FIXTURE: Capabilities = {
       'the tofu-apply worker, immediately before apply (final gate)',
     ],
     rules: [
-      { id: 'control-plane-service', description: 'No change may touch DriftScribe\'s own Cloud Run services.', category: 'control-plane' },
-      { id: 'control-plane-sa', description: 'No change may touch DriftScribe\'s own service accounts.', category: 'control-plane' },
-      { id: 'iam-change-forbidden-v1', description: 'All IAM changes are refused — even on unrelated resources (v1 floor).', category: 'iam' },
-      { id: 'delete-action-forbidden-v1', description: 'All deletes are refused — the agent cannot destroy any resource (v1 floor).', category: 'global-v1' },
-      { id: 'plan-json-unparseable', description: 'The plan file is not valid JSON — rejected outright (fail-closed).', category: 'structural' },
+      { id: 'control-plane-service', description: 'Its Cloud Run services.', category: 'control-plane' },
+      { id: 'control-plane-sa', description: 'Its service accounts.', category: 'control-plane' },
+      { id: 'iam-change-forbidden-v1', description: 'Any IAM change at all — even on unrelated resources (v1 floor).', category: 'iam' },
+      { id: 'delete-action-forbidden-v1', description: 'Deleting any resource (v1 floor).', category: 'global-v1' },
+      { id: 'plan-json-unparseable', description: 'The plan file isn\'t valid JSON (fail-closed).', category: 'structural' },
     ],
   },
 };
@@ -188,7 +188,7 @@ describe('CapabilityCard', () => {
 
     // Denylist section — a control-plane rule description AND its category heading
     const denylist = getByTestId('cap-denylist');
-    expect(denylist.textContent).toContain('No change may touch DriftScribe\'s own Cloud Run services.');
+    expect(denylist.textContent).toContain('Its Cloud Run services.');
     expect(denylist.textContent).toContain('Its own control plane is untouchable');
 
     // Workloads section — all four crew identities AND their descriptors
