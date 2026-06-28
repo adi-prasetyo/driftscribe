@@ -104,8 +104,13 @@
     align-items: stretch;
     gap: var(--ds-sp-2);
     padding: var(--ds-sp-2);
-    background: var(--ds-surface);
-    border: 1px solid var(--ds-border);
+    /* The composer is the one INTERACTIVE card in this column (Infra/Capability
+       cards above it are read-only), so it wears a light stream accent — tinted
+       fill + a 3px left accent bar, the same callout language as base.css — to
+       read as "type here", not blend into the passive cards. */
+    background: var(--ds-stream-surface);
+    border: 1px solid var(--ds-stream-border);
+    border-left: 3px solid var(--ds-stream);
     border-radius: var(--ds-radius);
     box-shadow: var(--ds-shadow-sm);
     transition: opacity var(--ds-dur) var(--ds-ease),
@@ -116,7 +121,7 @@
   /* Lift the whole composer when any control inside is focused — a calm,
      editorial focus affordance rather than per-control rings stacking up. */
   .chat-form:focus-within {
-    border-color: var(--ds-stream-border);
+    border-color: var(--ds-stream);
     box-shadow: var(--ds-shadow-sm), var(--ds-ring);
   }
 
@@ -125,6 +130,10 @@
     opacity: 0.55;
     box-shadow: none;
     background: var(--ds-surface-2);
+    /* Inert replay: drop the stream accent so the composer reads as receded,
+       not "ready for input". */
+    border-color: var(--ds-border);
+    border-left-color: var(--ds-border);
   }
   .chat-form.historical:focus-within {
     border-color: var(--ds-border);
@@ -142,19 +151,22 @@
     flex: 1 1 16rem;
     min-width: 0;
     padding: 0.62em 0.85em;
-    border: 1px solid transparent;
+    /* Real field chrome: a white inset well on the tinted card so the input
+       reads as "click to type", not plain text sitting in a box. */
+    border: 1px solid var(--ds-stream-border);
     border-radius: var(--ds-radius-sm);
-    background: transparent;
+    background: var(--ds-surface);
     color: var(--ds-fg);
     font-size: var(--ds-fs-2);
     line-height: 1.4;
+    transition: border-color var(--ds-dur) var(--ds-ease);
   }
   .chat-form__input::placeholder {
     color: var(--ds-faint);
   }
   .chat-form__input:focus-visible {
     outline: none;
-    box-shadow: none;
+    border-color: var(--ds-stream);
   }
 
   .chat-form__send {
@@ -175,6 +187,9 @@
   .chat-form__input:disabled {
     cursor: not-allowed;
     color: var(--ds-muted);
+    /* Shed the field chrome when inert so it recedes into the dimmed card. */
+    background: transparent;
+    border-color: transparent;
   }
 
   /* Narrow widths: the input takes the full row above Send. */
