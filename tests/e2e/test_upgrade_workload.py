@@ -15,7 +15,8 @@ def test_upgrade_reader_chat_returns_reply(coordinator_client):
     """Read-only: /chat workload=upgrade returns a non-empty reply + tool_calls."""
     resp = coordinator_client.post(
         "/chat",
-        json={"workload": "upgrade", "prompt": "What advisories exist for lodash?"},
+        json={"workload": "upgrade", "prompt": "What advisories exist for lodash?",
+              "ephemeral": True},  # read-only probe: don't litter the rail
         timeout=180.0,
     )
     assert resp.status_code == 200, resp.text

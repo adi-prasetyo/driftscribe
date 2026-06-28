@@ -53,7 +53,8 @@ def test_chat_drift_returns_reply_and_tool_calls(coordinator_client):
     """/chat workload=drift returns the documented free-form shape."""
     resp = coordinator_client.post(
         "/chat",
-        json={"workload": "drift", "prompt": "Check payment-demo-e2e for drift"},
+        json={"workload": "drift", "prompt": "Check payment-demo-e2e for drift",
+              "ephemeral": True},  # read-only probe: don't litter the rail
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()

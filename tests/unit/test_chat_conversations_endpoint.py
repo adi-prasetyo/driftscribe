@@ -32,11 +32,26 @@ def client(monkeypatch):
     agent_main.get_settings.cache_clear()
 
 
-def _post(client, prompt, workload="drift", conversation_id=None):
+def _post(client, prompt, workload="drift", conversation_id=None, ephemeral=None):
     body = {"prompt": prompt, "workload": workload}
     if conversation_id is not None:
         body["conversation_id"] = conversation_id
+    if ephemeral is not None:
+        body["ephemeral"] = ephemeral
     return client.post("/chat", json=body)  # JSON path (no SSE Accept header)
+
+
+def _sse_done(text):
+    """Parse the terminal ``done`` frame dict from an SSE body."""
+    import json as _json
+    for block in text.split("\n\n"):
+        block = block.strip()
+        if not block.startswith("event: done"):
+            continue
+        for line in block.splitlines():
+            if line.startswith("data:"):
+                return _json.loads(line[len("data:"):].strip())
+    return None
 
 
 def test_new_chat_creates_conversation_and_returns_id(client):
@@ -114,3 +129,69 @@ def test_paused_crew_lock_mismatch_409(client, monkeypatch):
     _set_paused(monkeypatch, True)
     assert _post(client, "q", workload="explore",
                  conversation_id=cid).status_code == 409
+
+
+# --- Ephemeral (don't-persist) probe turns ---------------------------------
+
+def test_ephemeral_chat_returns_reply_but_persists_nothing(client):
+    # The probe gets a real answer, but no conversation_id and no rail entry —
+    # so repeated verification checks don't pile up in the operator's history.
+    r = _post(client, "health probe", workload="explore", ephemeral=True)
+    assert r.status_code == 200
+    assert r.json()["reply"]
+    assert "conversation_id" not in r.json()
+    assert client.get("/conversations").json()["conversations"] == []
+
+
+def test_ephemeral_with_conversation_id_is_422(client):
+    # Continuing a durable thread while persisting nothing is contradictory.
+    cid = _post(client, "q1", workload="explore").json()["conversation_id"]
+    r = _post(client, "q2", workload="explore", conversation_id=cid,
+              ephemeral=True)
+    assert r.status_code == 422
+
+
+def test_ephemeral_sse_done_omits_conversation_id(client, monkeypatch):
+    # The SPA uses SSE by default — pin that the ``done`` frame carries no
+    # conversation_id (vs. a normal SSE turn, which does) and nothing persists.
+    async def _stub_stream(prompt, session_id=None, *, workload="drift",
+                           autonomy_mode="propose_apply", prior_turns=None):
+        yield {"type": "result", "reply": f"reply to {prompt}",
+               "tool_calls": [], "session_id": "sid"}
+
+    monkeypatch.setattr("agent.adk_agent.run_chat_stream", _stub_stream)
+    headers = {"Accept": "text/event-stream"}
+
+    # Control: a normal SSE turn DOES echo conversation_id + persists.
+    normal = client.post("/chat", json={"prompt": "real", "workload": "explore"},
+                         headers=headers)
+    done = _sse_done(normal.text)
+    assert done["conversation_id"]
+    assert len(client.get("/conversations").json()["conversations"]) == 1
+
+    # Ephemeral SSE turn: reply, but no conversation_id and no new rail entry.
+    eph = client.post(
+        "/chat",
+        json={"prompt": "probe", "workload": "explore", "ephemeral": True},
+        headers=headers,
+    )
+    done = _sse_done(eph.text)
+    assert done["reply"] == "reply to probe"
+    assert "conversation_id" not in done
+    assert len(client.get("/conversations").json()["conversations"]) == 1
+
+
+def test_ephemeral_provision_fanout_persists_nothing(client, monkeypatch):
+    # Provision routes through the fan-out stream (a structurally distinct path);
+    # the same persist chokepoint must keep ephemeral probes out of history.
+    async def _stub_fanout(prompt, session_id=None, *, autonomy_mode="propose_apply",
+                           prior_turns=None):
+        yield {"type": "result", "reply": f"provisioned {prompt}",
+               "tool_calls": [], "session_id": "sid"}
+
+    monkeypatch.setattr("agent.fanout.run_provision_fanout_stream", _stub_fanout)
+    r = _post(client, "probe", workload="provision", ephemeral=True)
+    assert r.status_code == 200
+    assert r.json()["reply"] == "provisioned probe"
+    assert "conversation_id" not in r.json()
+    assert client.get("/conversations").json()["conversations"] == []
