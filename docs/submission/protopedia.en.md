@@ -10,7 +10,7 @@ DriftScribe — a multi-agent coordinator/worker pattern for safe AI-driven DevO
 
 ## Summary
 
-DriftScribe is a multi-agent framework for safe AI-driven DevOps on Cloud Run. A single workload-aware coordinator (Google ADK + Gemini 2.5 Flash on Vertex AI) routes operator requests to per-workload agents that see only the tools they're allowed to use. Four crew ship today: **Anchor** (the `drift` workload) watches a live Cloud Run service (`payment-demo`) against an ops contract and decides between `no_op` / `docs_pr` / `drift_issue` / `rollback` / `escalation`; **Patch** (the `upgrade` workload) watches an npm `package.json` against the GitHub Advisory DB and decides between `no_op` / `docs_pr` / `upgrade_pr` / `escalation`; **Explore** (the `explore` workload) is a read-only investigator across live infra and code, listing zero mutation tools; **Provision** (the `provision` workload) authors OpenTofu changes and opens a single `iac/`-only PR that flows through a gated, HMAC-signed apply pipeline. Anchor runs autonomously (a live Eventarc trigger on Cloud Run config changes); the other three run on demand from chat. Reasoning is grounded by Google's Developer Knowledge MCP (attached at the coordinator only). Destructive paths are gated: rollback uses HMAC-signed single-use HITL approvals, and upgrade-PR opens reuse a post-LLM deterministic validator (semver, GHSA URL shape, path regex) that fails closed. The agent proposes, the operator (or the validator) disposes, and the worker boundary keeps "propose" safe to expose.
+DriftScribe is a multi-agent framework for safe AI-driven DevOps on Cloud Run. A single workload-aware coordinator (Google ADK + Gemini 2.5 Flash on Vertex AI) routes operator requests to per-workload agents that see only the tools they're allowed to use. Four crew ship today: **Anchor** watches a live Cloud Run service (`payment-demo`) against an ops contract and decides between `no_op` / `docs_pr` / `drift_issue` / `rollback` / `escalation`; **Patch** watches an npm `package.json` against the GitHub Advisory DB and decides between `no_op` / `docs_pr` / `upgrade_pr` / `escalation`; **Explore** is a read-only investigator across live infra and code, listing zero mutation tools; **Provision** authors OpenTofu changes and opens a single `iac/`-only PR that flows through a gated, HMAC-signed apply pipeline. Anchor runs autonomously (a live Eventarc trigger on Cloud Run config changes); the other three run on demand from chat. Reasoning is grounded by Google's Developer Knowledge MCP (attached at the coordinator only). Destructive paths are gated: rollback uses HMAC-signed single-use HITL approvals, and upgrade-PR opens reuse a post-LLM deterministic validator (semver, GHSA URL shape, path regex) that fails closed. The agent proposes, the operator (or the validator) disposes, and the worker boundary keeps "propose" safe to expose.
 
 ## Highlights
 
@@ -36,6 +36,8 @@ DriftScribe is a multi-agent framework for safe AI-driven DevOps on Cloud Run. A
 - CI: GitHub Actions (ruff + pytest on PRs and pushes to main)
 
 ## Demo
+
+DriftScribe's crews form a stewardship loop around one cloud estate: Provision stands infrastructure up, Anchor guards what's live with the only autonomous trigger, Patch keeps it current, and Explore explains it. The demo follows that arc.
 
 The walkthrough is structured as eight beats across two workloads, driven by `scripts/demo.sh`.
 
