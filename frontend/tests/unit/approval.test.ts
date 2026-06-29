@@ -324,8 +324,8 @@ describe('iacApproveLabel — retire the stale CTA on superseded rows', () => {
     ).toBe('View approval history →');
   });
 
-  it('applied + merge pending / failed / undefined apply_status → "Go to approval page →"', () => {
-    // applied but merge not confirmed → still actionable-ish, neutral wording.
+  it('applied + merge pending / undefined apply_status → "Go to approval page →"', () => {
+    // applied but merge not confirmed → still actionable (merge-only reconcile) → neutral wording.
     expect(
       iacApproveLabel({ apply_status: 'applied', merge_state: 'failed', pr_number: 68 }, new Set()),
     ).toBe('Go to approval page →');
@@ -333,10 +333,27 @@ describe('iacApproveLabel — retire the stale CTA on superseded rows', () => {
     expect(iacApproveLabel({ apply_status: 'applied', pr_number: 68 }, new Set())).toBe(
       'Go to approval page →',
     );
-    expect(iacApproveLabel({ apply_status: 'failed', pr_number: 70 }, new Set())).toBe(
-      'Go to approval page →',
-    );
     expect(iacApproveLabel({ pr_number: 68 }, new Set())).toBe('Go to approval page →');
+  });
+
+  it('terminal-failed apply_status → "View failure details →" (no approval action on the page)', () => {
+    // The approval page renders these as a terminal no-action banner (agent/main.py
+    // suppresses the form for failed/failed_state_suspect/ambiguous), so the rail must
+    // not promise approval work the page can't offer. Merge state is irrelevant — a
+    // terminal failure is terminal whether or not the PR later merged (PR #95: a
+    // failed_state_suspect + merged row that read "Go to approval page →" but had no button).
+    expect(iacApproveLabel({ apply_status: 'failed', pr_number: 70 }, new Set())).toBe(
+      'View failure details →',
+    );
+    expect(
+      iacApproveLabel(
+        { apply_status: 'failed_state_suspect', merge_state: 'merged', pr_number: 95 },
+        new Set(),
+      ),
+    ).toBe('View failure details →');
+    expect(iacApproveLabel({ apply_status: 'ambiguous', pr_number: 70 }, new Set())).toBe(
+      'View failure details →',
+    );
   });
 
   it('waiting_for_rebake with an invalid/missing pr_number against a non-empty set → still "Review & approve →"', () => {
