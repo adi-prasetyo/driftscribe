@@ -1,4 +1,4 @@
-# DriftScribe — ProtoPedia submission (English)
+# DriftScribe: ProtoPedia submission (English)
 
 > [日本語版はこちら](protopedia.ja.md)
 >
@@ -6,7 +6,7 @@
 
 ## Title
 
-DriftScribe — a multi-agent coordinator/worker pattern for safe AI-driven DevOps on Cloud Run
+DriftScribe: a multi-agent coordinator/worker pattern for safe AI-driven DevOps on Cloud Run
 
 ## Summary
 
@@ -57,7 +57,7 @@ The walkthrough is structured as eight beats across two workloads, driven by `sc
 
 **Current scope (single-tenant, by design).** DriftScribe runs bound to one GitHub repo and one Google Cloud project. This is deliberate: we prioritized a fully working, secure, end-to-end agent loop (detect drift → propose IaC PR → human approves → apply) over a thin multi-tenant shell. Single-tenancy is what *lets* us enforce the guarantees above: the human approval gate, service-account trust between workers, and an apply worker that only runs plans whose IaC matches a hash baked into its own image.
 
-**Path to product.** Letting other users run DriftScribe on their own GitHub and their own cloud is the clear next step, reachable either as isolated per-customer deployments or as a shared multi-tenant service. We scoped that out of the hackathon *deliberately*: the multi-tenant identity and cross-project cloud access it requires is security-sensitive work we'd rather do right than rush. A "GitHub connector" alone is the small part (~10–15%); the real work is per-tenant cloud access, identity, and data isolation. The full single-tenant coupling map and the productization paths are documented at `docs/plans/2026-06-24-multi-tenant-productization-scope.md`.
+**Path to product.** Letting other users run DriftScribe on their own GitHub and their own cloud is the clear next step, reachable either as isolated per-customer deployments or as a shared multi-tenant service. We scoped that out of the hackathon *deliberately*: the multi-tenant identity and cross-project cloud access it requires is security-sensitive work we'd rather do right than rush. A "GitHub connector" alone is the small part (~10-15%); the real work is per-tenant cloud access, identity, and data isolation. The full single-tenant coupling map and the productization paths are documented at `docs/plans/2026-06-24-multi-tenant-productization-scope.md`.
 
 ## Repository
 
