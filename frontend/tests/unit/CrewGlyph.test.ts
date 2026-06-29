@@ -1,5 +1,8 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
 import CrewGlyph from '../../src/components/CrewGlyph.svelte';
 
 // Component tests for CrewGlyph — the per-agent "one estate, four verbs"
@@ -115,6 +118,54 @@ describe('CrewGlyph — animated gate', () => {
       const svg = container.querySelector('svg')!;
       expect(svg.getAttribute('class')).not.toContain('crew-glyph--animated');
       cleanup();
+    }
+  });
+});
+
+describe('CrewGlyph — per-crew identity color', () => {
+  // Each crew now carries its OWN primary hue (Anchor=blue, Patch=brick red,
+  // Provision=violet, Explore=teal), replacing the old shared ink-square +
+  // stream-blue accent. jsdom has no cascade engine, so we can't read computed
+  // color here; the binding is pinned at the source level (same posture as
+  // styles.test.ts), whitespace-tolerant per Codex so reformatting won't
+  // false-fail. The contract: each `crew-glyph--{verb}` rule sets BOTH `color`
+  // (the square's currentColor stroke + currentColor-filled dots) AND
+  // `--crew-accent` (the verb accents) to that crew's identity token — so the
+  // glyph is monochromatic in its hue.
+  const src = readFileSync(
+    resolve(dirname(fileURLToPath(import.meta.url)), '../../src/components/CrewGlyph.svelte'),
+    'utf8',
+  );
+  const CREW_TOKEN: Record<string, string> = {
+    drift: '--ds-crew-drift',
+    upgrade: '--ds-crew-upgrade',
+    provision: '--ds-crew-provision',
+    explore: '--ds-crew-explore',
+  };
+
+  it.each(Object.entries(CREW_TOKEN))(
+    'binds crew-glyph--%s to color + --crew-accent of its identity token',
+    (verb, token) => {
+      const m = src.match(new RegExp(`\\.crew-glyph--${verb}\\s*\\{([^}]*)\\}`));
+      expect(m, `no .crew-glyph--${verb} { ... } rule found`).not.toBeNull();
+      const body = m![1];
+      const tok = token.replace(/-/g, '\\-');
+      expect(body, `${verb} must set color to ${token}`).toMatch(
+        new RegExp(`color\\s*:\\s*var\\(\\s*${tok}\\s*\\)`),
+      );
+      expect(body, `${verb} must set --crew-accent to ${token}`).toMatch(
+        new RegExp(`--crew-accent\\s*:\\s*var\\(\\s*${tok}\\s*\\)`),
+      );
+    },
+  );
+
+  it('keeps the unknown-verb fallback off the crew palette (neutral ink)', () => {
+    // An unrecognised crew must NOT be painted in some crew's hue — it stays on
+    // inherited ink + the stream-blue fallback. So no crew-glyph--unknown color
+    // rule should exist binding a --ds-crew-* token.
+    const m = src.match(/\.crew-glyph--unknown\s*\{([^}]*)\}/);
+    if (m) {
+      expect(m[1]).not.toMatch(/--ds-crew-/);
     }
   });
 });

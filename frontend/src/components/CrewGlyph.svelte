@@ -10,9 +10,15 @@
    *
    * Every glyph shares the same service-node (a rounded square in
    * `currentColor`); each agent performs its one verb against it. Autonomy is
-   * NEVER encoded in the motion — it lives on the badge/grouping. There is a
-   * single accent (`--crew-accent`, default `--ds-stream`); the node itself is
-   * `currentColor` so the glyph inherits the surrounding text color.
+   * NEVER encoded in the motion — it lives on the badge/grouping.
+   *
+   * Color is per-crew IDENTITY: each `crew-glyph--{verb}` rule sets the glyph's
+   * `color` (which the node + currentColor-filled dots read) AND `--crew-accent`
+   * (the verb accents) to the same crew token — `--ds-crew-{verb}` — so the
+   * whole glyph is monochromatic in that crew's hue (Anchor=blue, Patch=brick
+   * red, Provision=violet, Explore=teal). The unknown verb has no per-crew rule,
+   * so it falls back to inherited ink + the `--ds-stream` accent and is never
+   * misrepresented as belonging to a real crew.
    *
    * Tech (locked): inline SVG + CSS @keyframes only — no Lottie/GIF, no JS rAF.
    * Animations use transforms/opacity. The un-animated (base) CSS state of
@@ -93,15 +99,39 @@
 </svg>
 
 <style>
-  /* One accent for the whole family; the node stays currentColor. Themeable by
-     overriding --crew-accent on the host. ~3s ambient loop with a long rest
-     tail so a panel of four reads calm, not busy. */
+  /* Base/fallback: the unknown verb inherits ink and the stream-blue accent.
+     Known crews override both below. ~3s ambient loop with a long rest tail so a
+     panel of four reads calm, not busy. */
   .crew-glyph {
     --crew-accent: var(--ds-stream);
     --glyph-dur: 3000ms;
     flex-shrink: 0;
     display: block;
   }
+
+  /* Per-crew identity color. Setting `color` recolors the square (its stroke is
+     `currentColor`) and the currentColor-filled detail dots; `--crew-accent`
+     recolors the verb accents to the same hue — so each glyph is monochromatic
+     in its crew's color. A direct `color` here wins over any `color` inherited
+     from the host (e.g. the CrewPicker card), so the glyph stays its crew hue
+     regardless of selected/unselected card text color. */
+  .crew-glyph--drift {
+    color: var(--ds-crew-drift);
+    --crew-accent: var(--ds-crew-drift);
+  }
+  .crew-glyph--upgrade {
+    color: var(--ds-crew-upgrade);
+    --crew-accent: var(--ds-crew-upgrade);
+  }
+  .crew-glyph--provision {
+    color: var(--ds-crew-provision);
+    --crew-accent: var(--ds-crew-provision);
+  }
+  .crew-glyph--explore {
+    color: var(--ds-crew-explore);
+    --crew-accent: var(--ds-crew-explore);
+  }
+
   .crew-glyph :is(rect, line, polyline) {
     stroke-width: 4;
   }

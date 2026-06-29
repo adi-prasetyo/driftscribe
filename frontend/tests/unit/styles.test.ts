@@ -74,6 +74,25 @@ describe('tokens.css — design-system custom properties', () => {
     }
   });
 
+  it('declares the four crew identity colors with their pinned hues', () => {
+    // Identity, not status: one primary hue per crew agent (consumed by
+    // CrewGlyph). Pinned by value, not just name — drifting Anchor off blue or
+    // Patch off green would silently re-skin the glyphs. Kept distinct from the
+    // status accents above so a future status re-tune can't mutate crew identity.
+    const expected: Record<string, string> = {
+      '--ds-crew-drift': '#1f6feb', // Anchor — blue
+      '--ds-crew-upgrade': '#a8432e', // Patch — brick red (terracotta)
+      '--ds-crew-provision': '#6f42c1', // Provision — violet
+      '--ds-crew-explore': '#0f8a8a', // Explore — teal
+    };
+    const stripped = stripComments(tokens);
+    for (const [name, hex] of Object.entries(expected)) {
+      expect(declaresVar(tokens, name), `missing ${name}`).toBe(true);
+      const re = new RegExp(`${name.replace(/-/g, '\\-')}\\s*:\\s*${hex}`, 'i');
+      expect(re.test(stripped), `${name} should be ${hex}`).toBe(true);
+    }
+  });
+
   it('declares a full type scale --ds-fs-1 .. --ds-fs-6', () => {
     for (let i = 1; i <= 6; i++) {
       expect(declaresVar(tokens, `--ds-fs-${i}`), `missing --ds-fs-${i}`).toBe(

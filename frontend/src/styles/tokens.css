@@ -52,6 +52,21 @@
   --ds-stream-surface: #ecf2fd;
   --ds-stream-border: #c4dafb;
 
+  /* --- Crew identity colors --------------------------------------------- */
+  /* One primary hue per crew agent, consumed by CrewGlyph for the looping
+     glyph's square + verb accents. These are IDENTITY, not status, so they are
+     declared separately from the semantic accents above: Anchor's blue happens
+     to match the stream blue today, but reading it through a dedicated crew
+     token keeps a future status re-tune from silently re-skinning the crews.
+     The four hues are spread around the wheel for at-a-glance separation. Patch's
+     brick red is deliberately an earthy terracotta, kept clear of the pinker
+     error/danger signal red (--ds-danger #c5303f) so a Patch glyph never reads
+     as an error state. */
+  --ds-crew-drift: #1f6feb;      /* Anchor — stability / blue */
+  --ds-crew-upgrade: #a8432e;    /* Patch — fix / brick red (terracotta) */
+  --ds-crew-provision: #6f42c1;  /* Provision — builds infra / violet */
+  --ds-crew-explore: #0f8a8a;    /* Explore — read-only scan / teal */
+
   /* neutral chip */
   --ds-neutral-surface: #efeeea;
 
