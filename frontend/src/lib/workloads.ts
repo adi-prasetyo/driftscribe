@@ -87,6 +87,20 @@ export const WORKLOADS: WorkloadOption[] = (
   label: `${e.name} — ${e.descriptor}`,
 }));
 
+/** value → crew display name, e.g. `drift` → `Anchor`. Built once from the
+ *  catalog. */
+const CREW_NAME = new Map<string, string>(WORKLOADS.map((w) => [w.value, w.name]));
+
+/**
+ * The operator-facing crew name for a workload value (`drift` → `Anchor`).
+ * Falls back to the raw value, then to `"Crew"`, so an unknown/absent workload
+ * never renders blank. Single source of truth for the byline (ConversationThread)
+ * and the conversation search predicate.
+ */
+export function crewName(workload: string | undefined | null): string {
+  return (workload && CREW_NAME.get(workload)) || workload || 'Crew';
+}
+
 /**
  * Composer prefill (Phase-4 adopt-button bridge): App sets text + workload from an
  * Adopt click and ChatForm applies it WITHOUT sending. `epoch` lets the same/another

@@ -1,5 +1,24 @@
 import { describe, it, expect } from 'vitest';
-import { WORKLOADS, type Workload, type WorkloadOption, type WorkloadGroup, askAboutPrPrefill, askPrFromSearch, initialChatPrefill } from '../../src/lib/workloads';
+import { WORKLOADS, type Workload, type WorkloadOption, type WorkloadGroup, askAboutPrPrefill, askPrFromSearch, initialChatPrefill, crewName } from '../../src/lib/workloads';
+
+describe('crewName', () => {
+  it('maps each catalog value to its display name', () => {
+    for (const w of WORKLOADS) {
+      expect(crewName(w.value)).toBe(w.name);
+    }
+  });
+
+  it('maps drift → Anchor (the autonomous crew)', () => {
+    expect(crewName('drift')).toBe('Anchor');
+  });
+
+  it('falls back to the raw value for an unknown workload, then "Crew" when absent', () => {
+    expect(crewName('mystery')).toBe('mystery');
+    expect(crewName(undefined)).toBe('Crew');
+    expect(crewName(null)).toBe('Crew');
+    expect(crewName('')).toBe('Crew');
+  });
+});
 
 // The crew picker contract, derived from frontend/src/lib/workloads.catalog.json
 // (the single source the backend cross-surface test also reads). The option

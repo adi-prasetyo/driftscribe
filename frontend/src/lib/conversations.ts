@@ -5,8 +5,47 @@
 // deterministic under test (no hidden Date.now()).
 
 import type { Conversation } from './types';
+import { normalizeForSearch } from './format';
+import { crewName } from './workloads';
 
 export type ConversationBucket = 'Today' | 'Yesterday' | 'Older';
+
+/**
+ * Does a conversation match a free-text query? Case- and separator-insensitive
+ * (via `normalizeForSearch`) substring over the title, the raw workload value,
+ * and the crew display name — so `anchor` finds a `drift`-crew chat and `drift`
+ * finds it too. An empty / whitespace-only query matches everything (the modal
+ * shows the full list until the operator types).
+ */
+export function matchesConversation(c: Conversation, query: string): boolean {
+  const q = normalizeForSearch(query);
+  if (!q) return true;
+  const hay = normalizeForSearch([c.title, c.workload, crewName(c.workload)].join(' '));
+  return hay.includes(q);
+}
+
+/**
+ * Cap the rail to the newest `max` conversations, but never hide the one the
+ * operator currently has open: if `activeId` falls outside the newest `max`, it
+ * is appended so the active-row affordance survives (e.g. after resuming an
+ * older chat from the search modal). The input is already newest-first
+ * (backend contract); null/undefined entries are dropped. Returned in
+ * newest-first order so the caller can bucket it unchanged.
+ */
+export function capConversations(
+  conversations: ReadonlyArray<Conversation | null | undefined> | null | undefined,
+  max: number,
+  activeId: string | null,
+): Conversation[] {
+  const list = (conversations ?? []).filter((c): c is Conversation => c != null);
+  if (list.length <= max) return list;
+  const top = list.slice(0, max);
+  if (activeId && !top.some((c) => c.conversation_id === activeId)) {
+    const active = list.find((c) => c.conversation_id === activeId);
+    if (active) return [...top, active];
+  }
+  return top;
+}
 
 export interface ConversationGroup {
   label: ConversationBucket;

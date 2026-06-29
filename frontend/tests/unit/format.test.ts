@@ -1,5 +1,28 @@
 import { describe, it, expect } from 'vitest';
-import { fmtTokens, shortTrace, fmtPreview, fmtWhen, shortSha, iacStatusLabel, iacStatusHelp, decisionActionLabel, decisionActionHelp, iacApplyMeta, appliedAtDiffersMaterially } from '../../src/lib/format';
+import { fmtTokens, shortTrace, fmtPreview, fmtWhen, shortSha, iacStatusLabel, iacStatusHelp, decisionActionLabel, decisionActionHelp, iacApplyMeta, appliedAtDiffersMaterially, normalizeForSearch } from '../../src/lib/format';
+
+describe('normalizeForSearch', () => {
+  it('lowercases', () => {
+    expect(normalizeForSearch('IaC Apply')).toBe('iac apply');
+  });
+
+  it('collapses every run of non-alphanumerics to a single space and trims', () => {
+    expect(normalizeForSearch('  iac_apply  ')).toBe('iac apply');
+    expect(normalizeForSearch('applied & merged')).toBe('applied merged');
+    expect(normalizeForSearch('PR #168')).toBe('pr 168');
+    expect(normalizeForSearch('waiting_for_rebake')).toBe('waiting for rebake');
+  });
+
+  it('preserves Unicode letters and digits (Japanese stays searchable)', () => {
+    expect(normalizeForSearch('ドリフト 確認')).toBe('ドリフト 確認');
+  });
+
+  it('returns "" for null/undefined/empty/whitespace', () => {
+    expect(normalizeForSearch(null)).toBe('');
+    expect(normalizeForSearch(undefined)).toBe('');
+    expect(normalizeForSearch('   ')).toBe('');
+  });
+});
 
 describe('fmtTokens', () => {
   it('formats a present total with comma grouping and " tok" suffix', () => {

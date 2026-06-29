@@ -7,7 +7,8 @@
 // component decides presentation.
 
 import type { Decision } from './types';
-import { iacApplyMeta } from './format';
+import { iacApplyMeta, decisionActionLabel, normalizeForSearch } from './format';
+import { crewName } from './workloads';
 import { iacPrHref } from './approval';
 import type { IconName } from './icons';
 
@@ -179,4 +180,74 @@ export function lifecycleSummaryLabel(earlier: ReadonlyArray<Decision>): string 
     .map(([label, k]) => (k > 1 ? `${label} ×${k}` : label))
     .join(', ');
   return `${n} earlier ${n === 1 ? 'step' : 'steps'} · ${composition}`;
+}
+
+/**
+ * Does a single decision match a free-text query? Case- and separator-insensitive
+ * (via `normalizeForSearch`) substring over the fields the operator can see or
+ * reason about: the PR title, the PR number in every form it's displayed/typed
+ * (`PR #168`, `168`, `#168`), the action (raw `iac_apply` + the friendly
+ * `decisionActionLabel`), the crew (raw workload + display name), and the status
+ * (raw `apply_status`/`merge_state` + the friendly `iacApplyMeta` label, so
+ * `merge pending` / `applied merged` match). Empty query → matches everything.
+ */
+export function matchesDecision(d: Decision, query: string): boolean {
+  const q = normalizeForSearch(query);
+  if (!q) return true;
+  const pr = typeof d.pr_number === 'number' ? d.pr_number : null;
+  const workload = typeof d.workload === 'string' ? d.workload : undefined;
+  const parts = [
+    d.pr_title,
+    pr !== null ? `PR #${pr}` : null,
+    d.action,
+    decisionActionLabel(d.action),
+    workload,
+    workload ? crewName(workload) : null,
+    typeof d.apply_status === 'string' ? d.apply_status : null,
+    typeof d.merge_state === 'string' ? d.merge_state : null,
+    iacApplyMeta(d.apply_status, d.merge_state).label,
+  ];
+  return normalizeForSearch(parts.filter((p) => typeof p === 'string' && p).join(' ')).includes(q);
+}
+
+/**
+ * Does a rail item match a query? A `single` defers to its decision; a `group`
+ * matches when ANY of its folded docs match — so a status-only query (e.g.
+ * `failed`) that only an earlier lifecycle doc carries still surfaces the group
+ * (its `<summary>` composition shows that status). PR title/number are shared
+ * across a group's docs, so those queries always hit the visible face too.
+ */
+export function railItemMatches(item: RailItem, query: string): boolean {
+  if (normalizeForSearch(query) === '') return true;
+  return item.kind === 'single'
+    ? matchesDecision(item.d, query)
+    : item.docs.some((d) => matchesDecision(d, query));
+}
+
+/**
+ * Cap the rail to the newest `max` items, but never hide the one whose trace the
+ * operator currently has open: if the active item falls outside the newest
+ * `max`, it is appended so the active-row affordance survives (mirrors
+ * `capConversations`). `items` is already newest-first (`groupRailDecisions`
+ * preserves list order). An item is active when it (single) or any of its folded
+ * docs (group) carries `activeTraceId`.
+ */
+export function capRailItems(
+  items: RailItem[],
+  max: number,
+  activeTraceId: string | null,
+): RailItem[] {
+  if (items.length <= max) return items;
+  const top = items.slice(0, max);
+  if (activeTraceId) {
+    const isActive = (it: RailItem): boolean =>
+      it.kind === 'single'
+        ? it.d.trace_id === activeTraceId
+        : it.docs.some((d) => d.trace_id === activeTraceId);
+    if (!top.some(isActive)) {
+      const active = items.find(isActive);
+      if (active) return [...top, active];
+    }
+  }
+  return top;
 }

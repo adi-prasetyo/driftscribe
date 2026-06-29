@@ -2,9 +2,71 @@ import { describe, it, expect } from 'vitest';
 import {
   bucketFor,
   groupConversations,
+  matchesConversation,
+  capConversations,
   type ConversationGroup,
 } from '../../src/lib/conversations';
 import type { Conversation } from '../../src/lib/types';
+
+function fullConv(over: Partial<Conversation>): Conversation {
+  return { conversation_id: 'c', workload: 'drift', title: 'untitled', ...over };
+}
+
+describe('matchesConversation', () => {
+  it('matches on the title (case-insensitive)', () => {
+    const c = fullConv({ title: 'Investigate the Storefront bucket' });
+    expect(matchesConversation(c, 'storefront')).toBe(true);
+    expect(matchesConversation(c, 'STOREFRONT')).toBe(true);
+    expect(matchesConversation(c, 'database')).toBe(false);
+  });
+
+  it('matches on the raw workload value AND the crew display name', () => {
+    const c = fullConv({ workload: 'drift', title: 'x' });
+    expect(matchesConversation(c, 'drift')).toBe(true);
+    expect(matchesConversation(c, 'anchor')).toBe(true); // drift → Anchor
+  });
+
+  it('is separator-insensitive', () => {
+    const c = fullConv({ title: 'check adopt_probe_topic' });
+    expect(matchesConversation(c, 'adopt probe')).toBe(true);
+  });
+
+  it('an empty / whitespace query matches everything', () => {
+    const c = fullConv({ title: 'anything' });
+    expect(matchesConversation(c, '')).toBe(true);
+    expect(matchesConversation(c, '   ')).toBe(true);
+  });
+});
+
+describe('capConversations', () => {
+  const list: Conversation[] = Array.from({ length: 8 }, (_, i) =>
+    fullConv({ conversation_id: `c${i}`, title: `t${i}` }),
+  ); // newest-first c0..c7
+
+  it('returns the list unchanged when it fits within max', () => {
+    expect(capConversations(list.slice(0, 3), 5, null)).toHaveLength(3);
+  });
+
+  it('keeps only the newest max when nothing active is hidden', () => {
+    const out = capConversations(list, 5, null);
+    expect(out.map((c) => c.conversation_id)).toEqual(['c0', 'c1', 'c2', 'c3', 'c4']);
+  });
+
+  it('appends the active conversation when it falls outside the cap', () => {
+    const out = capConversations(list, 5, 'c7');
+    expect(out.map((c) => c.conversation_id)).toEqual(['c0', 'c1', 'c2', 'c3', 'c4', 'c7']);
+  });
+
+  it('does not duplicate the active conversation when it is already visible', () => {
+    const out = capConversations(list, 5, 'c2');
+    expect(out.map((c) => c.conversation_id)).toEqual(['c0', 'c1', 'c2', 'c3', 'c4']);
+  });
+
+  it('drops null entries and tolerates null/undefined input', () => {
+    expect(capConversations([null, undefined], 5, null)).toEqual([]);
+    expect(capConversations(null, 5, null)).toEqual([]);
+  });
+});
 
 // A fixed "now": 2026-06-27 15:00 local. All cases are expressed relative to it.
 const NOW = new Date(2026, 5, 27, 15, 0, 0);
