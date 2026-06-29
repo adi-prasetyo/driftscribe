@@ -175,6 +175,137 @@ def test_no_plan_comment_renders_run_c2(_configured, monkeypatch):
     assert 'name="form_token"' not in body
 
 
+# --- nonexistent-PR vs plan-pending disambiguation (dogfooding papercut) -------
+# The no-plan render used to show the identical "no plan built yet" copy whether
+# the PR existed (plan pending) or the PR number was a phantom (e.g. typing
+# /iac-approvals/200 when the newest PR is #173). The GET now does a fail-soft
+# PR-existence probe ONLY on the no-plan path and branches the copy.
+
+
+class _Status404(Exception):
+    """A PyGithub-shaped 404 (UnknownObjectException carries ``.status``)."""
+
+    status = 404
+
+
+class _Status500(Exception):
+    status = 500
+
+
+class _FakePR:
+    def __init__(self, number: int) -> None:
+        self.number = number
+
+
+class _FakeRepo:
+    """Drives ``get_pull`` / ``get_pulls`` for the existence probe.
+
+    ``pr_state``: True → PR resolves; False → confirmed 404; "error" → a non-404
+    failure (undeterminable). ``highest`` is the newest-PR number returned by
+    ``get_pulls`` (only consulted on the confirmed-404 path).
+    """
+
+    def __init__(self, *, pr_state, highest: int = 173) -> None:
+        self._pr_state = pr_state
+        self._highest = highest
+
+    def get_pull(self, number):
+        if self._pr_state is True:
+            return _FakePR(number)
+        if self._pr_state is False:
+            raise _Status404("not found")
+        raise _Status500("upstream error")
+
+    def get_pulls(self, **kwargs):
+        return [_FakePR(self._highest)]
+
+
+def _patch_no_plan_with_repo(monkeypatch, repo):
+    """No C2 comment (view=None) but a real repo seam for the existence probe."""
+    monkeypatch.setattr("agent.main.get_repo", lambda token, r: repo)
+    import agent.main as main_mod
+
+    monkeypatch.setattr(
+        main_mod.iac_artifacts, "find_latest_c2_comment", lambda r, pr: None
+    )
+
+
+def test_nonexistent_pr_renders_distinct_message(_configured, monkeypatch):
+    _patch_no_plan_with_repo(monkeypatch, _FakeRepo(pr_state=False, highest=173))
+    client = TestClient(app)
+    resp = client.get("/iac-approvals/200")
+    assert resp.status_code == 200
+    body = resp.text
+    # The phantom-PR copy, NOT the plan-pending copy.
+    assert "does not exist" in body
+    assert "The most recent pull request is #173" in body
+    assert "No plan has been built for PR" not in body
+    assert 'data-testid="approve-button"' not in body
+    assert 'name="form_token"' not in body
+
+
+def test_nonexistent_pr_omits_hint_when_newest_unreadable(_configured, monkeypatch):
+    repo = _FakeRepo(pr_state=False)
+
+    def _boom(**kwargs):
+        raise _Status500("cannot list")
+
+    repo.get_pulls = _boom  # type: ignore[assignment]
+    _patch_no_plan_with_repo(monkeypatch, repo)
+    client = TestClient(app)
+    resp = client.get("/iac-approvals/200")
+    assert resp.status_code == 200
+    body = resp.text
+    assert "does not exist" in body
+    assert "most recent pull request" not in body  # hint gracefully omitted
+
+
+def test_real_pr_without_plan_still_shows_pending(_configured, monkeypatch):
+    _patch_no_plan_with_repo(monkeypatch, _FakeRepo(pr_state=True))
+    client = TestClient(app)
+    resp = client.get("/iac-approvals/168")
+    assert resp.status_code == 200
+    body = resp.text
+    # Real PR, no plan yet → keep the existing plan-pending copy unchanged.
+    assert "No plan has been built for PR" in body
+    assert "does not exist" not in body
+
+
+def test_pr_existence_undeterminable_falls_back_to_pending(_configured, monkeypatch):
+    _patch_no_plan_with_repo(monkeypatch, _FakeRepo(pr_state="error"))
+    client = TestClient(app)
+    resp = client.get("/iac-approvals/999")
+    assert resp.status_code == 200
+    body = resp.text
+    # A non-404 probe failure must not claim the PR is missing — fall back.
+    assert "No plan has been built for PR" in body
+    assert "does not exist" not in body
+
+
+def test_iac_pr_existence_pins_real_pygithub_404(_configured, monkeypatch):
+    """The .status predicate must hold against the REAL PyGithub 404 type.
+
+    The _FakeRepo tests use a hand-rolled `.status = 404`; this one raises an
+    actual `github.UnknownObjectException` so a future PyGithub change to that
+    exception's shape would break here rather than silently in production.
+    """
+    from github import UnknownObjectException
+
+    from agent.main import _iac_pr_existence
+
+    class _Repo404:
+        def get_pull(self, number):
+            raise UnknownObjectException(404, None, None)
+
+        def get_pulls(self, **kwargs):
+            return [_FakePR(173)]
+
+    monkeypatch.setattr("agent.main.get_repo", lambda token, r: _Repo404())
+    exists, highest = _iac_pr_existence(get_settings(), 200)
+    assert exists is False
+    assert highest == 173
+
+
 def test_denylist_tripped_suppresses_approve(_configured, monkeypatch):
     view = _view(denylist_violations=[("protect-coordinator", "deletes driftscribe-agent")])
     _patch_resolve(monkeypatch, ref=_ref(), view=view)

@@ -3810,6 +3810,55 @@ def _resolve_iac_plan(
     return (ref, view)
 
 
+def _iac_pr_existence(s: Settings, pr_number: int) -> tuple[bool | None, int | None]:
+    """Best-effort: does ``pr_number`` exist, and what is the repo's newest PR?
+
+    Called ONLY on the no-plan render path (``view is None``) so the approval
+    page can tell a genuinely nonexistent PR number apart from a real PR whose
+    C2 plan simply has not been built yet — otherwise the two are
+    indistinguishable (a real dogfooding papercut: ``/iac-approvals/200``
+    rendered "no plan built yet" for a PR that never existed). Returns
+    ``(pr_exists, highest_pr)``:
+
+    - ``pr_exists``: ``True`` if the PR resolves, ``False`` on a confirmed 404,
+      ``None`` when undeterminable (GitHub unconfigured, auth/network/SDK
+      error) — the caller falls back to the existing plan-pending copy on ``None``.
+    - ``highest_pr``: the repo's most-recently-created PR number (a friendly
+      "the newest PR is #M" hint), populated ONLY on a confirmed 404, or
+      ``None`` if it can't be read.
+
+    Fail-soft on every path (the GET must stay always-200 / probe-safe): any
+    error degrades to ``(None, None)`` and today's generic message. The newest-PR
+    lookup runs ONLY for the confirmed-404 case, so the common plan-pending
+    render adds just one GitHub round-trip and the approvable path adds none.
+    """
+    if not (s.github_token and s.github_repo):
+        return (None, None)
+    try:
+        repo = get_repo(s.github_token, s.github_repo)
+    except Exception:  # noqa: BLE001 — undeterminable existence → generic copy
+        log.warning("iac_pr_existence_repo_failed", extra={"pr_number": pr_number})
+        return (None, None)
+    try:
+        repo.get_pull(pr_number)
+        return (True, None)  # exists; the newest-PR hint is only for the 404 case
+    except Exception as e:  # noqa: BLE001 — 404 = confirmed-missing; else undeterminable
+        if getattr(e, "status", None) != 404:
+            log.warning(
+                "iac_pr_existence_lookup_failed", extra={"pr_number": pr_number}
+            )
+            return (None, None)
+    # Confirmed 404 → nonexistent PR number. Best-effort newest-PR hint so the
+    # page can point the operator at a real number instead of a dead guess.
+    highest: int | None = None
+    try:
+        newest = repo.get_pulls(state="all", sort="created", direction="desc")
+        highest = int(newest[0].number)
+    except Exception:  # noqa: BLE001 — the hint is optional; never break the page
+        highest = None
+    return (False, highest)
+
+
 def _iac_artifact_consistent(
     ref: "iac_artifacts.C2CommentRef | None",
     view: "iac_artifacts.IacPlanView",
@@ -3881,6 +3930,20 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
     """
     s = get_settings()
     ref, view = _resolve_iac_plan(s, pr_number)
+
+    # No-plan render path: tell a nonexistent PR number apart from a real PR
+    # whose plan has not been built yet (dogfooding papercut — /iac-approvals/200
+    # showed "no plan built yet" for a PR that never existed). Best-effort, only
+    # on this rare path so the normal approve path adds no GitHub round-trips;
+    # fail-soft → (None, None) keeps the GET always-200 and the generic copy.
+    # `ref is None` narrows to the genuine no-marker cases (no comment found, or a
+    # nonexistent PR — both yield ref=None); the rare (ref, None) artifact-load
+    # failure already has a marker comment for this number, so a probe would be
+    # wasted (it would just render the same generic copy on this path).
+    pr_exists: bool | None = None
+    highest_pr: int | None = None
+    if view is None and ref is None:
+        pr_exists, highest_pr = _iac_pr_existence(s, pr_number)
 
     can_approve = False
     reason_blocked = ""
@@ -4102,6 +4165,10 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
     ctx = {
         "pr_number": pr_number,
         "view": view,
+        # No-plan branch only (view is None): pr_exists=False → "PR doesn't exist"
+        # copy + the newest-PR hint; True/None → the existing plan-pending copy.
+        "pr_exists": pr_exists,
+        "highest_pr": highest_pr,
         "form_token": form_token,
         "can_approve": can_approve,
         "reason_blocked": reason_blocked,
