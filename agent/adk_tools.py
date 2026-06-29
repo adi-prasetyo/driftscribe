@@ -854,6 +854,39 @@ def _fetch_main_iac_tree(target_repo: str) -> dict[str, str]:
     return result
 
 
+def find_open_adopt_pr_for_resource(asset_type: str, resource_name: str) -> int | None:
+    """PR number of an OPEN ``driftscribe-infra`` PR already adopting
+    ``(asset_type, resource_name)``, or None.
+
+    Best-effort: any GitHub error returns None (fail-OPEN — the UI guard is the
+    primary defense; never block provisioning on a probe failure). Matching on
+    resource IDENTITY (not the raw import-id string) is the semantically-correct
+    dedup: a second adoption of the same resource is exactly the dupe we refuse.
+    Reuses the same issues-by-label listing + pure parser as the
+    ``/infra/pending-approvals`` endpoint.
+    """
+    from driftscribe_lib.pending_approvals import build_pending_approval
+
+    if not asset_type or not resource_name:
+        return None
+    try:
+        s = get_settings()
+        if not s.github_repo:
+            return None  # GitHub not configured → nothing to probe (fail-open)
+        repo = get_repo(s.github_token, s.github_repo)
+        for issue in repo.get_issues(state="open", labels=["driftscribe-infra"]):
+            if getattr(issue, "pull_request", None) is None:
+                continue
+            entry = build_pending_approval(
+                issue.number, issue.title or "", issue.html_url or "", issue.body or ""
+            )
+            if entry["asset_type"] == asset_type and entry["resource_name"] == resource_name:
+                return issue.number
+    except Exception:  # noqa: BLE001 — fail-open: a probe failure must never block provisioning
+        _log.warning("open_adopt_pr_dupe_check_failed", exc_info=True)
+    return None
+
+
 def propose_adoption_tool(
     resource_type: str,
     name: str,
@@ -926,6 +959,27 @@ def propose_adoption_tool(
     conflict = preflight_conflicts(r, iac_files, s.gcp_project)
     if conflict is not None:
         return {"status": "rejected", "reason": conflict}
+
+    # Open-PR dupe guard (defense in depth alongside the Infra-panel UI guard):
+    # preflight_conflicts above only catches a resource already declared on MERGED
+    # main; this refuses a second adoption while an earlier adoption PR is still
+    # OPEN (the dupe-PR footgun). Fail-open: find_open_adopt_pr_for_resource
+    # returns None on any GitHub error, so a hiccup never blocks provisioning.
+    from driftscribe_lib.pending_approvals import import_id_to_resource
+
+    resolved = import_id_to_resource(r.import_id)
+    if resolved is not None:
+        existing_pr = find_open_adopt_pr_for_resource(*resolved)
+        if existing_pr is not None:
+            return {
+                "status": "rejected",
+                "reason": (
+                    f"An adoption PR for this resource is already open: PR #{existing_pr}. "
+                    f"Review and approve it at /iac-approvals/{existing_pr} instead of "
+                    "opening a duplicate. (Opening a second PR for the same resource "
+                    "would create a conflicting adoption.)"
+                ),
+            }
 
     result = _open_iac_pr_and_notify(
         [{"path": r.path, "content": r.content}], r.title, r.body
