@@ -271,7 +271,7 @@
         <summary>C2 plan artifact (c2.v1) — provenance &amp; hashes</summary>
         <div class="ds-disclosure-body">
           <div class="ds-field"><span class="ds-label ds-help-term" title="Artifact format version. The apply worker rejects any schema it does not recognize.">schema_version</span> <code class="ds-code">{{ view.metadata.get("schema_version", "") }}</code></div>
-          <div class="ds-field"><span class="ds-label ds-help-term" title="The owner/repo this plan was built for, recorded in the HMAC-signed plan metadata.">repo</span> <code class="ds-code">{{ view.metadata.get("repo", "") }}</code></div>
+          <div class="ds-field"><span class="ds-label ds-help-term" title="The owner/repo this plan was built for, recorded in the plan metadata and included in the HMAC-signed approval payload.">repo</span> <code class="ds-code">{{ view.metadata.get("repo", "") }}</code></div>
           <div class="ds-field"><span class="ds-label ds-help-term" title="The pull request this plan belongs to.">pr_number</span> <code class="ds-code">{{ view.metadata.get("pr_number", "") }}</code></div>
           <div class="ds-field"><span class="ds-label ds-help-term" title="The exact Git commit this plan was built from.">head_sha</span> <code class="ds-code">{{ view.metadata.get("head_sha", "") }}</code></div>
           <div class="ds-field"><span class="ds-label ds-help-term" title="The base-branch commit at plan time, so the diff can be recomputed deterministically.">base_sha</span> <code class="ds-code">{{ view.metadata.get("base_sha", "") }}</code></div>
