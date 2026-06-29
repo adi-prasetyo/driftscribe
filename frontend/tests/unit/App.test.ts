@@ -14,6 +14,8 @@ beforeEach(() => {
   window.localStorage.clear();
   window.sessionStorage.clear();
   window.HTMLElement.prototype.scrollIntoView = vi.fn();
+  // openTrace scrolls the window to top; jsdom doesn't implement scrollTo.
+  window.scrollTo = vi.fn() as unknown as typeof window.scrollTo;
   history.replaceState(null, '', '/');
   vi.stubGlobal(
     'fetch',
@@ -78,10 +80,11 @@ describe('App — tour wiring (smoke)', () => {
   });
 });
 
-describe('App — open-trace scrolls the historical region into view', () => {
-  // The historical replay renders at the BOTTOM of the chat column (below the
-  // estate panel + composer), so without this the click looks dead. The button
-  // is in the left rail; the banner it scrolls to is #historical-badge.
+describe('App — open-trace puts the replay at the top and scrolls the window up', () => {
+  // The historical replay now renders at the TOP of the chat column, and
+  // openTrace scrolls the WINDOW to top (top:0) to reveal it — no jump down to
+  // the bottom. The button is in the left rail; the replay region is
+  // #historical-badge.
   function stubFetchWithIacDecision(): void {
     const iac = {
       decision_id: 'd1',
@@ -114,11 +117,11 @@ describe('App — open-trace scrolls the historical region into view', () => {
     );
   }
 
-  it('clicking open-trace scrolls #historical-badge into view (block:start, reduced-motion → auto)', async () => {
+  it('clicking open-trace scrolls the window to top (top:0, reduced-motion → auto) and renders the replay above the composer', async () => {
     window.sessionStorage.setItem('driftscribe_token', 'tok');
     stubFetchWithIacDecision();
     const scrollSpy = vi.fn();
-    window.HTMLElement.prototype.scrollIntoView = scrollSpy;
+    window.scrollTo = scrollSpy as unknown as typeof window.scrollTo;
 
     const { findByTestId, getByTestId } = render(App);
 
@@ -129,21 +132,24 @@ describe('App — open-trace scrolls the historical region into view', () => {
     // The banner enters the DOM (proves historicalActive flipped + tick flushed).
     await waitFor(() => expect(getByTestId('historical-banner')).toBeTruthy());
 
-    // The scroll fired with the historical-region options. setup.ts forces
-    // matchMedia('reduce') → matches:true, so prefersReducedMotion() picks 'auto'.
+    // The window scrolled to the top. setup.ts forces matchMedia('reduce') →
+    // matches:true, so prefersReducedMotion() picks 'auto'.
     await waitFor(() => expect(scrollSpy).toHaveBeenCalled());
-    // Exactly one scroll per open-trace — locks mock.contexts.at(-1) to the one
-    // expected call so a future second scroll on this path can't make the
-    // receiver assertion silently test the wrong call.
+    // Exactly one scroll per open-trace.
     expect(scrollSpy).toHaveBeenCalledTimes(1);
-    expect(scrollSpy).toHaveBeenCalledWith({ behavior: 'auto', block: 'start' });
-    // ...and it scrolled the historical banner (scrollIntoView's `this` is the
-    // element it was invoked on).
-    const banner = document.getElementById('historical-badge');
-    expect(scrollSpy.mock.contexts.at(-1)).toBe(banner);
+    expect(scrollSpy).toHaveBeenCalledWith({ top: 0, behavior: 'auto' });
     // Focus follows the scroll so keyboard/SR users land in the replay region
     // instead of being stranded on the rail button they just clicked.
+    const banner = document.getElementById('historical-badge');
     expect(document.activeElement).toBe(banner);
+    // The replay region renders ABOVE the composer in document order — i.e. at
+    // the top of the chat column, not below it.
+    const composer = document.getElementById('chat-form');
+    expect(banner).toBeTruthy();
+    expect(composer).toBeTruthy();
+    expect(
+      banner!.compareDocumentPosition(composer!) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 });
 
