@@ -36,7 +36,7 @@ There is **one public service** (the *coordinator*) and **several private worker
   else.** Workers are private — a human can't call them directly, only the coordinator can.
 
 Why split it this way? Because the LLM is the untrustworthy part. If a prompt-injection attack
-talks the agent into "delete everything," it doesn't matter — the coordinator has no tool that
+talks the LLM into "delete everything," it doesn't matter: the coordinator has no tool that
 can, and the workers will refuse a request aimed at the wrong target. **The danger is contained
 by architecture, not by hoping the LLM behaves.**
 
@@ -59,35 +59,46 @@ by architecture, not by hoping the LLM behaves.**
     tool; the coordinator calls it only after a human approves the plan)
 ```
 
+> **Three words to keep straight.** *Coordinator* is the one public service you
+> just met: it reasons and proposes. *Worker* is a private, single-purpose service
+> that performs one narrow action. *Crew* is the operator-facing name for one of
+> the four jobs the coordinator can do (Anchor, Patch, Provision, Explore). Each
+> crew is one *workload*: its own prompt and its own short tool list.
+
 ---
 
 ## 3. What it actually does (the "workloads")
 
-A **workload** is one job the agent knows how to do: its own prompt, its own tool set, its own
+A **workload** is one job the coordinator knows how to do: its own prompt, its own tool set, its own
 workers. The coordinator routes each request to the right workload, and the LLM *only ever sees
 the tools for that one workload* — it can't reach across.
 
-Four workloads exist today, organised as a crew:
+Four workloads exist today, each shown to operators as a crew:
 
-1. **Anchor** (the `drift` workload) — the only one that runs **autonomously**. A live Eventarc
+The four read as a stewardship loop around one estate: **Provision** stands
+infrastructure up, **Anchor** guards what's live (the only one that runs on its
+own), **Patch** keeps it current, and **Explore** explains it. You provision
+once; Anchor keeps watch after the handoff.
+
+1. **Anchor** — the only one that runs **autonomously**. A live Eventarc
    trigger fires whenever the `payment-demo` Cloud Run service config changes, waking Anchor
    automatically. Anchor watches the live env vars against a written "ops contract"
    (`demo/ops-contract.yaml`). If reality has drifted from the contract, it can: do nothing, open
    a docs PR, file a drift issue, or **roll back** the service — and a rollback always requires a
    human to approve via a signed, one-time, 15-minute link.
 
-2. **Patch** (the `upgrade` workload) — watches a demo `package.json` against GitHub's security
+2. **Patch** — watches a demo `package.json` against GitHub's security
    Advisory DB. If a dependency has a known vulnerability, it can open an **upgrade PR** bumping
    it. A strict non-LLM validator runs before any write: no downgrades, no new deps, only
    patch/minor jumps, the advisory URL must be real. Major version bumps are refused and routed to
    a human. Patch runs **on demand** from chat; its autonomous trigger is future work and is not
    wired up in this build.
 
-3. **Explore** (the `explore` workload) — an on-demand, **chat-only** workload that is strictly
+3. **Explore** — an on-demand, **chat-only** workload that is strictly
    read-only: it can read your *whole* GCP project's resources (via Cloud Asset Inventory) and the
    live resource map shown in the UI. Zero mutation tools — not even "notify."
 
-4. **Provision** (the `provision` workload) — an on-demand, **chat-only** workload that can
+4. **Provision** — an on-demand, **chat-only** workload that can
    **author OpenTofu/Terraform changes**, but only as a *proposal*: its one mutation tool writes
    `iac/`-only HCL and opens a single PR through the `tofu-editor` worker. It **never touches live
    infrastructure.** The actual `tofu apply` happens **downstream, in a separate pipeline**, behind
@@ -104,7 +115,7 @@ Four workloads exist today, organised as a crew:
 
 DriftScribe stacks several independent safety nets. Any one failing doesn't open the door.
 
-- **Layer 0 — the agent's toolbox is a fixed, short list.** The LLM can only call tools on an
+- **Layer 0 — the LLM-facing toolbox is a fixed, short list.** The LLM can only call tools on an
   explicit allowlist. There is no "run shell," no "make any HTTP request," no raw SDK access.
   Tests literally fail the build if a tool name or parameter looks dangerous (`shell`, `exec`,
   `delete`, `raw_url`, …). And each workload only gets its slice of the list.
@@ -120,9 +131,10 @@ DriftScribe stacks several independent safety nets. Any one failing doesn't open
   no — the worker's *identity is the target*, the request body can't change it.
 
 - **Layer 3 — humans in the loop for the dangerous things.** Rollbacks and infra applies don't
-  happen because the agent decided so. The agent mints a signed approval link; a human opens it,
-  reviews the plan, and clicks Approve; only then does the worker act. The approval is one-time,
-  time-limited, and verified by the *worker* (not the coordinator) — so even a compromised
+  happen because the coordinator decided so. The approval credential is minted and verified by the
+  acting worker, not the coordinator; the coordinator only shows the approval UI. A human reviews
+  the plan and clicks Approve, and only then does the worker act. The approval is one-time and
+  time-limited, so even a compromised
   coordinator can't fake or force an execution.
 
 Two separate auth mechanisms keep the boundaries clean: humans reach the coordinator with a
@@ -182,7 +194,7 @@ validator gates) → one locked worker executes.**
 - **It provisions its own demo.** The infra-graph / checkout demo was actually built *by
   DriftScribe itself* going through its own author → approve → apply loop — the agent dogfoods
   its own infrastructure pipeline.
-- **Chat has memory, and so does the crew.** Conversations with each crew are saved and
+- **Chat has memory, and so do the crews.** Conversations with each crew are saved and
   resumable from a history rail in the UI, and each thread stays with the crew that started it.
   Crews can also read redacted snippets of each other's recent chats as shared, read-only "team
   memory," so context carries across the team.

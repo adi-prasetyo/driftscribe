@@ -74,14 +74,16 @@ export function welcomeLine(graph: InfraGraph | null): string {
     ? `the GCP project ${graph.project}`
     : 'your GCP project';
   return (
-    `DriftScribe is a small crew watching ${subject}. Anchor runs on its ` +
-    'own. It keeps your live Cloud Run config true to its contract, reacting ' +
-    'the moment something changes. Three more wait for you to ask: Patch keeps ' +
-    'your dependencies current, Provision authors infrastructure changes, and ' +
-    'Explore answers questions read-only, including how DriftScribe itself ' +
-    'works. Infrastructure applies and rollbacks ' +
-    'always wait for your approval. Only routine dependency updates can run ' +
-    'end-to-end, and only at the Propose + Apply setting.'
+    `DriftScribe is a small crew keeping ${subject} honest, from creation ` +
+    'onward, and it works as a loop. Provision stands infrastructure up: you ' +
+    'describe a change, it opens the IaC pull request. Anchor then guards what ' +
+    'is live. It runs on its own, the only crew that does, watching your Cloud ' +
+    'Run config and reacting the moment it drifts from its contract. Patch ' +
+    'keeps your dependencies current, and Explore answers questions read-only, ' +
+    'including how DriftScribe itself works. Provision, Patch, and Explore ' +
+    'wait for you to ask. Infrastructure applies and rollbacks always wait for ' +
+    'your approval. Only routine dependency updates can run end-to-end, and ' +
+    'only at the Propose + Apply setting.'
   );
 }
 

@@ -46,7 +46,7 @@ const FIXTURE: Capabilities = {
       name: 'upgrade',
       display_name: 'Patch',
       descriptor: 'dependencies',
-      description: 'Watch the repo\'s package.json for outdated dependencies (or vulnerable versions per advisory feeds) and propose upgrade PRs.',
+      description: 'Checks the repo\'s package.json on demand for outdated dependencies (or vulnerable versions per advisory feeds) and proposes upgrade PRs.',
       // Phase 17.G: Patch is NOT autonomous — /recheck upgrade 503s, no wired
       // trigger. The DTO's autonomous flag now reflects that (was wrongly true).
       autonomous: false,
@@ -241,6 +241,29 @@ describe('CapabilityCard', () => {
       // First element child of the summary (leads the flex row, before the name).
       expect(summary.firstElementChild).toBe(glyph);
     }
+  });
+
+  it('3c. each workload body carries its stewardship-loop role line (honest, no auto-remediation claim)', async () => {
+    const paths: string[] = [];
+    const { getByTestId } = render(CapabilityCard, {
+      props: { call: makeCall(paths) },
+    });
+    const el = getByTestId('capability-card') as HTMLDetailsElement;
+    el.open = true;
+    await fireEvent(el, new Event('toggle'));
+
+    await waitFor(() => getByTestId('cap-workloads'));
+    // The loop line lives in the BODY, not the summary (the summary has a
+    // glued-exact-string pin). One per crew, keyed on the symbolic value.
+    const provLoop = getByTestId('cap-workload-provision-loop');
+    expect(provLoop.textContent).toContain('In the loop ·');
+    expect(provLoop.textContent).toContain('Stands infrastructure up');
+    const driftLoop = getByTestId('cap-workload-drift-loop');
+    expect(driftLoop.textContent).toContain('Guards what is live');
+    // Honesty: Anchor's loop line reacts to/detects drift; it must never claim
+    // it fixes drift on its own (remediation is gated, shown in the gates section).
+    expect(driftLoop.textContent?.toLowerCase()).not.toContain('fixes');
+    expect(driftLoop.textContent?.toLowerCase()).not.toContain('auto');
   });
 
   it('4. write_capable badge: provision_open_infra_pr shows "write-capable", read tool shows "read"', async () => {

@@ -138,9 +138,18 @@ describe('step copy', () => {
     for (const name of ['Anchor', 'Patch', 'Provision', 'Explore']) {
       expect(line).toContain(name);
     }
+    // Lifecycle-loop framing: the crew reads as a loop, Provision creates,
+    // Anchor guards what is live.
+    expect(line).toContain('it works as a loop');
+    expect(line).toContain('Provision stands infrastructure up');
+    expect(line).toContain('Anchor then guards');
     // Anchor is the one that runs on its own; the rest wait to be asked.
-    expect(line).toContain('Anchor runs on its');
+    expect(line).toContain('runs on its own, the only crew that does');
     expect(line).toContain('wait for you to ask');
+    // Honesty: Anchor REACTS to drift, but remediation stays gated — the copy
+    // must never claim it fixes drift on its own.
+    expect(line.toLowerCase()).not.toContain('auto-fix');
+    expect(line.toLowerCase()).not.toContain('fixes it');
     // Explore is surfaced as the crew you ask to understand the system itself
     // (the read-only crew that carries the whole-system overview).
     expect(line).toContain('how DriftScribe itself works');

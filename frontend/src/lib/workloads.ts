@@ -87,6 +87,21 @@ export const WORKLOADS: WorkloadOption[] = (
   label: `${e.name} — ${e.descriptor}`,
 }));
 
+/**
+ * Where each crew sits in the stewardship loop (create → guard → maintain →
+ * explain), as one operator-facing line. Surfaced in CapabilityCard so the four
+ * crews read as one coherent system, not four separate tools. PURE COPY, not a
+ * safety claim: Anchor reacts to/detects drift on its own, but its remediations
+ * stay behind the human approval gate (see the gates section of the same card).
+ * Keyed by the FROZEN symbolic workload value.
+ */
+export const CREW_LIFECYCLE: Record<Workload, string> = {
+  provision: 'Stands infrastructure up. You describe a change; it opens the IaC PR.',
+  drift: 'Guards what is live. Runs on its own, reacting when it detects drift.',
+  upgrade: 'Keeps it current. Proposes dependency upgrades.',
+  explore: 'Explains it. Read-only answers across the whole system.',
+};
+
 /** value → crew display name, e.g. `drift` → `Anchor`. Built once from the
  *  catalog. */
 const CREW_NAME = new Map<string, string>(WORKLOADS.map((w) => [w.value, w.name]));

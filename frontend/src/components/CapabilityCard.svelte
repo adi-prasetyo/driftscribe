@@ -11,8 +11,17 @@
   import { groupRules, type Capabilities } from '../lib/capabilities';
   import { parseWorkloadPrompts } from '../lib/prompts';
   import type { WorkloadPrompts } from '../lib/prompts';
+  import { CREW_LIFECYCLE, type Workload } from '../lib/workloads';
   import Icon from './Icon.svelte';
   import CrewGlyph from './CrewGlyph.svelte';
+
+  /** The crew's place in the stewardship loop, keyed by the frozen symbolic
+   *  workload name. Empty string for an unknown workload so the {#if} renders
+   *  nothing. Pure copy, not a safety claim — the gates section above is the
+   *  authority on what waits for approval. */
+  function loopRole(name: string): string {
+    return CREW_LIFECYCLE[name as Workload] ?? '';
+  }
 
   let {
     call,
@@ -224,6 +233,13 @@
             </summary>
             <div class="cap-workload__body">
               <p class="ds-subtle cap-workload__desc">{wl.description}</p>
+
+              {#if loopRole(wl.name)}
+                <p
+                  class="cap-workload__loop ds-subtle"
+                  data-testid="cap-workload-{wl.name}-loop"
+                ><span class="cap-workload__loop-label">In the loop ·</span> {loopRole(wl.name)}</p>
+              {/if}
 
               {#if wl.tools.length > 0}
                 <p class="cap-workload__sub-heading">Tools</p>
@@ -482,6 +498,16 @@
   .cap-workload__desc {
     margin: 0 0 var(--ds-sp-3);
     font-size: var(--ds-fs-1);
+  }
+  /* Stewardship-loop role — a calm one-liner placing the crew in the loop,
+     sitting just under its description. */
+  .cap-workload__loop {
+    margin: 0 0 var(--ds-sp-3);
+    font-size: var(--ds-fs-1);
+  }
+  .cap-workload__loop-label {
+    color: var(--ds-muted);
+    font-weight: 600;
   }
   .cap-workload__sub-heading {
     margin: var(--ds-sp-3) 0 var(--ds-sp-1);

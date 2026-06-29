@@ -7,17 +7,24 @@
 [![CI](https://github.com/adi-prasetyo/driftscribe/actions/workflows/ci.yml/badge.svg)](https://github.com/adi-prasetyo/driftscribe/actions/workflows/ci.yml)
 [![E2E](https://github.com/adi-prasetyo/driftscribe/actions/workflows/e2e.yml/badge.svg?event=workflow_dispatch)](https://github.com/adi-prasetyo/driftscribe/actions/workflows/e2e.yml)
 
-**An AI DevOps agent that watches your Google Cloud estate and proposes fixes —
-but never applies a risky change on its own.** A crew of four ships today — each a
-workload-scoped agent that reads everything in its lane, proposes rather than
-applies, and is held to the safety boundary in the last column:
+**An AI DevOps agent that watches your Google Cloud estate and proposes fixes,
+but never applies a risky change on its own.** Four crews ship today, each one a
+workload with its own prompt and its own short list of tools. Each reads
+everything in its lane, proposes rather than applies, and is held to the safety
+boundary in the last column:
 
 | Crew | Trigger | Scope | Safety boundary |
 | --- | --- | --- | --- |
-| **Anchor** (`drift`) | Autonomous (Eventarc) | Live Cloud Run config vs ops contract → docs PR, drift issue, or rollback | Rollback waits behind a single-use HITL approval |
-| **Patch** (`upgrade`) | On demand (chat) | npm deps vs GitHub Advisory DB → upgrade PR | Major bumps refused by a deterministic validator |
-| **Provision** (`provision`) | On demand (chat) | Authors `iac/`-only OpenTofu PRs | Never touches live infra; apply is a separate gated worker |
-| **Explore** (`explore`) | On demand (chat) | Read-only inventory of the whole project; also explains how DriftScribe works | Zero mutation tools (pinned by a test) |
+| **Anchor** | Autonomous (Eventarc) | Live Cloud Run config vs ops contract → docs PR, drift issue, or rollback | Rollback waits behind a single-use HITL approval |
+| **Patch** | On demand (chat) | npm deps vs GitHub Advisory DB → upgrade PR | Major bumps refused by a deterministic validator |
+| **Provision** | On demand (chat) | Authors `iac/`-only OpenTofu PRs | Never touches live infra; apply is a separate gated worker |
+| **Explore** | On demand (chat) | Read-only inventory of the whole project; also explains how DriftScribe works | Zero mutation tools (pinned by a test) |
+
+**How the crews fit together:** it runs as a loop. Provision stands new
+infrastructure up (you ask, it opens the IaC PR). Anchor then guards what's
+live, catching drift the moment it appears, on its own. Patch keeps
+dependencies current, and Explore answers anything read-only. The handoff is
+the point: you provision once, and Anchor keeps watch for drift.
 
 The coordinator is Gemini on Google's Agent Development Kit, grounded by the
 Developer Knowledge MCP; it holds no direct power to act. Narrow single-purpose
@@ -59,7 +66,7 @@ needed.
 - Watches the `payment-demo` Cloud Run service env vs [`demo/ops-contract.yaml`](demo/ops-contract.yaml).
 - Actions: `no_op` / `docs_pr` / `drift_issue` / `rollback` / `escalation`.
 - Workers: `reader` (read-only Cloud Run state), `docs` (open docs PR), `rollback` (revision rollback), plus the shared `notifier`.
-- HITL approval gate on `rollback`: HMAC-signed one-shot link, 15-minute TTL, single-use Firestore transaction. Anchor never executes a rollback itself; it only mints the approval URL.
+- HITL approval gate on `rollback`: HMAC-signed one-shot link, 15-minute TTL, single-use Firestore transaction. Anchor never executes a rollback itself; the `rollback` worker mints the one-time approval URL.
 
 ### Patch — dependency upgrades (`upgrade`)
 
@@ -67,7 +74,7 @@ Patch runs on demand from chat. Its autonomous trigger (a `/recheck` observation
 loop analogous to Anchor's Eventarc trigger) is future work. Today `/recheck`
 returns 503 (unimplemented) and Patch is chat-only.
 
-- Watches [`demo/upgrade-target/package.json`](demo/upgrade-target/package.json) vs the GitHub Advisory DB.
+- Checks [`demo/upgrade-target/package.json`](demo/upgrade-target/package.json) vs the GitHub Advisory DB.
 - Actions: `no_op` / `docs_pr` / `upgrade_pr` / `escalation`.
 - Workers: `upgrade-reader` (read-only lockfile + advisory query), `upgrade-docs` (open upgrade PR), plus the shared `notifier`.
 - Post-LLM deterministic validator on the write path: lockfile path regex, `package_name` must exist in the current lockfile, `target_version` must be greater than current (no downgrades), version jump ∈ {patch, minor}, `advisory_url` must match `https://github.com/advisories/GHSA-...`. Major bumps are refused at the validator. The LLM is instructed to route those to `escalation`; if it doesn't, the validator fails closed.
@@ -78,8 +85,8 @@ returns 503 (unimplemented) and Patch is chat-only.
 Both are on-demand: Explore and Provision run from chat only. `/recheck`
 refuses them, since neither has an autonomous observation source.
 
-- **Explore** (the `explore` workload, read-only): whole-project resource inspection via Cloud Asset Inventory (`infra-reader` worker), plus live Cloud Run env, the ops contract, the dependency lockfile, and developer docs. It's also the crew to ask how DriftScribe itself works — its prompt carries a whole-system overview, so a newcomer can get oriented in chat without reading the docs first. Explore lists zero mutation tools. It can read everything and change nothing (the read-only guarantee is pinned by a test that asserts its tools are disjoint from the mutation set).
-- **Provision** (the `provision` workload, infra edits): authors OpenTofu changes from a chat request and opens one `iac/`-only PR via the `tofu-editor` worker (which re-validates every file: `iac/` prefix, foundation ban, secret ban, AGENT-mode static gate). Provision never touches live infra. The actual `tofu apply` runs downstream in the `tofu-apply` worker, the sole live-infra mutator, behind a plan-bound, HMAC-signed operator approval, a path the chat agent cannot invoke directly.
+- **Explore** (read-only): whole-project resource inspection via Cloud Asset Inventory (`infra-reader` worker), plus live Cloud Run env, the ops contract, the dependency lockfile, and developer docs. It's also the crew to ask how DriftScribe itself works — its prompt carries a whole-system overview, so a newcomer can get oriented in chat without reading the docs first. Explore lists zero mutation tools. It can read everything and change nothing (the read-only guarantee is pinned by a test that asserts its tools are disjoint from the mutation set).
+- **Provision** (infra edits): authors OpenTofu changes from a chat request and opens one `iac/`-only PR via the `tofu-editor` worker (which re-validates every file: `iac/` prefix, foundation ban, secret ban, AGENT-mode static gate). Provision never touches live infra. The actual `tofu apply` runs downstream in the `tofu-apply` worker, the sole live-infra mutator, behind a plan-bound, HMAC-signed operator approval, a path the chat agent cannot invoke directly.
 
 The operator UI renders a live infra resource map (managed vs. drift) alongside the decisions timeline.
 
@@ -148,9 +155,8 @@ for the verification step and a sample query.
 
 ## How DriftScribe's drift workload compares to other drift tools
 
-The table below scopes the comparison to Anchor (the `drift` workload). Patch
-(the `upgrade` workload) sits in a different category (Dependabot- /
-Renovate-shaped) and is not compared here.
+The table below scopes the comparison to Anchor. Patch sits in a different
+category (Dependabot- / Renovate-shaped) and is not compared here.
 
 | | DriftScribe — Anchor | Drift (CloudPosse) | Steampipe | Cloud Custodian | AWS Config Rules |
 | --- | --- | --- | --- | --- | --- |

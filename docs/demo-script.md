@@ -11,6 +11,13 @@ deployed coordinator at `driftscribe-agent` and print the
 `X-Trace-Id` from the response so you can chase the log trail in
 Cloud Logging.
 
+**The story to tell.** DriftScribe is one small crew running a stewardship
+loop around a cloud estate: Provision stands infrastructure up, Anchor guards
+what's live on its own, Patch keeps it current, and Explore explains it. The
+scripted beats below walk two of those crews (Anchor's drift detection, Patch's
+upgrades); Provision and Explore are shown interactively from chat. The
+through-line for the judge: you provision once, then Anchor keeps watch for drift.
+
 ## Pre-flight (run 5 minutes before recording)
 
 ```bash
