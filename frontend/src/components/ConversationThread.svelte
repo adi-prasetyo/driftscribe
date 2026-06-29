@@ -7,7 +7,7 @@
   // stance. Each crew turn links to its reasoning trace, and surfaces a PR CTA
   // when that turn opened one.
   import CrewGlyph from './CrewGlyph.svelte';
-  import { WORKLOADS } from '../lib/workloads';
+  import { crewName } from '../lib/workloads';
   import { iacApprovalHref } from '../lib/approval';
   import type { ConversationTurn } from '../lib/types';
 
@@ -18,13 +18,6 @@
     turns: ConversationTurn[];
     onOpenTrace: (traceId: string) => void;
   } = $props();
-
-  // workload value → display name ("drift" → "Anchor"), for the crew bubble
-  // byline. Falls back to the raw value for an unknown crew.
-  const CREW_NAME = new Map(WORKLOADS.map((w) => [w.value, w.name]));
-  function crewName(workload: string | undefined): string {
-    return (workload && CREW_NAME.get(workload as never)) || workload || 'Crew';
-  }
 
   // Same-origin /iac-approvals/<n> link for a turn that opened an infra PR.
   function prHref(turn: ConversationTurn): string | null {

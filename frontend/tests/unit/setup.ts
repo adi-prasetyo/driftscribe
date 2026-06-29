@@ -80,3 +80,24 @@ if (typeof window !== 'undefined' && !window.matchMedia) {
     } as MediaQueryList;
   };
 }
+
+// jsdom does not implement HTMLDialogElement.showModal()/show()/close() (they
+// throw "Not implemented"). Modal.svelte drives a native <dialog> via these, so
+// stub them to track `open` and fire the native `close` event — enough for unit
+// tests of open/close + content; the focus trap and ::backdrop are runtime-only
+// (Playwright-verified). Mirrors the animate/matchMedia stubs above.
+if (typeof HTMLDialogElement !== 'undefined') {
+  const proto = HTMLDialogElement.prototype;
+  proto.showModal = function showModal(this: HTMLDialogElement): void {
+    this.open = true;
+  };
+  proto.show = function show(this: HTMLDialogElement): void {
+    this.open = true;
+  };
+  proto.close = function close(this: HTMLDialogElement, returnValue?: string): void {
+    if (!this.open) return;
+    this.open = false;
+    if (returnValue !== undefined) this.returnValue = returnValue;
+    this.dispatchEvent(new Event('close'));
+  };
+}

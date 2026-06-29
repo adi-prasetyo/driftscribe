@@ -9,6 +9,22 @@ const ELLIPSIS = '…';
 const DEFAULT_PREVIEW_MAX = 2000;
 
 /**
+ * Normalize a string for free-text search: lowercase, every run of
+ * non-alphanumeric characters collapsed to a single space, trimmed. Applied to
+ * BOTH the query and the searchable haystack so separators never block a match —
+ * `iac apply` finds `iac_apply`, `docs pr` finds `docs_pr`, `applied merged`
+ * finds `applied & merged`, and `PR #168` / `pr 168` / `#168` / `168` all align.
+ * Unicode letters/digits are preserved (so a Japanese title stays searchable).
+ */
+export function normalizeForSearch(s: string | null | undefined): string {
+  if (!s) return '';
+  return s
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
+}
+
+/**
  * Render an LLM token total as a human string, e.g. `"1,234 tok"`.
  * Returns `""` when the total is null/undefined/absent. A total of 0 is a
  * present value and renders as `"0 tok"`.

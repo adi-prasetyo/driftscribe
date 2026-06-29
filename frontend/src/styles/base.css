@@ -467,3 +467,64 @@ code.ds-code {
 
 /* --- Icon (ds-icon) -------------------------------------------------------- */
 .ds-icon { flex-shrink: 0; vertical-align: -0.125em; }
+
+/* --- Rail search affordance + modal (shared by both left rails) ------------ */
+/* The "Search chats/decisions (N) →" link at the bottom of a capped rail. A
+   quiet, full-width text affordance — calmer than a button, matching the rail's
+   other inline CTAs ("open trace →"). */
+.rail-more {
+  appearance: none;
+  align-self: flex-start;
+  margin: var(--ds-sp-1) 0 0;
+  padding: var(--ds-sp-1) var(--ds-sp-1);
+  border: none;
+  background: none;
+  color: var(--ds-muted);
+  font: inherit;
+  font-size: var(--ds-fs-1);
+  cursor: pointer;
+  border-radius: var(--ds-radius-sm);
+  transition: color var(--ds-dur-fast) var(--ds-ease);
+}
+.rail-more:hover {
+  color: var(--ds-fg);
+}
+.rail-more:focus-visible {
+  outline: none;
+  box-shadow: var(--ds-ring);
+}
+
+/* Body of a search modal: the input, the live count, then the results. */
+.search-pane {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-sp-3);
+}
+.search-input {
+  width: 100%;
+  padding: 0.6em 0.8em;
+  font: inherit;
+  color: var(--ds-fg);
+  background: var(--ds-surface-2);
+  border: 1px solid var(--ds-border-strong);
+  border-radius: var(--ds-radius-sm);
+  transition:
+    border-color var(--ds-dur-fast) var(--ds-ease),
+    box-shadow var(--ds-dur-fast) var(--ds-ease),
+    background-color var(--ds-dur-fast) var(--ds-ease);
+}
+.search-input::placeholder {
+  color: var(--ds-faint);
+}
+.search-input:focus-visible {
+  outline: none;
+  background: var(--ds-surface);
+  border-color: var(--ds-stream);
+  box-shadow: var(--ds-ring);
+}
+.search-count {
+  margin: 0;
+  font-size: var(--ds-fs-1);
+  color: var(--ds-faint);
+  font-variant-numeric: tabular-nums;
+}

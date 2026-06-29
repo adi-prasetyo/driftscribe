@@ -5,6 +5,10 @@ import {
   hasAnomalousStep,
   railRowIcon,
   showPrNumberingHint,
+  matchesDecision,
+  railItemMatches,
+  capRailItems,
+  type RailItem,
 } from '../../src/lib/rail';
 import type { Decision } from '../../src/lib/types';
 
@@ -299,5 +303,98 @@ describe('showPrNumberingHint', () => {
   it('tolerates null/undefined input', () => {
     expect(showPrNumberingHint(null as unknown as Decision[])).toBe(false);
     expect(showPrNumberingHint(undefined as unknown as Decision[])).toBe(false);
+  });
+});
+
+describe('matchesDecision', () => {
+  it('matches on the PR title', () => {
+    const d = iac('a', 168, 'applied', { pr_title: 'Adopt the probe topic' });
+    expect(matchesDecision(d, 'probe')).toBe(true);
+    expect(matchesDecision(d, 'rollback')).toBe(false);
+  });
+
+  it('matches the PR number in every displayed/typed form', () => {
+    const d = iac('a', 168, 'applied');
+    expect(matchesDecision(d, '168')).toBe(true);
+    expect(matchesDecision(d, '#168')).toBe(true);
+    expect(matchesDecision(d, 'PR 168')).toBe(true);
+    expect(matchesDecision(d, 'pr #168')).toBe(true);
+  });
+
+  it('matches the action raw and friendly', () => {
+    const noop = { decision_id: 'n', action: 'no_op' } as Decision;
+    expect(matchesDecision(noop, 'no_op')).toBe(true);
+    expect(matchesDecision(noop, 'no action')).toBe(true); // decisionActionLabel
+  });
+
+  it('matches the crew raw value and display name', () => {
+    const d = iac('a', 1, 'applied', { workload: 'drift' } as Partial<Decision>);
+    expect(matchesDecision(d, 'drift')).toBe(true);
+    expect(matchesDecision(d, 'anchor')).toBe(true);
+  });
+
+  it('matches the status raw and the friendly label', () => {
+    const d = iac('a', 1, 'applied', { merge_state: 'merged' });
+    expect(matchesDecision(d, 'merged')).toBe(true);
+    expect(matchesDecision(d, 'applied merged')).toBe(true); // iacApplyMeta label
+    const pending = iac('b', 2, 'applied', { merge_state: 'failed' });
+    expect(matchesDecision(pending, 'merge pending')).toBe(true);
+  });
+
+  it('an empty query matches everything', () => {
+    expect(matchesDecision(other('x'), '')).toBe(true);
+    expect(matchesDecision(other('x'), '   ')).toBe(true);
+  });
+});
+
+describe('railItemMatches', () => {
+  it('a single defers to its decision', () => {
+    const item: RailItem = { kind: 'single', d: iac('a', 168, 'applied', { pr_title: 'probe' }) };
+    expect(railItemMatches(item, 'probe')).toBe(true);
+    expect(railItemMatches(item, 'nope')).toBe(false);
+  });
+
+  it('a group matches when ANY folded doc matches (status only on an earlier doc)', () => {
+    const face = iac('f', 70, 'applied', { merge_state: 'merged' });
+    const earlier = iac('e', 70, 'failed');
+    const item: RailItem = { kind: 'group', pr: 70, docs: [face, earlier] };
+    expect(railItemMatches(item, 'failed')).toBe(true); // only the earlier doc
+    expect(railItemMatches(item, '70')).toBe(true); // shared, hits the face
+  });
+
+  it('an empty query matches everything', () => {
+    const item: RailItem = { kind: 'single', d: other('x') };
+    expect(railItemMatches(item, '')).toBe(true);
+  });
+});
+
+describe('capRailItems', () => {
+  const items: RailItem[] = Array.from(
+    { length: 14 },
+    (_, i): RailItem => ({ kind: 'single', d: iac(`d${i}`, i + 1, 'applied', { trace_id: `t${i}` }) }),
+  );
+
+  it('returns the list unchanged when it fits within max', () => {
+    expect(capRailItems(items.slice(0, 6), 10, null)).toHaveLength(6);
+  });
+
+  it('keeps only the newest max when nothing active is hidden', () => {
+    expect(capRailItems(items, 10, null)).toHaveLength(10);
+  });
+
+  it('appends the active item (by trace_id) when it falls outside the cap', () => {
+    const out = capRailItems(items, 10, 't13');
+    expect(out).toHaveLength(11);
+    expect(out[10]).toBe(items[13]);
+  });
+
+  it('matches the active trace inside a group, and does not duplicate when already visible', () => {
+    const grouped: RailItem[] = [
+      ...items.slice(0, 10),
+      { kind: 'group', pr: 999, docs: [iac('g0', 999, 'applied', { trace_id: 'gx' }), iac('g1', 999, 'failed', { trace_id: 'gy' })] },
+    ];
+    const out = capRailItems(grouped, 10, 'gy');
+    expect(out).toHaveLength(11);
+    expect(capRailItems(items, 10, 't3')).toHaveLength(10); // active already visible
   });
 });

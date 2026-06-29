@@ -1,5 +1,5 @@
-import { describe, it, expect, afterEach } from 'vitest';
-import { render, cleanup, fireEvent } from '@testing-library/svelte';
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import { render, cleanup, fireEvent, within } from '@testing-library/svelte';
 import DecisionsRail from '../../src/components/DecisionsRail.svelte';
 import type { Decision } from '../../src/lib/types';
 
@@ -668,5 +668,85 @@ describe('DecisionsRail — PR-numbering header hint', () => {
     });
     expect(getByTestId('rail-gap-help')).toBeTruthy();
     expect(queryAllByTestId('status-help')).toHaveLength(0);
+  });
+});
+
+// N distinct-PR applied rows (one doc each → N `single` rail items), newest-first.
+function manyRows(n = 14): Decision[] {
+  return Array.from({ length: n }, (_, i) =>
+    iacRow({
+      decision_id: `d${i}`,
+      pr_number: i + 1,
+      apply_status: 'applied',
+      merge_state: 'merged',
+      trace_id: `t${i}`,
+      pr_title: `change ${i}`,
+    }),
+  );
+}
+
+describe('DecisionsRail — cap + search', () => {
+  it('caps the rail to `max` rows and shows the search affordance with the TOTAL row count', () => {
+    const { getAllByTestId, getByTestId } = render(DecisionsRail, {
+      props: { decisions: manyRows(14), activeTraceId: null, onOpenTrace: noop, max: 10 },
+    });
+    expect(getAllByTestId('past-decision-item')).toHaveLength(10);
+    expect(getByTestId('decisions-search-open').textContent).toContain('(14)');
+  });
+
+  it('hides the affordance when the rows fit within `max`', () => {
+    const { queryByTestId } = render(DecisionsRail, {
+      props: { decisions: manyRows(6), activeTraceId: null, onOpenTrace: noop, max: 10 },
+    });
+    expect(queryByTestId('decisions-search-open')).toBeNull();
+  });
+
+  it('hides the affordance when active-pinning means every row is already shown (total = max+1)', () => {
+    const { getAllByTestId, queryByTestId } = render(DecisionsRail, {
+      props: { decisions: manyRows(11), activeTraceId: 't10', onOpenTrace: noop, max: 10 },
+    });
+    expect(getAllByTestId('past-decision-item')).toHaveLength(11); // 10 + pinned active = all
+    expect(queryByTestId('decisions-search-open')).toBeNull(); // nothing hidden
+  });
+
+  it('pins the active (open-trace) row even when it falls outside the cap', () => {
+    const { getAllByTestId } = render(DecisionsRail, {
+      props: { decisions: manyRows(14), activeTraceId: 't13', onOpenTrace: noop, max: 10 },
+    });
+    const rows = getAllByTestId('past-decision-item');
+    expect(rows).toHaveLength(11); // 10 newest + the pinned active row
+    expect(rows.some((r) => r.classList.contains('active'))).toBe(true);
+  });
+
+  it('opens the modal with the full list, filters live, and shows a no-match note', async () => {
+    const rows = manyRows(14);
+    rows[7] = iacRow({ decision_id: 'd7', pr_number: 8, apply_status: 'applied', merge_state: 'merged', trace_id: 't7', pr_title: 'unique-needle' });
+    const { getByTestId, queryByTestId } = render(DecisionsRail, {
+      props: { decisions: rows, activeTraceId: null, onOpenTrace: noop, max: 10 },
+    });
+    expect(queryByTestId('decisions-search-input')).toBeNull();
+    await fireEvent.click(getByTestId('decisions-search-open'));
+    expect(getByTestId('decisions-search-count').textContent).toContain('14 of 14');
+    await fireEvent.input(getByTestId('decisions-search-input'), { target: { value: 'unique-needle' } });
+    expect(getByTestId('decisions-search-count').textContent).toContain('1 of 14');
+    await fireEvent.input(getByTestId('decisions-search-input'), { target: { value: 'zzz-nope' } });
+    expect(getByTestId('decisions-search-count').textContent).toContain('0 of 14');
+    expect(getByTestId('decisions-search-input')).toBeTruthy(); // input persists on empty results
+  });
+
+  it('opening a trace from inside the modal closes the modal and calls onOpenTrace', async () => {
+    const onOpenTrace = vi.fn();
+    const rows = manyRows(14);
+    rows[7] = iacRow({ decision_id: 'd7', pr_number: 8, apply_status: 'applied', merge_state: 'merged', trace_id: 'trace-8', pr_title: 'unique-needle' });
+    const { getByTestId, queryByTestId, container } = render(DecisionsRail, {
+      props: { decisions: rows, activeTraceId: null, onOpenTrace, max: 10 },
+    });
+    await fireEvent.click(getByTestId('decisions-search-open'));
+    await fireEvent.input(getByTestId('decisions-search-input'), { target: { value: 'unique-needle' } });
+    const dialog = container.querySelector('dialog')!;
+    await fireEvent.click(within(dialog).getByTestId('open-trace-button'));
+    expect(onOpenTrace).toHaveBeenCalledWith('trace-8');
+    // Modal closed → its search input is gone.
+    expect(queryByTestId('decisions-search-input')).toBeNull();
   });
 });

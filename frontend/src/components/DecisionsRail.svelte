@@ -21,19 +21,27 @@
     lifecycleSummaryLabel,
     railRowIcon,
     showPrNumberingHint,
+    capRailItems,
+    railItemMatches,
+    type RailItem,
   } from '../lib/rail';
   import Icon from './Icon.svelte';
   import HelpHint from './HelpHint.svelte';
+  import Modal from './Modal.svelte';
   import type { Decision } from '../lib/types';
 
   let {
     decisions,
     activeTraceId,
     onOpenTrace,
+    max = 10,
   }: {
     decisions: Decision[];
     activeTraceId: string | null;
     onOpenTrace: (traceId: string) => void;
+    /** Cap the rail to the newest `max` grouped rows; the rest live in the
+     *  search modal. The active row (open trace) is pinned even when outside. */
+    max?: number;
   } = $props();
 
   // PRs whose iac_apply has terminally `applied` — a `waiting_for_rebake` row
@@ -46,10 +54,31 @@
   // the render loop changes.
   const railItems = $derived(groupRailDecisions(decisions));
 
+  // The rail shows only the newest `max` grouped rows (plus the active row if it
+  // would otherwise be hidden); the full set stays reachable via the modal.
+  const cappedItems = $derived(capRailItems(railItems, max, activeTraceId));
+
   // Show the header PR-numbering hint (why the numbers skip values) once ≥2
   // distinct iac_apply PR numbers are on screen — the numbers are real GitHub
   // PRs, so they skip every non-infra PR in between.
   const showPrHint = $derived(showPrNumberingHint(decisions));
+
+  // ---- search modal ----
+  let showSearch = $state(false);
+  let query = $state('');
+  const searchItems = $derived(railItems.filter((it) => railItemMatches(it, query)));
+
+  function openSearch(): void {
+    query = '';
+    showSearch = true;
+  }
+  // Opening a trace from the modal must close it first so the historical replay
+  // (which App scrolls to the top of the page) isn't hidden behind the overlay.
+  // Used at BOTH open-trace sites in decisionCard (face + lifecycle steps).
+  function handleOpenTrace(traceId: string): void {
+    showSearch = false;
+    onOpenTrace(traceId);
+  }
 
   // Resolve the rollback approval link for a row, same-origin-guarded. Returns
   // the safe RELATIVE href, or null when there is no approval / it fails the
@@ -208,7 +237,7 @@
           class="open-trace-btn"
           data-testid="open-trace-button"
           type="button"
-          onclick={() => onOpenTrace(d.trace_id as string)}
+          onclick={() => handleOpenTrace(d.trace_id as string)}
         >open trace →</button>
       {/if}
 
@@ -268,7 +297,7 @@
               {#if step.created_at}<time class="row-time" datetime={step.created_at}>{fmtCreatedAt(step.created_at)}</time>{/if}
               {#if step.trace_id}
                 <button class="open-trace-btn" data-testid="lifecycle-open-trace" type="button"
-                  onclick={() => onOpenTrace(step.trace_id as string)}>open trace →</button>
+                  onclick={() => handleOpenTrace(step.trace_id as string)}>open trace →</button>
               {/if}
               {#if stepMeta.help}<HelpHint text={stepMeta.help} label={stepMeta.label} />{/if}
             </li>
@@ -277,6 +306,19 @@
       </details>
     {/if}
   </li>
+{/snippet}
+
+{#snippet railRow(item: RailItem)}
+  {#if item.kind === 'single'}
+    {@render decisionCard(item.d, item.d.pr_title, !!(item.d.trace_id && item.d.trace_id === activeTraceId), null)}
+  {:else}
+    {@render decisionCard(
+      item.docs[0],
+      item.docs.find((x) => x.pr_title)?.pr_title,
+      item.docs.some((x) => x.trace_id && x.trace_id === activeTraceId),
+      item.docs.slice(1),
+    )}
+  {/if}
 {/snippet}
 
 <aside id="decisions-rail" data-testid="past-decisions-pane" aria-label="Past decisions">
@@ -295,21 +337,49 @@
     <p class="empty ds-subtle">No decisions yet.</p>
   {:else}
     <ul id="decisions-list">
-      {#each railItems as item (item.kind === 'group' ? 'g:' + item.pr : 's:' + item.d.decision_id)}
-        {#if item.kind === 'single'}
-          {@render decisionCard(item.d, item.d.pr_title, !!(item.d.trace_id && item.d.trace_id === activeTraceId), null)}
-        {:else}
-          {@render decisionCard(
-            item.docs[0],
-            item.docs.find((x) => x.pr_title)?.pr_title,
-            item.docs.some((x) => x.trace_id && x.trace_id === activeTraceId),
-            item.docs.slice(1),
-          )}
-        {/if}
+      {#each cappedItems as item (item.kind === 'group' ? 'g:' + item.pr : 's:' + item.d.decision_id)}
+        {@render railRow(item)}
       {/each}
     </ul>
+
+    {#if cappedItems.length < railItems.length}
+      <!-- Only when the rail actually hides rows (active-pinning can surface an
+           otherwise-capped row, so compare rendered vs total, not total vs max). -->
+      <button
+        class="rail-more"
+        data-testid="decisions-search-open"
+        type="button"
+        onclick={openSearch}
+      >Search decisions ({railItems.length}) →</button>
+    {/if}
   {/if}
 </aside>
+
+<Modal open={showSearch} title="Search decisions" onClose={() => (showSearch = false)}>
+  <div class="search-pane">
+    <input
+      class="search-input"
+      data-modal-autofocus
+      data-testid="decisions-search-input"
+      type="search"
+      aria-label="Search decisions by PR, crew, action, or status"
+      placeholder="Search by PR, title, crew, action, or status…"
+      bind:value={query}
+    />
+    <p class="search-count" data-testid="decisions-search-count" aria-live="polite">
+      {searchItems.length} of {railItems.length}
+    </p>
+    {#if searchItems.length === 0}
+      <p class="empty ds-subtle">No decisions match “{query}”.</p>
+    {:else}
+      <ul id="decisions-search-list" class="decisions-list">
+        {#each searchItems as item (item.kind === 'group' ? 'g:' + item.pr : 's:' + item.d.decision_id)}
+          {@render railRow(item)}
+        {/each}
+      </ul>
+    {/if}
+  </div>
+</Modal>
 
 <style>
   #decisions-rail {
@@ -359,7 +429,8 @@
     color: var(--ds-faint);
   }
 
-  #decisions-list {
+  #decisions-list,
+  .decisions-list {
     list-style: none;
     display: flex;
     flex-direction: column;

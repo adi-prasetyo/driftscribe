@@ -3,25 +3,51 @@
   // a calm left-rail list of cards, here folded into Today/Yesterday/Older day
   // buckets (newest first). Each card resumes its thread on click. The grouping
   // is pure (lib/conversations.groupConversations); this component only renders.
-  import { groupConversations } from '../lib/conversations';
+  import { groupConversations, capConversations, matchesConversation } from '../lib/conversations';
   import CrewGlyph from './CrewGlyph.svelte';
   import HelpHint from './HelpHint.svelte';
   import Icon from './Icon.svelte';
+  import Modal from './Modal.svelte';
   import type { Conversation } from '../lib/types';
 
   let {
     conversations,
     activeConversationId,
     onOpen,
+    max = 5,
   }: {
     conversations: Conversation[];
     activeConversationId: string | null;
     onOpen: (conversationId: string) => void;
+    /** Cap the rail to the newest `max` chats; the rest live in the search
+     *  modal. The active chat is pinned even when it falls outside the cap. */
+    max?: number;
   } = $props();
 
+  // The rail shows only the newest `max` (plus the active chat if it would
+  // otherwise be hidden); the full list stays reachable via the search modal.
+  const capped = $derived(capConversations(conversations, max, activeConversationId));
   // Bucket by day relative to the render-time clock. Recomputed whenever the
   // list changes (a new/updated conversation re-sorts + may re-bucket).
-  const groups = $derived(groupConversations(conversations, new Date()));
+  const groups = $derived(groupConversations(capped, new Date()));
+
+  // ---- search modal ----
+  let showSearch = $state(false);
+  let query = $state('');
+  // Filtered + bucketed full list for the modal (not the capped rail list).
+  const searchMatches = $derived(conversations.filter((c) => matchesConversation(c, query)));
+  const searchGroups = $derived(groupConversations(searchMatches, new Date()));
+
+  function openSearch(): void {
+    query = '';
+    showSearch = true;
+  }
+  // Resume from the modal: close it first so the resumed thread isn't hidden
+  // behind the overlay (App scrolls the chat into view).
+  function handleOpen(id: string): void {
+    showSearch = false;
+    onOpen(id);
+  }
 
   // Compact, readable wall-clock for a card. Mirrors DecisionsRail.fmtCreatedAt:
   // falls back to the raw value when it doesn't parse, '' when absent.
@@ -49,6 +75,32 @@
   }
 </script>
 
+{#snippet conversationItem(c: Conversation)}
+  <li
+    class="conv-row"
+    data-testid="conversation-item"
+    class:active={c.conversation_id === activeConversationId}
+  >
+    <button
+      class="conv-open"
+      data-testid="conversation-open"
+      type="button"
+      title={c.title}
+      aria-current={c.conversation_id === activeConversationId ? 'true' : undefined}
+      onclick={() => handleOpen(c.conversation_id)}
+    >
+      <span class="conv-glyph"><CrewGlyph verb={c.workload} size={20} animated={false} /></span>
+      <span class="conv-body">
+        <span class="conv-title">{c.title}</span>
+        <span class="conv-meta">
+          {#if c.updated_at}<time datetime={c.updated_at}>{fmtTime(c.updated_at)}</time>{/if}
+          {#if turnsLabel(c.turn_count)}<span class="conv-count">· {turnsLabel(c.turn_count)}</span>{/if}
+        </span>
+      </span>
+    </button>
+  </li>
+{/snippet}
+
 <aside id="conversations-rail" data-testid="conversations-pane" aria-label="Conversations">
   <div class="rail-header">
     <h2 class="ds-label rail-eyebrow">
@@ -72,35 +124,55 @@
         <h3 class="conv-group__label">{group.label}</h3>
         <ul class="conv-list">
           {#each group.items as c (c.conversation_id)}
-            <li
-              class="conv-row"
-              data-testid="conversation-item"
-              class:active={c.conversation_id === activeConversationId}
-            >
-              <button
-                class="conv-open"
-                data-testid="conversation-open"
-                type="button"
-                title={c.title}
-                aria-current={c.conversation_id === activeConversationId ? 'true' : undefined}
-                onclick={() => onOpen(c.conversation_id)}
-              >
-                <span class="conv-glyph"><CrewGlyph verb={c.workload} size={20} animated={false} /></span>
-                <span class="conv-body">
-                  <span class="conv-title">{c.title}</span>
-                  <span class="conv-meta">
-                    {#if c.updated_at}<time datetime={c.updated_at}>{fmtTime(c.updated_at)}</time>{/if}
-                    {#if turnsLabel(c.turn_count)}<span class="conv-count">· {turnsLabel(c.turn_count)}</span>{/if}
-                  </span>
-                </span>
-              </button>
-            </li>
+            {@render conversationItem(c)}
           {/each}
         </ul>
       </div>
     {/each}
+
+    {#if capped.length < conversations.length}
+      <!-- Only when the rail actually hides chats (active-pinning can surface an
+           otherwise-capped row, so compare rendered vs total, not total vs max). -->
+      <button
+        class="rail-more"
+        data-testid="conversations-search-open"
+        type="button"
+        onclick={openSearch}
+      >Search chats ({conversations.length}) →</button>
+    {/if}
   {/if}
 </aside>
+
+<Modal open={showSearch} title="Search chats" onClose={() => (showSearch = false)}>
+  <div class="search-pane">
+    <input
+      class="search-input"
+      data-modal-autofocus
+      data-testid="conversations-search-input"
+      type="search"
+      aria-label="Search chats by title or crew"
+      placeholder="Search by title or crew…"
+      bind:value={query}
+    />
+    <p class="search-count" data-testid="conversations-search-count" aria-live="polite">
+      {searchMatches.length} of {conversations.length}
+    </p>
+    {#if searchMatches.length === 0}
+      <p class="empty ds-subtle">No chats match “{query}”.</p>
+    {:else}
+      {#each searchGroups as group (group.label)}
+        <div class="conv-group" data-testid="conv-search-group">
+          <h3 class="conv-group__label">{group.label}</h3>
+          <ul class="conv-list">
+            {#each group.items as c (c.conversation_id)}
+              {@render conversationItem(c)}
+            {/each}
+          </ul>
+        </div>
+      {/each}
+    {/if}
+  </div>
+</Modal>
 
 <style>
   #conversations-rail {

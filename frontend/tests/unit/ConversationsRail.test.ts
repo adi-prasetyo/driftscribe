@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { render, cleanup, fireEvent } from '@testing-library/svelte';
+import { render, cleanup, fireEvent, within } from '@testing-library/svelte';
 import ConversationsRail from '../../src/components/ConversationsRail.svelte';
 import type { Conversation } from '../../src/lib/types';
 
@@ -90,5 +90,78 @@ describe('ConversationsRail', () => {
     expect(groups).toHaveLength(2);
     expect(groups[0].textContent).toContain('Today');
     expect(groups[1].textContent).toContain('Older');
+  });
+});
+
+// Eight "Today" conversations (newest-first c0..c7) for the cap/search tests.
+function manyConvs(n = 8): Conversation[] {
+  const ts = new Date().toISOString();
+  return Array.from({ length: n }, (_, i) =>
+    conv({ conversation_id: `c${i}`, title: `chat ${i}`, updated_at: ts }),
+  );
+}
+
+describe('ConversationsRail — cap + search', () => {
+  it('caps the rail to `max` and shows the search affordance with the TOTAL count', () => {
+    const { getAllByTestId, getByTestId } = render(ConversationsRail, {
+      props: { conversations: manyConvs(8), activeConversationId: null, onOpen: noop, max: 5 },
+    });
+    expect(getAllByTestId('conversation-item')).toHaveLength(5);
+    expect(getByTestId('conversations-search-open').textContent).toContain('(8)');
+  });
+
+  it('hides the affordance when the list fits within `max`', () => {
+    const { queryByTestId } = render(ConversationsRail, {
+      props: { conversations: manyConvs(4), activeConversationId: null, onOpen: noop, max: 5 },
+    });
+    expect(queryByTestId('conversations-search-open')).toBeNull();
+  });
+
+  it('hides the affordance when active-pinning means every row is already shown (total = max+1)', () => {
+    const { getAllByTestId, queryByTestId } = render(ConversationsRail, {
+      props: { conversations: manyConvs(6), activeConversationId: 'c5', onOpen: noop, max: 5 },
+    });
+    expect(getAllByTestId('conversation-item')).toHaveLength(6); // 5 + pinned active = all
+    expect(queryByTestId('conversations-search-open')).toBeNull(); // nothing hidden
+  });
+
+  it('pins the active conversation in the rail even when it falls outside the cap', () => {
+    const { getAllByTestId } = render(ConversationsRail, {
+      props: { conversations: manyConvs(8), activeConversationId: 'c7', onOpen: noop, max: 5 },
+    });
+    const rows = getAllByTestId('conversation-item');
+    expect(rows).toHaveLength(6); // 5 newest + the pinned active one
+    expect(rows.some((r) => r.classList.contains('active'))).toBe(true);
+  });
+
+  it('opens the modal showing the full list, filters live, and resumes on click', async () => {
+    const onOpen = vi.fn();
+    const convs = manyConvs(7);
+    convs[6] = conv({ conversation_id: 'c6', title: 'zztarget unique', updated_at: new Date().toISOString() });
+    const { getByTestId, queryByTestId, container } = render(ConversationsRail, {
+      props: { conversations: convs, activeConversationId: null, onOpen, max: 5 },
+    });
+    // Modal closed initially.
+    expect(queryByTestId('conversations-search-input')).toBeNull();
+    await fireEvent.click(getByTestId('conversations-search-open'));
+    // Full list visible + count.
+    expect(getByTestId('conversations-search-count').textContent).toContain('7 of 7');
+    // Filter to the one distinctive title.
+    await fireEvent.input(getByTestId('conversations-search-input'), { target: { value: 'zztarget' } });
+    expect(getByTestId('conversations-search-count').textContent).toContain('1 of 7');
+    // Resume that result — scope to the modal (the rail still shows its 5).
+    const dialog = container.querySelector('dialog')!;
+    await fireEvent.click(within(dialog).getByTestId('conversation-open'));
+    expect(onOpen).toHaveBeenCalledWith('c6');
+  });
+
+  it('shows a no-match note when the query matches nothing', async () => {
+    const { getByTestId, getByText } = render(ConversationsRail, {
+      props: { conversations: manyConvs(7), activeConversationId: null, onOpen: noop, max: 5 },
+    });
+    await fireEvent.click(getByTestId('conversations-search-open'));
+    await fireEvent.input(getByTestId('conversations-search-input'), { target: { value: 'qqqzzz-nomatch' } });
+    expect(getByTestId('conversations-search-count').textContent).toContain('0 of 7');
+    expect(getByText((t) => t.startsWith('No chats match'))).toBeTruthy();
   });
 });
