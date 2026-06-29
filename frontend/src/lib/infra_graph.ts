@@ -252,6 +252,41 @@ function shortName(name: string): string {
   return idx === -1 ? name : name.slice(idx + 1);
 }
 
+/** An open infra PR awaiting operator approval (GET /infra/pending-approvals).
+ *  asset_type/resource_name are blank for a freehand (non-adoption) infra PR:
+ *  those appear in the panel band only, never joined to a resource card. */
+export interface PendingApproval {
+  pr_number: number;
+  title: string;
+  url: string;
+  asset_type: string;
+  resource_name: string;
+}
+
+/** PR number of an open adoption PR matching this resource row, or null.
+ *  Joins on (asset_type, short name) — shortName() normalizes both sides so a
+ *  full-path node label still matches the bare resource_name. Guards against the
+ *  resource-less band-only entries (blank asset_type/name never match a row). */
+export function findPendingPr(
+  approvals: PendingApproval[] | null | undefined,
+  assetType: string,
+  name: string,
+): number | null {
+  if (!approvals || !assetType || !name) return null;
+  const target = shortName(name);
+  for (const a of approvals) {
+    if (
+      a.asset_type &&
+      a.resource_name &&
+      a.asset_type === assetType &&
+      shortName(a.resource_name) === target
+    ) {
+      return a.pr_number;
+    }
+  }
+  return null;
+}
+
 /**
  * True when an overlay actually contributes something to draw. A degraded/empty
  * live graph with a renderable overlay still produces a planned-changes-only
