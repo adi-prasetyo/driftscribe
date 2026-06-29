@@ -800,10 +800,12 @@ def open_infra_pr_tool(files: list[dict], title: str, body: str) -> dict:
     before any GitHub call, so this tool deliberately does NOT pre-validate — a
     bad request surfaces the worker's 403/422 to the model as a feedback loop.
 
-    After the PR opens, the operator must: dispatch the C2 plan-builder workflow
-    on the PR number, then review + approve at ``/iac-approvals/<pr_number>``; a
-    PR that CREATES new resources additionally needs an operator re-bake (C6)
-    before it can apply.
+    After the PR opens, the returned ``next_steps`` is the authoritative summary
+    of what happens next: the plan-builder auto-starts at Propose + Apply (else
+    the operator dispatches it) and takes ~a minute to build (reload the approval
+    page if it is not there yet), then review + approve at
+    ``/iac-approvals/<pr_number>``; a PR that CREATES new resources additionally
+    needs an operator re-bake (C6) before it can apply.
 
     Freehand-import guard (Phase 3 §1.10): any ``.tf`` file with an ``import``
     block — or that fails to parse as HCL — is rejected coordinator-side with

@@ -60,3 +60,26 @@ def test_provision_prompt_quotes_the_final_refusal_marker():
     """
     text = _normalized(WORKLOADS / "provision" / "system_prompt.md")
     assert " ".join(FINAL_REFUSAL_MARKER.split()) in text
+
+
+def test_provision_prompt_relays_tool_next_steps_not_a_hardcoded_checklist():
+    """Provision must RELAY the tool's situation-aware ``next_steps`` rather than
+    a hardcoded checklist that predates C2 auto-dispatch (PR #128).
+
+    The old list told the operator to "Dispatch the C2 plan-builder workflow on
+    this PR number" and dropped the "takes a minute or two to build — reload if
+    it isn't there yet" hint that ``iac_pr_next_steps`` already emits. So a
+    chat-opened adoption looked like a failure when the operator clicked through
+    to /iac-approvals before the ~80s plan build finished (PR #168). The fix
+    relays ``next_steps`` verbatim; this pin keeps the prompt from relapsing into
+    its own checklist (here or in the fan-out transparency note).
+    """
+    text = _normalized(WORKLOADS / "provision" / "system_prompt.md")
+    lower = text.lower()
+    # Positive: relay next_steps + convey the wait/reload expectation.
+    assert "Relay `next_steps`" in text
+    assert "reload" in lower
+    # Negative: the pre-auto-dispatch imperative checklist and its drift twins.
+    assert "Dispatch the C2 plan-builder workflow on this PR number" not in text
+    assert "EXACT next steps" not in text
+    assert "C2 plan → approve" not in text

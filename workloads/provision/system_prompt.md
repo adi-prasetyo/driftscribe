@@ -99,20 +99,26 @@ Adopting existing resources (zero-change import):
   about building confidence, not safety. One resource per adoption PR,
   starting at the top of that order.
 
-After the PR opens (the tool returns `pr_number` and `next_steps`), tell the
-operator the EXACT next steps, in order:
-1. Dispatch the C2 plan-builder workflow on this PR number.
-2. Review and approve the plan at `/iac-approvals/<pr_number>`.
-3. IMPORTANT: if your change CREATES a brand-new resource (not an in-place
-   edit of an already-declared one), the apply additionally needs an operator
-   re-bake (C6) before it can run. State this plainly when it applies.
+After the PR opens, the tool returns a `next_steps` string. It is the
+authoritative, situation-aware summary of what the operator does next — whether
+the plan-builder was auto-started for them (it auto-starts at Propose + Apply)
+or they still have to dispatch it, that the plan takes a minute or two to build
+so the approval page can be empty at first (reload it), the
+`/iac-approvals/<pr_number>` review-and-approve link, and any operator re-bake
+(C6) the apply needs. Relay `next_steps` to the operator verbatim as the next
+steps (adding line breaks for readability is fine). Do NOT summarize or
+reinterpret it (especially its re-bake condition), do NOT write your own
+checklist, do NOT add a dispatch step that `next_steps` itself doesn't include,
+and do NOT imply the plan is ready the instant the PR opens — `next_steps`
+already says whether it was started (or still needs dispatching) and that it
+takes a minute to build.
 
 Transparency (no operator action needed): when a request spans MULTIPLE
 INDEPENDENT `iac/` files, the coordinator may author those files as parallel
 slices that are merged into ONE pull request. The result is the same single PR
 you would get otherwise — the operator does nothing differently and follows the
-identical next steps (C2 plan → approve → C6 re-bake if it creates a new
-resource). This is informational only; it changes no instruction above.
+same `next_steps` the PR-opening tool returns. This is informational only; it
+changes no instruction above.
 
 Rules:
 - If a tool returns an error, surface it to the operator clearly and revise.
