@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { render, cleanup, waitFor, fireEvent } from '@testing-library/svelte';
 import mermaid from 'mermaid';
 import InfraDiagram from '../../src/components/InfraDiagram.svelte';
-import type { InfraGraph, PlanOverlay } from '../../src/lib/infra_graph';
+import type { InfraGraph, PlanOverlay, PendingApproval } from '../../src/lib/infra_graph';
 
 // Renders InfraDiagram with a stubbed `call` prop (the component's only data
 // dependency). The COVERAGE tests never open the panel, so Mermaid is never
@@ -826,8 +826,19 @@ describe('InfraDiagram — refresh coalescing + last-applied-wins (livelock regr
   // Last-applied-wins remains the response-application policy as defense-in-depth.
   function deferredCall() {
     const pending: Array<(g: InfraGraph) => void> = [];
-    const call = (_path: string): Promise<Response> =>
-      new Promise<Response>((resolve) => {
+    const call = (path: string): Promise<Response> => {
+      // The pending-approvals list is a separate, fast endpoint — independent of
+      // graph-fetch coalescing. Answer it immediately so it never enters the
+      // controllable graph-fetch queue (which models only /infra/graph).
+      if (path.startsWith('/infra/pending-approvals')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ approvals: [] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      return new Promise<Response>((resolve) => {
         pending.push((g) =>
           resolve(
             new Response(JSON.stringify(g), {
@@ -837,6 +848,7 @@ describe('InfraDiagram — refresh coalescing + last-applied-wins (livelock regr
           ),
         );
       });
+    };
     return { call, pending };
   }
 
@@ -1402,5 +1414,106 @@ describe('InfraDiagram — legend help (zone 2)', () => {
     });
     await waitFor(() => expect(getByTestId('infra-legend')).toBeTruthy());
     expect(getByTestId('infra-legend').getAttribute('aria-hidden')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Open infra changes (pending approvals) — card link replaces Adopt, panel band,
+// legend swatch. Fetched INSIDE the component via its own `call` (no new prop).
+// ---------------------------------------------------------------------------
+
+function adoptableTopicGraph(): InfraGraph {
+  return {
+    generated_at: null,
+    project: 'demo',
+    caveat: 'test caveat',
+    degraded: false,
+    degraded_reason: null,
+    totals: { resources: 1, managed: 0, drift: 1 },
+    groups: [
+      {
+        asset_type: TOPIC,
+        label: 'Pub/Sub topic',
+        adoptable: true,
+        count: 1,
+        managed: 0,
+        drift: 1,
+        sensitive: false,
+        nodes: [
+          { id: 'g0n0', label: 'adopt-probe-topic', asset_type: TOPIC, managed: false, location: null },
+        ],
+      },
+    ],
+    edges: [],
+  };
+}
+
+const TOPIC_APPROVAL: PendingApproval = {
+  pr_number: 168,
+  title: 'Adopt topic',
+  url: 'https://gh/168',
+  asset_type: TOPIC,
+  resource_name: 'adopt-probe-topic',
+};
+
+/** A `call` stub routing `/infra/pending-approvals` to the approvals body (or a
+ *  thrown error) and everything else to the graph. */
+function callRouter(
+  graph: InfraGraph,
+  opts: { approvals?: PendingApproval[]; pendingThrows?: boolean } = {},
+): (path: string) => Promise<Response> {
+  return async (path: string) => {
+    if (path.startsWith('/infra/pending-approvals')) {
+      if (opts.pendingThrows) throw new Error('network');
+      return jsonResponse({ approvals: opts.approvals ?? [] });
+    }
+    return jsonResponse(graph);
+  };
+}
+
+describe('InfraDiagram — open infra changes (pending approvals)', () => {
+  it('replaces the Adopt button with a Review-pending link when an open PR adopts the row', async () => {
+    const { getByTestId, queryByTestId } = render(InfraDiagram, {
+      props: { call: callRouter(adoptableTopicGraph(), { approvals: [TOPIC_APPROVAL] }), onAdopt: () => {} },
+    });
+    const link = await waitFor(() => getByTestId('card-pending-link'));
+    expect(link.getAttribute('href')).toBe('/iac-approvals/168');
+    expect(link.textContent).toContain('Review pending adoption (PR #168)');
+    expect(queryByTestId('card-adopt-btn')).toBeNull();
+    expect(getByTestId('card-pending-tag')).toBeTruthy();
+  });
+
+  it('shows an "Open infra changes (N)" band linking each open PR', async () => {
+    const { getByTestId } = render(InfraDiagram, {
+      props: { call: callRouter(adoptableTopicGraph(), { approvals: [TOPIC_APPROVAL] }) },
+    });
+    const band = await waitFor(() => getByTestId('pending-approvals-band'));
+    expect(band.textContent).toContain('Open infra changes (1)');
+    expect(band.querySelector('a[href="/iac-approvals/168"]')).not.toBeNull();
+  });
+
+  it('adds an "Open PR" legend entry when there are open PRs', async () => {
+    const { getByTestId } = render(InfraDiagram, {
+      props: { call: callRouter(adoptableTopicGraph(), { approvals: [TOPIC_APPROVAL] }) },
+    });
+    await waitFor(() => expect(getByTestId('legend-pending')).toBeTruthy());
+  });
+
+  it('keeps the Adopt button and shows no band when there are no open PRs', async () => {
+    const { getByTestId, queryByTestId } = render(InfraDiagram, {
+      props: { call: callRouter(adoptableTopicGraph(), { approvals: [] }), onAdopt: () => {} },
+    });
+    await waitFor(() => expect(getByTestId('card-adopt-btn')).toBeTruthy());
+    expect(queryByTestId('pending-approvals-band')).toBeNull();
+    expect(queryByTestId('card-pending-link')).toBeNull();
+    expect(queryByTestId('legend-pending')).toBeNull();
+  });
+
+  it('degrades silently (Adopt button stays, no band) when the pending fetch fails', async () => {
+    const { getByTestId, queryByTestId } = render(InfraDiagram, {
+      props: { call: callRouter(adoptableTopicGraph(), { pendingThrows: true }), onAdopt: () => {} },
+    });
+    await waitFor(() => expect(getByTestId('card-adopt-btn')).toBeTruthy());
+    expect(queryByTestId('pending-approvals-band')).toBeNull();
   });
 });
