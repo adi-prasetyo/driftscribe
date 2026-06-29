@@ -475,6 +475,53 @@ def test_load_plan_view_plan_json_fetch_error_sets_unverifiable() -> None:
     assert view.unverifiable is True
 
 
+def test_load_plan_view_repo_mismatch_sets_unverifiable() -> None:
+    """A valid c2.v1 artifact whose declared ``repo`` does not match the
+    deployment's configured repo is marked ``unverifiable`` so it never renders
+    as a trusted review (and, since the approve POST re-resolves through here, it
+    never reaches ``/propose``, so no approval is minted). Mirrors
+    :func:`load_plan_view_from_gcs`. The apply
+    worker HMAC-binds the signed repo but does not itself enforce
+    deployment-repo equality, so this resolution-time check is that gate."""
+    # _seed_view_client stamps repo="adi-p/driftscribe" into the metadata.
+    client, _md = _seed_view_client(_benign_plan_json())
+    view = load_plan_view(
+        _ref(),
+        bucket_name=BUCKET,
+        client=client,
+        expected_repo="someone-else/other-repo",
+    )
+    assert view.unverifiable is True
+    # Foreign provenance is NOT surfaced as if it were ours (metadata left unset).
+    assert view.metadata == {}
+
+
+def test_load_plan_view_repo_match_verifies() -> None:
+    """When ``expected_repo`` equals the artifact's declared repo the plan
+    verifies normally — the gate fires ONLY on a mismatch."""
+    client, _md = _seed_view_client(_benign_plan_json())
+    view = load_plan_view(
+        _ref(),
+        bucket_name=BUCKET,
+        client=client,
+        expected_repo="adi-p/driftscribe",
+    )
+    assert view.unverifiable is False
+    assert view.integrity_ok is True
+    assert view.metadata["repo"] == "adi-p/driftscribe"
+
+
+def test_load_plan_view_repo_check_skipped_when_none() -> None:
+    """``expected_repo=None`` (the deployment has no configured repo, e.g. local
+    dev) skips the repo gate — backward-compatible with the prior signature."""
+    client, _md = _seed_view_client(_benign_plan_json())
+    view = load_plan_view(
+        _ref(), bucket_name=BUCKET, client=client, expected_repo=None
+    )
+    assert view.unverifiable is False
+    assert view.integrity_ok is True
+
+
 # --------------------------------------------------------------------------- #
 # find_latest_c2_comment
 # --------------------------------------------------------------------------- #

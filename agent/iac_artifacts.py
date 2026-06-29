@@ -557,7 +557,11 @@ class IacPlanView:
 
 
 def load_plan_view(
-    ref: C2CommentRef, *, bucket_name: str, client: Any = None
+    ref: C2CommentRef,
+    *,
+    bucket_name: str,
+    client: Any = None,
+    expected_repo: str | None = None,
 ) -> IacPlanView:
     """Fetch + advisory-verify the C2 artifact referenced by ``ref``.
 
@@ -569,6 +573,16 @@ def load_plan_view(
        ``driftscribe_lib.iac_plan_metadata.build_metadata`` (validates all fields +
        URI formats) and assert ``schema_version == "c2.v1"``. A malformed metadata
        sets ``unverifiable=True`` (suppress Approve) rather than crashing.
+       ``expected_repo`` (when given) additionally pins ``md["repo"]`` to the
+       deployment's configured repo: a foreign-repo artifact is marked
+       ``unverifiable`` so it never renders as a trusted review and — because the
+       approve POST re-resolves through here — never reaches ``/propose``, so no
+       approval is minted for it. ``None`` skips the check (caller has no
+       configured repo). Mirrors
+       :func:`load_plan_view_from_gcs`. This resolution-time check IS the
+       deployment-repo-equality gate: the apply worker HMAC-binds the signed
+       ``repo`` (so the applied plan is exactly the one approved) but does not
+       itself compare it against the deployment's repo.
     3. Validate + fetch ``plan.json`` pinned to the metadata's ``generation_json``.
     4. Recompute ``sha256(plan_json)`` and constant-time compare to
        ``metadata.plan_json_sha256`` → ``integrity_ok``. (We do NOT use
@@ -602,6 +616,13 @@ def load_plan_view(
 
     # Step 2: assert c2.v1 via build_metadata round-trip.
     if not _assert_c2v1_metadata(md):
+        view.unverifiable = True
+        return view
+    # Pin the artifact's declared repo to the deployment's repo when known
+    # (mirrors load_plan_view_from_gcs). A foreign-repo artifact must never
+    # render as a trusted review; leave ``metadata`` unset so the page does not
+    # surface the foreign provenance as if it were this deployment's.
+    if expected_repo is not None and md.get("repo") != expected_repo:
         view.unverifiable = True
         return view
     view.metadata = md
