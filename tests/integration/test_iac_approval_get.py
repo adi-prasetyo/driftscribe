@@ -115,7 +115,7 @@ def _patch_resolve(monkeypatch, *, ref, view):
     monkeypatch.setattr(
         main_mod.iac_artifacts,
         "load_plan_view",
-        lambda r, *, bucket_name, client=None: view,
+        lambda r, *, bucket_name, client=None, expected_repo=None: view,
     )
 
 
@@ -348,6 +348,33 @@ def test_unverifiable_suppresses_approve(_configured, monkeypatch):
     assert 'data-testid="approve-button"' not in body
     assert 'name="form_token"' not in body
     assert 'data-testid="approve-blocked"' in body  # hard-stop → red
+
+
+def test_get_threads_configured_repo_into_load_plan_view(
+    _configured, _inmemory, monkeypatch
+):
+    """The resolver (shared by the GET render AND the approve POST) must PIN the
+    artifact's repo to this deployment's ``GITHUB_REPO`` so a foreign-repo
+    artifact cannot render as a trusted review or have an approval minted for it
+    (the approve POST re-resolves through the same seam). We assert the wiring
+    here; ``load_plan_view``'s own repo gate is unit-tested."""
+    captured: dict[str, object] = {}
+    monkeypatch.setattr("agent.main.get_repo", lambda token, repo: object())
+    import agent.main as main_mod
+
+    monkeypatch.setattr(
+        main_mod.iac_artifacts, "find_latest_c2_comment", lambda repo, pr: _ref()
+    )
+
+    def _spy(r, *, bucket_name, client=None, expected_repo=None):
+        captured["expected_repo"] = expected_repo
+        return _view()
+
+    monkeypatch.setattr(main_mod.iac_artifacts, "load_plan_view", _spy)
+    resp = TestClient(app).get("/iac-approvals/42")
+    assert resp.status_code == 200
+    # _configured sets GITHUB_REPO=theghostsquad00/driftscribe.
+    assert captured["expected_repo"] == "theghostsquad00/driftscribe"
 
 
 def test_metadata_pr_mismatch_suppresses_approve(_configured, monkeypatch):

@@ -3803,7 +3803,9 @@ def _resolve_iac_plan(
         ref = iac_artifacts.find_latest_c2_comment(repo, pr_number)
         if ref is None:
             return (None, None)
-        view = iac_artifacts.load_plan_view(ref, bucket_name=artifacts_bucket(s))
+        view = iac_artifacts.load_plan_view(
+            ref, bucket_name=artifacts_bucket(s), expected_repo=s.github_repo or None
+        )
     except Exception:  # noqa: BLE001 — fail-closed: any resolver error → no/unverifiable plan
         log.warning("iac_plan_resolution_failed", extra={"pr_number": pr_number})
         return (ref, None)

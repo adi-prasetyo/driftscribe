@@ -694,7 +694,7 @@ def _iac_patch_get_resolve(monkeypatch):
     monkeypatch.setattr(
         main_mod.iac_artifacts,
         "load_plan_view",
-        lambda r, *, bucket_name, client=None: _iac_view(),
+        lambda r, *, bucket_name, client=None, expected_repo=None: _iac_view(),
     )
 
 
