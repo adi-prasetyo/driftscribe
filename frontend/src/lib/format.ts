@@ -118,6 +118,94 @@ export function iacStatusHelp(status: string | null | undefined): string | null 
   return IAC_STATUS_HELP[status] ?? null;
 }
 
+/** Visual tone for an iac_apply status token → a CSS class suffix. '' = neutral. */
+export type IacTone = '' | 'ok' | 'warn' | 'danger';
+
+export interface IacApplyMeta {
+  /** Status text for the rail meta line, e.g. 'applied & merged'. */
+  label: string;
+  /** Tone driving the token color; '' renders the default muted meta color. */
+  tone: IacTone;
+  /** Plain-language HelpHint text, or null when none is warranted. */
+  help: string | null;
+  /** True ONLY for a terminal applied+merged row — drives the ✓ "done" affordance. */
+  done: boolean;
+}
+
+const IAC_DONE_HELP =
+  "This change is live and merged — there's nothing more to do here.";
+// Must NOT promise that a plain retry clears a permanent branch-protection block —
+// mirrors agent/main.py `_iac_merge_step`'s own operator wording.
+const IAC_MERGE_PENDING_HELP =
+  "The apply succeeded, but its pull request hasn't merged yet. Open the approval " +
+  'page to check the merge status, or retry once any branch-protection block is resolved.';
+
+// Tone for NON-applied statuses. Mirrors decision.ts's APPLY_STATUS_BADGE so the
+// rail and the open-trace decision card agree on color (ambiguous → warn, not danger).
+const IAC_STATUS_TONE: Record<string, IacTone> = {
+  failed: 'danger',
+  failed_state_suspect: 'danger',
+  ambiguous: 'warn',
+};
+
+/**
+ * Merge-aware display for an iac_apply row's status. The rail historically showed
+ * only `apply_status` ('applied'), which can't distinguish "done" (applied AND
+ * merged) from "applied but merge still pending" — so a first-timer couldn't tell
+ * a finished change from one that still needs attention. This folds `merge_state`
+ * in for the `applied` case and otherwise composes the existing
+ * `iacStatusLabel`/`iacStatusHelp`.
+ *
+ * `merge_state` arrives already promoted by the serve-time `reconcile_merge_state`
+ * (agent/main.py), so an out-of-band-merged PR reads as done here too.
+ */
+export function iacApplyMeta(
+  apply_status: string | null | undefined,
+  merge_state: string | null | undefined,
+): IacApplyMeta {
+  if (apply_status === 'applied') {
+    if (merge_state === 'merged') {
+      return { label: 'applied & merged', tone: 'ok', help: IAC_DONE_HELP, done: true };
+    }
+    if (merge_state === 'failed' || merge_state === 'pending') {
+      return {
+        label: 'applied · merge pending',
+        tone: 'warn',
+        help: IAC_MERGE_PENDING_HELP,
+        done: false,
+      };
+    }
+    // Applied with no/unknown merge_state: we can't claim "done" → stay neutral.
+    return { label: 'applied', tone: '', help: null, done: false };
+  }
+  return {
+    label: iacStatusLabel(apply_status),
+    tone: IAC_STATUS_TONE[apply_status ?? ''] ?? '',
+    help: iacStatusHelp(apply_status),
+    done: false,
+  };
+}
+
+/**
+ * True when an iac_apply row's recorded apply moment (`applied_at`) differs
+ * materially from its last-activity time (`created_at`) — e.g. a row applied in
+ * May whose face doc is a June merge-only reconcile. The rail sorts/labels by
+ * `created_at` (last activity), so when these diverge we surface a faint "applied
+ * {date}" cue alongside it. Both must parse; a sub-threshold diff (default 24h)
+ * or any unparseable/missing input returns false (no cue).
+ */
+export function appliedAtDiffersMaterially(
+  applied_at: string | null | undefined,
+  created_at: string | null | undefined,
+  thresholdMs = 86_400_000,
+): boolean {
+  if (typeof applied_at !== 'string' || typeof created_at !== 'string') return false;
+  const a = Date.parse(applied_at);
+  const c = Date.parse(created_at);
+  if (Number.isNaN(a) || Number.isNaN(c)) return false;
+  return Math.abs(c - a) >= thresholdMs;
+}
+
 /**
  * Friendly headline label for a decision's `action`, shown on the rail's
  * non-iac rows (the `{:else}` branch). Today only `no_op` is remapped — from

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { fmtTokens, shortTrace, fmtPreview, fmtWhen, shortSha, iacStatusLabel, iacStatusHelp, decisionActionLabel, decisionActionHelp } from '../../src/lib/format';
+import { fmtTokens, shortTrace, fmtPreview, fmtWhen, shortSha, iacStatusLabel, iacStatusHelp, decisionActionLabel, decisionActionHelp, iacApplyMeta, appliedAtDiffersMaterially } from '../../src/lib/format';
 
 describe('fmtTokens', () => {
   it('formats a present total with comma grouping and " tok" suffix', () => {
@@ -263,5 +263,86 @@ describe('decisionActionHelp', () => {
     expect(decisionActionHelp('')).toBeNull();
     expect(decisionActionHelp(null)).toBeNull();
     expect(decisionActionHelp(undefined)).toBeNull();
+  });
+});
+
+describe('iacApplyMeta — merge-aware status for the rail', () => {
+  it('applied + merged → terminal "done" with ok tone and help', () => {
+    const m = iacApplyMeta('applied', 'merged');
+    expect(m.label).toBe('applied & merged');
+    expect(m.tone).toBe('ok');
+    expect(m.done).toBe(true);
+    expect(typeof m.help).toBe('string');
+    expect((m.help as string).toLowerCase()).toContain('nothing more to do');
+  });
+
+  it('applied + failed → merge pending (warn, not done)', () => {
+    const m = iacApplyMeta('applied', 'failed');
+    expect(m.label).toBe('applied · merge pending');
+    expect(m.tone).toBe('warn');
+    expect(m.done).toBe(false);
+    expect((m.help as string).toLowerCase()).toContain("hasn't merged");
+    // Must NOT promise a plain retry fixes a permanent branch-protection block.
+    expect((m.help as string).toLowerCase()).toContain('branch-protection');
+  });
+
+  it('applied + pending → merge pending too (forward-compat, not plain "applied")', () => {
+    const m = iacApplyMeta('applied', 'pending');
+    expect(m.label).toBe('applied · merge pending');
+    expect(m.tone).toBe('warn');
+    expect(m.done).toBe(false);
+  });
+
+  it('applied with no/unknown merge_state → neutral "applied" (cannot claim done)', () => {
+    for (const ms of [undefined, null, '', 'n/a', 'weird']) {
+      const m = iacApplyMeta('applied', ms);
+      expect(m.label).toBe('applied');
+      expect(m.tone).toBe('');
+      expect(m.done).toBe(false);
+      expect(m.help).toBeNull();
+    }
+  });
+
+  it('non-applied statuses reuse the existing label/help; tone mirrors decision.ts', () => {
+    expect(iacApplyMeta('failed', 'n/a')).toMatchObject({ tone: 'danger', done: false });
+    expect(iacApplyMeta('failed_state_suspect', 'n/a').tone).toBe('danger');
+    expect(iacApplyMeta('ambiguous', 'n/a').tone).toBe('warn'); // mirrors decision.ts (not danger)
+    const wait = iacApplyMeta('waiting_for_rebake', 'pending');
+    expect(wait.label).toBe('awaiting rebuild');
+    expect(wait.tone).toBe(''); // neutral — carries its own label + help
+    expect(typeof wait.help).toBe('string');
+  });
+
+  it('tolerates null/undefined apply_status', () => {
+    expect(iacApplyMeta(null, null)).toMatchObject({ label: '', tone: '', help: null, done: false });
+    expect(iacApplyMeta(undefined, undefined).done).toBe(false);
+  });
+});
+
+describe('appliedAtDiffersMaterially — chronology cue gate', () => {
+  it('true when applied_at and created_at differ by ≥ the threshold', () => {
+    expect(
+      appliedAtDiffersMaterially('2026-05-30T11:16:12Z', '2026-06-26T16:03:27Z'),
+    ).toBe(true);
+  });
+
+  it('false when within the threshold (same apply/activity moment)', () => {
+    expect(
+      appliedAtDiffersMaterially('2026-06-26T16:03:00Z', '2026-06-26T16:03:27Z'),
+    ).toBe(false);
+  });
+
+  it('respects a custom threshold', () => {
+    // 2h apart: false at the 24h default, true at a 1h threshold.
+    const a = '2026-06-26T10:00:00Z';
+    const c = '2026-06-26T12:00:00Z';
+    expect(appliedAtDiffersMaterially(a, c)).toBe(false);
+    expect(appliedAtDiffersMaterially(a, c, 3_600_000)).toBe(true);
+  });
+
+  it('false for any unparseable / missing input (no cue)', () => {
+    expect(appliedAtDiffersMaterially('nope', '2026-06-26T16:03:27Z')).toBe(false);
+    expect(appliedAtDiffersMaterially('2026-06-26T16:03:27Z', undefined)).toBe(false);
+    expect(appliedAtDiffersMaterially(null, null)).toBe(false);
   });
 });

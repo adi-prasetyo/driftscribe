@@ -132,6 +132,15 @@ describe('lifecycleSummaryLabel', () => {
   it('a missing/empty status renders the neutral token, never the action string', () => {
     expect(lifecycleSummaryLabel([iac('x', 9, '')])).toBe('1 earlier step · status not recorded');
   });
+
+  it('is merge-aware: applied steps read their merge outcome, not a bare "applied"', () => {
+    expect(
+      lifecycleSummaryLabel([iac('a', 32, 'applied', { merge_state: 'merged' })]),
+    ).toBe('1 earlier step · applied & merged');
+    expect(
+      lifecycleSummaryLabel([iac('a', 32, 'applied', { merge_state: 'failed' })]),
+    ).toBe('1 earlier step · applied · merge pending');
+  });
 });
 
 describe('hasAnomalousStep', () => {
@@ -149,6 +158,17 @@ describe('hasAnomalousStep', () => {
     expect(hasAnomalousStep([iac('u', 9, 'something_new')])).toBe(true);
     expect(hasAnomalousStep([iac('m', 9, '')])).toBe(true);
     expect(hasAnomalousStep([{ decision_id: 'n', action: 'iac_apply', pr_number: 9 } as Decision])).toBe(true);
+  });
+
+  it('an applied step whose merge is still pending (failed/pending) is anomalous', () => {
+    // The expanded step shows "merge pending"; the collapsed summary must not hide
+    // it behind a closed expander — open so it's visible without a click.
+    expect(hasAnomalousStep([iac('a', 32, 'applied', { merge_state: 'failed' })])).toBe(true);
+    expect(hasAnomalousStep([iac('a', 32, 'applied', { merge_state: 'pending' })])).toBe(true);
+  });
+
+  it('an applied + merged (done) step is calm', () => {
+    expect(hasAnomalousStep([iac('a', 32, 'applied', { merge_state: 'merged' })])).toBe(false);
   });
 
   it('empty list is calm', () => {

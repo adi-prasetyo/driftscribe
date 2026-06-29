@@ -40,10 +40,11 @@ describe('DecisionsRail — iac_apply CTA supersession + status token', () => {
     const { getAllByTestId, getByTestId } = render(DecisionsRail, {
       props: { decisions, activeTraceId: null, onOpenTrace: noop },
     });
-    // ONE rail row, ONE approval CTA for the whole lifecycle.
+    // ONE rail row, ONE approval CTA for the whole lifecycle. The face is an
+    // `applied` row with no confirmed merge → neutral "Go to approval page →".
     expect(getAllByTestId('past-decision-item')).toHaveLength(1);
     const link = getByTestId('iac-approve-link');
-    expect(link.textContent?.trim()).toBe('Open approval page →');
+    expect(link.textContent?.trim()).toBe('Go to approval page →');
     expect(link.getAttribute('href')).toBe('/iac-approvals/68');
   });
 
@@ -86,6 +87,84 @@ describe('DecisionsRail — iac_apply CTA supersession + status token', () => {
     const applied = metas.find((t) => t?.includes('applied'))!;
     expect(applied.indexOf('applied')).toBeGreaterThan(applied.indexOf('iac_apply'));
     expect(applied.indexOf('applied')).toBeLessThan(applied.indexOf('⎇'));
+  });
+});
+
+describe('DecisionsRail — merge-aware "done" affordance', () => {
+  it('applied + merged reads "applied & merged" (done) and the CTA is a history link', () => {
+    const decisions: Decision[] = [
+      iacRow({
+        decision_id: 'done-68',
+        apply_status: 'applied',
+        merge_state: 'merged',
+        pr_number: 68,
+      }),
+    ];
+    const { getByTestId, container } = render(DecisionsRail, {
+      props: { decisions, activeTraceId: null, onOpenTrace: noop },
+    });
+    const status = getByTestId('iac-status');
+    expect(status.textContent).toContain('applied & merged');
+    // The done token carries the ✓ check icon + the ok tone class.
+    expect(status.classList.contains('iac-status--ok')).toBe(true);
+    expect(container.querySelector('.iac-status-check')).not.toBeNull();
+    // CTA is worded as a record, not a pending action.
+    expect(getByTestId('iac-approve-link').textContent?.trim()).toBe('View approval history →');
+    // A done row needs no help affordance is wrong — it DOES carry a "done" help ⓘ.
+    expect(getByTestId('status-help')).toBeTruthy();
+  });
+
+  it('applied + merge_state=failed reads "merge pending" (warn) and keeps an actionable CTA', () => {
+    const decisions: Decision[] = [
+      iacRow({
+        decision_id: 'pending-71',
+        apply_status: 'applied',
+        merge_state: 'failed',
+        pr_number: 71,
+      }),
+    ];
+    const { getByTestId, container } = render(DecisionsRail, {
+      props: { decisions, activeTraceId: null, onOpenTrace: noop },
+    });
+    const status = getByTestId('iac-status');
+    expect(status.textContent).toContain('merge pending');
+    expect(status.classList.contains('iac-status--warn')).toBe(true);
+    expect(container.querySelector('.iac-status-check')).toBeNull(); // not done
+    expect(getByTestId('iac-approve-link').textContent?.trim()).toBe('Go to approval page →');
+  });
+
+  it('surfaces an "applied {date}" cue when applied_at predates created_at materially', () => {
+    const decisions: Decision[] = [
+      iacRow({
+        decision_id: 'reconciled-32',
+        apply_status: 'applied',
+        merge_state: 'merged',
+        pr_number: 32,
+        applied_at: '2026-05-30T11:16:12Z', // real apply, a month before...
+        created_at: '2026-06-26T16:03:27Z', // ...the merge-only reconcile (row time)
+      }),
+    ];
+    const { getByTestId } = render(DecisionsRail, {
+      props: { decisions, activeTraceId: null, onOpenTrace: noop },
+    });
+    expect(getByTestId('applied-cue').textContent).toContain('applied');
+  });
+
+  it('omits the cue when applied_at and created_at are the same moment', () => {
+    const decisions: Decision[] = [
+      iacRow({
+        decision_id: 'fresh-68',
+        apply_status: 'applied',
+        merge_state: 'merged',
+        pr_number: 68,
+        applied_at: '2026-06-26T16:03:27Z',
+        created_at: '2026-06-26T16:03:27Z',
+      }),
+    ];
+    const { queryByTestId } = render(DecisionsRail, {
+      props: { decisions, activeTraceId: null, onOpenTrace: noop },
+    });
+    expect(queryByTestId('applied-cue')).toBeNull();
   });
 });
 

@@ -176,25 +176,26 @@ export function resolvedIacPrNumbers(
 
 /**
  * Label for an iac_apply row's approval CTA. The link target — `/iac-approvals/<n>`
- * — is unchanged for every state; only the wording reflects whether the row is
- * still ACTIONABLE.
+ * — is unchanged for every state; only the wording reflects how the row reads to
+ * an operator.
  *
- * "Review & approve →" ONLY when the row is `waiting_for_rebake` AND not
- * superseded (no `applied` row for its PR — see `resolvedIacPrNumbers`). A
- * `waiting_for_rebake` create-class decision still needs an operator click (the
- * second, post-rebake Apply); once a later `applied` row exists for the same PR,
- * that work is done and the row is view-only. Every other state — a superseded
- * waiting row, applied, failed, or a row with an invalid/missing `pr_number`
- * that can't be matched to a resolved PR (so it keeps the live CTA) — resolves
- * to the neutral "Open approval page →" (Codex review, PR #71: avoid a stale
- * "Review & approve" affordance on a decision that is already resolved).
+ * Three wordings:
+ * - "Review & approve →" — the ONLY actionable label: a `waiting_for_rebake` row
+ *   that is NOT superseded (no `applied` row for its PR — see
+ *   `resolvedIacPrNumbers`) still needs the operator's second, post-rebake Apply.
+ * - "View approval history →" — a DONE row (`applied` + `merge_state==='merged'`):
+ *   the gate is closed, so the link is a record to look back at, not an action.
+ * - "Go to approval page →" — every other (non-actionable, not-yet-done) state: a
+ *   superseded waiting row, applied-but-merge-pending, failed, or an unmatchable
+ *   `pr_number`. Neutral wording so a finished/parked row doesn't imply pending
+ *   approval work (Codex review, PR #71: no stale "Review & approve" affordance).
  */
 export function iacApproveLabel(
-  d: { apply_status?: string; pr_number?: number },
+  d: { apply_status?: string; merge_state?: string; pr_number?: number },
   resolvedPrs: ReadonlySet<number>,
 ): string {
   const superseded = typeof d.pr_number === 'number' && resolvedPrs.has(d.pr_number);
-  return d.apply_status === 'waiting_for_rebake' && !superseded
-    ? 'Review & approve →'
-    : 'Open approval page →';
+  if (d.apply_status === 'waiting_for_rebake' && !superseded) return 'Review & approve →';
+  if (d.apply_status === 'applied' && d.merge_state === 'merged') return 'View approval history →';
+  return 'Go to approval page →';
 }

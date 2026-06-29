@@ -8,7 +8,13 @@
     resolvedIacPrNumbers,
     iacApproveLabel,
   } from '../lib/approval';
-  import { shortSha, iacStatusLabel, iacStatusHelp, decisionActionLabel, decisionActionHelp } from '../lib/format';
+  import {
+    shortSha,
+    iacApplyMeta,
+    appliedAtDiffersMaterially,
+    decisionActionLabel,
+    decisionActionHelp,
+  } from '../lib/format';
   import {
     groupRailDecisions,
     hasAnomalousStep,
@@ -158,11 +164,20 @@
 
     {#if d.action === 'iac_apply'}
       {@const sha = shortSha(d.head_sha)}
-      {@const st = iacStatusLabel(d.apply_status)}
-      {@const help = iacStatusHelp(d.apply_status)}
+      {@const meta = iacApplyMeta(d.apply_status, d.merge_state)}
+      {@const toneClass = meta.tone ? `iac-status iac-status--${meta.tone}` : 'iac-status'}
+      <!-- Chronology cue: the row time is created_at (last activity, e.g. a later
+           merge-only reconcile). When the apply itself happened materially earlier,
+           surface the real apply moment so a "done" row doesn't misread its day. -->
+      {@const appliedCue =
+        d.apply_status === 'applied' &&
+        d.applied_at &&
+        appliedAtDiffersMaterially(d.applied_at, d.created_at)
+          ? fmtCreatedAt(d.applied_at)
+          : ''}
       <!-- HelpHint sits at the END so its opened inline panel breaks cleanly
            onto its own line below the meta (never mid-line, never clipped). -->
-      <p class="row-meta">iac_apply{#if st} · {st}{/if}{#if sha} · <span class="row-sha">⎇ {sha}</span>{/if}{#if help}<HelpHint text={help} label={st} />{/if}</p>
+      <p class="row-meta">iac_apply{#if meta.label} · <span class={toneClass} data-testid="iac-status">{#if meta.done}<Icon name="check" size={12} extraClass="iac-status-check" />{/if}{meta.label}</span>{/if}{#if sha} · <span class="row-sha">⎇ {sha}</span>{/if}{#if appliedCue} · <span class="applied-cue" data-testid="applied-cue">applied {appliedCue}</span>{/if}{#if meta.help}<HelpHint text={meta.help} label={meta.label} />{/if}</p>
     {/if}
 
     {#if d.action === 'no_op'}
@@ -240,20 +255,22 @@
         <summary data-testid="iac-lifecycle-summary">{lifecycleSummaryLabel(lifecycle)}</summary>
         <ol class="lifecycle-steps">
           {#each [...lifecycle].reverse() as step (step.decision_id)}
-            {@const stepStatus = iacStatusLabel(step.apply_status)}
-            {@const stepHelp = iacStatusHelp(step.apply_status)}
+            {@const stepMeta = iacApplyMeta(step.apply_status, step.merge_state)}
+            {@const stepToneClass = stepMeta.tone
+              ? `step-status iac-status iac-status--${stepMeta.tone}`
+              : 'step-status iac-status'}
             <li class="lifecycle-step" data-testid="iac-lifecycle-step">
               <!-- Inline siblings spaced by flex gap — no text-node separators,
                    hence no seam-gluing needed (grounding fact 10 applies only
                    where text nodes meet). HelpHint is LAST so its flex-basis:100%
                    panel wraps onto its own line below when opened. -->
-              <span class="step-status">{stepStatus || 'status not recorded'}</span>
+              <span class={stepToneClass}>{#if stepMeta.done}<Icon name="check" size={12} extraClass="iac-status-check" />{/if}{stepMeta.label || 'status not recorded'}</span>
               {#if step.created_at}<time class="row-time" datetime={step.created_at}>{fmtCreatedAt(step.created_at)}</time>{/if}
               {#if step.trace_id}
                 <button class="open-trace-btn" data-testid="lifecycle-open-trace" type="button"
                   onclick={() => onOpenTrace(step.trace_id as string)}>open trace →</button>
               {/if}
-              {#if stepHelp}<HelpHint text={stepHelp} label={stepStatus} />{/if}
+              {#if stepMeta.help}<HelpHint text={stepMeta.help} label={stepMeta.label} />{/if}
             </li>
           {/each}
         </ol>
@@ -448,6 +465,38 @@
   .row-sha {
     font-family: var(--ds-font-mono, ui-monospace, monospace);
     font-variant-numeric: tabular-nums;
+  }
+
+  /* Merge-aware iac_apply status token. Neutral inherits the meta color; the tone
+     modifiers tint an attention/terminal/done state so "applied & merged" (done)
+     reads as finished vs "applied · merge pending". Inline-flex keeps the optional
+     ✓ aligned with the label; baseline keeps the token level with the meta text. */
+  .iac-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25em;
+    vertical-align: baseline;
+    font-weight: var(--ds-fw-medium, 500);
+  }
+  .iac-status--ok {
+    color: var(--ds-ok);
+  }
+  .iac-status--warn {
+    color: var(--ds-warn);
+  }
+  .iac-status--danger {
+    color: var(--ds-danger);
+  }
+  /* Icon.svelte renders its own scoped element, so the check tint is global. */
+  :global(.iac-status-check) {
+    color: var(--ds-ok);
+  }
+
+  /* Secondary apply-moment cue: shown when the row time (created_at = last
+     activity, e.g. a later merge reconcile) differs materially from the apply
+     moment. Faint + subordinate so it never competes with the status token. */
+  .applied-cue {
+    color: var(--ds-faint);
   }
 
   /* --- The action affordances -------------------------------------------- */

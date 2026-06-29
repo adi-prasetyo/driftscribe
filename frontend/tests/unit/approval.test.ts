@@ -312,20 +312,31 @@ describe('iacApproveLabel — retire the stale CTA on superseded rows', () => {
     );
   });
 
-  it('waiting_for_rebake + PR resolved → "Open approval page →" (superseded)', () => {
+  it('waiting_for_rebake + PR resolved → "Go to approval page →" (superseded)', () => {
     expect(
       iacApproveLabel({ apply_status: 'waiting_for_rebake', pr_number: 68 }, new Set([68])),
-    ).toBe('Open approval page →');
+    ).toBe('Go to approval page →');
   });
 
-  it('applied / failed / undefined apply_status → "Open approval page →"', () => {
+  it('applied + merged (done) → "View approval history →"', () => {
+    expect(
+      iacApproveLabel({ apply_status: 'applied', merge_state: 'merged', pr_number: 68 }, new Set()),
+    ).toBe('View approval history →');
+  });
+
+  it('applied + merge pending / failed / undefined apply_status → "Go to approval page →"', () => {
+    // applied but merge not confirmed → still actionable-ish, neutral wording.
+    expect(
+      iacApproveLabel({ apply_status: 'applied', merge_state: 'failed', pr_number: 68 }, new Set()),
+    ).toBe('Go to approval page →');
+    // applied with no merge_state → not provably done → neutral wording.
     expect(iacApproveLabel({ apply_status: 'applied', pr_number: 68 }, new Set())).toBe(
-      'Open approval page →',
+      'Go to approval page →',
     );
     expect(iacApproveLabel({ apply_status: 'failed', pr_number: 70 }, new Set())).toBe(
-      'Open approval page →',
+      'Go to approval page →',
     );
-    expect(iacApproveLabel({ pr_number: 68 }, new Set())).toBe('Open approval page →');
+    expect(iacApproveLabel({ pr_number: 68 }, new Set())).toBe('Go to approval page →');
   });
 
   it('waiting_for_rebake with an invalid/missing pr_number against a non-empty set → still "Review & approve →"', () => {
@@ -342,7 +353,7 @@ describe('iacApproveLabel — retire the stale CTA on superseded rows', () => {
     const resolved = new Set([68]); // PR A (68) is resolved; PR B (71) is not
     expect(
       iacApproveLabel({ apply_status: 'waiting_for_rebake', pr_number: 68 }, resolved),
-    ).toBe('Open approval page →');
+    ).toBe('Go to approval page →');
     expect(
       iacApproveLabel({ apply_status: 'waiting_for_rebake', pr_number: 71 }, resolved),
     ).toBe('Review & approve →');

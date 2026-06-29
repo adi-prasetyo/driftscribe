@@ -62,6 +62,12 @@ export interface Decision extends Record<string, unknown> {
   // failed_state_suspect / ambiguous). The rail renders it as a meta-line token
   // and uses it to retire the stale "Review & approve →" CTA on superseded rows.
   apply_status?: string;
+  // iac_apply apply moment (ISO 8601), recorded when apply_status==="applied".
+  // Distinct from created_at (the doc's last-activity time): a merge-only reconcile
+  // re-records the merged outcome with a fresh created_at but carries the ORIGINAL
+  // applied_at forward (agent/main.py _record_iac_decision). The rail shows an
+  // "applied {date}" cue when the two diverge; the trace card's "When" prefers it.
+  applied_at?: string;
   // iac_apply merge state (merged / failed / pending / n/a). May be reconciled
   // at serve time: when the PR was merged out-of-band, the coordinator promotes
   // a stale merge_state="failed" to "merged" and sets merge_reconciled (a
