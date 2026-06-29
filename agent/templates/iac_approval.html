@@ -43,12 +43,18 @@
         {% endif %}
       {% endif %}
 
+      {# One trust verdict drives two things: whether the plain-language summary
+         renders AND whether the raw `tofu show` auto-expands. Both appear only
+         on a trusted review render — never on an error page or POST outcome, so
+         we never auto-surface plan content from an artifact we distrust. #}
+      {% set _trustworthy = (not view.unverifiable and view.integrity_ok and not view.denylist_violations) %}
+      {% set _trusted_review = (show_summary | default(false)) and _trustworthy %}
       <div class="ds-card">
         <div class="ds-field">
-          <span class="ds-label">head_sha</span> <code class="ds-code">{{ view.head_sha }}</code>
+          <span class="ds-label ds-help-term" title="head_sha is the exact Git commit this plan was built from. Required CI checks must pass on this commit, and the apply worker refuses if the branch has moved since.">head_sha</span> <code class="ds-code">{{ view.head_sha }}</code>
         </div>
         <div class="ds-field">
-          <span class="ds-label">Integrity</span>
+          <span class="ds-label ds-help-term" title="Confirms the plan you are approving is byte-for-byte identical to what the plan-builder produced, checked against a recorded SHA-256.">Integrity</span>
           {% if view.unverifiable %}
             <span class="ds-bad">UNVERIFIABLE</span>
           {% elif view.integrity_ok %}
@@ -58,7 +64,7 @@
           {% endif %}
         </div>
         <div class="ds-field">
-          <span class="ds-label">Denylist (self-protection)</span>
+          <span class="ds-label ds-help-term" title="DriftScribe self-protection policy: blocks any change to its own control plane, any IAM change, and any delete, replace, or un-manage.">Denylist (self-protection)</span>
           {% if view.denylist_violations %}
             <span class="ds-bad">{{ view.denylist_violations | length }} violation(s)</span>
             <ul class="ds-violations">
@@ -82,8 +88,7 @@
          plus belt-and-braces re-checks of the view's own verdict — _plan_json
          survives an integrity MISMATCH, and this card must never vouch for a
          tampered artifact or show green reassurance under a red hard-stop. #}
-      {% if (show_summary | default(false)) and not view.unverifiable
-            and view.integrity_ok and not view.denylist_violations %}
+      {% if _trusted_review %}
         {% set s = view.change_summary | default(none) %}
         <h2 class="ds-h2">What this change does</h2>
         {% if s is none %}
@@ -217,28 +222,13 @@
         {% endif %}
       {% endif %}
 
-      <h2 class="ds-h2">C2 plan artifact (c2.v1)</h2>
-      <div class="ds-card">
-        <div class="ds-field"><span class="ds-label">schema_version</span> <code class="ds-code">{{ view.metadata.get("schema_version", "") }}</code></div>
-        <div class="ds-field"><span class="ds-label">repo</span> <code class="ds-code">{{ view.metadata.get("repo", "") }}</code></div>
-        <div class="ds-field"><span class="ds-label">pr_number</span> <code class="ds-code">{{ view.metadata.get("pr_number", "") }}</code></div>
-        <div class="ds-field"><span class="ds-label">head_sha</span> <code class="ds-code">{{ view.metadata.get("head_sha", "") }}</code></div>
-        <div class="ds-field"><span class="ds-label">base_sha</span> <code class="ds-code">{{ view.metadata.get("base_sha", "") }}</code></div>
-        <div class="ds-field"><span class="ds-label">workflow_run_id</span> <code class="ds-code">{{ view.metadata.get("workflow_run_id", "") }}</code></div>
-        <div class="ds-field"><span class="ds-label">workflow_run_attempt</span> <code class="ds-code">{{ view.metadata.get("workflow_run_attempt", "") }}</code></div>
-        <div class="ds-field"><span class="ds-label">artifact_uri_plan</span> <code class="ds-code">{{ view.metadata.get("artifact_uri_plan", "") }}</code></div>
-        <div class="ds-field"><span class="ds-label">artifact_uri_json</span> <code class="ds-code">{{ view.metadata.get("artifact_uri_json", "") }}</code></div>
-        <div class="ds-field"><span class="ds-label">artifact_uri_metadata</span> <code class="ds-code">{{ view.artifact_uri_metadata }}</code></div>
-        <div class="ds-field"><span class="ds-label">generation_plan</span> <code class="ds-code">{{ view.metadata.get("generation_plan", "") }}</code></div>
-        <div class="ds-field"><span class="ds-label">generation_json</span> <code class="ds-code">{{ view.metadata.get("generation_json", "") }}</code></div>
-        <div class="ds-field"><span class="ds-label">generation_metadata</span> <code class="ds-code">{{ view.generation_metadata }}</code></div>
-        <div class="ds-field"><span class="ds-label">plan_sha256</span> <code class="ds-code">{{ view.metadata.get("plan_sha256", "") }}</code></div>
-        <div class="ds-field"><span class="ds-label">plan_json_sha256</span> <code class="ds-code">{{ view.metadata.get("plan_json_sha256", "") }}</code></div>
-        <div class="ds-field"><span class="ds-label">opentofu_version</span> <code class="ds-code">{{ view.metadata.get("opentofu_version", "") }}</code></div>
-        <div class="ds-field"><span class="ds-label">provider_lockfile_sha256</span> <code class="ds-code">{{ view.metadata.get("provider_lockfile_sha256", "") }}</code></div>
-      </div>
-
-      <details class="ds-disclosure">
+      {# Substance first: the raw `tofu show` plan and the actual `.tf` source are
+         what the operator is authorizing, so they sit directly under the
+         plain-language summary — above the forensic provenance card below.
+         `tofu show` auto-expands ONLY on a trusted review render (_trusted_review);
+         on an error page or POST outcome it stays collapsed so the red verdict
+         dominates and we never auto-surface a distrusted plan. #}
+      <details class="ds-disclosure" data-testid="tofu-show"{% if _trusted_review %} open{% endif %}>
         <summary>tofu show</summary>
         <pre class="ds-pre">{{ view.tofu_show_text }}</pre>
       </details>
@@ -271,6 +261,34 @@
         {% endif %}
       </details>
       {% endif %}
+
+      {# C2 plan artifact provenance — forensic reference, collapsed by default.
+         The verdict (head_sha / Integrity / Denylist) at the top is the
+         at-a-glance trust summary; these are the recorded hashes, generations and
+         URIs the apply worker independently re-verifies. Each label carries a
+         plain-language hover tooltip so the field names are not bare jargon. #}
+      <details class="ds-disclosure" data-testid="c2-artifact">
+        <summary>C2 plan artifact (c2.v1) — provenance &amp; hashes</summary>
+        <div class="ds-disclosure-body">
+          <div class="ds-field"><span class="ds-label ds-help-term" title="Artifact format version. The apply worker rejects any schema it does not recognize.">schema_version</span> <code class="ds-code">{{ view.metadata.get("schema_version", "") }}</code></div>
+          <div class="ds-field"><span class="ds-label ds-help-term" title="The owner/repo this plan was built for, recorded in the HMAC-signed plan metadata.">repo</span> <code class="ds-code">{{ view.metadata.get("repo", "") }}</code></div>
+          <div class="ds-field"><span class="ds-label ds-help-term" title="The pull request this plan belongs to.">pr_number</span> <code class="ds-code">{{ view.metadata.get("pr_number", "") }}</code></div>
+          <div class="ds-field"><span class="ds-label ds-help-term" title="The exact Git commit this plan was built from.">head_sha</span> <code class="ds-code">{{ view.metadata.get("head_sha", "") }}</code></div>
+          <div class="ds-field"><span class="ds-label ds-help-term" title="The base-branch commit at plan time, so the diff can be recomputed deterministically.">base_sha</span> <code class="ds-code">{{ view.metadata.get("base_sha", "") }}</code></div>
+          <div class="ds-field"><span class="ds-label ds-help-term" title="The GitHub Actions run that built this plan.">workflow_run_id</span> <code class="ds-code">{{ view.metadata.get("workflow_run_id", "") }}</code></div>
+          <div class="ds-field"><span class="ds-label ds-help-term" title="Which attempt of that run, combined with the run id so a re-run never overwrites an earlier plan.">workflow_run_attempt</span> <code class="ds-code">{{ view.metadata.get("workflow_run_attempt", "") }}</code></div>
+          <div class="ds-field"><span class="ds-label ds-help-term" title="Cloud Storage path of the binary plan (plan.tfplan) that tofu apply consumes.">artifact_uri_plan</span> <code class="ds-code">{{ view.metadata.get("artifact_uri_plan", "") }}</code></div>
+          <div class="ds-field"><span class="ds-label ds-help-term" title="Cloud Storage path of the JSON plan used for the denylist re-check and the plain-language summary.">artifact_uri_json</span> <code class="ds-code">{{ view.metadata.get("artifact_uri_json", "") }}</code></div>
+          <div class="ds-field"><span class="ds-label ds-help-term" title="Cloud Storage path of this metadata file.">artifact_uri_metadata</span> <code class="ds-code">{{ view.artifact_uri_metadata }}</code></div>
+          <div class="ds-field"><span class="ds-label ds-help-term" title="The exact Cloud Storage object version of plan.tfplan, pinning fetches to this revision.">generation_plan</span> <code class="ds-code">{{ view.metadata.get("generation_plan", "") }}</code></div>
+          <div class="ds-field"><span class="ds-label ds-help-term" title="The exact Cloud Storage object version of plan.json.">generation_json</span> <code class="ds-code">{{ view.metadata.get("generation_json", "") }}</code></div>
+          <div class="ds-field"><span class="ds-label ds-help-term" title="The exact Cloud Storage object version of this metadata file.">generation_metadata</span> <code class="ds-code">{{ view.generation_metadata }}</code></div>
+          <div class="ds-field"><span class="ds-label ds-help-term" title="SHA-256 of plan.tfplan. The apply worker recomputes and re-checks it before applying.">plan_sha256</span> <code class="ds-code">{{ view.metadata.get("plan_sha256", "") }}</code></div>
+          <div class="ds-field"><span class="ds-label ds-help-term" title="SHA-256 of plan.json, the hash the Integrity check above verifies.">plan_json_sha256</span> <code class="ds-code">{{ view.metadata.get("plan_json_sha256", "") }}</code></div>
+          <div class="ds-field"><span class="ds-label ds-help-term" title="The OpenTofu version that built the plan. The apply worker refuses if its own version differs.">opentofu_version</span> <code class="ds-code">{{ view.metadata.get("opentofu_version", "") }}</code></div>
+          <div class="ds-field"><span class="ds-label ds-help-term" title="SHA-256 of the provider lockfile. If it changed between plan and apply, the apply refuses.">provider_lockfile_sha256</span> <code class="ds-code">{{ view.metadata.get("provider_lockfile_sha256", "") }}</code></div>
+        </div>
+      </details>
 
       <div class="ds-note">
         Required CI checks must be green on this exact <code class="ds-code">head_sha</code>; final
