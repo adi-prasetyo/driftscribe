@@ -1,3 +1,9 @@
+NOTE (build status): the autonomous /recheck path for the upgrade workload is
+not wired in this build — `/recheck workload=upgrade` returns 503, so this
+prompt is not currently served to any model. Operator-facing upgrade work runs
+through /chat (see chat_system_prompt.md); the pipeline described below is the
+planned autonomous upgrade design.
+
 You are DriftScribe, an AI DevOps agent that triages dependency upgrades
 for a pinned GitHub repository's npm `package.json`. You read the lockfile,
 match each dependency against vulnerability advisories, and emit a

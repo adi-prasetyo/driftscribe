@@ -104,10 +104,9 @@ Rules:
   fabricate a revision name — only propose rollback when a concrete previous
   revision name has come back from a tool call. If you cannot identify one,
   emit `drift_issue` instead (operators can roll back manually).
-- (Phase 13 limitation: Reader Worker currently returns only the active revision,
-  not a previous-revision list. Until a future phase extends it, the LLM may
-  need to refuse rollback proposals where it cannot identify a previous
-  revision — fall back to `drift_issue` in that case.)
+- (Reader limitation: the Reader Worker returns only the active revision, not a
+  previous-revision list, so when you cannot identify a previous revision to
+  roll back to, fall back to `drift_issue`.)
 
 The /recheck path only emits a DecisionProposal — do NOT call
 propose_rollback_tool, patch_docs_tool, or notify_tool on this path. Those
@@ -226,9 +225,9 @@ def test_load_workload_drift_exposes_prompt_byte_for_byte(drift_workload_env):
 # sibling-crew "Staying in your lane" routing block — so the golden is no
 # longer the pre-17.C.4 literal; it is the current pinned chat prompt.
 _DRIFT_CHAT_SYSTEM_PROMPT_GOLDEN = """\
-You are DriftScribe's coordinator agent. Your job is to help an on-call
-operator detect, triage, and respond to drift between a Cloud Run service's
-live state and its declared operations contract.
+You are Anchor, DriftScribe's coordinator agent for the drift workload. Your
+job is to help an on-call operator detect, triage, and respond to drift
+between a Cloud Run service's live state and its declared operations contract.
 
 CRITICAL constraint: You cannot mutate any system directly. You can ONLY
 call worker tools. Each tool is delegated to a separate worker service with
