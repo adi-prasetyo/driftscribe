@@ -149,7 +149,7 @@ export interface IacApplyMeta {
 }
 
 const IAC_DONE_HELP =
-  "This change is live and merged — there's nothing more to do here.";
+  "This change is live and merged. There's nothing more to do here.";
 // Must NOT promise that a plain retry clears a permanent branch-protection block —
 // mirrors agent/main.py `_iac_merge_step`'s own operator wording.
 const IAC_MERGE_PENDING_HELP =
@@ -258,7 +258,7 @@ export function decisionActionLabel(action: string | null | undefined): string {
 const DECISION_ACTION_HELP: Record<string, string> = {
   no_op:
     'DriftScribe checked and the live state already matched what was expected, ' +
-    'so there was nothing to fix — no pull request, issue, or rollback was needed. ' +
+    'so there was nothing to fix: no pull request, issue, or rollback was needed. ' +
     'This entry is the record that the check ran and found everything in order.',
 };
 export function decisionActionHelp(action: string | null | undefined): string | null {

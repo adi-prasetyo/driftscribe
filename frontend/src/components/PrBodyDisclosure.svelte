@@ -105,7 +105,7 @@
     </div>
     {#if truncated}
       <p class="pr-body__truncated" data-testid="pr-body-truncated">
-        Description truncated — open the PR on GitHub for the full text.
+        Description truncated. Open the PR on GitHub for the full text.
       </p>
     {/if}
   </details>

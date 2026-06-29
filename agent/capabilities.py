@@ -99,7 +99,7 @@ TOOL_DESCRIPTIONS: Final[Mapping[str, str]] = MappingProxyType({
         "reject, or apply anything."
     ),
     "read_team_log": (
-        "Reads DriftScribe's own decision log as \"team memory\" — what the "
+        "Reads DriftScribe's own decision log as \"team memory\": what the "
         "crews recently did or decided (adoptions, docs PRs, rollbacks, "
         "upgrades), newest first, optionally filtered to one PR. Read-only and "
         "allowlist-projected: surfaces recorded status and pointers only, never "
@@ -107,7 +107,7 @@ TOOL_DESCRIPTIONS: Final[Mapping[str, str]] = MappingProxyType({
         "failed apply, and not live merge state."
     ),
     "read_conversations": (
-        "Reads recent chat conversations across crews as \"team memory\" — what "
+        "Reads recent chat conversations across crews as \"team memory\": what "
         "other crews recently discussed, newest first; pass a crew to filter, a "
         "query to title-search, or a conversation_id to read one thread. "
         "Read-only and allowlist-projected: turn text is secret-redacted, "

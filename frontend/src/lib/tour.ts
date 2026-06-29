@@ -113,7 +113,7 @@ export function estateLine(graph: InfraGraph | null): string {
   if (s.resources === 0) {
     const body =
       s.otherResources > 0
-        ? 'none are in resource types DriftScribe supports — they are types like ' +
+        ? 'none are in resource types DriftScribe supports. They are types like ' +
           'Cloud Run revisions and container images it does not manage'
         : 'none are in resource types DriftScribe supports yet';
     return `${s.totalResources} resources indexed, ${body}. ${tail}`;

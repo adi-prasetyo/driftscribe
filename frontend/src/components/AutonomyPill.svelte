@@ -287,7 +287,7 @@
       class="ds-pill ds-pill--warn autonomy-pill__btn"
       type="button"
       data-testid="autonomy-pill-retry"
-      aria-label="Autonomy state could not be read — retry."
+      aria-label="Autonomy state could not be read. Retry."
       title="Autonomy state could not be read; the agent is failing closed to Observe. Click to retry."
       onclick={() => void autonomy.fetchAutonomy()}
       ><Icon name="alert-triangle" size={12} />State unknown · retry</button
