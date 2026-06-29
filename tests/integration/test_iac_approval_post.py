@@ -15,6 +15,8 @@ seams on ``agent.main``. The ``Origin`` header is sent matching
 """
 from __future__ import annotations
 
+import datetime as dt
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -1050,12 +1052,99 @@ def test_applied_merge_fail_parks_and_reconciles(_configured, monkeypatch):
     assert existing is not None
     assert existing["apply_status"] == "applied"
     assert existing["merge_state"] == "failed"
+    # Pin the parked doc's apply moment to a distinctive past sentinel so the
+    # carry-forward assertion below is deterministic (not a now()-vs-now() race).
+    _SENTINEL = "2020-01-01T00:00:00+00:00"
+    existing["applied_at"] = _SENTINEL
     # Second POST: merge now succeeds → merge-only reconcile (NO re-apply).
     merge_state["fail"] = False
     r2 = _post(client, token=_mint())
     assert r2.status_code == 200
     assert "applied and merged" in r2.text.lower()
     assert len(calls["apply"]) == 1  # NOT re-applied
+    # The reconcile re-record carries the ORIGINAL apply moment forward — it must
+    # NOT restamp applied_at to the reconcile time (that floated stale rows to the
+    # top of the rail and mislabeled the apply day).
+    reconciled = state.find_decision_for_event(ek)
+    assert reconciled["apply_status"] == "applied"
+    assert reconciled["merge_state"] == "merged"
+    assert reconciled["applied_at"] == _SENTINEL
+
+
+def test_merge_only_reconcile_failure_preserves_applied_at(_configured, monkeypatch):
+    """A merge that STILL fails on the reconcile re-POST re-records applied+failed —
+    and must also preserve the original apply moment, so repeated failed retries
+    don't drift applied_at forward each time."""
+    _patch_resolve(monkeypatch)
+    _patch_repo(monkeypatch)
+
+    def _merge(repo, **kw):  # always fails
+        raise PrMergeBlockedError("mergeability still computing")
+
+    _patch_github(monkeypatch, merge=_merge)
+    _patch_workers(monkeypatch)
+    client = TestClient(app)
+    assert _post(client, token=_mint()).status_code == 200  # park applied+failed
+    state = get_state()
+    ek = main_mod._iac_event_key("theghostsquad00/driftscribe", 42, _HEAD, _GEN_META)
+    _SENTINEL = "2020-01-01T00:00:00+00:00"
+    state.find_decision_for_event(ek)["applied_at"] = _SENTINEL
+    # Re-POST: merge fails again → re-record applied+failed, applied_at preserved.
+    assert _post(client, token=_mint()).status_code == 200
+    reparked = state.find_decision_for_event(ek)
+    assert reparked["apply_status"] == "applied" and reparked["merge_state"] == "failed"
+    assert reparked["applied_at"] == _SENTINEL
+
+
+def test_merge_only_reconcile_missing_applied_at_falls_back_to_now(
+    _configured, monkeypatch
+):
+    """Best-effort fallback: an old parked doc with no usable applied_at gets a
+    fresh stamp on reconcile rather than crashing or persisting None."""
+    _patch_resolve(monkeypatch)
+    _patch_repo(monkeypatch)
+    merge_state = {"fail": True}
+
+    def _merge(repo, **kw):
+        if merge_state["fail"]:
+            raise PrMergeBlockedError("mergeability still computing")
+        return {"merged": True, "already_merged": False, "number": 42, "url": "u"}
+
+    _patch_github(monkeypatch, merge=_merge)
+    _patch_workers(monkeypatch)
+    client = TestClient(app)
+    assert _post(client, token=_mint()).status_code == 200  # park applied+failed
+    state = get_state()
+    ek = main_mod._iac_event_key("theghostsquad00/driftscribe", 42, _HEAD, _GEN_META)
+    state.find_decision_for_event(ek)["applied_at"] = None  # no usable prior value
+    before = dt.datetime.now(dt.timezone.utc)
+    merge_state["fail"] = False
+    assert _post(client, token=_mint()).status_code == 200
+    after = dt.datetime.now(dt.timezone.utc)
+    reconciled = state.find_decision_for_event(ek)
+    assert isinstance(reconciled["applied_at"], str) and reconciled["applied_at"]
+    parsed = dt.datetime.fromisoformat(reconciled["applied_at"])
+    assert before <= parsed <= after
+
+
+def test_fresh_apply_stamps_applied_at_now(_configured, monkeypatch):
+    """No regression: a genuine fresh apply→merge stamps applied_at at apply time
+    (nothing to carry forward)."""
+    _patch_resolve(monkeypatch)
+    _patch_repo(monkeypatch)
+    _patch_github(monkeypatch)
+    _patch_workers(monkeypatch)
+    client = TestClient(app)
+    before = dt.datetime.now(dt.timezone.utc)
+    r = _post(client, token=_mint())
+    after = dt.datetime.now(dt.timezone.utc)
+    assert r.status_code == 200 and "applied and merged" in r.text.lower()
+    state = get_state()
+    ek = main_mod._iac_event_key("theghostsquad00/driftscribe", 42, _HEAD, _GEN_META)
+    dec = state.find_decision_for_event(ek)
+    assert isinstance(dec["applied_at"], str) and dec["applied_at"]
+    parsed = dt.datetime.fromisoformat(dec["applied_at"])
+    assert before <= parsed <= after
 
 
 # =========================================================================== #

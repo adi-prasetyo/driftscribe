@@ -4293,6 +4293,7 @@ def _record_iac_decision(
     pr_number: int,
     approver: str,
     pr_title: str | None = None,
+    applied_at: str | None = None,
 ) -> dict:
     """Build + persist the infra-apply decision doc (the reconcile pointer).
 
@@ -4306,6 +4307,14 @@ def _record_iac_decision(
     request via :func:`_fetch_pr_title` and rendered as the rail row's subtitle.
     Persisted only when a non-empty string is supplied (the PR URL, by contrast,
     is derived at serve time — see :func:`attach_iac_pr_link`).
+
+    ``applied_at`` (optional) overrides the recorded apply moment for an
+    ``applied`` row. A FRESH apply leaves it ``None`` → stamped to now (the apply
+    just happened). The merge-only reconcile re-POST passes the ORIGINAL apply
+    moment from the prior decision so re-recording the merged outcome doesn't
+    restamp the apply day — which otherwise floats a month-old apply to the top of
+    the rail and mislabels its "When" (the rail/trace surface this field). Ignored
+    unless ``apply_status == "applied"``.
     """
     decision_id = str(uuid.uuid4())
     decision = {
@@ -4324,7 +4333,9 @@ def _record_iac_decision(
     if pr_title:
         decision["pr_title"] = pr_title
     if apply_status == "applied":
-        decision["applied_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
+        decision["applied_at"] = applied_at or dt.datetime.now(
+            dt.timezone.utc
+        ).isoformat()
     state.record_decision(decision_id, event_key, decision)
     return decision
 
@@ -4831,6 +4842,7 @@ def _iac_merge_step(
     operator_email: str,
     pr_number: int,
     pr_title: str | None = None,
+    applied_at: str | None = None,
 ) -> Response:
     """Step (g): merge the EXACT applied head; reconcile on merge-fail.
 
@@ -4869,6 +4881,7 @@ def _iac_merge_step(
             pr_number=pr_number,
             approver=operator_email,
             pr_title=pr_title,
+            applied_at=applied_at,
         )
         if permanent:
             alert = (
@@ -4919,6 +4932,7 @@ def _iac_merge_step(
         pr_number=pr_number,
         approver=operator_email,
         pr_title=pr_title,
+        applied_at=applied_at,
     )
     return _render_iac_outcome(
         request,
@@ -4988,12 +5002,21 @@ def _handle_existing_iac_decision(
             outcome="Already applied and merged (idempotent).",
         )
     if status == "applied" and merge_state == "failed":
+        # Merge-only reconcile: the apply already happened — only the merge is being
+        # (re)driven — so carry the ORIGINAL apply moment forward rather than letting
+        # the re-record restamp it to now. Guard the untyped persisted dict: only a
+        # non-empty str is usable; an old row without it falls back to now (best
+        # effort, not a correctness guarantee).
+        prior_applied_at = existing.get("applied_at")
         return _iac_merge_step(
             request, s, state, repo=repo, event_key=event_key, view=view,
             required_checks=required_checks,
             approval_id=existing.get("approval_id"),
             apply_attempt_id=existing.get("apply_attempt_id"),
             operator_email=operator_email, pr_number=pr_number, pr_title=pr_title,
+            applied_at=prior_applied_at
+            if isinstance(prior_applied_at, str) and prior_applied_at
+            else None,
         )
     if status in {"failed", "failed_state_suspect", "ambiguous"}:
         note = (

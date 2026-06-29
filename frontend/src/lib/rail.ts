@@ -7,7 +7,7 @@
 // component decides presentation.
 
 import type { Decision } from './types';
-import { iacStatusLabel } from './format';
+import { iacApplyMeta } from './format';
 import { iacPrHref } from './approval';
 import type { IconName } from './icons';
 
@@ -134,25 +134,32 @@ export function showPrNumberingHint(
 const CALM_STATUSES = new Set(['applied', 'waiting_for_rebake']);
 
 /**
- * True when any earlier step carries a status outside CALM_STATUSES. Missing
- * and unknown statuses count as anomalous (fail-open to visible): the rail
- * must never collapse a failure — or something it cannot classify — behind a
- * closed expander for this audience.
+ * True when any earlier step is anomalous and must be visible without a click. A
+ * step is anomalous when its `apply_status` is missing/unknown or outside
+ * CALM_STATUSES (fail-open to visible — the rail must never collapse a failure or
+ * something it cannot classify), OR when it is `applied` but its merge did NOT
+ * complete (`merge_state` failed/pending) — a still-pending merge is attention
+ * the collapsed summary would otherwise hide (kept in lockstep with the
+ * merge-aware face/step rendering and `iacApplyMeta`).
  */
 export function hasAnomalousStep(earlier: ReadonlyArray<Decision>): boolean {
-  return earlier.some(
-    (d) => typeof d.apply_status !== 'string' || !CALM_STATUSES.has(d.apply_status),
-  );
+  return earlier.some((d) => {
+    if (typeof d.apply_status !== 'string' || !CALM_STATUSES.has(d.apply_status)) return true;
+    return d.apply_status === 'applied' && (d.merge_state === 'failed' || d.merge_state === 'pending');
+  });
 }
 
 /**
  * The complete `<summary>` text for a lifecycle expander: a count plus a
  * status composition, so the collapsed row never hides WHAT the earlier steps
  * were — e.g. `2 earlier steps · awaiting rebuild ×2`, `1 earlier step ·
- * failed`. `earlier` arrives in list (newest-first) order; composition labels
- * are ordered by first appearance oldest-first and deduped with `×k` counts.
- * Returned as ONE string so the component renders it as a single expression —
- * no markup seams, no whitespace-collapse risk.
+ * failed`. Labels are merge-aware (via `iacApplyMeta`), so an earlier applied
+ * step reads `applied & merged` / `applied · merge pending` rather than a bare
+ * `applied` that hides its merge outcome. `earlier` arrives in list
+ * (newest-first) order; composition labels are ordered by first appearance
+ * oldest-first and deduped with `×k` counts. Returned as ONE string so the
+ * component renders it as a single expression — no markup seams, no
+ * whitespace-collapse risk.
  *
  * Precondition: callers pass `docs.slice(1)` of a group, so `earlier.length
  * >= 1` (a group has ≥2 docs by construction — see `groupRailDecisions`). An
@@ -163,7 +170,9 @@ export function lifecycleSummaryLabel(earlier: ReadonlyArray<Decision>): string 
   const n = earlier.length;
   const counts = new Map<string, number>();
   for (let i = earlier.length - 1; i >= 0; i--) {
-    const label = iacStatusLabel(earlier[i].apply_status) || 'status not recorded';
+    const label =
+      iacApplyMeta(earlier[i].apply_status, earlier[i].merge_state).label ||
+      'status not recorded';
     counts.set(label, (counts.get(label) ?? 0) + 1);
   }
   const composition = [...counts.entries()]
