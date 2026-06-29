@@ -171,6 +171,7 @@ def test_happy_path_summary_shape(monkeypatch):
         address="google_storage_bucket.my_bucket",
         location="US",
         attr_changes=(normal_attr,),
+        resource_name="my-bucket-live",
     )
     entry_update = ChangeEntry(
         verb="update",
@@ -179,6 +180,7 @@ def test_happy_path_summary_shape(monkeypatch):
         name="other_bucket",
         address="google_storage_bucket.other_bucket",
         attr_changes=(sensitive_attr,),
+        resource_name="other-bucket-live",
     )
     summary = PlanSummary(
         entries=(entry_create, entry_update),
@@ -209,11 +211,20 @@ def test_happy_path_summary_shape(monkeypatch):
     assert len(entries) == 2
     entry = entries[0]
     for key in ("verb", "resource_type", "name", "address", "location",
-                "attr_changes", "imported", "deposed", "action_reason", "attrs_truncated"):
+                "attr_changes", "imported", "deposed", "action_reason",
+                "attrs_truncated", "resource_name"):
         assert key in entry, f"missing key {key!r} in entry"
 
     # resource_type must be the type_label, not rtype
     assert entry["resource_type"] == "Storage Bucket"
+
+    # resource_name is the REAL GCP name and is exposed DISTINCT from the
+    # Terraform local name (`name`) and address — so a crew can name the
+    # resource correctly instead of echoing the TF identifier (the
+    # adopt-probe-topic slip: name=adopt_adopt_probe_topic, real=adopt-probe-topic).
+    assert entry["resource_name"] == "my-bucket-live"
+    assert entry["name"] == "my_bucket"
+    assert entries[1]["resource_name"] == "other-bucket-live"
 
     # Sensitive attr: the "(sensitive)" literal with sensitive=True
     update_entry = entries[1]
@@ -226,6 +237,35 @@ def test_happy_path_summary_shape(monkeypatch):
     # blast_radius and cannot_touch
     assert "blast_radius" in result
     assert result["cannot_touch"] == BLAST_CANNOT_TOUCH_NOTE
+
+
+def test_import_entry_exposes_real_resource_name(monkeypatch):
+    """The exact #168 shape: an adopt import whose Terraform local name and
+    address carry the doubled ``adopt_`` prefix, while the real GCP resource
+    name does not. The tool must surface BOTH so a crew names the resource
+    ``adopt-probe-topic`` (real) instead of ``adopt_adopt_probe_topic`` (TF)."""
+    summary = PlanSummary(
+        entries=(
+            ChangeEntry(
+                verb="import",
+                rtype="google_pubsub_topic",
+                type_label="Pub/Sub Topic",
+                name="adopt_adopt_probe_topic",
+                address="google_pubsub_topic.adopt_adopt_probe_topic",
+                imported=True,
+                resource_name="adopt-probe-topic",
+            ),
+        ),
+        n_import=1,
+    )
+    view = _make_view()
+    view.__dict__["change_summary"] = summary
+    monkeypatch.setattr(_adk_tools_mod, "load_plan_view_from_gcs", lambda *a, **k: view)
+
+    entry = load_iac_plan_tool(168)["summary"]["entries"][0]
+    assert entry["resource_name"] == "adopt-probe-topic"
+    assert entry["name"] == "adopt_adopt_probe_topic"
+    assert entry["address"] == "google_pubsub_topic.adopt_adopt_probe_topic"
 
 
 def test_denylist_violations_with_summary(monkeypatch):

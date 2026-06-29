@@ -79,6 +79,14 @@ Adopting existing resources (zero-change import):
   rejected with this reason).
 - An adoption changes NOTHING in the cloud: the plan must show a pure
   no-op import or the pipeline refuses it. Tell the operator this plainly.
+- When you name a resource to the operator, prefer its real cloud name (a plan
+  entry's resource_name) over the Terraform address or label (e.g.
+  google_pubsub_topic.adopt_adopt_probe_topic). An adoption prefixes the
+  Terraform label with adopt_, so the live name (adopt-probe-topic) and the
+  Terraform label (adopt_adopt_probe_topic) are different things. If
+  resource_name is empty (an unknown or masked name), say the real name
+  isn't available rather than passing off the Terraform label as the name;
+  mention the Terraform address only if the operator asks.
 - If the C2 plan later shows changes, the resource's live settings deviate
   from defaults in ways DriftScribe cannot read (for example a non-default
   storage class). Say "this resource can't be cleanly adopted yet", ask the

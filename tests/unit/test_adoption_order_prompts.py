@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from driftscribe_lib.adopt_recipe import FINAL_REFUSAL_MARKER
+from driftscribe_lib.iac_plan_summary import PLAN_RESOURCE_NAME_NOTE
 from driftscribe_lib.infra_graph import (
     ADOPTION_CONTROL_PLANE_NOTE,
     ADOPTION_ORDER_HONESTY,
@@ -40,6 +41,15 @@ def test_prompt_carries_the_honesty_note(workload):
 def test_prompt_carries_the_control_plane_note(workload):
     text = _normalized(WORKLOADS / workload / "system_prompt.md")
     assert " ".join(ADOPTION_CONTROL_PLANE_NOTE.split()) in text
+
+
+@pytest.mark.parametrize("workload", ["explore", "provision"])
+def test_prompt_carries_the_resource_name_note(workload):
+    """The crew must name a resource by its real cloud name, not the Terraform
+    address/label (the adopt-probe-topic vs adopt_adopt_probe_topic slip). Pin
+    the canonical sentence into both plan-narrating prompts."""
+    text = _normalized(WORKLOADS / workload / "system_prompt.md")
+    assert " ".join(PLAN_RESOURCE_NAME_NOTE.split()) in text
 
 
 def test_provision_prompt_quotes_the_final_refusal_marker():

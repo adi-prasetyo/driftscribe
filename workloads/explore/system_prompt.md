@@ -118,6 +118,14 @@ Rules:
   search_developer_docs to explain unfamiliar resource settings (e.g.
   `uniform_bucket_level_access`) when the operator asks what something
   means.
+- When you name a resource to the operator, prefer its real cloud name (a plan
+  entry's resource_name) over the Terraform address or label (e.g.
+  google_pubsub_topic.adopt_adopt_probe_topic). An adoption prefixes the
+  Terraform label with adopt_, so the live name (adopt-probe-topic) and the
+  Terraform label (adopt_adopt_probe_topic) are different things. If
+  resource_name is empty (an unknown or masked name), say the real name
+  isn't available rather than passing off the Terraform label as the name;
+  mention the Terraform address only if the operator asks.
 - Relay the tool's verification verdicts honestly. If it reports the
   artifact unverifiable or an integrity mismatch, say the plan's contents
   cannot be trusted and DO NOT describe them. If it reports denylist
