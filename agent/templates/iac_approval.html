@@ -17,8 +17,13 @@
 
     {% if view is none %}
       <div class="ds-card">
-        <p>No C2 <code class="ds-code">tofu plan</code> artifact found for PR #{{ pr_number }}.</p>
-        <p class="ds-subtle">No plan has been built for PR #{{ pr_number }} yet. If you just opened this PR with the autonomy dial at Propose&nbsp;+&nbsp;Apply, the plan-builder is running — give it a minute and reload. Otherwise, dispatch the C2 plan-builder for this PR, then reload.</p>
+        {% if pr_exists is defined and pr_exists is sameas false %}
+          <p>PR #{{ pr_number }} does not exist in this repository.</p>
+          <p class="ds-subtle">There is no pull request numbered {{ pr_number }}, so there is no plan to approve.{% if highest_pr %} The most recent pull request is #{{ highest_pr }}.{% endif %} Open this page from a real PR link (the Past-decisions rail links each one) instead of typing a number.</p>
+        {% else %}
+          <p>No C2 <code class="ds-code">tofu plan</code> artifact found for PR #{{ pr_number }}.</p>
+          <p class="ds-subtle">No plan has been built for PR #{{ pr_number }} yet. If you just opened this PR with the autonomy dial at Propose&nbsp;+&nbsp;Apply, the plan-builder is running — give it a minute and reload. Otherwise, dispatch the C2 plan-builder for this PR, then reload.</p>
+        {% endif %}
       </div>
     {% else %}
       {% if decision is defined and decision %}
