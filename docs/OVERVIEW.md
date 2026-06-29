@@ -198,6 +198,10 @@ validator gates) → one locked worker executes.**
   resumable from a history rail in the UI, and each thread stays with the crew that started it.
   Crews can also read redacted snippets of each other's recent chats as shared, read-only "team
   memory," so context carries across the team.
+- **No duplicate adoptions.** Open infra PRs awaiting your approval are listed at the top of the
+  Infrastructure panel, and any resource that already has an open adoption PR shows a "review it"
+  link in place of its Adopt button (the coordinator also refuses to open a second PR for the same
+  resource).
 
 ---
 

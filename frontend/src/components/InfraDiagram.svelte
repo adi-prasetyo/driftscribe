@@ -36,7 +36,10 @@
     type ResourceCard,
     type ResourceRowStatus,
     type PlanOverlay,
+    type PendingApproval,
+    findPendingPr,
   } from '../lib/infra_graph';
+  import { iacApprovalHref } from '../lib/approval';
   import { RefreshScheduler } from '../lib/infra_refresh';
   import { coveragePercent } from '../lib/coverage';
   import CoverageMeter from './CoverageMeter.svelte';
@@ -94,6 +97,12 @@
   let overlay = $state<PlanOverlay | null>(null);
   let overlayError = $state(false);
 
+  // Open infra changes (pending approvals) — fetched alongside the graph from the
+  // same `call` prop (no new prop, finding 7). Fire-and-forget so the cheap cached
+  // list never blocks the slow CAI graph; degrades to [] on any error so the band
+  // and card links simply vanish.
+  let pendingApprovals = $state<PendingApproval[]>([]);
+
   // Non-reactive locals. The timer/epoch logic lives in a pure RefreshScheduler
   // (lib/infra_refresh) so it is unit-testable independent of this component; the
   // component keeps only the view + the async fetch/render concurrency guards.
@@ -107,6 +116,7 @@
   let refreshInFlight = false;
   let renderRun = 0; // guards renderDiagram() — independent of fetchRun
   let overlayRun = 0; // guards fetchOverlay() — a THIRD independent guard (grounding fact 5)
+  let pendingRun = 0; // guards fetchPending() — its own independent epoch
   let mermaidIdSeq = 0; // unique mermaid render id
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let mermaidMod: any = null; // cached after the first lazy import
@@ -125,7 +135,10 @@
     'tagged system-managed are protected. Those are the OpenTofu state and ' +
     'artifact buckets DriftScribe owns, or buckets a Google service creates ' +
     'automatically: the ' +
-    'denylist blocks changing or adopting them, so they have no Adopt button.';
+    'denylist blocks changing or adopting them, so they have no Adopt button.' +
+    ' A blue marker means an adoption PR is already open for that resource: open ' +
+    'it from the card or the band at the top to review and approve, instead of ' +
+    'adopting it again.';
 
   const degraded = $derived(graph?.degraded ?? false);
   const totals = $derived(graph?.totals ?? null);
@@ -179,7 +192,27 @@
     return previewActive && overlayRenderable(overlay) ? overlay : null;
   }
 
+  // Open-PR list. Independent epoch guard (pendingRun) so a late response can't
+  // clobber a newer one. Fire-and-forget from refresh(); errors degrade to [].
+  async function fetchPending(): Promise<void> {
+    const mine = ++pendingRun;
+    try {
+      const resp = await call('/infra/pending-approvals');
+      if (!resp.ok) throw new Error(`pending-approvals ${resp.status}`); // gate body on ok (mirror refresh)
+      const body = await resp.json();
+      if (mine !== pendingRun) return; // a newer fetch won
+      pendingApprovals = Array.isArray(body?.approvals) ? body.approvals : [];
+    } catch {
+      if (mine === pendingRun) pendingApprovals = []; // degrade silently
+    }
+  }
+
   async function refresh(): Promise<void> {
+    // Fire-and-forget the cheap pending-approvals list on EVERY trigger (mount +
+    // each scheduler tick) — BEFORE the coalescing guard, so a tick that arrives
+    // while a slow graph fetch is in flight still refreshes the open-PR list. The
+    // pendingRun epoch guard makes concurrent calls safe; never awaited.
+    void fetchPending();
     if (refreshInFlight) return;
     refreshInFlight = true;
     const myRun = ++fetchRun;
@@ -551,6 +584,34 @@
       <p class="ds-blocked" role="alert">{error}</p>
     {/if}
 
+    <!-- Open infra changes: every OPEN driftscribe-infra PR awaiting approval.
+         Honest-neutral header (a terminally-failed-but-open PR is still "open").
+         Independent of graph state, so the operator sees open PRs even if CAI is
+         down. Each entry is gated on a valid same-origin approval path, so a bad
+         pr_number never renders a null-href anchor (finding 6). -->
+    {#if pendingApprovals.length > 0}
+      <section
+        class="infra-pending-band"
+        data-testid="pending-approvals-band"
+        aria-label="Open infrastructure changes"
+      >
+        <h3 class="infra-pending-band__title">Open infra changes ({pendingApprovals.length})</h3>
+        <ul class="infra-pending-band__list">
+          {#each pendingApprovals as a (a.pr_number)}
+            {@const href = iacApprovalHref(a.pr_number)}
+            {#if href}
+              <li class="infra-pending-band__item">
+                <a class="infra-pending-band__link" {href} target="_blank" rel="noopener"
+                  >PR #{a.pr_number} →</a
+                >
+                <span class="infra-pending-band__pr-title">{a.title}</span>
+              </li>
+            {/if}
+          {/each}
+        </ul>
+      </section>
+    {/if}
+
     <!-- Zone 2 — legend: the key for the card colors (and, in preview, the ghost
          overlay colors). Placed above the grid/map so it reads as the key for what
          follows. Real a11y content (no aria-hidden); the dot swatches are
@@ -563,6 +624,9 @@
           <span class="infra-key infra-key--managed">managed in IaC</span>
           <span class="infra-key infra-key--drift">drift (not in IaC)</span>
           <span class="infra-key infra-key--hidden">counts-only</span>
+          {#if pendingApprovals.length > 0}
+            <span class="infra-key infra-key--pending" data-testid="legend-pending">Open PR</span>
+          {/if}
         {/if}
         {#if previewActive}
           <span class="infra-key infra-key--ghost-create">will be created</span>
@@ -603,11 +667,16 @@
            resources" disclosure (a Svelte snippet keeps the two grids identical). -->
       {#snippet cardView(card: ResourceCard)}
         {@const badge = cardBadge(card)}
+        {@const cardActionable = card.rows.some(
+          (r) =>
+            r.adoptable &&
+            iacApprovalHref(findPendingPr(pendingApprovals, card.assetType, r.label)) === null,
+        )}
         <div class="infra-card" data-testid="infra-card">
           <div class="infra-card__head">
             <span class="infra-card__type" data-testid="infra-card-type">{card.label}</span>
             <span class="infra-card__head-meta">
-              {#if card.assetType === startHere}
+              {#if card.assetType === startHere && cardActionable}
                 <span class="infra-card__start" data-testid="card-start-here">Start here</span>
               {/if}
               <span
@@ -639,16 +708,34 @@
                       >managed</span
                     >
                   {:else if row.adoptable}
-                    <button
-                      class="ds-btn infra-card__btn"
-                      type="button"
-                      data-testid="card-adopt-btn"
-                      disabled={adoptDisabled}
-                      title={adoptDisabled
-                        ? 'Unavailable while the chat is busy or reviewing a past trace.'
-                        : undefined}
-                      onclick={() => clickAdopt(row.prefill)}>Adopt into IaC</button
-                    >
+                    {@const pendingPr = findPendingPr(pendingApprovals, card.assetType, row.label)}
+                    {@const pendingHref = pendingPr !== null ? iacApprovalHref(pendingPr) : null}
+                    {#if pendingPr !== null && pendingHref}
+                      <!-- An adoption PR is already open for this resource: link to
+                           its approval page (kills duplicate-adoption PRs) instead
+                           of offering Adopt again. -->
+                      <a
+                        class="infra-card__pending-link"
+                        data-testid="card-pending-link"
+                        href={pendingHref}
+                        target="_blank"
+                        rel="noopener">Review pending adoption (PR #{pendingPr}) →</a
+                      >
+                      <span class="infra-card__pending-tag" data-testid="card-pending-tag"
+                        >PR open</span
+                      >
+                    {:else}
+                      <button
+                        class="ds-btn infra-card__btn"
+                        type="button"
+                        data-testid="card-adopt-btn"
+                        disabled={adoptDisabled}
+                        title={adoptDisabled
+                          ? 'Unavailable while the chat is busy or reviewing a past trace.'
+                          : undefined}
+                        onclick={() => clickAdopt(row.prefill)}>Adopt into IaC</button
+                      >
+                    {/if}
                   {:else if row.status === 'control_plane'}
                     <!-- Compact tag in the same slot as the green "managed" tag; the
                          denylist reasoning lives once in the legend ⓘ (LEGEND_HELP)
@@ -888,6 +975,11 @@
   .infra-key--hidden::before {
     background: var(--ds-neutral-surface);
   }
+  /* Open-PR key — stream (blue) swatch, matching the card "PR open" tag/link. */
+  .infra-key--pending::before {
+    background: var(--ds-stream-surface);
+    border-color: var(--ds-stream);
+  }
   /* Ghost (preview) keys — dashed swatches, bare design tokens (no fallback hex). */
   .infra-key--ghost-create::before {
     background: var(--ds-ok-surface);
@@ -1042,6 +1134,61 @@
   .infra-card__btn:hover {
     background: var(--ds-warn-surface);
     border-color: var(--ds-warn);
+  }
+  /* Pending-PR affordances — stream-ink (blue), distinct from the warn-tinted
+     Adopt button: this is "go review an open PR", not "start an adoption". */
+  .infra-card__pending-link {
+    flex: none;
+    font-size: var(--ds-fs-1);
+    color: var(--ds-stream-ink);
+    text-decoration: underline;
+    white-space: nowrap;
+  }
+  .infra-card__pending-tag {
+    flex: none;
+    font-size: var(--ds-fs-1);
+    color: var(--ds-stream-ink);
+    white-space: nowrap;
+  }
+  /* Open infra changes band — an attention surface at the top of the panel body.
+     Stream (blue) accent: it points to an existing review action, not a warning. */
+  .infra-pending-band {
+    margin: var(--ds-sp-3) 0 0;
+    padding: var(--ds-sp-3) var(--ds-sp-4);
+    border: 1px solid var(--ds-stream-border);
+    border-left: 3px solid var(--ds-stream);
+    border-radius: var(--ds-radius);
+    background: var(--ds-stream-surface);
+  }
+  .infra-pending-band__title {
+    margin: 0 0 var(--ds-sp-2);
+    font-size: var(--ds-fs-2);
+    color: var(--ds-stream-ink);
+  }
+  .infra-pending-band__list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: var(--ds-sp-1);
+  }
+  .infra-pending-band__item {
+    display: flex;
+    align-items: baseline;
+    gap: var(--ds-sp-2);
+    font-size: var(--ds-fs-1);
+  }
+  .infra-pending-band__link {
+    flex: none;
+    color: var(--ds-stream-ink);
+    font-weight: 600;
+    text-decoration: underline;
+    white-space: nowrap;
+  }
+  .infra-pending-band__pr-title {
+    color: var(--ds-muted);
+    overflow-wrap: anywhere;
   }
   .infra-card__muted {
     /* The "not an adoptable type" note takes its own line below the dot + name

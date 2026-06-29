@@ -71,6 +71,9 @@ def test_propose_adoption_tool_happy_path(
 
     monkeypatch.setattr(adk_tools.worker_client, "call_open_infra_pr", fake_worker)
     monkeypatch.setattr(adk_tools, "_fetch_main_iac_tree", fake_fetch)
+    # Stub the open-PR dupe probe (a real GitHub call otherwise): this path tests
+    # the open flow, so "no existing adoption PR" keeps it off the network.
+    monkeypatch.setattr(adk_tools, "find_open_adopt_pr_for_resource", lambda *a, **k: None)
     monkeypatch.setattr(adk_tools, "notify_iac_pr_pending", lambda *a, **kw: notified.append(a))
     monkeypatch.setattr(
         "agent.config.Settings.gcp_project",
@@ -127,6 +130,8 @@ def test_propose_adoption_tool_worker_error_propagates_no_notify(monkeypatch):
 
     monkeypatch.setattr(adk_tools.worker_client, "call_open_infra_pr", _error_worker)
     monkeypatch.setattr(adk_tools, "_fetch_main_iac_tree", fake_fetch)
+    # Stub the open-PR dupe probe so this path stays off the network (see happy-path).
+    monkeypatch.setattr(adk_tools, "find_open_adopt_pr_for_resource", lambda *a, **k: None)
     monkeypatch.setattr(adk_tools, "notify_iac_pr_pending", lambda *a, **kw: notified.append(a))
     monkeypatch.setattr(
         "agent.config.Settings.gcp_project",

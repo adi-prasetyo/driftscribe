@@ -2683,6 +2683,78 @@ def refresh_infra_graph(request: Request) -> dict:
     return {"cached": True, "resource_count": resource_count}
 
 
+# --------------------------------------------------------------------------- #
+# Open infra changes (pending approvals) — Infra-panel surface
+# --------------------------------------------------------------------------- #
+_PENDING_APPROVALS_CACHE: "tuple[float, list[dict]] | None" = None
+_PENDING_APPROVALS_TTL_S = 60.0
+_INFRA_PR_LABEL = "driftscribe-infra"
+
+
+def _list_pending_approvals() -> list[dict]:
+    """Open infra PRs awaiting approval, newest first. Raises on GitHub error
+    (the endpoint maps that to a degraded 200).
+
+    Uses the issues API with a SERVER-SIDE label filter:
+    ``get_issues(state="open", labels=[driftscribe-infra])`` returns only the
+    labeled items, and a PR is an issue whose ``.pull_request`` is set. The issue
+    object already carries ``number/title/body/html_url`` (a PR's body IS its
+    issue body), so NO per-PR ``get_pull`` round-trip is needed.
+
+    Trust model (adversarial review): the ``driftscribe-infra`` label is applied
+    only by the tofu-editor worker, but that is a deployment GitHub-permissions
+    assumption, NOT an API-enforced constraint (a collaborator with Triage+ could
+    label an arbitrary PR). This surface is read-only and the approve link is built
+    solely from the numeric PR number, so the worst case of a mislabeled PR is a
+    spurious row, never a bad action.
+    """
+    from driftscribe_lib.pending_approvals import build_pending_approval
+
+    s = get_settings()
+    repo = get_repo(s.github_token, s.github_repo)
+    out: list[dict] = []
+    # PyGithub accepts label NAMES (strings) here; it resolves them to the GitHub
+    # label query param. sort/direction are passed EXPLICITLY (not left to the API
+    # default) so the "newest first" promise is enforced, not assumed.
+    for issue in repo.get_issues(
+        state="open", labels=[_INFRA_PR_LABEL], sort="created", direction="desc"
+    ):
+        if getattr(issue, "pull_request", None) is None:
+            continue  # a real issue, not a PR
+        out.append(
+            build_pending_approval(
+                issue.number, issue.title or "", issue.html_url or "", issue.body or ""
+            )
+        )
+    return out
+
+
+@app.get("/infra/pending-approvals")
+def get_pending_approvals(
+    response: Response,
+    _: None = Depends(verify_token),
+) -> dict:
+    """Open infra PRs awaiting operator approval, for the Infra panel.
+
+    Additive + fail-soft: a GitHub error returns ``{"approvals": [], "degraded":
+    True}`` (never a 5xx) so the panel degrades gracefully. Short in-process TTL
+    cache (the list changes slowly and the panel polls). ``Cache-Control:
+    no-store``. Token-guarded exactly like ``/infra/graph`` and ``/decisions``.
+    """
+    global _PENDING_APPROVALS_CACHE
+    response.headers["Cache-Control"] = "no-store"
+    cached = _PENDING_APPROVALS_CACHE
+    if cached is not None and (time.monotonic() - cached[0]) <= _PENDING_APPROVALS_TTL_S:
+        return {"approvals": cached[1]}
+    try:
+        approvals = _list_pending_approvals()
+    except Exception:  # noqa: BLE001 — fail-soft, never 5xx the panel
+        log.warning("pending_approvals_listing_failed", exc_info=True)
+        return {"approvals": [], "degraded": True}
+    _PENDING_APPROVALS_CACHE = (time.monotonic(), approvals)
+    return {"approvals": approvals}
+
+
 @app.get("/infra/graph/preview")
 def get_infra_graph_preview(
     response: Response,
