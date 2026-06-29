@@ -552,25 +552,22 @@
     historicalPrBody = null;
     historicalPrBodyTruncated = false;
     status = 'pending';
-    // The historical replay renders at the BOTTOM of the chat column (below the
-    // estate panel + composer), so without this the click looks dead — the new
-    // content lands below the fold and nothing visibly happens. Bring the banner
-    // (and the region beneath it) into view. #historical-badge — HistoricalBanner's
-    // root, a hard e2e-contract id — only exists once historicalActive flips true
-    // AND Svelte flushes the {#if active} block, so await tick() first. Reuse the
-    // existing getElementById(...).scrollIntoView idiom (handleAdopt/onMount).
-    // Scrolling here (pre-fetch) gives instant feedback; the trace body fills in
-    // below the already-pinned banner when /trace resolves.
+    // When historicalActive flips true the replay renders at the TOP of the chat
+    // column (see the {#if historicalActive}{@render traceOutput()} branch), so
+    // bringing the page to the top reveals it — no jarring jump down. Scroll the
+    // WINDOW (the chat column is page-flow, not its own scroll container) rather
+    // than scrollIntoView. await tick() first so the {#if active} block has
+    // flushed and #historical-badge exists for the focus() below. Scrolling here
+    // (pre-fetch) gives instant feedback; the trace body fills in above as it
+    // resolves.
     await tick();
     if (myRun !== runSeq) return; // a newer run superseded us during the tick
+    window.scrollTo({ top: 0, behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
+    // Move focus into the replay region (banner is tabindex=-1) so keyboard/SR
+    // users land in the new content instead of being stranded on the rail button.
+    // preventScroll: the window.scrollTo above already positioned the viewport;
+    // don't let focus fight it with a second jump.
     const banner = document.getElementById('historical-badge');
-    banner?.scrollIntoView({
-      behavior: prefersReducedMotion() ? 'auto' : 'smooth',
-      block: 'start',
-    });
-    // Move focus into the region too (banner is tabindex=-1) so keyboard/SR
-    // users aren't left on the rail button. preventScroll: scrollIntoView above
-    // already positioned it; don't fight that with a second jump.
     banner?.focus({ preventScroll: true });
     try {
       const resp = await call('/trace/' + encodeURIComponent(tid));
@@ -687,6 +684,33 @@
   </div>
 </header>
 
+<!-- The trace/replay output cluster. Each child's own {#if} already gates on
+     historicalActive, so the same snippet renders correctly whether it sits at
+     the TOP (historical replay) or the BOTTOM (live chat) of the chat column —
+     the only thing that changes is WHERE it mounts. Mutually-exclusive call
+     sites below ({#if historicalActive} vs {#if !historicalActive}) mean only
+     one instance is ever live, so there is no double-mount. Rendered inline, so
+     the components stay direct children of .chat-area (the margin rule applies). -->
+{#snippet traceOutput()}
+  <HistoricalBanner active={historicalActive} traceId={historicalTraceId} onNewChat={newChat} />
+  <TraceBadge {traceId} {status} />
+  <FinalResponse reply={finalReply} isError={finalIsError} />
+  {#if historicalActive && historicalDecision}
+    <DriftDiffCard decision={historicalDecision} />
+  {/if}
+  {#if iacPr && !historicalActive}
+    <IacApprovalCta prNumber={iacPr.pr_number} />
+  {/if}
+  {#if busy && finalReply == null}
+    <ReplyPending />
+  {/if}
+  {#if historicalActive && finalReply == null && historicalDecision}
+    <DecisionSummary decision={historicalDecision} />
+    <PrBodyDisclosure body={historicalPrBody} truncated={historicalPrBodyTruncated} />
+  {/if}
+  <Timeline {events} {status} />
+{/snippet}
+
 <main class="layout">
   <div class="rails">
     <ConversationsRail
@@ -698,6 +722,11 @@
   </div>
 
   <section id="chat-area" class="chat-area" aria-label="Chat and reasoning timeline">
+    <!-- Historical replay renders FIRST so an opened trace lands at the top of
+         the chat column (openTrace scrolls the window to top to reveal it). -->
+    {#if historicalActive}
+      {@render traceOutput()}
+    {/if}
     {#if tourOffered && !tourOpen}
       <TourBanner onStart={startTour} onDismiss={dismissTourOffer} />
     {/if}
@@ -728,23 +757,11 @@
     {#if !historicalActive && conversationTurns.length > 0}
       <ConversationThread turns={conversationTurns} onOpenTrace={openTrace} />
     {/if}
-    <HistoricalBanner active={historicalActive} traceId={historicalTraceId} onNewChat={newChat} />
-    <TraceBadge {traceId} {status} />
-    <FinalResponse reply={finalReply} isError={finalIsError} />
-    {#if historicalActive && historicalDecision}
-      <DriftDiffCard decision={historicalDecision} />
+    <!-- Live chat output stays BELOW the composer (the natural type-then-stream
+         flow); the historical branch above relocates it to the top instead. -->
+    {#if !historicalActive}
+      {@render traceOutput()}
     {/if}
-    {#if iacPr && !historicalActive}
-      <IacApprovalCta prNumber={iacPr.pr_number} />
-    {/if}
-    {#if busy && finalReply == null}
-      <ReplyPending />
-    {/if}
-    {#if historicalActive && finalReply == null && historicalDecision}
-      <DecisionSummary decision={historicalDecision} />
-      <PrBodyDisclosure body={historicalPrBody} truncated={historicalPrBodyTruncated} />
-    {/if}
-    <Timeline {events} {status} />
   </section>
 </main>
 

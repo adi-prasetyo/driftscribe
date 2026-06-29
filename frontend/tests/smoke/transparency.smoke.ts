@@ -233,10 +233,11 @@ test.describe('transparency UI (mock smoke)', () => {
 
     await expect(page.locator(`[data-testid="${TESTIDS.historicalBanner}"]`)).toBeVisible();
 
-    // (openTrace scrolls #historical-badge into view — a layout/viewport effect
-    // that this short mock fixture can't meaningfully assert, since the banner is
-    // already in view here. The scroll call itself is locked in App.test.ts and
-    // the real-viewport behavior is confirmed by a live Playwright check.)
+    // (openTrace renders the replay at the top of the chat column and scrolls the
+    // window to top — a layout/viewport effect this short mock fixture can't
+    // meaningfully assert. The scroll call + above-the-composer DOM order are
+    // locked in App.test.ts and the real-viewport behavior is confirmed by a
+    // live Playwright check.)
 
     // The status pill reads "historical" — NOT the regressed "streaming".
     const pill = page.locator('#status-pill');
