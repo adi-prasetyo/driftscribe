@@ -356,6 +356,20 @@ def test_import_only_change_is_import_verb_not_skipped():
     assert summarize_plan(_plan(rc)).n_import == 1
 
 
+def test_import_resource_name_is_real_gcp_name_not_tf_label():
+    """#168 shape: the Terraform local label carries the doubled ``adopt_``
+    prefix, but the resource's real GCP name (from ``after.name``) does not.
+    ``resource_name`` must be the real name so a crew never echoes the TF label
+    as the resource's name (the adopt-probe-topic vs adopt_adopt_probe_topic slip)."""
+    rc = _rc(["no-op"], name="adopt_adopt_probe_topic",
+             before={"name": "adopt-probe-topic"}, after={"name": "adopt-probe-topic"})
+    rc["change"]["importing"] = {"id": "projects/p/topics/adopt-probe-topic"}
+    e = _one(summarize_plan(_plan(rc)))
+    assert e.verb == "import" and e.imported
+    assert e.name == "adopt_adopt_probe_topic"      # Terraform local label
+    assert e.resource_name == "adopt-probe-topic"   # real GCP name
+
+
 def test_import_plus_update_keeps_update_verb_with_imported_flag():
     rc = _rc(["update"], name="adopted", before={"x": 1}, after={"x": 2})
     rc["change"]["importing"] = {"id": "x"}

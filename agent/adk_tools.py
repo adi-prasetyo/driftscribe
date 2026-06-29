@@ -960,7 +960,12 @@ def load_iac_plan_tool(pr_number: int) -> dict[str, Any]:
     - not found            → ``{"found": False, "error": ...}``
     - unverifiable / integrity mismatch → ``found=True`` + ``error``, NO summary
       (never describe a possibly-tampered plan)
-    - verified             → ``summary`` (plain-language entries + counts),
+    - verified             → ``summary`` (plain-language entries + counts;
+      each entry carries the Terraform ``address``/``name`` identifiers AND the
+      resource's real GCP ``resource_name`` — prefer ``resource_name`` when
+      naming a resource to a human; it is ``""`` for a masked/unknown name, in
+      which case say the real name is unavailable rather than passing off the
+      ``adopt_``-prefixed TF label as the name),
       ``blast_radius`` + ``cannot_touch`` (item-8 reuse), ``denylist_violations``
       (summary INCLUDED alongside violations — explaining a blocked plan is the
       point; ``blocked=True`` keeps the framing honest), ``approval_page`` path,
@@ -1051,8 +1056,15 @@ def load_iac_plan_tool(pr_number: int) -> dict[str, Any]:
             {
                 "verb": e.verb,
                 "resource_type": e.type_label,
+                # `name`/`address` are Terraform IDENTIFIERS (the local label and
+                # the `<type>.<label>` address); `resource_name` is the resource's
+                # REAL name in GCP. They differ — an adopt import labels the
+                # resource `adopt_<sanitized>` in HCL while the live name has no
+                # such prefix — so surface both and let the prompt steer which to
+                # show a human.
                 "name": e.name,
                 "address": e.address,
+                "resource_name": e.resource_name,
                 "location": e.location,
                 "imported": e.imported,
                 "deposed": e.deposed,

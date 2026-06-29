@@ -37,6 +37,7 @@ __all__ = [
     "MAX_ENTRIES",
     "AttrChange",
     "BLAST_CANNOT_TOUCH_NOTE",
+    "PLAN_RESOURCE_NAME_NOTE",
     "ChangeEntry",
     "PlanSummary",
     "blast_radius_phrase",
@@ -60,6 +61,24 @@ BLAST_CANNOT_TOUCH_NOTE = (
     "only one at a time, from a small allowlist of types, and only when "
     "nothing would be modified — denylist-enforced, re-checked by the "
     "apply worker before apply."
+)
+
+# Crew-facing guidance for naming a resource when narrating a plan. Each
+# `load_iac_plan_tool` entry carries the Terraform `address`/`name` identifiers
+# AND the resource's real cloud `resource_name`; they DIFFER for an adoption
+# (the import HCL labels the resource `adopt_<sanitized>`, while the live name
+# has no such prefix), so a crew that echoes the Terraform label misnames the
+# resource. Hand-duplicated into the explore + provision prompts; pinned by
+# test_prompt_carries_the_resource_name_note so the copy can't drift.
+PLAN_RESOURCE_NAME_NOTE = (
+    "When you name a resource to the operator, prefer its real cloud name (a "
+    "plan entry's resource_name) over the Terraform address or label (e.g. "
+    "google_pubsub_topic.adopt_adopt_probe_topic). An adoption prefixes the "
+    "Terraform label with adopt_, so the live name (adopt-probe-topic) and the "
+    "Terraform label (adopt_adopt_probe_topic) are different things. If "
+    "resource_name is empty (an unknown or masked name), say the real name "
+    "isn't available rather than passing off the Terraform label as the name; "
+    "mention the Terraform address only if the operator asks."
 )
 
 MAX_ENTRIES = 40           # resource rows rendered (counts stay total)
