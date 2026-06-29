@@ -99,6 +99,73 @@ describe('ChatForm — prefill', () => {
   });
 });
 
+describe('ChatForm — keyboard submit (Enter sends, Shift+Enter is a newline)', () => {
+  it('submits on Enter (no Shift) and clears the field', async () => {
+    const onSubmit = vi.fn();
+    const { getByTestId } = render(ChatForm, { props: { onSubmit } });
+    const input = getByTestId('chat-prompt') as HTMLTextAreaElement;
+    await fireEvent.input(input, { target: { value: 'send me' } });
+    await fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSubmit).toHaveBeenCalledWith('send me', 'drift');
+    expect(input.value).toBe('');
+  });
+
+  it('does NOT submit on Shift+Enter (lets the line break through)', async () => {
+    const onSubmit = vi.fn();
+    const { getByTestId } = render(ChatForm, { props: { onSubmit } });
+    const input = getByTestId('chat-prompt') as HTMLTextAreaElement;
+    await fireEvent.input(input, { target: { value: 'line one' } });
+    await fireEvent.keyDown(input, { key: 'Enter', shiftKey: true });
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('does NOT submit on Enter while an IME composition is active', async () => {
+    // CJK input confirms a candidate with Enter; submitting mid-composition would
+    // fire the prompt before the word is even committed.
+    const onSubmit = vi.fn();
+    const { getByTestId } = render(ChatForm, { props: { onSubmit } });
+    const input = getByTestId('chat-prompt') as HTMLTextAreaElement;
+    await fireEvent.input(input, { target: { value: 'こんにちは' } });
+    await fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('does NOT submit on Enter when the field is empty/whitespace', async () => {
+    const onSubmit = vi.fn();
+    const { getByTestId } = render(ChatForm, { props: { onSubmit } });
+    const input = getByTestId('chat-prompt') as HTMLTextAreaElement;
+    await fireEvent.input(input, { target: { value: '   ' } });
+    await fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('does NOT submit on Enter reported with the legacy IME keyCode 229', async () => {
+    // Some browser/IME combos still report the composition-confirm Enter as
+    // keyCode 229 with isComposing already false; belt-and-suspenders guard.
+    const onSubmit = vi.fn();
+    const { getByTestId } = render(ChatForm, { props: { onSubmit } });
+    const input = getByTestId('chat-prompt') as HTMLTextAreaElement;
+    await fireEvent.input(input, { target: { value: 'まだ変換中' } });
+    await fireEvent.keyDown(input, { key: 'Enter', keyCode: 229 });
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('exposes the Enter / Shift+Enter behaviour to assistive tech via aria-describedby', () => {
+    // The textarea's accessible name is just "Prompt"; the non-native Enter
+    // behaviour must be announced too, not hidden in the (often unspoken)
+    // placeholder.
+    const { getByTestId } = render(ChatForm, { props: { onSubmit: noop } });
+    const input = getByTestId('chat-prompt') as HTMLTextAreaElement;
+    const describedby = input.getAttribute('aria-describedby');
+    expect(describedby).toBeTruthy();
+    const hint = document.getElementById(describedby!);
+    expect(hint).not.toBeNull();
+    const text = hint!.textContent?.toLowerCase() ?? '';
+    expect(text).toContain('enter');
+    expect(text).toContain('shift');
+  });
+});
+
 describe('ChatForm — crew picker integration', () => {
   it('renders the four crew cards, each describing itself for assistive tech', () => {
     const { container } = render(ChatForm, { props: { onSubmit: noop } });
