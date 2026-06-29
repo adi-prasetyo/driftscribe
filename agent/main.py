@@ -2700,6 +2700,13 @@ def _list_pending_approvals() -> list[dict]:
     labeled items, and a PR is an issue whose ``.pull_request`` is set. The issue
     object already carries ``number/title/body/html_url`` (a PR's body IS its
     issue body), so NO per-PR ``get_pull`` round-trip is needed.
+
+    Trust model (adversarial review): the ``driftscribe-infra`` label is applied
+    only by the tofu-editor worker, but that is a deployment GitHub-permissions
+    assumption, NOT an API-enforced constraint (a collaborator with Triage+ could
+    label an arbitrary PR). This surface is read-only and the approve link is built
+    solely from the numeric PR number, so the worst case of a mislabeled PR is a
+    spurious row, never a bad action.
     """
     from driftscribe_lib.pending_approvals import build_pending_approval
 
@@ -2707,8 +2714,11 @@ def _list_pending_approvals() -> list[dict]:
     repo = get_repo(s.github_token, s.github_repo)
     out: list[dict] = []
     # PyGithub accepts label NAMES (strings) here; it resolves them to the GitHub
-    # label query param.
-    for issue in repo.get_issues(state="open", labels=[_INFRA_PR_LABEL]):
+    # label query param. sort/direction are passed EXPLICITLY (not left to the API
+    # default) so the "newest first" promise is enforced, not assumed.
+    for issue in repo.get_issues(
+        state="open", labels=[_INFRA_PR_LABEL], sort="created", direction="desc"
+    ):
         if getattr(issue, "pull_request", None) is None:
             continue  # a real issue, not a PR
         out.append(
@@ -2716,7 +2726,6 @@ def _list_pending_approvals() -> list[dict]:
                 issue.number, issue.title or "", issue.html_url or "", issue.body or ""
             )
         )
-    # get_issues default sort is created-desc, so `out` is already newest-first.
     return out
 
 

@@ -198,6 +198,7 @@
     const mine = ++pendingRun;
     try {
       const resp = await call('/infra/pending-approvals');
+      if (!resp.ok) throw new Error(`pending-approvals ${resp.status}`); // gate body on ok (mirror refresh)
       const body = await resp.json();
       if (mine !== pendingRun) return; // a newer fetch won
       pendingApprovals = Array.isArray(body?.approvals) ? body.approvals : [];
@@ -207,11 +208,13 @@
   }
 
   async function refresh(): Promise<void> {
+    // Fire-and-forget the cheap pending-approvals list on EVERY trigger (mount +
+    // each scheduler tick) — BEFORE the coalescing guard, so a tick that arrives
+    // while a slow graph fetch is in flight still refreshes the open-PR list. The
+    // pendingRun epoch guard makes concurrent calls safe; never awaited.
+    void fetchPending();
     if (refreshInFlight) return;
     refreshInFlight = true;
-    // Fire-and-forget the cheap pending-approvals list on every refresh trigger
-    // (mount + each scheduler tick); never awaited before the slow graph fetch.
-    void fetchPending();
     const myRun = ++fetchRun;
     loading = true;
     error = null;
@@ -665,7 +668,9 @@
       {#snippet cardView(card: ResourceCard)}
         {@const badge = cardBadge(card)}
         {@const cardActionable = card.rows.some(
-          (r) => r.adoptable && findPendingPr(pendingApprovals, card.assetType, r.label) === null,
+          (r) =>
+            r.adoptable &&
+            iacApprovalHref(findPendingPr(pendingApprovals, card.assetType, r.label)) === null,
         )}
         <div class="infra-card" data-testid="infra-card">
           <div class="infra-card__head">

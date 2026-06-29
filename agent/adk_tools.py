@@ -872,6 +872,15 @@ def find_open_adopt_pr_for_resource(
     dedup: a second adoption of the same resource is exactly the dupe we refuse.
     Reuses the same issues-by-label listing + pure parser as the
     ``/infra/pending-approvals`` endpoint.
+
+    Two known, fail-safe limitations (adversarial review): (1) it trusts the
+    ``driftscribe-infra`` label, a repo-permissions assumption rather than an API
+    constraint — a forged/mislabeled PR can at worst cause a spurious dupe
+    *refusal* of a legitimate adoption (fail-safe, never a bad apply); (2) if the
+    worker's best-effort label application failed at PR-creation time, that PR is
+    unlabeled and invisible here, so a duplicate PR could still be opened — but a
+    duplicate cannot apply silently (the second apply conflicts at the tofu state
+    level, and both PRs still require the C2 plan + operator approval).
     """
     from driftscribe_lib.pending_approvals import build_pending_approval
 

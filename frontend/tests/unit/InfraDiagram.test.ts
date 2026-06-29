@@ -1435,6 +1435,7 @@ function adoptableTopicGraph(): InfraGraph {
         asset_type: TOPIC,
         label: 'Pub/Sub topic',
         adoptable: true,
+        adopt_rank: 1,
         count: 1,
         managed: 0,
         drift: 1,
@@ -1460,12 +1461,12 @@ const TOPIC_APPROVAL: PendingApproval = {
  *  thrown error) and everything else to the graph. */
 function callRouter(
   graph: InfraGraph,
-  opts: { approvals?: PendingApproval[]; pendingThrows?: boolean } = {},
+  opts: { approvals?: PendingApproval[]; pendingThrows?: boolean; pendingStatus?: number } = {},
 ): (path: string) => Promise<Response> {
   return async (path: string) => {
     if (path.startsWith('/infra/pending-approvals')) {
       if (opts.pendingThrows) throw new Error('network');
-      return jsonResponse({ approvals: opts.approvals ?? [] });
+      return jsonResponse({ approvals: opts.approvals ?? [] }, opts.pendingStatus ?? 200);
     }
     return jsonResponse(graph);
   };
@@ -1515,5 +1516,57 @@ describe('InfraDiagram — open infra changes (pending approvals)', () => {
     });
     await waitFor(() => expect(getByTestId('card-adopt-btn')).toBeTruthy());
     expect(queryByTestId('pending-approvals-band')).toBeNull();
+  });
+
+  it('ignores a non-200 pending-approvals response even if its body parses', async () => {
+    // resp.ok must gate body consumption (mirror refresh()): a 500 whose body
+    // happens to carry approvals must NOT populate the band / card link.
+    const { getByTestId, queryByTestId } = render(InfraDiagram, {
+      props: {
+        call: callRouter(adoptableTopicGraph(), { approvals: [TOPIC_APPROVAL], pendingStatus: 500 }),
+        onAdopt: () => {},
+      },
+    });
+    await waitFor(() => expect(getByTestId('card-adopt-btn')).toBeTruthy());
+    await new Promise((r) => setTimeout(r, 25)); // let the pending fetch settle
+    expect(queryByTestId('pending-approvals-band')).toBeNull();
+    expect(queryByTestId('card-pending-link')).toBeNull();
+  });
+
+  it('refreshes pending approvals even on a coalesced trigger (graph fetch in flight)', async () => {
+    let pendingCalls = 0;
+    const graphResolvers: Array<(g: InfraGraph) => void> = [];
+    const call = async (path: string): Promise<Response> => {
+      if (path.startsWith('/infra/pending-approvals')) {
+        pendingCalls += 1;
+        return jsonResponse({ approvals: [] });
+      }
+      return new Promise<Response>((resolve) => {
+        graphResolvers.push((g) => resolve(jsonResponse(g)));
+      });
+    };
+    const utils = render(InfraDiagram, { props: { call } });
+    await waitFor(() => expect(graphResolvers.length).toBe(1)); // graph fetch in flight
+    await waitFor(() => expect(pendingCalls).toBe(1)); // mount fired pending once
+    // Fire a 2nd trigger while the graph fetch is still in flight (it coalesces).
+    const details = utils.container.querySelector('details')!;
+    details.open = true;
+    await fireEvent(details, new Event('toggle'));
+    // The pending list must still refetch — it is independent of graph coalescing.
+    await waitFor(() => expect(pendingCalls).toBe(2));
+  });
+
+  it('keeps Start here + Adopt for a malformed pr_number <= 0 (gate consistency)', async () => {
+    // pr_number 0 yields no valid approval href; the row must stay actionable
+    // (Adopt shown) AND "Start here" must not be suppressed — both gates tie to
+    // iacApprovalHref so they can never disagree (adversarial review nit).
+    const bad: PendingApproval = { ...TOPIC_APPROVAL, pr_number: 0 };
+    const { getByTestId, queryByTestId } = render(InfraDiagram, {
+      props: { call: callRouter(adoptableTopicGraph(), { approvals: [bad] }), onAdopt: () => {} },
+    });
+    await waitFor(() => expect(getByTestId('card-adopt-btn')).toBeTruthy());
+    await new Promise((r) => setTimeout(r, 25));
+    expect(queryByTestId('card-pending-link')).toBeNull();
+    expect(getByTestId('card-start-here')).toBeTruthy();
   });
 });

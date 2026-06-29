@@ -70,6 +70,26 @@ def test_lists_open_infra_adoption_prs(monkeypatch, client_with_token):
     assert body.get("degraded") in (False, None)
 
 
+def test_lists_request_newest_first_explicitly(monkeypatch, client_with_token):
+    # The docstring promises "newest first"; enforce it via explicit sort params
+    # rather than relying on GitHub's implicit default (adversarial review).
+    captured: dict = {}
+
+    def fake_get_issues(**kw):
+        captured.update(kw)
+        return []
+
+    fake_repo = SimpleNamespace(get_issues=fake_get_issues)
+    monkeypatch.setattr(main, "get_repo", lambda *a, **k: fake_repo)
+
+    r = client_with_token.get("/infra/pending-approvals")
+    assert r.status_code == 200
+    assert captured.get("state") == "open"
+    assert captured.get("labels") == ["driftscribe-infra"]
+    assert captured.get("sort") == "created"
+    assert captured.get("direction") == "desc"
+
+
 def test_github_failure_degrades_soft(monkeypatch, client_with_token):
     def boom(*a, **k):
         raise RuntimeError("github down")
