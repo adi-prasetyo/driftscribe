@@ -34,7 +34,7 @@
   } = $props();
 
   let prompt = $state('');
-  let inputEl = $state<HTMLInputElement | null>(null);
+  let inputEl = $state<HTMLTextAreaElement | null>(null);
 
   // The workload picker is the CrewPicker (four mini crew cards) bound to
   // `workload` below; the autonomy signal + Autonomous/On-demand grouping it
@@ -57,13 +57,41 @@
     });
   });
 
-  function handle(e: SubmitEvent) {
-    e.preventDefault();
+  function submit() {
     const trimmed = prompt.trim();
     if (!trimmed) return;
     onSubmit(trimmed, workload);
     prompt = '';
   }
+
+  function handle(e: SubmitEvent) {
+    e.preventDefault();
+    submit();
+  }
+
+  // Chat-composer key handling: Enter sends, Shift+Enter inserts a newline (the
+  // textarea's native behaviour, so we just let it through). The IME guards stop
+  // a submit while CJK input is mid-composition — pressing Enter to confirm a
+  // candidate must not fire the prompt mid-word. `isComposing` is the modern
+  // signal; `keyCode === 229` is the legacy belt-and-suspenders for browser/IME
+  // combos that report the confirm Enter after composition already ended.
+  function handleKeydown(e: KeyboardEvent) {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
+      e.preventDefault();
+      submit();
+    }
+  }
+
+  // Auto-grow the textarea to fit its content so line breaks (Shift+Enter) are
+  // actually visible; CSS caps it with a max-height + scroll. Tracks `prompt` so
+  // it also re-fits on prefill and after a send clears the field.
+  $effect(() => {
+    prompt;
+    const el = inputEl;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  });
 </script>
 
 <form id="chat-form" class="chat-form" class:historical={disabled} onsubmit={handle}>
@@ -73,18 +101,26 @@
     <CrewPicker bind:value={workload} {disabled} />
   </div>
 
-  <input
+  <textarea
     id="prompt-input"
     data-testid="chat-prompt"
     class="chat-form__input"
-    type="text"
+    rows="1"
     autocomplete="off"
-    placeholder="Ask the coordinator…"
+    placeholder="Ask the coordinator…  (Enter to send · Shift+Enter for a new line)"
     aria-label="Prompt"
+    aria-describedby="prompt-input-hint"
     bind:this={inputEl}
     bind:value={prompt}
+    onkeydown={handleKeydown}
     {disabled}
-  />
+  ></textarea>
+  <!-- The placeholder carries the Enter/Shift+Enter hint for sighted operators,
+       but it vanishes once typing starts and is unreliable for screen readers —
+       so the same hint lives here, visually hidden, wired via aria-describedby. -->
+  <p id="prompt-input-hint" class="chat-form__sr-only">
+    Press Enter to send. Press Shift plus Enter for a new line.
+  </p>
 
   <button
     id="send-btn"
@@ -146,7 +182,24 @@
     min-width: 0;
   }
 
-  /* The prompt input is the protagonist: it grows to fill the row. */
+  /* Visually-hidden helper for the aria-describedby keyboard hint (matches the
+     CrewPicker / ReplyPending sr-only pattern). */
+  .chat-form__sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    border: 0;
+    white-space: nowrap;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+  }
+
+  /* The prompt input is the protagonist: it grows to fill the row. As a
+     textarea it auto-grows in height with its content (JS sets the height from
+     scrollHeight); we cap it here and scroll past the cap. */
   .chat-form__input {
     flex: 1 1 16rem;
     min-width: 0;
@@ -157,8 +210,14 @@
     border-radius: var(--ds-radius-sm);
     background: var(--ds-surface);
     color: var(--ds-fg);
+    font-family: inherit;
     font-size: var(--ds-fs-2);
     line-height: 1.4;
+    /* A single comfortable row by default, growing up to ~8 lines before it
+       starts scrolling. resize:none — the auto-grow owns the height. */
+    resize: none;
+    max-height: 12rem;
+    overflow-y: auto;
     transition: border-color var(--ds-dur) var(--ds-ease);
   }
   .chat-form__input::placeholder {
