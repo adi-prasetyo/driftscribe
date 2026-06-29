@@ -57,7 +57,7 @@ The full topology and the IAM boundaries are documented in
 
 ## Workloads
 
-### Anchor — Cloud Run config drift (`drift`)
+### Anchor: Cloud Run config drift (`drift`)
 
 Anchor runs autonomously: a live Eventarc trigger reacts to every Cloud Run
 config change. It's event-driven, not a polling loop, so no chat invocation is
@@ -68,7 +68,7 @@ needed.
 - Workers: `reader` (read-only Cloud Run state), `docs` (open docs PR), `rollback` (revision rollback), plus the shared `notifier`.
 - HITL approval gate on `rollback`: HMAC-signed one-shot link, 15-minute TTL, single-use Firestore transaction. Anchor never executes a rollback itself; the `rollback` worker mints the one-time approval URL.
 
-### Patch — dependency upgrades (`upgrade`)
+### Patch: dependency upgrades (`upgrade`)
 
 Patch runs on demand from chat. Its autonomous trigger (a `/recheck` observation
 loop analogous to Anchor's Eventarc trigger) is future work. Today `/recheck`
@@ -80,13 +80,13 @@ returns 503 (unimplemented) and Patch is chat-only.
 - Post-LLM deterministic validator on the write path: lockfile path regex, `package_name` must exist in the current lockfile, `target_version` must be greater than current (no downgrades), version jump ∈ {patch, minor}, `advisory_url` must match `https://github.com/advisories/GHSA-...`. Major bumps are refused at the validator. The LLM is instructed to route those to `escalation`; if it doesn't, the validator fails closed.
 - Also carries PR-lifecycle tools (`upgrade-close-pr`, `upgrade-merge-pr`) so the agent can close or CI-gated-merge an upgrade PR it opened; the `upgrade-docs` worker re-validates eligibility (driftscribe label + `upgrade/` branch + `main` base, green required check) before acting.
 
-### Explore + Provision — infrastructure read + author (`explore`, `provision`)
+### Explore + Provision: infrastructure read + author (`explore`, `provision`)
 
 Both are on-demand: Explore and Provision run from chat only. `/recheck`
 refuses them, since neither has an autonomous observation source.
 
-- **Explore** (read-only): whole-project resource inspection via Cloud Asset Inventory (`infra-reader` worker), plus live Cloud Run env, the ops contract, the dependency lockfile, and developer docs. It's also the crew to ask how DriftScribe itself works — its prompt carries a whole-system overview, so a newcomer can get oriented in chat without reading the docs first. Explore lists zero mutation tools. It can read everything and change nothing (the read-only guarantee is pinned by a test that asserts its tools are disjoint from the mutation set).
-- **Provision** (infra edits): authors OpenTofu changes from a chat request and opens one `iac/`-only PR via the `tofu-editor` worker (which re-validates every file: `iac/` prefix, foundation ban, secret ban, AGENT-mode static gate). Provision never touches live infra. The actual `tofu apply` runs downstream in the `tofu-apply` worker, the sole live-infra mutator, behind a plan-bound, HMAC-signed operator approval, a path the chat agent cannot invoke directly.
+- **Explore** (read-only): whole-project resource inspection via Cloud Asset Inventory (`infra-reader` worker), plus live Cloud Run env, the ops contract, the dependency lockfile, and developer docs. It's also the crew to ask how DriftScribe itself works. Its prompt carries a whole-system overview, so a newcomer can get oriented in chat without reading the docs first. Explore lists zero mutation tools. It can read everything and change nothing (the read-only guarantee is pinned by a test that asserts its tools are disjoint from the mutation set).
+- **Provision** (infra edits): authors OpenTofu changes from a chat request and opens one `iac/`-only PR via the `tofu-editor` worker (which re-validates every file: `iac/` prefix, foundation ban, secret ban, AGENT-mode static gate). Provision never touches live infra. The actual `tofu apply` runs downstream in the `tofu-apply` worker, the only thing that runs `tofu apply` against live infra, behind a plan-bound, HMAC-signed operator approval, a path the chat agent cannot invoke directly.
 
 The operator UI renders a live infra resource map (managed vs. drift) alongside the decisions timeline.
 
@@ -134,7 +134,7 @@ container + model-client cold start on top of these warm figures.
 
 **Spend.** Idle cost at `min-instances=0` is $0. No BigQuery billing export was
 enabled for the demo project, so this README doesn't report a precise project
-total — billing exports aren't retroactive, and we won't publish a fabricated
+total. Billing exports aren't retroactive, and we won't publish a fabricated
 figure. Demo volume is low: tens of `/chat` calls plus a handful of Cloud Build
 deploys. For an exact number, the GCP Billing console → Reports, filtered to
 project `driftscribe-hack-2026` over the hackathon window, is authoritative.
@@ -158,7 +158,7 @@ for the verification step and a sample query.
 The table below scopes the comparison to Anchor. Patch sits in a different
 category (Dependabot- / Renovate-shaped) and is not compared here.
 
-| | DriftScribe — Anchor | Drift (CloudPosse) | Steampipe | Cloud Custodian | AWS Config Rules |
+| | DriftScribe (Anchor) | Drift (CloudPosse) | Steampipe | Cloud Custodian | AWS Config Rules |
 | --- | --- | --- | --- | --- | --- |
 | AI-driven decisions | ✓ | ✗ | ✗ | ✗ | ✗ |
 | HITL approval gates | ✓ | ✗ | ✗ | ✗ | ✗ |
@@ -179,17 +179,17 @@ the worker boundary makes "propose" safe to expose.
 
 ## Repository layout
 
-- [`agent/`](agent/) — coordinator service (ADK agent, classifier, approvals, auth, MCP attach, IaC authoring)
-- [`workloads/`](workloads/) — per-workload manifests (`drift`, `upgrade`, `explore`, `provision`): system prompts, contracts, tool/worker/action lists
-- [`workers/`](workers/) — execute-only worker services: drift `reader` / `docs` / `rollback`, upgrade `upgrade-reader` / `upgrade-docs`, infra `infra-reader` / `tofu-editor` / `tofu-apply`, plus the shared `notifier`
-- [`driftscribe_lib/`](driftscribe_lib/) — shared library (structured logging + trace IDs, GitHub helpers, HCL parser, plan-approval schema)
-- [`iac/`](iac/) — the OpenTofu the agent reads and authors (the demo's own infrastructure)
-- [`frontend/`](frontend/) — operator UI (Svelte + Vite SPA, served at `/`)
-- [`demo/`](demo/) — `payment-demo` drift target + ops contract, `upgrade-target` pinned npm lockfile
-- [`docs/`](docs/) — [`OVERVIEW.md`](docs/OVERVIEW.md) (start here), `architecture/`, `runbooks/`, `plans/`
-- [`scripts/`](scripts/) — demo runner
-- [`infra/`](infra/) — Cloud Build + smoke tests
-- [`tests/`](tests/) — unit + integration suite
+- [`agent/`](agent/): coordinator service (ADK agent, classifier, approvals, auth, MCP attach, IaC authoring)
+- [`workloads/`](workloads/): per-workload manifests (`drift`, `upgrade`, `explore`, `provision`): system prompts, contracts, tool/worker/action lists
+- [`workers/`](workers/): execute-only worker services: drift `reader` / `docs` / `rollback`, upgrade `upgrade-reader` / `upgrade-docs`, infra `infra-reader` / `tofu-editor` / `tofu-apply`, plus the shared `notifier`
+- [`driftscribe_lib/`](driftscribe_lib/): shared library (structured logging + trace IDs, GitHub helpers, HCL parser, plan-approval schema)
+- [`iac/`](iac/): the OpenTofu the agent reads and authors (the demo's own infrastructure)
+- [`frontend/`](frontend/): operator UI (Svelte + Vite SPA, served at `/`)
+- [`demo/`](demo/): `payment-demo` drift target + ops contract, `upgrade-target` pinned npm lockfile
+- [`docs/`](docs/): [`OVERVIEW.md`](docs/OVERVIEW.md) (start here), `architecture/`, `runbooks/`, `plans/`
+- [`scripts/`](scripts/): demo runner
+- [`infra/`](infra/): Cloud Build + smoke tests
+- [`tests/`](tests/): unit + integration suite
 
 ## Scope & roadmap
 
@@ -218,7 +218,7 @@ multi-agent framework:
 
 - **Infra-IaC agent:** a whole-project inventory reader (`infra-reader`, Cloud
   Asset Inventory), agent-authored OpenTofu via the `tofu-editor` worker, and a
-  gated `tofu-apply` worker (sole live-infra mutator) behind a plan-bound,
+  gated `tofu-apply` worker (the only thing that runs `tofu apply`) behind a plan-bound,
   HMAC-signed approval. The `explore` and `provision` workloads expose the read
   and author sides. DriftScribe drove this very pipeline (author → approve →
   apply) to provision its own checkout demo (`storefront` + `orders-worker`).
