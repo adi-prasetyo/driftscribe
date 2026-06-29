@@ -179,17 +179,31 @@ export function resolvedIacPrNumbers(
  * — is unchanged for every state; only the wording reflects how the row reads to
  * an operator.
  *
- * Three wordings:
+ * Four wordings:
  * - "Review & approve →" — the ONLY actionable label: a `waiting_for_rebake` row
  *   that is NOT superseded (no `applied` row for its PR — see
  *   `resolvedIacPrNumbers`) still needs the operator's second, post-rebake Apply.
  * - "View approval history →" — a DONE row (`applied` + `merge_state==='merged'`):
  *   the gate is closed, so the link is a record to look back at, not an action.
+ * - "View failure details →" — a TERMINAL-FAILED row (`failed`,
+ *   `failed_state_suspect`, or `ambiguous`, regardless of merge_state): the
+ *   approval page renders these as a no-action failure banner and suppresses the
+ *   Approve form (agent/main.py iac_approval_get), so the rail must not imply an
+ *   approval is pending. The honest "Go to approval page →" catch-all read as an
+ *   invitation to approve when the page had nothing to approve (PR #95: a
+ *   `failed_state_suspect` + merged row whose page had no button).
  * - "Go to approval page →" — every other (non-actionable, not-yet-done) state: a
- *   superseded waiting row, applied-but-merge-pending, failed, or an unmatchable
- *   `pr_number`. Neutral wording so a finished/parked row doesn't imply pending
- *   approval work (Codex review, PR #71: no stale "Review & approve" affordance).
+ *   superseded waiting row, applied-but-merge-pending (still actionable via the
+ *   merge-only reconcile), or an unmatchable `pr_number`. Neutral wording so a
+ *   parked row doesn't imply pending approval work (Codex review, PR #71: no
+ *   stale "Review & approve" affordance).
  */
+const TERMINAL_FAILED_APPLY_STATUSES: ReadonlySet<string> = new Set([
+  'failed',
+  'failed_state_suspect',
+  'ambiguous',
+]);
+
 export function iacApproveLabel(
   d: { apply_status?: string; merge_state?: string; pr_number?: number },
   resolvedPrs: ReadonlySet<number>,
@@ -197,5 +211,7 @@ export function iacApproveLabel(
   const superseded = typeof d.pr_number === 'number' && resolvedPrs.has(d.pr_number);
   if (d.apply_status === 'waiting_for_rebake' && !superseded) return 'Review & approve →';
   if (d.apply_status === 'applied' && d.merge_state === 'merged') return 'View approval history →';
+  if (d.apply_status !== undefined && TERMINAL_FAILED_APPLY_STATUSES.has(d.apply_status))
+    return 'View failure details →';
   return 'Go to approval page →';
 }
