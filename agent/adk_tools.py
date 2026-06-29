@@ -854,9 +854,17 @@ def _fetch_main_iac_tree(target_repo: str) -> dict[str, str]:
     return result
 
 
-def find_open_adopt_pr_for_resource(asset_type: str, resource_name: str) -> int | None:
-    """PR number of an OPEN ``driftscribe-infra`` PR already adopting
-    ``(asset_type, resource_name)``, or None.
+def find_open_adopt_pr_for_resource(
+    asset_type: str, resource_name: str, repo_full_name: str
+) -> int | None:
+    """PR number of an OPEN ``driftscribe-infra`` PR in ``repo_full_name`` already
+    adopting ``(asset_type, resource_name)``, or None.
+
+    ``repo_full_name`` MUST be the repo the new PR will open against — the caller
+    passes ``authority.target_repo`` (the iac-editor target, which honors
+    ``IAC_EDITOR_TARGET_REPO_OVERRIDE``), NOT the deployment's ``GITHUB_REPO``:
+    the two can diverge, and the dupe check is only meaningful in the same repo
+    the PR is about to be opened in (Codex review).
 
     Best-effort: any GitHub error returns None (fail-OPEN — the UI guard is the
     primary defense; never block provisioning on a probe failure). Matching on
@@ -867,13 +875,11 @@ def find_open_adopt_pr_for_resource(asset_type: str, resource_name: str) -> int 
     """
     from driftscribe_lib.pending_approvals import build_pending_approval
 
-    if not asset_type or not resource_name:
+    if not asset_type or not resource_name or not repo_full_name:
         return None
     try:
         s = get_settings()
-        if not s.github_repo:
-            return None  # GitHub not configured → nothing to probe (fail-open)
-        repo = get_repo(s.github_token, s.github_repo)
+        repo = get_repo(s.github_token, repo_full_name)
         for issue in repo.get_issues(state="open", labels=["driftscribe-infra"]):
             if getattr(issue, "pull_request", None) is None:
                 continue
@@ -969,7 +975,9 @@ def propose_adoption_tool(
 
     resolved = import_id_to_resource(r.import_id)
     if resolved is not None:
-        existing_pr = find_open_adopt_pr_for_resource(*resolved)
+        # Check the SAME repo the PR will open against (authority.target_repo),
+        # which the preflight above also used — not settings.github_repo.
+        existing_pr = find_open_adopt_pr_for_resource(*resolved, authority.target_repo)
         if existing_pr is not None:
             return {
                 "status": "rejected",

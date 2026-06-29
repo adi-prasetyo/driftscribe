@@ -38,7 +38,7 @@ def test_rejects_when_open_adopt_pr_exists(monkeypatch):
 
     worker_calls: list = []
     _happy_path_setup(monkeypatch, adk_tools, worker_calls)
-    monkeypatch.setattr(adk_tools, "find_open_adopt_pr_for_resource", lambda at, rn: 168)
+    monkeypatch.setattr(adk_tools, "find_open_adopt_pr_for_resource", lambda at, rn, repo: 168)
 
     result = adk_tools.propose_adoption_tool("google_pubsub_topic", "my-topic")
 
@@ -52,7 +52,7 @@ def test_proceeds_when_no_open_adopt_pr(monkeypatch):
 
     worker_calls: list = []
     _happy_path_setup(monkeypatch, adk_tools, worker_calls)
-    monkeypatch.setattr(adk_tools, "find_open_adopt_pr_for_resource", lambda at, rn: None)
+    monkeypatch.setattr(adk_tools, "find_open_adopt_pr_for_resource", lambda at, rn, repo: None)
 
     result = adk_tools.propose_adoption_tool("google_pubsub_topic", "my-topic")
 
@@ -66,15 +66,12 @@ def test_find_open_adopt_pr_fails_open_on_github_error(monkeypatch):
     def boom(*a, **k):
         raise RuntimeError("github down")
 
-    monkeypatch.setattr(
-        "agent.config.Settings.github_repo",
-        property(lambda self: "owner/repo"),
-        raising=False,
-    )
     monkeypatch.setattr(adk_tools, "get_repo", boom)
     # Any GitHub error inside the probe → None (never blocks provisioning).
     assert (
-        adk_tools.find_open_adopt_pr_for_resource("pubsub.googleapis.com/Topic", "my-topic")
+        adk_tools.find_open_adopt_pr_for_resource(
+            "pubsub.googleapis.com/Topic", "my-topic", "owner/repo"
+        )
         is None
     )
 
@@ -92,22 +89,74 @@ def test_find_open_adopt_pr_matches_resource_identity(monkeypatch):
         ),
     ]
     fake_repo = SimpleNamespace(get_issues=lambda **kw: issues)
-    monkeypatch.setattr(
-        "agent.config.Settings.github_repo",
-        property(lambda self: "owner/repo"),
-        raising=False,
-    )
     monkeypatch.setattr(adk_tools, "get_repo", lambda *a, **k: fake_repo)
 
     # Same resource identity → returns the open PR number.
     assert (
-        adk_tools.find_open_adopt_pr_for_resource("pubsub.googleapis.com/Topic", "my-topic")
+        adk_tools.find_open_adopt_pr_for_resource(
+            "pubsub.googleapis.com/Topic", "my-topic", "owner/repo"
+        )
         == 168
     )
     # Different resource → no match.
     assert (
-        adk_tools.find_open_adopt_pr_for_resource("pubsub.googleapis.com/Topic", "other")
+        adk_tools.find_open_adopt_pr_for_resource(
+            "pubsub.googleapis.com/Topic", "other", "owner/repo"
+        )
         is None
     )
-    # Blank identity → never probes, no match.
-    assert adk_tools.find_open_adopt_pr_for_resource("", "my-topic") is None
+    # Blank identity or blank repo → never probes, no match.
+    assert adk_tools.find_open_adopt_pr_for_resource("", "my-topic", "owner/repo") is None
+    assert (
+        adk_tools.find_open_adopt_pr_for_resource("pubsub.googleapis.com/Topic", "my-topic", "")
+        is None
+    )
+
+
+def test_find_open_adopt_pr_queries_the_given_repo(monkeypatch):
+    """The probe lists issues from the repo it is handed (the iac-editor target),
+    not the deployment's settings.github_repo (Codex review)."""
+    from agent import adk_tools
+
+    captured: dict = {}
+
+    def fake_get_repo(token, repo):
+        captured["repo"] = repo
+        return SimpleNamespace(get_issues=lambda **kw: [])
+
+    monkeypatch.setattr(adk_tools, "get_repo", fake_get_repo)
+    adk_tools.find_open_adopt_pr_for_resource(
+        "pubsub.googleapis.com/Topic", "my-topic", "owner/editor-target"
+    )
+    assert captured["repo"] == "owner/editor-target"
+
+
+def test_dupe_guard_checks_the_editor_target_repo_not_github_repo(monkeypatch):
+    """The dupe lookup must query the repo the PR will OPEN against (the iac-editor
+    target), not the deployment's GITHUB_REPO — they can diverge via
+    IAC_EDITOR_TARGET_REPO_OVERRIDE (Codex review)."""
+    from agent import adk_tools
+    from agent.workloads.registry import resolve_iac_editor_target
+
+    monkeypatch.setenv("IAC_EDITOR_TARGET_REPO_OVERRIDE", "owner/editor-target")
+    monkeypatch.setattr(
+        "agent.config.Settings.github_repo",
+        property(lambda self: "owner/deployment-repo"),
+        raising=False,
+    )
+    worker_calls: list = []
+    _happy_path_setup(monkeypatch, adk_tools, worker_calls)
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        adk_tools,
+        "find_open_adopt_pr_for_resource",
+        lambda at, rn, repo: captured.update(repo=repo) or None,
+    )
+
+    adk_tools.propose_adoption_tool("google_pubsub_topic", "my-topic")
+
+    # The guard was handed the editor-target repo (where the PR opens), NOT the
+    # deployment's github_repo.
+    assert captured["repo"] == resolve_iac_editor_target()
+    assert captured["repo"] == "owner/editor-target"
