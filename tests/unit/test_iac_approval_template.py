@@ -521,6 +521,78 @@ def test_cost_never_renders_outside_trust_gate():
         assert 'data-testid="cost-estimate"' not in html
 
 
+# --------------------------------------------------------------------------- #
+# Layout reorder + tooltips — substance (tofu show / source) above the forensic
+# C2 metadata; tofu show auto-expands ONLY on a trustworthy review page; the
+# trust terms and metadata fields carry plain-language hover tooltips.
+# --------------------------------------------------------------------------- #
+
+
+def test_tofu_show_open_by_default_on_trustworthy_review():
+    # The normal review GET (show_summary=True, integrity ok, denylist clear)
+    # auto-expands the raw plan so the operator sees the change without a click.
+    html = _render()  # _view() is trustworthy; base ctx has show_summary=True
+    assert 'data-testid="tofu-show"' in html
+    assert 'data-testid="tofu-show" open' in html
+
+
+def test_tofu_show_collapsed_when_integrity_mismatch():
+    # Never auto-surface raw plan output from an artifact we are telling the
+    # operator NOT to trust — it must stay collapsed under the red verdict.
+    view = _view()
+    view.integrity_ok = False
+    html = _render(view=view, show_summary=False,
+                   reason_blocked="plan.json integrity mismatch", reason_severity="error")
+    assert 'data-testid="tofu-show"' in html  # still present...
+    assert 'data-testid="tofu-show" open' not in html  # ...just not expanded
+
+
+def test_tofu_show_collapsed_on_denylist_violation():
+    view = _view()
+    view.denylist_violations = [("delete-action-forbidden-v1", "x")]
+    html = _render(view=view, show_summary=False,
+                   reason_blocked="denylist violations (self-protection policy)",
+                   reason_severity="error")
+    assert 'data-testid="tofu-show" open' not in html
+
+
+def test_c2_artifact_is_collapsed_disclosure():
+    # The 17 forensic field rows (15 signed c2.v1 keys + the 2 out-of-band GCS
+    # locators) move into a closed <details> (reference material), not an
+    # always-open card.
+    html = _render()
+    assert 'data-testid="c2-artifact"' in html
+    assert 'data-testid="c2-artifact" open' not in html
+    # The fields themselves are still in the DOM (assurance the move kept them).
+    assert "schema_version" in html and "plan_json_sha256" in html
+
+
+def test_substance_renders_before_forensic_metadata():
+    # Order contract: "What this change does" → tofu show → C2 metadata.
+    view = _view()
+    view.change_summary = _summary()
+    html = _render(view=view)
+    i_summary = html.index('data-testid="change-summary"')
+    i_tofu = html.index('data-testid="tofu-show"')
+    i_meta = html.index('data-testid="c2-artifact"')
+    assert i_summary < i_tofu < i_meta
+
+
+def test_verdict_labels_carry_help_tooltips():
+    html = _render()
+    # Each trust term gets the affordance class + a native title tooltip.
+    assert html.count("ds-help-term") >= 3
+    assert "the exact Git commit this plan was built from" in html
+    assert "byte-for-byte identical" in html
+    assert "self-protection policy" in html
+
+
+def test_metadata_labels_carry_help_tooltips():
+    html = _render()
+    # The forensic fields are explained too (e.g. the hash the worker re-checks).
+    assert "re-checks it before applying" in html
+
+
 def test_cost_entry_skipped_for_deposed_row():
     # A deposed entry shares its address with the main row — the join must
     # not put a cost line on it. Build a summary with a deposed entry plus a

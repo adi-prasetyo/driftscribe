@@ -151,6 +151,16 @@ pre {
   font-weight: var(--ds-fw-semibold);
 }
 
+/* a term carrying a plain-language hover explanation (native title tooltip);
+   the dotted underline + help cursor signal "hover me". Used on the iac
+   approval page's trust verdict + C2 provenance field labels. */
+.ds-help-term {
+  text-decoration: underline dotted;
+  text-underline-offset: 0.2em;
+  text-decoration-thickness: 1px;
+  cursor: help;
+}
+
 /* --- Card: the primary surface ------------------------------------------- */
 .ds-card {
   background: var(--ds-surface);
@@ -312,6 +322,10 @@ code.ds-code {
 }
 .ds-disclosure > .ds-pre {
   margin: var(--ds-sp-3) var(--ds-sp-4) var(--ds-sp-4);
+}
+/* field-row body inside a disclosure (C2 provenance card) */
+.ds-disclosure > .ds-disclosure-body {
+  padding: var(--ds-sp-2) var(--ds-sp-4) var(--ds-sp-3);
 }
 
 /* --- Buttons ------------------------------------------------------------- */
