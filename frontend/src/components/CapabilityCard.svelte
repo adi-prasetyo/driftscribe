@@ -174,7 +174,7 @@
 
       <!-- 2. Denylist — blocked outright, approval cannot override -->
       <section class="cap-section" data-testid="cap-denylist" aria-labelledby="cap-denylist-heading">
-        <h2 class="cap-section__heading" id="cap-denylist-heading">Blocked outright. Approval cannot override these</h2>
+        <h2 class="cap-section__heading" id="cap-denylist-heading">What's always blocked</h2>
         <p class="ds-subtle cap-denylist__summary">{data.denylist.summary}</p>
         {#each ruleGroups as group (group.category)}
           <div class="cap-rule-group">

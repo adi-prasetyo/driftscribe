@@ -90,7 +90,7 @@ export const CATEGORY_HEADINGS: Record<
   'control-plane' | 'service-managed' | 'iam' | 'global-v1' | 'structural',
   string
 > = {
-  'control-plane': 'Its own control plane is untouchable',
+  'control-plane': 'Its own control plane is off-limits:',
   'service-managed': 'It leaves Google-created buckets alone',
   iam: 'It cannot change who has access',
   'global-v1': 'It cannot destroy or replace anything',

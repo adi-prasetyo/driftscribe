@@ -913,20 +913,21 @@ RULE_DESCRIPTIONS: Final[Mapping[str, str]] = MappingProxyType({
         "identity (fail-closed)."
     ),
     "control-plane-service": (
-        "Its Cloud Run services."
+        "The Cloud Run services."
     ),
     "control-plane-sa": (
-        "Its service accounts."
+        "The service accounts."
     ),
     "control-plane-bucket": (
-        "The IaC state and artifact buckets — and every object inside them."
+        "The IaC state and artifact buckets, and every object inside them."
     ),
     "service-managed-bucket": (
         "Cloud Build, App Engine, Cloud Functions, and Cloud Run source-deploy "
-        "each auto-create their own buckets — not DriftScribe's to track in IaC."
+        "each auto-create their own buckets. Google's to manage, not "
+        "DriftScribe's to track."
     ),
     "control-plane-secret": (
-        "Its secrets — approval keys, GitHub token, and every version."
+        "The secrets: approval keys, the GitHub token, and every version."
     ),
     "control-plane-kms": (
         "The state-encryption KMS key and its key ring."
@@ -935,19 +936,19 @@ RULE_DESCRIPTIONS: Final[Mapping[str, str]] = MappingProxyType({
         "Workload Identity Federation pools and providers."
     ),
     "iam-change-forbidden-v1": (
-        "Any IAM change at all — even on unrelated resources (v1 floor)."
+        "Any IAM change at all, even on unrelated resources (v1 floor)."
     ),
     "import-with-changes-forbidden-v1": (
         "Adopting a resource must change nothing: if importing it would also "
-        "modify it, the plan is refused and the agent must regenerate config "
-        "that matches live reality exactly."
+        "modify it, the plan is refused and the coordinator must regenerate "
+        "config that matches live reality exactly."
     ),
     "import-type-not-adoptable-v1": (
         "Only Cloud Storage buckets, Pub/Sub topics and subscriptions, and "
-        "Cloud Run services can be adopted in v1 — every other type is refused."
+        "Cloud Run services can be adopted in v1. Every other type is refused."
     ),
     "import-mixed-plan-forbidden-v1": (
-        "An adoption plan may contain nothing but the adoption — any other "
+        "An adoption plan may contain nothing but the adoption. Any other "
         "change in the same plan is refused."
     ),
     "import-batch-forbidden-v1": (
@@ -961,7 +962,7 @@ RULE_DESCRIPTIONS: Final[Mapping[str, str]] = MappingProxyType({
         "Forgetting a resource from state (v1 floor)."
     ),
     "replace-action-forbidden-v1": (
-        "Replacing a resource — destroy-and-recreate (v1 floor)."
+        "Replacing a resource: destroy-and-recreate (v1 floor)."
     ),
     "unknown-action-forbidden-v1": (
         "Any action outside the audited OpenTofu vocabulary (fail-closed "
