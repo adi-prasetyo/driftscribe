@@ -127,9 +127,12 @@
     border-color: var(--ds-stream-border);
     box-shadow: var(--ds-ring);
   }
+  /* Selected: keep the white well (same as the unselected cards) and mark the
+     choice with a thin blue border + slightly stronger label; the looping glyph
+     is the other selected signal. */
   .crew-card--selected {
-    border-color: var(--ds-stream-border);
-    background: var(--ds-stream-surface);
+    border-color: var(--ds-stream);
+    background: var(--ds-surface);
     color: var(--ds-fg);
   }
 

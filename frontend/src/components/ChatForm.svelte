@@ -90,7 +90,15 @@
     const el = inputEl;
     if (!el) return;
     el.style.height = 'auto';
-    el.style.height = `${el.scrollHeight}px`;
+    // box-sizing is border-box, but scrollHeight excludes the borders — so
+    // setting height = scrollHeight leaves the content box ~2px short and
+    // overflow-y:auto shows a scrollbar even on an empty, single-line field.
+    // Add the vertical borders back so the box fits its content exactly and the
+    // scrollbar only appears once the content really exceeds the max-height cap.
+    const cs = getComputedStyle(el);
+    const borderY =
+      parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth);
+    el.style.height = `${el.scrollHeight + borderY}px`;
   });
 </script>
 
@@ -140,13 +148,11 @@
     align-items: stretch;
     gap: var(--ds-sp-2);
     padding: var(--ds-sp-2);
-    /* The composer is the one INTERACTIVE card in this column (Infra/Capability
-       cards above it are read-only), so it wears a light stream accent — tinted
-       fill + a 3px left accent bar, the same callout language as base.css — to
-       read as "type here", not blend into the passive cards. */
-    background: var(--ds-stream-surface);
+    /* White fill like the other cards in this column; a thin blue border is the
+       only accent, marking this as the interactive composer without the heavier
+       tinted fill + 3px left accent bar it used to wear. */
+    background: var(--ds-surface);
     border: 1px solid var(--ds-stream-border);
-    border-left: 3px solid var(--ds-stream);
     border-radius: var(--ds-radius);
     box-shadow: var(--ds-shadow-sm);
     transition: opacity var(--ds-dur) var(--ds-ease),
@@ -154,26 +160,17 @@
       border-color var(--ds-dur) var(--ds-ease);
   }
 
-  /* Lift the whole composer when any control inside is focused — a calm,
-     editorial focus affordance rather than per-control rings stacking up. */
-  .chat-form:focus-within {
-    border-color: var(--ds-stream);
-    box-shadow: var(--ds-shadow-sm), var(--ds-ring);
-  }
+  /* No whole-card focus treatment by design — focus is handled (deliberately
+     quietly) at the input rule below. See .chat-form__input:focus-visible. */
 
   /* Historical replay: the composer is inert and visually receded. */
   .chat-form.historical {
     opacity: 0.55;
     box-shadow: none;
     background: var(--ds-surface-2);
-    /* Inert replay: drop the stream accent so the composer reads as receded,
+    /* Inert replay: drop the blue border so the composer reads as receded,
        not "ready for input". */
     border-color: var(--ds-border);
-    border-left-color: var(--ds-border);
-  }
-  .chat-form.historical:focus-within {
-    border-color: var(--ds-border);
-    box-shadow: none;
   }
 
   /* The crew picker owns its own full-width row above the input. */
@@ -204,8 +201,9 @@
     flex: 1 1 16rem;
     min-width: 0;
     padding: 0.62em 0.85em;
-    /* Real field chrome: a white inset well on the tinted card so the input
-       reads as "click to type", not plain text sitting in a box. */
+    /* A bordered well — the same thin blue border as the card — so the input
+       reads as "click to type", set off from the card by its border + the
+       surrounding padding rather than a fill of its own. */
     border: 1px solid var(--ds-stream-border);
     border-radius: var(--ds-radius-sm);
     background: var(--ds-surface);
@@ -223,9 +221,14 @@
   .chat-form__input::placeholder {
     color: var(--ds-faint);
   }
+  /* Active field: no extra highlight — the field looks the same focused as at
+     rest, so nothing flares up when you click in. The blinking caret is the only
+     focus cue. We null box-shadow too because the global focus rule
+     (base.css `:where(...):focus-visible`) otherwise paints a blue ring on the
+     textarea; outline:none alone left that ring in place. */
   .chat-form__input:focus-visible {
     outline: none;
-    border-color: var(--ds-stream);
+    box-shadow: none;
   }
 
   .chat-form__send {
