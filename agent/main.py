@@ -4540,14 +4540,28 @@ def iac_approval_post(
     approval. ``cf_access_jwt`` is the RAW header forwarded to the worker so it
     can re-verify the operator identity authoritatively at ``/apply``.
 
-    REJECT is a coordinator-side audit no-op (no approval exists under
-    propose-on-approve). APPROVE executes the ordered state machine; see the
-    inline step comments and the plan's §2 table for the release matrix.
+    REJECT is a coordinator-side **non-binding** no-op (no approval exists under
+    propose-on-approve, so there is nothing to deny). It persists nothing — no
+    decision row, no audit entry — calls no worker, and never touches GitHub, so
+    the infra PR stays open and a later GET re-shows the Approve/Reject form. It
+    is "not now", not a recorded rejection; the outcome banner says so. APPROVE
+    executes the ordered state machine; see the inline step comments and the
+    plan's §2 table for the release matrix.
     """
     s = get_settings()
 
     # REJECT — no approval exists yet (propose-on-approve mints on approve), so
     # there is nothing to deny on the worker. Audit no-op + re-render, 200.
+    #
+    # Three consequences the banner copy spells out for the operator, because a
+    # bare "Rejected" reads like a recorded, binding decision and it is none of
+    # those things:
+    #   1. Nothing is persisted — no decision row, no audit entry. A reject is
+    #      pure local feedback on this one render.
+    #   2. The GitHub PR is untouched — reject never calls GitHub, so the infra
+    #      PR stays open exactly as it was (only APPROVE merges it).
+    #   3. Because (1), a fresh GET re-resolves the plan and shows the Approve /
+    #      Reject form again — there is no stored "rejected" flag to suppress it.
     if decision == "reject":
         _ref, view = _resolve_iac_plan(s, pr_number)
         return _render_iac_outcome(
@@ -4555,7 +4569,12 @@ def iac_approval_post(
             pr_number=pr_number,
             view=view,
             decision="reject",
-            outcome="Rejected (no apply performed). No plan approval was minted.",
+            outcome=(
+                "Rejected (no apply performed). No plan approval was minted. "
+                "This is a local decline only: it is not recorded, and it does "
+                "not change or close the GitHub PR, so reopening this page will "
+                "show the Approve and Reject options again."
+            ),
         )
 
     # --- APPROVE -------------------------------------------------------------
