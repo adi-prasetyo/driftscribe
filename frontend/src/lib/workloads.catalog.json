@@ -10,7 +10,7 @@
     "value": "upgrade",
     "name": "Patch",
     "descriptor": "dependencies",
-    "summary": "Watches the repo's package.json for outdated or vulnerable dependencies and proposes upgrade PRs.",
+    "summary": "Checks the repo's package.json on demand for outdated or vulnerable dependencies and proposes upgrade PRs.",
     "group": "on-demand"
   },
   {
