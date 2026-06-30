@@ -80,17 +80,57 @@ returns 503 (unimplemented) and Patch is chat-only.
 - Post-LLM deterministic validator on the write path: lockfile path regex, `package_name` must exist in the current lockfile, `target_version` must be greater than current (no downgrades), version jump ∈ {patch, minor}, `advisory_url` must match `https://github.com/advisories/GHSA-...`. Major bumps are refused at the validator. The LLM is instructed to route those to `escalation`; if it doesn't, the validator fails closed.
 - Also carries PR-lifecycle tools (`upgrade-close-pr`, `upgrade-merge-pr`) so the agent can close or CI-gated-merge an upgrade PR it opened; the `upgrade-docs` worker re-validates eligibility (driftscribe label + `upgrade/` branch + `main` base, green required check) before acting.
 
-### Explore + Provision: infrastructure read + author (`explore`, `provision`)
+### Provision: infrastructure author (`provision`)
 
-Both are on-demand: Explore and Provision run from chat only. `/recheck`
-refuses them, since neither has an autonomous observation source.
+On demand, from chat only (`/recheck` refuses it: it has no autonomous
+observation source).
 
-- **Explore** (read-only): whole-project resource inspection via Cloud Asset Inventory (`infra-reader` worker), plus live Cloud Run env, the ops contract, the dependency lockfile, and developer docs. It's also the crew to ask how DriftScribe itself works. Its prompt carries a whole-system overview, so a newcomer can get oriented in chat without reading the docs first. Explore lists zero mutation tools. It can read everything and change nothing (the read-only guarantee is pinned by a test that asserts its tools are disjoint from the mutation set).
-- **Provision** (infra edits): authors OpenTofu changes from a chat request and opens one `iac/`-only PR via the `tofu-editor` worker (which re-validates every file: `iac/` prefix, foundation ban, secret ban, AGENT-mode static gate). Provision never touches live infra. The actual `tofu apply` runs downstream in the `tofu-apply` worker, the only thing that runs `tofu apply` against live infra, behind a plan-bound, HMAC-signed operator approval, a path the chat agent cannot invoke directly.
+- Authors OpenTofu changes from a chat request and opens one `iac/`-only PR via the `tofu-editor` worker (which re-validates every file: `iac/` prefix, foundation ban, secret ban, AGENT-mode static gate).
+- Provision never touches live infrastructure. The actual `tofu apply` runs downstream in the `tofu-apply` worker (the only thing that runs `tofu apply` against live infra), behind a plan-bound, HMAC-signed operator approval, a path the chat agent cannot invoke directly.
+
+### Explore: read-only investigation (`explore`)
+
+On demand, from chat only (`/recheck` refuses it too).
+
+- The broadest read scope of the four crews: it reads across every lane, the live Cloud Run env, the ops contract, the dependency lockfile, the whole-project resource inventory via Cloud Asset Inventory (`infra-reader` worker), pending IaC plan artifacts, the team decision log, past conversations, and authoritative developer docs.
+- It is also the crew that explains DriftScribe itself: its prompt carries the whole-system overview, so a newcomer can get oriented in chat without reading the docs first. The other three crews redirect "how does DriftScribe work" questions here.
+- Explore lists zero mutation tools. It can read everything and change nothing, a guarantee pinned by a test that asserts its tools are disjoint from the mutation set.
 
 The operator UI renders a live infra resource map (managed vs. drift) alongside the decisions timeline.
 
+**Read scope at a glance.** The crews differ as much in what they can *see* as
+in what they can do. Anchor and Patch read only their own lane; Provision adds
+the infra inventory it needs to author changes; Explore reads across every lane,
+which is what makes it the orientation crew.
+
+| Read source | Anchor | Patch | Provision | Explore |
+| --- | :--: | :--: | :--: | :--: |
+| Live Cloud Run env | ✓ | ✗ | ✓ | ✓ |
+| Dependency lockfile | ✗ | ✓ | ✗ | ✓ |
+| Ops contract | ✓ | ✗ | ✓ | ✓ |
+| Whole-project inventory (Cloud Asset) | ✗ | ✗ | ✓ | ✓ |
+| Pending IaC plan artifacts | ✗ | ✗ | ✗ | ✓ |
+| Developer docs (MCP) | ✓ | ✓ | ✓ | ✓ |
+| Recent GitHub PRs | ✓ | ✓ | ✗ | ✗ † |
+| Team decision log | ✗ | ✗ | ✗ | ✓ |
+| Past conversations | ✓ | ✓ | ✓ | ✓ |
+
+† Explore deliberately omits the recent-PR search: that one tool rides a
+write-capable GitHub token, which a strictly read-only crew must not hold. Every
+other Explore tool is backed by a read-only credential.
+
 ## Demo
+
+The demo is the live operator UI at <https://driftscribe.adp-app.com>. It shows
+the infra resource map (managed vs. drift), the decisions timeline, and the
+reasoning trace behind every decision, so you can watch a drift detection, a
+docs PR, an upgrade proposal, and the rollback approval gate from the browser
+without touching a terminal.
+
+`scripts/demo.sh` is the companion runner that drives activity behind that UI
+(or for a keyboard-only walkthrough). The drift beats mutate the `payment-demo`
+Cloud Run service to create the drift the UI then surfaces; the upgrade beats
+exercise the dependency-upgrade path, where `upgrade-b` opens a real PR.
 
 ```bash
 # Workload 1: drift
@@ -114,8 +154,8 @@ a real pull request on the configured `GITHUB_REPO`. The gate is single-use by
 design: re-firing from shell history alone won't open another PR unless the
 env var is still set in the shell.
 
-Full operator runbook (screen layout, timing, expected outputs, cleanup):
-[`docs/demo-script.md`](docs/demo-script.md).
+Full operator runbook (UI walkthrough, screen layout, timing, expected outputs,
+cleanup): [`docs/demo-script.md`](docs/demo-script.md).
 
 ## Cost & latency
 
@@ -152,30 +192,6 @@ are preserved and queryable via Logs Explorer for a year. Storage beyond day
 30 is billed at $0.01/GiB-month; hackathon volume is well under the threshold
 where this matters. See [`docs/runbooks/deploy.md`](docs/runbooks/deploy.md)
 for the verification step and a sample query.
-
-## How DriftScribe's drift workload compares to other drift tools
-
-The table below scopes the comparison to Anchor. Patch sits in a different
-category (Dependabot- / Renovate-shaped) and is not compared here.
-
-| | DriftScribe (Anchor) | Drift (CloudPosse) | Steampipe | Cloud Custodian | AWS Config Rules |
-| --- | --- | --- | --- | --- | --- |
-| AI-driven decisions | ✓ | ✗ | ✗ | ✗ | ✗ |
-| HITL approval gates | ✓ | ✗ | ✗ | ✗ | ✗ |
-| Layered safety (OS + policy) | ✓ | ✗ | ✗ | partial | partial |
-| Multi-cloud | ✗ (GCP only) | ✓ (Terraform-aware, multi) | ✓ | ✓ (AWS-primary) | ✗ (AWS) |
-| Open source | ✓ | ✓ | ✓ | ✓ | ✗ |
-| Deployment surface | Cloud Run (10 DriftScribe services + 3 demo services) | Terraform | Plugin host | Lambda | Managed service |
-| Target user | DevOps + SRE on GCP | IaC platform teams | SQL-fluent ops | AWS ops | AWS compliance teams |
-
-DriftScribe trades multi-cloud breadth for layered safety on a single platform.
-It's hackathon-stage, the others are production-mature. The wager is that
-AI + HITL is the missing axis. Existing tools detect drift well but either
-stop at the report (Drift, Steampipe) or, when remediation is enabled, apply
-changes without HITL as the default product centerline (Custodian and Config
-Rules can be composed with approval workflows, but that isn't the default).
-DriftScribe sits in the middle: the agent proposes, the operator disposes, and
-the worker boundary makes "propose" safe to expose.
 
 ## Repository layout
 
