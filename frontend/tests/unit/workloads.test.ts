@@ -50,7 +50,7 @@ const EXPECTED: ReadonlyArray<{
     name: 'Patch',
     descriptor: 'dependencies',
     summary:
-      "Watches the repo's package.json for outdated or vulnerable dependencies and proposes upgrade PRs.",
+      "Checks the repo's package.json on demand for outdated or vulnerable dependencies and proposes upgrade PRs.",
     group: 'on-demand',
     label: 'Patch — dependencies',
   },

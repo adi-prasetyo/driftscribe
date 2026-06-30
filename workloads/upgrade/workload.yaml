@@ -31,13 +31,19 @@ name: upgrade
 # no trigger is wired — so it is on-demand / chat-only, and the descriptor
 # stays always-visible to disambiguate "Patch" from HTTP PATCH. See
 # ``AUTONOMOUS_TRIGGER_WORKLOADS`` in agent/main.py (Patch is NOT in it).
+# Roadmap: wiring an autonomous trigger for Patch IS planned — a scheduled
+# or advisory-feed ``/recheck`` observation loop, analogous to Anchor's
+# Eventarc trigger. When it lands, register ``upgrade`` in
+# ``AUTONOMOUS_TRIGGER_WORKLOADS`` and the operator-facing autonomy signal
+# (crew-picker group/badge, GET /capabilities ``autonomous``) follows
+# automatically. The README "Patch" section tracks this as future work.
 display_name: Patch
 descriptor: dependencies
 description: >
-  Watch the repo's package.json for outdated dependencies (or
-  vulnerable versions per advisory feeds) and propose upgrade PRs.
-  Phase 17 scopes this to package.json only — Python/Rust/Go lockfile
-  parsing is deferred.
+  Checks the repo's package.json on demand for outdated dependencies
+  (or vulnerable versions per advisory feeds) and proposes upgrade PRs.
+  Scoped to npm package.json for now — Python/Rust/Go lockfiles
+  aren't parsed yet.
 
 # Relative to this workload's directory (workloads/upgrade/).
 system_prompt_file: system_prompt.md
