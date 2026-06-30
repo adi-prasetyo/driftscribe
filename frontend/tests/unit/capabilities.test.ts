@@ -8,12 +8,12 @@ import type { CapRule } from '../../src/lib/capabilities';
 
 const controlPlaneRule: CapRule = {
   id: 'control-plane-service',
-  description: 'Its Cloud Run services.',
+  description: 'The Cloud Run services.',
   category: 'control-plane',
 };
 const iamRule: CapRule = {
   id: 'iam-change-forbidden-v1',
-  description: 'Any IAM change at all — even on unrelated resources (v1 floor).',
+  description: 'Any IAM change at all, even on unrelated resources (v1 floor).',
   category: 'iam',
 };
 const globalRule: CapRule = {
@@ -28,7 +28,7 @@ const structuralRule: CapRule = {
 };
 const serviceManagedRule: CapRule = {
   id: 'service-managed-bucket',
-  description: 'Cloud Build, App Engine, Cloud Functions, and Cloud Run source-deploy each auto-create their own buckets — not DriftScribe\'s to track in IaC.',
+  description: 'Cloud Build, App Engine, Cloud Functions, and Cloud Run source-deploy each auto-create their own buckets. Google\'s to manage, not DriftScribe\'s to track.',
   category: 'service-managed',
 };
 const unknownRule: CapRule = {

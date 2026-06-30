@@ -108,9 +108,9 @@ const FIXTURE: Capabilities = {
       'the tofu-apply worker, immediately before apply (final gate)',
     ],
     rules: [
-      { id: 'control-plane-service', description: 'Its Cloud Run services.', category: 'control-plane' },
-      { id: 'control-plane-sa', description: 'Its service accounts.', category: 'control-plane' },
-      { id: 'iam-change-forbidden-v1', description: 'Any IAM change at all — even on unrelated resources (v1 floor).', category: 'iam' },
+      { id: 'control-plane-service', description: 'The Cloud Run services.', category: 'control-plane' },
+      { id: 'control-plane-sa', description: 'The service accounts.', category: 'control-plane' },
+      { id: 'iam-change-forbidden-v1', description: 'Any IAM change at all, even on unrelated resources (v1 floor).', category: 'iam' },
       { id: 'delete-action-forbidden-v1', description: 'Deleting any resource (v1 floor).', category: 'global-v1' },
       { id: 'plan-json-unparseable', description: 'The plan file isn\'t valid JSON (fail-closed).', category: 'structural' },
     ],
@@ -188,8 +188,8 @@ describe('CapabilityCard', () => {
 
     // Denylist section — a control-plane rule description AND its category heading
     const denylist = getByTestId('cap-denylist');
-    expect(denylist.textContent).toContain('Its Cloud Run services.');
-    expect(denylist.textContent).toContain('Its own control plane is untouchable');
+    expect(denylist.textContent).toContain('The Cloud Run services.');
+    expect(denylist.textContent).toContain('Its own control plane is off-limits');
 
     // Workloads section — all four crew identities AND their descriptors
     const workloads = getByTestId('cap-workloads');
@@ -340,7 +340,7 @@ describe('CapabilityCard', () => {
     await waitFor(() => {
       // Each of the three main sections must have a heading
       expect(getByRole('heading', { name: /always needs your approval/i })).toBeTruthy();
-      expect(getByRole('heading', { name: /blocked outright/i })).toBeTruthy();
+      expect(getByRole('heading', { name: /always blocked/i })).toBeTruthy();
       expect(getByRole('heading', { name: /what each workload can use/i })).toBeTruthy();
     });
   });
