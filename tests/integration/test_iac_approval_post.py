@@ -287,6 +287,10 @@ def test_reject_is_noop_no_worker_calls(_configured, monkeypatch):
     resp = _post(client, token=_mint(), decision="reject")
     assert resp.status_code == 200
     assert "reject" in resp.text.lower()
+    # The banner documents the non-binding semantics: not recorded, GitHub PR
+    # untouched, page stays available (see iac_approval_post reject branch).
+    assert "not recorded" in resp.text
+    assert "does not change or close the GitHub PR" in resp.text
     assert calls["propose"] == []
     assert calls["apply"] == []
 
