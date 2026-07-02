@@ -89,6 +89,71 @@ describe('App — resume a conversation from the rail', () => {
       expect(checked?.value).toBe('explore');
     });
   });
+
+  it("auto-loads the latest crew turn's reasoning into the inline timeline (thread stays visible, NOT full replay)", async () => {
+    const list = {
+      conversations: [
+        {
+          conversation_id: 'c1',
+          workload: 'drift',
+          title: 'why did EXTRA drift?',
+          updated_at: new Date().toISOString(),
+          turn_count: 2,
+          last_trace_id: 't1',
+        },
+      ],
+    };
+    const detail = {
+      conversation_id: 'c1',
+      workload: 'drift',
+      title: 'why did EXTRA drift?',
+      last_trace_id: 't1',
+      turns: [
+        { seq: 0, role: 'user', text: 'why did EXTRA drift?', workload: 'drift', trace_id: 't1' },
+        { seq: 1, role: 'crew', text: 'someone set it in the console', workload: 'drift', trace_id: 't1' },
+      ],
+    };
+    // The latest turn's trace carries real reasoning: a coordinator thought, a
+    // paired tool call, and an MCP call — one displayable event per group.
+    const trace = {
+      trace_id: 't1',
+      complete: true,
+      events: [
+        { event: 'llm_thought', trace_id: 't1', thought_text: 'weighing the region tradeoff', timestamp: '2026-07-02T00:00:00Z' },
+        { event: 'tool_call', trace_id: 't1', tool_name: 'load_iac_plan_tool', tool_args: {}, timestamp: '2026-07-02T00:00:01Z' },
+        { event: 'tool_result', trace_id: 't1', tool_name: 'load_iac_plan_tool', result_ok: true, result_preview: 'ok', timestamp: '2026-07-02T00:00:02Z' },
+        { event: 'mcp_call', trace_id: 't1', mcp_tool: 'search_docs', mcp_server: 'ctx7', latency_ms: 12, timestamp: '2026-07-02T00:00:03Z' },
+      ],
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/conversations/')) return okJson(detail);
+        if (url.includes('/conversations')) return okJson(list);
+        if (url.includes('/trace/')) return okJson(trace);
+        if (url.includes('/decisions')) return okJson({ decisions: [] });
+        if (url.includes('/infra/graph')) return okJson(GRAPH);
+        return okJson({});
+      }),
+    );
+
+    const { findByTestId, getByText, queryByTestId } = render(App);
+
+    await fireEvent.click(await findByTestId('conversation-open'));
+
+    // The thread rehydrated AND the latest turn's reasoning shows inline: the
+    // coordinator thought text only renders when the timeline is populated.
+    await findByTestId('conversation-thread');
+    await waitFor(() => expect(getByText('weighing the region tradeoff')).toBeTruthy());
+
+    // We are in inline mode, NOT full-page historical replay: the thread and the
+    // reasoning coexist, and the "viewing historical trace" banner is absent.
+    expect(queryByTestId('conversation-thread')).not.toBeNull();
+    expect(queryByTestId('historical-banner')).toBeNull();
+    // The crew reply bubble is still shown above the reasoning.
+    expect(getByText('someone set it in the console')).toBeTruthy();
+  });
 });
 
 describe('App — a chat turn settles into the thread', () => {

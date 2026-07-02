@@ -8,7 +8,7 @@
     type TokenState,
   } from './lib/api';
   import { consumeSse } from './lib/sse';
-  import type { TraceEvent, TimelineStatus } from './lib/timeline';
+  import { groupOf, type TraceEvent, type TimelineStatus } from './lib/timeline';
   import type {
     Conversation,
     ConversationDetail,
@@ -303,6 +303,17 @@
         conversationWorkload = wl;
         composerWorkload = wl; // land the composer on this thread's locked crew
       }
+      // Auto-load the latest turn's reasoning into the INLINE timeline so a
+      // resumed conversation shows its coordinator reasoning / tools / MCP
+      // without the extra per-turn "open trace" click. Prefer the last CREW turn
+      // that carries a trace (the "open trace" affordance lives on crew bubbles),
+      // then any turn, then the conversation's last_trace_id. Fire-and-forget:
+      // it fills the timeline in a beat later (like a lazy load) while the
+      // tick()+scroll below runs; runSeq-guarded so a superseding open drops it.
+      const crewTid = [...conversationTurns].reverse().find((t) => t.role === 'crew' && t.trace_id)?.trace_id;
+      const anyTid = crewTid ?? [...conversationTurns].reverse().find((t) => t.trace_id)?.trace_id;
+      const inlineTid = anyTid ?? detail.last_trace_id ?? null;
+      if (inlineTid) void loadConversationTrace(inlineTid, myRun);
     } catch {
       // A failed rehydrate abandons the thread rather than leaving it half-open.
       if (myRun === runSeq) conversationId = null;
@@ -319,6 +330,33 @@
       .getElementById('chat-form')
       ?.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' });
     document.getElementById('conversation-thread')?.focus({ preventScroll: true });
+  }
+
+  // Load a resumed conversation's latest-turn trace into the INLINE timeline
+  // (the thread stays visible — this is NOT the full-page historical replay that
+  // openTrace does). historicalActive stays false; the two are independent axes
+  // ("inline vs full replay" vs "live vs snapshot"), so status='historical' here
+  // only labels the snapshot (green pill) — it does not relocate the output or
+  // hide the thread. Fail-soft + runSeq-guarded like loadPrBody. Promote ONLY
+  // when the trace carries a DISPLAYABLE event (groupOf !== null): Timeline drops
+  // final_response / unknown kinds, so a reply-only trace has events.length > 0
+  // yet would render three empty group accordions — the exact confusion we fix.
+  async function loadConversationTrace(tid: string, myRun: number) {
+    try {
+      const resp = await call('/trace/' + encodeURIComponent(tid));
+      if (myRun !== runSeq || !resp.ok) return;
+      const t = (await resp.json()) as TraceResponse;
+      if (myRun !== runSeq) return;
+      const evts = Array.isArray(t.events) ? t.events : [];
+      if (!evts.some((e) => groupOf(e) !== null)) return; // no reasoning to show
+      // Set the three together after the final guard so a superseding run can
+      // never see a half-applied inline trace.
+      events = evts;
+      traceId = tid;
+      status = 'historical';
+    } catch {
+      /* fail-soft — leave the empty-timeline affordance (same as the homepage) */
+    }
   }
 
   // Append the just-completed exchange to the open thread optimistically — we
