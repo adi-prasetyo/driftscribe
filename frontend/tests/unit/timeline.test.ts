@@ -7,6 +7,7 @@ import {
   pairToolEvents,
   toolCallCount,
   eventKey,
+  reconcileBackfill,
   type GroupKey,
   type TraceEvent,
 } from '../../src/lib/timeline';
@@ -334,5 +335,156 @@ describe('Timeline — historical-empty state', () => {
     });
     expect(container.querySelector('#group-coordinator')).not.toBeNull();
     expect(queryByTestId('timeline-empty')).toBeNull();
+  });
+});
+
+// --- reconcileBackfill — merge /trace into the live timeline, never overwrite //
+//
+// Regression cover for the "new chat shows no coordinator reasoning / tools /
+// mcp" bug. The live SSE stream carries every timeline kind EXCEPT the
+// trace-only `mcp_call` side-channel, and it renders those events as they
+// arrive. The post-turn GET /trace backfill used to REPLACE the live event set
+// (`events = t.events`). Cloud Logging ingestion lags the stream by seconds, so
+// that /trace snapshot is frequently incomplete — at the extreme it holds only
+// non-timeline log lines (event=None) that still pass a `length > 0` guard — so
+// the replace wiped the reasoning the user just watched stream in. Reopening
+// later worked because /trace had fully ingested by then. reconcileBackfill
+// keeps the live timeline and only ADDS the trace-only mcp_call events.
+
+// A Cloud Logging "log line": no `event` field, so groupOf() bins it to null.
+// These ingest BEFORE the timeline events, so a too-early /trace holds only
+// these (n > 0, but zero displayable timeline events).
+function logLine(insertId: string): TraceEvent {
+  return {
+    trace_id: 'a'.repeat(32),
+    insert_id: insertId,
+    level: 'info',
+    logger: 'agent',
+    msg: 'coordinator turn',
+  } as unknown as TraceEvent;
+}
+
+describe('reconcileBackfill — merge /trace into live timeline (never overwrite)', () => {
+  it('keeps the live reasoning when /trace holds only ingestion-lagged log lines', () => {
+    // THE BUG: live streamed a thought + a resolved tool call; the immediate
+    // /trace has only log lines (timeline events not yet ingested).
+    const live: TraceEvent[] = [
+      ev({ event: 'llm_thought', insert_id: 'stream-0', thought_text: 'assessing drift' }),
+      ev({ event: 'tool_call', insert_id: 'stream-1', tool_name: 'read_live_env' }),
+      ev({ event: 'tool_result', insert_id: 'stream-2', tool_name: 'read_live_env' }),
+    ];
+    const fetched: TraceEvent[] = [logLine('log-0'), logLine('log-1'), logLine('log-2')];
+
+    const out = reconcileBackfill(live, fetched);
+
+    // The live timeline survives intact — nothing dropped, nothing from the
+    // stale snapshot swapped in.
+    expect(out).toEqual(live);
+    expect(out.filter((e) => groupOf(e) === 'coordinator')).toHaveLength(1);
+    expect(out.filter((e) => groupOf(e) === 'tools')).toHaveLength(2);
+  });
+
+  it('adds the trace-only mcp_call events the stream never carried', () => {
+    const live: TraceEvent[] = [
+      ev({ event: 'llm_thought', insert_id: 'stream-0', thought_text: 'assessing drift' }),
+      ev({ event: 'tool_call', insert_id: 'stream-1', tool_name: 'read_live_env' }),
+      ev({ event: 'tool_result', insert_id: 'stream-2', tool_name: 'read_live_env' }),
+    ];
+    // /trace mirrors the stream (with REAL Cloud Logging insert_ids) plus the
+    // mcp_call side-channel the SSE stream does not emit.
+    const fetched: TraceEvent[] = [
+      logLine('log-0'),
+      ev({ event: 'llm_thought', insert_id: 'ci-0', thought_text: 'assessing drift' }),
+      ev({ event: 'tool_call', insert_id: 'ci-1', tool_name: 'read_live_env' }),
+      ev({ event: 'tool_result', insert_id: 'ci-2', tool_name: 'read_live_env' }),
+      ev({ event: 'mcp_call', insert_id: 'ci-3', mcp_tool: 'search_docs', mcp_server: 'ctx7' }),
+    ];
+
+    const out = reconcileBackfill(live, fetched);
+
+    // Every live event is preserved, the mcp_call is appended, and the
+    // reasoning/tools are NOT duplicated from the /trace copy (which carries
+    // different insert_ids for the same logical events).
+    expect(out.filter((e) => groupOf(e) === 'coordinator')).toHaveLength(1);
+    expect(out.filter((e) => groupOf(e) === 'tools')).toHaveLength(2);
+    const mcp = out.filter((e) => groupOf(e) === 'mcp');
+    expect(mcp).toHaveLength(1);
+    expect(mcp[0].mcp_tool).toBe('search_docs');
+  });
+
+  it('falls back to the fetched trace when the live stream produced no timeline events (recovery)', () => {
+    // Transport error / non-SSE fallback: the stream carried nothing
+    // displayable, so there is nothing to protect — trust /trace wholesale.
+    const live: TraceEvent[] = [logLine('log-0')]; // e.g. only a stray log line
+    const fetched: TraceEvent[] = [
+      ev({ event: 'llm_thought', insert_id: 'ci-0', thought_text: 'recovered' }),
+      ev({ event: 'tool_call', insert_id: 'ci-1', tool_name: 'read_live_env' }),
+      ev({ event: 'tool_result', insert_id: 'ci-2', tool_name: 'read_live_env' }),
+    ];
+
+    const out = reconcileBackfill(live, fetched);
+    expect(out).toEqual(fetched);
+  });
+
+  it('returns the live events unchanged when /trace is empty', () => {
+    const live: TraceEvent[] = [
+      ev({ event: 'llm_thought', insert_id: 'stream-0', thought_text: 'assessing drift' }),
+    ];
+    expect(reconcileBackfill(live, [])).toEqual(live);
+  });
+
+  it('does not re-add an mcp_call already present in the live events (dedup by key)', () => {
+    // Defensive: if an mcp event ever reaches the live set, the same event in
+    // /trace (identical insert_id) must not be duplicated.
+    const live: TraceEvent[] = [
+      ev({ event: 'llm_thought', insert_id: 'stream-0', thought_text: 'assessing drift' }),
+      ev({ event: 'mcp_call', insert_id: 'ci-3', mcp_tool: 'search_docs' }),
+    ];
+    const fetched: TraceEvent[] = [
+      ev({ event: 'mcp_call', insert_id: 'ci-3', mcp_tool: 'search_docs' }),
+    ];
+    const out = reconcileBackfill(live, fetched);
+    expect(out.filter((e) => groupOf(e) === 'mcp')).toHaveLength(1);
+    expect(out).toEqual(live);
+  });
+
+  it('collapses duplicate mcp_call rows WITHIN the fetched trace (no dup keys)', () => {
+    // A repeated insert_id inside one /trace snapshot must not append twice —
+    // that would produce duplicate keys in the keyed Svelte timeline loop.
+    const live: TraceEvent[] = [
+      ev({ event: 'llm_thought', insert_id: 'stream-0', thought_text: 'assessing drift' }),
+    ];
+    const fetched: TraceEvent[] = [
+      ev({ event: 'mcp_call', insert_id: 'ci-3', mcp_tool: 'search_docs' }),
+      ev({ event: 'mcp_call', insert_id: 'ci-3', mcp_tool: 'search_docs' }),
+      ev({ event: 'mcp_call', insert_id: 'ci-4', mcp_tool: 'read_doc' }),
+    ];
+    const out = reconcileBackfill(live, fetched);
+    const mcp = out.filter((e) => groupOf(e) === 'mcp');
+    expect(mcp).toHaveLength(2); // ci-3 once, ci-4 once
+    const keys = mcp.map(eventKey);
+    expect(new Set(keys).size).toBe(keys.length); // no duplicate keys
+  });
+
+  it('does NOT recover the non-mcp tail from /trace after a partial live stream (documented limitation)', () => {
+    // If the stream broke after emitting >=1 displayable event, liveHasTimeline
+    // is already true, so we only import the trace-only mcp_call side-channel —
+    // NOT the missing thought/tool tail (which would need unreliable
+    // cross-source de-dup against an itself-incomplete /trace). Contract: never
+    // WIPE the live timeline. Recovering the tail is a separate /trace-poll job.
+    const live: TraceEvent[] = [
+      ev({ event: 'llm_thought', insert_id: 'stream-0', thought_text: 'assessing drift' }),
+    ];
+    const fetched: TraceEvent[] = [
+      ev({ event: 'llm_thought', insert_id: 'ci-0', thought_text: 'assessing drift' }),
+      ev({ event: 'tool_call', insert_id: 'ci-1', tool_name: 'read_live_env' }),
+      ev({ event: 'tool_result', insert_id: 'ci-2', tool_name: 'read_live_env' }),
+      ev({ event: 'mcp_call', insert_id: 'ci-3', mcp_tool: 'search_docs' }),
+    ];
+    const out = reconcileBackfill(live, fetched);
+    // The one live thought is kept; the mcp_call is added; the tool tail is not.
+    expect(out.filter((e) => groupOf(e) === 'coordinator')).toHaveLength(1);
+    expect(out.filter((e) => groupOf(e) === 'tools')).toHaveLength(0);
+    expect(out.filter((e) => groupOf(e) === 'mcp')).toHaveLength(1);
   });
 });

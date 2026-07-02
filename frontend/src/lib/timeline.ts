@@ -184,3 +184,61 @@ export function eventKey(e: TraceEvent): string {
   ];
   return 'evt:syn:' + parts.join('␟'); // U+241F SYMBOL FOR UNIT SEPARATOR
 }
+
+/**
+ * Reconcile the live-streamed timeline with a post-turn GET /trace snapshot.
+ *
+ * The live SSE /chat stream already carries every timeline kind the coordinator
+ * emits AND renders them as they arrive — EXCEPT `mcp_call`, which is a
+ * trace-only side-channel (see TraceEvent). Cloud Logging ingestion lags the
+ * stream by seconds, so a /trace fetched immediately after the turn is
+ * frequently INCOMPLETE: it may hold a subset of the reasoning, or — at the
+ * extreme — only non-timeline log lines (event=None) that ingest first. A
+ * naive `events = t.events` therefore REPLACED the complete live timeline with
+ * a stale snapshot and wiped the reasoning/tools/mcp the user just watched
+ * stream in (the "new chat shows no coordinator reasoning" bug); reopening the
+ * conversation later worked only because /trace had fully ingested by then.
+ *
+ * So we MERGE, never overwrite:
+ *   - If the live set has NO displayable timeline event (transport error, or a
+ *     non-SSE JSON fallback), there is nothing to protect — trust /trace
+ *     wholesale (the recovery path).
+ *   - Otherwise KEEP every live event and ADD only the `mcp_call` events the
+ *     stream never sent, de-duplicated by eventKey against any mcp already
+ *     present AND against earlier mcp in the same fetched snapshot. We
+ *     deliberately do NOT merge the other kinds from /trace: the stream is
+ *     authoritative for them, and the same logical event is stamped with a
+ *     DIFFERENT insert_id on each source (stream-N vs a real Cloud Logging id),
+ *     so cross-source de-dup by key is unreliable — re-adding them would
+ *     double-count.
+ *
+ * KNOWN LIMITATION: if the live stream is interrupted AFTER emitting at least
+ * one displayable event, the missing non-mcp tail is NOT recovered from /trace
+ * (liveHasTimeline is already true). Backfilling it would need the same
+ * unreliable cross-source de-dup, and a too-early /trace is itself incomplete;
+ * the honest recovery is a brief /trace poll, deferred as a separate change.
+ * This function's contract is narrow: never WIPE the live timeline.
+ */
+export function reconcileBackfill(
+  live: TraceEvent[],
+  fetched: TraceEvent[],
+): TraceEvent[] {
+  if (!Array.isArray(fetched) || fetched.length === 0) return live;
+  const liveHasTimeline = live.some((e) => groupOf(e) !== null);
+  if (!liveHasTimeline) return fetched; // recovery path — nothing to protect
+  // Seed with the live mcp keys, then grow the set as we accept each fetched
+  // mcp — so duplicate mcp rows WITHIN the /trace snapshot are also collapsed
+  // (a repeated insert_id would otherwise yield duplicate Svelte keys).
+  const seenMcp = new Set(
+    live.filter((e) => groupOf(e) === 'mcp').map(eventKey),
+  );
+  const additions: TraceEvent[] = [];
+  for (const e of fetched) {
+    if (groupOf(e) !== 'mcp') continue;
+    const k = eventKey(e);
+    if (seenMcp.has(k)) continue;
+    seenMcp.add(k);
+    additions.push(e);
+  }
+  return additions.length > 0 ? [...live, ...additions] : live;
+}
