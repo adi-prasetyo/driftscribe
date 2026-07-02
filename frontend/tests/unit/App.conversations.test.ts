@@ -240,4 +240,58 @@ describe('App — a chat turn settles into the thread', () => {
     });
     expect(queryByTestId('conversation-thread')).toBeNull();
   });
+
+  it('shows an optimistic thinking bubble while the reply is in flight, then settles it in place', async () => {
+    // Hold /chat open so the in-flight state (prompt bubble + "thinking" crew
+    // bubble, hero suppressed) is observable, then release the reply.
+    let releaseChat!: (r: Response) => void;
+    const chatPromise = new Promise<Response>((res) => {
+      releaseChat = res;
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes('/chat') && init?.method === 'POST') return chatPromise;
+        if (url.includes('/conversations/')) return okJson({ conversation_id: 'new-conv', workload: 'drift', title: 'x', turns: [] });
+        if (url.includes('/conversations')) return okJson({ conversations: [] });
+        if (url.includes('/trace/')) return okJson({ trace_id: 'trace-xyz', events: [], complete: true });
+        if (url.includes('/decisions')) return okJson({ decisions: [] });
+        if (url.includes('/infra/graph')) return okJson(GRAPH);
+        return okJson({});
+      }),
+    );
+
+    const { findByTestId, getByText, queryByTestId } = render(App);
+
+    const input = (await findByTestId('chat-prompt')) as HTMLInputElement;
+    await fireEvent.input(input, { target: { value: 'why did it drift?' } });
+    await fireEvent.submit(document.getElementById('chat-form')!);
+
+    // In flight: the exchange renders through the thread — the operator's prompt
+    // bubble plus a live "thinking" crew bubble — and the standalone hero is
+    // suppressed entirely (the reply will land in the bubble, not the hero).
+    await findByTestId('conversation-thread');
+    await findByTestId('thread-typing');
+    expect(getByText('why did it drift?')).toBeTruthy();
+    expect(queryByTestId('final-response')).toBeNull();
+
+    // Release the reply → it fills that same bubble, the typing indicator goes
+    // away, and the turn settles into the thread. The persisted crew bubble's
+    // open-trace link only appears once the turn settles, so awaiting it pins
+    // the post-settle state.
+    releaseChat(
+      okJson(
+        { reply: 'because someone set it in the console', tool_calls: [], conversation_id: 'new-conv' },
+        { 'X-Trace-Id': 'trace-xyz' },
+      ),
+    );
+    await findByTestId('thread-open-trace');
+    expect(getByText('because someone set it in the console')).toBeTruthy();
+    expect(queryByTestId('thread-typing')).toBeNull();
+    // The hero stayed out of the way throughout — present again post-settle but
+    // hidden (its reply was cleared into the thread).
+    const hero = queryByTestId('final-response');
+    expect(hero === null || hero.hasAttribute('hidden')).toBe(true);
+  });
 });

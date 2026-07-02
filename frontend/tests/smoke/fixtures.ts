@@ -23,6 +23,7 @@ export const TESTIDS = {
   conversationsPane: 'conversations-pane',
   conversationOpen: 'conversation-open',
   conversationThread: 'conversation-thread',
+  threadTyping: 'thread-typing',
 } as const;
 
 export const TRACE_ID = 'abcdef0123456789abcdef0123456789';
@@ -89,13 +90,23 @@ export const SECRET_URL_VALUE_NEW = 'https://admin:s3cr3tNEW@svc.internal/api';
 // One SSE chat turn: meta → thought → tool_call → tool_result → done.
 // NB: mcp_call is intentionally ABSENT from the stream (it only arrives via the
 // /trace backfill — see TRACE_RESPONSE).
-export function sseBody(traceId = TRACE_ID): string {
+//
+// `opts.conversationId`: when set, the done frame echoes it — the chat-native
+// path then settles the reply into the thread's crew bubble (the persisted
+// path). Omit it to exercise the one-shot fallback (reply stays in the hero).
+export function sseBody(traceId = TRACE_ID, opts: { conversationId?: string } = {}): string {
+  const done: Record<string, unknown> = {
+    reply: 'Found 3 drifted env vars.',
+    tool_calls: ['read_live_env_tool'],
+    session_id: 's1',
+  };
+  if (opts.conversationId) done.conversation_id = opts.conversationId;
   const frames = [
     `event: meta\ndata: ${JSON.stringify({ trace_id: traceId })}`,
     `data: ${JSON.stringify({ event: 'llm_thought', trace_id: traceId, workload: 'drift', thought_text: 'Comparing live env to the ops contract.' })}`,
     `data: ${JSON.stringify({ event: 'tool_call', trace_id: traceId, workload: 'drift', tool_name: 'read_live_env_tool', tool_args: { service: 'payment-demo' } })}`,
     `data: ${JSON.stringify({ event: 'tool_result', trace_id: traceId, workload: 'drift', tool_name: 'read_live_env_tool', result_preview: '{"drift":3}', result_ok: true })}`,
-    `event: done\ndata: ${JSON.stringify({ reply: 'Found 3 drifted env vars.', tool_calls: ['read_live_env_tool'], session_id: 's1' })}`,
+    `event: done\ndata: ${JSON.stringify(done)}`,
   ];
   return frames.join('\n\n') + '\n\n';
 }

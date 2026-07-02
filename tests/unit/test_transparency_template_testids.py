@@ -19,6 +19,9 @@ REQUIRED_TESTIDS_TRANSPARENCY = {
     "chat-prompt",
     "chat-submit",
     "final-response",
+    # A live chat reply now settles into the conversation thread (chat-native);
+    # the cloud e2e keys off this in addition to the still-present hero.
+    "conversation-thread",
     "past-decisions-pane",
     "past-decision-item",
     "open-trace-button",

@@ -45,29 +45,57 @@
         </li>
       {:else}
         {@const prUrl = prHref(turn)}
+        {@const live = turn.optimistic === true}
+        {@const pending = turn.pending === true}
         <li class="turn turn--crew" data-testid="thread-turn-crew">
-          <span class="turn__glyph"><CrewGlyph verb={turn.workload ?? ''} size={22} animated={false} /></span>
-          <div class="bubble bubble--crew">
+          <!-- The glyph loops only while the reply is still streaming (pending);
+               it rests on its static healthy frame otherwise. CrewGlyph honors
+               prefers-reduced-motion internally. -->
+          <span class="turn__glyph"><CrewGlyph verb={turn.workload ?? ''} size={22} animated={pending} /></span>
+          <!-- Optimistic (live) crew bubble is a polite live region so screen
+               readers hear the "generating" state and then the reply landing in
+               the SAME node. Persisted / historical turns get no live region
+               (else a rehydrated thread would re-announce every past reply). -->
+          <div
+            class="bubble bubble--crew"
+            role={live ? 'status' : undefined}
+            aria-live={live ? 'polite' : undefined}
+          >
             <p class="turn__byline">{crewName(turn.workload)}</p>
-            <div class="turn__text">{turn.text}</div>
-            <div class="turn__actions">
-              {#if turn.trace_id}
-                <button
-                  class="turn-link"
-                  data-testid="thread-open-trace"
-                  type="button"
-                  aria-label={`Open trace for turn ${turn.seq + 1}`}
-                  onclick={() => onOpenTrace(turn.trace_id as string)}>open trace →</button>
-              {/if}
-              {#if prUrl}
-                <a
-                  class="turn-link"
-                  data-testid="thread-pr-link"
-                  href={prUrl}
-                  target="_blank"
-                  rel="noopener">Review PR #{turn.iac_pr?.pr_number} →</a>
-              {/if}
-            </div>
+            {#if pending}
+              <div class="turn__typing" data-testid="thread-typing" aria-hidden="true">
+                <span class="typing-dot"></span>
+                <span class="typing-dot"></span>
+                <span class="typing-dot"></span>
+              </div>
+              <span class="turn__sr">Generating reply&hellip;</span>
+            {:else}
+              <div class="turn__text">{turn.text}</div>
+            {/if}
+            <!-- Suppress the action links on an optimistic turn: clicking "open
+                 trace" before it settles bumps runSeq and drops the in-flight
+                 settle (the turn would never persist). They reappear on the
+                 persisted turn a beat later. -->
+            {#if !live}
+              <div class="turn__actions">
+                {#if turn.trace_id}
+                  <button
+                    class="turn-link"
+                    data-testid="thread-open-trace"
+                    type="button"
+                    aria-label={`Open trace for turn ${turn.seq + 1}`}
+                    onclick={() => onOpenTrace(turn.trace_id as string)}>open trace →</button>
+                {/if}
+                {#if prUrl}
+                  <a
+                    class="turn-link"
+                    data-testid="thread-pr-link"
+                    href={prUrl}
+                    target="_blank"
+                    rel="noopener">Review PR #{turn.iac_pr?.pr_number} →</a>
+                {/if}
+              </div>
+            {/if}
           </div>
         </li>
       {/if}
@@ -154,6 +182,62 @@
     align-items: center;
     gap: var(--ds-sp-2) var(--ds-sp-3);
     margin-top: var(--ds-sp-2);
+  }
+
+  /* Pending crew bubble: three dots gently rise in sequence while the reply
+     streams. The base (un-animated) state rests at a visible dim opacity, so
+     under prefers-reduced-motion the dots are a legible static "typing" mark
+     and the sr-only line carries the meaning for assistive tech. */
+  .turn__typing {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: var(--ds-sp-1) 0;
+  }
+  .typing-dot {
+    width: 0.4rem;
+    height: 0.4rem;
+    border-radius: var(--ds-radius-pill);
+    background: var(--ds-muted);
+    opacity: 0.35;
+    animation: thread-typing 1.2s var(--ds-ease) infinite;
+  }
+  .typing-dot:nth-child(2) {
+    animation-delay: 0.16s;
+  }
+  .typing-dot:nth-child(3) {
+    animation-delay: 0.32s;
+  }
+  @keyframes thread-typing {
+    0%,
+    60%,
+    100% {
+      opacity: 0.3;
+      transform: translateY(0);
+    }
+    30% {
+      opacity: 0.9;
+      transform: translateY(-2px);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .typing-dot {
+      animation: none;
+    }
+  }
+
+  /* Visually hidden, still announced by the bubble's live region. */
+  .turn__sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    border: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
 
   .turn-link {

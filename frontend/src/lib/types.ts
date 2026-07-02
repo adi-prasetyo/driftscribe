@@ -98,6 +98,13 @@ export interface ConversationTurn {
   // Crew turns only: present when that turn opened an infrastructure PR.
   iac_pr?: { pr_number: number; pr_url: string } | null;
   tool_calls?: string[];
+  // Live/optimistic turns ONLY — the backend never sets these. Drive the
+  // chat-native live exchange (App.svelte `displayTurns`): `optimistic` marks a
+  // transient turn not yet persisted into the thread (its action links are
+  // suppressed until it settles), and `pending` marks the crew turn while the
+  // reply is still streaming (renders a typing indicator instead of text).
+  optimistic?: boolean;
+  pending?: boolean;
 }
 
 /** One conversation's metadata row in the history rail (GET /conversations).
