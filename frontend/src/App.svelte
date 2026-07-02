@@ -8,7 +8,12 @@
     type TokenState,
   } from './lib/api';
   import { consumeSse } from './lib/sse';
-  import { groupOf, type TraceEvent, type TimelineStatus } from './lib/timeline';
+  import {
+    groupOf,
+    reconcileBackfill,
+    type TraceEvent,
+    type TimelineStatus,
+  } from './lib/timeline';
   import type {
     Conversation,
     ConversationDetail,
@@ -572,9 +577,13 @@
       if (myRun !== runSeq || !resp.ok) return;
       const t = (await resp.json()) as TraceResponse;
       if (myRun !== runSeq) return;
-      if (Array.isArray(t.events) && t.events.length > 0) {
-        events = t.events;
-      }
+      // MERGE the ingestion-lagged /trace snapshot into the live timeline,
+      // never overwrite it: the live stream already rendered every kind except
+      // the trace-only mcp_call side-channel, and a too-early /trace can be
+      // incomplete (or hold only log lines). reconcileBackfill pulls the
+      // mcp_call events and falls back to /trace only when the stream produced
+      // nothing displayable. See lib/timeline.ts.
+      events = reconcileBackfill(events, Array.isArray(t.events) ? t.events : []);
     } catch {
       /* backfill is best-effort — the live stream already populated the timeline */
     }
