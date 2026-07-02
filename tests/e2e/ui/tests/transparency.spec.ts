@@ -40,7 +40,12 @@ test.describe('transparency UI', () => {
     await page.locator('#group-tools').evaluate((el) => { (el as HTMLDetailsElement).open = true; });
     await expect(page.locator('[data-group="tools"]')).toBeVisible();
 
-    await expect(page.locator('[data-testid="final-response"]')).toBeVisible({ timeout: 60_000 });
+    // Chat-native: the reply lands in the thread's crew bubble, not the standalone
+    // hero. A real (non-ephemeral) chat persists, so the exchange settles into the
+    // thread — the settled crew turn exposes its "open trace" link, which is a
+    // reliable "the reply arrived and persisted" signal.
+    await expect(page.locator('[data-testid="conversation-thread"]')).toBeVisible({ timeout: 60_000 });
+    await expect(page.locator('[data-testid="thread-open-trace"]').first()).toBeVisible({ timeout: 60_000 });
   });
 
   test('past-decisions pane renders with at least one item (seeded)', async ({ page, request }) => {

@@ -136,6 +136,48 @@
   // behind a historical view (Codex review 019eb572 must-fix 3).
   const chatDisabled = $derived(historicalActive || busy);
 
+  // ---- chat-native live exchange ----
+  // While a live /chat turn is in flight (or its reply just landed but hasn't
+  // settled into the thread yet), render the exchange THROUGH the thread as an
+  // optimistic user + crew bubble pair instead of the standalone hero. The crew
+  // bubble reads `finalReply` live, so the reply fills that same bubble the
+  // instant the `done` frame arrives — the existing backfill/loadDecisions
+  // latency before settle is no longer visible (no blue→green swap, no upward
+  // hop). Captured (not reactive) at submit time so the bubble keys/labels stay
+  // stable for the whole run. Cleared the MOMENT a non-persistable outcome is
+  // known (paused / one-shot / error) so those fall back to the hero without
+  // flashing in a bubble first — see the clear points in submitChat.
+  type LiveExchange = { prompt: string; workload: Workload; baseSeq: number };
+  let liveExchange = $state<LiveExchange | null>(null);
+
+  // The thread's rendered turns: the persisted turns plus, during a live run,
+  // the optimistic exchange. `baseSeq` mirrors appendLocalTurns
+  // (conversationTurns.length at submit), so when settle appends the real turns
+  // the keys are identical and the keyed {#each} updates in place instead of
+  // remounting — the transient bubble becomes the persisted one with no visual
+  // change.
+  const displayTurns = $derived.by((): ConversationTurn[] => {
+    if (liveExchange == null) return conversationTurns;
+    const { prompt, workload, baseSeq } = liveExchange;
+    return [
+      ...conversationTurns,
+      { seq: baseSeq, role: 'user', text: prompt, workload, trace_id: traceId, optimistic: true },
+      {
+        seq: baseSeq + 1,
+        role: 'crew',
+        text: finalReply ?? '',
+        workload,
+        trace_id: traceId,
+        iac_pr: iacPr,
+        optimistic: true,
+        pending: finalReply == null,
+      },
+    ];
+  });
+  // Historical replay must always show the hero, never a live bubble; openTrace
+  // clears liveExchange, so both-true is impossible — this guard is belt.
+  const liveExchangeActive = $derived(!historicalActive && liveExchange != null);
+
   // Adopt-button bridge + ?ask_pr boot seed (item 12): an Adopt click — or
   // arriving from the approval page's "ask about this change" link — prefills
   // (NOT sends) the composer. epoch bumps so the same/another Adopt re-applies
@@ -285,6 +327,7 @@
     finalReply = null;
     finalIsError = false;
     iacPr = null;
+    liveExchange = null; // cancel any in-flight optimistic exchange
     status = 'pending';
     conversationId = id;
     // Clear the prior thread's crew NOW so a failed rehydrate can't leave a
@@ -412,16 +455,30 @@
     }
     const sendConversationId = conversationId;
 
+    // Render this turn through the thread from the moment Send is pressed: an
+    // optimistic user bubble + a "thinking" crew bubble that fills with the
+    // reply in place. baseSeq is captured AFTER the crew-switch reset above so
+    // it reflects the (possibly cleared) thread and matches appendLocalTurns.
+    liveExchange = { prompt, workload, baseSeq: conversationTurns.length };
+
     // Once the coordinator echoes a conversation_id (persist succeeded), fold
-    // the exchange into the open thread optimistically and let the reply settle
-    // there instead of the standalone hero — no second round-trip, no
-    // duplication. rcid absent (one-shot path / error frame) → unchanged.
+    // the exchange into the open thread and clear the optimistic overlay — the
+    // transient bubble becomes the persisted one with no visual change. rcid
+    // absent (one-shot / paused / error) → the optimistic bubble was already
+    // dropped at the terminal point, so just belt-and-suspenders clear here.
     const settleConversation = (rcid: string | undefined) => {
       if (myRun !== runSeq) return;
-      if (typeof rcid !== 'string' || rcid.length === 0) return;
+      if (typeof rcid !== 'string' || rcid.length === 0) {
+        liveExchange = null;
+        return;
+      }
       conversationId = rcid;
       conversationWorkload = workload;
       appendLocalTurns(prompt, finalReply, traceId);
+      // Clear the overlay right after the real turns are appended, BEFORE
+      // clearing finalReply/iacPr, so a mid-settle read of displayTurns is never
+      // half-applied (the persisted turns already carry the reply).
+      liveExchange = null;
       finalReply = null; // now the last bubble in the thread above
       finalIsError = false;
       iacPr = null; // the thread's crew bubble carries the PR CTA
@@ -445,6 +502,7 @@
         status = 'error';
         finalReply = 'Network error contacting the coordinator.';
         finalIsError = true;
+        liveExchange = null; // nothing persisted → the error belongs in the hero
         return;
       }
       if (myRun !== runSeq) return;
@@ -458,6 +516,7 @@
             ? 'Rate limit reached. The demo allows a few chat runs per minute per visitor. Please wait a moment and try again.'
             : `Request failed (${resp.status}).`;
         finalIsError = true;
+        liveExchange = null; // nothing persisted → the error belongs in the hero
         return;
       }
 
@@ -481,23 +540,29 @@
               : null;
           status = 'complete';
           // Mirror the SSE done frame: the JSON path echoes conversation_id
-          // when the turn persisted. Settle after the backfill resolves traceId.
+          // when the turn persisted. Decide persistability NOW (a paused refusal
+          // echoes conversation_id but persists nothing; a one-shot has none) so
+          // a non-persistable reply drops the optimistic bubble immediately and
+          // falls back to the hero, instead of flashing in a bubble across the
+          // backfill/decisions round-trips that precede settle.
+          const jsonRcid =
+            !body?.paused &&
+            typeof body?.conversation_id === 'string' &&
+            body.conversation_id.length > 0
+              ? body.conversation_id
+              : undefined;
+          if (jsonRcid === undefined) liveExchange = null;
           await backfillTrace(myRun);
           if (myRun !== runSeq) return;
           await loadDecisions();
-          // Skip settle for a paused refusal (echoes conversation_id but
-          // persists nothing) — leave the paused reply in the hero.
-          settleConversation(
-            !body?.paused && typeof body?.conversation_id === 'string'
-              ? body.conversation_id
-              : undefined,
-          );
+          settleConversation(jsonRcid);
           return;
         } catch {
           if (myRun !== runSeq) return;
           status = 'error';
           finalReply = 'Malformed response.';
           finalIsError = true;
+          liveExchange = null; // nothing persisted → the error belongs in the hero
         }
         await backfillTrace(myRun);
         if (myRun === runSeq) await loadDecisions();
@@ -526,6 +591,14 @@
             // persists NO turn — never settle it into the thread (it would
             // vanish on reload); leave the calm paused reply in the hero.
             doneConversationId = d.paused ? undefined : d.conversation_id;
+            // Non-persistable (paused refusal or one-shot with no
+            // conversation_id): drop the optimistic bubble now so the reply
+            // lands in the hero and never flashes in a bubble during the
+            // post-stream backfill. The persistable case keeps the bubble (the
+            // reply fills it in place) until settle promotes it.
+            if (typeof doneConversationId !== 'string' || doneConversationId.length === 0) {
+              liveExchange = null;
+            }
             status = 'complete';
           },
           onError: (er) => {
@@ -533,6 +606,7 @@
             finalReply = er.detail || 'The coordinator returned an error.';
             finalIsError = true;
             status = 'error';
+            liveExchange = null; // errored turn persists nothing → hero
           },
         });
       } catch {
@@ -558,6 +632,7 @@
           ? 'The reasoning stream was interrupted. Showing the recovered trace.'
           : 'The reasoning stream ended before a final reply arrived.';
         finalIsError = true;
+        liveExchange = null; // interrupted stream persists nothing → hero
       }
       await loadDecisions();
       // Settle AFTER the recovery guard so a stream that produced a real reply
@@ -601,6 +676,7 @@
     finalReply = null;
     finalIsError = false;
     iacPr = null;
+    liveExchange = null; // a replay always shows the hero, never a live bubble
     historicalDecision = null;
     historicalPrBody = null;
     historicalPrBodyTruncated = false;
@@ -692,6 +768,7 @@
     finalReply = null;
     finalIsError = false;
     iacPr = null;
+    liveExchange = null; // clean slate — no lingering optimistic exchange
     historicalDecision = null;
     historicalPrBody = null;
     historicalPrBodyTruncated = false;
@@ -754,14 +831,21 @@
 {#snippet traceOutput()}
   <HistoricalBanner active={historicalActive} traceId={historicalTraceId} onNewChat={newChat} />
   <TraceBadge {traceId} {status} />
-  <FinalResponse reply={finalReply} isError={finalIsError} />
+  <!-- During a live chat the reply lands in the thread's crew bubble (see
+       displayTurns), so the standalone hero + its loading shimmer yield. They
+       stay for historical replay and the non-persist fallback (paused / one-shot
+       / error), where liveExchange is cleared and there is no bubble to hold the
+       reply. -->
+  {#if !liveExchangeActive}
+    <FinalResponse reply={finalReply} isError={finalIsError} />
+  {/if}
   {#if historicalActive && historicalDecision}
     <DriftDiffCard decision={historicalDecision} />
   {/if}
   {#if iacPr && !historicalActive}
     <IacApprovalCta prNumber={iacPr.pr_number} />
   {/if}
-  {#if busy && finalReply == null}
+  {#if busy && finalReply == null && !liveExchangeActive}
     <ReplyPending />
   {/if}
   {#if historicalActive && finalReply == null && historicalDecision}
@@ -813,8 +897,8 @@
         bind:workload={composerWorkload}
       />
     </div>
-    {#if !historicalActive && conversationTurns.length > 0}
-      <ConversationThread turns={conversationTurns} onOpenTrace={openTrace} />
+    {#if !historicalActive && displayTurns.length > 0}
+      <ConversationThread turns={displayTurns} onOpenTrace={openTrace} />
     {/if}
     <!-- Live chat output stays BELOW the composer (the natural type-then-stream
          flow); the historical branch above relocates it to the top instead. -->

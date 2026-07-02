@@ -2,6 +2,7 @@ import { test, expect, type Page, type Route } from '@playwright/test';
 import {
   TESTIDS,
   TRACE_ID,
+  CONVERSATION_ID,
   IAC_TRACE_ID,
   DRIFT_CARD_TRACE_ID,
   sseBody,
@@ -79,6 +80,17 @@ async function mockData(page: Page, state: RouteState) {
     }),
   );
 
+  // The rail's conversation list. Empty by default (the chat-native settle after
+  // a turn calls loadConversations to refresh the rail); the resume smoke
+  // registers its own richer /conversations routes AFTER this, so they win there.
+  await page.route('**/conversations**', (route: Route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ conversations: [] }),
+    }),
+  );
+
   await page.route('**/chat', async (route: Route) => {
     state.chatHeaders = route.request().headers();
     if (state.chatDelayMs > 0) {
@@ -88,7 +100,9 @@ async function mockData(page: Page, state: RouteState) {
       status: 200,
       contentType: 'text/event-stream',
       headers: { 'X-Trace-Id': TRACE_ID, 'Cache-Control': 'no-cache' },
-      body: sseBody(),
+      // Echo a conversation_id so the reply settles into the thread's crew
+      // bubble (chat-native), matching prod's persisted-turn path.
+      body: sseBody(TRACE_ID, { conversationId: CONVERSATION_ID }),
     });
   });
 }
@@ -117,7 +131,7 @@ test.describe('transparency UI (mock smoke)', () => {
     expect(bad, `static assets must load with no 4xx/5xx: ${bad.join(', ')}`).toHaveLength(0);
   });
 
-  test('chat SSE renders timeline + final response; sends Accept + token; backfills mcp', async ({ page }) => {
+  test('chat SSE renders timeline + threaded reply; sends Accept + token; backfills mcp', async ({ page }) => {
     const state = freshState();
     await seedToken(page);
     await mockData(page, state);
@@ -126,10 +140,13 @@ test.describe('transparency UI (mock smoke)', () => {
     await page.locator(`[data-testid="${TESTIDS.chatPrompt}"]`).fill('Check payment-demo for drift');
     await page.locator(`[data-testid="${TESTIDS.chatSubmit}"]`).click();
 
-    // final response lands from the stream's `done` frame
-    const final = page.locator(`[data-testid="${TESTIDS.finalResponse}"]`);
-    await expect(final).toBeVisible();
-    await expect(final).toContainText('Found 3 drifted env vars.');
+    // The reply lands in the thread's crew bubble (chat-native), alongside the
+    // operator's own prompt bubble — NOT the standalone hero, which stays hidden.
+    const thread = page.locator(`[data-testid="${TESTIDS.conversationThread}"]`);
+    await expect(thread).toBeVisible();
+    await expect(thread).toContainText('Check payment-demo for drift');
+    await expect(thread).toContainText('Found 3 drifted env vars.');
+    await expect(page.locator(`[data-testid="${TESTIDS.finalResponse}"]`)).toBeHidden();
 
     // the request advertised SSE + carried the token from sessionStorage
     expect(state.chatHeaders['accept'] ?? '').toContain('text/event-stream');
@@ -150,7 +167,7 @@ test.describe('transparency UI (mock smoke)', () => {
     await expect(page.locator('#group-mcp')).toContainText('search_documents');
   });
 
-  test('loading shimmer fills the hero until the reply lands, then is replaced', async ({ page }) => {
+  test('a thinking bubble streams in the thread until the reply lands, then fills in place', async ({ page }) => {
     const state = freshState();
     state.chatDelayMs = 800; // hold /chat open so the in-flight state is observable
     await seedToken(page);
@@ -161,16 +178,20 @@ test.describe('transparency UI (mock smoke)', () => {
     await page.locator(`[data-testid="${TESTIDS.chatSubmit}"]`).click();
 
     // While the coordinator is working (request in flight, no reply yet) the
-    // shimmer placeholder occupies the hero slot and the real hero stays hidden.
-    const pending = page.locator(`[data-testid="${TESTIDS.replyPending}"]`);
+    // exchange is already in the thread: the prompt bubble + a live "thinking"
+    // crew bubble. The standalone hero stays out of the way.
+    const thread = page.locator(`[data-testid="${TESTIDS.conversationThread}"]`);
+    const typing = page.locator(`[data-testid="${TESTIDS.threadTyping}"]`);
     const final = page.locator(`[data-testid="${TESTIDS.finalResponse}"]`);
-    await expect(pending).toBeVisible();
+    await expect(thread).toBeVisible();
+    await expect(typing).toBeVisible();
     await expect(final).toBeHidden();
 
-    // Once the reply lands, the shimmer is replaced by the real answer.
-    await expect(final).toBeVisible();
-    await expect(final).toContainText('Found 3 drifted env vars.');
-    await expect(pending).toBeHidden();
+    // Once the reply lands, the typing indicator is replaced by the prose in the
+    // SAME bubble — no separate hero, no position hop.
+    await expect(thread).toContainText('Found 3 drifted env vars.');
+    await expect(typing).toBeHidden();
+    await expect(final).toBeHidden();
   });
 
   test('auth-required (401) shows the inline AuthPanel instead of window.prompt', async ({ page }) => {
