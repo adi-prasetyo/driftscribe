@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { untrack } from 'svelte';
+  import { tick, untrack } from 'svelte';
   import { type Workload, type ChatPrefill } from '../lib/workloads';
   import Icon from './Icon.svelte';
   import CrewPicker from './CrewPicker.svelte';
@@ -55,6 +55,14 @@
       workload = p.workload;
       inputEl?.focus();
     });
+    // Re-fit the textarea AFTER the bind:value DOM write commits. The prompt-
+    // tracking auto-grow effect below also re-runs on this write, but because the
+    // write originates inside THIS effect it measures scrollHeight against the
+    // pre-commit (stale, empty) layout, leaving a multi-line prefill one line
+    // tall until the operator edits it. tick() waits for the DOM to flush so the
+    // resize measures the real content height. (Typing needs no tick — the
+    // browser commits the DOM value before the input event, so that path is fine.)
+    tick().then(autoResize);
   });
 
   function submit() {
@@ -82,11 +90,11 @@
     }
   }
 
-  // Auto-grow the textarea to fit its content so line breaks (Shift+Enter) are
-  // actually visible; CSS caps it with a max-height + scroll. Tracks `prompt` so
-  // it also re-fits on prefill and after a send clears the field.
-  $effect(() => {
-    prompt;
+  // Fit the textarea's height to its content so line breaks (Shift+Enter) and
+  // multi-line prefills are actually visible; CSS caps it with a max-height +
+  // scroll. Called reactively on every `prompt` change (below) and again after a
+  // prefill's DOM commit (above).
+  function autoResize(): void {
     const el = inputEl;
     if (!el) return;
     el.style.height = 'auto';
@@ -99,6 +107,11 @@
     const borderY =
       parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth);
     el.style.height = `${el.scrollHeight + borderY}px`;
+  }
+  // Re-fit on every prompt change so typing and post-send clearing stay sized.
+  $effect(() => {
+    prompt;
+    autoResize();
   });
 </script>
 
