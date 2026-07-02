@@ -132,12 +132,13 @@ steps:
         # values contain "@"). TOFU_APPLY_URL / TOFU_EDITOR_URL are folded in
         # below only when their substitution is set, so today's deploys leave
         # them untouched.
-        # GOOGLE_CLOUD_LOCATION=global (NOT asia-northeast1): Gemini 2.5 Flash
-        # returns thought-SUMMARY parts only from `global`/us-central1 — Tokyo
-        # returns none, so the "Coordinator reasoning" panel was empty. Folded
-        # into this update so the image + region land on ONE revision (avoids a
-        # separate env-only revision). See infra/cloudbuild.yaml for the full
-        # rationale; TARGET_REGION / Cloud Run --region stay asia-northeast1.
+        # GOOGLE_CLOUD_LOCATION=global (NOT asia-northeast1): the coordinator
+        # model (gemini-3.5-flash) is served only on Vertex's global endpoint;
+        # global also returns the thought-SUMMARY parts the "Coordinator
+        # reasoning" panel needs (Tokyo returned none even for the older 2.5
+        # Flash). Folded into this update so the image + region land on ONE
+        # revision (avoids a separate env-only revision). See infra/cloudbuild.yaml
+        # for the full rationale; TARGET_REGION / Cloud Run --region stay asia-northeast1.
         ENV_VARS="^@^CF_ACCESS_TEAM_DOMAIN=${_CF_ACCESS_TEAM_DOMAIN}@CF_ACCESS_AUD_TAG=${_CF_ACCESS_AUD_TAG}@COORDINATOR_ORIGIN=${_COORDINATOR_ORIGIN}@IAC_REQUIRED_CHECKS=${_IAC_REQUIRED_CHECKS}@IAC_MERGE_METHOD=${_IAC_MERGE_METHOD}@GOOGLE_CLOUD_LOCATION=global"
         EXTRA_ARGS=()
         if [ -n "${_VPC_NETWORK}" ]; then

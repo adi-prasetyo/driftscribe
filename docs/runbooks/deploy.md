@@ -390,7 +390,7 @@ gcloud pubsub subscriptions describe "$SUB" --project "$PROJECT" \
 ## Step 8 — enable the ADK delegation path
 
 Before flipping `USE_ADK=true`, confirm your project's Vertex AI quota for
-`generate-content` on `gemini-2.5-flash` in `asia-northeast1` is healthy
+`generate-content` on `gemini-3.5-flash` on the `global` endpoint is healthy
 (GCP Console → Vertex AI → Quotas). Phase 14.5 moved Gemini auth from the
 AI Studio API key to Vertex AI ADC, so quota is now per-project /
 per-region / per-model — separate from any AI Studio credit balance and

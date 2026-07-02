@@ -428,8 +428,9 @@ def build_slice_author_agent(
     ADK never sees a duplicate sub-agent name and the ``name_to_slice`` tagging
     map is never overwritten. The slug suffix is kept purely for human
     readability. Model/planner mirror :func:`agent.adk_agent.build_chat_agent`
-    exactly (``gemini-2.5-flash`` + ``BuiltInPlanner(ThinkingConfig(
-    include_thoughts=True))``).
+    exactly via the shared ``COORDINATOR_MODEL`` / ``COORDINATOR_THINKING_LEVEL``
+    constants (``BuiltInPlanner(ThinkingConfig(include_thoughts=True,
+    thinking_level=...))``).
 
     Constructing the ``Agent`` is offline (no network) — the ADK imports
     happen lazily here so the pure-decomposition core of this module stays
@@ -440,21 +441,27 @@ def build_slice_author_agent(
     from google.adk.planners.built_in_planner import BuiltInPlanner
     from google.genai.types import ThinkingConfig
 
+    from agent.adk_agent import COORDINATOR_MODEL, COORDINATOR_THINKING_LEVEL
+
     read_tool_values = list(read_tools.values())
     submit_tool = make_submit_slice_file(spec.target_path, sink)
 
     return Agent(
         name=f"driftscribe_slice_{slice_index}_{_slug_target_path(spec.target_path)}",
-        model="gemini-2.5-flash",
+        model=COORDINATOR_MODEL,
         instruction=_SLICE_AUTHOR_INSTRUCTION.format(
             goal=spec.goal,
             target_path=spec.target_path,
         ),
         tools=[*read_tool_values, submit_tool],
-        # Mirror build_chat_agent: surface Gemini 2.5 Flash's thought
-        # summaries (same planner/thinking config as the coordinator agents).
+        # Mirror build_chat_agent: surface thought summaries and pin the
+        # reasoning depth (same COORDINATOR_MODEL / thinking_level as the
+        # coordinator agents).
         planner=BuiltInPlanner(
-            thinking_config=ThinkingConfig(include_thoughts=True),
+            thinking_config=ThinkingConfig(
+                include_thoughts=True,
+                thinking_level=COORDINATOR_THINKING_LEVEL,
+            ),
         ),
     )
 
@@ -627,6 +634,8 @@ async def decompose(
     from google.genai import types
     from google.genai.types import ThinkingConfig
 
+    from agent.adk_agent import COORDINATOR_MODEL, COORDINATOR_THINKING_LEVEL
+
     if read_tools is None:
         read_tools = resolve_provision_read_tools()
 
@@ -634,12 +643,16 @@ async def decompose(
     submit_plan = make_submit_plan(sink)
     agent = Agent(
         name="driftscribe_decompose",
-        model="gemini-2.5-flash",
+        model=COORDINATOR_MODEL,
         instruction=_DECOMPOSE_INSTRUCTION,
         tools=[*read_tools.values(), submit_plan],
-        # Mirror build_chat_agent: surface Gemini 2.5 Flash's thought summaries.
+        # Mirror build_chat_agent: surface thought summaries and pin the
+        # reasoning depth (COORDINATOR_MODEL / thinking_level).
         planner=BuiltInPlanner(
-            thinking_config=ThinkingConfig(include_thoughts=True),
+            thinking_config=ThinkingConfig(
+                include_thoughts=True,
+                thinking_level=COORDINATOR_THINKING_LEVEL,
+            ),
         ),
     )
 
