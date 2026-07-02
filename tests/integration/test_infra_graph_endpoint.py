@@ -704,6 +704,24 @@ def test_refresh_200_warms_l2(monkeypatch):
     assert calls["n"] == 1
 
 
+def test_refresh_runs_skew_canary_on_stale_worker(monkeypatch, caplog):
+    """Pre-warm must also flag a stale-worker inventory, else a scheduled warm
+    caches a field-less inventory into L2 and the canary never fires on GET."""
+    _set_prewarm_audience(monkeypatch, _PREWARM_AUD)
+    _accept_oidc(monkeypatch, "infra-prewarm-sa@test-proj.iam.gserviceaccount.com")
+    _set_l2_ttl(monkeypatch, "900")
+    _inject_l2()
+    # _inventory()'s Cloud Run entry lacks not_in_iac_control_plane (pre-#193).
+    _counting_call(monkeypatch, returns=_inventory())
+    client = TestClient(app)
+    with caplog.at_level("WARNING"):
+        assert client.post(REFRESH_PATH, headers={"Authorization": "Bearer x"}).status_code == 200
+    recs = [r for r in caplog.records
+            if r.msg == "infra_graph_inventory_missing_control_plane_count"]
+    assert len(recs) == 1
+    assert RUN_TYPE in recs[0].stale_asset_types
+
+
 def test_refresh_soft_200_on_worker_error(monkeypatch):
     _set_prewarm_audience(monkeypatch, _PREWARM_AUD)
     _accept_oidc(monkeypatch, "infra-prewarm-sa@test-proj.iam.gserviceaccount.com")

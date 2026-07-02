@@ -2468,6 +2468,46 @@ def _read_l2_cache(l2_ttl: float) -> "tuple[dict, float] | None":
     return payload, max(0.0, age)
 
 
+def _warn_on_control_plane_skew(inventory: dict) -> None:
+    """Skew canary (#193 half-deploy guard): the actionable-drift badge needs the
+    infra_reader worker to emit ``not_in_iac_control_plane`` per adoptable type.
+
+    A worker deployed BEFORE #193 omits the key entirely, so :func:`build_graph`
+    silently falls back to raw drift (``drift_adoptable == drift``) and every
+    adoptable badge over-reports. The tell is a MISSING key (not a zero, which is
+    a legitimate "no control-plane drift") on an adoptable type that has drift —
+    i.e. a coordinator/worker version skew. Log it at WARNING so a half-deploy is
+    visible server-side instead of only surfacing as wrong counts in the UI.
+
+    Called on the FRESH-fetch success path from BOTH ``GET /infra/graph`` and the
+    pre-warm hook (so a scheduled pre-warm can't cache a stale-worker inventory
+    unobserved). Never raises — the callers must not turn a read into a 5xx.
+    """
+    by_type = inventory.get("by_type")
+    if not isinstance(by_type, dict):
+        return
+    stale_types = sorted(
+        atype
+        for atype, entry in by_type.items()
+        if isinstance(entry, dict)
+        and atype in ADOPTABLE_ASSET_TYPES
+        and isinstance(entry.get("not_in_iac"), int)
+        and entry.get("not_in_iac", 0) > 0
+        and "not_in_iac_control_plane" not in entry
+    )
+    if stale_types:
+        log.warning(
+            "infra_graph_inventory_missing_control_plane_count",
+            extra={
+                "stale_asset_types": stale_types,
+                "hint": (
+                    "infra_reader worker predates #193; redeploy it so "
+                    "actionable-drift badges stop over-reporting raw drift"
+                ),
+            },
+        )
+
+
 def _persist_infra_inventory(inventory: dict, *, l1_ttl: float, l2_ttl: float) -> bool:
     """Cache a SUCCESSFUL inventory in both layers; return whether the PERSISTENT
     L2 layer was durably written.
@@ -2610,37 +2650,7 @@ def get_infra_graph(
             extra={"error": inventory.get("error"), "detail": inventory.get("detail")},
         )
     elif isinstance(inventory, dict):
-        # Skew canary (#193 half-deploy guard): the actionable-drift badge needs
-        # the worker to emit `not_in_iac_control_plane` per adoptable type. A
-        # worker deployed BEFORE #193 omits the key entirely, so build_graph
-        # silently falls back to raw drift (drift_adoptable == drift) and every
-        # adoptable badge over-reports. The tell is a MISSING key (not a zero,
-        # which is a legitimate "no control-plane drift") on an adoptable type
-        # that has drift — i.e. a coordinator/worker version skew. Log it at
-        # WARNING so a half-deploy is visible server-side instead of only
-        # surfacing as wrong counts in the UI.
-        by_type = inventory.get("by_type")
-        if isinstance(by_type, dict):
-            stale_types = sorted(
-                atype
-                for atype, entry in by_type.items()
-                if isinstance(entry, dict)
-                and atype in ADOPTABLE_ASSET_TYPES
-                and isinstance(entry.get("not_in_iac"), int)
-                and entry.get("not_in_iac", 0) > 0
-                and "not_in_iac_control_plane" not in entry
-            )
-            if stale_types:
-                log.warning(
-                    "infra_graph_inventory_missing_control_plane_count",
-                    extra={
-                        "stale_asset_types": stale_types,
-                        "hint": (
-                            "infra_reader worker predates #193; redeploy it so "
-                            "actionable-drift badges stop over-reporting raw drift"
-                        ),
-                    },
-                )
+        _warn_on_control_plane_skew(inventory)
         # Success only: cache in both layers (never an error/degraded payload,
         # never a non-dict) so a healthy map is reused but an outage isn't pinned.
         _persist_infra_inventory(inventory, l1_ttl=l1_ttl, l2_ttl=l2_ttl)
@@ -2702,6 +2712,7 @@ def refresh_infra_graph(request: Request) -> dict:
         log.warning("infra_graph_prewarm_inventory_error", extra={"error": reason})
         return {"cached": False, "reason": "inventory_error"}
 
+    _warn_on_control_plane_skew(inventory)
     l2_written = _persist_infra_inventory(
         inventory,
         l1_ttl=s.infra_graph_cache_ttl_s,
