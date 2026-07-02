@@ -227,7 +227,18 @@ export function adoptStepState(graph: InfraGraph | null): AdoptStepState {
     g.nodes.filter((n) => !n.managed),
   );
   const nonControlPlane = unmanagedShown.filter((n) => n.control_plane !== true);
-  if (unmanagedShown.length > 0 && nonControlPlane.length === 0) {
+  // The per-type sample is capped, so a group can hold adoptable drift no
+  // sampled row shows. Trust the aggregate `drift_adoptable` when present: if it
+  // exceeds the adoptable (non-control-plane) rows on hand, there IS a target
+  // the tour just can't name — never conclude "system-managed only" then.
+  const hiddenActionable = candidates.some(({ g }) => {
+    if (typeof g.drift_adoptable !== 'number' || !Number.isFinite(g.drift_adoptable)) return false;
+    const shownActionable = g.nodes.filter(
+      (n) => !n.managed && n.control_plane !== true,
+    ).length;
+    return g.drift_adoptable > shownActionable;
+  });
+  if (!hiddenActionable && unmanagedShown.length > 0 && nonControlPlane.length === 0) {
     return {
       kind: 'none',
       line:
@@ -239,7 +250,7 @@ export function adoptStepState(graph: InfraGraph | null): AdoptStepState {
         'everything that is there.',
     };
   }
-  return nonControlPlane.length > 0
+  return hiddenActionable || nonControlPlane.length > 0
     ? {
         kind: 'none',
         line:

@@ -121,6 +121,81 @@ def test_unknown_asset_type_label_is_humanized():
 
 
 # --------------------------------------------------------------------------- #
+# drift_adoptable — actionable drift (adoptable, non-control-plane) per group
+# --------------------------------------------------------------------------- #
+
+
+def _by_type_only(entry_atype: str, entry: dict) -> dict:
+    """An inventory with a single by_type entry (top-level totals derived)."""
+    return _inventory(
+        by_type={entry_atype: entry},
+        total_resources=entry["count"],
+        declared_in_iac=entry["declared_in_iac"],
+        not_in_iac=entry["not_in_iac"],
+    )
+
+
+def test_drift_adoptable_excludes_control_plane_on_adoptable_type():
+    # 11 unmanaged Cloud Run services, 10 of them DriftScribe's own control plane.
+    g = build_graph(_by_type_only(RUN_TYPE, {
+        "count": 12, "declared_in_iac": 1, "not_in_iac": 11,
+        "not_in_iac_control_plane": 10, "sensitive": False,
+        "sample": [{"name": "adopt-probe-svc", "location": "l", "iac": False, "match_confidence": None}],
+    }))
+    grp = g["groups"][0]
+    assert grp["drift"] == 11            # raw not_in_iac unchanged
+    assert grp["drift_adoptable"] == 1   # only the one non-control-plane service
+
+
+def test_drift_adoptable_zero_when_all_drift_is_control_plane():
+    g = build_graph(_by_type_only(BUCKET_TYPE, {
+        "count": 3, "declared_in_iac": 0, "not_in_iac": 3,
+        "not_in_iac_control_plane": 3, "sensitive": False,
+        "sample": [{"name": "x-tofu-state", "location": "US", "iac": False, "match_confidence": None}],
+    }))
+    grp = g["groups"][0]
+    assert grp["drift"] == 3
+    assert grp["drift_adoptable"] == 0
+
+
+def test_drift_adoptable_zero_for_non_adoptable_type():
+    g = build_graph(_by_type_only("example.googleapis.com/WidgetThing", {
+        "count": 5, "declared_in_iac": 0, "not_in_iac": 5,
+        "not_in_iac_control_plane": 0, "sensitive": False,
+        "sample": [{"name": "w1", "location": "g", "iac": False, "match_confidence": None}],
+    }))
+    grp = g["groups"][0]
+    assert grp["adoptable"] is False
+    assert grp["drift"] == 5
+    assert grp["drift_adoptable"] == 0   # a non-adoptable type has no actionable drift
+
+
+def test_drift_adoptable_zero_for_sensitive_type():
+    g = build_graph(_inventory())
+    secret = next(grp for grp in g["groups"] if grp["asset_type"] == SECRET_TYPE)
+    assert secret["drift_adoptable"] == 0
+
+
+def test_drift_adoptable_falls_back_to_raw_drift_when_field_missing():
+    # Stale inventory (pre-field) → over-report (show all as drift), never under-report.
+    g = build_graph(_by_type_only(RUN_TYPE, {
+        "count": 2, "declared_in_iac": 0, "not_in_iac": 2, "sensitive": False,
+        "sample": [{"name": "adopt-probe-svc", "location": "l", "iac": False, "match_confidence": None}],
+    }))
+    grp = g["groups"][0]
+    assert grp["drift_adoptable"] == 2
+
+
+def test_drift_adoptable_never_negative():
+    g = build_graph(_by_type_only(RUN_TYPE, {
+        "count": 1, "declared_in_iac": 0, "not_in_iac": 1,
+        "not_in_iac_control_plane": 5, "sensitive": False,  # malformed: cp > not_in_iac
+        "sample": [{"name": "adopt-probe-svc", "location": "l", "iac": False, "match_confidence": None}],
+    }))
+    assert g["groups"][0]["drift_adoptable"] == 0
+
+
+# --------------------------------------------------------------------------- #
 # Node managed/drift flags + ids
 # --------------------------------------------------------------------------- #
 

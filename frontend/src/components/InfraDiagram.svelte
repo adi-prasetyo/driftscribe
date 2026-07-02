@@ -129,13 +129,14 @@
   const LEGEND_HELP =
     'Every box is a real resource in your project. Green means managed in IaC: ' +
     'it is defined in OpenTofu, so DriftScribe tracks it and can change it through ' +
-    'the approval flow. Yellow means drift: the resource exists but is not in any ' +
-    '.tf file, so it is outside management. Grey is neutral: counts-only rows hide ' +
-    'sensitive names such as secrets and show only a number, while named rows ' +
-    'tagged system-managed are protected. Those are the OpenTofu state and ' +
-    'artifact buckets DriftScribe owns, or buckets a Google service creates ' +
-    'automatically: the ' +
-    'denylist blocks changing or adopting them, so they have no Adopt button.' +
+    'the approval flow. Yellow means adoptable drift: the resource exists, is not ' +
+    'in any .tf file, and is a type DriftScribe can import, so it has an Adopt ' +
+    'button. Grey is neutral: counts-only rows hide sensitive names such as ' +
+    'secrets and show only a number; named rows tagged system-managed are ' +
+    'protected (the OpenTofu state and artifact buckets DriftScribe owns, or ' +
+    'buckets a Google service creates automatically: the denylist blocks changing ' +
+    'or adopting them); and rows in a type DriftScribe cannot import are marked ' +
+    'not an adoptable type. Those grey rows are real but not counted as drift.' +
     ' A blue marker means an adoption PR is already open for that resource: open ' +
     'it from the card or the band at the top to review and approve, instead of ' +
     'adopting it again.';
@@ -164,13 +165,19 @@
     scope.resources > 0 ? coveragePercent(scope.managed, scope.resources) : null,
   );
 
-  // Header pill per card: drift count (warn) / in sync / counts-only (neutral).
+  // Header pill per card. Only ADOPTABLE types can carry a warn "N drift" badge,
+  // and it counts actionable drift (adoptable, non-control-plane) so it matches
+  // the Adopt rows shown. Non-adoptable types are never "drift": a neutral "not
+  // tracked" (or "in sync" if some are managed) keeps the "Other resources" calm.
   function cardBadge(card: ResourceCard): { text: string; warn: boolean } {
     if (card.sensitive) return { text: 'counts-only', warn: false };
-    if (card.drift > 0) return { text: `${card.drift} drift`, warn: true };
+    if (!card.adoptable) {
+      return { text: card.managed > 0 ? 'in sync' : 'not tracked', warn: false };
+    }
+    if (card.actionableDrift > 0) return { text: `${card.actionableDrift} drift`, warn: true };
     return { text: 'in sync', warn: false };
   }
-  // Status-dot tint: managed → ok, drift → warn, control-plane → neutral.
+  // Status-dot tint: managed → ok, drift → warn, control-plane / untracked → neutral.
   function dotClass(status: ResourceRowStatus): string {
     return status === 'managed' ? 'ok' : status === 'drift' ? 'drift' : 'hidden';
   }
@@ -622,7 +629,7 @@
         <span class="infra-legend__lead ds-label">Legend</span>
         {#if graph && !degraded}
           <span class="infra-key infra-key--managed">managed in IaC</span>
-          <span class="infra-key infra-key--drift">drift (not in IaC)</span>
+          <span class="infra-key infra-key--drift">adoptable drift</span>
           <span class="infra-key infra-key--hidden">counts-only</span>
           {#if pendingApprovals.length > 0}
             <span class="infra-key infra-key--pending" data-testid="legend-pending">Open PR</span>
@@ -753,6 +760,12 @@
               {#if card.hiddenUnmanaged > 0}
                 <li class="ds-subtle infra-card__trailer" data-testid="card-trailer">
                   +{card.hiddenUnmanaged} more unmanaged {card.label}(s) not shown
+                </li>
+              {:else if !card.adoptable && card.count > card.rows.length}
+                <!-- Non-adoptable type: a neutral truncation note (never "unmanaged"
+                     / "drift" — these aren't actionable). -->
+                <li class="ds-subtle infra-card__trailer" data-testid="card-trailer">
+                  +{card.count - card.rows.length} more {card.label}(s) not shown
                 </li>
               {/if}
             {/if}
@@ -1099,7 +1112,9 @@
     gap: var(--ds-sp-2);
     padding: var(--ds-sp-2) var(--ds-sp-3);
   }
-  /* Drift rows are tinted so the unmanaged resources read at a glance. */
+  /* Only ACTIONABLE drift (adoptable, non-control-plane) is tinted amber, so the
+     yellow reads as "you can adopt this". Managed, system-managed (control_plane)
+     and untracked (non-adoptable) rows stay on the plain card surface. */
   .infra-card__row--drift {
     background: var(--ds-warn-surface);
   }

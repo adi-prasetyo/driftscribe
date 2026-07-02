@@ -2126,7 +2126,7 @@ _infra_graph_cache_store_override: "InfraGraphCacheStore | None" = None
 # Bump when the persisted payload contract changes so a deploy ignores
 # stale-shaped docs written by an older revision. L1 is naturally cleared by an
 # instance recycle; L2 survives deploys, so it needs an explicit version gate.
-_INFRA_GRAPH_L2_FORMAT_VERSION = 1
+_INFRA_GRAPH_L2_FORMAT_VERSION = 2  # v2: inventory carries not_in_iac_control_plane
 # A written_at more than this far in the FUTURE is distrusted (clock skew /
 # hand-edited doc) and treated as a miss rather than served stale forever.
 _INFRA_GRAPH_L2_CLOCK_SKEW_TOLERANCE_S = 60.0

@@ -44,6 +44,16 @@ export interface InfraGroup {
   count: number;
   managed: number;
   drift: number;
+  /**
+   * Actionable drift: unmanaged resources of an adoptable type that are NOT
+   * control-plane / service-managed — i.e. the ones a real Adopt row is offered
+   * for. `drift` counts EVERY unmanaged resource (incl. control-plane and
+   * non-adoptable types); this is the subset the badge/sort/scope use so the
+   * count matches what the rows present as adoptable. Optional — a stale
+   * coordinator without the field falls back to raw drift for adoptable types
+   * (over-report, never hide) and 0 for non-adoptable types.
+   */
+  drift_adoptable?: number;
   /** Secret/sensitive types: counts-only, `nodes` is []. */
   sensitive: boolean;
   nodes: InfraNode[];
@@ -427,13 +437,18 @@ export function adoptGroupRank(g: InfraGroup): number | null {
 // names → text interpolation only, never an HTML sink) applies unchanged.
 // ---------------------------------------------------------------------------
 
-export type ResourceRowStatus = 'managed' | 'drift' | 'control_plane';
+export type ResourceRowStatus = 'managed' | 'drift' | 'control_plane' | 'untracked';
 
 export interface ResourceCardRow {
   /** each-key — server-assigned, unique. */
   nodeId: string;
   /** UNTRUSTED resource name — reaches Svelte text interpolation + the chat input only. */
   label: string;
+  /**
+   * managed → in IaC. drift → actionable (adoptable type, non-control-plane;
+   * amber + Adopt). control_plane → system-managed (denylist-refused). untracked
+   * → unmanaged but a non-adoptable type (neutral, no amber, no Adopt).
+   */
   status: ResourceRowStatus;
   /** drift AND the group is adoptable AND the node is not control-plane. */
   adoptable: boolean;
@@ -457,20 +472,46 @@ export interface ResourceCard {
   count: number;
   managed: number;
   drift: number;
+  /**
+   * Actionable drift for this card (adoptable, non-control-plane). Drives the
+   * "N drift" badge, the drift-first sort tier, and the scope totals — so the
+   * headline number matches the adoptable rows shown. Derived from the group's
+   * `drift_adoptable` (see :func:`actionableDrift`).
+   */
+  actionableDrift: number;
   rows: ResourceCardRow[];
-  /** max(0, drift − unmanaged rows shown) — the "+N more unmanaged not shown" trailer. */
+  /**
+   * For an adoptable card: max(0, actionableDrift − actionable rows shown) — the
+   * "+N more unmanaged not shown" trailer. Control-plane / non-adoptable rows
+   * never enter this figure (0 for non-adoptable cards).
+   */
   hiddenUnmanaged: number;
   /** Guided-order rank (1 = start here), or null when unranked. */
   rank: number | null;
 }
 
-// Sort tier: drift-bearing non-sensitive cards first (rank-ordered within), then
-// in-sync non-sensitive, then counts-only sensitive last. NB tier 0 is "non-
-// sensitive with drift" — it also holds control-plane / non-adoptable drift, not
-// only adoptable rows.
+/**
+ * Actionable drift for a group: the count of unmanaged, non-control-plane
+ * resources of an adoptable type. Uses the server's `drift_adoptable` when
+ * present; otherwise fails safe — an adoptable type falls back to raw drift
+ * (over-report, never hide an unmanaged resource), a non-adoptable type to 0
+ * (it can never be adopted). Pure + total.
+ */
+function actionableDrift(g: InfraGroup): number {
+  if (typeof g.drift_adoptable === 'number' && Number.isFinite(g.drift_adoptable)) {
+    return Math.max(0, g.drift_adoptable);
+  }
+  return g.adoptable === true && Number.isFinite(g.drift) ? Math.max(0, g.drift) : 0;
+}
+
+// Sort tier: cards with ACTIONABLE drift first (rank-ordered within), then
+// neutral non-sensitive cards (in-sync, control-plane-only, or non-adoptable),
+// then counts-only sensitive last. Tier 0 is keyed on actionable drift — not raw
+// drift — so a card whose only unmanaged resources are control-plane or a
+// non-adoptable type does not jump above genuinely in-sync cards.
 function cardTier(card: ResourceCard): number {
   if (card.sensitive) return 2;
-  return card.drift > 0 ? 0 : 1;
+  return card.actionableDrift > 0 ? 0 : 1;
 }
 
 /**
@@ -482,10 +523,11 @@ function cardTier(card: ResourceCard): number {
  * a type with resources never collapses to the "No resources indexed yet" note;
  * a count === 0 group (pathological) is dropped (5-lens review w4jj7t4a5).
  *
- * `hiddenUnmanaged` counts only the UNMANAGED delta (drift − unmanaged rows
- * shown). Managed rows never enter that subtraction, so showing managed rows
- * cannot inflate or deflate the "+N more unmanaged" figure (parity with the old
- * adopt trailer; Codex review 019eb572 round-2 invariant).
+ * `hiddenUnmanaged` counts only the hidden ACTIONABLE-drift delta
+ * (actionableDrift − actionable rows shown). Managed and control-plane rows
+ * never enter that subtraction, so the "+N more unmanaged" trailer never
+ * over-promises adoptable work that isn't there (parity with the old adopt
+ * trailer; Codex review 019eb572 round-2 invariant).
  */
 export function resourceCards(graph: InfraGraph): ResourceCard[] {
   if (graph.degraded) return [];
@@ -501,6 +543,7 @@ export function resourceCards(graph: InfraGraph): ResourceCard[] {
         count: g.count,
         managed: g.managed,
         drift: g.drift,
+        actionableDrift: 0,
         rows: [],
         hiddenUnmanaged: 0,
         rank: null,
@@ -509,26 +552,36 @@ export function resourceCards(graph: InfraGraph): ResourceCard[] {
     }
     const groupAdoptable = g.adoptable === true;
     const rows: ResourceCardRow[] = [];
-    let unmanagedShown = 0;
+    let actionableShown = 0;
     for (const n of g.nodes) {
       if (n.managed) {
         rows.push({ nodeId: n.id, label: n.label, status: 'managed', adoptable: false, prefill: '' });
         continue;
       }
-      unmanagedShown += 1;
       if (n.control_plane === true) {
         rows.push({ nodeId: n.id, label: n.label, status: 'control_plane', adoptable: false, prefill: '' });
         continue;
       }
-      rows.push({
-        nodeId: n.id,
-        label: n.label,
-        status: 'drift',
-        adoptable: groupAdoptable,
-        prefill: groupAdoptable ? adoptPrefill(g.label, n.label, n.location) : '',
-      });
+      if (groupAdoptable) {
+        actionableShown += 1;
+        rows.push({
+          nodeId: n.id,
+          label: n.label,
+          status: 'drift',
+          adoptable: true,
+          prefill: adoptPrefill(g.label, n.label, n.location),
+        });
+        continue;
+      }
+      // Unmanaged, but a non-adoptable type: neutral, never amber, never Adopt.
+      rows.push({ nodeId: n.id, label: n.label, status: 'untracked', adoptable: false, prefill: '' });
     }
-    const hiddenUnmanaged = Math.max(0, g.drift - unmanagedShown);
+    const cardActionableDrift = actionableDrift(g);
+    // Only adoptable cards carry a "+N more unmanaged" trailer, and it counts
+    // only the actionable drift not yet shown as a row.
+    const hiddenUnmanaged = groupAdoptable
+      ? Math.max(0, cardActionableDrift - actionableShown)
+      : 0;
     cards.push({
       assetType: g.asset_type,
       label: g.label,
@@ -537,6 +590,7 @@ export function resourceCards(graph: InfraGraph): ResourceCard[] {
       count: g.count,
       managed: g.managed,
       drift: g.drift,
+      actionableDrift: cardActionableDrift,
       rows,
       hiddenUnmanaged,
       rank: adoptGroupRank(g),
@@ -635,10 +689,10 @@ export function scopeTotals(cards: ResourceCard[], totalResources: number): Scop
   return {
     resources,
     managed,
-    // Σ primary.drift (not resources − managed): matches the per-card drift
-    // badges even if a malformed group violates count == managed + drift
-    // (Codex completed-work review, nice-to-have 1).
-    drift: sum(primary, (c) => c.drift),
+    // Σ primary.actionableDrift (not raw drift, not resources − managed):
+    // matches the per-card "N drift" badges, which count only adoptable,
+    // non-control-plane resources (Codex completed-work review, nice-to-have 1).
+    drift: sum(primary, (c) => c.actionableDrift),
     totalResources: total,
     outOfScope: Math.max(0, total - resources),
     otherResources: sum(other, (c) => c.count),
@@ -657,6 +711,18 @@ export function scopeTotals(cards: ResourceCard[], totalResources: number): Scop
  * live node for mutate/destroy verbs, else add a ghost; create/import always
  * add; unmapped/groupless/overflow ghosts land in a "Planned changes" subgraph.
  */
+/**
+ * Mermaid class for a live (non-ghost) node, mirroring the card row semantics so
+ * the preview map and the card grid agree on what amber means: managed → green;
+ * adoptable, non-control-plane drift → amber `drift`; everything else
+ * (control-plane / non-adoptable unmanaged) → neutral `hidden`. Pure.
+ */
+function liveNodeClass(group: InfraGroup, node: InfraNode): 'managed' | 'drift' | 'hidden' {
+  if (node.managed) return 'managed';
+  if (group.adoptable === true && node.control_plane !== true) return 'drift';
+  return 'hidden';
+}
+
 export function toMermaid(graph: InfraGraph, overlay?: PlanOverlay): string {
   const hasGhosts = overlayRenderable(overlay);
   const lines: string[] = ['flowchart LR', CLASS_DEFS];
@@ -753,8 +819,7 @@ export function toMermaid(graph: InfraGraph, overlay?: PlanOverlay): string {
           reclassed.add(hit);
           inner.push(`${mid}["${escapeMermaidLabel(node.label)} · ${VERB_SUFFIX[hit.verb]}"]:::${VERB_CLASS[hit.verb]}`);
         } else {
-          const cls = node.managed ? 'managed' : 'drift';
-          inner.push(`${mid}["${escapeMermaidLabel(node.label)}"]:::${cls}`);
+          inner.push(`${mid}["${escapeMermaidLabel(node.label)}"]:::${liveNodeClass(group, node)}`);
         }
         drew = true;
       }

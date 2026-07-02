@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from driftscribe_lib.iac_hcl import DeclaredIdentity
+from driftscribe_lib.iac_plan_denylist import is_control_plane_node
 
 # Asset types whose resource NAMES tend to carry sensitive data — surfaced as
 # counts only (no sample, identity redacted in declared_not_found). Small,
@@ -71,7 +72,13 @@ def build_inventory(
     matched_keys: set[tuple[str, str]] = set()
 
     type_buckets: dict[str, dict] = defaultdict(
-        lambda: {"count": 0, "declared_in_iac": 0, "not_in_iac": 0, "_samples": []}
+        lambda: {
+            "count": 0,
+            "declared_in_iac": 0,
+            "not_in_iac": 0,
+            "not_in_iac_control_plane": 0,
+            "_samples": [],
+        }
     )
     declared_total = 0
     for r in resources:
@@ -80,6 +87,10 @@ def build_inventory(
         decl = matchable.get(key)
         bucket = type_buckets[r.asset_type]
         bucket["count"] += 1
+        # The short display name is what the graph uses as the node label, so it
+        # is also the string the shared control-plane classifier keys on — keeping
+        # the aggregate count (here) and the per-node flag (infra_graph) in lockstep.
+        display = norm.rsplit("/", 1)[-1] if norm else r.name
         if decl is not None:
             matched_keys.add(key)
             bucket["declared_in_iac"] += 1
@@ -90,8 +101,12 @@ def build_inventory(
             bucket["not_in_iac"] += 1
             conf = None
             iac = False
+            # Count unmanaged control-plane / service-managed resources over EVERY
+            # resource (not just the ≤10 sample) so the graph can derive actionable
+            # (adoptable, non-control-plane) drift from a whole-estate figure.
+            if is_control_plane_node(r.asset_type, display):
+                bucket["not_in_iac_control_plane"] += 1
         if len(bucket["_samples"]) < _SAMPLE_CAP:
-            display = norm.rsplit("/", 1)[-1] if norm else r.name
             bucket["_samples"].append(
                 {"name": display, "location": r.location, "iac": iac, "match_confidence": conf}
             )
@@ -103,6 +118,7 @@ def build_inventory(
             "count": b["count"],
             "declared_in_iac": b["declared_in_iac"],
             "not_in_iac": b["not_in_iac"],
+            "not_in_iac_control_plane": b["not_in_iac_control_plane"],
             "sensitive": sensitive,
         }
         if not sensitive:

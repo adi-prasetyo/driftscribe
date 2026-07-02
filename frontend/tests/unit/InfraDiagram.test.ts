@@ -1132,6 +1132,64 @@ describe('InfraDiagram — scope split (adoptable vs. other)', () => {
   });
 });
 
+describe('InfraDiagram — actionable-drift honesty (badge + neutral non-adoptable)', () => {
+  it('shows ACTIONABLE drift on an adoptable card that also holds control-plane members', async () => {
+    // 11 unmanaged Cloud Run services, 10 of them DriftScribe's own control plane
+    // → the badge must read "1 drift", not "11 drift".
+    const graph: InfraGraph = {
+      generated_at: null, project: 'demo', caveat: 'test caveat',
+      degraded: false, degraded_reason: null,
+      totals: { resources: 12, managed: 1, drift: 11 },
+      groups: [
+        {
+          asset_type: 'run.googleapis.com/Service', label: 'Cloud Run service', adoptable: true,
+          count: 12, managed: 1, drift: 11, drift_adoptable: 1, sensitive: false,
+          nodes: [
+            { id: 'r0', label: 'adopt-probe-svc', asset_type: 'run.googleapis.com/Service', managed: false, location: null },
+            { id: 'r1', label: 'driftscribe-agent', asset_type: 'run.googleapis.com/Service', managed: false, location: null, control_plane: true },
+          ],
+        },
+      ],
+      edges: [],
+    };
+    const { getByTestId } = render(InfraDiagram, { props: { call: callWith(graph), onAdopt: () => {} } });
+    await waitFor(() => expect(getByTestId('infra-cards')).toBeTruthy());
+    expect(norm(getByTestId('infra-card-badge').textContent)).toBe('1 drift');
+    // Exactly one Adopt button (the probe); the control-plane row is system-managed.
+    expect(getByTestId('card-adopt-btn')).toBeTruthy();
+    expect(getByTestId('card-control-plane').textContent).toContain('system-managed');
+  });
+
+  it('gives a non-adoptable type a neutral "not tracked" badge, never "N drift"/warn', async () => {
+    const { getByTestId, getAllByTestId } = render(InfraDiagram, {
+      props: { call: callWith(scopeSplitGraph()), onAdopt: () => {} },
+    });
+    await waitFor(() => expect(getByTestId('infra-other-cards')).toBeTruthy());
+    const otherGrid = getByTestId('infra-other-cards');
+    const badges = getAllByTestId('infra-card-badge').filter((b) => otherGrid.contains(b));
+    const texts = badges.map((b) => norm(b.textContent ?? ''));
+    expect(texts).toContain('not tracked');
+    for (const t of texts) expect(t).not.toContain('drift'); // no "18 drift" etc.
+    for (const b of badges) {
+      if (norm(b.textContent ?? '') === 'not tracked') {
+        expect(b.classList.contains('ds-pill--warn')).toBe(false);
+      }
+    }
+  });
+
+  it('renders non-adoptable unmanaged rows as neutral (untracked), never amber drift', async () => {
+    const { getByTestId, getAllByTestId } = render(InfraDiagram, {
+      props: { call: callWith(scopeSplitGraph()), onAdopt: () => {} },
+    });
+    await waitFor(() => expect(getByTestId('infra-other-cards')).toBeTruthy());
+    const otherGrid = getByTestId('infra-other-cards');
+    const rows = getAllByTestId('infra-card-row').filter((r) => otherGrid.contains(r));
+    expect(rows.some((r) => r.classList.contains('infra-card__row--untracked'))).toBe(true);
+    for (const r of rows) expect(r.classList.contains('infra-card__row--drift')).toBe(false);
+    expect(getByTestId('card-not-adoptable').textContent).toContain('not an adoptable type');
+  });
+});
+
 describe('InfraDiagram — normal path skips Mermaid', () => {
   it('never calls mermaid.render when there is no previewPr (cards only)', async () => {
     const { getByTestId } = render(InfraDiagram, {
