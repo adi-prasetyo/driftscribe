@@ -423,6 +423,33 @@ describe('adoptStepState', () => {
     }
   });
 
+  it('reports hidden adoptable drift (aggregate drift_adoptable) beyond the sample, not "system-managed only"', () => {
+    // An adoptable Cloud Run group with 11 unmanaged services: 10 control-plane
+    // workers + 1 real probe, but the ≤10 sample surfaced only control-plane
+    // nodes. drift_adoptable=1 says there IS an adoptable target — the tour must
+    // not claim everything left is system-managed.
+    const g = makeGraph({
+      totals: { resources: 12, managed: 0, drift: 11 },
+      groups: [
+        makeGroup({
+          adoptable: true,
+          adopt_rank: 1,
+          count: 12,
+          managed: 0,
+          drift: 11,
+          drift_adoptable: 1,
+          nodes: [makeNode({ label: 'driftscribe-agent', managed: false, control_plane: true })],
+        }),
+      ],
+    });
+    const s = adoptStepState(g);
+    expect(s.kind).toBe('none');
+    if (s.kind === 'none') {
+      expect(s.line).toContain('could adopt');
+      expect(s.line).not.toContain('control-plane'); // not the system-managed-only line
+    }
+  });
+
   it('control-plane plus unnamed still reports the unnamed line (non-CP nodes exist)', () => {
     const g = makeGraph({
       totals: { resources: 2, managed: 0, drift: 2 },

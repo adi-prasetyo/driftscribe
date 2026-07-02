@@ -74,13 +74,14 @@ describe('toMermaid — structure', () => {
 });
 
 describe('toMermaid — managed vs drift classes', () => {
-  it('colors managed nodes :::managed and drift nodes :::drift', () => {
+  it('colors managed nodes :::managed and adoptable-drift nodes :::drift', () => {
     const src = toMermaid(
       graph({
         groups: [
           group({
             asset_type: RUN,
             label: 'Cloud Run service',
+            adoptable: true,
             count: 2,
             nodes: [
               node({ id: 'g0n0', label: 'payment-demo', managed: true }),
@@ -92,6 +93,43 @@ describe('toMermaid — managed vs drift classes', () => {
     );
     expect(src).toMatch(/n0\["payment-demo"\]:::managed/);
     expect(src).toMatch(/n1\["storefront"\]:::drift/);
+  });
+
+  it('colors an unmanaged node in a NON-adoptable group :::hidden (not amber drift)', () => {
+    const src = toMermaid(
+      graph({
+        groups: [
+          group({
+            asset_type: SA,
+            label: 'Service account',
+            adoptable: false,
+            count: 1,
+            nodes: [node({ id: 'g0n0', label: 'ci@p', asset_type: SA, managed: false })],
+          }),
+        ],
+      }),
+    );
+    // Amber is reserved for adoptable drift; a non-adoptable node is neutral.
+    expect(src).toMatch(/n0\["ci@p"\]:::hidden/);
+    expect(src).not.toMatch(/:::drift/);
+  });
+
+  it('colors an unmanaged control-plane node :::hidden (system-managed, never amber)', () => {
+    const src = toMermaid(
+      graph({
+        groups: [
+          group({
+            asset_type: BUCKET,
+            label: 'Storage bucket',
+            adoptable: true,
+            count: 1,
+            nodes: [node({ id: 'g0n0', label: 'demo-tofu-state', asset_type: BUCKET, managed: false, control_plane: true })],
+          }),
+        ],
+      }),
+    );
+    expect(src).toMatch(/n0\["demo-tofu-state"\]:::hidden/);
+    expect(src).not.toMatch(/:::drift/);
   });
 });
 
@@ -279,6 +317,7 @@ function liveGraph(): InfraGraph {
       group({
         asset_type: TOPIC,
         label: 'Pub/Sub topic',
+        adoptable: true,
         count: 1,
         managed: 1,
         nodes: [node({ id: 'g0n0', label: 'drift-events', asset_type: TOPIC, managed: true })],
@@ -286,6 +325,7 @@ function liveGraph(): InfraGraph {
       group({
         asset_type: RUN,
         label: 'Cloud Run service',
+        adoptable: true,
         count: 2,
         managed: 1,
         nodes: [
@@ -1050,7 +1090,7 @@ describe('resourceCards — row mapping', () => {
     expect(row.prefill).toBe('');
   });
 
-  it('maps an unmanaged node in a NON-adoptable group to a non-adoptable drift row', () => {
+  it('maps an unmanaged node in a NON-adoptable group to a neutral untracked row (not drift)', () => {
     const cards = resourceCards(
       graph({
         groups: [
@@ -1067,7 +1107,8 @@ describe('resourceCards — row mapping', () => {
       }),
     );
     const [row] = cards[0].rows;
-    expect(row.status).toBe('drift');
+    // A non-adoptable type is not actionable drift: it renders neutral, never amber.
+    expect(row.status).toBe('untracked');
     expect(row.adoptable).toBe(false);
     expect(row.prefill).toBe('');
   });
@@ -1091,7 +1132,111 @@ describe('resourceCards — row mapping', () => {
   });
 });
 
+describe('resourceCards — actionable drift (excludes control-plane / non-adoptable)', () => {
+  it('takes actionableDrift from drift_adoptable while keeping raw drift', () => {
+    const cards = resourceCards(
+      graph({
+        groups: [
+          group({
+            asset_type: RUN, label: 'Cloud Run service', adoptable: true,
+            count: 12, managed: 1, drift: 11, drift_adoptable: 1,
+            nodes: [node({ id: 'r0', label: 'adopt-probe-svc', asset_type: RUN, managed: false })],
+          }),
+        ],
+      }),
+    );
+    expect(cards[0].actionableDrift).toBe(1);
+    expect(cards[0].drift).toBe(11); // raw not_in_iac preserved for context
+  });
+
+  it('is 0 for a non-adoptable group even with raw drift', () => {
+    const cards = resourceCards(
+      graph({
+        groups: [
+          group({
+            asset_type: SA, label: 'Service account', adoptable: false,
+            count: 5, managed: 0, drift: 5, drift_adoptable: 0,
+            nodes: [node({ id: 's0', label: 'ci@p', asset_type: SA, managed: false })],
+          }),
+        ],
+      }),
+    );
+    expect(cards[0].actionableDrift).toBe(0);
+  });
+
+  it('falls back to raw drift for an adoptable group when drift_adoptable is missing (stale)', () => {
+    const cards = resourceCards(
+      graph({
+        groups: [
+          group({
+            asset_type: BUCKET, label: 'Storage bucket', adoptable: true,
+            count: 2, managed: 0, drift: 2,
+            nodes: [node({ id: 'b0', label: 'bkt', asset_type: BUCKET, managed: false })],
+          }),
+        ],
+      }),
+    );
+    expect(cards[0].actionableDrift).toBe(2);
+  });
+
+  it('falls back to 0 for a non-adoptable group when drift_adoptable is missing (stale)', () => {
+    const cards = resourceCards(
+      graph({
+        groups: [
+          group({
+            asset_type: SA, label: 'Service account',
+            count: 3, managed: 0, drift: 3,
+            nodes: [node({ id: 's0', label: 'x', asset_type: SA, managed: false })],
+          }),
+        ],
+      }),
+    );
+    expect(cards[0].actionableDrift).toBe(0);
+  });
+
+  it('sorts a card whose drift is entirely control-plane below an actionable card', () => {
+    const cards = resourceCards(
+      graph({
+        groups: [
+          group({
+            asset_type: RUN, label: 'Cloud Run service', adoptable: true,
+            count: 3, managed: 0, drift: 3, drift_adoptable: 0,
+            nodes: [node({ id: 'r0', label: 'driftscribe-agent', asset_type: RUN, managed: false, control_plane: true })],
+          }),
+          group({
+            asset_type: BUCKET, label: 'Storage bucket', adoptable: true,
+            count: 1, managed: 0, drift: 1, drift_adoptable: 1,
+            nodes: [node({ id: 'b0', label: 'bkt', asset_type: BUCKET, managed: false })],
+          }),
+        ],
+      }),
+    );
+    // BUCKET has actionable drift (tier 0); RUN is all control-plane (tier 1).
+    expect(cards.map((c) => c.assetType)).toEqual([BUCKET, RUN]);
+  });
+});
+
 describe('resourceCards — hidden-unmanaged honesty', () => {
+  it('excludes control-plane rows from the "+N more unmanaged" figure (actionable-aware)', () => {
+    const cards = resourceCards(
+      graph({
+        groups: [
+          group({
+            asset_type: RUN, label: 'Cloud Run service', adoptable: true,
+            count: 12, managed: 0, drift: 11, drift_adoptable: 1,
+            nodes: [
+              node({ id: 'r0', label: 'adopt-probe-svc', asset_type: RUN, managed: false }),
+              node({ id: 'r1', label: 'driftscribe-agent', asset_type: RUN, managed: false, control_plane: true }),
+            ],
+          }),
+        ],
+      }),
+    );
+    // actionableDrift 1, exactly one 'drift' row shown → nothing more to adopt.
+    expect(cards[0].hiddenUnmanaged).toBe(0);
+  });
+
+
   it('counts only the unmanaged delta, never the managed rows shown', () => {
     // drift=5, two unmanaged sampled + one managed sampled → +3 hidden (managed
     // row must NOT reduce the hidden-unmanaged figure).
@@ -1163,20 +1308,23 @@ describe('resourceCards — ordering (drift-first, rank within, sensitive last)'
     });
   }
 
-  it('orders drift cards (rank, then stable) before in-sync, before counts-only', () => {
+  it('orders actionable-drift cards (rank, then stable) before neutral, before counts-only', () => {
+    // SA is non-adoptable → 0 actionable drift → it leaves the drift tier and
+    // sits with the in-sync Topic in server order (BUCKET/RUN idx before SA idx).
     const cards = resourceCards(mixedGraph());
-    expect(cards.map((c) => c.assetType)).toEqual([BUCKET, RUN, SA, TOPIC, SECRET]);
+    expect(cards.map((c) => c.assetType)).toEqual([BUCKET, RUN, TOPIC, SA, SECRET]);
   });
 
-  it('falls back to server order within the drift tier when ranks are absent (stale coordinator)', () => {
+  it('falls back to server order when ranks/adoptable are absent (stale coordinator)', () => {
     const g = mixedGraph();
     for (const grp of g.groups) {
       delete grp.adopt_rank;
       delete grp.adoptable;
     }
-    // No ranks: drift tier keeps server order (Run, Bucket, SA), then in-sync Topic, then Secret.
+    // No adoptable flag → no actionable drift for any type → a single neutral
+    // tier in server order, counts-only Secret last.
     const cards = resourceCards(g);
-    expect(cards.map((c) => c.assetType)).toEqual([RUN, BUCKET, SA, TOPIC, SECRET]);
+    expect(cards.map((c) => c.assetType)).toEqual([TOPIC, RUN, BUCKET, SA, SECRET]);
   });
 
   it('keeps in-sync (tier 1) cards in server order even when the server ranked them', () => {
@@ -1338,6 +1486,20 @@ describe('scopeTotals — coverage within the adoptable scope', () => {
     expect(s.managed).toBe(1);
     expect(s.resources).toBe(2);
     expect(s.drift).toBe(1);
+  });
+
+  it('sums ACTIONABLE drift (excludes control-plane), not raw drift', () => {
+    const g = graph({
+      groups: [
+        group({
+          asset_type: RUN, label: 'Cloud Run service', adoptable: true,
+          count: 12, managed: 1, drift: 11, drift_adoptable: 1,
+          nodes: [node({ id: 'r0', label: 'adopt-probe-svc', asset_type: RUN, managed: false })],
+        }),
+      ],
+    });
+    const s = scopeTotals(resourceCards(g), 12);
+    expect(s.drift).toBe(1); // the header badge reads actionable, not the raw 11
   });
 
   it('reads the project-wide total from graph.totals.resources, not card sums (Codex MF1)', () => {

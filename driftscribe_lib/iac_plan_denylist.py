@@ -97,6 +97,7 @@ a broad except to convert any such bug into a deny anyway.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Final, Mapping
@@ -108,6 +109,8 @@ __all__ = [
     "evaluate",
     "RULE_DESCRIPTIONS",
     "ADOPTABLE_RESOURCE_TYPES",
+    "CONTROL_PLANE_NODE_MATCHERS",
+    "is_control_plane_node",
 ]
 
 
@@ -499,6 +502,33 @@ def is_service_managed_bucket_name(name: object) -> bool:
         name.endswith(SERVICE_MANAGED_BUCKET_SUFFIXES)
         or name.startswith(SERVICE_MANAGED_BUCKET_PREFIXES)
     )
+
+
+# CAI-asset-type-keyed matchers for the infra surfaces (node control_plane flag
+# in infra_graph + the aggregate not_in_iac_control_plane count in
+# infra_inventory). A node of one of these types whose SHORT name matches is
+# either DriftScribe's own control plane (Cloud Run worker services; the
+# -tofu-state / -tofu-artifacts buckets) OR a bucket a Google service
+# auto-creates (Cloud Build / App Engine / Cloud Functions / Cloud Run staging).
+# Both carry the same control_plane CTA-suppression flag. Pub/Sub has no
+# identity rule, so its nodes are never flagged. Single source of truth so the
+# two surfaces cannot drift; a false positive cannot happen without the denylist
+# also refusing that same identity (parity pinned in test_infra_graph).
+CONTROL_PLANE_NODE_MATCHERS: dict[str, Callable[[str], bool]] = {
+    "storage.googleapis.com/Bucket": lambda name: (
+        name.endswith(CONTROL_PLANE_BUCKET_SUFFIXES) or is_service_managed_bucket_name(name)
+    ),
+    "run.googleapis.com/Service": lambda name: name in CONTROL_PLANE_SERVICE_NAMES,
+}
+
+
+def is_control_plane_node(asset_type: object, name: object) -> bool:
+    """True iff a live resource of ``asset_type`` named ``name`` is non-adoptable
+    by identity — DriftScribe's own control plane or a Google-service-managed
+    bucket. ``None``/non-str safe; empty name never matches. See
+    :data:`CONTROL_PLANE_NODE_MATCHERS`."""
+    matcher = CONTROL_PLANE_NODE_MATCHERS.get(asset_type)  # type: ignore[arg-type]
+    return bool(matcher is not None and isinstance(name, str) and name and matcher(name))
 
 
 def _check_control_plane_bucket(

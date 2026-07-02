@@ -26,6 +26,7 @@ from driftscribe_lib.iac_plan_denylist import (  # noqa: F401  (re-export)
     CLOUD_RUN_SERVICE_TYPES,
     CONTROL_PLANE_BUCKET_SUFFIXES,
     CONTROL_PLANE_KMS_KEY_NAMES,
+    CONTROL_PLANE_NODE_MATCHERS,
     CONTROL_PLANE_KMS_KEYRING_NAMES,
     CONTROL_PLANE_SA_ACCOUNT_IDS,
     CONTROL_PLANE_SECRET_IDS,
@@ -43,6 +44,7 @@ from driftscribe_lib.iac_plan_denylist import (  # noqa: F401  (re-export)
     Violation,
     WIF_RESOURCE_TYPES,
     evaluate,
+    is_control_plane_node,
     is_service_managed_bucket_name,
     load_plan_json,
 )

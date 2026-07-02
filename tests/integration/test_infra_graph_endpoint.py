@@ -301,7 +301,10 @@ from agent.infra_graph_cache_store import (  # noqa: E402
     FirestoreInfraGraphCacheStore,
     InMemoryInfraGraphCacheStore,
 )
-from agent.main import _set_infra_graph_cache_store_for_tests  # noqa: E402
+from agent.main import (  # noqa: E402
+    _INFRA_GRAPH_L2_FORMAT_VERSION,
+    _set_infra_graph_cache_store_for_tests,
+)
 
 
 def _set_l2_ttl(monkeypatch, value: str) -> None:
@@ -390,7 +393,7 @@ def test_l2_future_written_at_treated_as_miss(monkeypatch):
     _set_l2_ttl(monkeypatch, "900")
     store = _inject_l2()
     # Plant a record stamped 10 minutes in the future.
-    store.set({"format_version": 1, "written_at": 1600.0, "payload": _inventory()})
+    store.set({"format_version": _INFRA_GRAPH_L2_FORMAT_VERSION, "written_at": 1600.0, "payload": _inventory()})
     calls = _counting_call(monkeypatch, returns=_inventory())
     client = TestClient(app)
     r = client.get("/infra/graph")
@@ -422,7 +425,7 @@ def test_l2_error_payload_treated_as_miss(monkeypatch):
     _set_l2_ttl(monkeypatch, "900")
     store = _inject_l2()
     store.set(
-        {"format_version": 1, "written_at": 1000.0,
+        {"format_version": _INFRA_GRAPH_L2_FORMAT_VERSION, "written_at": 1000.0,
          "payload": {"error": "cloud_asset_unavailable"}}
     )
     calls = _counting_call(monkeypatch, returns=_inventory())
@@ -438,7 +441,7 @@ def test_l2_hit_promotes_into_l1(monkeypatch):
     monkeypatch.setattr("agent.main.time.time", lambda: 1000.0)
     _set_l2_ttl(monkeypatch, "900")  # L1 stays at its 60s default (enabled)
     store = _inject_l2()
-    store.set({"format_version": 1, "written_at": 1000.0, "payload": _inventory()})
+    store.set({"format_version": _INFRA_GRAPH_L2_FORMAT_VERSION, "written_at": 1000.0, "payload": _inventory()})
     calls = _counting_call(monkeypatch, returns=_inventory())
     client = TestClient(app)
     r1 = client.get("/infra/graph")

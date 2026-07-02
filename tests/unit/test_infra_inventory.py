@@ -55,6 +55,95 @@ def test_matching_high_identity_marks_sample_iac_true_and_rolls_up_declared():
     assert sample["match_confidence"] == "high"
 
 
+BUCKET_TYPE = "storage.googleapis.com/Bucket"
+
+
+def _run(short_name: str) -> CaiResource:
+    return CaiResource(
+        name=f"//run.googleapis.com/projects/p/locations/l/services/{short_name}",
+        asset_type=RUN_TYPE,
+        location="l",
+    )
+
+
+def _bucket(short_name: str) -> CaiResource:
+    return CaiResource(
+        name=f"//storage.googleapis.com/projects/_/buckets/{short_name}",
+        asset_type=BUCKET_TYPE,
+        location="US",
+    )
+
+
+class TestControlPlaneDriftCount:
+    """`not_in_iac_control_plane` counts unmanaged resources that are DriftScribe's
+    own control plane / service-managed — so the graph can subtract them from the
+    displayed drift. Computed over EVERY resource (not the ≤10 sample), keyed by
+    the same short name used as the node label."""
+
+    def test_key_present_and_zero_when_no_control_plane(self):
+        out = build_inventory([_run("adopt-probe-svc")], [], project="p", iac_snapshot_sha="s")
+        assert out["by_type"][RUN_TYPE]["not_in_iac"] == 1
+        assert out["by_type"][RUN_TYPE]["not_in_iac_control_plane"] == 0
+
+    def test_own_worker_service_counts_as_control_plane_drift(self):
+        out = build_inventory([_run("driftscribe-agent")], [], project="p", iac_snapshot_sha="s")
+        entry = out["by_type"][RUN_TYPE]
+        assert entry["not_in_iac"] == 1
+        assert entry["not_in_iac_control_plane"] == 1
+
+    def test_mixed_worker_and_probe_separates_actionable_from_control_plane(self):
+        out = build_inventory(
+            [_run("driftscribe-agent"), _run("driftscribe-reader"), _run("adopt-probe-svc")],
+            [],
+            project="p",
+            iac_snapshot_sha="s",
+        )
+        entry = out["by_type"][RUN_TYPE]
+        assert entry["not_in_iac"] == 3
+        assert entry["not_in_iac_control_plane"] == 2  # the two workers; probe is actionable
+
+    def test_tofu_state_bucket_counts_as_control_plane_drift(self):
+        out = build_inventory(
+            [_bucket("driftscribe-hack-2026-tofu-state"), _bucket("driftscribe-hack-2026-assets")],
+            [],
+            project="p",
+            iac_snapshot_sha="s",
+        )
+        entry = out["by_type"][BUCKET_TYPE]
+        assert entry["not_in_iac"] == 2
+        assert entry["not_in_iac_control_plane"] == 1  # tofu-state; assets is actionable
+
+    def test_non_adoptable_type_never_control_plane_even_if_unmanaged(self):
+        keys = [CaiResource(name="//cloudkms.googleapis.com/x/cryptoKeys/k", asset_type="cloudkms.googleapis.com/CryptoKey", location="l")]
+        out = build_inventory(keys, [], project="p", iac_snapshot_sha="s")
+        entry = out["by_type"]["cloudkms.googleapis.com/CryptoKey"]
+        assert entry["not_in_iac"] == 1
+        assert entry["not_in_iac_control_plane"] == 0
+
+    def test_managed_control_plane_resource_is_not_counted(self):
+        decl = DeclaredIdentity(
+            identity="projects/p/locations/l/services/driftscribe-agent",
+            address="google_cloud_run_v2_service.agent",
+            source="import_id",
+            confidence="high",
+            asset_type=RUN_TYPE,
+        )
+        out = build_inventory([_run("driftscribe-agent")], [decl], project="p", iac_snapshot_sha="s")
+        entry = out["by_type"][RUN_TYPE]
+        assert entry["declared_in_iac"] == 1
+        assert entry["not_in_iac"] == 0
+        assert entry["not_in_iac_control_plane"] == 0
+
+    def test_control_plane_drift_counts_beyond_sample_cap(self):
+        # 12 control-plane workers > _SAMPLE_CAP (10): the count must reflect ALL,
+        # not just the sampled nodes.
+        workers = [_run("driftscribe-agent") for _ in range(12)]
+        out = build_inventory(workers, [], project="p", iac_snapshot_sha="s")
+        entry = out["by_type"][RUN_TYPE]
+        assert entry["not_in_iac"] == 12
+        assert entry["not_in_iac_control_plane"] == 12
+
+
 def test_non_matching_resource_is_iac_false_and_rolls_into_not_in_iac():
     res = [CaiResource(
         name="//run.googleapis.com/projects/p/locations/l/services/other",

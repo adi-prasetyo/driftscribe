@@ -25,13 +25,10 @@ DTO the UI renders as an "unavailable" note.
 """
 from __future__ import annotations
 
-from collections.abc import Callable
-
 from driftscribe_lib.iac_plan_denylist import (
     ADOPTABLE_RESOURCE_TYPES,
-    CONTROL_PLANE_BUCKET_SUFFIXES,
-    CONTROL_PLANE_SERVICE_NAMES,
-    is_service_managed_bucket_name,
+    CONTROL_PLANE_NODE_MATCHERS,
+    is_control_plane_node,
 )
 from driftscribe_lib.iac_plan_summary import PlanSummary
 from driftscribe_lib.infra_inventory import SENSITIVE_ASSET_TYPES
@@ -156,37 +153,21 @@ ADOPTION_CONTROL_PLANE_NOTE = (
 # an honest note. The node itself stays on the map: it IS unmanaged drift, and
 # hiding it would misreport the estate.
 #
-# PARITY-BY-CONSTRUCTION: the matchers reuse the denylist's OWN identity
-# predicates/constants for the adoptable types that have an identity rule —
-# the bucket matcher fires on the control-plane suffix (same semantics as
-# _is_protected_bucket_name) OR is_service_managed_bucket_name (the shared
-# predicate the denylist's service-managed-bucket rule uses), and the Cloud Run
-# matcher on CONTROL_PLANE_SERVICE_NAMES. Pub/Sub has no identity rule, so its
-# nodes are never flagged. A flagged bucket node therefore corresponds to
-# EITHER a control-plane-bucket OR a service-managed-bucket denylist refusal —
-# both suppress the same `control_plane` CTA flag (no second signal). The
-# operator-facing note broadens to name both kinds. test_infra_graph pins the
-# parity by driving build_graph and evaluate with the same identity. Failure
-# direction is safe: an unflagged protected name only shows a button whose
-# plan C2 then blocks; a false positive cannot happen without the denylist
-# also refusing that same identity.
-_CONTROL_PLANE_NODE_MATCHERS: dict[str, Callable[[str], bool]] = {
-    "storage.googleapis.com/Bucket": lambda name: (
-        name.endswith(CONTROL_PLANE_BUCKET_SUFFIXES)
-        or is_service_managed_bucket_name(name)
-    ),
-    "run.googleapis.com/Service": lambda name: name in CONTROL_PLANE_SERVICE_NAMES,
-}
-
-
-def _is_control_plane_node(atype: str, label: str) -> bool:
-    """True iff a node of ``atype`` named ``label`` is non-adoptable by identity.
-
-    Covers DriftScribe's own control plane AND buckets a Google service
-    auto-creates — both carry the same ``control_plane`` CTA-suppression flag.
-    """
-    matcher = _CONTROL_PLANE_NODE_MATCHERS.get(atype)
-    return bool(matcher is not None and label and matcher(label))
+# PARITY-BY-CONSTRUCTION: the classifier lives in the denylist module (its OWN
+# identity predicates/constants) and is shared verbatim by the inventory's
+# aggregate control-plane count and this per-node flag, so the two surfaces
+# cannot drift. A flagged bucket node corresponds to EITHER a control-plane
+# bucket OR a service-managed-bucket denylist refusal — both suppress the same
+# `control_plane` CTA flag. Pub/Sub has no identity rule, so its nodes are never
+# flagged. test_infra_graph pins the parity by driving build_graph and evaluate
+# with the same identity. Failure direction is safe: an unflagged protected name
+# only shows a button whose plan C2 then blocks; a false positive cannot happen
+# without the denylist also refusing that same identity.
+#
+# `_CONTROL_PLANE_NODE_MATCHERS` / `_is_control_plane_node` remain as module-local
+# aliases for the shared denylist objects (back-compat for existing importers).
+_CONTROL_PLANE_NODE_MATCHERS = CONTROL_PLANE_NODE_MATCHERS
+_is_control_plane_node = is_control_plane_node
 
 
 # Plan rtypes whose names/addresses must never reach the map. Mirrors the
@@ -340,7 +321,7 @@ def build_graph(inventory: dict) -> dict:
         { generated_at, project, caveat, iac_snapshot_sha,
           degraded: bool, degraded_reason: str|None, detail?: str|None,
           totals: {resources, managed, drift},
-          groups: [ { asset_type, label, count, managed, drift, sensitive,
+          groups: [ { asset_type, label, count, managed, drift, drift_adoptable, sensitive,
                       adoptable,
                       nodes: [ {id, label, asset_type, managed, location, control_plane?} ],
                       truncated_in_group? } ],
@@ -383,6 +364,15 @@ def build_graph(inventory: dict) -> dict:
         count = _as_int(entry.get("count"))
         managed = _as_int(entry.get("declared_in_iac"))
         drift = _as_int(entry.get("not_in_iac"))
+        adoptable = atype in ADOPTABLE_ASSET_TYPES and not sensitive
+        # Actionable drift = unmanaged resources this surface can actually adopt:
+        # an adoptable type MINUS its control-plane / service-managed members
+        # (which the UI shows as "system-managed", never as adoptable drift). A
+        # non-adoptable or sensitive type has no actionable drift by definition.
+        # If a stale inventory lacks the control-plane count, fall back to raw
+        # drift — over-report rather than hide unmanaged resources.
+        cp_drift = _as_int(entry.get("not_in_iac_control_plane"))
+        drift_adoptable = max(0, drift - cp_drift) if adoptable else 0
 
         nodes: list[dict] = []
         truncated_in_group = 0
@@ -419,11 +409,12 @@ def build_graph(inventory: dict) -> dict:
             "count": count,
             "managed": managed,
             "drift": drift,
+            "drift_adoptable": drift_adoptable,
             "sensitive": sensitive,
             # Adopt-button affordance (Phase 4): an adoptable type whose group is
             # NOT sensitive. Sensitive groups are counts-only (no node names) so
             # they can never carry an Adopt button regardless of their type.
-            "adoptable": atype in ADOPTABLE_ASSET_TYPES and not sensitive,
+            "adoptable": adoptable,
             "nodes": nodes,
         }
         if group["adoptable"]:
