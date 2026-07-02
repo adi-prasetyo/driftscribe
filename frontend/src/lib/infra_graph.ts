@@ -446,8 +446,9 @@ export interface ResourceCardRow {
   label: string;
   /**
    * managed → in IaC. drift → actionable (adoptable type, non-control-plane;
-   * amber + Adopt). control_plane → system-managed (denylist-refused). untracked
-   * → unmanaged but a non-adoptable type (neutral, no amber, no Adopt).
+   * amber + Adopt). control_plane → system-managed (denylist-refused; collapsed
+   * into the card's systemManaged disclosure, NOT the inline rows). untracked →
+   * unmanaged but a non-adoptable type (neutral, no amber, no Adopt).
    */
   status: ResourceRowStatus;
   /** drift AND the group is adoptable AND the node is not control-plane. */
@@ -479,7 +480,23 @@ export interface ResourceCard {
    * `drift_adoptable` (see :func:`actionableDrift`).
    */
   actionableDrift: number;
+  /** Inline rows: managed + adoptable-drift + untracked. Control-plane excluded. */
   rows: ResourceCardRow[];
+  /**
+   * Control-plane / service-managed rows (sampled), folded into a collapsed
+   * per-card disclosure so DriftScribe's own ~10 Cloud Run services (and the
+   * -tofu-state / service-created buckets) don't bury the 1–2 actionable rows.
+   * Never adoptable; keeps the resource TYPE coherent in one card rather than
+   * splitting it into the "Other resources" section (design 2026-07-03).
+   */
+  systemManaged: ResourceCardRow[];
+  /**
+   * TRUE control-plane count for the disclosure summary + "+N more" trailer —
+   * ≥ systemManaged.length. For an adoptable card it is inferred from the group
+   * totals (raw drift − actionableDrift = the non-adoptable unmanaged remainder),
+   * so node sampling can't under-count it; 0 when there are none.
+   */
+  systemManagedTotal: number;
   /**
    * For an adoptable card: max(0, actionableDrift − actionable rows shown) — the
    * "+N more unmanaged not shown" trailer. Control-plane / non-adoptable rows
@@ -545,6 +562,8 @@ export function resourceCards(graph: InfraGraph): ResourceCard[] {
         drift: g.drift,
         actionableDrift: 0,
         rows: [],
+        systemManaged: [],
+        systemManagedTotal: 0,
         hiddenUnmanaged: 0,
         rank: null,
       });
@@ -552,6 +571,7 @@ export function resourceCards(graph: InfraGraph): ResourceCard[] {
     }
     const groupAdoptable = g.adoptable === true;
     const rows: ResourceCardRow[] = [];
+    const systemManaged: ResourceCardRow[] = [];
     let actionableShown = 0;
     for (const n of g.nodes) {
       if (n.managed) {
@@ -559,7 +579,8 @@ export function resourceCards(graph: InfraGraph): ResourceCard[] {
         continue;
       }
       if (n.control_plane === true) {
-        rows.push({ nodeId: n.id, label: n.label, status: 'control_plane', adoptable: false, prefill: '' });
+        // Collapsed into the card's systemManaged disclosure, not the inline rows.
+        systemManaged.push({ nodeId: n.id, label: n.label, status: 'control_plane', adoptable: false, prefill: '' });
         continue;
       }
       if (groupAdoptable) {
@@ -582,6 +603,16 @@ export function resourceCards(graph: InfraGraph): ResourceCard[] {
     const hiddenUnmanaged = groupAdoptable
       ? Math.max(0, cardActionableDrift - actionableShown)
       : 0;
+    // True control-plane count for the disclosure summary. For an adoptable card
+    // the group-level figure (raw unmanaged − actionable unmanaged) is the exact
+    // non-adoptable remainder and survives node sampling; guard g.drift against
+    // non-finite JSON. Non-adoptable cards have no derivable figure, so the sample
+    // stands. max() keeps it ≥ the rows we actually hold.
+    const rawDrift = Number.isFinite(g.drift) ? g.drift : 0;
+    const systemManagedTotal = Math.max(
+      systemManaged.length,
+      groupAdoptable ? Math.max(0, rawDrift - cardActionableDrift) : 0,
+    );
     cards.push({
       assetType: g.asset_type,
       label: g.label,
@@ -592,6 +623,8 @@ export function resourceCards(graph: InfraGraph): ResourceCard[] {
       drift: g.drift,
       actionableDrift: cardActionableDrift,
       rows,
+      systemManaged,
+      systemManagedTotal,
       hiddenUnmanaged,
       rank: adoptGroupRank(g),
     });
@@ -654,7 +687,12 @@ export function splitCards(cards: ResourceCard[]): CardSplit {
 }
 
 export interface ScopeTotals {
-  /** Σ count over PRIMARY cards — the coverage-meter denominator. */
+  /**
+   * Coverage-meter denominator: Σ (managed + actionableDrift) over PRIMARY cards
+   * — the migratable in-scope resources, NOT raw Σ count. Control-plane /
+   * service-managed and unmanaged non-adoptable rows are excluded so that
+   * `managed + drift === resources` (the header reconciles) and 100% is reachable.
+   */
   resources: number;
   /** Σ managed over PRIMARY cards. */
   managed: number;
@@ -683,8 +721,17 @@ export function scopeTotals(cards: ResourceCard[], totalResources: number): Scop
   const { primary, other } = splitCards(cards);
   const sum = (cs: ResourceCard[], pick: (c: ResourceCard) => number): number =>
     cs.reduce((acc, c) => acc + pick(c), 0);
-  const resources = sum(primary, (c) => c.count);
+  // Denominator = managed + ACTIONABLE drift per primary card (NOT raw
+  // card.count). The meter's numerator is `managed` and its "N not yet in IaC"
+  // is `drift` (= actionableDrift), so managed + drift MUST equal resources or
+  // the header ("9 of 29 managed · 7 not yet in IaC") stops adding up. Raw count
+  // also folds in control-plane / service-managed rows (DriftScribe's own Cloud
+  // Run services, the -tofu-state bucket) and unmanaged non-adoptable rows —
+  // none of them migratable, so counting them left 13 resources invisible in the
+  // breakdown AND made 100% unreachable. Excluding them restores the invariant
+  // and lets adopting the last drift resource reach 100% (coverage.ts intent).
   const managed = sum(primary, (c) => c.managed);
+  const resources = sum(primary, (c) => c.managed + c.actionableDrift);
   const total = Number.isFinite(totalResources) ? Math.max(0, totalResources) : 0;
   return {
     resources,

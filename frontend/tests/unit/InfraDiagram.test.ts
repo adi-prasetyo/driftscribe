@@ -1408,6 +1408,102 @@ describe('InfraDiagram — control-plane adopt suppression', () => {
   });
 });
 
+describe('InfraDiagram — system-managed collapse (design 2026-07-03)', () => {
+  const RUN = 'run.googleapis.com/Service';
+  function runCardGraph(nodes: InfraGraph['groups'][number]['nodes'], drift_adoptable = 1): InfraGraph {
+    return {
+      generated_at: null, project: 'demo', caveat: 'c',
+      degraded: false, degraded_reason: null,
+      totals: { resources: 4, managed: 1, drift: 3 },
+      groups: [
+        {
+          asset_type: RUN, label: 'Cloud Run service', adoptable: true,
+          count: 4, managed: 1, drift: 3, drift_adoptable, sensitive: false, nodes,
+        },
+      ],
+      edges: [],
+    };
+  }
+
+  it('folds control-plane rows into a closed <details>, keeping the Adopt row in the main body', async () => {
+    const { getByTestId, getAllByTestId } = render(InfraDiagram, {
+      props: {
+        call: callWith(
+          runCardGraph([
+            { id: 'r0', label: 'storefront', asset_type: RUN, managed: true, location: null },
+            { id: 'r1', label: 'orders-worker', asset_type: RUN, managed: false, location: null },
+            { id: 'r2', label: 'driftscribe-agent', asset_type: RUN, managed: false, location: null, control_plane: true },
+            { id: 'r3', label: 'driftscribe-worker', asset_type: RUN, managed: false, location: null, control_plane: true },
+          ]),
+        ),
+        onAdopt: () => {},
+      },
+    });
+    await waitFor(() => expect(getByTestId('infra-cards')).toBeTruthy());
+    const details = getByTestId('card-system-managed') as HTMLDetailsElement;
+    expect(details.tagName).toBe('DETAILS');
+    expect(details.open).toBe(false); // collapsed by default
+    expect(norm(getByTestId('card-system-managed-summary').textContent)).toContain('2 system-managed');
+    // Both control-plane rows live inside the disclosure, not the main body.
+    const tags = getAllByTestId('card-control-plane');
+    expect(tags).toHaveLength(2);
+    for (const t of tags) expect(details.contains(t)).toBe(true);
+    // The one Adopt button stays in the main body, outside the disclosure.
+    const btn = getByTestId('card-adopt-btn');
+    expect(details.contains(btn)).toBe(false);
+  });
+
+  it('shows the true count + "more" trailer when control-plane nodes are sampled, alongside the hidden-actionable trailer', async () => {
+    // 12 services: 0 managed, 2 adoptable drift, 10 control-plane; only 1 control-plane sampled.
+    const g: InfraGraph = {
+      generated_at: null, project: 'demo', caveat: 'c',
+      degraded: false, degraded_reason: null,
+      totals: { resources: 12, managed: 0, drift: 12 },
+      groups: [
+        {
+          asset_type: RUN, label: 'Cloud Run service', adoptable: true,
+          count: 12, managed: 0, drift: 12, drift_adoptable: 2, sensitive: false,
+          nodes: [
+            { id: 'r2', label: 'driftscribe-agent', asset_type: RUN, managed: false, location: null, control_plane: true },
+          ],
+        },
+      ],
+      edges: [],
+    };
+    const { getByTestId, queryByTestId } = render(InfraDiagram, { props: { call: callWith(g), onAdopt: () => {} } });
+    await waitFor(() => expect(getByTestId('infra-cards')).toBeTruthy());
+    // Summary reflects the group figure (10), not the single sampled node.
+    expect(norm(getByTestId('card-system-managed-summary').textContent)).toContain('10 system-managed');
+    // No misleading "not individually listed" summary when the card has content.
+    expect(queryByTestId('card-summary')).toBeNull();
+    // The hidden-actionable trailer still surfaces the 2 un-sampled adoptable services.
+    expect(norm(getByTestId('card-trailer').textContent)).toContain('2 more unmanaged');
+  });
+
+  it('shows the disclosure from inferred totals even when no control-plane node was sampled', async () => {
+    // 10 unmanaged services, none adoptable (drift_adoptable 0) → all control-plane,
+    // but the sample is empty. The card must show "10 system-managed", not the
+    // misleading "not individually listed" summary (Codex completed-work review).
+    const g: InfraGraph = {
+      generated_at: null, project: 'demo', caveat: 'c',
+      degraded: false, degraded_reason: null,
+      totals: { resources: 10, managed: 0, drift: 10 },
+      groups: [
+        {
+          asset_type: RUN, label: 'Cloud Run service', adoptable: true,
+          count: 10, managed: 0, drift: 10, drift_adoptable: 0, sensitive: false, nodes: [],
+        },
+      ],
+      edges: [],
+    };
+    const { getByTestId, queryByTestId } = render(InfraDiagram, { props: { call: callWith(g), onAdopt: () => {} } });
+    await waitFor(() => expect(getByTestId('infra-cards')).toBeTruthy());
+    expect(norm(getByTestId('card-system-managed-summary').textContent)).toContain('10 system-managed');
+    expect(queryByTestId('card-summary')).toBeNull(); // not "10 ... not individually listed"
+    expect(norm(getByTestId('infra-card-badge').textContent)).toBe('system-managed'); // not "in sync"
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Hero band + legend (kept from the 2026-06-24 hierarchy rework; the Mermaid map
 // and the standalone adopt zone were replaced by the resource card grid in the
