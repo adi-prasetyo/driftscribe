@@ -114,6 +114,38 @@ def test_planted_secret_name_never_reaches_payload(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# Version-skew canary: a pre-#193 worker omits not_in_iac_control_plane, so the
+# actionable-drift badge silently over-reports. The route logs a WARNING when a
+# fresh inventory shows that skew, so the half-deploy is visible server-side.
+# --------------------------------------------------------------------------- #
+
+
+def test_missing_control_plane_count_on_adoptable_drift_logs_warning(monkeypatch, caplog):
+    # _inventory()'s Cloud Run entry has not_in_iac=1 but NO
+    # not_in_iac_control_plane key — the exact pre-#193 worker shape.
+    _mock_call(monkeypatch, returns=_inventory())
+    client = TestClient(app)
+    with caplog.at_level("WARNING"):
+        assert client.get("/infra/graph").status_code == 200
+    recs = [r for r in caplog.records
+            if r.msg == "infra_graph_inventory_missing_control_plane_count"]
+    assert len(recs) == 1
+    assert RUN_TYPE in recs[0].stale_asset_types
+
+
+def test_control_plane_count_present_logs_no_warning(monkeypatch, caplog):
+    inv = _inventory()
+    # A current worker emits the key (0 = "no control-plane drift", legitimate).
+    inv["by_type"][RUN_TYPE]["not_in_iac_control_plane"] = 0
+    _mock_call(monkeypatch, returns=inv)
+    client = TestClient(app)
+    with caplog.at_level("WARNING"):
+        assert client.get("/infra/graph").status_code == 200
+    assert not [r for r in caplog.records
+                if r.msg == "infra_graph_inventory_missing_control_plane_count"]
+
+
+# --------------------------------------------------------------------------- #
 # Degradation (always soft-fail to 200)
 # --------------------------------------------------------------------------- #
 
@@ -670,6 +702,24 @@ def test_refresh_200_warms_l2(monkeypatch):
     r = client.get("/infra/graph")
     assert r.headers.get("x-infra-graph-cache") == "hit-l2"
     assert calls["n"] == 1
+
+
+def test_refresh_runs_skew_canary_on_stale_worker(monkeypatch, caplog):
+    """Pre-warm must also flag a stale-worker inventory, else a scheduled warm
+    caches a field-less inventory into L2 and the canary never fires on GET."""
+    _set_prewarm_audience(monkeypatch, _PREWARM_AUD)
+    _accept_oidc(monkeypatch, "infra-prewarm-sa@test-proj.iam.gserviceaccount.com")
+    _set_l2_ttl(monkeypatch, "900")
+    _inject_l2()
+    # _inventory()'s Cloud Run entry lacks not_in_iac_control_plane (pre-#193).
+    _counting_call(monkeypatch, returns=_inventory())
+    client = TestClient(app)
+    with caplog.at_level("WARNING"):
+        assert client.post(REFRESH_PATH, headers={"Authorization": "Bearer x"}).status_code == 200
+    recs = [r for r in caplog.records
+            if r.msg == "infra_graph_inventory_missing_control_plane_count"]
+    assert len(recs) == 1
+    assert RUN_TYPE in recs[0].stale_asset_types
 
 
 def test_refresh_soft_200_on_worker_error(monkeypatch):

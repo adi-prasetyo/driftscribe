@@ -119,7 +119,12 @@ from driftscribe_lib.cf_access import (
 )
 from driftscribe_lib.github import PrMergeBlockedError, PrNotEligibleError
 from driftscribe_lib.iac_plan_summary import BLAST_CANNOT_TOUCH_NOTE, blast_radius_phrase
-from driftscribe_lib.infra_graph import build_graph, plan_overlay, plan_overlay_unavailable
+from driftscribe_lib.infra_graph import (
+    ADOPTABLE_ASSET_TYPES,
+    build_graph,
+    plan_overlay,
+    plan_overlay_unavailable,
+)
 from driftscribe_lib.logging import (
     current_trace_id_or_new,
     install_trace_middleware,
@@ -2126,7 +2131,10 @@ _infra_graph_cache_store_override: "InfraGraphCacheStore | None" = None
 # Bump when the persisted payload contract changes so a deploy ignores
 # stale-shaped docs written by an older revision. L1 is naturally cleared by an
 # instance recycle; L2 survives deploys, so it needs an explicit version gate.
-_INFRA_GRAPH_L2_FORMAT_VERSION = 2  # v2: inventory carries not_in_iac_control_plane
+_INFRA_GRAPH_L2_FORMAT_VERSION = 3  # v3: invalidate v2 docs cached from a pre-#193
+# worker that never actually populated not_in_iac_control_plane (v2 was bumped
+# with the reader code but the worker lagged, so v2 docs hold field-less
+# inventories that force build_graph's raw-drift fallback). v2: field added.
 # A written_at more than this far in the FUTURE is distrusted (clock skew /
 # hand-edited doc) and treated as a miss rather than served stale forever.
 _INFRA_GRAPH_L2_CLOCK_SKEW_TOLERANCE_S = 60.0
@@ -2460,6 +2468,46 @@ def _read_l2_cache(l2_ttl: float) -> "tuple[dict, float] | None":
     return payload, max(0.0, age)
 
 
+def _warn_on_control_plane_skew(inventory: dict) -> None:
+    """Skew canary (#193 half-deploy guard): the actionable-drift badge needs the
+    infra_reader worker to emit ``not_in_iac_control_plane`` per adoptable type.
+
+    A worker deployed BEFORE #193 omits the key entirely, so :func:`build_graph`
+    silently falls back to raw drift (``drift_adoptable == drift``) and every
+    adoptable badge over-reports. The tell is a MISSING key (not a zero, which is
+    a legitimate "no control-plane drift") on an adoptable type that has drift —
+    i.e. a coordinator/worker version skew. Log it at WARNING so a half-deploy is
+    visible server-side instead of only surfacing as wrong counts in the UI.
+
+    Called on the FRESH-fetch success path from BOTH ``GET /infra/graph`` and the
+    pre-warm hook (so a scheduled pre-warm can't cache a stale-worker inventory
+    unobserved). Never raises — the callers must not turn a read into a 5xx.
+    """
+    by_type = inventory.get("by_type")
+    if not isinstance(by_type, dict):
+        return
+    stale_types = sorted(
+        atype
+        for atype, entry in by_type.items()
+        if isinstance(entry, dict)
+        and atype in ADOPTABLE_ASSET_TYPES
+        and isinstance(entry.get("not_in_iac"), int)
+        and entry.get("not_in_iac", 0) > 0
+        and "not_in_iac_control_plane" not in entry
+    )
+    if stale_types:
+        log.warning(
+            "infra_graph_inventory_missing_control_plane_count",
+            extra={
+                "stale_asset_types": stale_types,
+                "hint": (
+                    "infra_reader worker predates #193; redeploy it so "
+                    "actionable-drift badges stop over-reporting raw drift"
+                ),
+            },
+        )
+
+
 def _persist_infra_inventory(inventory: dict, *, l1_ttl: float, l2_ttl: float) -> bool:
     """Cache a SUCCESSFUL inventory in both layers; return whether the PERSISTENT
     L2 layer was durably written.
@@ -2602,6 +2650,7 @@ def get_infra_graph(
             extra={"error": inventory.get("error"), "detail": inventory.get("detail")},
         )
     elif isinstance(inventory, dict):
+        _warn_on_control_plane_skew(inventory)
         # Success only: cache in both layers (never an error/degraded payload,
         # never a non-dict) so a healthy map is reused but an outage isn't pinned.
         _persist_infra_inventory(inventory, l1_ttl=l1_ttl, l2_ttl=l2_ttl)
@@ -2663,6 +2712,7 @@ def refresh_infra_graph(request: Request) -> dict:
         log.warning("infra_graph_prewarm_inventory_error", extra={"error": reason})
         return {"cached": False, "reason": "inventory_error"}
 
+    _warn_on_control_plane_skew(inventory)
     l2_written = _persist_infra_inventory(
         inventory,
         l1_ttl=s.infra_graph_cache_ttl_s,
