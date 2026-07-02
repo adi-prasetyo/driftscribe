@@ -461,6 +461,26 @@ def _dial_instruction(base_prompt: str, autonomy_mode: str) -> str:
     return f"{base_prompt}\n\n{autonomy_instruction_note(autonomy_mode)}"
 
 
+# --------------------------------------------------------------------------- #
+# Coordinator LLM configuration (single flip point for every crew agent).
+# --------------------------------------------------------------------------- #
+# Gemini 3.5 Flash is GA on Vertex on the global endpoint — which this
+# coordinator already targets (GOOGLE_CLOUD_LOCATION=global) — and is tuned for
+# agentic tool use, the exact tool-selection reasoning the crews depend on
+# (Google's own benchmarks put it ahead of 3.1 Pro on agentic tasks). Prior
+# model was gemini-2.5-flash at dynamic thinking, which under-thought on
+# easy-looking asks and mis-selected tools.
+#
+# thinking_level="high" is Gemini 3's deepest reasoning tier (there is no
+# "xhigh"); Gemini 3 replaces the deprecated thinking_budget with thinking_level
+# (levels: minimal/low/medium/high). Dial COORDINATOR_THINKING_LEVEL down to
+# "medium" if per-turn latency needs trimming. gemini-3.5-flash is a
+# global-endpoint-only model. fanout.py reads these same two constants so all
+# crew + slice agents stay in lockstep.
+COORDINATOR_MODEL = "gemini-3.5-flash"
+COORDINATOR_THINKING_LEVEL = "high"
+
+
 def build_agent(workload: WorkloadResolution, *, autonomy_mode: str) -> Agent:
     """Construct the /recheck-flavored ADK Agent for the given workload.
 
@@ -492,14 +512,18 @@ def build_agent(workload: WorkloadResolution, *, autonomy_mode: str) -> Agent:
     allowed = filter_tools_for_mode(recheck_tools, TOOL_TIERS, autonomy_mode)
     return Agent(
         name=f"driftscribe_{workload.spec.name}",
-        model="gemini-2.5-flash",
+        model=COORDINATOR_MODEL,
         instruction=_dial_instruction(workload.system_prompt, autonomy_mode),
         tools=list(allowed.values()),
-        # 18.B.1: surface Gemini 2.5 Flash's thought summaries. The model
-        # already spends thinking tokens at default-dynamic budget; this
-        # only changes whether the summaries are *returned*.
+        # 18.B.1: surface the model's thought summaries (include_thoughts).
+        # thinking_level pins the reasoning depth explicitly instead of leaving
+        # it to the dynamic default, so the model actually deliberates before
+        # selecting a tool on the autonomous /recheck path.
         planner=BuiltInPlanner(
-            thinking_config=ThinkingConfig(include_thoughts=True),
+            thinking_config=ThinkingConfig(
+                include_thoughts=True,
+                thinking_level=COORDINATOR_THINKING_LEVEL,
+            ),
         ),
     )
 
@@ -546,14 +570,19 @@ def build_chat_agent(
         instruction = f"{extra_instruction}\n\n{instruction}"
     return Agent(
         name=f"driftscribe_chat_{workload.spec.name}",
-        model="gemini-2.5-flash",
+        model=COORDINATOR_MODEL,
         instruction=instruction,
         tools=list(allowed.values()),
-        # 18.B.1: surface Gemini 2.5 Flash's thought summaries. The model
-        # already spends thinking tokens at default-dynamic budget; this
-        # only changes whether the summaries are *returned*.
+        # 18.B.1: surface the model's thought summaries (include_thoughts).
+        # thinking_level pins the reasoning depth explicitly instead of leaving
+        # it to the dynamic default, so the interactive chat coordinator
+        # deliberates over tool choice (the fix for shallow keyword-matched
+        # tool selection) rather than under-thinking on easy-looking asks.
         planner=BuiltInPlanner(
-            thinking_config=ThinkingConfig(include_thoughts=True),
+            thinking_config=ThinkingConfig(
+                include_thoughts=True,
+                thinking_level=COORDINATOR_THINKING_LEVEL,
+            ),
         ),
     )
 

@@ -279,9 +279,10 @@ steps:
       # silently restore the ADK path before the operator has confirmed Vertex
       # AI quota. Flip on a running revision with:
       #   gcloud run services update driftscribe-agent --update-env-vars=USE_ADK=true
-      # ...after verifying Vertex AI `generate-content` quota for
-      # gemini-2.5-flash in asia-northeast1 (GCP Console → Vertex AI → Quotas),
-      # then run the Beat C smoke test before recording the demo video.
+      # ...after verifying Vertex AI `generate-content` quota for the
+      # coordinator model (gemini-3.5-flash) on the global endpoint
+      # (GCP Console → Vertex AI → Quotas), then run the Beat C smoke test
+      # before recording the demo video.
       #
       # READER_URL / DOCS_URL / ROLLBACK_URL / NOTIFIER_URL are placeholders;
       # the post-deploy step at the END of this build reads each worker's
@@ -294,11 +295,13 @@ steps:
       # to Vertex AI (ADC via the coordinator's runtime SA). These are stamped
       # at deploy time, not post-deploy — they don't depend on any worker URL.
       # GOOGLE_CLOUD_LOCATION is `global` (NOT asia-northeast1) deliberately:
-      # empirically (5-region probe, 2026-06-15) Gemini 2.5 Flash returns
-      # `thought=True` reasoning-SUMMARY parts ONLY from `global` / us-central1 —
-      # asia-northeast1 spends thinking tokens but returns zero summaries, so the
-      # operator UI's "Coordinator reasoning" panel was empty there. `global`
-      # surfaces the summaries at a modest per-call latency cost (accepted).
+      # the coordinator model (gemini-3.5-flash, a Gemini 3 model) is served
+      # ONLY on Vertex's global endpoint. `global` was already required on the
+      # prior gemini-2.5-flash for a separate reason — empirically (5-region
+      # probe, 2026-06-15) 2.5 Flash returned `thought=True` reasoning-SUMMARY
+      # parts ONLY from `global` / us-central1, leaving the operator UI's
+      # "Coordinator reasoning" panel empty in asia-northeast1. Either way
+      # `global` is required, at a modest per-call latency cost (accepted).
       # NOTE: TARGET_REGION + the Cloud Run --region stay asia-northeast1 — only
       # the Vertex inference location moves. The `global` endpoint gives no
       # Japan-region data-processing guarantee (demo data is synthetic).

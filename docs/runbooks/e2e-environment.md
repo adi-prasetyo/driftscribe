@@ -68,7 +68,7 @@ These are the steps **before** `setup_e2e_project.sh` can run.
    no assertions on the webhook contents.
 
 6. (Optional, recommended) Verify Vertex AI Gemini quota for
-   `gemini-2.5-flash` in `asia-northeast1` on the `driftscribe-e2e`
+   `gemini-3.5-flash` on the `global` endpoint on the `driftscribe-e2e`
    project before the first build:
 
    - https://console.cloud.google.com/iam-admin/quotas?project=driftscribe-e2e
