@@ -30,7 +30,7 @@ const FIXTURE: Capabilities = {
       name: 'drift',
       display_name: 'Anchor',
       descriptor: 'Cloud Run config',
-      description: 'Detect drift between a Cloud Run service\'s live env vars and the team\'s declared ops-contract.yaml.',
+      description: 'Detect configuration drift between a Cloud Run service\'s live env vars and the team\'s declared ops-contract.yaml.',
       autonomous: true,
       tools: [
         { name: 'drift_read_live_env', description: 'Reads the live Cloud Run environment: deployed image, revision, environment variables, and service configuration.', write_capable: false },
