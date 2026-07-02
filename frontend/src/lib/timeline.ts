@@ -144,6 +144,21 @@ export function pairToolEvents(
 }
 
 /**
+ * Number of logical tool invocations in a tools-group event list.
+ *
+ * A single tool run emits TWO trace events (a `tool_call` and its
+ * `tool_result`), so counting raw events double-counts every resolved call.
+ * This collapses each call+result into one via `pairToolEvents`, so the tools
+ * group header agrees with the "N call(s)" shown inside each sub-group. Pairing
+ * is per-`tool_name`, so running over the whole tools list equals the sum of
+ * the per-sub-group pair counts. In-flight calls and orphan results each count
+ * as one (they render as singletons and must not vanish from the tally).
+ */
+export function toolCallCount(events: TraceEvent[]): number {
+  return pairToolEvents(events).length;
+}
+
+/**
  * Stable per-event DOM/open-state key.
  *   - "evt:" + insert_id when insert_id is present (legacy namespace, so it
  *     can never collide with sub-group "sub:" ids — transparency.html ~865).

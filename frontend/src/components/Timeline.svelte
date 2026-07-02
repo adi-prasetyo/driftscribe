@@ -5,6 +5,7 @@
     groupEvents,
     subKey,
     pairToolEvents,
+    toolCallCount,
     eventKey,
     type TraceEvent,
     type TimelineStatus,
@@ -152,7 +153,7 @@
     key="tools"
     title={titleFor.tools}
     icon="wrench"
-    count={groups.tools.length}
+    count={toolCallCount(groups.tools)}
     empty={groups.tools.length === 0}
   >
     {#each toolSubs as sub (sub.key)}

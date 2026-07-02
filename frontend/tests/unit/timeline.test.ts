@@ -5,6 +5,7 @@ import {
   subKey,
   groupEvents,
   pairToolEvents,
+  toolCallCount,
   eventKey,
   type GroupKey,
   type TraceEvent,
@@ -192,6 +193,56 @@ describe('pairToolEvents — pair call+result by order within a tool_name', () =
 
   it('returns [] for an empty event list', () => {
     expect(pairToolEvents([])).toEqual([]);
+  });
+});
+
+describe('toolCallCount — logical tool invocations, not raw events', () => {
+  it('counts a call+result pair as ONE call (not two raw events)', () => {
+    const call = ev({ event: 'tool_call', tool_name: 't', insert_id: 'c1' });
+    const result = ev({ event: 'tool_result', tool_name: 't', insert_id: 'r1' });
+    // The bug: the tools header counted raw events (2) while the expanded
+    // sub-group counted pairs (1 call). The header must agree with the inside.
+    expect(toolCallCount([call, result])).toBe(1);
+  });
+
+  it('sums pairs across different tool_names (matches sum of sub-group pills)', () => {
+    const events = [
+      ev({ event: 'tool_call', tool_name: 'a', insert_id: 'ca' }),
+      ev({ event: 'tool_result', tool_name: 'a', insert_id: 'ra' }),
+      ev({ event: 'tool_call', tool_name: 'b', insert_id: 'cb' }),
+      ev({ event: 'tool_result', tool_name: 'b', insert_id: 'rb' }),
+    ];
+    expect(toolCallCount(events)).toBe(2);
+  });
+
+  it('counts an in-flight call (no result yet) as one call', () => {
+    const call = ev({ event: 'tool_call', tool_name: 't', insert_id: 'c1' });
+    expect(toolCallCount([call])).toBe(1);
+  });
+
+  it('counts an orphan result (call out of window) as one call', () => {
+    const result = ev({ event: 'tool_result', tool_name: 't', insert_id: 'r1' });
+    expect(toolCallCount([result])).toBe(1);
+  });
+
+  it('returns 0 for an empty list', () => {
+    expect(toolCallCount([])).toBe(0);
+  });
+});
+
+describe('Timeline — tools header pill counts calls, not raw events', () => {
+  afterEach(cleanup);
+
+  it('shows "1" on the tools group header for a single completed call (was "2")', () => {
+    const events = [
+      ev({ event: 'tool_call', tool_name: 'read_drift', insert_id: 'c1' }),
+      ev({ event: 'tool_result', tool_name: 'read_drift', insert_id: 'r1' }),
+    ];
+    const { container } = render(Timeline, {
+      props: { events, status: 'historical' },
+    });
+    const pill = container.querySelector('#group-tools .group__count');
+    expect(pill?.textContent?.trim()).toBe('1');
   });
 });
 
