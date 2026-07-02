@@ -1068,7 +1068,7 @@ describe('resourceCards — row mapping', () => {
     expect(row.prefill).toBe('Adopt the Storage bucket `my-old-uploads` in asia-northeast1 into IaC management.');
   });
 
-  it('maps a control-plane unmanaged node to a control_plane row (never adoptable)', () => {
+  it('routes a control-plane unmanaged node to systemManaged, not the inline rows', () => {
     const cards = resourceCards(
       graph({
         groups: [
@@ -1084,10 +1084,12 @@ describe('resourceCards — row mapping', () => {
         ],
       }),
     );
-    const [row] = cards[0].rows;
-    expect(row.status).toBe('control_plane');
-    expect(row.adoptable).toBe(false);
-    expect(row.prefill).toBe('');
+    expect(cards[0].rows).toEqual([]); // not inline — collapsed away
+    const [sys] = cards[0].systemManaged;
+    expect(sys.status).toBe('control_plane');
+    expect(sys.adoptable).toBe(false);
+    expect(sys.prefill).toBe('');
+    expect(cards[0].systemManagedTotal).toBe(1);
   });
 
   it('maps an unmanaged node in a NON-adoptable group to a neutral untracked row (not drift)', () => {
@@ -1129,6 +1131,71 @@ describe('resourceCards — row mapping', () => {
 
   it('returns [] for a degraded graph', () => {
     expect(resourceCards(graph({ degraded: true, groups: [] }))).toEqual([]);
+  });
+});
+
+describe('resourceCards — system-managed collapse', () => {
+  it('splits control-plane rows out of inline rows into systemManaged (managed + drift stay)', () => {
+    const cards = resourceCards(
+      graph({
+        totals: { resources: 4, managed: 1, drift: 3 },
+        groups: [
+          group({
+            asset_type: RUN, label: 'Cloud Run service', adoptable: true,
+            count: 4, managed: 1, drift: 3, drift_adoptable: 1,
+            nodes: [
+              node({ id: 'r0', label: 'storefront', managed: true }),
+              node({ id: 'r1', label: 'orders-worker', managed: false }),
+              node({ id: 'r2', label: 'driftscribe-agent', managed: false, control_plane: true }),
+              node({ id: 'r3', label: 'driftscribe-worker', managed: false, control_plane: true }),
+            ],
+          }),
+        ],
+      }),
+    );
+    const card = cards[0];
+    expect(card.rows.map((r) => r.status)).toEqual(['managed', 'drift']); // no control_plane inline
+    expect(card.systemManaged.map((r) => r.label)).toEqual(['driftscribe-agent', 'driftscribe-worker']);
+    expect(card.systemManagedTotal).toBe(2);
+    expect(card.managed).toBe(1);
+    expect(card.actionableDrift).toBe(1);
+  });
+
+  it('infers the true systemManagedTotal from group counts when nodes are sampled (drift − actionableDrift)', () => {
+    // 12 services: 1 managed, 1 adoptable drift, 10 control-plane, but only one
+    // control-plane node sampled → total must reflect the group figure, not the sample.
+    const cards = resourceCards(
+      graph({
+        groups: [
+          group({
+            asset_type: RUN, label: 'Cloud Run service', adoptable: true,
+            count: 12, managed: 1, drift: 11, drift_adoptable: 1,
+            nodes: [node({ id: 'r1', label: 'driftscribe-agent', managed: false, control_plane: true })],
+          }),
+        ],
+      }),
+    );
+    expect(cards[0].systemManaged).toHaveLength(1); // sampled
+    expect(cards[0].systemManagedTotal).toBe(10); // 11 raw drift − 1 actionable
+  });
+
+  it('has an empty systemManaged (total 0) for a card with no control-plane rows', () => {
+    const cards = resourceCards(
+      graph({
+        groups: [
+          group({
+            asset_type: BUCKET, label: 'Storage bucket', adoptable: true,
+            count: 2, managed: 1, drift: 1, drift_adoptable: 1,
+            nodes: [
+              node({ id: 'b0', label: 'm', asset_type: BUCKET, managed: true }),
+              node({ id: 'b1', label: 'd', asset_type: BUCKET, managed: false }),
+            ],
+          }),
+        ],
+      }),
+    );
+    expect(cards[0].systemManaged).toEqual([]);
+    expect(cards[0].systemManagedTotal).toBe(0);
   });
 });
 
@@ -1500,6 +1567,33 @@ describe('scopeTotals — coverage within the adoptable scope', () => {
     });
     const s = scopeTotals(resourceCards(g), 12);
     expect(s.drift).toBe(1); // the header badge reads actionable, not the raw 11
+  });
+
+  it('excludes control-plane rows from the coverage denominator (managed + drift = resources)', () => {
+    // Prod shape (#195): an adoptable Cloud Run card holding DriftScribe's own
+    // services (control-plane) alongside 1 managed + 1 adoptable-drift service.
+    // The denominator must be managed + actionable drift, so the meter can reach
+    // 100% and "N managed of M · K not yet in IaC" reconciles (N + K = M).
+    const g = graph({
+      totals: { resources: 4, managed: 1, drift: 3 },
+      groups: [
+        group({
+          asset_type: RUN, label: 'Cloud Run service', adoptable: true,
+          count: 4, managed: 1, drift: 3, drift_adoptable: 1,
+          nodes: [
+            node({ id: 'r0', label: 'storefront', asset_type: RUN, managed: true }),
+            node({ id: 'r1', label: 'orders-worker', asset_type: RUN, managed: false }),
+            node({ id: 'r2', label: 'driftscribe-agent', asset_type: RUN, managed: false, control_plane: true }),
+            node({ id: 'r3', label: 'driftscribe-worker', asset_type: RUN, managed: false, control_plane: true }),
+          ],
+        }),
+      ],
+    });
+    const s = scopeTotals(resourceCards(g), g.totals.resources);
+    expect(s.managed).toBe(1);
+    expect(s.drift).toBe(1); // actionable only
+    expect(s.resources).toBe(2); // 1 managed + 1 adoptable drift — NOT 4
+    expect(s.managed + s.drift).toBe(s.resources); // the reconcile invariant
   });
 
   it('reads the project-wide total from graph.totals.resources, not card sums (Codex MF1)', () => {

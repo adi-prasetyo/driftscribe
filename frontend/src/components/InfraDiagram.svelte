@@ -175,6 +175,9 @@
       return { text: card.managed > 0 ? 'in sync' : 'not tracked', warn: false };
     }
     if (card.actionableDrift > 0) return { text: `${card.actionableDrift} drift`, warn: true };
+    // Nothing managed and nothing to adopt, only protected system-managed rows:
+    // "in sync" would misrepresent an empty-of-user-resources card.
+    if (card.managed === 0 && card.systemManagedTotal > 0) return { text: 'system-managed', warn: false };
     return { text: 'in sync', warn: false };
   }
   // Status-dot tint: managed → ok, drift → warn, control-plane / untracked → neutral.
@@ -697,10 +700,13 @@
               <li class="infra-card__counts" data-testid="card-counts-only">
                 <span class="infra-dot infra-dot--hidden"></span>{countsLine(card)}
               </li>
-            {:else if card.rows.length === 0}
+            {:else if card.rows.length === 0 && card.systemManagedTotal === 0}
               <!-- Defensive: a non-sensitive type with resources but no sampled
-                   nodes (every node truncated). Summarize rather than render a
-                   hollow card or collapse the whole grid to "nothing here". -->
+                   nodes (every node truncated) AND nothing system-managed to show.
+                   Summarize rather than render a hollow card or collapse the whole
+                   grid to "nothing here". A card with system-managed resources
+                   (sampled OR inferred from aggregates) falls through to the
+                   disclosure below instead. -->
               <li class="infra-card__counts" data-testid="card-summary">
                 <span class="infra-dot infra-dot--hidden"></span>{card.count}
                 {card.label.toLowerCase()}{card.count === 1 ? '' : 's'} · not individually listed
@@ -743,13 +749,6 @@
                         onclick={() => clickAdopt(row.prefill)}>Adopt into IaC</button
                       >
                     {/if}
-                  {:else if row.status === 'control_plane'}
-                    <!-- Compact tag in the same slot as the green "managed" tag; the
-                         denylist reasoning lives once in the legend ⓘ (LEGEND_HELP)
-                         instead of repeating a paragraph on every system-managed row. -->
-                    <span class="infra-card__tag" data-testid="card-control-plane"
-                      >system-managed</span
-                    >
                   {:else}
                     <span class="ds-subtle infra-card__muted" data-testid="card-not-adoptable"
                       >not an adoptable type</span
@@ -761,13 +760,47 @@
                 <li class="ds-subtle infra-card__trailer" data-testid="card-trailer">
                   +{card.hiddenUnmanaged} more unmanaged {card.label}(s) not shown
                 </li>
-              {:else if !card.adoptable && card.count > card.rows.length}
+              {:else if !card.adoptable && card.count > card.rows.length + card.systemManaged.length}
                 <!-- Non-adoptable type: a neutral truncation note (never "unmanaged"
-                     / "drift" — these aren't actionable). -->
+                     / "drift" — these aren't actionable). Subtract systemManaged so
+                     the count isn't inflated by rows shown in the disclosure below. -->
                 <li class="ds-subtle infra-card__trailer" data-testid="card-trailer">
-                  +{card.count - card.rows.length} more {card.label}(s) not shown
+                  +{card.count - card.rows.length - card.systemManaged.length} more {card.label}(s) not shown
                 </li>
               {/if}
+            {/if}
+            {#if card.systemManagedTotal > 0}
+              <!-- System-managed / control-plane resources (DriftScribe's own Cloud
+                   Run services, the -tofu-state / service-created buckets): real, of
+                   a supported type, but denylist-protected so never adoptable. Folded
+                   into one collapsed line per card so they don't bury the actionable
+                   rows, while keeping the resource TYPE in a single card. Gated on the
+                   TRUE total (which can be inferred from aggregates when no control-
+                   plane node was sampled), so the count never silently vanishes into a
+                   "not individually listed" note. Reasoning: legend ⓘ. -->
+              <li class="infra-card__system-li">
+                <details class="infra-card__system" data-testid="card-system-managed">
+                  <summary class="infra-card__system-summary" data-testid="card-system-managed-summary">
+                    <span class="infra-dot infra-dot--hidden"></span>
+                    {card.systemManagedTotal} system-managed
+                    <span class="ds-subtle">· protected</span>
+                  </summary>
+                  <ul class="infra-card__system-body">
+                    {#each card.systemManaged as row (row.nodeId)}
+                      <li class="infra-card__row infra-card__row--control_plane">
+                        <span class="infra-dot infra-dot--hidden"></span>
+                        <span class="infra-card__name">{row.label}</span>
+                        <span class="infra-card__tag" data-testid="card-control-plane">system-managed</span>
+                      </li>
+                    {/each}
+                    {#if card.systemManagedTotal > card.systemManaged.length}
+                      <li class="ds-subtle infra-card__trailer">
+                        +{card.systemManagedTotal - card.systemManaged.length} more not shown
+                      </li>
+                    {/if}
+                  </ul>
+                </details>
+              </li>
             {/if}
           </ul>
         </div>
@@ -1232,6 +1265,50 @@
     padding: var(--ds-sp-1) var(--ds-sp-3) var(--ds-sp-2);
     font-size: var(--ds-fs-1);
     font-style: italic;
+  }
+
+  /* Per-card system-managed disclosure (design 2026-07-03): control-plane rows
+     folded into one quiet expandable line so DriftScribe's own services / the
+     -tofu-state buckets don't bury the actionable rows. Mirrors the "Other
+     resources" ▸ affordance, scoped inside the card. */
+  .infra-card__system-li {
+    list-style: none;
+  }
+  .infra-card__system {
+    border-top: 1px dashed var(--ds-border);
+  }
+  .infra-card__system-summary {
+    display: flex;
+    align-items: center;
+    gap: var(--ds-sp-2);
+    padding: var(--ds-sp-2) var(--ds-sp-3);
+    cursor: pointer;
+    list-style: none;
+    font-size: var(--ds-fs-1);
+    color: var(--ds-muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .infra-card__system-summary::-webkit-details-marker {
+    display: none;
+  }
+  .infra-card__system-summary::after {
+    content: '▸';
+    order: -1;
+    color: var(--ds-faint);
+    transition: transform var(--ds-dur-fast) var(--ds-ease);
+  }
+  .infra-card__system[open] .infra-card__system-summary::after {
+    transform: rotate(90deg);
+  }
+  /* The grey dot sits between the ▸ marker and the count; keep it from stealing
+     flex space so the caret + label stay together. */
+  .infra-card__system-summary .infra-dot {
+    flex: none;
+  }
+  .infra-card__system-body {
+    list-style: none;
+    margin: 0;
+    padding: 0 0 var(--ds-sp-1);
   }
 
   /* "Other resources" disclosure (design 2026-06-25 scope-split): the
