@@ -1131,9 +1131,14 @@
     border-color: var(--ds-warn);
     color: var(--ds-warn-ink);
   }
+  /* Hover = solid deep-gold fill (mirrors the Send button's deepen-on-hover).
+     The old --ds-warn-surface fill was the SAME #fcf3dc as the drift row it sits
+     on, so the button dissolved into the row; a filled --ds-warn-ink chip with
+     white text stays legible AND clearly distinct from the beige row. */
   .infra-card__btn:hover {
-    background: var(--ds-warn-surface);
-    border-color: var(--ds-warn);
+    background: var(--ds-warn-ink);
+    border-color: var(--ds-warn-ink);
+    color: #fff;
   }
   /* Pending-PR affordances — stream-ink (blue), distinct from the warn-tinted
      Adopt button: this is "go review an open PR", not "start an adoption". */
