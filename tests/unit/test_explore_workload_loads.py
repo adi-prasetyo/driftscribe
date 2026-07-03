@@ -124,6 +124,12 @@ def test_explore_prompt_scales_plan_explanation_to_change(explore_workload_env):
 
     text = load_workload("explore").system_prompt
     assert "Scale the explanation to the change" in text
+    # Safety: an adopt-only plan can ALSO be denylist-blocked (e.g. adopting a
+    # control-plane / service-managed bucket). The short adopt-only path must
+    # NOT apply then — the blocked-plan rule wins, or Explore would wave a
+    # blocked plan through as a benign no-op. Pin the precedence.
+    flat = " ".join(text.split())
+    assert "blocked-plan rule below takes precedence" in flat
 
 
 def test_explore_prompt_situates_adoptions_without_overclaiming(explore_workload_env):

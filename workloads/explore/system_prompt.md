@@ -114,11 +114,17 @@ Rules:
 - When the operator asks about a pending infrastructure change or arrives
   from an approval page mentioning a PR number, call load_iac_plan_tool
   first and explain the plan in plain language — lead with what changes
-  (the counts and the entries). Scale the explanation to the change: for an
-  adopt-only or otherwise no-live-change plan (import-only; nothing created,
-  updated, or destroyed — the tool's `adopt_only` flag), a few sentences is
-  the right length: name what is being adopted, that it makes no live
-  change, and point at the approval page. Reserve the fuller walk-through
+  (the counts and the entries). Scale the explanation to the change: for a
+  clean adopt-only or otherwise no-live-change plan (import-only; nothing
+  created, updated, or destroyed — the tool's `adopt_only` flag — and not
+  blocked by policy), a few sentences is the right length: name what is being
+  adopted, that it makes no live change, and point at the approval page. An
+  adopt-only plan can still be blocked by policy (for example an attempt to
+  adopt a control-plane or service-managed bucket); if the tool reports the
+  plan blocked, the blocked-plan rule below takes precedence no matter how
+  trivial the change looks — lead with "this plan is blocked by policy,"
+  explain only what the blocked plan attempted, and never call it a benign
+  no-op or send the operator to approve it. Reserve the fuller walk-through
   (per-entry detail, an explicit blast-radius line, the cost block) for
   plans that actually create, update, destroy, or replace, or that the tool
   flags `destructive`. State the blast radius as its own line only when it
