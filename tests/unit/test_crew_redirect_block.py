@@ -111,3 +111,26 @@ def test_structured_triage_prompts_stay_prose_free(path):
     # The routing block is a conversational behavior; it must never bleed into
     # the JSON-only structured triage prompts.
     assert _ROUTING_MARKER not in _flat(path)
+
+
+# The "operator-facing register" rules landed alongside the Explore
+# proportionality work (Explore pins its own copies in
+# test_explore_workload_loads.py). Every chat-facing crew must carry the same
+# two load-bearing anchors so a reword can't quietly drop either:
+#   (a) an audience/leak-guard rule — write for the operator, don't echo
+#       code-level identifiers; and
+#   (b) a proportionality rule — scale the answer to what was actually found.
+@pytest.mark.parametrize("workload", sorted(_CHAT_PROMPTS))
+def test_chat_prompt_writes_for_the_operator_not_the_developer(workload):
+    flat = _flat(_CHAT_PROMPTS[workload][0])
+    assert "for you to act on, not vocabulary to repeat" in flat, (
+        f"{workload} chat prompt missing the operator-register (leak-guard) rule"
+    )
+
+
+@pytest.mark.parametrize("workload", sorted(_CHAT_PROMPTS))
+def test_chat_prompt_scales_answer_to_what_it_found(workload):
+    flat = _flat(_CHAT_PROMPTS[workload][0])
+    assert "scale your answer" in flat, (
+        f"{workload} chat prompt missing the proportionality rule"
+    )

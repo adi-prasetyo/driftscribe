@@ -114,6 +114,56 @@ def test_explore_prompt_pins_honest_cost_relay_rule(explore_workload_env):
     assert "disclaimer faithfully" in text
 
 
+def test_explore_prompt_scales_plan_explanation_to_change(explore_workload_env):
+    """A plan explanation must be proportional to the change: a trivial
+    adopt-only import gets a few sentences, not the full counts -> blast
+    radius -> cost walk-through reserved for real create/update/destroy plans.
+    Pins the load-bearing anchor so a reword can't quietly restore the
+    fixed-length struct-to-prose behavior."""
+    from agent.workloads import load_workload
+
+    text = load_workload("explore").system_prompt
+    assert "Scale the explanation to the change" in text
+    # Safety: an adopt-only plan can ALSO be denylist-blocked (e.g. adopting a
+    # control-plane / service-managed bucket). The short adopt-only path must
+    # NOT apply then — the blocked-plan rule wins, or Explore would wave a
+    # blocked plan through as a benign no-op. Pin the precedence.
+    flat = " ".join(text.split())
+    assert "blocked-plan rule below takes precedence" in flat
+
+
+def test_explore_prompt_situates_adoptions_without_overclaiming(explore_workload_env):
+    """For an adopt-only plan, when the operator's question invites broader
+    context, Explore may call read_project_inventory to SITUATE the resource
+    (counts by type / not-yet-in-IaC) — but the plan, not the eventually
+    consistent inventory, is authoritative on existence. Pins the safety
+    invariant: a not-found inventory lookup must NEVER be reported as the
+    adoption being invalid (the eventual-consistency false negative)."""
+    from agent.workloads import load_workload
+
+    # Normalize whitespace so a hard line-wrap in the prompt can't split a
+    # pinned phrase (the adoption-order tests use the same idiom).
+    flat = " ".join(load_workload("explore").system_prompt.split())
+    assert "read_project_inventory to situate" in flat.lower()
+    assert "never present that as the adoption being invalid" in flat
+
+
+def test_explore_prompt_writes_for_the_operator_not_the_developer(explore_workload_env):
+    """Explore serves the operator who runs the infrastructure, not a
+    DriftScribe developer. Internal identifiers (tool names, output fields,
+    flags like adopt_only / freshness_caveat) named in the instructions are
+    for the model to act on, not jargon to echo at the operator. Pins the
+    audience/leak-guard anchor so a reword can't drop it."""
+    from agent.workloads import load_workload
+
+    flat = " ".join(load_workload("explore").system_prompt.split())
+    assert "for you to act on, not vocabulary to repeat" in flat
+    # ...but the guard targets code-level identifiers ONLY. The operator-facing
+    # roles Explore is meant to teach (the trust story) must stay fair game, or
+    # the guard would gut Explore's job. Pin that carve-out.
+    assert "not internal jargon" in flat.lower()
+
+
 def test_explore_prompt_carries_whole_system_overview(explore_workload_env):
     """Explore is the read-only crew operators reach for to understand the
     system, so its prompt must carry an accurate WHOLE-SYSTEM overview — not
