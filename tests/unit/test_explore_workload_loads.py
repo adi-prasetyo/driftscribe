@@ -142,6 +142,18 @@ def test_explore_prompt_situates_adoptions_without_overclaiming(explore_workload
     assert "never present that as the adoption being invalid" in flat
 
 
+def test_explore_prompt_writes_for_the_operator_not_the_developer(explore_workload_env):
+    """Explore serves the operator who runs the infrastructure, not a
+    DriftScribe developer. Internal identifiers (tool names, output fields,
+    flags like adopt_only / freshness_caveat) named in the instructions are
+    for the model to act on, not jargon to echo at the operator. Pins the
+    audience/leak-guard anchor so a reword can't drop it."""
+    from agent.workloads import load_workload
+
+    flat = " ".join(load_workload("explore").system_prompt.split())
+    assert "for you to act on, not vocabulary to repeat" in flat
+
+
 def test_explore_prompt_carries_whole_system_overview(explore_workload_env):
     """Explore is the read-only crew operators reach for to understand the
     system, so its prompt must carry an accurate WHOLE-SYSTEM overview — not
