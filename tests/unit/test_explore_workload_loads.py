@@ -114,6 +114,34 @@ def test_explore_prompt_pins_honest_cost_relay_rule(explore_workload_env):
     assert "disclaimer faithfully" in text
 
 
+def test_explore_prompt_scales_plan_explanation_to_change(explore_workload_env):
+    """A plan explanation must be proportional to the change: a trivial
+    adopt-only import gets a few sentences, not the full counts -> blast
+    radius -> cost walk-through reserved for real create/update/destroy plans.
+    Pins the load-bearing anchor so a reword can't quietly restore the
+    fixed-length struct-to-prose behavior."""
+    from agent.workloads import load_workload
+
+    text = load_workload("explore").system_prompt
+    assert "Scale the explanation to the change" in text
+
+
+def test_explore_prompt_situates_adoptions_without_overclaiming(explore_workload_env):
+    """For an adopt-only plan, when the operator's question invites broader
+    context, Explore may call read_project_inventory to SITUATE the resource
+    (counts by type / not-yet-in-IaC) — but the plan, not the eventually
+    consistent inventory, is authoritative on existence. Pins the safety
+    invariant: a not-found inventory lookup must NEVER be reported as the
+    adoption being invalid (the eventual-consistency false negative)."""
+    from agent.workloads import load_workload
+
+    # Normalize whitespace so a hard line-wrap in the prompt can't split a
+    # pinned phrase (the adoption-order tests use the same idiom).
+    flat = " ".join(load_workload("explore").system_prompt.split())
+    assert "read_project_inventory to situate" in flat.lower()
+    assert "never present that as the adoption being invalid" in flat
+
+
 def test_explore_prompt_carries_whole_system_overview(explore_workload_env):
     """Explore is the read-only crew operators reach for to understand the
     system, so its prompt must carry an accurate WHOLE-SYSTEM overview — not
