@@ -416,9 +416,10 @@ def test_decompose_instruction_contains_adoption_no_split_rule():
         "The decompose instruction must mention 'ADOPTION' (or 'adoption') "
         "to guide the model away from decomposing adopt requests."
     )
-    assert "provision_propose_adoption" in _DECOMPOSE_INSTRUCTION, (
-        "The decompose instruction must name the provision_propose_adoption "
-        "tool so the model knows the single-agent path has the adopt tool."
+    assert "propose_adoption_tool" in _DECOMPOSE_INSTRUCTION, (
+        "The decompose instruction must name propose_adoption_tool (the "
+        "registered LLM-facing callable) so the model knows the single-agent "
+        "path has the adopt tool."
     )
     # The key rule: adopt requests always go to the single-agent path.
     assert "ONE slice" in _DECOMPOSE_INSTRUCTION or "one slice" in _DECOMPOSE_INSTRUCTION.lower(), (
@@ -442,9 +443,9 @@ def test_provision_system_prompt_contains_adoption_guidance():
     )
     prompt_text = prompt_path.read_text()
 
-    assert "provision_propose_adoption" in prompt_text, (
-        "workloads/provision/system_prompt.md must name provision_propose_adoption "
-        "in the adoption guidance section."
+    assert "propose_adoption_tool" in prompt_text, (
+        "workloads/provision/system_prompt.md must name propose_adoption_tool "
+        "(the registered LLM-facing callable) in the adoption guidance section."
     )
     assert "NEVER author adopt HCL" in prompt_text, (
         "workloads/provision/system_prompt.md must contain 'NEVER author adopt HCL' "

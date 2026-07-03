@@ -566,7 +566,7 @@ caller routes a single-slice plan to the legacy single-agent path — so when \
 in doubt, prefer ONE slice.
    - An ADOPTION request (bringing an existing live resource under IaC \
 management, or importing) is NEVER decomposed: always return exactly ONE slice. \
-The single-agent path holds the provision_propose_adoption tool, which renders \
+The single-agent path holds propose_adoption_tool, which renders \
 the import HCL deterministically — slice sub-agents do not have that tool and \
 must never author import blocks themselves.
 3. Constraints on every slice (the downstream gate enforces these; violating \
@@ -1037,7 +1037,7 @@ def _merge_slice_sinks(pairs: list[tuple[SliceSpec, dict]]) -> AuthorResult:
             422,
             (
                 "Slice-authored files must not contain import blocks — use "
-                "provision_propose_adoption for resource adoptions (import blocks "
+                "propose_adoption_tool for resource adoptions (import blocks "
                 "are coordinator-side only; the fan-out editor path does not accept "
                 f"them). Violation(s): {'; '.join(import_violations)}"
             ),

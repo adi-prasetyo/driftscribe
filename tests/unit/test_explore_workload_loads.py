@@ -144,7 +144,7 @@ def test_explore_prompt_situates_adoptions_without_overclaiming(explore_workload
     # Normalize whitespace so a hard line-wrap in the prompt can't split a
     # pinned phrase (the adoption-order tests use the same idiom).
     flat = " ".join(load_workload("explore").system_prompt.split())
-    assert "read_project_inventory to situate" in flat.lower()
+    assert "read_project_inventory_tool to situate" in flat.lower()
     assert "never present that as the adoption being invalid" in flat
 
 
