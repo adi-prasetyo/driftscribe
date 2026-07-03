@@ -227,7 +227,7 @@ def test_no_plan_when_view_none(_configured, monkeypatch):
     ``(ref, None)`` means the whole resolution failed (transport/GCS error
     while fetching the artifact a comment pointed at) — no artifact was ever
     characterized, so there is nothing to call an "error" in. This mirrors the
-    approval GET's "No verifiable C2 plan artifact" PENDING rung (calm note,
+    approval GET's "No verifiable plan artifact" PENDING rung (calm note,
     not red). ``artifact_error`` is reserved for a RESOLVED view that fails
     verification (unverifiable / integrity / denylist / PR-pin mismatch).
     """

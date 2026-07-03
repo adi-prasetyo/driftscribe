@@ -21,8 +21,8 @@
           <p>PR #{{ pr_number }} does not exist in this repository.</p>
           <p class="ds-subtle">There is no pull request numbered {{ pr_number }}, so there is no plan to approve.{% if highest_pr %} The most recent pull request is #{{ highest_pr }}.{% endif %} Open this page from a real PR link (the Past-decisions rail links each one) instead of typing a number.</p>
         {% else %}
-          <p>No C2 <code class="ds-code">tofu plan</code> artifact found for PR #{{ pr_number }}.</p>
-          <p class="ds-subtle">No plan has been built for PR #{{ pr_number }} yet. If you just opened this PR with the autonomy dial at Propose&nbsp;+&nbsp;Apply, the plan-builder is running — give it a minute and reload. Otherwise, dispatch the C2 plan-builder for this PR, then reload.</p>
+          <p>No <code class="ds-code">tofu plan</code> artifact found for PR #{{ pr_number }}.</p>
+          <p class="ds-subtle">No plan has been built for PR #{{ pr_number }} yet. If you just opened this PR with the autonomy dial at Propose&nbsp;+&nbsp;Apply, the plan-builder is running — give it a minute and reload. Otherwise, dispatch the plan-builder for this PR, then reload.</p>
         {% endif %}
       </div>
     {% else %}
@@ -240,25 +240,34 @@
          trustworthy, PR-consistent artifact). Content is HTML-escaped by Jinja
          autoescape; the form-action is same-origin (allowed by the IaC CSP). #}
       {% if iac_source_files %}
+      {% set _n_source = iac_source_files | length %}
       <details class="ds-disclosure" data-testid="iac-source">
-        <summary>Source (.tf) — {{ iac_source_files | length }} file(s)</summary>
-        <p class="ds-subtle" data-testid="iac-source-demo-note">{{ iac_source_demo_note }}</p>
-        {% if iac_source_refresh_available %}
-        <form method="post" action="/iac-approvals/{{ pr_number }}/refresh-source">
-          <button class="ds-btn" type="submit" data-testid="refresh-source">↻ refresh source</button>
-        </form>
+        {# One file (the common adoption case): put its path in the summary and
+           skip the redundant per-file heading below. More than one: keep a count
+           and label each block with its path. Content is wrapped in
+           .ds-disclosure-body so the note + files get the same inset padding as
+           the C2 provenance card (bare <details> children hug the border). #}
+        {% if _n_source == 1 %}
+        <summary>Source ({{ iac_source_files[0].path }})</summary>
+        {% else %}
+        <summary>Source (.tf) — {{ _n_source }} files</summary>
         {% endif %}
-        {% for f in iac_source_files %}
-          <div class="ds-field"><span class="ds-label">file</span> <code class="ds-code">{{ f.path }}</code></div>
-          {% if f.content is none %}
-            <p class="ds-subtle">(omitted — file too large to show here; view it on the PR in GitHub)</p>
-          {% else %}
-            <pre class="ds-pre">{{ f.content }}</pre>
+        <div class="ds-disclosure-body">
+          <p class="ds-subtle" data-testid="iac-source-demo-note">{{ iac_source_demo_note }}</p>
+          {% for f in iac_source_files %}
+            {% if _n_source > 1 %}
+            <p class="ds-subtle"><code class="ds-code">{{ f.path }}</code></p>
+            {% endif %}
+            {% if f.content is none %}
+              <p class="ds-subtle">(omitted — file too large to show here; view it on the PR in GitHub)</p>
+            {% else %}
+              <pre class="ds-pre">{{ f.content }}</pre>
+            {% endif %}
+          {% endfor %}
+          {% if iac_source_truncated %}
+            <p class="ds-subtle">…more files in this PR are not shown here — view the full diff on the PR in GitHub.</p>
           {% endif %}
-        {% endfor %}
-        {% if iac_source_truncated %}
-          <p class="ds-subtle">…more files in this PR are not shown here — view the full diff on the PR in GitHub.</p>
-        {% endif %}
+        </div>
       </details>
       {% endif %}
 
@@ -268,9 +277,8 @@
          URIs the apply worker independently re-verifies. Each label carries a
          plain-language hover tooltip so the field names are not bare jargon. #}
       <details class="ds-disclosure" data-testid="c2-artifact">
-        <summary>C2 plan artifact (c2.v1) — provenance &amp; hashes</summary>
+        <summary>Plan artifact — provenance &amp; hashes</summary>
         <div class="ds-disclosure-body">
-          <div class="ds-field"><span class="ds-label ds-help-term" title="Artifact format version. The apply worker rejects any schema it does not recognize.">schema_version</span> <code class="ds-code">{{ view.metadata.get("schema_version", "") }}</code></div>
           <div class="ds-field"><span class="ds-label ds-help-term" title="The owner/repo this plan was built for, recorded in the plan metadata and included in the HMAC-signed approval payload.">repo</span> <code class="ds-code">{{ view.metadata.get("repo", "") }}</code></div>
           <div class="ds-field"><span class="ds-label ds-help-term" title="The pull request this plan belongs to.">pr_number</span> <code class="ds-code">{{ view.metadata.get("pr_number", "") }}</code></div>
           <div class="ds-field"><span class="ds-label ds-help-term" title="The exact Git commit this plan was built from.">head_sha</span> <code class="ds-code">{{ view.metadata.get("head_sha", "") }}</code></div>

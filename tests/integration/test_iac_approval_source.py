@@ -149,12 +149,33 @@ def test_source_block_rendered_on_cache_miss(_configured, _src_store, monkeypatc
     assert _FILE["path"] in body
     assert "google_storage_bucket" in body  # content rendered
     assert 'data-testid="iac-source-demo-note"' in body
+    # Single file: its path goes in the summary, and the awkward "N file(s)"
+    # count is dropped.
+    assert f"Source ({_FILE['path']})" in body
+    assert "file(s)" not in body
     # Fetched once and persisted under the verified head_sha.
     assert calls == [(42, _HEAD)]
     rec = _src_store.get(42)
     assert rec["head_sha"] == _HEAD
     assert rec["files"] == [_FILE]
     assert rec["format_version"] == _IAC_PR_SOURCE_FORMAT_VERSION
+
+
+def test_multiple_source_files_show_count_and_per_file_paths(
+    _configured, _src_store, monkeypatch
+):
+    # A PR that changes 2+ .tf files keeps a count in the summary (not a single
+    # filename) and labels each block with its own path.
+    second = {"path": "iac/adopt_topic_demo.tf", "content": 'resource "x" "y" {}\n'}
+    _patch_resolve(monkeypatch, ref=_ref(), view=_view())
+    _patch_source_fetch(monkeypatch, files=[_FILE, second])
+
+    body = TestClient(app).get("/iac-approvals/42").text
+    assert "Source (.tf) — 2 files" in body
+    # Both paths appear as per-file headings; neither is folded into the summary.
+    assert _FILE["path"] in body
+    assert second["path"] in body
+    assert f"Source ({_FILE['path']})" not in body
 
 
 def test_cache_hit_does_not_call_github(_configured, _src_store, monkeypatch):
@@ -252,9 +273,12 @@ def test_source_not_rendered_for_unverifiable_view(_configured, _src_store, monk
     assert calls == [], "no source fetch for an untrustworthy artifact"
 
 
-def test_refresh_button_shown_for_operator_present(_configured, _src_store, monkeypatch):
-    # CF Access configured + a JWT header present (presence-checked here; the POST
-    # crypto-verifies) ⇒ refresh control shown.
+# The manual "refresh source" button was removed from the approval page (source is
+# pinned to head_sha, so it can't change without a new commit — the control was just
+# confusing). It must not render, even for a signed-in operator; the source block
+# itself stays visible for everyone. The backing POST .../refresh-source endpoint is
+# retained (tested below) for reintroduction without a backend change.
+def test_refresh_button_not_rendered_for_operator(_configured, _src_store, monkeypatch):
     monkeypatch.setenv("CF_ACCESS_TEAM_DOMAIN", "team.cloudflareaccess.com")
     monkeypatch.setenv("CF_ACCESS_AUD_TAG", "aud-tag")
     get_settings.cache_clear()
@@ -263,24 +287,13 @@ def test_refresh_button_shown_for_operator_present(_configured, _src_store, monk
     resp = TestClient(app).get(
         "/iac-approvals/42", headers={"Cf-Access-Jwt-Assertion": "dummy.jwt.token"}
     )
-    assert 'data-testid="iac-source"' in resp.text
-    assert 'data-testid="refresh-source"' in resp.text
-
-
-def test_refresh_button_hidden_when_cf_unconfigured(_configured, _src_store, monkeypatch):
-    # CF Access unconfigured (local/dev): the POST would 503, so hide the control.
-    _patch_resolve(monkeypatch, ref=_ref(), view=_view())
-    _patch_source_fetch(monkeypatch, files=[_FILE])
-    resp = TestClient(app).get("/iac-approvals/42")
     assert 'data-testid="iac-source"' in resp.text  # source still shown
     assert 'data-testid="refresh-source"' not in resp.text
 
 
-def test_refresh_button_hidden_for_anonymous_demo_viewer(
+def test_refresh_button_not_rendered_for_anonymous_demo_viewer(
     _configured, _src_store, monkeypatch
 ):
-    # CF Access configured + NO Cf-Access-Jwt-Assertion header ⇒ anonymous demo
-    # viewer: source visible, refresh control hidden.
     monkeypatch.setenv("CF_ACCESS_TEAM_DOMAIN", "team.cloudflareaccess.com")
     monkeypatch.setenv("CF_ACCESS_AUD_TAG", "aud-tag")
     get_settings.cache_clear()
