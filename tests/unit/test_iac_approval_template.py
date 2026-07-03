@@ -557,14 +557,18 @@ def test_tofu_show_collapsed_on_denylist_violation():
 
 
 def test_c2_artifact_is_collapsed_disclosure():
-    # The 17 forensic field rows (15 signed c2.v1 keys + the 2 out-of-band GCS
-    # locators) move into a closed <details> (reference material), not an
-    # always-open card.
+    # The 16 forensic field rows (14 of the 15 signed c2.v1 keys — schema_version
+    # is dropped from the UI as internal jargon; the worker still checks it — plus
+    # the 2 out-of-band GCS locators) move into a closed <details> (reference
+    # material), not an always-open card.
     html = _render()
     assert 'data-testid="c2-artifact"' in html
     assert 'data-testid="c2-artifact" open' not in html
     # The fields themselves are still in the DOM (assurance the move kept them).
-    assert "schema_version" in html and "plan_json_sha256" in html
+    assert "head_sha" in html and "plan_json_sha256" in html
+    # schema_version is intentionally not surfaced (its only value is "c2.v1",
+    # internal jargon; the apply worker re-checks the schema regardless).
+    assert "schema_version" not in html
 
 
 def test_substance_renders_before_forensic_metadata():

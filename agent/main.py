@@ -4101,7 +4101,7 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
     _autonomy = _autonomy_state_fail_closed()
 
     if view is None:
-        reason_blocked = "No verifiable C2 plan artifact."
+        reason_blocked = "No verifiable plan artifact."
         reason_severity = "pending"
     elif view.unverifiable:
         reason_blocked = "artifact unverifiable"
@@ -4312,16 +4312,13 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
         "blast_phrase": _blast_phrase,
         "cannot_touch_note": BLAST_CANNOT_TOUCH_NOTE,
         # "View source" block (PR1). Files is a list of {path, content|None, bytes};
-        # the demo note is always shown with the block. The refresh control shows
-        # ONLY when the POST could plausibly succeed — i.e. CF Access is configured
-        # AND the request carries a JWT (presence-checked here; the POST
-        # crypto-verifies it). With CF unconfigured (local/dev) the POST 503s, so
-        # the button is hidden; for a no-JWT demo viewer it is hidden too (they see
-        # source, just not the refresh control).
+        # the demo note is always shown with the block. (The manual "refresh source"
+        # control was removed from the UI as confusing — source is pinned to
+        # head_sha, so it can't change without a new commit / new page. The backing
+        # POST .../refresh-source endpoint is retained for reintroduction if needed.)
         "iac_source_files": iac_source_files,
         "iac_source_truncated": iac_source_truncated,
         "iac_source_demo_note": _IAC_SOURCE_DEMO_NOTE,
-        "iac_source_refresh_available": _cf_configured and not _cf_anonymous,
     }
     if resolved_decision:
         # Render the terminal-state outcome banner + suppress the bottom form.
@@ -4342,6 +4339,11 @@ def iac_refresh_source(
 ) -> Response:
     """Force a re-fetch + re-save of the PR's ``.tf`` source cache, then redirect
     back to the approval GET.
+
+    NOTE: the approval page no longer renders a "refresh source" button (removed as
+    confusing — source is pinned to head_sha and cannot change without a new
+    commit). This endpoint is intentionally retained so the control can be
+    reintroduced without a backend change; it is otherwise unlinked.
 
     Operator-gated on purpose: VIEWING source is open to everyone (incl. the demo's
     anonymous viewers, served from cache / a fetch-on-miss), but the manual refresh
