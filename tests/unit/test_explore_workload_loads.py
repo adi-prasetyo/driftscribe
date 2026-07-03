@@ -152,6 +152,10 @@ def test_explore_prompt_writes_for_the_operator_not_the_developer(explore_worklo
 
     flat = " ".join(load_workload("explore").system_prompt.split())
     assert "for you to act on, not vocabulary to repeat" in flat
+    # ...but the guard targets code-level identifiers ONLY. The operator-facing
+    # roles Explore is meant to teach (the trust story) must stay fair game, or
+    # the guard would gut Explore's job. Pin that carve-out.
+    assert "not internal jargon" in flat.lower()
 
 
 def test_explore_prompt_carries_whole_system_overview(explore_workload_env):
