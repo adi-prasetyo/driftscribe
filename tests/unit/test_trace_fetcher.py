@@ -14,9 +14,10 @@ Three test classes:
 
 from __future__ import annotations
 
+import re
 import sys
 import types
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 import pytest
@@ -162,12 +163,23 @@ def test_cloud_logging_fetcher_filter_string_shape(monkeypatch):
     trace = "0123456789abcdef0123456789abcdef"
     f.fetch(trace, limit=250)
 
-    assert captured["filter_"] == (
+    # The static head is snapshot-pinned (guards against regressing to
+    # ``labels.*`` / ``textPayload``); the ``timestamp>=`` floor is
+    # time-dependent, so it's matched by shape, not value. The floor itself is
+    # REQUIRED — without it Cloud Logging only searches ~the last day.
+    assert captured["filter_"].startswith(
         'resource.type="cloud_run_revision" '
         'AND resource.labels.service_name="driftscribe-agent" '
-        f'AND jsonPayload.trace_id="{trace}"'
+        f'AND jsonPayload.trace_id="{trace}" '
+        'AND timestamp>="'
     )
-    assert captured["order_by"] == "timestamp asc"
+    assert re.search(
+        r'AND timestamp>="\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z"$',
+        captured["filter_"],
+    )
+    # DESC so recently-ingested (live) traces stay fast under the wide floor;
+    # the /trace endpoint re-sorts ascending for display.
+    assert captured["order_by"] == "timestamp desc"
     assert captured["page_size"] == 250
     assert captured["max_results"] == 250
 
@@ -186,6 +198,41 @@ def test_cloud_logging_fetcher_filter_uses_custom_service_name(monkeypatch):
 
     f.fetch("a" * 32)
     assert 'resource.labels.service_name="some-other-service"' in captured["filter_"]
+
+
+def test_cloud_logging_fetcher_timestamp_floor_tracks_lookback(monkeypatch):
+    """The ``timestamp>=`` floor is ``now - lookback_days`` and moves with it.
+
+    Regression guard for the bug this clause fixes: a filter with no timestamp
+    floor makes Cloud Logging search only ~the last day, so any trace older
+    than 24h returns empty. A short lookback yields a recent floor; a long one
+    yields an older floor.
+    """
+    captured: dict = {}
+
+    def _capture(**kwargs):
+        captured.update(kwargs)
+        return iter([])
+
+    fake_client, _ = _install_fake_cloud_logging(monkeypatch, _capture)
+
+    def floor_of(days: int) -> datetime:
+        f = CloudLoggingFetcher(project="test-proj", lookback_days=days)
+        f._client = fake_client
+        f.fetch("c" * 32)
+        m = re.search(r'timestamp>="([^"]+)"', captured["filter_"])
+        assert m, captured["filter_"]
+        return datetime.strptime(m.group(1), "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc
+        )
+
+    now = datetime.now(timezone.utc)
+    short = floor_of(1)
+    long = floor_of(400)
+    # ~1 day back vs ~400 days back, with generous slack for clock drift + the
+    # whole-second truncation in _timestamp_floor.
+    assert timedelta(hours=23) < (now - short) < timedelta(hours=25)
+    assert timedelta(days=399) < (now - long) < timedelta(days=401)
 
 
 # ---------------------------------------------------------------------------

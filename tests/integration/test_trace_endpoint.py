@@ -32,6 +32,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from agent.main import (
+    _TRACE_FETCH_LIMIT,
     _TRACE_FETCH_TIMEOUT_S,
     _STABILITY_GRACE_S,
     app,
@@ -320,6 +321,66 @@ class _SlowFetcher:
         return []
 
 
+def test_trace_endpoint_full_page_is_never_complete_or_cached(monkeypatch):
+    """A fetch at the ``_TRACE_FETCH_LIMIT`` cap is treated as truncated.
+
+    The fetcher pulls ``timestamp desc``, so a full page keeps the newest
+    ``final_response`` (which _observe_and_check_stability treats as "done")
+    while dropping the OLDEST entries. Without the truncation guard the endpoint
+    would bless that head-missing timeline complete and cache it. The guard
+    forces ``complete=False`` and skips the cache even past the stability grace,
+    so every poll refetches (``stub.calls`` keeps climbing).
+    """
+    # Exactly _TRACE_FETCH_LIMIT matching entries, ending in a final_response —
+    # enough to satisfy stability but flagged as possibly-truncated.
+    entries = [
+        {
+            "trace_id": _TRACE_A,
+            "event": "llm_thought",
+            "thought_text": f"t{i}",
+            "timestamp": f"2026-05-21T00:00:{i % 60:02d}Z",
+            "insert_id": f"ins-{i:04d}",
+        }
+        for i in range(_TRACE_FETCH_LIMIT - 1)
+    ]
+    entries.append(
+        {
+            "trace_id": _TRACE_A,
+            "event": "final_response",
+            "text": "done",
+            "timestamp": "2026-05-21T01:00:00Z",
+            "insert_id": "ins-final",
+        }
+    )
+    assert len(entries) == _TRACE_FETCH_LIMIT
+    stub = _stub_with(entries)
+    _install_fetcher(stub)
+    client = TestClient(app)
+
+    fake_now = [1000.0]
+    monkeypatch.setattr("agent.main.time.monotonic", lambda: fake_now[0])
+
+    # Poll 1: full page, no observation history yet → incomplete anyway.
+    body1 = client.get(f"/trace/{_TRACE_A}").json()
+    assert len(body1["events"]) == _TRACE_FETCH_LIMIT
+    assert body1["complete"] is False
+    assert stub.calls == 1
+
+    # Poll 2: past the stability grace — WITHOUT the truncation guard this would
+    # flip to complete=True and cache. The guard keeps it False...
+    fake_now[0] += _STABILITY_GRACE_S + 1.0
+    body2 = client.get(f"/trace/{_TRACE_A}").json()
+    assert body2["complete"] is False
+    assert body2["fetched_from_cache"] is False
+    assert stub.calls == 2
+
+    # Poll 3: ...and nothing was cached, so it refetches again.
+    body3 = client.get(f"/trace/{_TRACE_A}").json()
+    assert body3["complete"] is False
+    assert body3["fetched_from_cache"] is False
+    assert stub.calls == 3
+
+
 def test_trace_endpoint_503_on_fetch_timeout(monkeypatch):
     """A fetcher that sleeps longer than the configured timeout must
     yield a 503 (not a 500, not a 200-with-empty-events). The route
@@ -572,3 +633,6 @@ def test_module_constants_have_documented_defaults():
     completion) is caught here, not in the field."""
     assert _STABILITY_GRACE_S == pytest.approx(30.0)
     assert _TRACE_FETCH_TIMEOUT_S == pytest.approx(5.0)
+    # The per-fetch cap doubles as the truncation threshold (see the full-page
+    # guard test above), so pin it too.
+    assert _TRACE_FETCH_LIMIT == 500

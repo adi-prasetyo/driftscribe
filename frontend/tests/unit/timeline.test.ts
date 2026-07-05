@@ -307,6 +307,26 @@ describe('Timeline — historical-empty state', () => {
     expect(queryByText('No coordinator reasoning yet.')).toBeNull();
   });
 
+  it('historical + no events, NOT directly-recorded: says the trace could not be loaded, not that no reasoning ran', () => {
+    // The default (a chat turn / reasoning decision). Copy must NOT claim the
+    // turn was "recorded directly" — the reasoning happened, it just could not
+    // be fetched (e.g. beyond the log lookback window).
+    const { getByTestId } = render(Timeline, {
+      props: { events: [], status: 'historical' },
+    });
+    const note = getByTestId('timeline-empty');
+    expect(note.textContent).toContain("couldn't be loaded");
+    expect(note.textContent).not.toContain('recorded directly');
+  });
+
+  it('historical + no events, directlyRecorded: keeps the accurate "recorded directly" copy', () => {
+    // The iac_apply case: legitimately no coordinator reasoning run.
+    const { getByTestId } = render(Timeline, {
+      props: { events: [], status: 'historical', directlyRecorded: true },
+    });
+    expect(getByTestId('timeline-empty').textContent).toContain('recorded directly');
+  });
+
   it('historical WITH events: still renders the grouped timeline, no empty note', () => {
     const { queryByTestId, container } = render(Timeline, {
       props: {

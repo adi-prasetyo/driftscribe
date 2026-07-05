@@ -20,17 +20,26 @@
   let {
     events = [],
     status = 'pending',
-  }: { events?: TraceEvent[]; status?: TimelineStatus } = $props();
+    directlyRecorded = false,
+  }: {
+    events?: TraceEvent[];
+    status?: TimelineStatus;
+    /** True when this trace belongs to a decision that was RECORDED DIRECTLY
+     *  (an iac_apply approval) and so legitimately has no coordinator reasoning
+     *  run. False for chat turns and other reasoning decisions: an empty
+     *  timeline there means the reasoning couldn't be loaded, NOT that none
+     *  happened — the two cases get different, honest copy below. */
+    directlyRecorded?: boolean;
+  } = $props();
 
   const groups = $derived(groupEvents(events));
 
-  // A replayed decision that was recorded directly (e.g. an iac_apply approval)
-  // carries no reasoning events. In that case show ONLY the explanatory note
-  // below and suppress the three group accordions, which would otherwise render
-  // as three redundant "No X yet." panels. Same condition gates the note and the
-  // suppression, so they can never disagree. Live/pending/streaming empty states
-  // keep the groups (events are still arriving), and a historical trace that
-  // does carry events renders the full grouped timeline.
+  // An empty historical trace shows ONLY the explanatory note below and
+  // suppresses the three group accordions, which would otherwise render as
+  // three redundant "No X yet." panels. Same condition gates the note and the
+  // suppression, so they can never disagree. Live/pending/streaming empty
+  // states keep the groups (events are still arriving), and a historical trace
+  // that does carry events renders the full grouped timeline.
   const historicalEmpty = $derived(status === 'historical' && events.length === 0);
 
   interface Sub {
@@ -121,10 +130,18 @@
 
 <div class="timeline">
   {#if historicalEmpty}
-    <p class="timeline-empty ds-subtle" data-testid="timeline-empty">
-      No reasoning timeline for this decision. It was recorded directly, not
-      produced by an agent reasoning run.
-    </p>
+    {#if directlyRecorded}
+      <p class="timeline-empty ds-subtle" data-testid="timeline-empty">
+        No reasoning timeline for this decision. It was recorded directly, not
+        produced by an agent reasoning run.
+      </p>
+    {:else}
+      <p class="timeline-empty ds-subtle" data-testid="timeline-empty">
+        The reasoning timeline for this turn couldn't be loaded. The
+        coordinator's reasoning is stored separately from the conversation and
+        may be temporarily unavailable.
+      </p>
+    {/if}
   {:else}
   <Group
     key="coordinator"

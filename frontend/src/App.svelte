@@ -852,7 +852,12 @@
     <DecisionSummary decision={historicalDecision} />
     <PrBodyDisclosure body={historicalPrBody} truncated={historicalPrBodyTruncated} />
   {/if}
-  <Timeline {events} {status} />
+  <!-- directlyRecorded gates the empty-timeline copy: only an iac_apply is
+       recorded directly (worker-written, no coordinator reasoning run), so an
+       empty trace there is expected. Chat turns / other decisions have no
+       decision doc or a real reasoning run, so their empty trace means
+       "couldn't load", not "never reasoned". -->
+  <Timeline {events} {status} directlyRecorded={historicalDecision?.action === 'iac_apply'} />
 {/snippet}
 
 <main class="layout">
@@ -861,6 +866,7 @@
       {conversations}
       activeConversationId={conversationId}
       onOpen={openConversation}
+      onNewChat={newChat}
     />
     <DecisionsRail {decisions} {activeTraceId} onOpenTrace={openTrace} />
   </div>

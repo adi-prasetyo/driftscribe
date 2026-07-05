@@ -21,6 +21,7 @@ via ``_reset_trace_fetcher_for_tests``.
 
 from __future__ import annotations
 
+import datetime as _dt
 import re
 from typing import Any, Protocol
 
@@ -31,13 +32,30 @@ from typing import Any, Protocol
 # ``current_trace_id_or_new()`` which conforms to this format.
 _HEX32_RE = re.compile(r"^[0-9a-f]{32}$")
 
+# Default lower bound (in days) for the ``timestamp`` clause on every Cloud
+# Logging query. This is load-bearing, not a perf tweak: OBSERVED behavior of
+# ``entries.list`` is that a filter with NO timestamp clause only searches
+# roughly the last day of logs, so a trace older than ~24h comes back empty
+# even though the entry is still well within the log bucket's retention. That
+# regressed "open trace" for any conversation older than a day (durable turns,
+# unreachable reasoning). Pinning a floor at ``now - lookback`` forces Cloud
+# Logging to search the full retained window. 400 ≥ the ``_Default`` bucket's
+# 365-day retention, so any still-retained trace is reachable; entries older
+# than retention don't exist, so a wider floor buys nothing. Override with
+# ``TRACE_LOG_LOOKBACK_DAYS`` if a deployment lengthens retention.
+_DEFAULT_TRACE_LOOKBACK_DAYS = 400
+
 
 class TraceFetcher(Protocol):
-    """Return entries ordered by (timestamp asc, insert_id asc).
+    """Return the structured log entries for one trace, order UNSPECIFIED.
 
-    Each entry is a dict from the structured JSON payload — Phase 18's
-    ``JSONFormatter`` puts our extras at the top of ``jsonPayload``, and Cloud
-    Run's stdout parser turns that into ``entry.payload`` on the client side.
+    Implementations may return any order (``CloudLoggingFetcher`` pulls
+    ``timestamp desc``); the ``/trace`` endpoint re-sorts ascending by
+    (timestamp, insert_id) before rendering, so ordering is endpoint-owned, not
+    a fetcher contract. Each entry is a dict from the structured JSON payload —
+    Phase 18's ``JSONFormatter`` puts our extras at the top of ``jsonPayload``,
+    and Cloud Run's stdout parser turns that into ``entry.payload`` on the
+    client side.
     """
 
     def fetch(self, trace_id: str, *, limit: int = 500) -> list[dict]: ...
@@ -56,7 +74,12 @@ class CloudLoggingFetcher:
     data-size bound is ``max_results=limit`` (default 500).
     """
 
-    def __init__(self, project: str, service_name: str = "driftscribe-agent"):
+    def __init__(
+        self,
+        project: str,
+        service_name: str = "driftscribe-agent",
+        lookback_days: int = _DEFAULT_TRACE_LOOKBACK_DAYS,
+    ):
         # Lazy import: keeps unit tests that never construct this class from
         # paying the google-cloud-logging import cost (and from needing
         # network or ADC to be wired during import).
@@ -64,6 +87,19 @@ class CloudLoggingFetcher:
 
         self._client = cloud_logging.Client(project=project)
         self._service = service_name
+        self._lookback_days = lookback_days
+
+    def _timestamp_floor(self) -> str:
+        """RFC3339 ``now - lookback`` floor for the query's ``timestamp`` clause.
+
+        Computed per fetch (not cached) so a long-lived singleton doesn't pin a
+        stale floor. Whole-second ``...Z`` form — Cloud Logging's filter parser
+        accepts it and it keeps the snapshot test's regex simple.
+        """
+        floor = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(
+            days=self._lookback_days
+        )
+        return floor.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     def fetch(self, trace_id: str, *, limit: int = 500) -> list[dict]:
         # ``fullmatch`` (not ``match``) is load-bearing here: Python's ``$``
@@ -80,14 +116,28 @@ class CloudLoggingFetcher:
         # structured-stdout pipeline puts our extras under ``jsonPayload.*``
         # (NOT ``labels.*`` or ``textPayload``). The snapshot test in
         # test_trace_fetcher.py protects against accidental regression here.
+        #
+        # The ``timestamp>=`` floor is REQUIRED for correctness, not just
+        # speed — without it Cloud Logging only searches ~the last day and a
+        # trace older than 24h returns empty (see _DEFAULT_TRACE_LOOKBACK_DAYS).
+        # The floor is a constant we build (never caller input), so it can't
+        # widen the injection surface the _HEX32_RE guard above closes.
         filter_str = (
             f'resource.type="cloud_run_revision" '
             f'AND resource.labels.service_name="{self._service}" '
-            f'AND jsonPayload.trace_id="{trace_id}"'
+            f'AND jsonPayload.trace_id="{trace_id}" '
+            f'AND timestamp>="{self._timestamp_floor()}"'
         )
+        # ``timestamp desc``: Cloud Logging recommends descending order for
+        # recently-ingested logs, so the ~1/sec live-poll path (whose trace is
+        # seconds old) stays fast even with the wide floor above. The /trace
+        # endpoint re-sorts ascending by (timestamp, insert_id) before render,
+        # so the display order is unchanged; and if a pathologically chatty
+        # trace ever exceeds ``limit`` entries, this keeps the NEWEST ``limit``
+        # (dropping the oldest tail) rather than stalling on the oldest.
         entries_iter = self._client.list_entries(
             filter_=filter_str,
-            order_by="timestamp asc",
+            order_by="timestamp desc",
             page_size=limit,
             max_results=limit,
         )
