@@ -552,8 +552,31 @@ def get_trace_fetcher() -> TraceFetcher:
         if s.dry_run or not s.gcp_project:
             _trace_fetcher_singleton = StubTraceFetcher()
         else:
-            _trace_fetcher_singleton = CloudLoggingFetcher(project=s.gcp_project)
+            # TRACE_LOG_LOOKBACK_DAYS lets a deployment with longer log
+            # retention widen the /trace search window; unset/blank/malformed
+            # falls back to the fetcher's own default (≥ the 365d bucket).
+            _trace_fetcher_singleton = CloudLoggingFetcher(
+                project=s.gcp_project,
+                **_trace_lookback_kwarg(),
+            )
     return _trace_fetcher_singleton
+
+
+def _trace_lookback_kwarg() -> dict[str, int]:
+    """Read TRACE_LOG_LOOKBACK_DAYS into a kwarg dict (empty on unset/bad).
+
+    Returning a dict rather than a value lets the caller fall through to
+    ``CloudLoggingFetcher``'s own default when the env var is absent or
+    non-numeric, so the default lives in exactly one place.
+    """
+    raw = os.environ.get("TRACE_LOG_LOOKBACK_DAYS")
+    if not raw:
+        return {}
+    try:
+        days = int(raw)
+    except ValueError:
+        return {}
+    return {"lookback_days": days} if days > 0 else {}
 
 
 def _reset_trace_fetcher_for_tests() -> None:
@@ -589,6 +612,10 @@ _TRACE_FETCH_EXECUTOR = ThreadPoolExecutor(
     max_workers=4, thread_name_prefix="trace-fetch"
 )
 _TRACE_FETCH_TIMEOUT_S = 5.0
+# Max entries pulled per /trace fetch. A result at this cap is treated as
+# possibly-truncated (see the guard in ``get_trace``), so it's never cached as
+# a complete timeline.
+_TRACE_FETCH_LIMIT = 500
 
 # In-process completion cache. Keyed by trace_id; value is (written_at,
 # payload). Only completed-AND-stable timelines are cached (see
@@ -3345,7 +3372,9 @@ def get_trace(
     # threadpool slot indefinitely. ``fut.cancel()`` on timeout is
     # best-effort (Python can't kill a thread mid-call) but it at
     # least prevents the Future from being awaited again.
-    fut = _TRACE_FETCH_EXECUTOR.submit(fetcher.fetch, trace_id, limit=500)
+    fut = _TRACE_FETCH_EXECUTOR.submit(
+        fetcher.fetch, trace_id, limit=_TRACE_FETCH_LIMIT
+    )
     try:
         events = fut.result(timeout=_TRACE_FETCH_TIMEOUT_S)
     except _FutureTimeout:
@@ -3359,10 +3388,10 @@ def get_trace(
             headers={"Cache-Control": "no-store"},
         ) from None
 
-    # Stable tie-breaker: same-millisecond events would otherwise
-    # shuffle without ``insert_id`` to disambiguate. The fetcher
-    # already orders by ``timestamp asc`` (Cloud Logging) but doesn't
-    # break ties.
+    # Canonical render order: ascending by (timestamp, insert_id). We sort
+    # here rather than trusting the fetcher's order — CloudLoggingFetcher pulls
+    # ``timestamp desc`` (fast for recently-ingested logs) and doesn't break
+    # same-millisecond ties, so this is the single source of display order.
     events.sort(key=lambda e: (e.get("timestamp", ""), e.get("insert_id", "")))
 
     # Defense-in-depth: redact again at render. Phase 19.A.3 already
@@ -3374,6 +3403,20 @@ def get_trace(
     events = [redact_event(e) for e in events]  # type: ignore[misc]
 
     complete = _observe_and_check_stability(trace_id, events)
+    # Truncation guard: the fetch is capped at _TRACE_FETCH_LIMIT. A full page
+    # means the fetch likely dropped entries — and because the fetcher pulls
+    # ``timestamp desc``, it drops the OLDEST, keeping the newest final_response
+    # that _observe_and_check_stability treats as "done". Left unchecked, a
+    # truncated timeline would be blessed complete and cached with its head
+    # missing. Never happens at today's ~10-20 events/trace, but guard + warn so
+    # a future chatty trace surfaces loudly instead of silently losing history.
+    if len(events) >= _TRACE_FETCH_LIMIT:
+        log.warning(
+            "trace_timeline_truncated",
+            extra={"trace_id": trace_id, "count": len(events),
+                   "limit": _TRACE_FETCH_LIMIT},
+        )
+        complete = False
     if complete:
         # Cache the timeline-only view; the decision is re-read on
         # every response above. Drop the observation entry — once the

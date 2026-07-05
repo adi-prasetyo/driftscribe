@@ -14,11 +14,17 @@
     conversations,
     activeConversationId,
     onOpen,
+    onNewChat,
     max = 5,
   }: {
     conversations: Conversation[];
     activeConversationId: string | null;
     onOpen: (conversationId: string) => void;
+    /** Reset to a clean slate (drops the open thread + any historical replay).
+     *  Wired to App's `newChat()`, which until now was only reachable from the
+     *  historical-trace banner — so a resumed conversation had no way back to a
+     *  blank composer short of reloading. */
+    onNewChat: () => void;
     /** Cap the rail to the newest `max` chats; the rest live in the search
      *  modal. The active chat is pinned even when it falls outside the cap. */
     max?: number;
@@ -106,6 +112,17 @@
     <h2 class="ds-label rail-eyebrow">
       <span class="eyebrow-icon"><Icon name="message-square" size={14} /></span>Conversations
     </h2>
+    <!-- Clean-slate action. Resuming a thread from the rail locks the composer
+         to that thread's crew, and (until this) the only "start over" affordance
+         lived in the historical-trace banner — so a resumed chat had no way back
+         to a blank composer short of a reload. `margin-left:auto` floats it to
+         the header's trailing edge, before the help icon. -->
+    <button
+      type="button"
+      class="rail-new-chat"
+      data-testid="conversations-new-chat"
+      onclick={onNewChat}
+    ><Icon name="plus" size={13} />New chat</button>
     <!-- Always shown — it explains what the rail is and where the cross-crew
          "team memory" boundary sits. Mirrors DecisionsRail's header hint; the
          flex-wrap header + HelpHint's flex-basis:100% panel wrap it cleanly. -->
@@ -201,6 +218,39 @@
     align-items: center;
     color: var(--ds-muted);
     flex-shrink: 0;
+  }
+
+  /* Quiet ghost button, floated to the header's trailing edge. Calm until
+     hovered — it's a utility action, not the rail's focal point. */
+  .rail-new-chat {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3em;
+    appearance: none;
+    border: 1px solid var(--ds-border);
+    border-radius: var(--ds-radius-sm);
+    background: var(--ds-surface);
+    color: var(--ds-fg-soft);
+    font-size: var(--ds-fs-1);
+    font-weight: var(--ds-fw-semibold);
+    line-height: 1.2;
+    padding: 0.32em 0.6em;
+    cursor: pointer;
+    transition:
+      background-color var(--ds-dur) var(--ds-ease),
+      border-color var(--ds-dur) var(--ds-ease),
+      color var(--ds-dur) var(--ds-ease);
+  }
+
+  .rail-new-chat:hover {
+    background: var(--ds-surface-2);
+    border-color: var(--ds-border-strong);
+    color: var(--ds-fg);
+  }
+
+  .rail-new-chat:active {
+    transform: translateY(1px);
   }
 
   .empty {
