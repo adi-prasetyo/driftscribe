@@ -133,8 +133,10 @@ def test_cloud_logging_fetcher_accepts_valid_trace_id(monkeypatch):
     f = CloudLoggingFetcher(project="test-proj")
     f._client = fake_client
 
+    # Empty result: the fast phase misses, so the wide phase also runs —
+    # exactly two queries, never more.
     assert f.fetch("a" * 32) == []
-    assert fake_client.list_entries.call_count == 1
+    assert fake_client.list_entries.call_count == 2
 
 
 # ---------------------------------------------------------------------------
@@ -233,6 +235,147 @@ def test_cloud_logging_fetcher_timestamp_floor_tracks_lookback(monkeypatch):
     # whole-second truncation in _timestamp_floor.
     assert timedelta(hours=23) < (now - short) < timedelta(hours=25)
     assert timedelta(days=399) < (now - long) < timedelta(days=401)
+
+
+# ---------------------------------------------------------------------------
+# CloudLoggingFetcher — two-phase query (2026-07-06 /trace outage regression)
+# ---------------------------------------------------------------------------
+#
+# entries.list latency grows with the width of the ``timestamp`` window
+# (~1.4s @ 1d vs ~17s @ 400d measured on prod), so an unconditional
+# retention-deep query blew the endpoint's fetch budget on every call. The
+# fetcher now queries a narrow fast floor first and only widens on a miss.
+
+
+def _fake_entry(ts_iso: str, insert_id: str = "i1") -> MagicMock:
+    e = MagicMock()
+    e.payload = {"trace_id": "d" * 32, "event": "llm_thought", "timestamp": ts_iso}
+    e.timestamp = None
+    e.insert_id = insert_id
+    return e
+
+
+def _iso_ago(**delta) -> str:
+    t = datetime.now(timezone.utc) - timedelta(**delta)
+    return t.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _floor_age_of(filter_str: str) -> timedelta:
+    m = re.search(r'timestamp>="([^"]+)"', filter_str)
+    assert m, filter_str
+    floor = datetime.strptime(m.group(1), "%Y-%m-%dT%H:%M:%SZ").replace(
+        tzinfo=timezone.utc
+    )
+    return datetime.now(timezone.utc) - floor
+
+
+def test_two_phase_fresh_trace_resolves_in_fast_phase_alone(monkeypatch):
+    """A recent trace is served by the narrow query — the wide one never runs.
+
+    This IS the outage fix: the hot paths (live poll, post-turn backfill,
+    recent opens) must never pay the retention-deep window's latency.
+    """
+    calls: list[dict] = []
+
+    def _impl(**kwargs):
+        calls.append(kwargs)
+        return iter([_fake_entry(_iso_ago(hours=1))])
+
+    fake_client, _ = _install_fake_cloud_logging(monkeypatch, _impl)
+    f = CloudLoggingFetcher(project="test-proj")
+    f._client = fake_client
+
+    out = f.fetch("d" * 32)
+    assert len(out) == 1
+    assert len(calls) == 1
+    # The single query used the FAST floor (~2 days), not the wide default.
+    assert timedelta(days=1, hours=23) < _floor_age_of(calls[0]["filter_"]) < timedelta(
+        days=2, hours=1
+    )
+
+
+def test_two_phase_old_trace_falls_through_to_wide_phase(monkeypatch):
+    """A fast-phase miss reruns with the retention-deep floor and returns it."""
+    calls: list[dict] = []
+
+    def _impl(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return iter([])  # fast phase: nothing in the last 2 days
+        return iter([_fake_entry(_iso_ago(days=30))])
+
+    fake_client, _ = _install_fake_cloud_logging(monkeypatch, _impl)
+    f = CloudLoggingFetcher(project="test-proj")
+    f._client = fake_client
+
+    out = f.fetch("d" * 32)
+    assert len(out) == 1
+    assert len(calls) == 2
+    assert _floor_age_of(calls[0]["filter_"]) < timedelta(days=3)
+    assert _floor_age_of(calls[1]["filter_"]) > timedelta(days=399)
+
+
+def test_two_phase_straddle_guard_reruns_wide(monkeypatch):
+    """Fast-phase entries hugging the fast floor force the wide rerun.
+
+    A trace whose oldest visible entry sits within the guard band of the
+    fast floor may extend past the window edge; serving the narrow result
+    could cache a head-truncated timeline as complete.
+    """
+    calls: list[dict] = []
+    near_floor = _iso_ago(days=2, hours=-3)  # 3h ABOVE the 2d floor (inside 6h guard)
+
+    def _impl(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return iter([_fake_entry(near_floor)])
+        return iter([_fake_entry(near_floor), _fake_entry(_iso_ago(days=2, hours=2), "i0")])
+
+    fake_client, _ = _install_fake_cloud_logging(monkeypatch, _impl)
+    f = CloudLoggingFetcher(project="test-proj")
+    f._client = fake_client
+
+    out = f.fetch("d" * 32)
+    assert len(calls) == 2
+    assert len(out) == 2  # the wide (superset) result wins
+
+
+def test_two_phase_unparseable_timestamp_fails_toward_wide(monkeypatch):
+    """A fast-phase entry with a garbage timestamp must NOT be trusted as
+    complete — fail toward the wide (correct, slower) phase."""
+    calls: list[dict] = []
+
+    def _impl(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return iter([_fake_entry("not-a-timestamp")])
+        return iter([_fake_entry(_iso_ago(hours=1))])
+
+    fake_client, _ = _install_fake_cloud_logging(monkeypatch, _impl)
+    f = CloudLoggingFetcher(project="test-proj")
+    f._client = fake_client
+
+    out = f.fetch("d" * 32)
+    assert len(calls) == 2
+    assert len(out) == 1
+
+
+def test_two_phase_collapses_when_lookback_narrower_than_fast_floor(monkeypatch):
+    """lookback_days <= the fast floor means one query, at the configured
+    lookback — a second identical-or-wider query would be pure waste."""
+    calls: list[dict] = []
+
+    def _impl(**kwargs):
+        calls.append(kwargs)
+        return iter([])
+
+    fake_client, _ = _install_fake_cloud_logging(monkeypatch, _impl)
+    f = CloudLoggingFetcher(project="test-proj", lookback_days=1)
+    f._client = fake_client
+
+    assert f.fetch("d" * 32) == []
+    assert len(calls) == 1
+    assert _floor_age_of(calls[0]["filter_"]) < timedelta(days=1, hours=1)
 
 
 # ---------------------------------------------------------------------------

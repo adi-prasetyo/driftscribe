@@ -611,7 +611,14 @@ def _reset_trace_fetcher_for_tests() -> None:
 _TRACE_FETCH_EXECUTOR = ThreadPoolExecutor(
     max_workers=4, thread_name_prefix="trace-fetch"
 )
-_TRACE_FETCH_TIMEOUT_S = 5.0
+# 25s accommodates the fetcher's two-phase query: the fast narrow phase
+# (~1.5s, serves live polls / the post-turn backfill / recent opens) plus a
+# worst-case retention-deep wide phase (~17s measured at a 400-day floor) for
+# old traces. The prior 5.0s budget was tuned for the narrow-only world and
+# turned EVERY wide query into a 503 (2026-07-06 /trace outage) — and since
+# ``fut.cancel()`` can't kill a running thread, timing out early never even
+# saved the executor slot.
+_TRACE_FETCH_TIMEOUT_S = 25.0
 # Max entries pulled per /trace fetch. A result at this cap is treated as
 # possibly-truncated (see the guard in ``get_trace``), so it's never cached as
 # a complete timeline.
