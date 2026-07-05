@@ -45,6 +45,24 @@ _HEX32_RE = re.compile(r"^[0-9a-f]{32}$")
 # ``TRACE_LOG_LOOKBACK_DAYS`` if a deployment lengthens retention.
 _DEFAULT_TRACE_LOOKBACK_DAYS = 400
 
+# Floor (in days) for the FAST first phase of the two-phase query below.
+# entries.list latency grows with the width of the ``timestamp`` window —
+# measured against prod (2026-07-06, same trace_id, same 23 entries):
+# ~1.4s @ 1d, ~2.7s @ 30d, ~3.9s @ 60d, ~17s @ 400d. The endpoint's Future
+# budget is a hard wall, so querying the retention-deep window UNCONDITIONALLY
+# (the original PR #204 shape) turned every /trace call into a timeout → the
+# post-turn mcp_call backfill and every "open trace" 503'd. Two days covers
+# every hot path (the ~1/sec live poll, the post-turn backfill, opens on
+# recent conversations); only a miss pays for the wide window.
+_FAST_PHASE_LOOKBACK_DAYS = 2
+
+# If the OLDEST entry the fast phase returned sits within this band above the
+# fast floor, the trace may extend past the floor (partially out of window) —
+# rerun wide rather than serve (and cache) a head-truncated timeline. 6h is
+# generous: real traces (one chat turn, one worker fan-out, one C2 plan build)
+# span minutes.
+_FAST_PHASE_STRADDLE_GUARD = _dt.timedelta(hours=6)
+
 
 class TraceFetcher(Protocol):
     """Return the structured log entries for one trace, order UNSPECIFIED.
@@ -89,17 +107,73 @@ class CloudLoggingFetcher:
         self._service = service_name
         self._lookback_days = lookback_days
 
-    def _timestamp_floor(self) -> str:
-        """RFC3339 ``now - lookback`` floor for the query's ``timestamp`` clause.
+    def _timestamp_floor(self, days: int) -> str:
+        """RFC3339 ``now - days`` floor for the query's ``timestamp`` clause.
 
         Computed per fetch (not cached) so a long-lived singleton doesn't pin a
         stale floor. Whole-second ``...Z`` form — Cloud Logging's filter parser
         accepts it and it keeps the snapshot test's regex simple.
         """
-        floor = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(
-            days=self._lookback_days
-        )
+        floor = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=days)
         return floor.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def _query(self, trace_id: str, *, floor_days: int, limit: int) -> list[dict]:
+        # Filter syntax confirmed correct for our JSONFormatter — Cloud Run's
+        # structured-stdout pipeline puts our extras under ``jsonPayload.*``
+        # (NOT ``labels.*`` or ``textPayload``). The snapshot test in
+        # test_trace_fetcher.py protects against accidental regression here.
+        #
+        # The ``timestamp>=`` floor is REQUIRED for correctness, not just
+        # speed — without it Cloud Logging only searches ~the last day and a
+        # trace older than 24h returns empty (see _DEFAULT_TRACE_LOOKBACK_DAYS).
+        # The floor is a constant we build (never caller input), so it can't
+        # widen the injection surface the _HEX32_RE guard in ``fetch`` closes.
+        filter_str = (
+            f'resource.type="cloud_run_revision" '
+            f'AND resource.labels.service_name="{self._service}" '
+            f'AND jsonPayload.trace_id="{trace_id}" '
+            f'AND timestamp>="{self._timestamp_floor(floor_days)}"'
+        )
+        # ``timestamp desc``: Cloud Logging recommends descending order for
+        # recently-ingested logs, so the ~1/sec live-poll path (whose trace is
+        # seconds old) stays fast. The /trace endpoint re-sorts ascending by
+        # (timestamp, insert_id) before render, so the display order is
+        # unchanged; and if a pathologically chatty trace ever exceeds
+        # ``limit`` entries, this keeps the NEWEST ``limit`` (dropping the
+        # oldest tail) rather than stalling on the oldest.
+        entries_iter = self._client.list_entries(
+            filter_=filter_str,
+            order_by="timestamp desc",
+            page_size=limit,
+            max_results=limit,
+        )
+        return [_entry_to_dict(e) for e in entries_iter]
+
+    def _straddles_fast_floor(self, entries: list[dict]) -> bool:
+        """True when the fast phase's OLDEST entry sits suspiciously close to
+        the fast floor — the trace may continue past the window edge, so the
+        caller must rerun wide rather than serve a head-truncated timeline
+        (which ``get_trace`` could then cache as complete).
+
+        Unparseable timestamps count as straddling: fail toward the wide
+        (correct, slower) phase, never toward silent truncation.
+        """
+        guard_floor = (
+            _dt.datetime.now(_dt.timezone.utc)
+            - _dt.timedelta(days=_FAST_PHASE_LOOKBACK_DAYS)
+            + _FAST_PHASE_STRADDLE_GUARD
+        )
+        for e in entries:
+            raw = str(e.get("timestamp", ""))
+            try:
+                ts = _dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=_dt.timezone.utc)
+            except ValueError:
+                return True
+            if ts <= guard_floor:
+                return True
+        return False
 
     def fetch(self, trace_id: str, *, limit: int = 500) -> list[dict]:
         # ``fullmatch`` (not ``match``) is load-bearing here: Python's ``$``
@@ -112,36 +186,20 @@ class CloudLoggingFetcher:
             # straight into the Cloud Logging filter language, so anything that
             # doesn't look like our 32-hex format gets refused at the door.
             return []
-        # Filter syntax confirmed correct for our JSONFormatter — Cloud Run's
-        # structured-stdout pipeline puts our extras under ``jsonPayload.*``
-        # (NOT ``labels.*`` or ``textPayload``). The snapshot test in
-        # test_trace_fetcher.py protects against accidental regression here.
-        #
-        # The ``timestamp>=`` floor is REQUIRED for correctness, not just
-        # speed — without it Cloud Logging only searches ~the last day and a
-        # trace older than 24h returns empty (see _DEFAULT_TRACE_LOOKBACK_DAYS).
-        # The floor is a constant we build (never caller input), so it can't
-        # widen the injection surface the _HEX32_RE guard above closes.
-        filter_str = (
-            f'resource.type="cloud_run_revision" '
-            f'AND resource.labels.service_name="{self._service}" '
-            f'AND jsonPayload.trace_id="{trace_id}" '
-            f'AND timestamp>="{self._timestamp_floor()}"'
-        )
-        # ``timestamp desc``: Cloud Logging recommends descending order for
-        # recently-ingested logs, so the ~1/sec live-poll path (whose trace is
-        # seconds old) stays fast even with the wide floor above. The /trace
-        # endpoint re-sorts ascending by (timestamp, insert_id) before render,
-        # so the display order is unchanged; and if a pathologically chatty
-        # trace ever exceeds ``limit`` entries, this keeps the NEWEST ``limit``
-        # (dropping the oldest tail) rather than stalling on the oldest.
-        entries_iter = self._client.list_entries(
-            filter_=filter_str,
-            order_by="timestamp desc",
-            page_size=limit,
-            max_results=limit,
-        )
-        return [_entry_to_dict(e) for e in entries_iter]
+        # Two-phase query (2026-07-06 outage lesson): entries.list latency
+        # grows with the width of the ``timestamp`` window (measurements at
+        # _FAST_PHASE_LOOKBACK_DAYS above), and a single retention-deep query
+        # blew the endpoint's fetch budget on EVERY call — the /trace 503s
+        # took the post-turn mcp_call backfill and all trace replays down
+        # with them. The narrow phase serves the hot paths in ~1.5s; the wide
+        # phase runs only when the narrow one proves insufficient.
+        fast_days = min(_FAST_PHASE_LOOKBACK_DAYS, self._lookback_days)
+        entries = self._query(trace_id, floor_days=fast_days, limit=limit)
+        if self._lookback_days <= fast_days:
+            return entries
+        if entries and not self._straddles_fast_floor(entries):
+            return entries
+        return self._query(trace_id, floor_days=self._lookback_days, limit=limit)
 
 
 class StubTraceFetcher:

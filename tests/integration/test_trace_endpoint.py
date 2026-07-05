@@ -389,7 +389,7 @@ def test_trace_endpoint_503_on_fetch_timeout(monkeypatch):
     can still be time-bounded.
 
     We shrink the timeout for the test so the suite stays fast — the
-    production default is 5s; we test against a tiny window."""
+    production default is 25s; we test against a tiny window."""
     # Shrink the production timeout to keep this test fast.
     monkeypatch.setattr("agent.main._TRACE_FETCH_TIMEOUT_S", 0.2)
 
@@ -632,7 +632,10 @@ def test_module_constants_have_documented_defaults():
     inadvertently shrinks the stability grace (causing flaky
     completion) is caught here, not in the field."""
     assert _STABILITY_GRACE_S == pytest.approx(30.0)
-    assert _TRACE_FETCH_TIMEOUT_S == pytest.approx(5.0)
+    # 25s: fast narrow phase + worst-case retention-deep wide phase (~17s
+    # measured @ 400d). 5.0 was the narrow-only budget and 503'd every wide
+    # query (2026-07-06 /trace outage).
+    assert _TRACE_FETCH_TIMEOUT_S == pytest.approx(25.0)
     # The per-fetch cap doubles as the truncation threshold (see the full-page
     # guard test above), so pin it too.
     assert _TRACE_FETCH_LIMIT == 500
