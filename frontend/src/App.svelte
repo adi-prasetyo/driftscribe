@@ -54,6 +54,7 @@
   import Timeline from './components/Timeline.svelte';
   import TourBanner from './components/TourBanner.svelte';
   import TourCard from './components/TourCard.svelte';
+  import DemoNoticeBanner from './components/DemoNoticeBanner.svelte';
   import { tourDone, markTourDone, shouldOfferTour } from './lib/tour';
   import type { InfraGraph } from './lib/infra_graph';
   import Icon from './components/Icon.svelte';
@@ -880,6 +881,11 @@
     {#if tourOffered && !tourOpen}
       <TourBanner onStart={startTour} onDismiss={dismissTourOffer} />
     {/if}
+    <!-- Public judging window notice (task C, 2026-07-07 demo-reset-and-notice
+         plan). DEMO_MODE lives in the edge worker, not visible here, so the
+         banner always offers itself and manages its own dismissed state
+         (localStorage) rather than being gated on a prop from this component. -->
+    <DemoNoticeBanner />
     <!-- The autonomy dial moved to the header pill; the "controls" spotlight
          marker moved with it. PauseBanner stays here (only shown when paused). -->
     <PauseBanner {pause} />
