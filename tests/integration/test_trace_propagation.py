@@ -192,6 +192,12 @@ def _reader_app_for_logging_test(monkeypatch):
         "read_live_state",
         lambda *a, **k: {"env": {"X": "1"}, "revision": "rev-1"},
     )
+    monkeypatch.setattr(
+        reader_main,
+        "list_previous_ready_revisions",
+        lambda *a, **k: [],
+    )
+    monkeypatch.setattr(reader_main, "_get_revisions_client", lambda: object())
     reader_main.app.dependency_overrides[reader_main._verify_caller_dep] = (
         lambda: "tester"
     )

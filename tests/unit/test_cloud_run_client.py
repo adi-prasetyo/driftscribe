@@ -1,9 +1,10 @@
+import datetime as dt
 from unittest.mock import MagicMock
 
 from google.cloud import run_v2
 
 from agent.cloud_run_client import read_live_env
-from driftscribe_lib.cloud_run import read_live_state
+from driftscribe_lib.cloud_run import list_previous_ready_revisions, read_live_state
 
 _TYPE_REVISION = run_v2.TrafficTargetAllocationType.TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION
 _TYPE_LATEST = run_v2.TrafficTargetAllocationType.TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST
@@ -531,3 +532,119 @@ def test_read_live_state_skips_value_source_secrets_in_revision():
     assert "DB_PASSWORD" not in state["env"]
     assert state["env"]["PAYMENT_MODE"] == "mock"
     rev_client.get_revision.assert_called_once_with(name=served_path)
+
+
+# --------------------------------------------------------------------------- #
+# list_previous_ready_revisions — rollback-candidate discovery
+# --------------------------------------------------------------------------- #
+
+
+def _condition(type_: str, state):
+    m = MagicMock()
+    m.type_ = type_
+    m.state = state
+    return m
+
+
+_READY = run_v2.Condition.State.CONDITION_SUCCEEDED
+_FAILED = run_v2.Condition.State.CONDITION_FAILED
+_PENDING = run_v2.Condition.State.CONDITION_PENDING
+
+
+def _revision(short_name: str, *, ready: bool, create_time: dt.datetime, service="payment-demo"):
+    """Build a fake ``run_v2.Revision`` for ``list_revisions`` iteration.
+
+    ``ready=False`` gives the revision a ``Ready`` condition in
+    ``CONDITION_FAILED`` (a bad-image / crashed-on-boot deploy) rather than
+    omitting the condition entirely — either shape must be excluded.
+    """
+    m = MagicMock()
+    m.name = f"projects/p/locations/r/services/{service}/revisions/{short_name}"
+    m.create_time = create_time
+    m.conditions = [_condition("Ready", _READY if ready else _FAILED)]
+    return m
+
+
+def test_list_previous_ready_revisions_excludes_active_and_sorts_newest_first():
+    rev_client = MagicMock()
+    t0 = dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)
+    rev_client.list_revisions.return_value = [
+        _revision("payment-demo-00007-aaa", ready=True, create_time=t0),
+        _revision("payment-demo-00009-bbb", ready=True, create_time=t0 + dt.timedelta(hours=2)),
+        _revision("payment-demo-00008-ccc", ready=True, create_time=t0 + dt.timedelta(hours=1)),
+    ]
+
+    result = list_previous_ready_revisions(
+        "payment-demo", "r", "p", "payment-demo-00009-bbb",
+        revisions_client=rev_client,
+    )
+
+    assert result == ["payment-demo-00008-ccc", "payment-demo-00007-aaa"]
+
+
+def test_list_previous_ready_revisions_filters_not_ready():
+    rev_client = MagicMock()
+    t0 = dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)
+    rev_client.list_revisions.return_value = [
+        _revision("payment-demo-00007-aaa", ready=True, create_time=t0),
+        # Crashed-on-boot deploy: must never be suggested as a rollback target.
+        _revision("payment-demo-00008-bad", ready=False, create_time=t0 + dt.timedelta(hours=1)),
+    ]
+
+    result = list_previous_ready_revisions(
+        "payment-demo", "r", "p", "payment-demo-00009-active",
+        revisions_client=rev_client,
+    )
+
+    assert result == ["payment-demo-00007-aaa"]
+
+
+def test_list_previous_ready_revisions_caps_at_five():
+    rev_client = MagicMock()
+    t0 = dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)
+    rev_client.list_revisions.return_value = [
+        _revision(f"payment-demo-0000{i}-xxx", ready=True, create_time=t0 + dt.timedelta(hours=i))
+        for i in range(7)
+    ]
+
+    result = list_previous_ready_revisions(
+        "payment-demo", "r", "p", "payment-demo-00099-active",
+        revisions_client=rev_client,
+    )
+
+    assert len(result) == 5
+    # Newest-first: hours 6,5,4,3,2 (0 and 1 fall outside the cap).
+    assert result == [
+        "payment-demo-00006-xxx",
+        "payment-demo-00005-xxx",
+        "payment-demo-00004-xxx",
+        "payment-demo-00003-xxx",
+        "payment-demo-00002-xxx",
+    ]
+
+
+def test_list_previous_ready_revisions_no_candidates_returns_empty_list():
+    """No-previous-revisions case: a brand-new service where the only
+    revision IS the active one must yield ``[]``, not an error."""
+    rev_client = MagicMock()
+    rev_client.list_revisions.return_value = [
+        _revision("payment-demo-00001-abc", ready=True, create_time=dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)),
+    ]
+
+    result = list_previous_ready_revisions(
+        "payment-demo", "r", "p", "payment-demo-00001-abc",
+        revisions_client=rev_client,
+    )
+
+    assert result == []
+
+
+def test_list_previous_ready_revisions_passes_correct_parent():
+    rev_client = MagicMock()
+    rev_client.list_revisions.return_value = []
+
+    list_previous_ready_revisions("s", "asia-northeast1", "p", "s-00001-abc", revisions_client=rev_client)
+
+    rev_client.list_revisions.assert_called_once_with(
+        parent="projects/p/locations/asia-northeast1/services/s"
+    )

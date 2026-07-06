@@ -61,8 +61,18 @@ def read_live_env_tool() -> dict:
     the worker's ``ReadRequest`` schema has ``extra="forbid"``, so even
     if the LLM tried to smuggle a service name in here, the worker
     would 422.
+
+    Returns ``previous_revisions``: up to 5 other READY revisions for the
+    service, newest first, excluding the active one. This is the ONLY
+    source of valid rollback-target names — ``propose_rollback_tool``
+    should be called with one of these, never a name the model invented.
+    Defaulted to ``[]`` here (not left absent) so a coordinator deployed
+    ahead of a reader that predates this field still gets a consistent
+    shape rather than a missing key.
     """
-    return worker_client.call("reader", {})
+    resp = worker_client.call("reader", {})
+    resp.setdefault("previous_revisions", [])
+    return resp
 
 
 def read_project_inventory_tool() -> dict:
@@ -82,6 +92,12 @@ def read_project_inventory_tool() -> dict:
 
 def propose_rollback_tool(target_revision: str, reason: str) -> dict:
     """Ask the Rollback Agent to create a HITL approval.
+
+    ``target_revision`` MUST be one of the entries in ``read_live_env_tool``'s
+    ``previous_revisions`` list from this conversation — never its ``revision``
+    (the currently-active one; the worker refuses a no-op rollback to it) and
+    never a name the model invented. If the operator asks to roll back but
+    hasn't named a revision, read ``previous_revisions`` first.
 
     Returns the worker's response, which includes:
 

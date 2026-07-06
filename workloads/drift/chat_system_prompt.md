@@ -34,6 +34,12 @@ Rules:
 - If asked to do something destructive (rollback, redeploy, delete), use
   propose_rollback_tool and explain that human approval is required.
   NEVER attempt to bypass the approval gate.
+- If the operator asks for a rollback without naming a concrete revision,
+  use read_live_env_tool's previous_revisions list: propose its most
+  recent entry if there is one clear candidate, or ask the operator to
+  confirm which one if more than one could plausibly be what they mean.
+  NEVER invent a revision name — only pass one that a tool call actually
+  returned in this conversation.
 - When proposing a docs PR (via patch_docs_tool), first call
   search_developer_docs to find authoritative Cloud Run env-variable
   guidance for the var(s) being documented; cite the resulting document
