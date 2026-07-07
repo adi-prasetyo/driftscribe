@@ -23,6 +23,7 @@ import sys
 import textwrap
 
 import pytest
+import requests
 from fastapi import HTTPException, status
 from fastapi.testclient import TestClient
 
@@ -403,3 +404,40 @@ def test_worker_does_not_import_coordinator_registry() -> None:
         f"stay isolated from agent.* code.\nstderr: {result.stderr}\n"
         f"stdout: {result.stdout}"
     )
+
+
+# Advisory-lookup degradation (2026-07-07 backend audit, finding 3) -------- #
+
+
+def test_advisory_lookup_failure_degrades_to_error_flag(client, monkeypatch) -> None:
+    """A transient GitHub Advisory API failure must NOT fail the whole read.
+
+    Previously an unhandled ``requests`` exception here surfaced as a bare
+    500 → the coordinator's ``worker_client`` mapped it to
+    ``WorkerClientError`` → the entire /chat turn for the Patch crew died
+    with a 502. Mirror infra_reader's degradation contract instead: HTTP
+    200, the dependency row survives with ``advisories: []`` plus an
+    ``advisories_error`` note the crew can narrate to the operator.
+    """
+    def _boom(_name, _version):
+        raise requests.ConnectionError("GitHub Advisory API unreachable")
+
+    monkeypatch.setattr(upgrade_reader_main, "_lookup_advisories", _boom)
+    r = client.post("/read", json=_valid_body())
+    assert r.status_code == 200
+    deps = r.json()["dependencies"]
+    assert len(deps) == 1
+    dep = deps[0]
+    assert dep["name"] == "lodash"
+    assert dep["advisories"] == []
+    # Self-describing note (the model reads tool-return JSON verbatim).
+    assert "advisor" in dep["advisories_error"].lower()
+
+
+def test_advisory_success_carries_no_error_flag(client) -> None:
+    """The degraded-lookup key must be ABSENT on the healthy path."""
+    r = client.post("/read", json=_valid_body())
+    assert r.status_code == 200
+    dep = r.json()["dependencies"][0]
+    assert "advisories_error" not in dep
+    assert dep["advisories"] != []

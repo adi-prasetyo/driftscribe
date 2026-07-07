@@ -9,6 +9,7 @@ import math
 import os
 import re
 import secrets
+import threading
 import time
 import urllib.parse
 import uuid
@@ -631,6 +632,15 @@ _TRACE_FETCH_LIMIT = 500
 _TRACE_CACHE: dict[str, tuple[float, dict]] = {}
 _TRACE_CACHE_TTL_S = 300.0
 
+# Soft cap mirroring ``_OBSERVATIONS_SOFT_CAP`` below — same leak class:
+# expiry is lazy and per-key on read, so a completed trace cached once and
+# never re-opened (the common case for one-shot recheck/chat runs) has no
+# other eviction path. FIFO eviction by insertion order. Sizing: entries
+# here are full /trace payloads (tens of KiB, much bigger than observation
+# entries), so the cap is smaller: 256 × ~50 KiB ≈ 12 MiB ballpark — the
+# cap bounds entry COUNT, not bytes; payload size itself is unbounded.
+_TRACE_CACHE_SOFT_CAP = 256
+
 # Observed-stability: how long the SAME timeline signature has held in
 # our own observations. Required because Cloud Logging documents a
 # 0-60s live-tail buffer where entries can arrive out of order — using
@@ -763,7 +773,16 @@ def _cache_put(trace_id: str, payload: dict) -> None:
     that both observed the same expired/missing entry will both
     write; last writer wins. See :func:`_cache_get` for the full
     concurrency note.
+
+    FIFO soft-cap (same pattern and caveats as the
+    ``_TRACE_OBSERVATIONS`` eviction in
+    :func:`_observe_and_check_stability`): only NEW keys can grow the
+    dict, so an overwrite of an existing trace_id never evicts a
+    sibling.
     """
+    if trace_id not in _TRACE_CACHE and len(_TRACE_CACHE) >= _TRACE_CACHE_SOFT_CAP:
+        oldest_key = next(iter(_TRACE_CACHE))
+        _TRACE_CACHE.pop(oldest_key, None)
     _TRACE_CACHE[trace_id] = (time.monotonic(), payload)
 
 
@@ -1800,6 +1819,16 @@ async def recheck(
 # time avoids allocating a new ``requests.Session`` per /eventarc call.
 _GOOGLE_AUTH_TRANSPORT = GoogleAuthRequest()
 
+# Serializes EVERY use of the shared transport above: it wraps a single
+# ``requests.Session``, which is not documented thread-safe, and its two
+# users run on different threads — /eventarc verifies on
+# ``asyncio.to_thread`` worker threads, the (sync-route) infra-graph
+# prewarm verify on FastAPI's threadpool. Pre-offload, /eventarc calls
+# were implicitly serialized by blocking the event loop; the lock
+# preserves that property without the stall. Both endpoints are
+# low-frequency, so contention is negligible.
+_GOOGLE_AUTH_TRANSPORT_LOCK = threading.Lock()
+
 
 @app.post("/eventarc")
 async def eventarc(
@@ -1908,10 +1937,20 @@ async def eventarc(
     # Collapsing all three to 401 is intentional — a token-leak probe
     # shouldn't be able to distinguish "expired" from "wrong audience" from
     # "garbage" from "issuer mismatch".
+    # ``asyncio.to_thread``: the verify does a blocking JWKS HTTPS fetch on
+    # every call (no caching — see above) and this is an async route, so
+    # calling it bare would stall the shared event loop — including every
+    # in-flight /chat SSE stream — for the duration of the fetch. The lock
+    # serializes access to the shared requests.Session transport (see
+    # ``_GOOGLE_AUTH_TRANSPORT_LOCK``).
+    def _verify_serialized() -> dict:
+        with _GOOGLE_AUTH_TRANSPORT_LOCK:
+            return verify_oauth2_token(
+                token, _GOOGLE_AUTH_TRANSPORT, audience=s.eventarc_audience
+            )
+
     try:
-        claims = verify_oauth2_token(
-            token, _GOOGLE_AUTH_TRANSPORT, audience=s.eventarc_audience
-        )
+        claims = await asyncio.to_thread(_verify_serialized)
     except (ValueError, google_auth_exceptions.GoogleAuthError):
         # Don't echo the verifier's message — internal detail might
         # disclose which check failed.
@@ -2724,12 +2763,14 @@ def refresh_infra_graph(request: Request) -> dict:
             detail="auth not configured: GCP_PROJECT unset (cannot build expected SA email)",
         )
     # 401 on token failure / 403 on a caller that isn't the dedicated prewarm SA.
-    verify_oidc_caller(
-        request,
-        audience=s.infra_prewarm_audience,
-        allowed_emails={f"infra-prewarm-sa@{s.gcp_project}.iam.gserviceaccount.com"},
-        transport=_GOOGLE_AUTH_TRANSPORT,
-    )
+    # Lock: shared-Session transport, see ``_GOOGLE_AUTH_TRANSPORT_LOCK``.
+    with _GOOGLE_AUTH_TRANSPORT_LOCK:
+        verify_oidc_caller(
+            request,
+            audience=s.infra_prewarm_audience,
+            allowed_emails={f"infra-prewarm-sa@{s.gcp_project}.iam.gserviceaccount.com"},
+            transport=_GOOGLE_AUTH_TRANSPORT,
+        )
 
     try:
         inventory = worker_client.call("infra_reader", {})

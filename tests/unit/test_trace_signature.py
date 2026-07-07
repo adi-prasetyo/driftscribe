@@ -224,3 +224,48 @@ def test_observations_dict_respects_soft_cap():
 
     # Cleanup for the next test.
     _reset_trace_state_for_tests()
+
+
+def test_trace_cache_respects_soft_cap():
+    """Pin the FIFO soft-cap on ``_TRACE_CACHE`` (2026-07-07 backend audit,
+    finding 2).
+
+    Same leak class as ``_TRACE_OBSERVATIONS`` above, which already got the
+    fix: a completed trace cached once but never re-opened (the common case
+    for one-shot recheck/chat runs) has no other eviction path — expiry is
+    lazy and per-key on read, so a never-read-again entry sits in the dict
+    for the life of the process. Insert ``_TRACE_CACHE_SOFT_CAP + 10``
+    distinct payloads and assert the cap holds and eviction is FIFO."""
+    from agent.main import (
+        _TRACE_CACHE,
+        _TRACE_CACHE_SOFT_CAP,
+        _cache_put,
+        _reset_trace_state_for_tests,
+    )
+
+    _reset_trace_state_for_tests()
+    n_inserts = _TRACE_CACHE_SOFT_CAP + 10
+    for i in range(n_inserts):
+        _cache_put(f"{i:032x}", {"events": [], "seq": i})
+
+    # Cap respected.
+    assert len(_TRACE_CACHE) <= _TRACE_CACHE_SOFT_CAP
+
+    # FIFO discipline: the FIRST 10 trace_ids were evicted; the newest
+    # _TRACE_CACHE_SOFT_CAP remain.
+    surviving = set(_TRACE_CACHE.keys())
+    for i in range(10):
+        assert (
+            f"{i:032x}" not in surviving
+        ), f"oldest entry {i} should have been evicted"
+    assert f"{n_inserts - 1:032x}" in surviving
+
+    # Overwriting an EXISTING key while at the cap must not evict a
+    # sibling — the dict doesn't grow on overwrite.
+    newest = f"{n_inserts - 1:032x}"
+    before = set(_TRACE_CACHE.keys())
+    _cache_put(newest, {"events": [], "seq": "overwrite"})
+    assert set(_TRACE_CACHE.keys()) == before
+
+    # Cleanup for the next test.
+    _reset_trace_state_for_tests()
