@@ -48,6 +48,9 @@ describe("demoAllowed", () => {
     ["GET", "/pause", true],
     ["GET", "/autonomy", true],
     ["GET", "/trace/abc-123", true],
+    ["GET", "/trace/abc-123/pr-body", true],
+    ["GET", "/conversations", true],
+    ["GET", "/conversations/conv-1", true],
     ["POST", "/chat", true],
     // excluded by design: operator mutations + cost amplification
     ["POST", "/pause", false],
@@ -57,8 +60,11 @@ describe("demoAllowed", () => {
     // method matters
     ["GET", "/chat", false],
     ["POST", "/infra/pending-approvals", false],
+    ["POST", "/conversations/conv-1", false],
     // path shape matters
     ["GET", "/trace/a/b", false],
+    ["GET", "/trace/a/pr-body/extra", false],
+    ["GET", "/conversations/a/b", false],
     ["GET", "/infra/pending-approvals/extra", false],
     ["GET", "/trace/", false],
     ["GET", "/decisions/extra", false],
