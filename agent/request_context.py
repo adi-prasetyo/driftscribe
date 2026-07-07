@@ -41,9 +41,17 @@ def is_demo_anonymous() -> bool:
 
     Read by tools (e.g. :func:`agent.adk_tools.propose_rollback_tool`) that must
     withhold live credentials from the model for anonymous callers during the
-    public demo window (audit C1). Fail-closed default ``False`` so any path that
-    does NOT explicitly bind the flag is treated as a trusted operator — i.e. a
-    missed binding leaks nothing (it only ever WITHHOLDS more, never less)."""
+    public demo window (audit C1).
+
+    Default ``False`` mirrors :func:`agent.main._is_demo_anonymous` (absence of
+    the ``X-DriftScribe-Demo-Anonymous`` marker == trusted operator). NOTE: for
+    the withholding this default is fail-OPEN, NOT fail-closed — an anonymous
+    request that never bound the flag would be treated as an operator and could
+    receive the token. That is safe ONLY because every ``/chat`` entrypoint
+    computes the flag from the request and threads it in explicitly (SSE + JSON),
+    and the sole credential-returning tool (``propose_rollback_tool``) is
+    reachable only via that path. Do NOT rely on the default to protect a new
+    credential surface — bind the flag at the request boundary."""
     return _demo_anonymous.get()
 
 

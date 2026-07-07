@@ -212,3 +212,61 @@ async def test_run_chat_stream_keeps_seeded_token_for_operator(monkeypatch):
         "q", workload="drift", autonomy_mode="propose_apply", prior_turns=prior,
     )]
     assert "?t=SECRETTOKEN" in appended[0][2]
+
+
+def _observe_anon_during_run(monkeypatch, observed):
+    """Wire run_chat_stream so the runner loop records is_demo_anonymous() at
+    tool-execution time. Proves the scope wraps runner.run_async (Codex
+    follow-up), not just a direct scope around propose_rollback_tool."""
+    from agent.request_context import is_demo_anonymous
+
+    class _Svc:
+        async def create_session(self, **kw):
+            return SimpleNamespace(events=[])
+
+        async def append_event(self, session, event):
+            return event
+
+    async def _stub_run(*a, **k):
+        observed["anon"] = is_demo_anonymous()   # captured mid-run
+        yield SimpleNamespace(
+            content=SimpleNamespace(parts=[SimpleNamespace(text="ok", thought=False)]),
+            partial=False, usage_metadata=None, is_final_response=lambda: True,
+        )
+
+    monkeypatch.setattr(adk_agent, "InMemorySessionService", _Svc)
+    monkeypatch.setattr(adk_agent, "load_workload", lambda w: SimpleNamespace())
+    monkeypatch.setattr(
+        adk_agent, "build_chat_agent",
+        lambda res, autonomy_mode, extra_instruction=None, demo_anon=False: SimpleNamespace(name="ag"),
+    )
+    monkeypatch.setattr(
+        adk_agent, "Runner",
+        lambda **kw: SimpleNamespace(run_async=lambda **k: _stub_run()),
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_chat_stream_binds_demo_anonymous_scope_during_run(monkeypatch):
+    """demo_anon=True is bound as a request scope for the DURATION of the ADK run
+    loop — so a tool the runner invokes (e.g. propose_rollback_tool) sees
+    is_demo_anonymous() == True. This is the C1 propagation guarantee: the scope
+    wraps runner.run_async, mirroring autonomy_mode_scope."""
+    observed: dict = {}
+    _observe_anon_during_run(monkeypatch, observed)
+    _ = [it async for it in adk_agent.run_chat_stream(
+        "q", workload="drift", autonomy_mode="propose_apply", demo_anon=True,
+    )]
+    assert observed["anon"] is True
+
+
+@pytest.mark.asyncio
+async def test_run_chat_stream_operator_run_not_marked_anonymous(monkeypatch):
+    """Companion: an operator run (demo_anon default False) leaves
+    is_demo_anonymous() False during the run — operators keep full credentials."""
+    observed: dict = {}
+    _observe_anon_during_run(monkeypatch, observed)
+    _ = [it async for it in adk_agent.run_chat_stream(
+        "q", workload="drift", autonomy_mode="propose_apply",
+    )]
+    assert observed["anon"] is False
