@@ -6300,6 +6300,7 @@ async def chat(
 
 @app.get("/conversations")
 def list_conversations_endpoint(
+    request: Request,
     response: Response,
     limit: int = 50,
     workload: str | None = None,
@@ -6322,12 +6323,18 @@ def list_conversations_endpoint(
         )
     response.headers["Cache-Control"] = "no-store"
     rows = state.list_conversations(limit=limit, workload=workload)
+    # M1: conversations are shared team memory with zero privacy between demo
+    # visitors. A persisted turn can carry a live ?t= approval link — scrub it
+    # for anonymous readers (Worker marker). Operators keep the clickable link.
+    if _is_demo_anonymous(request):
+        rows = redact_approval_tokens_deep(rows)
     return {"conversations": rows}
 
 
 @app.get("/conversations/{conversation_id}")
 def get_conversation_endpoint(
     conversation_id: str,
+    request: Request,
     response: Response,
     _: None = Depends(verify_token),
     state: StateStore = Depends(get_state),
@@ -6349,4 +6356,8 @@ def get_conversation_endpoint(
             detail="conversation not found",
             headers={"Cache-Control": "no-store"},
         )
+    # M1: scrub any live ?t= approval link from the full turns for anonymous
+    # readers (shared team memory; a persisted operator turn may carry it).
+    if _is_demo_anonymous(request):
+        conv = redact_approval_tokens_deep(conv)
     return conv
