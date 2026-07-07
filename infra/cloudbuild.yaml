@@ -17,12 +17,13 @@
 # later `tofu apply` could revert prod). For routine hack-2026 deploys use the
 # TARGETED files, each of which touches one service and leaves payment-demo
 # alone:
-#   infra/cloudbuild.coordinator-update.yaml   (coordinator)
-#   infra/cloudbuild.infra-reader.yaml         (infra-reader worker)
-#   infra/cloudbuild.tofu-apply.yaml           (tofu-apply worker)
-#   infra/cloudbuild.upgrade-docs-update.yaml  (upgrade-docs worker)
+#   infra/cloudbuild.coordinator-update.yaml     (coordinator)
+#   infra/cloudbuild.infra-reader.yaml           (infra-reader worker)
+#   infra/cloudbuild.tofu-apply.yaml             (tofu-apply worker)
+#   infra/cloudbuild.upgrade-docs-update.yaml    (upgrade-docs worker)
+#   infra/cloudbuild.upgrade-reader-update.yaml  (upgrade-reader worker)
 #
-# Default-compute-SA retirement (2026-05-30): unlike the 4 targeted hack-2026
+# Default-compute-SA retirement (2026-05-30): unlike the 5 targeted hack-2026
 # files, this file is deliberately NOT pinned to cloudbuild-deploy-sa@ — it is
 # dual-project and driftscribe-e2e has no such SA. On e2e it runs as e2e's
 # default compute SA (unchanged). On hack-2026, post-Phase-6 it would run as the
@@ -87,7 +88,8 @@ steps:
   # full-stack build on driftscribe-hack-2026 unless explicitly overridden. It
   # rebuilds+redeploys payment-demo at a fresh tag, which breaks the Phase A
   # OpenTofu zero-diff; the targeted files (coordinator-update / infra-reader /
-  # tofu-apply / upgrade-docs-update) are the supported hack-2026 deploy paths.
+  # tofu-apply / upgrade-docs-update / upgrade-reader-update) are the supported
+  # hack-2026 deploy paths.
   # This closes the accidental-run window until Phase 6 strips the compute SA's
   # editor (after which it fails-closed at the first AR push on its own). e2e and
   # any other project run normally — the guard only trips on hack-2026.
@@ -99,7 +101,7 @@ steps:
         set -euo pipefail
         if [ "$PROJECT_ID" = "driftscribe-hack-2026" ] && [ "${_ALLOW_HACK2026}" != "yes" ]; then
           echo "REFUSING: infra/cloudbuild.yaml is DO-NOT-RUN on driftscribe-hack-2026 — it churns payment-demo and breaks the OpenTofu zero-diff." >&2
-          echo "Use a targeted file (coordinator-update / infra-reader / tofu-apply / upgrade-docs-update), or override with:" >&2
+          echo "Use a targeted file (coordinator-update / infra-reader / tofu-apply / upgrade-docs-update / upgrade-reader-update), or override with:" >&2
           echo "  --substitutions=_ALLOW_HACK2026=yes,_TARGET_SERVICE_SA=payment-demo-runtime@driftscribe-hack-2026.iam.gserviceaccount.com" >&2
           exit 1
         fi
