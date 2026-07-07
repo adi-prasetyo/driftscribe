@@ -375,6 +375,71 @@ def test_describe_skips_enrichment_when_no_subscriptions(client, monkeypatch):
     assert len(capture["requests"]) == 1
 
 
+def test_describe_malformed_enrichment_row_skips_only_that_row(client, monkeypatch):
+    # A malformed enrichment row (versioned_resources=None) preceding a valid one
+    # must skip ONLY the bad row — the valid subscription still gets its topic.
+    # Guards the plan's "individually malformed rows are skipped while the rest
+    # proceed" contract (Codex completed-work review).
+    sub_bad = _SUB_NAME  # //…/subscriptions/adopt-probe-sub
+    sub_good = "//pubsub.googleapis.com/projects/driftscribe-hack-2026/subscriptions/orders-sub"
+    primary = [
+        _FakeResource(sub_bad, _SUB_TYPE, "global"),
+        _FakeResource(sub_good, _SUB_TYPE, "global"),
+    ]
+    enrichment = [
+        # Malformed: versioned_resources is None (not iterable) → row skipped.
+        _FakeResource(sub_bad, _SUB_TYPE, "global", versioned_resources=None),
+        _FakeResource(
+            sub_good, _SUB_TYPE, "global",
+            versioned_resources=[_FakeVersioned({"topic": "projects/driftscribe-hack-2026/topics/order-events"})],
+        ),
+    ]
+    monkeypatch.setattr(
+        infra_main.asset_v1,
+        "AssetServiceClient",
+        _make_dispatch_client(primary, enrichment),
+    )
+    r = client.post("/describe", json={})
+    assert r.status_code == 200, r.text
+    by_name = {s["name"]: s for s in r.json()["by_type"][_SUB_TYPE]["sample"]}
+    assert "topic" not in by_name["adopt-probe-sub"]     # bad row skipped
+    assert by_name["orders-sub"]["topic"] == "order-events"  # valid row survived
+
+
+def test_describe_enrichment_row_that_raises_is_skipped(client, monkeypatch):
+    # Directly exercise the per-row `except` path: a versioned wrapper whose
+    # `.resource` access raises must skip only its row (Codex note — the None
+    # case is smoothed by `or ()` and never reaches the except branch).
+    class _RaisingVersioned:
+        @property
+        def resource(self):
+            raise RuntimeError("unreadable versioned resource")
+
+    sub_bad = _SUB_NAME
+    sub_good = "//pubsub.googleapis.com/projects/driftscribe-hack-2026/subscriptions/orders-sub"
+    primary = [
+        _FakeResource(sub_bad, _SUB_TYPE, "global"),
+        _FakeResource(sub_good, _SUB_TYPE, "global"),
+    ]
+    enrichment = [
+        _FakeResource(sub_bad, _SUB_TYPE, "global", versioned_resources=[_RaisingVersioned()]),
+        _FakeResource(
+            sub_good, _SUB_TYPE, "global",
+            versioned_resources=[_FakeVersioned({"topic": "projects/driftscribe-hack-2026/topics/order-events"})],
+        ),
+    ]
+    monkeypatch.setattr(
+        infra_main.asset_v1,
+        "AssetServiceClient",
+        _make_dispatch_client(primary, enrichment),
+    )
+    r = client.post("/describe", json={})
+    assert r.status_code == 200, r.text
+    by_name = {s["name"]: s for s in r.json()["by_type"][_SUB_TYPE]["sample"]}
+    assert "topic" not in by_name["adopt-probe-sub"]         # raising row skipped
+    assert by_name["orders-sub"]["topic"] == "order-events"  # valid row survived
+
+
 def test_describe_enrichment_failure_keeps_full_inventory_without_topic(client, monkeypatch):
     # The enrichment call raising must NOT degrade the primary inventory: the
     # subscription is still counted, just without a topic key (crew falls back

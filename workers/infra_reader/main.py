@@ -105,9 +105,18 @@ def _subscription_topics(client: asset_v1.AssetServiceClient) -> dict[str, str]:
     )
     topics: dict[str, str] = {}
     for r in client.search_all_resources(request=request):
-        raw = _first_topic(vr.resource for vr in r.versioned_resources)
-        if raw:
-            topics[r.name] = shorten_topic(raw, GCP_PROJECT)
+        # Per-row guard: a single malformed result (e.g. versioned_resources
+        # None/absent, a wrapper missing .resource, an unreadable name) must skip
+        # ONLY that row — never drop the whole map. The whole-map {} fallback in
+        # describe() is reserved for an API-level failure (the search/pagination
+        # itself raising), which propagates out of this loop as intended.
+        try:
+            raw = _first_topic(vr.resource for vr in (r.versioned_resources or ()))
+            if raw:
+                topics[r.name] = shorten_topic(raw, GCP_PROJECT)
+        except Exception as e:  # noqa: BLE001 — one bad row must not drop the rest
+            log.warning("skipping malformed subscription enrichment row: %s", e)
+            continue
     return topics
 
 
