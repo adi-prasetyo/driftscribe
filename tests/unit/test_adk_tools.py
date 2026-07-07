@@ -18,6 +18,7 @@ is mocked at the function level.
 """
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
@@ -747,6 +748,77 @@ def test_propose_rollback_tool_safe_reason_still_sent_to_worker():
     assert payload["target_revision"] == "payment-demo-00010-abc"
     assert "payment-demo-00010-abc" in payload["reason"]
     assert "SECRET-SENTINEL-do-not-leak" not in payload["reason"]
+
+
+# --------------------------------------------------------------------------- #
+# propose_rollback_tool — withhold the approval credential from the model for
+# anonymous public-demo callers (audit C1, primary fix)
+# --------------------------------------------------------------------------- #
+
+
+def _rollback_worker_response_with_token(token="SECRETTOKEN"):
+    """Worker /propose response shape — BOTH the bare ``approval_token`` field
+    and the tokenized ``approval_url``, exactly as workers/rollback/main.py emits."""
+    return {
+        "approval_id": "id1",
+        "approval_token": token,
+        "approval_url": f"https://c/approvals/id1?t={token}",
+        "expires_at": "2026-07-07T00:15:00+00:00",
+    }
+
+
+def test_propose_rollback_withholds_credential_from_model_when_anon():
+    """Audit C1 (primary): an anonymous demo caller must NEVER receive the
+    single-use rollback approval credential — neither the bare ``approval_token``
+    field NOR the ``?t=`` token inside ``approval_url``. ADK feeds this return
+    straight back to the model, which could echo it into its reply OR route it
+    into a PR body on the PUBLIC repo. The operator notifier webhook still gets
+    the real clickable link, so the operator flow is unchanged."""
+    from agent.adk_tools import propose_rollback_tool
+    from agent.request_context import demo_anonymous_scope
+
+    notifier_calls = []
+
+    def _fake_call(worker, payload):
+        if worker == "notifier":
+            notifier_calls.append(payload)
+            return {"status": "sent"}
+        return _rollback_worker_response_with_token()
+
+    with patch("agent.adk_tools.worker_client.call", side_effect=_fake_call):
+        with demo_anonymous_scope(True):
+            out = propose_rollback_tool(
+                target_revision="payment-demo-00002-bbb", reason="x"
+            )
+
+    # The model sees the token on NO field.
+    assert "SECRETTOKEN" not in json.dumps(out)
+    assert "approval_token" not in out          # bare raw token dropped entirely
+    # Non-secret fields stay so the model can still say an approval was created.
+    assert out["approval_id"] == "id1"
+    assert out["expires_at"] == "2026-07-07T00:15:00+00:00"
+    # Operator notifier webhook is UNCHANGED — it still carries the live link.
+    assert len(notifier_calls) == 1
+    assert "SECRETTOKEN" in notifier_calls[0]["body"]
+
+
+def test_propose_rollback_operator_keeps_credential():
+    """No demo-anon marker (operator path) → the tool return still carries the
+    live token on both surfaces, so the operator gets the clickable link."""
+    from agent.adk_tools import propose_rollback_tool
+
+    def _fake_call(worker, payload):
+        if worker == "notifier":
+            return {"status": "sent"}
+        return _rollback_worker_response_with_token()
+
+    with patch("agent.adk_tools.worker_client.call", side_effect=_fake_call):
+        out = propose_rollback_tool(
+            target_revision="payment-demo-00002-bbb", reason="x"
+        )
+
+    assert out["approval_token"] == "SECRETTOKEN"
+    assert "?t=SECRETTOKEN" in out["approval_url"]
 
 
 @pytest.mark.parametrize(

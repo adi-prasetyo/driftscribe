@@ -164,6 +164,25 @@ def propose_rollback_tool(target_revision: str, reason: str) -> dict:
             "rollback_propose_notify_failed",
             extra={"target_revision": target_revision},
         )
+    # Audit C1 (primary fix): anonymous public-demo callers must NEVER receive
+    # the single-use ?t= approval credential — it is the sole authz for
+    # POST /approvals/{id}. ADK feeds this return straight back to the model,
+    # which could echo it into its reply OR route it into a PR body on the
+    # PUBLIC repo (the drift crew holds both propose_rollback and patch_docs).
+    # The operator notifier webhook above already carries the real link, so the
+    # operator flow is unchanged — only the value handed to the MODEL is scrubbed.
+    # Both credential surfaces are removed: the bare ``approval_token`` field is
+    # dropped, and the ?t= token inside ``approval_url`` is masked (path +
+    # approval_id + expires_at stay readable so the model can still say an
+    # approval was created).
+    from agent.request_context import is_demo_anonymous
+
+    if is_demo_anonymous() and isinstance(resp, dict):
+        from agent.renderer import redact_approval_tokens_deep
+
+        scrubbed = dict(redact_approval_tokens_deep(resp))
+        scrubbed.pop("approval_token", None)
+        return scrubbed
     return resp
 
 
