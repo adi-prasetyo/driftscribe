@@ -207,7 +207,7 @@ Each worker has a tiny REST surface with a hardcoded "payload-intent policy" —
 - **Endpoint:** `POST /describe`
 - **Request:** `{}` (empty object; `extra="forbid"` → 422 on any field). The worker's whole job is fixed at deploy time — there is nothing for the body to select.
 - **Response:** a bounded project-inventory summary, IaC-labeled — managed (declared in the baked-in `iac/`) vs. unmanaged (drift) resource counts, with a `declared_set_status` that degrades independently if any `*.tf` fails to parse. CAI permission/availability failures **soft-fail to a 200** carrying `{ "error": "cloud_asset_unavailable", ... }` so a missing grant degrades the UI panel rather than crashing the request.
-- **Hardcoded policy:** project-scoped read of `$GCP_PROJECT` via Cloud Asset Inventory `searchAllResources` with a minimal read-mask. No write surface of any kind.
+- **Hardcoded policy:** project-scoped read of `$GCP_PROJECT` via Cloud Asset Inventory `searchAllResources` with a minimal read-mask, plus two scoped `versioned_resources` reads (Pub/Sub subscription topic, Cloud Run template image) from which only those single fields are retained. No write surface of any kind.
 - **Auth to GCP:** `roles/cloudasset.viewer` + `serviceusage.serviceUsageConsumer` — strictly read-only. Backs both the `explore` and `provision` workloads' `read_project_inventory` tool and the operator UI's infra resource-map panel.
 
 ### Tofu Editor — `driftscribe-tofu-editor`

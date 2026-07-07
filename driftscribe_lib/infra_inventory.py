@@ -28,22 +28,30 @@ _FRESHNESS = (
 )
 _SAMPLE_CAP = 10
 
+# The one type whose sample may carry an enrichment-joined ``image``. Gating on
+# it keeps the pure layer robust even if a future reader mis-set ``image`` on a
+# non-run row (defense in depth — the reader only sets it on run services today).
+_RUN_ASSET_TYPE = "run.googleapis.com/Service"
+
 
 @dataclass(frozen=True)
 class CaiResource:
     """The masked CAI fields we use (read_mask = name,assetType,location).
 
-    ``topic`` is the ONE exception: it is not part of the minimal read_mask but
-    is joined in by the worker's scoped subscription-only enrichment search (the
-    subscription→topic edge, retained so the Provision crew can adopt a
-    subscription without stalling to ask). It is None for every non-subscription
-    resource and for subscriptions the enrichment couldn't read; the default
-    keeps every existing three-field construction valid.
+    ``topic`` and ``image`` are the exceptions: neither is part of the minimal
+    read_mask; each is joined in by a scoped enrichment search the worker runs
+    only when that asset type is present. ``topic`` is the subscription→topic
+    edge (retained so the Provision crew can adopt a subscription without
+    stalling to ask); ``image`` is a Cloud Run service's template container
+    image (same reason for run-service adoption). Both are None for every other
+    resource and for rows the enrichment couldn't read; the defaults keep every
+    existing three-field construction valid.
     """
     name: str            # full //service/projects/.../X
     asset_type: str
     location: str
     topic: str | None = None
+    image: str | None = None
 
 
 def shorten_topic(topic: str, project: str) -> str:
@@ -113,6 +121,9 @@ def build_inventory(
         # is also the string the shared control-plane classifier keys on — keeping
         # the aggregate count (here) and the per-node flag (infra_graph) in lockstep.
         display = norm.rsplit("/", 1)[-1] if norm else r.name
+        # Computed once per row (hoisted out of the not-in-IaC branch) because it
+        # now also gates image emission below, which applies to managed rows too.
+        is_control_plane = is_control_plane_node(r.asset_type, display)
         if decl is not None:
             matched_keys.add(key)
             bucket["declared_in_iac"] += 1
@@ -126,7 +137,7 @@ def build_inventory(
             # Count unmanaged control-plane / service-managed resources over EVERY
             # resource (not just the ≤10 sample) so the graph can derive actionable
             # (adoptable, non-control-plane) drift from a whole-estate figure.
-            if is_control_plane_node(r.asset_type, display):
+            if is_control_plane:
                 bucket["not_in_iac_control_plane"] += 1
         if len(bucket["_samples"]) < _SAMPLE_CAP:
             entry = {"name": display, "location": r.location, "iac": iac, "match_confidence": conf}
@@ -135,6 +146,19 @@ def build_inventory(
             # field; every other sample stays byte-identical.
             if isinstance(r.topic, str) and r.topic:
                 entry["topic"] = r.topic
+            # Cloud Run service image, same only-when-present style — but NEVER
+            # for a control-plane row: DriftScribe's own service images must not
+            # enter the sample text, the anonymous-visible /infra/graph JSON, or
+            # the L2 cache (the scoped CAI search can't filter by name, so the
+            # join covers every service; suppression happens here at emission).
+            # Type-gated to run services so a mislabeled non-run image can't leak.
+            if (
+                r.asset_type == _RUN_ASSET_TYPE
+                and isinstance(r.image, str)
+                and r.image
+                and not is_control_plane
+            ):
+                entry["image"] = r.image
             bucket["_samples"].append(entry)
 
     by_type: dict[str, dict] = {}

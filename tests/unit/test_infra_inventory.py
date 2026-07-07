@@ -59,11 +59,12 @@ def test_matching_high_identity_marks_sample_iac_true_and_rolls_up_declared():
 BUCKET_TYPE = "storage.googleapis.com/Bucket"
 
 
-def _run(short_name: str) -> CaiResource:
+def _run(short_name: str, image: str | None = None) -> CaiResource:
     return CaiResource(
         name=f"//run.googleapis.com/projects/p/locations/l/services/{short_name}",
         asset_type=RUN_TYPE,
         location="l",
+        image=image,
     )
 
 
@@ -602,6 +603,76 @@ def test_shorten_topic_already_short_or_garbage_passes_through():
     assert shorten_topic("order-events", "p") == "order-events"
     assert shorten_topic("nonsense", "p") == "nonsense"
     assert shorten_topic("", "p") == ""
+
+
+# --------------------------------------------------------------------------- #
+# Cloud Run service→image enrichment (adopt-run-image-prefill). The worker joins
+# the template container image in via a scoped second CAI search; build_inventory
+# carries it onto the sample when present, EXCEPT for control-plane rows (whose
+# images are DriftScribe's own and must never enter the anonymous-visible graph).
+# Unlike topic there is no shortening — the image passes through verbatim so it
+# byte-matches the live spec for a zero-change import.
+# --------------------------------------------------------------------------- #
+
+
+def test_run_service_sample_carries_image_when_present():
+    # A non-control-plane service (the run-adoption probe) keeps its image.
+    out = build_inventory(
+        [_run("adopt-probe-svc", "gcr.io/cloudrun/hello")],
+        [], project="p", iac_snapshot_sha="sha1",
+    )
+    sample = out["by_type"][RUN_TYPE]["sample"][0]
+    assert sample["image"] == "gcr.io/cloudrun/hello"
+
+
+def test_run_service_sample_omits_image_key_when_none():
+    out = build_inventory(
+        [_run("adopt-probe-svc", None)], [], project="p", iac_snapshot_sha="sha1",
+    )
+    sample = out["by_type"][RUN_TYPE]["sample"][0]
+    assert "image" not in sample
+
+
+def test_run_service_sample_omits_image_key_when_empty_string():
+    out = build_inventory(
+        [_run("adopt-probe-svc", "")], [], project="p", iac_snapshot_sha="sha1",
+    )
+    sample = out["by_type"][RUN_TYPE]["sample"][0]
+    assert "image" not in sample
+
+
+def test_control_plane_service_sample_never_carries_image():
+    # DriftScribe's own coordinator is control-plane — even carrying an image it
+    # must be suppressed at emission (never reaches the anonymous graph / cache).
+    out = build_inventory(
+        [_run("driftscribe-agent", "gcr.io/driftscribe-hack-2026/coordinator")],
+        [], project="p", iac_snapshot_sha="sha1",
+    )
+    sample = out["by_type"][RUN_TYPE]["sample"][0]
+    assert "image" not in sample
+
+
+def test_run_service_carrying_both_topic_and_image_none_emits_neither_key():
+    # A vanilla run service (both enrichment fields at their default None) must
+    # be byte-identical to the pre-enrichment four-key shape.
+    out = build_inventory([_run("svc-a")], [], project="p", iac_snapshot_sha="sha1")
+    sample = out["by_type"][RUN_TYPE]["sample"][0]
+    assert "topic" not in sample
+    assert "image" not in sample
+    assert set(sample) == {"name", "location", "iac", "match_confidence"}
+
+
+def test_non_run_resource_carrying_an_image_never_emits_it():
+    # Defense in depth (Codex review): only run services may surface an image.
+    # A subscription (or any non-run row) that somehow carried one — never
+    # produced by the reader — must not emit the key at the pure layer.
+    r = CaiResource(
+        name="//pubsub.googleapis.com/projects/p/subscriptions/s",
+        asset_type=SUB_TYPE, location="global", image="gcr.io/p/x",
+    )
+    out = build_inventory([r], [], project="p", iac_snapshot_sha="s")
+    sample = out["by_type"][SUB_TYPE]["sample"][0]
+    assert "image" not in sample
 
 
 def test_end_to_end_noncai_form_bucket_import_is_false_drift():

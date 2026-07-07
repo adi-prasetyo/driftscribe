@@ -875,6 +875,42 @@ describe('adoptPrefill', () => {
       '`' + 'x'.repeat(254) + '`.',
     );
   });
+
+  it('appends the image clause for a run service with an image (location present too)', () => {
+    expect(
+      adoptPrefill('Cloud Run service', 'adopt-probe-svc', 'asia-northeast1', null, 'gcr.io/cloudrun/hello'),
+    ).toBe(
+      'Adopt the Cloud Run service `adopt-probe-svc` in asia-northeast1 into IaC management. Its image is `gcr.io/cloudrun/hello`.',
+    );
+  });
+
+  it('omits the image clause when image is null/empty (legacy string unchanged)', () => {
+    const legacy = 'Adopt the Cloud Run service `s` in asia-northeast1 into IaC management.';
+    expect(adoptPrefill('Cloud Run service', 's', 'asia-northeast1')).toBe(legacy);
+    expect(adoptPrefill('Cloud Run service', 's', 'asia-northeast1', null, null)).toBe(legacy);
+    expect(adoptPrefill('Cloud Run service', 's', 'asia-northeast1', null, '')).toBe(legacy);
+  });
+
+  it('normalizes an untrusted image and honors the 512 cap WITHOUT truncating a 254+ valid ref', () => {
+    // control chars collapse to a space like every other fragment
+    expect(adoptPrefill('Cloud Run service', 's', null, null, 'gcr.io/p\t/img')).toBe(
+      'Adopt the Cloud Run service `s` into IaC management. Its image is `gcr.io/p /img`.',
+    );
+    // A valid 300-char ref survives intact — it WOULD be truncated under the 254 topic cap.
+    const ref = 'gcr.io/p/' + 'x'.repeat(291); // length 300
+    expect(ref.length).toBe(300);
+    expect(adoptPrefill('Cloud Run service', 's', null, null, ref)).toContain('`' + ref + '`.');
+    // The 512 cap still bites beyond 512.
+    expect(adoptPrefill('Cloud Run service', 's', null, null, 'y'.repeat(600))).toContain(
+      '`' + 'y'.repeat(512) + '`.',
+    );
+  });
+
+  it('keeps clause order deterministic if topic AND image are somehow both present', () => {
+    expect(adoptPrefill('X', 'n', null, 't', 'i')).toBe(
+      'Adopt the X `n` into IaC management. Its topic is `t`. Its image is `i`.',
+    );
+  });
 });
 
 describe('prefillLocation', () => {
@@ -886,6 +922,10 @@ describe('prefillLocation', () => {
   it('passes every other type location through unchanged (incl. null)', () => {
     expect(prefillLocation('storage.googleapis.com/Bucket', 'asia-northeast1')).toBe('asia-northeast1');
     expect(prefillLocation('run.googleapis.com/Service', null)).toBeNull();
+  });
+
+  it('keeps the location for a Cloud Run service (it is REQUIRED by the tool)', () => {
+    expect(prefillLocation('run.googleapis.com/Service', 'asia-northeast1')).toBe('asia-northeast1');
   });
 });
 
@@ -936,6 +976,57 @@ describe('subscription topic prefill (end-to-end through the row builders)', () 
     delete g.groups[0].nodes[0].topic;
     const [row] = adoptRows(g);
     expect(row.prefill).toBe('Adopt the Pub/Sub subscription `adopt-probe-sub` into IaC management.');
+  });
+});
+
+describe('run service image prefill (end-to-end through the row builders)', () => {
+  const RUN = 'run.googleapis.com/Service';
+  const runGraph = () =>
+    graph({
+      groups: [
+        group({
+          asset_type: RUN,
+          label: 'Cloud Run service',
+          adoptable: true,
+          count: 1,
+          managed: 0,
+          drift: 1,
+          nodes: [
+            node({
+              id: 'r0',
+              label: 'adopt-probe-svc',
+              asset_type: RUN,
+              managed: false,
+              location: 'asia-northeast1',
+              image: 'gcr.io/cloudrun/hello',
+            }),
+          ],
+        }),
+      ],
+    });
+
+  it('adoptRows: run service prefill carries the image AND keeps the location clause', () => {
+    const [row] = adoptRows(runGraph());
+    expect(row.prefill).toBe(
+      'Adopt the Cloud Run service `adopt-probe-svc` in asia-northeast1 into IaC management. Its image is `gcr.io/cloudrun/hello`.',
+    );
+  });
+
+  it('resourceCards: run service drift row prefill carries the image AND the location clause', () => {
+    const [card] = resourceCards(runGraph());
+    const [row] = card.rows;
+    expect(row.prefill).toBe(
+      'Adopt the Cloud Run service `adopt-probe-svc` in asia-northeast1 into IaC management. Its image is `gcr.io/cloudrun/hello`.',
+    );
+  });
+
+  it('a run service without a joined image falls back to the legacy prefill (no image clause)', () => {
+    const g = runGraph();
+    delete g.groups[0].nodes[0].image;
+    const [row] = adoptRows(g);
+    expect(row.prefill).toBe(
+      'Adopt the Cloud Run service `adopt-probe-svc` in asia-northeast1 into IaC management.',
+    );
   });
 });
 

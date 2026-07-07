@@ -169,6 +169,10 @@ ADOPTION_CONTROL_PLANE_NOTE = (
 _CONTROL_PLANE_NODE_MATCHERS = CONTROL_PLANE_NODE_MATCHERS
 _is_control_plane_node = is_control_plane_node
 
+# The one node type that may carry an enrichment-joined ``image`` — gating the
+# passthrough on it keeps a mislabeled non-run image from reaching the client.
+_RUN_ASSET_TYPE = "run.googleapis.com/Service"
+
 
 # Plan rtypes whose names/addresses must never reach the map. Mirrors the
 # static gate's SECRET_MATERIAL_RESOURCE_TYPES (drift-pinned ⊇ at test time;
@@ -401,7 +405,20 @@ def build_graph(inventory: dict) -> dict:
                     topic = sample.get("topic")
                     if isinstance(topic, str) and topic:
                         node["topic"] = topic
-                    if _is_control_plane_node(atype, label):
+                    # Same computation drives the image gate and the CTA flag, so
+                    # a control-plane row can neither expose an image nor an
+                    # adopt button.
+                    is_cp = _is_control_plane_node(atype, label)
+                    # Cloud Run service→image passthrough (adopt-run-image-prefill):
+                    # only-when-present + type-strict + NEVER for control-plane
+                    # (defense in depth on top of build_inventory's sample-level
+                    # suppression — a control-plane image must never reach the
+                    # anonymous-visible client node), so every other node stays
+                    # byte-identical and a malformed image can't reach the client.
+                    image = sample.get("image")
+                    if atype == _RUN_ASSET_TYPE and isinstance(image, str) and image and not is_cp:
+                        node["image"] = image
+                    if is_cp:
                         # Only-when-true (truncated_in_group style) so every
                         # non-control-plane graph stays byte-identical.
                         node["control_plane"] = True

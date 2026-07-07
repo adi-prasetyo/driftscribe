@@ -86,6 +86,11 @@ def read_project_inventory_tool() -> dict:
     no KMS. The summary is CAI-sourced (eventually consistent, partial
     coverage) — present it with its freshness_caveat, and present
     declared_not_found entries as "things to check," never confirmed drift.
+
+    Adoption facts: a ``by_type[*].sample[*]`` entry may carry the
+    adoption-required fact for its type — ``topic`` for a Pub/Sub subscription,
+    ``image`` for a Cloud Run service — so ``propose_adoption_tool`` can read it
+    from here instead of asking the operator.
     """
     return worker_client.call("infra_reader", {})
 
@@ -983,8 +988,10 @@ def propose_adoption_tool(
       sample in ``read_project_inventory_tool`` (its ``topic`` field); ask
       the operator only if it is not there).
     - ``google_cloud_run_v2_service`` — Cloud Run service. Requires
-      ``location`` AND ``image`` (the exact container image it runs — ask
-      the operator if unknown).
+      ``location`` AND ``image`` (the exact container image it runs — read
+      both from the service's sample in ``read_project_inventory_tool`` (its
+      ``location`` and ``image`` fields); ask the operator only if the image
+      is not there).
 
     ``name`` is the resource's short name (bare bucket name, topic/sub short
     name, service name). On a ``{"status": "rejected"}`` result, read the
