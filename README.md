@@ -127,6 +127,25 @@ reasoning trace behind every decision, so you can watch a drift detection, a
 docs PR, an upgrade proposal, and the rollback approval gate from the browser
 without touching a terminal.
 
+### Real, but restorable
+
+A mutation stays open to anonymous visitors when its blast radius is bounded and
+mechanically restorable, and is gated when it is not.
+
+- **Open, self-healing:** asking Patch to fix the vulnerable dependency merges a
+  real PR (one line of `demo/upgrade-target/package.json`); asking Anchor to roll
+  back really moves `payment-demo` traffic to an earlier revision. A scheduled
+  workflow ([`demo-reset.yml`](.github/workflows/demo-reset.yml)) restores both
+  baselines: the service every two hours, the upgrade fixture every morning.
+- **Gated:** merging an infrastructure PR always requires the operator's
+  identity, and free-form infrastructure authoring is operator-only during the
+  public window (the one-click Adopt path, which only ever emits a bounded
+  zero-change import, stays open). A merged infra PR cannot be unmerged, so it
+  never happens anonymously.
+
+What you see is neither a mockup nor an honor system: real changes land, and the
+parts that cannot be safely reset are the parts you cannot reach.
+
 `scripts/demo.sh` is the companion runner that drives activity behind that UI
 (or for a keyboard-only walkthrough). The drift beats mutate the `payment-demo`
 Cloud Run service to create the drift the UI then surfaces; the upgrade beats
