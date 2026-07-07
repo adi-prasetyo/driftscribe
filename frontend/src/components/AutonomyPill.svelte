@@ -59,8 +59,8 @@
   let pillReady = $state(false);
   let pillRafId: number | undefined;
 
-  // Popover placement. The pill is the LEFT-most header action and the header
-  // wraps the actions onto their own (left-aligned) row on sub-wide viewports, so
+  // Popover placement. The pill sits near the left end of the header actions and
+  // the header wraps the actions onto their own (left-aligned) row on sub-wide viewports, so
   // a pill-anchored `right: 0` dropdown overflows the viewport's left edge. We
   // instead place the popover relative to the VIEWPORT on open and clamp it
   // on-screen: right edge aligned to the pill's right edge, but if that pushes the

@@ -54,7 +54,8 @@
   import Timeline from './components/Timeline.svelte';
   import TourBanner from './components/TourBanner.svelte';
   import TourCard from './components/TourCard.svelte';
-  import DemoNoticeBanner from './components/DemoNoticeBanner.svelte';
+  import DemoNoticeBell from './components/DemoNoticeBell.svelte';
+  import { announceHeaderPopoverOpen } from './lib/headerPopover';
   import { tourDone, markTourDone, shouldOfferTour } from './lib/tour';
   import type { InfraGraph } from './lib/infra_graph';
   import Icon from './components/Icon.svelte';
@@ -203,6 +204,11 @@
   function startTour(): void {
     tourOffered = false;
     tourOpen = true;
+    // The tour's "controls" step spotlights the header corner the popovers hang
+    // from — close them (notice included) before the spotlight lands. Pause and
+    // Autonomy keep their saving exception: mid-POST they ignore this, and that
+    // transient overlap is accepted (documented invariant).
+    announceHeaderPopoverOpen('tour');
   }
   function dismissTourOffer(): void {
     tourOffered = false;
@@ -805,6 +811,10 @@
     <h1 class="app-title">DriftScribe<span class="app-title__sub">. The agent proposes, you approve.</span></h1>
   </div>
   <div class="app-header__actions">
+    <!-- Judging-window notice bell (replaces the in-flow DemoNoticeBanner; see
+         docs/plans/2026-07-07-demo-notice-bell.md). Deleted whole at
+         close-window time. -->
+    <DemoNoticeBell />
     <!-- data-tour="controls" lives on this always-rendered wrapper (not the
          loaded-only pill button) so the tour spotlight resolves even while
          /autonomy is loading or unknown. -->
@@ -881,11 +891,6 @@
     {#if tourOffered && !tourOpen}
       <TourBanner onStart={startTour} onDismiss={dismissTourOffer} />
     {/if}
-    <!-- Public judging window notice (task C, 2026-07-07 demo-reset-and-notice
-         plan). DEMO_MODE lives in the edge worker, not visible here, so the
-         banner always offers itself and manages its own dismissed state
-         (localStorage) rather than being gated on a prop from this component. -->
-    <DemoNoticeBanner />
     <!-- The autonomy dial moved to the header pill; the "controls" spotlight
          marker moved with it. PauseBanner stays here (only shown when paused). -->
     <PauseBanner {pause} />
@@ -966,8 +971,9 @@
     display: inline-flex;
     align-items: center;
     gap: var(--ds-sp-3);
-    /* A third (and the widest) control now lives here — let the cluster wrap to
-       a second line on narrow viewports rather than overflow (Codex #6). */
+    /* Several controls now live here (notice bell, autonomy, pause, tour,
+       token) — let the cluster wrap to a second line on narrow viewports rather
+       than overflow (Codex #6). */
     flex-wrap: wrap;
     justify-content: flex-end;
   }
