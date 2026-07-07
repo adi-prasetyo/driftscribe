@@ -612,3 +612,34 @@ async def test_final_response_malformed_json_falls_back_to_redact_text(
     # URL userinfo still stripped via the fallback regex.
     assert "u:p@" not in preview
     assert "<redacted>" in preview
+
+
+# --------------------------------------------------------------------------- #
+# ``_redact_final_response`` must ALSO strip live rollback approval tokens from
+# the 365-day-durable Cloud Logging preview (audit C1 hardening). The
+# /approvals/{id}?t=<token> URL is neither a credentialed URL (no userinfo) nor
+# a name-keyed secret, so redact_event / redact_text both miss it — a live
+# single-use token would otherwise sit in durable logs. Applies to everyone
+# (nobody needs a live token in logs), not just anonymous callers.
+# --------------------------------------------------------------------------- #
+
+
+def test_redact_final_response_text_branch_strips_approval_token():
+    from agent.adk_agent import _redact_final_response
+
+    preview, kind = _redact_final_response(
+        "approve at https://c/approvals/abc?t=SECRETLOGTOKEN"
+    )
+    assert kind == "text"
+    assert "SECRETLOGTOKEN" not in preview
+    assert "?t=<redacted>" in preview
+
+
+def test_redact_final_response_json_branch_strips_approval_token():
+    from agent.adk_agent import _redact_final_response
+
+    preview, kind = _redact_final_response(
+        '{"msg": "approve at https://c/approvals/abc?t=SECRETLOGTOKEN"}'
+    )
+    assert kind == "json"
+    assert "SECRETLOGTOKEN" not in preview

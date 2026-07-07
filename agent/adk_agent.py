@@ -794,6 +794,12 @@ def _redact_final_response(accepted_text: str) -> tuple[str, str]:
     ``response_kind`` is ``"json"`` when structural redaction fired,
     ``"text"`` otherwise.
     """
+    # A live rollback approval token (/approvals/{id}?t=<token>) is neither a
+    # credentialed URL nor a name-keyed secret, so redact_event / redact_text
+    # both miss it — but a single-use token must not sit in the 365-day-durable
+    # log. redact_approval_tokens_deep is applied on BOTH branches, BEFORE the
+    # 2000-char truncation (preserving the redact-then-truncate invariant so a
+    # token straddling the boundary can't survive the cut) — audit C1 hardening.
     stripped = accepted_text.lstrip()
     if stripped.startswith("{") or stripped.startswith("["):
         try:
@@ -805,14 +811,16 @@ def _redact_final_response(accepted_text: str) -> tuple[str, str]:
             # already replaced any secret-keyed values with the
             # ``<redacted>`` sentinel, so ``default=str`` only acts
             # on benign non-secret types.
-            return (json.dumps(safe, default=str)[:2000], "json")
+            dumped = redact_approval_tokens_deep(json.dumps(safe, default=str))
+            return (dumped[:2000], "json")
         except (json.JSONDecodeError, ValueError):
             # Looked like JSON (leading "{" / "[") but didn't parse —
             # likely a truncated stream or a malformed emit. Fall
             # through to the text path, which still strips
             # credentialed URLs via the regex.
             pass
-    return ((redact_text(accepted_text) or "")[:2000], "text")
+    text = redact_approval_tokens_deep(redact_text(accepted_text) or "")
+    return (text[:2000], "text")
 
 
 def _emit_final_response(text: str) -> dict:
