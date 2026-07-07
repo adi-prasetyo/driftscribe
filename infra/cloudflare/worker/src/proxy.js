@@ -47,6 +47,7 @@ export const DEMO_ALLOWLIST = [
   ["GET", /^\/decisions$/],
   ["GET", /^\/infra\/graph$/],
   ["GET", /^\/infra\/graph\/preview$/],
+  ["GET", /^\/infra\/pending-approvals$/],
   ["GET", /^\/capabilities$/],
   ["GET", /^\/pause$/],
   ["GET", /^\/autonomy$/],

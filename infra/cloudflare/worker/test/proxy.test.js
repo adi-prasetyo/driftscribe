@@ -43,6 +43,7 @@ describe("demoAllowed", () => {
     ["GET", "/decisions", true],
     ["GET", "/infra/graph", true],
     ["GET", "/infra/graph/preview", true],
+    ["GET", "/infra/pending-approvals", true],
     ["GET", "/capabilities", true],
     ["GET", "/pause", true],
     ["GET", "/autonomy", true],
@@ -55,8 +56,10 @@ describe("demoAllowed", () => {
     ["POST", "/iac-approvals/42", false],
     // method matters
     ["GET", "/chat", false],
+    ["POST", "/infra/pending-approvals", false],
     // path shape matters
     ["GET", "/trace/a/b", false],
+    ["GET", "/infra/pending-approvals/extra", false],
     ["GET", "/trace/", false],
     ["GET", "/decisions/extra", false],
     ["GET", "/", false],
