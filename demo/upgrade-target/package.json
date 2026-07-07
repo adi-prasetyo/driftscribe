@@ -4,6 +4,6 @@
   "private": true,
   "description": "Intentionally-vulnerable demo target for DriftScribe Phase 17's upgrade workload. See README.md for the CVE/GHSA being demonstrated. Do not depend on this package.",
   "dependencies": {
-    "lodash": "4.17.21"
+    "lodash": "4.17.20"
   }
 }
