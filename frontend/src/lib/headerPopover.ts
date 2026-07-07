@@ -5,7 +5,7 @@
 
 export const HEADER_POPOVER_EVENT = 'ds:header-popover-open';
 
-export type HeaderPopoverId = 'pause' | 'autonomy';
+export type HeaderPopoverId = 'pause' | 'autonomy' | 'notice' | 'tour';
 
 /** Announce that the popover with `id` just opened. Fail-soft. */
 export function announceHeaderPopoverOpen(id: HeaderPopoverId): void {
