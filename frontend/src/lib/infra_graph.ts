@@ -43,6 +43,15 @@ export interface InfraNode {
    * (same pattern as `control_plane`) — absent → the prefill just omits it.
    */
   topic?: string | null;
+  /**
+   * Cloud Run service only: the template container image, joined server-side so
+   * the Adopt prefill can hand it to the Provision crew (which REQUIRES the exact
+   * image to adopt a service) instead of stalling to ask. Present ONLY on a
+   * NON-control-plane run node the enrichment could read (the server suppresses
+   * DriftScribe's own service images); optional = stale-coordinator-safe (same
+   * pattern as `topic`) — absent → the prefill just omits it.
+   */
+  image?: string | null;
 }
 
 export interface InfraGroup {
@@ -396,15 +405,20 @@ export function prefillLocation(assetType: string, location: string | null): str
 /**
  * "Adopt the Storage bucket `name` in asia-northeast1 into IaC management."
  * For a Pub/Sub subscription the caller passes the node's `topic`, appending
- * " Its topic is `<topic>`." so the Provision crew can adopt it without stalling
- * to ask (the tool REQUIRES a topic). `topic` is UNTRUSTED server data, so it is
- * runtime-guarded and normalized like every other fragment.
+ * " Its topic is `<topic>`."; for a Cloud Run service it passes the node's
+ * `image`, appending " Its image is `<image>`." — each so the Provision crew can
+ * adopt without stalling to ask (the tool REQUIRES the topic / the image). Both
+ * are UNTRUSTED server data, runtime-guarded and normalized like every other
+ * fragment (image cap 512 — `_IMAGE_RE` allows refs up to 512 chars, so a lower
+ * cap could truncate a valid ref into a rejected one). A subscription and a run
+ * service never co-occur in one node, but the clause order is deterministic.
  */
 export function adoptPrefill(
   groupLabel: string,
   nodeLabel: string,
   location: string | null,
   topic: string | null = null,
+  image: string | null = null,
 ): string {
   const type = normalizeForPrompt(groupLabel, 40);
   const name = normalizeForPrompt(nodeLabel, 254);
@@ -414,7 +428,11 @@ export function adoptPrefill(
     typeof topic === 'string' && topic
       ? ` Its topic is \`${normalizeForPrompt(topic, 254)}\`.`
       : '';
-  return `Adopt the ${type} \`${name}\`${where} into IaC management.${topicClause}`;
+  const imageClause =
+    typeof image === 'string' && image
+      ? ` Its image is \`${normalizeForPrompt(image, 512)}\`.`
+      : '';
+  return `Adopt the ${type} \`${name}\`${where} into IaC management.${topicClause}${imageClause}`;
 }
 
 /**
@@ -439,7 +457,7 @@ export function adoptRows(graph: InfraGraph): AdoptRow[] {
         adoptable,
         controlPlane,
         prefill: adoptable
-          ? adoptPrefill(g.label, n.label, prefillLocation(g.asset_type, n.location), n.topic ?? null)
+          ? adoptPrefill(g.label, n.label, prefillLocation(g.asset_type, n.location), n.topic ?? null, n.image ?? null)
           : '',
       });
     }
@@ -626,7 +644,7 @@ export function resourceCards(graph: InfraGraph): ResourceCard[] {
           label: n.label,
           status: 'drift',
           adoptable: true,
-          prefill: adoptPrefill(g.label, n.label, prefillLocation(g.asset_type, n.location), n.topic ?? null),
+          prefill: adoptPrefill(g.label, n.label, prefillLocation(g.asset_type, n.location), n.topic ?? null, n.image ?? null),
         });
         continue;
       }

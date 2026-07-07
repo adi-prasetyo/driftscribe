@@ -257,6 +257,70 @@ def test_non_subscription_nodes_never_carry_topic():
             assert "topic" not in node
 
 
+def _run_inventory(sample_extra: dict, *, name: str = "adopt-probe-svc") -> dict:
+    """A one-run-service inventory whose single sample merges `sample_extra`."""
+    return {
+        "project": "p", "generated_at": "2026-07-07T00:00:00+00:00",
+        "inventory_source": "cloud_asset_inventory", "freshness_caveat": "…",
+        "iac_snapshot_sha": "sha", "total_resources": 1, "declared_in_iac": 0,
+        "not_in_iac": 1,
+        "by_type": {
+            RUN_TYPE: {
+                "count": 1, "declared_in_iac": 0, "not_in_iac": 1,
+                "not_in_iac_control_plane": 0, "sensitive": False,
+                "sample": [{"name": name, "location": "asia-northeast1",
+                            "iac": False, "match_confidence": None, **sample_extra}],
+            }
+        },
+        "declared_not_found": [], "truncated": {"per_type_sample": 10},
+    }
+
+
+def test_node_carries_image_when_sample_has_it():
+    g = build_graph(_run_inventory({"image": "gcr.io/cloudrun/hello"}))
+    node = g["groups"][0]["nodes"][0]
+    assert node["image"] == "gcr.io/cloudrun/hello"
+
+
+def test_node_omits_image_when_sample_lacks_it():
+    g = build_graph(_run_inventory({}))
+    assert "image" not in g["groups"][0]["nodes"][0]
+
+
+def test_node_omits_image_when_sample_image_is_non_string():
+    # Type-strict: a non-string (or empty) image never reaches the client node.
+    for bad in (123, "", None, {"x": 1}):
+        g = build_graph(_run_inventory({"image": bad}))
+        assert "image" not in g["groups"][0]["nodes"][0]
+
+
+def test_control_plane_node_never_carries_image_even_if_sample_leaks_one():
+    # Defense in depth on top of build_inventory's sample-level suppression: even
+    # if a sample adversarially carries an image for a control-plane service, the
+    # node build suppresses it (and still flags the node control_plane).
+    g = build_graph(
+        _run_inventory({"image": "gcr.io/p/coordinator"}, name="driftscribe-agent")
+    )
+    node = g["groups"][0]["nodes"][0]
+    assert "image" not in node
+    assert node["control_plane"] is True
+
+
+def test_non_run_nodes_never_carry_image():
+    g = build_graph(_inventory())
+    for grp in g["groups"]:
+        for node in grp["nodes"]:
+            assert "image" not in node
+
+
+def test_non_run_node_never_carries_image_even_if_sample_leaks_one():
+    # Type-gated (Codex review): a subscription sample adversarially carrying an
+    # image must not emit it at the node layer — defense in depth on top of the
+    # reader only ever setting `image` on run rows.
+    g = build_graph(_sub_inventory({"image": "gcr.io/p/x"}))
+    assert "image" not in g["groups"][0]["nodes"][0]
+
+
 def test_group_rollup_counts():
     g = build_graph(_inventory())
     run = next(grp for grp in g["groups"] if grp["asset_type"] == RUN_TYPE)

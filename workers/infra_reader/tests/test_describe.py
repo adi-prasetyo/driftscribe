@@ -360,14 +360,20 @@ def test_describe_enrichment_request_pins_asset_types_and_read_mask(client, monk
     assert enrich.scope == "projects/driftscribe-hack-2026"
 
 
-def test_describe_skips_enrichment_when_no_subscriptions(client, monkeypatch):
-    # A subscription-free estate must never pay for the second search.
+def test_describe_skips_enrichment_when_no_enrichable_types(client, monkeypatch):
+    # An estate with no enrichable types (no subscriptions AND no run services)
+    # must never pay for a second scoped search — only the primary runs. A bucket
+    # is neither, so it exercises the skip for BOTH enrichment blocks.
     capture: dict = {}
-    primary = [_FakeResource(_PAYMENT_DEMO_NAME, _RUN_SERVICE, "asia-northeast1")]
+    bucket = _FakeResource(
+        "//storage.googleapis.com/some-bucket",
+        "storage.googleapis.com/Bucket",
+        "asia-northeast1",
+    )
     monkeypatch.setattr(
         infra_main.asset_v1,
         "AssetServiceClient",
-        _make_dispatch_client(primary, [], capture=capture),
+        _make_dispatch_client([bucket], [], capture=capture),
     )
     r = client.post("/describe", json={})
     assert r.status_code == 200, r.text
@@ -479,3 +485,254 @@ def test_describe_malformed_iac_marks_parse_error(client, monkeypatch, tmp_path)
     body = r.json()
     assert body["total_resources"] == 1
     assert body["declared_set_status"] == "parse_error"
+
+
+# --------------------------------------------------------------------------- #
+# Cloud Run service→image enrichment (adopt-run-image-prefill). A THIRD-ish
+# scoped search: same shared `_versioned_field_map` plumbing as the subscription
+# topic enrichment, dispatched only when run services are present. Because BOTH
+# enrichments now set `asset_types`, tests that exercise both need a dispatch
+# fake that discriminates by the scoped type, not just "is enrichment".
+# --------------------------------------------------------------------------- #
+
+_RUN_NAME = (
+    "//run.googleapis.com/projects/driftscribe-hack-2026/"
+    "locations/asia-northeast1/services/adopt-probe-svc"
+)
+_CP_RUN_NAME = (
+    "//run.googleapis.com/projects/driftscribe-hack-2026/"
+    "locations/asia-northeast1/services/driftscribe-agent"
+)
+
+
+def _run_versioned(image, *, v2=False):
+    """A `_FakeVersioned` carrying a run Service versioned resource with `image`.
+
+    `v2=True` uses the flatter v2 shape (template.containers) to exercise the
+    extractor's fallback path. Also seeds an env secret + SA email so tests can
+    assert those never leak out of the extractor.
+    """
+    container = {"image": image, "env": [{"name": "API_KEY", "value": "s3cr3t"}]}
+    if v2:
+        resource = {"template": {"containers": [container]}}
+    else:
+        resource = {"spec": {"template": {"spec": {"containers": [container]}}}}
+    resource["serviceAccountName"] = "runtime@driftscribe-hack-2026.iam.gserviceaccount.com"
+    return _FakeVersioned(resource)
+
+
+def _make_typed_dispatch_client(primary, by_type, *, capture=None, raises_for=None):
+    """Fake client dispatching each scoped enrichment search by its asset_type.
+
+    ``by_type`` maps an asset_type → that scoped search's results; ``raises_for``
+    maps an asset_type → an exception to raise for that search. The primary
+    (no-``asset_types``) search returns ``primary``.
+    """
+    raises_for = raises_for or {}
+
+    class _FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        def search_all_resources(self, request=None, **kwargs):
+            types = list(getattr(request, "asset_types", None) or [])
+            if capture is not None:
+                capture.setdefault("requests", []).append(request)
+            if not types:
+                return iter(primary)
+            atype = types[0]
+            if capture is not None:
+                capture[atype] = request
+            if atype in raises_for:
+                raise raises_for[atype]
+            return iter(by_type.get(atype, []))
+
+    return _FakeClient
+
+
+def test_extract_run_image_v1_shape_happy_path():
+    assert (
+        infra_main.extract_run_image(
+            [{"spec": {"template": {"spec": {"containers": [
+                {"image": "gcr.io/cloudrun/hello"}]}}}}]
+        )
+        == "gcr.io/cloudrun/hello"
+    )
+
+
+def test_extract_run_image_v2_fallback_shape():
+    assert (
+        infra_main.extract_run_image(
+            [{"template": {"containers": [{"image": "gcr.io/p/img:tag"}]}}]
+        )
+        == "gcr.io/p/img:tag"
+    )
+
+
+def test_extract_run_image_multi_container_takes_first():
+    assert (
+        infra_main.extract_run_image(
+            [{"spec": {"template": {"spec": {"containers": [
+                {"image": "first"}, {"image": "second"}]}}}}]
+        )
+        == "first"
+    )
+
+
+def test_extract_run_image_empty_malformed_and_nonstring_are_none():
+    assert infra_main.extract_run_image([]) is None
+    # non-mapping row, then a shape missing the containers path → None
+    assert infra_main.extract_run_image(["not-a-mapping", {"spec": {}}]) is None
+    # containers present but empty → None
+    assert (
+        infra_main.extract_run_image(
+            [{"spec": {"template": {"spec": {"containers": []}}}}]
+        )
+        is None
+    )
+    # non-string image is ignored
+    assert (
+        infra_main.extract_run_image(
+            [{"spec": {"template": {"spec": {"containers": [{"image": 123}]}}}}]
+        )
+        is None
+    )
+
+
+def test_extract_run_image_on_real_proto_versioned_resource_shape():
+    # Pins the LIVE proto-plus shape (Codex review): a real google-cloud-asset
+    # VersionedResource whose `.resource` is a google.protobuf.Struct
+    # (MapComposite / RepeatedComposite), NOT the plain-dict doubles the other
+    # extractor tests use. Guards against a future proto-plus marshaling change
+    # silently breaking extraction — the run adopt recipe has never been proven
+    # live, so this is the tightest static pin available.
+    v1 = infra_main.asset_v1.VersionedResource(
+        resource={"spec": {"template": {"spec": {"containers": [
+            {"image": "gcr.io/cloudrun/hello"}]}}}}
+    )
+    assert infra_main.extract_run_image([v1.resource]) == "gcr.io/cloudrun/hello"
+    v2 = infra_main.asset_v1.VersionedResource(
+        resource={"template": {"containers": [{"image": "gcr.io/p/img:tag"}]}}
+    )
+    assert infra_main.extract_run_image([v2.resource]) == "gcr.io/p/img:tag"
+
+
+def test_describe_run_sample_gains_image(client, monkeypatch):
+    primary = [_FakeResource(_RUN_NAME, _RUN_SERVICE, "asia-northeast1")]
+    by_type = {_RUN_SERVICE: [
+        _FakeResource(_RUN_NAME, _RUN_SERVICE, "asia-northeast1",
+                      versioned_resources=[_run_versioned("gcr.io/cloudrun/hello")])
+    ]}
+    monkeypatch.setattr(
+        infra_main.asset_v1, "AssetServiceClient",
+        _make_typed_dispatch_client(primary, by_type),
+    )
+    r = client.post("/describe", json={})
+    assert r.status_code == 200, r.text
+    sample = r.json()["by_type"][_RUN_SERVICE]["sample"][0]
+    assert sample["name"] == "adopt-probe-svc"
+    assert sample["image"] == "gcr.io/cloudrun/hello"
+    # Nothing else from the versioned resource leaks (env secret / SA email).
+    assert "s3cr3t" not in str(sample)
+    assert "serviceAccountName" not in str(sample)
+
+
+def test_describe_run_sample_gains_image_v2_shape(client, monkeypatch):
+    primary = [_FakeResource(_RUN_NAME, _RUN_SERVICE, "asia-northeast1")]
+    by_type = {_RUN_SERVICE: [
+        _FakeResource(_RUN_NAME, _RUN_SERVICE, "asia-northeast1",
+                      versioned_resources=[_run_versioned("gcr.io/p/img:tag", v2=True)])
+    ]}
+    monkeypatch.setattr(
+        infra_main.asset_v1, "AssetServiceClient",
+        _make_typed_dispatch_client(primary, by_type),
+    )
+    r = client.post("/describe", json={})
+    assert r.status_code == 200, r.text
+    assert r.json()["by_type"][_RUN_SERVICE]["sample"][0]["image"] == "gcr.io/p/img:tag"
+
+
+def test_describe_run_enrichment_request_pins_asset_types_and_read_mask(client, monkeypatch):
+    capture: dict = {}
+    primary = [_FakeResource(_RUN_NAME, _RUN_SERVICE, "asia-northeast1")]
+    monkeypatch.setattr(
+        infra_main.asset_v1, "AssetServiceClient",
+        _make_typed_dispatch_client(primary, {}, capture=capture),
+    )
+    r = client.post("/describe", json={})
+    assert r.status_code == 200, r.text
+    enrich = capture[_RUN_SERVICE]
+    assert list(enrich.asset_types) == ["run.googleapis.com/Service"]
+    assert list(enrich.read_mask.paths) == ["name", "versioned_resources"]
+    assert enrich.scope == "projects/driftscribe-hack-2026"
+
+
+def test_describe_control_plane_service_image_suppressed(client, monkeypatch):
+    # DriftScribe's own coordinator is control-plane: even when the enrichment
+    # reads its image, build_inventory suppresses it at emission so it never
+    # reaches the anonymous-visible graph JSON.
+    primary = [_FakeResource(_CP_RUN_NAME, _RUN_SERVICE, "asia-northeast1")]
+    by_type = {_RUN_SERVICE: [
+        _FakeResource(_CP_RUN_NAME, _RUN_SERVICE, "asia-northeast1",
+                      versioned_resources=[_run_versioned("gcr.io/driftscribe-hack-2026/coordinator")])
+    ]}
+    monkeypatch.setattr(
+        infra_main.asset_v1, "AssetServiceClient",
+        _make_typed_dispatch_client(primary, by_type),
+    )
+    r = client.post("/describe", json={})
+    assert r.status_code == 200, r.text
+    sample = r.json()["by_type"][_RUN_SERVICE]["sample"][0]
+    assert sample["name"] == "driftscribe-agent"
+    assert "image" not in sample
+
+
+def test_describe_run_failure_does_not_skip_subscription_enrichment(client, monkeypatch):
+    # Independence (run fails → sub still enriches). The run image search raises;
+    # the subscription topic must still be joined and the full inventory kept.
+    primary = [
+        _FakeResource(_RUN_NAME, _RUN_SERVICE, "asia-northeast1"),
+        _FakeResource(_SUB_NAME, _SUB_TYPE, "global"),
+    ]
+    by_type = {_SUB_TYPE: [
+        _FakeResource(_SUB_NAME, _SUB_TYPE, "global",
+                      versioned_resources=[_FakeVersioned(
+                          {"topic": "projects/driftscribe-hack-2026/topics/adopt-probe-topic"})])
+    ]}
+    monkeypatch.setattr(
+        infra_main.asset_v1, "AssetServiceClient",
+        _make_typed_dispatch_client(
+            primary, by_type,
+            raises_for={_RUN_SERVICE: gax.ServiceUnavailable("cai backend down")},
+        ),
+    )
+    r = client.post("/describe", json={})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["total_resources"] == 2
+    assert "image" not in body["by_type"][_RUN_SERVICE]["sample"][0]
+    assert body["by_type"][_SUB_TYPE]["sample"][0]["topic"] == "adopt-probe-topic"
+
+
+def test_describe_subscription_failure_does_not_skip_run_enrichment(client, monkeypatch):
+    # The mirror (sub fails → run still enriches).
+    primary = [
+        _FakeResource(_RUN_NAME, _RUN_SERVICE, "asia-northeast1"),
+        _FakeResource(_SUB_NAME, _SUB_TYPE, "global"),
+    ]
+    by_type = {_RUN_SERVICE: [
+        _FakeResource(_RUN_NAME, _RUN_SERVICE, "asia-northeast1",
+                      versioned_resources=[_run_versioned("gcr.io/cloudrun/hello")])
+    ]}
+    monkeypatch.setattr(
+        infra_main.asset_v1, "AssetServiceClient",
+        _make_typed_dispatch_client(
+            primary, by_type,
+            raises_for={_SUB_TYPE: gax.ServiceUnavailable("cai backend down")},
+        ),
+    )
+    r = client.post("/describe", json={})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["by_type"][_RUN_SERVICE]["sample"][0]["image"] == "gcr.io/cloudrun/hello"
+    assert "topic" not in body["by_type"][_SUB_TYPE]["sample"][0]

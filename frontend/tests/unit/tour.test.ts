@@ -431,6 +431,36 @@ describe('adoptStepState', () => {
     expect(s.prefill).not.toContain(' in global');
   });
 
+  it('a run service target carries its image and keeps the location (no stall from the tour path)', () => {
+    const g = makeGraph({
+      groups: [
+        makeGroup({
+          asset_type: 'run.googleapis.com/Service',
+          label: 'Cloud Run service',
+          adoptable: true,
+          adopt_rank: 1,
+          nodes: [
+            makeNode({
+              id: 'run0',
+              label: 'adopt-probe-svc',
+              asset_type: 'run.googleapis.com/Service',
+              managed: false,
+              location: 'asia-northeast1',
+              image: 'gcr.io/cloudrun/hello',
+            }),
+          ],
+        }),
+      ],
+    });
+    const s = adoptStepState(g);
+    expect(s.kind).toBe('target');
+    if (s.kind !== 'target') throw new Error('unreachable');
+    expect(s.prefill).toBe(
+      'Adopt the Cloud Run service `adopt-probe-svc` in asia-northeast1 into IaC management. Its image is `gcr.io/cloudrun/hello`.',
+    );
+    expect(s.prefill).toContain(' in asia-northeast1');
+  });
+
   it('all-control-plane estate gets the honest denylist line, not the unnamed line', () => {
     const g = makeGraph({
       totals: { resources: 1, managed: 0, drift: 1 },

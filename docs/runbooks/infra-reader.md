@@ -45,7 +45,13 @@ custom role `driftscribeInfraReader` (`cloudasset.assets.searchAllResources` +
 credential" rule. It grants read access to resource *metadata* (names, types,
 locations) and the ability to call the CAI API; it grants **no** write access,
 **no** resource-content access beyond what CAI exposes, and **no** ability to
-decrypt state. Do not add any other role. The **custom role (step 2a) is the
+decrypt state. Scoped exception: for two adoptable types the worker issues one
+extra scoped `versioned_resources` search each and retains **only one field** —
+a Pub/Sub subscription's `resource.topic` and a Cloud Run service's template
+container image — so those resources can be adopted without stalling to ask;
+every other field the versioned resource carries (env vars, SA/operator emails,
+push endpoints) is read but never stored, logged, or returned, and the run image
+is suppressed at emission for DriftScribe's own control-plane services. Do not add any other role. The **custom role (step 2a) is the
 recommended default** — it is exactly the two permissions the worker calls,
 nothing more; the predefined pair (step 2b) is the simpler-but-broader
 alternative.

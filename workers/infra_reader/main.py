@@ -23,15 +23,28 @@ narrate the partial degradation. Auth failures stay real 401/403.
 
 Read-mask policy: the PRIMARY inventory search stays minimal-masked
 (name/asset_type/location) — anything more would over-fetch rich metadata for
-every asset type, including sensitive-adjacent fields. Pub/Sub subscriptions get
-ONE additional scoped ``versioned_resources`` search (subscriptions only) from
-which ONLY ``resource.topic`` is retained; every other versioned-resource field
-(push endpoints, SA emails, labels) is read but never stored, logged, or
-returned. This carries the subscription→topic edge into the inventory so the
-Provision crew can adopt a subscription without stalling to ask for its topic.
+every asset type, including sensitive-adjacent fields. Two adoptable types get
+ONE additional scoped ``versioned_resources`` search each, from which ONLY a
+single field is retained:
+
+- Pub/Sub subscriptions → ``resource.topic`` (the subscription→topic edge).
+- Cloud Run services → the template container image
+  (``spec.template.spec.containers[0].image``), so a service can be adopted
+  without stalling to ask for its image.
+
+Every other field these versioned resources carry — push endpoints, container
+**env vars (possible secrets)**, service-account emails, creator/lastModifier
+operator emails, labels — is read by the API but never stored, logged (not even
+in per-row skip warnings, which record only the asset type + exception, never
+row content), or returned. The run image is additionally SUPPRESSED for
+DriftScribe's own control-plane services at emission (build_inventory / graph
+node), so it never enters the anonymous-visible ``/infra/graph`` JSON or the L2
+cache. Both searches soft-fail INDEPENDENTLY to their no-enrichment behavior
+without touching the primary inventory or each other.
 """
 import dataclasses
 import os
+from collections.abc import Callable
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Request
@@ -63,11 +76,40 @@ IAC_SNAPSHOT_SHA = os.environ.get("IAC_SNAPSHOT_SHA", "unknown")
 # and risk surfacing sensitive resource attributes.
 _READ_MASK_PATHS = ["name", "asset_type", "location"]
 
-# Subscription-only enrichment (see module docstring). A SECOND scoped search
-# restricted to subscriptions, masked to ``versioned_resources`` so we can read
-# the sub→topic edge; ONLY ``resource.topic`` is retained from it.
+# Scoped per-type enrichment (see module docstring). For each adoptable type
+# that needs one field the minimal mask omits, a SECOND scoped search restricted
+# to that type, masked to ``versioned_resources``; ONLY the single named field is
+# retained. Subscriptions → ``resource.topic``; run Services → the template
+# container image.
 _SUB_ASSET_TYPE = "pubsub.googleapis.com/Subscription"
-_SUB_READ_MASK_PATHS = ["name", "versioned_resources"]
+_RUN_ASSET_TYPE = "run.googleapis.com/Service"
+_VERSIONED_READ_MASK_PATHS = ["name", "versioned_resources"]
+
+
+def _dig(obj, *path):
+    """Walk ``path`` through a nested mapping/sequence; None on any miss.
+
+    ``str`` steps index a mapping via ``.get``; ``int`` steps index a sequence.
+    Returns None on any missing key, out-of-range index, or type mismatch. Works
+    on plain dicts/lists (tests) and the proto-plus ``MapComposite`` /
+    ``RepeatedComposite`` the live CAI client returns for a
+    ``google.protobuf.Struct`` — so extractors navigate one shape either way.
+    """
+    cur = obj
+    for step in path:
+        try:
+            if isinstance(step, int):
+                cur = cur[step]
+            else:
+                get = getattr(cur, "get", None)
+                if not callable(get):
+                    return None
+                cur = get(step)
+        except (KeyError, IndexError, TypeError):
+            return None
+        if cur is None:
+            return None
+    return cur
 
 
 def _first_topic(resources) -> str | None:
@@ -88,36 +130,94 @@ def _first_topic(resources) -> str | None:
     return None
 
 
-def _subscription_topics(client: asset_v1.AssetServiceClient) -> dict[str, str]:
-    """Map each subscription's raw CAI ``name`` → its topic (shortened in-project).
+def extract_run_image(versioned) -> str | None:
+    """First non-empty template container image among run Service versioned
+    resources, else None.
 
-    A scoped subscription-only search with a ``versioned_resources`` read_mask.
-    The join key is the raw CAI ``name`` (``//pubsub.googleapis.com/projects/.../
-    subscriptions/...``) — the SAME string ``_search_all`` returns — NOT the
-    normalized display name. Only ``resource.topic`` is retained; everything else
-    the versioned resource carries is discarded here and never leaves this
-    function.
+    Tries the v1 Knative shape ``spec.template.spec.containers[0].image`` then a
+    v2-shape fallback ``template.containers[0].image``; FIRST container only (the
+    adopt recipe renders single-container HCL, so a multi-container service can't
+    cleanly import anyway). Pure: no network, unit-testable with plain dicts.
+
+    SECURITY: returns ONLY the image string. The run versioned resource also
+    carries container env vars (possible secrets), the service-account email,
+    and creator/lastModifier operator emails — none are returned, and callers
+    MUST never store or log the raw payload.
+    """
+    for resource in versioned:
+        image = _dig(resource, "spec", "template", "spec", "containers", 0, "image")
+        if not (isinstance(image, str) and image):
+            image = _dig(resource, "template", "containers", 0, "image")
+        if isinstance(image, str) and image:
+            return image
+    return None
+
+
+def _versioned_field_map(
+    client: asset_v1.AssetServiceClient,
+    asset_type: str,
+    extract: Callable[[list], str | None],
+) -> dict[str, str]:
+    """Map each hit's raw CAI ``name`` → the single field ``extract`` retains,
+    via ONE scoped ``versioned_resources`` search restricted to ``asset_type``.
+
+    Shared plumbing for both enrichments (subscription→topic, run→image): the
+    scoped search, the join by raw CAI ``name`` (the SAME string ``_search_all``
+    returns — NOT the normalized display name), and the PER-ROW guard. A single
+    malformed result (versioned_resources None/absent, a wrapper whose
+    ``.resource`` raises, an unreadable name) skips ONLY that row — never drops
+    the whole map. The whole-map {} fallback in ``describe()`` is reserved for an
+    API-level failure (the search/pagination itself raising), which propagates
+    out of this loop as intended.
+
+    ``extract`` receives the row's versioned-resource mappings and returns the
+    retained value or None. ONLY that return value is kept — every other field
+    the payload carries (push endpoints, env vars, SA/operator emails, labels) is
+    discarded here and never leaves this function, never stored or logged.
     """
     request = asset_v1.SearchAllResourcesRequest(
         scope=f"projects/{GCP_PROJECT}",
-        asset_types=[_SUB_ASSET_TYPE],
-        read_mask={"paths": _SUB_READ_MASK_PATHS},
+        asset_types=[asset_type],
+        read_mask={"paths": _VERSIONED_READ_MASK_PATHS},
     )
-    topics: dict[str, str] = {}
+    out: dict[str, str] = {}
     for r in client.search_all_resources(request=request):
-        # Per-row guard: a single malformed result (e.g. versioned_resources
-        # None/absent, a wrapper missing .resource, an unreadable name) must skip
-        # ONLY that row — never drop the whole map. The whole-map {} fallback in
-        # describe() is reserved for an API-level failure (the search/pagination
-        # itself raising), which propagates out of this loop as intended.
         try:
-            raw = _first_topic(vr.resource for vr in (r.versioned_resources or ()))
-            if raw:
-                topics[r.name] = shorten_topic(raw, GCP_PROJECT)
+            value = extract([vr.resource for vr in (r.versioned_resources or ())])
+            if value:
+                out[r.name] = value
         except Exception as e:  # noqa: BLE001 — one bad row must not drop the rest
-            log.warning("skipping malformed subscription enrichment row: %s", e)
+            # Log the asset type + exception only (both payload-free) — NEVER the
+            # row content (env vars / SA emails live in the run payload).
+            log.warning("skipping malformed %s enrichment row: %s", asset_type, e)
             continue
-    return topics
+    return out
+
+
+def _subscription_topics(client: asset_v1.AssetServiceClient) -> dict[str, str]:
+    """Map each subscription's raw CAI ``name`` → its topic (shortened in-project).
+
+    Thin wrapper over :func:`_versioned_field_map`: retains ``resource.topic`` and
+    applies :func:`shorten_topic`. See that helper for the guard/soft-fail
+    contract; the join key is the raw CAI ``name``.
+    """
+    return _versioned_field_map(
+        client,
+        _SUB_ASSET_TYPE,
+        lambda resources: (
+            shorten_topic(raw, GCP_PROJECT) if (raw := _first_topic(resources)) else None
+        ),
+    )
+
+
+def _run_service_images(client: asset_v1.AssetServiceClient) -> dict[str, str]:
+    """Map each Cloud Run service's raw CAI ``name`` → its template container image.
+
+    Thin wrapper over :func:`_versioned_field_map` supplying
+    :func:`extract_run_image`. No shortening — the image passes through verbatim
+    so it byte-matches the live spec for a zero-change import.
+    """
+    return _versioned_field_map(client, _RUN_ASSET_TYPE, extract_run_image)
 
 
 def _verify_caller_dep(request: Request) -> str:
@@ -202,10 +302,12 @@ def describe(
             "project": GCP_PROJECT,
         }
 
-    # Subscription→topic enrichment: only when subscriptions are present, and
-    # strictly soft-fail — the PRIMARY inventory must NEVER degrade because of
-    # this. Any failure (API error, unexpected shapes) degrades to an empty map,
-    # so samples simply lack ``topic`` and the crew falls back to asking.
+    # Per-type versioned enrichment: each runs only when its type is present, and
+    # strictly soft-fails — the PRIMARY inventory must NEVER degrade because of
+    # it. The two blocks are INDEPENDENT (each in its own try/except): a failure
+    # of one must not skip the other. Any failure (API error, unexpected shapes)
+    # degrades to an empty map, so samples simply lack the field and the crew
+    # falls back to asking.
     if any(r.asset_type == _SUB_ASSET_TYPE for r in resources):
         try:
             topics = _subscription_topics(client)
@@ -216,6 +318,20 @@ def describe(
             resources = [
                 dataclasses.replace(r, topic=topics.get(r.name))
                 if r.asset_type == _SUB_ASSET_TYPE
+                else r
+                for r in resources
+            ]
+
+    if any(r.asset_type == _RUN_ASSET_TYPE for r in resources):
+        try:
+            images = _run_service_images(client)
+        except Exception:  # noqa: BLE001 — enrichment must never break the primary inventory
+            log.warning("run service image enrichment failed", exc_info=True)
+            images = {}
+        if images:
+            resources = [
+                dataclasses.replace(r, image=images.get(r.name))
+                if r.asset_type == _RUN_ASSET_TYPE
                 else r
                 for r in resources
             ]
