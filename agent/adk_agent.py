@@ -529,15 +529,42 @@ def build_agent(workload: WorkloadResolution, *, autonomy_mode: str) -> Agent:
     )
 
 
+# Propose-tier tools ALSO withheld from anonymous demo callers (beyond the
+# apply-tier set). ``provision_open_infra_pr`` is free-form infrastructure
+# AUTHORING: it opens an unbounded number of LLM-authored, attacker-influenceable
+# PRs on the PUBLIC (judged) submission repo and dispatches a Cloud Build plan
+# per call (audit M4/H2 — operator decision to gate). The bounded,
+# template-generated ``provision_propose_adoption`` (the flagship infra-panel
+# Adopt CTA — zero-change import, dupe-guarded, bounded by the finite drift list)
+# is deliberately NOT here, so anonymous judges keep the Adopt demo.
+_DEMO_ANON_EXTRA_DENY: frozenset[str] = frozenset({"provision_open_infra_pr"})
+
+
 # Tools withheld from anonymous demo callers regardless of the dial (audit H1).
 # Apply-tier tools mutate live state / merge to a deploy branch on provenance
 # alone — which the "chat == operator" assumption granted, false under the
 # public demo. Derived from TOOL_TIERS so a newly-added apply-tier tool is
-# auto-denied. Kept as a function (not a module constant) so it always reflects
-# the current TOOL_TIERS; the same seam makes gating propose-tier provision
-# tools (audit M4) a one-line change if the operator opts in.
+# auto-denied, plus the explicit propose-tier authoring denial above. Kept as a
+# function (not a module constant) so it always reflects the current TOOL_TIERS.
 def _demo_anon_denied_tools() -> frozenset[str]:
-    return frozenset(name for name, tier in TOOL_TIERS.items() if tier == "apply")
+    apply_tier = frozenset(name for name, tier in TOOL_TIERS.items() if tier == "apply")
+    return apply_tier | _DEMO_ANON_EXTRA_DENY
+
+
+# Appended (last-read, for adherence) to a demo-anonymous agent's instruction
+# ONLY when the denylist actually dropped a tool it would otherwise have — so
+# the crew explains the operator-only boundary and redirects, instead of
+# silently lacking a capability the visitor asked for. Names no tool (the
+# name-grounding guard scans docstrings/prompts; this is runtime-composed).
+_DEMO_ANON_NOTE = (
+    "DEMO NOTE: you are serving an anonymous visitor in the public demo window. "
+    "Live-mutating actions and free-form infrastructure authoring (opening a new "
+    "infra PR, merging a PR) are operator-only right now and are not available to "
+    "you. If the visitor asks for one, briefly say it is operator-only during the "
+    "public demo and offer what you CAN do instead — e.g. propose adopting an "
+    "existing unmanaged resource, explain the change, or point to an existing "
+    "approval example."
+)
 
 
 def build_chat_agent(
@@ -574,13 +601,15 @@ def build_chat_agent(
     :class:`WorkloadResolution`.
     """
     allowed = filter_tools_for_mode(workload.tools, TOOL_TIERS, autonomy_mode)
-    # Audit H1: for anonymous demo callers, drop apply-tier tools on top of the
-    # dial filter. ``allowed`` is keyed by symbolic tool name (the TOOL_TIERS
-    # key), so the denylist is a direct key filter. The approve gate at
-    # POST /approvals/{id} still reads the real dial — this only narrows the
-    # anonymous chat tool surface.
+    # Audit H1/M4: for anonymous demo callers, drop apply-tier tools + free-form
+    # provision authoring on top of the dial filter. ``allowed`` is keyed by
+    # symbolic tool name (the TOOL_TIERS key), so the denylist is a direct key
+    # filter. The approve gate at POST /approvals/{id} still reads the real dial
+    # — this only narrows the anonymous chat tool surface.
+    demo_dropped: list[str] = []
     if demo_anon:
         denied = _demo_anon_denied_tools()
+        demo_dropped = [name for name in allowed if name in denied]
         allowed = {name: t for name, t in allowed.items() if name not in denied}
     instruction = _dial_instruction(workload.chat_system_prompt, autonomy_mode)
     # ``extra_instruction`` (e.g. the cross-crew conversations breadcrumb) is
@@ -589,6 +618,11 @@ def build_chat_agent(
     # mutate the cached WorkloadResolution — this composes per-request only.
     if extra_instruction:
         instruction = f"{extra_instruction}\n\n{instruction}"
+    # Appended LAST (trusted operator instruction; recency aids adherence) only
+    # when the demo-anon denylist actually removed a tool — so the crew explains
+    # the operator-only boundary rather than silently lacking a capability.
+    if demo_dropped:
+        instruction = f"{instruction}\n\n{_DEMO_ANON_NOTE}"
     return Agent(
         name=f"driftscribe_chat_{workload.spec.name}",
         model=COORDINATOR_MODEL,

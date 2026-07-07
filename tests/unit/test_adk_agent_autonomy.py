@@ -49,6 +49,31 @@ def test_chat_agent_propose_keeps_provision_authoring(provision_workload_env):
     assert propose_adoption_tool in tools
 
 
+def test_chat_agent_demo_anon_drops_provision_authoring_keeps_adoption(provision_workload_env):
+    """M4/H2: for anonymous demo callers, free-form infra AUTHORING
+    (provision_open_infra_pr) is dropped even though it is propose-tier — it
+    opens unbounded LLM-authored PRs on the public judged repo + a Cloud Build
+    per call. The bounded, template-generated Adopt flow (propose_adoption) stays
+    so the flagship infra-panel Adopt CTA still works for judges."""
+    resolution = load_workload("provision")
+    agent = adk_agent.build_chat_agent(
+        resolution, autonomy_mode="propose_apply", demo_anon=True
+    )
+    tools = _tool_set(agent)
+    assert open_infra_pr_tool not in tools       # free-form authoring denied
+    assert propose_adoption_tool in tools         # Adopt CTA preserved
+
+
+def test_chat_agent_operator_keeps_provision_authoring(provision_workload_env):
+    resolution = load_workload("provision")
+    agent = adk_agent.build_chat_agent(
+        resolution, autonomy_mode="propose_apply", demo_anon=False
+    )
+    tools = _tool_set(agent)
+    assert open_infra_pr_tool in tools            # operator keeps authoring
+    assert propose_adoption_tool in tools
+
+
 # --------------------------------------------------------------------------- #
 # Chat agent — upgrade workload, propose keeps propose-tier, strips apply-tier
 # --------------------------------------------------------------------------- #
