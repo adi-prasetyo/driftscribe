@@ -19,6 +19,7 @@ import os
 import pytest
 from fastapi import HTTPException, status
 from fastapi.testclient import TestClient
+from google.api_core import exceptions as gax
 
 # Env MUST be set before importing workers.reader.main — the module reads
 # OWN_URL / ALLOWED_CALLERS / GCP_PROJECT at import time and KeyErrors if
@@ -53,6 +54,15 @@ def client(monkeypatch):
             "revision": "payment-demo-00001-abc",
         },
     )
+    monkeypatch.setattr(
+        reader_main,
+        "list_previous_ready_revisions",
+        lambda s, r, p, active, **_: ["payment-demo-00000-zzz"],
+    )
+    # Stub the client indirection (mirrors the rollback worker's tests) so no
+    # real gRPC channel / ADC lookup is attempted — both consumers above are
+    # stubbed and swallow the revisions_client kwarg via **_.
+    monkeypatch.setattr(reader_main, "_get_revisions_client", lambda: object())
     # Pin the boot-time env-derived constants this test hard-asserts so the
     # asserted values can't be polluted by import order. In a unified pytest
     # run another worker's test module (e.g. infra_reader) may set GCP_PROJECT
@@ -79,6 +89,50 @@ def test_read_empty_body_returns_env_and_revision(client):
     assert body["service"] == "payment-demo"
     assert body["region"] == "asia-northeast1"
     assert body["project"] == "test-proj"
+    assert body["env"] == {"PAYMENT_MODE": "mock", "FEATURE_NEW_CHECKOUT": "false"}
+    assert body["revision"] == "payment-demo-00001-abc"
+    assert body["previous_revisions"] == ["payment-demo-00000-zzz"]
+
+
+def test_read_passes_active_revision_to_previous_revisions_lookup(client, monkeypatch):
+    """The revision picked by ``read_live_state`` must be excluded from the
+    rollback-candidate list — pass it through as ``active`` rather than
+    re-deriving it, so the two can never disagree."""
+    seen = {}
+
+    def fake_list_previous(s, r, p, active, **_):
+        seen["active"] = active
+        return []
+
+    monkeypatch.setattr(reader_main, "list_previous_ready_revisions", fake_list_previous)
+    r = client.post("/read", json={})
+    assert r.status_code == 200
+    assert seen["active"] == "payment-demo-00001-abc"
+
+
+def test_read_previous_revisions_empty_when_none_available(client, monkeypatch):
+    """No-previous-revisions case: a service with only one (the active)
+    revision returns an empty list, not an error or a missing key."""
+    monkeypatch.setattr(
+        reader_main, "list_previous_ready_revisions", lambda s, r, p, active, **_: []
+    )
+    r = client.post("/read", json={})
+    assert r.status_code == 200
+    assert r.json()["previous_revisions"] == []
+
+
+def test_read_degrades_to_empty_previous_revisions_when_listing_fails(client, monkeypatch):
+    """Fail-soft: previous_revisions is a best-effort supplement — a transient
+    Cloud Run API failure on the listing must NOT 500 the whole /read when the
+    core live-state read already succeeded (env/revision stay intact)."""
+    def boom(s, r, p, active, **_):
+        raise gax.ServiceUnavailable("transient backend blip")
+
+    monkeypatch.setattr(reader_main, "list_previous_ready_revisions", boom)
+    r = client.post("/read", json={})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["previous_revisions"] == []
     assert body["env"] == {"PAYMENT_MODE": "mock", "FEATURE_NEW_CHECKOUT": "false"}
     assert body["revision"] == "payment-demo-00001-abc"
 
@@ -168,6 +222,12 @@ def test_real_verify_caller_dep_wired_with_env(monkeypatch):
     # Patch the symbol at its import site in workers.reader.main (same
     # rationale as the read_live_state patch above).
     monkeypatch.setattr(reader_main, "verify_caller", fake_verify)
+    monkeypatch.setattr(reader_main, "_get_revisions_client", lambda: object())
+    monkeypatch.setattr(
+        reader_main,
+        "list_previous_ready_revisions",
+        lambda s, r, p, active, **_: [],
+    )
     monkeypatch.setattr(
         reader_main,
         "read_live_state",

@@ -34,11 +34,57 @@ def test_read_live_env_tool_calls_reader_with_empty_payload():
     from agent.adk_tools import read_live_env_tool
 
     with patch("agent.adk_tools.worker_client.call") as m:
-        m.return_value = {"env": {"X": "1"}, "revision": "rev-1"}
+        m.return_value = {
+            "env": {"X": "1"},
+            "revision": "rev-1",
+            "previous_revisions": ["rev-0"],
+        }
         out = read_live_env_tool()
 
     m.assert_called_once_with("reader", {})
-    assert out == {"env": {"X": "1"}, "revision": "rev-1"}
+    assert out == {
+        "env": {"X": "1"},
+        "revision": "rev-1",
+        "previous_revisions": ["rev-0"],
+    }
+
+
+def test_read_live_env_tool_passes_through_previous_revisions():
+    """The reader's ``previous_revisions`` field must reach the LLM
+    verbatim — this is the rollback-candidate-discovery flow's only
+    source of valid target names (see propose_rollback_tool's docstring).
+    """
+    from agent.adk_tools import read_live_env_tool
+
+    with patch("agent.adk_tools.worker_client.call") as m:
+        m.return_value = {
+            "env": {},
+            "revision": "payment-demo-00010-abc",
+            "previous_revisions": [
+                "payment-demo-00009-xyz",
+                "payment-demo-00007-qrs",
+            ],
+        }
+        out = read_live_env_tool()
+
+    assert out["previous_revisions"] == [
+        "payment-demo-00009-xyz",
+        "payment-demo-00007-qrs",
+    ]
+
+
+def test_read_live_env_tool_defaults_previous_revisions_when_reader_predates_field():
+    """Deploy-skew tolerance: a coordinator deployed AHEAD of the reader
+    (which predates this field) must not crash or silently omit the key —
+    default to an empty list so the LLM sees a consistent shape either way.
+    """
+    from agent.adk_tools import read_live_env_tool
+
+    with patch("agent.adk_tools.worker_client.call") as m:
+        m.return_value = {"env": {"X": "1"}, "revision": "rev-1"}  # no previous_revisions
+        out = read_live_env_tool()
+
+    assert out["previous_revisions"] == []
 
 
 def test_propose_rollback_tool_sends_target_revision_and_safe_reason():

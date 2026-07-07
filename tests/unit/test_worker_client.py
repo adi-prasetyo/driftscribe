@@ -91,6 +91,29 @@ def test_call_reader_posts_to_read_endpoint_with_bearer(_stub_mint_id_token) -> 
 
 
 @respx.mock
+def test_call_reader_tolerates_unknown_response_field(_stub_mint_id_token) -> None:
+    """Deploy-skew case: a reader deployed AHEAD of this coordinator can
+    return a field this code doesn't know about yet (e.g. a future
+    ``previous_revisions`` addition landing reader-first). ``call`` does
+    no schema validation on the response — it's a bare ``r.json()`` — so
+    an unrecognized key must pass through untouched rather than 500 or
+    get silently dropped."""
+    route = respx.post(f"{READER_URL}/read").respond(
+        200,
+        json={
+            "env": {"X": "1"},
+            "revision": "rev-1",
+            "previous_revisions": ["rev-0"],
+            "a_field_this_coordinator_has_never_heard_of": "whatever",
+        },
+    )
+    out = worker_client.call("reader", {})
+    assert out["previous_revisions"] == ["rev-0"]
+    assert out["a_field_this_coordinator_has_never_heard_of"] == "whatever"
+    assert route.called
+
+
+@respx.mock
 def test_call_audience_is_root_url_not_endpoint(_stub_mint_id_token) -> None:
     """The ID token's ``aud`` claim MUST be the worker's ROOT URL.
 

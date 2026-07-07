@@ -170,3 +170,65 @@ def read_live_state(
     rev = revisions_client.get_revision(name=rev_path)
     env = _extract_env_from_containers(rev.containers)
     return {"env": env, "revision": short_name}
+
+
+def _is_ready(revision) -> bool:
+    """True if ``revision`` (a ``run_v2.Revision``) carries a ``Ready``
+    condition in the succeeded state.
+
+    Cloud Run's per-revision ``conditions`` list is Knative-style: each
+    entry has a string ``type_`` ("Ready", "Active", ...) rather than a
+    single top-level status field. A revision that failed to start (bad
+    image, crashed on boot) or is still mid-rollout will lack a succeeded
+    ``Ready`` condition — but it still EXISTS as a revision resource, so
+    the rollback worker's existence-only validation would accept it (see
+    :func:`list_previous_ready_revisions`) and the rollback would shift
+    100% of traffic onto a revision that fails the same way the original
+    bad deploy did.
+    """
+    return any(
+        c.type_ == "Ready" and c.state == run_v2.Condition.State.CONDITION_SUCCEEDED
+        for c in revision.conditions
+    )
+
+
+def list_previous_ready_revisions(
+    service: str,
+    region: str,
+    project: str,
+    active_revision: str,
+    revisions_client=None,
+    cap: int = 5,
+) -> list[str]:
+    """Return up to ``cap`` READY revision names for ``service``, newest
+    first, excluding ``active_revision``.
+
+    Powers the drift chat "roll back to..." flow: an operator asking Anchor
+    to roll back rarely knows a Cloud Run revision name by heart, and
+    :func:`read_live_state` only ever returns the ONE currently-serving
+    revision. This gives the LLM a short list of concrete, already-valid
+    candidate names instead of forcing it to guess or refuse.
+
+    Filtered to READY (see :func:`_is_ready`) because this is the ONLY
+    readiness gate on the rollback path: the rollback worker validates that
+    ``target_revision`` exists and is not the active one
+    (``workers/rollback/main.py::_list_revisions`` returns EVERY revision,
+    healthy or not, and ``/propose`` checks membership + not-active only) —
+    it never checks revision health. A failed/pending revision surfaced
+    here would therefore be approved and applied as-is, so it must never
+    be surfaced.
+
+    Sorted by ``create_time`` descending rather than trusting
+    ``list_revisions``' return order (undocumented) or the revision-name
+    suffix (a random 3-letter tag, not a sequence number).
+    """
+    revisions_client = revisions_client or run_v2.RevisionsClient()
+    parent = f"projects/{project}/locations/{region}/services/{service}"
+    candidates = []
+    for rev in revisions_client.list_revisions(parent=parent):
+        short_name = rev.name.rsplit("/", 1)[-1]
+        if short_name == active_revision or not _is_ready(rev):
+            continue
+        candidates.append((rev.create_time, short_name))
+    candidates.sort(key=lambda pair: pair[0], reverse=True)
+    return [name for _, name in candidates[:cap]]

@@ -1,0 +1,608 @@
+name: demo-reset
+
+# Scheduled self-heal for the public judging window (opened 2026-07-07 at
+# autonomy propose_apply — see docs/plans/2026-07-07-demo-daily-reset-and-notice.md).
+# Anonymous judges can chat with the crews and trigger REAL apply-side effects:
+# a live rollback of `payment-demo` traffic/env, and a merged lodash upgrade PR
+# against `demo/upgrade-target/package.json`. Both are demo fixtures that
+# "rot" once disturbed — this workflow restores the demo-ready baseline on a
+# schedule so no judge can break the demo for the next visitor.
+#
+# Two jobs, deliberately split by BLAST DOMAIN (GCP vs GitHub) and by CADENCE:
+#   - service-reset: payment-demo traffic/env pre-read-and-diff (GCP), plus two
+#     notify-only safety nets (autonomy/pause dial, adopt-fixtures). Runs every
+#     2h — judges roll back payment-demo far more casually than they merge an
+#     upgrade PR, so this needs the tighter cadence.
+#   - lodash-repin: re-pins demo/upgrade-target/package.json via an auto-merged
+#     PR (GitHub only). Runs once a day — main history shouldn't fill with
+#     reset commits, and re-pinning is idempotent so a stale merge doesn't
+#     compound.
+#
+# Triggers: two crons (2h service-reset-only, daily 6:00 JST BOTH jobs) plus
+# workflow_dispatch (service-reset always; lodash-repin opt-in via
+# `force-lodash`, e.g. the FIRST post-deploy run — see the deploy checklist in
+# the plan doc — needs it to fix already-rotted state without waiting for
+# 6:00 JST). NEVER `pull_request_target` — same stance as iac.yml (see that
+# file's header comment): this workflow authenticates to GCP via WIF and holds
+# a GitHub PAT, so it must never run PR-controlled code. `schedule` always runs
+# the version of this file committed to the default branch (main); manual
+# dispatch is likewise expected from main (the WIF provider's attribute
+# condition — infra/scripts/setup_demo_reset.sh — pins ref==refs/heads/main,
+# mirroring iac.yml's rationale for pinning workflow_dispatch to the trusted
+# branch).
+on:
+  schedule:
+    # UTC. GitHub Actions cron runs on a best-effort schedule (the docs warn
+    # the top of the hour is the most contended slot) — see each job's `if:`
+    # below for which one(s) a given scheduled run triggers.
+    - cron: '0 */2 * * *'   # every 2h -> service-reset only
+    - cron: '0 21 * * *'    # 21:00 UTC = 6:00 JST -> service-reset AND lodash-repin
+  workflow_dispatch:
+    inputs:
+      force-lodash:
+        description: 'Also run lodash-repin (service-reset always runs regardless of this input)'
+        type: boolean
+        default: false
+
+# Floor for ALL jobs: read-only checkout + WIF token minting + PR read.
+# Neither job needs GitHub WRITE access via the ambient GITHUB_TOKEN —
+# lodash-repin's git/PR mutations are authenticated with the
+# upgrade-docs-github-pat Secret Manager secret instead (see that job:
+# PAT-authored commits/PRs trigger CI, GITHUB_TOKEN-authored ones do not,
+# and the required checks + auto-merge depend on CI having run).
+#
+# pull-requests: read is REQUIRED, not optional: declaring ANY permissions
+# block zeroes every unlisted scope (it overrides the repo default, it does
+# not merge with it), and the GITHUB_TOKEN is a GitHub App installation
+# token — endpoints outside its granted scopes 403 with "Resource not
+# accessible by integration" EVEN ON A PUBLIC REPO (same failure class
+# iac.yml documents around cli/cli#8374). Without this scope, the
+# adopt-fixture step's `gh api .../pulls/168` read would 403 on every 2h
+# run, trip the notify-only FAILED branch, and email the owner forever
+# regardless of PR #168's real state — defeating the safety net it exists
+# to be.
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: read
+
+# Serialize ALL runs of this workflow (a 2h cron firing mid-way through a
+# manual dispatch, or the daily 6:00 JST run overlapping a 2h tick, must not
+# race each other's gcloud/gh mutations). No cancel-in-progress: a cancelled
+# mid-flight run could leave payment-demo mid-update or a lodash PR half-open;
+# queueing behind the earlier run is safer than aborting it.
+concurrency:
+  group: demo-reset
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------------- #
+  # service-reset: payment-demo pre-read-and-diff + two notify-only nets.
+  # ---------------------------------------------------------------------- #
+  service-reset:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # No actions/checkout: this job only reads/writes live GCP + coordinator
+    # state, never repo files. The payment-demo baseline literals below
+    # mirror demo/ops-contract.yaml (see that step's comment for why they are
+    # literals, not a parsed read of the file).
+    steps:
+      - name: Authenticate to GCP via WIF
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_DEMO_RESET }}
+          service_account: ${{ secrets.GCP_DEMO_RESET_SA }}
+          project_id: driftscribe-hack-2026
+
+      - name: Setup gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: "payment-demo: pre-read-and-diff (never call update on a no-op)"
+        id: payment_demo
+        run: |
+          set -euo pipefail
+
+          # Baseline mirrors demo/ops-contract.yaml's expected_env block (the
+          # documented source of truth for the demo contract). Kept as two
+          # literals here rather than parsed from YAML: this job only needs
+          # jq over the Cloud Run JSON describe below, not a YAML parser
+          # (no yq/python in this job by design). If ops-contract.yaml's
+          # baseline values ever change, update these two lines to match.
+          BASELINE_PAYMENT_MODE="mock"
+          BASELINE_FEATURE_NEW_CHECKOUT="false"
+
+          # ONE describe call — every comparison below reads this single JSON
+          # blob. CRITICAL: never call `services update`/`update-traffic`
+          # speculatively.
+          #   (a) `gcloud run services update` creates a NEW revision even
+          #       when the requested values are byte-identical to the
+          #       current ones — a "no-op" update is not a no-op on Cloud Run.
+          #   (b) payment-demo mutations feed Eventarc back into the
+          #       coordinator's /eventarc endpoint, which AUTONOMOUSLY
+          #       triggers an Anchor (LLM) run. A blind reset every 2h would
+          #       burn LLM cost and spam the operator UI's decision rail
+          #       forever. Pre-read-and-diff is the only way to keep this
+          #       job invisible when nothing actually drifted.
+          DESCRIBE_JSON=$(gcloud run services describe payment-demo \
+            --project=driftscribe-hack-2026 --region=asia-northeast1 --format=json)
+
+          # --- env diff: exactly {PAYMENT_MODE, FEATURE_NEW_CHECKOUT}, no more,
+          # no less (specifically: no stray NEW_THING, or any other var). ---
+          ENV_OK=$(jq -r --arg pm "$BASELINE_PAYMENT_MODE" --arg fc "$BASELINE_FEATURE_NEW_CHECKOUT" '
+            (.spec.template.spec.containers[0].env // []) as $env
+            | (($env | length) == 2)
+              and (($env | map(select(.name == "PAYMENT_MODE"))[0].value) == $pm)
+              and (($env | map(select(.name == "FEATURE_NEW_CHECKOUT"))[0].value) == $fc)
+          ' <<<"$DESCRIBE_JSON")
+          EXTRA_VARS=$(jq -r '
+            (.spec.template.spec.containers[0].env // [])
+            | map(select(.name != "PAYMENT_MODE" and .name != "FEATURE_NEW_CHECKOUT"))
+            | map(.name) | join(",")
+          ' <<<"$DESCRIBE_JSON")
+
+          # --- traffic diff: the rollback drift signature. A healthy service
+          # routes 100% to `latestRevision: true`; workers/rollback/main.py:244-255
+          # pins traffic to a specific revisionName instead (no latestRevision
+          # flag), which is exactly what we detect here. ---
+          TRAFFIC_OK=$(jq -r '
+            (.spec.traffic // []) as $t
+            | (($t | length) == 1) and ($t[0].percent == 100) and ($t[0].latestRevision == true)
+          ' <<<"$DESCRIBE_JSON")
+
+          if [ "$ENV_OK" != "true" ]; then
+            echo "payment-demo env DRIFTED (extra/mismatched vars: ${EXTRA_VARS:-<value mismatch only>}) — restoring"
+            # Single combined call: --remove-env-vars is applied BEFORE
+            # --update-env-vars by gcloud, so one invocation is enough; only
+            # append --remove-env-vars when there is actually something extra
+            # to strip (an empty --remove-env-vars is a gcloud usage error,
+            # not a no-op).
+            UPDATE_ARGS=(--update-env-vars="PAYMENT_MODE=${BASELINE_PAYMENT_MODE},FEATURE_NEW_CHECKOUT=${BASELINE_FEATURE_NEW_CHECKOUT}")
+            if [ -n "$EXTRA_VARS" ]; then
+              UPDATE_ARGS+=(--remove-env-vars="$EXTRA_VARS")
+            fi
+            gcloud run services update payment-demo \
+              --project=driftscribe-hack-2026 --region=asia-northeast1 \
+              "${UPDATE_ARGS[@]}" --quiet
+            echo "env_result=fixed (removed: ${EXTRA_VARS:-none})" >> "$GITHUB_OUTPUT"
+          else
+            echo "payment-demo env: clean, no-op"
+            echo "env_result=clean" >> "$GITHUB_OUTPUT"
+          fi
+
+          # Traffic fix runs AFTER env, and is computed against the ORIGINAL
+          # describe above (not re-read after the env fix). Ordering rationale:
+          # an env fix creates a new revision, and Cloud Run's default deploy
+          # behavior already routes 100% traffic to that new latest revision
+          # UNLESS the existing traffic config explicitly pins a named
+          # revision (the rollback drift signature) — in which case the pin
+          # survives the env-only update and this explicit step is exactly
+          # what clears it. When only traffic drifted (env was already clean)
+          # this is the one call that matters; when both drifted, it is a
+          # harmless, idempotent belt-and-suspenders on top of the env fix.
+          if [ "$TRAFFIC_OK" != "true" ]; then
+            echo "payment-demo traffic DRIFTED (pinned to a specific revision, not latest) — restoring"
+            gcloud run services update-traffic payment-demo \
+              --project=driftscribe-hack-2026 --region=asia-northeast1 \
+              --to-latest --quiet
+            echo "traffic_result=fixed" >> "$GITHUB_OUTPUT"
+          else
+            echo "payment-demo traffic: clean, no-op"
+            echo "traffic_result=clean" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Resolve coordinator URL + operator token
+        id: coord
+        run: |
+          set -euo pipefail
+          URL=$(gcloud run services describe driftscribe-agent \
+            --project=driftscribe-hack-2026 --region=asia-northeast1 \
+            --format='value(status.url)')
+          TOKEN=$(gcloud secrets versions access latest \
+            --secret=coordinator-shared-token --project=driftscribe-hack-2026)
+          # Mask BEFORE the value is ever written anywhere else (GITHUB_OUTPUT
+          # included) so no later log line can leak it.
+          echo "::add-mask::$TOKEN"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: "autonomy/pause safety-net (judges cannot change either — drift here is unexpected)"
+        id: autonomy_pause
+        env:
+          COORD_URL: ${{ steps.coord.outputs.url }}
+          OPERATOR_TOKEN: ${{ steps.coord.outputs.token }}
+        run: |
+          set -euo pipefail
+          AUTONOMY_JSON=$(curl -sS -f -H "X-DriftScribe-Token: ${OPERATOR_TOKEN}" "${COORD_URL}/autonomy")
+          PAUSE_JSON=$(curl -sS -f -H "X-DriftScribe-Token: ${OPERATOR_TOKEN}" "${COORD_URL}/pause")
+          MODE=$(jq -r '.mode' <<<"$AUTONOMY_JSON")
+          MODE_READ_ERROR=$(jq -r '.read_error' <<<"$AUTONOMY_JSON")
+          PAUSED=$(jq -r '.paused' <<<"$PAUSE_JSON")
+          PAUSE_READ_ERROR=$(jq -r '.read_error' <<<"$PAUSE_JSON")
+
+          # read_error=true means the coordinator could NOT read the stored
+          # dial/flag and is serializing its FAIL-CLOSED view at HTTP 200
+          # (mode=observe / paused=true — agent/main.py GET /autonomy +
+          # GET /pause) — that is NOT the operator's actual choice. Blindly
+          # POSTing propose_apply/unpause over an unreadable store could
+          # clobber a genuine operator dial-down the moment Firestore
+          # recovers. So on read_error: report loudly, write NOTHING. This
+          # step still exits 0 so the pause check + adopt-fixture verify
+          # below run to completion; the FINAL summary step then FAILS the
+          # job on any read_error result (after the full summary is written)
+          # — fail-closed observe/paused means the public demo is effectively
+          # degraded, and a failed scheduled run is what emails the owner.
+          if [ "$MODE_READ_ERROR" = "true" ]; then
+            {
+              echo "### :warning: autonomy dial UNREADABLE (failing closed)"
+              echo "GET /autonomy returned \`read_error=true\` — the coordinator cannot"
+              echo "read the stored dial and is failing closed to observe. NOT writing"
+              echo "anything back (a blind restore could overwrite a deliberate operator"
+              echo "setting); the job is failed at the summary step so the owner is"
+              echo "emailed, and the next scheduled run will retry."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "autonomy_result=read_error (not restored)" >> "$GITHUB_OUTPUT"
+          elif [ "$MODE" != "propose_apply" ]; then
+            {
+              echo "### :rotating_light: autonomy dial drifted"
+              echo "Expected \`mode=propose_apply\`, observed \`mode=${MODE}\`. Anonymous"
+              echo "judges cannot change this dial, so this means something unexpected"
+              echo "happened. Restoring propose_apply now."
+            } >> "$GITHUB_STEP_SUMMARY"
+            curl -sS -f -X POST -H "X-DriftScribe-Token: ${OPERATOR_TOKEN}" -H 'Content-Type: application/json' \
+              -d '{"mode":"propose_apply","reason":"demo-reset: restoring judging-window autonomy baseline"}' \
+              "${COORD_URL}/autonomy" >/dev/null
+            echo "autonomy_result=fixed (was ${MODE})" >> "$GITHUB_OUTPUT"
+          else
+            echo "autonomy_result=clean" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$PAUSE_READ_ERROR" = "true" ]; then
+            {
+              echo "### :warning: pause flag UNREADABLE (failing closed)"
+              echo "GET /pause returned \`read_error=true\` — the coordinator cannot read"
+              echo "the stored flag and is failing closed to paused. NOT writing anything"
+              echo "back (a blind resume could overwrite a deliberate operator pause);"
+              echo "the job is failed at the summary step so the owner is emailed, and"
+              echo "the next scheduled run will retry."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "pause_result=read_error (not restored)" >> "$GITHUB_OUTPUT"
+          elif [ "$PAUSED" != "false" ]; then
+            {
+              echo "### :rotating_light: pause flag drifted"
+              echo "Expected \`paused=false\`, observed \`paused=${PAUSED}\`. Anonymous"
+              echo "judges cannot change this flag, so this means something unexpected"
+              echo "happened. Resuming now."
+            } >> "$GITHUB_STEP_SUMMARY"
+            curl -sS -f -X POST -H "X-DriftScribe-Token: ${OPERATOR_TOKEN}" -H 'Content-Type: application/json' \
+              -d '{"paused":false,"reason":"demo-reset: restoring judging-window pause baseline"}' \
+              "${COORD_URL}/pause" >/dev/null
+            echo "pause_result=fixed (was ${PAUSED})" >> "$GITHUB_OUTPUT"
+          else
+            echo "pause_result=clean" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: "adopt-fixture verify (notify-only — NEVER auto-repair)"
+        id: adopt_fixtures
+        env:
+          # Default GITHUB_TOKEN is fine here — this step never mutates
+          # anything — BUT it depends on the workflow-level `pull-requests:
+          # read` scope: the installation token 403s on /pulls reads without
+          # it, public repo or not (see the top-level permissions comment).
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Same env-indirection pattern as every other ${{ }} value that
+          # lands in a run: body (uniform with the sweep/summary steps).
+          REPO: ${{ github.repository }}
+        run: |
+          set +e  # run every check and report ALL failures, don't stop at the first
+          FAILURES=""
+
+          if ! gcloud pubsub topics describe adopt-probe-topic \
+               --project=driftscribe-hack-2026 >/dev/null 2>&1; then
+            FAILURES="${FAILURES}- Pub/Sub topic \`adopt-probe-topic\` is MISSING"$'\n'
+          fi
+          if ! gcloud pubsub subscriptions describe adopt-probe-sub \
+               --project=driftscribe-hack-2026 >/dev/null 2>&1; then
+            FAILURES="${FAILURES}- Pub/Sub subscription \`adopt-probe-sub\` is MISSING"$'\n'
+          fi
+          if ! gcloud run services describe adopt-probe-svc \
+               --project=driftscribe-hack-2026 --region=asia-northeast1 >/dev/null 2>&1; then
+            FAILURES="${FAILURES}- Cloud Run service \`adopt-probe-svc\` is MISSING"$'\n'
+          fi
+
+          PR_STATE=$(gh api "repos/${REPO}/pulls/168" --jq .state 2>/dev/null)
+          if [ "$PR_STATE" != "open" ]; then
+            FAILURES="${FAILURES}- PR #168 is not OPEN (state=\`${PR_STATE:-unreadable}\`) — the /iac-approvals/168 recording depends on it staying open"$'\n'
+          fi
+
+          if [ -n "$FAILURES" ]; then
+            {
+              echo "### :rotating_light: adopt-fixture verify FAILED"
+              echo "These are the intentional-drift fixtures for the infra-map demo."
+              echo "Anonymous judges cannot cause any of these on their own (IaC merge"
+              echo "is CF-JWT gated), so a failure here means something unexpected"
+              echo "happened. This check is NOTIFY-ONLY — it never auto-repairs — so"
+              echo "the job fails loudly instead; GitHub emails the owner on a failed"
+              echo "scheduled workflow, which is the notification mechanism."
+              echo
+              printf '%s' "$FAILURES"
+            } >> "$GITHUB_STEP_SUMMARY"
+            printf '%s' "$FAILURES" >&2
+            echo "adopt_result=FAILED" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          echo "adopt-fixtures: all clean"
+          echo "adopt_result=clean" >> "$GITHUB_OUTPUT"
+
+      - name: Run summary
+        # Runs even if adopt-fixture verify (above) exited 1 — the earlier
+        # steps already ran and their outputs are set regardless, so the
+        # summary should always reflect what actually happened this run.
+        if: always()
+        env:
+          # Step outputs pass through env:, NEVER interpolated with ${{ }}
+          # directly inside the run: body — that is the classic actions-
+          # injection pattern (the expression is substituted into the script
+          # BEFORE bash parses it). env_result in particular embeds live
+          # Cloud Run env-var NAMES (cloud state, not validated literals),
+          # and this workflow holds GCP credentials. Via env: the shell
+          # receives them as data, not code.
+          ENV_RESULT: ${{ steps.payment_demo.outputs.env_result }}
+          TRAFFIC_RESULT: ${{ steps.payment_demo.outputs.traffic_result }}
+          AUTONOMY_RESULT: ${{ steps.autonomy_pause.outputs.autonomy_result }}
+          PAUSE_RESULT: ${{ steps.autonomy_pause.outputs.pause_result }}
+          ADOPT_RESULT: ${{ steps.adopt_fixtures.outputs.adopt_result }}
+        run: |
+          {
+            echo "## demo-reset / service-reset — $(date -u +%FT%TZ)"
+            echo "- payment-demo env: ${ENV_RESULT:-step did not run}"
+            echo "- payment-demo traffic: ${TRAFFIC_RESULT:-step did not run}"
+            echo "- autonomy dial: ${AUTONOMY_RESULT:-step did not run}"
+            echo "- pause flag: ${PAUSE_RESULT:-step did not run}"
+            echo "- adopt-fixtures: ${ADOPT_RESULT:-step did not run}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # FAIL the job on a read_error result — AFTER the full summary is
+          # written (same summarize-then-fail pattern as the adopt-fixture
+          # step). The safety-net step deliberately exits 0 on read_error so
+          # every check still runs, but read_error means the coordinator
+          # failed closed to observe/paused: the public demo is effectively
+          # degraded, and the plan's failure-notification contract is that
+          # unexpected states FAIL the scheduled run so GitHub emails the
+          # owner. Nothing was written back (see that step's comment).
+          if [[ "${AUTONOMY_RESULT:-}" == read_error* || "${PAUSE_RESULT:-}" == read_error* ]]; then
+            echo "::error::autonomy/pause store unreadable (coordinator failing closed) — failing the run so the owner is notified; nothing was written back"
+            exit 1
+          fi
+
+  # ---------------------------------------------------------------------- #
+  # lodash-repin: restore the upgrade-demo baseline via an auto-merged PR.
+  # ---------------------------------------------------------------------- #
+  lodash-repin:
+    # Runs on the daily 6:00 JST cron, OR on-demand via workflow_dispatch's
+    # force-lodash input. Bracket notation (not dot notation) is REQUIRED for
+    # `inputs['force-lodash']` — GitHub Actions expression syntax parses a
+    # bare `.inputs.force-lodash` as subtraction, not property access, because
+    # the key contains a hyphen. `github.event.inputs` is empty/absent for
+    # `schedule` events, so the right-hand side of the `&&` safely evaluates
+    # to a non-match rather than erroring.
+    if: >-
+      github.event.schedule == '0 21 * * *' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs['force-lodash'] == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          # No default-token credentials persisted: every GitHub mutation
+          # below (commit push, PR create, PR merge, PR close, branch delete)
+          # authenticates with the upgrade-docs-github-pat Secret Manager PAT
+          # instead — see the rationale in the re-pin step.
+          persist-credentials: false
+
+      - name: Authenticate to GCP via WIF
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_DEMO_RESET }}
+          service_account: ${{ secrets.GCP_DEMO_RESET_SA }}
+          project_id: driftscribe-hack-2026
+
+      - name: Setup gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Fetch GitHub PAT (upgrade-docs-github-pat) from Secret Manager
+        id: pat
+        run: |
+          set -euo pipefail
+          # Same authority domain that already patches/merges
+          # demo/upgrade-target/package.json in production (the Upgrade Docs
+          # worker) — reusing it here means the re-pin PR is indistinguishable
+          # in provenance from a normal upgrade-workload PR.
+          PAT=$(gcloud secrets versions access latest \
+            --secret=upgrade-docs-github-pat --project=driftscribe-hack-2026)
+          echo "::add-mask::$PAT"
+          echo "pat=$PAT" >> "$GITHUB_OUTPUT"
+
+      - name: Check lodash baseline on main
+        id: baseline
+        run: |
+          set -euo pipefail
+          # Reads the file straight from the checkout (already at main's tip
+          # for both `schedule` and `workflow_dispatch` on this workflow) —
+          # no need for a separate GitHub Contents API round trip.
+          CURRENT=$(jq -r '.dependencies.lodash' demo/upgrade-target/package.json)
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          if [ "$CURRENT" = "4.17.20" ]; then
+            echo "at_baseline=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "at_baseline=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "lodash on main: ${CURRENT} (baseline: 4.17.20)"
+
+      - name: "Sweep stray upgrade/lodash-* and demo-reset/lodash-repin-* PRs and branches"
+        id: sweep
+        env:
+          GH_TOKEN: ${{ steps.pat.outputs.pat }}
+        run: |
+          set -euo pipefail
+          REPO="${{ github.repository }}"
+          CLOSED=0
+          DELETED=0
+
+          # Two stray patterns are swept, both BEFORE the re-pin step runs:
+          #   - upgrade/lodash-*          judge-driven upgrade-workload PRs
+          #     (pattern mirrors tests/e2e/_github_helpers.py:sweep_upgrade_prs).
+          #   - demo-reset/lodash-repin-* THIS workflow's own earlier re-pin
+          #     PRs. If one is stuck open (e.g. a CI flake meant auto-merge
+          #     never fired), at_baseline stays false and every subsequent
+          #     daily run would pile ANOTHER re-pin PR on top forever.
+          #     Closing the stuck one (+ deleting its branch) and letting
+          #     this run open a fresh PR also re-triggers CI from scratch —
+          #     the self-heal for a flaked check.
+          #
+          # CRITICAL capture shape: a checked $(...) assignment, THEN mapfile
+          # from the variable. `mapfile -t ARR < <(gh ...)` silently swallows
+          # a gh failure — a process substitution's exit status does not
+          # propagate, even under set -euo pipefail — so a rotated/expired
+          # PAT would report a clean zero-stray sweep and leave the job green
+          # while stale branches block the next judge's propose. A failing
+          # $(...) assignment DOES trip set -e and fails the job loudly.
+          PR_LINES=$(gh pr list --repo "$REPO" --state open \
+            --json number,headRefName \
+            --jq '.[] | select((.headRefName | startswith("upgrade/lodash-"))
+                              or (.headRefName | startswith("demo-reset/lodash-repin-"))) | .number')
+          mapfile -t PR_NUMBERS <<<"$PR_LINES"
+          for pr in "${PR_NUMBERS[@]:-}"; do
+            [ -z "$pr" ] && continue
+            if gh pr close "$pr" --repo "$REPO" \
+                 --comment "demo reset: restoring upgrade-demo baseline"; then
+              CLOSED=$((CLOSED + 1))
+            else
+              echo "warn: could not close PR #$pr (continuing sweep)" >&2
+            fi
+          done
+
+          # Delete EVERY matching branch, whether or not it still has an open
+          # PR. The upgrade branch name is deterministic (agent/adk_tools.py:423:
+          # upgrade/{package_name}-{ver_dashed}), so a stale branch from an
+          # already-merged/closed PR blocks the next judge's propose_pr call
+          # outright (delete_branch_on_merge is off on this repo) — this is
+          # the reset primitive that actually matters, independent of the
+          # close pass above. Same checked-capture shape as the PR list;
+          # matching-refs returns [] (HTTP 200) when nothing matches, so an
+          # empty result is not an error.
+          UPGRADE_REFS=$(gh api "repos/$REPO/git/matching-refs/heads/upgrade/lodash-" --jq '.[].ref')
+          REPIN_REFS=$(gh api "repos/$REPO/git/matching-refs/heads/demo-reset/lodash-repin-" --jq '.[].ref')
+          mapfile -t BRANCH_REFS <<<"${UPGRADE_REFS}"$'\n'"${REPIN_REFS}"
+          for ref in "${BRANCH_REFS[@]:-}"; do
+            [ -z "$ref" ] && continue
+            branch="${ref#refs/heads/}"
+            if gh api -X DELETE "repos/$REPO/git/refs/heads/${branch}" >/dev/null 2>&1; then
+              DELETED=$((DELETED + 1))
+            else
+              echo "warn: could not delete branch $branch (continuing sweep)" >&2
+            fi
+          done
+
+          echo "closed=$CLOSED" >> "$GITHUB_OUTPUT"
+          echo "deleted=$DELETED" >> "$GITHUB_OUTPUT"
+          echo "sweep: closed $CLOSED stray PR(s), deleted $DELETED stray branch(es)"
+
+      - name: "Re-pin lodash to 4.17.20 (branch + commit + PR + auto-merge)"
+        id: repin
+        if: steps.baseline.outputs.at_baseline == 'false'
+        env:
+          GH_TOKEN: ${{ steps.pat.outputs.pat }}
+        run: |
+          set -euo pipefail
+          BRANCH="demo-reset/lodash-repin-${{ github.run_id }}"
+
+          git config user.name "driftscribe-demo-reset"
+          git config user.email "actions@github.com"
+          git checkout -b "$BRANCH"
+
+          # Single-line change — value-only replace, keeps the rest of the
+          # file (formatting, other fields) byte-identical.
+          sed -i -E 's/"lodash": "[^"]*"/"lodash": "4.17.20"/' demo/upgrade-target/package.json
+          git diff --stat demo/upgrade-target/package.json
+          git add demo/upgrade-target/package.json
+          git commit -m "demo-reset: re-pin lodash to 4.17.20 (scheduled baseline restore)"
+
+          # Push WITH THE PAT, not the default GITHUB_TOKEN. This is the
+          # crux of the mechanism: a GITHUB_TOKEN-authored push/PR does NOT
+          # trigger the repo's required checks (lint-test, GitGuardian
+          # Security Checks) — GitHub suppresses workflow runs triggered by
+          # its own default token to prevent recursive-Action loops. Without
+          # a real PAT identity, the required checks would never run, and
+          # `gh pr merge --auto` below would wait forever. The token is
+          # embedded in the push URL (not a git-credential file) — safe here
+          # because it was masked immediately on fetch (any log occurrence is
+          # redacted) and this runner is an ephemeral, single-job VM.
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" \
+            "HEAD:refs/heads/${BRANCH}"
+
+          # PR body via a QUOTED heredoc + --body-file, not an inline --body
+          # string: the YAML block scalar preserves any indentation beyond
+          # the scalar's base indent, so indented continuation lines inside
+          # an inline --body would reach GitHub with leading spaces and
+          # render as Markdown code blocks. Heredoc lines below sit at the
+          # scalar base indent (column 0 after YAML dedent), so the body is
+          # flush-left prose; the quoted delimiter also makes backticks
+          # literal (no bash command substitution risk in the body copy).
+          # ${{ github.run_id }} is substituted by Actions before bash ever
+          # parses the script, so it works inside the quoted heredoc; it is
+          # a GitHub-generated integer, not injectable content.
+          BODY_FILE="$(mktemp)"
+          cat >"$BODY_FILE" <<'BODY_EOF'
+          Scheduled demo-baseline restore (workflow run ${{ github.run_id }}).
+
+          A judge-driven upgrade-workload PR merge moves `demo/upgrade-target/package.json`'s `lodash` from the documented demo baseline (`4.17.20`) to `4.17.21`. This PR re-pins it to `4.17.20` so the next judge's upgrade-workload demo has a real vulnerable dependency to find and upgrade.
+
+          Opened by the `demo-reset.yml` scheduled workflow using the `upgrade-docs-github-pat` identity (the same authority domain that already patches/merges this file in production) so the required checks run and auto-merge can proceed unattended.
+          BODY_EOF
+
+          PR_URL=$(gh pr create --repo "${{ github.repository }}" \
+            --base main --head "$BRANCH" \
+            --title "demo-reset: re-pin lodash to 4.17.20" \
+            --body-file "$BODY_FILE")
+
+          echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
+          echo "Opened $PR_URL"
+
+          # Do NOT wait for the merge here — enable auto-merge and move on.
+          # Requires the repo setting `allow_auto_merge=true` (one-time
+          # operator setup, see infra/scripts/setup_demo_reset.sh's final
+          # reminder); until that is flipped this call fails loudly, which is
+          # the correct behavior (auto-merge silently never happening would
+          # be worse).
+          gh pr merge --auto --squash --delete-branch "$PR_URL" --repo "${{ github.repository }}"
+
+      - name: Run summary
+        if: always()
+        env:
+          # Step outputs pass through env:, never ${{ }} inside the run: body
+          # (actions-injection pattern — see the service-reset summary step's
+          # comment; pr_url comes from a gh api response, not a literal).
+          CURRENT: ${{ steps.baseline.outputs.current }}
+          AT_BASELINE: ${{ steps.baseline.outputs.at_baseline }}
+          SWEEP_CLOSED: ${{ steps.sweep.outputs.closed }}
+          SWEEP_DELETED: ${{ steps.sweep.outputs.deleted }}
+          REPIN_OUTCOME: ${{ steps.repin.outcome }}
+          REPIN_PR_URL: ${{ steps.repin.outputs.pr_url }}
+        run: |
+          {
+            echo "## demo-reset / lodash-repin — $(date -u +%FT%TZ)"
+            echo "- lodash on main (before this run): ${CURRENT:-unknown (step did not run)}"
+            echo "- sweep (upgrade/lodash-* + demo-reset/lodash-repin-*): closed ${SWEEP_CLOSED:-?} stray PR(s), deleted ${SWEEP_DELETED:-?} stray branch(es)"
+            # The "opened <url>" line is gated on the step OUTCOME, not just
+            # at_baseline: a mid-step death (e.g. push succeeded, pr create
+            # failed) must not print a success line for a PR that may not
+            # exist or never got auto-merge enabled.
+            if [ "$AT_BASELINE" = "true" ]; then
+              echo "- re-pin: not needed (already at baseline 4.17.20)"
+            elif [ "$REPIN_OUTCOME" = "success" ]; then
+              echo "- re-pin: opened ${REPIN_PR_URL} (auto-merge enabled, not awaited)"
+            else
+              echo "- re-pin: DID NOT COMPLETE (step outcome: ${REPIN_OUTCOME:-unknown}) — check the step log; the next daily run will retry after sweeping any partial PR/branch"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

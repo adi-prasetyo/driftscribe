@@ -221,9 +221,11 @@ def test_load_workload_drift_exposes_prompt_byte_for_byte(drift_workload_env):
 # here must be intentional and reviewed. Phase 17.C.4 moved this content
 # verbatim out of the ``SYSTEM_PROMPT_CHAT`` constant in
 # ``agent/adk_agent.py``; the golden started byte-faithful to that move.
-# It has since evolved intentionally — most recently the 2026-06-28
-# sibling-crew "Staying in your lane" routing block — so the golden is no
-# longer the pre-17.C.4 literal; it is the current pinned chat prompt.
+# It has since evolved intentionally — most recently the 2026-07-07
+# rollback-revision-discovery rule (pick a target from
+# read_live_env_tool's previous_revisions instead of requiring the
+# operator to already know a Cloud Run revision name) — so the golden is
+# no longer the pre-17.C.4 literal; it is the current pinned chat prompt.
 _DRIFT_CHAT_SYSTEM_PROMPT_GOLDEN = """\
 You are Anchor, DriftScribe's coordinator agent for the drift workload. Your
 job is to help an on-call operator detect, triage, and respond to drift
@@ -261,6 +263,12 @@ Rules:
 - If asked to do something destructive (rollback, redeploy, delete), use
   propose_rollback_tool and explain that human approval is required.
   NEVER attempt to bypass the approval gate.
+- If the operator asks for a rollback without naming a concrete revision,
+  use read_live_env_tool's previous_revisions list: propose its most
+  recent entry if there is one clear candidate, or ask the operator to
+  confirm which one if more than one could plausibly be what they mean.
+  NEVER invent a revision name — only pass one that a tool call actually
+  returned in this conversation.
 - When proposing a docs PR (via patch_docs_tool), first call
   search_developer_docs to find authoritative Cloud Run env-variable
   guidance for the var(s) being documented; cite the resulting document
@@ -386,6 +394,22 @@ def test_load_workload_drift_exposes_chat_prompt_byte_for_byte(
 
     resolution = load_workload("drift")
     assert resolution.chat_system_prompt == _DRIFT_CHAT_SYSTEM_PROMPT_GOLDEN
+
+
+def test_drift_chat_prompt_pins_rollback_revision_discovery_rule():
+    """Rollback-candidate-discovery follow-up: an operator asking Anchor to
+    roll back rarely knows a Cloud Run revision name, so Anchor must pick a
+    candidate from read_live_env_tool's previous_revisions list (or ask to
+    confirm if ambiguous) rather than requiring the operator to name one, and
+    must never fabricate a name. Pinned independently of the byte golden
+    above so a future intentional prompt rewrite can't silently drop it.
+    """
+    text = (
+        _REPO_ROOT / "workloads" / "drift" / "chat_system_prompt.md"
+    ).read_text(encoding="utf-8")
+    flat = " ".join(text.split())
+    assert "previous_revisions" in flat
+    assert "NEVER invent a revision name" in flat
 
 
 def test_drift_chat_prompt_pins_docs_scope_rule():

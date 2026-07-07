@@ -39,6 +39,11 @@
 <style>
   .tour-banner {
     display: flex;
+    /* Wrap on narrow phones: without it the two buttons squeeze the text to a
+       sliver at ~375px. Wrapped lines hold one item each, so the centered
+       alignment only ever applies to the wide single-line case, where it is
+       the shipped look against this banner's short copy. */
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
     gap: var(--ds-sp-4);
@@ -46,6 +51,10 @@
   }
   .tour-banner__text {
     min-width: 0;
+    /* Basis below the text's natural width so the wrap decision doesn't use
+       max-content: the text shares the row with the buttons (then grows) on
+       desktop, and only genuinely narrow cards wrap. */
+    flex: 1 1 20rem;
   }
   .tour-banner__lead {
     margin: 0;

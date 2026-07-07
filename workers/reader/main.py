@@ -1,7 +1,8 @@
 """Reader Agent — read-only Cloud Run state worker (Phase 11.3).
 
 Worker #1 of 4 in the DriftScribe v3.1 multi-agent architecture. Returns the
-live env block + active revision name for the *hardcoded* target service.
+live env block + active revision name for the *hardcoded* target service,
+plus a short list of previous READY revisions (rollback candidates).
 
 Safety layers in play here:
 
@@ -22,10 +23,12 @@ are out of scope for this worker.
 import os
 
 from fastapi import Depends, FastAPI, Request
+from google.api_core import exceptions as gax
+from google.cloud import run_v2
 from pydantic import BaseModel, ConfigDict
 
 from driftscribe_lib.auth import verify_caller
-from driftscribe_lib.cloud_run import read_live_state
+from driftscribe_lib.cloud_run import list_previous_ready_revisions, read_live_state
 from driftscribe_lib.logging import install_trace_middleware, setup as setup_logging
 
 log = setup_logging("reader-agent")
@@ -48,6 +51,14 @@ def _verify_caller_dep(request: Request) -> str:
     can swap it via ``app.dependency_overrides`` without monkey-patching the
     shared library module."""
     return verify_caller(request, own_url=OWN_URL, allowed_callers=ALLOWED_CALLERS)
+
+
+def _get_revisions_client() -> run_v2.RevisionsClient:
+    """Indirection for testability (mirrors ``workers/rollback/main.py``) —
+    tests monkeypatch this so no real gRPC channel is built. Called once per
+    ``/read`` and the client is shared by both the live-state read and the
+    previous-revisions listing, rather than letting each construct its own."""
+    return run_v2.RevisionsClient()
 
 
 class ReadRequest(BaseModel):
@@ -82,16 +93,44 @@ def read(
     _body: ReadRequest,
     caller: str = Depends(_verify_caller_dep),
 ) -> dict:
-    """Return live env + active revision for the configured target service."""
+    """Return live env + active revision for the configured target service.
+
+    ``previous_revisions`` (added for the rollback-candidate-discovery flow):
+    up to 5 other READY revisions, newest first, so a caller that wants to
+    roll back doesn't have to already know a revision name. Additive field —
+    existing consumers reading only ``env`` / ``revision`` are unaffected.
+    """
     log.info(
         "read request from %s target=%s/%s/%s",
         caller, TARGET_SERVICE, TARGET_REGION, GCP_PROJECT,
     )
-    state = read_live_state(TARGET_SERVICE, TARGET_REGION, GCP_PROJECT)
+    revisions_client = _get_revisions_client()
+    state = read_live_state(
+        TARGET_SERVICE, TARGET_REGION, GCP_PROJECT,
+        revisions_client=revisions_client,
+    )
+    # Fail-soft, unlike the read_live_state call above: ``env`` / ``revision``
+    # are the core contract every chat turn and recheck depends on (a failure
+    # there SHOULD 5xx so the coordinator sees a real reader outage), whereas
+    # previous_revisions is a best-effort supplement for rollback-candidate
+    # discovery. A transient listing failure (quota, IAM propagation, backend
+    # blip) must not take down the whole read that already succeeded.
+    try:
+        previous_revisions = list_previous_ready_revisions(
+            TARGET_SERVICE, TARGET_REGION, GCP_PROJECT, state["revision"],
+            revisions_client=revisions_client,
+        )
+    except gax.GoogleAPICallError as e:
+        # PermissionDenied is a GoogleAPICallError subclass, so this covers
+        # both the no-IAM case and generic transient backend failures (same
+        # stance as workers/infra_reader/main.py's CAI soft-fail).
+        log.warning("previous-revisions listing unavailable: %s", e)
+        previous_revisions = []
     return {
         "service": TARGET_SERVICE,
         "region": TARGET_REGION,
         "project": GCP_PROJECT,
         "env": state["env"],
         "revision": state["revision"],
+        "previous_revisions": previous_revisions,
     }
