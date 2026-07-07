@@ -1,4 +1,6 @@
 """Multi-turn /chat persistence + the conversations HTTP surface (P1)."""
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -18,7 +20,7 @@ def client(monkeypatch):
     agent_main.app.dependency_overrides[verify_token] = lambda: None
 
     async def _run_chat(prompt, session_id=None, *, workload="drift",
-                        autonomy_mode="propose_apply", prior_turns=None):
+                        autonomy_mode="propose_apply", prior_turns=None, demo_anon=False):
         # echo how many prior turns were seeded so tests can assert resume
         return {"reply": f"reply to {prompt} (seeded={len(prior_turns or [])})",
                 "tool_calls": [], "session_id": "sid"}
@@ -155,7 +157,7 @@ def test_ephemeral_sse_done_omits_conversation_id(client, monkeypatch):
     # The SPA uses SSE by default — pin that the ``done`` frame carries no
     # conversation_id (vs. a normal SSE turn, which does) and nothing persists.
     async def _stub_stream(prompt, session_id=None, *, workload="drift",
-                           autonomy_mode="propose_apply", prior_turns=None):
+                           autonomy_mode="propose_apply", prior_turns=None, demo_anon=False):
         yield {"type": "result", "reply": f"reply to {prompt}",
                "tool_calls": [], "session_id": "sid"}
 
@@ -185,7 +187,7 @@ def test_ephemeral_provision_fanout_persists_nothing(client, monkeypatch):
     # Provision routes through the fan-out stream (a structurally distinct path);
     # the same persist chokepoint must keep ephemeral probes out of history.
     async def _stub_fanout(prompt, session_id=None, *, autonomy_mode="propose_apply",
-                           prior_turns=None):
+                           prior_turns=None, demo_anon=False):
         yield {"type": "result", "reply": f"provisioned {prompt}",
                "tool_calls": [], "session_id": "sid"}
 
@@ -195,3 +197,57 @@ def test_ephemeral_provision_fanout_persists_nothing(client, monkeypatch):
     assert r.json()["reply"] == "provisioned probe"
     assert "conversation_id" not in r.json()
     assert client.get("/conversations").json()["conversations"] == []
+
+
+# --------------------------------------------------------------------------- #
+# Conversations are shared "team memory" with zero privacy between demo
+# visitors. A persisted operator crew turn can carry a live ?t= approval link;
+# an anonymous demo reader must never be handed that token cross-session (M1).
+# Operators (no marker) keep the clickable link.
+# --------------------------------------------------------------------------- #
+
+_TOKEN_URL = "https://c/approvals/id1?t=SECRETTOKEN"
+
+
+def _seed_token_reply_conversation(client, monkeypatch):
+    """Create a conversation whose persisted crew turn (the reply) carries a
+    live approval link — the realistic operator-authored-token case."""
+    async def _tok_run_chat(prompt, session_id=None, *, workload="drift",
+                            autonomy_mode="propose_apply", prior_turns=None,
+                            demo_anon=False):
+        return {"reply": f"Approve at {_TOKEN_URL}", "tool_calls": [],
+                "session_id": "sid"}
+
+    monkeypatch.setattr("agent.adk_agent.run_chat", _tok_run_chat)
+    return _post(client, "roll back").json()["conversation_id"]
+
+
+def test_get_conversation_demo_anonymous_scrubs_token(client, monkeypatch):
+    cid = _seed_token_reply_conversation(client, monkeypatch)
+    r = client.get(f"/conversations/{cid}",
+                   headers={"X-DriftScribe-Demo-Anonymous": "1"})
+    dumped = json.dumps(r.json())
+    assert "?t=SECRETTOKEN" not in dumped
+    assert "?t=<redacted>" in dumped
+
+
+def test_get_conversation_operator_keeps_token(client, monkeypatch):
+    cid = _seed_token_reply_conversation(client, monkeypatch)
+    r = client.get(f"/conversations/{cid}")
+    assert "?t=SECRETTOKEN" in json.dumps(r.json())
+
+
+def test_list_conversations_demo_anonymous_scrubs_token(client):
+    # The list surfaces title (= first prompt, truncated to 60 chars); a short
+    # token-bearing prompt proves the metadata rows are also scrubbed for anon.
+    _post(client, "rb https://c/approvals/id1?t=LISTTOK123")
+    r = client.get("/conversations", headers={"X-DriftScribe-Demo-Anonymous": "1"})
+    dumped = json.dumps(r.json())
+    assert "?t=LISTTOK123" not in dumped
+    assert "?t=<redacted>" in dumped
+
+
+def test_list_conversations_operator_keeps_token(client):
+    _post(client, "rb https://c/approvals/id1?t=LISTTOK123")
+    r = client.get("/conversations")
+    assert "?t=LISTTOK123" in json.dumps(r.json())

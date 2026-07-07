@@ -55,7 +55,7 @@ def _live(dotted: str):
 
 
 async def _drain(prompt="do the thing", session_id="sid-fixed",
-                 autonomy_mode="propose_apply"):
+                 autonomy_mode="propose_apply", demo_anon=False):
     """Drain the orchestrator's async generator into a list.
 
     Defaults to ``autonomy_mode="propose_apply"`` so the existing
@@ -65,7 +65,7 @@ async def _drain(prompt="do the thing", session_id="sid-fixed",
     return [
         item
         async for item in fanout.run_provision_fanout_stream(
-            prompt, session_id, autonomy_mode=autonomy_mode
+            prompt, session_id, autonomy_mode=autonomy_mode, demo_anon=demo_anon
         )
     ]
 
@@ -273,7 +273,7 @@ def test_single_slice_delegates_to_run_chat_stream(monkeypatch):
 
     delegated_to: dict = {}
 
-    async def _fake_run_chat_stream(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply", prior_turns=None):
+    async def _fake_run_chat_stream(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply", prior_turns=None, demo_anon=False):
         delegated_to["prompt"] = prompt
         delegated_to["session_id"] = session_id
         delegated_to["workload"] = workload
@@ -328,7 +328,7 @@ def test_non_policy_decompose_failure_fails_open(monkeypatch):
 
     delegated: dict = {}
 
-    async def _fake_run_chat_stream(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply", prior_turns=None):
+    async def _fake_run_chat_stream(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply", prior_turns=None, demo_anon=False):
         delegated["workload"] = workload
         yield {
             "type": "result",
@@ -899,7 +899,7 @@ def test_provision_fanout_observe_delegates_without_editor_call(monkeypatch):
     delegated: dict = {}
 
     async def _fake_run_chat_stream(prompt, session_id=None, *, workload="drift",
-                                    autonomy_mode="propose_apply", prior_turns=None):
+                                    autonomy_mode="propose_apply", prior_turns=None, demo_anon=False):
         delegated["workload"] = workload
         delegated["autonomy_mode"] = autonomy_mode
         yield {
@@ -917,6 +917,50 @@ def test_provision_fanout_observe_delegates_without_editor_call(monkeypatch):
     assert open_pr_called["n"] == 0
     assert delegated == {"workload": "provision", "autonomy_mode": "observe"}
     assert _result(items)["reply"] == "observe single-agent reply"
+
+
+def test_provision_fanout_demo_anon_delegates_without_editor_call(monkeypatch):
+    """M4/H2: a demo-anonymous provision run — even a multi-slice one at
+    propose_apply — delegates the WHOLE stream to the single-agent path at entry,
+    so the fan-out's committed authoring editor call (call_open_infra_pr) never
+    fires. The single agent carries propose_adoption (kept) but not
+    provision_open_infra_pr (denied), so anon visitors can adopt but not author."""
+    async def _decompose_should_not_run(*a, **k):
+        raise AssertionError("decompose must not run for demo-anon (entry-delegated)")
+
+    monkeypatch.setattr(fanout, "decompose", _decompose_should_not_run)
+
+    open_pr_called = {"n": 0}
+    monkeypatch.setattr(
+        _live("agent.worker_client"),
+        "call_open_infra_pr",
+        lambda *a, **k: open_pr_called.__setitem__("n", open_pr_called["n"] + 1),
+    )
+
+    delegated: dict = {}
+
+    async def _fake_run_chat_stream(prompt, session_id=None, *, workload="drift",
+                                    autonomy_mode="propose_apply", prior_turns=None, demo_anon=False):
+        delegated["workload"] = workload
+        delegated["autonomy_mode"] = autonomy_mode
+        delegated["demo_anon"] = demo_anon
+        yield {
+            "type": "result",
+            "reply": "demo-anon single-agent reply",
+            "tool_calls": [],
+            "session_id": session_id,
+        }
+
+    monkeypatch.setattr(_live("agent.adk_agent"), "run_chat_stream", _fake_run_chat_stream)
+
+    # propose_apply (full autonomy) + demo_anon=True: still entry-delegates.
+    items = asyncio.run(_drain(autonomy_mode="propose_apply", demo_anon=True))
+
+    assert open_pr_called["n"] == 0
+    assert delegated == {
+        "workload": "provision", "autonomy_mode": "propose_apply", "demo_anon": True,
+    }
+    assert _result(items)["reply"] == "demo-anon single-agent reply"
 
 
 def test_provision_fanout_precall_guard_fails_closed(monkeypatch):
@@ -967,7 +1011,7 @@ def test_provision_fanout_single_slice_passes_mode_through(monkeypatch):
     delegated: dict = {}
 
     async def _fake_run_chat_stream(prompt, session_id=None, *, workload="drift",
-                                    autonomy_mode="propose_apply", prior_turns=None):
+                                    autonomy_mode="propose_apply", prior_turns=None, demo_anon=False):
         delegated["autonomy_mode"] = autonomy_mode
         yield {
             "type": "result",

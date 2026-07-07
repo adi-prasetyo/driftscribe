@@ -74,7 +74,7 @@ def test_chat_happy_path_returns_reply_and_tool_calls(monkeypatch) -> None:
     # doesn't silently drop the workload kwarg.
     fake.assert_awaited_once_with(
         "what's the live state?", session_id=None, workload="drift",
-        autonomy_mode="propose_apply", prior_turns=[],
+        autonomy_mode="propose_apply", prior_turns=[], demo_anon=False,
     )
 
 
@@ -94,7 +94,7 @@ def test_chat_passes_session_id_through(monkeypatch) -> None:
     # through unchanged.
     fake.assert_awaited_once_with(
         "hi", session_id="s1", workload="drift", autonomy_mode="propose_apply",
-        prior_turns=[],
+        prior_turns=[], demo_anon=False,
     )
 
 

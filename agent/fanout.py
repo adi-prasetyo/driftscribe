@@ -1133,6 +1133,7 @@ async def run_provision_fanout_stream(
     *,
     autonomy_mode: str,
     prior_turns: list[dict] | None = None,
+    demo_anon: bool = False,
 ) -> AsyncIterator[dict]:
     """Stream a parallel fan-out ``provision`` (IaC-authoring) run end to end.
 
@@ -1214,7 +1215,7 @@ async def run_provision_fanout_stream(
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
-    if autonomy_mode == "observe":
+    if autonomy_mode == "observe" or demo_anon:
         # Autonomy dial (ClickOps item 11, Codex must-fix 1): authoring an
         # infra PR is propose-class work and the whole fan-out exists to make
         # that ONE coordinator-direct editor call — which never passes through
@@ -1224,9 +1225,16 @@ async def run_provision_fanout_stream(
         # Layer-0-filtered, so it still answers provision questions but has no
         # authoring tool; its instruction note points at the dial. The
         # delegated run's seq restarts at 1 — documented contract.
+        #
+        # demo_anon takes the SAME entry-delegation (audit M4/H2): the committed
+        # fan-out authoring makes the coordinator-direct open_infra_pr call which
+        # bypasses tool filtering, so an anonymous visitor must never reach it.
+        # The single-agent path is Layer-0-filtered AND demo-anon-denylisted, so
+        # it keeps provision_propose_adoption (the Adopt CTA) but not
+        # provision_open_infra_pr — anon can adopt, not free-form author.
         async for item in run_chat_stream(
             prompt, sid, workload="provision", autonomy_mode=autonomy_mode,
-            prior_turns=prior_turns,
+            prior_turns=prior_turns, demo_anon=demo_anon,
         ):
             yield item
         return
@@ -1256,7 +1264,7 @@ async def run_provision_fanout_stream(
         # a fresh delegated run.
         async for item in run_chat_stream(
             prompt, sid, workload="provision", autonomy_mode=autonomy_mode,
-            prior_turns=prior_turns,
+            prior_turns=prior_turns, demo_anon=demo_anon,
         ):
             yield item
         return
@@ -1266,7 +1274,7 @@ async def run_provision_fanout_stream(
     if len(plan.slices) == 1:
         async for item in run_chat_stream(
             prompt, sid, workload="provision", autonomy_mode=autonomy_mode,
-            prior_turns=prior_turns,
+            prior_turns=prior_turns, demo_anon=demo_anon,
         ):
             yield item
         return

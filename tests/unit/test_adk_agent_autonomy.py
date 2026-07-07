@@ -49,6 +49,31 @@ def test_chat_agent_propose_keeps_provision_authoring(provision_workload_env):
     assert propose_adoption_tool in tools
 
 
+def test_chat_agent_demo_anon_drops_provision_authoring_keeps_adoption(provision_workload_env):
+    """M4/H2: for anonymous demo callers, free-form infra AUTHORING
+    (provision_open_infra_pr) is dropped even though it is propose-tier — it
+    opens unbounded LLM-authored PRs on the public judged repo + a Cloud Build
+    per call. The bounded, template-generated Adopt flow (propose_adoption) stays
+    so the flagship infra-panel Adopt CTA still works for judges."""
+    resolution = load_workload("provision")
+    agent = adk_agent.build_chat_agent(
+        resolution, autonomy_mode="propose_apply", demo_anon=True
+    )
+    tools = _tool_set(agent)
+    assert open_infra_pr_tool not in tools       # free-form authoring denied
+    assert propose_adoption_tool in tools         # Adopt CTA preserved
+
+
+def test_chat_agent_operator_keeps_provision_authoring(provision_workload_env):
+    resolution = load_workload("provision")
+    agent = adk_agent.build_chat_agent(
+        resolution, autonomy_mode="propose_apply", demo_anon=False
+    )
+    tools = _tool_set(agent)
+    assert open_infra_pr_tool in tools            # operator keeps authoring
+    assert propose_adoption_tool in tools
+
+
 # --------------------------------------------------------------------------- #
 # Chat agent — upgrade workload, propose keeps propose-tier, strips apply-tier
 # --------------------------------------------------------------------------- #
@@ -65,6 +90,35 @@ def test_chat_agent_propose_keeps_propose_strips_apply(upgrade_workload_env):
     tools_pa = _tool_set(agent_pa)
     assert upgrade_propose_pr_tool in tools_pa
     assert upgrade_merge_pr_tool in tools_pa
+
+
+# --------------------------------------------------------------------------- #
+# Demo-anonymous tool denylist (audit H1): apply-tier tools mutate live state /
+# merge to a deploy branch on the "chat == operator" assumption, which is false
+# under the public demo. For anonymous callers they are dropped regardless of
+# the dial. The approve gate at POST /approvals/{id} still reads the real dial —
+# this only narrows the anonymous CHAT tool surface.
+# --------------------------------------------------------------------------- #
+
+
+def test_build_chat_agent_demo_anon_drops_apply_tier(upgrade_workload_env):
+    resolution = load_workload("upgrade")
+    agent = adk_agent.build_chat_agent(
+        resolution, autonomy_mode="propose_apply", demo_anon=True
+    )
+    tools = _tool_set(agent)
+    assert upgrade_merge_pr_tool not in tools   # apply-tier dropped for anon
+    assert upgrade_propose_pr_tool in tools      # propose-tier still available
+
+
+def test_build_chat_agent_operator_keeps_apply_tier(upgrade_workload_env):
+    resolution = load_workload("upgrade")
+    agent = adk_agent.build_chat_agent(
+        resolution, autonomy_mode="propose_apply", demo_anon=False
+    )
+    tools = _tool_set(agent)
+    assert upgrade_merge_pr_tool in tools        # operator keeps apply-tier
+    assert upgrade_propose_pr_tool in tools
 
 
 # --------------------------------------------------------------------------- #

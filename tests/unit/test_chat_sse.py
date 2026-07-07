@@ -53,7 +53,7 @@ def _adk_enabled(monkeypatch):
     agent_main.get_settings.cache_clear()
 
 
-async def _stub_stream(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply", prior_turns=None):
+async def _stub_stream(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply", prior_turns=None, demo_anon=False):
     yield {"type": "event", "event": {
         "event": "tool_call", "tool_name": "read_drift", "tool_args": {},
         "seq": 1, "insert_id": "stream-1", "timestamp": "t"}}
@@ -80,7 +80,7 @@ def test_chat_streams_sse_when_accept_header(_adk_enabled):
     assert done[0]["tool_calls"] == ["read_drift"]
 
 
-async def _stub_stream_with_iac_pr(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply", prior_turns=None):
+async def _stub_stream_with_iac_pr(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply", prior_turns=None, demo_anon=False):
     yield {"type": "event", "event": {
         "event": "tool_call", "tool_name": "open_infra_pr", "tool_args": {},
         "seq": 1, "insert_id": "stream-1", "timestamp": "t"}}
@@ -136,7 +136,7 @@ async def test_drain_chat_stream_result_preserves_iac_pr():
 
 
 def test_chat_returns_json_without_accept_header(_adk_enabled):
-    async def _run_chat(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply", prior_turns=None):
+    async def _run_chat(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply", prior_turns=None, demo_anon=False):
         return {"reply": "all good", "tool_calls": [], "session_id": "sid"}
 
     with patch("agent.adk_agent.run_chat", _run_chat), \
@@ -163,7 +163,7 @@ def test_chat_sse_rebinds_contextvars_for_the_stream_body(_adk_enabled):
     from agent.workload_context import current_workload
     from driftscribe_lib.logging import get_trace_id
 
-    async def _ctx_echo_stream(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply", prior_turns=None):
+    async def _ctx_echo_stream(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply", prior_turns=None, demo_anon=False):
         yield {"type": "event", "event": {
             "event": "tool_call", "tool_name": "x", "tool_args": {},
             "bound_trace_id": get_trace_id(),
@@ -187,7 +187,7 @@ def test_chat_sse_rebinds_contextvars_for_the_stream_body(_adk_enabled):
 
 
 def test_chat_sse_emits_error_frame_on_inloop_failure(_adk_enabled):
-    async def _boom(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply", prior_turns=None):
+    async def _boom(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply", prior_turns=None, demo_anon=False):
         raise RuntimeError("model misbehaved")
         yield  # pragma: no cover — makes this an async generator
 
@@ -204,3 +204,70 @@ def test_chat_sse_emits_error_frame_on_inloop_failure(_adk_enabled):
     err = [d for ev, d in frames if ev == "error"]
     assert err and err[0]["status_hint"] == 502
     assert "model misbehaved" in err[0]["detail"]
+
+
+# --------------------------------------------------------------------------- #
+# Defense-in-depth (audit C1): serve-time approval-token scrub for anonymous
+# demo callers on the /chat reply + SSE frames. Belt-and-braces on top of the
+# primary fix (propose_rollback_tool withholds the token from the model): any
+# future token-bearing tool return, or an operator token re-surfaced via a
+# resumed conversation, must not reach an anonymous caller on the wire.
+# --------------------------------------------------------------------------- #
+
+_TOKEN_URL = "https://c/approvals/id1?t=SECRETTOKEN"
+
+
+async def _stub_stream_with_token(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply", prior_turns=None, demo_anon=False):
+    yield {"type": "event", "event": {
+        "event": "tool_call", "tool_name": "drift_propose_rollback", "tool_args": {},
+        "seq": 1, "insert_id": "stream-1", "timestamp": "t"}}
+    yield {"type": "result", "reply": f"An approval was created. Approve at {_TOKEN_URL}",
+           "tool_calls": ["drift_propose_rollback"], "session_id": "sid"}
+
+
+def test_chat_sse_demo_anonymous_scrubs_approval_token(_adk_enabled):
+    with patch("agent.adk_agent.run_chat_stream", _stub_stream_with_token), \
+         patch.object(agent_main, "load_workload"), \
+         patch.object(agent_main, "_eager_resolve_upgrade_contract"):
+        client = TestClient(agent_main.app)
+        r = client.post("/chat", json={"prompt": "roll back", "workload": "drift"},
+                        headers={"Accept": "text/event-stream",
+                                 "X-DriftScribe-Demo-Anonymous": "1"})
+
+    assert r.status_code == 200
+    assert "?t=SECRETTOKEN" not in r.text
+    assert "?t=<redacted>" in r.text
+
+
+def test_chat_sse_operator_keeps_approval_token(_adk_enabled):
+    with patch("agent.adk_agent.run_chat_stream", _stub_stream_with_token), \
+         patch.object(agent_main, "load_workload"), \
+         patch.object(agent_main, "_eager_resolve_upgrade_contract"):
+        client = TestClient(agent_main.app)
+        r = client.post("/chat", json={"prompt": "roll back", "workload": "drift"},
+                        headers={"Accept": "text/event-stream"})  # no marker → operator
+
+    assert "?t=SECRETTOKEN" in r.text
+
+
+def test_chat_json_demo_anonymous_scrubs_approval_token(_adk_enabled):
+    with patch("agent.adk_agent.run_chat_stream", _stub_stream_with_token), \
+         patch.object(agent_main, "load_workload"), \
+         patch.object(agent_main, "_eager_resolve_upgrade_contract"):
+        client = TestClient(agent_main.app)
+        r = client.post("/chat", json={"prompt": "roll back", "workload": "drift"},
+                        headers={"X-DriftScribe-Demo-Anonymous": "1"})  # no Accept → JSON
+
+    body = r.json()
+    assert "?t=SECRETTOKEN" not in body["reply"]
+    assert "?t=<redacted>" in body["reply"]
+
+
+def test_chat_json_operator_keeps_approval_token(_adk_enabled):
+    with patch("agent.adk_agent.run_chat_stream", _stub_stream_with_token), \
+         patch.object(agent_main, "load_workload"), \
+         patch.object(agent_main, "_eager_resolve_upgrade_contract"):
+        client = TestClient(agent_main.app)
+        r = client.post("/chat", json={"prompt": "roll back", "workload": "drift"})
+
+    assert "?t=SECRETTOKEN" in r.json()["reply"]

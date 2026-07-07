@@ -128,7 +128,8 @@ from agent.mcp.developer_knowledge import (
 )
 from agent.autonomy import autonomy_instruction_note, filter_tools_for_mode
 from agent.models import DecisionProposal
-from agent.request_context import autonomy_mode_scope
+from agent.renderer import redact_approval_tokens_deep
+from agent.request_context import autonomy_mode_scope, demo_anonymous_scope
 from agent.secret_guard import redact_dict, redact_event, redact_text
 from agent.workload_context import current_workload
 from agent.workloads import WorkloadResolution, load_workload
@@ -528,11 +529,50 @@ def build_agent(workload: WorkloadResolution, *, autonomy_mode: str) -> Agent:
     )
 
 
+# Propose-tier tools ALSO withheld from anonymous demo callers (beyond the
+# apply-tier set). ``provision_open_infra_pr`` is free-form infrastructure
+# AUTHORING: it opens an unbounded number of LLM-authored, attacker-influenceable
+# PRs on the PUBLIC (judged) submission repo and dispatches a Cloud Build plan
+# per call (audit M4/H2 — operator decision to gate). The bounded,
+# template-generated ``provision_propose_adoption`` (the flagship infra-panel
+# Adopt CTA — zero-change import, dupe-guarded, bounded by the finite drift list)
+# is deliberately NOT here, so anonymous judges keep the Adopt demo.
+_DEMO_ANON_EXTRA_DENY: frozenset[str] = frozenset({"provision_open_infra_pr"})
+
+
+# Tools withheld from anonymous demo callers regardless of the dial (audit H1).
+# Apply-tier tools mutate live state / merge to a deploy branch on provenance
+# alone — which the "chat == operator" assumption granted, false under the
+# public demo. Derived from TOOL_TIERS so a newly-added apply-tier tool is
+# auto-denied, plus the explicit propose-tier authoring denial above. Kept as a
+# function (not a module constant) so it always reflects the current TOOL_TIERS.
+def _demo_anon_denied_tools() -> frozenset[str]:
+    apply_tier = frozenset(name for name, tier in TOOL_TIERS.items() if tier == "apply")
+    return apply_tier | _DEMO_ANON_EXTRA_DENY
+
+
+# Appended (last-read, for adherence) to a demo-anonymous agent's instruction
+# ONLY when the denylist actually dropped a tool it would otherwise have — so
+# the crew explains the operator-only boundary and redirects, instead of
+# silently lacking a capability the visitor asked for. Names no tool (the
+# name-grounding guard scans docstrings/prompts; this is runtime-composed).
+_DEMO_ANON_NOTE = (
+    "DEMO NOTE: you are serving an anonymous visitor in the public demo window. "
+    "Live-mutating actions and free-form infrastructure authoring (opening a new "
+    "infra PR, merging a PR) are operator-only right now and are not available to "
+    "you. If the visitor asks for one, briefly say it is operator-only during the "
+    "public demo and offer what you CAN do instead — e.g. propose adopting an "
+    "existing unmanaged resource, explain the change, or point to an existing "
+    "approval example."
+)
+
+
 def build_chat_agent(
     workload: WorkloadResolution,
     *,
     autonomy_mode: str,
     extra_instruction: str | None = None,
+    demo_anon: bool = False,
 ) -> Agent:
     """Construct the /chat-flavored ADK Agent for the given workload.
 
@@ -561,6 +601,16 @@ def build_chat_agent(
     :class:`WorkloadResolution`.
     """
     allowed = filter_tools_for_mode(workload.tools, TOOL_TIERS, autonomy_mode)
+    # Audit H1/M4: for anonymous demo callers, drop apply-tier tools + free-form
+    # provision authoring on top of the dial filter. ``allowed`` is keyed by
+    # symbolic tool name (the TOOL_TIERS key), so the denylist is a direct key
+    # filter. The approve gate at POST /approvals/{id} still reads the real dial
+    # — this only narrows the anonymous chat tool surface.
+    demo_dropped: list[str] = []
+    if demo_anon:
+        denied = _demo_anon_denied_tools()
+        demo_dropped = [name for name in allowed if name in denied]
+        allowed = {name: t for name, t in allowed.items() if name not in denied}
     instruction = _dial_instruction(workload.chat_system_prompt, autonomy_mode)
     # ``extra_instruction`` (e.g. the cross-crew conversations breadcrumb) is
     # PREPENDED: it is untrusted, pointer-only DATA, so it must sit BEFORE the
@@ -568,6 +618,11 @@ def build_chat_agent(
     # mutate the cached WorkloadResolution — this composes per-request only.
     if extra_instruction:
         instruction = f"{extra_instruction}\n\n{instruction}"
+    # Appended LAST (trusted operator instruction; recency aids adherence) only
+    # when the demo-anon denylist actually removed a tool — so the crew explains
+    # the operator-only boundary rather than silently lacking a capability.
+    if demo_dropped:
+        instruction = f"{instruction}\n\n{_DEMO_ANON_NOTE}"
     return Agent(
         name=f"driftscribe_chat_{workload.spec.name}",
         model=COORDINATOR_MODEL,
@@ -793,6 +848,12 @@ def _redact_final_response(accepted_text: str) -> tuple[str, str]:
     ``response_kind`` is ``"json"`` when structural redaction fired,
     ``"text"`` otherwise.
     """
+    # A live rollback approval token (/approvals/{id}?t=<token>) is neither a
+    # credentialed URL nor a name-keyed secret, so redact_event / redact_text
+    # both miss it — but a single-use token must not sit in the 365-day-durable
+    # log. redact_approval_tokens_deep is applied on BOTH branches, BEFORE the
+    # 2000-char truncation (preserving the redact-then-truncate invariant so a
+    # token straddling the boundary can't survive the cut) — audit C1 hardening.
     stripped = accepted_text.lstrip()
     if stripped.startswith("{") or stripped.startswith("["):
         try:
@@ -804,14 +865,16 @@ def _redact_final_response(accepted_text: str) -> tuple[str, str]:
             # already replaced any secret-keyed values with the
             # ``<redacted>`` sentinel, so ``default=str`` only acts
             # on benign non-secret types.
-            return (json.dumps(safe, default=str)[:2000], "json")
+            dumped = redact_approval_tokens_deep(json.dumps(safe, default=str))
+            return (dumped[:2000], "json")
         except (json.JSONDecodeError, ValueError):
             # Looked like JSON (leading "{" / "[") but didn't parse —
             # likely a truncated stream or a malformed emit. Fall
             # through to the text path, which still strips
             # credentialed URLs via the regex.
             pass
-    return ((redact_text(accepted_text) or "")[:2000], "text")
+    text = redact_approval_tokens_deep(redact_text(accepted_text) or "")
+    return (text[:2000], "text")
 
 
 def _emit_final_response(text: str) -> dict:
@@ -982,6 +1045,7 @@ async def run_chat_stream(
     workload: str = "drift",
     autonomy_mode: str,
     prior_turns: list[dict] | None = None,
+    demo_anon: bool = False,
 ):
     """Core streaming generator for the chat agent.
 
@@ -1011,7 +1075,8 @@ async def run_chat_stream(
     # to avoid blocking the event loop; doubly fail-soft (None => no breadcrumb).
     breadcrumb = await asyncio.to_thread(build_conversations_breadcrumb, workload)
     agent = build_chat_agent(
-        resolution, autonomy_mode=autonomy_mode, extra_instruction=breadcrumb
+        resolution, autonomy_mode=autonomy_mode, extra_instruction=breadcrumb,
+        demo_anon=demo_anon,
     )
     session_service = InMemorySessionService()
     sid = session_id or str(uuid.uuid4())
@@ -1025,6 +1090,12 @@ async def run_chat_stream(
     # stored session that Runner reads. Cap to MAX_SEED_TURNS; drop the oldest
     # with one marker so prompt cost stays bounded.
     turns_to_seed = list(prior_turns or [])
+    # Defense-in-depth (audit C1): an anonymous caller may resume a conversation
+    # whose persisted operator turn carries a live ?t= approval link. Scrub the
+    # token from each seeded turn so it never re-enters the model context (the
+    # walker is identity-on-no-change, so token-free turns are untouched).
+    if demo_anon:
+        turns_to_seed = [redact_approval_tokens_deep(t) for t in turns_to_seed]
     if len(turns_to_seed) > MAX_SEED_TURNS:
         omitted = len(turns_to_seed) - MAX_SEED_TURNS
         turns_to_seed = turns_to_seed[-MAX_SEED_TURNS:]
@@ -1072,7 +1143,7 @@ async def run_chat_stream(
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
-    with autonomy_mode_scope(autonomy_mode):
+    with autonomy_mode_scope(autonomy_mode), demo_anonymous_scope(demo_anon):
         async for event in runner.run_async(
             user_id="driftscribe-runtime",
             session_id=sid,
@@ -1125,6 +1196,7 @@ async def run_chat(
     workload: str = "drift",
     autonomy_mode: str,
     prior_turns: list[dict] | None = None,
+    demo_anon: bool = False,
 ) -> dict:
     """Run the free-form chat agent against `prompt`.
 
@@ -1154,6 +1226,7 @@ async def run_chat(
     async for item in run_chat_stream(
         prompt, session_id=session_id, workload=workload,
         autonomy_mode=autonomy_mode, prior_turns=prior_turns,
+        demo_anon=demo_anon,
     ):
         if item["type"] == "result":
             return {

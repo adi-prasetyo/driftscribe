@@ -62,7 +62,7 @@ async def test_run_chat_stream_seeds_prior_turns_into_session(monkeypatch):
     monkeypatch.setattr(adk_agent, "load_workload", lambda w: SimpleNamespace())
     monkeypatch.setattr(
         adk_agent, "build_chat_agent",
-        lambda res, autonomy_mode, extra_instruction=None: SimpleNamespace(
+        lambda res, autonomy_mode, extra_instruction=None, demo_anon=False: SimpleNamespace(
             name="driftscribe_chat_drift"
         ),
     )
@@ -119,7 +119,7 @@ async def test_run_chat_stream_caps_prior_turns_with_marker(monkeypatch):
     monkeypatch.setattr(adk_agent, "load_workload", lambda w: SimpleNamespace())
     monkeypatch.setattr(
         adk_agent, "build_chat_agent",
-        lambda res, autonomy_mode, extra_instruction=None: SimpleNamespace(name="ag"),
+        lambda res, autonomy_mode, extra_instruction=None, demo_anon=False: SimpleNamespace(name="ag"),
     )
     monkeypatch.setattr(
         adk_agent, "Runner",
@@ -136,3 +136,137 @@ async def test_run_chat_stream_caps_prior_turns_with_marker(monkeypatch):
     assert "omitted" in appended[0][1]
     # the oldest kept turn is t4 (first 4 dropped)
     assert appended[1][1] == "t4"
+
+
+def _seed_recorder(monkeypatch):
+    """Wire run_chat_stream's session service + runner to capture seeded turn
+    text. Returns the ``appended`` list of (author, role, text)."""
+    appended = []
+
+    class _RecordingService:
+        def __init__(self):
+            self._session = SimpleNamespace(events=[])
+
+        async def create_session(self, **kw):
+            return self._session
+
+        async def append_event(self, session, event):
+            appended.append(
+                (event.author, event.content.role, event.content.parts[0].text)
+            )
+            return event
+
+    async def _stub_run(*a, **k):
+        yield SimpleNamespace(
+            content=SimpleNamespace(parts=[SimpleNamespace(text="ok", thought=False)]),
+            partial=False, usage_metadata=None, is_final_response=lambda: True,
+        )
+
+    monkeypatch.setattr(adk_agent, "InMemorySessionService", _RecordingService)
+    monkeypatch.setattr(adk_agent, "load_workload", lambda w: SimpleNamespace())
+    monkeypatch.setattr(
+        adk_agent, "build_chat_agent",
+        lambda res, autonomy_mode, extra_instruction=None, demo_anon=False: SimpleNamespace(
+            name="driftscribe_chat_drift"
+        ),
+    )
+    monkeypatch.setattr(
+        adk_agent, "Runner",
+        lambda **kw: SimpleNamespace(run_async=lambda **k: _stub_run()),
+    )
+    return appended
+
+
+@pytest.mark.asyncio
+async def test_run_chat_stream_scrubs_seeded_token_for_demo_anon(monkeypatch):
+    """Defense-in-depth (C1): an anonymous caller resuming a conversation whose
+    persisted operator turn carries a live ?t= approval link must NOT have that
+    token re-seeded into the model context. With demo_anon=True the seeded turn
+    text is token-scrubbed before it reaches the session."""
+    appended = _seed_recorder(monkeypatch)
+    prior = [
+        {"role": "crew",
+         "text": "Approve at https://c/approvals/id1?t=SECRETTOKEN",
+         "workload": "drift"},
+    ]
+    _ = [it async for it in adk_agent.run_chat_stream(
+        "q", workload="drift", autonomy_mode="propose_apply",
+        prior_turns=prior, demo_anon=True,
+    )]
+    seeded_text = appended[0][2]
+    assert "SECRETTOKEN" not in seeded_text
+    assert "?t=<redacted>" in seeded_text
+
+
+@pytest.mark.asyncio
+async def test_run_chat_stream_keeps_seeded_token_for_operator(monkeypatch):
+    """Operator path (demo_anon default False): the seeded turn is untouched, so
+    an operator resuming their own conversation still gets the clickable link."""
+    appended = _seed_recorder(monkeypatch)
+    prior = [
+        {"role": "crew",
+         "text": "Approve at https://c/approvals/id1?t=SECRETTOKEN",
+         "workload": "drift"},
+    ]
+    _ = [it async for it in adk_agent.run_chat_stream(
+        "q", workload="drift", autonomy_mode="propose_apply", prior_turns=prior,
+    )]
+    assert "?t=SECRETTOKEN" in appended[0][2]
+
+
+def _observe_anon_during_run(monkeypatch, observed):
+    """Wire run_chat_stream so the runner loop records is_demo_anonymous() at
+    tool-execution time. Proves the scope wraps runner.run_async (Codex
+    follow-up), not just a direct scope around propose_rollback_tool."""
+    from agent.request_context import is_demo_anonymous
+
+    class _Svc:
+        async def create_session(self, **kw):
+            return SimpleNamespace(events=[])
+
+        async def append_event(self, session, event):
+            return event
+
+    async def _stub_run(*a, **k):
+        observed["anon"] = is_demo_anonymous()   # captured mid-run
+        yield SimpleNamespace(
+            content=SimpleNamespace(parts=[SimpleNamespace(text="ok", thought=False)]),
+            partial=False, usage_metadata=None, is_final_response=lambda: True,
+        )
+
+    monkeypatch.setattr(adk_agent, "InMemorySessionService", _Svc)
+    monkeypatch.setattr(adk_agent, "load_workload", lambda w: SimpleNamespace())
+    monkeypatch.setattr(
+        adk_agent, "build_chat_agent",
+        lambda res, autonomy_mode, extra_instruction=None, demo_anon=False: SimpleNamespace(name="ag"),
+    )
+    monkeypatch.setattr(
+        adk_agent, "Runner",
+        lambda **kw: SimpleNamespace(run_async=lambda **k: _stub_run()),
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_chat_stream_binds_demo_anonymous_scope_during_run(monkeypatch):
+    """demo_anon=True is bound as a request scope for the DURATION of the ADK run
+    loop — so a tool the runner invokes (e.g. propose_rollback_tool) sees
+    is_demo_anonymous() == True. This is the C1 propagation guarantee: the scope
+    wraps runner.run_async, mirroring autonomy_mode_scope."""
+    observed: dict = {}
+    _observe_anon_during_run(monkeypatch, observed)
+    _ = [it async for it in adk_agent.run_chat_stream(
+        "q", workload="drift", autonomy_mode="propose_apply", demo_anon=True,
+    )]
+    assert observed["anon"] is True
+
+
+@pytest.mark.asyncio
+async def test_run_chat_stream_operator_run_not_marked_anonymous(monkeypatch):
+    """Companion: an operator run (demo_anon default False) leaves
+    is_demo_anonymous() False during the run — operators keep full credentials."""
+    observed: dict = {}
+    _observe_anon_during_run(monkeypatch, observed)
+    _ = [it async for it in adk_agent.run_chat_stream(
+        "q", workload="drift", autonomy_mode="propose_apply",
+    )]
+    assert observed["anon"] is False

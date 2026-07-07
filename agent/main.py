@@ -505,7 +505,7 @@ def _persist_chat_turn(
 
 async def _persisting_chat_stream(
     workload: str, prompt: str, conv: dict, trace_id: str | None,
-    session_id: str | None, *, autonomy_mode: str,
+    session_id: str | None, *, autonomy_mode: str, demo_anon: bool = False,
 ):
     """Wrap _chat_stream: seed prior turns in, persist the new turn out.
 
@@ -518,7 +518,7 @@ async def _persisting_chat_stream(
     state = get_state()
     async for item in _chat_stream(
         workload, prompt, session_id, autonomy_mode=autonomy_mode,
-        prior_turns=conv["prior_turns"],
+        prior_turns=conv["prior_turns"], demo_anon=demo_anon,
     ):
         if item.get("type") == "result":
             # Off-load the (possibly Firestore-transactional) write to a thread
@@ -5923,7 +5923,7 @@ _SSE_HEARTBEAT_S = 15
 
 def _chat_stream(
     workload: str, prompt: str, session_id: str | None, *, autonomy_mode: str,
-    prior_turns: list[dict] | None = None,
+    prior_turns: list[dict] | None = None, demo_anon: bool = False,
 ):
     """Select the chat-stream async generator for a workload.
 
@@ -5944,12 +5944,13 @@ def _chat_stream(
         from agent.fanout import run_provision_fanout_stream
         return run_provision_fanout_stream(
             prompt, session_id, autonomy_mode=autonomy_mode,
-            prior_turns=prior_turns,
+            prior_turns=prior_turns, demo_anon=demo_anon,
         )
     from agent.adk_agent import run_chat_stream
     return run_chat_stream(
         prompt, session_id=session_id, workload=workload,
         autonomy_mode=autonomy_mode, prior_turns=prior_turns,
+        demo_anon=demo_anon,
     )
 
 
@@ -5986,7 +5987,8 @@ async def _drain_chat_stream_result(agen) -> dict:
 
 
 async def _chat_sse(prompt: str, session_id: str | None, conv: dict,
-                    workload: str, trace_id: str, *, autonomy_mode: str):
+                    workload: str, trace_id: str, *, autonomy_mode: str,
+                    demo_anon: bool = False):
     """SSE generator for the /chat streaming path.
 
     Re-binds the trace_id + workload ContextVars INSIDE the generator
@@ -6012,7 +6014,7 @@ async def _chat_sse(prompt: str, session_id: str | None, conv: dict,
         try:
             async for item in _persisting_chat_stream(
                 workload, prompt, conv, trace_id, session_id,
-                autonomy_mode=autonomy_mode,
+                autonomy_mode=autonomy_mode, demo_anon=demo_anon,
             ):
                 await queue.put(("item", item))
         except Exception as e:  # noqa: BLE001 - mapped to a status hint
@@ -6033,6 +6035,12 @@ async def _chat_sse(prompt: str, session_id: str | None, conv: dict,
                 continue
             if kind == "item":
                 item = payload
+                # Defense-in-depth (audit C1): for anonymous demo callers, scrub
+                # any rollback approval ?t= token from the framed item (covers
+                # both "event" and "done" frames) before it reaches the wire.
+                # Belt-and-braces atop propose_rollback_tool's withholding.
+                if demo_anon:
+                    item = redact_approval_tokens_deep(item)
                 if item["type"] == "event":
                     yield _sse_frame(data=item["event"])
                 else:  # "result"
@@ -6130,6 +6138,12 @@ async def chat(
     # filtered at Layer 0 instead — so we read the mode once here and thread
     # it through every streaming/JSON path below.
     autonomy = _autonomy_state_fail_closed()
+    # Audit C1/H1: mark anonymous public-demo callers (the CF Worker injects the
+    # operator token but tags the request X-DriftScribe-Demo-Anonymous). Threaded
+    # into every streaming/JSON path below so tools withhold the live approval
+    # token from the model and apply-tier tools drop out of the anonymous surface.
+    # Operators (no marker) are unaffected.
+    demo_anon = _is_demo_anonymous(request)
     # Phase 17.A.3: pre-resolve the workload so an "undeployed workload"
     # failure (e.g. upgrade before Phase 17.B/17.C/17.E land the tools +
     # worker URLs) surfaces as 503 BEFORE we boot the ADK runner. The
@@ -6203,7 +6217,7 @@ async def chat(
         return StreamingResponse(
             _chat_sse(
                 req.prompt, req.session_id, conv, req.workload, trace_id,
-                autonomy_mode=autonomy.mode,
+                autonomy_mode=autonomy.mode, demo_anon=demo_anon,
             ),
             media_type="text/event-stream",
             headers={
@@ -6239,12 +6253,14 @@ async def chat(
                 # same ``WorkerClientError``/``RuntimeError`` types as the chat
                 # path, so the outer ``except`` + ``_chat_error_payload``
                 # mapping below covers it unchanged.
-                return await _drain_chat_stream_result(
+                out = await _drain_chat_stream_result(
                     _persisting_chat_stream(
                         "provision", req.prompt, conv, trace_id, req.session_id,
-                        autonomy_mode=autonomy.mode,
+                        autonomy_mode=autonomy.mode, demo_anon=demo_anon,
                     )
                 )
+                # Defense-in-depth (audit C1): serve-time token scrub for anon.
+                return redact_approval_tokens_deep(out) if demo_anon else out
             # JSON-others STILL goes through run_chat (pinned by
             # test_provision_fanout_route / test_chat_endpoint) with the
             # caller's session_id; multi-turn seeding rides the prior_turns
@@ -6253,13 +6269,15 @@ async def chat(
             result = await run_chat(
                 req.prompt, session_id=req.session_id, workload=req.workload,
                 autonomy_mode=autonomy.mode, prior_turns=conv["prior_turns"],
+                demo_anon=demo_anon,
             )
             if await asyncio.to_thread(
                 _persist_chat_turn, state, conv=conv, prompt=req.prompt,
                 trace_id=trace_id, result=result,
             ):
                 result["conversation_id"] = conv["conversation_id"]
-            return result
+            # Defense-in-depth (audit C1): serve-time token scrub for anon.
+            return redact_approval_tokens_deep(result) if demo_anon else result
         finally:
             reset_workload(_workload_token)
     except (
@@ -6282,6 +6300,7 @@ async def chat(
 
 @app.get("/conversations")
 def list_conversations_endpoint(
+    request: Request,
     response: Response,
     limit: int = 50,
     workload: str | None = None,
@@ -6304,12 +6323,18 @@ def list_conversations_endpoint(
         )
     response.headers["Cache-Control"] = "no-store"
     rows = state.list_conversations(limit=limit, workload=workload)
+    # M1: conversations are shared team memory with zero privacy between demo
+    # visitors. A persisted turn can carry a live ?t= approval link — scrub it
+    # for anonymous readers (Worker marker). Operators keep the clickable link.
+    if _is_demo_anonymous(request):
+        rows = redact_approval_tokens_deep(rows)
     return {"conversations": rows}
 
 
 @app.get("/conversations/{conversation_id}")
 def get_conversation_endpoint(
     conversation_id: str,
+    request: Request,
     response: Response,
     _: None = Depends(verify_token),
     state: StateStore = Depends(get_state),
@@ -6331,4 +6356,8 @@ def get_conversation_endpoint(
             detail="conversation not found",
             headers={"Cache-Control": "no-store"},
         )
+    # M1: scrub any live ?t= approval link from the full turns for anonymous
+    # readers (shared team memory; a persisted operator turn may carry it).
+    if _is_demo_anonymous(request):
+        conv = redact_approval_tokens_deep(conv)
     return conv

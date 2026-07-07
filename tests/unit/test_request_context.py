@@ -46,3 +46,26 @@ def test_stale_propose_apply_does_not_leak_to_next_run():
     # Second run in same thread/task — should NOT see propose_apply
     with autonomy_mode_scope("observe"):
         assert get_current_autonomy_mode() == "observe"
+
+
+def test_is_demo_anonymous_default_is_false():
+    from agent.request_context import is_demo_anonymous
+    assert is_demo_anonymous() is False
+
+
+def test_demo_anonymous_scope_sets_and_resets():
+    from agent.request_context import demo_anonymous_scope, is_demo_anonymous
+    assert is_demo_anonymous() is False
+    with demo_anonymous_scope(True):
+        assert is_demo_anonymous() is True
+    assert is_demo_anonymous() is False
+
+
+def test_demo_anonymous_scope_resets_even_on_exception():
+    from agent.request_context import demo_anonymous_scope, is_demo_anonymous
+    try:
+        with demo_anonymous_scope(True):
+            raise ValueError("boom")
+    except ValueError:
+        pass
+    assert is_demo_anonymous() is False
