@@ -1,0 +1,66 @@
+# Canonical incremental-update deploy path for the LIVE upgrade-reader worker
+# on driftscribe-hack-2026 (single-user portfolio).
+#
+# WHY THIS FILE EXISTS:
+#   Mirrors infra/cloudbuild.upgrade-docs-update.yaml (see that file's header
+#   for the full rationale). The full infra/cloudbuild.yaml rebuilds and
+#   redeploys ALL services and re-runs the OWN_URL / worker-URL sync dance;
+#   running it just to ship one worker churns the whole fleet and risks
+#   resetting URLs to placeholder.invalid on a transient failure. This file
+#   is the narrow path that touches ONLY the upgrade-reader worker: build its
+#   image, then update the existing revision template in place (image only).
+#   SA, secrets, env vars, ingress, OWN_URL, ALLOWED_CALLERS, and scaling all
+#   stay as they were.
+#
+#   Added 2026-07-07 to ship the advisory-lookup soft-fail fix (PR #209,
+#   backend audit finding 3) without touching the rest of the fleet.
+#
+# USAGE (operator runs by hand, no CI integration):
+#
+#   gcloud builds submit \
+#     --config=infra/cloudbuild.upgrade-reader-update.yaml \
+#     --substitutions=_TAG=$(git rev-parse --short HEAD) \
+#     --project=driftscribe-hack-2026
+
+substitutions:
+  _TAG: 'manual'
+  _REGION: asia-northeast1
+  _SERVICE: driftscribe-upgrade-reader
+
+# Default-compute-SA retirement (Phase 4): run this build as the dedicated
+# cloudbuild-deploy-sa@ rather than the project's default compute SA — same
+# stance as every other *-update.yaml here. A user-specified serviceAccount
+# REQUIRES an explicit logging option (CLOUD_LOGGING_ONLY — no default GCS
+# logs bucket). Hardcoded to driftscribe-hack-2026: operator-run only.
+serviceAccount: 'projects/driftscribe-hack-2026/serviceAccounts/cloudbuild-deploy-sa@driftscribe-hack-2026.iam.gserviceaccount.com'
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-upgrade-reader:${_TAG}
+      - -f
+      - workers/upgrade_reader/Dockerfile
+      - .
+
+  - name: gcr.io/cloud-builders/docker
+    args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-upgrade-reader:${_TAG}']
+
+  # Incremental update of the existing service: image ONLY. No env-var
+  # changes — everything else in the revision template is preserved.
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - services
+      - update
+      - ${_SERVICE}
+      - --image=asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-upgrade-reader:${_TAG}
+      - --region=${_REGION}
+      - --project=$PROJECT_ID
+
+images:
+  - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-upgrade-reader:${_TAG}
