@@ -128,6 +128,7 @@ from agent.mcp.developer_knowledge import (
 )
 from agent.autonomy import autonomy_instruction_note, filter_tools_for_mode
 from agent.models import DecisionProposal
+from agent.renderer import redact_approval_tokens_deep
 from agent.request_context import autonomy_mode_scope, demo_anonymous_scope
 from agent.secret_guard import redact_dict, redact_event, redact_text
 from agent.workload_context import current_workload
@@ -1026,6 +1027,12 @@ async def run_chat_stream(
     # stored session that Runner reads. Cap to MAX_SEED_TURNS; drop the oldest
     # with one marker so prompt cost stays bounded.
     turns_to_seed = list(prior_turns or [])
+    # Defense-in-depth (audit C1): an anonymous caller may resume a conversation
+    # whose persisted operator turn carries a live ?t= approval link. Scrub the
+    # token from each seeded turn so it never re-enters the model context (the
+    # walker is identity-on-no-change, so token-free turns are untouched).
+    if demo_anon:
+        turns_to_seed = [redact_approval_tokens_deep(t) for t in turns_to_seed]
     if len(turns_to_seed) > MAX_SEED_TURNS:
         omitted = len(turns_to_seed) - MAX_SEED_TURNS
         turns_to_seed = turns_to_seed[-MAX_SEED_TURNS:]

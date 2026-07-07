@@ -6035,6 +6035,12 @@ async def _chat_sse(prompt: str, session_id: str | None, conv: dict,
                 continue
             if kind == "item":
                 item = payload
+                # Defense-in-depth (audit C1): for anonymous demo callers, scrub
+                # any rollback approval ?t= token from the framed item (covers
+                # both "event" and "done" frames) before it reaches the wire.
+                # Belt-and-braces atop propose_rollback_tool's withholding.
+                if demo_anon:
+                    item = redact_approval_tokens_deep(item)
                 if item["type"] == "event":
                     yield _sse_frame(data=item["event"])
                 else:  # "result"
@@ -6247,12 +6253,14 @@ async def chat(
                 # same ``WorkerClientError``/``RuntimeError`` types as the chat
                 # path, so the outer ``except`` + ``_chat_error_payload``
                 # mapping below covers it unchanged.
-                return await _drain_chat_stream_result(
+                out = await _drain_chat_stream_result(
                     _persisting_chat_stream(
                         "provision", req.prompt, conv, trace_id, req.session_id,
                         autonomy_mode=autonomy.mode, demo_anon=demo_anon,
                     )
                 )
+                # Defense-in-depth (audit C1): serve-time token scrub for anon.
+                return redact_approval_tokens_deep(out) if demo_anon else out
             # JSON-others STILL goes through run_chat (pinned by
             # test_provision_fanout_route / test_chat_endpoint) with the
             # caller's session_id; multi-turn seeding rides the prior_turns
@@ -6268,7 +6276,8 @@ async def chat(
                 trace_id=trace_id, result=result,
             ):
                 result["conversation_id"] = conv["conversation_id"]
-            return result
+            # Defense-in-depth (audit C1): serve-time token scrub for anon.
+            return redact_approval_tokens_deep(result) if demo_anon else result
         finally:
             reset_workload(_workload_token)
     except (
