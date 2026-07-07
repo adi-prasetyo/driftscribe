@@ -47,10 +47,14 @@ export const DEMO_ALLOWLIST = [
   ["GET", /^\/decisions$/],
   ["GET", /^\/infra\/graph$/],
   ["GET", /^\/infra\/graph\/preview$/],
+  ["GET", /^\/infra\/pending-approvals$/],
   ["GET", /^\/capabilities$/],
   ["GET", /^\/pause$/],
   ["GET", /^\/autonomy$/],
   ["GET", /^\/trace\/[^/]+$/],
+  ["GET", /^\/trace\/[^/]+\/pr-body$/],
+  ["GET", /^\/conversations$/],
+  ["GET", /^\/conversations\/[^/]+$/],
   ["POST", /^\/chat$/],
 ];
 
