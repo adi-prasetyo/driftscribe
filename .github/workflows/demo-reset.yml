@@ -88,14 +88,14 @@ jobs:
     # literals, not a parsed read of the file).
     steps:
       - name: Authenticate to GCP via WIF
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@b7593ed2efd1c1617e1b0254da33b86225adb2a5 # v2.1.7
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_DEMO_RESET }}
           service_account: ${{ secrets.GCP_DEMO_RESET_SA }}
           project_id: driftscribe-hack-2026
 
       - name: Setup gcloud CLI
-        uses: google-github-actions/setup-gcloud@v2
+        uses: google-github-actions/setup-gcloud@77e7a554d41e2ee56fc945c52dfd3f33d12def9a # v2.1.4
 
       - name: "payment-demo: pre-read-and-diff (never call update on a no-op)"
         id: payment_demo
@@ -392,7 +392,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout main
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           # No default-token credentials persisted: every GitHub mutation
           # below (commit push, PR create, PR merge, PR close, branch delete)
@@ -401,14 +401,14 @@ jobs:
           persist-credentials: false
 
       - name: Authenticate to GCP via WIF
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@b7593ed2efd1c1617e1b0254da33b86225adb2a5 # v2.1.7
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_DEMO_RESET }}
           service_account: ${{ secrets.GCP_DEMO_RESET_SA }}
           project_id: driftscribe-hack-2026
 
       - name: Setup gcloud CLI
-        uses: google-github-actions/setup-gcloud@v2
+        uses: google-github-actions/setup-gcloud@77e7a554d41e2ee56fc945c52dfd3f33d12def9a # v2.1.4
 
       - name: Fetch GitHub PAT (upgrade-docs-github-pat) from Secret Manager
         id: pat
