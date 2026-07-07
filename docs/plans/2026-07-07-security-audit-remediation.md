@@ -381,11 +381,13 @@ git commit -m "fix(security): demo-anonymous tool denylist drops apply-tier tool
 **Step 1: Write the failing tests**
 
 ```python
+# Built by concatenation (low-entropy bodies) so no contiguous secret-shaped
+# literal sits in source — avoids tripping GitGuardian on a security-test file.
 @pytest.mark.parametrize("secret", [
-    "<GOOGLE_API_KEY_EXAMPLE>",
-    "<GITHUB_CLASSIC_PAT_EXAMPLE>",
-    "<GITHUB_FINE_GRAINED_PAT_EXAMPLE>",
-    "<JWT_EXAMPLE>",
+    "AIza" + "b" * 35,
+    "ghp_" + "a" * 30,
+    "github_pat_" + "1" * 40,
+    ".".join(["eyJ" + "a" * 8, "b" * 8, "c" * 8]),
 ])
 def test_redact_text_masks_shaped_tokens(secret):
     out = redact_text(f"here is {secret} end")

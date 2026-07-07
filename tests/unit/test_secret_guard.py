@@ -8,15 +8,20 @@ from agent.secret_guard import redact_event, redact_text
 # URLs / secret-NAMED keys). A model thought-summary or reply quoting a raw
 # AIza.../ghp_.../github_pat_.../JWT token would otherwise reach durable logs /
 # rendered surfaces unredacted. Only high-signal, low-false-positive prefixes.
+#
+# The fixtures are BUILT BY CONCATENATION with low-entropy repeated-char bodies
+# on purpose: no contiguous secret-shaped literal sits in this source file (that
+# would trip GitGuardian on a security-test file), yet each constructed value
+# still matches the corresponding _SHAPED_SECRET_RES pattern at runtime.
 # --------------------------------------------------------------------------- #
 
+_GOOGLE_KEY = "AIza" + "b" * 35                 # AIza + 35 -> matches
+_GH_CLASSIC = "ghp_" + "a" * 30                 # gh[pousr]_ + >=20
+_GH_PAT = "github_pat_" + "1" * 40              # github_pat_ + >=20
+_FAKE_JWT = ".".join(["eyJ" + "a" * 8, "b" * 8, "c" * 8])   # three b64url-ish segments
 
-@pytest.mark.parametrize("secret", [
-    "<GOOGLE_API_KEY_EXAMPLE>",   # Google API key (AIza + 35)
-    "<GITHUB_CLASSIC_PAT_EXAMPLE>",     # GitHub classic PAT
-    "<GITHUB_FINE_GRAINED_PAT_EXAMPLE>",
-    "<JWT_EXAMPLE>",   # JWT
-])
+
+@pytest.mark.parametrize("secret", [_GOOGLE_KEY, _GH_CLASSIC, _GH_PAT, _FAKE_JWT])
 def test_redact_text_masks_shaped_tokens(secret):
     out = redact_text(f"here is {secret} end")
     assert secret not in out
@@ -29,9 +34,9 @@ def test_redact_text_leaves_ordinary_words():
 
 
 def test_redact_event_masks_shaped_token_nested():
-    payload = {"reply": "key is <GITHUB_CLASSIC_PAT_EXAMPLE> here"}
+    payload = {"reply": f"key is {_GH_CLASSIC} here"}
     out = redact_event(payload)
-    assert "<GITHUB_CLASSIC_PAT_EXAMPLE>" not in out["reply"]
+    assert _GH_CLASSIC not in out["reply"]
 
 
 def test_redact_text_strips_url_userinfo():
