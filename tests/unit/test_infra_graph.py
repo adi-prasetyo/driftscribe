@@ -210,6 +210,53 @@ def test_nodes_carry_managed_flag_and_stable_ids():
     assert run["nodes"][0]["asset_type"] == RUN_TYPE
 
 
+SUB_TYPE = "pubsub.googleapis.com/Subscription"
+
+
+def _sub_inventory(sample_extra: dict) -> dict:
+    """A one-subscription inventory whose single sample merges `sample_extra`."""
+    return {
+        "project": "p", "generated_at": "2026-07-07T00:00:00+00:00",
+        "inventory_source": "cloud_asset_inventory", "freshness_caveat": "…",
+        "iac_snapshot_sha": "sha", "total_resources": 1, "declared_in_iac": 0,
+        "not_in_iac": 1,
+        "by_type": {
+            SUB_TYPE: {
+                "count": 1, "declared_in_iac": 0, "not_in_iac": 1,
+                "not_in_iac_control_plane": 0, "sensitive": False,
+                "sample": [{"name": "adopt-probe-sub", "location": "global",
+                            "iac": False, "match_confidence": None, **sample_extra}],
+            }
+        },
+        "declared_not_found": [], "truncated": {"per_type_sample": 10},
+    }
+
+
+def test_node_carries_topic_when_sample_has_it():
+    g = build_graph(_sub_inventory({"topic": "adopt-probe-topic"}))
+    node = g["groups"][0]["nodes"][0]
+    assert node["topic"] == "adopt-probe-topic"
+
+
+def test_node_omits_topic_when_sample_lacks_it():
+    g = build_graph(_sub_inventory({}))
+    assert "topic" not in g["groups"][0]["nodes"][0]
+
+
+def test_node_omits_topic_when_sample_topic_is_non_string():
+    # Type-strict: a non-string (or empty) topic never reaches the client node.
+    for bad in (123, "", None, {"x": 1}):
+        g = build_graph(_sub_inventory({"topic": bad}))
+        assert "topic" not in g["groups"][0]["nodes"][0]
+
+
+def test_non_subscription_nodes_never_carry_topic():
+    g = build_graph(_inventory())
+    for grp in g["groups"]:
+        for node in grp["nodes"]:
+            assert "topic" not in node
+
+
 def test_group_rollup_counts():
     g = build_graph(_inventory())
     run = next(grp for grp in g["groups"] if grp["asset_type"] == RUN_TYPE)

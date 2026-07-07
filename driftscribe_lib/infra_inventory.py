@@ -31,10 +31,32 @@ _SAMPLE_CAP = 10
 
 @dataclass(frozen=True)
 class CaiResource:
-    """The masked CAI fields we use (read_mask = name,assetType,location)."""
+    """The masked CAI fields we use (read_mask = name,assetType,location).
+
+    ``topic`` is the ONE exception: it is not part of the minimal read_mask but
+    is joined in by the worker's scoped subscription-only enrichment search (the
+    subscription→topic edge, retained so the Provision crew can adopt a
+    subscription without stalling to ask). It is None for every non-subscription
+    resource and for subscriptions the enrichment couldn't read; the default
+    keeps every existing three-field construction valid.
+    """
     name: str            # full //service/projects/.../X
     asset_type: str
     location: str
+    topic: str | None = None
+
+
+def shorten_topic(topic: str, project: str) -> str:
+    """Shorten ``projects/{project}/topics/{name}`` → ``{name}`` iff the project
+    matches; any other shape passes through unchanged.
+
+    A cross-project full path (``projects/OTHER/topics/x``) is still a valid
+    input to ``propose_adoption_tool``, which normalizes/rejects at its own
+    boundary — so we never silently shorten a foreign project's path. An
+    already-short name or any unrecognized shape is returned as-is.
+    """
+    prefix = f"projects/{project}/topics/"
+    return topic[len(prefix):] if topic.startswith(prefix) else topic
 
 
 def normalize_cai_name(name: str) -> str:
@@ -107,9 +129,13 @@ def build_inventory(
             if is_control_plane_node(r.asset_type, display):
                 bucket["not_in_iac_control_plane"] += 1
         if len(bucket["_samples"]) < _SAMPLE_CAP:
-            bucket["_samples"].append(
-                {"name": display, "location": r.location, "iac": iac, "match_confidence": conf}
-            )
+            entry = {"name": display, "location": r.location, "iac": iac, "match_confidence": conf}
+            # Only-when-present (matches control_plane / truncated_in_group style):
+            # a subscription that carries an enrichment-joined topic gains the
+            # field; every other sample stays byte-identical.
+            if isinstance(r.topic, str) and r.topic:
+                entry["topic"] = r.topic
+            bucket["_samples"].append(entry)
 
     by_type: dict[str, dict] = {}
     for atype, b in sorted(type_buckets.items()):

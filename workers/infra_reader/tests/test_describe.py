@@ -51,20 +51,39 @@ from workers.infra_reader import main as infra_main  # noqa: E402
 from workers.infra_reader.main import _verify_caller_dep, app  # noqa: E402
 
 _RUN_SERVICE = "run.googleapis.com/Service"
+_SUB_TYPE = "pubsub.googleapis.com/Subscription"
 _PAYMENT_DEMO_NAME = (
     "//run.googleapis.com/projects/driftscribe-hack-2026/"
     "locations/asia-northeast1/services/payment-demo"
+)
+_SUB_NAME = (
+    "//pubsub.googleapis.com/projects/driftscribe-hack-2026/"
+    "subscriptions/adopt-probe-sub"
 )
 _ALLOWED = "coordinator@driftscribe-hack-2026.iam.gserviceaccount.com"
 
 
 class _FakeResource:
-    """Minimal stand-in for a CAI ResourceSearchResult — only the masked fields."""
+    """Minimal stand-in for a CAI ResourceSearchResult — only the masked fields.
 
-    def __init__(self, name, asset_type, location):
+    ``versioned_resources`` defaults to () so a primary-search double never
+    carries enrichment payload; the subscription-enrichment doubles pass a list
+    of objects whose ``.resource`` is a plain dict (a stand-in for the proto-plus
+    ``MapComposite`` the real client returns — both support ``.get``).
+    """
+
+    def __init__(self, name, asset_type, location, versioned_resources=()):
         self.name = name
         self.asset_type = asset_type
         self.location = location
+        self.versioned_resources = versioned_resources
+
+
+class _FakeVersioned:
+    """Stand-in for a CAI VersionedResource — only ``.resource`` is read."""
+
+    def __init__(self, resource):
+        self.resource = resource
 
 
 def _make_fake_client(results, *, raises=None, capture=None):
@@ -249,6 +268,134 @@ def test_describe_generic_api_error_soft_fails_200(client, monkeypatch):
     r = client.post("/describe", json={})
     assert r.status_code == 200, r.text
     assert r.json()["error"] == "cloud_asset_unavailable"
+
+
+# --------------------------------------------------------------------------- #
+# Subscription→topic enrichment (adopt-sub-topic-prefill). The enrichment is a
+# SECOND scoped search dispatched only when subscriptions are present; the
+# dispatch fake below discriminates the two calls by whether the request carries
+# ``asset_types`` (only the enrichment search sets it).
+# --------------------------------------------------------------------------- #
+
+
+def _make_dispatch_client(primary, enrichment, *, capture=None, enrich_raises=None):
+    """Fake client whose ``search_all_resources`` returns ``primary`` for the
+    minimal-masked inventory search and ``enrichment`` for the subscription-only
+    enrichment search (the one that sets ``asset_types``).
+    """
+
+    class _FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        def search_all_resources(self, request=None, **kwargs):
+            is_enrichment = bool(getattr(request, "asset_types", None))
+            if capture is not None:
+                capture.setdefault("requests", []).append(request)
+                capture["enrichment" if is_enrichment else "primary"] = request
+            if is_enrichment:
+                if enrich_raises is not None:
+                    raise enrich_raises
+                return iter(enrichment)
+            return iter(primary)
+
+    return _FakeClient
+
+
+def test_first_topic_pure_extractor_good_malformed_empty():
+    # good row → its topic; malformed / topic-less / non-dict rows skipped; the
+    # first non-empty string topic wins.
+    assert infra_main._first_topic([{"topic": "projects/p/topics/t"}]) == "projects/p/topics/t"
+    assert (
+        infra_main._first_topic(
+            [{"pushConfig": {}}, "not-a-mapping", {"topic": ""}, {"topic": "good"}]
+        )
+        == "good"
+    )
+    assert infra_main._first_topic([]) is None
+    assert infra_main._first_topic([{"topic": 123}]) is None  # non-string topic ignored
+
+
+def test_describe_subscription_sample_gains_topic(client, monkeypatch):
+    primary = [_FakeResource(_SUB_NAME, _SUB_TYPE, "global")]
+    enrichment = [
+        _FakeResource(
+            _SUB_NAME, _SUB_TYPE, "global",
+            versioned_resources=[
+                _FakeVersioned(
+                    {"topic": "projects/driftscribe-hack-2026/topics/adopt-probe-topic",
+                     "pushConfig": {"pushEndpoint": "https://secret.example/hook"}}
+                )
+            ],
+        )
+    ]
+    monkeypatch.setattr(
+        infra_main.asset_v1,
+        "AssetServiceClient",
+        _make_dispatch_client(primary, enrichment),
+    )
+    r = client.post("/describe", json={})
+    assert r.status_code == 200, r.text
+    sample = r.json()["by_type"][_SUB_TYPE]["sample"][0]
+    # In-project topic shortened to its bare name; nothing else from the
+    # versioned resource (the push endpoint) leaks into the sample.
+    assert sample["topic"] == "adopt-probe-topic"
+    assert "pushConfig" not in sample
+    assert "pushEndpoint" not in str(sample)
+
+
+def test_describe_enrichment_request_pins_asset_types_and_read_mask(client, monkeypatch):
+    capture: dict = {}
+    primary = [_FakeResource(_SUB_NAME, _SUB_TYPE, "global")]
+    monkeypatch.setattr(
+        infra_main.asset_v1,
+        "AssetServiceClient",
+        _make_dispatch_client(primary, [], capture=capture),
+    )
+    r = client.post("/describe", json={})
+    assert r.status_code == 200, r.text
+    enrich = capture["enrichment"]
+    assert list(enrich.asset_types) == ["pubsub.googleapis.com/Subscription"]
+    assert list(enrich.read_mask.paths) == ["name", "versioned_resources"]
+    assert enrich.scope == "projects/driftscribe-hack-2026"
+
+
+def test_describe_skips_enrichment_when_no_subscriptions(client, monkeypatch):
+    # A subscription-free estate must never pay for the second search.
+    capture: dict = {}
+    primary = [_FakeResource(_PAYMENT_DEMO_NAME, _RUN_SERVICE, "asia-northeast1")]
+    monkeypatch.setattr(
+        infra_main.asset_v1,
+        "AssetServiceClient",
+        _make_dispatch_client(primary, [], capture=capture),
+    )
+    r = client.post("/describe", json={})
+    assert r.status_code == 200, r.text
+    assert "enrichment" not in capture      # only the primary search ran
+    assert len(capture["requests"]) == 1
+
+
+def test_describe_enrichment_failure_keeps_full_inventory_without_topic(client, monkeypatch):
+    # The enrichment call raising must NOT degrade the primary inventory: the
+    # subscription is still counted, just without a topic key (crew falls back
+    # to asking).
+    primary = [
+        _FakeResource(_SUB_NAME, _SUB_TYPE, "global"),
+        _FakeResource(_PAYMENT_DEMO_NAME, _RUN_SERVICE, "asia-northeast1"),
+    ]
+    monkeypatch.setattr(
+        infra_main.asset_v1,
+        "AssetServiceClient",
+        _make_dispatch_client(
+            primary, [], enrich_raises=gax.ServiceUnavailable("cai backend down")
+        ),
+    )
+    r = client.post("/describe", json={})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["total_resources"] == 2
+    sample = body["by_type"][_SUB_TYPE]["sample"][0]
+    assert "topic" not in sample
 
 
 def test_describe_malformed_iac_marks_parse_error(client, monkeypatch, tmp_path):

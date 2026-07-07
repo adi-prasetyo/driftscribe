@@ -14,6 +14,7 @@ from driftscribe_lib.infra_inventory import (
     CaiResource,
     build_inventory,
     normalize_cai_name,
+    shorten_topic,
 )
 
 IAC = Path(__file__).resolve().parents[2] / "iac"
@@ -531,6 +532,76 @@ def test_end_to_end_service_account_resolver_output_matches_live():
     out = build_inventory(live, declared, project="p", iac_snapshot_sha="sha1")
     assert out["declared_in_iac"] == 1
     assert out["declared_not_found"] == []
+
+
+# --------------------------------------------------------------------------- #
+# Subscription→topic enrichment (adopt-sub-topic-prefill). The worker joins the
+# subscription's topic in via a scoped second CAI search; build_inventory just
+# carries it through onto the sample when present. shorten_topic is the pure
+# display-form helper.
+# --------------------------------------------------------------------------- #
+
+
+def _sub(short_name: str, topic: str | None) -> CaiResource:
+    return CaiResource(
+        name=f"//pubsub.googleapis.com/projects/p/subscriptions/{short_name}",
+        asset_type=SUB_TYPE,
+        location="global",
+        topic=topic,
+    )
+
+
+def test_subscription_sample_carries_topic_when_present():
+    out = build_inventory(
+        [_sub("adopt-probe-sub", "adopt-probe-topic")],
+        [], project="p", iac_snapshot_sha="sha1",
+    )
+    sample = out["by_type"][SUB_TYPE]["sample"][0]
+    assert sample["topic"] == "adopt-probe-topic"
+
+
+def test_subscription_sample_omits_topic_key_when_none():
+    out = build_inventory(
+        [_sub("adopt-probe-sub", None)], [], project="p", iac_snapshot_sha="sha1",
+    )
+    sample = out["by_type"][SUB_TYPE]["sample"][0]
+    assert "topic" not in sample
+
+
+def test_subscription_sample_omits_topic_key_when_empty_string():
+    out = build_inventory(
+        [_sub("adopt-probe-sub", "")], [], project="p", iac_snapshot_sha="sha1",
+    )
+    sample = out["by_type"][SUB_TYPE]["sample"][0]
+    assert "topic" not in sample
+
+
+def test_non_subscription_samples_never_carry_topic():
+    # A Cloud Run service left at the default topic=None must be byte-identical
+    # to the pre-enrichment shape — no topic key ever appears.
+    out = build_inventory([_run("svc-a")], [], project="p", iac_snapshot_sha="sha1")
+    sample = out["by_type"][RUN_TYPE]["sample"][0]
+    assert "topic" not in sample
+    assert set(sample) == {"name", "location", "iac", "match_confidence"}
+
+
+def test_shorten_topic_same_project_shortens_to_bare_name():
+    assert shorten_topic("projects/p/topics/order-events", "p") == "order-events"
+
+
+def test_shorten_topic_cross_project_passes_through_unchanged():
+    # A foreign project's full path is still valid input to propose_adoption_tool,
+    # which normalizes/rejects at its own boundary — never silently shortened.
+    assert (
+        shorten_topic("projects/other/topics/order-events", "p")
+        == "projects/other/topics/order-events"
+    )
+
+
+def test_shorten_topic_already_short_or_garbage_passes_through():
+    assert shorten_topic("order-events", "p") == "order-events"
+    assert shorten_topic("nonsense", "p") == "nonsense"
+    assert shorten_topic("", "p") == ""
 
 
 def test_end_to_end_noncai_form_bucket_import_is_false_drift():

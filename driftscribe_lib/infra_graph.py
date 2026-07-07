@@ -394,6 +394,13 @@ def build_graph(inventory: dict) -> dict:
                         "managed": bool(sample.get("iac")),
                         "location": location if isinstance(location, str) else None,
                     }
+                    # Subscription→topic passthrough (adopt-sub-topic-prefill):
+                    # only-when-present + type-strict (same defensive stance as
+                    # `location`), so every non-subscription node stays
+                    # byte-identical and a malformed topic can't reach the client.
+                    topic = sample.get("topic")
+                    if isinstance(topic, str) and topic:
+                        node["topic"] = topic
                     if _is_control_plane_node(atype, label):
                         # Only-when-true (truncated_in_group style) so every
                         # non-control-plane graph stays byte-identical.

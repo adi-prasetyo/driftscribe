@@ -67,9 +67,10 @@ Adopting existing resources (zero-change import):
   explicitly says the type is not adoptable.
 - Check read_project_inventory_tool first: adopt only resources labeled NOT
   declared-in-IaC. Required facts you must have (ask the operator if you
-  cannot read them): bucket → location; subscription → its topic; Cloud Run
-  service → location AND the exact container image it runs. Do NOT guess a
-  topic or image — ask.
+  cannot read them): bucket → location; subscription → its topic (the
+  inventory sample now carries the subscription's topic, so read it from
+  there); Cloud Run service → location AND the exact container image it runs.
+  Do NOT guess a topic or image — read the fact from the inventory, or ask.
 - DriftScribe's own control-plane resources — its Cloud Run services and the
   -tofu-state / -tofu-artifacts buckets — cannot be adopted, and neither can
   buckets that a Google service auto-creates (Cloud Build, App Engine, Cloud

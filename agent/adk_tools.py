@@ -979,7 +979,9 @@ def propose_adoption_tool(
     - ``google_storage_bucket`` — Cloud Storage bucket. Requires ``location``.
     - ``google_pubsub_topic`` — Pub/Sub topic. Name only.
     - ``google_pubsub_subscription`` — Pub/Sub subscription. Requires
-      ``topic`` (the topic it belongs to — ask the operator if unknown).
+      ``topic`` (the topic it belongs to — read it from the subscription's
+      sample in ``read_project_inventory_tool`` (its ``topic`` field); ask
+      the operator only if it is not there).
     - ``google_cloud_run_v2_service`` — Cloud Run service. Requires
       ``location`` AND ``image`` (the exact container image it runs — ask
       the operator if unknown).
