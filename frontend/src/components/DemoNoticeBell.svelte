@@ -139,6 +139,24 @@
     if (shouldAutoOpenNotice(search, dismissed)) openNotice(false);
     return () => window.removeEventListener(HEADER_POPOVER_EVENT, onForeign);
   });
+
+  // Re-anchor on late layout shift. The boot auto-open fires before /autonomy
+  // and /pause resolve; when those header pills swap their loading placeholder
+  // for real content their widths change, and because the actions cluster is
+  // right-aligned the bell slides left under the already-open (position:fixed)
+  // popover — leaving it visibly detached on the very first visit. onWindowResize
+  // does not catch this: it is a same-viewport reflow, not a resize. Observe the
+  // actions row for size changes while open and re-place the popover. (Only the
+  // boot auto-open is exposed to this; a bell-click open happens after the header
+  // has settled.)
+  $effect(() => {
+    if (!open || typeof ResizeObserver === 'undefined') return;
+    const row = containerEl?.closest('.app-header__actions') ?? containerEl?.parentElement;
+    if (!row) return;
+    const ro = new ResizeObserver(() => positionPopover());
+    ro.observe(row);
+    return () => ro.disconnect();
+  });
 </script>
 
 <svelte:window onkeydown={onWindowKeydown} onpointerdown={onWindowPointerDown} onresize={onWindowResize} />
