@@ -529,11 +529,23 @@ def build_agent(workload: WorkloadResolution, *, autonomy_mode: str) -> Agent:
     )
 
 
+# Tools withheld from anonymous demo callers regardless of the dial (audit H1).
+# Apply-tier tools mutate live state / merge to a deploy branch on provenance
+# alone — which the "chat == operator" assumption granted, false under the
+# public demo. Derived from TOOL_TIERS so a newly-added apply-tier tool is
+# auto-denied. Kept as a function (not a module constant) so it always reflects
+# the current TOOL_TIERS; the same seam makes gating propose-tier provision
+# tools (audit M4) a one-line change if the operator opts in.
+def _demo_anon_denied_tools() -> frozenset[str]:
+    return frozenset(name for name, tier in TOOL_TIERS.items() if tier == "apply")
+
+
 def build_chat_agent(
     workload: WorkloadResolution,
     *,
     autonomy_mode: str,
     extra_instruction: str | None = None,
+    demo_anon: bool = False,
 ) -> Agent:
     """Construct the /chat-flavored ADK Agent for the given workload.
 
@@ -562,6 +574,14 @@ def build_chat_agent(
     :class:`WorkloadResolution`.
     """
     allowed = filter_tools_for_mode(workload.tools, TOOL_TIERS, autonomy_mode)
+    # Audit H1: for anonymous demo callers, drop apply-tier tools on top of the
+    # dial filter. ``allowed`` is keyed by symbolic tool name (the TOOL_TIERS
+    # key), so the denylist is a direct key filter. The approve gate at
+    # POST /approvals/{id} still reads the real dial — this only narrows the
+    # anonymous chat tool surface.
+    if demo_anon:
+        denied = _demo_anon_denied_tools()
+        allowed = {name: t for name, t in allowed.items() if name not in denied}
     instruction = _dial_instruction(workload.chat_system_prompt, autonomy_mode)
     # ``extra_instruction`` (e.g. the cross-crew conversations breadcrumb) is
     # PREPENDED: it is untrusted, pointer-only DATA, so it must sit BEFORE the
@@ -1021,7 +1041,8 @@ async def run_chat_stream(
     # to avoid blocking the event loop; doubly fail-soft (None => no breadcrumb).
     breadcrumb = await asyncio.to_thread(build_conversations_breadcrumb, workload)
     agent = build_chat_agent(
-        resolution, autonomy_mode=autonomy_mode, extra_instruction=breadcrumb
+        resolution, autonomy_mode=autonomy_mode, extra_instruction=breadcrumb,
+        demo_anon=demo_anon,
     )
     session_service = InMemorySessionService()
     sid = session_id or str(uuid.uuid4())

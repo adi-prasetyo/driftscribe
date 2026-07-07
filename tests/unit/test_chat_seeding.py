@@ -62,7 +62,7 @@ async def test_run_chat_stream_seeds_prior_turns_into_session(monkeypatch):
     monkeypatch.setattr(adk_agent, "load_workload", lambda w: SimpleNamespace())
     monkeypatch.setattr(
         adk_agent, "build_chat_agent",
-        lambda res, autonomy_mode, extra_instruction=None: SimpleNamespace(
+        lambda res, autonomy_mode, extra_instruction=None, demo_anon=False: SimpleNamespace(
             name="driftscribe_chat_drift"
         ),
     )
@@ -119,7 +119,7 @@ async def test_run_chat_stream_caps_prior_turns_with_marker(monkeypatch):
     monkeypatch.setattr(adk_agent, "load_workload", lambda w: SimpleNamespace())
     monkeypatch.setattr(
         adk_agent, "build_chat_agent",
-        lambda res, autonomy_mode, extra_instruction=None: SimpleNamespace(name="ag"),
+        lambda res, autonomy_mode, extra_instruction=None, demo_anon=False: SimpleNamespace(name="ag"),
     )
     monkeypatch.setattr(
         adk_agent, "Runner",
@@ -166,7 +166,7 @@ def _seed_recorder(monkeypatch):
     monkeypatch.setattr(adk_agent, "load_workload", lambda w: SimpleNamespace())
     monkeypatch.setattr(
         adk_agent, "build_chat_agent",
-        lambda res, autonomy_mode, extra_instruction=None: SimpleNamespace(
+        lambda res, autonomy_mode, extra_instruction=None, demo_anon=False: SimpleNamespace(
             name="driftscribe_chat_drift"
         ),
     )
