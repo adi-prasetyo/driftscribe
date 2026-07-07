@@ -1,4 +1,37 @@
+import pytest
+
 from agent.secret_guard import redact_event, redact_text
+
+
+# --------------------------------------------------------------------------- #
+# M3: redact bare secret VALUES by distinctive shape (not just credentialed
+# URLs / secret-NAMED keys). A model thought-summary or reply quoting a raw
+# AIza.../ghp_.../github_pat_.../JWT token would otherwise reach durable logs /
+# rendered surfaces unredacted. Only high-signal, low-false-positive prefixes.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("secret", [
+    "<GOOGLE_API_KEY_EXAMPLE>",   # Google API key (AIza + 35)
+    "<GITHUB_CLASSIC_PAT_EXAMPLE>",     # GitHub classic PAT
+    "<GITHUB_FINE_GRAINED_PAT_EXAMPLE>",
+    "<JWT_EXAMPLE>",   # JWT
+])
+def test_redact_text_masks_shaped_tokens(secret):
+    out = redact_text(f"here is {secret} end")
+    assert secret not in out
+    assert "here is" in out and "end" in out
+
+
+def test_redact_text_leaves_ordinary_words():
+    s = "the quick brown fox jumps over 12345"
+    assert redact_text(s) == s
+
+
+def test_redact_event_masks_shaped_token_nested():
+    payload = {"reply": "key is <GITHUB_CLASSIC_PAT_EXAMPLE> here"}
+    out = redact_event(payload)
+    assert "<GITHUB_CLASSIC_PAT_EXAMPLE>" not in out["reply"]
 
 
 def test_redact_text_strips_url_userinfo():

@@ -21,6 +21,21 @@ SECRET_NAME_PATTERN = re.compile(
 # which are credentials regardless of the var's name.
 _CREDENTIALED_URL = re.compile(r"\b[a-z][a-z0-9+.-]*://[^/@\s]*:[^/@\s]*@", re.IGNORECASE)
 
+# Value-shape heuristic (M3): distinctive, low-false-positive secret token
+# shapes. These catch a raw credential quoted in free-form text (a model
+# thought summary / reply) that carries no secret-NAME key and is not a
+# credentialed URL. Deliberately NOT generic "long base64/hex" — that would
+# mask ordinary long identifiers. ``github_pat_`` precedes ``gh[pousr]_`` so the
+# longer, more specific prefix wins. Applied by :func:`redact_text`.
+_SHAPED_SECRET_RES = (
+    re.compile(r"AIza[0-9A-Za-z_\-]{35}"),                # Google API key
+    re.compile(r"github_pat_[0-9A-Za-z_]{20,}"),          # GitHub fine-grained PAT
+    re.compile(r"gh[pousr]_[0-9A-Za-z]{20,}"),            # GitHub classic tokens
+    re.compile(                                            # JWT (three b64url segments)
+        r"eyJ[0-9A-Za-z_\-]+\.[0-9A-Za-z_\-]+\.[0-9A-Za-z_\-]+"
+    ),
+)
+
 
 def is_secret_name(name: str) -> bool:
     return bool(SECRET_NAME_PATTERN.search(name))
@@ -39,7 +54,7 @@ def should_redact(name: str, value: str | None) -> bool:
 
 
 def redact_text(text: str | None) -> str | None:
-    """Return ``text`` with credentialed URLs replaced.
+    """Return ``text`` with credentialed URLs AND shaped secret values replaced.
 
     Targets the same pattern as :func:`value_looks_credentialed` —
     URLs of the form ``scheme://user:pass@host`` — but operates on
@@ -47,12 +62,21 @@ def redact_text(text: str | None) -> str | None:
     previews, MCP errors). Replaces only the userinfo segment so the
     URL stays parseable for the reader (host + path remain) but the
     secret is gone.
+
+    Additionally masks bare secret VALUES matching a distinctive shape
+    (Google ``AIza`` key, GitHub ``ghp_``/``github_pat_`` token, JWT) — a
+    raw credential quoted in free-form text that carries no secret-NAME
+    key and is not a credentialed URL (audit M3).
     """
     if not text:
         return text
-    return _CREDENTIALED_URL.sub(
+    out = _CREDENTIALED_URL.sub(
         lambda m: m.group(0).split(":", 1)[0] + "://<redacted>@", text
     )
+    # M3: mask bare secret VALUES by distinctive shape (AIza / ghp_ / PAT / JWT).
+    for pat in _SHAPED_SECRET_RES:
+        out = pat.sub("<redacted>", out)
+    return out
 
 
 # Metadata keys known never to carry secrets — passed through as-is.
