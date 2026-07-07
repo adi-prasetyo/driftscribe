@@ -467,5 +467,5 @@ def test_chat_upgrade_workload_routes_to_run_chat_with_workload_kwarg(
     # default and the contract-resolve eager check would still pass.
     fake_run_chat.assert_awaited_once_with(
         "triage advisories", session_id=None, workload="upgrade",
-        autonomy_mode="propose_apply", prior_turns=[]
+        autonomy_mode="propose_apply", prior_turns=[], demo_anon=False
     )

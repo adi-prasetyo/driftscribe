@@ -128,7 +128,7 @@ from agent.mcp.developer_knowledge import (
 )
 from agent.autonomy import autonomy_instruction_note, filter_tools_for_mode
 from agent.models import DecisionProposal
-from agent.request_context import autonomy_mode_scope
+from agent.request_context import autonomy_mode_scope, demo_anonymous_scope
 from agent.secret_guard import redact_dict, redact_event, redact_text
 from agent.workload_context import current_workload
 from agent.workloads import WorkloadResolution, load_workload
@@ -982,6 +982,7 @@ async def run_chat_stream(
     workload: str = "drift",
     autonomy_mode: str,
     prior_turns: list[dict] | None = None,
+    demo_anon: bool = False,
 ):
     """Core streaming generator for the chat agent.
 
@@ -1072,7 +1073,7 @@ async def run_chat_stream(
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
-    with autonomy_mode_scope(autonomy_mode):
+    with autonomy_mode_scope(autonomy_mode), demo_anonymous_scope(demo_anon):
         async for event in runner.run_async(
             user_id="driftscribe-runtime",
             session_id=sid,
@@ -1125,6 +1126,7 @@ async def run_chat(
     workload: str = "drift",
     autonomy_mode: str,
     prior_turns: list[dict] | None = None,
+    demo_anon: bool = False,
 ) -> dict:
     """Run the free-form chat agent against `prompt`.
 
@@ -1154,6 +1156,7 @@ async def run_chat(
     async for item in run_chat_stream(
         prompt, session_id=session_id, workload=workload,
         autonomy_mode=autonomy_mode, prior_turns=prior_turns,
+        demo_anon=demo_anon,
     ):
         if item["type"] == "result":
             return {

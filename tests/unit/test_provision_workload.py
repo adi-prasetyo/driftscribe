@@ -134,7 +134,7 @@ def test_chat_provision_workload_agent_exposes_open_infra_pr_tool(
     monkeypatch.setenv("DEVELOPER_KNOWLEDGE_API_KEY", "test-key")
     get_settings.cache_clear()
 
-    async def _stub_fanout(prompt, session_id=None, *, autonomy_mode="propose_apply", prior_turns=None):
+    async def _stub_fanout(prompt, session_id=None, *, autonomy_mode="propose_apply", prior_turns=None, demo_anon=False):
         yield {"type": "result", "reply": "ok", "tool_calls": [],
                "session_id": "sid"}
 

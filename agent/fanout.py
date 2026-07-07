@@ -1133,6 +1133,7 @@ async def run_provision_fanout_stream(
     *,
     autonomy_mode: str,
     prior_turns: list[dict] | None = None,
+    demo_anon: bool = False,
 ) -> AsyncIterator[dict]:
     """Stream a parallel fan-out ``provision`` (IaC-authoring) run end to end.
 
@@ -1226,7 +1227,7 @@ async def run_provision_fanout_stream(
         # delegated run's seq restarts at 1 — documented contract.
         async for item in run_chat_stream(
             prompt, sid, workload="provision", autonomy_mode=autonomy_mode,
-            prior_turns=prior_turns,
+            prior_turns=prior_turns, demo_anon=demo_anon,
         ):
             yield item
         return
@@ -1256,7 +1257,7 @@ async def run_provision_fanout_stream(
         # a fresh delegated run.
         async for item in run_chat_stream(
             prompt, sid, workload="provision", autonomy_mode=autonomy_mode,
-            prior_turns=prior_turns,
+            prior_turns=prior_turns, demo_anon=demo_anon,
         ):
             yield item
         return
@@ -1266,7 +1267,7 @@ async def run_provision_fanout_stream(
     if len(plan.slices) == 1:
         async for item in run_chat_stream(
             prompt, sid, workload="provision", autonomy_mode=autonomy_mode,
-            prior_turns=prior_turns,
+            prior_turns=prior_turns, demo_anon=demo_anon,
         ):
             yield item
         return
