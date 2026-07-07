@@ -19,6 +19,7 @@ Settings: tests set ``EVENTARC_AUDIENCE`` and rely on the autouse conftest's
 monkeypatch.setenv so the new value is observed.
 """
 
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -860,3 +861,87 @@ def test_eventarc_non_target_service_path_also_preserves_trace_id(monkeypatch):
     assert r.headers.get("X-Trace-Id") == inbound_trace
     mock_recheck.assert_not_awaited()
     assert ds_logging.get_trace_id() == ""
+
+
+def test_eventarc_verifies_token_off_the_event_loop(monkeypatch):
+    """``verify_oauth2_token`` must NOT run on the event loop thread.
+
+    The verifier synchronously fetches Google's JWKS certs over HTTPS on
+    every call (the module-level transport does not cache them — see the
+    comment above the call site), so invoking it bare inside the
+    ``async def eventarc`` coroutine stalls the shared event loop —
+    including every in-flight ``/chat`` SSE stream — for the duration of
+    the fetch (2026-07-07 backend audit, finding 1).
+
+    Pin the PROPERTY, not the mechanism: inside the verifier there must be
+    no running event loop in the current thread (i.e. the handler offloaded
+    the call, e.g. via ``asyncio.to_thread``), rather than mocking
+    ``asyncio.to_thread`` itself.
+    """
+    _set_audience(monkeypatch)
+    saw_running_loop: dict[str, bool] = {}
+
+    def _fake_verify(token, transport, audience):
+        try:
+            asyncio.get_running_loop()
+            saw_running_loop["value"] = True
+        except RuntimeError:
+            saw_running_loop["value"] = False
+        # Wrong SA → the handler 403s right after verification, so the
+        # test never exercises the downstream recheck pipeline.
+        return {
+            "email": "some-other-sa@test-proj.iam.gserviceaccount.com",
+            "aud": _VALID_AUDIENCE,
+        }
+
+    with patch("agent.main.verify_oauth2_token", side_effect=_fake_verify):
+        client = TestClient(app)
+        r = client.post(
+            "/eventarc",
+            json=_audit_log_body(),
+            headers={"Authorization": "Bearer fake-token"},
+        )
+    # 403 proves verification ran and the handler moved past it.
+    assert r.status_code == 403
+    assert saw_running_loop["value"] is False, (
+        "verify_oauth2_token executed on the event loop thread; it does "
+        "blocking network I/O (uncached JWKS fetch) and must be offloaded"
+    )
+
+
+def test_eventarc_verify_serialized_by_transport_lock(monkeypatch):
+    """Offloaded verifies must hold ``_GOOGLE_AUTH_TRANSPORT_LOCK``.
+
+    The shared module-level ``_GOOGLE_AUTH_TRANSPORT`` wraps a single
+    ``requests.Session``, which is not documented thread-safe. Before the
+    ``asyncio.to_thread`` offload, concurrent /eventarc deliveries were
+    implicitly serialized by blocking the event loop; the lock preserves
+    that serialization now that verifies run on worker threads (Codex
+    review nit on the audit fix).
+    """
+    _set_audience(monkeypatch)
+    lock_held: dict[str, bool] = {}
+
+    def _fake_verify(token, transport, audience):
+        from agent import main as agent_main
+
+        lock_held["value"] = agent_main._GOOGLE_AUTH_TRANSPORT_LOCK.locked()
+        # Wrong SA → 403 right after verification (same trick as above).
+        return {
+            "email": "some-other-sa@test-proj.iam.gserviceaccount.com",
+            "aud": _VALID_AUDIENCE,
+        }
+
+    with patch("agent.main.verify_oauth2_token", side_effect=_fake_verify):
+        client = TestClient(app)
+        r = client.post(
+            "/eventarc",
+            json=_audit_log_body(),
+            headers={"Authorization": "Bearer fake-token"},
+        )
+    assert r.status_code == 403
+    assert lock_held["value"] is True, (
+        "verify_oauth2_token ran without _GOOGLE_AUTH_TRANSPORT_LOCK held; the "
+        "shared requests.Session transport must not be used concurrently "
+        "from multiple worker threads"
+    )

@@ -680,6 +680,40 @@ def test_refresh_403_wrong_service_account(monkeypatch):
     assert resp.status_code == 403
 
 
+def test_refresh_verify_serialized_by_transport_lock(monkeypatch):
+    """The prewarm verify must hold ``_GOOGLE_AUTH_TRANSPORT_LOCK``.
+
+    It shares ``_GOOGLE_AUTH_TRANSPORT`` (a single ``requests.Session``)
+    with /eventarc, whose verifies run on ``asyncio.to_thread`` worker
+    threads — while THIS sync route runs on a threadpool thread. Every use
+    of the shared transport must hold the lock so the Session is never
+    driven from two threads at once (Codex review follow-up to the
+    2026-07-07 backend audit, finding 1).
+    """
+    _set_prewarm_audience(monkeypatch, _PREWARM_AUD)
+    _mock_call(monkeypatch, returns=_inventory())
+    lock_held: dict[str, bool] = {}
+
+    def _fake_verify(token, transport, audience):
+        from agent import main as agent_main
+
+        lock_held["value"] = agent_main._GOOGLE_AUTH_TRANSPORT_LOCK.locked()
+        # Wrong SA → 403 right after verification (auth path fully
+        # exercised, downstream warm skipped).
+        return {"email": "intruder@evil.example"}
+
+    monkeypatch.setattr(
+        "driftscribe_lib.auth.id_token.verify_oauth2_token", _fake_verify
+    )
+    client = TestClient(app)
+    resp = client.post(REFRESH_PATH, headers={"Authorization": "Bearer x"})
+    assert resp.status_code == 403
+    assert lock_held["value"] is True, (
+        "verify_oidc_caller used the shared transport without "
+        "_GOOGLE_AUTH_TRANSPORT_LOCK held"
+    )
+
+
 def test_refresh_200_warms_l2(monkeypatch):
     _set_prewarm_audience(monkeypatch, _PREWARM_AUD)
     # gcp_project is "test-proj" (conftest) → expected SA email:

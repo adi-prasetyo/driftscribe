@@ -283,12 +283,25 @@ def read(
     # at a real-world lockfile with hundreds of entries.
     dependencies: list[dict] = []
     for name, version_spec in deps_block.items():
-        advisories = _lookup_advisories(name, version_spec)
-        dependencies.append({
-            "name": name,
-            "version": version_spec,
-            "advisories": advisories,
-        })
+        dep: dict = {"name": name, "version": version_spec, "advisories": []}
+        # Degrade per-dependency instead of failing the whole read: an
+        # unhandled advisory-API blip here used to surface as a bare 500
+        # → the coordinator's WorkerClientError → the entire Patch /chat
+        # turn died with a 502. Mirrors infra_reader's soft-fail contract.
+        try:
+            dep["advisories"] = _lookup_advisories(name, version_spec)
+        except requests.RequestException:
+            log.warning(
+                "advisory lookup failed for %s@%s; degrading to empty list",
+                name,
+                version_spec,
+                exc_info=True,
+            )
+            dep["advisories_error"] = (
+                "advisory lookup failed (GitHub Advisory API error); "
+                "advisories for this dependency are UNKNOWN, not zero"
+            )
+        dependencies.append(dep)
 
     return {
         "target_repo": TARGET_REPO,
