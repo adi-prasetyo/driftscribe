@@ -8,6 +8,7 @@ import {
   previewPrFromSearch,
   adoptRows,
   adoptPrefill,
+  prefillLocation,
   adoptGroupRank,
   resourceCards,
   splitCards,
@@ -848,6 +849,93 @@ describe('adoptPrefill', () => {
     expect(adoptPrefill('Storage  bucket', 'na\tme', '  loc ')).toBe(
       'Adopt the Storage bucket `na me` in loc into IaC management.',
     );
+  });
+
+  it('appends the topic clause for a subscription with a topic', () => {
+    expect(
+      adoptPrefill('Pub/Sub subscription', 'adopt-probe-sub', null, 'adopt-probe-topic'),
+    ).toBe(
+      'Adopt the Pub/Sub subscription `adopt-probe-sub` into IaC management. Its topic is `adopt-probe-topic`.',
+    );
+  });
+
+  it('omits the topic clause when topic is null/empty (legacy string unchanged)', () => {
+    const legacy = 'Adopt the Pub/Sub subscription `s` into IaC management.';
+    expect(adoptPrefill('Pub/Sub subscription', 's', null)).toBe(legacy);
+    expect(adoptPrefill('Pub/Sub subscription', 's', null, null)).toBe(legacy);
+    expect(adoptPrefill('Pub/Sub subscription', 's', null, '')).toBe(legacy);
+  });
+
+  it('normalizes an untrusted topic (control chars + length) before composing', () => {
+    expect(adoptPrefill('Pub/Sub subscription', 's', null, 'a\tb\nc')).toBe(
+      'Adopt the Pub/Sub subscription `s` into IaC management. Its topic is `a b c`.',
+    );
+    const long = 'x'.repeat(300);
+    expect(adoptPrefill('Pub/Sub subscription', 's', null, long)).toContain(
+      '`' + 'x'.repeat(254) + '`.',
+    );
+  });
+});
+
+describe('prefillLocation', () => {
+  it('returns null for Pub/Sub topics and subscriptions (they are global, location-forbidden)', () => {
+    expect(prefillLocation('pubsub.googleapis.com/Topic', 'global')).toBeNull();
+    expect(prefillLocation('pubsub.googleapis.com/Subscription', 'global')).toBeNull();
+  });
+
+  it('passes every other type location through unchanged (incl. null)', () => {
+    expect(prefillLocation('storage.googleapis.com/Bucket', 'asia-northeast1')).toBe('asia-northeast1');
+    expect(prefillLocation('run.googleapis.com/Service', null)).toBeNull();
+  });
+});
+
+describe('subscription topic prefill (end-to-end through the row builders)', () => {
+  const SUB = 'pubsub.googleapis.com/Subscription';
+  const subGraph = () =>
+    graph({
+      groups: [
+        group({
+          asset_type: SUB,
+          label: 'Pub/Sub subscription',
+          adoptable: true,
+          count: 1,
+          managed: 0,
+          drift: 1,
+          nodes: [
+            node({
+              id: 's0',
+              label: 'adopt-probe-sub',
+              asset_type: SUB,
+              managed: false,
+              location: 'global',
+              topic: 'adopt-probe-topic',
+            }),
+          ],
+        }),
+      ],
+    });
+
+  it('adoptRows: subscription prefill carries the topic and NO location clause', () => {
+    const [row] = adoptRows(subGraph());
+    expect(row.prefill).toBe(
+      'Adopt the Pub/Sub subscription `adopt-probe-sub` into IaC management. Its topic is `adopt-probe-topic`.',
+    );
+    expect(row.prefill).not.toContain(' in global');
+  });
+
+  it('resourceCards: subscription drift row prefill carries the topic and NO location clause', () => {
+    const [card] = resourceCards(subGraph());
+    const [row] = card.rows;
+    expect(row.prefill).toBe(
+      'Adopt the Pub/Sub subscription `adopt-probe-sub` into IaC management. Its topic is `adopt-probe-topic`.',
+    );
+  });
+
+  it('a subscription without a joined topic falls back to the legacy prefill (no topic clause)', () => {
+    const g = subGraph();
+    delete g.groups[0].nodes[0].topic;
+    const [row] = adoptRows(g);
+    expect(row.prefill).toBe('Adopt the Pub/Sub subscription `adopt-probe-sub` into IaC management.');
   });
 });
 

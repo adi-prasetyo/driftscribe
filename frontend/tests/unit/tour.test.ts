@@ -401,6 +401,36 @@ describe('adoptStepState', () => {
     if (s.kind === 'target') expect(s.prefill).toContain('`orders`');
   });
 
+  it('a subscription target carries its topic and no location clause (no stall from the tour path)', () => {
+    const g = makeGraph({
+      groups: [
+        makeGroup({
+          asset_type: 'pubsub.googleapis.com/Subscription',
+          label: 'Pub/Sub subscription',
+          adoptable: true,
+          adopt_rank: 1,
+          nodes: [
+            makeNode({
+              id: 'sub0',
+              label: 'adopt-probe-sub',
+              asset_type: 'pubsub.googleapis.com/Subscription',
+              managed: false,
+              location: 'global',
+              topic: 'adopt-probe-topic',
+            }),
+          ],
+        }),
+      ],
+    });
+    const s = adoptStepState(g);
+    expect(s.kind).toBe('target');
+    if (s.kind !== 'target') throw new Error('unreachable');
+    expect(s.prefill).toBe(
+      'Adopt the Pub/Sub subscription `adopt-probe-sub` into IaC management. Its topic is `adopt-probe-topic`.',
+    );
+    expect(s.prefill).not.toContain(' in global');
+  });
+
   it('all-control-plane estate gets the honest denylist line, not the unnamed line', () => {
     const g = makeGraph({
       totals: { resources: 1, managed: 0, drift: 1 },

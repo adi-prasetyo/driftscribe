@@ -15,6 +15,7 @@ import {
   adoptGroupRank,
   adoptPrefill,
   normalizeForPrompt,
+  prefillLocation,
   resourceCards,
   scopeTotals,
   type InfraGraph,
@@ -209,7 +210,7 @@ export function adoptStepState(graph: InfraGraph | null): AdoptStepState {
         'imports a resource into IaC exactly as it is. This zero-change ' +
         'import goes through the same review and approval as any ' +
         `other change.${hint ? ` ${hint}` : ''}`,
-      prefill: adoptPrefill(g.label, node.label, node.location),
+      prefill: adoptPrefill(g.label, node.label, prefillLocation(g.asset_type, node.location), node.topic ?? null),
     };
   }
   if (graph.totals.drift === 0) {

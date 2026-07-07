@@ -35,6 +35,14 @@ export interface InfraNode {
    * response without the field shows the button and C2 still blocks the plan.
    */
   control_plane?: boolean;
+  /**
+   * Pub/Sub subscription only: the topic it belongs to, joined in server-side so
+   * the Adopt prefill can hand it to the Provision crew (which REQUIRES a topic
+   * to adopt a subscription) instead of stalling to ask. Present ONLY on a
+   * subscription node the enrichment could read; optional = stale-coordinator-safe
+   * (same pattern as `control_plane`) — absent → the prefill just omits it.
+   */
+  topic?: string | null;
 }
 
 export interface InfraGroup {
@@ -370,17 +378,43 @@ export function normalizeForPrompt(raw: string, max: number): string {
     .slice(0, max);
 }
 
-/** "Adopt the Storage bucket `name` in asia-northeast1 into IaC management." */
+// Pub/Sub topics and subscriptions are global — render_adoption FORBIDS a
+// `location` for them (adopt_recipe `_enforce_forbidden`), so a prefill that said
+// "in global" would invite the crew to pass a location and eat a rejected/retry
+// loop. `prefillLocation` returns null for those two types so the prefill omits
+// the location clause; every other type's location passes through unchanged.
+const PUBSUB_LOCATIONLESS: ReadonlySet<string> = new Set([
+  'pubsub.googleapis.com/Topic',
+  'pubsub.googleapis.com/Subscription',
+]);
+
+/** Location to render in an adopt prefill for `assetType` (null = omit it). */
+export function prefillLocation(assetType: string, location: string | null): string | null {
+  return PUBSUB_LOCATIONLESS.has(assetType) ? null : location;
+}
+
+/**
+ * "Adopt the Storage bucket `name` in asia-northeast1 into IaC management."
+ * For a Pub/Sub subscription the caller passes the node's `topic`, appending
+ * " Its topic is `<topic>`." so the Provision crew can adopt it without stalling
+ * to ask (the tool REQUIRES a topic). `topic` is UNTRUSTED server data, so it is
+ * runtime-guarded and normalized like every other fragment.
+ */
 export function adoptPrefill(
   groupLabel: string,
   nodeLabel: string,
   location: string | null,
+  topic: string | null = null,
 ): string {
   const type = normalizeForPrompt(groupLabel, 40);
   const name = normalizeForPrompt(nodeLabel, 254);
   const loc = location ? normalizeForPrompt(location, 40) : '';
   const where = loc ? ` in ${loc}` : '';
-  return `Adopt the ${type} \`${name}\`${where} into IaC management.`;
+  const topicClause =
+    typeof topic === 'string' && topic
+      ? ` Its topic is \`${normalizeForPrompt(topic, 254)}\`.`
+      : '';
+  return `Adopt the ${type} \`${name}\`${where} into IaC management.${topicClause}`;
 }
 
 /**
@@ -404,7 +438,9 @@ export function adoptRows(graph: InfraGraph): AdoptRow[] {
         nodeLabel: n.label,
         adoptable,
         controlPlane,
-        prefill: adoptable ? adoptPrefill(g.label, n.label, n.location) : '',
+        prefill: adoptable
+          ? adoptPrefill(g.label, n.label, prefillLocation(g.asset_type, n.location), n.topic ?? null)
+          : '',
       });
     }
   }
@@ -590,7 +626,7 @@ export function resourceCards(graph: InfraGraph): ResourceCard[] {
           label: n.label,
           status: 'drift',
           adoptable: true,
-          prefill: adoptPrefill(g.label, n.label, n.location),
+          prefill: adoptPrefill(g.label, n.label, prefillLocation(g.asset_type, n.location), n.topic ?? null),
         });
         continue;
       }
