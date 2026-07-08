@@ -84,7 +84,7 @@ Same as the lodash-repin job: WIF → gcloud → fetch `upgrade-docs-github-pat`
 from Secret Manager (the demo-reset SA already holds accessor on it —
 `setup_demo_reset.sh` §6; the WIF provider is scoped to the workflow FILE,
 not a job, so no infra changes). The ambient `GITHUB_TOKEN` stays read-only,
-preserving the workflow's documented stance ("Neither job needs GitHub WRITE
+preserving the workflow's documented stance ("No job needs GitHub WRITE
 access via the ambient GITHUB_TOKEN"). The PAT already closes PRs and
 deletes branches in the lodash sweep, so no new permission is exercised.
 
