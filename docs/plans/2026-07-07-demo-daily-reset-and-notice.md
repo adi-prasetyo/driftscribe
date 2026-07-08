@@ -229,8 +229,10 @@ public-PR exposure; a per-provider attribute binding would tighten it later.
 4. **Disable the `demo-health.yml` and `demo-reset.yml` workflows**
    (`gh workflow disable demo-health.yml` — else it emails a failure
    every 30 min forever — then `gh workflow disable demo-reset.yml`).
-5. **Remove `DemoNoticeBanner` from the SPA** (revert commit) + redeploy
-   coordinator.
+5. **Remove `<DemoNoticeBell />` from the SPA** (the header bell that
+   replaced the original `DemoNoticeBanner`, PR #211 — component
+   `frontend/src/components/DemoNoticeBell.svelte`, wired in `App.svelte`)
+   + redeploy coordinator.
 
 ## Resolved items (were open in the parked draft)
 
