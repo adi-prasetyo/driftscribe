@@ -11,7 +11,7 @@ import {
   NEXT_LINE,
   adoptStepState,
 } from '../../src/lib/tour';
-import type { InfraGraph, InfraGroup, InfraNode } from '../../src/lib/infra_graph';
+import type { InfraGraph, InfraGroup, InfraNode, PendingApproval } from '../../src/lib/infra_graph';
 
 describe('tour done flag (localStorage)', () => {
   beforeEach(() => window.localStorage.clear());
@@ -84,6 +84,17 @@ function makeGroup(over: Partial<InfraGroup> = {}): InfraGroup {
     sensitive: false,
     nodes: [makeNode()],
     adoptable: true,
+    ...over,
+  };
+}
+
+function makePending(over: Partial<PendingApproval> = {}): PendingApproval {
+  return {
+    pr_number: 168,
+    title: 'Adopt adopt-probe-topic',
+    url: 'https://github.com/example/repo/pull/168',
+    asset_type: 'pubsub.googleapis.com/Topic',
+    resource_name: 'adopt-probe-topic',
     ...over,
   };
 }
@@ -569,5 +580,129 @@ describe('adoptStepState', () => {
       expect(s.line).toContain('Google service');
       expect(s.line).toContain('denylist');
     }
+  });
+
+  // Pending-adoption-PR awareness (the "why does the tour suggest a resource
+  // that already has PR #168 open?" gap): the panel and the propose_adoption
+  // dupe-guard both know about open adoption PRs, but adoptStepState only saw
+  // the graph. A resource with a review-pending PR is still graph-unmanaged
+  // (the PR is not merged/applied), so it was still the rank-1 suggestion.
+  it('skips a node whose resource already has an open adoption PR, falling to the next group', () => {
+    const g = makeGraph({
+      groups: [
+        makeGroup({
+          asset_type: 'pubsub.googleapis.com/Topic',
+          label: 'Pub/Sub topic',
+          adoptable: true,
+          adopt_rank: 1,
+          nodes: [makeNode({ id: 't0', label: 'adopt-probe-topic', asset_type: 'pubsub.googleapis.com/Topic', managed: false })],
+        }),
+        makeGroup({
+          asset_type: 'pubsub.googleapis.com/Topic',
+          label: 'Pub/Sub topic',
+          adoptable: true,
+          adopt_rank: 2,
+          nodes: [makeNode({ id: 't1', label: 'orders', asset_type: 'pubsub.googleapis.com/Topic', managed: false })],
+        }),
+      ],
+    });
+    const pending = [makePending({ asset_type: 'pubsub.googleapis.com/Topic', resource_name: 'adopt-probe-topic', pr_number: 168 })];
+    const s = adoptStepState(g, pending);
+    expect(s.kind).toBe('target');
+    if (s.kind === 'target') {
+      expect(s.prefill).toContain('`orders`');
+      expect(s.prefill).not.toContain('adopt-probe-topic');
+    }
+  });
+
+  it('within a group, picks the sibling without an open PR', () => {
+    const g = makeGraph({
+      groups: [
+        makeGroup({
+          asset_type: 'pubsub.googleapis.com/Topic',
+          label: 'Pub/Sub topic',
+          adoptable: true,
+          adopt_rank: 1,
+          nodes: [
+            makeNode({ id: 't0', label: 'adopt-probe-topic', asset_type: 'pubsub.googleapis.com/Topic', managed: false }),
+            makeNode({ id: 't1', label: 'orders', asset_type: 'pubsub.googleapis.com/Topic', managed: false }),
+          ],
+        }),
+      ],
+    });
+    const pending = [makePending({ asset_type: 'pubsub.googleapis.com/Topic', resource_name: 'adopt-probe-topic', pr_number: 168 })];
+    const s = adoptStepState(g, pending);
+    expect(s.kind).toBe('target');
+    if (s.kind === 'target') expect(s.prefill).toContain('`orders`');
+  });
+
+  it('when every adoptable target already has an open PR, points at the open change instead of suggesting one', () => {
+    const g = makeGraph({
+      totals: { resources: 1, managed: 0, drift: 1 },
+      groups: [
+        makeGroup({
+          asset_type: 'pubsub.googleapis.com/Topic',
+          label: 'Pub/Sub topic',
+          adoptable: true,
+          adopt_rank: 1,
+          nodes: [makeNode({ id: 't0', label: 'adopt-probe-topic', asset_type: 'pubsub.googleapis.com/Topic', managed: false })],
+        }),
+      ],
+    });
+    const pending = [makePending({ asset_type: 'pubsub.googleapis.com/Topic', resource_name: 'adopt-probe-topic', pr_number: 168 })];
+    const s = adoptStepState(g, pending);
+    expect(s.kind).toBe('none');
+    if (s.kind === 'none') {
+      expect(s.line).toContain('already');
+      expect(s.line).toContain('Open infra changes');
+      // honesty: not misdescribed as a naming/type/system-managed problem
+      expect(s.line).not.toContain('named adopt target');
+      expect(s.line).not.toContain('not adoptable types');
+      expect(s.line).not.toContain('system-managed');
+    }
+  });
+
+  it('a PR-d named row alongside an UNNAMED actionable row falls through to the no-named-target line, not the all-PR-d line', () => {
+    // Honesty guard (Codex 019f4012): the unnamed row is adoptable-but-unnameable,
+    // NOT PR'd — claiming "everything already has a PR" would overclaim.
+    const g = makeGraph({
+      totals: { resources: 2, managed: 0, drift: 2 },
+      groups: [
+        makeGroup({
+          asset_type: 'pubsub.googleapis.com/Topic',
+          label: 'Pub/Sub topic',
+          adoptable: true,
+          adopt_rank: 1,
+          nodes: [
+            makeNode({ id: 't0', label: 'adopt-probe-topic', asset_type: 'pubsub.googleapis.com/Topic', managed: false }),
+            makeNode({ id: 't1', label: '   ', asset_type: 'pubsub.googleapis.com/Topic', managed: false }), // normalizes to ''
+          ],
+        }),
+      ],
+    });
+    const pending = [makePending({ asset_type: 'pubsub.googleapis.com/Topic', resource_name: 'adopt-probe-topic', pr_number: 168 })];
+    const s = adoptStepState(g, pending);
+    expect(s.kind).toBe('none');
+    if (s.kind === 'none') {
+      expect(s.line).toContain('named adopt target');
+      expect(s.line).not.toContain('Open infra changes');
+    }
+  });
+
+  it('without a pending-approvals list, behaves exactly as before (undefined = no filtering)', () => {
+    const g = makeGraph({
+      groups: [
+        makeGroup({
+          asset_type: 'pubsub.googleapis.com/Topic',
+          label: 'Pub/Sub topic',
+          adoptable: true,
+          adopt_rank: 1,
+          nodes: [makeNode({ id: 't0', label: 'adopt-probe-topic', asset_type: 'pubsub.googleapis.com/Topic', managed: false })],
+        }),
+      ],
+    });
+    const s = adoptStepState(g);
+    expect(s.kind).toBe('target');
+    if (s.kind === 'target') expect(s.prefill).toContain('`adopt-probe-topic`');
   });
 });
