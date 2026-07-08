@@ -8,7 +8,7 @@ name: demo-reset
 # "rot" once disturbed — this workflow restores the demo-ready baseline on a
 # schedule so no judge can break the demo for the next visitor.
 #
-# Two jobs, deliberately split by BLAST DOMAIN (GCP vs GitHub) and by CADENCE:
+# Three jobs, deliberately split by BLAST DOMAIN (GCP vs GitHub) and by CADENCE:
 #   - service-reset: payment-demo traffic/env pre-read-and-diff (GCP), plus two
 #     notify-only safety nets (autonomy/pause dial, adopt-fixtures). Runs every
 #     2h — judges roll back payment-demo far more casually than they merge an
@@ -17,9 +17,15 @@ name: demo-reset
 #     PR (GitHub only). Runs once a day — main history shouldn't fill with
 #     reset commits, and re-pinning is idempotent so a stale merge doesn't
 #     compound.
+#   - adopt-pr-sweep: closes visitor adoption PRs older than 2h (GitHub only)
+#     so the Infra panel's "Adopt into IaC" demo self-restores — an open
+#     adoption PR hides that resource's Adopt button from every later visitor
+#     (pending-approvals band + crew dupe-guard, both state=open). Runs every
+#     2h alongside service-reset (docs/plans/2026-07-08-adopt-pr-sweep.md).
 #
-# Triggers: two crons (2h service-reset-only, daily 6:00 JST BOTH jobs) plus
-# workflow_dispatch (service-reset always; lodash-repin opt-in via
+# Triggers: two crons (2h = service-reset + adopt-pr-sweep, daily 6:00 JST =
+# ALL THREE jobs) plus
+# workflow_dispatch (service-reset + adopt-pr-sweep always; lodash-repin opt-in via
 # `force-lodash`, e.g. the FIRST post-deploy run — see the deploy checklist in
 # the plan doc — needs it to fix already-rotted state without waiting for
 # 6:00 JST). NEVER `pull_request_target` — same stance as iac.yml (see that
@@ -35,8 +41,8 @@ on:
     # UTC. GitHub Actions cron runs on a best-effort schedule (the docs warn
     # the top of the hour is the most contended slot) — see each job's `if:`
     # below for which one(s) a given scheduled run triggers.
-    - cron: '0 */2 * * *'   # every 2h -> service-reset only
-    - cron: '0 21 * * *'    # 21:00 UTC = 6:00 JST -> service-reset AND lodash-repin
+    - cron: '0 */2 * * *'   # every 2h -> service-reset + adopt-pr-sweep
+    - cron: '0 21 * * *'    # 21:00 UTC = 6:00 JST -> all three jobs
   workflow_dispatch:
     inputs:
       force-lodash:
@@ -45,9 +51,9 @@ on:
         default: false
 
 # Floor for ALL jobs: read-only checkout + WIF token minting + PR read.
-# Neither job needs GitHub WRITE access via the ambient GITHUB_TOKEN —
-# lodash-repin's git/PR mutations are authenticated with the
-# upgrade-docs-github-pat Secret Manager secret instead (see that job:
+# No job needs GitHub WRITE access via the ambient GITHUB_TOKEN —
+# lodash-repin's and adopt-pr-sweep's git/PR mutations are authenticated with
+# the upgrade-docs-github-pat Secret Manager secret instead (see lodash-repin:
 # PAT-authored commits/PRs trigger CI, GITHUB_TOKEN-authored ones do not,
 # and the required checks + auto-merge depend on CI having run).
 #
@@ -604,5 +610,143 @@ jobs:
               echo "- re-pin: opened ${REPIN_PR_URL} (auto-merge enabled, not awaited)"
             else
               echo "- re-pin: DID NOT COMPLETE (step outcome: ${REPIN_OUTCOME:-unknown}) — check the step log; the next daily run will retry after sweeping any partial PR/branch"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------- #
+  # adopt-pr-sweep: close stale visitor adoption PRs so the Adopt demo
+  # self-restores (docs/plans/2026-07-08-adopt-pr-sweep.md).
+  # ---------------------------------------------------------------------- #
+  adopt-pr-sweep:
+    # No `if:` — runs on every trigger, same as service-reset: the 2h cadence
+    # IS the feature (a visitor adoption PR lives 2h-4h, so a judge mid-demo
+    # is never swept out from under their open approval page, and the Adopt
+    # button self-restores for the next visitor). A separate JOB, not a
+    # service-reset step: adopt-fixture verify exits 1 on a broken fixture
+    # and would skip any later step in that job, and this blast domain is
+    # GitHub-only (the sweep never touches GCP state).
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # No actions/checkout: this job only lists/closes PRs and deletes their
+      # branches via the GitHub API. GCP auth exists solely to fetch the PAT.
+      - name: Authenticate to GCP via WIF
+        uses: google-github-actions/auth@b7593ed2efd1c1617e1b0254da33b86225adb2a5 # v2.1.7
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_DEMO_RESET }}
+          service_account: ${{ secrets.GCP_DEMO_RESET_SA }}
+          project_id: driftscribe-hack-2026
+
+      - name: Setup gcloud CLI
+        uses: google-github-actions/setup-gcloud@77e7a554d41e2ee56fc945c52dfd3f33d12def9a # v2.1.4
+
+      - name: Fetch GitHub PAT (upgrade-docs-github-pat) from Secret Manager
+        id: pat
+        run: |
+          set -euo pipefail
+          # Same identity lodash-repin already uses to close PRs and delete
+          # branches (see that job's rationale); the demo-reset SA holds
+          # secretAccessor on it (infra/scripts/setup_demo_reset.sh). The
+          # ambient GITHUB_TOKEN stays read-only per the workflow-level
+          # permissions comment.
+          PAT=$(gcloud secrets versions access latest \
+            --secret=upgrade-docs-github-pat --project=driftscribe-hack-2026)
+          echo "::add-mask::$PAT"
+          echo "pat=$PAT" >> "$GITHUB_OUTPUT"
+
+      - name: "Sweep visitor adoption PRs older than 2h (never #168)"
+        id: sweep
+        env:
+          GH_TOKEN: ${{ steps.pat.outputs.pat }}
+          # env-indirection per this file's convention: values never
+          # ${{ }}-interpolated into the run: body.
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # Selection predicate (docs/plans/2026-07-08-adopt-pr-sweep.md):
+          #   - same-repo head ONLY (isCrossRepository|not): a fork PR's
+          #     headRefName is contributor-controlled, and the branch-delete
+          #     below targets a ref in THIS repo — without this guard a fork
+          #     PR named infra/adopt-* could aim it at a real branch here
+          #     (Codex must-fix).
+          #   - headRefName startswith infra/adopt-: server-derived, the LLM
+          #     never supplies it (agent/adk_tools.py derive_iac_pr_authority
+          #     slugs the renderer-pinned "Adopt ..." title). Deliberately NOT
+          #     the driftscribe-infra label — the label is worker-side
+          #     best-effort AND not adoption-specific (operator fix PRs like
+          #     #216 carry it too and must never be swept).
+          #   - >= 2h old: a judge mid-demo is never swept; 2h age + the 2h
+          #     cron bounds a visitor PR's lifetime at 2h-4h.
+          #   - never #168: the adopt-fixture verify step in service-reset
+          #     REQUIRES that PR open (the /iac-approvals/168 recording and
+          #     the curated approval-page demo) — sweeping it would fail
+          #     every subsequent scheduled run forever.
+          #
+          # Checked $(...) capture THEN mapfile — same rationale as the
+          # lodash sweep: a process-substitution failure doesn't propagate,
+          # so a rotated PAT must fail the job loudly, not report a clean
+          # zero-stray sweep. All filtering happens inside --jq: only
+          # same-repo PR numbers and server-derived branch names reach bash.
+          PR_LINES=$(gh pr list --repo "$REPO" --state open \
+            --json number,createdAt,headRefName,isCrossRepository \
+            --jq '.[]
+                  | select(.isCrossRepository | not)
+                  | select(.headRefName | startswith("infra/adopt-"))
+                  | select(.number != 168)
+                  | select((now - (.createdAt | fromdateiso8601)) >= 7200)
+                  | "\(.number)\t\(.headRefName)"')
+          mapfile -t PR_ROWS <<<"$PR_LINES"
+
+          # Quoted heredoc: the public close comment contains backticks that
+          # must stay literal (never a double-quoted shell string).
+          COMMENT=$(cat <<'COMMENT_EOF'
+          demo reset: auto-closing this public-demo-window adoption PR so the Adopt demo is available for the next visitor. Nothing was applied; the resource stays unmanaged. Adoption PRs opened during the demo window are swept ~2 hours after opening (`.github/workflows/demo-reset.yml`).
+          COMMENT_EOF
+          )
+
+          CLOSED=0
+          DELETED=0
+          for row in "${PR_ROWS[@]:-}"; do
+            [ -z "$row" ] && continue
+            pr="${row%%$'\t'*}"
+            branch="${row#*$'\t'}"
+            if gh pr close "$pr" --repo "$REPO" --comment "$COMMENT"; then
+              CLOSED=$((CLOSED + 1))
+            else
+              echo "warn: could not close PR #$pr (continuing sweep)" >&2
+              continue  # never delete the branch of a PR we failed to close
+            fi
+            # Per-PR branch delete only — never a bulk infra/adopt-* ref
+            # sweep, which could race a fresh (<2h) adoption's branch. The
+            # branch name is collision-safe ({ts}-{hex} suffix, see
+            # derive_iac_pr_authority), so a stale branch never blocks the
+            # next adoption; deletion is hygiene, warn-and-continue.
+            if gh api -X DELETE "repos/$REPO/git/refs/heads/${branch}" >/dev/null 2>&1; then
+              DELETED=$((DELETED + 1))
+            else
+              echo "warn: could not delete branch $branch (continuing sweep)" >&2
+            fi
+          done
+
+          echo "closed=$CLOSED" >> "$GITHUB_OUTPUT"
+          echo "deleted=$DELETED" >> "$GITHUB_OUTPUT"
+          echo "sweep: closed $CLOSED stale adoption PR(s), deleted $DELETED branch(es)"
+
+      - name: Run summary
+        if: always()
+        env:
+          # Step outputs via env:, never ${{ }} in the run: body (see the
+          # service-reset summary step's actions-injection comment).
+          SWEEP_OUTCOME: ${{ steps.sweep.outcome }}
+          SWEEP_CLOSED: ${{ steps.sweep.outputs.closed }}
+          SWEEP_DELETED: ${{ steps.sweep.outputs.deleted }}
+        run: |
+          {
+            echo "## demo-reset / adopt-pr-sweep — $(date -u +%FT%TZ)"
+            if [ "$SWEEP_OUTCOME" = "success" ]; then
+              echo "- closed ${SWEEP_CLOSED:-0} stale adoption PR(s), deleted ${SWEEP_DELETED:-0} branch(es)"
+            else
+              echo "- sweep DID NOT COMPLETE (step outcome: ${SWEEP_OUTCOME:-unknown}) — check the step log; the next scheduled run retries"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
