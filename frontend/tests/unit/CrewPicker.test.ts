@@ -141,7 +141,7 @@ describe('CrewPicker — crew-locked (open thread)', () => {
     expect(driftHint.textContent).toBe(WORKLOADS.find((w) => w.value === 'drift')!.summary);
   });
 
-  it('blocks arrow-key radio navigation while locked', async () => {
+  it('blocks arrow-key radio SELECTION change while locked', async () => {
     const { container } = render(CrewPicker, { props: { value: 'drift', lockedTo: 'drift' } });
     const drift = container.querySelector(
       '[data-testid="crew-card-drift"] input',
@@ -151,6 +151,23 @@ describe('CrewPicker — crew-locked (open thread)', () => {
     expect(notPrevented).toBe(false);
     // …and the selection must actually stay put (the behavior, not the API).
     await waitFor(() => expect(drift.checked).toBe(true));
+  });
+
+  it('still ROVES FOCUS across locked cards (a11y: they stay keyboard-reachable)', async () => {
+    // The lock refuses selection, not reachability: arrow keys must still move
+    // focus to the greyed cards so a keyboard/SR user can hear each one's lock
+    // explanation (surfaced via the focus-shown tooltip). Selection stays pinned.
+    const { container } = render(CrewPicker, { props: { value: 'drift', lockedTo: 'drift' } });
+    const radios = [
+      ...container.querySelectorAll('input[type="radio"]'),
+    ] as HTMLInputElement[];
+    radios[0].focus();
+    await fireEvent.keyDown(radios[0], { key: 'ArrowRight' });
+    // Focus advanced to the next card…
+    expect(document.activeElement).toBe(radios[1]);
+    // …but the locked crew is still the checked one.
+    const checked = container.querySelector('input[type="radio"]:checked') as HTMLInputElement;
+    expect(checked.value).toBe('drift');
   });
 
   it('snaps a programmatic value change back to the locked crew (belt)', async () => {

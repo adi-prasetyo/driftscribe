@@ -92,10 +92,33 @@
       el.checked = el.value === value;
     }
   }
-  // Arrow keys natively move a radio group's selection; block them while locked.
+  // In a native radio group, Arrow/Home/End BOTH move focus AND change the
+  // selection — and they're the only way keyboard users reach the non-checked
+  // radios. While locked we must keep the focus movement (so a keyboard / screen-
+  // reader user can still reach each greyed card and hear its lock explanation
+  // via the focus-shown tooltip) but drop the selection change. So preventDefault
+  // the native roving, then move focus by hand without touching checked/value.
+  // (Space/Enter that would re-check a focused card fire a click → guardClick,
+  // which refuses + re-pins, so they need no handling here.)
+  const ROVE_KEYS = ['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp', 'Home', 'End'];
   function guardKeydown(e: KeyboardEvent): void {
-    if (lockedTo === null) return;
-    if (e.key.startsWith('Arrow')) e.preventDefault();
+    if (lockedTo === null || !ROVE_KEYS.includes(e.key)) return;
+    e.preventDefault();
+    const radios = [
+      ...((e.currentTarget as HTMLElement)
+        .closest('fieldset')
+        ?.querySelectorAll<HTMLInputElement>('input[type="radio"]') ?? []),
+    ];
+    if (radios.length === 0) return;
+    const i = radios.indexOf(e.currentTarget as HTMLInputElement);
+    let target: HTMLInputElement | undefined;
+    if (e.key === 'Home') target = radios[0];
+    else if (e.key === 'End') target = radios[radios.length - 1];
+    else {
+      const forward = e.key === 'ArrowRight' || e.key === 'ArrowDown';
+      target = radios[(i + (forward ? 1 : -1) + radios.length) % radios.length];
+    }
+    target?.focus({ preventScroll: true });
   }
   // Belt: nothing in-app should flip the bound value while locked (App resets
   // the thread before an Adopt prefill), but if something does, snap back.
