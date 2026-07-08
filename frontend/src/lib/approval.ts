@@ -20,7 +20,12 @@
  * RELATIVE href (`pathname + search`) on success, or `null` if rejected.
  *
  * Rejects: off-origin absolute URLs, non-http(s) schemes (`javascript:`,
- * `data:`, `file:`, …), non-`/approvals/` paths, and empty/malformed input.
+ * `data:`, `file:`, …), non-`/approvals/` paths, empty/malformed input, and
+ * links whose `?t=` token is the demo scrub's literal `<redacted>` placeholder
+ * — the anonymous serve scrub masks the one-time token to that literal, and
+ * both Approve and Reject need the real token, so a CTA for such a link is a
+ * dead button (the literal can never be a real token: the redactor's value
+ * class excludes `<`).
  */
 export function safeApprovalHref(raw: string, origin?: string): string | null {
   const base = origin ?? window.location.origin;
@@ -37,6 +42,9 @@ export function safeApprovalHref(raw: string, origin?: string): string | null {
     if (u.origin !== baseOrigin) return null;
     if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
     if (!u.pathname.startsWith('/approvals/')) return null;
+    // searchParams decodes, so both `?t=<redacted>` and `?t=%3Credacted%3E`
+    // (the URL-encoded form a browser produces) are caught here.
+    if (u.searchParams.get('t') === '<redacted>') return null;
     return u.pathname + u.search;
   } catch {
     return null;

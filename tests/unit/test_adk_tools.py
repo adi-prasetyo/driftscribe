@@ -828,12 +828,56 @@ def test_propose_rollback_withholds_credential_from_model_when_anon():
     # The model sees the token on NO field.
     assert "SECRETTOKEN" not in json.dumps(out)
     assert "approval_token" not in out          # bare raw token dropped entirely
+    # The URL is dropped ENTIRELY — a masked ``?t=<redacted>`` URL survives as
+    # a dead link the model echoes to visitors (observed live 2026-07-08).
+    assert "approval_url" not in out
+    # ...replaced by an explicit note the model can relay instead.
+    assert "operator" in out["approval_note"]
+    assert "approval URL" in out["approval_note"]
     # Non-secret fields stay so the model can still say an approval was created.
     assert out["approval_id"] == "id1"
     assert out["expires_at"] == "2026-07-07T00:15:00+00:00"
     # Operator notifier webhook is UNCHANGED — it still carries the live link.
     assert len(notifier_calls) == 1
     assert "SECRETTOKEN" in notifier_calls[0]["body"]
+
+
+@pytest.mark.parametrize(
+    "worker_resp",
+    [
+        # no approval_url at all (error shape)
+        {"error": "worker exploded", "approval_id": "id1"},
+        # approval_url present but expires_at malformed → the notify is
+        # SKIPPED, so the note's "was sent to the operator" would be false
+        # (Codex review: the note must track the notify condition exactly).
+        {"approval_id": "id1", "approval_url": "https://c/approvals/id1?t=tok"},
+        {"approval_id": "id1", "approval_url": "https://c/approvals/id1?t=tok",
+         "expires_at": ""},
+        {"approval_id": "id1", "approval_url": "https://c/approvals/id1?t=tok",
+         "expires_at": 12345},
+    ],
+)
+def test_propose_rollback_anon_notify_skipped_gains_no_note(worker_resp):
+    """The ``approval_note`` asserts the operator's channel was sent the live
+    link, so it must appear ONLY when the notify was actually attempted — any
+    shape that skips the notify (no URL, or a malformed ``expires_at``) must
+    not gain the note. The credential fields are still scrubbed."""
+    from agent.adk_tools import propose_rollback_tool
+    from agent.request_context import demo_anonymous_scope
+
+    def _fake_call(worker, payload):
+        assert worker != "notifier", "notify must be skipped for this shape"
+        return worker_resp
+
+    with patch("agent.adk_tools.worker_client.call", side_effect=_fake_call):
+        with demo_anonymous_scope(True):
+            out = propose_rollback_tool(
+                target_revision="payment-demo-00002-bbb", reason="x"
+            )
+
+    assert "approval_note" not in out
+    assert "approval_url" not in out
+    assert "?t=tok" not in json.dumps(out)
 
 
 def test_propose_rollback_operator_keeps_credential():

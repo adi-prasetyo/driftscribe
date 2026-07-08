@@ -3827,6 +3827,15 @@ def approval_get(request: Request, approval_id: str, t: str = "") -> Response:
     store = approval_helpers.get_approval_store()
     approval = store.get(approval_id)
     expired = bool(approval) and approval_helpers.is_expired(approval)
+    # No usable token → the page cannot act: BOTH Approve and Reject hand
+    # (approval_id, t) to the rollback worker for HMAC verification, so
+    # rendering the form would only manufacture a doomed POST (observed live
+    # 2026-07-08: a tokenless Approve died as raw 422 JSON). The literal
+    # ``<redacted>`` is what the demo-anonymous serve scrub substitutes for
+    # the token in persisted conversations — a visitor pasting such a link
+    # lands here; it can never be a real token (the redactor's value class
+    # excludes ``<``). The template renders an explanatory note instead.
+    token_missing = not t.strip() or t.strip() == "<redacted>"
     # Pause gate (display): the page shows what its POST would do — Approve
     # disabled + a calm note while paused; Reject stays active (the POST allows
     # reject while paused). _pause_state_fail_closed keeps the GET ALWAYS-200
@@ -3846,6 +3855,7 @@ def approval_get(request: Request, approval_id: str, t: str = "") -> Response:
             "approval_id": approval_id,
             "approval": approval,
             "token": t,
+            "token_missing": token_missing,
             "expired": expired,
             "paused": paused,
             "autonomy_blocked": autonomy_blocked,
