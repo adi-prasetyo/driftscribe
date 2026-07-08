@@ -18,7 +18,11 @@ resource "google_pubsub_subscription" "orders_sub" {
   # Never expire. Nothing consumes this subscription between demo sessions,
   # so GCP's default 31-day idle expiry deleted it out-of-band (2026-07-08),
   # and the resulting +create in every tofu plan blocked all adoption PRs
-  # (import-mixed-plan-forbidden-v1).
+  # (import-mixed-plan-forbidden-v1). PR #216 merged this config but its apply
+  # was (correctly) drift-refused: the expiry deletion itself was still
+  # unreconciled out-of-band drift. Recovery ran the runbook's state reconcile
+  # (iac-apply-failure-recovery.md §2, refresh-only) and this PR re-expresses
+  # the create per §7b.
   expiration_policy {
     ttl = ""
   }
