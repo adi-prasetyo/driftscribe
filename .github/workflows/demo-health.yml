@@ -1,0 +1,87 @@
+name: demo-health
+
+# Synthetic monitor for the public judging window (opened 2026-07-07 —
+# docs/plans/2026-07-08-demo-health-monitor.md). demo-reset.yml heals demo
+# DATA through the run.app origin with the operator token, so it stays
+# green even when the public hostname is walled off (which happened on
+# 2026-07-08: the window sat CLOSED for hours after an operator flip and
+# nothing noticed). This workflow probes the path an anonymous judge
+# actually takes — CF Access edge -> demo-proxy Worker -> coordinator —
+# and FAILS the run on any unhealthy state. GitHub's failed-scheduled-run
+# email to the owner is the alert: the same notification contract
+# demo-reset.yml documents. Repeated failure emails while broken are the
+# intended urgency during judging week.
+#
+# NEVER auto-repairs. Window flips are deliberate operator actions
+# (infra/cloudflare/demo-window.sh), and the runbook's mid-window `off`
+# flip (IaC approvals) must not be fought by a monitor. A deliberate
+# short flip that crosses a 30-min tick costs one false-positive email —
+# accepted, it doubles as the "you forgot to flip back on" reminder.
+#
+# ZERO credentials by design: no WIF, no secrets, no PAT — anonymous curl
+# is the whole point (we probe what a stranger sees). Nothing here can
+# mutate anything, so `schedule`-runs-from-main is the only trust anchor
+# needed. When the window closes for good (~7/30), disable this workflow:
+# `gh workflow disable demo-health.yml` (see demo-window.sh close checklist).
+on:
+  schedule:
+    # :17/:47, NOT */30 — GitHub's docs single out the top of the hour as
+    # the most contended (delayed or even dropped) cron slot, and */30
+    # lands half its firings there. demo-reset.yml already rides :00; this
+    # monitor deliberately doesn't.
+    - cron: '17,47 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read   # checkout only
+
+concurrency:
+  group: demo-health
+  cancel-in-progress: true   # probes are stateless; the newest answer wins
+
+jobs:
+  judge-path-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15   # probe worst case ~8 min (3 attempts x ~2 min of curl max-times + 2x40s sleeps + checkout); padded so the script's graceful exit always beats the job ceiling — a killed job would skip the summary step
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Probe the anonymous judge path
+        id: probe
+        run: |
+          set -o pipefail
+          if bash infra/cloudflare/demo-health-probe.sh 2>&1 | tee probe.log; then
+            echo "healthy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "healthy=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Summary + verdict
+        env:
+          # Step output via env:, never ${{ }} in the run: body (repo
+          # convention — see demo-reset.yml's actions-injection comments).
+          HEALTHY: ${{ steps.probe.outputs.healthy }}
+        run: |
+          {
+            echo "## demo-health / judge-path-probe — $(date -u +%FT%TZ)"
+            echo '````'
+            cat probe.log
+            echo '````'
+            if [ "$HEALTHY" != "true" ]; then
+              echo "### :rotating_light: judge path UNHEALTHY"
+              echo "Anonymous visitors cannot fully use driftscribe.adp-app.com right now."
+              echo ""
+              echo "Triage (repo root, \`set -a; source .env; set +a\` first):"
+              echo '- `infra/cloudflare/demo-window.sh status` — edge + policy state'
+              echo '- CLOSED -> `demo-window.sh on` (it prints the full ordering checklist: dial, DEMO_MODE, then edge)'
+              echo '- HALF-OPEN -> redeploy the Worker with DEMO_MODE="1"; the deploy output MUST list CHAT_RATE_LIMIT'
+              echo '- edge OPEN but an API probe failed -> coordinator/infra-reader problem: check Cloud Run logs'
+              echo ""
+              echo "Window deliberately closed for good? Disable this monitor:"
+              echo '`gh workflow disable demo-health.yml`'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          [ "$HEALTHY" = "true" ]

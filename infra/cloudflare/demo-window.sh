@@ -5,6 +5,8 @@
 #   demo-window.sh on      create the Everyone-bypass policy (edge gate OPEN)
 #   demo-window.sh off     delete it (edge gate restored)
 #   demo-window.sh status  policy + live edge state, no changes
+#   demo-window.sh probe   anonymous edge probe only, exit 0 iff fully OPEN
+#                          (no CF API token needed — used by demo-health.yml)
 #
 # The bypass policy only opens the EDGE. What anonymous traffic can then do
 # is decided by the Worker's DEMO_MODE (infra/cloudflare/worker/) — with
@@ -18,7 +20,8 @@
 # CF Access JWT for OPERATORS on this hostname too, so POST /iac-approvals/{n}
 # 401s for everyone mid-window. Flip `off` briefly if an approve is needed.
 #
-# Required env var (load via `set -a; source .env; set +a` at repo root):
+# Required env var (load via `set -a; source .env; set +a` at repo root) —
+# needed for on/off/status only; `probe` runs credential-free:
 #   CLOUDFLARE_DRIFTSCRIBE_API_TOKEN   (Account:Access Apps+Policies:Edit)
 
 set -euo pipefail
@@ -29,10 +32,16 @@ TEAM_DOMAIN="adp-app.cloudflareaccess.com"
 BYPASS_NAME="driftscribe-demo-bypass"
 
 API="https://api.cloudflare.com/client/v4"
-: "${CLOUDFLARE_DRIFTSCRIBE_API_TOKEN:?load it first: set -a; source .env; set +a}"
-
-AUTH=(-H "Authorization: Bearer ${CLOUDFLARE_DRIFTSCRIBE_API_TOKEN}")
 JSON=(-H "Content-Type: application/json")
+
+# The CF API token is only needed by subcommands that read/mutate Access
+# policies (on/off/status). `probe` is anonymous-curl only, so it must run
+# with no credentials at all (that is what lets demo-health.yml call it
+# from a zero-secret scheduled job).
+require_cf_token() {
+  : "${CLOUDFLARE_DRIFTSCRIBE_API_TOKEN:?load it first: set -a; source .env; set +a}"
+  AUTH=(-H "Authorization: Bearer ${CLOUDFLARE_DRIFTSCRIBE_API_TOKEN}")
+}
 
 # Strict call: any non-success response is fatal.
 cf_call() {
@@ -73,6 +82,7 @@ find_app_id() {
 APP_ID=""
 POLICIES=""
 load_policies() {
+  require_cf_token
   APP_ID=$(find_app_id)
   if [[ -z "$APP_ID" ]]; then
     echo "FATAL: no Access app gates $HOST — run setup-access.sh first" >&2
@@ -188,6 +198,8 @@ Window-CLOSE ordering (reverse of open):
   1. this script: demo-window.sh off                     <- edge gate, FIRST
   2. worker/wrangler.toml DEMO_MODE="0" + wrangler deploy
   3. operator: restore the autonomy dial if desired
+  4. judging-window automation: gh workflow disable demo-health.yml
+     (else it emails a failure every 30 min forever) + demo-reset.yml
 EOF
 }
 
@@ -273,12 +285,24 @@ cmd_status() {
   describe_edge "$(edge_state)"
 }
 
+cmd_probe() {
+  # Anonymous edge probe only — no Cloudflare API token, no side effects.
+  # Exit 0 iff the window is fully OPEN (bypass live + Worker DEMO_MODE=1
+  # injecting); closed / half-open / odd:* exit 1 so schedulers
+  # (.github/workflows/demo-health.yml) can alert on any of them.
+  local state
+  state=$(edge_state)
+  describe_edge "$state"
+  [[ "$state" == "open" ]]
+}
+
 case "${1:-}" in
   on)     cmd_on ;;
   off)    cmd_off ;;
   status) cmd_status ;;
+  probe)  cmd_probe ;;
   *)
-    echo "usage: $0 <on|off|status>" >&2
+    echo "usage: $0 <on|off|status|probe>" >&2
     exit 2
     ;;
 esac

@@ -259,6 +259,9 @@ Close (~7/30):
    script fails loudly unless the Access redirect returns.
 2. `DEMO_MODE = "0"` + `wrangler deploy`.
 3. Restore the autonomy dial as desired.
+4. Disable the judging-window automation: `gh workflow disable
+   demo-health.yml` (else it emails a failure every 30 min forever) +
+   `gh workflow disable demo-reset.yml`.
 
 Mid-window IaC approve: flip `off` briefly (the Everyone-bypass strips
 operator CF JWTs on this hostname too), approve, flip back `on`.
