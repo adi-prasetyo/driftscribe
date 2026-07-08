@@ -295,3 +295,132 @@ describe('App — a chat turn settles into the thread', () => {
     expect(hero === null || hero.hasAttribute('hidden')).toBe(true);
   });
 });
+
+// EXACT DTO shape from InfraDiagram.test.ts::adoptGraph() (the source of
+// truth): groups carry asset_type/adoptable/count/managed/drift/sensitive;
+// nodes carry id/label/asset_type/managed/location. Do NOT invent fields —
+// lib/infra_graph.resourceCards() reads these exact names, and a wrong shape
+// silently renders no card-adopt-btn.
+const ADOPT_GRAPH = {
+  generated_at: null,
+  project: 'demo-proj',
+  caveat: 'test caveat',
+  degraded: false,
+  degraded_reason: null,
+  totals: { resources: 1, managed: 0, drift: 1 },
+  groups: [
+    {
+      asset_type: 'storage.googleapis.com/Bucket',
+      label: 'Storage bucket',
+      adoptable: true,
+      count: 1,
+      managed: 0,
+      drift: 1,
+      sensitive: false,
+      nodes: [
+        {
+          id: 'g0n0',
+          label: 'my-old-uploads',
+          asset_type: 'storage.googleapis.com/Bucket',
+          managed: false,
+          location: 'asia-northeast1',
+        },
+      ],
+    },
+  ],
+  edges: [],
+};
+
+function resumeFixtures() {
+  const list = {
+    conversations: [
+      {
+        conversation_id: 'c1',
+        workload: 'explore',
+        title: 'prior chat about drift',
+        updated_at: new Date().toISOString(),
+        turn_count: 2,
+      },
+    ],
+  };
+  const detail = {
+    conversation_id: 'c1',
+    workload: 'explore',
+    title: 'prior chat about drift',
+    turns: [
+      { seq: 0, role: 'user', text: 'what changed?', workload: 'explore' },
+      { seq: 1, role: 'crew', text: 'the env var EXTRA drifted', workload: 'explore', trace_id: 't1' },
+    ],
+  };
+  return { list, detail };
+}
+
+function stubResumeFetch(graph: unknown = GRAPH) {
+  const { list, detail } = resumeFixtures();
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/conversations/')) return okJson(detail);
+      if (url.includes('/conversations')) return okJson(list);
+      if (url.includes('/decisions')) return okJson({ decisions: [] });
+      if (url.includes('/infra/pending-approvals')) return okJson({ approvals: [] });
+      if (url.includes('/infra/graph')) return okJson(graph);
+      return okJson({});
+    }),
+  );
+}
+
+describe('App — composer New chat + crew lock', () => {
+  it('hides the composer New chat button on a fresh boot', async () => {
+    stubResumeFetch();
+    const { findByTestId, queryByTestId } = render(App);
+    await findByTestId('chat-prompt');
+    expect(queryByTestId('composer-new-chat')).toBeNull();
+  });
+
+  it('resuming a thread shows New chat and soft-locks the other crews', async () => {
+    stubResumeFetch();
+    const { findByTestId, container } = render(App);
+    await fireEvent.click(await findByTestId('conversation-open'));
+    await findByTestId('conversation-thread');
+    await findByTestId('composer-new-chat');
+    await waitFor(() => {
+      // Thread crew is explore → the other three lock.
+      const drift = container.querySelector('[data-testid="crew-card-drift"] input')!;
+      expect(drift.getAttribute('aria-disabled')).toBe('true');
+      const explore = container.querySelector('[data-testid="crew-card-explore"] input')!;
+      expect(explore.getAttribute('aria-disabled')).toBeNull();
+    });
+  });
+
+  it('New chat drops the thread, unlocks the crews, and hides itself', async () => {
+    stubResumeFetch();
+    const { findByTestId, queryByTestId, container } = render(App);
+    await fireEvent.click(await findByTestId('conversation-open'));
+    await findByTestId('conversation-thread');
+    await fireEvent.click(await findByTestId('composer-new-chat'));
+    await waitFor(() => {
+      expect(queryByTestId('conversation-thread')).toBeNull();
+      expect(queryByTestId('composer-new-chat')).toBeNull();
+      expect(container.querySelector('input[aria-disabled="true"]')).toBeNull();
+    });
+  });
+
+  it('an Adopt click on an open thread starts a clean slate before prefilling', async () => {
+    stubResumeFetch(ADOPT_GRAPH);
+    const { findByTestId, queryByTestId, container } = render(App);
+    await fireEvent.click(await findByTestId('conversation-open'));
+    await findByTestId('conversation-thread');
+    await fireEvent.click(await findByTestId('card-adopt-btn'));
+    await waitFor(() => {
+      // Thread dropped (clean slate), composer prefilled on Provision, unlocked.
+      expect(queryByTestId('conversation-thread')).toBeNull();
+      const input = container.querySelector('#prompt-input') as HTMLTextAreaElement;
+      expect(input.value).toContain('my-old-uploads');
+      const checked = container.querySelector('input[type="radio"]:checked') as HTMLInputElement;
+      expect(checked.value).toBe('provision');
+      expect(container.querySelector('input[aria-disabled="true"]')).toBeNull();
+    });
+  });
+});
