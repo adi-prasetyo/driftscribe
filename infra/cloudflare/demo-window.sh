@@ -198,6 +198,8 @@ Window-CLOSE ordering (reverse of open):
   1. this script: demo-window.sh off                     <- edge gate, FIRST
   2. worker/wrangler.toml DEMO_MODE="0" + wrangler deploy
   3. operator: restore the autonomy dial if desired
+  4. judging-window automation: gh workflow disable demo-health.yml
+     (else it emails a failure every 30 min forever) + demo-reset.yml
 EOF
 }
 
