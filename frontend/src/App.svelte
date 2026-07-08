@@ -909,7 +909,6 @@
       {conversations}
       activeConversationId={conversationId}
       onOpen={openConversation}
-      onNewChat={newChat}
     />
     <DecisionsRail {decisions} {activeTraceId} onOpenTrace={openTrace} />
   </div>
