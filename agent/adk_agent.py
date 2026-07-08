@@ -567,6 +567,36 @@ _DEMO_ANON_NOTE = (
 )
 
 
+# Explore is the read-only "how does DriftScribe work" crew — it drops no tool
+# for an anonymous caller (it has none to drop), so it never receives
+# ``_DEMO_ANON_NOTE`` above. Yet it is exactly the crew a judge asks why they
+# cannot approve, why drift recurred or their adoption PR closed, or whether the
+# infra is real. Give it demo-environment context whenever it serves an
+# anonymous visitor. Runtime-composed and demo_anon-gated: it self-removes when
+# the window closes (an authenticated operator never sees it), so it needs no
+# close-window runbook step and never touches the served prompt file or the
+# byte-golden pins. Names no tool (the name-grounding guard scans prompt files,
+# not this). Honest framing: proposing here is genuinely real, but changing live
+# infra is held by the operator — that is the access boundary, not a feature.
+_EXPLORE_DEMO_ANON_NOTE = (
+    "DEMO NOTE: you are serving an anonymous visitor in DriftScribe's public "
+    "demo window. This is normally a single-operator console, opened to the "
+    "public only for the hackathon. Proposing a change here is real: the Adopt "
+    "button opens an actual GitHub pull request. But approving or applying an "
+    "infrastructure change, and running a rollback, are operator-only during the "
+    "public demo, so an anonymous visitor cannot directly change the live "
+    "infrastructure. The target is a real Google Cloud project with real pull "
+    "requests. Scheduled resets keep the demo in a consistent state: they "
+    "periodically restore the baseline and re-introduce the sample drift, so "
+    "drift that was resolved can reappear, and an adoption pull request a "
+    "visitor opened may be closed automatically after a couple of hours. This is "
+    "background: only bring it up when the visitor's question touches it (why a "
+    "change cannot be approved here, why drift returned or a PR closed, or "
+    "whether the infrastructure is real), otherwise just answer their actual "
+    "question."
+)
+
+
 def build_chat_agent(
     workload: WorkloadResolution,
     *,
@@ -618,10 +648,16 @@ def build_chat_agent(
     # mutate the cached WorkloadResolution — this composes per-request only.
     if extra_instruction:
         instruction = f"{extra_instruction}\n\n{instruction}"
-    # Appended LAST (trusted operator instruction; recency aids adherence) only
-    # when the demo-anon denylist actually removed a tool — so the crew explains
-    # the operator-only boundary rather than silently lacking a capability.
-    if demo_dropped:
+    # Appended LAST (trusted operator instruction; recency aids adherence).
+    # Explore is the read-only public-demo explainer crew: it drops no tool
+    # (nothing to deny), yet it is exactly where an anonymous visitor asks why
+    # they cannot approve, why drift recurred or their adoption PR closed, or
+    # whether the infra is real — so it gets demo-environment context whenever
+    # demo_anon, not gated on a dropped tool. The mutation crews keep the
+    # tool-boundary note, still gated on an actually-removed tool.
+    if demo_anon and workload.spec.name == "explore":
+        instruction = f"{instruction}\n\n{_EXPLORE_DEMO_ANON_NOTE}"
+    elif demo_dropped:
         instruction = f"{instruction}\n\n{_DEMO_ANON_NOTE}"
     return Agent(
         name=f"driftscribe_chat_{workload.spec.name}",

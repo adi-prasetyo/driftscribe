@@ -122,6 +122,50 @@ def test_build_chat_agent_operator_keeps_apply_tier(upgrade_workload_env):
 
 
 # --------------------------------------------------------------------------- #
+# Explore demo-context note: Explore is read-only (drops no tool for anon), so
+# the tool-boundary _DEMO_ANON_NOTE never fires for it. But it is the crew that
+# fields "why can't I approve / why did drift come back / is this real" from
+# anonymous judges, so a demo-anon Explore chat gets the demo-ENVIRONMENT note
+# regardless — and an authenticated operator Explore chat never does.
+# --------------------------------------------------------------------------- #
+
+
+def test_chat_agent_demo_anon_explore_gets_demo_context(explore_workload_env):
+    resolution = load_workload("explore")
+    agent = adk_agent.build_chat_agent(
+        resolution, autonomy_mode="propose_apply", demo_anon=True
+    )
+    # Explore has no mutation tool to drop, yet the demo-environment note is
+    # appended (unlike the mutation crews, whose note is drop-gated).
+    assert adk_agent._EXPLORE_DEMO_ANON_NOTE in agent.instruction
+    # It must NOT get the mutation-crew tool-boundary note.
+    assert adk_agent._DEMO_ANON_NOTE not in agent.instruction
+
+
+def test_chat_agent_operator_explore_has_no_demo_context(explore_workload_env):
+    resolution = load_workload("explore")
+    agent = adk_agent.build_chat_agent(
+        resolution, autonomy_mode="propose_apply", demo_anon=False
+    )
+    # Authenticated operator: no demo note of either kind leaks into the prompt.
+    assert adk_agent._EXPLORE_DEMO_ANON_NOTE not in agent.instruction
+    assert adk_agent._DEMO_ANON_NOTE not in agent.instruction
+
+
+def test_chat_agent_demo_anon_mutation_crew_keeps_boundary_note_not_explore_note(
+    provision_workload_env,
+):
+    # A mutation crew that actually drops a tool for anon keeps the existing
+    # tool-boundary note and must NOT get the Explore-specific context note.
+    resolution = load_workload("provision")
+    agent = adk_agent.build_chat_agent(
+        resolution, autonomy_mode="propose_apply", demo_anon=True
+    )
+    assert adk_agent._DEMO_ANON_NOTE in agent.instruction
+    assert adk_agent._EXPLORE_DEMO_ANON_NOTE not in agent.instruction
+
+
+# --------------------------------------------------------------------------- #
 # Recheck agent — drift workload, Observe strips mutation tools
 # --------------------------------------------------------------------------- #
 
