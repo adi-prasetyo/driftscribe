@@ -61,6 +61,20 @@ describe('safeApprovalHref', () => {
     expect(safeApprovalHref('data:text/html,<script>alert(1)</script>', ORIGIN)).toBeNull();
   });
 
+  it('rejects the demo scrub\'s literal "<redacted>" token placeholder', () => {
+    // The anonymous serve scrub masks the one-time token to the literal
+    // "<redacted>"; the link can never act (Approve AND Reject verify the
+    // real token), so no CTA must render for it.
+    expect(safeApprovalHref('/approvals/x?t=<redacted>', ORIGIN)).toBeNull();
+    expect(
+      safeApprovalHref('https://coordinator.example/approvals/x?t=<redacted>', ORIGIN),
+    ).toBeNull();
+  });
+
+  it('rejects the URL-encoded form of the "<redacted>" placeholder', () => {
+    expect(safeApprovalHref('/approvals/x?t=%3Credacted%3E', ORIGIN)).toBeNull();
+  });
+
   it('rejects a relative path that is not under /approvals/', () => {
     expect(safeApprovalHref('/other/path', ORIGIN)).toBeNull();
   });

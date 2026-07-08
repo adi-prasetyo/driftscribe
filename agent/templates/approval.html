@@ -44,26 +44,36 @@
       {% endif %}
 
       {% if approval.status == "pending" and not expired %}
-        {% if paused %}
-          {# Pause gate (kill switch): calm note above the form. Approve is
-             disabled (the POST refuses it 423); Reject stays active because the
-             POST allows reject while paused — denying a rollback is the
-             safety-direction. #}
-          <div class="ds-note" data-testid="paused-note">⏸ DriftScribe is paused — Approve is disabled until an operator resumes. Reject still works (it denies this request).</div>
-        {% elif autonomy_blocked is defined and autonomy_blocked %}
-          {# Autonomy dial: calm note (not an alarm — the dial is the operator's
-             choice). Approve is disabled (the POST refuses it 409); Reject stays
-             active, same safety direction as pause. autonomy_detail distinguishes
-             a configured restriction from a fail-closed read. #}
-          <div class="ds-note" data-testid="autonomy-note">{{ autonomy_detail }} Reject still works (it denies this request).</div>
+        {% if token_missing is defined and token_missing %}
+          {# No usable one-time token arrived with the link (empty, or the
+             demo scrub's literal "<redacted>" placeholder). Approve AND
+             Reject both need the token, so the form would only manufacture a
+             doomed POST — render an explanation instead. Outranks the
+             paused / autonomy notes: those describe button states, and there
+             are no buttons here. #}
+          <div class="ds-note" data-testid="no-token-note">This page can't act on this approval. The link that opened it is missing its one-time token. Approving or rejecting requires the complete approval link, which is sent to the operator's notification channel when a rollback is proposed. In the public demo, chat shows the link with the token removed, so approvals stay operator-only.</div>
+        {% else %}
+          {% if paused %}
+            {# Pause gate (kill switch): calm note above the form. Approve is
+               disabled (the POST refuses it 423); Reject stays active because the
+               POST allows reject while paused — denying a rollback is the
+               safety-direction. #}
+            <div class="ds-note" data-testid="paused-note">⏸ DriftScribe is paused — Approve is disabled until an operator resumes. Reject still works (it denies this request).</div>
+          {% elif autonomy_blocked is defined and autonomy_blocked %}
+            {# Autonomy dial: calm note (not an alarm — the dial is the operator's
+               choice). Approve is disabled (the POST refuses it 409); Reject stays
+               active, same safety direction as pause. autonomy_detail distinguishes
+               a configured restriction from a fail-closed read. #}
+            <div class="ds-note" data-testid="autonomy-note">{{ autonomy_detail }} Reject still works (it denies this request).</div>
+          {% endif %}
+          <form method="post" action="/approvals/{{ approval.approval_id }}">
+            <input type="hidden" name="t" data-testid="token-field" value="{{ token }}">
+            <div class="ds-actions">
+              <button class="ds-btn ds-btn--approve" data-testid="approve-button" type="submit" name="decision" value="approve"{% if paused or (autonomy_blocked is defined and autonomy_blocked) %} disabled{% endif %}>Approve rollback</button>
+              <button class="ds-btn ds-btn--reject" data-testid="reject-button" type="submit" name="decision" value="reject">Reject</button>
+            </div>
+          </form>
         {% endif %}
-        <form method="post" action="/approvals/{{ approval.approval_id }}">
-          <input type="hidden" name="t" data-testid="token-field" value="{{ token }}">
-          <div class="ds-actions">
-            <button class="ds-btn ds-btn--approve" data-testid="approve-button" type="submit" name="decision" value="approve"{% if paused or (autonomy_blocked is defined and autonomy_blocked) %} disabled{% endif %}>Approve rollback</button>
-            <button class="ds-btn ds-btn--reject" data-testid="reject-button" type="submit" name="decision" value="reject">Reject</button>
-          </div>
-        </form>
       {% elif expired %}
         <p class="ds-bad">This approval has expired and can no longer be acted on.</p>
       {% else %}

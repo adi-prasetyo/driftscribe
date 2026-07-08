@@ -828,12 +828,38 @@ def test_propose_rollback_withholds_credential_from_model_when_anon():
     # The model sees the token on NO field.
     assert "SECRETTOKEN" not in json.dumps(out)
     assert "approval_token" not in out          # bare raw token dropped entirely
+    # The URL is dropped ENTIRELY — a masked ``?t=<redacted>`` URL survives as
+    # a dead link the model echoes to visitors (observed live 2026-07-08).
+    assert "approval_url" not in out
+    # ...replaced by an explicit note the model can relay instead.
+    assert "operator" in out["approval_note"]
+    assert "approval URL" in out["approval_note"]
     # Non-secret fields stay so the model can still say an approval was created.
     assert out["approval_id"] == "id1"
     assert out["expires_at"] == "2026-07-07T00:15:00+00:00"
     # Operator notifier webhook is UNCHANGED — it still carries the live link.
     assert len(notifier_calls) == 1
     assert "SECRETTOKEN" in notifier_calls[0]["body"]
+
+
+def test_propose_rollback_anon_worker_error_gains_no_note():
+    """A worker response with no usable ``approval_url`` (error shape) must not
+    gain an ``approval_note`` — the note claims the operator was notified, and
+    the notifier only fires when a real link existed."""
+    from agent.adk_tools import propose_rollback_tool
+    from agent.request_context import demo_anonymous_scope
+
+    def _fake_call(worker, payload):
+        return {"error": "worker exploded", "approval_id": "id1"}
+
+    with patch("agent.adk_tools.worker_client.call", side_effect=_fake_call):
+        with demo_anonymous_scope(True):
+            out = propose_rollback_tool(
+                target_revision="payment-demo-00002-bbb", reason="x"
+            )
+
+    assert "approval_note" not in out
+    assert out["error"] == "worker exploded"
 
 
 def test_propose_rollback_operator_keeps_credential():

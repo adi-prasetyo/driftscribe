@@ -1018,6 +1018,11 @@
           const u = new URL(raw, window.location.origin);
           if (u.origin !== window.location.origin) return null;
           if (!u.pathname.startsWith("/approvals/")) return null;
+          // The demo-anonymous serve scrub masks the one-time token to the
+          // literal "<redacted>"; such a link can never act (both Approve
+          // and Reject verify the real token), so render no CTA for it.
+          // searchParams decodes, catching the %3Credacted%3E form too.
+          if (u.searchParams.get("t") === "<redacted>") return null;
           return u.pathname + u.search + u.hash;
         } catch (e) {
           return null;

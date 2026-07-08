@@ -304,6 +304,63 @@ def test_get_no_external_assets(client, store) -> None:
     assert 'href="//' not in text
 
 
+@pytest.mark.parametrize(
+    "query",
+    [
+        "",                       # no ?t at all (link cut before the token)
+        "?t=",                    # empty token value
+        "?t=%3Credacted%3E",      # the demo scrub's literal placeholder, URL-encoded
+        "?t=<redacted>",          # ...and pasted raw (client encodes it the same way)
+    ],
+)
+def test_get_pending_without_usable_token_explains_instead_of_form(
+    client, store, query
+) -> None:
+    """A pending approval reached WITHOUT a usable one-time token (link cut
+    short, or a visitor pasting the ``?t=<redacted>`` placeholder that the
+    demo-anonymous scrub leaves in persisted conversations) renders an
+    explanatory note INSTEAD of the Approve/Reject form. Both POST actions
+    need the real token (the worker verifies the HMAC), so the form could
+    only manufacture a doomed POST — observed live 2026-07-08 as a raw 422
+    on a tokenless Approve click."""
+    approval = store.create_pending(
+        target_revision="payment-demo-00002-bbb", reason="r"
+    )
+    r = client.get(f"/approvals/{approval.approval_id}{query}")
+    assert r.status_code == 200
+    body = r.text
+    assert 'data-testid="no-token-note"' in body
+    assert "operator-only" in body
+    # No form at all: neither button, no hidden token field.
+    assert 'value="approve"' not in body
+    assert 'value="reject"' not in body
+    assert 'name="t"' not in body
+    # The approval details still render (this is a view, not an error page).
+    assert "payment-demo-00002-bbb" in body
+
+
+def test_get_no_token_note_outranks_paused_note(client, store, monkeypatch) -> None:
+    """Token-missing outranks the paused display: the paused/autonomy notes
+    describe Approve/Reject button states, and with no usable token there are
+    no buttons to describe."""
+    from agent import main as agent_main
+    from agent.pause import PauseState
+
+    monkeypatch.setattr(
+        agent_main,
+        "_pause_state_fail_closed",
+        lambda: PauseState(paused=True, reason="test pause"),
+    )
+    approval = store.create_pending(
+        target_revision="payment-demo-00002-bbb", reason="r"
+    )
+    r = client.get(f"/approvals/{approval.approval_id}")
+    assert r.status_code == 200
+    assert 'data-testid="no-token-note"' in r.text
+    assert 'data-testid="paused-note"' not in r.text
+    assert 'value="approve"' not in r.text
+
+
 # --------------------------------------------------------------------------- #
 # POST /approvals/{id} — approve path
 # --------------------------------------------------------------------------- #

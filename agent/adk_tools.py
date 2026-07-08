@@ -115,6 +115,11 @@ def propose_rollback_tool(target_revision: str, reason: str) -> dict:
       coordinator's approval handler dispatches the actual /execute.
     - ``expires_at``: 15-min TTL.
 
+    In the public-demo anonymous view, ``approval_token`` and
+    ``approval_url`` are withheld (audit C1) and an ``approval_note``
+    field explains what to tell the user instead — relay that note;
+    never present or invent an approval URL when it is absent.
+
     The coordinator does NOT execute rollbacks directly. This tool
     only PROPOSES — the operator must visit ``approval_url`` and
     press Approve.
@@ -177,9 +182,12 @@ def propose_rollback_tool(target_revision: str, reason: str) -> dict:
     # The operator notifier webhook above already carries the real link, so the
     # operator flow is unchanged — only the value handed to the MODEL is scrubbed.
     # Both credential surfaces are removed: the bare ``approval_token`` field is
-    # dropped, and the ?t= token inside ``approval_url`` is masked (path +
-    # approval_id + expires_at stay readable so the model can still say an
-    # approval was created).
+    # dropped, and ``approval_url`` is dropped ENTIRELY — an earlier version
+    # masked the token in place (``?t=<redacted>``), but the model echoed that
+    # masked URL to visitors as if it were actionable, and clicking it dead-ends
+    # (observed live 2026-07-08). ``approval_note`` replaces it so the model has
+    # something honest to relay; approval_id + expires_at stay readable so the
+    # model can still say an approval was created and when it expires.
     from agent.request_context import is_demo_anonymous
 
     if is_demo_anonymous() and isinstance(resp, dict):
@@ -187,6 +195,19 @@ def propose_rollback_tool(target_revision: str, reason: str) -> dict:
 
         scrubbed = dict(redact_approval_tokens_deep(resp))
         scrubbed.pop("approval_token", None)
+        popped_url = scrubbed.pop("approval_url", None)
+        # Note only when a real approval link existed (and therefore went to
+        # the operator's channel above) — a worker-error response must not
+        # gain a misleading "operator notified" claim.
+        if isinstance(popped_url, str) and popped_url:
+            scrubbed["approval_note"] = (
+                "Public demo view: the approval link is operator-only and is "
+                "not available here, so do not present, reconstruct, or invent "
+                "any approval URL. The operator's notification channel already "
+                "received the live approval link. Tell the user the rollback "
+                "proposal was created and is waiting for the operator to "
+                "approve it before it expires."
+            )
         return scrubbed
     return resp
 
