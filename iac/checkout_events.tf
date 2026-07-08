@@ -14,4 +14,12 @@ resource "google_pubsub_subscription" "orders_sub" {
   labels = {
     managed-by = "driftscribe-iac"
   }
+
+  # Never expire. Nothing consumes this subscription between demo sessions,
+  # so GCP's default 31-day idle expiry deleted it out-of-band (2026-07-08),
+  # and the resulting +create in every tofu plan blocked all adoption PRs
+  # (import-mixed-plan-forbidden-v1).
+  expiration_policy {
+    ttl = ""
+  }
 }
