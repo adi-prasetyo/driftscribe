@@ -53,10 +53,10 @@ def test_every_emitted_rule_has_a_description_and_no_stale_ones():
     assert set(RULE_DESCRIPTIONS) == emitted
 
 
-def test_there_are_exactly_nineteen_rules():
-    # The docstring promises 19 rule IDs; pin it so the AST scan can't
+def test_there_are_exactly_twenty_rules():
+    # The docstring promises 20 rule IDs; pin it so the AST scan can't
     # silently degrade (e.g. a refactor wrapping Violation in a helper).
-    assert len(RULE_DESCRIPTIONS) == 19
+    assert len(RULE_DESCRIPTIONS) == 20
 
 
 def test_descriptions_are_operator_grade():

@@ -115,6 +115,26 @@ class TestControlPlaneDriftCount:
         assert entry["not_in_iac"] == 2
         assert entry["not_in_iac_control_plane"] == 1  # tofu-state; assets is actionable
 
+    def test_eventarc_pubsub_counts_as_control_plane_drift(self):
+        # Eventarc trigger-transport topics/subs are service-managed: they
+        # move out of actionable drift, exactly like the auto-created buckets.
+        topics = [
+            CaiResource(
+                name="//pubsub.googleapis.com/projects/p/topics/eventarc-asia-northeast1-x-823",
+                asset_type="pubsub.googleapis.com/Topic",
+                location="global",
+            ),
+            CaiResource(
+                name="//pubsub.googleapis.com/projects/p/topics/adopt-probe-topic",
+                asset_type="pubsub.googleapis.com/Topic",
+                location="global",
+            ),
+        ]
+        out = build_inventory(topics, [], project="p", iac_snapshot_sha="s")
+        entry = out["by_type"]["pubsub.googleapis.com/Topic"]
+        assert entry["not_in_iac"] == 2
+        assert entry["not_in_iac_control_plane"] == 1  # eventarc only
+
     def test_non_adoptable_type_never_control_plane_even_if_unmanaged(self):
         keys = [CaiResource(name="//cloudkms.googleapis.com/x/cryptoKeys/k", asset_type="cloudkms.googleapis.com/CryptoKey", location="l")]
         out = build_inventory(keys, [], project="p", iac_snapshot_sha="s")

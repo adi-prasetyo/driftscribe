@@ -775,6 +775,7 @@ class TestBlastCannotTouchNote:
             "control-plane-sa",
             "control-plane-bucket",
             "service-managed-bucket",
+            "service-managed-pubsub",
             "control-plane-secret",
             "control-plane-kms",
             "wif-config-change",

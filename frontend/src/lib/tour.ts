@@ -245,8 +245,9 @@ export function adoptStepState(graph: InfraGraph | null): AdoptStepState {
       line:
         'The unmanaged resources the agent could otherwise adopt are ' +
         'system-managed infrastructure: DriftScribe control-plane services ' +
-        'and IaC state/artifact buckets, or buckets a Google service ' +
-        'auto-creates. The always-on denylist blocks the agent from ' +
+        'and IaC state/artifact buckets, or resources a Google service ' +
+        'auto-creates, like Cloud Build buckets and Eventarc trigger ' +
+        'transport. The always-on denylist blocks the agent from ' +
         'changing these, adoption included. The Infrastructure panel shows ' +
         'everything that is there.',
     };

@@ -134,8 +134,10 @@
     'button. Grey is neutral: counts-only rows hide sensitive names such as ' +
     'secrets and show only a number; named rows tagged system-managed are ' +
     'protected (the OpenTofu state and artifact buckets DriftScribe owns, or ' +
-    'buckets a Google service creates automatically: the denylist blocks changing ' +
-    'or adopting them); and rows in a type DriftScribe cannot import are marked ' +
+    'resources a Google service creates automatically, such as Cloud Build ' +
+    'buckets and the Pub/Sub pairs Eventarc uses to deliver trigger events: ' +
+    'the denylist blocks changing or adopting them); and rows in a type ' +
+    'DriftScribe cannot import are marked ' +
     'not an adoptable type. Those grey rows are real but not counted as drift.' +
     ' A blue marker means an adoption PR is already open for that resource: open ' +
     'it from the card or the band at the top to review and approve, instead of ' +

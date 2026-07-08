@@ -137,8 +137,9 @@ ADOPTION_CONTROL_PLANE_NOTE = (
     "DriftScribe's own control-plane resources — its Cloud Run services and "
     "the -tofu-state / -tofu-artifacts buckets — cannot be adopted, and "
     "neither can buckets that a Google service auto-creates (Cloud Build, App "
-    "Engine, Cloud Functions, or Cloud Run source deploys): the always-on "
-    "denylist refuses any plan that would change or import them."
+    "Engine, Cloud Functions, or Cloud Run source deploys) or the Pub/Sub "
+    "topics and subscriptions Eventarc creates to deliver trigger events: the "
+    "always-on denylist refuses any plan that would change or import them."
 )
 
 # Control-plane adopt suppression (2026-06-12, ranking-filter follow-up found
@@ -158,7 +159,8 @@ ADOPTION_CONTROL_PLANE_NOTE = (
 # aggregate control-plane count and this per-node flag, so the two surfaces
 # cannot drift. A flagged bucket node corresponds to EITHER a control-plane
 # bucket OR a service-managed-bucket denylist refusal — both suppress the same
-# `control_plane` CTA flag. Pub/Sub has no identity rule, so its nodes are never
+# `control_plane` CTA flag. Pub/Sub's only identity rule is the Eventarc
+# trigger-transport prefix; other Pub/Sub nodes are never
 # flagged. test_infra_graph pins the parity by driving build_graph and evaluate
 # with the same identity. Failure direction is safe: an unflagged protected name
 # only shows a button whose plan C2 then blocks; a false positive cannot happen

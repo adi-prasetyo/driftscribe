@@ -254,8 +254,9 @@ RULE_CATEGORIES: Final[Mapping[str, str]] = MappingProxyType({
     "control-plane-bucket":   "control-plane",
     "control-plane-secret":   "control-plane",
     "control-plane-kms":      "control-plane",
-    # Service-managed (buckets other Google services auto-create):
+    # Service-managed (resources other Google services auto-create):
     "service-managed-bucket": "service-managed",
+    "service-managed-pubsub": "service-managed",
     # IAM (access-control changes):
     "wif-config-change":          "iam",
     "iam-change-forbidden-v1":    "iam",

@@ -1,0 +1,17 @@
+{
+  "_test_intent": "mutated Pub/Sub topic row with no name on either side — must emit plan-json-malformed-change (bias-to-deny: a hidden identity could hide the eventarc- transport prefix)",
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "google_pubsub_topic.nameless",
+      "mode": "managed",
+      "type": "google_pubsub_topic",
+      "name": "nameless",
+      "change": {
+        "actions": ["update"],
+        "before": {},
+        "after": {}
+      }
+    }
+  ]
+}

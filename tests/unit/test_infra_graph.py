@@ -985,19 +985,21 @@ class TestControlPlaneNodeFlag:
         assert "control_plane" not in g["groups"][0]["nodes"][0]
 
     def test_type_scoped_a_topic_named_like_a_service_is_not_flagged(self):
-        # Name collisions across types must not flag: there is no control-plane
-        # Pub/Sub identity rule, so a topic named "driftscribe-agent" is
-        # adoptable and its import is admitted.
+        # Name collisions across types must not flag: Pub/Sub's only identity
+        # rule is the eventarc- transport prefix, so a topic named
+        # "driftscribe-agent" is adoptable and its import is admitted.
         g = build_graph(_one_node_inventory(TOPIC_TYPE, "driftscribe-agent"))
         assert "control_plane" not in g["groups"][0]["nodes"][0]
 
     def test_matchers_cover_only_adoptable_types(self):
         # The flag exists to suppress adopt CTAs; a matcher on a non-adoptable
-        # type would be dead code. Exactly Bucket + Run Service have
-        # control-plane identity rules among the adoptable four.
+        # type would be dead code. All four adoptable types now carry an
+        # identity rule (Pub/Sub's is the eventarc- transport prefix).
         assert set(_CONTROL_PLANE_NODE_MATCHERS) == {
             "storage.googleapis.com/Bucket",
             "run.googleapis.com/Service",
+            "pubsub.googleapis.com/Topic",
+            "pubsub.googleapis.com/Subscription",
         }
         assert set(_CONTROL_PLANE_NODE_MATCHERS) <= ADOPTABLE_ASSET_TYPES
 
@@ -1024,6 +1026,17 @@ class TestControlPlaneNodeFlag:
              {"name": "driftscribe-agent"}, "driftscribe-agent", True),
             ("run.googleapis.com/Service", "google_cloud_run_v2_service",
              {"name": "storefront"}, "storefront", False),
+            # Eventarc trigger transport: flagged AND blocked, both types
+            ("pubsub.googleapis.com/Topic", "google_pubsub_topic",
+             {"name": "eventarc-asia-northeast1-driftscribe-cloudrun-changes-823"},
+             "eventarc-asia-northeast1-driftscribe-cloudrun-changes-823", True),
+            ("pubsub.googleapis.com/Subscription", "google_pubsub_subscription",
+             {"name": "eventarc-asia-northeast1-driftscribe-cloudrun-changes-sub-019"},
+             "eventarc-asia-northeast1-driftscribe-cloudrun-changes-sub-019", True),
+            ("pubsub.googleapis.com/Topic", "google_pubsub_topic",
+             {"name": "adopt-probe-topic"}, "adopt-probe-topic", False),
+            ("pubsub.googleapis.com/Subscription", "google_pubsub_subscription",
+             {"name": "orders-sub"}, "orders-sub", False),
         ],
     )
     def test_flag_parity_with_denylist_import_admission(
@@ -1038,7 +1051,8 @@ class TestControlPlaneNodeFlag:
 
         violations = evaluate(DenylistInput(plan=_single_import_plan(rtype, attrs)))
         blocked = any(
-            v.rule.startswith("control-plane-") or v.rule == "service-managed-bucket"
+            v.rule.startswith("control-plane-")
+            or v.rule.startswith("service-managed-")
             for v in violations
         )
 
