@@ -156,7 +156,15 @@ def propose_rollback_tool(target_revision: str, reason: str) -> dict:
     # extra push notification.
     approval_url = resp.get("approval_url") if isinstance(resp, dict) else None
     expires_at = resp.get("expires_at") if isinstance(resp, dict) else None
-    if isinstance(approval_url, str) and approval_url and isinstance(expires_at, str) and expires_at:
+    # Shared by the notify below AND the anon approval_note: the note asserts
+    # the link was sent to the operator's channel, so it must track exactly
+    # the condition under which that send is attempted (Codex review: a
+    # malformed expires_at skips the notify — the note must not claim it).
+    notify_eligible = bool(
+        isinstance(approval_url, str) and approval_url
+        and isinstance(expires_at, str) and expires_at
+    )
+    if notify_eligible:
         s = get_settings()
         notify_body = (
             f"Rollback approval pending: roll back {s.target_service} to "
@@ -195,16 +203,18 @@ def propose_rollback_tool(target_revision: str, reason: str) -> dict:
 
         scrubbed = dict(redact_approval_tokens_deep(resp))
         scrubbed.pop("approval_token", None)
-        popped_url = scrubbed.pop("approval_url", None)
-        # Note only when a real approval link existed (and therefore went to
-        # the operator's channel above) — a worker-error response must not
-        # gain a misleading "operator notified" claim.
-        if isinstance(popped_url, str) and popped_url:
+        scrubbed.pop("approval_url", None)
+        # Note only when the operator notify above was actually attempted
+        # (same condition, not merely "a URL existed") — a worker response
+        # that skipped the notify must not gain an "operator notified" claim.
+        # The send itself is best-effort/fire-and-forget, so the note says
+        # "was sent", never "was received".
+        if notify_eligible:
             scrubbed["approval_note"] = (
                 "Public demo view: the approval link is operator-only and is "
                 "not available here, so do not present, reconstruct, or invent "
-                "any approval URL. The operator's notification channel already "
-                "received the live approval link. Tell the user the rollback "
+                "any approval URL. The live approval link was sent to the "
+                "operator's notification channel. Tell the user the rollback "
                 "proposal was created and is waiting for the operator to "
                 "approve it before it expires."
             )

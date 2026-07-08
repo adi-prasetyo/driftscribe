@@ -842,15 +842,32 @@ def test_propose_rollback_withholds_credential_from_model_when_anon():
     assert "SECRETTOKEN" in notifier_calls[0]["body"]
 
 
-def test_propose_rollback_anon_worker_error_gains_no_note():
-    """A worker response with no usable ``approval_url`` (error shape) must not
-    gain an ``approval_note`` — the note claims the operator was notified, and
-    the notifier only fires when a real link existed."""
+@pytest.mark.parametrize(
+    "worker_resp",
+    [
+        # no approval_url at all (error shape)
+        {"error": "worker exploded", "approval_id": "id1"},
+        # approval_url present but expires_at malformed → the notify is
+        # SKIPPED, so the note's "was sent to the operator" would be false
+        # (Codex review: the note must track the notify condition exactly).
+        {"approval_id": "id1", "approval_url": "https://c/approvals/id1?t=tok"},
+        {"approval_id": "id1", "approval_url": "https://c/approvals/id1?t=tok",
+         "expires_at": ""},
+        {"approval_id": "id1", "approval_url": "https://c/approvals/id1?t=tok",
+         "expires_at": 12345},
+    ],
+)
+def test_propose_rollback_anon_notify_skipped_gains_no_note(worker_resp):
+    """The ``approval_note`` asserts the operator's channel was sent the live
+    link, so it must appear ONLY when the notify was actually attempted — any
+    shape that skips the notify (no URL, or a malformed ``expires_at``) must
+    not gain the note. The credential fields are still scrubbed."""
     from agent.adk_tools import propose_rollback_tool
     from agent.request_context import demo_anonymous_scope
 
     def _fake_call(worker, payload):
-        return {"error": "worker exploded", "approval_id": "id1"}
+        assert worker != "notifier", "notify must be skipped for this shape"
+        return worker_resp
 
     with patch("agent.adk_tools.worker_client.call", side_effect=_fake_call):
         with demo_anonymous_scope(True):
@@ -859,7 +876,8 @@ def test_propose_rollback_anon_worker_error_gains_no_note():
             )
 
     assert "approval_note" not in out
-    assert out["error"] == "worker exploded"
+    assert "approval_url" not in out
+    assert "?t=tok" not in json.dumps(out)
 
 
 def test_propose_rollback_operator_keeps_credential():
