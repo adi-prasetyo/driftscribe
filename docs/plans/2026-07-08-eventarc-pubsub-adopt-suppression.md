@@ -37,9 +37,9 @@ NOT in scope: closing the already-open PRs #168/#215 (probe resources, not event
 - `CONTROL_PLANE_NODE_MATCHERS` gains `"pubsub.googleapis.com/Topic"` and `"pubsub.googleapis.com/Subscription"` → `is_service_managed_pubsub_name`. Rewrite the "Pub/Sub has no identity rule, so its nodes are never flagged" comment.
 - `_check_service_managed_pubsub(rc, rtype, actions, before, after, violations)` mirroring `_check_service_managed_bucket`: `rtype` gate on `{"google_pubsub_topic", "google_pubsub_subscription"}`, match `before/after["name"]`, emit `Violation("service-managed-pubsub", ...)`. Register it wherever the bucket check is dispatched from.
 - Module docstring rule list (~line 46): add the `service-managed-pubsub` entry.
-- Export `is_service_managed_pubsub_name` in `__all__` (line ~112 region) alongside the bucket helper.
+- `__all__` deliberately unchanged: `is_service_managed_bucket_name` is public-but-not-exported today and the exact-list test pins it; the new helper follows the same convention. The tools shim re-exports the new constant + helper, pinned by the shim identity test (Codex review).
 
-Tests: violation on update/import/delete of an `eventarc-*` topic and sub; NO violation for `order-events`/`orders-sub`/`adopt-probe-*`; None-name row silent; existing bucket cases untouched.
+Tests: violation on update/import/delete of an `eventarc-*` topic and sub; NO violation for `order-events`/`orders-sub`/`adopt-probe-*`; a mutated pubsub row with NO name on either side emits `plan-json-malformed-change` (bias-to-deny — this check owns the case, there is no earlier bucket-style guard for Pub/Sub; Codex review); existing bucket cases untouched.
 
 ### 2. `adopt_recipe.py`
 
@@ -75,4 +75,4 @@ Tests: eventarc topic + sub names rejected with the FINAL marker; `adopt-probe-t
 
 ### 5. Deploy + live verify
 
-`driftscribe_lib` is shared → deploy BOTH infra-reader worker AND coordinator (PR #195 lesson; `driftscribe-deploy` runbook). Then confirm on the public graph (after L2 cache expiry or forced refresh): the four `eventarc-*` rows carry `control_plane: true`, the Adopt zone shows only `adopt-probe-svc`, and the coverage denominator dropped by 4.
+`driftscribe_lib` is shared → deploy coordinator AND infra-reader AND tofu-apply (Codex review: the apply worker bakes driftscribe_lib and re-runs the denylist immediately before apply — PR #195 lesson, extended). Then confirm on the public graph (after L2 cache expiry or forced refresh): the four `eventarc-*` rows carry `control_plane: true`, the Adopt zone shows only `adopt-probe-svc`, and the coverage denominator dropped by 4.
