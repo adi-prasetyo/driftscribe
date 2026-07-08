@@ -138,5 +138,7 @@ def test_tools_shim_reexports_the_same_objects() -> None:
     assert shim.SERVICE_MANAGED_BUCKET_SUFFIXES is lib.SERVICE_MANAGED_BUCKET_SUFFIXES
     assert shim.SERVICE_MANAGED_BUCKET_PREFIXES is lib.SERVICE_MANAGED_BUCKET_PREFIXES
     assert shim.is_service_managed_bucket_name is lib.is_service_managed_bucket_name
+    assert shim.SERVICE_MANAGED_PUBSUB_PREFIXES is lib.SERVICE_MANAGED_PUBSUB_PREFIXES
+    assert shim.is_service_managed_pubsub_name is lib.is_service_managed_pubsub_name
     assert shim.is_control_plane_node is lib.is_control_plane_node
     assert shim.CONTROL_PLANE_NODE_MATCHERS is lib.CONTROL_PLANE_NODE_MATCHERS

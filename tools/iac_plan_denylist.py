@@ -41,11 +41,13 @@ from driftscribe_lib.iac_plan_denylist import (  # noqa: F401  (re-export)
     RULE_DESCRIPTIONS,
     SERVICE_MANAGED_BUCKET_PREFIXES,
     SERVICE_MANAGED_BUCKET_SUFFIXES,
+    SERVICE_MANAGED_PUBSUB_PREFIXES,
     Violation,
     WIF_RESOURCE_TYPES,
     evaluate,
     is_control_plane_node,
     is_service_managed_bucket_name,
+    is_service_managed_pubsub_name,
     load_plan_json,
 )
 

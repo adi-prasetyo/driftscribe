@@ -29,7 +29,7 @@ phase decision; the v1 false-positive trade-off (e.g. a clean IAM grant
 on a payment-demo bucket is also denied) is accepted to keep the gate
 defensible until the C3 human-approval flow lands.
 
-**Rule IDs (19)**:
+**Rule IDs (20)**:
 
 - ``plan-json-unparseable`` — bad JSON or top-level not an object.
 - ``plan-json-missing-resource-changes`` — key missing OR not a list.
@@ -48,6 +48,12 @@ defensible until the C3 human-approval flow lands.
   App Engine / legacy GCR ``*.appspot.com``, Cloud Functions
   ``gcf-sources-*`` / ``gcf-v2-{sources,uploads}-*``, Cloud Run
   ``run-sources-*``); bucket-only, no OBJECT case.
+- ``service-managed-pubsub`` — non-no-op change to (or import of) a
+  Pub/Sub topic or subscription Eventarc auto-creates as trigger
+  transport (``eventarc-*``). Owns the malformed-name case for its two
+  resource types (no earlier bucket-style guard exists for Pub/Sub): a
+  mutated/imported row with no ``name`` on either side emits
+  ``plan-json-malformed-change``.
 - ``control-plane-secret`` — non-no-op change to a protected secret
   (matched on ``secret_id``) or one of its versions (parent id
   extracted from the resource path).
@@ -118,7 +124,7 @@ __all__ = [
 class Violation:
     """A single denylist violation.
 
-    ``rule`` is a short machine identifier (one of the 19 rule IDs listed
+    ``rule`` is a short machine identifier (one of the 20 rule IDs listed
     in the module docstring); ``detail`` is a human-readable message that
     names the offending resource address + action tuple.
     """
@@ -243,6 +249,13 @@ SERVICE_MANAGED_BUCKET_PREFIXES: tuple[str, ...] = (
     "gcf-v2-uploads-",  # Cloud Functions gen2 upload staging
     "run-sources-",  # Cloud Run source deploys
 )
+
+# Eventarc names every Pub/Sub transport resource it auto-creates for a
+# trigger `eventarc-<location>-<trigger-name>-<suffix>` (subscriptions insert
+# `-sub-`). Same accepted false-positive trade-off as the bucket prefixes: an
+# operator topic that happens to start with "eventarc-" is refused, never
+# mutated.
+SERVICE_MANAGED_PUBSUB_PREFIXES: tuple[str, ...] = ("eventarc-",)
 
 # Operational secrets that the denylist protects. Per Codex Important #4 the
 # v1 list is intentionally broader than just the design-mandated HMAC keys —
@@ -504,21 +517,38 @@ def is_service_managed_bucket_name(name: object) -> bool:
     )
 
 
+def is_service_managed_pubsub_name(name: object) -> bool:
+    """True iff ``name`` is a Pub/Sub topic/subscription Eventarc auto-creates.
+
+    PUBLIC and shared across the same three surfaces as
+    :func:`is_service_managed_bucket_name` — the denylist check,
+    ``infra_graph``'s node-flag matcher, and ``adopt_recipe``'s tool-boundary
+    rejection — so the identity rule lives in exactly one place and the
+    surfaces cannot drift. The caller is responsible for type-scoping (topics
+    and subscriptions only); this helper only answers the name question.
+    ``None``/non-str safe.
+    """
+    return isinstance(name, str) and name.startswith(SERVICE_MANAGED_PUBSUB_PREFIXES)
+
+
 # CAI-asset-type-keyed matchers for the infra surfaces (node control_plane flag
 # in infra_graph + the aggregate not_in_iac_control_plane count in
 # infra_inventory). A node of one of these types whose SHORT name matches is
 # either DriftScribe's own control plane (Cloud Run worker services; the
-# -tofu-state / -tofu-artifacts buckets) OR a bucket a Google service
-# auto-creates (Cloud Build / App Engine / Cloud Functions / Cloud Run staging).
-# Both carry the same control_plane CTA-suppression flag. Pub/Sub has no
-# identity rule, so its nodes are never flagged. Single source of truth so the
-# two surfaces cannot drift; a false positive cannot happen without the denylist
-# also refusing that same identity (parity pinned in test_infra_graph).
+# -tofu-state / -tofu-artifacts buckets), a bucket a Google service
+# auto-creates (Cloud Build / App Engine / Cloud Functions / Cloud Run
+# staging), or a Pub/Sub topic/subscription Eventarc auto-creates as trigger
+# transport (eventarc-*) — Pub/Sub's ONLY identity rule. All carry the same
+# control_plane CTA-suppression flag. Single source of truth so the surfaces
+# cannot drift; a false positive cannot happen without the denylist also
+# refusing that same identity (parity pinned in test_infra_graph).
 CONTROL_PLANE_NODE_MATCHERS: dict[str, Callable[[str], bool]] = {
     "storage.googleapis.com/Bucket": lambda name: (
         name.endswith(CONTROL_PLANE_BUCKET_SUFFIXES) or is_service_managed_bucket_name(name)
     ),
     "run.googleapis.com/Service": lambda name: name in CONTROL_PLANE_SERVICE_NAMES,
+    "pubsub.googleapis.com/Topic": is_service_managed_pubsub_name,
+    "pubsub.googleapis.com/Subscription": is_service_managed_pubsub_name,
 }
 
 
@@ -619,6 +649,54 @@ def _check_service_managed_bucket(
                 "service-managed-bucket",
                 f"{rc.get('address', '<unknown>')}: Google-service-managed bucket "
                 f"{(after_name or before_name)!r} (actions={list(actions)})",
+            )
+        )
+
+
+_PUBSUB_RESOURCE_TYPES = frozenset({
+    "google_pubsub_topic",
+    "google_pubsub_subscription",
+})
+
+
+def _check_service_managed_pubsub(
+    rc: dict,
+    rtype: str,
+    actions: tuple[str, ...],
+    before: dict,
+    after: dict,
+    violations: list[Violation],
+) -> None:
+    """Emit service-managed-pubsub on a non-no-op change to (or import of) a
+    Pub/Sub topic/subscription Eventarc auto-creates as trigger transport.
+
+    Same rationale as service-managed-bucket: these belong to Eventarc, which
+    creates and replaces them with its triggers — adopting one into operator
+    IaC is meaningless. Unlike buckets there is no earlier control-plane check
+    owning the malformed-name case for these types, so THIS check emits
+    plan-json-malformed-change when a mutated/imported row hides its name on
+    both sides (the module's bias-to-deny identity contract).
+    """
+    if rtype not in _PUBSUB_RESOURCE_TYPES:
+        return
+    before_name = before.get("name")
+    after_name = after.get("name")
+    if not isinstance(before_name, str) and not isinstance(after_name, str):
+        violations.append(
+            Violation(
+                "plan-json-malformed-change",
+                f"{rc.get('address', '<unknown>')}: {rtype} has no name",
+            )
+        )
+        return
+    if is_service_managed_pubsub_name(before_name) or is_service_managed_pubsub_name(
+        after_name
+    ):
+        violations.append(
+            Violation(
+                "service-managed-pubsub",
+                f"{rc.get('address', '<unknown>')}: Eventarc-managed Pub/Sub "
+                f"resource {(after_name or before_name)!r} (actions={list(actions)})",
             )
         )
 
@@ -904,6 +982,7 @@ def evaluate(di: DenylistInput) -> list[Violation]:
             _check_control_plane_sa(rc, rtype, actions, before, after, violations)
             _check_control_plane_bucket(rc, rtype, actions, before, after, violations)
             _check_service_managed_bucket(rc, rtype, actions, before, after, violations)
+            _check_service_managed_pubsub(rc, rtype, actions, before, after, violations)
             _check_control_plane_secret(rc, rtype, actions, before, after, violations)
             _check_control_plane_kms(rc, rtype, actions, before, after, violations)
             _check_wif(rc, rtype, actions, violations)
@@ -955,6 +1034,11 @@ RULE_DESCRIPTIONS: Final[Mapping[str, str]] = MappingProxyType({
         "Cloud Build, App Engine, Cloud Functions, and Cloud Run source-deploy "
         "each auto-create their own buckets. Google's to manage, not "
         "DriftScribe's to track."
+    ),
+    "service-managed-pubsub": (
+        "Eventarc auto-creates a Pub/Sub topic and subscription to deliver "
+        "each trigger's events. Eventarc's to manage, not DriftScribe's to "
+        "track."
     ),
     "control-plane-secret": (
         "The secrets: approval keys, the GitHub token, and every version."

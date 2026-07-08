@@ -783,10 +783,37 @@ class TestControlPlaneRefusal:
         assert "cannot be adopted" in msg
         assert msg.endswith(FINAL_REFUSAL_MARKER)
 
+    def test_eventarc_transport_topic_is_rejected(self):
+        # Eventarc trigger-transport Pub/Sub is service-managed: refused at
+        # the tool boundary with an HONEST Eventarc reason, same stance as
+        # the service-managed buckets.
+        with pytest.raises(AdoptRecipeError) as ei:
+            render_adoption(
+                "google_pubsub_topic",
+                "eventarc-asia-northeast1-driftscribe-cloudrun-changes-823",
+                "driftscribe-hack-2026",
+            )
+        msg = str(ei.value)
+        assert "cannot be adopted" in msg
+        assert "Eventarc" in msg
+        assert "denylist" in msg
+        assert "control plane" not in msg.lower()
+        assert msg.endswith(FINAL_REFUSAL_MARKER)
+
+    def test_eventarc_transport_subscription_is_rejected(self):
+        with pytest.raises(AdoptRecipeError) as ei:
+            render_adoption(
+                "google_pubsub_subscription",
+                "eventarc-asia-northeast1-driftscribe-cloudrun-changes-sub-019",
+                "driftscribe-hack-2026",
+                topic="adopt-probe-topic",
+            )
+        assert str(ei.value).endswith(FINAL_REFUSAL_MARKER)
+
     def test_topic_named_like_a_service_still_renders(self):
-        # Type-scoped, exactly like the denylist: no control-plane Pub/Sub
-        # identity rule exists, so this import is admitted — and the recipe
-        # must keep rendering it.
+        # Type-scoped, exactly like the denylist: Pub/Sub's only identity
+        # rule is the eventarc- transport prefix, so this import is
+        # admitted — and the recipe must keep rendering it.
         r = render_adoption(
             "google_pubsub_topic", "driftscribe-agent", "driftscribe-hack-2026"
         )

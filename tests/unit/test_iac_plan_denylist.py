@@ -258,6 +258,53 @@ def test_import_service_managed_bucket_fires_only_that_rule():
     assert set(_rules(evaluate(DenylistInput(plan=parsed)))) == {"service-managed-bucket"}
 
 
+# --- service-managed-pubsub: Eventarc trigger-transport topics/subscriptions ---
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        "service_managed_pubsub_update.json",
+        "import_service_managed_pubsub.json",
+    ],
+)
+def test_service_managed_pubsub_change_or_import_is_denied(fixture):
+    """A Pub/Sub topic/subscription Eventarc auto-creates (eventarc-*) must
+    fire service-managed-pubsub on BOTH a change and a zero-change import."""
+    parsed, _ = load_plan_json(_load(fixture))
+    rules = _rules(evaluate(DenylistInput(plan=parsed)))
+    assert "service-managed-pubsub" in rules, fixture
+
+
+def test_import_service_managed_pubsub_fires_only_that_rule():
+    """The import is a zero-change adopt of an adoptable type, so ONLY the
+    service-managed-pubsub identity rule fires."""
+    parsed, _ = load_plan_json(_load("import_service_managed_pubsub.json"))
+    assert set(_rules(evaluate(DenylistInput(plan=parsed)))) == {"service-managed-pubsub"}
+
+
+def test_pubsub_row_with_no_name_is_malformed():
+    """A mutated Pub/Sub row hiding its name on both sides is bias-to-deny:
+    plan-json-malformed-change (this check owns the case — no earlier
+    bucket-style guard exists for Pub/Sub)."""
+    parsed, _ = load_plan_json(_load("pubsub_no_name_update.json"))
+    assert "plan-json-malformed-change" in _rules(evaluate(DenylistInput(plan=parsed)))
+
+
+def test_is_service_managed_pubsub_name_matches_eventarc_prefix_only():
+    """eventarc-* matches; operator topics/subs (incl. near-misses) do NOT —
+    a false positive here wrongly blocks a legitimate adoption."""
+    from driftscribe_lib.iac_plan_denylist import is_service_managed_pubsub_name as f
+
+    assert f("eventarc-asia-northeast1-driftscribe-cloudrun-changes-823")
+    assert f("eventarc-asia-northeast1-driftscribe-cloudrun-changes-sub-019")
+    assert not f("adopt-probe-topic")
+    assert not f("orders-sub")
+    assert not f("my-eventarc-topic")  # prefix, not substring
+    assert not f(None)
+    assert not f("")
+
+
 def test_is_service_managed_bucket_name_matches_known_families_only():
     """Bounded set: Cloud Build / App Engine + legacy GCR / Cloud Functions /
     Cloud Run source buckets match; operator buckets (incl. Google-ish

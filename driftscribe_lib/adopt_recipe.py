@@ -16,6 +16,7 @@ from driftscribe_lib.iac_plan_denylist import (
     CONTROL_PLANE_BUCKET_SUFFIXES,
     CONTROL_PLANE_SERVICE_NAMES,
     is_service_managed_bucket_name,
+    is_service_managed_pubsub_name,
 )
 
 __all__ = [
@@ -211,9 +212,9 @@ def _reject_control_plane(resource_type: str, name: str) -> None:
     identity semantics as the denylist rules that would block the C2 plan
     anyway (and as infra_graph's node flag): rejecting HERE means chat gets an
     immediate, honest refusal instead of authoring a PR that is guaranteed to
-    be blocked at plan evaluation. Type-scoped exactly like the rules — Pub/Sub
-    has no identity rule, so topics and subscriptions are never rejected by
-    name.
+    be blocked at plan evaluation. Type-scoped exactly like the rules —
+    Pub/Sub's only identity rule is the Eventarc trigger-transport prefix
+    (service-managed, like the auto-created buckets).
     """
     if resource_type == "google_storage_bucket" and name.endswith(
         CONTROL_PLANE_BUCKET_SUFFIXES
@@ -233,6 +234,16 @@ def _reject_control_plane(resource_type: str, name: str) -> None:
             "Run source deploys), not a resource you provisioned — the "
             "always-on denylist refuses any plan that would change or import "
             f"it. {FINAL_REFUSAL_MARKER}"
+        )
+    if resource_type in (
+        "google_pubsub_topic",
+        "google_pubsub_subscription",
+    ) and is_service_managed_pubsub_name(name):
+        raise AdoptRecipeError(
+            f"{name!r} cannot be adopted: it is a Pub/Sub resource that "
+            "Eventarc creates automatically to deliver a trigger's events, "
+            "not a resource you provisioned — the always-on denylist refuses "
+            f"any plan that would change or import it. {FINAL_REFUSAL_MARKER}"
         )
     if (
         resource_type == "google_cloud_run_v2_service"

@@ -75,8 +75,9 @@ Adopting existing resources (zero-change import):
 - DriftScribe's own control-plane resources — its Cloud Run services and the
   -tofu-state / -tofu-artifacts buckets — cannot be adopted, and neither can
   buckets that a Google service auto-creates (Cloud Build, App Engine, Cloud
-  Functions, or Cloud Run source deploys): the always-on denylist refuses any
-  plan that would change or import them. If the operator asks to adopt one, say
+  Functions, or Cloud Run source deploys) or the Pub/Sub topics and
+  subscriptions Eventarc creates to deliver trigger events: the always-on
+  denylist refuses any plan that would change or import them. If the operator asks to adopt one, say
   so plainly and do not call propose_adoption_tool for it (it would be
   rejected with this reason).
 - An adoption changes NOTHING in the cloud: the plan must show a pure

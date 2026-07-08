@@ -1,0 +1,17 @@
+{
+  "_test_intent": "update of an Eventarc-managed Pub/Sub topic (trigger transport) — must emit service-managed-pubsub",
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "google_pubsub_topic.eventarc_topic",
+      "mode": "managed",
+      "type": "google_pubsub_topic",
+      "name": "eventarc_topic",
+      "change": {
+        "actions": ["update"],
+        "before": {"name": "eventarc-asia-northeast1-driftscribe-cloudrun-changes-823"},
+        "after": {"name": "eventarc-asia-northeast1-driftscribe-cloudrun-changes-823"}
+      }
+    }
+  ]
+}

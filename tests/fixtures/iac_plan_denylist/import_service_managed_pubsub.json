@@ -1,0 +1,18 @@
+{
+  "_test_intent": "import of an Eventarc-managed Pub/Sub subscription (trigger transport) — must emit exactly service-managed-pubsub (type is adoptable, so import-type-not-adoptable does NOT fire)",
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "google_pubsub_subscription.eventarc_sub",
+      "mode": "managed",
+      "type": "google_pubsub_subscription",
+      "name": "eventarc_sub",
+      "change": {
+        "actions": ["no-op"],
+        "before": {"name": "eventarc-asia-northeast1-driftscribe-cloudrun-changes-sub-019"},
+        "after": {"name": "eventarc-asia-northeast1-driftscribe-cloudrun-changes-sub-019"},
+        "importing": {"id": "projects/driftscribe-hack-2026/subscriptions/eventarc-asia-northeast1-driftscribe-cloudrun-changes-sub-019"}
+      }
+    }
+  ]
+}
