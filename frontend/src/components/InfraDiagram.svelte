@@ -54,6 +54,7 @@
     onAdopt,
     adoptDisabled = false,
     onGraph,
+    onPending,
   }: {
     /** App's token-aware fetch wrapper. */
     call: (path: string, init?: RequestInit) => Promise<Response>;
@@ -78,6 +79,13 @@
      * SAME data as this panel — no duplicate fetch, no second source of truth.
      */
     onGraph?: (g: InfraGraph) => void;
+    /**
+     * Called with each /infra/pending-approvals result (mirrors onGraph): App
+     * lifts the open-adoption-PR list to the TourCard so the tour's first-adoption
+     * suggestion skips a resource that already has a PR in review — same source
+     * of truth as this panel's blue open-PR markers, no duplicate fetch.
+     */
+    onPending?: (approvals: PendingApproval[]) => void;
   } = $props();
 
   // previewPr is set once at boot (App parses it from the URL) and only ever
@@ -214,8 +222,12 @@
       const body = await resp.json();
       if (mine !== pendingRun) return; // a newer fetch won
       pendingApprovals = Array.isArray(body?.approvals) ? body.approvals : [];
+      onPending?.(pendingApprovals);
     } catch {
-      if (mine === pendingRun) pendingApprovals = []; // degrade silently
+      if (mine === pendingRun) {
+        pendingApprovals = []; // degrade silently
+        onPending?.(pendingApprovals);
+      }
     }
   }
 

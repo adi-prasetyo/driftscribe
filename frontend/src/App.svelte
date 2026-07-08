@@ -57,7 +57,7 @@
   import DemoNoticeBell from './components/DemoNoticeBell.svelte';
   import { announceHeaderPopoverOpen } from './lib/headerPopover';
   import { tourDone, markTourDone, shouldOfferTour } from './lib/tour';
-  import type { InfraGraph } from './lib/infra_graph';
+  import type { InfraGraph, PendingApproval } from './lib/infra_graph';
   import Icon from './components/Icon.svelte';
 
   // ---- state ----
@@ -199,6 +199,9 @@
   // permanent reopen path. Closing OR dismissing marks the tour done; the
   // flag is a UI preference, so localStorage (not sessionStorage) is right.
   let tourGraph = $state<InfraGraph | null>(null);
+  // Lifted alongside tourGraph (InfraDiagram.onPending) so the tour's first-adoption
+  // suggestion skips a resource that already has an open adoption PR.
+  let tourPending = $state<PendingApproval[]>([]);
   let tourOpen = $state(false);
   let tourOffered = $state(shouldOfferTour(window.location.search, tourDone()));
   function startTour(): void {
@@ -903,6 +906,7 @@
         onAdopt={handleAdopt}
         adoptDisabled={chatDisabled}
         onGraph={(g) => (tourGraph = g)}
+        onPending={(a) => (tourPending = a)}
       />
     </div>
     <CapabilityCard {call} autonomyNote={capabilityAutonomyNote} />
@@ -930,6 +934,7 @@
 {#if tourOpen}
   <TourCard
     graph={tourGraph}
+    pendingApprovals={tourPending}
     adoptDisabled={chatDisabled}
     onAdoptPrefill={handleAdopt}
     onClose={closeTour}

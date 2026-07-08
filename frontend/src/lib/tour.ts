@@ -14,11 +14,13 @@
 import {
   adoptGroupRank,
   adoptPrefill,
+  findPendingPr,
   normalizeForPrompt,
   prefillLocation,
   resourceCards,
   scopeTotals,
   type InfraGraph,
+  type PendingApproval,
 } from './infra_graph';
 import { coveragePercent } from './coverage';
 
@@ -165,8 +167,20 @@ export type AdoptStepState =
  * panel's adopt list exactly (non-sensitive, adoptable, has an unmanaged
  * node; sorted by adoptGroupRank with unranked last, stable). The hint is
  * shown only when the group is RANKED — same rule as InfraDiagram.
+ *
+ * `pendingApprovals` (optional — the panel's `/infra/pending-approvals` list,
+ * lifted through App) lets the tour skip a resource that already has an open
+ * adoption PR. Such a resource is still graph-unmanaged (the PR is not
+ * merged/applied, so it is genuinely not in any .tf yet), so without this it
+ * stayed the rank-1 pick — sending the operator to open a SECOND adoption of
+ * something already in review. The panel already marks these with a blue
+ * marker and `propose_adoption_tool` refuses the dupe; this brings the tour's
+ * suggestion in line with both. Omitted/undefined = no filtering (unchanged).
  */
-export function adoptStepState(graph: InfraGraph | null): AdoptStepState {
+export function adoptStepState(
+  graph: InfraGraph | null,
+  pendingApprovals?: PendingApproval[] | null,
+): AdoptStepState {
   if (graph === null || graph.degraded) {
     return {
       kind: 'unavailable',
@@ -196,7 +210,11 @@ export function adoptStepState(graph: InfraGraph | null): AdoptStepState {
       (n) =>
         !n.managed &&
         n.control_plane !== true &&
-        normalizeForPrompt(n.label, 254) !== '',
+        normalizeForPrompt(n.label, 254) !== '' &&
+        // Skip a resource that already has an open adoption PR — don't send
+        // the operator to adopt it a second time; the honest all-PR'd fall
+        // through below points them at the open change instead.
+        findPendingPr(pendingApprovals, g.asset_type, n.label) === null,
     );
     if (!node) continue;
     const hint =
@@ -239,6 +257,45 @@ export function adoptStepState(graph: InfraGraph | null): AdoptStepState {
     ).length;
     return g.drift_adoptable > shownActionable;
   });
+  // Every named adopt target the tour could otherwise suggest already has an
+  // open adoption PR (the loop above skips PR'd nodes, so reaching here with
+  // named-actionable rows means they were ALL skipped for that reason). Point
+  // the operator at the open change rather than the honest-but-wrong "no named
+  // target" line below. Two guards keep the claim honest:
+  //   - !hiddenActionable: if the aggregate says there is adoptable drift no
+  //     sampled row shows, we can't claim ALL are PR'd.
+  //   - nonControlPlane.length === namedActionable.length: no UNNAMED actionable
+  //     row is present (an adoptable row whose name didn't resolve is not PR'd,
+  //     it's un-nameable) — that case belongs to the "no named target" line
+  //     below, not this one (Codex 019f4012).
+  const namedActionable = candidates.flatMap(({ g }) =>
+    g.nodes
+      .filter(
+        (n) =>
+          !n.managed &&
+          n.control_plane !== true &&
+          normalizeForPrompt(n.label, 254) !== '',
+      )
+      .map((n) => ({ node: n, assetType: g.asset_type })),
+  );
+  if (
+    !hiddenActionable &&
+    namedActionable.length > 0 &&
+    nonControlPlane.length === namedActionable.length &&
+    namedActionable.every(
+      ({ node, assetType }) =>
+        findPendingPr(pendingApprovals, assetType, node.label) !== null,
+    )
+  ) {
+    return {
+      kind: 'none',
+      line:
+        'Everything the tour could suggest adopting next already has an ' +
+        'adoption PR open and waiting for review. Open it from the Open infra ' +
+        'changes band at the top of the Infrastructure panel instead of ' +
+        'starting a second adoption of the same resource.',
+    };
+  }
   if (!hiddenActionable && unmanagedShown.length > 0 && nonControlPlane.length === 0) {
     return {
       kind: 'none',

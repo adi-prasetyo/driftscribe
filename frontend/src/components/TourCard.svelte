@@ -16,16 +16,24 @@
     NEXT_LINE,
     adoptStepState,
   } from '../lib/tour';
-  import type { InfraGraph } from '../lib/infra_graph';
+  import type { InfraGraph, PendingApproval } from '../lib/infra_graph';
 
   let {
     graph = null,
+    pendingApprovals = [],
     adoptDisabled = false,
     onAdoptPrefill,
     onClose,
   }: {
     /** Lifted /infra/graph payload (InfraDiagram.onGraph); null until loaded. */
     graph?: InfraGraph | null;
+    /**
+     * Lifted /infra/pending-approvals list (InfraDiagram.onPending): the same
+     * open-adoption-PR list the panel shows. Lets the adopt step skip a
+     * resource that already has a PR in review instead of suggesting a
+     * duplicate adoption. Empty until loaded / on any fetch error.
+     */
+    pendingApprovals?: PendingApproval[];
     /** Same condition that disables ChatForm/Adopt (busy / historical replay). */
     adoptDisabled?: boolean;
     /** Routes through App.handleAdopt — prefills the composer, never sends. */
@@ -36,7 +44,7 @@
 
   let stepIndex = $state(0);
   const step = $derived(TOUR_STEPS[stepIndex]);
-  const adoptState = $derived(adoptStepState(graph));
+  const adoptState = $derived(adoptStepState(graph, pendingApprovals));
 
   // Spotlight the current step's target: toggle .tour-spotlight on the
   // matching [data-tour] element and scroll it into view. The effect cleanup
