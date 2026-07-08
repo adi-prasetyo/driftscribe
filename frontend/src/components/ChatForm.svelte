@@ -13,6 +13,9 @@
     onSubmit,
     prefill = null,
     workload = $bindable('drift'),
+    lockedCrew = null,
+    showNewChat = false,
+    onNewChat = () => {},
   }: {
     disabled?: boolean;
     onSubmit: (prompt: string, workload: Workload) => void;
@@ -31,6 +34,16 @@
      * drives it via `bind:value`, and the prefill effect still overrides it.
      */
     workload?: Workload;
+    /** Crew-lock passthrough to CrewPicker: the open thread's crew, or null. */
+    lockedCrew?: Workload | null;
+    /**
+     * Show the composer's New chat button — true whenever a clean slate would
+     * clear something (open thread, in-flight exchange, leftover one-shot
+     * output). App gates it on !historicalActive: in historical replay the
+     * banner's own "← new chat" is the single exit.
+     */
+    showNewChat?: boolean;
+    onNewChat?: () => void;
   } = $props();
 
   let prompt = $state('');
@@ -117,9 +130,21 @@
 
 <form id="chat-form" class="chat-form" class:historical={disabled} onsubmit={handle}>
   <!-- Crew-card workload picker, above the input ("who → what"). The selected
-       card's glyph loops; the rest are static. Bound to `workload`. -->
+       card's glyph loops; the rest are static. Bound to `workload`. The New chat
+       button hugs the trailing edge of this row when there's something to reset. -->
   <div class="chat-form__crew">
-    <CrewPicker bind:value={workload} {disabled} />
+    <CrewPicker bind:value={workload} {disabled} lockedTo={lockedCrew} />
+    {#if showNewChat}
+      <!-- Deliberately NOT {disabled}: while a reply streams this is the
+           cancel/escape hatch (App's newChat bumps runSeq). Pill + borderless
+           at rest so it reads as a quiet action, not a fifth crew card. -->
+      <button
+        type="button"
+        class="chat-form__new-chat"
+        data-testid="composer-new-chat"
+        onclick={onNewChat}
+      ><Icon name="plus" size={13} />New chat</button>
+    {/if}
   </div>
 
   <textarea
@@ -186,10 +211,53 @@
     border-color: var(--ds-border);
   }
 
-  /* The crew picker owns its own full-width row above the input. */
+  /* The crew picker + New chat button share the full-width row above the input:
+     picker grows, button hugs the trailing edge. */
   .chat-form__crew {
     flex: 1 1 100%;
     min-width: 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--ds-sp-2);
+  }
+  .chat-form__crew > :global(.crew-picker) {
+    flex: 1 1 auto;
+    width: auto;
+    min-width: 0;
+  }
+
+  /* Quiet clean-slate action. Distinct from the crew cards on purpose —
+     borderless at rest + pill radius + no glyph, so the row reads as
+     "four choices … one action", not five crew. */
+  .chat-form__new-chat {
+    flex: 0 0 auto;
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3em;
+    appearance: none;
+    border: 1px solid transparent;
+    border-radius: var(--ds-radius-pill);
+    background: transparent;
+    color: var(--ds-fg-soft);
+    font-size: var(--ds-fs-1);
+    font-weight: var(--ds-fw-semibold);
+    line-height: 1.2;
+    padding: 0.32em 0.7em;
+    cursor: pointer;
+    transition:
+      background-color var(--ds-dur) var(--ds-ease),
+      border-color var(--ds-dur) var(--ds-ease),
+      color var(--ds-dur) var(--ds-ease);
+  }
+  .chat-form__new-chat:hover {
+    background: var(--ds-surface-2);
+    border-color: var(--ds-border-strong);
+    color: var(--ds-fg);
+  }
+  .chat-form__new-chat:active {
+    transform: translateY(1px);
   }
 
   /* Visually-hidden helper for the aria-describedby keyboard hint (matches the

@@ -98,3 +98,102 @@ describe('CrewPicker — disabled (historical replay)', () => {
     expect(glyphAnimated(container, 'drift')).toBe(false);
   });
 });
+
+describe('CrewPicker — crew-locked (open thread)', () => {
+  it('refuses to switch to a locked card on click', async () => {
+    const { container } = render(CrewPicker, { props: { value: 'drift', lockedTo: 'drift' } });
+    const explore = container.querySelector(
+      '[data-testid="crew-card-explore"] input',
+    ) as HTMLInputElement;
+    await fireEvent.click(explore);
+    // jsdom may transiently report the clicked radio checked inside the
+    // cancelled activation; assert the SETTLED state (post-rerender), and pin
+    // that the locked-to radio is still the checked one.
+    await waitFor(() => {
+      expect(explore.checked).toBe(false);
+      const drift = container.querySelector(
+        '[data-testid="crew-card-drift"] input',
+      ) as HTMLInputElement;
+      expect(drift.checked).toBe(true);
+    });
+  });
+
+  it('marks locked cards aria-disabled; the thread crew stays operable', () => {
+    const { container } = render(CrewPicker, { props: { value: 'drift', lockedTo: 'drift' } });
+    for (const v of VALUES) {
+      const radio = container.querySelector(`[data-testid="crew-card-${v}"] input`)!;
+      if (v === 'drift') expect(radio.getAttribute('aria-disabled')).toBeNull();
+      else expect(radio.getAttribute('aria-disabled')).toBe('true');
+    }
+  });
+
+  it("swaps locked cards' tooltip to the lock explanation naming the thread crew", () => {
+    const { container } = render(CrewPicker, { props: { value: 'drift', lockedTo: 'drift' } });
+    const exploreHint = container.querySelector(
+      '[data-testid="crew-card-explore"] [role="tooltip"]',
+    )!;
+    expect(exploreHint.textContent).toContain('This thread is with Anchor');
+    expect(exploreHint.textContent?.toLowerCase()).toContain('new chat');
+    // The thread's own card keeps its normal summary.
+    const driftHint = container.querySelector(
+      '[data-testid="crew-card-drift"] [role="tooltip"]',
+    )!;
+    expect(driftHint.textContent).toBe(WORKLOADS.find((w) => w.value === 'drift')!.summary);
+  });
+
+  it('blocks arrow-key radio SELECTION change while locked', async () => {
+    const { container } = render(CrewPicker, { props: { value: 'drift', lockedTo: 'drift' } });
+    const drift = container.querySelector(
+      '[data-testid="crew-card-drift"] input',
+    ) as HTMLInputElement;
+    // fireEvent resolves false when preventDefault() was called…
+    const notPrevented = await fireEvent.keyDown(drift, { key: 'ArrowRight' });
+    expect(notPrevented).toBe(false);
+    // …and the selection must actually stay put (the behavior, not the API).
+    await waitFor(() => expect(drift.checked).toBe(true));
+  });
+
+  it('still ROVES FOCUS across locked cards (a11y: they stay keyboard-reachable)', async () => {
+    // The lock refuses selection, not reachability: arrow keys must still move
+    // focus to the greyed cards so a keyboard/SR user can hear each one's lock
+    // explanation (surfaced via the focus-shown tooltip). Selection stays pinned.
+    const { container } = render(CrewPicker, { props: { value: 'drift', lockedTo: 'drift' } });
+    const radios = [
+      ...container.querySelectorAll('input[type="radio"]'),
+    ] as HTMLInputElement[];
+    radios[0].focus();
+    await fireEvent.keyDown(radios[0], { key: 'ArrowRight' });
+    // Focus advanced to the next card…
+    expect(document.activeElement).toBe(radios[1]);
+    // …but the locked crew is still the checked one.
+    const checked = container.querySelector('input[type="radio"]:checked') as HTMLInputElement;
+    expect(checked.value).toBe('drift');
+  });
+
+  it('snaps a programmatic value change back to the locked crew (belt)', async () => {
+    const { container } = render(CrewPicker, { props: { value: 'explore', lockedTo: 'drift' } });
+    await waitFor(() => {
+      const drift = container.querySelector(
+        '[data-testid="crew-card-drift"] input',
+      ) as HTMLInputElement;
+      expect(drift.checked).toBe(true);
+    });
+  });
+
+  it('force-shows the tooltip on a blocked click (nudge feedback)', async () => {
+    const { container } = render(CrewPicker, { props: { value: 'drift', lockedTo: 'drift' } });
+    const card = container.querySelector('[data-testid="crew-card-explore"]')!;
+    await fireEvent.click(card.querySelector('input')!);
+    expect(card.classList.contains('crew-card--nudged')).toBe(true);
+  });
+
+  it('does not lock anything when lockedTo is null (fresh composer)', async () => {
+    const { container } = render(CrewPicker, { props: { value: 'drift', lockedTo: null } });
+    const explore = container.querySelector(
+      '[data-testid="crew-card-explore"] input',
+    ) as HTMLInputElement;
+    await fireEvent.click(explore);
+    expect(explore.checked).toBe(true);
+    expect(explore.getAttribute('aria-disabled')).toBeNull();
+  });
+});

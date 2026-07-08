@@ -200,3 +200,44 @@ describe('ChatForm — crew picker integration', () => {
     expect(onSubmit).toHaveBeenCalledWith('hello', 'drift');
   });
 });
+
+describe('ChatForm — composer New chat button', () => {
+  it('is hidden by default (fresh composer)', () => {
+    const { queryByTestId } = render(ChatForm, { props: { onSubmit: () => {} } });
+    expect(queryByTestId('composer-new-chat')).toBeNull();
+  });
+
+  it('renders when showNewChat and fires onNewChat on click', async () => {
+    const onNewChat = vi.fn();
+    const { getByTestId } = render(ChatForm, {
+      props: { onSubmit: () => {}, showNewChat: true, onNewChat },
+    });
+    await fireEvent.click(getByTestId('composer-new-chat'));
+    expect(onNewChat).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays clickable while the form is disabled (mid-stream cancel path)', async () => {
+    const onNewChat = vi.fn();
+    const { getByTestId } = render(ChatForm, {
+      props: { onSubmit: () => {}, disabled: true, showNewChat: true, onNewChat },
+    });
+    const btn = getByTestId('composer-new-chat') as HTMLButtonElement;
+    expect(btn.disabled).toBe(false);
+    await fireEvent.click(btn);
+    expect(onNewChat).toHaveBeenCalledTimes(1);
+  });
+
+  it('forwards lockedCrew: a locked card click cannot change the submitted crew', async () => {
+    const onSubmit = vi.fn();
+    const { container } = render(ChatForm, {
+      props: { onSubmit, workload: 'drift', lockedCrew: 'drift' },
+    });
+    await fireEvent.click(
+      container.querySelector('[data-testid="crew-card-explore"] input')!,
+    );
+    const input = container.querySelector('#prompt-input') as HTMLTextAreaElement;
+    await fireEvent.input(input, { target: { value: 'check the service' } });
+    await fireEvent.submit(document.getElementById('chat-form')!);
+    expect(onSubmit).toHaveBeenCalledWith('check the service', 'drift');
+  });
+});

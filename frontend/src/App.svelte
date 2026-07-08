@@ -180,6 +180,27 @@
   // clears liveExchange, so both-true is impossible — this guard is belt.
   const liveExchangeActive = $derived(!historicalActive && liveExchange != null);
 
+  // Crew-lock context: an open thread — or the in-flight first exchange — pins
+  // the composer to one crew; CrewPicker greys out the rest. null = no lock.
+  const lockedCrew = $derived<Workload | null>(
+    conversationWorkload ?? liveExchange?.workload ?? null,
+  );
+  // The composer's New chat button shows whenever a clean slate would clear
+  // something. displayTurns already unifies "persisted thread + optimistic
+  // in-flight exchange" (reuse it — one source of thread visibility, no drift);
+  // finalReply/busy/events cover the hero + timeline-only states (a paused /
+  // one-shot / error reply persists no thread but still occupies the hero), and
+  // conversationId is a belt for an open-but-empty thread edge. Hidden in
+  // historical replay — the banner owns the exit there.
+  const composerNewChat = $derived(
+    !historicalActive &&
+      (conversationId !== null ||
+        displayTurns.length > 0 ||
+        finalReply !== null ||
+        busy ||
+        events.length > 0),
+  );
+
   // Adopt-button bridge + ?ask_pr boot seed (item 12): an Adopt click — or
   // arriving from the approval page's "ask about this change" link — prefills
   // (NOT sends) the composer. epoch bumps so the same/another Adopt re-applies
@@ -188,6 +209,14 @@
     initialChatPrefill(window.location.search)
   );
   function handleAdopt(text: string) {
+    // Adopt starts a NEW provisioning task, so ALWAYS drop to a clean slate
+    // first: on an open thread the provision prefill would otherwise fight the
+    // crew lock (CrewPicker snaps the value straight back), and leftover
+    // one-shot output shouldn't sit around a fresh task either. On an already-
+    // fresh composer this is a harmless no-op (Adopt is disabled during busy/
+    // historical, so there is never a live stream to cancel). The old thread
+    // stays reachable from the rail.
+    newChat();
     chatPrefill = { text, workload: 'provision', epoch: (chatPrefill?.epoch ?? 0) + 1 };
     // Bring the composer into view so the prefilled draft is obvious. Best-effort:
     // the element exists in the live tree; guarded for the historical/SSR-less case.
@@ -880,7 +909,6 @@
       {conversations}
       activeConversationId={conversationId}
       onOpen={openConversation}
-      onNewChat={newChat}
     />
     <DecisionsRail {decisions} {activeTraceId} onOpenTrace={openTrace} />
   </div>
@@ -916,6 +944,9 @@
         onSubmit={submitChat}
         prefill={chatPrefill}
         bind:workload={composerWorkload}
+        lockedCrew={lockedCrew}
+        showNewChat={composerNewChat}
+        onNewChat={newChat}
       />
     </div>
     {#if !historicalActive && displayTurns.length > 0}
