@@ -39,19 +39,20 @@ _demo_anonymous: contextvars.ContextVar[bool] = contextvars.ContextVar(
 def is_demo_anonymous() -> bool:
     """True when the in-flight request is a marked anonymous demo caller.
 
-    Read by tools (e.g. :func:`agent.adk_tools.propose_rollback_tool`) that must
-    withhold live credentials from the model for anonymous callers during the
-    public demo window (audit C1).
+    This is the request-scoped "anonymous demo visitor" flag, bound for the
+    duration of an ADK run by :func:`demo_anonymous_scope`. It historically
+    gated ``propose_rollback_tool`` into withholding the approval credential
+    from the model; after the 2026-07-09 operator-seat reversal (docs/plans/
+    2026-07-09-operator-seat-demo-window.md) NO production caller reads it — a
+    visitor now receives the same link as the operator. It is kept as
+    defense-in-depth plumbing (a future tool that must behave differently for
+    anonymous visitors can read it) and remains test-covered.
 
     Default ``False`` mirrors :func:`agent.main._is_demo_anonymous` (absence of
-    the ``X-DriftScribe-Demo-Anonymous`` marker == trusted operator). NOTE: for
-    the withholding this default is fail-OPEN, NOT fail-closed — an anonymous
-    request that never bound the flag would be treated as an operator and could
-    receive the token. That is safe ONLY because every ``/chat`` entrypoint
-    computes the flag from the request and threads it in explicitly (SSE + JSON),
-    and the sole credential-returning tool (``propose_rollback_tool``) is
-    reachable only via that path. Do NOT rely on the default to protect a new
-    credential surface — bind the flag at the request boundary."""
+    the ``X-DriftScribe-Demo-Anonymous`` marker == trusted operator). The
+    default is fail-OPEN, so if a future caller reuses this to protect a
+    credential surface it MUST bind the flag at the request boundary (as every
+    ``/chat`` entrypoint does — SSE + JSON) rather than relying on the default."""
     return _demo_anonymous.get()
 
 

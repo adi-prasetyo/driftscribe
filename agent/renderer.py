@@ -195,13 +195,19 @@ _APPROVAL_REDACT_MAX_DEPTH = 64
 
 def redact_approval_tokens_deep(payload: object, _depth: int = 0) -> object:
     """Recursively replace rollback-approval ``?t=`` token values in every
-    string of a JSON-able payload (anonymous-read serve-time defense).
+    string of a JSON-able payload.
+
+    Surviving callers after the 2026-07-09 operator-seat reversal (the anonymous
+    /decisions and /trace serve-time scrubs were removed): the ``/runs`` +
+    model-facing decisions-history scrub (via :func:`scrub_decision_approval`),
+    the cross-crew ``read_conversations`` untrusted-text redaction, and the
+    Cloud Logging final-response log-preview redactor.
 
     Conventions mirror :func:`scrub_decision_rationale`: returns the input
-    BY IDENTITY when nothing matches — callers like ``GET /trace`` apply
-    this per-request to payloads that also live in a server-side cache, so
-    the walker must never mutate and never hand back a changed object
-    unnecessarily. Never raises; non-container scalars pass through.
+    BY IDENTITY when nothing matches — some callers apply this per-request to
+    payloads that also live in a server-side cache, so the walker must never
+    mutate and never hand back a changed object unnecessarily. Never raises;
+    non-container scalars pass through.
     """
     if _depth > _APPROVAL_REDACT_MAX_DEPTH:
         return "<redacted:depth>"
@@ -218,20 +224,27 @@ def redact_approval_tokens_deep(payload: object, _depth: int = 0) -> object:
 
 
 def scrub_decision_approval(decision: object) -> object:
-    """Serve-time, anonymous-read defense: strip the tokenized rollback
-    approval link from a decision doc (hackathon A.2, Codex catch).
+    """Strip the tokenized rollback approval link from a decision doc.
 
     Rollback decisions persist ``approval.approval_url`` carrying the live
     single-use ``?t=`` token, and ``rendered_body`` embeds the same URL.
-    Anonymous demo-window reads (``GET /decisions`` / ``/trace`` — Worker-
-    marked) and the unauthenticated ``GET /runs/{id}`` must not hand that
-    token out cross-session: with it, a visitor could deny a pending
-    operator rollback — and execute one if the dial were ever at
-    Propose+Apply. The ``approval_url`` KEY is dropped (not token-redacted
-    in place) so the SPA rail renders no dead CTA (``approveHref``
-    null-checks it); ``approval_id``/``expires_at`` stay — they are not
-    secret. Every other string in the doc goes through
-    :func:`redact_approval_tokens_deep` (rendered_body, anything echoed).
+
+    SURVIVING SCOPE (after the 2026-07-09 operator-seat decision, docs/plans/
+    2026-07-09-operator-seat-demo-window.md): the anonymous demo-window scrubs of
+    ``GET /decisions`` and ``/trace`` were REMOVED — a visitor holds the operator
+    seat, so those reads now carry the live link, same as the operator. Two
+    callers remain:
+
+    * the unauthenticated ``GET /runs/{id}`` — always scrubbed (enumerable id,
+      no auth, nothing in the UI consumes it), and
+    * the model-facing decisions-history read tool (``agent/adk_tools.py``) —
+      keeping ≤15-min-dead history links out of model context costs nothing.
+
+    The ``approval_url`` KEY is dropped (not token-redacted in place) so the SPA
+    rail renders no dead CTA (``approveHref`` null-checks it);
+    ``approval_id``/``expires_at`` stay — they are not secret. Every other string
+    in the doc goes through :func:`redact_approval_tokens_deep` (rendered_body,
+    anything echoed).
 
     Conventions mirror :func:`scrub_decision_rationale`: identity on
     no-change, copy-on-change, never mutates the input, never raises,

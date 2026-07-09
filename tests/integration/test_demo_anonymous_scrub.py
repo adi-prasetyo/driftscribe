@@ -1,23 +1,26 @@
-"""Integration tests for the demo-window approval-link scrub (hackathon A.2).
+"""Integration tests for the operator-seat demo window: anonymous visitors get
+the SAME rollback approval link as the operator (docs/plans/2026-07-09-operator-
+seat-demo-window.md).
 
-Rollback decisions persist ``approval.approval_url`` carrying the live,
-single-use ``?t=`` HMAC token (and ``rendered_body`` embeds the same URL).
-During the hackathon judging window the Worker injects the operator token for
-anonymous visitors on ``GET /decisions`` / ``GET /trace/{id}`` and marks those
-requests ``X-DriftScribe-Demo-Anonymous: 1`` — without a serve-time scrub the
-token would be harvestable CROSS-SESSION (Codex A.2 catch: a visitor could
-deny a pending operator rollback, or execute one if the dial were ever at
-Propose+Apply).
+This module previously pinned the hackathon A.2 serve-time scrub, which withheld
+the tokenized ``?t=`` approval link from anonymous ``GET /decisions`` /
+``GET /trace/{id}`` reads. The 2026-07-09 operator-seat decision REVERSED that
+scrub (audit C1 for the rollback link): a visitor sits in the operator's seat,
+so the rail's Approve CTA and the timeline's approval links must be live for
+them. Safety comes from the bounded blast radius (single-use token, 15-min TTL,
+the worker refuses no-op targets, self-healing baseline), not from withholding
+the link. This file now pins the REVERSED contract as the risk-acceptance record.
 
 Contract pinned here:
 
-* ``GET /decisions`` — marker present → ``approval.approval_url`` dropped +
-  ``rendered_body`` token redacted; marker absent (operator) → raw preserved.
-* ``GET /trace/{id}`` — marker present → decision scrubbed AND event strings
-  redacted; the in-process timeline cache is NEVER poisoned by the
-  per-request scrub (an operator poll after an anonymous poll sees the link).
-* ``GET /runs/{id}`` — ALWAYS scrubbed (unauthenticated; decision_ids become
-  enumerable through the demo-window /decisions; nothing in the UI reads it).
+* ``GET /decisions`` — anonymous marker present OR absent → ``approval.approval_url``
+  and the ``rendered_body`` link are served INTACT.
+* ``GET /trace/{id}`` — anonymous marker present OR absent → the decision's
+  approval link AND the event strings are served intact; the timeline cache is
+  never scrubbed either.
+* ``GET /runs/{id}`` — STILL always scrubbed (unauthenticated; decision_ids
+  become enumerable through the demo-window /decisions; nothing in the UI reads
+  it). The one surviving serve-time approval scrub.
 """
 from __future__ import annotations
 
@@ -54,25 +57,23 @@ def _seed_rollback_decision(decision_id: str = "dec-rb") -> None:
 
 
 # --------------------------------------------------------------------------- #
-# GET /decisions
+# GET /decisions — anon now sees the live link (operator seat)
 # --------------------------------------------------------------------------- #
 
 
-def test_decisions_marker_scrubs_approval_link():
+def test_decisions_marker_keeps_approval_link():
+    # Operator-seat reversal: the anonymous marker no longer scrubs the link.
     _seed_rollback_decision()
     resp = TestClient(app).get("/decisions", headers=_MARKER)
     assert resp.status_code == 200
-    assert _TOKEN not in resp.text
     row = resp.json()["decisions"][0]
-    assert "approval_url" not in row["approval"]
-    # Non-secret approval fields survive.
-    assert row["approval"]["approval_id"] == "ap-123"
-    assert "?t=<redacted>" in row["rendered_body"]
+    assert row["approval"]["approval_url"] == _URL
+    assert _URL in row["rendered_body"]
 
 
 def test_decisions_without_marker_keeps_approval_link():
-    # The operator (CF JWT via Access, or run.app + token — never marked)
-    # keeps the rail's approve CTA.
+    # The operator (CF JWT via Access, or run.app + token — never marked) keeps
+    # the rail's approve CTA — unchanged by the reversal.
     _seed_rollback_decision()
     resp = TestClient(app).get("/decisions")
     assert resp.status_code == 200
@@ -81,7 +82,7 @@ def test_decisions_without_marker_keeps_approval_link():
 
 
 # --------------------------------------------------------------------------- #
-# GET /runs/{decision_id} — always scrubbed
+# GET /runs/{decision_id} — STILL always scrubbed (the one survivor)
 # --------------------------------------------------------------------------- #
 
 
@@ -96,7 +97,7 @@ def test_runs_always_scrubs_approval_link():
 
 
 # --------------------------------------------------------------------------- #
-# GET /trace/{trace_id}
+# GET /trace/{trace_id} — anon now sees the live link (operator seat)
 # --------------------------------------------------------------------------- #
 
 
@@ -105,7 +106,7 @@ def _install_stub_with_link_event() -> None:
     # shape redact_event does NOT catch (it kills secret-named KEYS in
     # structured payloads; prose strings only get userinfo-URL stripping).
     # The final_response entry lets the stability tracker complete/cache the
-    # timeline for the cache-poisoning pin below.
+    # timeline for the cache pin below.
     stub = StubTraceFetcher(
         entries=[
             {
@@ -127,15 +128,14 @@ def _install_stub_with_link_event() -> None:
     app.dependency_overrides[get_trace_fetcher] = lambda: stub
 
 
-def test_trace_marker_scrubs_decision_and_events():
+def test_trace_marker_keeps_decision_and_events():
     _seed_rollback_decision()
     _install_stub_with_link_event()
     resp = TestClient(app).get(f"/trace/{_TRACE}", headers=_MARKER)
     assert resp.status_code == 200
-    assert _TOKEN not in resp.text
     body = resp.json()
-    assert "approval_url" not in body["decision"]["approval"]
-    assert "?t=<redacted>" in body["events"][0]["summary"]
+    assert body["decision"]["approval"]["approval_url"] == _URL
+    assert _URL in body["events"][0]["summary"]
 
 
 def test_trace_without_marker_keeps_link():
@@ -148,11 +148,10 @@ def test_trace_without_marker_keeps_link():
     assert _URL in body["events"][0]["summary"]
 
 
-def test_trace_scrub_does_not_poison_cache_for_operator(monkeypatch):
-    """An anonymous (marked) poll must not leave scrubbed events in the
-    server-side timeline cache: a later operator (unmarked) poll of the SAME
-    completed trace must still see the tokenized link (and the cache-hit
-    anonymous poll must still scrub)."""
+def test_trace_cache_serves_link_to_anon_and_operator(monkeypatch):
+    """After the reversal, BOTH an anonymous (marked) poll and an operator
+    (unmarked) poll of the same completed, cached trace see the live tokenized
+    link — the cache is no longer scrubbed on either path."""
     _seed_rollback_decision()
     _install_stub_with_link_event()
     client = TestClient(app)
@@ -164,18 +163,16 @@ def test_trace_scrub_does_not_poison_cache_for_operator(monkeypatch):
 
     r1 = client.get(f"/trace/{_TRACE}", headers=_MARKER)
     assert r1.status_code == 200
-    assert _TOKEN not in r1.text
     fake_now[0] += _STABILITY_GRACE_S + 1.0
     r2 = client.get(f"/trace/{_TRACE}", headers=_MARKER)
     assert r2.json()["complete"] is True
-    assert _TOKEN not in r2.text
 
     # Operator poll (no marker) — served FROM the cache, link intact.
     r3 = client.get(f"/trace/{_TRACE}")
     assert r3.json()["fetched_from_cache"] is True
     assert _URL in r3.json()["events"][0]["summary"]
 
-    # Anonymous cache-hit poll — still scrubbed.
+    # Anonymous cache-hit poll — link intact too (operator seat).
     r4 = client.get(f"/trace/{_TRACE}", headers=_MARKER)
     assert r4.json()["fetched_from_cache"] is True
-    assert _TOKEN not in r4.text
+    assert _URL in r4.json()["events"][0]["summary"]

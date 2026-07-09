@@ -115,10 +115,9 @@ def propose_rollback_tool(target_revision: str, reason: str) -> dict:
       coordinator's approval handler dispatches the actual /execute.
     - ``expires_at``: 15-min TTL.
 
-    In the public-demo anonymous view, ``approval_token`` and
-    ``approval_url`` are withheld (audit C1) and an ``approval_note``
-    field explains what to tell the user instead — relay that note;
-    never present or invent an approval URL when it is absent.
+    Anonymous public-demo callers receive exactly what the operator
+    receives: present the ``approval_url`` to the visitor and invite them
+    to open it and approve; do not echo the bare ``approval_token``.
 
     The coordinator does NOT execute rollbacks directly. This tool
     only PROPOSES — the operator must visit ``approval_url`` and
@@ -156,10 +155,9 @@ def propose_rollback_tool(target_revision: str, reason: str) -> dict:
     # extra push notification.
     approval_url = resp.get("approval_url") if isinstance(resp, dict) else None
     expires_at = resp.get("expires_at") if isinstance(resp, dict) else None
-    # Shared by the notify below AND the anon approval_note: the note asserts
-    # the link was sent to the operator's channel, so it must track exactly
-    # the condition under which that send is attempted (Codex review: a
-    # malformed expires_at skips the notify — the note must not claim it).
+    # Gates the best-effort operator notify below: only attempt the push when
+    # both the approval_url and a well-formed expires_at are present (a malformed
+    # expires_at would otherwise interpolate into a misleading notification body).
     notify_eligible = bool(
         isinstance(approval_url, str) and approval_url
         and isinstance(expires_at, str) and expires_at
@@ -182,43 +180,14 @@ def propose_rollback_tool(target_revision: str, reason: str) -> dict:
             "rollback_propose_notify_failed",
             extra={"target_revision": target_revision},
         )
-    # Audit C1 (primary fix): anonymous public-demo callers must NEVER receive
-    # the single-use ?t= approval credential — it is the sole authz for
-    # POST /approvals/{id}. ADK feeds this return straight back to the model,
-    # which could echo it into its reply OR route it into a PR body on the
-    # PUBLIC repo (the drift crew holds both propose_rollback and patch_docs).
-    # The operator notifier webhook above already carries the real link, so the
-    # operator flow is unchanged — only the value handed to the MODEL is scrubbed.
-    # Both credential surfaces are removed: the bare ``approval_token`` field is
-    # dropped, and ``approval_url`` is dropped ENTIRELY — an earlier version
-    # masked the token in place (``?t=<redacted>``), but the model echoed that
-    # masked URL to visitors as if it were actionable, and clicking it dead-ends
-    # (observed live 2026-07-08). ``approval_note`` replaces it so the model has
-    # something honest to relay; approval_id + expires_at stay readable so the
-    # model can still say an approval was created and when it expires.
-    from agent.request_context import is_demo_anonymous
-
-    if is_demo_anonymous() and isinstance(resp, dict):
-        from agent.renderer import redact_approval_tokens_deep
-
-        scrubbed = dict(redact_approval_tokens_deep(resp))
-        scrubbed.pop("approval_token", None)
-        scrubbed.pop("approval_url", None)
-        # Note only when the operator notify above was actually attempted
-        # (same condition, not merely "a URL existed") — a worker response
-        # that skipped the notify must not gain an "operator notified" claim.
-        # The send itself is best-effort/fire-and-forget, so the note says
-        # "was sent", never "was received".
-        if notify_eligible:
-            scrubbed["approval_note"] = (
-                "Public demo view: the approval link is operator-only and is "
-                "not available here, so do not present, reconstruct, or invent "
-                "any approval URL. The live approval link was sent to the "
-                "operator's notification channel. Tell the user the rollback "
-                "proposal was created and is waiting for the operator to "
-                "approve it before it expires."
-            )
-        return scrubbed
+    # Operator decision 2026-07-09 (docs/plans/2026-07-09-operator-seat-demo-
+    # window.md): during the public demo window the visitor holds the operator
+    # seat, so anonymous callers receive the SAME response the operator does,
+    # approval_url and all. This deliberately reverses audit C1's anon-scrub for
+    # the rollback link: the link is the point of the demo (asking Anchor to roll
+    # back really moves payment-demo traffic once approved). Bounds that make this
+    # safe: single-use token, 15-min TTL, the worker refuses no-op targets, and
+    # demo-reset.yml restores the payment-demo baseline within ~2h.
     return resp
 
 

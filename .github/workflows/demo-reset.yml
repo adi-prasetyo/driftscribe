@@ -2,33 +2,43 @@ name: demo-reset
 
 # Scheduled self-heal for the public judging window (opened 2026-07-07 at
 # autonomy propose_apply — see docs/plans/2026-07-07-demo-daily-reset-and-notice.md).
-# Anonymous judges can chat with the crews and trigger REAL apply-side effects:
-# a live rollback of `payment-demo` traffic/env, and a merged lodash upgrade PR
-# against `demo/upgrade-target/package.json`. Both are demo fixtures that
-# "rot" once disturbed — this workflow restores the demo-ready baseline on a
-# schedule so no judge can break the demo for the next visitor.
+# Anonymous visitors sit in the operator's seat (docs/plans/2026-07-09-operator-
+# seat-demo-window.md) and trigger REAL apply-side effects: a live rollback of
+# `payment-demo` traffic/env once they approve it (now literally true for
+# visitors again — audit C1's anon approval-link scrub was reversed), and a
+# merged lodash upgrade PR against `demo/upgrade-target/package.json` (audit H1's
+# anon merge-tool drop was reversed). Both are demo fixtures that "rot" once
+# disturbed — this workflow restores the demo-ready baseline on a schedule so no
+# visitor can break the demo for the next one.
 #
 # Three jobs, deliberately split by BLAST DOMAIN (GCP vs GitHub) and by CADENCE:
 #   - service-reset: payment-demo traffic/env pre-read-and-diff (GCP), plus two
 #     notify-only safety nets (autonomy/pause dial, adopt-fixtures). Runs every
-#     2h — judges roll back payment-demo far more casually than they merge an
+#     2h — visitors roll back payment-demo far more casually than they merge an
 #     upgrade PR, so this needs the tighter cadence.
 #   - lodash-repin: re-pins demo/upgrade-target/package.json via an auto-merged
-#     PR (GitHub only). Runs once a day — main history shouldn't fill with
-#     reset commits, and re-pinning is idempotent so a stale merge doesn't
-#     compound.
+#     PR (GitHub only). Runs every 2h (2026-07-09: visitor merges are open, so a
+#     merged fixture must self-restore on the same ~2h rhythm) AND on the daily
+#     6:00 JST cron. Merge-aware + idempotent: the baseline check no-ops the
+#     re-pin when lodash is already 4.17.20, so a 2h run only commits when a
+#     visitor actually merged the fix. The judge-PR sweep is restricted on the
+#     2h cron (repin-only) so it never closes a PR a judge is mid-merge on; the
+#     full sweep (incl. judge upgrade/lodash-* PRs) runs on the daily cron and
+#     on workflow_dispatch.
 #   - adopt-pr-sweep: closes visitor adoption PRs older than 2h (GitHub only)
 #     so the Infra panel's "Adopt into IaC" demo self-restores — an open
 #     adoption PR hides that resource's Adopt button from every later visitor
 #     (pending-approvals band + crew dupe-guard, both state=open). Runs every
 #     2h alongside service-reset (docs/plans/2026-07-08-adopt-pr-sweep.md).
 #
-# Triggers: two crons (2h = service-reset + adopt-pr-sweep, daily 6:00 JST =
-# ALL THREE jobs) plus
-# workflow_dispatch (service-reset + adopt-pr-sweep always; lodash-repin opt-in via
-# `force-lodash`, e.g. the FIRST post-deploy run — see the deploy checklist in
-# the plan doc — needs it to fix already-rotted state without waiting for
-# 6:00 JST). NEVER `pull_request_target` — same stance as iac.yml (see that
+# Triggers: two crons (2h = service-reset + adopt-pr-sweep + lodash-repin
+# [merge-aware, repin-only sweep], daily 6:00 JST = ALL THREE jobs with the FULL
+# judge-PR sweep) plus workflow_dispatch (service-reset + adopt-pr-sweep always;
+# lodash-repin opt-in via `force-lodash`, e.g. the FIRST post-deploy run — see
+# the deploy checklist in the plan doc — needs it to fix already-rotted state
+# without waiting for a cron; DISPATCH IMPLIES THE FULL SWEEP, so avoid it during
+# the open window if a judge may have a live upgrade/lodash-* PR). NEVER
+# `pull_request_target` — same stance as iac.yml (see that
 # file's header comment): this workflow authenticates to GCP via WIF and holds
 # a GitHub PAT, so it must never run PR-controlled code. `schedule` always runs
 # the version of this file committed to the default branch (main); manual
@@ -384,14 +394,21 @@ jobs:
   # lodash-repin: restore the upgrade-demo baseline via an auto-merged PR.
   # ---------------------------------------------------------------------- #
   lodash-repin:
-    # Runs on the daily 6:00 JST cron, OR on-demand via workflow_dispatch's
-    # force-lodash input. Bracket notation (not dot notation) is REQUIRED for
-    # `inputs['force-lodash']` — GitHub Actions expression syntax parses a
+    # Runs on the 2h cron (2026-07-09: visitor merges are open, so a merged
+    # fixture must self-restore on the same ~2h rhythm as the other baselines),
+    # on the daily 6:00 JST cron, OR on-demand via workflow_dispatch's
+    # force-lodash input. Merge-aware: the "Check lodash baseline" step below
+    # no-ops the actual re-pin when lodash is already 4.17.20, so a 2h run only
+    # commits when a judge actually merged the fix. The judge-PR sweep is
+    # restricted on the 2h cron (see the sweep step) so it never closes a PR a
+    # judge opened minutes ago. Bracket notation (not dot notation) is REQUIRED
+    # for `inputs['force-lodash']` — GitHub Actions expression syntax parses a
     # bare `.inputs.force-lodash` as subtraction, not property access, because
     # the key contains a hyphen. `github.event.inputs` is empty/absent for
     # `schedule` events, so the right-hand side of the `&&` safely evaluates
     # to a non-match rather than erroring.
     if: >-
+      github.event.schedule == '0 */2 * * *' ||
       github.event.schedule == '0 21 * * *' ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs['force-lodash'] == 'true')
     runs-on: ubuntu-latest
@@ -445,26 +462,39 @@ jobs:
           fi
           echo "lodash on main: ${CURRENT} (baseline: 4.17.20)"
 
-      - name: "Sweep stray upgrade/lodash-* and demo-reset/lodash-repin-* PRs and branches"
+      - name: "Sweep stray lodash re-pin PRs and branches (judge PRs only on daily/dispatch)"
         id: sweep
         env:
           GH_TOKEN: ${{ steps.pat.outputs.pat }}
+          # FULL_SWEEP true only on the daily 21:00 UTC cron or a manual
+          # workflow_dispatch. On the 2h cron it is false so the sweep NEVER
+          # touches a judge's upgrade/lodash-* PR/branch — a judge may have
+          # opened one minutes ago and be about to merge it, and closing it
+          # mid-demo during the open window is exactly the hazard we avoid.
+          # demo-reset/lodash-repin-* (this workflow's own strays) are always
+          # swept so a stuck auto-merge can't pile up re-pin PRs.
+          FULL_SWEEP: ${{ github.event.schedule == '0 21 * * *' || github.event_name == 'workflow_dispatch' }}
         run: |
           set -euo pipefail
           REPO="${{ github.repository }}"
           CLOSED=0
           DELETED=0
 
-          # Two stray patterns are swept, both BEFORE the re-pin step runs:
-          #   - upgrade/lodash-*          judge-driven upgrade-workload PRs
-          #     (pattern mirrors tests/e2e/_github_helpers.py:sweep_upgrade_prs).
+          # Stray patterns swept BEFORE the re-pin step runs:
           #   - demo-reset/lodash-repin-* THIS workflow's own earlier re-pin
           #     PRs. If one is stuck open (e.g. a CI flake meant auto-merge
           #     never fired), at_baseline stays false and every subsequent
-          #     daily run would pile ANOTHER re-pin PR on top forever.
-          #     Closing the stuck one (+ deleting its branch) and letting
-          #     this run open a fresh PR also re-triggers CI from scratch —
-          #     the self-heal for a flaked check.
+          #     run would pile ANOTHER re-pin PR on top forever. Closing the
+          #     stuck one (+ deleting its branch) and letting this run open a
+          #     fresh PR also re-triggers CI from scratch — the self-heal for a
+          #     flaked check. ALWAYS swept (both cadences + dispatch).
+          #   - upgrade/lodash-*          judge-driven upgrade-workload PRs
+          #     (pattern mirrors tests/e2e/_github_helpers.py:sweep_upgrade_prs).
+          #     Swept only when FULL_SWEEP (daily 21:00 UTC + dispatch): the 2h
+          #     cron leaves live judge PRs alone. A merged judge PR's stale
+          #     branch (delete_branch_on_merge is off) can block the NEXT
+          #     judge's propose until the daily run tidies it — accepted, and
+          #     far better than closing an active judge's open PR.
           #
           # CRITICAL capture shape: a checked $(...) assignment, THEN mapfile
           # from the variable. `mapfile -t ARR < <(gh ...)` silently swallows
@@ -473,10 +503,16 @@ jobs:
           # PAT would report a clean zero-stray sweep and leave the job green
           # while stale branches block the next judge's propose. A failing
           # $(...) assignment DOES trip set -e and fails the job loudly.
+          if [ "$FULL_SWEEP" = "true" ]; then
+            PR_SELECT='(.headRefName | startswith("upgrade/lodash-")) or (.headRefName | startswith("demo-reset/lodash-repin-"))'
+            echo "sweep mode: FULL (judge upgrade/lodash-* + demo-reset/lodash-repin-*)"
+          else
+            PR_SELECT='(.headRefName | startswith("demo-reset/lodash-repin-"))'
+            echo "sweep mode: repin-only (2h cron — judge upgrade/lodash-* PRs left untouched)"
+          fi
           PR_LINES=$(gh pr list --repo "$REPO" --state open \
             --json number,headRefName \
-            --jq '.[] | select((.headRefName | startswith("upgrade/lodash-"))
-                              or (.headRefName | startswith("demo-reset/lodash-repin-"))) | .number')
+            --jq ".[] | select(${PR_SELECT}) | .number")
           mapfile -t PR_NUMBERS <<<"$PR_LINES"
           for pr in "${PR_NUMBERS[@]:-}"; do
             [ -z "$pr" ] && continue
@@ -496,9 +532,14 @@ jobs:
           # the reset primitive that actually matters, independent of the
           # close pass above. Same checked-capture shape as the PR list;
           # matching-refs returns [] (HTTP 200) when nothing matches, so an
-          # empty result is not an error.
-          UPGRADE_REFS=$(gh api "repos/$REPO/git/matching-refs/heads/upgrade/lodash-" --jq '.[].ref')
+          # empty result is not an error. upgrade/lodash-* branches are only
+          # swept under FULL_SWEEP (same 2h-cron restraint as the PR close).
           REPIN_REFS=$(gh api "repos/$REPO/git/matching-refs/heads/demo-reset/lodash-repin-" --jq '.[].ref')
+          if [ "$FULL_SWEEP" = "true" ]; then
+            UPGRADE_REFS=$(gh api "repos/$REPO/git/matching-refs/heads/upgrade/lodash-" --jq '.[].ref')
+          else
+            UPGRADE_REFS=""
+          fi
           mapfile -t BRANCH_REFS <<<"${UPGRADE_REFS}"$'\n'"${REPIN_REFS}"
           for ref in "${BRANCH_REFS[@]:-}"; do
             [ -z "$ref" ] && continue
@@ -599,7 +640,7 @@ jobs:
           {
             echo "## demo-reset / lodash-repin — $(date -u +%FT%TZ)"
             echo "- lodash on main (before this run): ${CURRENT:-unknown (step did not run)}"
-            echo "- sweep (upgrade/lodash-* + demo-reset/lodash-repin-*): closed ${SWEEP_CLOSED:-?} stray PR(s), deleted ${SWEEP_DELETED:-?} stray branch(es)"
+            echo "- sweep (demo-reset/lodash-repin-* always; judge upgrade/lodash-* only on daily/dispatch): closed ${SWEEP_CLOSED:-?} stray PR(s), deleted ${SWEEP_DELETED:-?} stray branch(es)"
             # The "opened <url>" line is gated on the step OUTCOME, not just
             # at_baseline: a mid-step death (e.g. push succeeded, pr create
             # failed) must not print a success line for a PR that may not

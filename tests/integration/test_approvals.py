@@ -318,11 +318,12 @@ def test_get_pending_without_usable_token_explains_instead_of_form(
 ) -> None:
     """A pending approval reached WITHOUT a usable one-time token (link cut
     short, or a visitor pasting the ``?t=<redacted>`` placeholder that the
-    demo-anonymous scrub leaves in persisted conversations) renders an
-    explanatory note INSTEAD of the Approve/Reject form. Both POST actions
-    need the real token (the worker verifies the HMAC), so the form could
-    only manufacture a doomed POST — observed live 2026-07-08 as a raw 422
-    on a tokenless Approve click."""
+    surviving scrubs — /runs, read_conversations, model-facing reads — still
+    emit) renders an explanatory note INSTEAD of the Approve/Reject form. Both
+    POST actions need the real token (the worker verifies the HMAC), so the
+    form could only manufacture a doomed POST — observed live 2026-07-08 as a
+    raw 422 on a tokenless Approve click. Post-2026-07-09 the note points the
+    visitor back to the chat reply for the full link."""
     approval = store.create_pending(
         target_revision="payment-demo-00002-bbb", reason="r"
     )
@@ -330,7 +331,7 @@ def test_get_pending_without_usable_token_explains_instead_of_form(
     assert r.status_code == 200
     body = r.text
     assert 'data-testid="no-token-note"' in body
-    assert "operator-only" in body
+    assert "chat reply" in body
     # No form at all: neither button, no hidden token field.
     assert 'value="approve"' not in body
     assert 'value="reject"' not in body

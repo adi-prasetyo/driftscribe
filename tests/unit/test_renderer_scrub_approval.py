@@ -1,12 +1,18 @@
-"""Unit tests for the rollback-approval-link serve-time scrub (hackathon A.2).
+"""Unit tests for the rollback-approval-link scrub helpers.
 
-* ``scrub_decision_approval(decision)`` — applied to anonymous demo-window
-  decision reads (GET /decisions, /trace — Worker-marked) and ALWAYS on the
-  unauthenticated GET /runs/{id}. Drops ``approval.approval_url`` (the rail
-  must render no dead CTA) and redacts the ``?t=`` token wherever it hides in
-  the doc's strings (rendered_body, echoed replies).
+These functions survive the 2026-07-09 operator-seat reversal (docs/plans/
+2026-07-09-operator-seat-demo-window.md) — the anonymous /decisions and /trace
+serve-time scrubs were removed, but the helpers themselves still back the
+surviving scrub sites:
+
+* ``scrub_decision_approval(decision)`` — ALWAYS on the unauthenticated
+  GET /runs/{id}, and on the model-facing decisions-history read tool. Drops
+  ``approval.approval_url`` (so no dead CTA / no live token in model context)
+  and redacts the ``?t=`` token wherever it hides in the doc's strings
+  (rendered_body, echoed replies).
 * ``redact_approval_tokens_deep(payload)`` — the recursive string walker, also
-  applied to /trace event payloads.
+  applied on the cross-crew read_conversations untrusted-text surface and the
+  Cloud Logging final-response log-preview.
 
 Conventions under test mirror scrub_decision_rationale: identity on
 no-change, copy-on-change, never mutates the input, non-dict passthrough.
