@@ -140,6 +140,7 @@ def test_chat_agent_demo_anon_explore_gets_demo_context(explore_workload_env):
     assert adk_agent._EXPLORE_DEMO_ANON_NOTE in agent.instruction
     # It must NOT get the mutation-crew tool-boundary note.
     assert adk_agent._DEMO_ANON_NOTE not in agent.instruction
+    assert adk_agent._ANCHOR_DEMO_ANON_NOTE not in agent.instruction  # no cross-note leakage
 
 
 def test_chat_agent_operator_explore_has_no_demo_context(explore_workload_env):
@@ -163,6 +164,71 @@ def test_chat_agent_demo_anon_mutation_crew_keeps_boundary_note_not_explore_note
     )
     assert adk_agent._DEMO_ANON_NOTE in agent.instruction
     assert adk_agent._EXPLORE_DEMO_ANON_NOTE not in agent.instruction
+    assert adk_agent._ANCHOR_DEMO_ANON_NOTE not in agent.instruction  # no cross-note leakage
+
+
+# --------------------------------------------------------------------------- #
+# Anchor (drift) demo-context note: like Explore, Anchor drops no tool for an
+# anonymous caller (all its tools are report/propose tier), so the drop-gated
+# _DEMO_ANON_NOTE never fires for it either. But it is the flagship crew and
+# exactly where an anonymous judge asks "can I approve or roll back this",
+# "why did drift change between visits", or "is this real" — so a demo-anon
+# drift chat gets the demo-ENVIRONMENT note regardless, and an authenticated
+# operator drift chat never does.
+# --------------------------------------------------------------------------- #
+
+
+def test_chat_agent_demo_anon_drift_gets_demo_context(drift_workload_env):
+    resolution = load_workload("drift")
+    agent = adk_agent.build_chat_agent(
+        resolution, autonomy_mode="propose_apply", demo_anon=True
+    )
+    assert adk_agent._ANCHOR_DEMO_ANON_NOTE in agent.instruction
+    # It must NOT get the mutation-crew tool-boundary note or Explore's note.
+    assert adk_agent._DEMO_ANON_NOTE not in agent.instruction
+    assert adk_agent._EXPLORE_DEMO_ANON_NOTE not in agent.instruction
+    # Proposing stays available to anon — the note must never coincide with a
+    # capability loss.
+    tools = _tool_set(agent)
+    assert propose_rollback_tool in tools
+    assert patch_docs_tool in tools
+
+
+def test_chat_agent_operator_drift_has_no_demo_context(drift_workload_env):
+    resolution = load_workload("drift")
+    agent = adk_agent.build_chat_agent(
+        resolution, autonomy_mode="propose_apply", demo_anon=False
+    )
+    # Authenticated operator: no demo note of any kind leaks into the prompt.
+    assert adk_agent._ANCHOR_DEMO_ANON_NOTE not in agent.instruction
+    assert adk_agent._DEMO_ANON_NOTE not in agent.instruction
+    assert adk_agent._EXPLORE_DEMO_ANON_NOTE not in agent.instruction
+
+
+def test_chat_agent_demo_anon_drift_tool_set_matches_operator(drift_workload_env):
+    """This pins that drift drops nothing for anon, which is what makes the
+    note-dispatch ``elif`` ordering in build_chat_agent safe (if drift ever
+    gains an apply-tier tool this fails and the dispatch must be revisited)."""
+    resolution = load_workload("drift")
+    anon = adk_agent.build_chat_agent(
+        resolution, autonomy_mode="propose_apply", demo_anon=True
+    )
+    operator = adk_agent.build_chat_agent(
+        resolution, autonomy_mode="propose_apply", demo_anon=False
+    )
+    assert _tool_set(anon) == _tool_set(operator)
+
+
+def test_chat_agent_demo_anon_drift_note_is_last_with_breadcrumb(drift_workload_env):
+    resolution = load_workload("drift")
+    agent = adk_agent.build_chat_agent(
+        resolution,
+        autonomy_mode="propose_apply",
+        demo_anon=True,
+        extra_instruction="BREADCRUMB-SENTINEL",
+    )
+    assert agent.instruction.startswith("BREADCRUMB-SENTINEL")
+    assert agent.instruction.endswith(adk_agent._ANCHOR_DEMO_ANON_NOTE)
 
 
 # --------------------------------------------------------------------------- #

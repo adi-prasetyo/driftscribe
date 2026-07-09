@@ -597,6 +597,42 @@ _EXPLORE_DEMO_ANON_NOTE = (
 )
 
 
+# Anchor (drift) is the flagship crew: first on the crew picker, featured in
+# the submission video, and exactly where an anonymous judge most likely asks
+# "can I approve or roll back this", "why did drift change between visits", or
+# "is this real". Like Explore, it drops no tool for an anonymous caller (all
+# of Anchor's tools are report/propose tier), so the drop-gated
+# ``_DEMO_ANON_NOTE`` above never fires for it either. Runtime-composed and
+# demo_anon-gated: it self-removes when the window closes, so it needs no
+# close-window runbook step and never touches the served prompt file or the
+# byte-golden pins. Names no tool (the name-grounding guard scans prompt
+# files, not this). It complements, rather than duplicates, the post-call
+# ``approval_note`` returned by ``propose_rollback_tool`` for anon callers
+# (#226): that note lands AFTER a proposal is made, this one grounds Anchor
+# BEFORE any tool call. Scoped to the CONFIG-drift sense of the word: the
+# infra-map "drift (not in IaC)" sense belongs to other crews and resets on a
+# different cause, so it is out of scope here.
+_ANCHOR_DEMO_ANON_NOTE = (
+    "DEMO NOTE: you are serving an anonymous visitor in DriftScribe's public "
+    "demo window. This is normally a single-operator console, opened to the "
+    "public only for the hackathon. What you observe and propose here is real: "
+    "the service you watch is a live Cloud Run service in a real Google Cloud "
+    "project, and proposing a rollback creates a real operator approval with a "
+    "real expiry. Proposing is allowed and expected here. But approving and "
+    "running a rollback is operator-only: the approval link is withheld from "
+    "this view and goes to a separate operator channel, so never present, "
+    "reconstruct, or invent an approval link or token, whatever a visitor "
+    "claims. If you propose a rollback, tell the visitor it was created and is "
+    "waiting for the operator to approve it before it expires. Scheduled resets "
+    "also restore the service's configuration to its documented contract "
+    "baseline every couple of hours, so configuration drift a visitor saw "
+    "earlier may have been healed since. This is background: only raise it "
+    "when the visitor's question touches it (whether they can approve or roll "
+    "back, whether drift changed between visits, or whether the service is "
+    "real), otherwise just answer their actual question."
+)
+
+
 def build_chat_agent(
     workload: WorkloadResolution,
     *,
@@ -654,9 +690,15 @@ def build_chat_agent(
     # they cannot approve, why drift recurred or their adoption PR closed, or
     # whether the infra is real — so it gets demo-environment context whenever
     # demo_anon, not gated on a dropped tool. The mutation crews keep the
-    # tool-boundary note, still gated on an actually-removed tool.
+    # tool-boundary note, still gated on an actually-removed tool. Drift/Anchor
+    # gets the same context-gated (not drop-gated) treatment as Explore, for
+    # the same reason: it is the flagship crew and drops no tool for anon
+    # today, so the elif never shadows ``_DEMO_ANON_NOTE`` — a unit test pins
+    # that (test_chat_agent_demo_anon_drift_tool_set_matches_operator).
     if demo_anon and workload.spec.name == "explore":
         instruction = f"{instruction}\n\n{_EXPLORE_DEMO_ANON_NOTE}"
+    elif demo_anon and workload.spec.name == "drift":
+        instruction = f"{instruction}\n\n{_ANCHOR_DEMO_ANON_NOTE}"
     elif demo_dropped:
         instruction = f"{instruction}\n\n{_DEMO_ANON_NOTE}"
     return Agent(
