@@ -86,12 +86,31 @@ class _FakeVersioned:
         self.resource = resource
 
 
-def _make_fake_client(results, *, raises=None, capture=None):
+class _FakeAsset:
+    """Minimal stand-in for a CAI ListAssets ``Asset`` (RESOURCE content).
+
+    Only ``.name``, ``.asset_type`` and ``.resource.location`` are read by
+    ``_list_buckets``; ``.resource`` is a tiny object exposing ``.location`` (the
+    real Asset's ``resource`` is a proto ``Resource`` with a ``location`` field).
+    """
+
+    def __init__(self, name, asset_type="storage.googleapis.com/Bucket", location=""):
+        self.name = name
+        self.asset_type = asset_type
+        self.resource = type("_R", (), {"location": location})()
+
+
+def _make_fake_client(
+    results, *, raises=None, capture=None,
+    buckets=None, list_raises=None, list_capture=None,
+):
     """Build a fake AssetServiceClient class returning ``results`` from search.
 
     ``capture`` (a dict) records the ``request`` kwarg so tests can assert the
     read_mask. ``raises`` (an exception instance) makes search_all_resources
-    raise instead of yielding.
+    raise instead of yielding. ``buckets`` seeds the ListAssets bucket-supplement
+    (default empty); ``list_raises`` makes ``list_assets`` raise; ``list_capture``
+    records its request.
     """
 
     class _FakeClient:
@@ -107,6 +126,13 @@ def _make_fake_client(results, *, raises=None, capture=None):
             # Return an iterable (mimics the client's paging iterator, which
             # transparently yields across pages).
             return iter(results)
+
+        def list_assets(self, request=None, **kwargs):
+            if list_capture is not None:
+                list_capture["request"] = request
+            if list_raises is not None:
+                raise list_raises
+            return iter(buckets or [])
 
     return _FakeClient
 
@@ -298,6 +324,9 @@ def _make_dispatch_client(primary, enrichment, *, capture=None, enrich_raises=No
                     raise enrich_raises
                 return iter(enrichment)
             return iter(primary)
+
+        def list_assets(self, request=None, **kwargs):
+            return iter(())  # bucket supplement unused by these enrichment tests
 
     return _FakeClient
 
@@ -547,6 +576,9 @@ def _make_typed_dispatch_client(primary, by_type, *, capture=None, raises_for=No
                 raise raises_for[atype]
             return iter(by_type.get(atype, []))
 
+        def list_assets(self, request=None, **kwargs):
+            return iter(())  # bucket supplement unused by these enrichment tests
+
     return _FakeClient
 
 
@@ -736,3 +768,79 @@ def test_describe_subscription_failure_does_not_skip_run_enrichment(client, monk
     body = r.json()
     assert body["by_type"][_RUN_SERVICE]["sample"][0]["image"] == "gcr.io/cloudrun/hello"
     assert "topic" not in body["by_type"][_SUB_TYPE]["sample"][0]
+
+
+# --------------------------------------------------------------------------- #
+# Bucket-discovery hardening (ListAssets supplement). GCS buckets propagate into
+# the SearchAllResources index very slowly (hours), so `_list_buckets` backfills
+# them from the fresher ListAssets index. The supplement unions by raw CAI name,
+# soft-fails independently, and is bucket-scoped (no other type touched).
+# --------------------------------------------------------------------------- #
+
+_BUCKET_TYPE = "storage.googleapis.com/Bucket"
+_RECEIPTS_BUCKET = "//storage.googleapis.com/driftscribe-hack-2026-receipts"
+
+
+def test_describe_listassets_bucket_missing_from_search_surfaces(client, monkeypatch):
+    # The exact failure this fix targets: the bucket is ABSENT from the primary
+    # SearchAllResources inventory but PRESENT in ListAssets. It must surface in
+    # the inventory (counted, sampled, flagged not-in-iac) via the supplement.
+    primary = [_FakeResource(_PAYMENT_DEMO_NAME, _RUN_SERVICE, "asia-northeast1")]
+    buckets = [_FakeAsset(_RECEIPTS_BUCKET, location="asia-northeast1")]
+    monkeypatch.setattr(
+        infra_main.asset_v1, "AssetServiceClient",
+        _make_fake_client(primary, buckets=buckets),
+    )
+    r = client.post("/describe", json={})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["total_resources"] == 2          # service + supplemented bucket
+    assert body["by_type"][_BUCKET_TYPE]["count"] == 1
+    sample = body["by_type"][_BUCKET_TYPE]["sample"][0]
+    assert sample["name"] == "driftscribe-hack-2026-receipts"
+    assert sample["iac"] is False                # not declared → adoptable drift
+
+
+def test_describe_listassets_bucket_already_in_search_not_duplicated(client, monkeypatch):
+    # A bucket present in BOTH indexes must be counted once — the union dedups by
+    # raw CAI name (byte-identical across the two APIs, verified live).
+    primary = [_FakeResource(_RECEIPTS_BUCKET, _BUCKET_TYPE, "asia-northeast1")]
+    buckets = [_FakeAsset(_RECEIPTS_BUCKET, location="asia-northeast1")]
+    monkeypatch.setattr(
+        infra_main.asset_v1, "AssetServiceClient",
+        _make_fake_client(primary, buckets=buckets),
+    )
+    r = client.post("/describe", json={})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["total_resources"] == 1
+    assert body["by_type"][_BUCKET_TYPE]["count"] == 1
+
+
+def test_describe_listassets_request_pins_parent_asset_types_content_type(client, monkeypatch):
+    list_capture: dict = {}
+    monkeypatch.setattr(
+        infra_main.asset_v1, "AssetServiceClient",
+        _make_fake_client([], list_capture=list_capture),
+    )
+    r = client.post("/describe", json={})
+    assert r.status_code == 200, r.text
+    req = list_capture["request"]
+    assert list(req.asset_types) == ["storage.googleapis.com/Bucket"]
+    assert req.parent == "projects/driftscribe-hack-2026"
+    assert int(req.content_type) == int(infra_main.asset_v1.ContentType.RESOURCE)
+
+
+def test_describe_listassets_supplement_soft_fails_keeps_inventory(client, monkeypatch):
+    # ListAssets raising must NOT degrade the primary inventory (mirrors the
+    # enrichment soft-fail contract): the service from search survives, 200.
+    primary = [_FakeResource(_PAYMENT_DEMO_NAME, _RUN_SERVICE, "asia-northeast1")]
+    monkeypatch.setattr(
+        infra_main.asset_v1, "AssetServiceClient",
+        _make_fake_client(primary, list_raises=gax.ServiceUnavailable("cai down")),
+    )
+    r = client.post("/describe", json={})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["total_resources"] == 1
+    assert body["by_type"][_RUN_SERVICE]["count"] == 1
