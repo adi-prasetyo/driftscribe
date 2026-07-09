@@ -93,8 +93,18 @@
   // carries a numeric `pr_number` (not an `approval` object, unlike rollback),
   // so we build the same-origin `/iac-approvals/<n>` path from it — gated on the
   // allowlisted action so we never construct a link from an unrelated decision.
+  // A row explicitly marked `superseded_by_pr` (recovery-runbook annotation)
+  // routes to the SUPERSEDING PR's approval page instead — that page is the one
+  // that reads "already applied and merged"; the label (iacApproveLabel) agrees.
   function iacApproveHref(d: Decision): string | null {
-    return d.action === 'iac_apply' ? iacApprovalHref(d.pr_number) : null;
+    if (d.action !== 'iac_apply') return null;
+    if (
+      typeof d.superseded_by_pr === 'number' &&
+      Number.isInteger(d.superseded_by_pr) &&
+      d.superseded_by_pr > 0
+    )
+      return iacApprovalHref(d.superseded_by_pr);
+    return iacApprovalHref(d.pr_number);
   }
 
   // Resolve the GitHub PR/issue link for a drift/docs decision. Gated on an

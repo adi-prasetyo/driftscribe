@@ -189,7 +189,13 @@ export function resolvedIacPrNumbers(
  * — is unchanged for every state; only the wording reflects how the row reads to
  * an operator.
  *
- * Four wordings:
+ * Five wordings:
+ * - "superseded by #N →" — a `waiting_for_rebake` row explicitly annotated
+ *   `superseded_by_pr` (recovery-runbook marker: its plan was re-expressed in a
+ *   NEW PR that already carries the real `applied` row — see
+ *   docs/runbooks/iac-apply-failure-recovery.md §7e). Checked FIRST, but gated to
+ *   the `waiting_for_rebake` shape so a mis-annotated `failed` row still reads
+ *   "View failure details →" instead of being masked.
  * - "Review & approve →" — the ONLY actionable label: a `waiting_for_rebake` row
  *   that is NOT superseded (no `applied` row for its PR — see
  *   `resolvedIacPrNumbers`) still needs the operator's second, post-rebake Apply.
@@ -203,10 +209,10 @@ export function resolvedIacPrNumbers(
  *   invitation to approve when the page had nothing to approve (PR #95: a
  *   `failed_state_suspect` + merged row whose page had no button).
  * - "Go to approval page →" — every other (non-actionable, not-yet-done) state: a
- *   superseded waiting row, applied-but-merge-pending (still actionable via the
- *   merge-only reconcile), or an unmatchable `pr_number`. Neutral wording so a
- *   parked row doesn't imply pending approval work (Codex review, PR #71: no
- *   stale "Review & approve" affordance).
+ *   superseded (via `resolvedIacPrNumbers`) waiting row, applied-but-merge-pending
+ *   (still actionable via the merge-only reconcile), or an unmatchable
+ *   `pr_number`. Neutral wording so a parked row doesn't imply pending approval
+ *   work (Codex review, PR #71: no stale "Review & approve" affordance).
  */
 const TERMINAL_FAILED_APPLY_STATUSES: ReadonlySet<string> = new Set([
   'failed',
@@ -215,9 +221,21 @@ const TERMINAL_FAILED_APPLY_STATUSES: ReadonlySet<string> = new Set([
 ]);
 
 export function iacApproveLabel(
-  d: { apply_status?: string; merge_state?: string; pr_number?: number },
+  d: {
+    apply_status?: string;
+    merge_state?: string;
+    pr_number?: number;
+    superseded_by_pr?: number;
+  },
   resolvedPrs: ReadonlySet<number>,
 ): string {
+  if (
+    d.apply_status === 'waiting_for_rebake' &&
+    typeof d.superseded_by_pr === 'number' &&
+    Number.isInteger(d.superseded_by_pr) &&
+    d.superseded_by_pr > 0
+  )
+    return `superseded by #${d.superseded_by_pr} →`;
   const superseded = typeof d.pr_number === 'number' && resolvedPrs.has(d.pr_number);
   if (d.apply_status === 'waiting_for_rebake' && !superseded) return 'Review & approve →';
   if (d.apply_status === 'applied' && d.merge_state === 'merged') return 'View approval history →';

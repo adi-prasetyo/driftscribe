@@ -546,19 +546,28 @@ def test_get_never_calls_worker_or_reads_plan_approvals(_configured, monkeypatch
 _GEN_META = "1700000000000003"
 
 
-def _seed_decision(*, apply_status: str, merge_state: str) -> None:
+def _seed_decision(
+    *, apply_status: str, merge_state: str, superseded_by_pr: int | None = None
+) -> None:
     """Record an iac_apply decision in the InMemory store under the key the GET
     will compute for PR 42 / _HEAD / _GEN_META. The event must be CLAIMED first
     (record_event) — find_decision_for_event only links a decision to a claimed
-    event, mirroring the real POST's idempotency-claim-then-record flow."""
+    event, mirroring the real POST's idempotency-claim-then-record flow.
+
+    ``superseded_by_pr``, when given, is merged onto the decision doc directly
+    (the InMemoryStateStore's ``_decisions`` dict — same pattern as
+    test_state_store_list*.py) since ``_record_iac_decision`` has no param for
+    it; it is written by a separate, out-of-band annotation script (A1)."""
     s = get_settings()
     ek = _iac_event_key(s.github_repo, 42, _HEAD, _GEN_META)
     state = get_state()
     state.record_event(ek, {"pr_number": 42})
-    _record_iac_decision(
+    decision = _record_iac_decision(
         state, ek, apply_status=apply_status, merge_state=merge_state,
         head_sha=_HEAD, pr_number=42, approver="op@example.com",
     )
+    if superseded_by_pr is not None:
+        state._decisions[decision["decision_id"]]["superseded_by_pr"] = superseded_by_pr
 
 
 @pytest.fixture
@@ -603,6 +612,36 @@ def test_waiting_for_rebake_keeps_form(_configured, _inmemory, monkeypatch):
     # The create-class second click (post-rebake Apply) is still actionable.
     _patch_resolve(monkeypatch, ref=_ref(), view=_view())
     _seed_decision(apply_status="waiting_for_rebake", merge_state="merged")
+    resp = TestClient(app).get("/iac-approvals/42")
+    assert resp.status_code == 200
+    body = resp.text
+    assert 'data-testid="approve-button"' in body
+    assert 'name="form_token"' in body
+
+
+def test_superseded_by_pr_suppresses_form_and_shows_banner(_configured, _inmemory, monkeypatch):
+    # PR #216-shaped: a parked waiting_for_rebake row whose apply was redirected
+    # to a new PR (docs/plans/2026-07-10-pr216-superseded-marker-and-brand-home-link.md
+    # Part A). The marker takes priority over the still-actionable waiting_for_rebake
+    # default — no form, no minted CSRF token, calm (non-error) banner naming #221.
+    _patch_resolve(monkeypatch, ref=_ref(), view=_view())
+    _seed_decision(apply_status="waiting_for_rebake", merge_state="merged", superseded_by_pr=221)
+    resp = TestClient(app).get("/iac-approvals/42")
+    assert resp.status_code == 200
+    body = resp.text
+    assert 'data-testid="approve-button"' not in body
+    assert 'name="form_token"' not in body
+    assert "Superseded by PR #221" in body
+    assert 'data-testid="approve-blocked"' not in body
+    assert 'class="ds-blocked"' not in body
+
+
+def test_superseded_by_pr_gated_to_waiting_for_rebake(_configured, _inmemory, monkeypatch):
+    # A stray superseded_by_pr on a still-pending (non-waiting_for_rebake) doc
+    # must NOT suppress the form — the marker is only meaningful on the parked
+    # waiting_for_rebake shape it was designed for.
+    _patch_resolve(monkeypatch, ref=_ref(), view=_view())
+    _seed_decision(apply_status="applied", merge_state="failed", superseded_by_pr=221)
     resp = TestClient(app).get("/iac-approvals/42")
     assert resp.status_code == 200
     body = resp.text

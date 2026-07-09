@@ -175,7 +175,9 @@ attribute changed out of band (someone edited the live service directly). This i
    (`gcloud run services describe …`) and the Cloud audit logs (who/what changed it).
 2. Decide intent:
    - the live change is **wanted** → fold it into `iac/` (a new PR), re-plan,
-     re-Approve. Now state⟷config⟷live agree.
+     re-Approve. Now state⟷config⟷live agree. If this `drift_refused` fired on a
+     C6 create-class resume (§7d) and the OLD PR still has a parked
+     `waiting_for_rebake` decision, retire it per **§7e** once the new PR applies.
    - the live change is **unwanted** → revert it on the live resource (or let the
      approved plan overwrite it once you confirm the approved plan's `after`
      matches intended), then reconcile state (§2 steps 1-8) and re-Approve.
@@ -282,7 +284,8 @@ The resume tried to apply but the worker's baked `iac/`-tree hash ≠ the approv
   fully in `main` + state, this may be a no-op PR; if `main` advanced but the resource
   still isn't applied, the new PR re-expresses the create), run C2 on it
   (`gh workflow run iac.yml -f pr_number=<new PR>`), and approve THAT. The hash gate is
-  *designed* to refuse the stale plan — do not try to force it.
+  *designed* to refuse the stale plan — do not try to force it. Once the new PR is
+  applied + merged, retire the OLD PR's parked decision per **§7e**.
 
 ### 7c. Create-class `failed_state_suspect` — the live × state reconciliation
 A create-class resume that ends `failed_state_suspect` (HTTP 502) is the most
@@ -325,6 +328,35 @@ create. **Never** retry the burned approval; always re-plan.
 - **No-mutation refusals** (`integrity_/fidelity_/verify_refused` 422, `lock_refused`
   423, `drift_refused` 409) on the resume: handled exactly as §5/§4/§3 — no infra
   changed, the `waiting_for_rebake` pointer is kept, fix + retry the Apply.
+
+### 7e. Retire the superseded parked decision
+
+§7b bullet 2 and §3's "fold it into a new PR" path both leave the **old** PR's
+`waiting_for_rebake` decision doc(s) parked forever — its saved plan is
+permanently stale (the hash gate will refuse it), but the doc itself carries no
+link to the replacement PR. Left alone, the rail keeps showing that old PR's
+actionable **"Review & approve →"** CTA next to the new PR's "applied & merged"
+row, and (worse) a signed-in operator visiting the old PR's approval page
+directly still sees a live Approve button on a plan that must never be
+re-submitted.
+
+Once the replacement PR is **applied + merged**, annotate the old PR's parked
+`waiting_for_rebake` decision doc(s) with `superseded_by_pr: <new PR#>`
+(additive merge on the `(default)` DB `decisions` collection, operator ADC).
+This retires the old row's "Review & approve →" rail CTA (→ "superseded by #N
+→") and makes `/iac-approvals/<old>` render a calm "superseded by #N" banner
+with Approve suppressed (both the GET and the POST refuse the stale plan) —
+closing the never-re-Approve footgun. **Additive only**: never fabricate an
+`applied` row, never delete the parked docs (they are the audit trail of the
+recovery).
+
+**Worked example:** PR #216 ("recreate orders-sub with never-expire policy")
+took the C6 merge-first path, then its saved plan went permanently stale after
+a §2 state reconcile bumped the tofu state serial. The actual recreate shipped
+through a new PR **#221** (applied + merged). #216's two `waiting_for_rebake`
+decision docs were annotated `superseded_by_pr: 221` per this section — see
+`docs/plans/2026-07-10-pr216-superseded-marker-and-brand-home-link.md` for the
+worked annotation script.
 
 ---
 

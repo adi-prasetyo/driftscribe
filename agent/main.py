@@ -4299,7 +4299,22 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
             )
             _st = existing.get("apply_status")
             _ms = existing.get("merge_state")
-            if _st == "applied" and _ms == "merged":
+            _superseded_by = existing.get("superseded_by_pr")
+            if (
+                _st == "waiting_for_rebake"
+                and type(_superseded_by) is int
+                and _superseded_by > 0
+            ):
+                can_approve = False
+                resolved_decision = "approve"
+                resolved_outcome = (
+                    f"Superseded by PR #{_superseded_by}, which is applied and merged. "
+                    "This plan is stale (its resource already exists) — nothing to "
+                    "approve here."
+                )
+                # calm severity (leave resolved_outcome_severity == "") — this is
+                # an expected recovery outcome, not a broken artifact.
+            elif _st == "applied" and _ms == "merged":
                 can_approve = False
                 resolved_decision = "approve"
                 resolved_outcome = (
@@ -5282,6 +5297,23 @@ def _handle_existing_iac_decision(
     # a fresh read, so a PR title edited after the first approval can't overwrite the
     # as-approved snapshot on later lifecycle rows (Codex review).
     pr_title = existing.get("pr_title") or pr_title
+
+    _superseded_by = existing.get("superseded_by_pr")
+    if (
+        status == "waiting_for_rebake"
+        and type(_superseded_by) is int
+        and _superseded_by > 0
+    ):
+        # Superseded by a later PR that already applied+merged — the saved plan is
+        # permanently stale; never resume it. (Mirror the GET suppression.)
+        return _render_iac_outcome(
+            request, pr_number=pr_number, view=view, decision="approve",
+            outcome=(
+                f"Superseded by PR #{_superseded_by}, which is applied and merged. "
+                "This plan is stale (its resource already exists) — nothing to "
+                "approve here."
+            ),
+        )
 
     if status == "waiting_for_rebake":
         if merge_state != "merged":
