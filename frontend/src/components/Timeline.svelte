@@ -34,13 +34,24 @@
 
   const groups = $derived(groupEvents(events));
 
-  // An empty historical trace shows ONLY the explanatory note below and
-  // suppresses the three group accordions, which would otherwise render as
-  // three redundant "No X yet." panels. Same condition gates the note and the
-  // suppression, so they can never disagree. Live/pending/streaming empty
-  // states keep the groups (events are still arriving), and a historical trace
-  // that does carry events renders the full grouped timeline.
-  const historicalEmpty = $derived(status === 'historical' && events.length === 0);
+  // A historical trace with zero DISPLAYABLE events shows ONLY the
+  // explanatory note below and suppresses the three group accordions, which
+  // would otherwise render as three redundant "No X yet." panels. Gates on
+  // `groups` (already derived above), not raw `events.length`: a trace can
+  // carry non-displayable log lines (no recognized `event` kind, dropped by
+  // groupOf/groupEvents) that inflate the raw count while leaving nothing to
+  // show — the same displayable-events test the App.svelte:438 autoload gate
+  // uses (`!evts.some((e) => groupOf(e) !== null)`). Same condition gates the
+  // note and the suppression, so they can never disagree. Live/pending/
+  // streaming empty states keep the groups (events are still arriving), and a
+  // historical trace that does carry a displayable event renders the full
+  // grouped timeline.
+  const historicalEmpty = $derived(
+    status === 'historical' &&
+      groups.coordinator.length === 0 &&
+      groups.tools.length === 0 &&
+      groups.mcp.length === 0,
+  );
 
   interface Sub {
     key: string;

@@ -8,6 +8,7 @@ import {
   matchesDecision,
   railItemMatches,
   capRailItems,
+  traceButtonLabel,
   type RailItem,
 } from '../../src/lib/rail';
 import type { Decision } from '../../src/lib/types';
@@ -365,6 +366,28 @@ describe('railItemMatches', () => {
   it('an empty query matches everything', () => {
     const item: RailItem = { kind: 'single', d: other('x') };
     expect(railItemMatches(item, '')).toBe(true);
+  });
+});
+
+describe('traceButtonLabel', () => {
+  // iac_apply decisions are recorded directly by the approval handler (no
+  // coordinator reasoning run), so their button reads "view details →";
+  // everything else keeps the reasoning-backed label.
+  it('returns "view details →" for iac_apply', () => {
+    expect(traceButtonLabel('iac_apply')).toBe('view details →');
+  });
+
+  it('returns "view reasoning →" for rollback', () => {
+    expect(traceButtonLabel('rollback')).toBe('view reasoning →');
+  });
+
+  it('returns "view reasoning →" for recheck', () => {
+    expect(traceButtonLabel('recheck')).toBe('view reasoning →');
+  });
+
+  it('returns "view reasoning →" for null/undefined', () => {
+    expect(traceButtonLabel(null)).toBe('view reasoning →');
+    expect(traceButtonLabel(undefined)).toBe('view reasoning →');
   });
 });
 

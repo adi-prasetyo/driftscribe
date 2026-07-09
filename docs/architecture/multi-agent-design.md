@@ -350,7 +350,7 @@ Retention: all of the above ride Cloud Logging's `_Default` bucket,
 extended to 365 days by `infra/scripts/setup_secrets.sh` (Phase 18.A).
 Storage past day 30 is billed at `$0.01/GiB-month`. Operators replay
 full agent traces with Logs Explorer queries like
-`jsonPayload.event=("llm_thought" OR "tool_call" OR "llm_usage" OR "mcp_call") AND jsonPayload.trace_id="<id>"`.
+`jsonPayload.event=("llm_thought" OR "tool_call" OR "tool_result" OR "llm_usage" OR "mcp_call" OR "final_response") AND jsonPayload.trace_id="<id>"`.
 
 ---
 

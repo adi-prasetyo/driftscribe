@@ -45,6 +45,28 @@ _HEX32_RE = re.compile(r"^[0-9a-f]{32}$")
 # ``TRACE_LOG_LOOKBACK_DAYS`` if a deployment lengthens retention.
 _DEFAULT_TRACE_LOOKBACK_DAYS = 400
 
+# The event kinds the pipeline actually emits (verified by grep over agent/ +
+# driftscribe_lib/): ``llm_thought``/``tool_call``/``tool_result``/``llm_usage``/
+# ``final_response`` from agent/adk_agent.py:873 and ``mcp_call`` from
+# agent/mcp/developer_knowledge.py:432. ALL SIX are load-bearing — dropping any
+# one regresses a real consumer:
+#   * ``tool_result`` — the SPA pairs it with ``tool_call`` for result_preview
+#     (Timeline.svelte); without it every tool call renders with no result.
+#   * ``final_response`` — required by ``_observe_and_check_stability``
+#     (agent/main.py:719) to ever flip the ``complete`` flag; without it a
+#     trace polls forever and never caches as done.
+# This is an explicit allowlist, not an existence check (``jsonPayload.event:*``),
+# so future stray event-bearing plumbing logs can't ride the trace_id filter in
+# unnoticed — a new kind needs a deliberate addition here.
+_EVENT_KINDS = (
+    "llm_thought",
+    "tool_call",
+    "tool_result",
+    "llm_usage",
+    "mcp_call",
+    "final_response",
+)
+
 # Floor (in days) for the FAST first phase of the two-phase query below.
 # entries.list latency grows with the width of the ``timestamp`` window —
 # measured against prod (2026-07-06, same trace_id, same 23 entries):
@@ -128,10 +150,19 @@ class CloudLoggingFetcher:
         # trace older than 24h returns empty (see _DEFAULT_TRACE_LOOKBACK_DAYS).
         # The floor is a constant we build (never caller input), so it can't
         # widen the injection surface the _HEX32_RE guard in ``fetch`` closes.
+        #
+        # The ``jsonPayload.event=(...)`` clause is REQUIRED for correctness
+        # too, not just cleanliness — every log line emitted inside the
+        # request context inherits ``trace_id`` via the ContextVar
+        # (driftscribe_lib.logging), so without this clause plumbing logs
+        # (httpx, PyGithub) ride along and pollute the timeline. See
+        # ``_EVENT_KINDS`` for why the allowlist is exactly these six kinds.
+        event_clause = " OR ".join(f'"{k}"' for k in _EVENT_KINDS)
         filter_str = (
             f'resource.type="cloud_run_revision" '
             f'AND resource.labels.service_name="{self._service}" '
             f'AND jsonPayload.trace_id="{trace_id}" '
+            f'AND jsonPayload.event=({event_clause}) '
             f'AND timestamp>="{self._timestamp_floor(floor_days)}"'
         )
         # ``timestamp desc``: Cloud Logging recommends descending order for
@@ -213,7 +244,14 @@ class StubTraceFetcher:
 
     def fetch(self, trace_id: str, *, limit: int = 500) -> list[dict]:
         self.calls += 1
-        return [e for e in self.entries if e.get("trace_id") == trace_id][:limit]
+        # Mirrors CloudLoggingFetcher's ``jsonPayload.event=(...)`` clause so
+        # dev/dry-run parity holds: an entry with no ``event`` key, or one
+        # outside ``_EVENT_KINDS``, would never come back from prod either.
+        return [
+            e
+            for e in self.entries
+            if e.get("trace_id") == trace_id and e.get("event") in _EVENT_KINDS
+        ][:limit]
 
 
 def _entry_to_dict(entry: Any) -> dict:

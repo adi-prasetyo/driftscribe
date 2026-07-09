@@ -327,6 +327,54 @@ describe('Timeline — historical-empty state', () => {
     expect(getByTestId('timeline-empty').textContent).toContain('recorded directly');
   });
 
+  it('historical + only non-displayable (unknown-kind) events: gates on displayable count, not raw length', () => {
+    // A trace polluted with plumbing log lines that inherit the trace id but
+    // carry no recognized `event` kind (groupOf -> null). Raw events.length is
+    // 2, but zero of them are displayable, so the empty-state note must still
+    // render and the group accordions must still be suppressed.
+    const junk = [
+      ev({ event: undefined as unknown as string }),
+      ev({ event: 'some_unknown_kind' }),
+    ];
+    const { getByTestId, container } = render(Timeline, {
+      props: { events: junk, status: 'historical' },
+    });
+    expect(getByTestId('timeline-empty')).toBeTruthy();
+    expect(container.querySelector('#group-coordinator')).toBeNull();
+    expect(container.querySelector('#group-tools')).toBeNull();
+    expect(container.querySelector('#group-mcp')).toBeNull();
+  });
+
+  it('historical + only junk events, directlyRecorded: keeps the "recorded directly" copy', () => {
+    const junk = [ev({ event: 'some_unknown_kind' })];
+    const { getByTestId } = render(Timeline, {
+      props: { events: junk, status: 'historical', directlyRecorded: true },
+    });
+    expect(getByTestId('timeline-empty').textContent).toContain('recorded directly');
+  });
+
+  it('historical + only junk events, NOT directlyRecorded: keeps the "couldn\'t be loaded" copy', () => {
+    const junk = [ev({ event: 'some_unknown_kind' })];
+    const { getByTestId } = render(Timeline, {
+      props: { events: junk, status: 'historical' },
+    });
+    const note = getByTestId('timeline-empty');
+    expect(note.textContent).toContain("couldn't be loaded");
+    expect(note.textContent).not.toContain('recorded directly');
+  });
+
+  it('historical + at least one displayable event alongside junk: renders the groups', () => {
+    const mixed = [
+      ev({ event: 'some_unknown_kind' }),
+      ev({ event: 'llm_thought', thought_text: 'considering drift' }),
+    ];
+    const { queryByTestId, container } = render(Timeline, {
+      props: { events: mixed, status: 'historical' },
+    });
+    expect(container.querySelector('#group-coordinator')).not.toBeNull();
+    expect(queryByTestId('timeline-empty')).toBeNull();
+  });
+
   it('historical WITH events: still renders the grouped timeline, no empty note', () => {
     const { queryByTestId, container } = render(Timeline, {
       props: {
