@@ -59,9 +59,9 @@ The full topology and the IAM boundaries are documented in
 
 ### Anchor: Cloud Run config drift (`drift`)
 
-Anchor runs autonomously: a live Eventarc trigger reacts to every Cloud Run
-config change. It's event-driven, not a polling loop, so no chat invocation is
-needed.
+Anchor runs autonomously: a live Eventarc trigger reacts to a config change on
+the watched `payment-demo` Cloud Run service. It's event-driven, not a polling
+loop, so no chat invocation is needed.
 
 - Watches the `payment-demo` Cloud Run service env vs [`demo/ops-contract.yaml`](demo/ops-contract.yaml).
 - Actions: `no_op` / `docs_pr` / `drift_issue` / `rollback` / `escalation`.
@@ -97,6 +97,14 @@ On demand, from chat only (`/recheck` refuses it too).
 - Explore lists zero mutation tools. It can read everything and change nothing, a guarantee pinned by a test that asserts its tools are disjoint from the mutation set.
 
 The operator UI renders a live infra resource map (managed vs. drift) alongside the decisions timeline.
+
+**Two things are called "drift."** Anchor's drift is config drift: the live env on the one
+`payment-demo` service vs the ops contract, watched by Eventarc and caught within seconds. The
+resource map's drift is different: real resources anywhere in the project that are not in `iac/`,
+discovered by the `infra-reader` worker through Cloud Asset Inventory and resolved by adopting them
+(Provision opens an import PR), not by Anchor. Because Cloud Asset Inventory is an
+eventually-consistent index and the map is cached on top of it, a newly created resource takes a
+few minutes (longer for buckets) to appear on the map. That is discovery latency, not a fault.
 
 **Read scope at a glance.** The crews differ as much in what they can *see* as
 in what they can do. Anchor and Patch read only their own lane; Provision adds
@@ -274,7 +282,7 @@ GitHub branch observation, HITL form-POST flow with explicit revision capture,
 Playwright UI on stable `data-testid` selectors, in a dedicated `driftscribe-e2e`
 GCP project under WIF + Required-reviewer gate), Phase 19.B (transparency UI),
 Phase 18.A (365-day logging), and Phase 17 (multi-agent framework). Hackathon
-submission deadline 2026-07-10.
+submission deadline 2026-07-12.
 
 Implementation plans live in [`docs/plans/`](docs/plans/) (dated, newest last).
 E2E runbooks: [`docs/runbooks/e2e-environment.md`](docs/runbooks/e2e-environment.md)
