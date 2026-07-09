@@ -22,3 +22,21 @@ export function reasoningTraceFromSearch(search: string): string | null {
   const raw = new URLSearchParams(search).get('reasoning');
   return raw !== null && HEX32_RE.test(raw) ? raw : null;
 }
+
+// A conversation id is a UUID4 minted at persist time (agent/main.py, str(uuid.uuid4())).
+// We validate loosely — a safe id charset, not a strict UUID — because unlike a trace id
+// the backend 404s (not 400s) an unknown conversation and openConversation() already
+// fail-safes on a non-ok GET /conversations/{id}. The guard just keeps obvious junk
+// (path traversal, empty, markup) from firing a doomed fetch. Fetch path is
+// encodeURIComponent'd regardless (defense in depth).
+const CONVERSATION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
+/**
+ * The conversation id to resume from a `?conversation=<id>` query string, or null
+ * when the param is absent or malformed. Pure — App.svelte calls openConversation
+ * on boot and syncConversationParam writes it back. Mirrors reasoningTraceFromSearch.
+ */
+export function conversationIdFromSearch(search: string): string | null {
+  const raw = new URLSearchParams(search).get('conversation');
+  return raw !== null && CONVERSATION_ID_RE.test(raw) ? raw : null;
+}

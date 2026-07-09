@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { reasoningTraceFromSearch } from '../../src/lib/deeplink';
+import { reasoningTraceFromSearch, conversationIdFromSearch } from '../../src/lib/deeplink';
 
 const HEX32 = 'eba334f9211d46cabc79e50ed200a5a1'; // 32 lowercase hex
+const CONV = '7f3b9c2a-1d4e-4a8b-9c0f-2e5a6b7c8d90'; // UUID4-shaped conversation id
 
 describe('reasoningTraceFromSearch', () => {
   it('returns a well-formed 32-char lowercase-hex trace id', () => {
@@ -30,5 +31,35 @@ describe('reasoningTraceFromSearch', () => {
     expect(reasoningTraceFromSearch('?reasoning=not-a-trace-id')).toBeNull();
     expect(reasoningTraceFromSearch('?reasoning=../../etc/passwd')).toBeNull();
     expect(reasoningTraceFromSearch('?reasoning=')).toBeNull();
+  });
+});
+
+describe('conversationIdFromSearch', () => {
+  it('returns a well-formed id', () => {
+    expect(conversationIdFromSearch(`?conversation=${CONV}`)).toBe(CONV);
+  });
+
+  it('ignores other params and reads only conversation', () => {
+    expect(conversationIdFromSearch(`?reasoning=${HEX32}&conversation=${CONV}`)).toBe(CONV);
+  });
+
+  it('mirrors: reasoningTraceFromSearch ignores conversation and reads only reasoning', () => {
+    expect(reasoningTraceFromSearch(`?reasoning=${HEX32}&conversation=${CONV}`)).toBe(HEX32);
+  });
+
+  it('is null when the param is absent', () => {
+    expect(conversationIdFromSearch('')).toBeNull();
+    expect(conversationIdFromSearch('?preview_pr=12')).toBeNull();
+  });
+
+  it('is null on junk / path-y / empty / markup', () => {
+    expect(conversationIdFromSearch('?conversation=')).toBeNull();
+    expect(conversationIdFromSearch('?conversation=../../etc/passwd')).toBeNull();
+    expect(conversationIdFromSearch('?conversation=<script>')).toBeNull();
+  });
+
+  it('accepts a UUID with hyphens', () => {
+    expect(conversationIdFromSearch(`?conversation=${CONV}`)).toBe(CONV);
+    expect(CONV).toContain('-');
   });
 });
