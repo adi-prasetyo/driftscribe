@@ -85,6 +85,11 @@ _SUB_ASSET_TYPE = "pubsub.googleapis.com/Subscription"
 _RUN_ASSET_TYPE = "run.googleapis.com/Service"
 _VERSIONED_READ_MASK_PATHS = ["name", "versioned_resources"]
 
+# GCS buckets propagate into the SearchAllResources index very slowly (hours);
+# a bucket-scoped ListAssets supplement (a fresher CAI index) backfills any the
+# primary search missed. See :func:`_list_buckets`.
+_BUCKET_ASSET_TYPE = "storage.googleapis.com/Bucket"
+
 
 def _dig(obj, *path):
     """Walk ``path`` through a nested mapping/sequence; None on any miss.
@@ -263,6 +268,45 @@ def _search_all(client: asset_v1.AssetServiceClient) -> list[CaiResource]:
     ]
 
 
+def _list_buckets(client: asset_v1.AssetServiceClient) -> list[CaiResource]:
+    """Enumerate the project's GCS buckets via ListAssets — a DIFFERENT, fresher
+    CAI index than the primary SearchAllResources inventory.
+
+    SearchAllResources is eventually consistent, and for GCS buckets specifically
+    its search index lags badly: a freshly created bucket routinely fails to
+    appear for *hours* (observed 4h+) while Pub/Sub types index in minutes.
+    ListAssets reads the resource-metadata index, which surfaces new buckets
+    promptly, so :func:`describe` unions these into the primary inventory (dedup
+    by raw CAI ``name``) — bucket discovery no longer hinges on the slow search
+    index.
+
+    Buckets ONLY: every other adoptable type indexes fast enough in search, and
+    keeping this bucket-scoped avoids reconciling two response schemas for the
+    whole inventory. Only the three inventory fields are retained
+    (name/asset_type/location) — the same minimal projection ``_search_all``
+    keeps — so a ListAssets-sourced bucket is classified identically to a
+    search-sourced one (a bucket's managed-vs-drift verdict is name-based, not
+    label-based). ``content_type=RESOURCE`` is required to get
+    ``resource.location`` (ListAssets has no field mask); the response also
+    carries a ``resource.data`` Struct (labels/IAM/etc.), but it is FETCHED AND
+    DISCARDED here — only name/asset_type/location are read, never stored or
+    logged (mirroring the versioned-enrichment discard contract above).
+    """
+    request = asset_v1.ListAssetsRequest(
+        parent=f"projects/{GCP_PROJECT}",
+        asset_types=[_BUCKET_ASSET_TYPE],
+        content_type=asset_v1.ContentType.RESOURCE,
+    )
+    return [
+        CaiResource(
+            name=a.name,
+            asset_type=a.asset_type,
+            location=getattr(getattr(a, "resource", None), "location", "") or "",
+        )
+        for a in client.list_assets(request=request)
+    ]
+
+
 app = FastAPI(title="DriftScribe Infra-Reader Agent")
 
 # Per-request trace id from inbound X-Trace-Id (or a fresh UUIDv4 hex), bound to
@@ -301,6 +345,24 @@ def describe(
             "detail": str(e),
             "project": GCP_PROJECT,
         }
+
+    # Bucket-discovery hardening: the SearchAllResources index lags badly for GCS
+    # buckets (hours), so supplement with a ListAssets pass (a fresher index) and
+    # union in any bucket the primary search missed, deduped by raw CAI name.
+    # Strictly soft-fails — the primary inventory must NEVER degrade because of
+    # it — and is bucket-scoped, so no other asset type is touched. Runs before
+    # the versioned enrichment blocks, which ignore buckets anyway.
+    try:
+        listed_buckets = _list_buckets(client)
+    except Exception:  # noqa: BLE001 — supplement must never break the primary inventory
+        log.warning("bucket ListAssets supplement failed", exc_info=True)
+        listed_buckets = []
+    if listed_buckets:
+        seen = {r.name for r in resources}
+        for b in listed_buckets:
+            if b.name not in seen:
+                seen.add(b.name)  # also dedups within the ListAssets result itself
+                resources.append(b)
 
     # Per-type versioned enrichment: each runs only when its type is present, and
     # strictly soft-fails — the PRIMARY inventory must NEVER degrade because of
