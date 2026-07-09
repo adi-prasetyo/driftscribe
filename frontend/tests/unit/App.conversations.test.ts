@@ -148,7 +148,7 @@ describe('App — resume a conversation from the rail', () => {
     await waitFor(() => expect(getByText('weighing the region tradeoff')).toBeTruthy());
 
     // We are in inline mode, NOT full-page historical replay: the thread and the
-    // reasoning coexist, and the "viewing historical trace" banner is absent.
+    // reasoning coexist, and the "viewing past reasoning" banner is absent.
     expect(queryByTestId('conversation-thread')).not.toBeNull();
     expect(queryByTestId('historical-banner')).toBeNull();
     // The crew reply bubble is still shown above the reasoning.

@@ -126,7 +126,7 @@ const IAC_STATUS_HELP: Record<string, string> = {
     're-checks the live state before retrying.',
   ambiguous:
     "DriftScribe couldn't confirm the final result of this apply (e.g. the change " +
-    'merged but the apply outcome was unclear). Open the trace to see what ' +
+    'merged but the apply outcome was unclear). View the reasoning to see what ' +
     'happened before retrying.',
 };
 export function iacStatusHelp(status: string | null | undefined): string | null {

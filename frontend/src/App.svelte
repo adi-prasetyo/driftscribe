@@ -668,7 +668,7 @@
       if (finalReply == null) {
         status = 'error';
         finalReply = streamErrored
-          ? 'The reasoning stream was interrupted. Showing the recovered trace.'
+          ? 'The reasoning stream was interrupted. Showing the recovered reasoning.'
           : 'The reasoning stream ended before a final reply arrived.';
         finalIsError = true;
         liveExchange = null; // interrupted stream persists nothing → hero

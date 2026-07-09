@@ -758,7 +758,7 @@
                         data-testid="card-adopt-btn"
                         disabled={adoptDisabled}
                         title={adoptDisabled
-                          ? 'Unavailable while the chat is busy or reviewing a past trace.'
+                          ? 'Unavailable while the chat is busy or reviewing past reasoning.'
                           : undefined}
                         onclick={() => clickAdopt(row.prefill)}>Adopt into IaC</button
                       >
