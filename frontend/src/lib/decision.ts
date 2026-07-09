@@ -72,10 +72,22 @@ export function decisionFields(d: Decision | null | undefined): DecisionField[] 
   }
 
   if (isStr(d.apply_status)) {
+    // A parked `waiting_for_rebake` plan re-expressed in a NEW PR is terminal:
+    // its saved plan is permanently stale, so the Apply row reads as RESOLVED
+    // ('superseded by #N', ok badge) rather than the raw pending enum. Same
+    // gating (waiting_for_rebake + positive int) as iacApplyMeta (format.ts),
+    // the rail CTA (approval.ts iacApproveLabel), and the GET/POST resume
+    // guards (agent/main.py) — see recovery runbook §7e. The Merge row is
+    // untouched.
+    const superseded =
+      d.apply_status === 'waiting_for_rebake' &&
+      typeof d.superseded_by_pr === 'number' &&
+      Number.isInteger(d.superseded_by_pr) &&
+      d.superseded_by_pr > 0;
     rows.push({
       label: 'Apply',
-      value: clamp(d.apply_status),
-      badge: APPLY_STATUS_BADGE[d.apply_status] ?? 'muted',
+      value: superseded ? `superseded by #${d.superseded_by_pr}` : clamp(d.apply_status),
+      badge: superseded ? 'ok' : (APPLY_STATUS_BADGE[d.apply_status] ?? 'muted'),
     });
   }
 

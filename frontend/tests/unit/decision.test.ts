@@ -79,6 +79,55 @@ describe('decisionFields — badge variants', () => {
   });
 });
 
+describe('decisionFields — Apply row supersession (mirrors iacApplyMeta)', () => {
+  // PR #216's parked waiting_for_rebake doc, re-expressed in #221. The Apply row
+  // must read as resolved, not the raw pending enum.
+  const SUPERSEDED = {
+    ...IAC_APPLY,
+    apply_status: 'waiting_for_rebake',
+    merge_state: 'merged',
+    pr_number: 216,
+    superseded_by_pr: 221,
+  } as Decision;
+
+  it('a superseded waiting_for_rebake row reads "superseded by #N" with an ok badge', () => {
+    const apply = byLabel(SUPERSEDED, 'Apply');
+    expect(apply?.value).toContain('superseded');
+    expect(apply?.value).toContain('#221');
+    expect(apply?.value).not.toBe('waiting_for_rebake');
+    expect(apply?.badge).toBe('ok');
+  });
+
+  it('is gated to waiting_for_rebake — a stray superseded_by_pr on an applied row is ignored', () => {
+    const apply = byLabel(
+      { ...IAC_APPLY, apply_status: 'applied', merge_state: 'merged', superseded_by_pr: 221 } as Decision,
+      'Apply',
+    );
+    expect(apply?.value).toBe('applied');
+    expect(apply?.badge).toBe('ok'); // from APPLY_STATUS_BADGE, not the superseded path
+  });
+
+  it('regression: waiting_for_rebake with NO superseded_by_pr stays raw + muted', () => {
+    const apply = byLabel(
+      { ...IAC_APPLY, apply_status: 'waiting_for_rebake', merge_state: 'pending' } as Decision,
+      'Apply',
+    );
+    expect(apply?.value).toBe('waiting_for_rebake');
+    expect(apply?.badge).toBe('muted');
+  });
+
+  it('rejects non-positive / non-integer markers (stays raw + muted)', () => {
+    for (const bad of [0, -1, 1.5]) {
+      const apply = byLabel(
+        { ...IAC_APPLY, apply_status: 'waiting_for_rebake', superseded_by_pr: bad } as Decision,
+        'Apply',
+      );
+      expect(apply?.value).toBe('waiting_for_rebake');
+      expect(apply?.badge).toBe('muted');
+    }
+  });
+});
+
 describe('decisionFields — safety (no dynamic field dump)', () => {
   it('never renders a non-allowlisted field, even a sensitive-looking one', () => {
     const d = {

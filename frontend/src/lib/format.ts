@@ -144,7 +144,10 @@ export interface IacApplyMeta {
   tone: IacTone;
   /** Plain-language HelpHint text, or null when none is warranted. */
   help: string | null;
-  /** True ONLY for a terminal applied+merged row — drives the ✓ "done" affordance. */
+  /**
+   * True for a terminal, no-action-remaining row (applied+merged, or a
+   * superseded waiting_for_rebake) — drives the ✓ "done" affordance.
+   */
   done: boolean;
 }
 
