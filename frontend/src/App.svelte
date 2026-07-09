@@ -719,17 +719,45 @@
         streamErrored = true;
       }
 
-      // One post-stream backfill (also the recovery path on transport error):
-      // pulls side-channel mcp_call events not carried on the stream +
-      // reconciles ordering (mirrors the legacy UI).
+      // FAST PATH — a clean, persistable `done` frame (a real reply the backend
+      // persisted). The reply is already on screen and the conversation_id is
+      // known, so fold the turn + set ?conversation + release the composer NOW,
+      // and refresh the timeline/decisions in the BACKGROUND — instead of holding
+      // the composer disabled through the post-answer /trace backfill (up to ~25s
+      // on a slow ingestion day) + /decisions round-trip.
+      //
+      // Predicate mirrors settleConversation's own persistability check (rcid a
+      // non-empty string) AND excludes streamErrored: onDone dispatches mid-loop
+      // (sse.ts reads frames incrementally), so a `done` frame can land and THEN
+      // the transport can die before clean EOF, leaving doneConversationId set
+      // with streamErrored === true. That hybrid — like every non-clean outcome —
+      // takes the byte-identical slow path below. finalReply is non-null here by
+      // construction: onDone sets it (:691) before doneConversationId (:697), and
+      // the backend only echoes a conversation_id for a persisted reply, so the
+      // recovery guard on the slow path is unreachable from this branch.
+      const persistableDone =
+        !streamErrored &&
+        typeof doneConversationId === 'string' &&
+        doneConversationId.length > 0;
+      if (persistableDone) {
+        settleConversation(doneConversationId);
+        // Background, best-effort, runSeq-guarded (backfillTrace :753/:756;
+        // loadDecisions is fully try/catch'd). A fast follow-up bumps runSeq and
+        // makes the stale backfill no-op cleanly; the only cost is this turn's
+        // side-channel mcp_call rows not filling inline if the operator leaves
+        // immediately — the persisted trace survives and reopening refetches it.
+        void backfillTrace(myRun);
+        void loadDecisions();
+        return; // → finally clears busy (guarded), so the composer releases now
+      }
+
+      // SLOW PATH (unchanged) — streamErrored / no-terminal-frame / onError /
+      // paused refusal / one-shot. Backfill is awaited first because it is ALSO
+      // the transport-error recovery path (the "Showing the recovered reasoning"
+      // message wants events already populated); then the recovery guard, then
+      // decisions, then settle (a no-op when doneConversationId is undefined).
       await backfillTrace(myRun);
       if (myRun !== runSeq) return;
-      // finalReply is set by both onDone and onError. If we reach here with it
-      // still null, the stream produced neither a `done` nor an `error` frame —
-      // either it broke mid-transport (streamErrored) or it closed cleanly on
-      // EOF without ever emitting a final reply. Either way, never leave the
-      // answer area empty: surface a recoverable error after the backfill so the
-      // loading shimmer resolves to a message instead of a blank hero.
       if (finalReply == null) {
         status = 'error';
         finalReply = streamErrored
@@ -739,9 +767,6 @@
         liveExchange = null; // interrupted stream persists nothing → hero
       }
       await loadDecisions();
-      // Settle AFTER the recovery guard so a stream that produced a real reply
-      // (doneConversationId set) folds into the thread; an interrupted stream
-      // leaves doneConversationId undefined and the error stays in the hero.
       settleConversation(doneConversationId);
     } finally {
       if (myRun === runSeq) busy = false;

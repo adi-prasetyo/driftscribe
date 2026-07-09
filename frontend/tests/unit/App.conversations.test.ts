@@ -13,6 +13,22 @@ function okJson(body: unknown, headers: Record<string, string> = {}): Response {
   });
 }
 
+// A /chat Response the App will treat as an SSE stream: content-type
+// text/event-stream + a ReadableStream body of `event:`/`data:` frames.
+// Modeled on sseResponse in sse.test.ts:16-28, but sets the content-type
+// header so App.svelte's stream-branch check (ctype.includes(...)) takes it.
+function sseChatResponse(frames: string, headers: Record<string, string> = {}): Response {
+  const stream = new ReadableStream<Uint8Array>({
+    start(c) {
+      c.enqueue(new TextEncoder().encode(frames));
+      c.close();
+    },
+  });
+  return new Response(stream as unknown as BodyInit, {
+    headers: { 'content-type': 'text/event-stream', ...headers },
+  });
+}
+
 const GRAPH = {
   generated_at: null,
   project: 'demo-proj',
@@ -295,6 +311,116 @@ describe('App — a chat turn settles into the thread', () => {
     // hidden (its reply was cleared into the thread).
     const hero = queryByTestId('final-response');
     expect(hero === null || hero.hasAttribute('hidden')).toBe(true);
+  });
+});
+
+// Fast-path composer release (docs/plans/2026-07-09-chat-composer-early-unblock.md):
+// on a clean, persistable SSE `done` frame, the turn settles + composer
+// re-enables + ?conversation is set IMMEDIATELY, with backfillTrace/loadDecisions
+// backgrounded — instead of holding the composer disabled through those two
+// post-answer round-trips.
+describe('App — SSE chat turn releases the composer at the done frame', () => {
+  it('fast path: settles the thread and re-enables the composer without waiting for /trace', async () => {
+    const frames =
+      'event: meta\ndata: {"trace_id":"trace-fast"}\n\n' +
+      'event: done\ndata: {"reply":"the answer arrived fast","tool_calls":[],"conversation_id":"conv-fast"}\n\n';
+    let releaseTrace!: (r: Response) => void;
+    const tracePromise = new Promise<Response>((res) => {
+      releaseTrace = res;
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes('/chat') && init?.method === 'POST') return sseChatResponse(frames);
+        if (url.includes('/conversations/'))
+          return okJson({ conversation_id: 'conv-fast', workload: 'drift', title: 'x', turns: [] });
+        if (url.includes('/conversations')) return okJson({ conversations: [] });
+        // /trace never resolves during this test — proves settle doesn't wait on it.
+        if (url.includes('/trace/')) return tracePromise;
+        if (url.includes('/decisions')) return okJson({ decisions: [] });
+        if (url.includes('/infra/graph')) return okJson(GRAPH);
+        return okJson({});
+      }),
+    );
+
+    const { findByTestId, getByText } = render(App);
+    const input = (await findByTestId('chat-prompt')) as HTMLInputElement;
+    await fireEvent.input(input, { target: { value: 'why did it drift?' } });
+    await fireEvent.submit(document.getElementById('chat-form')!);
+
+    // Settled into the thread, composer re-enabled, and ?conversation set —
+    // all while /trace is still pending.
+    await findByTestId('conversation-thread');
+    await waitFor(() => expect(getByText('the answer arrived fast')).toBeTruthy());
+    const sendBtn = (await findByTestId('chat-submit')) as HTMLButtonElement;
+    await waitFor(() => expect(sendBtn.disabled).toBe(false));
+    await waitFor(() =>
+      expect(new URLSearchParams(window.location.search).get('conversation')).toBe('conv-fast'),
+    );
+
+    releaseTrace(okJson({ trace_id: 'trace-fast', events: [], complete: true }));
+  });
+
+  it('slow path: a done-less stream still fires the recovery guard', async () => {
+    const frames = 'event: meta\ndata: {"trace_id":"trace-nodone"}\n\n';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes('/chat') && init?.method === 'POST') return sseChatResponse(frames);
+        if (url.includes('/trace/'))
+          return okJson({ trace_id: 'trace-nodone', events: [], complete: true });
+        if (url.includes('/conversations')) return okJson({ conversations: [] });
+        if (url.includes('/decisions')) return okJson({ decisions: [] });
+        if (url.includes('/infra/graph')) return okJson(GRAPH);
+        return okJson({});
+      }),
+    );
+
+    const { findByTestId, getByTestId, queryByTestId } = render(App);
+    const input = (await findByTestId('chat-prompt')) as HTMLInputElement;
+    await fireEvent.input(input, { target: { value: 'anything' } });
+    await fireEvent.submit(document.getElementById('chat-form')!);
+
+    await waitFor(() => {
+      const hero = getByTestId('final-response');
+      expect(hero.hasAttribute('hidden')).toBe(false);
+      expect(hero.textContent).toContain('The reasoning stream ended before a final reply arrived.');
+    });
+    expect(queryByTestId('conversation-thread')).toBeNull();
+  });
+
+  it('paused refusal over SSE stays in the hero (no fast-path settle)', async () => {
+    const frames =
+      'event: meta\ndata: {"trace_id":"trace-paused"}\n\n' +
+      'event: done\ndata: {"reply":"DriftScribe is paused (operator kill switch active).","tool_calls":[],"paused":true,"conversation_id":"echoed"}\n\n';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes('/chat') && init?.method === 'POST') return sseChatResponse(frames);
+        if (url.includes('/trace/'))
+          return okJson({ trace_id: 'trace-paused', events: [], complete: true });
+        if (url.includes('/conversations')) return okJson({ conversations: [] });
+        if (url.includes('/decisions')) return okJson({ decisions: [] });
+        if (url.includes('/infra/graph')) return okJson(GRAPH);
+        return okJson({});
+      }),
+    );
+
+    const { findByTestId, getByTestId, queryByTestId } = render(App);
+    const input = (await findByTestId('chat-prompt')) as HTMLInputElement;
+    await fireEvent.input(input, { target: { value: 'anything' } });
+    await fireEvent.submit(document.getElementById('chat-form')!);
+
+    await waitFor(() => {
+      const hero = getByTestId('final-response');
+      expect(hero.hasAttribute('hidden')).toBe(false);
+      expect(hero.textContent).toContain('paused');
+    });
+    expect(queryByTestId('conversation-thread')).toBeNull();
+    expect(new URLSearchParams(window.location.search).get('conversation')).toBeNull();
   });
 });
 
