@@ -57,9 +57,10 @@ describe('shouldOfferTour', () => {
     expect(shouldOfferTour('', true)).toBe(false);
   });
 
-  it('suppressed when the operator arrived with intent (?ask_pr / ?preview_pr)', () => {
+  it('suppressed when the operator arrived with intent (?ask_pr / ?preview_pr / ?reasoning)', () => {
     expect(shouldOfferTour('?ask_pr=102', false)).toBe(false);
     expect(shouldOfferTour('?preview_pr=7', false)).toBe(false);
+    expect(shouldOfferTour('?reasoning=eba334f9211d46cabc79e50ed200a5a1', false)).toBe(false);
   });
 });
 

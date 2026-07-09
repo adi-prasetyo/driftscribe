@@ -42,6 +42,7 @@
   import ConversationThread from './components/ConversationThread.svelte';
   import InfraDiagram from './components/InfraDiagram.svelte';
   import { previewPrFromSearch } from './lib/infra_graph';
+  import { reasoningTraceFromSearch } from './lib/deeplink';
   import { initialChatPrefill } from './lib/workloads';
   import type { ChatPrefill } from './lib/workloads';
   import CapabilityCard from './components/CapabilityCard.svelte';
@@ -102,6 +103,22 @@
     previewPr = null;
     const u = new URL(window.location.href);
     u.searchParams.delete('preview_pr');
+    history.replaceState(null, '', u);
+  }
+
+  // ?reasoning=<hex32> deep-links a shareable/bookmarkable replay of ONE past
+  // reasoning timeline. Parsed once at boot (before onMount), then kept in sync
+  // with the open replay by syncReasoningParam(). See lib/deeplink.
+  const bootReasoningTid = reasoningTraceFromSearch(window.location.search);
+
+  // Keep the shareable ?reasoning param in step with the open replay: set it when
+  // a trace opens, drop it on a return to chat / a thread. Surgical (preserves
+  // other params + the hash) and replaceState (no history spam) — mirrors
+  // exitPreview() so a copied address bar always points at what is on screen.
+  function syncReasoningParam(tid: string | null) {
+    const u = new URL(window.location.href);
+    if (tid) u.searchParams.set('reasoning', tid);
+    else u.searchParams.delete('reasoning');
     history.replaceState(null, '', u);
   }
 
@@ -368,6 +385,8 @@
     iacPr = null;
     liveExchange = null; // cancel any in-flight optimistic exchange
     status = 'pending';
+    // Leaving the replay for a live thread — clear the shareable param.
+    syncReasoningParam(null);
     conversationId = id;
     // Clear the prior thread's crew NOW so a failed rehydrate can't leave a
     // stale lock paired with the new id (which would slip the crew-change guard
@@ -720,6 +739,9 @@
     historicalPrBody = null;
     historicalPrBodyTruncated = false;
     status = 'pending';
+    // Reflect the open replay in the address bar so it can be copied / shared /
+    // bookmarked. Idempotent on the boot deep-link path (param already set).
+    syncReasoningParam(tid);
     // When historicalActive flips true the replay renders at the TOP of the chat
     // column (see the {#if historicalActive}{@render traceOutput()} branch), so
     // bringing the page to the top reveals it — no jarring jump down. Scroll the
@@ -817,6 +839,8 @@
     conversationId = null;
     conversationWorkload = null;
     conversationTurns = [];
+    // No replay on screen anymore — clear the shareable param.
+    syncReasoningParam(null);
   }
 
   onMount(() => {
@@ -832,6 +856,11 @@
       history.replaceState(null, '', u);
       document.getElementById('chat-form')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
+    // Boot deep-link: a shared ?reasoning=<id> URL opens straight into that
+    // replay. openTrace re-syncs the (already-present) param, so this is
+    // idempotent; it also fetches through call(), so a fresh operator tab gets
+    // the usual token prompt while the demo window serves it anonymously.
+    if (bootReasoningTid) void openTrace(bootReasoningTid);
   });
 </script>
 

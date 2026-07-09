@@ -18,14 +18,19 @@
 
   /**
    * Auto-open at boot? Only when not yet dismissed AND the visitor did not
-   * arrive on an errand (?ask_pr / ?preview_pr deep links) — same principle as
-   * shouldOfferTour (lib/tour.ts): interrupting intent is worse than waiting.
-   * The unread badge still shows, so nothing is lost.
+   * arrive on an errand (?ask_pr / ?preview_pr deep links, or a ?reasoning
+   * shared replay link) — same principle as shouldOfferTour (lib/tour.ts):
+   * interrupting intent is worse than waiting. The unread badge still shows,
+   * so nothing is lost.
    */
   export function shouldAutoOpenNotice(search: string, dismissed: boolean): boolean {
     if (dismissed) return false;
     const params = new URLSearchParams(search);
-    return params.get('ask_pr') === null && params.get('preview_pr') === null;
+    return (
+      params.get('ask_pr') === null &&
+      params.get('preview_pr') === null &&
+      params.get('reasoning') === null
+    );
   }
 </script>
 
