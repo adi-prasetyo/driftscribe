@@ -207,11 +207,11 @@ def test_chat_sse_emits_error_frame_on_inloop_failure(_adk_enabled):
 
 
 # --------------------------------------------------------------------------- #
-# Defense-in-depth (audit C1): serve-time approval-token scrub for anonymous
-# demo callers on the /chat reply + SSE frames. Belt-and-braces on top of the
-# primary fix (propose_rollback_tool withholds the token from the model): any
-# future token-bearing tool return, or an operator token re-surfaced via a
-# resumed conversation, must not reach an anonymous caller on the wire.
+# Operator-seat reversal (2026-07-09, docs/plans/2026-07-09-operator-seat-demo-
+# window.md — audit C1 reversed for the rollback link): the anonymous serve-time
+# approval-token scrub on the /chat reply + SSE frames is REMOVED. A visitor
+# holds the operator seat and must receive the live approval link on the wire,
+# same as the operator, so both the SSE and non-SSE JSON paths carry the token.
 # --------------------------------------------------------------------------- #
 
 _TOKEN_URL = "https://c/approvals/id1?t=SECRETTOKEN"
@@ -225,7 +225,7 @@ async def _stub_stream_with_token(prompt, session_id=None, *, workload="drift", 
            "tool_calls": ["drift_propose_rollback"], "session_id": "sid"}
 
 
-def test_chat_sse_demo_anonymous_scrubs_approval_token(_adk_enabled):
+def test_chat_sse_demo_anonymous_keeps_approval_token(_adk_enabled):
     with patch("agent.adk_agent.run_chat_stream", _stub_stream_with_token), \
          patch.object(agent_main, "load_workload"), \
          patch.object(agent_main, "_eager_resolve_upgrade_contract"):
@@ -235,8 +235,9 @@ def test_chat_sse_demo_anonymous_scrubs_approval_token(_adk_enabled):
                                  "X-DriftScribe-Demo-Anonymous": "1"})
 
     assert r.status_code == 200
-    assert "?t=SECRETTOKEN" not in r.text
-    assert "?t=<redacted>" in r.text
+    # Operator seat: the live link reaches the anonymous visitor on the wire.
+    assert "?t=SECRETTOKEN" in r.text
+    assert "?t=<redacted>" not in r.text
 
 
 def test_chat_sse_operator_keeps_approval_token(_adk_enabled):
@@ -250,7 +251,7 @@ def test_chat_sse_operator_keeps_approval_token(_adk_enabled):
     assert "?t=SECRETTOKEN" in r.text
 
 
-def test_chat_json_demo_anonymous_scrubs_approval_token(_adk_enabled):
+def test_chat_json_demo_anonymous_keeps_approval_token(_adk_enabled):
     with patch("agent.adk_agent.run_chat_stream", _stub_stream_with_token), \
          patch.object(agent_main, "load_workload"), \
          patch.object(agent_main, "_eager_resolve_upgrade_contract"):
@@ -259,8 +260,9 @@ def test_chat_json_demo_anonymous_scrubs_approval_token(_adk_enabled):
                         headers={"X-DriftScribe-Demo-Anonymous": "1"})  # no Accept → JSON
 
     body = r.json()
-    assert "?t=SECRETTOKEN" not in body["reply"]
-    assert "?t=<redacted>" in body["reply"]
+    # Operator seat: the non-SSE JSON reply carries the live link too.
+    assert "?t=SECRETTOKEN" in body["reply"]
+    assert "?t=<redacted>" not in body["reply"]
 
 
 def test_chat_json_operator_keeps_approval_token(_adk_enabled):

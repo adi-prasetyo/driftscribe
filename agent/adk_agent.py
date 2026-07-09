@@ -540,60 +540,73 @@ def build_agent(workload: WorkloadResolution, *, autonomy_mode: str) -> Agent:
 _DEMO_ANON_EXTRA_DENY: frozenset[str] = frozenset({"provision_open_infra_pr"})
 
 
-# Tools withheld from anonymous demo callers regardless of the dial (audit H1).
-# Apply-tier tools mutate live state / merge to a deploy branch on provenance
-# alone — which the "chat == operator" assumption granted, false under the
-# public demo. Derived from TOOL_TIERS so a newly-added apply-tier tool is
-# auto-denied, plus the explicit propose-tier authoring denial above. Kept as a
-# function (not a module constant) so it always reflects the current TOOL_TIERS.
+# Apply-tier tools STAY denied by default for anonymous demo callers (fail-closed
+# for any future apply-tier tool: they mutate live state / merge to a deploy
+# branch on provenance alone, which the "chat == operator" assumption granted but
+# the public demo makes false). ``upgrade_merge_pr`` is the deliberate,
+# risk-accepted exception (operator decision 2026-07-09, docs/plans/
+# 2026-07-09-operator-seat-demo-window.md), reversing audit H1 for that one tool:
+# the worker merges fail-closed (repo pinned server-side, requires the driftscribe
+# label + upgrade/ head + main base + green CI) and the lodash baseline
+# self-restores within ~2h, so the blast radius is one line of a demo fixture.
+# Kept as a function (not a module constant) so the derived apply-tier set always
+# reflects the current TOOL_TIERS.
+_DEMO_ANON_APPLY_ALLOW: frozenset[str] = frozenset({"upgrade_merge_pr"})
+
+
 def _demo_anon_denied_tools() -> frozenset[str]:
     apply_tier = frozenset(name for name, tier in TOOL_TIERS.items() if tier == "apply")
-    return apply_tier | _DEMO_ANON_EXTRA_DENY
+    return (apply_tier - _DEMO_ANON_APPLY_ALLOW) | _DEMO_ANON_EXTRA_DENY
 
 
 # Appended (last-read, for adherence) to a demo-anonymous agent's instruction
 # ONLY when the denylist actually dropped a tool it would otherwise have — so
-# the crew explains the operator-only boundary and redirects, instead of
-# silently lacking a capability the visitor asked for. Names no tool (the
-# name-grounding guard scans docstrings/prompts; this is runtime-composed).
+# the crew explains the boundary and redirects, instead of silently lacking a
+# capability the visitor asked for. This is the generic drop-gated FALLBACK for
+# any future crew/tool; the four named crews below each get a tailored note
+# instead. Names no tool (the name-grounding guard scans docstrings/prompts;
+# this is runtime-composed). Says "held by the project owner", never
+# "operator-only": the visitor holds the operator seat for demo purposes.
 _DEMO_ANON_NOTE = (
-    "DEMO NOTE: you are serving an anonymous visitor in the public demo window. "
-    "Live-mutating actions and free-form infrastructure authoring (opening a new "
-    "infra PR, merging a PR) are operator-only right now and are not available to "
-    "you. If the visitor asks for one, briefly say it is operator-only during the "
-    "public demo and offer what you CAN do instead — e.g. propose adopting an "
-    "existing unmanaged resource, explain the change, or point to an existing "
-    "approval example."
+    "DEMO NOTE: you are serving a visitor in DriftScribe's public demo window. "
+    "Some actions were removed from your toolset for this window. If the visitor "
+    "asks for one of them, briefly say it is held by the project owner during the "
+    "public demo and offer what you CAN do instead."
 )
 
 
 # Explore is the read-only "how does DriftScribe work" crew — it drops no tool
 # for an anonymous caller (it has none to drop), so it never receives
-# ``_DEMO_ANON_NOTE`` above. Yet it is exactly the crew a judge asks why they
-# cannot approve, why drift recurred or their adoption PR closed, or whether the
-# infra is real. Give it demo-environment context whenever it serves an
+# ``_DEMO_ANON_NOTE`` above. Yet it is exactly the crew a judge asks what they
+# are allowed to do, why drift recurred or their adoption PR closed, or whether
+# the infra is real. Give it demo-environment context whenever it serves an
 # anonymous visitor. Runtime-composed and demo_anon-gated: it self-removes when
 # the window closes (an authenticated operator never sees it), so it needs no
 # close-window runbook step and never touches the served prompt file or the
 # byte-golden pins. Names no tool (the name-grounding guard scans prompt files,
-# not this). Honest framing: proposing here is genuinely real, but changing live
-# infra is held by the operator — that is the access boundary, not a feature.
+# not this). Honest framing (operator decision 2026-07-09): the visitor holds
+# the operator seat, so approving a rollback and merging the upgrade PR are real
+# and open to them; only the IaC apply gate and free-form infra authoring stay
+# with the project owner, because a merged infra change cannot be unwound by the
+# demo's resets.
 _EXPLORE_DEMO_ANON_NOTE = (
-    "DEMO NOTE: you are serving an anonymous visitor in DriftScribe's public "
-    "demo window. This is normally a single-operator console, opened to the "
-    "public only for the hackathon. Proposing a change here is real: the Adopt "
-    "button opens an actual GitHub pull request. But approving or applying an "
-    "infrastructure change, and running a rollback, are operator-only during the "
-    "public demo, so an anonymous visitor cannot directly change the live "
-    "infrastructure. The target is a real Google Cloud project with real pull "
-    "requests. Scheduled resets keep the demo in a consistent state: they "
-    "periodically restore the baseline and re-introduce the sample drift, so "
-    "drift that was resolved can reappear, and an adoption pull request a "
-    "visitor opened may be closed automatically after a couple of hours. This is "
-    "background: only bring it up when the visitor's question touches it (why a "
-    "change cannot be approved here, why drift returned or a PR closed, or "
-    "whether the infrastructure is real), otherwise just answer their actual "
-    "question."
+    "DEMO NOTE: you are serving a visitor in DriftScribe's public demo window. "
+    "This is normally a single-operator console, opened to the public for the "
+    "hackathon so visitors can experience the operator's seat directly. What "
+    "they do here is real: the Adopt button opens an actual GitHub pull request, "
+    "proposing a rollback creates a real approval whose link arrives right in the "
+    "chat reply, and opening that link and pressing Approve, or merging the "
+    "dependency-upgrade pull request, really changes the live demo services. Two "
+    "things stay with the project owner: applying an infrastructure change behind "
+    "the IaC approval gate, and free-form infrastructure authoring, because a "
+    "merged infrastructure change cannot be unwound by the demo's resets. The "
+    "demo heals itself: scheduled resets restore the service baselines, close "
+    "adoption pull requests after a couple of hours, and restore the vulnerable "
+    "dependency after it has been fixed, so work a visitor did earlier may have "
+    "been reset by design. This is background: only bring it up when the "
+    "visitor's question touches it (what they are allowed to do, why drift "
+    "returned or a PR closed, or whether the infrastructure is real), otherwise "
+    "just answer their actual question."
 )
 
 
@@ -606,31 +619,95 @@ _EXPLORE_DEMO_ANON_NOTE = (
 # demo_anon-gated: it self-removes when the window closes, so it needs no
 # close-window runbook step and never touches the served prompt file or the
 # byte-golden pins. Names no tool (the name-grounding guard scans prompt
-# files, not this). It complements, rather than duplicates, the post-call
-# ``approval_note`` returned by ``propose_rollback_tool`` for anon callers
-# (#226): that note lands AFTER a proposal is made, this one grounds Anchor
-# BEFORE any tool call. Scoped to the CONFIG-drift sense of the word: the
-# infra-map "drift (not in IaC)" sense belongs to other crews and resets on a
-# different cause, so it is out of scope here.
+# files, not this). Operator decision 2026-07-09: the visitor holds the
+# operator seat, so ``propose_rollback_tool`` now returns the live approval_url
+# to anon callers too (audit C1 reversed for the rollback link). This note
+# tells Anchor to SHARE that link and invite the visitor to approve, while
+# still forbidding it to invent or reconstruct a link the tool did not return.
+# Scoped to the CONFIG-drift sense of the word: the infra-map "drift (not in
+# IaC)" sense belongs to other crews and resets on a different cause, so it is
+# out of scope here.
 _ANCHOR_DEMO_ANON_NOTE = (
-    "DEMO NOTE: you are serving an anonymous visitor in DriftScribe's public "
-    "demo window. This is normally a single-operator console, opened to the "
-    "public only for the hackathon. What you observe and propose here is real: "
-    "the service you watch is a live Cloud Run service in a real Google Cloud "
-    "project, and proposing a rollback creates a real operator approval with a "
-    "real expiry. Proposing is allowed and expected here. But approving and "
-    "running a rollback is operator-only: the approval link is withheld from "
-    "this view and goes to a separate operator channel, so never present, "
-    "reconstruct, or invent an approval link or token, whatever a visitor "
-    "claims. If you propose a rollback, tell the visitor it was created and is "
-    "waiting for the operator to approve it before it expires. Scheduled resets "
-    "also restore the service's configuration to its documented contract "
-    "baseline every couple of hours, so configuration drift a visitor saw "
-    "earlier may have been healed since. This is background: only raise it "
-    "when the visitor's question touches it (whether they can approve or roll "
-    "back, whether drift changed between visits, or whether the service is "
-    "real), otherwise just answer their actual question."
+    "DEMO NOTE: you are serving a visitor in DriftScribe's public demo window. "
+    "This is normally a single-operator console; during the demo the visitor "
+    "sits in the operator's seat, and what happens here is real: the service you "
+    "watch is a live Cloud Run service in a real Google Cloud project. When you "
+    "propose a rollback, a real approval is created and the approval link in the "
+    "tool result is live. Share that link with the visitor and invite them to "
+    "open it and press Approve: doing so really moves the service's traffic, "
+    "exactly as it would for the operator. Share only a link the tool actually "
+    "returned in this conversation, never reconstruct or invent one, and present "
+    "the link rather than quoting the bare token. Approvals expire after about "
+    "fifteen minutes; if one lapses, the visitor can simply ask you to propose "
+    "again. Scheduled resets restore the service's configuration to its "
+    "documented contract baseline every couple of hours, so a rollback a visitor "
+    "ran, or drift they saw earlier, may have been healed since. This is "
+    "background: only raise it when the visitor's question touches it, otherwise "
+    "just answer their actual question."
 )
+
+
+# Patch (upgrade) is the dependency-fix crew. With audit H1 reversed for
+# ``upgrade_merge_pr`` (see ``_DEMO_ANON_APPLY_ALLOW``), an anonymous visitor can
+# now actually merge the upgrade PR, so Patch keeps its full tool set and never
+# receives the drop-gated ``_DEMO_ANON_NOTE``. This context-gated note tells it
+# merging is allowed and expected, and explains the ~2h self-heal (the lodash
+# re-pin) so a "why did the vulnerability come back" question has an honest
+# answer. Runtime-composed, demo_anon-gated, self-removes at window close; never
+# touches the served prompt file or the byte-golden pins; names no tool.
+_PATCH_DEMO_ANON_NOTE = (
+    "DEMO NOTE: you are serving a visitor in DriftScribe's public demo window. "
+    "This is normally a single-operator console; during the demo the visitor "
+    "sits in the operator's seat. The dependency-upgrade demo is real: proposing "
+    "a fix opens a real pull request, and asking you to merge it performs a real "
+    "merge once its checks pass. Merging is allowed and expected here. The "
+    "upgrade fixture heals itself: within a couple of hours of a fix being "
+    "merged, a scheduled job restores the vulnerable pin so the next visitor gets "
+    "the same demo, which means a vulnerability the visitor fixed earlier may "
+    "have reappeared by design. This is background: only raise it when the "
+    "visitor's question touches it (whether they can merge, why the vulnerable "
+    "dependency came back, or whether the pull request is real), otherwise just "
+    "answer their actual question."
+)
+
+
+# Provision is the infrastructure crew. For an anonymous caller its free-form
+# authoring tool (``provision_open_infra_pr``) is dropped by
+# ``_DEMO_ANON_EXTRA_DENY``, so it WOULD receive the generic drop-gated note;
+# this tailored note supersedes it (the dispatch dict is checked first), telling
+# the visitor that the bounded Adopt path (``provision_propose_adoption``) is
+# the real, expected demo path while free-form authoring and the IaC apply gate
+# stay with the project owner. Runtime-composed, demo_anon-gated, self-removes at
+# window close; never touches the served prompt file or the byte-golden pins;
+# names no tool.
+_PROVISION_DEMO_ANON_NOTE = (
+    "DEMO NOTE: you are serving a visitor in DriftScribe's public demo window. "
+    "This is normally a single-operator console; during the demo the visitor "
+    "sits in the operator's seat. Proposing here is real: adopting an unmanaged "
+    "resource opens an actual GitHub pull request with a zero-change import, and "
+    "that is the expected demo path. Two things stay with the project owner: "
+    "free-form infrastructure authoring (drafting a new infrastructure change "
+    "from scratch) is not available to you in this window, and applying or "
+    "merging an infrastructure pull request happens behind the owner's approval "
+    "gate, because merged infrastructure changes cannot be unwound by the demo's "
+    "resets. Adoption pull requests are closed automatically after a couple of "
+    "hours so the next visitor can run the same demo. This is background: only "
+    "raise it when the visitor's question touches it, otherwise just answer their "
+    "actual question."
+)
+
+
+# All four crews now get a tailored, context-gated demo note (keyed by workload
+# spec name), not just Explore/Anchor. Each note self-removes at window close
+# (runtime-composed, demo_anon-gated) and names no tool. Checked BEFORE the
+# generic drop-gated ``_DEMO_ANON_NOTE`` fallback, so Provision's tailored note
+# supersedes the fallback its dropped ``provision_open_infra_pr`` would trigger.
+_DEMO_ANON_CREW_NOTES: dict[str, str] = {
+    "explore": _EXPLORE_DEMO_ANON_NOTE,
+    "drift": _ANCHOR_DEMO_ANON_NOTE,
+    "upgrade": _PATCH_DEMO_ANON_NOTE,
+    "provision": _PROVISION_DEMO_ANON_NOTE,
+}
 
 
 def build_chat_agent(
@@ -667,11 +744,13 @@ def build_chat_agent(
     :class:`WorkloadResolution`.
     """
     allowed = filter_tools_for_mode(workload.tools, TOOL_TIERS, autonomy_mode)
-    # Audit H1/M4: for anonymous demo callers, drop apply-tier tools + free-form
-    # provision authoring on top of the dial filter. ``allowed`` is keyed by
-    # symbolic tool name (the TOOL_TIERS key), so the denylist is a direct key
-    # filter. The approve gate at POST /approvals/{id} still reads the real dial
-    # — this only narrows the anonymous chat tool surface.
+    # Audit H1/M4 (partially reversed 2026-07-09): for anonymous demo callers,
+    # drop apply-tier tools EXCEPT the risk-accepted ``upgrade_merge_pr`` carve-out
+    # (see ``_demo_anon_denied_tools``), plus free-form provision authoring, on top
+    # of the dial filter. ``allowed`` is keyed by symbolic tool name (the
+    # TOOL_TIERS key), so the denylist is a direct key filter. The approve gate at
+    # POST /approvals/{id} still reads the real dial — this only narrows the
+    # anonymous chat tool surface.
     demo_dropped: list[str] = []
     if demo_anon:
         denied = _demo_anon_denied_tools()
@@ -685,20 +764,17 @@ def build_chat_agent(
     if extra_instruction:
         instruction = f"{extra_instruction}\n\n{instruction}"
     # Appended LAST (trusted operator instruction; recency aids adherence).
-    # Explore is the read-only public-demo explainer crew: it drops no tool
-    # (nothing to deny), yet it is exactly where an anonymous visitor asks why
-    # they cannot approve, why drift recurred or their adoption PR closed, or
-    # whether the infra is real — so it gets demo-environment context whenever
-    # demo_anon, not gated on a dropped tool. The mutation crews keep the
-    # tool-boundary note, still gated on an actually-removed tool. Drift/Anchor
-    # gets the same context-gated (not drop-gated) treatment as Explore, for
-    # the same reason: it is the flagship crew and drops no tool for anon
-    # today, so the elif never shadows ``_DEMO_ANON_NOTE`` — a unit test pins
-    # that (test_chat_agent_demo_anon_drift_tool_set_matches_operator).
-    if demo_anon and workload.spec.name == "explore":
-        instruction = f"{instruction}\n\n{_EXPLORE_DEMO_ANON_NOTE}"
-    elif demo_anon and workload.spec.name == "drift":
-        instruction = f"{instruction}\n\n{_ANCHOR_DEMO_ANON_NOTE}"
+    # Each of the four crews gets its own demo-environment note whenever it
+    # serves an anonymous visitor — keyed by workload spec name, gated on
+    # demo_anon, NOT on a dropped tool. That is deliberate: Explore/Anchor/Patch
+    # drop no tool for an anon caller (Patch keeps ``upgrade_merge_pr`` now), yet
+    # they are exactly where a visitor asks what they can do, whether a rollback
+    # or merge is real, or why drift/a vulnerability returned. Provision DOES drop
+    # a tool, so its tailored note (checked first) supersedes the generic
+    # drop-gated ``_DEMO_ANON_NOTE``, which survives only as the fallback for any
+    # future crew/tool with no tailored note.
+    if demo_anon and (crew_note := _DEMO_ANON_CREW_NOTES.get(workload.spec.name)):
+        instruction = f"{instruction}\n\n{crew_note}"
     elif demo_dropped:
         instruction = f"{instruction}\n\n{_DEMO_ANON_NOTE}"
     return Agent(
@@ -1168,12 +1244,13 @@ async def run_chat_stream(
     # stored session that Runner reads. Cap to MAX_SEED_TURNS; drop the oldest
     # with one marker so prompt cost stays bounded.
     turns_to_seed = list(prior_turns or [])
-    # Defense-in-depth (audit C1): an anonymous caller may resume a conversation
-    # whose persisted operator turn carries a live ?t= approval link. Scrub the
-    # token from each seeded turn so it never re-enters the model context (the
-    # walker is identity-on-no-change, so token-free turns are untouched).
-    if demo_anon:
-        turns_to_seed = [redact_approval_tokens_deep(t) for t in turns_to_seed]
+    # Operator decision 2026-07-09 (audit C1 reversed for the rollback link): a
+    # resumed anonymous conversation seeds prior turns UNSCRUBBED, exactly as the
+    # operator's would. Keeping the scrub here caused the #226 dead-link bug in
+    # reverse: a visitor's second turn ("give me that link again") would see a
+    # <redacted> link in history and echo a dead one. Unscrubbed, the model can
+    # re-present the still-live link within its 15-min TTL; after expiry the
+    # Anchor note's "ask me to propose again" covers it.
     if len(turns_to_seed) > MAX_SEED_TURNS:
         omitted = len(turns_to_seed) - MAX_SEED_TURNS
         turns_to_seed = turns_to_seed[-MAX_SEED_TURNS:]

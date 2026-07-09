@@ -200,10 +200,11 @@ def test_ephemeral_provision_fanout_persists_nothing(client, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# Conversations are shared "team memory" with zero privacy between demo
-# visitors. A persisted operator crew turn can carry a live ?t= approval link;
-# an anonymous demo reader must never be handed that token cross-session (M1).
-# Operators (no marker) keep the clickable link.
+# Conversations are shared "team memory" — shared-seat BY DESIGN in the public
+# window (operator-seat reversal 2026-07-09, docs/plans/2026-07-09-operator-seat-
+# demo-window.md — audit M1 reversed). A persisted crew turn can carry a live ?t=
+# approval link, and an anonymous reader is now handed it intact, same as the
+# operator, so the rail's approve CTA works from a reloaded conversation too.
 # --------------------------------------------------------------------------- #
 
 _TOKEN_URL = "https://c/approvals/id1?t=SECRETTOKEN"
@@ -222,13 +223,15 @@ def _seed_token_reply_conversation(client, monkeypatch):
     return _post(client, "roll back").json()["conversation_id"]
 
 
-def test_get_conversation_demo_anonymous_scrubs_token(client, monkeypatch):
+def test_get_conversation_demo_anonymous_keeps_token(client, monkeypatch):
+    # Operator-seat reversal: the anonymous reader gets the full turns with the
+    # live link intact, same as the operator.
     cid = _seed_token_reply_conversation(client, monkeypatch)
     r = client.get(f"/conversations/{cid}",
                    headers={"X-DriftScribe-Demo-Anonymous": "1"})
     dumped = json.dumps(r.json())
-    assert "?t=SECRETTOKEN" not in dumped
-    assert "?t=<redacted>" in dumped
+    assert "?t=SECRETTOKEN" in dumped
+    assert "?t=<redacted>" not in dumped
 
 
 def test_get_conversation_operator_keeps_token(client, monkeypatch):
@@ -237,14 +240,14 @@ def test_get_conversation_operator_keeps_token(client, monkeypatch):
     assert "?t=SECRETTOKEN" in json.dumps(r.json())
 
 
-def test_list_conversations_demo_anonymous_scrubs_token(client):
-    # The list surfaces title (= first prompt, truncated to 60 chars); a short
-    # token-bearing prompt proves the metadata rows are also scrubbed for anon.
+def test_list_conversations_demo_anonymous_keeps_token(client):
+    # The list surfaces title (= first prompt); after the reversal the anonymous
+    # metadata rows carry the token intact too, same as the operator.
     _post(client, "rb https://c/approvals/id1?t=LISTTOK123")
     r = client.get("/conversations", headers={"X-DriftScribe-Demo-Anonymous": "1"})
     dumped = json.dumps(r.json())
-    assert "?t=LISTTOK123" not in dumped
-    assert "?t=<redacted>" in dumped
+    assert "?t=LISTTOK123" in dumped
+    assert "?t=<redacted>" not in dumped
 
 
 def test_list_conversations_operator_keeps_token(client):

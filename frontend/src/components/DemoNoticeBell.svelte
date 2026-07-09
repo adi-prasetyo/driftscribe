@@ -195,8 +195,9 @@
         Ask a crew to investigate drift, propose a fix, or roll back the
         payment-demo service and watch it happen. You can't break it for the
         next visitor: the service heals itself every couple of hours, the
-        upgrade demo resets every morning, and adoption requests are tidied
-        away after a couple of hours so the next visitor gets the full demo.
+        upgrade demo resets within a couple of hours of being fixed, and
+        adoption requests are tidied away after a couple of hours so the next
+        visitor gets the full demo.
       </p>
       <button
         class="ds-btn ds-btn--ghost demo-bell__dismiss"

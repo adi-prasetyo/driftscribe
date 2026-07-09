@@ -65,7 +65,6 @@ from agent.renderer import (
     attach_iac_pr_link,
     render_docs_pr_body,
     render_drift_issue_body,
-    redact_approval_tokens_deep,
     render_escalation_issue_body,
     render_rollback_body,
     scrub_decision_approval,
@@ -2167,14 +2166,14 @@ def list_decisions_endpoint(
         )
         for d in state.list_decisions(limit=limit)
     ]
-    #   3. scrub_decision_approval — demo-window anonymous reads only (Worker
-    #      marker): rollback rows persist approval.approval_url with the live
-    #      single-use ?t= token, and an anonymous /decisions would hand it out
-    #      cross-session (Codex A.2 catch). Operators (CF JWT via Access, or
-    #      direct run.app + token) never carry the marker and keep the rail's
-    #      approve CTA.
-    if _is_demo_anonymous(request):
-        rows = [scrub_decision_approval(d) for d in rows]
+    # Operator decision 2026-07-09 (docs/plans/2026-07-09-operator-seat-demo-
+    # window.md): the anonymous demo-window scrub of approval.approval_url is
+    # removed here — a visitor holds the operator seat, so the rail's Approve CTA
+    # must work for them. Rollback rows carry the live single-use ?t= token, same
+    # as the operator sees; bounds (single-use, 15-min TTL, worker refuses no-op
+    # targets, self-healing baseline) make handing it out acceptable. Reverses
+    # audit A.2's serve-time scrub for /decisions. (/runs stays always-scrubbed —
+    # separate justification there.)
     return {"decisions": rows}
 
 
@@ -3394,24 +3393,13 @@ def get_trace(
         repo_provider=_memoized_repo_provider(_trace_settings),
         settings=_trace_settings,
     )
-    # Demo-window anonymous read (Worker marker, hackathon A.2): strip the
-    # tokenized rollback approval link from the decision AND every event
-    # string. Belt-and-braces for events — redact_event already kills the
-    # approval_url/approval_token KEYS in structured tool results, but a
-    # model reply or rendered_body can embed the URL in free prose. Both
-    # scrubs are copy-on-change, so the in-process timeline cache below is
-    # never poisoned by this per-request view (operator polls keep the link).
-    demo_anon = _is_demo_anonymous(request)
-    if demo_anon:
-        decision = scrub_decision_approval(decision)
-
+    # Operator decision 2026-07-09 (docs/plans/2026-07-09-operator-seat-demo-
+    # window.md): the anonymous demo-window scrub of the rollback approval link
+    # (from the decision AND every event string) is removed — a visitor holds the
+    # operator seat, so the timeline's approval links must be live for them, same
+    # as the operator sees. Reverses audit A.2's serve-time scrub for /trace.
     cached = _cache_get(trace_id)
     if cached is not None:
-        if demo_anon:
-            cached = {
-                **cached,
-                "events": redact_approval_tokens_deep(cached.get("events", [])),
-            }
         return {**cached, "decision": decision, "fetched_from_cache": True}
 
     # Real timeout via a Future boundary. The google-cloud-logging
@@ -3479,9 +3467,7 @@ def get_trace(
 
     return {
         "trace_id": trace_id,
-        # The cache (above) holds the UNscrubbed events; the demo-anonymous
-        # scrub is a per-request view applied at serve only.
-        "events": redact_approval_tokens_deep(events) if demo_anon else events,
+        "events": events,
         "decision": decision,
         "complete": complete,
         "fetched_from_cache": False,
@@ -3831,10 +3817,14 @@ def approval_get(request: Request, approval_id: str, t: str = "") -> Response:
     # (approval_id, t) to the rollback worker for HMAC verification, so
     # rendering the form would only manufacture a doomed POST (observed live
     # 2026-07-08: a tokenless Approve died as raw 422 JSON). The literal
-    # ``<redacted>`` is what the demo-anonymous serve scrub substitutes for
-    # the token in persisted conversations — a visitor pasting such a link
-    # lands here; it can never be a real token (the redactor's value class
-    # excludes ``<``). The template renders an explanatory note instead.
+    # ``<redacted>`` guard stays as a harmless defense: after the 2026-07-09
+    # operator-seat decision the demo-anonymous /decisions, /trace, /chat and
+    # /conversations serve scrubs are gone (visitors get the live link), but the
+    # surviving scrubs (unauthenticated ``/runs``, the model-facing
+    # decisions-history and cross-crew read_conversations reads) still emit
+    # ``<redacted>``, so a visitor pasting such a link still lands here; it can
+    # never be a real token (the redactor's value class excludes ``<``). The
+    # template renders an explanatory note instead.
     token_missing = not t.strip() or t.strip() == "<redacted>"
     # Pause gate (display): the page shows what its POST would do — Approve
     # disabled + a calm note while paused; Reject stays active (the POST allows
@@ -6045,12 +6035,10 @@ async def _chat_sse(prompt: str, session_id: str | None, conv: dict,
                 continue
             if kind == "item":
                 item = payload
-                # Defense-in-depth (audit C1): for anonymous demo callers, scrub
-                # any rollback approval ?t= token from the framed item (covers
-                # both "event" and "done" frames) before it reaches the wire.
-                # Belt-and-braces atop propose_rollback_tool's withholding.
-                if demo_anon:
-                    item = redact_approval_tokens_deep(item)
+                # Operator decision 2026-07-09: the anonymous SSE scrub of the
+                # rollback approval ?t= token is removed — the visitor holds the
+                # operator seat and must receive the live approval link in the
+                # stream, same as the operator. Reverses audit C1's SSE scrub.
                 if item["type"] == "event":
                     yield _sse_frame(data=item["event"])
                 else:  # "result"
@@ -6148,11 +6136,14 @@ async def chat(
     # filtered at Layer 0 instead — so we read the mode once here and thread
     # it through every streaming/JSON path below.
     autonomy = _autonomy_state_fail_closed()
-    # Audit C1/H1: mark anonymous public-demo callers (the CF Worker injects the
-    # operator token but tags the request X-DriftScribe-Demo-Anonymous). Threaded
-    # into every streaming/JSON path below so tools withhold the live approval
-    # token from the model and apply-tier tools drop out of the anonymous surface.
-    # Operators (no marker) are unaffected.
+    # Mark anonymous public-demo callers (the CF Worker injects the operator
+    # token but tags the request X-DriftScribe-Demo-Anonymous). Threaded into
+    # every streaming/JSON path below. After the 2026-07-09 operator-seat
+    # reversal this no longer withholds the approval link (a visitor holds the
+    # operator seat) — it selects the per-crew demo-environment note in
+    # build_chat_agent and still drops the free-form provision authoring tool
+    # (apply-tier stays denied EXCEPT the upgrade_merge_pr carve-out). Operators
+    # (no marker) are unaffected.
     demo_anon = _is_demo_anonymous(request)
     # Phase 17.A.3: pre-resolve the workload so an "undeployed workload"
     # failure (e.g. upgrade before Phase 17.B/17.C/17.E land the tools +
@@ -6269,8 +6260,10 @@ async def chat(
                         autonomy_mode=autonomy.mode, demo_anon=demo_anon,
                     )
                 )
-                # Defense-in-depth (audit C1): serve-time token scrub for anon.
-                return redact_approval_tokens_deep(out) if demo_anon else out
+                # Operator decision 2026-07-09: anon receives the live approval
+                # link in the /chat JSON reply, same as the operator (audit C1
+                # reversed).
+                return out
             # JSON-others STILL goes through run_chat (pinned by
             # test_provision_fanout_route / test_chat_endpoint) with the
             # caller's session_id; multi-turn seeding rides the prior_turns
@@ -6286,8 +6279,9 @@ async def chat(
                 trace_id=trace_id, result=result,
             ):
                 result["conversation_id"] = conv["conversation_id"]
-            # Defense-in-depth (audit C1): serve-time token scrub for anon.
-            return redact_approval_tokens_deep(result) if demo_anon else result
+            # Operator decision 2026-07-09: anon receives the live approval link
+            # in the /chat JSON reply, same as the operator (audit C1 reversed).
+            return result
         finally:
             reset_workload(_workload_token)
     except (
@@ -6333,11 +6327,10 @@ def list_conversations_endpoint(
         )
     response.headers["Cache-Control"] = "no-store"
     rows = state.list_conversations(limit=limit, workload=workload)
-    # M1: conversations are shared team memory with zero privacy between demo
-    # visitors. A persisted turn can carry a live ?t= approval link — scrub it
-    # for anonymous readers (Worker marker). Operators keep the clickable link.
-    if _is_demo_anonymous(request):
-        rows = redact_approval_tokens_deep(rows)
+    # Operator decision 2026-07-09 (audit M1 reversed): conversations are shared
+    # team memory by design in the public window. The visitor holds the operator
+    # seat, so a persisted turn's live ?t= approval link is served to anonymous
+    # readers too, same as the operator sees.
     return {"conversations": rows}
 
 
@@ -6366,8 +6359,7 @@ def get_conversation_endpoint(
             detail="conversation not found",
             headers={"Cache-Control": "no-store"},
         )
-    # M1: scrub any live ?t= approval link from the full turns for anonymous
-    # readers (shared team memory; a persisted operator turn may carry it).
-    if _is_demo_anonymous(request):
-        conv = redact_approval_tokens_deep(conv)
+    # Operator decision 2026-07-09 (audit M1 reversed): shared team memory is
+    # shared-seat by design in the public window. Anonymous readers get the full
+    # turns with any live ?t= approval link intact, same as the operator.
     return conv

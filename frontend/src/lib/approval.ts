@@ -21,11 +21,13 @@
  *
  * Rejects: off-origin absolute URLs, non-http(s) schemes (`javascript:`,
  * `data:`, `file:`, …), non-`/approvals/` paths, empty/malformed input, and
- * links whose `?t=` token is the demo scrub's literal `<redacted>` placeholder
- * — the anonymous serve scrub masks the one-time token to that literal, and
- * both Approve and Reject need the real token, so a CTA for such a link is a
- * dead button (the literal can never be a real token: the redactor's value
- * class excludes `<`).
+ * links whose `?t=` token is a scrub's literal `<redacted>` placeholder — after
+ * the 2026-07-09 operator-seat reversal the anonymous /decisions, /trace, /chat
+ * and /conversations serve scrubs are gone (visitors get the live link), but the
+ * surviving scrubs (`/runs`, the model-facing decisions-history and
+ * read_conversations reads) still emit that literal, and both Approve and Reject
+ * need the real token, so a CTA for such a link is a dead button (the literal
+ * can never be a real token: the redactor's value class excludes `<`).
  */
 export function safeApprovalHref(raw: string, origin?: string): string | null {
   const base = origin ?? window.location.origin;

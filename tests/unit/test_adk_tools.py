@@ -801,13 +801,13 @@ def _rollback_worker_response_with_token(token="SECRETTOKEN"):
     }
 
 
-def test_propose_rollback_withholds_credential_from_model_when_anon():
-    """Audit C1 (primary): an anonymous demo caller must NEVER receive the
-    single-use rollback approval credential — neither the bare ``approval_token``
-    field NOR the ``?t=`` token inside ``approval_url``. ADK feeds this return
-    straight back to the model, which could echo it into its reply OR route it
-    into a PR body on the PUBLIC repo. The operator notifier webhook still gets
-    the real clickable link, so the operator flow is unchanged."""
+def test_propose_rollback_anon_gets_same_credential_as_operator():
+    """Operator-seat reversal (2026-07-09, docs/plans/2026-07-09-operator-seat-
+    demo-window.md — audit C1 reversed for the rollback link): an anonymous demo
+    caller now receives EXACTLY what the operator receives, so a visitor can
+    approve the rollback themselves. Both credential surfaces (the bare
+    ``approval_token`` and the tokenized ``approval_url``) are intact, and the
+    #226 ``approval_note`` key is gone entirely."""
     from agent.adk_tools import propose_rollback_tool
     from agent.request_context import demo_anonymous_scope
 
@@ -825,16 +825,11 @@ def test_propose_rollback_withholds_credential_from_model_when_anon():
                 target_revision="payment-demo-00002-bbb", reason="x"
             )
 
-    # The model sees the token on NO field.
-    assert "SECRETTOKEN" not in json.dumps(out)
-    assert "approval_token" not in out          # bare raw token dropped entirely
-    # The URL is dropped ENTIRELY — a masked ``?t=<redacted>`` URL survives as
-    # a dead link the model echoes to visitors (observed live 2026-07-08).
-    assert "approval_url" not in out
-    # ...replaced by an explicit note the model can relay instead.
-    assert "operator" in out["approval_note"]
-    assert "approval URL" in out["approval_note"]
-    # Non-secret fields stay so the model can still say an approval was created.
+    # Anon == operator: both credential surfaces intact.
+    assert out["approval_token"] == "SECRETTOKEN"
+    assert out["approval_url"] == "https://c/approvals/id1?t=SECRETTOKEN"
+    # The #226 approval_note concept is gone.
+    assert "approval_note" not in out
     assert out["approval_id"] == "id1"
     assert out["expires_at"] == "2026-07-07T00:15:00+00:00"
     # Operator notifier webhook is UNCHANGED — it still carries the live link.
@@ -845,28 +840,25 @@ def test_propose_rollback_withholds_credential_from_model_when_anon():
 @pytest.mark.parametrize(
     "worker_resp",
     [
-        # no approval_url at all (error shape)
+        # error shape (no approval_url)
         {"error": "worker exploded", "approval_id": "id1"},
-        # approval_url present but expires_at malformed → the notify is
-        # SKIPPED, so the note's "was sent to the operator" would be false
-        # (Codex review: the note must track the notify condition exactly).
+        # malformed expires_at → the notify is skipped, but the tool return is
+        # STILL the worker response verbatim for anon (no scrub, no note).
         {"approval_id": "id1", "approval_url": "https://c/approvals/id1?t=tok"},
         {"approval_id": "id1", "approval_url": "https://c/approvals/id1?t=tok",
          "expires_at": ""},
-        {"approval_id": "id1", "approval_url": "https://c/approvals/id1?t=tok",
-         "expires_at": 12345},
     ],
 )
-def test_propose_rollback_anon_notify_skipped_gains_no_note(worker_resp):
-    """The ``approval_note`` asserts the operator's channel was sent the live
-    link, so it must appear ONLY when the notify was actually attempted — any
-    shape that skips the notify (no URL, or a malformed ``expires_at``) must
-    not gain the note. The credential fields are still scrubbed."""
+def test_propose_rollback_anon_returns_worker_response_unchanged(worker_resp):
+    """For anon callers the tool no longer transforms the worker response at all:
+    whatever shape the worker returns is handed back verbatim (no scrub, no
+    ``approval_note`` injection), identical to the operator path."""
     from agent.adk_tools import propose_rollback_tool
     from agent.request_context import demo_anonymous_scope
 
     def _fake_call(worker, payload):
-        assert worker != "notifier", "notify must be skipped for this shape"
+        if worker == "notifier":
+            return {"status": "sent"}
         return worker_resp
 
     with patch("agent.adk_tools.worker_client.call", side_effect=_fake_call):
@@ -875,9 +867,8 @@ def test_propose_rollback_anon_notify_skipped_gains_no_note(worker_resp):
                 target_revision="payment-demo-00002-bbb", reason="x"
             )
 
+    assert out == worker_resp
     assert "approval_note" not in out
-    assert "approval_url" not in out
-    assert "?t=tok" not in json.dumps(out)
 
 
 def test_propose_rollback_operator_keeps_credential():

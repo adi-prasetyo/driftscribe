@@ -136,10 +136,10 @@ mechanically restorable, and is gated when it is not.
   real PR (one line of `demo/upgrade-target/package.json`); asking Anchor to roll
   back really moves `payment-demo` traffic to an earlier revision. A scheduled
   workflow ([`demo-reset.yml`](.github/workflows/demo-reset.yml)) restores all
-  three baselines: the service every two hours, the upgrade fixture every
-  morning, and any adoption PR a visitor opens is closed unmerged after about
-  two hours so the Adopt demo stays available. Nothing a visitor does is applied
-  to real infrastructure.
+  three baselines: the service every two hours, the upgrade fixture within a
+  couple of hours of being fixed, and any adoption PR a visitor opens is closed
+  unmerged after about two hours so the Adopt demo stays available. Nothing a
+  visitor does is applied to real infrastructure.
 - **Gated:** merging an infrastructure PR always requires the operator's
   identity, and free-form infrastructure authoring is operator-only during the
   public window (the one-click Adopt path, which only ever emits a bounded

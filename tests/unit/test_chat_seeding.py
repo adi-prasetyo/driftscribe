@@ -178,11 +178,13 @@ def _seed_recorder(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_run_chat_stream_scrubs_seeded_token_for_demo_anon(monkeypatch):
-    """Defense-in-depth (C1): an anonymous caller resuming a conversation whose
-    persisted operator turn carries a live ?t= approval link must NOT have that
-    token re-seeded into the model context. With demo_anon=True the seeded turn
-    text is token-scrubbed before it reaches the session."""
+async def test_run_chat_stream_seeds_token_unscrubbed_for_demo_anon(monkeypatch):
+    """Operator-seat reversal (2026-07-09, docs/plans/2026-07-09-operator-seat-
+    demo-window.md — audit C1 reversed): a resumed anonymous conversation seeds
+    prior turns UNSCRUBBED, exactly as the operator's would. Keeping the scrub
+    caused the #226 dead-link bug in reverse (a follow-up 'give me that link
+    again' would see a <redacted> link in history); unscrubbed, the model can
+    re-present the still-live link within its TTL."""
     appended = _seed_recorder(monkeypatch)
     prior = [
         {"role": "crew",
@@ -194,8 +196,8 @@ async def test_run_chat_stream_scrubs_seeded_token_for_demo_anon(monkeypatch):
         prior_turns=prior, demo_anon=True,
     )]
     seeded_text = appended[0][2]
-    assert "SECRETTOKEN" not in seeded_text
-    assert "?t=<redacted>" in seeded_text
+    assert "?t=SECRETTOKEN" in seeded_text
+    assert "?t=<redacted>" not in seeded_text
 
 
 @pytest.mark.asyncio

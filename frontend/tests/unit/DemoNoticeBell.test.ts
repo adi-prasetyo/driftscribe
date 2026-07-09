@@ -30,7 +30,7 @@ describe('DemoNoticeBell', () => {
     const popover = await findByTestId('demo-notice-popover');
     expect(popover.textContent).toContain('This is a live sandbox.');
     expect(popover.textContent).toContain('heals itself every couple of hours');
-    expect(popover.textContent).toContain('upgrade demo resets every morning');
+    expect(popover.textContent).toContain('upgrade demo resets within a couple of hours of being fixed');
     expect(getByTestId('demo-notice-badge')).toBeTruthy();
   });
 

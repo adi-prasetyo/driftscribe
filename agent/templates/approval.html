@@ -51,7 +51,7 @@
              doomed POST — render an explanation instead. Outranks the
              paused / autonomy notes: those describe button states, and there
              are no buttons here. #}
-          <div class="ds-note" data-testid="no-token-note">This page can't act on this approval. The link that opened it is missing its one-time token. Approving or rejecting requires the complete approval link, which is sent to the operator's notification channel when a rollback is proposed. In the public demo, chat shows the link with the token removed, so approvals stay operator-only.</div>
+          <div class="ds-note" data-testid="no-token-note">This page can't act on this approval. The link that opened it is missing its one-time token. Approving or rejecting requires the complete approval link, which appears in the chat reply when a rollback is proposed (and is also sent to the operator's notification channel). Go back to the chat and use the full link, or ask for a fresh proposal if this one expired.</div>
         {% else %}
           {% if paused %}
             {# Pause gate (kill switch): calm note above the form. Approve is
