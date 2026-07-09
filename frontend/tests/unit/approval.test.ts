@@ -389,4 +389,40 @@ describe('iacApproveLabel — retire the stale CTA on superseded rows', () => {
       iacApproveLabel({ apply_status: 'waiting_for_rebake', pr_number: 71 }, resolved),
     ).toBe('Review & approve →');
   });
+
+  it('waiting_for_rebake + superseded_by_pr → "superseded by #N →" (wins even when the PR is NOT in resolvedPrs)', () => {
+    expect(
+      iacApproveLabel(
+        { apply_status: 'waiting_for_rebake', pr_number: 216, superseded_by_pr: 221 },
+        new Set(),
+      ),
+    ).toBe('superseded by #221 →');
+  });
+
+  it('superseded_by_pr is gated to waiting_for_rebake — does not mask a failed row', () => {
+    expect(
+      iacApproveLabel({ apply_status: 'failed', superseded_by_pr: 221, pr_number: 216 }, new Set()),
+    ).toBe('View failure details →');
+  });
+
+  it('superseded_by_pr ignores a 0 / negative / non-integer value — falls through to the normal ladder', () => {
+    expect(
+      iacApproveLabel(
+        { apply_status: 'waiting_for_rebake', pr_number: 216, superseded_by_pr: 0 },
+        new Set(),
+      ),
+    ).toBe('Review & approve →');
+    expect(
+      iacApproveLabel(
+        { apply_status: 'waiting_for_rebake', pr_number: 216, superseded_by_pr: -1 },
+        new Set(),
+      ),
+    ).toBe('Review & approve →');
+    expect(
+      iacApproveLabel(
+        { apply_status: 'waiting_for_rebake', pr_number: 216, superseded_by_pr: 1.5 },
+        new Set(),
+      ),
+    ).toBe('Review & approve →');
+  });
 });

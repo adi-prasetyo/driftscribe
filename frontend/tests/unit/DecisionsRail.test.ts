@@ -88,6 +88,37 @@ describe('DecisionsRail — iac_apply CTA supersession + status token', () => {
     expect(applied.indexOf('applied')).toBeGreaterThan(applied.indexOf('iac_apply'));
     expect(applied.indexOf('applied')).toBeLessThan(applied.indexOf('⎇'));
   });
+
+  it('a superseded_by_pr row reads "superseded by #N →" and links to the superseding PR', () => {
+    // PR #216's parked waiting_for_rebake row, annotated by the recovery runbook
+    // after its apply was redirected to #221 (docs/plans/2026-07-10-...).
+    const decisions: Decision[] = [
+      iacRow({
+        decision_id: 'wait-216',
+        apply_status: 'waiting_for_rebake',
+        pr_number: 216,
+        superseded_by_pr: 221,
+      }),
+    ];
+    const { getByTestId } = render(DecisionsRail, {
+      props: { decisions, activeTraceId: null, onOpenTrace: noop },
+    });
+    const link = getByTestId('iac-approve-link');
+    expect(link.textContent?.trim()).toBe('superseded by #221 →');
+    expect(link.getAttribute('href')).toBe('/iac-approvals/221');
+  });
+
+  it('the same row with superseded_by_pr absent falls back to the normal ladder and /iac-approvals/216', () => {
+    const decisions: Decision[] = [
+      iacRow({ decision_id: 'wait-216', apply_status: 'waiting_for_rebake', pr_number: 216 }),
+    ];
+    const { getByTestId } = render(DecisionsRail, {
+      props: { decisions, activeTraceId: null, onOpenTrace: noop },
+    });
+    const link = getByTestId('iac-approve-link');
+    expect(link.textContent?.trim()).toBe('Review & approve →');
+    expect(link.getAttribute('href')).toBe('/iac-approvals/216');
+  });
 });
 
 describe('DecisionsRail — merge-aware "done" affordance', () => {

@@ -62,6 +62,11 @@ export interface Decision extends Record<string, unknown> {
   // failed_state_suspect / ambiguous). The rail renders it as a meta-line token
   // and uses it to retire the stale "Review & approve →" CTA on superseded rows.
   apply_status?: string;
+  // Set by the recovery runbook when a merged-but-stale iac_apply plan was
+  // re-expressed in a NEW PR (that new PR carries the real `applied` row). Its
+  // presence retires this row's actionable "Review & approve →" CTA and points
+  // the operator at the superseding PR. Positive integer PR number.
+  superseded_by_pr?: number;
   // iac_apply apply moment (ISO 8601), recorded when apply_status==="applied".
   // Distinct from created_at (the doc's last-activity time): a merge-only reconcile
   // re-records the merged outcome with a fresh created_at but carries the ORIGINAL

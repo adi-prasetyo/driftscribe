@@ -1320,6 +1320,34 @@ def test_create_class_crash_after_pending_recovers_by_re_merge(_configured, monk
     assert dec["apply_status"] == "waiting_for_rebake" and dec["merge_state"] == "merged"
 
 
+def test_superseded_by_pr_refuses_resume_no_worker_calls(_configured, monkeypatch):
+    """PR #216-shaped BLOCKER test (Codex): a waiting_for_rebake+merged decision
+    carrying superseded_by_pr=221 must NOT resume via _iac_resume_apply on a valid
+    re-POST — the saved plan is permanently stale. The GET suppression alone isn't
+    enough; a stale/pre-minted form token could still drive this route, so the
+    POST handler (_handle_existing_iac_decision) must independently refuse."""
+    _patch_resolve(monkeypatch, view=_view())
+    _patch_repo(monkeypatch)
+    _patch_github(monkeypatch)
+    calls = _patch_workers(monkeypatch)
+    state = get_state()
+    ek = main_mod._iac_event_key("theghostsquad00/driftscribe", 42, _HEAD, _GEN_META)
+    state.record_event(ek, {"x": 1})
+    dec = main_mod._record_iac_decision(
+        state, ek, apply_status="waiting_for_rebake", merge_state="merged",
+        head_sha=_HEAD, pr_number=42, approver=_OPERATOR,
+    )
+    state._decisions[dec["decision_id"]]["superseded_by_pr"] = 221
+    client = TestClient(app)
+    resp = _post(client, token=_mint())
+    assert resp.status_code == 200, resp.text
+    assert "superseded by pr #221" in resp.text.lower()
+    assert calls["propose"] == []  # _iac_resume_apply never invoked
+    assert calls["apply"] == []
+    still = state.find_decision_for_event(ek)
+    assert still["apply_status"] == "waiting_for_rebake"  # unchanged, no new record written
+
+
 def test_resume_baked_hash_mismatch_short_circuits_before_propose(_configured, monkeypatch):
     """C6c: if the worker's baked iac_tree_hash != the approved hash, the resume
     short-circuits with a precise 'not re-baked' message BEFORE burning a propose."""
