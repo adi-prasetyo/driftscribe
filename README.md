@@ -104,7 +104,7 @@ resource map's drift is different: real resources anywhere in the project that a
 discovered by the `infra-reader` worker through Cloud Asset Inventory and resolved by adopting them
 (Provision opens an import PR), not by Anchor. Because Cloud Asset Inventory is an
 eventually-consistent index and the map is cached on top of it, a newly created resource takes a
-few minutes (longer for buckets) to appear on the map. That is discovery latency, not a fault.
+few minutes to appear on the map. That is discovery latency, not a fault.
 
 **Read scope at a glance.** The crews differ as much in what they can *see* as
 in what they can do. Anchor and Patch read only their own lane; Provision adds

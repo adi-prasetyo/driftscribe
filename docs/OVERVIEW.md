@@ -127,8 +127,8 @@ separate things, found two separate ways:
   them, and its Eventarc trigger never fires for them.
 
 One consequence worth knowing: CAI is an **eventually-consistent index**, and the resource map is
-cached on top of it. Create a resource by hand and it takes a few minutes (longer for buckets)
-before CAI has indexed it and the cache has refreshed, so it will not appear on the map instantly.
+cached on top of it. Create a resource by hand and it takes a few minutes before CAI has indexed it
+and the cache has refreshed, so it will not appear on the map instantly.
 That lag is normal discovery latency, not a fault.
 
 ---
