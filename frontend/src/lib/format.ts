@@ -144,7 +144,10 @@ export interface IacApplyMeta {
   tone: IacTone;
   /** Plain-language HelpHint text, or null when none is warranted. */
   help: string | null;
-  /** True ONLY for a terminal applied+merged row — drives the ✓ "done" affordance. */
+  /**
+   * True for a terminal, no-action-remaining row (applied+merged, or a
+   * superseded waiting_for_rebake) — drives the ✓ "done" affordance.
+   */
   done: boolean;
 }
 
@@ -170,7 +173,8 @@ const IAC_STATUS_TONE: Record<string, IacTone> = {
  * merged) from "applied but merge still pending" — so a first-timer couldn't tell
  * a finished change from one that still needs attention. This folds `merge_state`
  * in for the `applied` case and otherwise composes the existing
- * `iacStatusLabel`/`iacStatusHelp`.
+ * `iacStatusLabel`/`iacStatusHelp`. A `waiting_for_rebake` row explicitly marked
+ * `superseded_by_pr` is treated as resolved too — see the first branch below.
  *
  * `merge_state` arrives already promoted by the serve-time `reconcile_merge_state`
  * (agent/main.py), so an out-of-band-merged PR reads as done here too.
@@ -178,7 +182,29 @@ const IAC_STATUS_TONE: Record<string, IacTone> = {
 export function iacApplyMeta(
   apply_status: string | null | undefined,
   merge_state: string | null | undefined,
+  superseded_by_pr?: number | null,
 ): IacApplyMeta {
+  // A parked `waiting_for_rebake` plan that was re-expressed in a NEW PR (that new
+  // PR carries the real `applied` row) is terminal here: its own saved plan is
+  // permanently stale, so the row must read as RESOLVED ('superseded', done),
+  // not the still-pending 'awaiting rebuild'. Gated to `waiting_for_rebake` + a
+  // positive int, mirroring the rail label (approval.ts `iacApproveLabel`) and
+  // the GET/POST resume guards (agent/main.py) — see recovery runbook §7e.
+  if (
+    apply_status === 'waiting_for_rebake' &&
+    typeof superseded_by_pr === 'number' &&
+    Number.isInteger(superseded_by_pr) &&
+    superseded_by_pr > 0
+  ) {
+    return {
+      label: 'superseded',
+      tone: 'ok',
+      help:
+        `Superseded by PR #${superseded_by_pr}, which is applied and merged. ` +
+        "This plan is stale (its resource already exists), so there's nothing to do here.",
+      done: true,
+    };
+  }
   if (apply_status === 'applied') {
     if (merge_state === 'merged') {
       return { label: 'applied & merged', tone: 'ok', help: IAC_DONE_HELP, done: true };

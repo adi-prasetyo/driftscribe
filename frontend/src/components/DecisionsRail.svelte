@@ -204,7 +204,7 @@
 
     {#if d.action === 'iac_apply'}
       {@const sha = shortSha(d.head_sha)}
-      {@const meta = iacApplyMeta(d.apply_status, d.merge_state)}
+      {@const meta = iacApplyMeta(d.apply_status, d.merge_state, d.superseded_by_pr)}
       {@const toneClass = meta.tone ? `iac-status iac-status--${meta.tone}` : 'iac-status'}
       <!-- Chronology cue: the row time is created_at (last activity, e.g. a later
            merge-only reconcile). When the apply itself happened materially earlier,
@@ -295,7 +295,7 @@
         <summary data-testid="iac-lifecycle-summary">{lifecycleSummaryLabel(lifecycle)}</summary>
         <ol class="lifecycle-steps">
           {#each [...lifecycle].reverse() as step (step.decision_id)}
-            {@const stepMeta = iacApplyMeta(step.apply_status, step.merge_state)}
+            {@const stepMeta = iacApplyMeta(step.apply_status, step.merge_state, step.superseded_by_pr)}
             {@const stepToneClass = stepMeta.tone
               ? `step-status iac-status iac-status--${stepMeta.tone}`
               : 'step-status iac-status'}

@@ -119,6 +119,25 @@ describe('DecisionsRail — iac_apply CTA supersession + status token', () => {
     expect(link.textContent?.trim()).toBe('Review & approve →');
     expect(link.getAttribute('href')).toBe('/iac-approvals/216');
   });
+
+  it('a superseded_by_pr row also reads "superseded" (ok, done ✓) in the status badge, not "awaiting rebuild"', () => {
+    const decisions: Decision[] = [
+      iacRow({
+        decision_id: 'wait-216',
+        apply_status: 'waiting_for_rebake',
+        pr_number: 216,
+        superseded_by_pr: 221,
+      }),
+    ];
+    const { getByTestId, container } = render(DecisionsRail, {
+      props: { decisions, activeTraceId: null, onOpenTrace: noop },
+    });
+    const status = getByTestId('iac-status');
+    expect(status.textContent).toContain('superseded');
+    expect(status.textContent).not.toContain('awaiting rebuild');
+    expect(status.classList.contains('iac-status--ok')).toBe(true);
+    expect(container.querySelector('.iac-status-check')).not.toBeNull();
+  });
 });
 
 describe('DecisionsRail — merge-aware "done" affordance', () => {
