@@ -45,13 +45,18 @@ export function markTourDone(): void {
 
 /**
  * Offer the banner? Only when the tour was never done AND the operator did
- * not arrive on an errand (?ask_pr / ?preview_pr deep links from the
- * approval page) — interrupting intent is worse than not offering.
+ * not arrive on an errand (?ask_pr / ?preview_pr deep links from the approval
+ * page, or a ?reasoning shared replay link) — interrupting intent is worse
+ * than not offering.
  */
 export function shouldOfferTour(search: string, done: boolean): boolean {
   if (done) return false;
   const params = new URLSearchParams(search);
-  return params.get('ask_pr') === null && params.get('preview_pr') === null;
+  return (
+    params.get('ask_pr') === null &&
+    params.get('preview_pr') === null &&
+    params.get('reasoning') === null
+  );
 }
 
 export type TourStepId = 'welcome' | 'estate' | 'controls' | 'adopt' | 'next';

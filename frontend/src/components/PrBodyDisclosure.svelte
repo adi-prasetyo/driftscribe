@@ -132,6 +132,9 @@
      prose and non-ASCII glyphs (e.g. 🤖) fall back to the system emoji font. */
   .pr-body__md {
     margin-top: var(--ds-sp-3);
+    /* Match the summary's horizontal inset (.ds-disclosure > summary) so the
+       prose lines up with the heading instead of hugging the card border. */
+    padding: 0 var(--ds-sp-4) var(--ds-sp-3);
     max-height: 24rem;
     overflow-y: auto;
     font-family: var(--ds-font);
@@ -222,6 +225,7 @@
 
   .pr-body__truncated {
     margin: var(--ds-sp-2) 0 0;
+    padding: 0 var(--ds-sp-4) var(--ds-sp-3);
     color: var(--ds-muted);
     font-size: var(--ds-fs-1);
   }

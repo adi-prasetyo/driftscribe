@@ -21,6 +21,7 @@ describe('shouldAutoOpenNotice', () => {
   it('yields to errand deep links', () => {
     expect(shouldAutoOpenNotice('?ask_pr=12', false)).toBe(false);
     expect(shouldAutoOpenNotice('?preview_pr=12', false)).toBe(false);
+    expect(shouldAutoOpenNotice('?reasoning=eba334f9211d46cabc79e50ed200a5a1', false)).toBe(false);
   });
 });
 
