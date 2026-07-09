@@ -83,8 +83,8 @@
                     class="turn-link"
                     data-testid="thread-open-trace"
                     type="button"
-                    aria-label={`Open trace for turn ${turn.seq + 1}`}
-                    onclick={() => onOpenTrace(turn.trace_id as string)}>open trace →</button>
+                    aria-label={`View reasoning for turn ${turn.seq + 1}`}
+                    onclick={() => onOpenTrace(turn.trace_id as string)}>view reasoning →</button>
                 {/if}
                 {#if prUrl}
                   <a

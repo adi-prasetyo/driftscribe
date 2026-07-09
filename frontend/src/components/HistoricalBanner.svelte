@@ -30,7 +30,7 @@
   >
     <span class="historical-banner__label">
       <span class="historical-banner__dot" aria-hidden="true"></span>
-      viewing historical trace
+      viewing past reasoning
       <code id="historical-trace-id" class="ds-code">{shortTrace(traceId ?? '')}</code>
     </span>
     <button

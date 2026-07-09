@@ -596,7 +596,7 @@ describe('InfraDiagram — resource cards', () => {
     await waitFor(() => expect(getByTestId('card-adopt-btn')).toBeTruthy());
     const btn = getByTestId('card-adopt-btn') as HTMLButtonElement;
     expect(btn.disabled).toBe(true);
-    expect(btn.title).toBe('Unavailable while the chat is busy or reviewing a past trace.');
+    expect(btn.title).toBe('Unavailable while the chat is busy or reviewing past reasoning.');
     await fireEvent.click(btn);
     expect(onAdopt).not.toHaveBeenCalled();
   });

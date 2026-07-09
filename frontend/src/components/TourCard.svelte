@@ -104,7 +104,7 @@
         data-testid="tour-adopt-btn"
         disabled={adoptDisabled}
         title={adoptDisabled
-          ? 'Unavailable while the chat is busy or reviewing a past trace.'
+          ? 'Unavailable while the chat is busy or reviewing past reasoning.'
           : undefined}
         onclick={prefillAdopt}>Prefill the request</button
       >
@@ -118,7 +118,7 @@
     <!-- Honesty (Codex MF3): the copy says "when you send" but Send is
          disabled right now (busy stream / historical replay) — say so. -->
     <p class="ds-subtle tour-card__note" data-testid="tour-busy-note">
-      The chat is busy or showing a past trace right now, so sending becomes
+      The chat is busy or showing past reasoning right now, so sending becomes
       available when it finishes.
     </p>
   {/if}

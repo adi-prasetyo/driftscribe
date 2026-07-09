@@ -238,7 +238,7 @@
           data-testid="open-trace-button"
           type="button"
           onclick={() => handleOpenTrace(d.trace_id as string)}
-        >open trace →</button>
+        >view reasoning →</button>
       {/if}
 
       {#if approveHref(d)}
@@ -297,7 +297,7 @@
               {#if step.created_at}<time class="row-time" datetime={step.created_at}>{fmtCreatedAt(step.created_at)}</time>{/if}
               {#if step.trace_id}
                 <button class="open-trace-btn" data-testid="lifecycle-open-trace" type="button"
-                  onclick={() => handleOpenTrace(step.trace_id as string)}>open trace →</button>
+                  onclick={() => handleOpenTrace(step.trace_id as string)}>view reasoning →</button>
               {/if}
               {#if stepMeta.help}<HelpHint text={stepMeta.help} label={stepMeta.label} />{/if}
             </li>
