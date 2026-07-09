@@ -29,6 +29,26 @@ function sseChatResponse(frames: string, headers: Record<string, string> = {}): 
   });
 }
 
+// A /chat SSE Response that delivers `doneFrame` on the first read, then
+// errors the stream on the next pull — simulating onDone firing (setting
+// doneConversationId) followed by a post-done transport death (streamErrored).
+// The initial chunk fills the default highWaterMark-1 queue, so `pull` only
+// re-fires once the consumer's first read() has drained it — i.e. after
+// consumeSse has already dispatched the done frame.
+function sseChatResponseThenTransportError(doneFrame: string): Response {
+  const stream = new ReadableStream<Uint8Array>({
+    start(c) {
+      c.enqueue(new TextEncoder().encode(doneFrame));
+    },
+    pull(c) {
+      c.error(new Error('simulated transport failure'));
+    },
+  });
+  return new Response(stream as unknown as BodyInit, {
+    headers: { 'content-type': 'text/event-stream' },
+  });
+}
+
 const GRAPH = {
   generated_at: null,
   project: 'demo-proj',
@@ -421,6 +441,63 @@ describe('App — SSE chat turn releases the composer at the done frame', () => 
     });
     expect(queryByTestId('conversation-thread')).toBeNull();
     expect(new URLSearchParams(window.location.search).get('conversation')).toBeNull();
+  });
+
+  it('hybrid: a done frame followed by a transport error takes the slow path (composer stays blocked on backfill)', async () => {
+    // onDone fires (doneConversationId set) and THEN the transport dies before
+    // clean EOF — streamErrored ends up true alongside a set doneConversationId.
+    // persistableDone excludes streamErrored, so this must NOT fast-settle: the
+    // composer should stay disabled until backfillTrace/loadDecisions resolve,
+    // same as any other slow-path outcome. This is the regression guard for the
+    // `!streamErrored` clause in the fast-path predicate (App.svelte).
+    const doneFrame =
+      'event: meta\ndata: {"trace_id":"trace-hybrid"}\n\n' +
+      'event: done\ndata: {"reply":"the answer landed but the transport died","tool_calls":[],"conversation_id":"conv-hybrid"}\n\n';
+    let releaseTrace!: (r: Response) => void;
+    const tracePromise = new Promise<Response>((res) => {
+      releaseTrace = res;
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes('/chat') && init?.method === 'POST')
+          return sseChatResponseThenTransportError(doneFrame);
+        if (url.includes('/conversations/'))
+          return okJson({ conversation_id: 'conv-hybrid', workload: 'drift', title: 'x', turns: [] });
+        if (url.includes('/conversations')) return okJson({ conversations: [] });
+        if (url.includes('/trace/')) return tracePromise;
+        if (url.includes('/decisions')) return okJson({ decisions: [] });
+        if (url.includes('/infra/graph')) return okJson(GRAPH);
+        return okJson({});
+      }),
+    );
+
+    const { findByTestId } = render(App);
+    const input = (await findByTestId('chat-prompt')) as HTMLInputElement;
+    await fireEvent.input(input, { target: { value: 'why did it drift?' } });
+    await fireEvent.submit(document.getElementById('chat-form')!);
+
+    // The done frame landed (reply known) but the transport then errored — the
+    // slow path awaits backfillTrace first, so settle hasn't run yet: the
+    // composer stays disabled and ?conversation is unset while /trace is
+    // pending. (The optimistic liveExchange bubble already renders under
+    // conversation-thread at this point regardless of path — see the
+    // "shows an optimistic thinking bubble" test — so it isn't a useful signal
+    // here; disabled state + the settle-only ?conversation param are.)
+    await new Promise((r) => setTimeout(r, 20));
+    const sendBtn = (await findByTestId('chat-submit')) as HTMLButtonElement;
+    expect(sendBtn.disabled).toBe(true);
+    expect(new URLSearchParams(window.location.search).get('conversation')).toBeNull();
+
+    // Release /trace — the slow path's recovery guard is skipped (finalReply
+    // was already set by onDone), so it proceeds straight to settle.
+    releaseTrace(okJson({ trace_id: 'trace-hybrid', events: [], complete: true }));
+    await findByTestId('conversation-thread');
+    await waitFor(() => expect(sendBtn.disabled).toBe(false));
+    await waitFor(() =>
+      expect(new URLSearchParams(window.location.search).get('conversation')).toBe('conv-hybrid'),
+    );
   });
 });
 
