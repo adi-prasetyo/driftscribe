@@ -146,6 +146,14 @@ describe('lifecycleSummaryLabel', () => {
       lifecycleSummaryLabel([iac('a', 32, 'applied', { merge_state: 'failed' })]),
     ).toBe('1 earlier step · applied · merge pending');
   });
+
+  it('a superseded_by_pr earlier step composes as "superseded", not "awaiting rebuild"', () => {
+    expect(
+      lifecycleSummaryLabel([
+        iac('w', 216, 'waiting_for_rebake', { superseded_by_pr: 221 }),
+      ]),
+    ).toBe('1 earlier step · superseded');
+  });
 });
 
 describe('hasAnomalousStep', () => {

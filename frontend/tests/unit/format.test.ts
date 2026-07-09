@@ -340,6 +340,42 @@ describe('iacApplyMeta — merge-aware status for the rail', () => {
     expect(iacApplyMeta(null, null)).toMatchObject({ label: '', tone: '', help: null, done: false });
     expect(iacApplyMeta(undefined, undefined).done).toBe(false);
   });
+
+  it('waiting_for_rebake + superseded_by_pr → terminal "superseded" (ok tone, done), regardless of merge_state', () => {
+    const merged = iacApplyMeta('waiting_for_rebake', 'merged', 221);
+    expect(merged).toMatchObject({ label: 'superseded', tone: 'ok', done: true });
+    expect(typeof merged.help).toBe('string');
+    expect(merged.help as string).toContain('#221');
+
+    // The marker wins regardless of merge_state — the OTHER #216 doc carries
+    // merge_state:'pending' and must read the same way.
+    const pending = iacApplyMeta('waiting_for_rebake', 'pending', 221);
+    expect(pending).toMatchObject({ label: 'superseded', tone: 'ok', done: true });
+  });
+
+  it('superseded_by_pr is gated to waiting_for_rebake — does not mask applied or failed rows', () => {
+    const applied = iacApplyMeta('applied', 'merged', 221);
+    expect(applied.label).toBe('applied & merged');
+    expect(applied.done).toBe(true);
+
+    const failed = iacApplyMeta('failed', 'n/a', 221);
+    expect(failed.tone).toBe('danger');
+    expect(failed.label).not.toBe('superseded');
+  });
+
+  it('superseded_by_pr rejects non-positive/non-integer values — falls through to "awaiting rebuild"', () => {
+    for (const bad of [0, -1, 1.5]) {
+      const m = iacApplyMeta('waiting_for_rebake', 'pending', bad);
+      expect(m.label).toBe('awaiting rebuild');
+      expect(m.done).toBe(false);
+    }
+  });
+
+  it('regression: waiting_for_rebake with no third arg still reads "awaiting rebuild"', () => {
+    const m = iacApplyMeta('waiting_for_rebake', 'pending');
+    expect(m.label).toBe('awaiting rebuild');
+    expect(m.done).toBe(false);
+  });
 });
 
 describe('appliedAtDiffersMaterially — chronology cue gate', () => {

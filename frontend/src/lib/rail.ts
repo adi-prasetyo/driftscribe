@@ -172,7 +172,8 @@ export function lifecycleSummaryLabel(earlier: ReadonlyArray<Decision>): string 
   const counts = new Map<string, number>();
   for (let i = earlier.length - 1; i >= 0; i--) {
     const label =
-      iacApplyMeta(earlier[i].apply_status, earlier[i].merge_state).label ||
+      iacApplyMeta(earlier[i].apply_status, earlier[i].merge_state, earlier[i].superseded_by_pr)
+        .label ||
       'status not recorded';
     counts.set(label, (counts.get(label) ?? 0) + 1);
   }
@@ -205,7 +206,7 @@ export function matchesDecision(d: Decision, query: string): boolean {
     workload ? crewName(workload) : null,
     typeof d.apply_status === 'string' ? d.apply_status : null,
     typeof d.merge_state === 'string' ? d.merge_state : null,
-    iacApplyMeta(d.apply_status, d.merge_state).label,
+    iacApplyMeta(d.apply_status, d.merge_state, d.superseded_by_pr).label,
   ];
   return normalizeForSearch(parts.filter((p) => typeof p === 'string' && p).join(' ')).includes(q);
 }
