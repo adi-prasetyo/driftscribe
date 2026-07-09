@@ -42,7 +42,7 @@
   import ConversationThread from './components/ConversationThread.svelte';
   import InfraDiagram from './components/InfraDiagram.svelte';
   import { previewPrFromSearch } from './lib/infra_graph';
-  import { reasoningTraceFromSearch } from './lib/deeplink';
+  import { reasoningTraceFromSearch, conversationIdFromSearch } from './lib/deeplink';
   import { initialChatPrefill } from './lib/workloads';
   import type { ChatPrefill } from './lib/workloads';
   import CapabilityCard from './components/CapabilityCard.svelte';
@@ -122,6 +122,31 @@
     history.replaceState(null, '', u);
   }
 
+  // ?conversation=<id> deep-links a shareable/bookmarkable open thread. Parsed
+  // once at boot (before onMount), then kept in sync by setConversationId(). See
+  // lib/deeplink.
+  const bootConversationId = conversationIdFromSearch(window.location.search);
+
+  // Keep ?conversation in step with the open thread: set it when a thread opens/
+  // persists, drop it on new-chat / a failed open. Surgical (preserves other params
+  // + hash) and replaceState (no history entry) — a copied address bar always points
+  // at the thread on screen. Mirrors syncReasoningParam.
+  function syncConversationParam(id: string | null) {
+    const u = new URL(window.location.href);
+    if (id) u.searchParams.set('conversation', id);
+    else u.searchParams.delete('conversation');
+    history.replaceState(null, '', u);
+  }
+
+  // The ONLY writer of conversationId. Keeps the ?conversation param in lockstep
+  // with the state so the invariant (param present iff a thread is open, and equal
+  // to conversationId) holds at every transition, incl. future ones. Replace every
+  // `conversationId = X` assignment with this.
+  function setConversationId(id: string | null) {
+    conversationId = id;
+    syncConversationParam(id);
+  }
+
   let historicalActive = $state(false);
   let historicalTraceId = $state<string | null>(null);
   let activeTraceId = $state<string | null>(null);
@@ -148,12 +173,22 @@
   // append into (or backfill over) a newer run. `busy` also disables Send.
   let runSeq = 0;
   let busy = $state(false);
+  // True for the span of openConversation: conversationId is set (synchronously,
+  // before the GET) but conversationWorkload is still null, so CrewPicker is
+  // UNLOCKED (lockedCrew derives from conversationWorkload) — without this,
+  // Send is live during that window and submitChat's crew-switch-reset guard
+  // (`conversationWorkload !== null`) can't see the mismatch yet, so a submit
+  // rides the half-open thread's id with whatever crew is picked (Codex review
+  // 019f46e8 must-fix). Cleared in openConversation's finally, guarded so a
+  // superseded run can't clear a newer run's flag.
+  let resumingConversation = $state(false);
 
-  // The ONE chat-disabled condition (busy live stream OR historical replay), shared
-  // by ChatForm.disabled AND InfraDiagram.adoptDisabled so the two can never diverge
-  // — an Adopt click can never mutate a disabled composer or strand a stale draft
-  // behind a historical view (Codex review 019eb572 must-fix 3).
-  const chatDisabled = $derived(historicalActive || busy);
+  // The ONE chat-disabled condition (busy live stream OR historical replay OR a
+  // resume still rehydrating), shared by ChatForm.disabled AND
+  // InfraDiagram.adoptDisabled so the two can never diverge — an Adopt click can
+  // never mutate a disabled composer or strand a stale draft behind a historical
+  // view (Codex review 019eb572 must-fix 3).
+  const chatDisabled = $derived(historicalActive || busy || resumingConversation);
 
   // ---- chat-native live exchange ----
   // While a live /chat turn is in flight (or its reply just landed but hasn't
@@ -372,6 +407,7 @@
   async function openConversation(id: string) {
     const myRun = ++runSeq;
     busy = false;
+    resumingConversation = true;
     historicalActive = false;
     historicalTraceId = null;
     activeTraceId = null;
@@ -387,55 +423,61 @@
     status = 'pending';
     // Leaving the replay for a live thread — clear the shareable param.
     syncReasoningParam(null);
-    conversationId = id;
+    setConversationId(id);
     // Clear the prior thread's crew NOW so a failed rehydrate can't leave a
     // stale lock paired with the new id (which would slip the crew-change guard
     // and 409 on the next submit). Re-set from the detail on success.
     conversationWorkload = null;
     conversationTurns = [];
     try {
-      const resp = await call('/conversations/' + encodeURIComponent(id));
-      if (myRun !== runSeq) return;
-      if (!resp.ok) {
-        // Abandon the half-open thread — don't leave an id with no crew/turns.
-        conversationId = null;
-        return;
+      try {
+        const resp = await call('/conversations/' + encodeURIComponent(id));
+        if (myRun !== runSeq) return;
+        if (!resp.ok) {
+          // Abandon the half-open thread — don't leave an id with no crew/turns.
+          setConversationId(null);
+          return;
+        }
+        const detail = (await resp.json()) as ConversationDetail;
+        if (myRun !== runSeq) return;
+        conversationTurns = Array.isArray(detail.turns) ? detail.turns : [];
+        const wl = detail.workload as Workload | undefined;
+        if (wl) {
+          conversationWorkload = wl;
+          composerWorkload = wl; // land the composer on this thread's locked crew
+        }
+        // Auto-load the latest turn's reasoning into the INLINE timeline so a
+        // resumed conversation shows its coordinator reasoning / tools / MCP
+        // without the extra per-turn "open trace" click. Prefer the last CREW turn
+        // that carries a trace (the "open trace" affordance lives on crew bubbles),
+        // then any turn, then the conversation's last_trace_id. Fire-and-forget:
+        // it fills the timeline in a beat later (like a lazy load) while the
+        // tick()+scroll below runs; runSeq-guarded so a superseding open drops it.
+        const crewTid = [...conversationTurns].reverse().find((t) => t.role === 'crew' && t.trace_id)?.trace_id;
+        const anyTid = crewTid ?? [...conversationTurns].reverse().find((t) => t.trace_id)?.trace_id;
+        const inlineTid = anyTid ?? detail.last_trace_id ?? null;
+        if (inlineTid) void loadConversationTrace(inlineTid, myRun);
+      } catch {
+        // A failed rehydrate abandons the thread rather than leaving it half-open.
+        if (myRun === runSeq) setConversationId(null);
       }
-      const detail = (await resp.json()) as ConversationDetail;
+      await tick();
       if (myRun !== runSeq) return;
-      conversationTurns = Array.isArray(detail.turns) ? detail.turns : [];
-      const wl = detail.workload as Workload | undefined;
-      if (wl) {
-        conversationWorkload = wl;
-        composerWorkload = wl; // land the composer on this thread's locked crew
-      }
-      // Auto-load the latest turn's reasoning into the INLINE timeline so a
-      // resumed conversation shows its coordinator reasoning / tools / MCP
-      // without the extra per-turn "open trace" click. Prefer the last CREW turn
-      // that carries a trace (the "open trace" affordance lives on crew bubbles),
-      // then any turn, then the conversation's last_trace_id. Fire-and-forget:
-      // it fills the timeline in a beat later (like a lazy load) while the
-      // tick()+scroll below runs; runSeq-guarded so a superseding open drops it.
-      const crewTid = [...conversationTurns].reverse().find((t) => t.role === 'crew' && t.trace_id)?.trace_id;
-      const anyTid = crewTid ?? [...conversationTurns].reverse().find((t) => t.trace_id)?.trace_id;
-      const inlineTid = anyTid ?? detail.last_trace_id ?? null;
-      if (inlineTid) void loadConversationTrace(inlineTid, myRun);
-    } catch {
-      // A failed rehydrate abandons the thread rather than leaving it half-open.
-      if (myRun === runSeq) conversationId = null;
+      // Scroll the COMPOSER into view (not the thread top) so it stays on screen —
+      // the rehydrated history flows directly below it. Then move focus into the
+      // thread region (tabindex=-1) so keyboard / screen-reader users are told the
+      // conversation loaded, instead of being stranded on the rail button — the
+      // same scroll-then-focus pattern openTrace uses for #historical-badge.
+      const reduced = prefersReducedMotion();
+      document
+        .getElementById('chat-form')
+        ?.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' });
+      document.getElementById('conversation-thread')?.focus({ preventScroll: true });
+    } finally {
+      // Only the run that's still current clears the flag — a superseded run's
+      // finally must not stomp on a newer run's in-flight resume.
+      if (myRun === runSeq) resumingConversation = false;
     }
-    await tick();
-    if (myRun !== runSeq) return;
-    // Scroll the COMPOSER into view (not the thread top) so it stays on screen —
-    // the rehydrated history flows directly below it. Then move focus into the
-    // thread region (tabindex=-1) so keyboard / screen-reader users are told the
-    // conversation loaded, instead of being stranded on the rail button — the
-    // same scroll-then-focus pattern openTrace uses for #historical-badge.
-    const reduced = prefersReducedMotion();
-    document
-      .getElementById('chat-form')
-      ?.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' });
-    document.getElementById('conversation-thread')?.focus({ preventScroll: true });
   }
 
   // Load a resumed conversation's latest-turn trace into the INLINE timeline
@@ -485,7 +527,11 @@
 
   // ---- live chat (SSE) ----
   async function submitChat(prompt: string, workload: Workload) {
-    if (historicalActive || busy) return;
+    // resumingConversation is a belt: the composer is already disabled while it's
+    // true, so this should be unreachable via the UI — but a stray submit must
+    // never ride a half-open thread's id past the crew-switch guard before its
+    // crew has loaded (Codex review 019f46e8).
+    if (historicalActive || busy || resumingConversation) return;
     const myRun = ++runSeq;
     busy = true;
     events = [];
@@ -507,7 +553,7 @@
       conversationWorkload !== null &&
       workload !== conversationWorkload
     ) {
-      conversationId = null;
+      setConversationId(null);
       conversationWorkload = null;
       conversationTurns = [];
     }
@@ -530,7 +576,7 @@
         liveExchange = null;
         return;
       }
-      conversationId = rcid;
+      setConversationId(rcid);
       conversationWorkload = workload;
       appendLocalTurns(prompt, finalReply, traceId);
       // Clear the overlay right after the real turns are appended, BEFORE
@@ -726,6 +772,11 @@
   async function openTrace(tid: string) {
     const myRun = ++runSeq; // cancels any in-flight live stream
     busy = false;
+    // A replay supersedes any in-flight resume; openConversation's own finally
+    // won't clear this (its runSeq guard sees it's been superseded), so the
+    // superseding run must clear it itself or the composer stays disabled
+    // forever (Codex review 019f46e8).
+    resumingConversation = false;
     historicalActive = true;
     historicalTraceId = tid;
     activeTraceId = tid;
@@ -821,6 +872,10 @@
   function newChat() {
     ++runSeq; // cancel any in-flight live stream
     busy = false;
+    // A new chat supersedes any in-flight resume; see openTrace's identical
+    // reset for why the superseding run must clear this itself (Codex review
+    // 019f46e8).
+    resumingConversation = false;
     historicalActive = false;
     historicalTraceId = null;
     activeTraceId = null;
@@ -836,7 +891,7 @@
     status = 'pending';
     // Drop out of the open thread too — "new chat" is a clean slate. The thread
     // is still reachable from the rail (its id lives in /conversations).
-    conversationId = null;
+    setConversationId(null);
     conversationWorkload = null;
     conversationTurns = [];
     // No replay on screen anymore — clear the shareable param.
@@ -856,11 +911,22 @@
       history.replaceState(null, '', u);
       document.getElementById('chat-form')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
-    // Boot deep-link: a shared ?reasoning=<id> URL opens straight into that
-    // replay. openTrace re-syncs the (already-present) param, so this is
-    // idempotent; it also fetches through call(), so a fresh operator tab gets
-    // the usual token prompt while the demo window serves it anonymously.
-    if (bootReasoningTid) void openTrace(bootReasoningTid);
+    // Boot deep-links. A shared ?conversation=<id> resumes that thread; a shared
+    // ?reasoning=<id> replays that timeline; both together restore the thread first,
+    // then the replay on top (mirrors the on-screen state that produced the URL:
+    // openTrace leaves conversationId intact). AWAIT the conversation open before
+    // openTrace bumps runSeq, or its in-flight fetch would be cancelled by the guard.
+    void (async () => {
+      if (bootConversationId) {
+        const bootRun = runSeq; // openConversation's ++runSeq will make this bootRun+1
+        await openConversation(bootConversationId);
+        // If the operator interacted during the awaited open (New chat, another
+        // thread), a newer run bumped runSeq past bootRun+1 — do NOT then force the
+        // replay on top of what they navigated to. Bail out of the boot continuation.
+        if (runSeq !== bootRun + 1) return;
+      }
+      if (bootReasoningTid) openTrace(bootReasoningTid);
+    })();
   });
 </script>
 

@@ -32,6 +32,8 @@ beforeEach(() => {
   // Mark the tour done so its banner doesn't intercept the view.
   window.localStorage.setItem('driftscribe_tour_done', '1');
   window.HTMLElement.prototype.scrollIntoView = vi.fn();
+  // openTrace scrolls the window to top; jsdom doesn't implement scrollTo.
+  window.scrollTo = vi.fn() as unknown as typeof window.scrollTo;
   history.replaceState(null, '', '/');
 });
 afterEach(() => {
@@ -371,6 +373,29 @@ function stubResumeFetch(graph: unknown = GRAPH) {
   );
 }
 
+// A DriftScribe trace id is 32 lowercase hex chars (see lib/deeplink.ts).
+const HEX32 = 'eba334f9211d46cabc79e50ed200a5a1';
+
+// Same as stubResumeFetch, plus a generic /trace/ response — needed for tests
+// that open a reasoning replay (?reasoning=<id> boot, or "view reasoning" on a
+// thread turn) alongside the resumed thread.
+function stubResumeFetchWithTrace(graph: unknown = GRAPH) {
+  const { list, detail } = resumeFixtures();
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/trace/')) return okJson({ trace_id: HEX32, complete: true, events: [] });
+      if (url.includes('/conversations/')) return okJson(detail);
+      if (url.includes('/conversations')) return okJson(list);
+      if (url.includes('/decisions')) return okJson({ decisions: [] });
+      if (url.includes('/infra/pending-approvals')) return okJson({ approvals: [] });
+      if (url.includes('/infra/graph')) return okJson(graph);
+      return okJson({});
+    }),
+  );
+}
+
 describe('App — composer New chat + crew lock', () => {
   it('hides the composer New chat button on a fresh boot', async () => {
     stubResumeFetch();
@@ -422,5 +447,296 @@ describe('App — composer New chat + crew lock', () => {
       expect(checked.value).toBe('provision');
       expect(container.querySelector('input[aria-disabled="true"]')).toBeNull();
     });
+  });
+});
+
+// ?conversation=<id> deep-link (docs/plans/2026-07-09-conversation-url-deeplink.md):
+// bookmarkable/shareable open thread, mirroring the shipped ?reasoning=<id>
+// replay param. setConversationId() is the sole writer of conversationId, so
+// these wiring tests assert the URL invariant holds at every transition.
+describe('App — ?conversation boot deep-link', () => {
+  it('rehydrates the thread from ?conversation=<id> on boot', async () => {
+    stubResumeFetch();
+    history.replaceState(null, '', '/?conversation=c1');
+    const { findByTestId, getByText } = render(App);
+    await findByTestId('conversation-thread');
+    await waitFor(() => expect(getByText('the env var EXTRA drifted')).toBeTruthy());
+  });
+
+  it('sets ?conversation when a thread opens from the rail', async () => {
+    stubResumeFetch();
+    const { findByTestId } = render(App);
+    await fireEvent.click(await findByTestId('conversation-open'));
+    await findByTestId('conversation-thread');
+    await waitFor(() =>
+      expect(new URLSearchParams(window.location.search).get('conversation')).toBe('c1'),
+    );
+  });
+
+  it('clears both ?conversation and ?reasoning on New chat, preserving unrelated params + hash', async () => {
+    stubResumeFetchWithTrace();
+    history.replaceState(null, '', '/?unrelated=1#frag');
+    const { findByTestId, container } = render(App);
+    await fireEvent.click(await findByTestId('conversation-open'));
+    await findByTestId('conversation-thread');
+    // Open a turn's reasoning too, so both params are live before New chat —
+    // this is the historical-replay New chat exit (the banner's "← new chat",
+    // NOT composer-new-chat, which hides itself in historical mode).
+    await fireEvent.click(await findByTestId('thread-open-trace'));
+    await findByTestId('historical-banner');
+    await waitFor(() => {
+      const p = new URLSearchParams(window.location.search);
+      expect(p.get('conversation')).toBe('c1');
+      expect(p.get('reasoning')).toBe('t1');
+    });
+
+    const newChatBtn = container.querySelector('#new-chat-btn') as HTMLButtonElement;
+    await fireEvent.click(newChatBtn);
+
+    await waitFor(() => {
+      const p = new URLSearchParams(window.location.search);
+      expect(p.get('conversation')).toBeNull();
+      expect(p.get('reasoning')).toBeNull();
+      expect(p.get('unrelated')).toBe('1');
+    });
+    expect(window.location.hash).toBe('#frag');
+  });
+
+  it('restores both the thread and a reasoning replay from ?conversation&reasoning, keeping both params', async () => {
+    stubResumeFetchWithTrace();
+    history.replaceState(null, '', `/?conversation=c1&reasoning=${HEX32}`);
+    const { findByTestId } = render(App);
+    await findByTestId('conversation-thread');
+    await findByTestId('historical-banner');
+    await waitFor(() => {
+      const p = new URLSearchParams(window.location.search);
+      expect(p.get('conversation')).toBe('c1');
+      expect(p.get('reasoning')).toBe(HEX32);
+    });
+  });
+
+  it('clears ?conversation but still opens the ?reasoning replay when the boot conversation 404s', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/conversations/bad')) return new Response('not found', { status: 404 });
+        if (url.includes('/conversations')) return okJson({ conversations: [] });
+        if (url.includes('/trace/')) return okJson({ trace_id: HEX32, complete: true, events: [] });
+        if (url.includes('/decisions')) return okJson({ decisions: [] });
+        if (url.includes('/infra/graph')) return okJson(GRAPH);
+        return okJson({});
+      }),
+    );
+    history.replaceState(null, '', `/?conversation=bad&reasoning=${HEX32}`);
+    const { findByTestId, queryByTestId } = render(App);
+    await findByTestId('historical-banner');
+    await waitFor(() => {
+      const p = new URLSearchParams(window.location.search);
+      expect(p.get('conversation')).toBeNull();
+      expect(p.get('reasoning')).toBe(HEX32);
+    });
+    expect(queryByTestId('conversation-thread')).toBeNull();
+  });
+
+  it('does not open the boot reasoning replay on top if New chat interrupts the boot conversation fetch (the Codex race)', async () => {
+    let releaseDetail!: (r: Response) => void;
+    const detailPromise = new Promise<Response>((res) => {
+      releaseDetail = res;
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/conversations/c1')) return detailPromise;
+        if (url.includes('/conversations')) return okJson({ conversations: [] });
+        if (url.includes('/trace/')) return okJson({ trace_id: HEX32, complete: true, events: [] });
+        if (url.includes('/decisions')) return okJson({ decisions: [] });
+        if (url.includes('/infra/graph')) return okJson(GRAPH);
+        return okJson({});
+      }),
+    );
+    history.replaceState(null, '', `/?conversation=c1&reasoning=${HEX32}`);
+    const { findByTestId, queryByTestId } = render(App);
+
+    // The boot conversation fetch is in flight — conversationId was already
+    // set synchronously (before the awaited fetch), so New chat is showing.
+    await fireEvent.click(await findByTestId('composer-new-chat'));
+
+    // Release the stalled boot fetch AFTER the interruption; let openConversation's
+    // own runSeq guard (drops the stale detail) and the boot continuation's guard
+    // (skips the queued openTrace) both run.
+    releaseDetail(okJson({ conversation_id: 'c1', workload: 'explore', title: 'x', turns: [] }));
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(queryByTestId('historical-banner')).toBeNull();
+    expect(queryByTestId('conversation-thread')).toBeNull();
+    expect(new URLSearchParams(window.location.search).get('reasoning')).toBeNull();
+  });
+
+  it('openTrace on a thread turn keeps ?conversation alongside the new ?reasoning', async () => {
+    stubResumeFetchWithTrace();
+    const { findByTestId } = render(App);
+    await fireEvent.click(await findByTestId('conversation-open'));
+    await findByTestId('conversation-thread');
+    await fireEvent.click(await findByTestId('thread-open-trace'));
+    await waitFor(() => {
+      const p = new URLSearchParams(window.location.search);
+      expect(p.get('conversation')).toBe('c1');
+      expect(p.get('reasoning')).toBe('t1');
+    });
+  });
+
+  // Codex review 019f46e8 must-fix: conversationId is set (synchronously) before
+  // GET /conversations/{id} resolves, so there's a window where the thread is
+  // "open" but conversationWorkload (and therefore the crew lock) is still null.
+  // Without disabling Send there, a submit during that window rides the
+  // half-open thread's id with whatever crew happens to be picked — the
+  // crew-switch-reset guard in submitChat can't see the mismatch because it
+  // requires conversationWorkload !== null. The boot deep-link makes this easier
+  // to hit than the rail-click path (a cold fetch is slower than a warm one).
+  it('disables Send while a resumed thread is still rehydrating (no crew-switch race)', async () => {
+    let releaseDetail!: (r: Response) => void;
+    const detailPromise = new Promise<Response>((res) => {
+      releaseDetail = res;
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/conversations/c1')) return detailPromise;
+        if (url.includes('/conversations'))
+          return okJson({
+            conversations: [
+              {
+                conversation_id: 'c1',
+                workload: 'explore',
+                title: 'prior chat',
+                updated_at: new Date().toISOString(),
+                turn_count: 1,
+              },
+            ],
+          });
+        if (url.includes('/decisions')) return okJson({ decisions: [] });
+        if (url.includes('/infra/graph')) return okJson(GRAPH);
+        return okJson({});
+      }),
+    );
+    const { findByTestId } = render(App);
+    await fireEvent.click(await findByTestId('conversation-open'));
+
+    const sendBtn = (await findByTestId('chat-submit')) as HTMLButtonElement;
+    await waitFor(() => expect(sendBtn.disabled).toBe(true));
+
+    releaseDetail(okJson({ conversation_id: 'c1', workload: 'explore', title: 'x', turns: [] }));
+    await waitFor(() => expect(sendBtn.disabled).toBe(false));
+  });
+
+  // Codex review 019f46e8 (round 2): the first fix left resumingConversation
+  // stuck true forever whenever something OTHER than openConversation itself
+  // supersedes a pending resume — newChat/openTrace bump runSeq, so the stale
+  // openConversation's own `if (myRun === runSeq)` guard correctly refuses to
+  // clear a flag it no longer owns, but nothing else cleared it either. Both
+  // superseding entry points now reset it themselves.
+  it('New chat during a pending resume re-enables Send instead of leaving it stuck disabled', async () => {
+    let releaseDetail!: (r: Response) => void;
+    const detailPromise = new Promise<Response>((res) => {
+      releaseDetail = res;
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/conversations/c1')) return detailPromise;
+        if (url.includes('/conversations'))
+          return okJson({
+            conversations: [
+              {
+                conversation_id: 'c1',
+                workload: 'explore',
+                title: 'prior chat',
+                updated_at: new Date().toISOString(),
+                turn_count: 1,
+              },
+            ],
+          });
+        if (url.includes('/decisions')) return okJson({ decisions: [] });
+        if (url.includes('/infra/graph')) return okJson(GRAPH);
+        return okJson({});
+      }),
+    );
+    const { findByTestId } = render(App);
+    await fireEvent.click(await findByTestId('conversation-open'));
+
+    const sendBtn = (await findByTestId('chat-submit')) as HTMLButtonElement;
+    await waitFor(() => expect(sendBtn.disabled).toBe(true));
+
+    // Interrupt the pending resume with New chat — Send must re-enable now,
+    // not stay disabled waiting for a resume that no longer matters.
+    await fireEvent.click(await findByTestId('composer-new-chat'));
+    await waitFor(() => expect(sendBtn.disabled).toBe(false));
+
+    // The stale detail landing afterwards (openConversation's own runSeq guard
+    // drops it) must not re-disable Send either.
+    releaseDetail(okJson({ conversation_id: 'c1', workload: 'explore', title: 'x', turns: [] }));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(sendBtn.disabled).toBe(false);
+  });
+
+  it('opening a reasoning replay during a pending resume does not leave Send stuck disabled after returning to chat', async () => {
+    let releaseDetail!: (r: Response) => void;
+    const detailPromise = new Promise<Response>((res) => {
+      releaseDetail = res;
+    });
+    const iac = {
+      decision_id: 'd1',
+      trace_id: 'tid-iac-1',
+      action: 'iac_apply',
+      pr_number: 47,
+      apply_status: 'applied',
+      approver: 'op@example.com',
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/conversations/c1')) return detailPromise;
+        if (url.includes('/conversations'))
+          return okJson({
+            conversations: [
+              {
+                conversation_id: 'c1',
+                workload: 'explore',
+                title: 'prior chat',
+                updated_at: new Date().toISOString(),
+                turn_count: 1,
+              },
+            ],
+          });
+        if (url.includes('/trace/')) return okJson({ trace_id: 'tid-iac-1', complete: true, events: [], decision: iac });
+        if (url.includes('/decisions')) return okJson({ decisions: [iac] });
+        if (url.includes('/infra/graph')) return okJson(GRAPH);
+        return okJson({});
+      }),
+    );
+    const { findByTestId } = render(App);
+    await fireEvent.click(await findByTestId('conversation-open'));
+
+    const sendBtn = (await findByTestId('chat-submit')) as HTMLButtonElement;
+    await waitFor(() => expect(sendBtn.disabled).toBe(true));
+
+    // Interrupt the pending resume with a reasoning replay from the rail.
+    await fireEvent.click(await findByTestId('open-trace-button'));
+    await findByTestId('historical-banner');
+
+    // The stale resume detail landing mid-replay must not corrupt anything.
+    releaseDetail(okJson({ conversation_id: 'c1', workload: 'explore', title: 'x', turns: [] }));
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Exit the replay — Send must not be stuck disabled by a leftover flag
+    // openTrace never claimed.
+    const exitBtn = document.querySelector('#new-chat-btn') as HTMLButtonElement;
+    await fireEvent.click(exitBtn);
+    await waitFor(() => expect(sendBtn.disabled).toBe(false));
   });
 });
