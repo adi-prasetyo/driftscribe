@@ -956,12 +956,12 @@
 </script>
 
 <header class="app-header">
-  <div class="app-header__brand">
+  <a class="app-header__brand" href="/" aria-label="DriftScribe — go to home">
     <span class="app-logo-mark" aria-hidden="true">
       <Icon name="radar" size={16} extraClass="app-logo-mark__icon" />
     </span>
     <h1 class="app-title">DriftScribe<span class="app-title__sub">. The agent proposes, you approve.</span></h1>
-  </div>
+  </a>
   <div class="app-header__actions">
     <!-- Judging-window notice bell (replaces the in-flow DemoNoticeBanner; see
          docs/plans/2026-07-07-demo-notice-bell.md). Deleted whole at
@@ -1108,6 +1108,20 @@
     display: inline-flex;
     align-items: center;
     gap: var(--ds-sp-3);
+    text-decoration: none;
+    color: inherit;
+    cursor: pointer;
+    border-radius: 8px;
+  }
+  .app-header__brand:hover .app-title {
+    /* subtle: only a slight emphasis; do not underline the wordmark */
+    opacity: 0.85;
+  }
+  .app-header__brand:focus-visible {
+    /* match the app's global focus affordance (base.css:89 uses box-shadow
+       var(--ds-ring)), NOT a nonexistent --ds-focus token. */
+    outline: none;
+    box-shadow: var(--ds-ring);
   }
   .app-logo-mark {
     display: inline-flex;
