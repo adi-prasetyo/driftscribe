@@ -25,6 +25,7 @@ import pytest
 from agent.trace_fetcher import (
     CloudLoggingFetcher,
     StubTraceFetcher,
+    _EVENT_KINDS,
     _entry_to_dict,
 )
 
@@ -50,9 +51,28 @@ def test_stub_filters_by_trace_id():
 
 def test_stub_respects_limit():
     a = "a" * 32
-    f = StubTraceFetcher(entries=[{"trace_id": a, "i": i} for i in range(5)])
+    f = StubTraceFetcher(
+        entries=[{"trace_id": a, "event": "llm_thought", "i": i} for i in range(5)]
+    )
     out = f.fetch(a, limit=2)
     assert len(out) == 2
+
+
+def test_stub_excludes_entries_missing_or_unknown_event_kind():
+    """Mirrors CloudLoggingFetcher's allowlist: a kind-less or unrecognized
+    ``event`` must be excluded even when the trace_id matches, exactly like
+    prod's ``jsonPayload.event=(...)`` clause would exclude it."""
+    a = "a" * 32
+    f = StubTraceFetcher(
+        entries=[
+            {"trace_id": a, "event": "llm_thought"},
+            {"trace_id": a},  # no event field — e.g. inherited-context plumbing log
+            {"trace_id": a, "event": "httpx_noise"},  # unknown kind
+        ]
+    )
+    out = f.fetch(a)
+    assert len(out) == 1
+    assert out[0]["event"] == "llm_thought"
 
 
 def test_stub_counts_calls():
@@ -166,13 +186,17 @@ def test_cloud_logging_fetcher_filter_string_shape(monkeypatch):
     f.fetch(trace, limit=250)
 
     # The static head is snapshot-pinned (guards against regressing to
-    # ``labels.*`` / ``textPayload``); the ``timestamp>=`` floor is
-    # time-dependent, so it's matched by shape, not value. The floor itself is
-    # REQUIRED — without it Cloud Logging only searches ~the last day.
+    # ``labels.*`` / ``textPayload``, or losing the event-kind allowlist);
+    # the ``timestamp>=`` floor is time-dependent, so it's matched by shape,
+    # not value. The floor itself is REQUIRED — without it Cloud Logging only
+    # searches ~the last day.
     assert captured["filter_"].startswith(
         'resource.type="cloud_run_revision" '
         'AND resource.labels.service_name="driftscribe-agent" '
         f'AND jsonPayload.trace_id="{trace}" '
+        'AND jsonPayload.event=('
+        '"llm_thought" OR "tool_call" OR "tool_result" OR "llm_usage" '
+        'OR "mcp_call" OR "final_response") '
         'AND timestamp>="'
     )
     assert re.search(
@@ -184,6 +208,25 @@ def test_cloud_logging_fetcher_filter_string_shape(monkeypatch):
     assert captured["order_by"] == "timestamp desc"
     assert captured["page_size"] == 250
     assert captured["max_results"] == 250
+
+
+def test_event_kinds_allowlist_is_exactly_the_six_load_bearing_kinds():
+    """Pins the allowlist to exactly the six kinds the pipeline emits.
+
+    Missing ``tool_result`` breaks the SPA's result_preview pairing; missing
+    ``final_response`` means ``_observe_and_check_stability`` (agent/main.py)
+    can never observe completion. This is an explicit allowlist (not a bare
+    existence check), so a regression here is a silent behavior change, not
+    a loud failure — worth pinning directly.
+    """
+    assert _EVENT_KINDS == (
+        "llm_thought",
+        "tool_call",
+        "tool_result",
+        "llm_usage",
+        "mcp_call",
+        "final_response",
+    )
 
 
 def test_cloud_logging_fetcher_filter_uses_custom_service_name(monkeypatch):

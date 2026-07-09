@@ -468,6 +468,45 @@ describe('DecisionsRail — collapsed iac_apply lifecycle groups', () => {
 });
 
 // ---------------------------------------------------------------------------
+// traceButtonLabel wiring — iac_apply rows read "view details →" (recorded
+// directly, no coordinator reasoning run); everything else keeps the
+// reasoning-backed "view reasoning →".
+// ---------------------------------------------------------------------------
+
+describe('DecisionsRail — open-trace button label', () => {
+  it('an iac_apply row shows "view details →"', () => {
+    const decisions: Decision[] = [
+      iacRow({ decision_id: 'applied-68', apply_status: 'applied', pr_number: 68, trace_id: 't-applied' }),
+    ];
+    const { getByTestId } = render(DecisionsRail, {
+      props: { decisions, activeTraceId: null, onOpenTrace: noop },
+    });
+    expect(getByTestId('open-trace-button').textContent?.trim()).toBe('view details →');
+  });
+
+  it('an iac_apply lifecycle step also shows "view details →"', () => {
+    const decisions: Decision[] = [
+      iacRow({ decision_id: 'applied-68', apply_status: 'applied', pr_number: 68, trace_id: 't-new' }),
+      iacRow({ decision_id: 'wait-68', apply_status: 'waiting_for_rebake', pr_number: 68, trace_id: 't-old' }),
+    ];
+    const { getByTestId } = render(DecisionsRail, {
+      props: { decisions, activeTraceId: null, onOpenTrace: noop },
+    });
+    expect(getByTestId('lifecycle-open-trace').textContent?.trim()).toBe('view details →');
+  });
+
+  it('a non-iac_apply row (rollback) with a trace_id shows "view reasoning →"', () => {
+    const decisions: Decision[] = [
+      { decision_id: 'rb-1', action: 'rollback', trace_id: 't-rb' } as Decision,
+    ];
+    const { getByTestId } = render(DecisionsRail, {
+      props: { decisions, activeTraceId: null, onOpenTrace: noop },
+    });
+    expect(getByTestId('open-trace-button').textContent?.trim()).toBe('view reasoning →');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Task 9 — autonomy-suppressed token
 // ---------------------------------------------------------------------------
 

@@ -225,6 +225,19 @@ export function railItemMatches(item: RailItem, query: string): boolean {
 }
 
 /**
+ * The "open trace" button's label for a decision row. `iac_apply` decisions
+ * are recorded directly by the approval handler — there is never a
+ * coordinator reasoning run behind them — so "view reasoning →" would
+ * over-promise. The predicate deliberately matches the `directlyRecorded`
+ * gate the Timeline consumes (App.svelte:903 —
+ * `historicalDecision?.action === 'iac_apply'`), so the button's promise and
+ * the destination's empty-state copy can never disagree.
+ */
+export function traceButtonLabel(action: string | null | undefined): string {
+  return action === 'iac_apply' ? 'view details →' : 'view reasoning →';
+}
+
+/**
  * Cap the rail to the newest `max` items, but never hide the one whose trace the
  * operator currently has open: if the active item falls outside the newest
  * `max`, it is appended so the active-row affordance survives (mirrors
