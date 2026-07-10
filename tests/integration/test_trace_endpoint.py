@@ -26,6 +26,7 @@ Pins the operator-facing reasoning-timeline endpoint:
 from __future__ import annotations
 
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 import pytest
@@ -315,7 +316,9 @@ class _SlowFetcher:
         self.sleep_s = sleep_s
         self.calls = 0
 
-    def fetch(self, trace_id: str, *, limit: int = 500) -> list[dict]:
+    def fetch(
+        self, trace_id: str, *, limit: int = 500, around: Any = None
+    ) -> list[dict]:
         self.calls += 1
         time.sleep(self.sleep_s)
         return []
@@ -639,3 +642,67 @@ def test_module_constants_have_documented_defaults():
     # The per-fetch cap doubles as the truncation threshold (see the full-page
     # guard test above), so pin it too.
     assert _TRACE_FETCH_LIMIT == 500
+
+
+# --------------------------------------------------------------------------- #
+# created_at hint threading (2026-07-10 slow-replay fix)
+# --------------------------------------------------------------------------- #
+
+_TRACE_H = "c" * 32
+
+
+def test_trace_endpoint_passes_decision_created_at_as_hint():
+    """The endpoint reads the decision BEFORE the log fetch; its created_at
+    must reach the fetcher as the ``around`` hint so old traces get the
+    bounded window instead of the retention-deep walk."""
+    state = get_state()
+    state.record_event("ev-hint", {})
+    created = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    state.record_decision(
+        "dec-hint",
+        "ev-hint",
+        {
+            "action": "iac_apply",
+            "trace_id": _TRACE_H,
+            "event_key": "ev-hint",
+            "apply_status": "applied",
+            "merge_state": "merged",
+            "created_at": created,
+        },
+    )
+    stub = _stub_with([])
+    _install_fetcher(stub)
+    client = TestClient(app)
+
+    resp = client.get(f"/trace/{_TRACE_H}")
+    assert resp.status_code == 200
+    assert stub.last_around == created
+
+
+def test_trace_endpoint_no_decision_means_no_hint():
+    """Chat-turn traces have no decision doc — the fetcher must get
+    around=None and keep the exact two-phase hot path."""
+    stub = _stub_with([])
+    _install_fetcher(stub)
+    client = TestClient(app)
+
+    resp = client.get(f"/trace/{'e' * 32}")
+    assert resp.status_code == 200
+    assert stub.last_around is None
+
+
+def test_decision_created_at_hint_parses_defensively():
+    """Unit-ish checks on the helper: datetime passes through (naive → UTC),
+    ISO strings parse, garbage degrades to None instead of raising."""
+    from agent.main import _decision_created_at_hint
+
+    aware = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    assert _decision_created_at_hint({"created_at": aware}) == aware
+    naive = datetime(2026, 6, 1)
+    assert _decision_created_at_hint({"created_at": naive}).tzinfo is not None
+    parsed = _decision_created_at_hint({"created_at": "2026-06-01T12:00:00Z"})
+    assert parsed == datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    assert _decision_created_at_hint({"created_at": "not-a-date"}) is None
+    assert _decision_created_at_hint({"created_at": 12345}) is None
+    assert _decision_created_at_hint({}) is None
+    assert _decision_created_at_hint(None) is None

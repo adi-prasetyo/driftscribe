@@ -3303,6 +3303,32 @@ def post_autonomy_route(
     return _serialize_autonomy_state(a)
 
 
+def _decision_created_at_hint(decision: object) -> dt.datetime | None:
+    """The decision's ``created_at`` as a tz-aware datetime, or None.
+
+    Feeds ``CloudLoggingFetcher``'s bounded hint window: ``get_trace`` reads
+    the decision doc BEFORE the log fetch, and its ``created_at`` (persisted
+    on every decision since 19.A.7 and backfilled from the Firestore
+    server timestamp by find_decision_by_trace_id for older docs) pins WHEN
+    the trace happened, so the fetcher can search a narrow window instead of
+    the retention-deep floor. Defensive on shape — missing/str/garbage
+    degrades to None (fetcher falls back to its two-phase query); never
+    raises.
+    """
+    if not isinstance(decision, dict):
+        return None
+    raw = decision.get("created_at")
+    if isinstance(raw, dt.datetime):
+        return raw if raw.tzinfo is not None else raw.replace(tzinfo=dt.timezone.utc)
+    if isinstance(raw, str):
+        try:
+            parsed = dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=dt.timezone.utc)
+    return None
+
+
 @app.get("/trace/{trace_id}")
 def get_trace(
     trace_id: str,
@@ -3409,7 +3435,12 @@ def get_trace(
     # best-effort (Python can't kill a thread mid-call) but it at
     # least prevents the Future from being awaited again.
     fut = _TRACE_FETCH_EXECUTOR.submit(
-        fetcher.fetch, trace_id, limit=_TRACE_FETCH_LIMIT
+        fetcher.fetch,
+        trace_id,
+        limit=_TRACE_FETCH_LIMIT,
+        # Bounded hint window: the decision was read above, BEFORE this fetch,
+        # precisely so old traces don't pay the retention-deep scan.
+        around=_decision_created_at_hint(decision),
     )
     try:
         events = fut.result(timeout=_TRACE_FETCH_TIMEOUT_S)
