@@ -67,11 +67,15 @@
     }
   }
 
-  // turn_count is the number of persisted turns — each user prompt or crew
-  // reply counts as one. Render it as "N messages"; absent/zero → nothing.
+  // turn_count is the number of persisted turns — every exchange writes one
+  // user prompt AND one crew reply (user first), so it is normally even. We
+  // report only the operator's own messages: ceil(turn_count / 2) counts the
+  // user turns and is exact for the paired case, while still counting a lone
+  // user turn should a reply ever fail to persist. Absent/zero → nothing.
   function turnsLabel(n: number | undefined): string {
     if (!n || n < 1) return '';
-    return n === 1 ? '1 message' : `${n} messages`;
+    const messages = Math.ceil(n / 2);
+    return messages === 1 ? '1 message' : `${messages} messages`;
   }
 </script>
 
