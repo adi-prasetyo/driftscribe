@@ -510,5 +510,209 @@ def test_stub_satisfies_trace_fetcher_protocol():
     assert f.fetch("a" * 32) == []
 
 
+# ---------------------------------------------------------------------------
+# CloudLoggingFetcher — created_at hint window (2026-07-10 slow-replay fix)
+# ---------------------------------------------------------------------------
+#
+# When the /trace endpoint already knows WHEN the trace happened (the decision
+# doc's created_at), the fetcher queries ONE bounded window around that moment
+# instead of the fast(2d)+wide(400d) two-phase walk. entries.list latency
+# tracks the width of the timestamp window, so old traces get fast-phase
+# latency instead of the ~17s retention-deep scan.
+
+
+def _ceiling_age_of(filter_str: str) -> timedelta:
+    m = re.search(r'timestamp<="([^"]+)"', filter_str)
+    assert m, filter_str
+    ceil = datetime.strptime(m.group(1), "%Y-%m-%dT%H:%M:%SZ").replace(
+        tzinfo=timezone.utc
+    )
+    return datetime.now(timezone.utc) - ceil
+
+
+def test_hinted_fetch_uses_single_bounded_window(monkeypatch):
+    """With a hint, ONE query runs, floored at hint-2d and ceilinged at
+    hint+1d — never the fast phase, never the wide phase."""
+    calls: list[dict] = []
+    hint = datetime.now(timezone.utc) - timedelta(days=30)
+
+    def _impl(**kwargs):
+        calls.append(kwargs)
+        mid = (hint - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return iter([_fake_entry(mid)])
+
+    fake_client, _ = _install_fake_cloud_logging(monkeypatch, _impl)
+    f = CloudLoggingFetcher(project="test-proj")
+    f._client = fake_client
+
+    out = f.fetch("d" * 32, around=hint)
+    assert len(out) == 1
+    assert len(calls) == 1
+    # floor ≈ 32 days ago (hint-2d), ceiling ≈ 29 days ago (hint+1d);
+    # ±5 min slack for whole-second truncation + test wall time.
+    assert timedelta(days=31, hours=23) < _floor_age_of(calls[0]["filter_"]) < timedelta(days=32, hours=1)
+    assert timedelta(days=28, hours=23) < _ceiling_age_of(calls[0]["filter_"]) < timedelta(days=29, hours=1)
+
+
+def test_hinted_fetch_empty_is_authoritative(monkeypatch):
+    """AMENDED per Task 0: a bounded-window MISS returns empty WITHOUT the
+    wide fallback. iac_apply timelines are structurally empty (the apply
+    pipeline emits none of the six event kinds — verified against prod
+    2026-07-10), so falling back wide on empty would re-pay the ~17s scan on
+    exactly the rows users open; and the wide query cannot rescue a
+    lagging-ingestion entry anyway (ingestion lag hides entries from EVERY
+    window equally). The decision doc is written by the same request that
+    emits the events, so the ±(2d/1d) window cannot miss real ones."""
+    calls: list[dict] = []
+
+    def _impl(**kwargs):
+        calls.append(kwargs)
+        return iter([])
+
+    fake_client, _ = _install_fake_cloud_logging(monkeypatch, _impl)
+    f = CloudLoggingFetcher(project="test-proj")
+    f._client = fake_client
+
+    out = f.fetch("d" * 32, around=datetime.now(timezone.utc) - timedelta(days=90))
+    assert out == []
+    assert len(calls) == 1
+    assert 'timestamp<="' in calls[0]["filter_"]  # the one call was the bounded one
+
+
+@pytest.mark.parametrize(
+    "edge_offset",
+    [
+        timedelta(days=-2) + timedelta(hours=3),   # 3h above the floor (inside 6h guard)
+        timedelta(days=1) - timedelta(hours=3),    # 3h below the ceiling (inside 6h guard)
+    ],
+    ids=["lower-edge", "upper-edge"],
+)
+def test_hinted_fetch_edge_hugging_entry_reruns_wide(monkeypatch, edge_offset):
+    """An entry hugging EITHER edge of the hint window may mean the trace
+    extends past it — rerun wide rather than serve (and let the endpoint
+    cache) a truncated timeline."""
+    calls: list[dict] = []
+    hint = datetime.now(timezone.utc) - timedelta(days=30)
+    near_edge = (hint + edge_offset).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def _impl(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return iter([_fake_entry(near_edge)])
+        return iter([_fake_entry(near_edge), _fake_entry(_iso_ago(days=33), "i0")])
+
+    fake_client, _ = _install_fake_cloud_logging(monkeypatch, _impl)
+    f = CloudLoggingFetcher(project="test-proj")
+    f._client = fake_client
+
+    out = f.fetch("d" * 32, around=hint)
+    assert len(calls) == 2
+    assert len(out) == 2  # the wide (superset) result wins
+
+
+def test_hinted_fetch_naive_datetime_treated_as_utc(monkeypatch):
+    """A tz-naive hint must not crash; it's interpreted as UTC (mirrors
+    _straddles_fast_floor's convention)."""
+    calls: list[dict] = []
+    hint = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=30)
+
+    def _impl(**kwargs):
+        calls.append(kwargs)
+        mid = _iso_ago(days=30, minutes=5)
+        return iter([_fake_entry(mid)])
+
+    fake_client, _ = _install_fake_cloud_logging(monkeypatch, _impl)
+    f = CloudLoggingFetcher(project="test-proj")
+    f._client = fake_client
+
+    out = f.fetch("d" * 32, around=hint)
+    assert len(out) == 1
+    assert len(calls) == 1
+
+
+def test_hinted_fetch_ignored_when_lookback_narrower_than_fast_floor(monkeypatch):
+    """A deployment with lookback_days <= the fast floor keeps its existing
+    single-query behavior even when a hint is supplied."""
+    calls: list[dict] = []
+
+    def _impl(**kwargs):
+        calls.append(kwargs)
+        return iter([])
+
+    fake_client, _ = _install_fake_cloud_logging(monkeypatch, _impl)
+    f = CloudLoggingFetcher(project="test-proj", lookback_days=1)
+    f._client = fake_client
+
+    assert f.fetch("d" * 32, around=datetime.now(timezone.utc) - timedelta(days=30)) == []
+    assert len(calls) == 1
+    assert _floor_age_of(calls[0]["filter_"]) < timedelta(days=1, hours=1)
+    assert 'timestamp<="' not in calls[0]["filter_"]
+
+
+def test_hinted_fetch_ignored_when_window_outside_lookback(monkeypatch):
+    """Codex review MAJOR: a hint older than the configured lookback horizon
+    must NOT let the bounded window search entries the deployment's
+    ``lookback_days`` deliberately excludes. lookback=30d + hint@90d ago →
+    the standard two-phase runs (fast floor, then 30d floor), no ceiling."""
+    calls: list[dict] = []
+
+    def _impl(**kwargs):
+        calls.append(kwargs)
+        return iter([])
+
+    fake_client, _ = _install_fake_cloud_logging(monkeypatch, _impl)
+    f = CloudLoggingFetcher(project="test-proj", lookback_days=30)
+    f._client = fake_client
+
+    out = f.fetch("d" * 32, around=datetime.now(timezone.utc) - timedelta(days=90))
+    assert out == []
+    assert len(calls) == 2
+    assert _floor_age_of(calls[0]["filter_"]) < timedelta(days=3)          # fast phase
+    assert timedelta(days=29) < _floor_age_of(calls[1]["filter_"]) < timedelta(days=31)  # configured wide
+    assert 'timestamp<="' not in calls[0]["filter_"]
+    assert 'timestamp<="' not in calls[1]["filter_"]
+
+
+def test_hinted_fetch_used_when_window_inside_lookback(monkeypatch):
+    """Companion to the horizon guard: lookback=30d + hint@10d ago → the
+    bounded window DOES run (it fits entirely inside the horizon)."""
+    calls: list[dict] = []
+    hint = datetime.now(timezone.utc) - timedelta(days=10)
+
+    def _impl(**kwargs):
+        calls.append(kwargs)
+        mid = (hint - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return iter([_fake_entry(mid)])
+
+    fake_client, _ = _install_fake_cloud_logging(monkeypatch, _impl)
+    f = CloudLoggingFetcher(project="test-proj", lookback_days=30)
+    f._client = fake_client
+
+    out = f.fetch("d" * 32, around=hint)
+    assert len(out) == 1
+    assert len(calls) == 1
+    assert 'timestamp<="' in calls[0]["filter_"]
+
+
+def test_hinted_fetch_rejects_bad_trace_id_before_client(monkeypatch):
+    """The hex32 injection guard still short-circuits first, hint or not."""
+    fake_client, _ = _install_fake_cloud_logging(monkeypatch, lambda **_: iter([]))
+    f = CloudLoggingFetcher(project="test-proj")
+    f._client = fake_client
+    assert f.fetch("nope", around=datetime.now(timezone.utc)) == []
+    assert fake_client.list_entries.call_count == 0
+
+
+def test_stub_accepts_and_records_around_kwarg():
+    """StubTraceFetcher mirrors the Protocol so integration tests can assert
+    the endpoint threaded the hint through."""
+    f = StubTraceFetcher(entries=[])
+    hint = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    f.fetch("a" * 32, around=hint)
+    assert f.last_around == hint
+    f.fetch("a" * 32)
+    assert f.last_around is None
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
