@@ -26,6 +26,7 @@ Pins the operator-facing reasoning-timeline endpoint:
 from __future__ import annotations
 
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 import pytest
@@ -315,7 +316,9 @@ class _SlowFetcher:
         self.sleep_s = sleep_s
         self.calls = 0
 
-    def fetch(self, trace_id: str, *, limit: int = 500) -> list[dict]:
+    def fetch(
+        self, trace_id: str, *, limit: int = 500, around: Any = None
+    ) -> list[dict]:
         self.calls += 1
         time.sleep(self.sleep_s)
         return []
@@ -639,3 +642,188 @@ def test_module_constants_have_documented_defaults():
     # The per-fetch cap doubles as the truncation threshold (see the full-page
     # guard test above), so pin it too.
     assert _TRACE_FETCH_LIMIT == 500
+
+
+# --------------------------------------------------------------------------- #
+# created_at hint threading (2026-07-10 slow-replay fix)
+# --------------------------------------------------------------------------- #
+
+_TRACE_H = "c" * 32
+
+
+def test_trace_endpoint_passes_decision_created_at_as_hint():
+    """The endpoint reads the decision BEFORE the log fetch; its created_at
+    must reach the fetcher as the ``around`` hint so old traces get the
+    bounded window instead of the retention-deep walk."""
+    state = get_state()
+    state.record_event("ev-hint", {})
+    created = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    state.record_decision(
+        "dec-hint",
+        "ev-hint",
+        {
+            "action": "iac_apply",
+            "trace_id": _TRACE_H,
+            "event_key": "ev-hint",
+            "apply_status": "applied",
+            "merge_state": "merged",
+            "created_at": created,
+        },
+    )
+    stub = _stub_with([])
+    _install_fetcher(stub)
+    client = TestClient(app)
+
+    resp = client.get(f"/trace/{_TRACE_H}")
+    assert resp.status_code == 200
+    assert stub.last_around == created
+
+
+def test_trace_endpoint_no_decision_means_no_hint():
+    """Chat-turn traces have no decision doc — the fetcher must get
+    around=None and keep the exact two-phase hot path."""
+    stub = _stub_with([])
+    _install_fetcher(stub)
+    client = TestClient(app)
+
+    resp = client.get(f"/trace/{'e' * 32}")
+    assert resp.status_code == 200
+    assert stub.last_around is None
+
+
+def test_decision_created_at_hint_parses_defensively():
+    """Unit-ish checks on the helper: datetime passes through (naive → UTC),
+    ISO strings parse, garbage degrades to None instead of raising."""
+    from agent.main import _decision_created_at_hint
+
+    aware = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    assert _decision_created_at_hint({"created_at": aware}) == aware
+    naive = datetime(2026, 6, 1)
+    assert _decision_created_at_hint({"created_at": naive}).tzinfo is not None
+    parsed = _decision_created_at_hint({"created_at": "2026-06-01T12:00:00Z"})
+    assert parsed == datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    naive_iso = _decision_created_at_hint({"created_at": "2026-06-01T12:00:00"})
+    assert naive_iso == datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    offset_iso = _decision_created_at_hint(
+        {"created_at": "2026-06-01T12:00:00+09:00"}
+    )
+    assert offset_iso == datetime(2026, 6, 1, 3, 0, 0, tzinfo=timezone.utc)
+    assert _decision_created_at_hint({"created_at": "not-a-date"}) is None
+    assert _decision_created_at_hint({"created_at": 12345}) is None
+    assert _decision_created_at_hint({}) is None
+    assert _decision_created_at_hint(None) is None
+
+
+# --------------------------------------------------------------------------- #
+# iac_apply timelines cache on stability alone (they never emit final_response)
+# --------------------------------------------------------------------------- #
+
+_TRACE_I = "f" * 32
+
+
+def _record_iac_decision_doc(trace_id: str, suffix: str, *, apply_status: str = "applied") -> None:
+    state = get_state()
+    state.record_event(f"ev-iac-{suffix}", {})
+    state.record_decision(
+        f"dec-iac-{suffix}",
+        f"ev-iac-{suffix}",
+        {
+            "action": "iac_apply",
+            "trace_id": trace_id,
+            "event_key": f"ev-iac-{suffix}",
+            "apply_status": apply_status,
+            "merge_state": "merged",
+            "pr_number": 231,
+        },
+    )
+
+
+def test_trace_endpoint_caches_stable_iac_apply_without_final_response(monkeypatch):
+    """iac_apply traces never emit final_response, which made them permanently
+    uncacheable — every 'view details' re-paid the Cloud Logging fetch. A
+    non-empty, stability-grace-stable timeline whose decision is a RUN-ENDED
+    iac_apply now completes and caches; the decision is still re-read on the
+    hit."""
+    _record_iac_decision_doc(_TRACE_I, "cache")
+    stub = _stub_with(
+        [
+            {"trace_id": _TRACE_I, "event": "tool_call", "timestamp": "2026-06-01T00:00:00Z", "insert_id": "i1"},
+            {"trace_id": _TRACE_I, "event": "tool_result", "timestamp": "2026-06-01T00:00:01Z", "insert_id": "i2"},
+        ]
+    )
+    _install_fetcher(stub)
+    client = TestClient(app)
+
+    fake_now = [1000.0]
+    monkeypatch.setattr("agent.main.time.monotonic", lambda: fake_now[0])
+
+    body1 = client.get(f"/trace/{_TRACE_I}").json()
+    assert body1["complete"] is False          # first observation only records
+    assert body1["fetched_from_cache"] is False
+
+    fake_now[0] += _STABILITY_GRACE_S + 1.0
+    body2 = client.get(f"/trace/{_TRACE_I}").json()
+    assert body2["complete"] is True           # stable across the grace window
+    assert body2["fetched_from_cache"] is False
+
+    calls_before = stub.calls
+    body3 = client.get(f"/trace/{_TRACE_I}").json()
+    assert body3["fetched_from_cache"] is True
+    assert stub.calls == calls_before          # no re-fetch on the cache hit
+    assert body3["decision"]["action"] == "iac_apply"  # decision re-read, not frozen
+
+
+def test_trace_endpoint_never_caches_waiting_for_rebake_iac_apply(monkeypatch):
+    """Codex review MAJOR: waiting_for_rebake decisions are recorded BEFORE
+    the merge/re-bake work (the crash-recovery pointer, agent/main.py:5406),
+    so the trace may still be streaming events — a stable-looking snapshot
+    mid-merge must NOT cache."""
+    trace = "8" * 32
+    _record_iac_decision_doc(trace, "rebake", apply_status="waiting_for_rebake")
+    stub = _stub_with(
+        [{"trace_id": trace, "event": "tool_call", "timestamp": "2026-06-01T00:00:00Z", "insert_id": "i1"}]
+    )
+    _install_fetcher(stub)
+    client = TestClient(app)
+
+    fake_now = [3000.0]
+    monkeypatch.setattr("agent.main.time.monotonic", lambda: fake_now[0])
+
+    for _ in range(3):
+        body = client.get(f"/trace/{trace}").json()
+        assert body["complete"] is False
+        assert body["fetched_from_cache"] is False
+        fake_now[0] += _STABILITY_GRACE_S + 1.0
+
+
+def test_trace_endpoint_caches_stable_EMPTY_run_ended_iac_apply(monkeypatch):
+    """AMENDED per Task 0: iac_apply timelines are structurally EMPTY in prod
+    (the apply pipeline emits none of the six event kinds), so the empty-but-
+    stable timeline of a RUN-ENDED apply IS its complete replay and must
+    cache — otherwise every 'view details' on an apply row re-pays the fetch
+    forever. Stability still gates (two observations >= grace apart), and the
+    <=300s TTL self-heals if events ever appear later."""
+    trace = "9" * 32
+    _record_iac_decision_doc(trace, "empty")
+    stub = _stub_with([])
+    _install_fetcher(stub)
+    client = TestClient(app)
+
+    fake_now = [2000.0]
+    monkeypatch.setattr("agent.main.time.monotonic", lambda: fake_now[0])
+
+    body1 = client.get(f"/trace/{trace}").json()
+    assert body1["complete"] is False          # first observation only records
+    assert body1["fetched_from_cache"] is False
+
+    fake_now[0] += _STABILITY_GRACE_S + 1.0
+    body2 = client.get(f"/trace/{trace}").json()
+    assert body2["complete"] is True           # stable-empty + run-ended = complete
+    assert body2["fetched_from_cache"] is False
+
+    calls_before = stub.calls
+    body3 = client.get(f"/trace/{trace}").json()
+    assert body3["fetched_from_cache"] is True
+    assert stub.calls == calls_before
+    assert body3["events"] == []
+    assert body3["decision"]["action"] == "iac_apply"

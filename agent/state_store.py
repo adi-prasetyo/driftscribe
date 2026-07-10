@@ -145,11 +145,26 @@ class InMemoryStateStore:
         UI can show the final action alongside the events. Linear scan
         is fine for InMemoryStateStore — used only in tests / DRY_RUN —
         where the decision dict is at most a few entries deep.
+
+        Newest-first (2026-07-10, Codex review): one request can record
+        MULTIPLE decisions for the same trace_id (the create-class merge
+        path records a waiting_for_rebake pending → merged pair) — pick the
+        newest by ``created_at`` so the caller sees the current lifecycle
+        stage, not an arbitrary one. Newest-first parity with the Firestore
+        store — see its docstring for why. ``record_decision`` always
+        setdefaults ``created_at`` here, but tolerate a missing/None value
+        via the same UTC sentinel :meth:`list_decisions` uses, since callers
+        can pass explicit decision dicts (as the tests above do).
         """
-        for d in self._decisions.values():
-            if d.get("trace_id") == trace_id:
-                return d
-        return None
+        from datetime import datetime, timezone
+
+        sentinel = datetime.min.replace(tzinfo=timezone.utc)
+        matching = [
+            d for d in self._decisions.values() if d.get("trace_id") == trace_id
+        ]
+        if not matching:
+            return None
+        return max(matching, key=lambda d: d.get("created_at") or sentinel)
 
     def list_decisions(self, *, limit: int = 50) -> list[dict[str, Any]]:
         """Return up to ``limit`` decisions, newest first.
@@ -489,20 +504,33 @@ class FirestoreStateStore:
 
         Phase 19.A.6: the ``/trace/{trace_id}`` endpoint enriches the
         reasoning timeline with the persisted decision so the UI can
-        show the final action alongside the events. ``.limit(1)``
+        show the final action alongside the events. ``.limit(10)``
         bounds the read; the field is set on every decision since
         19.A.4 (``record_decision`` persists the request's trace_id).
 
         Returns ``None`` if no decision matches (e.g. /trace was called
         before /recheck finished, or the trace_id was for a /chat call
         that doesn't write a decision document at all).
+
+        Newest-first (2026-07-10, Codex review): one request can record
+        MULTIPLE decisions for the same trace_id (the create-class merge
+        path records a waiting_for_rebake pending → merged pair), and the
+        old unordered ``.limit(1)`` picked arbitrarily. Fetch a small page
+        and take the newest by server-managed ``snapshot.create_time``
+        (client-side — a server ``order_by("created_at")`` would EXCLUDE
+        pre-19.A.7 docs missing the field, see list_decisions). Backfill
+        ``created_at`` from ``create_time``, mirroring list_decisions, so the
+        /trace fetch hint works for every decision.
         """
-        snaps = (
-            self._decisions.where("trace_id", "==", trace_id).limit(1).stream()
+        snaps = list(
+            self._decisions.where("trace_id", "==", trace_id).limit(10).stream()
         )
-        for s in snaps:
-            return s.to_dict()
-        return None
+        if not snaps:
+            return None
+        newest = max(snaps, key=lambda s: s.create_time)
+        d = newest.to_dict() or {}
+        d.setdefault("created_at", newest.create_time)
+        return d
 
     def list_decisions(self, *, limit: int = 50) -> list[dict[str, Any]]:
         """Return up to ``limit`` decisions, newest first.

@@ -85,6 +85,35 @@ _FAST_PHASE_LOOKBACK_DAYS = 2
 # span minutes.
 _FAST_PHASE_STRADDLE_GUARD = _dt.timedelta(hours=6)
 
+# Bounded hint-window pads (2026-07-10 slow-replay fix). When the /trace
+# endpoint already knows WHEN the trace happened (the decision doc's
+# ``created_at``), the query is one narrow window AROUND that moment instead
+# of the fast+wide two-phase walk. entries.list latency tracks the WIDTH of
+# the timestamp window, not the age of the entries (validated against prod
+# 2026-07-10: bounded ~1.4s vs wide ~19-23s for the same 42-day-old trace's
+# 8 entries), so a ~3-day window around an old trace costs fast-phase
+# latency (~1.5s), not wide-phase (~10-17s).
+#
+# Pad asymmetry: events PRECEDE the decision doc (record_decision is at the
+# tail of the request) by minutes, so 2 days before is generous; trailing
+# events land seconds after, so 1 day after is generous too. _HINT_WINDOW_AFTER
+# must comfortably exceed _FAST_PHASE_STRADDLE_GUARD: real trailing events sit
+# seconds after ``around``, and the upper straddle band starts at
+# ceiling - guard — 1d vs 6h keeps real traces far from the band (a smaller
+# pad would make EVERY hinted fetch straddle and rerun wide).
+_HINT_WINDOW_BEFORE = _dt.timedelta(days=2)
+_HINT_WINDOW_AFTER = _dt.timedelta(days=1)
+
+
+def _fmt_rfc3339(ts: _dt.datetime) -> str:
+    """Whole-second RFC3339 ``...Z`` form — same shape as ``_timestamp_floor``.
+
+    Caller must pass a tz-aware ``ts``: ``astimezone`` on a naive datetime
+    interprets it as LOCAL wall-clock time, the opposite convention from
+    ``_entry_ts``/``_fetch_hinted``'s naive-means-UTC rule.
+    """
+    return ts.astimezone(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
 
 class TraceFetcher(Protocol):
     """Return the structured log entries for one trace, order UNSPECIFIED.
@@ -96,9 +125,20 @@ class TraceFetcher(Protocol):
     Phase 18's ``JSONFormatter`` puts our extras at the top of ``jsonPayload``,
     and Cloud Run's stdout parser turns that into ``entry.payload`` on the
     client side.
+
+    ``around`` is an optional hint for WHEN the trace happened — implementations
+    may use it to narrow their search window to a bounded band around that
+    moment; an empty bounded result is authoritative (no wide fallback — see
+    ``_fetch_hinted``), a non-empty edge-hugging one reruns the full window.
     """
 
-    def fetch(self, trace_id: str, *, limit: int = 500) -> list[dict]: ...
+    def fetch(
+        self,
+        trace_id: str,
+        *,
+        limit: int = 500,
+        around: _dt.datetime | None = None,
+    ) -> list[dict]: ...
 
 
 class CloudLoggingFetcher:
@@ -137,9 +177,16 @@ class CloudLoggingFetcher:
         accepts it and it keeps the snapshot test's regex simple.
         """
         floor = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=days)
-        return floor.strftime("%Y-%m-%dT%H:%M:%SZ")
+        return _fmt_rfc3339(floor)
 
-    def _query(self, trace_id: str, *, floor_days: int, limit: int) -> list[dict]:
+    def _query(
+        self,
+        trace_id: str,
+        *,
+        floor: str,
+        ceiling: str | None = None,
+        limit: int,
+    ) -> list[dict]:
         # Filter syntax confirmed correct for our JSONFormatter — Cloud Run's
         # structured-stdout pipeline puts our extras under ``jsonPayload.*``
         # (NOT ``labels.*`` or ``textPayload``). The snapshot test in
@@ -150,6 +197,8 @@ class CloudLoggingFetcher:
         # trace older than 24h returns empty (see _DEFAULT_TRACE_LOOKBACK_DAYS).
         # The floor is a constant we build (never caller input), so it can't
         # widen the injection surface the _HEX32_RE guard in ``fetch`` closes.
+        # An optional ``timestamp<=`` ceiling bounds hint-window queries — also
+        # caller-built, never raw input.
         #
         # The ``jsonPayload.event=(...)`` clause is REQUIRED for correctness
         # too, not just cleanliness — every log line emitted inside the
@@ -158,12 +207,15 @@ class CloudLoggingFetcher:
         # (httpx, PyGithub) ride along and pollute the timeline. See
         # ``_EVENT_KINDS`` for why the allowlist is exactly these six kinds.
         event_clause = " OR ".join(f'"{k}"' for k in _EVENT_KINDS)
+        ts_clause = f'timestamp>="{floor}"'
+        if ceiling is not None:
+            ts_clause += f' AND timestamp<="{ceiling}"'
         filter_str = (
             f'resource.type="cloud_run_revision" '
             f'AND resource.labels.service_name="{self._service}" '
             f'AND jsonPayload.trace_id="{trace_id}" '
             f'AND jsonPayload.event=({event_clause}) '
-            f'AND timestamp>="{self._timestamp_floor(floor_days)}"'
+            f'AND {ts_clause}'
         )
         # ``timestamp desc``: Cloud Logging recommends descending order for
         # recently-ingested logs, so the ~1/sec live-poll path (whose trace is
@@ -180,6 +232,17 @@ class CloudLoggingFetcher:
         )
         return [_entry_to_dict(e) for e in entries_iter]
 
+    @staticmethod
+    def _entry_ts(e: dict) -> _dt.datetime | None:
+        """Parse an entry's timestamp; None means unparseable (callers must
+        fail toward the wide, correct-but-slower phase)."""
+        raw = str(e.get("timestamp", ""))
+        try:
+            ts = _dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return ts if ts.tzinfo is not None else ts.replace(tzinfo=_dt.timezone.utc)
+
     def _straddles_fast_floor(self, entries: list[dict]) -> bool:
         """True when the fast phase's OLDEST entry sits suspiciously close to
         the fast floor — the trace may continue past the window edge, so the
@@ -195,18 +258,94 @@ class CloudLoggingFetcher:
             + _FAST_PHASE_STRADDLE_GUARD
         )
         for e in entries:
-            raw = str(e.get("timestamp", ""))
-            try:
-                ts = _dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
-                if ts.tzinfo is None:
-                    ts = ts.replace(tzinfo=_dt.timezone.utc)
-            except ValueError:
-                return True
-            if ts <= guard_floor:
+            ts = self._entry_ts(e)
+            if ts is None or ts <= guard_floor:
                 return True
         return False
 
-    def fetch(self, trace_id: str, *, limit: int = 500) -> list[dict]:
+    def _straddles_hint_window(
+        self,
+        entries: list[dict],
+        *,
+        floor: _dt.datetime,
+        ceiling: _dt.datetime,
+    ) -> bool:
+        """True when any entry hugs EITHER edge of the bounded hint window (or
+        has an unparseable timestamp) — the trace may extend past the window,
+        so the caller must rerun wide rather than serve a truncated timeline
+        (which ``get_trace`` could then cache as complete)."""
+        lo = floor + _FAST_PHASE_STRADDLE_GUARD
+        hi = ceiling - _FAST_PHASE_STRADDLE_GUARD
+        for e in entries:
+            ts = self._entry_ts(e)
+            if ts is None or ts <= lo or ts >= hi:
+                return True
+        return False
+
+    def _fetch_hinted(
+        self, trace_id: str, *, around: _dt.datetime, limit: int
+    ) -> list[dict] | None:
+        """Bounded hint-window fetch; None when the hint is unusable and the
+        caller must run the standard two-phase query instead.
+
+        Unusable when the deployment lookback is not wider than the fast
+        floor (nothing to save), or when the hint window's floor falls
+        outside ``now - lookback_days`` (Codex review: the bounded query
+        could otherwise reach entries the configured lookback horizon
+        deliberately excludes — TRACE_LOG_LOOKBACK_DAYS semantics must hold
+        with or without a hint).
+
+        Validity contract (Codex amendment review): this optimization is
+        valid ONLY for decision-bearing traces whose events are emitted
+        in-request near the decision write. If a future decision ever
+        records a trace_id for work emitted by a different request/day,
+        that flow must not supply a hint (or must supply an event-time
+        source instead).
+        """
+        if self._lookback_days <= _FAST_PHASE_LOOKBACK_DAYS:
+            return None
+        if around.tzinfo is None:
+            around = around.replace(tzinfo=_dt.timezone.utc)
+        floor_dt = around - _HINT_WINDOW_BEFORE
+        ceiling_dt = around + _HINT_WINDOW_AFTER
+        horizon = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(
+            days=self._lookback_days
+        )
+        if floor_dt < horizon:
+            return None
+        entries = self._query(
+            trace_id,
+            floor=_fmt_rfc3339(floor_dt),
+            ceiling=_fmt_rfc3339(ceiling_dt),
+            limit=limit,
+        )
+        if not entries:
+            # AMENDED per Task 0 (2026-07-10): an empty bounded result is
+            # AUTHORITATIVE — do not rerun wide. iac_apply timelines are
+            # structurally empty (the apply pipeline has no LLM loop, so it
+            # emits none of the six event kinds), so an empty-miss → wide
+            # fallback would re-pay the ~17s retention-deep scan on exactly
+            # the rows users open. And the fallback couldn't rescue anything:
+            # ingestion lag hides entries from every window equally, and the
+            # decision doc is written by the SAME request that emits the
+            # events, so a [created_at−2d, created_at+1d] window cannot miss
+            # real ones.
+            return entries
+        if not self._straddles_hint_window(entries, floor=floor_dt, ceiling=ceiling_dt):
+            return entries
+        # Edge-hugging (non-empty): the trace may extend past the window —
+        # rerun retention-deep rather than serve a truncated timeline.
+        return self._query(
+            trace_id, floor=self._timestamp_floor(self._lookback_days), limit=limit
+        )
+
+    def fetch(
+        self,
+        trace_id: str,
+        *,
+        limit: int = 500,
+        around: _dt.datetime | None = None,
+    ) -> list[dict]:
         # ``fullmatch`` (not ``match``) is load-bearing here: Python's ``$``
         # in ``re.match`` mode also matches just-before-a-final ``\n``, so
         # ``"a"*32 + "\n"`` would slip past a ``match`` call and get
@@ -217,6 +356,14 @@ class CloudLoggingFetcher:
             # straight into the Cloud Logging filter language, so anything that
             # doesn't look like our 32-hex format gets refused at the door.
             return []
+        # Hint-bounded phase (2026-07-10): when the caller knows the decision's
+        # created_at, query one ~3-day window around it instead of walking from
+        # now back to the retention floor — "view details" opens on decision
+        # rows drop from wide-phase latency (~10-17s) to fast-phase (~1.5s).
+        if around is not None:
+            hinted = self._fetch_hinted(trace_id, around=around, limit=limit)
+            if hinted is not None:
+                return hinted
         # Two-phase query (2026-07-06 outage lesson): entries.list latency
         # grows with the width of the ``timestamp`` window (measurements at
         # _FAST_PHASE_LOOKBACK_DAYS above), and a single retention-deep query
@@ -225,12 +372,16 @@ class CloudLoggingFetcher:
         # with them. The narrow phase serves the hot paths in ~1.5s; the wide
         # phase runs only when the narrow one proves insufficient.
         fast_days = min(_FAST_PHASE_LOOKBACK_DAYS, self._lookback_days)
-        entries = self._query(trace_id, floor_days=fast_days, limit=limit)
+        entries = self._query(
+            trace_id, floor=self._timestamp_floor(fast_days), limit=limit
+        )
         if self._lookback_days <= fast_days:
             return entries
         if entries and not self._straddles_fast_floor(entries):
             return entries
-        return self._query(trace_id, floor_days=self._lookback_days, limit=limit)
+        return self._query(
+            trace_id, floor=self._timestamp_floor(self._lookback_days), limit=limit
+        )
 
 
 class StubTraceFetcher:
@@ -241,9 +392,19 @@ class StubTraceFetcher:
         # Exposed so tests can assert cache / dedup behavior at the
         # ``/trace`` endpoint layer once that lands.
         self.calls = 0
+        # The hint the most recent fetch received — integration tests assert
+        # the endpoint threaded decision.created_at through.
+        self.last_around: _dt.datetime | None = None
 
-    def fetch(self, trace_id: str, *, limit: int = 500) -> list[dict]:
+    def fetch(
+        self,
+        trace_id: str,
+        *,
+        limit: int = 500,
+        around: _dt.datetime | None = None,
+    ) -> list[dict]:
         self.calls += 1
+        self.last_around = around
         # Mirrors CloudLoggingFetcher's ``jsonPayload.event=(...)`` clause so
         # dev/dry-run parity holds: an entry with no ``event`` key, or one
         # outside ``_EVENT_KINDS``, would never come back from prod either.

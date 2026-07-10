@@ -695,28 +695,77 @@ def _signature_of(events: list[dict]) -> str:
     return h.hexdigest()
 
 
-def _observe_and_check_stability(trace_id: str, events: list[dict]) -> bool:
+# apply_status values recorded when an apply REQUEST has already ended (the
+# _record_iac_decision docstring: ``applied`` is the apply-succeeded pointer —
+# the apply request is done even though the merge may still reconcile later;
+# ``failed`` / ``failed_state_suspect`` / ``ambiguous`` are failure
+# terminals). ``waiting_for_rebake`` is deliberately EXCLUDED: it is recorded
+# BEFORE the merge / re-bake work as the crash-recovery pointer
+# (the create-class path), so its trace may still be streaming events —
+# those timelines keep the never-cached behavior.
+_IAC_RUN_ENDED_STATUSES = frozenset(
+    {"applied", "failed", "failed_state_suspect", "ambiguous"}
+)
+
+
+def _iac_run_ended(decision: object) -> bool:
+    """True when the decision doc proves the trace's request already finished.
+
+    Feeds the ``require_final_response`` relaxation in
+    :func:`_observe_and_check_stability`: iac_apply traces never emit
+    ``final_response``, so THEIR completion marker is a run-ended decision
+    doc instead.
+
+    Keys on ``apply_status`` ALONE — deliberately. Serve-time
+    ``reconcile_merge_state()`` can promote ``merge_state`` failed→merged on
+    the fly but never touches ``apply_status``, so this predicate cannot be
+    flipped by a serve-time transform. Do NOT extend it to read
+    ``merge_state`` without revisiting that.
+    """
+    return (
+        isinstance(decision, dict)
+        and decision.get("action") == "iac_apply"
+        and decision.get("apply_status") in _IAC_RUN_ENDED_STATUSES
+    )
+
+
+def _observe_and_check_stability(
+    trace_id: str, events: list[dict], *, require_final_response: bool = True
+) -> bool:
     """Decide whether the timeline is complete via OBSERVED stability.
 
     Two conditions both required for ``complete=True``:
 
-    1. A ``final_response`` event is present. The agent emits this
-       near the end of every run (``_emit_llm_usage`` follows it for
-       token accounting, so ``final_response`` is not strictly the
-       very last entry — the 30-second grace window catches the
-       usage emit and any other tail events).
+    1. A completion marker is present. For chat/recheck traces this is a
+       ``final_response`` event — the agent emits this near the end of
+       every run (``_emit_llm_usage`` follows it for token accounting, so
+       ``final_response`` is not strictly the very last entry — the
+       30-second grace window catches the usage emit and any other tail
+       events). ``iac_apply`` traces emit NONE of the six timeline event
+       kinds (no LLM loop; their timelines are structurally empty), so they
+       can never satisfy this condition — the caller passes
+       ``require_final_response=False`` for them, but ONLY when the
+       decision doc proves the request already ended (see
+       :func:`_iac_run_ended`); the run-ended decision doc IS their
+       completion marker. With the flag off, stability alone decides,
+       including for an empty event list.
     2. The signature (over every event) has been the SAME for at
        least :data:`_STABILITY_GRACE_S` of WALL-CLOCK time in OUR
        observations. NOT the log entry timestamps — those can arrive
-       out of order from Cloud Logging.
+       out of order from Cloud Logging. A later straggler event changes
+       the signature, resets stability, and the caller's ≤300s cache TTL
+       self-heals once this function is next consulted.
 
     On a signature change, the observation resets — the new timeline
     has to hold steady for another full grace window before we'd cache
-    it. On a "no final_response" poll, the observation is dropped
+    it. On a "no completion marker" poll (``require_final_response=True``
+    and no ``final_response`` present), the observation is dropped
     entirely so a transient empty fetch doesn't pollute the next
     poll's stability check.
     """
-    if not any(e.get("event") == "final_response" for e in events):
+    if require_final_response and not any(
+        e.get("event") == "final_response" for e in events
+    ):
         _TRACE_OBSERVATIONS.pop(trace_id, None)
         return False
 
@@ -3303,6 +3352,32 @@ def post_autonomy_route(
     return _serialize_autonomy_state(a)
 
 
+def _decision_created_at_hint(decision: object) -> dt.datetime | None:
+    """The decision's ``created_at`` as a tz-aware datetime, or None.
+
+    Feeds ``CloudLoggingFetcher``'s bounded hint window: ``get_trace`` reads
+    the decision doc BEFORE the log fetch, and its ``created_at`` (persisted
+    on every decision since 19.A.7 and backfilled from the Firestore
+    server timestamp by find_decision_by_trace_id for older docs) pins WHEN
+    the trace happened, so the fetcher can search a narrow window instead of
+    the retention-deep floor. Defensive on shape — missing/str/garbage
+    degrades to None (fetcher falls back to its two-phase query); never
+    raises.
+    """
+    if not isinstance(decision, dict):
+        return None
+    raw = decision.get("created_at")
+    if isinstance(raw, dt.datetime):
+        return raw if raw.tzinfo is not None else raw.replace(tzinfo=dt.timezone.utc)
+    if isinstance(raw, str):
+        try:
+            parsed = dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=dt.timezone.utc)
+    return None
+
+
 @app.get("/trace/{trace_id}")
 def get_trace(
     trace_id: str,
@@ -3409,7 +3484,12 @@ def get_trace(
     # best-effort (Python can't kill a thread mid-call) but it at
     # least prevents the Future from being awaited again.
     fut = _TRACE_FETCH_EXECUTOR.submit(
-        fetcher.fetch, trace_id, limit=_TRACE_FETCH_LIMIT
+        fetcher.fetch,
+        trace_id,
+        limit=_TRACE_FETCH_LIMIT,
+        # Bounded hint window: the decision was read above, BEFORE this fetch,
+        # precisely so old traces don't pay the retention-deep scan.
+        around=_decision_created_at_hint(decision),
     )
     try:
         events = fut.result(timeout=_TRACE_FETCH_TIMEOUT_S)
@@ -3438,7 +3518,13 @@ def get_trace(
     # ``_entry_to_dict``, so the cast is sound.
     events = [redact_event(e) for e in events]  # type: ignore[misc]
 
-    complete = _observe_and_check_stability(trace_id, events)
+    complete = _observe_and_check_stability(
+        trace_id,
+        events,
+        # iac_apply traces never emit final_response; a RUN-ENDED decision
+        # doc + observed stability is their completion signal instead.
+        require_final_response=not _iac_run_ended(decision),
+    )
     # Truncation guard: the fetch is capped at _TRACE_FETCH_LIMIT. A full page
     # means the fetch likely dropped entries — and because the fetcher pulls
     # ``timestamp desc``, it drops the OLDEST, keeping the newest final_response
