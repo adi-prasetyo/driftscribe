@@ -712,3 +712,118 @@ def test_decision_created_at_hint_parses_defensively():
     assert _decision_created_at_hint({"created_at": 12345}) is None
     assert _decision_created_at_hint({}) is None
     assert _decision_created_at_hint(None) is None
+
+
+# --------------------------------------------------------------------------- #
+# iac_apply timelines cache on stability alone (they never emit final_response)
+# --------------------------------------------------------------------------- #
+
+_TRACE_I = "f" * 32
+
+
+def _record_iac_decision_doc(trace_id: str, suffix: str, *, apply_status: str = "applied") -> None:
+    state = get_state()
+    state.record_event(f"ev-iac-{suffix}", {})
+    state.record_decision(
+        f"dec-iac-{suffix}",
+        f"ev-iac-{suffix}",
+        {
+            "action": "iac_apply",
+            "trace_id": trace_id,
+            "event_key": f"ev-iac-{suffix}",
+            "apply_status": apply_status,
+            "merge_state": "merged",
+            "pr_number": 231,
+        },
+    )
+
+
+def test_trace_endpoint_caches_stable_iac_apply_without_final_response(monkeypatch):
+    """iac_apply traces never emit final_response, which made them permanently
+    uncacheable — every 'view details' re-paid the Cloud Logging fetch. A
+    non-empty, stability-grace-stable timeline whose decision is a RUN-ENDED
+    iac_apply now completes and caches; the decision is still re-read on the
+    hit."""
+    _record_iac_decision_doc(_TRACE_I, "cache")
+    stub = _stub_with(
+        [
+            {"trace_id": _TRACE_I, "event": "tool_call", "timestamp": "2026-06-01T00:00:00Z", "insert_id": "i1"},
+            {"trace_id": _TRACE_I, "event": "tool_result", "timestamp": "2026-06-01T00:00:01Z", "insert_id": "i2"},
+        ]
+    )
+    _install_fetcher(stub)
+    client = TestClient(app)
+
+    fake_now = [1000.0]
+    monkeypatch.setattr("agent.main.time.monotonic", lambda: fake_now[0])
+
+    body1 = client.get(f"/trace/{_TRACE_I}").json()
+    assert body1["complete"] is False          # first observation only records
+    assert body1["fetched_from_cache"] is False
+
+    fake_now[0] += _STABILITY_GRACE_S + 1.0
+    body2 = client.get(f"/trace/{_TRACE_I}").json()
+    assert body2["complete"] is True           # stable across the grace window
+    assert body2["fetched_from_cache"] is False
+
+    calls_before = stub.calls
+    body3 = client.get(f"/trace/{_TRACE_I}").json()
+    assert body3["fetched_from_cache"] is True
+    assert stub.calls == calls_before          # no re-fetch on the cache hit
+    assert body3["decision"]["action"] == "iac_apply"  # decision re-read, not frozen
+
+
+def test_trace_endpoint_never_caches_waiting_for_rebake_iac_apply(monkeypatch):
+    """Codex review MAJOR: waiting_for_rebake decisions are recorded BEFORE
+    the merge/re-bake work (the crash-recovery pointer, agent/main.py:5406),
+    so the trace may still be streaming events — a stable-looking snapshot
+    mid-merge must NOT cache."""
+    trace = "8" * 32
+    _record_iac_decision_doc(trace, "rebake", apply_status="waiting_for_rebake")
+    stub = _stub_with(
+        [{"trace_id": trace, "event": "tool_call", "timestamp": "2026-06-01T00:00:00Z", "insert_id": "i1"}]
+    )
+    _install_fetcher(stub)
+    client = TestClient(app)
+
+    fake_now = [3000.0]
+    monkeypatch.setattr("agent.main.time.monotonic", lambda: fake_now[0])
+
+    for _ in range(3):
+        body = client.get(f"/trace/{trace}").json()
+        assert body["complete"] is False
+        assert body["fetched_from_cache"] is False
+        fake_now[0] += _STABILITY_GRACE_S + 1.0
+
+
+def test_trace_endpoint_caches_stable_EMPTY_run_ended_iac_apply(monkeypatch):
+    """AMENDED per Task 0: iac_apply timelines are structurally EMPTY in prod
+    (the apply pipeline emits none of the six event kinds), so the empty-but-
+    stable timeline of a RUN-ENDED apply IS its complete replay and must
+    cache — otherwise every 'view details' on an apply row re-pays the fetch
+    forever. Stability still gates (two observations >= grace apart), and the
+    <=300s TTL self-heals if events ever appear later."""
+    trace = "9" * 32
+    _record_iac_decision_doc(trace, "empty")
+    stub = _stub_with([])
+    _install_fetcher(stub)
+    client = TestClient(app)
+
+    fake_now = [2000.0]
+    monkeypatch.setattr("agent.main.time.monotonic", lambda: fake_now[0])
+
+    body1 = client.get(f"/trace/{trace}").json()
+    assert body1["complete"] is False          # first observation only records
+    assert body1["fetched_from_cache"] is False
+
+    fake_now[0] += _STABILITY_GRACE_S + 1.0
+    body2 = client.get(f"/trace/{trace}").json()
+    assert body2["complete"] is True           # stable-empty + run-ended = complete
+    assert body2["fetched_from_cache"] is False
+
+    calls_before = stub.calls
+    body3 = client.get(f"/trace/{trace}").json()
+    assert body3["fetched_from_cache"] is True
+    assert stub.calls == calls_before
+    assert body3["events"] == []
+    assert body3["decision"]["action"] == "iac_apply"
