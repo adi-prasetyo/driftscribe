@@ -702,6 +702,12 @@ def test_decision_created_at_hint_parses_defensively():
     assert _decision_created_at_hint({"created_at": naive}).tzinfo is not None
     parsed = _decision_created_at_hint({"created_at": "2026-06-01T12:00:00Z"})
     assert parsed == datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    naive_iso = _decision_created_at_hint({"created_at": "2026-06-01T12:00:00"})
+    assert naive_iso == datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    offset_iso = _decision_created_at_hint(
+        {"created_at": "2026-06-01T12:00:00+09:00"}
+    )
+    assert offset_iso == datetime(2026, 6, 1, 3, 0, 0, tzinfo=timezone.utc)
     assert _decision_created_at_hint({"created_at": "not-a-date"}) is None
     assert _decision_created_at_hint({"created_at": 12345}) is None
     assert _decision_created_at_hint({}) is None
