@@ -32,11 +32,13 @@
     splitCards,
     scopeTotals,
     startHereAssetType,
+    investigateUnmatchedPrefill,
     type InfraGraph,
     type ResourceCard,
     type ResourceRowStatus,
     type PlanOverlay,
     type PendingApproval,
+    type UnmatchedDeclaration,
     findPendingPr,
   } from '../lib/infra_graph';
   import { iacApprovalHref } from '../lib/approval';
@@ -52,6 +54,7 @@
     previewPr = null,
     onExitPreview,
     onAdopt,
+    onInvestigate,
     adoptDisabled = false,
     onGraph,
     onPending,
@@ -66,6 +69,14 @@
     onExitPreview?: () => void;
     /** Adopt click → App prefills the chat with this string (NOT auto-sent). */
     onAdopt?: (prefill: string) => void;
+    /**
+     * Investigate click (unmatched-declarations band) → App prefills a NEW
+     * Provision chat with this read-only investigation prompt (NOT auto-sent).
+     * App wires the SAME `handleAdopt` bridge here: both start a clean Provision
+     * draft, scroll it into view, and never submit. Kept a distinct prop so the
+     * two intents read clearly at the call site and can diverge later.
+     */
+    onInvestigate?: (prefill: string) => void;
     /**
      * Disable the Adopt buttons — App passes the SAME condition that disables
      * ChatForm (busy / historical replay), so an Adopt click can never silently
@@ -154,6 +165,15 @@
   const degraded = $derived(graph?.degraded ?? false);
   const totals = $derived(graph?.totals ?? null);
 
+  // Unmatched IaC declarations (design 2026-07-11): declarations that did not
+  // match a live CAI resource. A SEPARATE top-level slice — never a live node,
+  // never counted in totals/coverage/adoption. Absent on a degraded graph or a
+  // stale coordinator (optional field), so the band + badge simply don't render.
+  const unmatched = $derived(degraded ? null : (graph?.unmatched_declarations ?? null));
+  const unmatchedEntries = $derived(unmatched?.entries ?? []);
+  const hasUnmatched = $derived(unmatchedEntries.length > 0);
+  const unmatchedCount = $derived(unmatched?.count ?? 0);
+
   // Resource cards (card-grid view; design 2026-06-24-infra-resource-cards): one
   // card per group, managed AND drift rows together, drift rows carrying the
   // inline Adopt button. Pure derivation in lib/infra_graph keeps this component
@@ -203,6 +223,15 @@
   function clickAdopt(prefill: string): void {
     if (adoptDisabled) return;
     onAdopt?.(prefill);
+  }
+
+  // Investigate an unmatched declaration: compose the read-only Provision
+  // prefill from the current graph and hand it up. Shares adoptDisabled so a
+  // click can never replace a draft while chat is busy or a historical replay is
+  // active. Guarded on `graph` (the prefill needs the live node sample).
+  function clickInvestigate(d: UnmatchedDeclaration): void {
+    if (adoptDisabled || !graph) return;
+    onInvestigate?.(investigateUnmatchedPrefill(d, graph));
   }
 
   // The overlay actually drawn (only when preview is active AND it has ghosts).
@@ -492,6 +521,17 @@
           >{scope.managed}/{scope.resources} managed{scopePct === null ? '' : ` · ${scopePct}%`}</span
         >
       {/if}
+      <!-- Separate glanceable badge for unmatched IaC declarations. Independent
+           of the drift/in-sync badge above (never merged into a combined number)
+           and does NOT touch scope.drift / coverage / card ordering. -->
+      {#if hasUnmatched}
+        <span
+          class="ds-pill ds-pill--muted infra-summary__unmatched"
+          data-testid="infra-unmatched-badge"
+          title="Declared in IaC, not found in the latest inventory"
+          >{unmatchedCount} IaC unmatched</span
+        >
+      {/if}
     </span>
   </summary>
 
@@ -665,6 +705,55 @@
           />
         {/if}
       </p>
+    {/if}
+
+    <!-- Unmatched-declarations band (design 2026-07-11): IaC declarations that
+         did not match a live CAI resource. An UNFRAMED status band (divider, not
+         a nested .ds-card) between the coverage hero and the resource-card grids,
+         on the NORMAL (non-preview) path only. These are NOT live resources: no
+         green/amber dot, no managed/Adopt/pending marker — only a read-only
+         Investigate that opens a Provision draft. Evidence, not proof of a
+         rename or deletion (the copy says so). -->
+    {#if !previewActive && graph && !degraded && hasUnmatched}
+      <section
+        class="infra-unmatched"
+        data-testid="infra-unmatched"
+        aria-label="IaC declarations not found in the latest inventory"
+      >
+        <div class="infra-unmatched__head">
+          <h3 class="infra-unmatched__title ds-label">Declared in IaC, not found live</h3>
+          <p class="ds-subtle infra-unmatched__lead">
+            These declarations did not match the latest Cloud Asset Inventory snapshot.
+            Index lag or an unapplied IaC change can cause this.
+          </p>
+        </div>
+        <ul class="infra-unmatched__list">
+          {#each unmatchedEntries as d (d.id)}
+            <li class="infra-unmatched__row" data-testid="infra-unmatched-row">
+              <span class="infra-unmatched__type">{d.type_label}</span>
+              <span class="infra-unmatched__name">{d.label}</span>
+              {#if d.address}
+                <code class="infra-unmatched__addr">{d.address}</code>
+              {/if}
+              <button
+                class="ds-btn ds-btn--ghost infra-unmatched__btn"
+                type="button"
+                data-testid="infra-unmatched-investigate"
+                disabled={adoptDisabled}
+                title={adoptDisabled
+                  ? 'Unavailable while the chat is busy or reviewing past reasoning.'
+                  : 'Ask Provision to investigate this declaration (opens a draft, sends nothing)'}
+                onclick={() => clickInvestigate(d)}
+              ><Icon name="compass" size={13} extraClass="infra-unmatched__btn-icon" />Investigate</button>
+            </li>
+          {/each}
+          {#if unmatched && unmatched.truncated > 0}
+            <li class="ds-subtle infra-unmatched__trailer" data-testid="infra-unmatched-trailer">
+              +{unmatched.truncated} more declarations not shown
+            </li>
+          {/if}
+        </ul>
+      </section>
     {/if}
 
     <!-- Preview keeps the lazy Mermaid ghost map (its one genuine use — a card
@@ -1256,6 +1345,85 @@
   .infra-pending-band__pr-title {
     color: var(--ds-muted);
     overflow-wrap: anywhere;
+  }
+
+  /* Unmatched-declarations band (design 2026-07-11) — an UNFRAMED status band
+     (top divider, no .ds-card frame) between the coverage hero and the card
+     grids. Restrained warning emphasis: a neutral row surface with a warn-border
+     left accent, NOT the full amber drift-row fill (these are not adoptable live
+     resources) and NOT a destructive-failure red. Rows carry no status dot. */
+  .infra-unmatched {
+    margin: var(--ds-sp-3) 0 0;
+    padding: var(--ds-sp-3) 0 0;
+    border-top: 1px solid var(--ds-border);
+  }
+  .infra-unmatched__head {
+    margin-bottom: var(--ds-sp-2);
+  }
+  .infra-unmatched__title {
+    display: block;
+    color: var(--ds-fg-soft);
+  }
+  .infra-unmatched__lead {
+    margin: var(--ds-sp-1) 0 0;
+    font-size: var(--ds-fs-1);
+  }
+  .infra-unmatched__list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--ds-sp-1);
+  }
+  .infra-unmatched__row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--ds-sp-2) var(--ds-sp-3);
+    padding: var(--ds-sp-2) var(--ds-sp-3);
+    border-left: 3px solid var(--ds-warn-border);
+    border-radius: var(--ds-radius);
+    background: var(--ds-surface-2);
+  }
+  .infra-unmatched__type {
+    flex: none;
+    font-size: var(--ds-fs-1);
+    color: var(--ds-muted);
+  }
+  .infra-unmatched__name {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    font-size: var(--ds-fs-2);
+    font-weight: var(--ds-fw-semibold);
+    color: var(--ds-fg);
+  }
+  .infra-unmatched__addr {
+    /* Shrinkable + min-width:0 so a long mono HCL address BREAKS instead of
+       forcing horizontal page overflow at narrow widths (flex:none / the default
+       min-width:auto would keep it at content size and overflow at 390px). */
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    font-family: var(--ds-font-mono);
+    font-size: var(--ds-fs-1);
+    color: var(--ds-muted);
+  }
+  .infra-unmatched__btn {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--ds-sp-1);
+    padding: 0.2em 0.7em;
+    font-size: var(--ds-fs-1);
+  }
+  .infra-unmatched__trailer {
+    margin: 0;
+    padding: var(--ds-sp-1) var(--ds-sp-3);
+    font-size: var(--ds-fs-1);
+    font-style: italic;
   }
   .infra-card__muted {
     /* The "not an adoptable type" note takes its own line below the dot + name

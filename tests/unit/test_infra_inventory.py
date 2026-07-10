@@ -713,3 +713,136 @@ def test_end_to_end_noncai_form_bucket_import_is_false_drift():
     assert out["by_type"][BUCKET_TYPE]["sample"][0]["iac"] is False
     assert out["declared_not_found"][0]["possible_causes"] == \
         ["cai_lag", "not_yet_applied", "format_mismatch"]
+
+
+# --------------------------------------------------------------------------- #
+# unmatched_iac — safe cached projection of resolved, NON-sensitive IaC
+# declarations that did not match a live CAI resource (2026-07-11 plan). Derived
+# from the same declared_not_found list, so the two can never disagree about
+# which declarations were unmatched. Sensitive types are excluded ENTIRELY.
+# --------------------------------------------------------------------------- #
+
+SECRET_VERSION_TYPE = "secretmanager.googleapis.com/SecretVersion"
+
+
+def test_resolved_unmatched_declaration_produces_raw_and_safe_projection():
+    # A resolved, non-sensitive declaration with no live match stays in raw
+    # declared_not_found AND yields the safe unmatched_iac projection alongside it.
+    decl = _decl("bucket-a", BUCKET_TYPE, "google_storage_bucket.bucket_a")
+    out = build_inventory([], [decl], project="p", iac_snapshot_sha="sha1")
+    assert len(out["declared_not_found"]) == 1
+    assert out["declared_not_found"][0]["identity"] == "bucket-a"
+    proj = out["unmatched_iac"]
+    assert proj["count"] == 1
+    assert proj["truncated"] == 0
+    assert proj["entries"] == [{
+        "asset_type": BUCKET_TYPE,
+        "name": "bucket-a",
+        "address": "google_storage_bucket.bucket_a",
+    }]
+    # Never copies confidence/source/identity/possible_causes into the projection.
+    assert set(proj["entries"][0]) == {"asset_type", "name", "address"}
+
+
+def test_matched_declaration_yields_no_raw_missing_and_no_projection():
+    res = [CaiResource(
+        name="//storage.googleapis.com/bucket-a",
+        asset_type=BUCKET_TYPE, location="asia-northeast1",
+    )]
+    decl = _decl("bucket-a", BUCKET_TYPE, "google_storage_bucket.bucket_a")
+    out = build_inventory(res, [decl], project="p", iac_snapshot_sha="sha1")
+    assert out["declared_not_found"] == []
+    assert "unmatched_iac" not in out
+
+
+def test_unresolved_identity_and_unknown_type_stay_raw_only():
+    # identity=None (runtime-valued attr) and asset_type=None (unsupported type)
+    # both remain in raw declared_not_found but never enter the safe projection.
+    unresolved = DeclaredIdentity(
+        identity=None, address="google_pubsub_topic.dynamic",
+        source="derived_resource", confidence="derived", asset_type=TOPIC_TYPE,
+    )
+    unsupported = DeclaredIdentity(
+        identity="some/thing", address="google_thing.x",
+        source="import_id", confidence="high", asset_type=None,
+    )
+    out = build_inventory(
+        [], [unresolved, unsupported], project="p", iac_snapshot_sha="sha1",
+    )
+    assert len(out["declared_not_found"]) == 2
+    assert "unmatched_iac" not in out
+
+
+def test_secret_declarations_never_enter_unmatched_iac():
+    import json
+    secret = DeclaredIdentity(
+        identity="projects/p/secrets/api-key",
+        address="google_secret_manager_secret.api_key",
+        source="import_id", confidence="high", asset_type=SECRET_TYPE,
+    )
+    secret_version = DeclaredIdentity(
+        identity="projects/p/secrets/api-key/versions/1",
+        address="google_secret_manager_secret_version.v1",
+        source="import_id", confidence="high", asset_type=SECRET_VERSION_TYPE,
+    )
+    bucket = _decl("plain-bucket", BUCKET_TYPE, "google_storage_bucket.plain")
+    out = build_inventory(
+        [], [secret, secret_version, bucket], project="p", iac_snapshot_sha="sha1",
+    )
+    proj = out["unmatched_iac"]
+    # Only the bucket survives; neither secret's identity nor address is present.
+    assert proj["count"] == 1
+    assert proj["entries"][0]["name"] == "plain-bucket"
+    blob = json.dumps(proj)
+    assert "api-key" not in blob
+    assert "google_secret_manager_secret" not in blob
+
+
+def test_projection_name_is_last_segment_of_canonical_identity():
+    run_decl = DeclaredIdentity(
+        identity="projects/p/locations/l/services/storefront-old",
+        address="google_cloud_run_v2_service.storefront_old",
+        source="import_id", confidence="high", asset_type=RUN_TYPE,
+    )
+    topic_decl = _decl(
+        "projects/p/topics/order-events", TOPIC_TYPE, "google_pubsub_topic.orders",
+    )
+    bucket_decl = _decl("bare-bucket", BUCKET_TYPE, "google_storage_bucket.bare")
+    out = build_inventory(
+        [], [run_decl, topic_decl, bucket_decl], project="p", iac_snapshot_sha="sha1",
+    )
+    names = {e["asset_type"]: e["name"] for e in out["unmatched_iac"]["entries"]}
+    assert names[RUN_TYPE] == "storefront-old"
+    assert names[TOPIC_TYPE] == "order-events"
+    assert names[BUCKET_TYPE] == "bare-bucket"
+
+
+def test_more_than_ten_eligible_declarations_are_sorted_and_capped():
+    # 12 unmatched buckets handed in reverse order → projection sorts ascending by
+    # (asset_type, name, address), caps at 10, and reports honest count/truncated.
+    decls = [
+        _decl(f"bucket-{i:02d}", BUCKET_TYPE, f"google_storage_bucket.b{i:02d}")
+        for i in reversed(range(12))
+    ]
+    out = build_inventory([], decls, project="p", iac_snapshot_sha="sha1")
+    proj = out["unmatched_iac"]
+    assert proj["count"] == 12
+    assert len(proj["entries"]) == 10
+    assert proj["truncated"] == 2
+    assert [e["name"] for e in proj["entries"]] == [f"bucket-{i:02d}" for i in range(10)]
+
+
+def test_no_eligible_entries_omits_unmatched_iac_entirely():
+    out = build_inventory([], [], project="p", iac_snapshot_sha="sha1")
+    assert "unmatched_iac" not in out
+
+
+def test_unmatched_iac_entry_omits_address_when_declaration_has_none():
+    # address is only included when it is a non-empty string.
+    decl = DeclaredIdentity(
+        identity="lonely-bucket", address="",
+        source="derived_resource", confidence="derived", asset_type=BUCKET_TYPE,
+    )
+    out = build_inventory([], [decl], project="p", iac_snapshot_sha="sha1")
+    entry = out["unmatched_iac"]["entries"][0]
+    assert entry == {"asset_type": BUCKET_TYPE, "name": "lonely-bucket"}

@@ -106,6 +106,16 @@ discovered by the `infra-reader` worker through Cloud Asset Inventory and resolv
 eventually-consistent index and the map is cached on top of it, a newly created resource takes a
 few minutes to appear on the map. That is discovery latency, not a fault.
 
+**The map also shows the reverse: IaC declarations not found live.** When a declaration in `iac/`
+does not match any resource in the latest Cloud Asset Inventory snapshot, the Infrastructure panel
+lists it in a separate "Declared in IaC, not found live" band (non-sensitive types only). This is
+evidence to look into, not proof that the resource was deleted or renamed: index lag or an
+unapplied IaC change can cause the same gap. Investigate opens a read-only Provision draft that asks
+the crew to check whether a visible unmanaged resource might be an intended replacement, and it does
+not change or submit anything. Automatic `A -> B` reconciliation is deliberately not supported:
+DriftScribe does not remove the old declaration, migrate OpenTofu state, import the new identity, or
+relax the plan safeguards on its own. This is the Infrastructure/Provision lane, not Anchor.
+
 **Read scope at a glance.** The crews differ as much in what they can *see* as
 in what they can do. Anchor and Patch read only their own lane; Provision adds
 the infra inventory it needs to author changes; Explore reads across every lane,

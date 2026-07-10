@@ -317,6 +317,73 @@ test.describe('transparency UI (mock smoke)', () => {
     await expect(page.locator(`[data-testid="${TESTIDS.infraOtherCards}"]`)).toContainText('1 secret');
   });
 
+  test('unmatched-declarations band: separate badge, Investigate prefills a Provision draft (no /chat), Adopt still present, layout holds', async ({
+    page,
+  }) => {
+    await seedToken(page);
+    await mockData(page, freshState());
+    let chatPosts = 0;
+    page.on('request', (req) => {
+      if (req.url().includes('/chat') && req.method() === 'POST') chatPosts++;
+    });
+    await page.goto('/');
+
+    // The collapsed summary carries a SEPARATE "N IaC unmatched" badge, distinct
+    // from the drift badge (both present, never merged into one number).
+    await expect(page.locator(`[data-testid="${TESTIDS.infraUnmatchedBadge}"]`)).toHaveText(
+      /1 IaC unmatched/,
+    );
+    await expect(page.locator(`[data-testid="${TESTIDS.infraDriftBadge}"]`)).toHaveText(/1 drift/);
+
+    // Expand → the band AND the live unmanaged resource are both visible.
+    await page.locator(`[data-testid="${TESTIDS.infraToggle}"]`).click();
+    const band = page.locator(`[data-testid="${TESTIDS.infraUnmatched}"]`);
+    await expect(band).toBeVisible();
+    await expect(band).toContainText('storefront-old');
+    await expect(band).toContainText('google_cloud_run_v2_service.storefront_old');
+    await expect(band).toContainText('did not match the latest Cloud Asset Inventory snapshot');
+    const cards = page.locator(`[data-testid="${TESTIDS.infraCards}"]`);
+    await expect(cards).toContainText('storefront');
+    // The live drift resource keeps its normal Adopt button (band adds none).
+    await expect(page.locator('[data-testid="card-adopt-btn"]').first()).toBeVisible();
+
+    // Layout holds at real viewports: the band + all its content (long names,
+    // mono HCL addresses, the Investigate button) fit within the viewport width
+    // and the grid stays visible. Scoped to the band on purpose — the app rail's
+    // own mobile-width behavior is a separate concern, not this feature's.
+    for (const [name, vp] of [
+      ['desktop', { width: 1280, height: 900 }],
+      ['mobile', { width: 390, height: 844 }],
+    ] as const) {
+      await page.setViewportSize(vp);
+      await expect(band).toBeVisible();
+      await expect(cards).toBeVisible();
+      await page.screenshot({ path: `test-results/infra-unmatched-${name}.png`, fullPage: true });
+      // No band descendant (long name, mono HCL address, Investigate button) may
+      // extend past the band's OWN right edge — i.e. everything wraps within the
+      // space the band is given, adding no horizontal overflow of its own. Scoped
+      // to the band's box (not the viewport) because the desktop-first app shell's
+      // rail is already wider than a 390px viewport, which is a separate concern.
+      const bandOverflow = await band.evaluate((el) => {
+        const boxRight = el.getBoundingClientRect().right;
+        return Math.max(
+          0,
+          ...[...el.querySelectorAll('*')].map((c) => c.getBoundingClientRect().right - boxRight),
+        );
+      });
+      expect(bandOverflow, `band content overflows the band box at ${name}`).toBeLessThanOrEqual(1);
+    }
+
+    // Investigate → a fresh Provision draft, prefilled, NOT submitted.
+    await page.locator(`[data-testid="${TESTIDS.infraUnmatchedInvestigate}"]`).click();
+    const prompt = page.locator('#prompt-input');
+    await expect(prompt).toHaveValue(/storefront-old/);
+    await expect(prompt).toHaveValue(/do not assume a rename/);
+    await expect(page.locator('input[type="radio"]:checked')).toHaveValue('provision');
+    // The click prefilled a draft only — no chat turn was sent.
+    expect(chatPosts).toBe(0);
+  });
+
   test('open-trace enters historical mode; new chat exits', async ({ page }) => {
     await seedToken(page);
     await mockData(page, freshState());

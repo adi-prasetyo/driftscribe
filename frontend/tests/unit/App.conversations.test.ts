@@ -536,6 +536,24 @@ const ADOPT_GRAPH = {
   edges: [],
 };
 
+// ADOPT_GRAPH + an unmatched IaC declaration → drives the Investigate bridge.
+const UNMATCHED_GRAPH = {
+  ...ADOPT_GRAPH,
+  unmatched_declarations: {
+    count: 1,
+    truncated: 0,
+    entries: [
+      {
+        id: 'u0',
+        asset_type: 'storage.googleapis.com/Bucket',
+        type_label: 'Storage bucket',
+        label: 'bucket-old',
+        address: 'google_storage_bucket.bucket_old',
+      },
+    ],
+  },
+};
+
 function resumeFixtures() {
   const list = {
     conversations: [
@@ -650,6 +668,31 @@ describe('App — composer New chat + crew lock', () => {
       expect(checked.value).toBe('provision');
       expect(container.querySelector('input[aria-disabled="true"]')).toBeNull();
     });
+  });
+
+  it('an Investigate click starts a clean Provision draft and sends no /chat', async () => {
+    stubResumeFetch(UNMATCHED_GRAPH);
+    const { findByTestId, queryByTestId, container } = render(App);
+    await fireEvent.click(await findByTestId('conversation-open'));
+    await findByTestId('conversation-thread');
+    await fireEvent.click(await findByTestId('infra-unmatched-investigate'));
+    await waitFor(() => {
+      // Fresh Provision draft (same handleAdopt bridge): thread dropped, composer
+      // prefilled with the investigation prompt, Provision selected, crews unlocked.
+      expect(queryByTestId('conversation-thread')).toBeNull();
+      const input = container.querySelector('#prompt-input') as HTMLTextAreaElement;
+      expect(input.value).toContain('bucket-old');
+      expect(input.value).toContain('do not assume a rename');
+      const checked = container.querySelector('input[type="radio"]:checked') as HTMLInputElement;
+      expect(checked.value).toBe('provision');
+      expect(container.querySelector('input[aria-disabled="true"]')).toBeNull();
+    });
+    // The click prefills a DRAFT ONLY — it must never POST /chat.
+    const calls = (fetch as unknown as { mock: { calls: [RequestInfo | URL, RequestInit?][] } }).mock.calls;
+    const chatPosts = calls.filter(
+      ([input, init]) => String(input).includes('/chat') && init?.method === 'POST',
+    );
+    expect(chatPosts).toHaveLength(0);
   });
 });
 

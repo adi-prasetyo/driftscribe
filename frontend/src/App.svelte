@@ -1052,6 +1052,7 @@
         {previewPr}
         onExitPreview={exitPreview}
         onAdopt={handleAdopt}
+        onInvestigate={handleAdopt}
         adoptDisabled={chatDisabled}
         onGraph={(g) => (tourGraph = g)}
         onPending={(a) => (tourPending = a)}

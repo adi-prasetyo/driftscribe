@@ -2252,7 +2252,10 @@ _infra_graph_cache_store_override: "InfraGraphCacheStore | None" = None
 # Bump when the persisted payload contract changes so a deploy ignores
 # stale-shaped docs written by an older revision. L1 is naturally cleared by an
 # instance recycle; L2 survives deploys, so it needs an explicit version gate.
-_INFRA_GRAPH_L2_FORMAT_VERSION = 3  # v3: invalidate v2 docs cached from a pre-#193
+_INFRA_GRAPH_L2_FORMAT_VERSION = 4  # v4: invalidate v3 docs cached before the
+# unmatched_iac projection existed — a v3 doc lacks it, so the unmatched-
+# declarations band would appear or vanish depending on whether an instance
+# served a pre-deploy L2 record. v3: invalidate v2 docs cached from a pre-#193
 # worker that never actually populated not_in_iac_control_plane (v2 was bumped
 # with the reader code but the worker lagged, so v2 docs hold field-less
 # inventories that force build_graph's raw-drift fallback). v2: field added.
@@ -2640,9 +2643,13 @@ def _persist_infra_inventory(inventory: dict, *, l1_ttl: float, l2_ttl: float) -
     write failure both return False.
 
     Strips ``declared_not_found`` (the only field carrying full declared-vs-live
-    resource paths; ``build_graph`` never reads it) before persisting, so the
-    at-rest L2 doc — and the L1 copy, via this single write path — omits it. L1
-    stamps a monotonic clock; L2 stamps wall-clock + the format version."""
+    canonical resource paths; ``build_graph`` never reads it) before persisting,
+    so the at-rest L2 doc — and the L1 copy, via this single write path — omits
+    it. The bounded, redaction-safe ``unmatched_iac`` projection is DELIBERATELY
+    retained: it carries only asset_type + short name + HCL address (no canonical
+    path, confidence, or possible_causes), and the operator UI's unmatched-
+    declarations band is built from it, so it must survive L1/L2. L1 stamps a
+    monotonic clock; L2 stamps wall-clock + the format version."""
     global _INFRA_INVENTORY_CACHE
     stripped = {k: v for k, v in inventory.items() if k != "declared_not_found"}
     if l1_ttl > 0:

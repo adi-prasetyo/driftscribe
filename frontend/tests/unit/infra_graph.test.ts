@@ -15,11 +15,13 @@ import {
   scopeTotals,
   startHereAssetType,
   normalizeForPrompt,
+  investigateUnmatchedPrefill,
   type InfraGraph,
   type InfraGroup,
   type InfraNode,
   type PlanOverlay,
   type OverlayEntry,
+  type UnmatchedDeclaration,
 } from '../../src/lib/infra_graph';
 
 const RUN = 'run.googleapis.com/Service';
@@ -1808,5 +1810,186 @@ describe('scopeTotals — coverage within the adoptable scope', () => {
     const g = graph({ degraded: true, groups: [] });
     const s = scopeTotals(resourceCards(g), g.totals.resources);
     expect(s).toEqual({ resources: 0, managed: 0, drift: 0, totalResources: 0, outOfScope: 0, otherResources: 0, otherTypes: 0 });
+  });
+});
+
+describe('investigateUnmatchedPrefill', () => {
+  function decl(p: Partial<UnmatchedDeclaration> = {}): UnmatchedDeclaration {
+    return {
+      id: 'u0',
+      asset_type: BUCKET,
+      type_label: 'Storage bucket',
+      label: 'bucket-a',
+      address: 'google_storage_bucket.bucket_a',
+      ...p,
+    };
+  }
+
+  it('lists a single same-type unmanaged candidate and pins the intent sentences', () => {
+    const g = graph({
+      groups: [
+        group({
+          asset_type: BUCKET,
+          label: 'Storage bucket',
+          nodes: [node({ id: 'g0n0', label: 'bucket-b', asset_type: BUCKET })],
+        }),
+      ],
+    });
+    const p = investigateUnmatchedPrefill(decl(), g);
+    expect(p).toContain(
+      'Investigate why IaC declares the Storage bucket `bucket-a` (`google_storage_bucket.bucket_a`) but it was not found in the latest Cloud Asset Inventory.',
+    );
+    expect(p).toContain('Visible unmanaged resources of the same type: `bucket-b`.');
+    expect(p).toContain('do not assume a rename, change files, or open a PR');
+    expect(p).toContain('ask me to confirm the relationship first');
+  });
+
+  it('lists multiple candidates in graph order', () => {
+    const g = graph({
+      groups: [
+        group({
+          asset_type: BUCKET,
+          label: 'Storage bucket',
+          nodes: [
+            node({ id: 'a', label: 'bucket-b', asset_type: BUCKET }),
+            node({ id: 'b', label: 'bucket-c', asset_type: BUCKET }),
+          ],
+        }),
+      ],
+    });
+    expect(investigateUnmatchedPrefill(decl(), g)).toContain(
+      'Visible unmanaged resources of the same type: `bucket-b`, `bucket-c`.',
+    );
+  });
+
+  it('says so explicitly when there are no visible candidates', () => {
+    const p = investigateUnmatchedPrefill(decl(), graph({ groups: [] }));
+    expect(p).toContain('No unmanaged resources of the same type are currently visible.');
+    expect(p).not.toContain('Visible unmanaged resources of the same type:');
+  });
+
+  it('excludes managed, control-plane, and cross-type nodes', () => {
+    const g = graph({
+      groups: [
+        group({
+          asset_type: BUCKET,
+          label: 'Storage bucket',
+          nodes: [
+            node({ id: 'm', label: 'managed-bucket', asset_type: BUCKET, managed: true }),
+            node({ id: 'c', label: 'cp-bucket', asset_type: BUCKET, control_plane: true }),
+            node({ id: 'ok', label: 'plain-bucket', asset_type: BUCKET }),
+          ],
+        }),
+        group({
+          asset_type: RUN,
+          label: 'Cloud Run service',
+          nodes: [node({ id: 'r', label: 'some-service', asset_type: RUN })],
+        }),
+      ],
+    });
+    const p = investigateUnmatchedPrefill(decl(), g);
+    expect(p).toContain('Visible unmanaged resources of the same type: `plain-bucket`.');
+    expect(p).not.toContain('managed-bucket');
+    expect(p).not.toContain('cp-bucket');
+    expect(p).not.toContain('some-service');
+  });
+
+  it('de-duplicates repeated candidate labels', () => {
+    const g = graph({
+      groups: [
+        group({
+          asset_type: BUCKET,
+          label: 'Storage bucket',
+          nodes: [
+            node({ id: 'a', label: 'dup', asset_type: BUCKET }),
+            node({ id: 'b', label: 'dup', asset_type: BUCKET }),
+          ],
+        }),
+      ],
+    });
+    expect(investigateUnmatchedPrefill(decl(), g)).toContain(
+      'Visible unmanaged resources of the same type: `dup`.',
+    );
+  });
+
+  it('caps at five candidates and appends a bounded "(and more may exist)"', () => {
+    const g = graph({
+      groups: [
+        group({
+          asset_type: BUCKET,
+          label: 'Storage bucket',
+          nodes: Array.from({ length: 7 }, (_, i) =>
+            node({ id: `n${i}`, label: `b${i}`, asset_type: BUCKET }),
+          ),
+        }),
+      ],
+    });
+    const p = investigateUnmatchedPrefill(decl(), g);
+    expect(p).toContain(
+      'Visible unmanaged resources of the same type: `b0`, `b1`, `b2`, `b3`, `b4` (and more may exist).',
+    );
+    expect(p).not.toContain('`b5`');
+    expect(p).not.toContain('`b6`');
+  });
+
+  it('normalizes control chars and long names in every fragment', () => {
+    const g = graph({
+      groups: [
+        group({
+          asset_type: BUCKET,
+          label: 'Storage bucket',
+          nodes: [node({ id: 'a', label: 'na\tme\nb', asset_type: BUCKET })],
+        }),
+      ],
+    });
+    const p = investigateUnmatchedPrefill(
+      decl({ label: 'de\tcl', type_label: 'Storage\tbucket', address: 'addr\nx' }),
+      g,
+    );
+    expect(p).toContain('Investigate why IaC declares the Storage bucket `de cl` (`addr x`)');
+    expect(p).toContain('`na me b`');
+  });
+
+  it('omits the address clause when the declaration has none', () => {
+    const p = investigateUnmatchedPrefill(decl({ address: undefined }), graph({ groups: [] }));
+    expect(p).toContain('Investigate why IaC declares the Storage bucket `bucket-a` but it was not found');
+    expect(p).not.toContain('()');
+  });
+});
+
+describe('unmatched_declarations does not affect existing derivations', () => {
+  it('resourceCards, scopeTotals, and adoptRows are identical with/without the field', () => {
+    const base = graph({
+      totals: { resources: 2, managed: 1, drift: 1 },
+      groups: [
+        group({
+          asset_type: BUCKET,
+          label: 'Storage bucket',
+          count: 2,
+          managed: 1,
+          drift: 1,
+          drift_adoptable: 1,
+          adoptable: true,
+          adopt_rank: 1,
+          nodes: [
+            node({ id: 'g0n0', label: 'managed-b', asset_type: BUCKET, managed: true }),
+            node({ id: 'g0n1', label: 'drift-b', asset_type: BUCKET }),
+          ],
+        }),
+      ],
+    });
+    const withField: InfraGraph = {
+      ...base,
+      unmatched_declarations: {
+        count: 1,
+        entries: [{ id: 'u0', asset_type: BUCKET, type_label: 'Storage bucket', label: 'ghost-b' }],
+        truncated: 0,
+      },
+    };
+    expect(resourceCards(withField)).toEqual(resourceCards(base));
+    expect(scopeTotals(resourceCards(withField), withField.totals.resources)).toEqual(
+      scopeTotals(resourceCards(base), base.totals.resources),
+    );
+    expect(adoptRows(withField)).toEqual(adoptRows(base));
   });
 });

@@ -131,6 +131,17 @@ cached on top of it. Create a resource by hand and it takes a few minutes before
 and the cache has refreshed, so it will not appear on the map instantly.
 That lag is normal discovery latency, not a fault.
 
+The map can show both sides of an identity mismatch: an IaC declaration not found in the latest
+inventory, and a live resource not declared in IaC. It does not call that a rename. The operator can
+ask Provision to investigate possible replacements, but must decide whether the resources are
+related. Declarations of sensitive types (secrets and secret versions) are never listed here, even
+as a count; the crews' raw inventory tool still reports them with the identity redacted.
+
+Automatic reconciliation is future work. A safe version would need explicit operator confirmation,
+IaC file deletion and update support, state migration, a full C2 plan, and the existing approval
+gate. Until then, the normal adoption tool stays add and import only, and cannot remove the stale
+declaration.
+
 ---
 
 ## 4. The safety model (layers, in plain words)

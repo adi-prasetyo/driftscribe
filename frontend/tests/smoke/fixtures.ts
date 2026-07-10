@@ -19,6 +19,9 @@ export const TESTIDS = {
   infraOther: 'infra-other',
   infraOtherCards: 'infra-other-cards',
   infraDriftBadge: 'infra-drift-badge',
+  infraUnmatched: 'infra-unmatched',
+  infraUnmatchedInvestigate: 'infra-unmatched-investigate',
+  infraUnmatchedBadge: 'infra-unmatched-badge',
   infraRefresh: 'infra-refresh',
   conversationsPane: 'conversations-pane',
   conversationOpen: 'conversation-open',
@@ -185,7 +188,8 @@ export function iacTraceResponse() {
 
 // GET /infra/graph — the resource-map DTO (build_graph shape). A Cloud Run group
 // (one managed, one drift) + a counts-only secret group. totals.drift = 2 so the
-// glanceable badge reads "2 drift"; the secret group carries NO name.
+// glanceable badge reads "2 drift"; the secret group carries NO name. Also carries
+// one unmatched IaC declaration (storefront-old) — SEPARATE from the live counts.
 export function infraGraphResponse() {
   return {
     generated_at: '2026-06-03T00:00:00Z',
@@ -221,6 +225,23 @@ export function infraGraphResponse() {
     ],
     edges: [],
     truncated: { per_type_sample: 10 },
+    // One unmatched IaC declaration: a Cloud Run service declared in iac/ but not
+    // found in the latest CAI snapshot. Kept SEPARATE from the live counts above,
+    // so totals/coverage/adoption are UNCHANGED (the live `storefront` node still
+    // stands as unmanaged drift). Drives the "Declared in IaC, not found live" band.
+    unmatched_declarations: {
+      count: 1,
+      truncated: 0,
+      entries: [
+        {
+          id: 'u0',
+          asset_type: 'run.googleapis.com/Service',
+          type_label: 'Cloud Run service',
+          label: 'storefront-old',
+          address: 'google_cloud_run_v2_service.storefront_old',
+        },
+      ],
+    },
   };
 }
 

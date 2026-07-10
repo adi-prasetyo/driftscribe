@@ -28,6 +28,10 @@ _FRESHNESS = (
 )
 _SAMPLE_CAP = 10
 
+# Cap on the safe unmatched-IaC projection surfaced to the operator UI. Small +
+# explicit; the raw declared_not_found diagnostic (crew tools) is uncapped.
+_UNMATCHED_IAC_CAP = 10
+
 # The one type whose sample may carry an enrichment-joined ``image``. Gating on
 # it keeps the pure layer robust even if a future reader mis-set ``image`` on a
 # non-run row (defense in depth — the reader only sets it on run services today).
@@ -79,6 +83,62 @@ def normalize_cai_name(name: str) -> str:
 
 def _is_sensitive(asset_type: str) -> bool:
     return asset_type in SENSITIVE_ASSET_TYPES
+
+
+def _unmatched_iac_projection(declared_not_found: list[dict]) -> dict | None:
+    """Bounded, redaction-safe projection of resolved, NON-sensitive IaC
+    declarations that did not match a live CAI resource — the operator-UI slice
+    of the raw ``declared_not_found`` diagnostic.
+
+    Derived from the SAME ``declared_not_found`` list built above (not a re-scan
+    of the declared set), so the raw diagnostic and this projection can never
+    disagree about which declarations were unmatched. Only three allowlisted,
+    explicitly-constructed fields survive — ``asset_type``, a short ``name``, and
+    the HCL ``address`` — never the canonical identity path, ``confidence``,
+    ``source``, or ``possible_causes`` (a DTO field nothing renders invites
+    cargo-cult preservation later; the crews already read the full-fidelity raw
+    entry).
+
+    DECISION — sensitive types (secrets / secret versions) are excluded
+    ENTIRELY, not surfaced as a bare count the way ``by_type`` is: a count with
+    no identity gives the operator nothing actionable in the panel, and the crews
+    still see the redacted entries in raw ``declared_not_found``. A resolved
+    ``declared_not_found`` entry already withholds ``identity`` for sensitive
+    types (it carries ``identity_redacted`` instead), so the string-identity gate
+    below drops them; the explicit ``_is_sensitive`` re-check is defense in depth
+    against a malformed caller. Returns ``None`` (field omitted) when nothing is
+    eligible.
+    """
+    entries: list[dict] = []
+    for raw in declared_not_found:
+        asset_type = raw.get("asset_type")
+        identity = raw.get("identity")
+        if not isinstance(asset_type, str) or not isinstance(identity, str):
+            continue
+        if _is_sensitive(asset_type):
+            continue
+        # Last non-empty '/'-segment of the canonical identity — untrusted text,
+        # kept text-only downstream (never an HTML/HCL sink).
+        name = next((seg for seg in reversed(identity.split("/")) if seg), "")
+        if not name:
+            continue
+        entry: dict = {"asset_type": asset_type, "name": name}
+        address = raw.get("address")
+        if isinstance(address, str) and address:
+            entry["address"] = address
+        entries.append(entry)
+
+    count = len(entries)
+    if count == 0:
+        return None
+    # Sort BEFORE truncating so the cap is stable across runs.
+    entries.sort(key=lambda e: (e["asset_type"], e["name"], e.get("address", "")))
+    capped = entries[:_UNMATCHED_IAC_CAP]
+    return {
+        "count": count,
+        "entries": capped,
+        "truncated": max(0, count - len(capped)),
+    }
 
 
 def build_inventory(
@@ -216,6 +276,11 @@ def build_inventory(
         "declared_not_found": declared_not_found,
         "truncated": {"per_type_sample": _SAMPLE_CAP},
     }
+    # Safe, cache-surviving slice of declared_not_found for the operator UI. Only
+    # emitted when non-empty so a no-unmatched inventory stays byte-identical.
+    unmatched_iac = _unmatched_iac_projection(declared_not_found)
+    if unmatched_iac is not None:
+        out["unmatched_iac"] = unmatched_iac
     if not declared_parse_ok:
         out["declared_set_status"] = "parse_error"
     return out

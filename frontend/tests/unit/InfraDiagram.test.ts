@@ -2,7 +2,13 @@ import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { render, cleanup, waitFor, fireEvent } from '@testing-library/svelte';
 import mermaid from 'mermaid';
 import InfraDiagram from '../../src/components/InfraDiagram.svelte';
-import type { InfraGraph, PlanOverlay, PendingApproval } from '../../src/lib/infra_graph';
+import { investigateUnmatchedPrefill } from '../../src/lib/infra_graph';
+import type {
+  InfraGraph,
+  PlanOverlay,
+  PendingApproval,
+  UnmatchedDeclaration,
+} from '../../src/lib/infra_graph';
 
 // Renders InfraDiagram with a stubbed `call` prop (the component's only data
 // dependency). The COVERAGE tests never open the panel, so Mermaid is never
@@ -1722,5 +1728,155 @@ describe('InfraDiagram — open infra changes (pending approvals)', () => {
     await new Promise((r) => setTimeout(r, 25));
     expect(queryByTestId('card-pending-link')).toBeNull();
     expect(getByTestId('card-start-here')).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Unmatched-declarations band (design 2026-07-11): IaC declarations not found in
+// the latest CAI snapshot. A SEPARATE band + summary badge; never a live row.
+// ---------------------------------------------------------------------------
+
+function unmatchedGraph(over?: Partial<UnmatchedDeclaration>, count = 1, truncated = 0): InfraGraph {
+  return {
+    ...adoptGraph(),
+    unmatched_declarations: {
+      count,
+      truncated,
+      entries: [
+        {
+          id: 'u0',
+          asset_type: BUCKET,
+          type_label: 'Storage bucket',
+          label: 'bucket-old',
+          address: 'google_storage_bucket.bucket_old',
+          ...over,
+        },
+      ],
+    },
+  };
+}
+
+describe('InfraDiagram — unmatched-declarations band', () => {
+  it('is absent for an old DTO with no unmatched_declarations field', async () => {
+    const { queryByTestId } = render(InfraDiagram, {
+      props: { call: callWith(adoptGraph()), onAdopt: () => {} },
+    });
+    await waitFor(() => expect(queryByTestId('infra-cards')).toBeTruthy());
+    expect(queryByTestId('infra-unmatched')).toBeNull();
+    expect(queryByTestId('infra-unmatched-badge')).toBeNull();
+  });
+
+  it('is absent when the optional field carries no entries', async () => {
+    const g: InfraGraph = {
+      ...adoptGraph(),
+      unmatched_declarations: { count: 0, truncated: 0, entries: [] },
+    };
+    const { queryByTestId } = render(InfraDiagram, {
+      props: { call: callWith(g), onAdopt: () => {} },
+    });
+    await waitFor(() => expect(queryByTestId('infra-cards')).toBeTruthy());
+    expect(queryByTestId('infra-unmatched')).toBeNull();
+    expect(queryByTestId('infra-unmatched-badge')).toBeNull();
+  });
+
+  it('renders the declaration with type, label, address, and uncertainty copy', async () => {
+    const { getByTestId } = render(InfraDiagram, {
+      props: { call: callWith(unmatchedGraph()), onAdopt: () => {} },
+    });
+    await waitFor(() => expect(getByTestId('infra-unmatched')).toBeTruthy());
+    const row = getByTestId('infra-unmatched-row');
+    expect(row.textContent).toContain('Storage bucket');
+    expect(row.textContent).toContain('bucket-old');
+    expect(row.textContent).toContain('google_storage_bucket.bucket_old');
+    expect(getByTestId('infra-unmatched').textContent).toContain(
+      'did not match the latest Cloud Asset Inventory snapshot',
+    );
+  });
+
+  it('shows the separate "N IaC unmatched" badge WITHOUT changing the drift badge', async () => {
+    const { getByTestId } = render(InfraDiagram, {
+      props: { call: callWith(unmatchedGraph()), onAdopt: () => {} },
+    });
+    await waitFor(() => expect(getByTestId('infra-unmatched-badge')).toBeTruthy());
+    // The unmatched badge is present and independent…
+    expect(getByTestId('infra-unmatched-badge').textContent).toContain('1 IaC unmatched');
+    // …and the existing drift badge is untouched (adoptGraph → 1 actionable drift).
+    expect(getByTestId('infra-drift-badge').textContent).toBe('1 drift');
+  });
+
+  it('does not add card rows or change the coverage count', async () => {
+    const withBand = render(InfraDiagram, {
+      props: { call: callWith(unmatchedGraph()), onAdopt: () => {} },
+    });
+    await waitFor(() => expect(withBand.getByTestId('infra-unmatched')).toBeTruthy());
+    // Same 3 rows as adoptGraph (prod-state, my-old-uploads, ci-runner); the
+    // declaration is NOT a card row.
+    expect(withBand.getAllByTestId('infra-card-row')).toHaveLength(3);
+    expect(withBand.getByTestId('infra-coverage-count').textContent).toBe('1/2 managed · 50%');
+  });
+
+  it('never renders the declaration with a managed tag or an Adopt button', async () => {
+    const { getByTestId, getAllByTestId } = render(InfraDiagram, {
+      props: { call: callWith(unmatchedGraph()), onAdopt: () => {} },
+    });
+    await waitFor(() => expect(getByTestId('infra-unmatched-row')).toBeTruthy());
+    const row = getByTestId('infra-unmatched-row');
+    expect(row.querySelector('[data-testid="card-managed-tag"]')).toBeNull();
+    expect(row.querySelector('[data-testid="card-adopt-btn"]')).toBeNull();
+    // Only the live drift bucket carries an Adopt button — the band adds none.
+    expect(getAllByTestId('card-adopt-btn')).toHaveLength(1);
+  });
+
+  it('clicking Investigate fires onInvestigate with the exact helper output', async () => {
+    const onInvestigate = vi.fn();
+    const g = unmatchedGraph();
+    const { getByTestId } = render(InfraDiagram, {
+      props: { call: callWith(g), onAdopt: () => {}, onInvestigate },
+    });
+    await waitFor(() => expect(getByTestId('infra-unmatched-investigate')).toBeTruthy());
+    await fireEvent.click(getByTestId('infra-unmatched-investigate'));
+    expect(onInvestigate).toHaveBeenCalledTimes(1);
+    expect(onInvestigate).toHaveBeenCalledWith(
+      investigateUnmatchedPrefill(g.unmatched_declarations!.entries[0], g),
+    );
+    // Sanity: the pinned intent survives end-to-end through the component.
+    const sent = onInvestigate.mock.calls[0][0] as string;
+    expect(sent).toContain('do not assume a rename, change files, or open a PR');
+    expect(sent).toContain('Visible unmanaged resources of the same type: `my-old-uploads`.');
+  });
+
+  it('disables Investigate and suppresses the callback when adoptDisabled', async () => {
+    const onInvestigate = vi.fn();
+    const { getByTestId } = render(InfraDiagram, {
+      props: { call: callWith(unmatchedGraph()), onAdopt: () => {}, onInvestigate, adoptDisabled: true },
+    });
+    await waitFor(() => expect(getByTestId('infra-unmatched-investigate')).toBeTruthy());
+    const btn = getByTestId('infra-unmatched-investigate') as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+    await fireEvent.click(btn);
+    expect(onInvestigate).not.toHaveBeenCalled();
+  });
+
+  it('still fires onAdopt with its existing prefill when the band is present', async () => {
+    const onAdopt = vi.fn();
+    const { getByTestId } = render(InfraDiagram, {
+      props: { call: callWith(unmatchedGraph()), onAdopt },
+    });
+    await waitFor(() => expect(getByTestId('card-adopt-btn')).toBeTruthy());
+    await fireEvent.click(getByTestId('card-adopt-btn'));
+    expect(onAdopt).toHaveBeenCalledWith(
+      'Adopt the Storage bucket `my-old-uploads` in asia-northeast1 into IaC management.',
+    );
+  });
+
+  it('renders an honest truncation trailer and total count', async () => {
+    const { getByTestId } = render(InfraDiagram, {
+      props: { call: callWith(unmatchedGraph(undefined, 3, 2)), onAdopt: () => {} },
+    });
+    await waitFor(() => expect(getByTestId('infra-unmatched-trailer')).toBeTruthy());
+    expect(getByTestId('infra-unmatched-trailer').textContent).toContain(
+      '+2 more declarations not shown',
+    );
+    expect(getByTestId('infra-unmatched-badge').textContent).toContain('3 IaC unmatched');
   });
 });

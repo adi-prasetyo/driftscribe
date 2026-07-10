@@ -477,6 +477,136 @@ def test_caveat_falls_back_when_absent():
 
 
 # ---------------------------------------------------------------------------
+# unmatched_declarations — top-level DTO slice for IaC declarations not found
+# live (2026-07-11 plan). Kept SEPARATE from groups[*].nodes (live resources
+# only): unmatched declarations never touch totals/coverage/adoption.
+# ---------------------------------------------------------------------------
+
+SECRET_VERSION_TYPE = "secretmanager.googleapis.com/SecretVersion"
+NET_TYPE = "compute.googleapis.com/Network"
+
+
+def _unmatched(entries, count=None, truncated=0) -> dict:
+    return {
+        "count": len(entries) if count is None else count,
+        "entries": entries,
+        "truncated": truncated,
+    }
+
+
+def test_unmatched_iac_becomes_unmatched_declarations_with_labels_and_ids():
+    inv = _inventory(unmatched_iac=_unmatched([
+        {"asset_type": BUCKET_TYPE, "name": "bucket-a",
+         "address": "google_storage_bucket.bucket_a"},
+        {"asset_type": RUN_TYPE, "name": "storefront-old"},
+    ], count=2))
+    ud = build_graph(inv)["unmatched_declarations"]
+    assert ud["count"] == 2
+    assert ud["truncated"] == 0
+    assert ud["entries"] == [
+        {"id": "u0", "asset_type": BUCKET_TYPE, "type_label": "Storage bucket",
+         "label": "bucket-a", "address": "google_storage_bucket.bucket_a"},
+        {"id": "u1", "asset_type": RUN_TYPE, "type_label": "Cloud Run service",
+         "label": "storefront-old"},
+    ]
+
+
+def test_unmatched_declarations_do_not_change_totals_or_nodes():
+    base = build_graph(_inventory())
+    withud = build_graph(_inventory(unmatched_iac=_unmatched([
+        {"asset_type": BUCKET_TYPE, "name": "bucket-a"},
+    ])))
+    assert withud["totals"] == base["totals"]
+    assert withud["groups"] == base["groups"]  # live nodes/counts untouched
+
+
+def test_unmatched_declaration_of_type_with_no_live_group_still_surfaces():
+    # A type absent from by_type (no live resource) still appears at top level.
+    g = build_graph(_inventory(unmatched_iac=_unmatched([
+        {"asset_type": NET_TYPE, "name": "legacy-vpc"},
+    ])))
+    assert NET_TYPE not in {grp["asset_type"] for grp in g["groups"]}
+    entry = g["unmatched_declarations"]["entries"][0]
+    assert entry["asset_type"] == NET_TYPE
+    assert entry["type_label"] == "VPC network"
+
+
+def test_unmatched_declarations_drop_sensitive_types_as_defense_in_depth():
+    g = build_graph(_inventory(unmatched_iac=_unmatched([
+        {"asset_type": SECRET_TYPE, "name": "api-key",
+         "address": "google_secret_manager_secret.api_key"},
+        {"asset_type": SECRET_VERSION_TYPE, "name": "1"},
+        {"asset_type": BUCKET_TYPE, "name": "bucket-a"},
+    ], count=3)))
+    ud = g["unmatched_declarations"]
+    assert [e["asset_type"] for e in ud["entries"]] == [BUCKET_TYPE]
+    assert "api-key" not in json.dumps(ud)
+    # Because entries were dropped (2 secrets), the count is recomputed from the
+    # survivors — the excluded declarations are NOT disclosed even as a count
+    # (Codex review: sensitive types excluded ENTIRELY, not counts-only).
+    assert ud["count"] == 1
+    assert ud["truncated"] == 0
+
+
+def test_unmatched_declarations_defensive_cap_at_ten():
+    # A malformed cache doc with more than ten valid entries is re-capped at ten
+    # (defense in depth on top of the worker's own 10-cap), with honest totals.
+    entries = [{"asset_type": BUCKET_TYPE, "name": f"bucket-{i:02d}"} for i in range(15)]
+    ud = build_graph(_inventory(
+        unmatched_iac=_unmatched(entries, count=15, truncated=0),
+    ))["unmatched_declarations"]
+    assert len(ud["entries"]) == 10
+    assert ud["count"] == 15
+    assert ud["truncated"] == 5
+    assert [e["id"] for e in ud["entries"]] == [f"u{i}" for i in range(10)]
+
+
+def test_unmatched_declarations_tolerate_garbage_without_raising():
+    for bad in (None, [], "nope", 42, {"entries": "not-a-list"},
+                {"entries": [123, "x", {}, {"asset_type": BUCKET_TYPE}]}):
+        g = build_graph(_inventory(unmatched_iac=bad))
+        assert g["degraded"] is False
+        assert "unmatched_declarations" not in g  # nothing valid survived
+
+
+def test_unmatched_declarations_non_finite_count_does_not_raise():
+    # Firestore permits non-finite doubles; a hand-edited count=inf must degrade,
+    # not break build_graph's never-raises contract (Codex review edge).
+    g = build_graph(_inventory(unmatched_iac={
+        "count": float("inf"),
+        "truncated": float("nan"),
+        "entries": [{"asset_type": BUCKET_TYPE, "name": "bucket-a"}],
+    }))
+    ud = g["unmatched_declarations"]
+    assert ud["count"] == 1  # inf coerces to the survivor-count floor
+    assert ud["truncated"] == 0
+
+
+def test_unmatched_declarations_omitted_when_absent():
+    assert "unmatched_declarations" not in build_graph(_inventory())
+
+
+def test_degraded_inventory_never_surfaces_unmatched_declarations():
+    g = build_graph({
+        "error": "cloud_asset_unavailable",
+        "unmatched_iac": _unmatched([{"asset_type": BUCKET_TYPE, "name": "bucket-a"}]),
+    })
+    assert g["degraded"] is True
+    assert "unmatched_declarations" not in g
+
+
+def test_unmatched_declarations_cap_and_truncated_carry_through():
+    entries = [{"asset_type": BUCKET_TYPE, "name": f"bucket-{i:02d}"} for i in range(10)]
+    ud = build_graph(_inventory(
+        unmatched_iac=_unmatched(entries, count=13, truncated=3),
+    ))["unmatched_declarations"]
+    assert ud["count"] == 13
+    assert len(ud["entries"]) == 10
+    assert ud["truncated"] == 3
+    assert [e["id"] for e in ud["entries"]] == [f"u{i}" for i in range(10)]
+
+
+# ---------------------------------------------------------------------------
 # Task (ghost-nodes): plan_overlay DTO builder (Decision 3)
 # ---------------------------------------------------------------------------
 
