@@ -8,6 +8,7 @@ import {
   toolCallCount,
   eventKey,
   reconcileBackfill,
+  omittedThoughtTokens,
   type GroupKey,
   type TraceEvent,
 } from '../../src/lib/timeline';
@@ -554,5 +555,90 @@ describe('reconcileBackfill — merge /trace into live timeline (never overwrite
     expect(out.filter((e) => groupOf(e) === 'coordinator')).toHaveLength(1);
     expect(out.filter((e) => groupOf(e) === 'tools')).toHaveLength(0);
     expect(out.filter((e) => groupOf(e) === 'mcp')).toHaveLength(1);
+  });
+});
+
+describe('omittedThoughtTokens — "reasoned but no summaries" detection', () => {
+  // Vertex sheds Gemini's reasoning-summary layer under load: the turn
+  // completes, usage bills thoughts_token_count > 0, but ZERO llm_thought
+  // events arrive — and the coordinator group reads as broken. The helper
+  // returns the thinking-token count to cite in the note, or 0 = don't show.
+
+  it('returns the thinking-token count when usage proves thinking but no thought arrived', () => {
+    const events = [
+      ev({ event: 'llm_usage', thoughts_token_count: 714, total_token_count: 804 }),
+    ];
+    expect(omittedThoughtTokens(events)).toBe(714);
+  });
+
+  it('sums thinking tokens across multiple usage events (multi-step runs)', () => {
+    const events = [
+      ev({ event: 'llm_usage', thoughts_token_count: 300 }),
+      ev({ event: 'tool_call', tool_name: 'read_live_env' }),
+      ev({ event: 'llm_usage', thoughts_token_count: 400 }),
+    ];
+    expect(omittedThoughtTokens(events)).toBe(700);
+  });
+
+  it('returns 0 the moment ANY llm_thought is present (summaries arrived)', () => {
+    const events = [
+      ev({ event: 'llm_thought', thought_text: 'assessing drift' }),
+      ev({ event: 'llm_usage', thoughts_token_count: 714 }),
+    ];
+    expect(omittedThoughtTokens(events)).toBe(0);
+  });
+
+  it('returns 0 with no usage event yet (mid-stream; summaries may still arrive)', () => {
+    expect(omittedThoughtTokens([ev({ event: 'tool_call', tool_name: 't' })])).toBe(0);
+    expect(omittedThoughtTokens([])).toBe(0);
+  });
+
+  it('returns 0 when usage carries no thinking (null / 0 / absent thoughts_token_count)', () => {
+    expect(
+      omittedThoughtTokens([ev({ event: 'llm_usage', thoughts_token_count: null })]),
+    ).toBe(0);
+    expect(
+      omittedThoughtTokens([ev({ event: 'llm_usage', thoughts_token_count: 0 })]),
+    ).toBe(0);
+    expect(omittedThoughtTokens([ev({ event: 'llm_usage' })])).toBe(0);
+  });
+});
+
+describe('Timeline — omitted-summaries note in the coordinator group', () => {
+  afterEach(cleanup);
+
+  it('renders the note (with a formatted token count) when thinking happened but no summaries', () => {
+    const events = [
+      ev({ event: 'llm_usage', insert_id: 'u1', thoughts_token_count: 1234, total_token_count: 2000 }),
+    ];
+    const { getByTestId } = render(Timeline, { props: { events, status: 'complete' } });
+    const note = getByTestId('thought-omitted-note');
+    expect(note.textContent).toContain('1,234');
+    expect(note.textContent).toContain('omitted');
+    // Honesty guard: the note must say the reply/tools are NOT affected.
+    expect(note.textContent).toContain('unaffected');
+  });
+
+  it('renders NO note when a reasoning summary is present', () => {
+    const events = [
+      ev({ event: 'llm_thought', insert_id: 't1', thought_text: 'assessing drift' }),
+      ev({ event: 'llm_usage', insert_id: 'u1', thoughts_token_count: 714 }),
+    ];
+    const { queryByTestId } = render(Timeline, { props: { events, status: 'complete' } });
+    expect(queryByTestId('thought-omitted-note')).toBeNull();
+  });
+
+  it('renders NO note mid-stream before any usage event arrives', () => {
+    const events = [ev({ event: 'tool_call', insert_id: 'c1', tool_name: 'read_live_env' })];
+    const { queryByTestId } = render(Timeline, { props: { events, status: 'streaming' } });
+    expect(queryByTestId('thought-omitted-note')).toBeNull();
+  });
+
+  it('leaves the historical-empty path untouched (no groups, no note)', () => {
+    const { queryByTestId, getByTestId } = render(Timeline, {
+      props: { events: [], status: 'historical' },
+    });
+    expect(getByTestId('timeline-empty')).toBeTruthy();
+    expect(queryByTestId('thought-omitted-note')).toBeNull();
   });
 });
