@@ -634,6 +634,33 @@ describe('Timeline — omitted-summaries note in the coordinator group', () => {
     expect(queryByTestId('thought-omitted-note')).toBeNull();
   });
 
+  it('renders NO note mid-stream even with usage>0 (per-step usage; later summaries may come)', () => {
+    // llm_usage is emitted per LLM STEP, not once per run: a multi-step run
+    // has usage from step 1 while step 2 (and its summaries) is still in
+    // flight. The note must not flash and then vanish.
+    const events = [
+      ev({ event: 'llm_usage', insert_id: 'u1', thoughts_token_count: 500 }),
+      ev({ event: 'tool_call', insert_id: 'c1', tool_name: 'read_live_env' }),
+    ];
+    const { queryByTestId } = render(Timeline, { props: { events, status: 'streaming' } });
+    expect(queryByTestId('thought-omitted-note')).toBeNull();
+  });
+
+  it('renders NO note on an errored turn (cannot honestly claim the reply was unaffected)', () => {
+    const events = [ev({ event: 'llm_usage', insert_id: 'u1', thoughts_token_count: 500 })];
+    const { queryByTestId } = render(Timeline, { props: { events, status: 'error' } });
+    expect(queryByTestId('thought-omitted-note')).toBeNull();
+  });
+
+  it('renders the note on a historical replay with thinking but no summaries', () => {
+    const events = [
+      ev({ event: 'llm_usage', insert_id: 'u1', thoughts_token_count: 714 }),
+      ev({ event: 'tool_call', insert_id: 'c1', tool_name: 'read_live_env' }),
+    ];
+    const { getByTestId } = render(Timeline, { props: { events, status: 'historical' } });
+    expect(getByTestId('thought-omitted-note').textContent).toContain('714');
+  });
+
   it('leaves the historical-empty path untouched (no groups, no note)', () => {
     const { queryByTestId, getByTestId } = render(Timeline, {
       props: { events: [], status: 'historical' },

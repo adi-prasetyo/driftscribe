@@ -196,9 +196,12 @@ export function eventKey(e: TraceEvent): string {
  *
  * Returns the summed thinking-token count to cite in the UI note, or 0 when
  * the note must not show: any llm_thought present (summaries arrived), no
- * usage event yet (mid-stream; usage is emitted at the end of the run, so
- * this can never fire while summaries may still arrive), or no thinking
- * spent (thoughts_token_count absent/zero, e.g. a directly recorded trace).
+ * usage event, or no thinking spent (thoughts_token_count absent/zero, e.g.
+ * a directly recorded trace). NOTE: usage events are emitted per LLM step,
+ * not once per run — on a multi-step run this can be > 0 between steps while
+ * a later step's summaries are still in flight, so the CALLER must also gate
+ * on a terminal timeline status before showing the note (Timeline.svelte
+ * gates on 'complete' | 'historical').
  */
 export function omittedThoughtTokens(events: TraceEvent[]): number {
   let tokens = 0;

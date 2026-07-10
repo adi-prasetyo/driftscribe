@@ -116,9 +116,16 @@
   // "Reasoned but no summaries" note: usage events prove thinking happened
   // (thoughts_token_count > 0) while zero llm_thought rows arrived. Vertex
   // sheds the summary layer under load; without this note the group reads
-  // as broken. Usage is emitted at the end of the run, so the note can never
-  // flash mid-stream while summaries may still arrive.
-  const omittedTokens = $derived(omittedThoughtTokens(groups.coordinator));
+  // as broken. Gated on terminal statuses: usage is emitted per LLM STEP
+  // (not once per run), so mid-stream a multi-step run can be usage>0 with
+  // a later step's summaries still in flight — the note must not flash then
+  // vanish. 'error'/'stalled' are also excluded: the note promises the reply
+  // was unaffected, which an errored turn can't honestly claim.
+  const omittedTokens = $derived(
+    status === 'complete' || status === 'historical'
+      ? omittedThoughtTokens(groups.coordinator)
+      : 0,
+  );
 </script>
 
 {#snippet toolPair(pair: { call?: TraceEvent; result?: TraceEvent })}
