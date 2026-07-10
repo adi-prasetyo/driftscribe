@@ -7,6 +7,7 @@
     pairToolEvents,
     toolCallCount,
     eventKey,
+    omittedThoughtTokens,
     type TraceEvent,
     type TimelineStatus,
     type GroupKey,
@@ -108,7 +109,23 @@
   const COORDINATOR_HINT =
     "Gemini's reasoning summaries are only returned by Vertex AI's 'global' " +
     'region, so this deployment routes inference there. Expect a little ' +
-    'extra latency per turn.';
+    'extra latency per turn. Under heavy load Vertex can also omit the ' +
+    'summaries entirely, even though the coordinator still reasons; when ' +
+    'that happens, a note appears here with the thinking-token count.';
+
+  // "Reasoned but no summaries" note: usage events prove thinking happened
+  // (thoughts_token_count > 0) while zero llm_thought rows arrived. Vertex
+  // sheds the summary layer under load; without this note the group reads
+  // as broken. Gated on terminal statuses: usage is emitted per LLM STEP
+  // (not once per run), so mid-stream a multi-step run can be usage>0 with
+  // a later step's summaries still in flight — the note must not flash then
+  // vanish. 'error'/'stalled' are also excluded: the note promises the reply
+  // was unaffected, which an errored turn can't honestly claim.
+  const omittedTokens = $derived(
+    status === 'complete' || status === 'historical'
+      ? omittedThoughtTokens(groups.coordinator)
+      : 0,
+  );
 </script>
 
 {#snippet toolPair(pair: { call?: TraceEvent; result?: TraceEvent })}
@@ -163,6 +180,14 @@
     open={true}
     empty={groups.coordinator.length === 0}
   >
+    {#if omittedTokens > 0}
+      <p class="thought-omitted" data-testid="thought-omitted-note">
+        The coordinator did reason on this turn ({omittedTokens.toLocaleString('en-US')}
+        thinking tokens), but Vertex AI omitted the reasoning summaries. Summaries
+        are generated best-effort and can be dropped when the service is busy; the
+        reply and tool calls are unaffected.
+      </p>
+    {/if}
     {#each groups.coordinator as e (eventKey(e))}
       <div class="event-item" in:fly={flyIn} animate:flip={{ duration: flipDur }}>
         {#if e.event === 'llm_thought'}
@@ -256,6 +281,16 @@
     color: var(--ds-fg);
     font-size: var(--ds-fs-2);
     line-height: var(--ds-lh-body);
+  }
+  .thought-omitted {
+    margin: 0;
+    padding: var(--ds-sp-3) 0;
+    border-bottom: 1px solid var(--ds-border);
+    color: var(--ds-muted);
+    font-size: var(--ds-fs-2);
+    line-height: var(--ds-lh-body);
+    font-style: italic;
+    max-width: var(--ds-measure);
   }
   .usage {
     display: flex;

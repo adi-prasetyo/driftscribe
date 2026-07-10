@@ -186,6 +186,36 @@ export function eventKey(e: TraceEvent): string {
 }
 
 /**
+ * Detect the "coordinator reasoned but Vertex omitted the summaries" state.
+ *
+ * Gemini's reasoning summaries are a best-effort layer: under load, Vertex
+ * completes the turn (and bills the thinking) while returning ZERO summary
+ * parts, so the coordinator group renders empty and reads as broken. The
+ * proof that thinking happened anyway is in the usage events: their
+ * `thoughts_token_count` is reported by the serving stack regardless.
+ *
+ * Returns the summed thinking-token count to cite in the UI note, or 0 when
+ * the note must not show: any llm_thought present (summaries arrived), no
+ * usage event, or no thinking spent (thoughts_token_count absent/zero, e.g.
+ * a directly recorded trace). NOTE: usage events are emitted per LLM step,
+ * not once per run — on a multi-step run this can be > 0 between steps while
+ * a later step's summaries are still in flight, so the CALLER must also gate
+ * on a terminal timeline status before showing the note (Timeline.svelte
+ * gates on 'complete' | 'historical').
+ */
+export function omittedThoughtTokens(events: TraceEvent[]): number {
+  let tokens = 0;
+  for (const e of events) {
+    if (e.event === 'llm_thought') return 0;
+    if (e.event === 'llm_usage') {
+      const v = e.thoughts_token_count;
+      if (typeof v === 'number' && v > 0) tokens += v;
+    }
+  }
+  return tokens;
+}
+
+/**
  * Reconcile the live-streamed timeline with a post-turn GET /trace snapshot.
  *
  * The live SSE /chat stream already carries every timeline kind the coordinator
