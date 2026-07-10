@@ -186,6 +186,30 @@ def test_find_decision_by_trace_id_picks_newest_when_trace_has_two_rows():
     assert out["merge_state"] == "merged"
 
 
+def test_find_decision_by_trace_id_missing_created_at_loses_to_present_one():
+    """Sentinel branch: a decision dict missing ``created_at`` (shouldn't
+    normally happen after Phase 19.A.7 — ``record_decision`` setdefaults it
+    — but the newest-first sort key must tolerate it via the ``datetime.min``
+    sentinel rather than raising ``TypeError`` on the ``None`` vs ``datetime``
+    compare). Bypass ``record_decision`` to plant a missing-field doc
+    directly, mirroring
+    ``test_state_store_list.py::test_inmemory_list_decisions_missing_created_at_sorts_last``.
+    """
+    s = InMemoryStateStore()
+    trace = "e" * 32
+    s._decisions["dec-missing"] = {
+        "action": "iac_apply", "trace_id": trace, "tag": "missing",
+    }
+    s._decisions["dec-present"] = {
+        "action": "iac_apply", "trace_id": trace, "tag": "present",
+        "created_at": datetime(2026, 5, 21, 0, 0, 0, tzinfo=timezone.utc),
+    }
+
+    out = s.find_decision_by_trace_id(trace)
+    assert out is not None
+    assert out["tag"] == "present"
+
+
 def test_firestore_find_decision_by_trace_id_newest_and_backfills_created_at():
     """Firestore: (a) among multiple snapshots the newest by server-managed
     ``snapshot.create_time`` wins; (b) a pre-19.A.7 doc without created_at

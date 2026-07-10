@@ -528,7 +528,7 @@ class FirestoreStateStore:
         if not snaps:
             return None
         newest = max(snaps, key=lambda s: s.create_time)
-        d = newest.to_dict()
+        d = newest.to_dict() or {}
         d.setdefault("created_at", newest.create_time)
         return d
 
