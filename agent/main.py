@@ -696,7 +696,8 @@ def _signature_of(events: list[dict]) -> str:
 
 
 # apply_status values recorded when an apply REQUEST has already ended (the
-# _record_iac_decision docstring: ``applied`` is the success terminal;
+# _record_iac_decision docstring: ``applied`` is the apply-succeeded pointer —
+# the apply request is done even though the merge may still reconcile later;
 # ``failed`` / ``failed_state_suspect`` / ``ambiguous`` are failure
 # terminals). ``waiting_for_rebake`` is deliberately EXCLUDED: it is recorded
 # BEFORE the merge / re-bake work as the crash-recovery pointer
