@@ -106,7 +106,12 @@ _HINT_WINDOW_AFTER = _dt.timedelta(days=1)
 
 
 def _fmt_rfc3339(ts: _dt.datetime) -> str:
-    """Whole-second RFC3339 ``...Z`` form — same shape as ``_timestamp_floor``."""
+    """Whole-second RFC3339 ``...Z`` form — same shape as ``_timestamp_floor``.
+
+    Caller must pass a tz-aware ``ts``: ``astimezone`` on a naive datetime
+    interprets it as LOCAL wall-clock time, the opposite convention from
+    ``_entry_ts``/``_fetch_hinted``'s naive-means-UTC rule.
+    """
     return ts.astimezone(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -172,7 +177,7 @@ class CloudLoggingFetcher:
         accepts it and it keeps the snapshot test's regex simple.
         """
         floor = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=days)
-        return floor.strftime("%Y-%m-%dT%H:%M:%SZ")
+        return _fmt_rfc3339(floor)
 
     def _query(
         self,

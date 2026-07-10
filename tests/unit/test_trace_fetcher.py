@@ -612,7 +612,14 @@ def test_hinted_fetch_edge_hugging_entry_reruns_wide(monkeypatch, edge_offset):
 
 def test_hinted_fetch_naive_datetime_treated_as_utc(monkeypatch):
     """A tz-naive hint must not crash; it's interpreted as UTC (mirrors
-    _straddles_fast_floor's convention)."""
+    _straddles_fast_floor's convention).
+
+    Smoke check only: on a UTC test runner (and with an entry well inside the
+    window), these assertions can't distinguish a UTC-vs-local interpretation
+    of the naive hint — both would happen to produce the same query. The
+    authoritative behavior is the ``.replace(tzinfo=utc)`` convention baked
+    into ``_fetch_hinted``/``_entry_ts``, not this test.
+    """
     calls: list[dict] = []
     hint = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=30)
 
