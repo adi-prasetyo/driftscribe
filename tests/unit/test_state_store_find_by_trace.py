@@ -18,6 +18,7 @@ These tests pin:
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
 from agent.state_store import FirestoreStateStore, InMemoryStateStore
@@ -100,9 +101,12 @@ def test_find_decision_by_trace_id_skips_decisions_without_trace_id():
 
 def test_firestore_find_decision_by_trace_id_uses_where_limit_stream():
     """Pin the Firestore interaction: ``.where("trace_id", "==", trace_id)
-    .limit(1).stream()``. Future refactors must not accidentally drop
-    ``.limit(1)`` (would page across the whole decisions collection)
-    or change the field name (would silently miss every document)."""
+    .limit(10).stream()``. Future refactors must not accidentally drop the
+    page bound (would page across the whole decisions collection) or change
+    the field name (would silently miss every document). The limit bounds
+    the page fetched for the client-side newest-first pick; matching docs
+    per trace_id are 1-2 in practice (create-class merge path can record a
+    pending → merged pair)."""
     mock_db = MagicMock()
     mock_decisions = MagicMock()
     mock_events = MagicMock()
@@ -119,15 +123,21 @@ def test_firestore_find_decision_by_trace_id_uses_where_limit_stream():
     mock_query.limit.return_value = mock_query
 
     snap = MagicMock()
+    snap.create_time = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
     snap.to_dict.return_value = {"action": "drift_issue", "trace_id": "a" * 32}
     mock_query.stream.return_value = iter([snap])
 
     store = FirestoreStateStore(project="p", client=mock_db)
     out = store.find_decision_by_trace_id("a" * 32)
 
-    assert out == {"action": "drift_issue", "trace_id": "a" * 32}
+    # created_at is backfilled from snapshot.create_time (setdefault), so
+    # compare it separately from the rest of the to_dict() payload.
+    assert out is not None
+    assert out["created_at"] == snap.create_time
+    out_without_created_at = {k: v for k, v in out.items() if k != "created_at"}
+    assert out_without_created_at == {"action": "drift_issue", "trace_id": "a" * 32}
     mock_decisions.where.assert_called_once_with("trace_id", "==", "a" * 32)
-    mock_query.limit.assert_called_once_with(1)
+    mock_query.limit.assert_called_once_with(10)
     mock_query.stream.assert_called_once_with()
 
 
@@ -150,3 +160,65 @@ def test_firestore_find_decision_by_trace_id_returns_none_when_no_match():
 
     store = FirestoreStateStore(project="p", client=mock_db)
     assert store.find_decision_by_trace_id("a" * 32) is None
+
+
+def test_find_decision_by_trace_id_picks_newest_when_trace_has_two_rows():
+    """The create-class merge path records waiting_for_rebake pending →
+    merged under ONE trace_id; the lookup must return the newest row (the
+    current lifecycle stage), not an arbitrary one."""
+    s = InMemoryStateStore()
+    trace = "d" * 32
+    s.record_event("ev-1", {})
+    s.record_event("ev-2", {})
+    s.record_decision(
+        "dec-old", "ev-1",
+        {"action": "iac_apply", "trace_id": trace, "merge_state": "pending",
+         "created_at": datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)},
+    )
+    s.record_decision(
+        "dec-new", "ev-2",
+        {"action": "iac_apply", "trace_id": trace, "merge_state": "merged",
+         "created_at": datetime(2026, 6, 1, 12, 0, 5, tzinfo=timezone.utc)},
+    )
+
+    out = s.find_decision_by_trace_id(trace)
+    assert out is not None
+    assert out["merge_state"] == "merged"
+
+
+def test_firestore_find_decision_by_trace_id_newest_and_backfills_created_at():
+    """Firestore: (a) among multiple snapshots the newest by server-managed
+    ``snapshot.create_time`` wins; (b) a pre-19.A.7 doc without created_at
+    gets it backfilled from create_time (mirrors list_decisions) so the
+    /trace fetch hint works for every decision."""
+    mock_db = MagicMock()
+    mock_decisions = MagicMock()
+    mock_events = MagicMock()
+
+    def collection_dispatch(name):
+        if name == "decisions":
+            return mock_decisions
+        return mock_events
+
+    mock_db.collection.side_effect = collection_dispatch
+
+    mock_query = MagicMock()
+    mock_decisions.where.return_value = mock_query
+    mock_query.limit.return_value = mock_query
+
+    older = MagicMock()
+    older.create_time = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    older.to_dict.return_value = {"action": "iac_apply", "trace_id": "a" * 32,
+                                  "merge_state": "pending"}
+    newer = MagicMock()
+    newer.create_time = datetime(2026, 6, 1, 12, 0, 5, tzinfo=timezone.utc)
+    newer.to_dict.return_value = {"action": "iac_apply", "trace_id": "a" * 32,
+                                  "merge_state": "merged"}  # no created_at field
+    mock_query.stream.return_value = iter([older, newer])  # unordered on purpose
+
+    store = FirestoreStateStore(project="p", client=mock_db)
+    out = store.find_decision_by_trace_id("a" * 32)
+
+    assert out is not None
+    assert out["merge_state"] == "merged"
+    assert out["created_at"] == newer.create_time  # backfilled
