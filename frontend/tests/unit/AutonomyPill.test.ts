@@ -3,7 +3,12 @@ import { render, cleanup, fireEvent, waitFor } from '@testing-library/svelte';
 import AutonomyPill from '../../src/components/AutonomyPill.svelte';
 import { createAutonomyStore } from '../../src/lib/autonomyStore';
 import { HEADER_POPOVER_EVENT } from '../../src/lib/headerPopover';
-import { AUTONOMY_EXPLAINER_HEADING } from '../../src/lib/autonomy';
+import { autonomyExplainerHeading } from '../../src/lib/autonomy';
+import { translate, type TranslateFn } from '../../src/lib/i18n';
+
+// The whole suite asserts English (setup.ts pins the suite to the EN catalog);
+// autonomyExplainerHeading now takes a TranslateFn, so tests thread an EN-bound one.
+const t: TranslateFn = (k, p) => translate('en', k, p);
 
 // AutonomyPill is the COMPACT header surface: a status pill that, while loaded,
 // doubles as the trigger via an anchored popover hosting the full dial.
@@ -180,7 +185,7 @@ describe('AutonomyPill', () => {
     const { getByTestId, queryByTestId } = await mount(res(PA));
     await fireEvent.click(getByTestId('autonomy-pill-toggle'));
     const toggle = await waitFor(() => getByTestId('autonomy-explainer-toggle'));
-    expect(toggle.textContent).toContain(AUTONOMY_EXPLAINER_HEADING);
+    expect(toggle.textContent).toContain(autonomyExplainerHeading(t));
     expect(queryByTestId('autonomy-explainer-body')).toBeNull();
     await fireEvent.click(toggle);
     await waitFor(() => expect(getByTestId('autonomy-explainer-body')).toBeTruthy());

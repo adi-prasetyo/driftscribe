@@ -7,11 +7,18 @@ import {
   TOUR_STEPS,
   welcomeLine,
   estateLine,
-  CONTROLS_LINE,
-  NEXT_LINE,
+  controlsLine,
+  nextLine,
   adoptStepState,
 } from '../../src/lib/tour';
 import type { InfraGraph, InfraGroup, InfraNode, PendingApproval } from '../../src/lib/infra_graph';
+import { translate, type TranslateFn } from '../../src/lib/i18n';
+
+// tour.ts's copy-producing functions take a `t: TranslateFn` (i18n fan-out) —
+// thread an en-bound translator so these assertions keep reading the exact
+// pinned English (design doc: "Helper-signature tests... thread an en-bound
+// t; assertions stay English").
+const t: TranslateFn = (key, params) => translate('en', key, params);
 
 describe('tour done flag (localStorage)', () => {
   beforeEach(() => window.localStorage.clear());
@@ -135,17 +142,17 @@ describe('TOUR_STEPS', () => {
 
 describe('step copy', () => {
   it('welcomeLine names the project when known, generic otherwise', () => {
-    expect(welcomeLine(makeGraph())).toContain(
+    expect(welcomeLine(t, makeGraph())).toContain(
       'the GCP project driftscribe-hack-2026',
     );
-    expect(welcomeLine(null)).toContain('your GCP project');
+    expect(welcomeLine(t, null)).toContain('your GCP project');
     // Honesty T1/T2: approval framing without a blanket safety promise.
-    expect(welcomeLine(null)).toContain('wait for your approval');
-    expect(welcomeLine(null).toLowerCase()).not.toContain('safe');
+    expect(welcomeLine(t, null)).toContain('wait for your approval');
+    expect(welcomeLine(t, null).toLowerCase()).not.toContain('safe');
   });
 
   it('welcomeLine introduces the crew honestly — only Anchor is autonomous', () => {
-    const line = welcomeLine(null);
+    const line = welcomeLine(t, null);
     // All four crew identities are named.
     for (const name of ['Anchor', 'Patch', 'Provision', 'Explore']) {
       expect(line).toContain(name);
@@ -194,7 +201,7 @@ describe('step copy', () => {
         }),
       ],
     });
-    const line = estateLine(g);
+    const line = estateLine(t, g);
     expect(line).toContain('13 resources indexed');
     expect(line).toContain('2 of 3'); // scope managed / scope resources
     expect(line).toContain('(67%)');
@@ -209,7 +216,7 @@ describe('step copy', () => {
       totals: { resources: 3, managed: 2, drift: 1 },
       groups: [makeGroup({ count: 3, managed: 2, drift: 1, nodes: [makeNode({ id: 'b0', label: 'm', managed: true })] })],
     });
-    const line = estateLine(g);
+    const line = estateLine(t, g);
     expect(line).toContain('2 of 3');
     expect(line).not.toMatch(/doesn't manage|does not manage|other/i);
   });
@@ -232,7 +239,7 @@ describe('step copy', () => {
         }),
       ],
     });
-    const line = estateLine(g);
+    const line = estateLine(t, g);
     expect(line).toContain('10 resources indexed');
     expect(line).toContain('none are in resource types DriftScribe supports');
     expect(line).not.toContain('The other');
@@ -240,40 +247,40 @@ describe('step copy', () => {
   });
 
   it('estateLine is honest while loading and when degraded (T3)', () => {
-    expect(estateLine(null)).toContain('still loading');
-    expect(estateLine(makeGraph({ degraded: true }))).toContain('unavailable');
+    expect(estateLine(t, null)).toContain('still loading');
+    expect(estateLine(t, makeGraph({ degraded: true }))).toContain('unavailable');
   });
 
-  it('CONTROLS_LINE scopes the gate claim to infrastructure edits (T2)', () => {
-    expect(CONTROLS_LINE).toContain('infrastructure edits pass your explicit approval gate');
-    expect(CONTROLS_LINE).toContain('routine dependency updates');
-    expect(CONTROLS_LINE).toContain('Pause');
-    expect(CONTROLS_LINE.toLowerCase()).not.toContain('safety');
+  it('controlsLine scopes the gate claim to infrastructure edits (T2)', () => {
+    expect(controlsLine(t)).toContain('infrastructure edits pass your explicit approval gate');
+    expect(controlsLine(t)).toContain('routine dependency updates');
+    expect(controlsLine(t)).toContain('Pause');
+    expect(controlsLine(t).toLowerCase()).not.toContain('safety');
     // Pause now lives in the header pill, not a content card — copy points there.
-    expect(CONTROLS_LINE).toContain('top bar');
+    expect(controlsLine(t)).toContain('top bar');
     // Reworded for the header-pill redesign: name the visible "Mode control",
     // not a "dial" (the spotlit element is now a compact pill).
-    expect(CONTROLS_LINE).toContain('Mode control');
-    expect(CONTROLS_LINE.toLowerCase()).not.toContain('dial');
+    expect(controlsLine(t)).toContain('Mode control');
+    expect(controlsLine(t).toLowerCase()).not.toContain('dial');
   });
 
-  it('NEXT_LINE is scoped to THIS request and the review-page gate (T6)', () => {
-    expect(NEXT_LINE).toContain('this adopt request');
-    expect(NEXT_LINE).toContain('pull request');
-    expect(NEXT_LINE).toContain(
+  it('nextLine is scoped to THIS request and the review-page gate (T6)', () => {
+    expect(nextLine(t)).toContain('this adopt request');
+    expect(nextLine(t)).toContain('pull request');
+    expect(nextLine(t)).toContain(
       'applied only after you approve it on the review page',
     );
-    expect(NEXT_LINE).toContain('Tour button');
+    expect(nextLine(t)).toContain('Tour button');
     // The old blanket claim must not return — propose_apply may merge
     // dependency PRs on its own (Codex MF1).
-    expect(NEXT_LINE).not.toContain('Nothing is applied');
+    expect(nextLine(t)).not.toContain('Nothing is applied');
   });
 });
 
 describe('adoptStepState', () => {
   it('unavailable while loading or degraded (T3)', () => {
-    expect(adoptStepState(null).kind).toBe('unavailable');
-    expect(adoptStepState(makeGraph({ degraded: true })).kind).toBe('unavailable');
+    expect(adoptStepState(t, null).kind).toBe('unavailable');
+    expect(adoptStepState(t, makeGraph({ degraded: true })).kind).toBe('unavailable');
   });
 
   it('picks the rank-1 group first (same order as the panel)', () => {
@@ -292,7 +299,7 @@ describe('adoptStepState', () => {
         }),
       ],
     });
-    const s = adoptStepState(g);
+    const s = adoptStepState(t, g);
     expect(s.kind).toBe('target');
     if (s.kind !== 'target') throw new Error('unreachable');
     expect(s.prefill).toBe(
@@ -312,7 +319,7 @@ describe('adoptStepState', () => {
         makeGroup({ nodes: [makeNode({ id: 'g3n0', label: 'pick-me' })] }),
       ],
     });
-    const s = adoptStepState(g);
+    const s = adoptStepState(t, g);
     if (s.kind !== 'target') throw new Error('expected target');
     expect(s.prefill).toContain('pick-me');
   });
@@ -321,7 +328,7 @@ describe('adoptStepState', () => {
     const g = makeGraph({
       groups: [makeGroup({ adopt_hint: 'should not show — unranked' })],
     });
-    const s = adoptStepState(g);
+    const s = adoptStepState(t, g);
     if (s.kind !== 'target') throw new Error('expected target');
     expect(s.line).not.toContain('should not show');
   });
@@ -337,7 +344,7 @@ describe('adoptStepState', () => {
         }),
       ],
     });
-    const s = adoptStepState(g);
+    const s = adoptStepState(t, g);
     if (s.kind !== 'target') throw new Error('expected target');
     expect(s.prefill).toContain('named-bucket');
 
@@ -345,6 +352,7 @@ describe('adoptStepState', () => {
     // target", NOT "not adoptable types" (Codex round-2 must-fix: an
     // unnamed bucket is still an adoptable type).
     const allUnnamed = adoptStepState(
+      t,
       makeGraph({ groups: [makeGroup({ nodes: [makeNode({ label: ' ' })] })] }),
     );
     expect(allUnnamed.kind).toBe('none');
@@ -354,6 +362,7 @@ describe('adoptStepState', () => {
 
   it('all-managed congratulates; non-adoptable leftovers stay honest (T5)', () => {
     const allManaged = adoptStepState(
+      t,
       makeGraph({
         totals: { resources: 9, managed: 9, drift: 0 },
         groups: [makeGroup({ drift: 0, nodes: [makeNode({ managed: true })] })],
@@ -363,6 +372,7 @@ describe('adoptStepState', () => {
     expect(allManaged.line).toContain('already under IaC management');
 
     const leftovers = adoptStepState(
+      t,
       makeGraph({ groups: [makeGroup({ adoptable: false })] }),
     );
     expect(leftovers.kind).toBe('none');
@@ -383,7 +393,7 @@ describe('adoptStepState', () => {
         }),
       ],
     });
-    const s = adoptStepState(g);
+    const s = adoptStepState(t, g);
     expect(s.kind).toBe('target');
     if (s.kind === 'target') {
       expect(s.prefill).toContain('`demo-assets`');
@@ -408,7 +418,7 @@ describe('adoptStepState', () => {
         }),
       ],
     });
-    const s = adoptStepState(g);
+    const s = adoptStepState(t, g);
     expect(s.kind).toBe('target');
     if (s.kind === 'target') expect(s.prefill).toContain('`orders`');
   });
@@ -434,7 +444,7 @@ describe('adoptStepState', () => {
         }),
       ],
     });
-    const s = adoptStepState(g);
+    const s = adoptStepState(t, g);
     expect(s.kind).toBe('target');
     if (s.kind !== 'target') throw new Error('unreachable');
     expect(s.prefill).toBe(
@@ -464,7 +474,7 @@ describe('adoptStepState', () => {
         }),
       ],
     });
-    const s = adoptStepState(g);
+    const s = adoptStepState(t, g);
     expect(s.kind).toBe('target');
     if (s.kind !== 'target') throw new Error('unreachable');
     expect(s.prefill).toBe(
@@ -484,7 +494,7 @@ describe('adoptStepState', () => {
         }),
       ],
     });
-    const s = adoptStepState(g);
+    const s = adoptStepState(t, g);
     expect(s.kind).toBe('none');
     if (s.kind === 'none') {
       expect(s.line).toContain('control-plane');
@@ -514,7 +524,7 @@ describe('adoptStepState', () => {
         }),
       ],
     });
-    const s = adoptStepState(g);
+    const s = adoptStepState(t, g);
     expect(s.kind).toBe('none');
     if (s.kind === 'none') {
       expect(s.line).toContain('could adopt');
@@ -536,7 +546,7 @@ describe('adoptStepState', () => {
         }),
       ],
     });
-    const s = adoptStepState(g);
+    const s = adoptStepState(t, g);
     expect(s.kind).toBe('none');
     if (s.kind === 'none') expect(s.line).toContain('named adopt target');
   });
@@ -556,7 +566,7 @@ describe('adoptStepState', () => {
         }),
       ],
     });
-    const s = adoptStepState(g);
+    const s = adoptStepState(t, g);
     expect(s.kind).toBe('target');
     if (s.kind === 'target') {
       expect(s.prefill).toContain('`demo-assets`');
@@ -575,7 +585,7 @@ describe('adoptStepState', () => {
         }),
       ],
     });
-    const s = adoptStepState(g);
+    const s = adoptStepState(t, g);
     expect(s.kind).toBe('none');
     if (s.kind === 'none') {
       expect(s.line).toContain('Google service');
@@ -608,7 +618,7 @@ describe('adoptStepState', () => {
       ],
     });
     const pending = [makePending({ asset_type: 'pubsub.googleapis.com/Topic', resource_name: 'adopt-probe-topic', pr_number: 168 })];
-    const s = adoptStepState(g, pending);
+    const s = adoptStepState(t, g, pending);
     expect(s.kind).toBe('target');
     if (s.kind === 'target') {
       expect(s.prefill).toContain('`orders`');
@@ -632,7 +642,7 @@ describe('adoptStepState', () => {
       ],
     });
     const pending = [makePending({ asset_type: 'pubsub.googleapis.com/Topic', resource_name: 'adopt-probe-topic', pr_number: 168 })];
-    const s = adoptStepState(g, pending);
+    const s = adoptStepState(t, g, pending);
     expect(s.kind).toBe('target');
     if (s.kind === 'target') expect(s.prefill).toContain('`orders`');
   });
@@ -651,7 +661,7 @@ describe('adoptStepState', () => {
       ],
     });
     const pending = [makePending({ asset_type: 'pubsub.googleapis.com/Topic', resource_name: 'adopt-probe-topic', pr_number: 168 })];
-    const s = adoptStepState(g, pending);
+    const s = adoptStepState(t, g, pending);
     expect(s.kind).toBe('none');
     if (s.kind === 'none') {
       expect(s.line).toContain('already');
@@ -682,7 +692,7 @@ describe('adoptStepState', () => {
       ],
     });
     const pending = [makePending({ asset_type: 'pubsub.googleapis.com/Topic', resource_name: 'adopt-probe-topic', pr_number: 168 })];
-    const s = adoptStepState(g, pending);
+    const s = adoptStepState(t, g, pending);
     expect(s.kind).toBe('none');
     if (s.kind === 'none') {
       expect(s.line).toContain('named adopt target');
@@ -702,7 +712,7 @@ describe('adoptStepState', () => {
         }),
       ],
     });
-    const s = adoptStepState(g);
+    const s = adoptStepState(t, g);
     expect(s.kind).toBe('target');
     if (s.kind === 'target') expect(s.prefill).toContain('`adopt-probe-topic`');
   });

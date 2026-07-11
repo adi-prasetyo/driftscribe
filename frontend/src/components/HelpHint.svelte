@@ -23,6 +23,7 @@
    * block panel breaks cleanly onto its own row below.
    */
   import Icon from './Icon.svelte';
+  import { t } from '../lib/i18n';
 
   // `label` (optional): the status this hint explains, so each button gets a
   // distinct accessible name when several appear in one lifecycle.
@@ -44,7 +45,8 @@
 <button
   type="button"
   class="help-hint__btn"
-  aria-label={ariaLabel ?? (label ? `Explain the “${label}” status` : 'Explain this status')}
+  aria-label={ariaLabel ??
+    (label ? $t('misc.helpHint.explainLabeledStatus', { label }) : $t('misc.helpHint.explainStatus'))}
   aria-expanded={open}
   aria-controls={open ? panelId : undefined}
   title={text}

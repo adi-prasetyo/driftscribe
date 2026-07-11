@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { TokenState } from '../lib/api';
   import Icon from './Icon.svelte';
+  import { t, type MessageKey } from '../lib/i18n';
 
   // Operator auth indicator (plan Appendix B). Renders #token-status as a
   // ds-pill whose label + variant map off the current TokenState, followed by a
@@ -13,23 +14,26 @@
     onChange: () => void;
   } = $props();
 
-  // state → {label, pillClass} per the hard contract. Kept as a derived lookup
+  // state → {key, pillClass} per the hard contract. Kept as a derived lookup
   // so the pill and its aria-live announcement stay in lockstep with `state`.
-  const VARIANTS: Record<TokenState, { label: string; pillClass: string }> = {
-    ok: { label: 'token ok', pillClass: 'ds-pill--ok' },
-    missing: { label: 'no token', pillClass: 'ds-pill--muted' },
-    invalid: { label: 'token rejected', pillClass: 'ds-pill--danger' },
+  // Built once at module eval, so it holds semantic ids (not translated text) —
+  // the label itself is resolved reactively at render via `$t`.
+  const VARIANTS: Record<TokenState, { key: MessageKey; pillClass: string }> = {
+    ok: { key: 'auth.status.ok', pillClass: 'ds-pill--ok' },
+    missing: { key: 'auth.status.missing', pillClass: 'ds-pill--muted' },
+    invalid: { key: 'auth.status.invalid', pillClass: 'ds-pill--danger' },
   };
 
   const variant = $derived(VARIANTS[state]);
+  const label = $derived($t(variant.key));
 </script>
 
 <span class="token-status">
   <span id="token-status" class={'ds-pill ' + variant.pillClass} aria-live="polite"
-    ><Icon name="key-round" size={12} />{variant.label}</span
+    ><Icon name="key-round" size={12} />{label}</span
   >
   <button id="change-token-btn" type="button" class="change-token" onclick={onChange}
-    >change token</button
+    >{$t('auth.status.changeToken')}</button
   >
 </span>
 

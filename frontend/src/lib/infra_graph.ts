@@ -16,6 +16,8 @@
 // renders an `edges` array generically so Phase 4 (partial topology) is a
 // server-side change only.
 
+import { plural, type MessageKey, type TranslateFn } from './i18n';
+
 export interface InfraNode {
   /** Server-assigned, already-safe render handle (e.g. "g0n1"). */
   id: string;
@@ -228,14 +230,14 @@ const VERB_CLASS: Record<OverlayVerb, 'ghostCreate' | 'ghostUpdate' | 'ghostDest
   replace: 'ghostDestroy',
 };
 
-const VERB_SUFFIX: Record<OverlayVerb, string> = {
-  create: 'will be created',
-  import: 'will be imported',
-  update: 'will be modified',
-  change: 'will change',
-  forget: 'will leave IaC management',
-  destroy: 'will be destroyed',
-  replace: 'will be replaced',
+const VERB_SUFFIX: Record<OverlayVerb, MessageKey> = {
+  create: 'infra.graph.verb.create',
+  import: 'infra.graph.verb.import',
+  update: 'infra.graph.verb.update',
+  change: 'infra.graph.verb.change',
+  forget: 'infra.graph.verb.forget',
+  destroy: 'infra.graph.verb.destroy',
+  replace: 'infra.graph.verb.replace',
 };
 
 // Verbs that reclass a label-matching live node (else add a ghost). create /
@@ -250,14 +252,14 @@ const RECLASS_VERBS: ReadonlySet<OverlayVerb> = new Set([
 ]);
 
 // overlayCountsLine ordering (Decision 5): operator-calm, non-zero verbs only.
-const COUNTS_ORDER: Array<{ key: keyof OverlayCounts; phrase: string }> = [
-  { key: 'create', phrase: 'will be created' },
-  { key: 'update', phrase: 'will be modified' },
-  { key: 'replace', phrase: 'will be replaced' },
-  { key: 'destroy', phrase: 'will be destroyed' },
-  { key: 'import', phrase: 'will be imported' },
-  { key: 'forget', phrase: 'will leave management' },
-  { key: 'change', phrase: 'will change' },
+const COUNTS_ORDER: Array<{ key: keyof OverlayCounts; msgKey: MessageKey }> = [
+  { key: 'create', msgKey: 'infra.graph.overlay.create' },
+  { key: 'update', msgKey: 'infra.graph.overlay.update' },
+  { key: 'replace', msgKey: 'infra.graph.overlay.replace' },
+  { key: 'destroy', msgKey: 'infra.graph.overlay.destroy' },
+  { key: 'import', msgKey: 'infra.graph.overlay.import' },
+  { key: 'forget', msgKey: 'infra.graph.overlay.forget' },
+  { key: 'change', msgKey: 'infra.graph.overlay.change' },
 ];
 
 // Cap a label so one pathological name can't blow out the diagram. Truncate the
@@ -358,17 +360,17 @@ export function overlayRenderable(overlay: PlanOverlay | null | undefined): bool
 }
 
 /**
- * Calm operator phrasing of the change counts — non-zero verbs only, ` · `-joined
- * in a fixed order. No singular/plural inflection (the numbers read fine). An
- * all-zero overlay → "No infrastructure changes".
+ * Calm operator phrasing of the change counts — non-zero verbs only, joined
+ * in a fixed order by the localized separator. No singular/plural inflection
+ * (the numbers read fine). An all-zero overlay → "No infrastructure changes".
  */
-export function overlayCountsLine(counts: OverlayCounts): string {
+export function overlayCountsLine(counts: OverlayCounts, t: TranslateFn): string {
   const parts: string[] = [];
-  for (const { key, phrase } of COUNTS_ORDER) {
+  for (const { key, msgKey } of COUNTS_ORDER) {
     const n = counts[key];
-    if (n > 0) parts.push(`${n} ${phrase}`);
+    if (n > 0) parts.push(t(msgKey, { n }));
   }
-  return parts.length > 0 ? parts.join(' · ') : 'No infrastructure changes';
+  return parts.length > 0 ? parts.join(t('infra.graph.overlay.sep')) : t('infra.graph.overlay.noChanges');
 }
 
 /**
@@ -920,7 +922,7 @@ function liveNodeClass(group: InfraGroup, node: InfraNode): 'managed' | 'drift' 
   return 'hidden';
 }
 
-export function toMermaid(graph: InfraGraph, overlay?: PlanOverlay): string {
+export function toMermaid(graph: InfraGraph, overlay: PlanOverlay | undefined, t: TranslateFn): string {
   const hasGhosts = overlayRenderable(overlay);
   const lines: string[] = ['flowchart LR', CLASS_DEFS];
   if (hasGhosts) lines.push(GHOST_CLASS_DEFS);
@@ -952,16 +954,19 @@ export function toMermaid(graph: InfraGraph, overlay?: PlanOverlay): string {
 
   // Render one ghost node line (added, not reclassed). `inFallback` prefixes the
   // type_label so a "Planned changes" ghost is self-describing. All dynamic
-  // parts are escaped; the verb suffix is a trusted literal appended after.
+  // parts are escaped, INCLUDING the localized verb suffix — catalog content is
+  // no longer a hardcoded literal, so it goes through the same boundary as
+  // every other label (Codex terminology review requirement).
   const ghostNodeLine = (e: OverlayEntry, inFallback: boolean): string => {
     const mid = `n${counter++}`;
     const base = e.sensitive
       ? `${e.type_label} (name hidden)`
       : shortName(e.name) || e.address;
     const escaped = escapeMermaidLabel(base);
+    const suffix = escapeMermaidLabel(t(VERB_SUFFIX[e.verb]));
     const label = inFallback
-      ? `${escapeMermaidLabel(e.type_label)}: ${escaped} · ${VERB_SUFFIX[e.verb]}`
-      : `${escaped} · ${VERB_SUFFIX[e.verb]}`;
+      ? `${escapeMermaidLabel(e.type_label)}: ${escaped} · ${suffix}`
+      : `${escaped} · ${suffix}`;
     return `${mid}["${label}"]:::${VERB_CLASS[e.verb]}`;
   };
 
@@ -996,9 +1001,11 @@ export function toMermaid(graph: InfraGraph, overlay?: PlanOverlay): string {
       if (group.count > 0) {
         const word = group.sensitive
           ? pluralize(group.label.toLowerCase(), group.count)
-          : pluralize('resource', group.count);
+          : plural(t, 'infra.graph.resource', group.count);
         const mid = `n${counter++}`;
-        inner.push(`${mid}["${escapeMermaidLabel(`${group.count} ${word} · hidden`)}"]:::hidden`);
+        inner.push(
+          `${mid}["${escapeMermaidLabel(`${group.count} ${word} · ${t('infra.graph.hidden')}`)}"]:::hidden`,
+        );
         drew = true;
       }
       // A reclass can't land on a counts-only/empty group (no nodes to match);
@@ -1014,7 +1021,10 @@ export function toMermaid(graph: InfraGraph, overlay?: PlanOverlay): string {
         const hit = reclassByLabel.get(node.label);
         if (hit) {
           reclassed.add(hit);
-          inner.push(`${mid}["${escapeMermaidLabel(node.label)} · ${VERB_SUFFIX[hit.verb]}"]:::${VERB_CLASS[hit.verb]}`);
+          const suffix = escapeMermaidLabel(t(VERB_SUFFIX[hit.verb]));
+          inner.push(
+            `${mid}["${escapeMermaidLabel(node.label)} · ${suffix}"]:::${VERB_CLASS[hit.verb]}`,
+          );
         } else {
           inner.push(`${mid}["${escapeMermaidLabel(node.label)}"]:::${liveNodeClass(group, node)}`);
         }
@@ -1023,7 +1033,7 @@ export function toMermaid(graph: InfraGraph, overlay?: PlanOverlay): string {
       const more = group.truncated_in_group ?? 0;
       if (more > 0) {
         const mid = `n${counter++}`;
-        inner.push(`${mid}["${escapeMermaidLabel(`+${more} more`)}"]:::hidden`);
+        inner.push(`${mid}["${escapeMermaidLabel(t('infra.graph.more', { n: more }))}"]:::hidden`);
         drew = true;
       }
       // Reclass entries that matched no live node degrade to added ghosts.
@@ -1057,11 +1067,13 @@ export function toMermaid(graph: InfraGraph, overlay?: PlanOverlay): string {
     }
     if (overlay.hidden > 0) {
       const mid = `n${counter++}`;
-      inner.push(`${mid}["${escapeMermaidLabel(`+${overlay.hidden} more planned change(s)`)}"]:::hidden`);
+      inner.push(
+        `${mid}["${escapeMermaidLabel(t('infra.graph.morePlanned', { n: overlay.hidden }))}"]:::hidden`,
+      );
       drew = true;
     }
     if (inner.length > 0) {
-      lines.push('subgraph sgplan["Planned changes"]');
+      lines.push(`subgraph sgplan["${escapeMermaidLabel(t('infra.graph.plannedChanges'))}"]`);
       lines.push('direction LR');
       lines.push(...inner);
       lines.push('end');
@@ -1082,7 +1094,7 @@ export function toMermaid(graph: InfraGraph, overlay?: PlanOverlay): string {
 
   // Always return a parseable diagram, even with nothing to draw.
   if (!drew) {
-    lines.push('empty["No resources indexed yet"]:::hidden');
+    lines.push(`empty["${escapeMermaidLabel(t('infra.graph.empty'))}"]:::hidden`);
   }
 
   return lines.join('\n');

@@ -3,11 +3,17 @@
   // a calm left-rail list of cards, here folded into Today/Yesterday/Older day
   // buckets (newest first). Each card resumes its thread on click. The grouping
   // is pure (lib/conversations.groupConversations); this component only renders.
-  import { groupConversations, capConversations, matchesConversation } from '../lib/conversations';
+  import {
+    groupConversations,
+    capConversations,
+    matchesConversation,
+    type ConversationBucket,
+  } from '../lib/conversations';
   import CrewGlyph from './CrewGlyph.svelte';
   import HelpHint from './HelpHint.svelte';
   import Icon from './Icon.svelte';
   import Modal from './Modal.svelte';
+  import { t, locale, localeTag, plural, type MessageKey, type TranslateFn } from '../lib/i18n';
   import type { Conversation } from '../lib/types';
 
   let {
@@ -49,14 +55,23 @@
     onOpen(id);
   }
 
+  // Day-bucket id → catalog key (conversations.ts returns semantic ids so it
+  // stays locale-free; this is the one place they become rendered text).
+  const BUCKET_KEY: Record<ConversationBucket, MessageKey> = {
+    today: 'conversations.bucket.today',
+    yesterday: 'conversations.bucket.yesterday',
+    older: 'conversations.bucket.older',
+  };
+
   // Compact, readable wall-clock for a card. Mirrors DecisionsRail.fmtCreatedAt:
-  // falls back to the raw value when it doesn't parse, '' when absent.
-  function fmtTime(iso: string | undefined): string {
+  // falls back to the raw value when it doesn't parse, '' when absent. `tag` is
+  // the active locale's BCP-47 tag (never `undefined` — see i18n.ts localeTag).
+  function fmtTime(iso: string | undefined, tag: 'ja-JP' | 'en-US'): string {
     if (!iso) return '';
     const parsed = Date.parse(iso);
     if (Number.isNaN(parsed)) return iso;
     try {
-      return new Intl.DateTimeFormat(undefined, {
+      return new Intl.DateTimeFormat(tag, {
         month: 'short',
         day: 'numeric',
         hour: '2-digit',
@@ -72,10 +87,10 @@
   // report only the operator's own messages: ceil(turn_count / 2) counts the
   // user turns and is exact for the paired case, while still counting a lone
   // user turn should a reply ever fail to persist. Absent/zero → nothing.
-  function turnsLabel(n: number | undefined): string {
+  function turnsLabel(n: number | undefined, tf: TranslateFn): string {
     if (!n || n < 1) return '';
     const messages = Math.ceil(n / 2);
-    return messages === 1 ? '1 message' : `${messages} messages`;
+    return plural(tf, 'conversations.messageCount', messages);
   }
 </script>
 
@@ -97,18 +112,18 @@
       <span class="conv-body">
         <span class="conv-title">{c.title}</span>
         <span class="conv-meta">
-          {#if c.updated_at}<time datetime={c.updated_at}>{fmtTime(c.updated_at)}</time>{/if}
-          {#if turnsLabel(c.turn_count)}<span class="conv-count">· {turnsLabel(c.turn_count)}</span>{/if}
+          {#if c.updated_at}<time datetime={c.updated_at}>{fmtTime(c.updated_at, localeTag($locale))}</time>{/if}
+          {#if turnsLabel(c.turn_count, $t)}<span class="conv-count">· {turnsLabel(c.turn_count, $t)}</span>{/if}
         </span>
       </span>
     </button>
   </li>
 {/snippet}
 
-<aside id="conversations-rail" data-testid="conversations-pane" aria-label="Conversations">
+<aside id="conversations-rail" data-testid="conversations-pane" aria-label={$t('conversations.rail.title')}>
   <div class="rail-header">
     <h2 class="ds-label rail-eyebrow">
-      <span class="eyebrow-icon"><Icon name="message-square" size={14} /></span>Conversations
+      <span class="eyebrow-icon"><Icon name="message-square" size={14} /></span>{$t('conversations.rail.title')}
     </h2>
     <!-- Always shown — it explains what the rail is and where the cross-crew
          "team memory" boundary sits. Mirrors DecisionsRail's header hint; the
@@ -117,17 +132,17 @@
          crew picker), so it sits with the crew-lock it releases. -->
     <HelpHint
       testid="conversations-help"
-      ariaLabel="About conversations"
-      text="Your chats are saved here, so you can reopen any thread and pick up where you left off. Each conversation stays with the crew that started it. Crews can also look back at redacted snippets of each other's recent chats as shared team memory."
+      ariaLabel={$t('conversations.rail.helpAriaLabel')}
+      text={$t('conversations.rail.helpText')}
     />
   </div>
 
   {#if conversations.length === 0}
-    <p class="empty ds-subtle">No conversations yet. Chats you start are saved here, so you can reopen any thread and keep going.</p>
+    <p class="empty ds-subtle">{$t('conversations.rail.empty')}</p>
   {:else}
     {#each groups as group (group.label)}
       <div class="conv-group" data-testid="conv-group">
-        <h3 class="conv-group__label">{group.label}</h3>
+        <h3 class="conv-group__label">{$t(BUCKET_KEY[group.label])}</h3>
         <ul class="conv-list">
           {#each group.items as c (c.conversation_id)}
             {@render conversationItem(c)}
@@ -144,31 +159,31 @@
         data-testid="conversations-search-open"
         type="button"
         onclick={openSearch}
-      >Search chats ({conversations.length}) →</button>
+      >{$t('conversations.rail.searchOpen', { n: conversations.length })}</button>
     {/if}
   {/if}
 </aside>
 
-<Modal open={showSearch} title="Search chats" onClose={() => (showSearch = false)}>
+<Modal open={showSearch} title={$t('conversations.search.title')} onClose={() => (showSearch = false)}>
   <div class="search-pane">
     <input
       class="search-input"
       data-modal-autofocus
       data-testid="conversations-search-input"
       type="search"
-      aria-label="Search chats by title or crew"
-      placeholder="Search by title or crew…"
+      aria-label={$t('conversations.search.inputAriaLabel')}
+      placeholder={$t('conversations.search.placeholder')}
       bind:value={query}
     />
     <p class="search-count" data-testid="conversations-search-count" aria-live="polite">
-      {searchMatches.length} of {conversations.length}
+      {$t('conversations.search.count', { matched: searchMatches.length, total: conversations.length })}
     </p>
     {#if searchMatches.length === 0}
-      <p class="empty ds-subtle">No chats match “{query}”.</p>
+      <p class="empty ds-subtle">{$t('conversations.search.noMatch', { query })}</p>
     {:else}
       {#each searchGroups as group (group.label)}
         <div class="conv-group" data-testid="conv-search-group">
-          <h3 class="conv-group__label">{group.label}</h3>
+          <h3 class="conv-group__label">{$t(BUCKET_KEY[group.label])}</h3>
           <ul class="conv-list">
             {#each group.items as c (c.conversation_id)}
               {@render conversationItem(c)}

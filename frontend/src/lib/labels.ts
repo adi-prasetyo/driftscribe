@@ -1,3 +1,6 @@
+import type { MessageKey } from '../locales';
+import type { TranslateFn } from './i18n';
+
 /**
  * Friendly worker / tool / MCP labels for the transparency timeline.
  *
@@ -11,40 +14,46 @@
  * ``mcp_server`` identity (``developer_knowledge``) as a fallback key — the
  * MCP group sub-keys on ``mcp_tool`` falling back to ``mcp_server`` when the
  * tool name isn't carried on older event shapes.
+ *
+ * i18n: the English label text itself now lives in the `timeline.worker.*`
+ * catalog (frontend/src/locales/timeline.ts, byte-for-byte the same strings
+ * this map used to hold directly) — this map only carries the KNOWN key set,
+ * mapping a tool/MCP key to its catalog key.
  */
-export const WORKER_LABELS: Record<string, string> = {
+const WORKER_LABEL_KEYS: Record<string, MessageKey> = {
   // Drift workload
-  read_live_env_tool: 'Reader (drift)',
-  patch_docs_tool: 'Docs (drift)',
-  propose_rollback_tool: 'Rollback (drift) · HITL',
+  read_live_env_tool: 'timeline.worker.read_live_env_tool',
+  patch_docs_tool: 'timeline.worker.patch_docs_tool',
+  propose_rollback_tool: 'timeline.worker.propose_rollback_tool',
   // Upgrade workload — tool names must match the exposed surface in
   // ``agent/adk_tools.py`` (the ``_tool`` suffix is part of the function
   // name the ADK runner sees).
-  upgrade_read_dependencies_tool: 'Upgrade Reader',
-  upgrade_propose_pr_tool: 'Upgrade Docs',
-  upgrade_close_pr_tool: 'Upgrade Docs · close PR',
-  upgrade_merge_pr_tool: 'Upgrade Docs · merge PR',
+  upgrade_read_dependencies_tool: 'timeline.worker.upgrade_read_dependencies_tool',
+  upgrade_propose_pr_tool: 'timeline.worker.upgrade_propose_pr_tool',
+  upgrade_close_pr_tool: 'timeline.worker.upgrade_close_pr_tool',
+  upgrade_merge_pr_tool: 'timeline.worker.upgrade_merge_pr_tool',
   // Provision workload (Phase D) — the callable __name__ is
   // ``open_infra_pr_tool`` (the symbolic workload name is
   // ``provision_open_infra_pr``; the timeline keys on the callable).
-  open_infra_pr_tool: 'Open infra PR',
+  open_infra_pr_tool: 'timeline.worker.open_infra_pr_tool',
   // Adoption tool (adopt design Phase 3) — callable ``propose_adoption_tool``;
   // symbolic workload name is ``provision_propose_adoption``.
-  propose_adoption_tool: 'Adopt resource (import PR)',
+  propose_adoption_tool: 'timeline.worker.propose_adoption_tool',
   // Shared
-  notify_tool: 'Notifier',
+  notify_tool: 'timeline.worker.notify_tool',
   // Item 12 — pending-infra-PR plan Q&A (explore workload).
-  load_iac_plan_tool: 'IaC plan reader',
+  load_iac_plan_tool: 'timeline.worker.load_iac_plan_tool',
   // MCP — Google Developer Knowledge. Per-tool labels (keyed on ``mcp_tool``)
   // plus the bare server-identity key (``mcp_server`` fallback) yielding the
   // unsuffixed friendly label.
-  developer_knowledge: 'Developer Knowledge MCP',
-  answer_query: 'Developer Knowledge MCP · answer',
-  search_documents: 'Developer Knowledge MCP · search',
-  get_documents: 'Developer Knowledge MCP · get',
+  developer_knowledge: 'timeline.worker.developer_knowledge',
+  answer_query: 'timeline.worker.answer_query',
+  search_documents: 'timeline.worker.search_documents',
+  get_documents: 'timeline.worker.get_documents',
 };
 
 /** Friendly label for a tool/MCP key, falling back to the raw key. */
-export function workerLabel(key: string): string {
-  return WORKER_LABELS[key] ?? key;
+export function workerLabel(key: string, t: TranslateFn): string {
+  const catalogKey = WORKER_LABEL_KEYS[key];
+  return catalogKey ? t(catalogKey) : key;
 }

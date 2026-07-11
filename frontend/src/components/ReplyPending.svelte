@@ -14,11 +14,12 @@
   // single sr-only line carries the announcement for assistive tech. The shimmer
   // is neutralised under prefers-reduced-motion (both the global base.css reset
   // and the explicit rule below, matching the TraceBadge precedent).
+  import { t } from '../lib/i18n';
 </script>
 
 <section class="ds-card reply-pending" data-testid="reply-pending" role="status">
-  <p class="ds-label reply-pending__label">Coordinator reply</p>
-  <span class="reply-pending__sr">Generating the coordinator&rsquo;s reply&hellip;</span>
+  <p class="ds-label reply-pending__label">{$t('misc.coordinatorReply.label')}</p>
+  <span class="reply-pending__sr">{$t('misc.replyPending.sr')}</span>
   <div class="reply-pending__bars" aria-hidden="true">
     <span class="skel-bar skel-bar--w1"></span>
     <span class="skel-bar skel-bar--w2"></span>

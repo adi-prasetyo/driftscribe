@@ -1,3 +1,5 @@
+import type { TranslateFn } from './i18n';
+
 // SECURITY-CRITICAL. Same-origin guard for HITL approval links, ported
 // verbatim-in-spirit from the legacy `_safeApprovalHref` renderer guard in
 // `agent/templates/transparency.html` (~lines 1000-1055). These functions
@@ -228,6 +230,7 @@ export function iacApproveLabel(
     superseded_by_pr?: number;
   },
   resolvedPrs: ReadonlySet<number>,
+  t: TranslateFn,
 ): string {
   if (
     d.apply_status === 'waiting_for_rebake' &&
@@ -235,11 +238,12 @@ export function iacApproveLabel(
     Number.isInteger(d.superseded_by_pr) &&
     d.superseded_by_pr > 0
   )
-    return `superseded by #${d.superseded_by_pr} →`;
+    return t('shared.approve.supersededBy', { pr: d.superseded_by_pr });
   const superseded = typeof d.pr_number === 'number' && resolvedPrs.has(d.pr_number);
-  if (d.apply_status === 'waiting_for_rebake' && !superseded) return 'Review & approve →';
-  if (d.apply_status === 'applied' && d.merge_state === 'merged') return 'View approval history →';
+  if (d.apply_status === 'waiting_for_rebake' && !superseded) return t('shared.approve.reviewApprove');
+  if (d.apply_status === 'applied' && d.merge_state === 'merged')
+    return t('shared.approve.viewHistory');
   if (d.apply_status !== undefined && TERMINAL_FAILED_APPLY_STATUSES.has(d.apply_status))
-    return 'View failure details →';
-  return 'Go to approval page →';
+    return t('shared.approve.viewFailure');
+  return t('shared.approve.goToPage');
 }

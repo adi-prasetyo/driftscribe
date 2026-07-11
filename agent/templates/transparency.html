@@ -1,18 +1,20 @@
 <!doctype html>
-<html lang="en">
+{# Initial lang is JA (the app defaults to Japanese); the i18n store rewrites
+   <html lang> + document.title once the SPA mounts and on every toggle. #}
+<html lang="ja">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
   <meta name="robots" content="noindex,nofollow">
-  <title>DriftScribe — the agent proposes, you approve</title>
+  <title>DriftScribe — エージェントが提案し、あなたが承認する</title>
   {# Built CSS resolved from the Vite manifest (agent.main._shell_assets). #}
   <link rel="stylesheet" href="{{ ds_css }}">
 </head>
 <body>
   {# The Svelte SPA mounts here (frontend/src/main.ts → mount(App, {target:#app})). #}
   <div id="app"></div>
-  <noscript>DriftScribe’s reasoning timeline requires JavaScript.</noscript>
+  <noscript>DriftScribe の推論タイムラインを表示するには JavaScript が必要です。/ DriftScribe’s reasoning timeline requires JavaScript.</noscript>
   {# Built ES module entry resolved from the Vite manifest. #}
   <script type="module" src="{{ ds_js }}"></script>
 </body>

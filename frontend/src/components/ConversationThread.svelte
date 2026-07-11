@@ -9,6 +9,7 @@
   import CrewGlyph from './CrewGlyph.svelte';
   import { crewName } from '../lib/workloads';
   import { iacApprovalHref } from '../lib/approval';
+  import { t } from '../lib/i18n';
   import type { ConversationTurn } from '../lib/types';
 
   let {
@@ -31,7 +32,7 @@
 <section
   id="conversation-thread"
   data-testid="conversation-thread"
-  aria-label="Conversation history"
+  aria-label={$t('conversations.thread.ariaLabel')}
   tabindex="-1"
 >
   <ol class="thread">
@@ -39,7 +40,7 @@
       {#if turn.role === 'user'}
         <li class="turn turn--user" data-testid="thread-turn-user">
           <div class="bubble bubble--user">
-            <p class="turn__byline">You</p>
+            <p class="turn__byline">{$t('conversations.thread.you')}</p>
             <div class="turn__text">{turn.text}</div>
           </div>
         </li>
@@ -68,7 +69,7 @@
                 <span class="typing-dot"></span>
                 <span class="typing-dot"></span>
               </div>
-              <span class="turn__sr">Generating reply&hellip;</span>
+              <span class="turn__sr">{$t('conversations.thread.generatingReply')}</span>
             {:else}
               <div class="turn__text">{turn.text}</div>
             {/if}
@@ -83,8 +84,9 @@
                     class="turn-link"
                     data-testid="thread-open-trace"
                     type="button"
-                    aria-label={`View reasoning for turn ${turn.seq + 1}`}
-                    onclick={() => onOpenTrace(turn.trace_id as string)}>view reasoning →</button>
+                    aria-label={$t('conversations.thread.viewReasoningAria', { n: turn.seq + 1 })}
+                    onclick={() => onOpenTrace(turn.trace_id as string)}
+                    >{$t('shared.rail.traceButton.viewReasoning')}</button>
                 {/if}
                 {#if prUrl}
                   <a
@@ -92,7 +94,7 @@
                     data-testid="thread-pr-link"
                     href={prUrl}
                     target="_blank"
-                    rel="noopener">Review PR #{turn.iac_pr?.pr_number} →</a>
+                    rel="noopener">{$t('conversations.thread.reviewPr', { n: turn.iac_pr?.pr_number ?? 0 })}</a>
                 {/if}
               </div>
             {/if}

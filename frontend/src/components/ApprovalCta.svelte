@@ -1,5 +1,6 @@
 <script lang="ts">
   import { safeApprovalHref } from '../lib/approval';
+  import { t } from '../lib/i18n';
 
   // Inline HITL call-to-action rendered INSIDE a rollback tool result. The
   // rollback worker may embed an `approval_url` in its JSON result payload; we
@@ -29,8 +30,8 @@
 
 {#if href}
   <div class="approval-cta">
-    <strong class="approval-cta__title">HITL approval required</strong>
-    <a class="approval-btn" {href} target="_blank" rel="noopener">Approve →</a>
+    <strong class="approval-cta__title">{$t('approval.rollbackCta.title')}</strong>
+    <a class="approval-btn" {href} target="_blank" rel="noopener">{$t('approval.rollbackCta.approve')}</a>
   </div>
 {/if}
 

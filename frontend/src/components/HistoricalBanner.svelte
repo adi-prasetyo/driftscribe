@@ -1,5 +1,6 @@
 <script lang="ts">
   import { shortTrace } from '../lib/format';
+  import { t } from '../lib/i18n';
 
   // Slim advisory banner shown while the operator is replaying a *past* trace
   // (historical mode) instead of a live session. The id / data-testid /
@@ -30,7 +31,7 @@
   >
     <span class="historical-banner__label">
       <span class="historical-banner__dot" aria-hidden="true"></span>
-      viewing past reasoning
+      {$t('timeline.historicalBanner.label')}
       <code id="historical-trace-id" class="ds-code">{shortTrace(traceId ?? '')}</code>
     </span>
     <button
@@ -39,7 +40,7 @@
       class="historical-banner__new"
       onclick={onNewChat}
     >
-      ← new chat
+      {$t('timeline.historicalBanner.newChat')}
     </button>
   </div>
 {/if}
