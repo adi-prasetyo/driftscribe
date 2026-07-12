@@ -1324,11 +1324,17 @@
   /* Pending-PR affordances — stream-ink (blue), distinct from the warn-tinted
      Adopt button: this is "go review an open PR", not "start an adoption". */
   .infra-card__pending-link {
-    flex: none;
+    /* Wrap like the resource name (flex:1 1 auto; min-width:0;
+       overflow-wrap:anywhere) so a long label breaks and stays inside the
+       208px-minimum card. The old flex:none + white-space:nowrap fit the short
+       EN "Review pending adoption (PR #…) →" but clipped the longer JA
+       "保留中の IaC 管理への取り込みを確認（PR #…）→" at the card edge. */
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-wrap: anywhere;
     font-size: var(--ds-fs-1);
     color: var(--ds-stream-ink);
     text-decoration: underline;
-    white-space: nowrap;
   }
   .infra-card__pending-tag {
     flex: none;
