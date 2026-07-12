@@ -257,6 +257,18 @@ so we could keep the core agent loop solid and fully working end-to-end. The ful
 single-tenant coupling map and the productization paths are written up in
 [`docs/plans/2026-06-24-multi-tenant-productization-scope.md`](docs/plans/2026-06-24-multi-tenant-productization-scope.md).
 
+**Deeper drift detection.** The infra map today catches existence-level drift:
+a resource that exists in the project but is not declared in IaC. What it
+cannot see yet is attribute-level drift, where a managed resource still matches
+its declaration by identity while its live configuration has quietly diverged
+(a console edit to a lifecycle rule, a changed env var). The designed next step
+is a periodic, non-mutating check that reuses the `tofu plan -refresh-only`
+gate the `tofu-apply` worker already runs before every apply, with findings
+surfaced in the Infrastructure panel as evidence for the Provision crew to
+investigate. Detection only, never auto-remediation: the human approval gate
+stays where it is. Design decisions and phasing are written up in
+[`docs/plans/2026-07-12-periodic-tofu-plan-drift-check.md`](docs/plans/2026-07-12-periodic-tofu-plan-drift-check.md).
+
 ## Status
 
 Built out past the hackathon MVP. Three initiatives landed on top of the Phase 17
