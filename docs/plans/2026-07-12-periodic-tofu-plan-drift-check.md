@@ -126,13 +126,16 @@ two complementary oracles:
 2. **Advisory runs use `-lock=false`, and honesty about what that buys.** The
    GCS backend acquires its lock by writing an object, and a locked periodic
    plan could contend with a real apply or a C2 plan-builder run. `-lock=false`
-   guarantees the checker can never delay or fail an apply; it does NOT
-   guarantee the advisory result is coherent if it overlaps one. In practice
-   the worker runs at max-instances=1 / concurrency=1, so drift-check and
-   apply serialize within the worker anyway; record that assumption rather
-   than rely on it silently, add a best-effort in-progress-apply precheck that
-   yields an `apply_in_progress` (inconclusive) result, and never persist an
-   advisory result known to overlap an apply. The existing *locked* freshness
+   guarantees the checker can never contend for the state lock with an apply;
+   it does NOT guarantee the advisory result is coherent if it overlaps one,
+   and it does not remove request-level queueing: the worker runs at
+   max-instances=1 / concurrency=1, so an apply arriving mid-check queues
+   behind it. That serialization is also what keeps the two from overlapping;
+   accept it, and bound it with the drift-check subprocess timeout so the
+   queueing delay an apply can experience is short and known. Add a
+   best-effort in-progress-apply precheck that yields an `apply_in_progress`
+   (inconclusive) result, and never persist an advisory result known to
+   overlap an apply. The existing *locked* freshness
    gate inside `run_apply_sequence` stays untouched as the only pre-apply
    authority.
 3. **Drift is reported against the *baked* config, with staleness as a
@@ -178,7 +181,7 @@ finalized in the implementation plan):
 {
   "check": "clean | drift | apply_in_progress | error",
   "checked_at": "2026-07-12T09:00:00Z",
-  "exit_code": 0,
+  "exit_code": 2,
   "baked_iac_hash": "…",
   "config_freshness": {
     "verdict": "current | stale | unknown",
@@ -203,6 +206,8 @@ finalized in the implementation plan):
 
 Rules carried over from the #244 projection, tightened per review:
 
+- `check` and `exit_code` must agree (`drift` pairs with exit 2, `clean` with
+  exit 0); `exit_code` is omitted for `apply_in_progress` and pre-plan errors.
 - Cap **every** dimension with module constants: max resources, max attribute
   names per resource, max attribute-name length, max total document size, and
   subprocess/parse time. Sort before truncating; honest `count`/`truncated`;
@@ -268,8 +273,8 @@ found; `apply_in_progress` renders as inconclusive, not clean.
 Tune the benign-attribute allowlist against a few weeks of real results;
 optionally add a zero-credential scheduled GH workflow that probes the result
 endpoint and fails loudly on `error`/persistent `drift` (demo-health.yml
-notification contract); evaluate a normal-plan (config-vs-state) mode as a
-distinct "pending config changes" signal.
+notification contract); evaluate a normal-plan mode (config-convergence:
+config vs refreshed live) as a distinct "pending config changes" signal.
 
 ## Explicit non-goals
 
@@ -289,9 +294,11 @@ distinct "pending config changes" signal.
 - A manual out-of-band edit to a managed demo resource appears in the band
   within one scheduled cycle, names the resource address, change kind, and
   changed attribute, and disappears within one cycle after revert.
-- A concurrent real apply is never blocked or failed by the periodic check;
-  a check that would overlap an apply yields `apply_in_progress`, and no
-  advisory result known to overlap an apply is persisted.
+- The periodic check never contends for the state lock with a real apply and
+  never fails one; an apply arriving mid-check experiences at most the
+  bounded, timeout-capped queueing delay of the worker's serialized request
+  handling. A check that would overlap an apply yields `apply_in_progress`,
+  and no advisory result known to overlap an apply is persisted.
 - A stale worker bake still reports the raw check outcome, paired with a
   `stale` freshness verdict; a GitHub read failure yields `unknown`, never
   silently `current`.
