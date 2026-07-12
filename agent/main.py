@@ -32,6 +32,7 @@ from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2.id_token import verify_oauth2_token
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
+from agent import approval_i18n
 from agent import approvals as approval_helpers
 from agent import iac_artifacts
 from agent import iac_csrf
@@ -328,6 +329,10 @@ def _shell_assets() -> dict[str, str]:
 # have to thread ``ds_css`` through each context dict and risk missing a branch).
 # A callable (not a static value) so the lazy manifest resolution runs per render.
 _TEMPLATES.env.globals["ds_css_href"] = lambda: _shell_assets()["css"]
+# JA vocabulary for the approval templates' `lang == 'ja'` branches only
+# (exact-match with English-identity fallback — agent/approval_i18n.py).
+_TEMPLATES.env.globals["ja_type_label"] = approval_i18n.ja_type_label
+_TEMPLATES.env.globals["ja_verb_label"] = approval_i18n.ja_verb_label
 
 
 # Endpoints that handle the HITL approval token MUST set these headers
@@ -3247,11 +3252,7 @@ def _autonomy_note_for_display(a: AutonomyState) -> str:
     says the effective mode is Observe and that it is failing closed.
     """
     if a.read_error:
-        return (
-            "autonomy state could not be read — the effective mode is Observe "
-            "(failing closed). Applying changes is disabled until the dial can "
-            "be read again."
-        )
+        return approval_i18n.REASON_EN["autonomy_unreadable"]
     return autonomy_apply_blocked_detail(a.mode)
 
 
@@ -3924,10 +3925,12 @@ def approval_get(request: Request, approval_id: str, t: str = "") -> Response:
     # restrictive display, never a 500.
     autonomy = _autonomy_state_fail_closed()
     autonomy_blocked = autonomy.mode != "propose_apply"
+    lang = approval_i18n.resolve_lang(request)
     response = _TEMPLATES.TemplateResponse(
         request,
         "approval.html",
         {
+            "lang": lang,
             "approval_id": approval_id,
             "approval": approval,
             "token": t,
@@ -3935,7 +3938,9 @@ def approval_get(request: Request, approval_id: str, t: str = "") -> Response:
             "expired": expired,
             "paused": paused,
             "autonomy_blocked": autonomy_blocked,
-            "autonomy_detail": _autonomy_note_for_display(autonomy),
+            "autonomy_detail": approval_i18n.localize_reason(
+                _autonomy_note_for_display(autonomy), lang
+            ),
         },
     )
     return _apply_approval_security_headers(response)
@@ -4230,6 +4235,9 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
     to the artifact-only view, keeping the GET always-200.
     """
     s = get_settings()
+    # Explicit ?lang= only (JA appended by the SPA's approval-link builders);
+    # no param — every pre-existing link/test/probe — stays English.
+    lang = approval_i18n.resolve_lang(request)
     ref, view = _resolve_iac_plan(s, pr_number)
 
     # No-plan render path: tell a nonexistent PR number apart from a real PR
@@ -4277,23 +4285,25 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
     # Read fail-closed so the DISPLAY matches the fail-closed POST gate.
     _autonomy = _autonomy_state_fail_closed()
 
+    # Gate reasons come from approval_i18n.REASON_EN (single source, so the
+    # JA render map can never go stale against a reworded literal here).
     if view is None:
-        reason_blocked = "No verifiable plan artifact."
+        reason_blocked = approval_i18n.REASON_EN["no_artifact"]
         reason_severity = "pending"
     elif view.unverifiable:
-        reason_blocked = "artifact unverifiable"
+        reason_blocked = approval_i18n.REASON_EN["unverifiable"]
         reason_severity = "error"
     elif not view.integrity_ok:
-        reason_blocked = "plan.json integrity mismatch"
+        reason_blocked = approval_i18n.REASON_EN["integrity_mismatch"]
         reason_severity = "error"
     elif view.denylist_violations:
-        reason_blocked = "denylist violations (self-protection policy)"
+        reason_blocked = approval_i18n.REASON_EN["denylist"]
         reason_severity = "error"
     elif not _iac_artifact_consistent(ref, view, pr_number):
         # The artifact does not coherently belong to this PR (metadata pr_number
         # mismatch, or comment ref ≠ fetched metadata). Fail-closed — never pin
         # an artifact for a different PR/head to this page.
-        reason_blocked = "artifact does not match this PR"
+        reason_blocked = approval_i18n.REASON_EN["pr_mismatch"]
         reason_severity = "error"
     elif _cf_anonymous:
         # Anonymous viewer (no CF Access JWT). Placed BEFORE the operator-state
@@ -4303,18 +4313,15 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
         # dial is pinned below Propose+Apply, and without this ordering every
         # judge would land on the autonomy note. The artifact hard-stops above
         # still render for everyone (a bad artifact is everyone's alarm).
-        reason_blocked = (
-            "approving requires a signed-in operator identity"
-            " (Cloudflare Access), which this request does not carry"
-        )
+        reason_blocked = approval_i18n.REASON_EN["operator_only"]
         reason_severity = "operator_only"
     elif not s.driftscribe_token:
-        reason_blocked = "approvals not configured (server token unset)"
+        reason_blocked = approval_i18n.REASON_EN["not_configured"]
         reason_severity = "pending"
     elif s.dry_run:
         # The POST fail-closes under dry-run (it would drive a REAL worker apply
         # while skipping the merge); suppress Approve here so the UI matches.
-        reason_blocked = "infra apply disabled (coordinator in dry-run mode)"
+        reason_blocked = approval_i18n.REASON_EN["dry_run"]
         reason_severity = "pending"
     elif _pause.paused:
         # Pause gate (kill switch): one more rung — the POST refuses 423 while
@@ -4323,9 +4330,9 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
         # is operator intent, not a broken artifact). Read errors take the same
         # rung so the fail-closed DISPLAY matches the fail-closed POST.
         reason_blocked = (
-            "DriftScribe is paused (operator kill switch active)"
+            approval_i18n.REASON_EN["paused"]
             if not _pause.read_error
-            else "DriftScribe is paused (pause state unreadable — failing closed)"
+            else approval_i18n.REASON_EN["paused_unreadable"]
         )
         reason_severity = "pending"
     elif _autonomy.mode != "propose_apply":
@@ -4393,34 +4400,22 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
             ):
                 can_approve = False
                 resolved_decision = "approve"
-                resolved_outcome = (
-                    f"Superseded by PR #{_superseded_by}, which is applied and merged. "
-                    "This plan is stale (its resource already exists) — nothing to "
-                    "approve here."
+                # EN output is byte-identical to the previous inline strings
+                # (pinned by tests/unit/test_approval_i18n.py); JA under ?lang=ja.
+                resolved_outcome = approval_i18n.outcome_superseded(
+                    _superseded_by, lang
                 )
                 # calm severity (leave resolved_outcome_severity == "") — this is
                 # an expected recovery outcome, not a broken artifact.
             elif _st == "applied" and _ms == "merged":
                 can_approve = False
                 resolved_decision = "approve"
-                resolved_outcome = (
-                    "Already applied and merged — nothing more to approve here."
-                )
+                resolved_outcome = approval_i18n.outcome_already_applied(lang)
             elif _st in {"failed", "failed_state_suspect", "ambiguous"}:
                 can_approve = False
                 resolved_decision = "approve"
                 resolved_outcome_severity = "error"
-                _note = (
-                    "The failed apply could not be proven to have left state clean "
-                    "— run the apply-failure recovery runbook (state reconcile) "
-                    "before any retry; this will NOT be retried automatically."
-                    if _st == "failed_state_suspect"
-                    else "Manual verification required; this will NOT be retried "
-                    "automatically."
-                )
-                resolved_outcome = (
-                    f"Terminal state recorded: apply_status={_st!r}. {_note}"
-                )
+                resolved_outcome = approval_i18n.outcome_terminal(_st, lang)
             # Any other recorded status (waiting_for_rebake, applied+failed, …)
             # is still actionable / idempotently guarded by the POST → KEEP form.
 
@@ -4441,7 +4436,7 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
         except iac_csrf.IacCsrfError:
             can_approve = False
             form_token = None
-            reason_blocked = "approvals not configured (server token unset)"
+            reason_blocked = approval_i18n.REASON_EN["not_configured"]
             reason_severity = "pending"
 
     # Blast-radius phrase: computed pre-template so the template gate is a simple
@@ -4479,6 +4474,7 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
         )
 
     ctx = {
+        "lang": lang,
         "pr_number": pr_number,
         "view": view,
         # No-plan branch only (view is None): pr_exists=False → "PR doesn't exist"
@@ -4487,7 +4483,9 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
         "highest_pr": highest_pr,
         "form_token": form_token,
         "can_approve": can_approve,
-        "reason_blocked": reason_blocked,
+        # Gate LOGIC ran on the English constants above; only the display
+        # string localizes (exact-match map, identity fallback).
+        "reason_blocked": approval_i18n.localize_reason(reason_blocked, lang),
         "reason_severity": reason_severity,
         # Gate 1 for the plain-language "What this change does" card: render it
         # only on non-error pages (reason_severity covers unverifiable, integrity
@@ -4501,8 +4499,12 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
         # → the {% if blast_phrase %} gate in the template suppresses the line.
         # cannot_touch_note is always the lib constant (POST re-renders that omit
         # these keys are protected by | default("") in the template).
-        "blast_phrase": _blast_phrase,
-        "cannot_touch_note": BLAST_CANNOT_TOUCH_NOTE,
+        "blast_phrase": (
+            approval_i18n.blast_phrase_ja(_summary) if lang == "ja" else _blast_phrase
+        ),
+        "cannot_touch_note": approval_i18n.localize_const(
+            BLAST_CANNOT_TOUCH_NOTE, lang
+        ),
         # "View source" block (PR1). Files is a list of {path, content|None, bytes};
         # the demo note is always shown with the block. (The manual "refresh source"
         # control was removed from the UI as confusing — source is pinned to
@@ -4510,7 +4512,9 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
         # POST .../refresh-source endpoint is retained for reintroduction if needed.)
         "iac_source_files": iac_source_files,
         "iac_source_truncated": iac_source_truncated,
-        "iac_source_demo_note": _IAC_SOURCE_DEMO_NOTE,
+        "iac_source_demo_note": approval_i18n.localize_const(
+            _IAC_SOURCE_DEMO_NOTE, lang
+        ),
     }
     if resolved_decision:
         # Render the terminal-state outcome banner + suppress the bottom form.
@@ -4747,6 +4751,10 @@ def _render_iac_outcome(
         request,
         "iac_approval.html",
         {
+            # Keep the page chrome in the operator's language on the POST
+            # re-render (the form carries ?lang= through); the outcome string
+            # itself is minted by the POST handlers and stays English.
+            "lang": approval_i18n.resolve_lang(request),
             "pr_number": pr_number,
             "view": view,
             "form_token": None,
@@ -5853,6 +5861,9 @@ def approval_post(
         request,
         "approval.html",
         {
+            # Chrome-only localization on the POST re-render (?lang= carried
+            # by the form action); Python-minted outcome details stay English.
+            "lang": approval_i18n.resolve_lang(request),
             "approval_id": approval_id,
             "approval": approval,
             # Don't echo the token back into the rendered form. The
@@ -5864,7 +5875,10 @@ def approval_post(
             "decision_result": execute_result,
             "paused": pause.paused,
             "autonomy_blocked": autonomy_blocked,
-            "autonomy_detail": _autonomy_note_for_display(autonomy),
+            "autonomy_detail": approval_i18n.localize_reason(
+                _autonomy_note_for_display(autonomy),
+                approval_i18n.resolve_lang(request),
+            ),
         },
     )
     return _apply_approval_security_headers(response)

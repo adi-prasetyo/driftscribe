@@ -1,46 +1,66 @@
 <!doctype html>
-<html lang="en">
+{# lang: explicit ?lang= only (agent.approval_i18n.resolve_lang); defaults to
+   English so no-param renders (tests, links minted in crew replies) render
+   the same English strings as the pre-i18n page. #}
+{% set lang = lang | default('en') %}
+<html lang="{{ lang }}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
   <meta name="robots" content="noindex,nofollow">
-  <title>DriftScribe Approval</title>
+  <title>{% if lang == 'ja' %}DriftScribe 承認{% else %}DriftScribe Approval{% endif %}</title>
   {# Shared design-system CSS from the Svelte+Vite bundle (manifest-resolved). #}
   <link rel="stylesheet" href="{{ ds_css_href() }}">
 </head>
 <body>
   <main class="ds-page">
+    {% if lang == 'ja' %}
+    <h1 class="ds-h1">DriftScribe 承認</h1>
+    <p class="ds-subtle">ロールバックワーカーを実行するための、人による確認・承認ゲートです。</p>
+    {% else %}
     <h1 class="ds-h1">DriftScribe Approval</h1>
     <p class="ds-subtle">Human-in-the-loop gate for the rollback worker.</p>
+    {% endif %}
 
     {% if not approval %}
       <div class="ds-card">
+        {% if lang == 'ja' %}
+        <p>承認 <code class="ds-code">{{ approval_id }}</code> が見つかりません。</p>
+        <p class="ds-subtle">
+          承認 ID が間違っているか、この承認がすでに処理されて
+          削除された可能性があります。
+        </p>
+        {% else %}
         <p>Approval <code class="ds-code">{{ approval_id }}</code> not found.</p>
         <p class="ds-subtle">
           Either the approval ID is wrong, or the approval was already
           processed and garbage-collected.
         </p>
+        {% endif %}
       </div>
     {% else %}
+      {# Field VALUES stay as-is: approval.reason is crew-authored English
+         pass-through (same policy as chat replies), ids/revisions/timestamps
+         are literals, and the status pill is the raw state enum. #}
       <div class="ds-card">
-        <div class="ds-field"><span class="ds-label">Approval ID</span> <code class="ds-code">{{ approval.approval_id }}</code></div>
-        <div class="ds-field"><span class="ds-label">Action</span> Rollback Cloud Run service to revision</div>
-        <div class="ds-field"><span class="ds-label">Target revision</span> <code class="ds-code">{{ approval.target_revision }}</code></div>
-        <div class="ds-field"><span class="ds-label">Reason</span> {{ approval.reason }}</div>
-        <div class="ds-field"><span class="ds-label">Proposed by</span> <code class="ds-code">{{ approval.created_by }}</code></div>
-        <div class="ds-field"><span class="ds-label">Expires at</span> {{ approval.expires_at }}</div>
+        <div class="ds-field"><span class="ds-label">{% if lang == 'ja' %}承認 ID{% else %}Approval ID{% endif %}</span> <code class="ds-code">{{ approval.approval_id }}</code></div>
+        <div class="ds-field"><span class="ds-label">{% if lang == 'ja' %}アクション{% else %}Action{% endif %}</span> {% if lang == 'ja' %}Cloud Run サービスを指定リビジョンへロールバック{% else %}Rollback Cloud Run service to revision{% endif %}</div>
+        <div class="ds-field"><span class="ds-label">{% if lang == 'ja' %}対象リビジョン{% else %}Target revision{% endif %}</span> <code class="ds-code">{{ approval.target_revision }}</code></div>
+        <div class="ds-field"><span class="ds-label">{% if lang == 'ja' %}理由{% else %}Reason{% endif %}</span> {{ approval.reason }}</div>
+        <div class="ds-field"><span class="ds-label">{% if lang == 'ja' %}提案者{% else %}Proposed by{% endif %}</span> <code class="ds-code">{{ approval.created_by }}</code></div>
+        <div class="ds-field"><span class="ds-label">{% if lang == 'ja' %}有効期限{% else %}Expires at{% endif %}</span> {{ approval.expires_at }}</div>
         <div class="ds-field">
-          <span class="ds-label">Status</span>
+          <span class="ds-label">{% if lang == 'ja' %}ステータス{% else %}Status{% endif %}</span>
           <span class="ds-pill ds-pill--{{ 'warn' if approval.status == 'pending' else 'muted' }}">{{ approval.status }}</span>
         </div>
       </div>
 
       {% if decision_result is defined and decision_result %}
-        <div class="ds-note">Rollback dispatched. Operation: {{ decision_result.get("operation_name", "(unknown)") }}</div>
+        <div class="ds-note">{% if lang == 'ja' %}ロールバックを開始しました。オペレーション：{{ decision_result.get("operation_name", "(unknown)") }}{% else %}Rollback dispatched. Operation: {{ decision_result.get("operation_name", "(unknown)") }}{% endif %}</div>
       {% endif %}
       {% if decision == "reject" %}
-        <div class="ds-blocked">Approval was denied. The rollback worker will refuse this approval ID on any subsequent /execute attempt.</div>
+        <div class="ds-blocked">{% if lang == 'ja' %}承認は却下されました。ロールバックワーカーは、以降の /execute 呼び出しでこの承認 ID を拒否します。{% else %}Approval was denied. The rollback worker will refuse this approval ID on any subsequent /execute attempt.{% endif %}</div>
       {% endif %}
 
       {% if approval.status == "pending" and not expired %}
@@ -51,33 +71,37 @@
              doomed POST — render an explanation instead. Outranks the
              paused / autonomy notes: those describe button states, and there
              are no buttons here. #}
-          <div class="ds-note" data-testid="no-token-note">This page can't act on this approval. The link that opened it is missing its one-time token. Approving or rejecting requires the complete approval link, which appears in the chat reply when a rollback is proposed (and is also sent to the operator's notification channel). Go back to the chat and use the full link, or ask for a fresh proposal if this one expired.</div>
+          <div class="ds-note" data-testid="no-token-note">{% if lang == 'ja' %}このページからはこの承認を操作できません。ページを開いたリンクに 1 回限りのトークンが含まれていません。承認にも却下にも完全な承認リンクが必要です。このリンクは、ロールバックが提案されたときのチャット返信に表示されます（オペレーターの通知チャネルにも送られます）。チャットに戻って完全なリンクを使うか、期限切れの場合は新しい提案を依頼してください。{% else %}This page can't act on this approval. The link that opened it is missing its one-time token. Approving or rejecting requires the complete approval link, which appears in the chat reply when a rollback is proposed (and is also sent to the operator's notification channel). Go back to the chat and use the full link, or ask for a fresh proposal if this one expired.{% endif %}</div>
         {% else %}
           {% if paused %}
             {# Pause gate (kill switch): calm note above the form. Approve is
                disabled (the POST refuses it 423); Reject stays active because the
                POST allows reject while paused — denying a rollback is the
                safety-direction. #}
-            <div class="ds-note" data-testid="paused-note">⏸ DriftScribe is paused — Approve is disabled until an operator resumes. Reject still works (it denies this request).</div>
+            <div class="ds-note" data-testid="paused-note">{% if lang == 'ja' %}⏸ DriftScribe は一時停止中です。オペレーターが再開するまで「承認」は無効です。「却下」は引き続き使用できます（このリクエストを拒否します）。{% else %}⏸ DriftScribe is paused — Approve is disabled until an operator resumes. Reject still works (it denies this request).{% endif %}</div>
           {% elif autonomy_blocked is defined and autonomy_blocked %}
             {# Autonomy dial: calm note (not an alarm — the dial is the operator's
                choice). Approve is disabled (the POST refuses it 409); Reject stays
                active, same safety direction as pause. autonomy_detail distinguishes
-               a configured restriction from a fail-closed read. #}
-            <div class="ds-note" data-testid="autonomy-note">{{ autonomy_detail }} Reject still works (it denies this request).</div>
+               a configured restriction from a fail-closed read (and arrives
+               pre-localized via approval_i18n.localize_reason). #}
+            <div class="ds-note" data-testid="autonomy-note">{% if lang == 'ja' %}{{ autonomy_detail }}「却下」は引き続き使用できます（このリクエストを拒否します）。{% else %}{{ autonomy_detail }} Reject still works (it denies this request).{% endif %}</div>
           {% endif %}
-          <form method="post" action="/approvals/{{ approval.approval_id }}">
+          {# The POST carries ?lang= so the outcome re-render keeps its JA
+             chrome (Python-minted outcome details stay English — POST
+             handlers are out of the decision-copy scope). #}
+          <form method="post" action="/approvals/{{ approval.approval_id }}{% if lang == 'ja' %}?lang=ja{% endif %}">
             <input type="hidden" name="t" data-testid="token-field" value="{{ token }}">
             <div class="ds-actions">
-              <button class="ds-btn ds-btn--approve" data-testid="approve-button" type="submit" name="decision" value="approve"{% if paused or (autonomy_blocked is defined and autonomy_blocked) %} disabled{% endif %}>Approve rollback</button>
-              <button class="ds-btn ds-btn--reject" data-testid="reject-button" type="submit" name="decision" value="reject">Reject</button>
+              <button class="ds-btn ds-btn--approve" data-testid="approve-button" type="submit" name="decision" value="approve"{% if paused or (autonomy_blocked is defined and autonomy_blocked) %} disabled{% endif %}>{% if lang == 'ja' %}ロールバックを承認{% else %}Approve rollback{% endif %}</button>
+              <button class="ds-btn ds-btn--reject" data-testid="reject-button" type="submit" name="decision" value="reject">{% if lang == 'ja' %}却下{% else %}Reject{% endif %}</button>
             </div>
           </form>
         {% endif %}
       {% elif expired %}
-        <p class="ds-bad">This approval has expired and can no longer be acted on.</p>
+        <p class="ds-bad">{% if lang == 'ja' %}この承認は期限切れのため、操作できません。{% else %}This approval has expired and can no longer be acted on.{% endif %}</p>
       {% else %}
-        <p class="ds-bad">This approval has already been resolved.</p>
+        <p class="ds-bad">{% if lang == 'ja' %}この承認はすでに処理済みです。{% else %}This approval has already been resolved.{% endif %}</p>
       {% endif %}
     {% endif %}
   </main>

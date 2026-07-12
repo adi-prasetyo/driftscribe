@@ -1,28 +1,47 @@
 <!doctype html>
-<html lang="en">
+{# lang: explicit ?lang= only (resolved by agent.approval_i18n.resolve_lang);
+   defaults to English so direct template renders (unit tests, POST paths that
+   omit it) render the same English strings as the pre-i18n page. #}
+{% set lang = lang | default('en') %}
+<html lang="{{ lang }}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
   <meta name="robots" content="noindex,nofollow">
-  <title>DriftScribe Infra Approval — PR #{{ pr_number }}</title>
+  <title>{% if lang == 'ja' %}DriftScribe IaC 適用の承認（PR #{{ pr_number }}）{% else %}DriftScribe Infra Approval — PR #{{ pr_number }}{% endif %}</title>
   {# Shared design-system CSS (same-origin; allowed by the strict IaC CSP's
      style-src 'self'). No inline style block — see agent.main._apply_iac_csp. #}
   <link rel="stylesheet" href="{{ ds_css_href() }}">
 </head>
 <body>
   <main class="ds-page">
+    {% if lang == 'ja' %}
+    <h1 class="ds-h1">DriftScribe IaC 適用の承認</h1>
+    <p class="ds-subtle">OpenTofu の適用ワーカーを実行するための、人による確認・承認ゲートです（PR #{{ pr_number }}）。</p>
+    {% else %}
     <h1 class="ds-h1">DriftScribe Infra Approval</h1>
     <p class="ds-subtle">Human-in-the-loop gate for the OpenTofu apply worker — PR #{{ pr_number }}.</p>
+    {% endif %}
 
     {% if view is none %}
       <div class="ds-card">
         {% if pr_exists is defined and pr_exists is sameas false %}
+          {% if lang == 'ja' %}
+          <p>PR #{{ pr_number }} はこのリポジトリに存在しません。</p>
+          <p class="ds-subtle">番号 {{ pr_number }} のプルリクエストは存在しないため、承認するプランもありません。{% if highest_pr %}最新のプルリクエストは #{{ highest_pr }} です。{% endif %}番号を直接入力するのではなく、実際の PR リンク（判断履歴の各行からリンクされています）からこのページを開いてください。</p>
+          {% else %}
           <p>PR #{{ pr_number }} does not exist in this repository.</p>
           <p class="ds-subtle">There is no pull request numbered {{ pr_number }}, so there is no plan to approve.{% if highest_pr %} The most recent pull request is #{{ highest_pr }}.{% endif %} Open this page from a real PR link (the Past-decisions rail links each one) instead of typing a number.</p>
+          {% endif %}
         {% else %}
+          {% if lang == 'ja' %}
+          <p>PR #{{ pr_number }} の <code class="ds-code">tofu plan</code> アーティファクトが見つかりません。</p>
+          <p class="ds-subtle">PR #{{ pr_number }} のプランはまだ作成されていません。自律動作レベルが「提案＋適用」の状態でこの PR を開いた直後であれば、プランビルダーが実行中です。1 分ほど待ってから再読み込みしてください。そうでない場合は、この PR に対してプランビルダーを実行してから再読み込みしてください。</p>
+          {% else %}
           <p>No <code class="ds-code">tofu plan</code> artifact found for PR #{{ pr_number }}.</p>
           <p class="ds-subtle">No plan has been built for PR #{{ pr_number }} yet. If you just opened this PR with the autonomy dial at Propose&nbsp;+&nbsp;Apply, the plan-builder is running — give it a minute and reload. Otherwise, dispatch the plan-builder for this PR, then reload.</p>
+          {% endif %}
         {% endif %}
       </div>
     {% else %}
@@ -31,11 +50,11 @@
           {# Default green note; red hard-stop when a TERMINAL apply FAILURE is
              being shown (outcome_severity == "error") so it never reads as success. #}
           <div class="{{ 'ds-blocked' if (outcome_severity is defined and outcome_severity == 'error') else 'ds-note' }}">
-            {{ outcome if (outcome is defined and outcome) else "Approved — infra apply dispatched." }}
+            {{ outcome if (outcome is defined and outcome) else ("承認しました。IaC の適用を開始しました。" if lang == 'ja' else "Approved — infra apply dispatched.") }}
           </div>
         {% elif decision == "reject" %}
           <div class="ds-blocked">
-            {{ outcome if (outcome is defined and outcome) else "Rejected. No apply will run for this artifact." }}
+            {{ outcome if (outcome is defined and outcome) else ("却下しました。このアーティファクトに対する適用は実行されません。" if lang == 'ja' else "Rejected. No apply will run for this artifact.") }}
           </div>
         {% endif %}
         {% if decision_result is defined and decision_result %}
@@ -51,36 +70,36 @@
       {% set _trusted_review = (show_summary | default(false)) and _trustworthy %}
       <div class="ds-card">
         <div class="ds-field">
-          <span class="ds-label ds-help-term" title="head_sha is the exact Git commit this plan was built from. Required CI checks must pass on this commit, and the apply worker refuses if the branch has moved since.">head_sha</span> <code class="ds-code">{{ view.head_sha }}</code>
+          <span class="ds-label ds-help-term" title="{% if lang == 'ja' %}head_sha は、このプランの生成元となった Git コミットです。必須の CI チェックがこのコミットで成功している必要があり、その後ブランチが動いていた場合、適用ワーカーは実行を拒否します。{% else %}head_sha is the exact Git commit this plan was built from. Required CI checks must pass on this commit, and the apply worker refuses if the branch has moved since.{% endif %}">head_sha</span> <code class="ds-code">{{ view.head_sha }}</code>
         </div>
         <div class="ds-field">
-          <span class="ds-label ds-help-term" title="Confirms the plan you are approving is byte-for-byte identical to what the plan-builder produced, checked against a recorded SHA-256.">Integrity</span>
+          <span class="ds-label ds-help-term" title="{% if lang == 'ja' %}承認しようとしているプランが、プランビルダーの生成物とバイト単位で同一であることを、記録済みの SHA-256 と照合して確認します。{% else %}Confirms the plan you are approving is byte-for-byte identical to what the plan-builder produced, checked against a recorded SHA-256.{% endif %}">{% if lang == 'ja' %}整合性{% else %}Integrity{% endif %}</span>
           {% if view.unverifiable %}
-            <span class="ds-bad">UNVERIFIABLE</span>
+            <span class="ds-bad">{% if lang == 'ja' %}検証不能{% else %}UNVERIFIABLE{% endif %}</span>
           {% elif view.integrity_ok %}
-            <span class="ds-ok">verified</span>
+            <span class="ds-ok">{% if lang == 'ja' %}検証済み{% else %}verified{% endif %}</span>
           {% else %}
-            <span class="ds-bad">MISMATCH</span>
+            <span class="ds-bad">{% if lang == 'ja' %}不一致{% else %}MISMATCH{% endif %}</span>
           {% endif %}
         </div>
         <div class="ds-field">
-          <span class="ds-label ds-help-term" title="DriftScribe self-protection policy: blocks any change to its own control plane, any IAM change, and any delete, replace, or un-manage.">Denylist (self-protection)</span>
+          <span class="ds-label ds-help-term" title="{% if lang == 'ja' %}DriftScribe の自己保護ポリシー：自身のコントロールプレーンの変更、IAM の変更、削除・置換・IaC 管理からの除外をすべてブロックします。{% else %}DriftScribe self-protection policy: blocks any change to its own control plane, any IAM change, and any delete, replace, or un-manage.{% endif %}">{% if lang == 'ja' %}拒否リスト（自己保護）{% else %}Denylist (self-protection){% endif %}</span>
           {% if view.denylist_violations %}
-            <span class="ds-bad">{{ view.denylist_violations | length }} violation(s)</span>
+            <span class="ds-bad">{% if lang == 'ja' %}違反 {{ view.denylist_violations | length }}件{% else %}{{ view.denylist_violations | length }} violation(s){% endif %}</span>
             <ul class="ds-violations">
               {% for rule, detail in view.denylist_violations %}
                 <li><code class="ds-code">{{ rule }}</code>: {{ detail }}</li>
               {% endfor %}
             </ul>
           {% else %}
-            <span class="ds-ok">none</span>
+            <span class="ds-ok">{% if lang == 'ja' %}なし{% else %}none{% endif %}</span>
           {% endif %}
         </div>
       </div>
 
       <p class="ds-subtle">
         <a href="/?ask_pr={{ pr_number }}" data-testid="ask-about-link">
-          Questions about this change? Ask the read-only assistant →</a>
+          {% if lang == 'ja' %}この変更について質問があれば、読み取り専用アシスタントへ →{% else %}Questions about this change? Ask the read-only assistant →{% endif %}</a>
       </p>
 
       {# Render ONLY for a trustworthy artifact: the route's show_summary flag
@@ -90,19 +109,29 @@
          tampered artifact or show green reassurance under a red hard-stop. #}
       {% if _trusted_review %}
         {% set s = view.change_summary | default(none) %}
-        <h2 class="ds-h2">What this change does</h2>
+        <h2 class="ds-h2">{% if lang == 'ja' %}この変更で行われること{% else %}What this change does{% endif %}</h2>
         {% if s is none %}
           <div class="ds-note" data-testid="summary-unavailable">
-            No structured summary is available for this plan — review the raw
-            <code class="ds-code">tofu show</code> output below before approving.
+            {% if lang == 'ja' %}このプランには構造化された要約がありません。承認する前に、下の
+            <code class="ds-code">tofu show</code> の生の出力を確認してください。{% else %}No structured summary is available for this plan — review the raw
+            <code class="ds-code">tofu show</code> output below before approving.{% endif %}
           </div>
         {% elif not s.entries %}
           <div class="ds-card" data-testid="change-summary-empty">
-            <p class="ds-ok">No changes — applying this plan does not modify any infrastructure.</p>
+            <p class="ds-ok">{% if lang == 'ja' %}変更はありません。このプランを適用してもインフラは一切変更されません。{% else %}No changes — applying this plan does not modify any infrastructure.{% endif %}</p>
           </div>
         {% else %}
           <div class="ds-card" data-testid="change-summary">
             <p class="ds-summary-counts">
+              {% if lang == 'ja' %}
+              {% if s.n_create %}<span class="ds-verb ds-verb--create">作成 {{ s.n_create }}件</span>{% endif %}
+              {% if s.n_update %}<span class="ds-verb ds-verb--update">変更 {{ s.n_update }}件</span>{% endif %}
+              {% if s.n_replace %}<span class="ds-verb ds-verb--replace">置換 {{ s.n_replace }}件</span>{% endif %}
+              {% if s.n_destroy %}<span class="ds-verb ds-verb--destroy">削除 {{ s.n_destroy }}件</span>{% endif %}
+              {% if s.n_import %}<span class="ds-verb ds-verb--import">インポート {{ s.n_import }}件</span>{% endif %}
+              {% if s.n_forget %}<span class="ds-verb ds-verb--forget">IaC 管理から除外 {{ s.n_forget }}件</span>{% endif %}
+              {% if s.n_change %}<span class="ds-verb ds-verb--change">その他 {{ s.n_change }}件</span>{% endif %}
+              {% else %}
               {% if s.n_create %}<span class="ds-verb ds-verb--create">{{ s.n_create }} create</span>{% endif %}
               {% if s.n_update %}<span class="ds-verb ds-verb--update">{{ s.n_update }} update</span>{% endif %}
               {% if s.n_replace %}<span class="ds-verb ds-verb--replace">{{ s.n_replace }} replace</span>{% endif %}
@@ -110,31 +139,37 @@
               {% if s.n_import %}<span class="ds-verb ds-verb--import">{{ s.n_import }} import</span>{% endif %}
               {% if s.n_forget %}<span class="ds-verb ds-verb--forget">{{ s.n_forget }} forget</span>{% endif %}
               {% if s.n_change %}<span class="ds-verb ds-verb--change">{{ s.n_change }} other</span>{% endif %}
+              {% endif %}
             </p>
             {% if s.destructive %}
               <div class="ds-blocked" data-testid="destroy-warning">
-                ⚠ {{ s.n_destroy + s.n_replace }} resource(s) will be destroyed or replaced.
-                Check the list below carefully before approving.
+                {% if lang == 'ja' %}⚠ {{ s.n_destroy + s.n_replace }}件のリソースが削除または置換されます。
+                承認する前に、下の一覧を注意深く確認してください。{% else %}⚠ {{ s.n_destroy + s.n_replace }} resource(s) will be destroyed or replaced.
+                Check the list below carefully before approving.{% endif %}
               </div>
             {% elif s.adopt_only %}
               {# Adopt-button UI Phase 4: an import-only plan modifies nothing — #}
               {# replace the generic green no-destroy note with calm adoption    #}
               {# framing. NEVER reachable when destructive (that branch is first).#}
               <p class="ds-ok" data-testid="adopt-note">
-                Nothing in your infrastructure will be modified — this only puts
+                {% if lang == 'ja' %}インフラは一切変更されません。この操作は {{ s.n_import }}件のリソースを
+                IaC 管理下に置くだけです。変更がマージされると（適用が完了する直前に）、
+                リソースマップと IaC 管理率のメーターに管理済みとして反映されます。{% else %}Nothing in your infrastructure will be modified — this only puts
                 {{ s.n_import }} resource{{ '' if s.n_import == 1 else 's' }} under
                 management. The resource map and coverage meter count it as managed
-                once the change merges (moments before the apply completes).
+                once the change merges (moments before the apply completes).{% endif %}
               </p>
             {% elif not s.all_accounted_safe %}
               <div class="ds-note">
-                This plan contains state changes or change types the summary
+                {% if lang == 'ja' %}このプランには、要約では完全に分類できない state 変更または
+                変更タイプが含まれています。承認する前に、下の生のプラン出力を
+                確認してください。{% else %}This plan contains state changes or change types the summary
                 cannot fully classify — review the raw plan output below before
-                approving.
+                approving.{% endif %}
               </div>
             {% else %}
               <p class="ds-ok" data-testid="no-destroy-note">
-                No resources will be destroyed or replaced by this plan.
+                {% if lang == 'ja' %}このプランでリソースが削除・置換されることはありません。{% else %}No resources will be destroyed or replaced by this plan.{% endif %}
               </p>
             {% endif %}
             {% if (blast_phrase | default("")) %}
@@ -143,8 +178,19 @@
               {# Adopt-only reframe (Phase 4): an import touches nothing live, so #}
               {# "can affect at most" overstates it — it only puts resources under #}
               {# management. cannot_touch_note still renders (honesty contract).   #}
+              {# blast_phrase + cannot_touch_note arrive pre-localized from the    #}
+              {# handler (approval_i18n.blast_phrase_ja / localize_const).         #}
+              {% if lang == 'ja' %}
+              この変更が IaC 管理下に置くのは最大で次のとおりです：{{ blast_phrase | default("") }}。
+              何も変更されません。実環境のリソースが OpenTofu の state に記録されるだけです。
+              {{ cannot_touch_note | default("") }}
+              {% else %}
               This change puts under management at most: {{ blast_phrase | default("") }}.
               It modifies nothing — the live resource is only recorded in OpenTofu state.
+              {{ cannot_touch_note | default("") }}
+              {% endif %}
+              {% elif lang == 'ja' %}
+              この変更が影響し得る範囲は最大で次のとおりです：{{ blast_phrase | default("") }}。
               {{ cannot_touch_note | default("") }}
               {% else %}
               This change can affect at most: {{ blast_phrase | default("") }}.
@@ -159,11 +205,28 @@
             </p>
             {% endif %}
             <p class="ds-subtle">
-              <a href="/?preview_pr={{ pr_number }}" data-testid="preview-map-link">See this change on the resource map →</a>
+              <a href="/?preview_pr={{ pr_number }}" data-testid="preview-map-link">{% if lang == 'ja' %}この変更をリソースマップで見る →{% else %}See this change on the resource map →{% endif %}</a>
             </p>
             <ul class="ds-summary-list">
               {% for e in s.entries %}
                 <li class="ds-summary-row">
+                  {% if lang == 'ja' %}
+                  <span class="ds-verb ds-verb--{{ e.verb }}">{{ ja_verb_label(e.verb) }}</span>
+                  {{ ja_type_label(e.type_label) }} <code class="ds-code">{{ e.name }}</code>
+                  {% if e.location %}<span class="ds-subtle">（{{ e.location }}）</span>{% endif %}
+                  {% if e.deposed %}
+                    <span class="ds-subtle">（以前の置換で残った古いコピー
+                    （deposed <code class="ds-code">{{ e.deposed }}</code>）であり、現在のリソースではありません）</span>
+                  {% endif %}
+                  {% if e.imported %}
+                    <span class="ds-subtle">（IaC 管理に取り込み：実環境のリソースは変更されず、
+                    OpenTofu の state に記録されます）</span>
+                  {% endif %}
+                  {% if e.verb == "forget" %}
+                    <span class="ds-subtle">（OpenTofu の state から削除：実環境のリソースは
+                    削除されず、IaC 管理から除外されるだけです）</span>
+                  {% endif %}
+                  {% else %}
                   <span class="ds-verb ds-verb--{{ e.verb }}">{{ e.verb }}</span>
                   {{ e.type_label }} <code class="ds-code">{{ e.name }}</code>
                   {% if e.location %}<span class="ds-subtle">in {{ e.location }}</span>{% endif %}
@@ -178,6 +241,7 @@
                   {% if e.verb == "forget" %}
                     <span class="ds-subtle">— removed from OpenTofu state: the live resource
                     is NOT deleted, it just stops being managed</span>
+                  {% endif %}
                   {% endif %}
                   <div class="ds-subtle">
                     <code class="ds-code">{{ e.address }}</code>{% if e.action_reason %} — {{ e.action_reason }}{% endif %}
@@ -194,14 +258,14 @@
                         <li>
                           <code class="ds-code">{{ a.path }}</code>:
                           {% if a.sensitive %}
-                            <span class="ds-subtle">(sensitive value changed — hidden)</span>
+                            <span class="ds-subtle">{% if lang == 'ja' %}（機密値が変更されました。非表示）{% else %}(sensitive value changed — hidden){% endif %}</span>
                           {% else %}
                             <code class="ds-code">{{ a.before }}</code> → <code class="ds-code">{{ a.after }}</code>
                           {% endif %}
                         </li>
                       {% endfor %}
                       {% if e.attrs_truncated %}
-                        <li class="ds-subtle">…more attribute changes — see the raw plan output below.</li>
+                        <li class="ds-subtle">{% if lang == 'ja' %}…ほかにも属性の変更があります。下の生のプラン出力を参照してください。{% else %}…more attribute changes — see the raw plan output below.{% endif %}</li>
                       {% endif %}
                     </ul>
                   {% endif %}
@@ -209,11 +273,12 @@
               {% endfor %}
             </ul>
             {% if s.n_hidden %}
-              <p class="ds-subtle">…and {{ s.n_hidden }} more resource change(s) — see the raw plan output below.</p>
+              <p class="ds-subtle">{% if lang == 'ja' %}…ほかに {{ s.n_hidden }}件のリソース変更があります。下の生のプラン出力を参照してください。{% else %}…and {{ s.n_hidden }} more resource change(s) — see the raw plan output below.{% endif %}</p>
             {% endif %}
             <p class="ds-subtle">
-              This summary is generated mechanically from the integrity-checked
-              plan file — not written by the AI.
+              {% if lang == 'ja' %}この要約は、整合性検証済みのプランファイルから機械的に生成されて
+              います。AI が書いたものではありません。{% else %}This summary is generated mechanically from the integrity-checked
+              plan file — not written by the AI.{% endif %}
             </p>
             {% if cost is not none %}
             <p class="ds-subtle" data-testid="cost-disclaimer">{{ cost.disclaimer }}</p>
@@ -248,9 +313,9 @@
            .ds-disclosure-body so the note + files get the same inset padding as
            the C2 provenance card (bare <details> children hug the border). #}
         {% if _n_source == 1 %}
-        <summary>Source ({{ iac_source_files[0].path }})</summary>
+        <summary>{% if lang == 'ja' %}ソース（{{ iac_source_files[0].path }}）{% else %}Source ({{ iac_source_files[0].path }}){% endif %}</summary>
         {% else %}
-        <summary>Source (.tf) — {{ _n_source }} files</summary>
+        <summary>{% if lang == 'ja' %}ソース（.tf）：{{ _n_source }}ファイル{% else %}Source (.tf) — {{ _n_source }} files{% endif %}</summary>
         {% endif %}
         <div class="ds-disclosure-body">
           <p class="ds-subtle" data-testid="iac-source-demo-note">{{ iac_source_demo_note }}</p>
@@ -259,13 +324,13 @@
             <p class="ds-subtle"><code class="ds-code">{{ f.path }}</code></p>
             {% endif %}
             {% if f.content is none %}
-              <p class="ds-subtle">(omitted — file too large to show here; view it on the PR in GitHub)</p>
+              <p class="ds-subtle">{% if lang == 'ja' %}（省略：ファイルが大きすぎるため表示できません。GitHub の PR で確認してください）{% else %}(omitted — file too large to show here; view it on the PR in GitHub){% endif %}</p>
             {% else %}
               <pre class="ds-pre">{{ f.content }}</pre>
             {% endif %}
           {% endfor %}
           {% if iac_source_truncated %}
-            <p class="ds-subtle">…more files in this PR are not shown here — view the full diff on the PR in GitHub.</p>
+            <p class="ds-subtle">{% if lang == 'ja' %}…この PR の残りのファイルはここには表示されません。GitHub の PR で差分全体を確認してください。{% else %}…more files in this PR are not shown here — view the full diff on the PR in GitHub.{% endif %}</p>
           {% endif %}
         </div>
       </details>
@@ -277,7 +342,11 @@
          URIs the apply worker independently re-verifies. Each label carries a
          plain-language hover tooltip so the field names are not bare jargon. #}
       <details class="ds-disclosure" data-testid="c2-artifact">
-        <summary>Plan artifact — provenance &amp; hashes</summary>
+        {# Field names + the 16 per-field tooltips below stay English on purpose
+           (decision-copy-only scope): they are literal metadata keys the apply
+           worker re-verifies, and inventing JA glosses for forensic identifiers
+           helps no one. Only the disclosure heading localizes. #}
+        <summary>{% if lang == 'ja' %}プランアーティファクト（来歴とハッシュ）{% else %}Plan artifact — provenance &amp; hashes{% endif %}</summary>
         <div class="ds-disclosure-body">
           <div class="ds-field"><span class="ds-label ds-help-term" title="The owner/repo this plan was built for, recorded in the plan metadata and included in the HMAC-signed approval payload.">repo</span> <code class="ds-code">{{ view.metadata.get("repo", "") }}</code></div>
           <div class="ds-field"><span class="ds-label ds-help-term" title="The pull request this plan belongs to.">pr_number</span> <code class="ds-code">{{ view.metadata.get("pr_number", "") }}</code></div>
@@ -299,18 +368,24 @@
       </details>
 
       <div class="ds-note">
-        Required CI checks must be green on this exact <code class="ds-code">head_sha</code>; final
+        {% if lang == 'ja' %}必須の CI チェックがまさにこの <code class="ds-code">head_sha</code> で成功している必要が
+        あります。最終的な受理は「承認」をクリックした時点で行われ、tofu-apply
+        ワーカーが適用前に整合性・拒否リスト・忠実性・オペレーターの本人確認を
+        独立して再検証します。このページは参考情報です。{% else %}Required CI checks must be green on this exact <code class="ds-code">head_sha</code>; final
         acceptance happens when you click Approve — the tofu-apply worker
         independently re-verifies integrity, denylist, fidelity, and your operator
-        identity before applying. This page is advisory.
+        identity before applying. This page is advisory.{% endif %}
       </div>
 
       {% if can_approve %}
-        <form method="post" action="/iac-approvals/{{ pr_number }}">
+        {# The POST carries ?lang= too so the outcome re-render keeps its JA
+           chrome (the outcome string itself stays English — POST handlers are
+           out of the decision-copy scope). #}
+        <form method="post" action="/iac-approvals/{{ pr_number }}{% if lang == 'ja' %}?lang=ja{% endif %}">
           <input type="hidden" name="form_token" data-testid="token-field" value="{{ form_token }}">
           <div class="ds-actions">
-            <button class="ds-btn ds-btn--approve" data-testid="approve-button" type="submit" name="decision" value="approve">Approve infra apply</button>
-            <button class="ds-btn ds-btn--reject" data-testid="reject-button" type="submit" name="decision" value="reject">Reject</button>
+            <button class="ds-btn ds-btn--approve" data-testid="approve-button" type="submit" name="decision" value="approve">{% if lang == 'ja' %}IaC 適用を承認{% else %}Approve infra apply{% endif %}</button>
+            <button class="ds-btn ds-btn--reject" data-testid="reject-button" type="submit" name="decision" value="reject">{% if lang == 'ja' %}却下{% else %}Reject{% endif %}</button>
           </div>
         </form>
       {% elif decision is defined and decision %}
@@ -322,23 +397,26 @@
         {# Genuine hard-stop (unverifiable / integrity mismatch / denylist /
            artifact-mismatch) — this SHOULD draw attention, so keep it red. #}
         <div class="ds-blocked" data-testid="approve-blocked">
-          Approve disabled: {{ reason_blocked if reason_blocked else "this artifact cannot be approved." }}
+          {% if lang == 'ja' %}承認は無効です：{{ reason_blocked if reason_blocked else "このアーティファクトは承認できません。" }}{% else %}Approve disabled: {{ reason_blocked if reason_blocked else "this artifact cannot be approved." }}{% endif %}
         </div>
       {% elif reason_severity == "operator_only" %}
         {# Anonymous viewer (no CF Access JWT — hackathon demo window, or a
            direct run.app probe): the POST would 401, so render a calm
            read-only note instead of a form that fails on click. #}
         <div class="ds-note" data-testid="approve-operator-only">
-          Approving is <strong>operator-only</strong> — it requires a signed-in
+          {% if lang == 'ja' %}承認は<strong>オペレーター限定</strong>です。サインイン済みの
+          オペレーターの本人確認（Cloudflare Access）が必要ですが、このリクエストには
+          含まれていません。このページは読み取り専用です。承認 &rarr; 適用の
+          ステップはデモ動画でご覧いただけます。{% else %}Approving is <strong>operator-only</strong> — it requires a signed-in
           operator identity (Cloudflare Access), which this request does not
           carry. This page is read-only; the approve &rarr; apply step is
-          demonstrated in the demo video.
+          demonstrated in the demo video.{% endif %}
         </div>
       {% else %}
         {# Not an error — the gate just isn't ready yet (no plan, approvals not
            configured, dry-run). Calm/neutral, not red. #}
         <div class="ds-note" data-testid="approve-pending">
-          Approval not available yet{% if reason_blocked %}: {{ reason_blocked }}{% endif %}.
+          {% if lang == 'ja' %}承認はまだ利用できません{% if reason_blocked %}：{{ reason_blocked }}{% endif %}。{% else %}Approval not available yet{% if reason_blocked %}: {{ reason_blocked }}{% endif %}.{% endif %}
         </div>
       {% endif %}
     {% endif %}
