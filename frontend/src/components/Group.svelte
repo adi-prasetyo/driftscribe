@@ -3,7 +3,7 @@
   import type { GroupKey } from '../lib/timeline';
   import type { IconName } from '../lib/icons';
   import Icon from './Icon.svelte';
-  import { t } from '../lib/i18n';
+  import { t, locale } from '../lib/i18n';
 
   // One of the three top-level reasoning groups. MUST be a real <details> with
   // id="group-{key}" and a direct child <div class="events" data-group="{key}">
@@ -45,7 +45,9 @@
   </summary>
   <div class="events" data-group={key}>
     {#if empty}
-      <p class="group__empty">{$t('misc.group.emptyState', { title: title.toLowerCase() })}</p>
+      <!-- Lowercasing is an EN-only grammar rule (the title lands mid-sentence
+           in 'No {title} yet.'); JA titles like 'MCP 通信' must pass unchanged. -->
+      <p class="group__empty">{$t('misc.group.emptyState', { title: $locale === 'en' ? title.toLowerCase() : title })}</p>
     {:else}
       {@render children?.()}
     {/if}

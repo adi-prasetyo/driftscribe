@@ -16,7 +16,7 @@
 // renders an `edges` array generically so Phase 4 (partial topology) is a
 // server-side change only.
 
-import { plural, type MessageKey, type TranslateFn } from './i18n';
+import { plural, translate, type MessageKey, type TranslateFn } from './i18n';
 
 export interface InfraNode {
   /** Server-assigned, already-safe render handle (e.g. "g0n1"). */
@@ -405,6 +405,38 @@ export interface AdoptRow {
   prefill: string;
 }
 
+// EN-bound fallback translator: the prefill/card helpers below predate i18n
+// threading and have dozens of EN-pinned callers (tests included). Defaulting
+// `t` to EN keeps their output byte-identical when no translator is passed;
+// components pass the reactive `$t`.
+const EN_T: TranslateFn = (key, params) => translate('en', key, params);
+
+// Frontend localization of the backend's friendly type labels
+// (driftscribe_lib/infra_graph.py::_TYPE_LABELS). EN catalog values are
+// byte-identical to the backend strings, so EN rendering is unchanged; an
+// asset type missing here (a future backend addition) falls back to the
+// backend-provided label untranslated — the same unknown-value pattern as
+// capabilities.adoptableTypeLabel.
+const INFRA_TYPE_LABEL_KEYS: Record<string, MessageKey> = {
+  'run.googleapis.com/Service': 'infra.type.runService',
+  'storage.googleapis.com/Bucket': 'infra.type.bucket',
+  'pubsub.googleapis.com/Topic': 'infra.type.pubsubTopic',
+  'pubsub.googleapis.com/Subscription': 'infra.type.pubsubSubscription',
+  'secretmanager.googleapis.com/Secret': 'infra.type.secret',
+  'secretmanager.googleapis.com/SecretVersion': 'infra.type.secretVersion',
+  'iam.googleapis.com/ServiceAccount': 'infra.type.serviceAccount',
+  'compute.googleapis.com/Network': 'infra.type.network',
+  'compute.googleapis.com/Subnetwork': 'infra.type.subnetwork',
+  'artifactregistry.googleapis.com/Repository': 'infra.type.artifactRegistryRepo',
+  'firestore.googleapis.com/Database': 'infra.type.firestoreDatabase',
+};
+
+/** Localized display label for a resource type; `fallback` = the backend's own label. */
+export function infraTypeLabel(assetType: string, fallback: string, t: TranslateFn): string {
+  const key = INFRA_TYPE_LABEL_KEYS[assetType];
+  return key ? t(key) : fallback;
+}
+
 /**
  * Normalize an untrusted fragment for inclusion in the agent prompt (Codex
  * review 019eb572 must-fix 2): strip C0/C1 control chars (incl. CR/LF/tab —
@@ -455,20 +487,21 @@ export function adoptPrefill(
   location: string | null,
   topic: string | null = null,
   image: string | null = null,
+  t: TranslateFn = EN_T,
 ): string {
   const type = normalizeForPrompt(groupLabel, 40);
   const name = normalizeForPrompt(nodeLabel, 254);
   const loc = location ? normalizeForPrompt(location, 40) : '';
-  const where = loc ? ` in ${loc}` : '';
+  const where = loc ? t('infra.prefill.adopt.where', { loc }) : '';
   const topicClause =
     typeof topic === 'string' && topic
-      ? ` Its topic is \`${normalizeForPrompt(topic, 254)}\`.`
+      ? t('infra.prefill.adopt.topic', { topic: normalizeForPrompt(topic, 254) })
       : '';
   const imageClause =
     typeof image === 'string' && image
-      ? ` Its image is \`${normalizeForPrompt(image, 512)}\`.`
+      ? t('infra.prefill.adopt.image', { image: normalizeForPrompt(image, 512) })
       : '';
-  return `Adopt the ${type} \`${name}\`${where} into IaC management.${topicClause}${imageClause}`;
+  return t('infra.prefill.adopt.base', { type, name, where, topicClause, imageClause });
 }
 
 /**
@@ -477,7 +510,7 @@ export function adoptPrefill(
  * A row's `adoptable` is `g.adoptable === true` (a stale coordinator response
  * without the field → false); the prefill is composed ONLY for adoptable rows.
  */
-export function adoptRows(graph: InfraGraph): AdoptRow[] {
+export function adoptRows(graph: InfraGraph, t: TranslateFn = EN_T): AdoptRow[] {
   const rows: AdoptRow[] = [];
   for (const g of graph.groups) {
     if (g.sensitive) continue;
@@ -493,7 +526,14 @@ export function adoptRows(graph: InfraGraph): AdoptRow[] {
         adoptable,
         controlPlane,
         prefill: adoptable
-          ? adoptPrefill(g.label, n.label, prefillLocation(g.asset_type, n.location), n.topic ?? null, n.image ?? null)
+          ? adoptPrefill(
+              infraTypeLabel(g.asset_type, g.label, t),
+              n.label,
+              prefillLocation(g.asset_type, n.location),
+              n.topic ?? null,
+              n.image ?? null,
+              t,
+            )
           : '',
       });
     }
@@ -543,11 +583,12 @@ const INVESTIGATE_CANDIDATE_CAP = 5;
 export function investigateUnmatchedPrefill(
   declaration: UnmatchedDeclaration,
   graph: InfraGraph,
+  t: TranslateFn = EN_T,
 ): string {
-  const type = normalizeForPrompt(declaration.type_label, 40);
+  const type = normalizeForPrompt(infraTypeLabel(declaration.asset_type, declaration.type_label, t), 40);
   const name = normalizeForPrompt(declaration.label, 254);
   const addr = declaration.address ? normalizeForPrompt(declaration.address, 254) : '';
-  const addrClause = addr ? ` (\`${addr}\`)` : '';
+  const addrClause = addr ? t('infra.prefill.investigate.addr', { addr }) : '';
 
   const seen = new Set<string>();
   const candidates: string[] = [];
@@ -566,18 +607,13 @@ export function investigateUnmatchedPrefill(
 
   const candidatesSentence =
     shown.length === 0
-      ? 'No unmanaged resources of the same type are currently visible.'
-      : `Visible unmanaged resources of the same type: ${shown
-          .map((c) => `\`${c}\``)
-          .join(', ')}${more ? ' (and more may exist)' : ''}.`;
+      ? t('infra.prefill.investigate.candidatesNone')
+      : t('infra.prefill.investigate.candidates', {
+          list: shown.map((c) => `\`${c}\``).join(t('infra.prefill.investigate.listSep')),
+          more: more ? t('infra.prefill.investigate.more') : '',
+        });
 
-  return (
-    `Investigate why IaC declares the ${type} \`${name}\`${addrClause} but it was ` +
-    `not found in the latest Cloud Asset Inventory. ${candidatesSentence} ` +
-    `Determine whether any may be an intended replacement, but do not assume a ` +
-    `rename, change files, or open a PR. Report the evidence and ask me to ` +
-    `confirm the relationship first.`
-  );
+  return t('infra.prefill.investigate.body', { type, name, addrClause, candidates: candidatesSentence });
 }
 
 // ---------------------------------------------------------------------------
@@ -698,7 +734,7 @@ function cardTier(card: ResourceCard): number {
  * over-promises adoptable work that isn't there (parity with the old adopt
  * trailer; Codex review 019eb572 round-2 invariant).
  */
-export function resourceCards(graph: InfraGraph): ResourceCard[] {
+export function resourceCards(graph: InfraGraph, t: TranslateFn = EN_T): ResourceCard[] {
   if (graph.degraded) return [];
   const cards: ResourceCard[] = [];
   for (const g of graph.groups) {
@@ -742,7 +778,14 @@ export function resourceCards(graph: InfraGraph): ResourceCard[] {
           label: n.label,
           status: 'drift',
           adoptable: true,
-          prefill: adoptPrefill(g.label, n.label, prefillLocation(g.asset_type, n.location), n.topic ?? null, n.image ?? null),
+          prefill: adoptPrefill(
+            infraTypeLabel(g.asset_type, g.label, t),
+            n.label,
+            prefillLocation(g.asset_type, n.location),
+            n.topic ?? null,
+            n.image ?? null,
+            t,
+          ),
         });
         continue;
       }
@@ -959,14 +1002,19 @@ export function toMermaid(graph: InfraGraph, overlay: PlanOverlay | undefined, t
   // every other label (Codex terminology review requirement).
   const ghostNodeLine = (e: OverlayEntry, inFallback: boolean): string => {
     const mid = `n${counter++}`;
+    const typeLabel = infraTypeLabel(e.asset_type ?? '', e.type_label, t);
     const base = e.sensitive
-      ? `${e.type_label} (name hidden)`
+      ? `${typeLabel}${t('infra.graph.nameHidden')}`
       : shortName(e.name) || e.address;
     const escaped = escapeMermaidLabel(base);
     const suffix = escapeMermaidLabel(t(VERB_SUFFIX[e.verb]));
+    // Separators are developer-owned catalog chrome (' · ' / '・', ': ' / '：')
+    // appended RAW like the literals they replaced — escapeMermaidLabel trims
+    // edge whitespace and would eat their glue spaces.
+    const sep = t('infra.graph.overlay.sep');
     const label = inFallback
-      ? `${escapeMermaidLabel(e.type_label)}: ${escaped} · ${suffix}`
-      : `${escaped} · ${suffix}`;
+      ? `${escapeMermaidLabel(typeLabel)}${t('infra.graph.typeNameSep')}${escaped}${sep}${suffix}`
+      : `${escaped}${sep}${suffix}`;
     return `${mid}["${label}"]:::${VERB_CLASS[e.verb]}`;
   };
 
@@ -999,12 +1047,16 @@ export function toMermaid(graph: InfraGraph, overlay: PlanOverlay | undefined, t
       // Counts-only (secret) OR an empty/capped group with a known count: one
       // neutral placeholder node — never a real resource name.
       if (group.count > 0) {
+        // Deliberate EN pass-through: the sensitive placeholder pluralizes the
+        // backend's (always-EN) group label with EN suffix rules. Localizing it
+        // would need a per-type counted form; this preview-only corner keeps
+        // the label as backend data instead (i18n review 2026-07-12).
         const word = group.sensitive
           ? pluralize(group.label.toLowerCase(), group.count)
           : plural(t, 'infra.graph.resource', group.count);
         const mid = `n${counter++}`;
         inner.push(
-          `${mid}["${escapeMermaidLabel(`${group.count} ${word} · ${t('infra.graph.hidden')}`)}"]:::hidden`,
+          `${mid}["${escapeMermaidLabel(`${group.count} ${word}${t('infra.graph.overlay.sep')}${t('infra.graph.hidden')}`)}"]:::hidden`,
         );
         drew = true;
       }
@@ -1023,7 +1075,7 @@ export function toMermaid(graph: InfraGraph, overlay: PlanOverlay | undefined, t
           reclassed.add(hit);
           const suffix = escapeMermaidLabel(t(VERB_SUFFIX[hit.verb]));
           inner.push(
-            `${mid}["${escapeMermaidLabel(node.label)} · ${suffix}"]:::${VERB_CLASS[hit.verb]}`,
+            `${mid}["${escapeMermaidLabel(node.label)}${t('infra.graph.overlay.sep')}${suffix}"]:::${VERB_CLASS[hit.verb]}`,
           );
         } else {
           inner.push(`${mid}["${escapeMermaidLabel(node.label)}"]:::${liveNodeClass(group, node)}`);
@@ -1050,7 +1102,7 @@ export function toMermaid(graph: InfraGraph, overlay: PlanOverlay | undefined, t
     }
 
     if (inner.length > 0) {
-      lines.push(`subgraph ${sgId}["${escapeMermaidLabel(group.label)}"]`);
+      lines.push(`subgraph ${sgId}["${escapeMermaidLabel(infraTypeLabel(group.asset_type, group.label, t))}"]`);
       lines.push('direction LR');
       lines.push(...inner);
       lines.push('end');

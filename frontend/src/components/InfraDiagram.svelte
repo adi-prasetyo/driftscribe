@@ -33,6 +33,7 @@
     scopeTotals,
     startHereAssetType,
     investigateUnmatchedPrefill,
+    infraTypeLabel,
     type InfraGraph,
     type ResourceCard,
     type ResourceRowStatus,
@@ -168,7 +169,7 @@
   // inline Adopt button. Pure derivation in lib/infra_graph keeps this component
   // thin and the model (row mapping, hidden-unmanaged honesty, drift-first + rank
   // ordering, the each-key by unique assetType) unit-tested in isolation.
-  const cards = $derived<ResourceCard[]>(graph ? resourceCards(graph) : []);
+  const cards = $derived<ResourceCard[]>(graph ? resourceCards(graph, $t) : []);
   // The top adoptable card gets the "Start here" chip (light-touch guided order:
   // the chip + drift-first ordering replace the dropped hint/order-note prose).
   const startHere = $derived(startHereAssetType(cards));
@@ -207,16 +208,22 @@
   function dotClass(status: ResourceRowStatus): string {
     return status === 'managed' ? 'ok' : status === 'drift' ? 'drift' : 'hidden';
   }
+  // Localized type label for a card's sentences. Lowercasing is an EN-only
+  // grammar rule (the label lands mid-sentence there); JA labels like
+  // 'Pub/Sub トピック' must pass through unchanged.
+  function cardWord(card: ResourceCard, t: TranslateFn): string {
+    const label = infraTypeLabel(card.assetType, card.label, t);
+    return $locale === 'en' ? label.toLowerCase() : label;
+  }
   // Counts-only line for a sensitive card: "N secrets · hidden" (no name, ever).
   function countsLine(card: ResourceCard, t: TranslateFn): string {
-    const word = card.label.toLowerCase();
     const key = (card.count === 1 ? 'infra.card.hiddenCountLine.one' : 'infra.card.hiddenCountLine.other') as MessageKey;
-    return t(key, { n: fmtNumber(card.count, $locale), label: word });
+    return t(key, { n: fmtNumber(card.count, $locale), label: cardWord(card, t) });
   }
   // "N {label}(s) · not individually listed" for a summarized (all-nodes-truncated) card.
   function notListedLine(card: ResourceCard, t: TranslateFn): string {
     const key = (card.count === 1 ? 'infra.card.notListedLine.one' : 'infra.card.notListedLine.other') as MessageKey;
-    return t(key, { n: fmtNumber(card.count, $locale), label: card.label.toLowerCase() });
+    return t(key, { n: fmtNumber(card.count, $locale), label: cardWord(card, t) });
   }
 
   function clickAdopt(prefill: string): void {
@@ -230,7 +237,7 @@
   // active. Guarded on `graph` (the prefill needs the live node sample).
   function clickInvestigate(d: UnmatchedDeclaration): void {
     if (adoptDisabled || !graph) return;
-    onInvestigate?.(investigateUnmatchedPrefill(d, graph));
+    onInvestigate?.(investigateUnmatchedPrefill(d, graph, $t));
   }
 
   // The overlay actually drawn (only when preview is active AND it has ghosts).
@@ -449,6 +456,24 @@
   $effect(() => {
     const epoch = appliedEpoch;
     untrack(() => scheduler.onAppliedEpoch(epoch));
+  });
+
+  // Re-compose the preview SVG when the language toggles: toMermaid bakes the
+  // localized ghost labels into the SVG at render time, so unlike the rest of
+  // the panel (reactive via $t) it needs an explicit re-render. Tracks ONLY
+  // $locale — the guard reads run untracked so a completing render (svgHtml
+  // write) can't re-trigger the effect and loop. Fires on a locale CHANGE
+  // (renderedLocale marker skips the mount run) regardless of svgHtml, so a
+  // toggle racing an in-flight render still bumps renderRun and invalidates
+  // the old-language render (Codex review: first-render race).
+  let renderedLocale = $locale;
+  $effect(() => {
+    const loc = $locale;
+    untrack(() => {
+      if (loc === renderedLocale) return;
+      renderedLocale = loc;
+      if (open && previewActive && graph) void renderDiagram(graph);
+    });
   });
 
   // Refresh when the operator returns to the tab (covers an apply approved in
@@ -734,7 +759,7 @@
         <ul class="infra-unmatched__list">
           {#each unmatchedEntries as d (d.id)}
             <li class="infra-unmatched__row" data-testid="infra-unmatched-row">
-              <span class="infra-unmatched__type">{d.type_label}</span>
+              <span class="infra-unmatched__type">{infraTypeLabel(d.asset_type, d.type_label, $t)}</span>
               <span class="infra-unmatched__name">{d.label}</span>
               {#if d.address}
                 <code class="infra-unmatched__addr">{d.address}</code>
@@ -789,7 +814,7 @@
         )}
         <div class="infra-card" data-testid="infra-card">
           <div class="infra-card__head">
-            <span class="infra-card__type" data-testid="infra-card-type">{card.label}</span>
+            <span class="infra-card__type" data-testid="infra-card-type">{infraTypeLabel(card.assetType, card.label, $t)}</span>
             <span class="infra-card__head-meta">
               {#if card.assetType === startHere && cardActionable}
                 <span class="infra-card__start" data-testid="card-start-here">{$t('infra.card.startHere')}</span>
@@ -860,7 +885,7 @@
               {/each}
               {#if card.hiddenUnmanaged > 0}
                 <li class="ds-subtle infra-card__trailer" data-testid="card-trailer">
-                  {$t('infra.card.trailerUnmanaged', { n: fmtNumber(card.hiddenUnmanaged, $locale), label: card.label })}
+                  {$t('infra.card.trailerUnmanaged', { n: fmtNumber(card.hiddenUnmanaged, $locale), label: infraTypeLabel(card.assetType, card.label, $t) })}
                 </li>
               {:else if !card.adoptable && card.count > card.rows.length + card.systemManaged.length}
                 <!-- Non-adoptable type: a neutral truncation note (never "unmanaged"
@@ -869,7 +894,7 @@
                 <li class="ds-subtle infra-card__trailer" data-testid="card-trailer">
                   {$t('infra.card.trailerNotShown', {
                     n: fmtNumber(card.count - card.rows.length - card.systemManaged.length, $locale),
-                    label: card.label,
+                    label: infraTypeLabel(card.assetType, card.label, $t),
                   })}
                 </li>
               {/if}

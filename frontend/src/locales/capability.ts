@@ -133,7 +133,10 @@ export const capability = {
     // ---- Backend metadata: human gates (agent/capabilities.py::HUMAN_GATES) ----
     'capability.gate.iacApply.title': 'IaC plan apply',
     'capability.gate.iacApply.description':
-      'Before the apply worker runs ``tofu apply``, an operator must approve the exact ' +
+      // Deliberate EN drift from the backend HUMAN_GATES text: the literal
+      // ``…`` markers around `tofu apply` render as plain text here, so both
+      // locales drop them (gate descriptions have no markdown pipeline).
+      'Before the apply worker runs tofu apply, an operator must approve the exact ' +
       'stored plan via the approval page. The approval is bound to the specific plan by ' +
       'a plan-bound HMAC with a signed expiry window. Approving one plan cannot approve another.',
     'capability.gate.rollback.title': 'Rollback',
@@ -393,7 +396,7 @@ export const capability = {
     // ---- Backend metadata: human gates ----
     'capability.gate.iacApply.title': 'IaC プランの適用',
     'capability.gate.iacApply.description':
-      '適用ワーカーが `tofu apply` を実行する前に、オペレーターが承認ページで保存済みの' +
+      '適用ワーカーが tofu apply を実行する前に、オペレーターが承認ページで保存済みの' +
       '特定のプランを承認する必要があります。承認はプラン固有の HMAC と署名付きの有効期限に' +
       'よって、その特定のプランに紐づけられます。あるプランの承認が別のプランを承認すること' +
       'はできません。',

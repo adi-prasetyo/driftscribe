@@ -15,6 +15,7 @@ import {
   adoptGroupRank,
   adoptPrefill,
   findPendingPr,
+  infraTypeLabel,
   normalizeForPrompt,
   prefillLocation,
   resourceCards,
@@ -190,14 +191,15 @@ export function adoptStepState(
       rank !== null && typeof g.adopt_hint === 'string' && g.adopt_hint
         ? g.adopt_hint
         : null;
+    const typeLabel = infraTypeLabel(g.asset_type, g.label, t);
     return {
       kind: 'target',
       // `hint` is free backend prose with no stable id (like InfraDiagram's
       // degraded_reason/caveat) — it passes through untranslated.
       line: hint
-        ? t('tour.adopt.target.withHint', { groupLabel: g.label, nodeLabel: node.label, hint })
-        : t('tour.adopt.target.plain', { groupLabel: g.label, nodeLabel: node.label }),
-      prefill: adoptPrefill(g.label, node.label, prefillLocation(g.asset_type, node.location), node.topic ?? null, node.image ?? null),
+        ? t('tour.adopt.target.withHint', { groupLabel: typeLabel, nodeLabel: node.label, hint })
+        : t('tour.adopt.target.plain', { groupLabel: typeLabel, nodeLabel: node.label }),
+      prefill: adoptPrefill(typeLabel, node.label, prefillLocation(g.asset_type, node.location), node.topic ?? null, node.image ?? null, t),
     };
   }
   if (graph.totals.drift === 0) {

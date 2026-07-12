@@ -124,6 +124,42 @@ export const infra = {
     'infra.card.notListedLine.one': '{n} {label} · not individually listed',
     'infra.card.notListedLine.other': '{n} {label}s · not individually listed',
 
+    // Localized resource-type labels, keyed by CAI asset type (mirrors
+    // driftscribe_lib/infra_graph.py::_TYPE_LABELS — EN values are
+    // byte-identical to the backend strings). Unknown future types fall back
+    // to the backend's own label (infra_graph.infraTypeLabel).
+    'infra.type.runService': 'Cloud Run service',
+    'infra.type.bucket': 'Storage bucket',
+    'infra.type.pubsubTopic': 'Pub/Sub topic',
+    'infra.type.pubsubSubscription': 'Pub/Sub subscription',
+    'infra.type.secret': 'Secret',
+    'infra.type.secretVersion': 'Secret version',
+    'infra.type.serviceAccount': 'Service account',
+    'infra.type.network': 'VPC network',
+    'infra.type.subnetwork': 'Subnet',
+    'infra.type.artifactRegistryRepo': 'Artifact Registry repo',
+    'infra.type.firestoreDatabase': 'Firestore database',
+
+    // Composer prefills (Adopt + Investigate). Presented as the operator's own
+    // editable request, so they localize like other UI chrome; identifiers stay
+    // verbatim inside backticks. EN composition is byte-identical to the
+    // pre-i18n inline strings (the unit suite pins these).
+    'infra.prefill.adopt.base': 'Adopt the {type} `{name}`{where} into IaC management.{topicClause}{imageClause}',
+    'infra.prefill.adopt.where': ' in {loc}',
+    'infra.prefill.adopt.topic': ' Its topic is `{topic}`.',
+    'infra.prefill.adopt.image': ' Its image is `{image}`.',
+    'infra.prefill.investigate.body':
+      'Investigate why IaC declares the {type} `{name}`{addrClause} but it was ' +
+      'not found in the latest Cloud Asset Inventory. {candidates} ' +
+      'Determine whether any may be an intended replacement, but do not assume a ' +
+      'rename, change files, or open a PR. Report the evidence and ask me to ' +
+      'confirm the relationship first.',
+    'infra.prefill.investigate.addr': ' (`{addr}`)',
+    'infra.prefill.investigate.candidatesNone': 'No unmanaged resources of the same type are currently visible.',
+    'infra.prefill.investigate.candidates': 'Visible unmanaged resources of the same type: {list}{more}.',
+    'infra.prefill.investigate.listSep': ', ',
+    'infra.prefill.investigate.more': ' (and more may exist)',
+
     'infra.other.lead': "Other resources DriftScribe doesn't manage",
     'infra.other.typeCount.one': '{n} type',
     'infra.other.typeCount.other': '{n} types',
@@ -175,6 +211,10 @@ export const infra = {
     'infra.graph.verb.replace': 'will be replaced',
 
     'infra.graph.hidden': 'hidden',
+    // Ghost-node chrome for sensitive/fallback entries. `nameHidden` carries
+    // its leading space (EN glue); `typeNameSep` joins "type: name".
+    'infra.graph.nameHidden': ' (name hidden)',
+    'infra.graph.typeNameSep': ': ',
     'infra.graph.resource.one': 'resource',
     'infra.graph.resource.other': 'resources',
     'infra.graph.more': '+{n} more',
@@ -191,7 +231,7 @@ export const infra = {
     'infra.badge.outOfScopeTitle': 'DriftScribe の管理対象外のリソース種別です',
     'infra.badge.outOfScope': '対象外',
     'infra.badge.unmatchedTitle': 'IaC には定義されていますが、最新のインベントリには見つかりません',
-    'infra.badge.unmatchedCount': 'IaC と一致しない宣言：{n}件',
+    'infra.badge.unmatchedCount': '実環境で未検出の IaC 定義：{n}件',
 
     'infra.count.drift': '{n}件のドリフト',
     'infra.label.inSync': '同期済み',
@@ -224,9 +264,9 @@ export const infra = {
     'infra.legend.managed': 'IaC 管理済み',
     'infra.legend.drift': 'IaC 管理に取り込み可能なドリフト',
     'infra.legend.openPr': '開いている PR',
-    'infra.legend.ghostCreate': '作成されます',
-    'infra.legend.ghostUpdate': '変更されます',
-    'infra.legend.ghostDestroy': '削除されます',
+    'infra.legend.ghostCreate': '作成予定',
+    'infra.legend.ghostUpdate': '変更予定',
+    'infra.legend.ghostDestroy': '削除予定',
     'infra.legend.helpAriaLabel': '色とタグの意味を説明',
     'infra.legend.help':
       'すべてのボックスは、プロジェクト内の実際のリソースです。緑は IaC 管理済みを意味します。' +
@@ -250,13 +290,13 @@ export const infra = {
 
     'infra.unmatched.title': 'IaC に定義済み・実環境で未検出',
     'infra.unmatched.lead':
-      'これらの宣言は、最新の Cloud Asset Inventory のスナップショットと一致しませんでした。' +
+      'これらの定義は、最新の Cloud Asset Inventory のスナップショットと一致しませんでした。' +
       'インデックスの遅延や、まだ適用されていない IaC の変更が原因である可能性があります。',
-    'infra.unmatched.ariaLabel': '最新のインベントリに見つからない IaC の宣言',
+    'infra.unmatched.ariaLabel': '最新のインベントリに見つからない IaC の定義',
     'infra.unmatched.investigate': '調査する',
     'infra.unmatched.investigateHint':
-      'Provision にこの宣言の調査を依頼します（下書きを開くだけで送信しません）',
-    'infra.unmatched.trailer': 'ほかに {n}件の宣言があります（表示されていません）',
+      'Provision にこの定義の調査を依頼します（下書きを開くだけで送信しません）',
+    'infra.unmatched.trailer': 'ほかに {n}件の定義があります（表示されていません）',
 
     'infra.disabledHint': 'チャットが処理中、または過去の実行を表示している間は利用できません。',
 
@@ -291,6 +331,37 @@ export const infra = {
     'infra.card.hiddenCountLine.other': '{label}：{n}件・非表示',
     'infra.card.notListedLine.one': '{label}：{n}件・個別には表示されません',
     'infra.card.notListedLine.other': '{label}：{n}件・個別には表示されません',
+
+    'infra.type.runService': 'Cloud Run サービス',
+    'infra.type.bucket': 'ストレージバケット',
+    'infra.type.pubsubTopic': 'Pub/Sub トピック',
+    'infra.type.pubsubSubscription': 'Pub/Sub サブスクリプション',
+    'infra.type.secret': 'シークレット',
+    'infra.type.secretVersion': 'シークレットバージョン',
+    'infra.type.serviceAccount': 'サービスアカウント',
+    'infra.type.network': 'VPC ネットワーク',
+    'infra.type.subnetwork': 'サブネット',
+    'infra.type.artifactRegistryRepo': 'Artifact Registry リポジトリ',
+    'infra.type.firestoreDatabase': 'Firestore データベース',
+
+    // Clause keys carry their own glue spacing (like EN's leading ' in {loc}'):
+    // the trailing space keeps the Latin–CJK boundary spaced when {type}
+    // starts with Latin script ('…にある Cloud Run サービス').
+    'infra.prefill.adopt.base': '{where}{type} `{name}` を IaC 管理に取り込んでください。{topicClause}{imageClause}',
+    'infra.prefill.adopt.where': '{loc} にある ',
+    'infra.prefill.adopt.topic': 'トピックは `{topic}` です。',
+    'infra.prefill.adopt.image': 'イメージは `{image}` です。',
+    'infra.prefill.investigate.body':
+      'IaC には {type} `{name}`{addrClause} が定義されていますが、最新の Cloud Asset Inventory では' +
+      '見つかりませんでした。原因を調査してください。{candidates}' +
+      'いずれかが意図された置き換えである可能性を確認してください。ただし、名前の変更と断定したり、' +
+      'ファイルを変更したり、PR を作成したりしないでください。証拠を報告し、まず私に関係の確認を' +
+      '求めてください。',
+    'infra.prefill.investigate.addr': '（`{addr}`）',
+    'infra.prefill.investigate.candidatesNone': '同じ種類の IaC 未管理のリソースは、現在確認できません。',
+    'infra.prefill.investigate.candidates': '同じ種類の IaC 未管理のリソース：{list}{more}。',
+    'infra.prefill.investigate.listSep': '、',
+    'infra.prefill.investigate.more': '（ほかにも存在する可能性があります）',
 
     'infra.other.lead': 'DriftScribe の管理対象外のリソース',
     'infra.other.typeCount.one': '{n}種類',
@@ -333,6 +404,8 @@ export const infra = {
     'infra.graph.verb.replace': '置き換え予定',
 
     'infra.graph.hidden': '非表示',
+    'infra.graph.nameHidden': '（名前は非表示）',
+    'infra.graph.typeNameSep': '：',
     'infra.graph.resource.one': 'リソース',
     'infra.graph.resource.other': 'リソース',
     'infra.graph.more': 'ほかに{n}件',

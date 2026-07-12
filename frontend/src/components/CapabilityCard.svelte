@@ -29,9 +29,11 @@
 
   /** The crew's place in the stewardship loop, keyed by the frozen symbolic
    *  workload name. Pure copy, not a safety claim — the gates section above is
-   *  the authority on what waits for approval. */
+   *  the authority on what waits for approval. An unrecognized future workload
+   *  has no lifecycle key, so its row is hidden ('' → the {#if} guard) instead
+   *  of rendering a raw catalog key. */
   function loopRole(name: string, t: TranslateFn): string {
-    return crewLifecycle(name as Workload, t);
+    return KNOWN_WORKLOADS.has(name as Workload) ? crewLifecycle(name as Workload, t) : '';
   }
 
   // Frozen symbolic workload values (agent/workloads/spec.py's name Literal).

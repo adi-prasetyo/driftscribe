@@ -49,6 +49,9 @@ enum, or code value — in prose, `apply` → `適用`.
 | infrastructure | インフラ | |
 | IaC | IaC | Anchor-use gloss: `コードで管理するインフラ (IaC)`. |
 | resource | リソース | |
+| resource-type labels | `infra.type.*` カタログ | Backend `_TYPE_LABELS` (Storage bucket, Pub/Sub topic, …) localize via `infra_graph.infraTypeLabel` (ストレージバケット, Pub/Sub トピック, …); unknown future types pass through untranslated. |
+| IaC declaration / declared in IaC | （IaC の）定義 / IaC に定義済み | An HCL resource definition. NOT 宣言. (The `ops-contract.yaml` desired-state contract may keep 宣言された.) |
+| planned-change verbs (PR-preview ghosts) | 作成予定・変更予定・削除予定 | Legend AND node badges share the 〜予定 form (matches `{n}件を作成予定`). NOT 〜されます. |
 | configuration / config | 設定 / 構成 | 設定 for env-var config; 構成 for structural. |
 | migration (ClickOps→IaC) | 移行 | |
 
@@ -81,6 +84,9 @@ enum, or code value — in prose, `apply` → `適用`.
 | EN | JA | Notes |
 |----|----|-------|
 | decision (log) | 判断 | `判断履歴` (the rail/log), `過去の判断`, `判断内容` per surface. NOT 意思決定. |
+| action (registry / decision field) | アクション | The action-id enum on decision rows and workload capability lists. |
+| operation (generic act) | 操作 | Something a user or OpenTofu does (`常に禁止される操作`, `操作ペース`). NOT for the action registry. |
+| Infra apply (`iac_apply`) | IaC 適用（ラベル）/ IaC の適用（文中） | e.g. `IaC の適用には承認が必要です`. NOT インフラの適用 / インフラへの適用. |
 | pull request / PR | プルリクエスト / PR | |
 | merge / merged | マージ / マージ済み | |
 | PR body | PR 本文 | |

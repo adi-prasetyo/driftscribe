@@ -30,7 +30,8 @@
   import HelpHint from './HelpHint.svelte';
   import Modal from './Modal.svelte';
   import type { Decision } from '../lib/types';
-  import { t, type MessageKey } from '../lib/i18n';
+  import { t, locale, localeTag, type MessageKey, type TranslateFn } from '../lib/i18n';
+  import { modeLabel } from '../lib/autonomy';
 
   let {
     decisions,
@@ -151,14 +152,25 @@
     return Object.hasOwn(GITHUB_LINK_LABEL, d.action) && d.github?.dry_run === true;
   }
 
-  // Render `created_at` as a compact, readable wall-clock string. Falls back to
-  // the raw value when it doesn't parse, and to '' when absent.
+  // Localized label for the suppressed pill's {mode}. Today the backend only
+  // suppresses in observe mode, but all three dial modes localize via the
+  // shared modeLabel; a malformed/unknown value falls back to the raw string.
+  function suppressedModeLabel(mode: string | undefined, tf: TranslateFn): string {
+    return mode === 'observe' || mode === 'propose' || mode === 'propose_apply'
+      ? modeLabel(mode, tf)
+      : (mode ?? '');
+  }
+
+  // Render `created_at` as a compact, readable wall-clock string in the ACTIVE
+  // app locale (not the host browser's), so dates follow the EN/JA toggle like
+  // the rest of the rail. Falls back to the raw value when it doesn't parse,
+  // and to '' when absent.
   function fmtCreatedAt(iso: string | undefined): string {
     if (!iso) return '';
     const parsed = Date.parse(iso);
     if (Number.isNaN(parsed)) return iso;
     try {
-      return new Intl.DateTimeFormat(undefined, {
+      return new Intl.DateTimeFormat(localeTag($locale), {
         month: 'short',
         day: 'numeric',
         hour: '2-digit',
@@ -238,7 +250,7 @@
     {#if d.suppressed_by_autonomy === true}
       <span class="rail-status rail-status--muted" data-testid="autonomy-suppressed"
         >{$t('decisions.autonomy.suppressed', {
-          mode: d.autonomy_mode === 'observe' ? $t('decisions.autonomy.observeLabel') : (d.autonomy_mode ?? ''),
+          mode: suppressedModeLabel(d.autonomy_mode, $t),
         })}</span>
     {/if}
 

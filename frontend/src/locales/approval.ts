@@ -30,7 +30,7 @@ export const approval = {
     'approval.rollbackCta.title': '人による確認・承認が必要です',
     'approval.rollbackCta.approve': '承認 →',
 
-    'approval.iacCta.title': 'インフラの適用には承認が必要です（PR #{pr}）',
+    'approval.iacCta.title': 'IaC の適用には承認が必要です（PR #{pr}）',
     'approval.iacCta.reviewApprove': '確認して承認 →',
     'approval.iacCta.cageNote':
       '適用の前に、この変更は自己防御のための拒否リストを通過し、あなたの明示的な承認を' +

@@ -147,7 +147,7 @@
         <ApprovalCta resultPreview={str(pair.result.result_preview)} />
       {/if}
       <div class="event__label">{$t('timeline.pair.resultPreview')}</div>
-      <pre class="ds-pre">{fmtPreview(str(pair.result.result_preview) || '(empty)')}</pre>
+      <pre class="ds-pre">{fmtPreview(str(pair.result.result_preview) || $t('timeline.pair.emptyPreview'))}</pre>
     {/if}
   </details>
 {/snippet}

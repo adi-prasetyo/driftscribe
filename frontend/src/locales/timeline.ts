@@ -53,6 +53,7 @@ export const timeline = {
     'timeline.pair.ok': 'ok',
     'timeline.pair.toolArgs': 'tool_args',
     'timeline.pair.resultPreview': 'result_preview',
+    'timeline.pair.emptyPreview': '(empty)',
 
     // Coordinator group's llm_usage row — the small caption label ahead of
     // the fmtTokens value (format.ts's own "{n} tok" suffix is separate).
@@ -133,6 +134,7 @@ export const timeline = {
     'timeline.pair.ok': 'OK',
     'timeline.pair.toolArgs': 'ツール引数',
     'timeline.pair.resultPreview': '結果プレビュー',
+    'timeline.pair.emptyPreview': '（空）',
 
     'timeline.subgroup.calls.one': '{n}回の呼び出し',
     'timeline.subgroup.calls.other': '{n}回の呼び出し',
@@ -148,7 +150,7 @@ export const timeline = {
 
     'timeline.worker.read_live_env_tool': 'リーダー（ドリフト）',
     'timeline.worker.patch_docs_tool': 'ドキュメント（ドリフト）',
-    'timeline.worker.propose_rollback_tool': 'ロールバック（ドリフト）・人による確認・承認',
+    'timeline.worker.propose_rollback_tool': 'ロールバック（ドリフト、人による確認・承認）',
     'timeline.worker.upgrade_read_dependencies_tool': 'アップグレードリーダー',
     'timeline.worker.upgrade_propose_pr_tool': 'アップグレードドキュメント',
     'timeline.worker.upgrade_close_pr_tool': 'アップグレードドキュメント・PR をクローズ',

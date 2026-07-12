@@ -59,9 +59,9 @@ export const decisions = {
     'decisions.noOp.lead': 'Checked · all clear',
     'decisions.noOp.helpAriaLabel': 'What “No action needed” means',
 
-    // DecisionsRail.svelte — Observe-mode suppressed token.
+    // DecisionsRail.svelte — Observe-mode suppressed token. The {mode} label
+    // comes from the shared autonomy modeLabel (capability.mode.*.label).
     'decisions.autonomy.suppressed': 'not executed in {mode} mode',
-    'decisions.autonomy.observeLabel': 'Observe',
 
     // DecisionsRail.svelte — dry-run preview pill.
     'decisions.dryRun.pill': 'dry run, not created on GitHub',
@@ -74,7 +74,7 @@ export const decisions = {
     'decisions.summary.label': 'Decision',
   },
   ja: {
-    'decisions.field.action': '操作',
+    'decisions.field.action': 'アクション',
     'decisions.field.pullRequest': 'プルリクエスト',
     'decisions.field.apply': '適用',
     'decisions.field.merge': 'マージ',
@@ -96,8 +96,8 @@ export const decisions = {
     'decisions.rail.searchOpen': '判断を検索（{n}件）→',
 
     'decisions.search.title': '判断を検索',
-    'decisions.search.inputAriaLabel': 'PR、エージェントチーム、操作、状態で判断を検索',
-    'decisions.search.placeholder': 'PR、タイトル、エージェントチーム、操作、状態で検索…',
+    'decisions.search.inputAriaLabel': 'PR、エージェントチーム、アクション、状態で判断を検索',
+    'decisions.search.placeholder': 'PR、タイトル、エージェントチーム、アクション、状態で検索…',
     'decisions.search.count': '{total}件中{shown}件',
     'decisions.search.noMatch': '「{query}」に一致する判断はありません。',
 
@@ -112,7 +112,6 @@ export const decisions = {
     'decisions.noOp.helpAriaLabel': '「対応不要」の意味',
 
     'decisions.autonomy.suppressed': '「{mode}」モードのため実行されていません',
-    'decisions.autonomy.observeLabel': '監視のみ',
 
     'decisions.dryRun.pill': 'ドライラン（GitHub には未作成）',
 
