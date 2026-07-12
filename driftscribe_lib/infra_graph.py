@@ -275,12 +275,22 @@ _DEFAULT_CAVEAT = (
 # 500-char truncation) so a degraded reason can't blow up the payload.
 _DETAIL_CAP = 500
 
+# Defensive cap on rendered unmatched declarations. The worker's projection
+# already caps at 10 (infra_inventory._UNMATCHED_IAC_CAP); re-applied here so a
+# malformed / hand-edited cache doc can't render an unbounded band.
+_UNMATCHED_DECLARATIONS_CAP = 10
+
 
 def _as_int(value: object, default: int = 0) -> int:
-    """Coerce to int, never raising — a malformed count degrades to ``default``."""
+    """Coerce to int, never raising — a malformed count degrades to ``default``.
+
+    ``OverflowError`` is caught alongside ``TypeError``/``ValueError`` because
+    Firestore stores non-finite doubles: a hand-edited cache doc carrying
+    ``float("inf")`` would otherwise make ``int()`` raise and break the
+    ``build_graph`` never-raises contract (Codex review)."""
     try:
         return int(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
@@ -300,6 +310,74 @@ def _humanize_asset_type(asset_type: str) -> str:
 
 def _label_for(asset_type: str) -> str:
     return _TYPE_LABELS.get(asset_type) or _humanize_asset_type(asset_type)
+
+
+def _unmatched_declarations_dto(unmatched_iac: object) -> dict | None:
+    """Reshape the inventory's safe ``unmatched_iac`` projection (see
+    :func:`driftscribe_lib.infra_inventory._unmatched_iac_projection`) into the
+    operator DTO: friendly ``type_label``, deterministic render-only ``u<i>``
+    ids, and the sensitive-type exclusion REAPPLIED here as defense in depth.
+
+    Kept a pure, top-level slice — deliberately NOT merged into ``groups`` — so
+    the UI can show an IaC declaration even when there are zero live resources of
+    its type. Pure + total: a malformed / hand-edited projection yields ``None``
+    (field omitted) rather than raising.
+
+    Count/truncated policy (Codex review): trust the worker's pre-cap ``count``
+    (the source of the legitimate 10-cap truncation) ONLY when NOTHING was dropped
+    by validation here. If any entry was dropped — a malformed entry, or a
+    sensitive one caught by the defense-in-depth filter — recompute the count from
+    the survivors so a hand-edited cache doc can NEVER disclose the number of
+    excluded declarations. Sensitive types stay excluded ENTIRELY, not as a bare
+    count. A defensive 10-cap is re-applied so a malformed doc can't render an
+    unbounded band.
+    """
+    if not isinstance(unmatched_iac, dict):
+        return None
+    raw_entries = unmatched_iac.get("entries")
+    if not isinstance(raw_entries, list):
+        return None
+    validated: list[dict] = []
+    for raw in raw_entries:
+        if not isinstance(raw, dict):
+            continue
+        asset_type = raw.get("asset_type")
+        label = raw.get("name")
+        if not isinstance(asset_type, str) or not asset_type:
+            continue
+        # Defense in depth: a secret identity must never reach the operator DTO,
+        # even if a malformed/hand-edited cache doc smuggled one into entries.
+        if asset_type in SENSITIVE_ASSET_TYPES:
+            continue
+        if not isinstance(label, str) or not label:
+            continue
+        item = {
+            "asset_type": asset_type,
+            "type_label": _label_for(asset_type),
+            "label": label,
+        }
+        address = raw.get("address")
+        if isinstance(address, str) and address:
+            item["address"] = address
+        validated.append(item)
+    if not validated:
+        return None
+    dropped = len(raw_entries) - len(validated)
+    # Defensive re-cap (the worker already caps at 10) + deterministic u<i> ids.
+    capped = validated[:_UNMATCHED_DECLARATIONS_CAP]
+    entries = [{"id": f"u{i}", **item} for i, item in enumerate(capped)]
+    if dropped == 0:
+        # Clean input: honor the worker's pre-cap total (floored at what we hold).
+        count = max(_as_int(unmatched_iac.get("count"), len(validated)), len(validated))
+    else:
+        # Something was dropped: recompute from survivors so we never leak the
+        # count of excluded (e.g. sensitive) declarations.
+        count = len(validated)
+    return {
+        "count": count,
+        "entries": entries,
+        "truncated": max(0, count - len(entries)),
+    }
 
 
 def _degraded(reason: str, *, project: object = None, detail: object = None) -> dict:
@@ -480,4 +558,11 @@ def build_graph(inventory: dict) -> dict:
     }
     if inventory.get("declared_set_status"):
         out["declared_set_status"] = inventory["declared_set_status"]
+    # Optional top-level slice: IaC declarations that did not match a live CAI
+    # resource. Emitted only when at least one non-sensitive entry survives, so a
+    # no-unmatched inventory stays byte-identical to the pre-change DTO. The
+    # degraded path returns earlier, so a degraded inventory never surfaces it.
+    unmatched = _unmatched_declarations_dto(inventory.get("unmatched_iac"))
+    if unmatched is not None:
+        out["unmatched_declarations"] = unmatched
     return out

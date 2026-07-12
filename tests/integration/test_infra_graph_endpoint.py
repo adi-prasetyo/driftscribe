@@ -550,17 +550,42 @@ def test_both_layers_disabled_emits_disabled(monkeypatch):
     assert r2.headers.get("x-infra-graph-cache") == "disabled"
 
 
-def test_declared_not_found_stripped_from_l2_but_dto_identical(monkeypatch):
-    """The persisted record drops ``declared_not_found`` (the only field with
-    full resource paths) — provably a no-op for the served DTO since build_graph
-    ignores it."""
+def test_l2_retains_safe_unmatched_projection_but_drops_raw_paths(monkeypatch):
+    """The persisted L2 record DROPS raw ``declared_not_found`` (full canonical
+    paths + sensitive identities) but DELIBERATELY RETAINS the bounded,
+    redaction-safe ``unmatched_iac`` projection that feeds the operator's
+    unmatched-declarations band.
+
+    This intentionally REVISES the earlier privacy stance for NON-sensitive stale
+    resource NAMES (the old test asserted the name must never reach the cache):
+    the panel already exposes live names of these same asset types, and this
+    feature requires exposing the unmatched short name. Full canonical paths and
+    every sensitive type remain excluded. See plan
+    2026-07-11-unmatched-iac-declarations.
+    """
+    import json
+    bucket_type = "storage.googleapis.com/Bucket"
     inv = _inventory()
+    # Raw diagnostic: a non-sensitive bucket (full canonical path) + a redacted
+    # secret. Only the bucket, SHORT-named, may survive into the cache.
     inv["declared_not_found"] = [
-        {"address": "google_storage_bucket.secret_paths",
+        {"address": "google_storage_bucket.bucket_a",
          "identity": "projects/p/buckets/super-secret-internal-bucket",
-         "asset_type": "storage.googleapis.com/Bucket",
-         "source": "iac", "confidence": "high", "possible_causes": ["cai_lag"]},
+         "asset_type": bucket_type, "source": "iac", "confidence": "high",
+         "possible_causes": ["cai_lag", "not_yet_applied", "format_mismatch"]},
+        {"address": "google_secret_manager_secret.api_key",
+         "asset_type": SECRET_TYPE, "source": "iac", "confidence": "high",
+         "identity_redacted": True,
+         "possible_causes": ["cai_lag", "not_yet_applied", "format_mismatch"]},
     ]
+    # The worker's safe projection (short name only, no canonical path).
+    inv["unmatched_iac"] = {
+        "count": 1,
+        "entries": [{"asset_type": bucket_type,
+                     "name": "super-secret-internal-bucket",
+                     "address": "google_storage_bucket.bucket_a"}],
+        "truncated": 0,
+    }
     calls = _counting_call(monkeypatch, returns=inv)
     _set_ttl(monkeypatch, "0")
     _set_l2_ttl(monkeypatch, "900")
@@ -569,13 +594,30 @@ def test_declared_not_found_stripped_from_l2_but_dto_identical(monkeypatch):
     r1 = client.get("/infra/graph")
     record = store.get()
     assert record is not None
+    blob = json.dumps(record)
+
+    # 1. Raw declared_not_found and the full canonical path are gone from the cache.
     assert "declared_not_found" not in record["payload"]
-    import json
-    assert "super-secret-internal-bucket" not in json.dumps(record)
-    # Positive: legitimate non-sensitive samples MUST survive stripping (guards
-    # against a future over-strip silently emptying the cached map).
+    assert "projects/p/buckets/super-secret-internal-bucket" not in blob
+    # 2. The safe projection survives — asset_type + short name + address only.
+    proj = record["payload"]["unmatched_iac"]
+    assert proj == {
+        "count": 1,
+        "entries": [{"asset_type": bucket_type,
+                     "name": "super-secret-internal-bucket",
+                     "address": "google_storage_bucket.bucket_a"}],
+        "truncated": 0,
+    }
+    assert set(proj["entries"][0]) == {"asset_type", "name", "address"}
+    # 3. No secret-type raw identity in the cache OR the served DTO.
+    assert "api_key" not in blob and "api-key" not in blob
+    assert "api_key" not in r1.text and "api-key" not in r1.text
+    # The served band shows the SHORT name but NEVER the canonical path.
+    assert "super-secret-internal-bucket" in r1.text
+    assert "projects/p/buckets/" not in r1.text
+    # Positive: legitimate non-sensitive samples MUST survive stripping.
     assert record["payload"]["by_type"][RUN_TYPE]["sample"][0]["name"] == "payment-demo"
-    # DTO served on the L2 hit is byte-identical to the first (full-inventory) build.
+    # 4. First (live) response and the L2-hit response are byte-identical.
     r2 = client.get("/infra/graph")
     assert calls["n"] == 1
     assert r1.json() == r2.json()

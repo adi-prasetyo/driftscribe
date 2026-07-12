@@ -98,6 +98,33 @@ export interface InfraEdge {
   kind?: string;
 }
 
+/**
+ * An IaC declaration that did not match a live CAI resource (design
+ * 2026-07-11-unmatched-iac-declarations). NOT a live resource: it never enters
+ * InfraNode / resourceCards / coverage / adoption. Evidence to investigate, not
+ * proof of deletion or rename.
+ */
+export interface UnmatchedDeclaration {
+  /** Server-assigned render handle (e.g. "u0"). */
+  id: string;
+  asset_type: string;
+  /** Friendly type label, e.g. "Storage bucket". */
+  type_label: string;
+  /** Declaration short name (last identity segment) — UNTRUSTED; text-only. */
+  label: string;
+  /** HCL address — UNTRUSTED; present only when the server had a non-empty one. */
+  address?: string;
+}
+
+export interface UnmatchedDeclarations {
+  /** Total eligible non-sensitive declarations before the server-side cap. */
+  count: number;
+  /** Capped, sorted entries (≤ server cap). */
+  entries: UnmatchedDeclaration[];
+  /** max(0, count − entries.length) — "+N more not shown". */
+  truncated: number;
+}
+
 export interface InfraGraph {
   generated_at: string | null;
   project: string | null;
@@ -111,6 +138,13 @@ export interface InfraGraph {
   edges: InfraEdge[];
   truncated?: Record<string, unknown>;
   declared_set_status?: string;
+  /**
+   * IaC declarations not found in the latest CAI snapshot (optional, present
+   * only when non-empty). SEPARATE from `groups[*].nodes`: never counted in
+   * totals/coverage/adoption, never rendered as a resource card row. A stale
+   * coordinator simply omits the field.
+   */
+  unmatched_declarations?: UnmatchedDeclarations;
 }
 
 // ---------------------------------------------------------------------------
@@ -480,6 +514,68 @@ export function adoptGroupRank(g: InfraGroup): number | null {
     g.adopt_rank > 0
     ? g.adopt_rank
     : null;
+}
+
+// ---------------------------------------------------------------------------
+// Unmatched-declaration investigation prefill (design
+// 2026-07-11-unmatched-iac-declarations §Task 3). Composes a read-only Provision
+// draft asking the crew to investigate whether any visible same-type unmanaged
+// resource might be an intended replacement for a declaration that vanished from
+// CAI — WITHOUT assuming a rename or making changes. Pure + unit-testable; the
+// untrusted-fragment stance (normalizeForPrompt, text-only sink) is unchanged.
+// ---------------------------------------------------------------------------
+
+/** Max same-type unmanaged candidates listed in the investigation prefill. */
+const INVESTIGATE_CANDIDATE_CAP = 5;
+
+/**
+ * A read-only Provision prefill for investigating an unmatched IaC declaration.
+ * Lists visible live nodes of the SAME asset_type that are unmanaged,
+ * non-control-plane, and non-empty after normalization — as candidates to
+ * INSPECT, never as asserted matches. Preserves graph order, de-duplicates
+ * labels, caps at five and appends a bounded "(and more may exist)" when the
+ * visible set is larger. Never claims the list is complete (CAI and per-type
+ * sampling are both bounded / eventually consistent), and explicitly forbids
+ * assuming a rename or making any change before the operator confirms intent.
+ */
+export function investigateUnmatchedPrefill(
+  declaration: UnmatchedDeclaration,
+  graph: InfraGraph,
+): string {
+  const type = normalizeForPrompt(declaration.type_label, 40);
+  const name = normalizeForPrompt(declaration.label, 254);
+  const addr = declaration.address ? normalizeForPrompt(declaration.address, 254) : '';
+  const addrClause = addr ? ` (\`${addr}\`)` : '';
+
+  const seen = new Set<string>();
+  const candidates: string[] = [];
+  for (const g of graph.groups) {
+    if (g.asset_type !== declaration.asset_type) continue;
+    for (const n of g.nodes) {
+      if (n.managed || n.control_plane === true) continue;
+      const label = normalizeForPrompt(n.label, 254);
+      if (!label || seen.has(label)) continue;
+      seen.add(label);
+      candidates.push(label);
+    }
+  }
+  const shown = candidates.slice(0, INVESTIGATE_CANDIDATE_CAP);
+  const more = candidates.length > INVESTIGATE_CANDIDATE_CAP;
+
+  const candidatesSentence =
+    shown.length === 0
+      ? 'No unmanaged resources of the same type are currently visible.'
+      : `Visible unmanaged resources of the same type: ${shown
+          .map((c) => `\`${c}\``)
+          .join(', ')}${more ? ' (and more may exist)' : ''}.`;
+
+  return (
+    `Investigate why IaC declares the ${type} \`${name}\`${addrClause} but it was ` +
+    `not found in the latest Cloud Asset Inventory. ${candidatesSentence} ` +
+    `Determine whether any may be an intended replacement, but do not assume a ` +
+    `rename, change files, or open a PR. Report the evidence and ask me to ` +
+    `confirm the relationship first.`
+  );
 }
 
 // ---------------------------------------------------------------------------
