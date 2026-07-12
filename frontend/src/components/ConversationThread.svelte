@@ -9,7 +9,7 @@
   import CrewGlyph from './CrewGlyph.svelte';
   import { crewName } from '../lib/workloads';
   import { iacApprovalHref } from '../lib/approval';
-  import { t } from '../lib/i18n';
+  import { t, locale } from '../lib/i18n';
   import type { ConversationTurn } from '../lib/types';
 
   let {
@@ -22,7 +22,7 @@
 
   // Same-origin /iac-approvals/<n> link for a turn that opened an infra PR.
   function prHref(turn: ConversationTurn): string | null {
-    return turn.iac_pr ? iacApprovalHref(turn.iac_pr.pr_number) : null;
+    return turn.iac_pr ? iacApprovalHref(turn.iac_pr.pr_number, $locale) : null;
   }
 </script>
 

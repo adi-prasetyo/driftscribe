@@ -88,7 +88,7 @@
   // origin guard (off-origin, non-http(s), non-/approvals/ path).
   function approveHref(d: Decision): string | null {
     const raw = d.approval?.approval_url;
-    return raw ? safeApprovalHref(raw) : null;
+    return raw ? safeApprovalHref(raw, undefined, $locale) : null;
   }
 
   // Resolve the infra-apply approval link for a row. An iac_apply decision
@@ -105,8 +105,8 @@
       Number.isInteger(d.superseded_by_pr) &&
       d.superseded_by_pr > 0
     )
-      return iacApprovalHref(d.superseded_by_pr);
-    return iacApprovalHref(d.pr_number);
+      return iacApprovalHref(d.superseded_by_pr, $locale);
+    return iacApprovalHref(d.pr_number, $locale);
   }
 
   // Resolve the GitHub PR/issue link for a drift/docs decision. Gated on an

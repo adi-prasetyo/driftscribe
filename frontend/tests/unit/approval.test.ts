@@ -112,6 +112,30 @@ describe('safeApprovalHref', () => {
     expect(safeApprovalHref(`${self}/approvals/x?t=1`)).toBe('/approvals/x?t=1');
     expect(safeApprovalHref('https://evil.com/approvals/x')).toBeNull();
   });
+
+  it('locale "ja" appends &lang=ja after an existing query', () => {
+    expect(safeApprovalHref('/approvals/x?t=1', ORIGIN, 'ja')).toBe('/approvals/x?t=1&lang=ja');
+  });
+
+  it('locale "ja" appends ?lang=ja when there is no existing query', () => {
+    expect(safeApprovalHref('/approvals/abc123', ORIGIN, 'ja')).toBe('/approvals/abc123?lang=ja');
+  });
+
+  it('locale "ja" does not duplicate an already-present lang param', () => {
+    expect(safeApprovalHref('/approvals/x?lang=ja', ORIGIN, 'ja')).toBe('/approvals/x?lang=ja');
+    expect(safeApprovalHref('/approvals/x?t=1&lang=en', ORIGIN, 'ja')).toBe(
+      '/approvals/x?t=1&lang=en',
+    );
+  });
+
+  it('no locale or locale "en" leaves the href unchanged (no lang param)', () => {
+    expect(safeApprovalHref('/approvals/x?t=1', ORIGIN)).toBe('/approvals/x?t=1');
+    expect(safeApprovalHref('/approvals/x?t=1', ORIGIN, 'en')).toBe('/approvals/x?t=1');
+  });
+
+  it('locale "ja" has no effect on a rejected (off-origin) URL — still null', () => {
+    expect(safeApprovalHref('https://evil.com/approvals/x', ORIGIN, 'ja')).toBeNull();
+  });
 });
 
 describe('isExpired', () => {
@@ -182,6 +206,20 @@ describe('iacApprovalHref', () => {
     // through, so a stray `true`/`false` must never yield `/iac-approvals/1`.
     expect(iacApprovalHref(true)).toBeNull();
     expect(iacApprovalHref(false)).toBeNull();
+  });
+
+  it('locale "ja" appends ?lang=ja', () => {
+    expect(iacApprovalHref(5, 'ja')).toBe('/iac-approvals/5?lang=ja');
+  });
+
+  it('no locale or locale "en" leaves the path unchanged', () => {
+    expect(iacApprovalHref(5)).toBe('/iac-approvals/5');
+    expect(iacApprovalHref(5, 'en')).toBe('/iac-approvals/5');
+  });
+
+  it('an invalid prNumber with locale "ja" still returns null', () => {
+    expect(iacApprovalHref('abc', 'ja')).toBeNull();
+    expect(iacApprovalHref(-1, 'ja')).toBeNull();
   });
 });
 

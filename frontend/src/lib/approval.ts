@@ -21,6 +21,11 @@ import type { TranslateFn } from './i18n';
  * http/https, and (c) the pathname starts with `/approvals/`. Returns the
  * RELATIVE href (`pathname + search`) on success, or `null` if rejected.
  *
+ * `locale === 'ja'` appends `lang=ja` (unless the link already carries a
+ * `lang` param) so the server-rendered approval page opens in the operator's
+ * language — the backend allowlists the value and defaults to English, so
+ * omitting it (every pre-i18n caller) is always safe.
+ *
  * Rejects: off-origin absolute URLs, non-http(s) schemes (`javascript:`,
  * `data:`, `file:`, …), non-`/approvals/` paths, empty/malformed input, and
  * links whose `?t=` token is a scrub's literal `<redacted>` placeholder — after
@@ -31,7 +36,11 @@ import type { TranslateFn } from './i18n';
  * need the real token, so a CTA for such a link is a dead button (the literal
  * can never be a real token: the redactor's value class excludes `<`).
  */
-export function safeApprovalHref(raw: string, origin?: string): string | null {
+export function safeApprovalHref(
+  raw: string,
+  origin?: string,
+  locale?: string,
+): string | null {
   const base = origin ?? window.location.origin;
   let baseOrigin: string;
   try {
@@ -49,7 +58,11 @@ export function safeApprovalHref(raw: string, origin?: string): string | null {
     // searchParams decodes, so both `?t=<redacted>` and `?t=%3Credacted%3E`
     // (the URL-encoded form a browser produces) are caught here.
     if (u.searchParams.get('t') === '<redacted>') return null;
-    return u.pathname + u.search;
+    let href = u.pathname + u.search;
+    if (locale === 'ja' && !u.searchParams.has('lang')) {
+      href += (u.search ? '&' : '?') + 'lang=ja';
+    }
+    return href;
   } catch {
     return null;
   }
@@ -66,8 +79,14 @@ export function safeApprovalHref(raw: string, origin?: string): string | null {
  * data path for IaC approvals: callers derive it from an allowlisted
  * `action === 'iac_apply'` decision's `pr_number`, never by reading a raw URL
  * field off an unredacted decision doc.
+ *
+ * `locale === 'ja'` appends `?lang=ja` (backend-allowlisted, EN default) so
+ * the approval page opens in the operator's language.
  */
-export function iacApprovalHref(prNumber: unknown): string | null {
+export function iacApprovalHref(
+  prNumber: unknown,
+  locale?: string,
+): string | null {
   if (
     typeof prNumber !== 'number' ||
     !Number.isInteger(prNumber) ||
@@ -75,7 +94,7 @@ export function iacApprovalHref(prNumber: unknown): string | null {
   ) {
     return null;
   }
-  return `/iac-approvals/${prNumber}`;
+  return `/iac-approvals/${prNumber}${locale === 'ja' ? '?lang=ja' : ''}`;
 }
 
 /**

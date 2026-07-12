@@ -1,6 +1,6 @@
 <script lang="ts">
   import { iacApprovalHref } from '../lib/approval';
-  import { t } from '../lib/i18n';
+  import { t, locale } from '../lib/i18n';
 
   // First-authoring approval CTA. When a /chat run just opened an infrastructure
   // PR (the `done` frame carried `iac_pr.pr_number`), the operator's final reply
@@ -16,7 +16,7 @@
   // deliberately NOT used for the href (it stays in the reply text).
   let { prNumber }: { prNumber: unknown } = $props();
 
-  const href = $derived(iacApprovalHref(prNumber));
+  const href = $derived(iacApprovalHref(prNumber, $locale));
 </script>
 
 {#if href}

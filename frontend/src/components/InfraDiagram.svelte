@@ -692,7 +692,7 @@
         <h3 class="infra-pending-band__title">{$t('infra.pending.title', { n: fmtNumber(pendingApprovals.length, $locale) })}</h3>
         <ul class="infra-pending-band__list">
           {#each pendingApprovals as a (a.pr_number)}
-            {@const href = iacApprovalHref(a.pr_number)}
+            {@const href = iacApprovalHref(a.pr_number, $locale)}
             {#if href}
               <li class="infra-pending-band__item">
                 <a class="infra-pending-band__link" {href} target="_blank" rel="noopener"
@@ -851,7 +851,7 @@
                     >
                   {:else if row.adoptable}
                     {@const pendingPr = findPendingPr(pendingApprovals, card.assetType, row.label)}
-                    {@const pendingHref = pendingPr !== null ? iacApprovalHref(pendingPr) : null}
+                    {@const pendingHref = pendingPr !== null ? iacApprovalHref(pendingPr, $locale) : null}
                     {#if pendingPr !== null && pendingHref}
                       <!-- An adoption PR is already open for this resource: link to
                            its approval page (kills duplicate-adoption PRs) instead

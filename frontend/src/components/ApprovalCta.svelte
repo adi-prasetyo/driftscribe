@@ -1,6 +1,6 @@
 <script lang="ts">
   import { safeApprovalHref } from '../lib/approval';
-  import { t } from '../lib/i18n';
+  import { t, locale } from '../lib/i18n';
 
   // Inline HITL call-to-action rendered INSIDE a rollback tool result. The
   // rollback worker may embed an `approval_url` in its JSON result payload; we
@@ -21,7 +21,9 @@
         obj && typeof obj === 'object'
           ? (obj as Record<string, unknown>).approval_url
           : undefined;
-      return typeof url === 'string' ? safeApprovalHref(url) : null;
+      return typeof url === 'string'
+        ? safeApprovalHref(url, undefined, $locale)
+        : null;
     } catch {
       return null;
     }
