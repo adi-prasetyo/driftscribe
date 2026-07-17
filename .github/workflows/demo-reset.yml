@@ -325,9 +325,38 @@ jobs:
             FAILURES="${FAILURES}- Cloud Run service \`adopt-probe-svc\` is MISSING"$'\n'
           fi
 
-          PR_STATE=$(gh api "repos/${REPO}/pulls/168" --jq .state 2>/dev/null)
-          if [ "$PR_STATE" != "open" ]; then
-            FAILURES="${FAILURES}- PR #168 is not OPEN (state=\`${PR_STATE:-unreadable}\`) — the /iac-approvals/168 recording depends on it staying open"$'\n'
+          # A GitHub API blip is NOT fixture rot. Discarding stderr and
+          # testing the captured state alone (the pre-2026-07-17 shape) made
+          # the two indistinguishable: any 5xx/rate-limit answered with an
+          # empty string, which failed the `!= open` test and emailed the
+          # owner a rot alarm for a PR that was open the whole time (run
+          # 29540963068). So: retry a failed READ before believing it, and
+          # keep "the API never answered" as a separate line from "the API
+          # answered, and #168 is closed" — only the latter is rot.
+          PR_ERR_FILE="${RUNNER_TEMP:-/tmp}/pr168-read.err"
+          PR_STATE=""
+          PR_READ_ERR=""
+          PR_READ_OK=false
+          for attempt in 1 2 3; do
+            # The read's own exit status is the sentinel — NOT whether it left
+            # anything in $PR_ERR_FILE. A gh failure that writes no stderr is
+            # rare but real, and keying off the message would misfile it as
+            # "answered, state empty" — i.e. back to the rot alarm this fix
+            # exists to stop.
+            if PR_STATE=$(gh api "repos/${REPO}/pulls/168" --jq .state 2>"$PR_ERR_FILE"); then
+              PR_READ_OK=true
+              break
+            fi
+            PR_STATE=""
+            PR_READ_ERR=$(tr '\n' ' ' <"$PR_ERR_FILE" | head -c 300)
+            echo "PR #168 read attempt ${attempt}/3 failed: ${PR_READ_ERR:-<no stderr>}" >&2
+            if [ "$attempt" -lt 3 ]; then sleep 5; fi
+          done
+
+          if [ "$PR_READ_OK" != "true" ]; then
+            FAILURES="${FAILURES}- PR #168 state UNREADABLE after 3 attempts (last error: \`${PR_READ_ERR:-<no stderr>}\`) — this is a GitHub API read failure, NOT proof the PR closed; check /iac-approvals/168 by hand"$'\n'
+          elif [ "$PR_STATE" != "open" ]; then
+            FAILURES="${FAILURES}- PR #168 is not OPEN (state=\`${PR_STATE}\`) — the /iac-approvals/168 recording depends on it staying open"$'\n'
           fi
 
           if [ -n "$FAILURES" ]; then
