@@ -778,7 +778,12 @@ def test_describe_subscription_failure_does_not_skip_run_enrichment(client, monk
 # --------------------------------------------------------------------------- #
 
 _BUCKET_TYPE = "storage.googleapis.com/Bucket"
-_RECEIPTS_BUCKET = "//storage.googleapis.com/driftscribe-hack-2026-receipts"
+# Synthetic name on purpose: must NOT match any live resource or any bucket
+# declared in the repo `iac/` tree, so the `iac is False` assertion below stays
+# robustly true. Do not swap this for a real adoptable resource name (e.g. a
+# demo bucket) — adopting that resource would declare it in `iac/` and flip the
+# flag, failing this test on the adopt PR for reasons unrelated to what it guards.
+_UNLISTED_BUCKET = "//storage.googleapis.com/test-fixture-unlisted-bucket"
 
 
 def test_describe_listassets_bucket_missing_from_search_surfaces(client, monkeypatch):
@@ -786,7 +791,7 @@ def test_describe_listassets_bucket_missing_from_search_surfaces(client, monkeyp
     # SearchAllResources inventory but PRESENT in ListAssets. It must surface in
     # the inventory (counted, sampled, flagged not-in-iac) via the supplement.
     primary = [_FakeResource(_PAYMENT_DEMO_NAME, _RUN_SERVICE, "asia-northeast1")]
-    buckets = [_FakeAsset(_RECEIPTS_BUCKET, location="asia-northeast1")]
+    buckets = [_FakeAsset(_UNLISTED_BUCKET, location="asia-northeast1")]
     monkeypatch.setattr(
         infra_main.asset_v1, "AssetServiceClient",
         _make_fake_client(primary, buckets=buckets),
@@ -797,15 +802,15 @@ def test_describe_listassets_bucket_missing_from_search_surfaces(client, monkeyp
     assert body["total_resources"] == 2          # service + supplemented bucket
     assert body["by_type"][_BUCKET_TYPE]["count"] == 1
     sample = body["by_type"][_BUCKET_TYPE]["sample"][0]
-    assert sample["name"] == "driftscribe-hack-2026-receipts"
+    assert sample["name"] == "test-fixture-unlisted-bucket"
     assert sample["iac"] is False                # not declared → adoptable drift
 
 
 def test_describe_listassets_bucket_already_in_search_not_duplicated(client, monkeypatch):
     # A bucket present in BOTH indexes must be counted once — the union dedups by
     # raw CAI name (byte-identical across the two APIs, verified live).
-    primary = [_FakeResource(_RECEIPTS_BUCKET, _BUCKET_TYPE, "asia-northeast1")]
-    buckets = [_FakeAsset(_RECEIPTS_BUCKET, location="asia-northeast1")]
+    primary = [_FakeResource(_UNLISTED_BUCKET, _BUCKET_TYPE, "asia-northeast1")]
+    buckets = [_FakeAsset(_UNLISTED_BUCKET, location="asia-northeast1")]
     monkeypatch.setattr(
         infra_main.asset_v1, "AssetServiceClient",
         _make_fake_client(primary, buckets=buckets),
