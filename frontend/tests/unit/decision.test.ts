@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { decisionFields, nextAppliedWatermark } from '../../src/lib/decision';
 import type { Decision } from '../../src/lib/types';
+import { translate, type TranslateFn } from '../../src/lib/i18n';
+
+// The whole suite asserts English (the decisions.en catalog is byte-for-byte
+// the original inline text decisionFields used to return), so it's called
+// with an EN-bound translator + locale throughout.
+const t: TranslateFn = (k, p) => translate('en', k, p);
 
 // A realistic iac_apply decision doc as GET /trace returns it (verified against
 // live Firestore doc fb18148c-…: fields {action, pr_number, apply_status,
@@ -20,12 +26,12 @@ const IAC_APPLY: Decision = {
 } as Decision;
 
 function byLabel(d: Decision, label: string) {
-  return decisionFields(d).find((f) => f.label === label);
+  return decisionFields(d, t, 'en').find((f) => f.label === label);
 }
 
 describe('decisionFields — iac_apply (curated)', () => {
   it('renders the full curated row set in order', () => {
-    const labels = decisionFields(IAC_APPLY).map((f) => f.label);
+    const labels = decisionFields(IAC_APPLY, t, 'en').map((f) => f.label);
     expect(labels).toEqual(['Action', 'Pull request', 'Apply', 'Merge', 'Head SHA', 'Approver', 'When']);
   });
 
@@ -138,7 +144,7 @@ describe('decisionFields — safety (no dynamic field dump)', () => {
       approval_url: 'https://coord/approvals/ap-1?t=secrettoken',
       internal_note: 'sensitive',
     } as unknown as Decision;
-    const fields = decisionFields(d);
+    const fields = decisionFields(d, t, 'en');
     const blob = JSON.stringify(fields);
     expect(blob).not.toContain('ghp_supersecretvalue');
     expect(blob).not.toContain('secrettoken');
@@ -158,13 +164,13 @@ describe('decisionFields — safety (no dynamic field dump)', () => {
 
 describe('decisionFields — generic / edge cases', () => {
   it('returns [] for null/undefined', () => {
-    expect(decisionFields(null)).toEqual([]);
-    expect(decisionFields(undefined)).toEqual([]);
+    expect(decisionFields(null, t, 'en')).toEqual([]);
+    expect(decisionFields(undefined, t, 'en')).toEqual([]);
   });
 
   it('an unknown action with only created_at shows Action + When', () => {
     const d = { decision_id: 'x', action: 'mystery_action', created_at: '2026-01-02T03:04:05Z' } as Decision;
-    expect(decisionFields(d).map((f) => f.label)).toEqual(['Action', 'When']);
+    expect(decisionFields(d, t, 'en').map((f) => f.label)).toEqual(['Action', 'When']);
     expect(byLabel(d, 'Action')?.value).toBe('mystery_action');
   });
 

@@ -1,4 +1,20 @@
 import '@testing-library/jest-dom/vitest';
+import { beforeEach, afterEach } from 'vitest';
+import { setLocale } from '../../src/lib/i18n';
+
+// i18n: the whole suite asserts rendered ENGLISH (the EN catalog is byte-for-byte
+// the app's original inline text), but the app DEFAULTS to Japanese. Pin the
+// persisted choice to `en`, and force the shared `locale` store back to `en`
+// before AND after every test so a JA-toggle test can never leak into the next.
+// (ESM import hoisting means i18n.ts evaluates before the setItem below, so the
+// beforeEach — not module-eval — is what guarantees EN at render time.)
+try {
+  localStorage.setItem('driftscribe.locale', 'en');
+} catch {
+  /* ignore */
+}
+beforeEach(() => setLocale('en'));
+afterEach(() => setLocale('en'));
 
 // Svelte transitions (slide, fly, fade) use the Web Animations API
 // (element.animate), which jsdom does not implement. Stub it out so

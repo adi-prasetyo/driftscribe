@@ -1,4 +1,5 @@
-import { test, expect, type Page, type Route } from '@playwright/test';
+import { expect, type Page, type Route } from '@playwright/test';
+import { test } from './fixtures';
 
 // Mock-Playwright smoke for the autonomy header pill (header redesign). Boots the
 // REAL FastAPI shell + /static (see playwright.smoke.config.ts) and mocks the data

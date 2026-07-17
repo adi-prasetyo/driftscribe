@@ -1,3 +1,5 @@
+import type { TranslateFn } from './i18n';
+
 // SECURITY-CRITICAL. Same-origin guard for HITL approval links, ported
 // verbatim-in-spirit from the legacy `_safeApprovalHref` renderer guard in
 // `agent/templates/transparency.html` (~lines 1000-1055). These functions
@@ -19,6 +21,11 @@
  * http/https, and (c) the pathname starts with `/approvals/`. Returns the
  * RELATIVE href (`pathname + search`) on success, or `null` if rejected.
  *
+ * `locale === 'ja'` appends `lang=ja` (unless the link already carries a
+ * `lang` param) so the server-rendered approval page opens in the operator's
+ * language — the backend allowlists the value and defaults to English, so
+ * omitting it (every pre-i18n caller) is always safe.
+ *
  * Rejects: off-origin absolute URLs, non-http(s) schemes (`javascript:`,
  * `data:`, `file:`, …), non-`/approvals/` paths, empty/malformed input, and
  * links whose `?t=` token is a scrub's literal `<redacted>` placeholder — after
@@ -29,7 +36,11 @@
  * need the real token, so a CTA for such a link is a dead button (the literal
  * can never be a real token: the redactor's value class excludes `<`).
  */
-export function safeApprovalHref(raw: string, origin?: string): string | null {
+export function safeApprovalHref(
+  raw: string,
+  origin?: string,
+  locale?: string,
+): string | null {
   const base = origin ?? window.location.origin;
   let baseOrigin: string;
   try {
@@ -47,7 +58,11 @@ export function safeApprovalHref(raw: string, origin?: string): string | null {
     // searchParams decodes, so both `?t=<redacted>` and `?t=%3Credacted%3E`
     // (the URL-encoded form a browser produces) are caught here.
     if (u.searchParams.get('t') === '<redacted>') return null;
-    return u.pathname + u.search;
+    let href = u.pathname + u.search;
+    if (locale === 'ja' && !u.searchParams.has('lang')) {
+      href += (u.search ? '&' : '?') + 'lang=ja';
+    }
+    return href;
   } catch {
     return null;
   }
@@ -64,8 +79,14 @@ export function safeApprovalHref(raw: string, origin?: string): string | null {
  * data path for IaC approvals: callers derive it from an allowlisted
  * `action === 'iac_apply'` decision's `pr_number`, never by reading a raw URL
  * field off an unredacted decision doc.
+ *
+ * `locale === 'ja'` appends `?lang=ja` (backend-allowlisted, EN default) so
+ * the approval page opens in the operator's language.
  */
-export function iacApprovalHref(prNumber: unknown): string | null {
+export function iacApprovalHref(
+  prNumber: unknown,
+  locale?: string,
+): string | null {
   if (
     typeof prNumber !== 'number' ||
     !Number.isInteger(prNumber) ||
@@ -73,7 +94,7 @@ export function iacApprovalHref(prNumber: unknown): string | null {
   ) {
     return null;
   }
-  return `/iac-approvals/${prNumber}`;
+  return `/iac-approvals/${prNumber}${locale === 'ja' ? '?lang=ja' : ''}`;
 }
 
 /**
@@ -228,6 +249,7 @@ export function iacApproveLabel(
     superseded_by_pr?: number;
   },
   resolvedPrs: ReadonlySet<number>,
+  t: TranslateFn,
 ): string {
   if (
     d.apply_status === 'waiting_for_rebake' &&
@@ -235,11 +257,12 @@ export function iacApproveLabel(
     Number.isInteger(d.superseded_by_pr) &&
     d.superseded_by_pr > 0
   )
-    return `superseded by #${d.superseded_by_pr} →`;
+    return t('shared.approve.supersededBy', { pr: d.superseded_by_pr });
   const superseded = typeof d.pr_number === 'number' && resolvedPrs.has(d.pr_number);
-  if (d.apply_status === 'waiting_for_rebake' && !superseded) return 'Review & approve →';
-  if (d.apply_status === 'applied' && d.merge_state === 'merged') return 'View approval history →';
+  if (d.apply_status === 'waiting_for_rebake' && !superseded) return t('shared.approve.reviewApprove');
+  if (d.apply_status === 'applied' && d.merge_state === 'merged')
+    return t('shared.approve.viewHistory');
   if (d.apply_status !== undefined && TERMINAL_FAILED_APPLY_STATUSES.has(d.apply_status))
-    return 'View failure details →';
-  return 'Go to approval page →';
+    return t('shared.approve.viewFailure');
+  return t('shared.approve.goToPage');
 }

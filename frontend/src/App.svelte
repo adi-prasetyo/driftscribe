@@ -25,6 +25,7 @@
   } from './lib/types';
   import { nextAppliedWatermark, type AppliedWatermark } from './lib/decision';
   import type { Workload } from './lib/workloads';
+  import { t } from './lib/i18n';
 
   import TokenStatus from './components/TokenStatus.svelte';
   import AuthPanel from './components/AuthPanel.svelte';
@@ -56,6 +57,7 @@
   import TourBanner from './components/TourBanner.svelte';
   import TourCard from './components/TourCard.svelte';
   import DemoNoticeBell from './components/DemoNoticeBell.svelte';
+  import LocaleToggle from './components/LocaleToggle.svelte';
   import { announceHeaderPopoverOpen } from './lib/headerPopover';
   import { tourDone, markTourDone, shouldOfferTour } from './lib/tour';
   import type { InfraGraph, PendingApproval } from './lib/infra_graph';
@@ -258,7 +260,7 @@
   // (NOT sends) the composer. epoch bumps so the same/another Adopt re-applies
   // after an edit; a boot seed starts at epoch 1, so a later Adopt bumps to 2.
   let chatPrefill = $state<ChatPrefill | null>(
-    initialChatPrefill(window.location.search)
+    initialChatPrefill(window.location.search, $t)
   );
   function handleAdopt(text: string) {
     // Adopt starts a NEW provisioning task, so ALWAYS drop to a clean slate
@@ -353,7 +355,7 @@
   // ---- autonomy dial (one shared store → header AutonomyPill + the capability
   // card note, so the two surfaces never diverge or double-fetch) ----
   const autonomy = createAutonomyStore(call);
-  const capabilityAutonomyNote = $derived(autonomyNoteFor($autonomy));
+  const capabilityAutonomyNote = $derived(autonomyNoteFor($autonomy, $t));
 
   // ---- decisions rail ----
   async function loadDecisions() {
@@ -604,7 +606,7 @@
       } catch {
         if (myRun !== runSeq) return;
         status = 'error';
-        finalReply = 'Network error contacting the coordinator.';
+        finalReply = $t('header.chatError.network');
         finalIsError = true;
         liveExchange = null; // nothing persisted → the error belongs in the hero
         return;
@@ -617,8 +619,8 @@
         // judges should see "wait", not a bare status code.
         finalReply =
           resp.status === 429
-            ? 'Rate limit reached. The demo allows a few chat runs per minute per visitor. Please wait a moment and try again.'
-            : `Request failed (${resp.status}).`;
+            ? $t('header.chatError.rateLimit')
+            : $t('header.chatError.requestFailed', { status: resp.status });
         finalIsError = true;
         liveExchange = null; // nothing persisted → the error belongs in the hero
         return;
@@ -664,7 +666,7 @@
         } catch {
           if (myRun !== runSeq) return;
           status = 'error';
-          finalReply = 'Malformed response.';
+          finalReply = $t('header.chatError.malformed');
           finalIsError = true;
           liveExchange = null; // nothing persisted → the error belongs in the hero
         }
@@ -707,7 +709,7 @@
           },
           onError: (er) => {
             if (myRun !== runSeq) return;
-            finalReply = er.detail || 'The coordinator returned an error.';
+            finalReply = er.detail || $t('header.chatError.coordinatorError');
             finalIsError = true;
             status = 'error';
             liveExchange = null; // errored turn persists nothing → hero
@@ -761,8 +763,8 @@
       if (finalReply == null) {
         status = 'error';
         finalReply = streamErrored
-          ? 'The reasoning stream was interrupted. Showing the recovered reasoning.'
-          : 'The reasoning stream ended before a final reply arrived.';
+          ? $t('header.chatError.streamInterrupted')
+          : $t('header.chatError.streamEnded');
         finalIsError = true;
         liveExchange = null; // interrupted stream persists nothing → hero
       }
@@ -956,13 +958,16 @@
 </script>
 
 <header class="app-header">
-  <a class="app-header__brand" href="/" aria-label="DriftScribe — go to home">
+  <a class="app-header__brand" href="/" aria-label={$t('header.brand.ariaLabel')}>
     <span class="app-logo-mark" aria-hidden="true">
       <Icon name="radar" size={16} extraClass="app-logo-mark__icon" />
     </span>
-    <h1 class="app-title">DriftScribe<span class="app-title__sub">. The agent proposes, you approve.</span></h1>
+    <h1 class="app-title">DriftScribe<span class="app-title__sub">{$t('header.brand.tagline')}</span></h1>
   </a>
   <div class="app-header__actions">
+    <!-- Language toggle (EN / 日本語). Leads the actions cluster; writing it
+         re-renders the whole app via the $t/$locale stores. -->
+    <LocaleToggle />
     <!-- Judging-window notice bell (replaces the in-flow DemoNoticeBanner; see
          docs/plans/2026-07-07-demo-notice-bell.md). Deleted whole at
          close-window time. -->
@@ -978,7 +983,7 @@
       class="ds-btn ds-btn--ghost app-tour-btn"
       type="button"
       data-testid="tour-open"
-      onclick={startTour}><Icon name="compass" size={14} />Tour</button
+      onclick={startTour}><Icon name="compass" size={14} />{$t('header.tourButton')}</button
     >
     <TokenStatus state={tokenState} onChange={onChangeToken} />
   </div>
@@ -1033,7 +1038,7 @@
     <DecisionsRail {decisions} {activeTraceId} onOpenTrace={openTrace} />
   </div>
 
-  <section id="chat-area" class="chat-area" aria-label="Chat and reasoning timeline">
+  <section id="chat-area" class="chat-area" aria-label={$t('header.chatArea.ariaLabel')}>
     <!-- Historical replay renders FIRST so an opened trace lands at the top of
          the chat column (openTrace scrolls the window to top to reveal it). -->
     {#if historicalActive}

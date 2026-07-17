@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tick, untrack } from 'svelte';
   import { type Workload, type ChatPrefill } from '../lib/workloads';
+  import { t } from '../lib/i18n';
   import Icon from './Icon.svelte';
   import CrewPicker from './CrewPicker.svelte';
 
@@ -143,7 +144,7 @@
         class="chat-form__new-chat"
         data-testid="composer-new-chat"
         onclick={onNewChat}
-      ><Icon name="plus" size={13} />New chat</button>
+      ><Icon name="plus" size={13} />{$t('composer.chatForm.newChat')}</button>
     {/if}
   </div>
 
@@ -153,8 +154,8 @@
     class="chat-form__input"
     rows="1"
     autocomplete="off"
-    placeholder="Ask the coordinator…  (Enter to send · Shift+Enter for a new line)"
-    aria-label="Prompt"
+    placeholder={$t('composer.chatForm.placeholder')}
+    aria-label={$t('composer.chatForm.promptAriaLabel')}
     aria-describedby="prompt-input-hint"
     bind:this={inputEl}
     bind:value={prompt}
@@ -165,7 +166,7 @@
        but it vanishes once typing starts and is unreliable for screen readers —
        so the same hint lives here, visually hidden, wired via aria-describedby. -->
   <p id="prompt-input-hint" class="chat-form__sr-only">
-    Press Enter to send. Press Shift plus Enter for a new line.
+    {$t('composer.chatForm.enterShiftHint')}
   </p>
 
   <button
@@ -175,7 +176,7 @@
     type="submit"
     {disabled}
   >
-    <Icon name="send" size={14} />Send
+    <Icon name="send" size={14} />{$t('composer.chatForm.send')}
   </button>
 </form>
 

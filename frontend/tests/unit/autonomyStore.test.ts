@@ -1,7 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { get } from 'svelte/store';
 import { createAutonomyStore, autonomyNoteFor } from '../../src/lib/autonomyStore';
-import { MODE_BLURBS } from '../../src/lib/autonomy';
+import { modeBlurb } from '../../src/lib/autonomy';
+import { translate } from '../../src/lib/i18n';
+
+// EN-bound translator — autonomyNoteFor now threads a TranslateFn; assertions
+// below stay English (tests/unit/setup.ts pins the whole suite to the EN catalog).
+const t = (key: Parameters<typeof translate>[1], params?: Record<string, string | number>) =>
+  translate('en', key, params);
 
 // Store-level tests for the operator autonomy dial. The shared monotonic seq
 // guard, the single-flight POST guard, and the commit-wins guard are the
@@ -142,28 +148,28 @@ describe('createAutonomyStore', () => {
 describe('autonomyNoteFor', () => {
   const base = { reason: null, actor: null, updatedAt: null };
   it('loading → null (silent)', () => {
-    expect(autonomyNoteFor({ kind: 'loading', mode: 'observe', readError: false, ...base })).toBeNull();
+    expect(autonomyNoteFor({ kind: 'loading', mode: 'observe', readError: false, ...base }, t)).toBeNull();
   });
   it('unknown → null (silent, Codex #1)', () => {
-    expect(autonomyNoteFor({ kind: 'unknown', mode: 'observe', readError: false, ...base })).toBeNull();
+    expect(autonomyNoteFor({ kind: 'unknown', mode: 'observe', readError: false, ...base }, t)).toBeNull();
   });
   it('loaded + propose_apply → null', () => {
-    expect(autonomyNoteFor({ kind: 'loaded', mode: 'propose_apply', readError: false, ...base })).toBeNull();
+    expect(autonomyNoteFor({ kind: 'loaded', mode: 'propose_apply', readError: false, ...base }, t)).toBeNull();
   });
   it('loaded + observe → observe note (no "write-capable tools are disabled")', () => {
-    const note = autonomyNoteFor({ kind: 'loaded', mode: 'observe', readError: false, ...base });
+    const note = autonomyNoteFor({ kind: 'loaded', mode: 'observe', readError: false, ...base }, t);
     expect(note).toBe(
       'The autonomy dial is currently set to Observe. Tools that open pull requests, issues, or approvals, and anything that merges or applies, are disabled until you raise the dial.',
     );
     expect(note).not.toContain('write-capable tools are disabled');
   });
   it('loaded + propose → propose note', () => {
-    expect(autonomyNoteFor({ kind: 'loaded', mode: 'propose', readError: false, ...base })).toBe(
+    expect(autonomyNoteFor({ kind: 'loaded', mode: 'propose', readError: false, ...base }, t)).toBe(
       'The autonomy dial is currently set to Propose. Pull requests and issues are enabled; anything that merges or applies is disabled until you raise the dial.',
     );
   });
   it('loaded + read_error → fail-closed note (never says "set to")', () => {
-    const note = autonomyNoteFor({ kind: 'loaded', mode: 'observe', readError: true, ...base });
+    const note = autonomyNoteFor({ kind: 'loaded', mode: 'observe', readError: true, ...base }, t);
     expect(note).toBe(
       'Autonomy state could not be read. The effective mode is Observe (failing closed) until the dial can be read again.',
     );
@@ -173,8 +179,9 @@ describe('autonomyNoteFor', () => {
 
 describe('Propose + Apply blurb honesty (Codex #4)', () => {
   it('names dependency autonomy AND keeps infra gated', () => {
-    expect(MODE_BLURBS.propose_apply.toLowerCase()).toContain('dependency');
-    expect(MODE_BLURBS.propose_apply.toLowerCase()).toContain('approval');
-    expect(MODE_BLURBS.propose_apply.toLowerCase()).toContain('infrastructure');
+    const blurb = modeBlurb('propose_apply', t).toLowerCase();
+    expect(blurb).toContain('dependency');
+    expect(blurb).toContain('approval');
+    expect(blurb).toContain('infrastructure');
   });
 });

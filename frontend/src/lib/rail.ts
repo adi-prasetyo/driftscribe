@@ -11,6 +11,7 @@ import { iacApplyMeta, decisionActionLabel, normalizeForSearch } from './format'
 import { crewName } from './workloads';
 import { iacPrHref } from './approval';
 import type { IconName } from './icons';
+import type { TranslateFn } from './i18n';
 
 /**
  * Maps a decision action string to a leading icon for the rail row.
@@ -167,20 +168,28 @@ export function hasAnomalousStep(earlier: ReadonlyArray<Decision>): boolean {
  * empty input would render a malformed `0 earlier steps · ` and is never
  * produced by the grouping.
  */
-export function lifecycleSummaryLabel(earlier: ReadonlyArray<Decision>): string {
+export function lifecycleSummaryLabel(earlier: ReadonlyArray<Decision>, t: TranslateFn): string {
   const n = earlier.length;
   const counts = new Map<string, number>();
   for (let i = earlier.length - 1; i >= 0; i--) {
     const label =
-      iacApplyMeta(earlier[i].apply_status, earlier[i].merge_state, earlier[i].superseded_by_pr)
-        .label ||
-      'status not recorded';
+      iacApplyMeta(
+        earlier[i].apply_status,
+        earlier[i].merge_state,
+        earlier[i].superseded_by_pr,
+        t,
+      ).label || t('shared.rail.lifecycle.statusNotRecorded');
     counts.set(label, (counts.get(label) ?? 0) + 1);
   }
+  // `×k` is a count notation (like a PR number or SHA), not translated prose —
+  // kept as code, same as the glossary's "keep numbers/ids/units Latin" rule.
   const composition = [...counts.entries()]
     .map(([label, k]) => (k > 1 ? `${label} ×${k}` : label))
-    .join(', ');
-  return `${n} earlier ${n === 1 ? 'step' : 'steps'} · ${composition}`;
+    .join(t('shared.rail.lifecycle.itemSeparator'));
+  return t(n === 1 ? 'shared.rail.lifecycle.summary.one' : 'shared.rail.lifecycle.summary.other', {
+    n,
+    composition,
+  });
 }
 
 /**
@@ -192,7 +201,7 @@ export function lifecycleSummaryLabel(earlier: ReadonlyArray<Decision>): string 
  * (raw `apply_status`/`merge_state` + the friendly `iacApplyMeta` label, so
  * `merge pending` / `applied merged` match). Empty query → matches everything.
  */
-export function matchesDecision(d: Decision, query: string): boolean {
+export function matchesDecision(d: Decision, query: string, t: TranslateFn): boolean {
   const q = normalizeForSearch(query);
   if (!q) return true;
   const pr = typeof d.pr_number === 'number' ? d.pr_number : null;
@@ -201,12 +210,12 @@ export function matchesDecision(d: Decision, query: string): boolean {
     d.pr_title,
     pr !== null ? `PR #${pr}` : null,
     d.action,
-    decisionActionLabel(d.action),
+    decisionActionLabel(d.action, t),
     workload,
     workload ? crewName(workload) : null,
     typeof d.apply_status === 'string' ? d.apply_status : null,
     typeof d.merge_state === 'string' ? d.merge_state : null,
-    iacApplyMeta(d.apply_status, d.merge_state, d.superseded_by_pr).label,
+    iacApplyMeta(d.apply_status, d.merge_state, d.superseded_by_pr, t).label,
   ];
   return normalizeForSearch(parts.filter((p) => typeof p === 'string' && p).join(' ')).includes(q);
 }
@@ -218,11 +227,11 @@ export function matchesDecision(d: Decision, query: string): boolean {
  * (its `<summary>` composition shows that status). PR title/number are shared
  * across a group's docs, so those queries always hit the visible face too.
  */
-export function railItemMatches(item: RailItem, query: string): boolean {
+export function railItemMatches(item: RailItem, query: string, t: TranslateFn): boolean {
   if (normalizeForSearch(query) === '') return true;
   return item.kind === 'single'
-    ? matchesDecision(item.d, query)
-    : item.docs.some((d) => matchesDecision(d, query));
+    ? matchesDecision(item.d, query, t)
+    : item.docs.some((d) => matchesDecision(d, query, t));
 }
 
 /**
@@ -234,8 +243,10 @@ export function railItemMatches(item: RailItem, query: string): boolean {
  * `historicalDecision?.action === 'iac_apply'`), so the button's promise and
  * the destination's empty-state copy can never disagree.
  */
-export function traceButtonLabel(action: string | null | undefined): string {
-  return action === 'iac_apply' ? 'view details →' : 'view reasoning →';
+export function traceButtonLabel(action: string | null | undefined, t: TranslateFn): string {
+  return action === 'iac_apply'
+    ? t('shared.rail.traceButton.viewDetails')
+    : t('shared.rail.traceButton.viewReasoning');
 }
 
 /**

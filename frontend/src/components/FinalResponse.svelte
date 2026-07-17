@@ -15,6 +15,8 @@
   // (white-space: pre-wrap) and uses the humanist body font for prose, switching
   // to the reserved monospace face only when the payload looks like JSON.
 
+  import { t } from '../lib/i18n';
+
   let {
     reply,
     isError = false,
@@ -28,22 +30,24 @@
   // Trim first so leading whitespace/newlines don't defeat the bracket check.
   const looksLikeJson = $derived.by(() => {
     if (reply == null) return false;
-    const t = reply.trim();
-    if (t.length < 2) return false;
-    const first = t[0];
-    const last = t[t.length - 1];
+    const trimmed = reply.trim();
+    if (trimmed.length < 2) return false;
+    const first = trimmed[0];
+    const last = trimmed[trimmed.length - 1];
     if (!((first === '{' && last === '}') || (first === '[' && last === ']'))) {
       return false;
     }
     try {
-      JSON.parse(t);
+      JSON.parse(trimmed);
       return true;
     } catch {
       return false;
     }
   });
 
-  const heading = $derived(isError ? 'Error' : 'Coordinator reply');
+  const heading = $derived(
+    isError ? $t('misc.finalResponse.error') : $t('misc.coordinatorReply.label'),
+  );
 </script>
 
 <section

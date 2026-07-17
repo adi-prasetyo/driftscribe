@@ -3,6 +3,8 @@
   // TourBanner — the first-visit tour offer (item 14). Shown by App only when
   // shouldOfferTour() said yes; dismissing marks the tour done (the header
   // Tour button remains the permanent reopen path).
+  import { t } from '../lib/i18n';
+
   let {
     onStart,
     onDismiss,
@@ -14,10 +16,9 @@
 
 <div class="ds-card tour-banner" data-testid="tour-banner" role="note">
   <div class="tour-banner__text">
-    <p class="tour-banner__lead">New here? Take the 5-minute tour.</p>
+    <p class="tour-banner__lead">{$t('tour.banner.lead')}</p>
     <p class="ds-subtle tour-banner__sub">
-      See your estate, the controls you hold, and how to adopt your first
-      resource into IaC.
+      {$t('tour.banner.sub')}
     </p>
   </div>
   <div class="tour-banner__actions">
@@ -25,13 +26,13 @@
       class="ds-btn ds-btn--approve"
       type="button"
       data-testid="tour-banner-start"
-      onclick={() => onStart?.()}>Start the tour</button
+      onclick={() => onStart?.()}>{$t('tour.banner.start')}</button
     >
     <button
       class="ds-btn ds-btn--ghost"
       type="button"
       data-testid="tour-banner-dismiss"
-      onclick={() => onDismiss?.()}>Dismiss</button
+      onclick={() => onDismiss?.()}>{$t('tour.banner.dismiss')}</button
     >
   </div>
 </div>

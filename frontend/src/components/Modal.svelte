@@ -21,6 +21,7 @@
   import { tick } from 'svelte';
   import Icon from './Icon.svelte';
   import { lockBodyScroll, unlockBodyScroll } from '../lib/scrollLock';
+  import { t } from '../lib/i18n';
   import type { Snippet } from 'svelte';
 
   let {
@@ -130,7 +131,7 @@
         <button
           type="button"
           class="modal__close"
-          aria-label="Close"
+          aria-label={$t('misc.modal.close')}
           onclick={requestClose}
         >
           <Icon name="x" size={18} />

@@ -1,5 +1,6 @@
-import { test, expect, type Page, type Route } from '@playwright/test';
+import { expect, type Page, type Route } from '@playwright/test';
 import {
+  test,
   TESTIDS,
   TRACE_ID,
   CONVERSATION_ID,
@@ -479,5 +480,28 @@ test.describe('transparency UI (mock smoke)', () => {
     await expect(
       page.locator(`[data-testid="${TESTIDS.conversationThread}"]`),
     ).toContainText('the env var EXTRA drifted from the contract');
+  });
+
+  test('locale defaults to Japanese; the header toggle switches the UI to English', async ({ page }) => {
+    // Every other test in this suite runs EN-pinned (see fixtures.ts); this is
+    // the one deliberate exception, re-pinning to `ja` (init scripts run in
+    // registration order, so this later call overrides the suite-wide pin).
+    await page.addInitScript(() => {
+      try {
+        localStorage.setItem('driftscribe.locale', 'ja');
+      } catch {
+        /* ignore */
+      }
+    });
+    await seedToken(page);
+    await mockData(page, freshState());
+    await page.goto('/');
+
+    await expect(page.locator('html')).toHaveAttribute('lang', 'ja');
+    await expect(page.locator(`[data-testid="${TESTIDS.chatSubmit}"]`)).toHaveText('送信');
+
+    await page.getByTestId('locale-en').click();
+    await expect(page.locator('html')).toHaveAttribute('lang', 'en');
+    await expect(page.locator(`[data-testid="${TESTIDS.chatSubmit}"]`)).toHaveText('Send');
   });
 });

@@ -8,6 +8,7 @@
 
   import type { Decision } from '../lib/types';
   import { diffRows } from '../lib/diff';
+  import { t } from '../lib/i18n';
 
   let { decision }: { decision: Decision | null } = $props();
 
@@ -15,15 +16,15 @@
 </script>
 
 {#if rows.length > 0}
-  <section class="ds-card drift-diff-card" data-testid="drift-diff-card" aria-label="Environment drift detail">
-    <p class="ds-label drift-diff-card__label">Drift detail</p>
+  <section class="ds-card drift-diff-card" data-testid="drift-diff-card" aria-label={$t('infra.driftDiff.ariaLabel')}>
+    <p class="ds-label drift-diff-card__label">{$t('infra.driftDiff.label')}</p>
     <table class="drift-diff-card__table">
       <thead>
         <tr>
-          <th scope="col">Var</th>
-          <th scope="col">Expected</th>
-          <th scope="col">Live</th>
-          <th scope="col">Status</th>
+          <th scope="col">{$t('infra.driftDiff.colVar')}</th>
+          <th scope="col">{$t('infra.driftDiff.colExpected')}</th>
+          <th scope="col">{$t('infra.driftDiff.colLive')}</th>
+          <th scope="col">{$t('infra.driftDiff.colStatus')}</th>
         </tr>
       </thead>
       <tbody>

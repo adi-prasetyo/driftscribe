@@ -32,7 +32,8 @@
    * `value` is the frozen symbolic workload (drift/upgrade/explore/provision);
    * the /chat contract is unchanged.
    */
-  import { WORKLOADS, crewName, type Workload } from '../lib/workloads';
+  import { WORKLOADS, crewName, crewSummary, type Workload } from '../lib/workloads';
+  import { t } from '../lib/i18n';
   import CrewGlyph from './CrewGlyph.svelte';
 
   let {
@@ -56,7 +57,7 @@
   const lockHint = $derived(
     lockedTo === null
       ? ''
-      : `This thread is with ${crewName(lockedTo)}. Start a new chat to switch crews.`,
+      : $t('composer.crewPicker.lockHint', { crew: crewName(lockedTo) }),
   );
   function isLocked(v: Workload): boolean {
     return lockedTo !== null && v !== lockedTo;
@@ -129,7 +130,7 @@
 
 <div class="crew-picker" class:historical={disabled}>
   <fieldset class="crew-picker__group" {disabled}>
-    <legend class="crew-sr-only">Choose a crew member</legend>
+    <legend class="crew-sr-only">{$t('composer.crewPicker.legend')}</legend>
     {#each WORKLOADS as wl (wl.value)}
       {@const nameId = `${groupName}-${wl.value}-name`}
       {@const hintId = `${groupName}-${wl.value}-hint`}
@@ -163,7 +164,7 @@
              crew-locked (an open thread with a different crew), the summary is
              swapped for the lock explanation naming the thread's crew. -->
         <span class="crew-card__hint" id={hintId} role="tooltip"
-          >{isLocked(wl.value) ? lockHint : wl.summary}</span
+          >{isLocked(wl.value) ? lockHint : crewSummary(wl.value, $t)}</span
         >
       </label>
     {/each}
