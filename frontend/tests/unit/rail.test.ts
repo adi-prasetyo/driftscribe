@@ -12,6 +12,12 @@ import {
   type RailItem,
 } from '../../src/lib/rail';
 import type { Decision } from '../../src/lib/types';
+import { translate, type TranslateFn } from '../../src/lib/i18n';
+
+// lifecycleSummaryLabel/matchesDecision/railItemMatches resolve iac status +
+// action wording through the shared.* catalog; the suite asserts English
+// (byte-for-byte the original inline text), so pin an EN-bound translator.
+const t: TranslateFn = (k, p) => translate('en', k, p);
 
 // Fixture shapes mirror live /decisions data (2026-06-10): newest-first,
 // create-class lifecycles = applied + waiting_for_rebake×2 per PR, and the
@@ -121,37 +127,38 @@ describe('lifecycleSummaryLabel', () => {
   // the oldest-first presentation ordering.
   it('renders count + status composition for the live create-class shape', () => {
     const earlier = [iac('w1', 68, 'waiting_for_rebake'), iac('w2', 68, 'waiting_for_rebake')];
-    expect(lifecycleSummaryLabel(earlier)).toBe('2 earlier steps · awaiting rebuild ×2');
+    expect(lifecycleSummaryLabel(earlier, t)).toBe('2 earlier steps · awaiting rebuild ×2');
   });
 
   it('singular wording + bare label for one step (PR-32 failed→applied shape)', () => {
-    expect(lifecycleSummaryLabel([iac('f', 32, 'failed')])).toBe('1 earlier step · failed');
+    expect(lifecycleSummaryLabel([iac('f', 32, 'failed')], t)).toBe('1 earlier step · failed');
   });
 
   it('multi-status composition is ordered by first appearance oldest-first', () => {
     // newest-first input: waiting (newer), failed (oldest) → oldest-first = failed first.
     const earlier = [iac('w', 9, 'waiting_for_rebake'), iac('f', 9, 'failed')];
-    expect(lifecycleSummaryLabel(earlier)).toBe('2 earlier steps · failed, awaiting rebuild');
+    expect(lifecycleSummaryLabel(earlier, t)).toBe('2 earlier steps · failed, awaiting rebuild');
   });
 
   it('a missing/empty status renders the neutral token, never the action string', () => {
-    expect(lifecycleSummaryLabel([iac('x', 9, '')])).toBe('1 earlier step · status not recorded');
+    expect(lifecycleSummaryLabel([iac('x', 9, '')], t)).toBe('1 earlier step · status not recorded');
   });
 
   it('is merge-aware: applied steps read their merge outcome, not a bare "applied"', () => {
     expect(
-      lifecycleSummaryLabel([iac('a', 32, 'applied', { merge_state: 'merged' })]),
+      lifecycleSummaryLabel([iac('a', 32, 'applied', { merge_state: 'merged' })], t),
     ).toBe('1 earlier step · applied & merged');
     expect(
-      lifecycleSummaryLabel([iac('a', 32, 'applied', { merge_state: 'failed' })]),
+      lifecycleSummaryLabel([iac('a', 32, 'applied', { merge_state: 'failed' })], t),
     ).toBe('1 earlier step · applied · merge pending');
   });
 
   it('a superseded_by_pr earlier step composes as "superseded", not "awaiting rebuild"', () => {
     expect(
-      lifecycleSummaryLabel([
-        iac('w', 216, 'waiting_for_rebake', { superseded_by_pr: 221 }),
-      ]),
+      lifecycleSummaryLabel(
+        [iac('w', 216, 'waiting_for_rebake', { superseded_by_pr: 221 })],
+        t,
+      ),
     ).toBe('1 earlier step · superseded');
   });
 });
@@ -318,62 +325,62 @@ describe('showPrNumberingHint', () => {
 describe('matchesDecision', () => {
   it('matches on the PR title', () => {
     const d = iac('a', 168, 'applied', { pr_title: 'Adopt the probe topic' });
-    expect(matchesDecision(d, 'probe')).toBe(true);
-    expect(matchesDecision(d, 'rollback')).toBe(false);
+    expect(matchesDecision(d, 'probe', t)).toBe(true);
+    expect(matchesDecision(d, 'rollback', t)).toBe(false);
   });
 
   it('matches the PR number in every displayed/typed form', () => {
     const d = iac('a', 168, 'applied');
-    expect(matchesDecision(d, '168')).toBe(true);
-    expect(matchesDecision(d, '#168')).toBe(true);
-    expect(matchesDecision(d, 'PR 168')).toBe(true);
-    expect(matchesDecision(d, 'pr #168')).toBe(true);
+    expect(matchesDecision(d, '168', t)).toBe(true);
+    expect(matchesDecision(d, '#168', t)).toBe(true);
+    expect(matchesDecision(d, 'PR 168', t)).toBe(true);
+    expect(matchesDecision(d, 'pr #168', t)).toBe(true);
   });
 
   it('matches the action raw and friendly', () => {
     const noop = { decision_id: 'n', action: 'no_op' } as Decision;
-    expect(matchesDecision(noop, 'no_op')).toBe(true);
-    expect(matchesDecision(noop, 'no action')).toBe(true); // decisionActionLabel
+    expect(matchesDecision(noop, 'no_op', t)).toBe(true);
+    expect(matchesDecision(noop, 'no action', t)).toBe(true); // decisionActionLabel
   });
 
   it('matches the crew raw value and display name', () => {
     const d = iac('a', 1, 'applied', { workload: 'drift' } as Partial<Decision>);
-    expect(matchesDecision(d, 'drift')).toBe(true);
-    expect(matchesDecision(d, 'anchor')).toBe(true);
+    expect(matchesDecision(d, 'drift', t)).toBe(true);
+    expect(matchesDecision(d, 'anchor', t)).toBe(true);
   });
 
   it('matches the status raw and the friendly label', () => {
     const d = iac('a', 1, 'applied', { merge_state: 'merged' });
-    expect(matchesDecision(d, 'merged')).toBe(true);
-    expect(matchesDecision(d, 'applied merged')).toBe(true); // iacApplyMeta label
+    expect(matchesDecision(d, 'merged', t)).toBe(true);
+    expect(matchesDecision(d, 'applied merged', t)).toBe(true); // iacApplyMeta label
     const pending = iac('b', 2, 'applied', { merge_state: 'failed' });
-    expect(matchesDecision(pending, 'merge pending')).toBe(true);
+    expect(matchesDecision(pending, 'merge pending', t)).toBe(true);
   });
 
   it('an empty query matches everything', () => {
-    expect(matchesDecision(other('x'), '')).toBe(true);
-    expect(matchesDecision(other('x'), '   ')).toBe(true);
+    expect(matchesDecision(other('x'), '', t)).toBe(true);
+    expect(matchesDecision(other('x'), '   ', t)).toBe(true);
   });
 });
 
 describe('railItemMatches', () => {
   it('a single defers to its decision', () => {
     const item: RailItem = { kind: 'single', d: iac('a', 168, 'applied', { pr_title: 'probe' }) };
-    expect(railItemMatches(item, 'probe')).toBe(true);
-    expect(railItemMatches(item, 'nope')).toBe(false);
+    expect(railItemMatches(item, 'probe', t)).toBe(true);
+    expect(railItemMatches(item, 'nope', t)).toBe(false);
   });
 
   it('a group matches when ANY folded doc matches (status only on an earlier doc)', () => {
     const face = iac('f', 70, 'applied', { merge_state: 'merged' });
     const earlier = iac('e', 70, 'failed');
     const item: RailItem = { kind: 'group', pr: 70, docs: [face, earlier] };
-    expect(railItemMatches(item, 'failed')).toBe(true); // only the earlier doc
-    expect(railItemMatches(item, '70')).toBe(true); // shared, hits the face
+    expect(railItemMatches(item, 'failed', t)).toBe(true); // only the earlier doc
+    expect(railItemMatches(item, '70', t)).toBe(true); // shared, hits the face
   });
 
   it('an empty query matches everything', () => {
     const item: RailItem = { kind: 'single', d: other('x') };
-    expect(railItemMatches(item, '')).toBe(true);
+    expect(railItemMatches(item, '', t)).toBe(true);
   });
 });
 
@@ -382,20 +389,20 @@ describe('traceButtonLabel', () => {
   // coordinator reasoning run), so their button reads "view details →";
   // everything else keeps the reasoning-backed label.
   it('returns "view details →" for iac_apply', () => {
-    expect(traceButtonLabel('iac_apply')).toBe('view details →');
+    expect(traceButtonLabel('iac_apply', t)).toBe('view details →');
   });
 
   it('returns "view reasoning →" for rollback', () => {
-    expect(traceButtonLabel('rollback')).toBe('view reasoning →');
+    expect(traceButtonLabel('rollback', t)).toBe('view reasoning →');
   });
 
   it('returns "view reasoning →" for recheck', () => {
-    expect(traceButtonLabel('recheck')).toBe('view reasoning →');
+    expect(traceButtonLabel('recheck', t)).toBe('view reasoning →');
   });
 
   it('returns "view reasoning →" for null/undefined', () => {
-    expect(traceButtonLabel(null)).toBe('view reasoning →');
-    expect(traceButtonLabel(undefined)).toBe('view reasoning →');
+    expect(traceButtonLabel(null, t)).toBe('view reasoning →');
+    expect(traceButtonLabel(undefined, t)).toBe('view reasoning →');
   });
 });
 

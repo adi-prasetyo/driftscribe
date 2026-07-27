@@ -23,6 +23,12 @@ import {
   type OverlayEntry,
   type UnmatchedDeclaration,
 } from '../../src/lib/infra_graph';
+import { translate, type TranslateFn } from '../../src/lib/i18n';
+
+// toMermaid/overlayCountsLine resolve verb suffixes + counts-only chrome
+// through the infra.graph.* catalog; the suite asserts English (byte-for-byte
+// the original inline text), so pin an EN-bound translator.
+const t: TranslateFn = (k, p) => translate('en', k, p);
 
 const RUN = 'run.googleapis.com/Service';
 const SECRET = 'secretmanager.googleapis.com/Secret';
@@ -51,7 +57,7 @@ function graph(p: Partial<InfraGraph>): InfraGraph {
 
 describe('toMermaid — structure', () => {
   it('emits a flowchart header and the three classDefs', () => {
-    const src = toMermaid(graph({ groups: [] }));
+    const src = toMermaid(graph({ groups: [] }), undefined, t);
     expect(src.startsWith('flowchart LR')).toBe(true);
     expect(src).toContain('classDef managed');
     expect(src).toContain('classDef drift');
@@ -69,7 +75,7 @@ describe('toMermaid — structure', () => {
             nodes: [node({ id: 'g0n0', label: 'payment-demo', managed: true })],
           }),
         ],
-      }),
+      }), undefined, t
     );
     expect(src).toContain('subgraph sg0["Cloud Run service"]');
     expect(src).toContain('end');
@@ -92,7 +98,7 @@ describe('toMermaid — managed vs drift classes', () => {
             ],
           }),
         ],
-      }),
+      }), undefined, t
     );
     expect(src).toMatch(/n0\["payment-demo"\]:::managed/);
     expect(src).toMatch(/n1\["storefront"\]:::drift/);
@@ -110,7 +116,7 @@ describe('toMermaid — managed vs drift classes', () => {
             nodes: [node({ id: 'g0n0', label: 'ci@p', asset_type: SA, managed: false })],
           }),
         ],
-      }),
+      }), undefined, t
     );
     // Amber is reserved for adoptable drift; a non-adoptable node is neutral.
     expect(src).toMatch(/n0\["ci@p"\]:::hidden/);
@@ -129,7 +135,7 @@ describe('toMermaid — managed vs drift classes', () => {
             nodes: [node({ id: 'g0n0', label: 'demo-tofu-state', asset_type: BUCKET, managed: false, control_plane: true })],
           }),
         ],
-      }),
+      }), undefined, t
     );
     expect(src).toMatch(/n0\["demo-tofu-state"\]:::hidden/);
     expect(src).not.toMatch(/:::drift/);
@@ -143,7 +149,7 @@ describe('toMermaid — secret / counts-only', () => {
         groups: [
           group({ asset_type: SECRET, label: 'Secret', count: 3, drift: 3, sensitive: true, nodes: [] }),
         ],
-      }),
+      }), undefined, t
     );
     expect(src).toContain('3 secrets · hidden');
     expect(src).toMatch(/:::hidden/);
@@ -153,7 +159,7 @@ describe('toMermaid — secret / counts-only', () => {
 
   it('pluralizes a count of one correctly', () => {
     const src = toMermaid(
-      graph({ groups: [group({ asset_type: SECRET, label: 'Secret', count: 1, sensitive: true })] }),
+      graph({ groups: [group({ asset_type: SECRET, label: 'Secret', count: 1, sensitive: true })] }), undefined, t
     );
     expect(src).toContain('1 secret · hidden');
     expect(src).not.toContain('1 secrets');
@@ -173,7 +179,7 @@ describe('toMermaid — sample-cap truncation', () => {
             truncated_in_group: 10,
           }),
         ],
-      }),
+      }), undefined, t
     );
     expect(src).toContain('+10 more');
   });
@@ -192,7 +198,7 @@ describe('toMermaid — label escaping (untrusted names, design §4.3)', () => {
             nodes: [node({ id: 'g0n0', label: nasty })],
           }),
         ],
-      }),
+      }), undefined, t
     );
     // none of the raw structural/HTML chars survive inside the node label
     expect(src).not.toContain('a"b');
@@ -241,7 +247,7 @@ describe('toMermaid — edges (Phase-4 forward-compat)', () => {
         { from: 'svc-a', to: 'ghost' }, // unresolved → skipped
       ],
     });
-    const src = toMermaid(g);
+    const src = toMermaid(g, undefined, t);
     // svc-a → n0, svc-b → n1
     expect(src).toMatch(/n0 -->\|calls\| n1/);
     // the unresolved edge produced no arrow to a ghost id
@@ -251,7 +257,7 @@ describe('toMermaid — edges (Phase-4 forward-compat)', () => {
 
 describe('toMermaid — empty / degraded', () => {
   it('returns a placeholder diagram when nothing is drawable', () => {
-    const src = toMermaid(graph({ groups: [] }));
+    const src = toMermaid(graph({ groups: [] }), undefined, t);
     expect(src).toContain('No resources indexed yet');
   });
 });
@@ -343,11 +349,11 @@ function liveGraph(): InfraGraph {
 describe('toMermaid — no overlay is byte-identical (regression pin)', () => {
   it('produces identical output with overlay omitted vs explicitly undefined', () => {
     const g = liveGraph();
-    expect(toMermaid(g, undefined)).toBe(toMermaid(g));
+    expect(toMermaid(g, undefined, t)).toBe(toMermaid(g, undefined, t));
   });
 
   it('emits no ghost classDefs or ghost classes without an overlay', () => {
-    const src = toMermaid(liveGraph());
+    const src = toMermaid(liveGraph(), undefined, t);
     expect(src).not.toContain('ghostCreate');
     expect(src).not.toContain('ghostUpdate');
     expect(src).not.toContain('ghostDestroy');
@@ -361,7 +367,7 @@ describe('toMermaid — no overlay is byte-identical (regression pin)', () => {
 
 describe('toMermaid — ghost classDefs gating', () => {
   it('appends ghost classDefs when the overlay has entries', () => {
-    const src = toMermaid(liveGraph(), overlay({ entries: [entry({ verb: 'create', name: 'order-events' })] }));
+    const src = toMermaid(liveGraph(), overlay({ entries: [entry({ verb: 'create', name: 'order-events' })] }), t);
     expect(src).toContain('classDef ghostCreate');
     expect(src).toContain('classDef ghostUpdate');
     expect(src).toContain('classDef ghostDestroy');
@@ -369,19 +375,19 @@ describe('toMermaid — ghost classDefs gating', () => {
   });
 
   it('pins the ghost classDef colors to the design-token hexes', () => {
-    const src = toMermaid(liveGraph(), overlay({ entries: [entry({ verb: 'create', name: 'order-events' })] }));
+    const src = toMermaid(liveGraph(), overlay({ entries: [entry({ verb: 'create', name: 'order-events' })] }), t);
     expect(src).toContain('classDef ghostCreate fill:#ecf6ef,stroke:#1f8a4c');
     expect(src).toContain('classDef ghostUpdate fill:#fcf3dc,stroke:#9a6b00');
     expect(src).toContain('classDef ghostDestroy fill:#fdeef0,stroke:#c5303f');
   });
 
   it('appends ghost classDefs when only hidden > 0', () => {
-    const src = toMermaid(liveGraph(), overlay({ hidden: 2 }));
+    const src = toMermaid(liveGraph(), overlay({ hidden: 2 }), t);
     expect(src).toContain('classDef ghostCreate');
   });
 
   it('does NOT append ghost classDefs for an empty available overlay', () => {
-    const src = toMermaid(liveGraph(), overlay({}));
+    const src = toMermaid(liveGraph(), overlay({}), t);
     expect(src).not.toContain('ghostCreate');
   });
 });
@@ -390,7 +396,7 @@ describe('toMermaid — create / import always ADD a ghost', () => {
   it('adds a green dashed ghost inside the mapped group subgraph', () => {
     const src = toMermaid(
       liveGraph(),
-      overlay({ entries: [entry({ verb: 'create', name: 'order-events' })], counts: { create: 1, update: 0, destroy: 0, replace: 0, import: 0, forget: 0, change: 0 } }),
+      overlay({ entries: [entry({ verb: 'create', name: 'order-events' })], counts: { create: 1, update: 0, destroy: 0, replace: 0, import: 0, forget: 0, change: 0 } }), t
     );
     expect(src).toMatch(/\["order-events · will be created"\]:::ghostCreate/);
     // It lives inside the Pub/Sub topic subgraph alongside the live node.
@@ -401,12 +407,12 @@ describe('toMermaid — create / import always ADD a ghost', () => {
   });
 
   it('renders an import ghost with the "will be imported" suffix and ghostCreate', () => {
-    const src = toMermaid(liveGraph(), overlay({ entries: [entry({ verb: 'import', name: 'imported-topic' })] }));
+    const src = toMermaid(liveGraph(), overlay({ entries: [entry({ verb: 'import', name: 'imported-topic' })] }), t);
     expect(src).toMatch(/\["imported-topic · will be imported"\]:::ghostCreate/);
   });
 
   it('never reclasses a same-labeled live node for a create', () => {
-    const src = toMermaid(liveGraph(), overlay({ entries: [entry({ verb: 'create', name: 'drift-events' })] }));
+    const src = toMermaid(liveGraph(), overlay({ entries: [entry({ verb: 'create', name: 'drift-events' })] }), t);
     // The live drift-events node stays managed; a separate ghost is added.
     expect(src).toContain('drift-events"]:::managed');
     expect(src).toMatch(/\["drift-events · will be created"\]:::ghostCreate/);
@@ -417,7 +423,7 @@ describe('toMermaid — update / change / forget / destroy / replace RECLASS mat
   it('reclasses a live node matched by exact label (update → ghostUpdate)', () => {
     const src = toMermaid(
       liveGraph(),
-      overlay({ entries: [entry({ verb: 'update', rtype: 'google_cloud_run_v2_service', type_label: 'Cloud Run service', asset_type: RUN, name: 'storefront' })] }),
+      overlay({ entries: [entry({ verb: 'update', rtype: 'google_cloud_run_v2_service', type_label: 'Cloud Run service', asset_type: RUN, name: 'storefront' })] }), t
     );
     expect(src).toMatch(/\["storefront · will be modified"\]:::ghostUpdate/);
     // The original :::managed line for storefront is gone (reclassed, not duplicated).
@@ -449,7 +455,7 @@ describe('toMermaid — update / change / forget / destroy / replace RECLASS mat
             name: 'projects/p/serviceAccounts/sa@p.iam.gserviceaccount.com',
           }),
         ],
-      }),
+      }), t
     );
     expect(src).toMatch(/\["sa@p.iam.gserviceaccount.com · will be modified"\]:::ghostUpdate/);
     expect(src).not.toMatch(/\["sa@p.iam.gserviceaccount.com"\]:::managed/);
@@ -458,7 +464,7 @@ describe('toMermaid — update / change / forget / destroy / replace RECLASS mat
   it('ADDS a ghost when an update has no matching live node', () => {
     const src = toMermaid(
       liveGraph(),
-      overlay({ entries: [entry({ verb: 'update', name: 'no-such-topic' })] }),
+      overlay({ entries: [entry({ verb: 'update', name: 'no-such-topic' })] }), t
     );
     expect(src).toMatch(/\["no-such-topic · will be modified"\]:::ghostUpdate/);
     // existing live topic untouched
@@ -481,7 +487,7 @@ describe('toMermaid — update / change / forget / destroy / replace RECLASS mat
     });
     const src = toMermaid(
       g,
-      overlay({ entries: [entry({ verb: 'update', rtype: 'google_cloud_run_v2_service', type_label: 'Cloud Run service', asset_type: RUN, name: 'dup' })] }),
+      overlay({ entries: [entry({ verb: 'update', rtype: 'google_cloud_run_v2_service', type_label: 'Cloud Run service', asset_type: RUN, name: 'dup' })] }), t
     );
     const matches = src.match(/\["dup · will be modified"\]:::ghostUpdate/g) ?? [];
     expect(matches.length).toBe(2);
@@ -489,22 +495,22 @@ describe('toMermaid — update / change / forget / destroy / replace RECLASS mat
   });
 
   it('destroy → ghostDestroy + "will be destroyed"', () => {
-    const src = toMermaid(liveGraph(), overlay({ entries: [entry({ verb: 'destroy', name: 'drift-events' })] }));
+    const src = toMermaid(liveGraph(), overlay({ entries: [entry({ verb: 'destroy', name: 'drift-events' })] }), t);
     expect(src).toMatch(/\["drift-events · will be destroyed"\]:::ghostDestroy/);
   });
 
   it('replace → ghostDestroy + "will be replaced"', () => {
-    const src = toMermaid(liveGraph(), overlay({ entries: [entry({ verb: 'replace', name: 'drift-events' })] }));
+    const src = toMermaid(liveGraph(), overlay({ entries: [entry({ verb: 'replace', name: 'drift-events' })] }), t);
     expect(src).toMatch(/\["drift-events · will be replaced"\]:::ghostDestroy/);
   });
 
   it('forget → ghostUpdate + "will leave IaC management"', () => {
-    const src = toMermaid(liveGraph(), overlay({ entries: [entry({ verb: 'forget', name: 'drift-events' })] }));
+    const src = toMermaid(liveGraph(), overlay({ entries: [entry({ verb: 'forget', name: 'drift-events' })] }), t);
     expect(src).toMatch(/\["drift-events · will leave IaC management"\]:::ghostUpdate/);
   });
 
   it('change → ghostUpdate + "will change"', () => {
-    const src = toMermaid(liveGraph(), overlay({ entries: [entry({ verb: 'change', name: 'drift-events' })] }));
+    const src = toMermaid(liveGraph(), overlay({ entries: [entry({ verb: 'change', name: 'drift-events' })] }), t);
     expect(src).toMatch(/\["drift-events · will change"\]:::ghostUpdate/);
   });
 });
@@ -524,7 +530,7 @@ describe('toMermaid — fallback "Planned changes" subgraph', () => {
             asset_type: null,
           }),
         ],
-      }),
+      }), t
     );
     expect(src).toContain('subgraph sgplan["Planned changes"]');
     const plan = src.slice(src.indexOf('subgraph sgplan['));
@@ -546,7 +552,7 @@ describe('toMermaid — fallback "Planned changes" subgraph', () => {
             asset_type: null,
           }),
         ],
-      }),
+      }), t
     );
     expect(src).toContain('subgraph sgplan["Planned changes"]');
     expect(src).toMatch(/google_project_iam_member.invoker · will be created/);
@@ -558,7 +564,7 @@ describe('toMermaid — fallback "Planned changes" subgraph', () => {
       liveGraph(),
       overlay({
         entries: [entry({ verb: 'create', rtype: 'google_storage_bucket', type_label: 'Storage bucket', asset_type: BUCKET, name: 'assets-bucket' })],
-      }),
+      }), t
     );
     expect(src).toContain('subgraph sgplan["Planned changes"]');
     const plan = src.slice(src.indexOf('subgraph sgplan['));
@@ -587,7 +593,7 @@ describe('toMermaid — sensitive entries are name-free', () => {
             location: '',
           }),
         ],
-      }),
+      }), t
     );
     // Parens are entity-escaped (escape-relevant chars), suffix is a trusted literal.
     expect(src).toMatch(/\["Secret #40;name hidden#41; · will be created"\]:::ghostCreate/);
@@ -597,7 +603,7 @@ describe('toMermaid — sensitive entries are name-free', () => {
 
 describe('toMermaid — hidden overflow node', () => {
   it('adds a "+N more planned change(s)" hidden node in the fallback subgraph', () => {
-    const src = toMermaid(liveGraph(), overlay({ hidden: 2 }));
+    const src = toMermaid(liveGraph(), overlay({ hidden: 2 }), t);
     expect(src).toContain('subgraph sgplan["Planned changes"]');
     // "(s)" parens are entity-escaped.
     expect(src).toMatch(/\["\+2 more planned change#40;s#41;"\]:::hidden/);
@@ -610,7 +616,7 @@ describe('toMermaid — counts-only / empty group arms still receive ghosts', ()
     const g = graph({
       groups: [group({ asset_type: TOPIC, label: 'Pub/Sub topic', count: 1, nodes: [] })],
     });
-    const src = toMermaid(g, overlay({ entries: [entry({ verb: 'create', name: 'order-events' })] }));
+    const src = toMermaid(g, overlay({ entries: [entry({ verb: 'create', name: 'order-events' })] }), t);
     expect(src).toContain('subgraph sg0["Pub/Sub topic"]');
     const sub = src.slice(src.indexOf('subgraph sg0['));
     expect(sub).toContain('order-events · will be created');
@@ -637,7 +643,7 @@ describe('toMermaid — counts-only / empty group arms still receive ghosts', ()
             location: '',
           }),
         ],
-      }),
+      }), t
     );
     // The counts-only placeholder AND the ghost both live in the Secret subgraph.
     const sub = src.slice(src.indexOf('subgraph sg0['));
@@ -664,7 +670,7 @@ describe('toMermaid — counts-only / empty group arms still receive ghosts', ()
             name: 'projects/p/serviceAccounts/sa@p.iam.gserviceaccount.com',
           }),
         ],
-      }),
+      }), t
     );
     const occurrences = src.match(/· will be modified/g) ?? [];
     expect(occurrences.length).toBe(1);
@@ -673,7 +679,7 @@ describe('toMermaid — counts-only / empty group arms still receive ghosts', ()
 
 describe('toMermaid — degraded / empty live graph still previews ghosts', () => {
   it('renders a ghost-only diagram for a groups:[] graph + 1 create (no empty fallback)', () => {
-    const src = toMermaid(graph({ groups: [] }), overlay({ entries: [entry({ verb: 'create', name: 'order-events' })] }));
+    const src = toMermaid(graph({ groups: [] }), overlay({ entries: [entry({ verb: 'create', name: 'order-events' })] }), t);
     expect(src).toContain('subgraph sgplan["Planned changes"]');
     expect(src).toMatch(/order-events · will be created/);
     expect(src).not.toContain('No resources indexed yet');
@@ -695,7 +701,7 @@ describe('toMermaid — ghost labels are escaped', () => {
             asset_type: null,
           }),
         ],
-      }),
+      }), t
     );
     expect(src).not.toContain('evil]"x');
     expect(src).toContain('#93;'); // ]
@@ -725,19 +731,19 @@ describe('overlayRenderable', () => {
 
 describe('overlayCountsLine', () => {
   it('returns "No infrastructure changes" for an all-zero count', () => {
-    expect(overlayCountsLine({ create: 0, update: 0, destroy: 0, replace: 0, import: 0, forget: 0, change: 0 })).toBe(
+    expect(overlayCountsLine({ create: 0, update: 0, destroy: 0, replace: 0, import: 0, forget: 0, change: 0 }, t)).toBe(
       'No infrastructure changes',
     );
   });
   it('joins non-zero verbs with " · " in canonical order', () => {
     expect(
-      overlayCountsLine({ create: 1, update: 2, destroy: 3, replace: 4, import: 5, forget: 6, change: 7 }),
+      overlayCountsLine({ create: 1, update: 2, destroy: 3, replace: 4, import: 5, forget: 6, change: 7 }, t),
     ).toBe(
       '1 will be created · 2 will be modified · 4 will be replaced · 3 will be destroyed · 5 will be imported · 6 will leave management · 7 will change',
     );
   });
   it('omits zero verbs (no inflection of singular/plural)', () => {
-    expect(overlayCountsLine({ create: 1, update: 1, destroy: 0, replace: 0, import: 0, forget: 0, change: 0 })).toBe(
+    expect(overlayCountsLine({ create: 1, update: 1, destroy: 0, replace: 0, import: 0, forget: 0, change: 0 }, t)).toBe(
       '1 will be created · 1 will be modified',
     );
   });
@@ -783,7 +789,7 @@ describe('toMermaid + mermaid.parse — real grammar validation (Codex plan-revi
           entry({ verb: 'update', rtype: 'google_cloud_run_v2_service', type_label: 'Cloud Run service', asset_type: RUN, name: 'storefront' }),
           entry({ verb: 'create', rtype: 'google_project_iam_member', type_label: 'IAM member', name: 'roles/run.invoker', address: 'google_project_iam_member.invoker', asset_type: null }),
         ],
-      }),
+      }), t
     );
     await expect(mermaid.parse(src)).resolves.toBeTruthy();
   });
@@ -791,7 +797,7 @@ describe('toMermaid + mermaid.parse — real grammar validation (Codex plan-revi
   it('parses the degraded ghost-only output', async () => {
     const mermaid = (await import('mermaid')).default;
     mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: 'neutral', flowchart: { htmlLabels: false } });
-    const src = toMermaid(graph({ degraded: true, groups: [] }), overlay({ entries: [entry({ verb: 'create', name: 'order-events' })] }));
+    const src = toMermaid(graph({ degraded: true, groups: [] }), overlay({ entries: [entry({ verb: 'create', name: 'order-events' })] }), t);
     await expect(mermaid.parse(src)).resolves.toBeTruthy();
   });
 });

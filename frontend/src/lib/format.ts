@@ -4,6 +4,13 @@
 // (agent/templates/transparency.html): trace pills show the first 8 chars
 // (`traceId.slice(0, 8)`), truncation uses the ellipsis character "…"
 // (U+2026), and result_preview is capped at 2000 chars by the backend.
+//
+// i18n: the operator-facing labels below are looked up in the `shared.*`
+// catalog (frontend/src/locales/shared.ts) via the caller-supplied
+// `TranslateFn` — this module holds no English strings of its own for those,
+// only the backend-enum → catalog-key maps.
+
+import { fmtNumber, localeTag, type TranslateFn, type Locale, type MessageKey } from './i18n';
 
 const ELLIPSIS = '…';
 const DEFAULT_PREVIEW_MAX = 2000;
@@ -29,10 +36,14 @@ export function normalizeForSearch(s: string | null | undefined): string {
  * Returns `""` when the total is null/undefined/absent. A total of 0 is a
  * present value and renders as `"0 tok"`.
  */
-export function fmtTokens(usage: { total_token_count?: number | null }): string {
+export function fmtTokens(
+  usage: { total_token_count?: number | null },
+  t: TranslateFn,
+  l: Locale,
+): string {
   const total = usage?.total_token_count;
   if (total === null || total === undefined) return '';
-  return `${total.toLocaleString('en-US')} tok`;
+  return t('shared.tokens', { n: fmtNumber(total, l) });
 }
 
 /**
@@ -74,21 +85,21 @@ export function fmtPreview(s: string, max: number = DEFAULT_PREVIEW_MAX): string
  * decision.ts's defensive style). null/undefined/'' → '' (the meta line then
  * omits the token).
  */
-const IAC_STATUS_LABELS: Record<string, string> = {
-  applied: 'applied',
+const IAC_STATUS_LABEL_KEYS: Record<string, MessageKey> = {
+  applied: 'shared.iac.applied',
   // "rebuild" not "re-bake": the operator-facing label uses plain language —
   // the internal enum stays `waiting_for_rebake`. The help text (iacStatusHelp)
   // explains rebuild-of-what (the apply worker, from merged code).
-  waiting_for_rebake: 'awaiting rebuild',
-  failed: 'failed',
-  failed_state_suspect: 'failed (state suspect)',
-  ambiguous: 'ambiguous',
+  waiting_for_rebake: 'shared.iac.awaitingRebuild',
+  failed: 'shared.iac.failed',
+  failed_state_suspect: 'shared.iac.failedStateSuspect',
+  ambiguous: 'shared.iac.ambiguous',
 };
 const IAC_STATUS_MAX = 40; // a status enum is tiny; cap an unexpected value hard
-export function iacStatusLabel(status: string | null | undefined): string {
+export function iacStatusLabel(status: string | null | undefined, t: TranslateFn): string {
   if (typeof status !== 'string' || status === '') return '';
-  const known = IAC_STATUS_LABELS[status];
-  if (known) return known;
+  const key = IAC_STATUS_LABEL_KEYS[status];
+  if (key) return t(key);
   return status.length > IAC_STATUS_MAX ? status.slice(0, IAC_STATUS_MAX) + ELLIPSIS : status;
 }
 
@@ -100,15 +111,12 @@ export function iacStatusLabel(status: string | null | undefined): string {
  * no help affordance is rendered. Keyed on the raw backend enum, the
  * same input iacStatusLabel takes.
  */
-const IAC_STATUS_HELP: Record<string, string> = {
+const IAC_STATUS_HELP_KEYS: Record<string, MessageKey> = {
   // Accurate for BOTH waiting_for_rebake variants — recorded with
   // merge_state="pending" (before the irreversible merge / kept on merge
   // failure) AND merge_state="merged" (after) — so it must NOT assert the merge
   // already happened (agent/main.py records the pending pointer pre-merge).
-  waiting_for_rebake:
-    'Create/adopt changes apply in two steps: the PR is merged, then the ' +
-    "agent's apply worker is rebuilt from the merged code and re-checks the " +
-    "plan before applying. A later 'applied' step confirms completion.",
+  waiting_for_rebake: 'shared.iac.help.awaitingRebuild',
   // Plain `failed` (NOT the state-suspect variant): the apply aborted but the
   // tofu-apply worker PROVED the live state stayed clean (TofuStepError, vs
   // ApplyStateSuspect's "may be mutated"). We deliberately do NOT point the
@@ -116,22 +124,14 @@ const IAC_STATUS_HELP: Record<string, string> = {
   // (capture_output) and persists only a 500-char tail to the isolated
   // apply-audit, so it is surfaced nowhere operator-facing — promising a
   // location (logs or /trace) would be false.
-  failed:
-    "The apply didn't complete, but DriftScribe verified your live infrastructure " +
-    'was left unchanged, so it is safe to fix the cause and retry. (Unlike "failed ' +
-    '(state suspect)", the state was proven clean.)',
-  failed_state_suspect:
-    "The apply didn't finish cleanly and the live infrastructure state may have " +
-    'changed (or a lock was held), so the result is uncertain. Re-running ' +
-    're-checks the live state before retrying.',
-  ambiguous:
-    "DriftScribe couldn't confirm the final result of this apply (e.g. the change " +
-    'merged but the apply outcome was unclear). View the reasoning to see what ' +
-    'happened before retrying.',
+  failed: 'shared.iac.help.failed',
+  failed_state_suspect: 'shared.iac.help.failedStateSuspect',
+  ambiguous: 'shared.iac.help.ambiguous',
 };
-export function iacStatusHelp(status: string | null | undefined): string | null {
+export function iacStatusHelp(status: string | null | undefined, t: TranslateFn): string | null {
   if (typeof status !== 'string') return null;
-  return IAC_STATUS_HELP[status] ?? null;
+  const key = IAC_STATUS_HELP_KEYS[status];
+  return key ? t(key) : null;
 }
 
 /** Visual tone for an iac_apply status token → a CSS class suffix. '' = neutral. */
@@ -150,14 +150,6 @@ export interface IacApplyMeta {
    */
   done: boolean;
 }
-
-const IAC_DONE_HELP =
-  "This change is live and merged. There's nothing more to do here.";
-// Must NOT promise that a plain retry clears a permanent branch-protection block —
-// mirrors agent/main.py `_iac_merge_step`'s own operator wording.
-const IAC_MERGE_PENDING_HELP =
-  "The apply succeeded, but its pull request hasn't merged yet. Open the approval " +
-  'page to check the merge status, or retry once any branch-protection block is resolved.';
 
 // Tone for NON-applied statuses. Mirrors decision.ts's APPLY_STATUS_BADGE so the
 // rail and the open-trace decision card agree on color (ambiguous → warn, not danger).
@@ -182,7 +174,8 @@ const IAC_STATUS_TONE: Record<string, IacTone> = {
 export function iacApplyMeta(
   apply_status: string | null | undefined,
   merge_state: string | null | undefined,
-  superseded_by_pr?: number | null,
+  superseded_by_pr: number | null | undefined,
+  t: TranslateFn,
 ): IacApplyMeta {
   // A parked `waiting_for_rebake` plan that was re-expressed in a NEW PR (that new
   // PR carries the real `applied` row) is terminal here: its own saved plan is
@@ -197,33 +190,36 @@ export function iacApplyMeta(
     superseded_by_pr > 0
   ) {
     return {
-      label: 'superseded',
+      label: t('shared.iac.superseded'),
       tone: 'ok',
-      help:
-        `Superseded by PR #${superseded_by_pr}, which is applied and merged. ` +
-        "This plan is stale (its resource already exists), so there's nothing to do here.",
+      help: t('shared.iac.help.superseded', { pr: superseded_by_pr }),
       done: true,
     };
   }
   if (apply_status === 'applied') {
     if (merge_state === 'merged') {
-      return { label: 'applied & merged', tone: 'ok', help: IAC_DONE_HELP, done: true };
+      return {
+        label: t('shared.iac.appliedMerged'),
+        tone: 'ok',
+        help: t('shared.iac.help.done'),
+        done: true,
+      };
     }
     if (merge_state === 'failed' || merge_state === 'pending') {
       return {
-        label: 'applied · merge pending',
+        label: t('shared.iac.appliedMergePending'),
         tone: 'warn',
-        help: IAC_MERGE_PENDING_HELP,
+        help: t('shared.iac.help.mergePending'),
         done: false,
       };
     }
     // Applied with no/unknown merge_state: we can't claim "done" → stay neutral.
-    return { label: 'applied', tone: '', help: null, done: false };
+    return { label: t('shared.iac.applied'), tone: '', help: null, done: false };
   }
   return {
-    label: iacStatusLabel(apply_status),
+    label: iacStatusLabel(apply_status, t),
     tone: IAC_STATUS_TONE[apply_status ?? ''] ?? '',
-    help: iacStatusHelp(apply_status),
+    help: iacStatusHelp(apply_status, t),
     done: false,
   };
 }
@@ -258,14 +254,10 @@ export function appliedAtDiffersMaterially(
  * to 40 chars + '…', matching iacStatusLabel's forward-compat style.
  * null/undefined/'' → '' (the caller then renders nothing).
  */
-const DECISION_ACTION_LABELS: Record<string, string> = {
-  no_op: 'No action needed',
-};
 const DECISION_ACTION_MAX = 40;
-export function decisionActionLabel(action: string | null | undefined): string {
+export function decisionActionLabel(action: string | null | undefined, t: TranslateFn): string {
   if (typeof action !== 'string' || action === '') return '';
-  const known = DECISION_ACTION_LABELS[action];
-  if (known) return known;
+  if (action === 'no_op') return t('shared.decision.noOp');
   return action.length > DECISION_ACTION_MAX
     ? action.slice(0, DECISION_ACTION_MAX) + ELLIPSIS
     : action;
@@ -281,15 +273,9 @@ export function decisionActionLabel(action: string | null | undefined): string {
  * → no help affordance is rendered. Keyed on the raw backend enum, the same
  * input decisionActionLabel takes.
  */
-const DECISION_ACTION_HELP: Record<string, string> = {
-  no_op:
-    'DriftScribe checked and the live state already matched what was expected, ' +
-    'so there was nothing to fix: no pull request, issue, or rollback was needed. ' +
-    'This entry is the record that the check ran and found everything in order.',
-};
-export function decisionActionHelp(action: string | null | undefined): string | null {
+export function decisionActionHelp(action: string | null | undefined, t: TranslateFn): string | null {
   if (typeof action !== 'string') return null;
-  return DECISION_ACTION_HELP[action] ?? null;
+  return action === 'no_op' ? t('shared.decision.noOpHelp') : null;
 }
 
 /**
@@ -297,13 +283,15 @@ export function decisionActionHelp(action: string | null | undefined): string | 
  * year (used by the DecisionSummary card — a historical decision can be from
  * any date, so unlike the rail's compact no-year form we include the year).
  * Falls back to the raw value when it doesn't parse, and to '' when absent.
+ * `l` is OPTIONAL — a caller with no locale in scope (e.g. decision.ts) still
+ * gets Intl's host-default formatting, unchanged from before i18n.
  */
-export function fmtWhen(iso: string): string {
+export function fmtWhen(iso: string, l?: Locale): string {
   if (!iso) return '';
   const parsed = Date.parse(iso);
   if (Number.isNaN(parsed)) return iso;
   try {
-    return new Intl.DateTimeFormat(undefined, {
+    return new Intl.DateTimeFormat(l ? localeTag(l) : undefined, {
       year: 'numeric',
       month: 'short',
       day: 'numeric',

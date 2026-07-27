@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { WORKLOADS, type Workload, type WorkloadOption, type WorkloadGroup, askAboutPrPrefill, askPrFromSearch, initialChatPrefill, crewName } from '../../src/lib/workloads';
+import { translate } from '../../src/lib/i18n';
+
+// EN-bound translator — these two helpers now thread a TranslateFn; assertions
+// below stay English (tests/unit/setup.ts pins the whole suite to the EN catalog).
+const t = (key: Parameters<typeof translate>[1], params?: Record<string, string | number>) =>
+  translate('en', key, params);
 
 describe('crewName', () => {
   it('maps each catalog value to its display name', () => {
@@ -155,7 +161,7 @@ describe('askPrFromSearch', () => {
 
 describe('askAboutPrPrefill', () => {
   it('names the PR and asks for a plain-language explanation', () => {
-    const text = askAboutPrPrefill(18);
+    const text = askAboutPrPrefill(18, t);
     expect(text).toContain('PR #18');
     expect(text.toLowerCase()).toContain('plain language');
   });
@@ -163,12 +169,12 @@ describe('askAboutPrPrefill', () => {
 
 describe('initialChatPrefill', () => {
   it('seeds an explore-workload prefill at epoch 1 from ask_pr', () => {
-    const p = initialChatPrefill('?ask_pr=18');
-    expect(p).toEqual({ text: askAboutPrPrefill(18), workload: 'explore', epoch: 1 });
+    const p = initialChatPrefill('?ask_pr=18', t);
+    expect(p).toEqual({ text: askAboutPrPrefill(18, t), workload: 'explore', epoch: 1 });
   });
   it('is null without a valid ask_pr', () => {
-    expect(initialChatPrefill('')).toBeNull();
-    expect(initialChatPrefill('?ask_pr=junk')).toBeNull();
-    expect(initialChatPrefill('?preview_pr=18')).toBeNull();
+    expect(initialChatPrefill('', t)).toBeNull();
+    expect(initialChatPrefill('?ask_pr=junk', t)).toBeNull();
+    expect(initialChatPrefill('?preview_pr=18', t)).toBeNull();
   });
 });

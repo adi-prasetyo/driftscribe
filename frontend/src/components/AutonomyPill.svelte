@@ -16,15 +16,16 @@
   import { slide } from 'svelte/transition';
   import {
     AUTONOMY_MODES,
-    MODE_LABELS,
-    MODE_BLURBS,
-    AUTONOMY_EXPLAINER_HEADING,
-    AUTONOMY_EXPLAINER_BODY,
+    modeLabel,
+    modeBlurb,
+    autonomyExplainerHeading,
+    autonomyExplainerBody,
     type AutonomyMode,
   } from '../lib/autonomy';
   import type { AutonomyStore } from '../lib/autonomyStore';
   import { announceHeaderPopoverOpen, HEADER_POPOVER_EVENT } from '../lib/headerPopover';
   import { motionMs } from '../lib/motion';
+  import { t, locale, localeTag } from '../lib/i18n';
   import Icon from './Icon.svelte';
 
   let { autonomy }: { autonomy: AutonomyStore } = $props();
@@ -90,9 +91,11 @@
   // per-mode alarm — show "Observe · fail-closed" (the server fails closed to
   // Observe) on a warn tint.
   const pillLabel = $derived(
-    st.readError ? `${MODE_LABELS.observe} · fail-closed` : MODE_LABELS[st.mode],
+    st.readError
+      ? $t('capability.mode.failClosed', { label: modeLabel('observe', $t) })
+      : modeLabel(st.mode, $t),
   );
-  const confirmLabel = $derived(saving ? 'Saving…' : 'Confirm');
+  const confirmLabel = $derived(saving ? $t('capability.saving') : $t('capability.autonomyPill.confirm'));
 
   function resetPopover(): void {
     confirming = false;
@@ -236,12 +239,12 @@
     }
   }
 
-  function fmtUpdatedAt(iso: string | null): string {
+  function fmtUpdatedAt(iso: string | null, tag: 'ja-JP' | 'en-US'): string {
     if (!iso) return '';
     const parsed = Date.parse(iso);
     if (Number.isNaN(parsed)) return iso;
     try {
-      return new Intl.DateTimeFormat(undefined, {
+      return new Intl.DateTimeFormat(tag, {
         month: 'short',
         day: 'numeric',
         hour: '2-digit',
@@ -280,17 +283,17 @@
 <div class="autonomy-pill" bind:this={containerEl}>
   {#if st.kind === 'loading'}
     <span class="ds-pill ds-pill--muted autonomy-pill__status" data-testid="autonomy-pill-state"
-      ><span class="autonomy-pill__dot" aria-hidden="true"></span>Mode · checking…</span
+      ><span class="autonomy-pill__dot" aria-hidden="true"></span>{$t('capability.autonomyPill.checking')}</span
     >
   {:else if st.kind === 'unknown'}
     <button
       class="ds-pill ds-pill--warn autonomy-pill__btn"
       type="button"
       data-testid="autonomy-pill-retry"
-      aria-label="Autonomy state could not be read. Retry."
-      title="Autonomy state could not be read; the agent is failing closed to Observe. Click to retry."
+      aria-label={$t('capability.autonomyPill.retryAria')}
+      title={$t('capability.autonomyPill.retryTitle')}
       onclick={() => void autonomy.fetchAutonomy()}
-      ><Icon name="alert-triangle" size={12} />State unknown · retry</button
+      ><Icon name="alert-triangle" size={12} />{$t('capability.autonomyPill.stateUnknown')}</button
     >
   {:else}
     <button
@@ -300,7 +303,7 @@
       data-testid="autonomy-pill-toggle"
       aria-haspopup="dialog"
       aria-expanded={open}
-      aria-label={`Autonomy mode: ${pillLabel}. Change it.`}
+      aria-label={$t('capability.autonomyPill.toggleAria', { label: pillLabel })}
       bind:this={toggleEl}
       onclick={onToggle}
       ><Icon name={MODE_ICONS[st.mode]} size={12} />{pillLabel}<Icon
@@ -315,7 +318,7 @@
         class="autonomy-popover"
         data-testid="autonomy-popover"
         role="dialog"
-        aria-label="Autonomy mode"
+        aria-label={$t('capability.autonomyPill.ariaLabel')}
         style={popoverStyle}
         transition:slide={{ duration: motionMs(160) }}
       >
@@ -324,7 +327,7 @@
           class="autonomy-segments"
           class:autonomy-segments--measured={pillMeasured}
           role="group"
-          aria-label="Autonomy mode"
+          aria-label={$t('capability.autonomyPill.ariaLabel')}
           bind:this={segmentsEl}
         >
           <!-- Sliding active pill (decorative, aria-hidden) -->
@@ -346,7 +349,7 @@
               disabled={saving}
               onclick={() => onSegmentClick(mode)}
               bind:this={segmentEls[i]}
-              ><Icon name={MODE_ICONS[mode]} size={14} />{MODE_LABELS[mode]}</button
+              ><Icon name={MODE_ICONS[mode]} size={14} />{modeLabel(mode, $t)}</button
             >
           {/each}
         </div>
@@ -354,13 +357,13 @@
         <!-- Current mode (committed, NOT pendingMode) + blurb -->
         <div class="autonomy-mode-summary">
           <p class="autonomy-current" data-testid="autonomy-current">
-            <span class="autonomy-current__label">Current</span>
+            <span class="autonomy-current__label">{$t('capability.autonomyPill.current')}</span>
             <span class="autonomy-current__sep" aria-hidden="true">·</span>
             <span class="autonomy-current__mode" data-testid="autonomy-current-mode"
-              >{MODE_LABELS[st.mode]}</span
+              >{modeLabel(st.mode, $t)}</span
             >
           </p>
-          <p class="autonomy-blurb">{MODE_BLURBS[st.mode]}</p>
+          <p class="autonomy-blurb">{modeBlurb(st.mode, $t)}</p>
         </div>
 
         <!-- Progressive-disclosure explainer, collapsed by default -->
@@ -372,33 +375,33 @@
             data-testid="autonomy-explainer-toggle"
             aria-expanded={explainerOpen}
             onclick={() => (explainerOpen = !explainerOpen)}
-            ><Icon name="chevron-down" size={14} extraClass="autonomy-explainer__chev" />{AUTONOMY_EXPLAINER_HEADING}</button
+            ><Icon name="chevron-down" size={14} extraClass="autonomy-explainer__chev" />{autonomyExplainerHeading($t)}</button
           >
           {#if explainerOpen}
             <p
               class="autonomy-explainer__body"
               data-testid="autonomy-explainer-body"
               transition:slide={{ duration: motionMs(200) }}
-            >{AUTONOMY_EXPLAINER_BODY}</p>
+            >{autonomyExplainerBody($t)}</p>
           {/if}
         </div>
 
         <!-- Meta line: actor · time · reason, OR the read_error warning -->
         {#if st.readError}
           <span class="autonomy-meta__warn" data-testid="autonomy-read-error"
-            >autonomy state could not be read, failing closed to Observe</span
+            >{$t('capability.autonomyPill.readErrorWarn')}</span
           >
         {:else}
           <div class="autonomy-meta">
             {#if st.actor}
-              <span class="autonomy-meta__label">Set by</span>
+              <span class="autonomy-meta__label">{$t('capability.autonomyPill.setBy')}</span>
               <span class="autonomy-meta__actor">{st.actor}</span>
             {/if}
             {#if st.updatedAt}
-              <time class="autonomy-meta__time" datetime={st.updatedAt}>{fmtUpdatedAt(st.updatedAt)}</time>
+              <time class="autonomy-meta__time" datetime={st.updatedAt}>{fmtUpdatedAt(st.updatedAt, localeTag($locale))}</time>
             {/if}
             {#if st.reason}
-              <span class="autonomy-meta__label">reason:</span>
+              <span class="autonomy-meta__label">{$t('capability.reasonMetaLabel')}</span>
               <span class="autonomy-meta__reason">{st.reason}</span>
             {/if}
           </div>
@@ -408,16 +411,16 @@
         {#if confirming && pendingMode}
           <div class="autonomy-confirm-row" transition:slide={{ duration: motionMs(200) }}>
             <p class="autonomy-confirm-hint">
-              Switch to <strong>{MODE_LABELS[pendingMode]}</strong>? {MODE_BLURBS[pendingMode]}
+              {$t('capability.autonomyPill.confirmSwitchLead')}<strong>{modeLabel(pendingMode, $t)}</strong>{$t('capability.autonomyPill.confirmSwitchTrail', { blurb: modeBlurb(pendingMode, $t) })}
             </p>
             <div class="autonomy-confirm-actions">
-              <label class="autonomy-reason-label" for="autonomy-reason-input">reason (optional)</label>
+              <label class="autonomy-reason-label" for="autonomy-reason-input">{$t('capability.reasonLabel')}</label>
               <input
                 id="autonomy-reason-input"
                 class="autonomy-reason-input"
                 type="text"
                 maxlength="500"
-                placeholder="why this change? (recorded in the audit log)"
+                placeholder={$t('capability.autonomyPill.reasonPlaceholder')}
                 data-testid="autonomy-reason"
                 bind:this={reasonEl}
                 bind:value={reasonInput}
@@ -435,7 +438,7 @@
                 type="button"
                 data-testid="autonomy-cancel"
                 onclick={onCancelArm}
-                disabled={saving}><Icon name="x" size={14} />Cancel</button
+                disabled={saving}><Icon name="x" size={14} />{$t('common.cancel')}</button
               >
             </div>
           </div>
@@ -443,7 +446,7 @@
 
         {#if postError}
           <p class="autonomy-error" data-testid="autonomy-error"
-            >Could not save. Autonomy state unchanged. Please try again.</p
+            >{$t('capability.autonomyPill.error')}</p
           >
         {/if}
       </div>

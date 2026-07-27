@@ -1,14 +1,17 @@
 // View-model grouping for the conversations history rail (P2). The backend
 // returns conversations newest-updated first; this folds them into day buckets
-// (Today / Yesterday / Older) so the rail reads as a timeline. Pure data →
+// (today / yesterday / older) so the rail reads as a timeline. Pure data →
 // data; the component owns presentation. `now` is injected so the bucketing is
 // deterministic under test (no hidden Date.now()).
+//
+// i18n: buckets are returned as SEMANTIC IDS, not rendered labels — this module
+// stays locale-free. ConversationsRail.svelte maps id → `$t('conversations.bucket.<id>')`.
 
 import type { Conversation } from './types';
 import { normalizeForSearch } from './format';
 import { crewName } from './workloads';
 
-export type ConversationBucket = 'Today' | 'Yesterday' | 'Older';
+export type ConversationBucket = 'today' | 'yesterday' | 'older';
 
 /**
  * Does a conversation match a free-text query? Case- and separator-insensitive
@@ -59,34 +62,34 @@ function startOfDay(d: Date): Date {
 
 /**
  * Classify one conversation's `updated_at` relative to `now`:
- *   ≥ start-of-today      → Today
- *   ≥ start-of-yesterday  → Yesterday
- *   anything earlier      → Older
- * A missing / unparseable timestamp falls to `Older` (fail-safe: an undated
+ *   ≥ start-of-today      → today
+ *   ≥ start-of-yesterday  → yesterday
+ *   anything earlier      → older
+ * A missing / unparseable timestamp falls to `older` (fail-safe: an undated
  * thread sorts to the bottom rather than masquerading as recent).
  */
 export function bucketFor(updatedAt: string | undefined | null, now: Date): ConversationBucket {
-  if (!updatedAt) return 'Older';
+  if (!updatedAt) return 'older';
   const ts = Date.parse(updatedAt);
-  if (Number.isNaN(ts)) return 'Older';
+  if (Number.isNaN(ts)) return 'older';
   const todayStart = startOfDay(now).getTime();
   const yesterdayStart = todayStart - 86_400_000; // 24h
-  if (ts >= todayStart) return 'Today';
-  if (ts >= yesterdayStart) return 'Yesterday';
-  return 'Older';
+  if (ts >= todayStart) return 'today';
+  if (ts >= yesterdayStart) return 'yesterday';
+  return 'older';
 }
 
 /**
  * Fold a newest-first conversation list into day-bucket groups, preserving the
  * incoming order within each bucket. Only non-empty buckets are returned, in
- * the fixed order Today → Yesterday → Older. Tolerates a null/undefined list
+ * the fixed order today → yesterday → older. Tolerates a null/undefined list
  * and null entries (dropped).
  */
 export function groupConversations(
   conversations: ReadonlyArray<Conversation | null | undefined> | null | undefined,
   now: Date,
 ): ConversationGroup[] {
-  const order: ConversationBucket[] = ['Today', 'Yesterday', 'Older'];
+  const order: ConversationBucket[] = ['today', 'yesterday', 'older'];
   const buckets = new Map<ConversationBucket, Conversation[]>();
   for (const c of conversations ?? []) {
     if (c == null) continue;

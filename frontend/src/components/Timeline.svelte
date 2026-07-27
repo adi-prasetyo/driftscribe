@@ -15,6 +15,7 @@
   import { workerLabel } from '../lib/labels';
   import { fmtTokens, fmtPreview } from '../lib/format';
   import { motionMs } from '../lib/motion';
+  import { t, locale, fmtNumber, plural, type TranslateFn } from '../lib/i18n';
   import Group from './Group.svelte';
   import ApprovalCta from './ApprovalCta.svelte';
 
@@ -60,7 +61,7 @@
     events: TraceEvent[];
   }
 
-  function subgroupsOf(list: TraceEvent[]): Sub[] {
+  function subgroupsOf(list: TraceEvent[], tf: TranslateFn): Sub[] {
     const map = new Map<string, TraceEvent[]>();
     const order: string[] = [];
     for (const e of list) {
@@ -71,11 +72,11 @@
       }
       map.get(k)!.push(e);
     }
-    return order.map((k) => ({ key: k, label: workerLabel(k), events: map.get(k)! }));
+    return order.map((k) => ({ key: k, label: workerLabel(k, tf), events: map.get(k)! }));
   }
 
-  const toolSubs = $derived(subgroupsOf(groups.tools));
-  const mcpSubs = $derived(subgroupsOf(groups.mcp));
+  const toolSubs = $derived(subgroupsOf(groups.tools, $t));
+  const mcpSubs = $derived(subgroupsOf(groups.mcp, $t));
 
   // Settle animation: entrances + reflow, collapsed to 0ms under reduced motion.
   const flyIn = $derived({ y: 8, duration: motionMs(260) });
@@ -85,33 +86,28 @@
     typeof v === 'string' ? v : v == null ? '' : String(v);
   const num = (v: unknown): number | null => (typeof v === 'number' ? v : null);
 
-  function latencySpan(evts: TraceEvent[]): string {
+  function latencySpan(evts: TraceEvent[], tf: TranslateFn): string {
     const ls = evts.map((e) => num(e.latency_ms)).filter((v): v is number => v != null);
     if (ls.length === 0) return '';
     const total = ls.reduce((a, b) => a + b, 0);
-    return `${total} ms`;
+    return tf('timeline.latencyMs', { ms: total });
   }
 
   function docCount(evts: TraceEvent[]): number {
     return evts.reduce((acc, e) => acc + (num(e.doc_count) ?? 0), 0);
   }
 
-  const titleFor: Record<GroupKey, string> = {
-    coordinator: 'Coordinator reasoning',
-    tools: 'Tools & workers',
-    mcp: 'MCP traffic',
-  };
+  const titleFor = $derived<Record<GroupKey, string>>({
+    coordinator: $t('timeline.group.coordinator'),
+    tools: $t('timeline.group.tools'),
+    mcp: $t('timeline.group.mcp'),
+  });
 
   // Self-documents why responses can feel slow: Gemini only returns its
   // reasoning summaries from Vertex AI's `global` region, so inference is
   // routed there (Tokyo returns none) at a small latency cost. Shown as a
   // hover-help icon next to the coordinator group only.
-  const COORDINATOR_HINT =
-    "Gemini's reasoning summaries are only returned by Vertex AI's 'global' " +
-    'region, so this deployment routes inference there. Expect a little ' +
-    'extra latency per turn. Under heavy load Vertex can also omit the ' +
-    'summaries entirely, even though the coordinator still reasons; when ' +
-    'that happens, a note appears here with the thinking-token count.';
+  const COORDINATOR_HINT = $derived($t('timeline.coordinatorHint'));
 
   // "Reasoned but no summaries" note: usage events prove thinking happened
   // (thoughts_token_count > 0) while zero llm_thought rows arrived. Vertex
@@ -135,23 +131,23 @@
     <summary class="event__summary">
       <span class="event__meta">{ts}</span>
       {#if ok === true}
-        <span class="pair-result-ok">ok</span>
+        <span class="pair-result-ok">{$t('timeline.pair.ok')}</span>
       {:else if ok === false}
-        <span class="pair-result-err">error</span>
+        <span class="pair-result-err">{$t('timeline.status.error')}</span>
       {:else}
-        <span class="event__pending">pending</span>
+        <span class="event__pending">{$t('timeline.status.pending')}</span>
       {/if}
     </summary>
     {#if pair.call}
-      <div class="event__label">tool_args</div>
+      <div class="event__label">{$t('timeline.pair.toolArgs')}</div>
       <pre class="ds-pre">{JSON.stringify(pair.call.tool_args ?? {}, null, 2)}</pre>
     {/if}
     {#if pair.result}
       {#if str(pair.result.tool_name) === 'propose_rollback_tool'}
         <ApprovalCta resultPreview={str(pair.result.result_preview)} />
       {/if}
-      <div class="event__label">result_preview</div>
-      <pre class="ds-pre">{fmtPreview(str(pair.result.result_preview) || '(empty)')}</pre>
+      <div class="event__label">{$t('timeline.pair.resultPreview')}</div>
+      <pre class="ds-pre">{fmtPreview(str(pair.result.result_preview) || $t('timeline.pair.emptyPreview'))}</pre>
     {/if}
   </details>
 {/snippet}
@@ -160,14 +156,11 @@
   {#if historicalEmpty}
     {#if directlyRecorded}
       <p class="timeline-empty ds-subtle" data-testid="timeline-empty">
-        No reasoning timeline for this decision. It was recorded directly, not
-        produced by an agent reasoning run.
+        {$t('timeline.empty.directlyRecorded')}
       </p>
     {:else}
       <p class="timeline-empty ds-subtle" data-testid="timeline-empty">
-        The reasoning timeline for this turn couldn't be loaded. The
-        coordinator's reasoning is stored separately from the conversation and
-        may be temporarily unavailable.
+        {$t('timeline.empty.notLoaded')}
       </p>
     {/if}
   {:else}
@@ -182,10 +175,7 @@
   >
     {#if omittedTokens > 0}
       <p class="thought-omitted" data-testid="thought-omitted-note">
-        The coordinator did reason on this turn ({omittedTokens.toLocaleString('en-US')}
-        thinking tokens), but Vertex AI omitted the reasoning summaries. Summaries
-        are generated best-effort and can be dropped when the service is busy; the
-        reply and tool calls are unaffected.
+        {$t('timeline.omittedNote', { n: fmtNumber(omittedTokens, $locale) })}
       </p>
     {/if}
     {#each groups.coordinator as e (eventKey(e))}
@@ -194,8 +184,8 @@
           <div class="thought">{str(e.thought_text)}</div>
         {:else if e.event === 'llm_usage'}
           <div class="usage">
-            <span class="ds-label">tokens</span>
-            <span class="usage__val ds-code">{fmtTokens({ total_token_count: num(e.total_token_count) })}</span>
+            <span class="ds-label">{$t('timeline.usageLabel')}</span>
+            <span class="usage__val ds-code">{fmtTokens({ total_token_count: num(e.total_token_count) }, $t, $locale)}</span>
           </div>
         {/if}
       </div>
@@ -214,8 +204,8 @@
       <details class="subgroup" animate:flip={{ duration: flipDur }}>
         <summary class="subgroup__summary">
           <span class="subgroup__label">{sub.label}</span>
-          <span class="ds-pill ds-pill--muted">{pairs.length} call{pairs.length === 1 ? '' : 's'}</span>
-          {#if latencySpan(sub.events)}<span class="subgroup__lat">{latencySpan(sub.events)}</span>{/if}
+          <span class="ds-pill ds-pill--muted">{plural($t, 'timeline.subgroup.calls', pairs.length)}</span>
+          {#if latencySpan(sub.events, $t)}<span class="subgroup__lat">{latencySpan(sub.events, $t)}</span>{/if}
         </summary>
         <div class="sub-events">
           {#each pairs as pair, i (eventKey((pair.call ?? pair.result)!) + ':' + i)}
@@ -238,15 +228,16 @@
         <summary class="subgroup__summary">
           <span class="subgroup__label">{sub.label}</span>
           <span class="ds-pill ds-pill--muted">{sub.events.length}</span>
-          {#if docCount(sub.events) > 0}<span class="subgroup__lat">{docCount(sub.events)} docs</span>{/if}
-          {#if latencySpan(sub.events)}<span class="subgroup__lat">{latencySpan(sub.events)}</span>{/if}
+          {#if docCount(sub.events) > 0}<span class="subgroup__lat">{$t('timeline.subgroup.docs', { n: docCount(sub.events) })}</span>{/if}
+          {#if latencySpan(sub.events, $t)}<span class="subgroup__lat">{latencySpan(sub.events, $t)}</span>{/if}
         </summary>
         <div class="sub-events">
           {#each sub.events as e (eventKey(e))}
+            {@const lat = num(e.latency_ms)}
             <div class="mcp-row" in:fly={flyIn}>
               <span class="event__meta">{str(e.timestamp)}</span>
               <span class="mcp-row__tool ds-code">{str(e.mcp_tool || e.mcp_server)}</span>
-              {#if num(e.latency_ms) != null}<span class="mcp-row__lat">{num(e.latency_ms)} ms</span>{/if}
+              {#if lat != null}<span class="mcp-row__lat">{$t('timeline.latencyMs', { ms: lat })}</span>{/if}
             </div>
           {/each}
         </div>

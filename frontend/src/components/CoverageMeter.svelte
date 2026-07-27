@@ -3,45 +3,66 @@
   // (roadmap Wave 1 item 2). Purely presentational: parent passes the
   // /infra/graph `totals`; percentage shaping lives in lib/coverage.ts.
   import { coveragePercent } from '../lib/coverage';
+  import { t, locale, fmtNumber } from '../lib/i18n';
 
   let {
     totals = null,
-    subject = 'your infrastructure',
+    subject,
   }: {
     /** The /infra/graph totals; null until the first fetch resolves. */
     totals: { resources: number; managed: number; drift: number } | null;
     /**
-     * What the percentage is "of" in the headline. Default "your
-     * infrastructure"; the Infrastructure panel passes a scope-aware subject
-     * ("your supported infrastructure") when it feeds scope totals.
+     * What the percentage is "of" in the headline. Defaults to the localized
+     * "your infrastructure"; the Infrastructure panel passes a scope-aware
+     * subject ("your supported infrastructure") when it feeds scope totals.
      */
     subject?: string;
   } = $props();
 
   const pct = $derived(totals ? coveragePercent(totals.managed, totals.resources) : null);
+  const pctText = $derived(pct === null ? null : fmtNumber(pct, $locale));
+  const subjectText = $derived(subject ?? $t('infra.coverage.subjectDefault'));
+  // The headline is one whole-sentence catalog key per locale (word order
+  // differs), with a literal '{{PCT}}' marker split out here to slot in the
+  // separately-styled/tested percentage <strong> — see infra.coverage.headline.
+  const headlineParts = $derived($t('infra.coverage.headline', { subject: subjectText }).split('{{PCT}}'));
 </script>
 
 {#if totals && pct !== null}
   <div class="coverage" data-testid="coverage-meter">
     <p class="coverage__headline">
-      <strong class="coverage__pct" data-testid="coverage-pct">{pct}%</strong>
-      of {subject} is under IaC management
+      {headlineParts[0]}<strong class="coverage__pct" data-testid="coverage-pct">{pctText}%</strong
+      >{headlineParts[1] ?? ''}
     </p>
     <div
       class="coverage__bar"
       role="progressbar"
-      aria-label="IaC coverage"
+      aria-label={$t('infra.coverage.ariaLabel')}
       aria-valuemin="0"
       aria-valuemax="100"
       aria-valuenow={pct}
-      aria-valuetext="{pct}% of {subject}, {totals.managed} of {totals.resources} resources managed"
+      aria-valuetext={$t('infra.coverage.ariaValueText', {
+        pct: pctText ?? '',
+        subject: subjectText,
+        managed: fmtNumber(totals.managed, $locale),
+        resources: fmtNumber(totals.resources, $locale),
+      })}
     >
       <div class="coverage__fill" data-testid="coverage-fill" style:width="{pct}%"></div>
     </div>
-    <!-- {' '} renders the separator space explicitly: Svelte trims literal
-         leading whitespace at {#if} boundaries, but never expression tags. -->
     <p class="coverage__detail" data-testid="coverage-detail">
-      {totals.managed} of {totals.resources} resources managed{#if totals.drift > 0}{' '}· {totals.drift} not yet in IaC{/if}
+      {#if totals.drift > 0}
+        {$t('infra.coverage.detailWithDrift', {
+          managed: fmtNumber(totals.managed, $locale),
+          resources: fmtNumber(totals.resources, $locale),
+          drift: fmtNumber(totals.drift, $locale),
+        })}
+      {:else}
+        {$t('infra.coverage.detail', {
+          managed: fmtNumber(totals.managed, $locale),
+          resources: fmtNumber(totals.resources, $locale),
+        })}
+      {/if}
     </p>
   </div>
 {/if}

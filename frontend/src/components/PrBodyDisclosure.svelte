@@ -18,6 +18,7 @@
   // parse degrades to a single plain-text paragraph.
 
   import { parseMarkdown, type BlockNode, type InlineNode } from '../lib/markdown';
+  import { t } from '../lib/i18n';
 
   let { body, truncated = false }: { body: string | null; truncated?: boolean } =
     $props();
@@ -53,7 +54,7 @@
 {#if body && blocks.length > 0}
   <details class="ds-disclosure pr-body" data-testid="pr-body-disclosure">
     <summary class="pr-body__summary">
-      What this change did <span class="pr-body__hint">(from the PR)</span>
+      {$t('approval.prBody.summary')}<span class="pr-body__hint">{$t('approval.prBody.hint')}</span>
     </summary>
     <!-- focusable so keyboard users can scroll the clipped prose (WCAG 2.1.1) -->
     <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
@@ -62,7 +63,7 @@
       data-testid="pr-body-md"
       tabindex="0"
       role="group"
-      aria-label="Pull request description"
+      aria-label={$t('approval.prBody.ariaLabel')}
     >
       {#each blocks as b}
         {#if b.type === 'heading'}
@@ -87,7 +88,7 @@
             class="md-table-wrap"
             tabindex="0"
             role="group"
-            aria-label="Table (scrollable)"
+            aria-label={$t('approval.prBody.tableScrollable')}
           >
             <table class="md-table">
               <thead>
@@ -105,7 +106,7 @@
     </div>
     {#if truncated}
       <p class="pr-body__truncated" data-testid="pr-body-truncated">
-        Description truncated. Open the PR on GitHub for the full text.
+        {$t('approval.prBody.truncated')}
       </p>
     {/if}
   </details>

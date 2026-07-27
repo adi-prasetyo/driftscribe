@@ -33,6 +33,7 @@
     scopeTotals,
     startHereAssetType,
     investigateUnmatchedPrefill,
+    infraTypeLabel,
     type InfraGraph,
     type ResourceCard,
     type ResourceRowStatus,
@@ -44,6 +45,7 @@
   import { iacApprovalHref } from '../lib/approval';
   import { RefreshScheduler } from '../lib/infra_refresh';
   import { coveragePercent } from '../lib/coverage';
+  import { t, locale, fmtNumber, plural, type TranslateFn, type MessageKey } from '../lib/i18n';
   import CoverageMeter from './CoverageMeter.svelte';
   import HelpHint from './HelpHint.svelte';
   import Icon from './Icon.svelte';
@@ -108,7 +110,10 @@
   let graph = $state<InfraGraph | null>(null);
   let loading = $state(false);
   let mermaidLoading = $state(false);
-  let error = $state<string | null>(null);
+  // Holds a catalog key (+ params) rather than resolved text so the rendered
+  // message stays correct if the operator switches language while it is shown
+  // (i18n: infra.error.*).
+  let error = $state<{ key: MessageKey; params?: Record<string, string | number> } | null>(null);
   let svgHtml = $state('');
 
   // Preview overlay state. `overlayError` is the transport/parse failure flag
@@ -144,23 +149,8 @@
   // One inline explanation for the legend colors AND the system-managed tag
   // (HelpHint ⓘ). The grey dot is shared by counts-only rows and named
   // system-managed rows, so the copy disambiguates both. Voice matches the
-  // de-AI copy pass (PR #144): colons, no em dashes.
-  const LEGEND_HELP =
-    'Every box is a real resource in your project. Green means managed in IaC: ' +
-    'it is defined in OpenTofu, so DriftScribe tracks it and can change it through ' +
-    'the approval flow. Yellow means adoptable drift: the resource exists, is not ' +
-    'in any .tf file, and is a type DriftScribe can import, so it has an Adopt ' +
-    'button. Grey is neutral: counts-only rows hide sensitive names such as ' +
-    'secrets and show only a number; named rows tagged system-managed are ' +
-    'protected (the OpenTofu state and artifact buckets DriftScribe owns, or ' +
-    'resources a Google service creates automatically, such as Cloud Build ' +
-    'buckets and the Pub/Sub pairs Eventarc uses to deliver trigger events: ' +
-    'the denylist blocks changing or adopting them); and rows in a type ' +
-    'DriftScribe cannot import are marked ' +
-    'not an adoptable type. Those grey rows are real but not counted as drift.' +
-    ' A blue marker means an adoption PR is already open for that resource: open ' +
-    'it from the card or the band at the top to review and approve, instead of ' +
-    'adopting it again.';
+  // de-AI copy pass (PR #144): colons, no em dashes. i18n: infra.legend.help.
+  const legendHelp = $derived($t('infra.legend.help'));
 
   const degraded = $derived(graph?.degraded ?? false);
   const totals = $derived(graph?.totals ?? null);
@@ -179,7 +169,7 @@
   // inline Adopt button. Pure derivation in lib/infra_graph keeps this component
   // thin and the model (row mapping, hidden-unmanaged honesty, drift-first + rank
   // ordering, the each-key by unique assetType) unit-tested in isolation.
-  const cards = $derived<ResourceCard[]>(graph ? resourceCards(graph) : []);
+  const cards = $derived<ResourceCard[]>(graph ? resourceCards(graph, $t) : []);
   // The top adoptable card gets the "Start here" chip (light-touch guided order:
   // the chip + drift-first ordering replace the dropped hint/order-note prose).
   const startHere = $derived(startHereAssetType(cards));
@@ -199,25 +189,41 @@
   // and it counts actionable drift (adoptable, non-control-plane) so it matches
   // the Adopt rows shown. Non-adoptable types are never "drift": a neutral "not
   // tracked" (or "in sync" if some are managed) keeps the "Other resources" calm.
-  function cardBadge(card: ResourceCard): { text: string; warn: boolean } {
-    if (card.sensitive) return { text: 'counts-only', warn: false };
+  function cardBadge(card: ResourceCard, t: TranslateFn): { text: string; warn: boolean } {
+    if (card.sensitive) return { text: t('infra.label.countsOnly'), warn: false };
     if (!card.adoptable) {
-      return { text: card.managed > 0 ? 'in sync' : 'not tracked', warn: false };
+      return { text: t(card.managed > 0 ? 'infra.label.inSync' : 'infra.label.notTracked'), warn: false };
     }
-    if (card.actionableDrift > 0) return { text: `${card.actionableDrift} drift`, warn: true };
+    if (card.actionableDrift > 0) {
+      return { text: t('infra.count.drift', { n: fmtNumber(card.actionableDrift, $locale) }), warn: true };
+    }
     // Nothing managed and nothing to adopt, only protected system-managed rows:
     // "in sync" would misrepresent an empty-of-user-resources card.
-    if (card.managed === 0 && card.systemManagedTotal > 0) return { text: 'system-managed', warn: false };
-    return { text: 'in sync', warn: false };
+    if (card.managed === 0 && card.systemManagedTotal > 0) {
+      return { text: t('infra.label.systemManaged'), warn: false };
+    }
+    return { text: t('infra.label.inSync'), warn: false };
   }
   // Status-dot tint: managed → ok, drift → warn, control-plane / untracked → neutral.
   function dotClass(status: ResourceRowStatus): string {
     return status === 'managed' ? 'ok' : status === 'drift' ? 'drift' : 'hidden';
   }
+  // Localized type label for a card's sentences. Lowercasing is an EN-only
+  // grammar rule (the label lands mid-sentence there); JA labels like
+  // 'Pub/Sub トピック' must pass through unchanged.
+  function cardWord(card: ResourceCard, t: TranslateFn): string {
+    const label = infraTypeLabel(card.assetType, card.label, t);
+    return $locale === 'en' ? label.toLowerCase() : label;
+  }
   // Counts-only line for a sensitive card: "N secrets · hidden" (no name, ever).
-  function countsLine(card: ResourceCard): string {
-    const word = card.label.toLowerCase();
-    return `${card.count} ${card.count === 1 ? word : `${word}s`} · hidden`;
+  function countsLine(card: ResourceCard, t: TranslateFn): string {
+    const key = (card.count === 1 ? 'infra.card.hiddenCountLine.one' : 'infra.card.hiddenCountLine.other') as MessageKey;
+    return t(key, { n: fmtNumber(card.count, $locale), label: cardWord(card, t) });
+  }
+  // "N {label}(s) · not individually listed" for a summarized (all-nodes-truncated) card.
+  function notListedLine(card: ResourceCard, t: TranslateFn): string {
+    const key = (card.count === 1 ? 'infra.card.notListedLine.one' : 'infra.card.notListedLine.other') as MessageKey;
+    return t(key, { n: fmtNumber(card.count, $locale), label: cardWord(card, t) });
   }
 
   function clickAdopt(prefill: string): void {
@@ -231,7 +237,7 @@
   // active. Guarded on `graph` (the prefill needs the live node sample).
   function clickInvestigate(d: UnmatchedDeclaration): void {
     if (adoptDisabled || !graph) return;
-    onInvestigate?.(investigateUnmatchedPrefill(d, graph));
+    onInvestigate?.(investigateUnmatchedPrefill(d, graph, $t));
   }
 
   // The overlay actually drawn (only when preview is active AND it has ghosts).
@@ -277,7 +283,7 @@
         resp = await call('/infra/graph');
       } catch {
         if (myRun !== fetchRun) return;
-        error = 'Could not reach the coordinator.';
+        error = { key: 'infra.error.reachCoordinator' };
         return;
       }
       if (myRun !== fetchRun && resp.ok) {
@@ -291,7 +297,7 @@
       } else if (myRun !== fetchRun) {
         return;
       } else if (!resp.ok) {
-        error = `Request failed (${resp.status}).`;
+        error = { key: 'infra.error.requestFailed', params: { status: resp.status } };
         return;
       }
       let body: InfraGraph;
@@ -299,7 +305,7 @@
         body = (await resp.json()) as InfraGraph;
       } catch {
         if (myRun !== fetchRun) return;
-        error = 'Malformed response.';
+        error = { key: 'infra.error.malformed' };
         return;
       }
       // Last-APPLIED-wins (not last-started-wins): apply this response unless a
@@ -355,14 +361,14 @@
           flowchart: { htmlLabels: false },
         });
       }
-      const src = toMermaid(g, ov ?? undefined);
+      const src = toMermaid(g, ov ?? undefined, $t);
       const { svg } = await mermaidMod.render(`infra-mmd-${++mermaidIdSeq}`, src);
       if (myRender !== renderRun) return;
       svgHtml = svg;
     } catch {
       if (myRender === renderRun) {
         svgHtml = '';
-        error = 'Could not render the diagram.';
+        error = { key: 'infra.error.renderDiagram' };
       }
     } finally {
       if (myRender === renderRun) mermaidLoading = false;
@@ -452,6 +458,24 @@
     untrack(() => scheduler.onAppliedEpoch(epoch));
   });
 
+  // Re-compose the preview SVG when the language toggles: toMermaid bakes the
+  // localized ghost labels into the SVG at render time, so unlike the rest of
+  // the panel (reactive via $t) it needs an explicit re-render. Tracks ONLY
+  // $locale — the guard reads run untracked so a completing render (svgHtml
+  // write) can't re-trigger the effect and loop. Fires on a locale CHANGE
+  // (renderedLocale marker skips the mount run) regardless of svgHtml, so a
+  // toggle racing an in-flight render still bumps renderRun and invalidates
+  // the old-language render (Codex review: first-render race).
+  let renderedLocale = $locale;
+  $effect(() => {
+    const loc = $locale;
+    untrack(() => {
+      if (loc === renderedLocale) return;
+      renderedLocale = loc;
+      if (open && previewActive && graph) void renderDiagram(graph);
+    });
+  });
+
   // Refresh when the operator returns to the tab (covers an apply approved in
   // another tab). Registered once; tears down all scheduler timers on destroy.
   $effect(() => {
@@ -487,24 +511,24 @@
 
 <details class="ds-card infra-panel" data-testid="infra-panel" {open} ontoggle={onToggle}>
   <summary class="infra-summary" data-testid="infra-toggle">
-    <span class="infra-summary__title ds-label"><Icon name="boxes" size={14} extraClass="infra-eyebrow-icon" />Infrastructure</span>
+    <span class="infra-summary__title ds-label"><Icon name="boxes" size={14} extraClass="infra-eyebrow-icon" />{$t('infra.panel.title')}</span>
     <span class="infra-summary__badges">
       {#if loading && !graph}
-        <span class="ds-pill ds-pill--muted">loading…</span>
+        <span class="ds-pill ds-pill--muted">{$t('infra.badge.loading')}</span>
       {:else if degraded}
-        <span class="ds-pill ds-pill--muted" data-testid="infra-drift-badge">unavailable</span>
+        <span class="ds-pill ds-pill--muted" data-testid="infra-drift-badge">{$t('infra.badge.unavailable')}</span>
       {:else if totals}
         {#if scope.drift > 0}
           <span
             class="ds-pill ds-pill--warn"
             data-testid="infra-drift-badge"
-            title="Drift in supported resource types">{scope.drift} drift</span
+            title={$t('infra.badge.driftTitle')}>{$t('infra.count.drift', { n: fmtNumber(scope.drift, $locale) })}</span
           >
         {:else if scope.resources > 0}
           <span
             class="ds-pill ds-pill--ok"
             data-testid="infra-drift-badge"
-            title="In supported resource types">in sync</span
+            title={$t('infra.badge.inSyncTitle')}>{$t('infra.label.inSync')}</span
           >
         {:else if totals.resources > 0}
           <!-- Resources exist, but none in a type DriftScribe manages: a green
@@ -512,13 +536,19 @@
           <span
             class="ds-pill ds-pill--muted"
             data-testid="infra-drift-badge"
-            title="These resources are in types DriftScribe doesn't manage">out of scope</span
+            title={$t('infra.badge.outOfScopeTitle')}>{$t('infra.badge.outOfScope')}</span
           >
         {:else}
-          <span class="ds-pill ds-pill--ok" data-testid="infra-drift-badge">in sync</span>
+          <span class="ds-pill ds-pill--ok" data-testid="infra-drift-badge">{$t('infra.label.inSync')}</span>
         {/if}
         <span class="infra-summary__count" data-testid="infra-coverage-count"
-          >{scope.managed}/{scope.resources} managed{scopePct === null ? '' : ` · ${scopePct}%`}</span
+          >{scopePct === null
+            ? $t('infra.summary.count', { managed: fmtNumber(scope.managed, $locale), resources: fmtNumber(scope.resources, $locale) })
+            : $t('infra.summary.countWithPct', {
+                managed: fmtNumber(scope.managed, $locale),
+                resources: fmtNumber(scope.resources, $locale),
+                pct: fmtNumber(scopePct, $locale),
+              })}</span
         >
       {/if}
       <!-- Separate glanceable badge for unmatched IaC declarations. Independent
@@ -528,8 +558,8 @@
         <span
           class="ds-pill ds-pill--muted infra-summary__unmatched"
           data-testid="infra-unmatched-badge"
-          title="Declared in IaC, not found in the latest inventory"
-          >{unmatchedCount} IaC unmatched</span
+          title={$t('infra.badge.unmatchedTitle')}
+          >{$t('infra.badge.unmatchedCount', { n: fmtNumber(unmatchedCount, $locale) })}</span
         >
       {/if}
     </span>
@@ -540,13 +570,12 @@
       <div class="infra-preview" data-testid="preview-banner" role="status">
         <div class="infra-preview__text">
           <p class="infra-preview__lead">
-            Previewing PR #{previewPr}. Dashed nodes show what approving this change
-            would do. The live map does not change until the change is applied.
+            {$t('infra.preview.lead', { pr: previewPr ?? '' })}
           </p>
           {#if overlay?.available}
             <p class="ds-subtle infra-preview__counts" data-testid="preview-counts">
-              {overlayCountsLine(overlay.counts)}{overlay.hidden > 0
-                ? ` · +${overlay.hidden} more not shown`
+              {overlayCountsLine(overlay.counts, $t)}{overlay.hidden > 0
+                ? $t('infra.preview.hiddenMore', { n: fmtNumber(overlay.hidden, $locale) })
                 : ''}
             </p>
           {/if}
@@ -555,33 +584,30 @@
           class="ds-btn ds-btn--ghost infra-preview__exit"
           type="button"
           data-testid="preview-exit"
-          onclick={exitPreview}>Exit preview</button
+          onclick={exitPreview}>{$t('infra.preview.exit')}</button
         >
       </div>
 
       {#if overlayError}
         <p class="ds-note" data-testid="preview-error">
-          Could not load the change preview.
+          {$t('infra.preview.error')}
           <button
             class="ds-btn ds-btn--ghost infra-preview__retry"
             type="button"
             data-testid="preview-retry"
-            onclick={() => void fetchOverlay()}>Retry</button
+            onclick={() => void fetchOverlay()}>{$t('common.retry')}</button
           >
         </p>
       {:else if overlay && !overlay.available}
         <p class="ds-note" data-testid="preview-unavailable">
           {#if overlay.reason === 'no_plan'}
-            No pending plan was found for PR #{previewPr}. Nothing to preview.
+            {$t('infra.preview.unavailable.noPlan', { pr: previewPr ?? '' })}
           {:else if overlay.reason === 'artifact_error'}
-            The plan for PR #{previewPr} could not be verified, so it cannot be previewed.
-            Open the approval page for details.
+            {$t('infra.preview.unavailable.artifactError', { pr: previewPr ?? '' })}
           {:else if overlay.reason === 'resolved'}
-            PR #{previewPr} has already reached a final outcome. The map below shows
-            what is live now.
+            {$t('infra.preview.unavailable.resolved', { pr: previewPr ?? '' })}
           {:else}
-            This plan could not be summarized into a preview. Review the approval page
-            instead.
+            {$t('infra.preview.unavailable.summaryUnavailable')}
           {/if}
         </p>
       {/if}
@@ -603,7 +629,7 @@
                estate, so the plain default subject is clearer (Workflow). -->
           <CoverageMeter
             totals={{ resources: scope.resources, managed: scope.managed, drift: scope.drift }}
-            subject={scope.otherResources > 0 ? 'your supported infrastructure' : 'your infrastructure'}
+            subject={$t(scope.otherResources > 0 ? 'infra.coverage.subjectSupported' : 'infra.coverage.subjectDefault')}
           />
           {#if scope.otherResources > 0}
             <!-- otherResources (the disclosure's own sum), NOT outOfScope: the
@@ -611,28 +637,32 @@
                  so attributing a number to "types DriftScribe doesn't manage"
                  must use what those cards actually total (Codex MF). -->
             <p class="ds-subtle infra-hero__scope-note" data-testid="infra-scope-note">
-              {scope.totalResources} total resources indexed · {scope.otherResources} in types
-              DriftScribe doesn't manage
+              {$t('infra.hero.scopeNote', {
+                total: fmtNumber(scope.totalResources, $locale),
+                other: fmtNumber(scope.otherResources, $locale),
+              })}
             </p>
           {/if}
         {:else if graph && !degraded && scope.totalResources > 0}
-          <p class="ds-subtle infra-hero__msg">No resources in supported types yet.</p>
+          <p class="ds-subtle infra-hero__msg">{$t('infra.hero.noSupportedResources')}</p>
         {:else if graph && !degraded}
-          <p class="ds-subtle infra-hero__msg">No resources indexed yet.</p>
+          <p class="ds-subtle infra-hero__msg">{$t('infra.hero.noResourcesIndexed')}</p>
         {:else if degraded}
           <!-- A plain muted line (NOT .ds-note): inside the framed hero a
                boxed callout would read as a frame-within-a-frame. -->
           <p class="ds-subtle infra-hero__msg" data-testid="infra-degraded">
-            Infrastructure inventory is unavailable right now{graph?.degraded_reason
-              ? ` (${graph.degraded_reason})`
-              : ''}. Cloud Asset Inventory may still be initializing. Try refreshing in a moment.
+            {$t('infra.hero.degraded', {
+              reason: graph?.degraded_reason
+                ? $t('infra.degraded.withReason', { reason: graph.degraded_reason })
+                : '',
+            })}
           </p>
         {:else if loading}
-          <p class="ds-subtle infra-hero__msg">Loading inventory…</p>
+          <p class="ds-subtle infra-hero__msg">{$t('infra.hero.loading')}</p>
         {:else}
           <!-- Fetch failed before any graph arrived: keep the framed hero from
                rendering hollow (the error alert itself shows below). -->
-          <p class="ds-subtle infra-hero__msg">Inventory unavailable.</p>
+          <p class="ds-subtle infra-hero__msg">{$t('infra.hero.unavailable')}</p>
         {/if}
       </div>
       <button
@@ -641,11 +671,11 @@
         data-testid="infra-refresh"
         onclick={manualRefresh}
         disabled={loading || mermaidLoading}
-      >{loading || mermaidLoading ? 'Refreshing…' : 'Refresh'}</button>
+      >{loading || mermaidLoading ? $t('infra.hero.refreshing') : $t('infra.hero.refresh')}</button>
     </div>
 
     {#if error}
-      <p class="ds-blocked" role="alert">{error}</p>
+      <p class="ds-blocked" role="alert">{$t(error.key, error.params)}</p>
     {/if}
 
     <!-- Open infra changes: every OPEN driftscribe-infra PR awaiting approval.
@@ -657,16 +687,16 @@
       <section
         class="infra-pending-band"
         data-testid="pending-approvals-band"
-        aria-label="Open infrastructure changes"
+        aria-label={$t('infra.pending.ariaLabel')}
       >
-        <h3 class="infra-pending-band__title">Open infra changes ({pendingApprovals.length})</h3>
+        <h3 class="infra-pending-band__title">{$t('infra.pending.title', { n: fmtNumber(pendingApprovals.length, $locale) })}</h3>
         <ul class="infra-pending-band__list">
           {#each pendingApprovals as a (a.pr_number)}
-            {@const href = iacApprovalHref(a.pr_number)}
+            {@const href = iacApprovalHref(a.pr_number, $locale)}
             {#if href}
               <li class="infra-pending-band__item">
                 <a class="infra-pending-band__link" {href} target="_blank" rel="noopener"
-                  >PR #{a.pr_number} →</a
+                  >{$t('infra.pending.prLink', { pr: a.pr_number })}</a
                 >
                 <span class="infra-pending-band__pr-title">{a.title}</span>
               </li>
@@ -683,24 +713,24 @@
          drops onto its own row below the keys. -->
     {#if (graph && !degraded) || previewActive}
       <p class="infra-legend" data-testid="infra-legend">
-        <span class="infra-legend__lead ds-label">Legend</span>
+        <span class="infra-legend__lead ds-label">{$t('infra.legend.title')}</span>
         {#if graph && !degraded}
-          <span class="infra-key infra-key--managed">managed in IaC</span>
-          <span class="infra-key infra-key--drift">adoptable drift</span>
-          <span class="infra-key infra-key--hidden">counts-only</span>
+          <span class="infra-key infra-key--managed">{$t('infra.legend.managed')}</span>
+          <span class="infra-key infra-key--drift">{$t('infra.legend.drift')}</span>
+          <span class="infra-key infra-key--hidden">{$t('infra.label.countsOnly')}</span>
           {#if pendingApprovals.length > 0}
-            <span class="infra-key infra-key--pending" data-testid="legend-pending">Open PR</span>
+            <span class="infra-key infra-key--pending" data-testid="legend-pending">{$t('infra.legend.openPr')}</span>
           {/if}
         {/if}
         {#if previewActive}
-          <span class="infra-key infra-key--ghost-create">will be created</span>
-          <span class="infra-key infra-key--ghost-update">will be modified</span>
-          <span class="infra-key infra-key--ghost-destroy">will be destroyed</span>
+          <span class="infra-key infra-key--ghost-create">{$t('infra.legend.ghostCreate')}</span>
+          <span class="infra-key infra-key--ghost-update">{$t('infra.legend.ghostUpdate')}</span>
+          <span class="infra-key infra-key--ghost-destroy">{$t('infra.legend.ghostDestroy')}</span>
         {/if}
         {#if graph && !degraded}
           <HelpHint
-            text={LEGEND_HELP}
-            ariaLabel="Explain the resource colors and tags"
+            text={legendHelp}
+            ariaLabel={$t('infra.legend.helpAriaLabel')}
             testid="legend-help"
           />
         {/if}
@@ -718,19 +748,18 @@
       <section
         class="infra-unmatched"
         data-testid="infra-unmatched"
-        aria-label="IaC declarations not found in the latest inventory"
+        aria-label={$t('infra.unmatched.ariaLabel')}
       >
         <div class="infra-unmatched__head">
-          <h3 class="infra-unmatched__title ds-label">Declared in IaC, not found live</h3>
+          <h3 class="infra-unmatched__title ds-label">{$t('infra.unmatched.title')}</h3>
           <p class="ds-subtle infra-unmatched__lead">
-            These declarations did not match the latest Cloud Asset Inventory snapshot.
-            Index lag or an unapplied IaC change can cause this.
+            {$t('infra.unmatched.lead')}
           </p>
         </div>
         <ul class="infra-unmatched__list">
           {#each unmatchedEntries as d (d.id)}
             <li class="infra-unmatched__row" data-testid="infra-unmatched-row">
-              <span class="infra-unmatched__type">{d.type_label}</span>
+              <span class="infra-unmatched__type">{infraTypeLabel(d.asset_type, d.type_label, $t)}</span>
               <span class="infra-unmatched__name">{d.label}</span>
               {#if d.address}
                 <code class="infra-unmatched__addr">{d.address}</code>
@@ -740,16 +769,14 @@
                 type="button"
                 data-testid="infra-unmatched-investigate"
                 disabled={adoptDisabled}
-                title={adoptDisabled
-                  ? 'Unavailable while the chat is busy or reviewing past reasoning.'
-                  : 'Ask Provision to investigate this declaration (opens a draft, sends nothing)'}
+                title={adoptDisabled ? $t('infra.disabledHint') : $t('infra.unmatched.investigateHint')}
                 onclick={() => clickInvestigate(d)}
-              ><Icon name="compass" size={13} extraClass="infra-unmatched__btn-icon" />Investigate</button>
+              ><Icon name="compass" size={13} extraClass="infra-unmatched__btn-icon" />{$t('infra.unmatched.investigate')}</button>
             </li>
           {/each}
           {#if unmatched && unmatched.truncated > 0}
             <li class="ds-subtle infra-unmatched__trailer" data-testid="infra-unmatched-trailer">
-              +{unmatched.truncated} more declarations not shown
+              {$t('infra.unmatched.trailer', { n: fmtNumber(unmatched.truncated, $locale) })}
             </li>
           {/if}
         </ul>
@@ -767,19 +794,19 @@
              and every label is entity-escaped upstream in toMermaid. -->
         <div class="infra-diagram" data-testid="infra-diagram">{@html svgHtml}</div>
       {:else if mermaidLoading || loading}
-        <p class="ds-subtle">Rendering diagram…</p>
+        <p class="ds-subtle">{$t('infra.preview.rendering')}</p>
       {:else if graph && !degraded}
         <!-- Preview with no renderable live map AND no ghosts (e.g. a resolved
              overlay over an empty live estate): the banner says "the map below
              shows what is live now", so the honest empty note belongs below it
              rather than a blank gap (5-lens review w4jj7t4a5). -->
-        <p class="ds-note" data-testid="infra-empty">No resources indexed yet.</p>
+        <p class="ds-note" data-testid="infra-empty">{$t('infra.hero.noResourcesIndexed')}</p>
       {/if}
     {:else if graph && !degraded}
       <!-- One card renderer, shared by the in-scope grid and the "Other
            resources" disclosure (a Svelte snippet keeps the two grids identical). -->
       {#snippet cardView(card: ResourceCard)}
-        {@const badge = cardBadge(card)}
+        {@const badge = cardBadge(card, $t)}
         {@const cardActionable = card.rows.some(
           (r) =>
             r.adoptable &&
@@ -787,10 +814,10 @@
         )}
         <div class="infra-card" data-testid="infra-card">
           <div class="infra-card__head">
-            <span class="infra-card__type" data-testid="infra-card-type">{card.label}</span>
+            <span class="infra-card__type" data-testid="infra-card-type">{infraTypeLabel(card.assetType, card.label, $t)}</span>
             <span class="infra-card__head-meta">
               {#if card.assetType === startHere && cardActionable}
-                <span class="infra-card__start" data-testid="card-start-here">Start here</span>
+                <span class="infra-card__start" data-testid="card-start-here">{$t('infra.card.startHere')}</span>
               {/if}
               <span
                 class="ds-pill infra-card__badge {badge.warn ? 'ds-pill--warn' : 'ds-pill--muted'}"
@@ -801,7 +828,7 @@
           <ul class="infra-card__body">
             {#if card.sensitive}
               <li class="infra-card__counts" data-testid="card-counts-only">
-                <span class="infra-dot infra-dot--hidden"></span>{countsLine(card)}
+                <span class="infra-dot infra-dot--hidden"></span>{countsLine(card, $t)}
               </li>
             {:else if card.rows.length === 0 && card.systemManagedTotal === 0}
               <!-- Defensive: a non-sensitive type with resources but no sampled
@@ -811,8 +838,7 @@
                    (sampled OR inferred from aggregates) falls through to the
                    disclosure below instead. -->
               <li class="infra-card__counts" data-testid="card-summary">
-                <span class="infra-dot infra-dot--hidden"></span>{card.count}
-                {card.label.toLowerCase()}{card.count === 1 ? '' : 's'} · not individually listed
+                <span class="infra-dot infra-dot--hidden"></span>{notListedLine(card, $t)}
               </li>
             {:else}
               {#each card.rows as row (row.nodeId)}
@@ -821,11 +847,11 @@
                   <span class="infra-card__name">{row.label}</span>
                   {#if row.status === 'managed'}
                     <span class="infra-card__tag infra-card__tag--ok" data-testid="card-managed-tag"
-                      >managed</span
+                      >{$t('infra.card.managedTag')}</span
                     >
                   {:else if row.adoptable}
                     {@const pendingPr = findPendingPr(pendingApprovals, card.assetType, row.label)}
-                    {@const pendingHref = pendingPr !== null ? iacApprovalHref(pendingPr) : null}
+                    {@const pendingHref = pendingPr !== null ? iacApprovalHref(pendingPr, $locale) : null}
                     {#if pendingPr !== null && pendingHref}
                       <!-- An adoption PR is already open for this resource: link to
                            its approval page (kills duplicate-adoption PRs) instead
@@ -835,10 +861,10 @@
                         data-testid="card-pending-link"
                         href={pendingHref}
                         target="_blank"
-                        rel="noopener">Review pending adoption (PR #{pendingPr}) →</a
+                        rel="noopener">{$t('infra.card.pendingLink', { pr: pendingPr })}</a
                       >
                       <span class="infra-card__pending-tag" data-testid="card-pending-tag"
-                        >PR open</span
+                        >{$t('infra.card.pendingTag')}</span
                       >
                     {:else}
                       <button
@@ -846,29 +872,30 @@
                         type="button"
                         data-testid="card-adopt-btn"
                         disabled={adoptDisabled}
-                        title={adoptDisabled
-                          ? 'Unavailable while the chat is busy or reviewing past reasoning.'
-                          : undefined}
-                        onclick={() => clickAdopt(row.prefill)}>Adopt into IaC</button
+                        title={adoptDisabled ? $t('infra.disabledHint') : undefined}
+                        onclick={() => clickAdopt(row.prefill)}>{$t('infra.card.adoptButton')}</button
                       >
                     {/if}
                   {:else}
                     <span class="ds-subtle infra-card__muted" data-testid="card-not-adoptable"
-                      >not an adoptable type</span
+                      >{$t('infra.label.notAdoptableType')}</span
                     >
                   {/if}
                 </li>
               {/each}
               {#if card.hiddenUnmanaged > 0}
                 <li class="ds-subtle infra-card__trailer" data-testid="card-trailer">
-                  +{card.hiddenUnmanaged} more unmanaged {card.label}(s) not shown
+                  {$t('infra.card.trailerUnmanaged', { n: fmtNumber(card.hiddenUnmanaged, $locale), label: infraTypeLabel(card.assetType, card.label, $t) })}
                 </li>
               {:else if !card.adoptable && card.count > card.rows.length + card.systemManaged.length}
                 <!-- Non-adoptable type: a neutral truncation note (never "unmanaged"
                      / "drift" — these aren't actionable). Subtract systemManaged so
                      the count isn't inflated by rows shown in the disclosure below. -->
                 <li class="ds-subtle infra-card__trailer" data-testid="card-trailer">
-                  +{card.count - card.rows.length - card.systemManaged.length} more {card.label}(s) not shown
+                  {$t('infra.card.trailerNotShown', {
+                    n: fmtNumber(card.count - card.rows.length - card.systemManaged.length, $locale),
+                    label: infraTypeLabel(card.assetType, card.label, $t),
+                  })}
                 </li>
               {/if}
             {/if}
@@ -885,20 +912,22 @@
                 <details class="infra-card__system" data-testid="card-system-managed">
                   <summary class="infra-card__system-summary" data-testid="card-system-managed-summary">
                     <span class="infra-dot infra-dot--hidden"></span>
-                    {card.systemManagedTotal} system-managed
-                    <span class="ds-subtle">· protected</span>
+                    {$t('infra.card.systemManagedCount', { n: fmtNumber(card.systemManagedTotal, $locale) })}
+                    <span class="ds-subtle">{$t('infra.card.protected')}</span>
                   </summary>
                   <ul class="infra-card__system-body">
                     {#each card.systemManaged as row (row.nodeId)}
                       <li class="infra-card__row infra-card__row--control_plane">
                         <span class="infra-dot infra-dot--hidden"></span>
                         <span class="infra-card__name">{row.label}</span>
-                        <span class="infra-card__tag" data-testid="card-control-plane">system-managed</span>
+                        <span class="infra-card__tag" data-testid="card-control-plane">{$t('infra.label.systemManaged')}</span>
                       </li>
                     {/each}
                     {#if card.systemManagedTotal > card.systemManaged.length}
                       <li class="ds-subtle infra-card__trailer">
-                        +{card.systemManagedTotal - card.systemManaged.length} more not shown
+                        {$t('infra.card.systemManagedMore', {
+                          n: fmtNumber(card.systemManagedTotal - card.systemManaged.length, $locale),
+                        })}
                       </li>
                     {/if}
                   </ul>
@@ -923,10 +952,11 @@
              into a collapsed disclosure so the default view stays on-scope. -->
         <details class="infra-other" data-testid="infra-other">
           <summary class="infra-other__summary" data-testid="infra-other-summary">
-            <span class="infra-other__lead ds-label">Other resources DriftScribe doesn't manage</span>
+            <span class="infra-other__lead ds-label">{$t('infra.other.lead')}</span>
             <span class="infra-other__meta"
-              >{scope.otherTypes} {scope.otherTypes === 1 ? 'type' : 'types'} · {scope.otherResources}
-              {scope.otherResources === 1 ? 'resource' : 'resources'}</span
+              >{plural($t, 'infra.other.typeCount', scope.otherTypes)}{$t(
+                'infra.meta.separator',
+              )}{plural($t, 'infra.other.resourceCount', scope.otherResources)}</span
             >
           </summary>
           <div class="infra-cards" data-testid="infra-other-cards">
@@ -1294,11 +1324,17 @@
   /* Pending-PR affordances — stream-ink (blue), distinct from the warn-tinted
      Adopt button: this is "go review an open PR", not "start an adoption". */
   .infra-card__pending-link {
-    flex: none;
+    /* Wrap like the resource name (flex:1 1 auto; min-width:0;
+       overflow-wrap:anywhere) so a long label breaks and stays inside the
+       208px-minimum card. The old flex:none + white-space:nowrap fit the short
+       EN "Review pending adoption (PR #…) →" but clipped the longer JA
+       "保留中の IaC 管理への取り込みを確認（PR #…）→" at the card edge. */
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-wrap: anywhere;
     font-size: var(--ds-fs-1);
     color: var(--ds-stream-ink);
     text-decoration: underline;
-    white-space: nowrap;
   }
   .infra-card__pending-tag {
     flex: none;

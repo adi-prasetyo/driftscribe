@@ -15,6 +15,7 @@ import {
   adoptGroupRank,
   adoptPrefill,
   findPendingPr,
+  infraTypeLabel,
   normalizeForPrompt,
   prefillLocation,
   resourceCards,
@@ -23,6 +24,7 @@ import {
   type PendingApproval,
 } from './infra_graph';
 import { coveragePercent } from './coverage';
+import type { MessageKey, TranslateFn } from './i18n';
 
 export const TOUR_DONE_KEY = 'driftscribe_tour_done';
 
@@ -63,104 +65,72 @@ export type TourStepId = 'welcome' | 'estate' | 'controls' | 'adopt' | 'next';
 
 export interface TourStep {
   id: TourStepId;
-  title: string;
+  /** i18n key for the step title; resolved by the component via $t. */
+  titleKey: MessageKey;
   /** data-tour attribute of the page element to spotlight; null = none. */
   target: string | null;
 }
 
 export const TOUR_STEPS: readonly TourStep[] = [
-  { id: 'welcome', title: 'Welcome', target: null },
-  { id: 'estate', title: 'Your estate', target: 'estate' },
-  { id: 'controls', title: 'You set the pace', target: 'controls' },
-  { id: 'adopt', title: 'Adopt your first resource', target: 'estate' },
-  { id: 'next', title: 'What happens next', target: 'composer' },
+  { id: 'welcome', titleKey: 'tour.step.welcome.title', target: null },
+  { id: 'estate', titleKey: 'tour.step.estate.title', target: 'estate' },
+  { id: 'controls', titleKey: 'tour.step.controls.title', target: 'controls' },
+  { id: 'adopt', titleKey: 'tour.step.adopt.title', target: 'estate' },
+  { id: 'next', titleKey: 'tour.step.next.title', target: 'composer' },
 ];
 
 /** Step 1 — the project is unknown until /infra/graph resolves. */
-export function welcomeLine(graph: InfraGraph | null): string {
+export function welcomeLine(t: TranslateFn, graph: InfraGraph | null): string {
   const subject = graph?.project
-    ? `the GCP project ${graph.project}`
-    : 'your GCP project';
-  return (
-    `DriftScribe is a small crew keeping ${subject} honest, from creation ` +
-    'onward, and it works as a loop. Provision stands infrastructure up: you ' +
-    'describe a change, it opens the IaC pull request. Anchor then guards what ' +
-    'is live. It runs on its own, the only crew that does, watching your Cloud ' +
-    'Run config and reacting the moment it drifts from its contract. Patch ' +
-    'keeps your dependencies current, and Explore answers questions read-only, ' +
-    'including how DriftScribe itself works. Provision, Patch, and Explore ' +
-    'wait for you to ask. Infrastructure applies and rollbacks always wait for ' +
-    'your approval. Only routine dependency updates can run end-to-end, and ' +
-    'only at the Propose + Apply setting.'
-  );
+    ? t('tour.welcome.subjectKnown', { project: graph.project })
+    : t('tour.welcome.subjectUnknown');
+  return t('tour.welcome.body', { subject });
 }
 
 /** Step 2 — live totals, or an honest loading/degraded line (T3). */
-export function estateLine(graph: InfraGraph | null): string {
-  if (graph === null) {
-    return (
-      'Your estate is still loading. The Infrastructure panel below will ' +
-      'fill in shortly.'
-    );
-  }
-  if (graph.degraded) {
-    return (
-      'The resource inventory is unavailable right now (Cloud Asset ' +
-      'Inventory may still be initializing). You can keep going and check ' +
-      'the panel later.'
-    );
-  }
+export function estateLine(t: TranslateFn, graph: InfraGraph | null): string {
+  if (graph === null) return t('tour.estate.loading');
+  if (graph.degraded) return t('tour.estate.degraded');
   // Scope-aware to match the panel (design 2026-06-25 scope-split, Codex MF2):
   // coverage is over the resource types DriftScribe manages, with the rest
   // (Cloud Run revisions, container images, …) called out as out-of-scope so the
   // tour never contradicts the meter below it.
   const s = scopeTotals(resourceCards(graph), graph.totals.resources);
-  const tail = 'The coverage meter below tracks your migration.';
   // Nothing in scope: a single clean clause (avoid "None… The other N", which
   // contradicts itself — Workflow finding).
   if (s.resources === 0) {
-    const body =
-      s.otherResources > 0
-        ? 'none are in resource types DriftScribe supports. They are types like ' +
-          'Cloud Run revisions and container images it does not manage'
-        : 'none are in resource types DriftScribe supports yet';
-    return `${s.totalResources} resources indexed, ${body}. ${tail}`;
+    return s.otherResources > 0
+      ? t('tour.estate.zeroWithOther', { total: s.totalResources })
+      : t('tour.estate.zeroAlone', { total: s.totalResources });
   }
-  const pct = coveragePercent(s.managed, s.resources);
-  const pctPart = pct === null ? '' : ` (${pct}%)`;
-  const scopeSentence =
-    `In the resource types DriftScribe supports, ${s.managed} of ${s.resources} ` +
-    `are under IaC management${pctPart}, ${s.drift} not yet.`;
-  const otherSentence =
-    s.otherResources > 0
-      ? ` The other ${s.otherResources} are types it does not manage, like Cloud Run ` +
-        'revisions and container images.'
-      : '';
-  return `${s.totalResources} resources indexed. ${scopeSentence}${otherSentence} ${tail}`;
+  // resources > 0 here, so coveragePercent (null only when resources <= 0)
+  // is always a number — the `?? 0` is a type-safety fallback, never live.
+  const pct = coveragePercent(s.managed, s.resources) ?? 0;
+  const params = {
+    total: s.totalResources,
+    managed: s.managed,
+    resources: s.resources,
+    pct,
+    drift: s.drift,
+  };
+  return s.otherResources > 0
+    ? t('tour.estate.inScopeWithOther', { ...params, other: s.otherResources })
+    : t('tour.estate.inScope', params);
 }
 
 // Step 3 — honesty T2: the always-gated claim is scoped to INFRASTRUCTURE
 // edits; Propose + Apply is allowed to finish routine dependency updates.
-export const CONTROLS_LINE =
-  'The Mode control in the top bar governs what Anchor does on its own when it ' +
-  'spots a change, and what the other agents may do when you ask: Observe (they ' +
-  'only watch and report), Propose (they draft changes for your review), or ' +
-  'Propose + Apply (they may also complete routine dependency updates ' +
-  'end-to-end). At every setting, infrastructure edits pass your explicit ' +
-  'approval gate. The Pause control sits next to it in the top bar and suspends ' +
-  'all agent activity in one click.';
+export function controlsLine(t: TranslateFn): string {
+  return t('tour.controls.body');
+}
 
 // Step 5 — what sending the prefilled request actually does, and how to
 // reopen the tour. Honesty T6 (Codex MF1): scoped to THIS adopt request —
 // a blanket "nothing is applied until you approve" would overclaim, since
 // Propose + Apply may merge dependency PRs on its own.
-export const NEXT_LINE =
-  'When you send this adopt request, the agent drafts it as a GitHub pull ' +
-  'request with a plan you can read in plain language: what it changes, ' +
-  'what it can never touch, and what it is estimated to cost. The ' +
-  'infrastructure change is applied only after you approve it on the ' +
-  'review page. You can reopen this tour anytime from the Tour button in ' +
-  'the header.';
+export function nextLine(t: TranslateFn): string {
+  return t('tour.next.body');
+}
 
 export type AdoptStepState =
   | { kind: 'unavailable'; line: string }
@@ -183,17 +153,12 @@ export type AdoptStepState =
  * suggestion in line with both. Omitted/undefined = no filtering (unchanged).
  */
 export function adoptStepState(
+  t: TranslateFn,
   graph: InfraGraph | null,
   pendingApprovals?: PendingApproval[] | null,
 ): AdoptStepState {
   if (graph === null || graph.degraded) {
-    return {
-      kind: 'unavailable',
-      line:
-        'The estate inventory is not available yet, so the tour cannot ' +
-        'suggest a first adoption. When it returns, the Adopt buttons live ' +
-        'in the Infrastructure panel.',
-    };
+    return { kind: 'unavailable', line: t('tour.adopt.unavailable') };
   }
   const candidates = graph.groups
     .filter((g) => !g.sensitive && g.adoptable === true)
@@ -226,23 +191,19 @@ export function adoptStepState(
       rank !== null && typeof g.adopt_hint === 'string' && g.adopt_hint
         ? g.adopt_hint
         : null;
+    const typeLabel = infraTypeLabel(g.asset_type, g.label, t);
     return {
       kind: 'target',
-      line:
-        `A good first adoption: the ${g.label} \`${node.label}\`. Adopting ` +
-        'imports a resource into IaC exactly as it is. This zero-change ' +
-        'import goes through the same review and approval as any ' +
-        `other change.${hint ? ` ${hint}` : ''}`,
-      prefill: adoptPrefill(g.label, node.label, prefillLocation(g.asset_type, node.location), node.topic ?? null, node.image ?? null),
+      // `hint` is free backend prose with no stable id (like InfraDiagram's
+      // degraded_reason/caveat) — it passes through untranslated.
+      line: hint
+        ? t('tour.adopt.target.withHint', { groupLabel: typeLabel, nodeLabel: node.label, hint })
+        : t('tour.adopt.target.plain', { groupLabel: typeLabel, nodeLabel: node.label }),
+      prefill: adoptPrefill(typeLabel, node.label, prefillLocation(g.asset_type, node.location), node.topic ?? null, node.image ?? null, t),
     };
   }
   if (graph.totals.drift === 0) {
-    return {
-      kind: 'none',
-      line:
-        'Everything in your estate is already under IaC management, so ' +
-        'there is nothing left to adopt. You are ahead of this tour.',
-    };
+    return { kind: 'none', line: t('tour.adopt.allManaged') };
   }
   // Distinguish WHY there is no suggestion (Codex 019eb76d round-2 + the
   // ranking-filter follow-up): control-plane-only ≠ unnamed ≠ no adoptable
@@ -292,41 +253,12 @@ export function adoptStepState(
         findPendingPr(pendingApprovals, assetType, node.label) !== null,
     )
   ) {
-    return {
-      kind: 'none',
-      line:
-        'Everything the tour could suggest adopting next already has an ' +
-        'adoption PR open and waiting for review. Open it from the Open infra ' +
-        'changes band at the top of the Infrastructure panel instead of ' +
-        'starting a second adoption of the same resource.',
-    };
+    return { kind: 'none', line: t('tour.adopt.allPending') };
   }
   if (!hiddenActionable && unmanagedShown.length > 0 && nonControlPlane.length === 0) {
-    return {
-      kind: 'none',
-      line:
-        'The unmanaged resources the agent could otherwise adopt are ' +
-        'system-managed infrastructure: DriftScribe control-plane services ' +
-        'and IaC state/artifact buckets, or resources a Google service ' +
-        'auto-creates, like Cloud Build buckets and Eventarc trigger ' +
-        'transport. The always-on denylist blocks the agent from ' +
-        'changing these, adoption included. The Infrastructure panel shows ' +
-        'everything that is there.',
-    };
+    return { kind: 'none', line: t('tour.adopt.systemManagedOnly') };
   }
   return hiddenActionable || nonControlPlane.length > 0
-    ? {
-        kind: 'none',
-        line:
-          'There are unmanaged resources the agent could adopt, but none ' +
-          'has a named adopt target the tour can prefill. The ' +
-          'Infrastructure panel shows what the live graph can show.',
-      }
-    : {
-        kind: 'none',
-        line:
-          'Your remaining unmanaged resources are not adoptable types. ' +
-          'The Infrastructure panel shows what is there, and you can ask ' +
-          'about any of them in chat.',
-      };
+    ? { kind: 'none', line: t('tour.adopt.noNamedTarget') }
+    : { kind: 'none', line: t('tour.adopt.notAdoptableTypes') };
 }

@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { groupRules, CATEGORY_HEADINGS } from '../../src/lib/capabilities';
+import { groupRules, categoryHeading } from '../../src/lib/capabilities';
 import type { CapRule } from '../../src/lib/capabilities';
+import { translate, type TranslateFn } from '../../src/lib/i18n';
+
+// The whole suite asserts English (setup.ts pins the suite to the EN catalog);
+// categoryHeading now takes a TranslateFn, so tests thread an EN-bound one.
+const t: TranslateFn = (k, p) => translate('en', k, p);
 
 // Representative subset of the real DTO — exercises the known categories
 // (control-plane, service-managed, iam, global-v1, structural) plus the
@@ -50,15 +55,15 @@ describe('groupRules', () => {
     const cpGroup = groups.find(g => g.category === 'control-plane');
     expect(cpGroup).toBeDefined();
     expect(cpGroup!.rules).toEqual([controlPlaneRule]);
-    expect(cpGroup!.heading).toBe(CATEGORY_HEADINGS['control-plane']);
+    expect(categoryHeading(cpGroup!.category, t)).toBe('Its own control plane is off-limits');
   });
 
   it('renders the service-managed category under its human heading (not the raw key)', () => {
     const groups = groupRules([serviceManagedRule]);
     expect(groups).toHaveLength(1);
     expect(groups[0].category).toBe('service-managed');
-    expect(groups[0].heading).toBe(CATEGORY_HEADINGS['service-managed']);
-    expect(groups[0].heading).not.toBe('service-managed');
+    expect(categoryHeading(groups[0].category, t)).toBe('It leaves Google-created buckets alone');
+    expect(categoryHeading(groups[0].category, t)).not.toBe('service-managed');
   });
 
   it('produces the four originally-known categories as proper headings', () => {
@@ -69,11 +74,9 @@ describe('groupRules', () => {
     expect(categories).toContain('iam');
     expect(categories).toContain('global-v1');
     expect(categories).toContain('structural');
-    // headings come from CATEGORY_HEADINGS
+    // every known category resolves to a heading DIFFERENT from its raw category string
     groups.forEach(g => {
-      if (g.category in CATEGORY_HEADINGS) {
-        expect(g.heading).toBe(CATEGORY_HEADINGS[g.category as keyof typeof CATEGORY_HEADINGS]);
-      }
+      expect(categoryHeading(g.category, t)).not.toBe(g.category);
     });
   });
 
@@ -83,8 +86,8 @@ describe('groupRules', () => {
     // unknown category comes last
     const lastGroup = groups[groups.length - 1];
     expect(lastGroup.category).toBe('experimental');
-    // heading is the raw category string
-    expect(lastGroup.heading).toBe('experimental');
+    // heading falls back to the raw category string (categoryHeading never throws on an unknown id)
+    expect(categoryHeading(lastGroup.category, t)).toBe('experimental');
     // rule is NOT dropped
     expect(lastGroup.rules).toContain(unknownRule);
   });

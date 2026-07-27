@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { t } from '../lib/i18n';
+
   // Inline operator-token entry that REPLACES window.prompt(). Rendered as a
   // centered, accessible modal (role="dialog" aria-modal) over a dim backdrop.
   // App owns sessionStorage['driftscribe_token']; this panel only collects the
@@ -62,10 +64,11 @@
       aria-labelledby="authpanel-title"
       aria-describedby="authpanel-desc"
     >
-      <h2 id="authpanel-title" class="ds-h2 authpanel__title">Operator token</h2>
+      <h2 id="authpanel-title" class="ds-h2 authpanel__title">{$t('auth.panel.title')}</h2>
       <p id="authpanel-desc" class="ds-subtle authpanel__desc">
-        Stored in <code class="ds-code">sessionStorage</code> for this tab only.
-        Cleared when you close the tab, never sent anywhere but the coordinator.
+        {$t('auth.panel.descBefore')}<code class="ds-code">sessionStorage</code>{$t(
+          'auth.panel.descAfter',
+        )}
       </p>
 
       <input
@@ -73,8 +76,8 @@
         bind:value
         type="text"
         class="authpanel__input"
-        aria-label="Operator token"
-        placeholder="Paste your operator token…"
+        aria-label={$t('auth.panel.title')}
+        placeholder={$t('auth.panel.placeholder')}
         autocomplete="off"
         autocapitalize="off"
         autocorrect="off"
@@ -84,7 +87,7 @@
 
       <div class="authpanel__actions">
         <button type="button" class="ds-btn ds-btn--ghost" onclick={onCancel}>
-          Cancel
+          {$t('auth.panel.cancel')}
         </button>
         <button
           type="button"
@@ -92,7 +95,7 @@
           disabled={value.trim() === ''}
           onclick={save}
         >
-          Save
+          {$t('auth.panel.save')}
         </button>
       </div>
     </div>

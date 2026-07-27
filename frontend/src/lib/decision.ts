@@ -11,6 +11,7 @@
 
 import type { Decision } from './types';
 import { fmtWhen } from './format';
+import type { TranslateFn, Locale, MessageKey } from './i18n';
 
 export type FieldBadge = 'ok' | 'danger' | 'warn' | 'muted';
 
@@ -48,27 +49,34 @@ const MERGE_STATE_BADGE: Record<string, FieldBadge> = {
   pending: 'warn',
 };
 
-const ACTION_LABEL: Record<string, string> = {
-  iac_apply: 'Infra apply',
-  rollback: 'Rollback',
-  recheck: 'Re-check',
+const ACTION_LABEL: Record<string, MessageKey> = {
+  iac_apply: 'decisions.action.iacApply',
+  rollback: 'decisions.action.rollback',
+  recheck: 'decisions.action.recheck',
 };
 
 const isStr = (v: unknown): v is string => typeof v === 'string' && v.length > 0;
 
 /**
  * Ordered, safe display rows for a decision. Pure; renders only allowlisted
- * fields. Returns [] for a null/empty decision.
+ * fields. Returns [] for a null/empty decision. `t`/`l` localize the row
+ * labels and known-enum values; the security-critical field ALLOWLIST itself
+ * (which fields ever get read off the doc) is untouched by localization.
  */
-export function decisionFields(d: Decision | null | undefined): DecisionField[] {
+export function decisionFields(
+  d: Decision | null | undefined,
+  t: TranslateFn,
+  l: Locale,
+): DecisionField[] {
   if (!d) return [];
   const rows: DecisionField[] = [];
 
   const action = isStr(d.action) ? d.action : 'decision';
-  rows.push({ label: 'Action', value: ACTION_LABEL[action] ?? clamp(action) });
+  const actionKey = ACTION_LABEL[action];
+  rows.push({ label: t('decisions.field.action'), value: actionKey ? t(actionKey) : clamp(action) });
 
   if (typeof d.pr_number === 'number') {
-    rows.push({ label: 'Pull request', value: `#${d.pr_number}` });
+    rows.push({ label: t('decisions.field.pullRequest'), value: `#${d.pr_number}` });
   }
 
   if (isStr(d.apply_status)) {
@@ -85,15 +93,17 @@ export function decisionFields(d: Decision | null | undefined): DecisionField[] 
       Number.isInteger(d.superseded_by_pr) &&
       d.superseded_by_pr > 0;
     rows.push({
-      label: 'Apply',
-      value: superseded ? `superseded by #${d.superseded_by_pr}` : clamp(d.apply_status),
+      label: t('decisions.field.apply'),
+      value: superseded
+        ? t('decisions.field.apply.supersededBy', { pr: d.superseded_by_pr as number })
+        : clamp(d.apply_status),
       badge: superseded ? 'ok' : (APPLY_STATUS_BADGE[d.apply_status] ?? 'muted'),
     });
   }
 
   if (isStr(d.merge_state)) {
     rows.push({
-      label: 'Merge',
+      label: t('decisions.field.merge'),
       value: clamp(d.merge_state),
       badge: MERGE_STATE_BADGE[d.merge_state] ?? 'muted',
     });
@@ -101,7 +111,7 @@ export function decisionFields(d: Decision | null | undefined): DecisionField[] 
 
   if (isStr(d.head_sha)) {
     rows.push({
-      label: 'Head SHA',
+      label: t('decisions.field.headSha'),
       value: d.head_sha.slice(0, SHA_DISPLAY),
       code: true,
       title: clamp(d.head_sha),
@@ -109,13 +119,13 @@ export function decisionFields(d: Decision | null | undefined): DecisionField[] 
   }
 
   if (isStr(d.approver)) {
-    rows.push({ label: 'Approver', value: clamp(d.approver) });
+    rows.push({ label: t('decisions.field.approver'), value: clamp(d.approver) });
   }
 
   // One "When" row: prefer applied_at (the apply moment), else created_at.
   const when = isStr(d.applied_at) ? d.applied_at : isStr(d.created_at) ? d.created_at : '';
   if (when) {
-    rows.push({ label: 'When', value: fmtWhen(when) });
+    rows.push({ label: t('decisions.field.when'), value: fmtWhen(when, l) });
   }
 
   return rows;

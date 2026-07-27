@@ -1,5 +1,6 @@
 <script lang="ts">
   import { iacApprovalHref } from '../lib/approval';
+  import { t, locale } from '../lib/i18n';
 
   // First-authoring approval CTA. When a /chat run just opened an infrastructure
   // PR (the `done` frame carried `iac_pr.pr_number`), the operator's final reply
@@ -15,19 +16,21 @@
   // deliberately NOT used for the href (it stays in the reply text).
   let { prNumber }: { prNumber: unknown } = $props();
 
-  const href = $derived(iacApprovalHref(prNumber));
+  const href = $derived(iacApprovalHref(prNumber, $locale));
 </script>
 
 {#if href}
   <div class="iac-cta" data-testid="iac-approval-cta">
-    <strong class="iac-cta__title">Infra apply needs your approval (PR #{prNumber})</strong>
+    <strong class="iac-cta__title"
+      >{$t('approval.iacCta.title', { pr: String(prNumber) })}</strong
+    >
     <a
       class="iac-cta__btn"
       data-testid="iac-approval-cta-link"
       {href}
       target="_blank"
       rel="noopener"
-    >Review &amp; approve →</a>
+    >{$t('approval.iacCta.reviewApprove')}</a>
     <!-- Static cage teaser — the authoritative, drift-pinned copy of this claim
          lives server-side (BLAST_CANNOT_TOUCH_NOTE in driftscribe_lib/iac_plan_summary.py,
          rendered on the approval page). This is a teaser whose three claims —
@@ -36,7 +39,7 @@
          re-checked by the apply worker before apply). No per-plan counts appear here
          because no plan exists at done-time: C2 is workflow_dispatch, so the plan is
          only created after the operator dispatches it, not at PR-open time. -->
-    <p class="iac-cta__cage-note" data-testid="iac-cta-cage-note">Before anything applies, this change must pass the self-protection denylist and get your explicit approval. The denylist blocks any DriftScribe control-plane changes, any IAM changes, and any deletes, replacements, or un-managing.</p>
+    <p class="iac-cta__cage-note" data-testid="iac-cta-cage-note">{$t('approval.iacCta.cageNote')}</p>
   </div>
 {/if}
 

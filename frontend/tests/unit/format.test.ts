@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { fmtTokens, shortTrace, fmtPreview, fmtWhen, shortSha, iacStatusLabel, iacStatusHelp, decisionActionLabel, decisionActionHelp, iacApplyMeta, appliedAtDiffersMaterially, normalizeForSearch } from '../../src/lib/format';
+import { translate, type TranslateFn } from '../../src/lib/i18n';
+
+// The whole suite asserts English (the shared.en catalog is byte-for-byte the
+// original inline text these functions used to return), so every changed
+// helper below is called with an EN-bound translator.
+const t: TranslateFn = (k, p) => translate('en', k, p);
 
 describe('normalizeForSearch', () => {
   it('lowercases', () => {
@@ -26,31 +32,31 @@ describe('normalizeForSearch', () => {
 
 describe('fmtTokens', () => {
   it('formats a present total with comma grouping and " tok" suffix', () => {
-    expect(fmtTokens({ total_token_count: 1234 })).toBe('1,234 tok');
+    expect(fmtTokens({ total_token_count: 1234 }, t, 'en')).toBe('1,234 tok');
   });
 
   it('formats a small total with no grouping needed', () => {
-    expect(fmtTokens({ total_token_count: 42 })).toBe('42 tok');
+    expect(fmtTokens({ total_token_count: 42 }, t, 'en')).toBe('42 tok');
   });
 
   it('formats zero as "0 tok" (0 is a present value, not absent)', () => {
-    expect(fmtTokens({ total_token_count: 0 })).toBe('0 tok');
+    expect(fmtTokens({ total_token_count: 0 }, t, 'en')).toBe('0 tok');
   });
 
   it('formats large totals with multiple comma groups', () => {
-    expect(fmtTokens({ total_token_count: 1234567 })).toBe('1,234,567 tok');
+    expect(fmtTokens({ total_token_count: 1234567 }, t, 'en')).toBe('1,234,567 tok');
   });
 
   it('returns "" when total_token_count is null', () => {
-    expect(fmtTokens({ total_token_count: null })).toBe('');
+    expect(fmtTokens({ total_token_count: null }, t, 'en')).toBe('');
   });
 
   it('returns "" when total_token_count is undefined', () => {
-    expect(fmtTokens({ total_token_count: undefined })).toBe('');
+    expect(fmtTokens({ total_token_count: undefined }, t, 'en')).toBe('');
   });
 
   it('returns "" when the field is absent entirely', () => {
-    expect(fmtTokens({})).toBe('');
+    expect(fmtTokens({}, t, 'en')).toBe('');
   });
 });
 
@@ -164,50 +170,50 @@ describe('fmtWhen', () => {
 
 describe('iacStatusLabel', () => {
   it('maps each known apply_status to its readable phrase', () => {
-    expect(iacStatusLabel('applied')).toBe('applied');
+    expect(iacStatusLabel('applied', t)).toBe('applied');
     // Operator-facing label is plain "rebuild" (the internal enum stays
     // `waiting_for_rebake`); the cryptic insider term "re-bake" is gone.
-    expect(iacStatusLabel('waiting_for_rebake')).toBe('awaiting rebuild');
-    expect(iacStatusLabel('failed')).toBe('failed');
+    expect(iacStatusLabel('waiting_for_rebake', t)).toBe('awaiting rebuild');
+    expect(iacStatusLabel('failed', t)).toBe('failed');
     // Codex must-fix: failed_state_suspect is a real backend-emitted status.
-    expect(iacStatusLabel('failed_state_suspect')).toBe('failed (state suspect)');
-    expect(iacStatusLabel('ambiguous')).toBe('ambiguous');
+    expect(iacStatusLabel('failed_state_suspect', t)).toBe('failed (state suspect)');
+    expect(iacStatusLabel('ambiguous', t)).toBe('ambiguous');
   });
 
   it('passes an unrecognised non-empty status through verbatim', () => {
-    expect(iacStatusLabel('some_new_status')).toBe('some_new_status');
+    expect(iacStatusLabel('some_new_status', t)).toBe('some_new_status');
   });
 
   it('clamps an over-long unknown status to 40 chars + ellipsis', () => {
     const long = 'x'.repeat(60);
-    const out = iacStatusLabel(long);
+    const out = iacStatusLabel(long, t);
     expect(out).toBe('x'.repeat(40) + '…');
     expect(out.length).toBe(41);
   });
 
   it('passes an unknown status of exactly 40 chars through without an ellipsis', () => {
     const exact = 'y'.repeat(40);
-    expect(iacStatusLabel(exact)).toBe(exact);
+    expect(iacStatusLabel(exact, t)).toBe(exact);
   });
 
   it('returns "" for empty / null / undefined', () => {
-    expect(iacStatusLabel('')).toBe('');
-    expect(iacStatusLabel(null)).toBe('');
-    expect(iacStatusLabel(undefined)).toBe('');
+    expect(iacStatusLabel('', t)).toBe('');
+    expect(iacStatusLabel(null, t)).toBe('');
+    expect(iacStatusLabel(undefined, t)).toBe('');
   });
 });
 
 describe('iacStatusHelp', () => {
   it('returns plain-language help for the cryptic statuses', () => {
     for (const status of ['waiting_for_rebake', 'failed_state_suspect', 'ambiguous', 'failed']) {
-      const help = iacStatusHelp(status);
+      const help = iacStatusHelp(status, t);
       expect(typeof help).toBe('string');
       expect((help as string).length).toBeGreaterThan(20);
     }
   });
 
   it('explains rebuild-of-what for waiting_for_rebake (not a circular "re-bake")', () => {
-    const help = iacStatusHelp('waiting_for_rebake') as string;
+    const help = iacStatusHelp('waiting_for_rebake', t) as string;
     expect(help.toLowerCase()).toContain('rebuilt');
     expect(help.toLowerCase()).toContain('worker');
     // Must not define the term using the very jargon we removed from the label.
@@ -215,7 +221,7 @@ describe('iacStatusHelp', () => {
   });
 
   it('explains failed as state-proven-clean with a clear retry next-step', () => {
-    const help = iacStatusHelp('failed') as string;
+    const help = iacStatusHelp('failed', t) as string;
     expect(typeof help).toBe('string');
     // The distinguishing fact vs failed_state_suspect: live state was left untouched...
     expect(help.toLowerCase()).toContain('unchanged');
@@ -228,46 +234,46 @@ describe('iacStatusHelp', () => {
   });
 
   it('returns null for self-evident statuses and unknown values', () => {
-    expect(iacStatusHelp('applied')).toBeNull();
-    expect(iacStatusHelp('some_new_status')).toBeNull();
+    expect(iacStatusHelp('applied', t)).toBeNull();
+    expect(iacStatusHelp('some_new_status', t)).toBeNull();
   });
 
   it('returns null for empty / null / undefined', () => {
-    expect(iacStatusHelp('')).toBeNull();
-    expect(iacStatusHelp(null)).toBeNull();
-    expect(iacStatusHelp(undefined)).toBeNull();
+    expect(iacStatusHelp('', t)).toBeNull();
+    expect(iacStatusHelp(null, t)).toBeNull();
+    expect(iacStatusHelp(undefined, t)).toBeNull();
   });
 });
 
 describe('decisionActionLabel', () => {
   it('remaps no_op from the bare enum to plain language', () => {
-    expect(decisionActionLabel('no_op')).toBe('No action needed');
+    expect(decisionActionLabel('no_op', t)).toBe('No action needed');
   });
 
   it('passes other action tokens through verbatim (those rows carry their own CTA)', () => {
-    expect(decisionActionLabel('docs_pr')).toBe('docs_pr');
-    expect(decisionActionLabel('drift_issue')).toBe('drift_issue');
-    expect(decisionActionLabel('escalation')).toBe('escalation');
-    expect(decisionActionLabel('rollback')).toBe('rollback');
+    expect(decisionActionLabel('docs_pr', t)).toBe('docs_pr');
+    expect(decisionActionLabel('drift_issue', t)).toBe('drift_issue');
+    expect(decisionActionLabel('escalation', t)).toBe('escalation');
+    expect(decisionActionLabel('rollback', t)).toBe('rollback');
   });
 
   it('clamps an over-long unknown action to 40 chars + ellipsis', () => {
     const long = 'x'.repeat(60);
-    const out = decisionActionLabel(long);
+    const out = decisionActionLabel(long, t);
     expect(out).toBe('x'.repeat(40) + '…');
     expect(out.length).toBe(41);
   });
 
   it('returns "" for empty / null / undefined', () => {
-    expect(decisionActionLabel('')).toBe('');
-    expect(decisionActionLabel(null)).toBe('');
-    expect(decisionActionLabel(undefined)).toBe('');
+    expect(decisionActionLabel('', t)).toBe('');
+    expect(decisionActionLabel(null, t)).toBe('');
+    expect(decisionActionLabel(undefined, t)).toBe('');
   });
 });
 
 describe('decisionActionHelp', () => {
   it('explains the no_op "checked, all clear" receipt in plain language', () => {
-    const help = decisionActionHelp('no_op') as string;
+    const help = decisionActionHelp('no_op', t) as string;
     expect(typeof help).toBe('string');
     expect(help.length).toBeGreaterThan(20);
     // The core reassurance: nothing was wrong / matched what was expected...
@@ -277,21 +283,21 @@ describe('decisionActionHelp', () => {
   });
 
   it('returns null for actions that need no explanation', () => {
-    expect(decisionActionHelp('docs_pr')).toBeNull();
-    expect(decisionActionHelp('iac_apply')).toBeNull();
-    expect(decisionActionHelp('rollback')).toBeNull();
+    expect(decisionActionHelp('docs_pr', t)).toBeNull();
+    expect(decisionActionHelp('iac_apply', t)).toBeNull();
+    expect(decisionActionHelp('rollback', t)).toBeNull();
   });
 
   it('returns null for empty / null / undefined', () => {
-    expect(decisionActionHelp('')).toBeNull();
-    expect(decisionActionHelp(null)).toBeNull();
-    expect(decisionActionHelp(undefined)).toBeNull();
+    expect(decisionActionHelp('', t)).toBeNull();
+    expect(decisionActionHelp(null, t)).toBeNull();
+    expect(decisionActionHelp(undefined, t)).toBeNull();
   });
 });
 
 describe('iacApplyMeta — merge-aware status for the rail', () => {
   it('applied + merged → terminal "done" with ok tone and help', () => {
-    const m = iacApplyMeta('applied', 'merged');
+    const m = iacApplyMeta('applied', 'merged', undefined, t);
     expect(m.label).toBe('applied & merged');
     expect(m.tone).toBe('ok');
     expect(m.done).toBe(true);
@@ -300,7 +306,7 @@ describe('iacApplyMeta — merge-aware status for the rail', () => {
   });
 
   it('applied + failed → merge pending (warn, not done)', () => {
-    const m = iacApplyMeta('applied', 'failed');
+    const m = iacApplyMeta('applied', 'failed', undefined, t);
     expect(m.label).toBe('applied · merge pending');
     expect(m.tone).toBe('warn');
     expect(m.done).toBe(false);
@@ -310,7 +316,7 @@ describe('iacApplyMeta — merge-aware status for the rail', () => {
   });
 
   it('applied + pending → merge pending too (forward-compat, not plain "applied")', () => {
-    const m = iacApplyMeta('applied', 'pending');
+    const m = iacApplyMeta('applied', 'pending', undefined, t);
     expect(m.label).toBe('applied · merge pending');
     expect(m.tone).toBe('warn');
     expect(m.done).toBe(false);
@@ -318,7 +324,7 @@ describe('iacApplyMeta — merge-aware status for the rail', () => {
 
   it('applied with no/unknown merge_state → neutral "applied" (cannot claim done)', () => {
     for (const ms of [undefined, null, '', 'n/a', 'weird']) {
-      const m = iacApplyMeta('applied', ms);
+      const m = iacApplyMeta('applied', ms, undefined, t);
       expect(m.label).toBe('applied');
       expect(m.tone).toBe('');
       expect(m.done).toBe(false);
@@ -327,52 +333,57 @@ describe('iacApplyMeta — merge-aware status for the rail', () => {
   });
 
   it('non-applied statuses reuse the existing label/help; tone mirrors decision.ts', () => {
-    expect(iacApplyMeta('failed', 'n/a')).toMatchObject({ tone: 'danger', done: false });
-    expect(iacApplyMeta('failed_state_suspect', 'n/a').tone).toBe('danger');
-    expect(iacApplyMeta('ambiguous', 'n/a').tone).toBe('warn'); // mirrors decision.ts (not danger)
-    const wait = iacApplyMeta('waiting_for_rebake', 'pending');
+    expect(iacApplyMeta('failed', 'n/a', undefined, t)).toMatchObject({ tone: 'danger', done: false });
+    expect(iacApplyMeta('failed_state_suspect', 'n/a', undefined, t).tone).toBe('danger');
+    expect(iacApplyMeta('ambiguous', 'n/a', undefined, t).tone).toBe('warn'); // mirrors decision.ts (not danger)
+    const wait = iacApplyMeta('waiting_for_rebake', 'pending', undefined, t);
     expect(wait.label).toBe('awaiting rebuild');
     expect(wait.tone).toBe(''); // neutral — carries its own label + help
     expect(typeof wait.help).toBe('string');
   });
 
   it('tolerates null/undefined apply_status', () => {
-    expect(iacApplyMeta(null, null)).toMatchObject({ label: '', tone: '', help: null, done: false });
-    expect(iacApplyMeta(undefined, undefined).done).toBe(false);
+    expect(iacApplyMeta(null, null, undefined, t)).toMatchObject({
+      label: '',
+      tone: '',
+      help: null,
+      done: false,
+    });
+    expect(iacApplyMeta(undefined, undefined, undefined, t).done).toBe(false);
   });
 
   it('waiting_for_rebake + superseded_by_pr → terminal "superseded" (ok tone, done), regardless of merge_state', () => {
-    const merged = iacApplyMeta('waiting_for_rebake', 'merged', 221);
+    const merged = iacApplyMeta('waiting_for_rebake', 'merged', 221, t);
     expect(merged).toMatchObject({ label: 'superseded', tone: 'ok', done: true });
     expect(typeof merged.help).toBe('string');
     expect(merged.help as string).toContain('#221');
 
     // The marker wins regardless of merge_state — the OTHER #216 doc carries
     // merge_state:'pending' and must read the same way.
-    const pending = iacApplyMeta('waiting_for_rebake', 'pending', 221);
+    const pending = iacApplyMeta('waiting_for_rebake', 'pending', 221, t);
     expect(pending).toMatchObject({ label: 'superseded', tone: 'ok', done: true });
   });
 
   it('superseded_by_pr is gated to waiting_for_rebake — does not mask applied or failed rows', () => {
-    const applied = iacApplyMeta('applied', 'merged', 221);
+    const applied = iacApplyMeta('applied', 'merged', 221, t);
     expect(applied.label).toBe('applied & merged');
     expect(applied.done).toBe(true);
 
-    const failed = iacApplyMeta('failed', 'n/a', 221);
+    const failed = iacApplyMeta('failed', 'n/a', 221, t);
     expect(failed.tone).toBe('danger');
     expect(failed.label).not.toBe('superseded');
   });
 
   it('superseded_by_pr rejects non-positive/non-integer values — falls through to "awaiting rebuild"', () => {
     for (const bad of [0, -1, 1.5]) {
-      const m = iacApplyMeta('waiting_for_rebake', 'pending', bad);
+      const m = iacApplyMeta('waiting_for_rebake', 'pending', bad, t);
       expect(m.label).toBe('awaiting rebuild');
       expect(m.done).toBe(false);
     }
   });
 
   it('regression: waiting_for_rebake with no third arg still reads "awaiting rebuild"', () => {
-    const m = iacApplyMeta('waiting_for_rebake', 'pending');
+    const m = iacApplyMeta('waiting_for_rebake', 'pending', undefined, t);
     expect(m.label).toBe('awaiting rebuild');
     expect(m.done).toBe(false);
   });

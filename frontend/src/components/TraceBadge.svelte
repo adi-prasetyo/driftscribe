@@ -2,6 +2,7 @@
   import { shortTrace } from '../lib/format';
   import type { TimelineStatus } from '../lib/timeline';
   import Icon from './Icon.svelte';
+  import { t } from '../lib/i18n';
 
   // The live identity strip for the current run: a copy-to-clipboard trace
   // pill + a lifecycle status pill. Rendered into <section id="trace-badge"
@@ -18,17 +19,17 @@
   // status -> { label shown on the pill, ds-pill modifier class }.
   // 'streaming' has no ds-pill modifier — its blue variant is styled below
   // via the scoped .status-pill.streaming rule, so its modifier is ''.
-  const STATUS_META: Record<TimelineStatus, { label: string; pill: string }> = {
-    pending: { label: 'pending', pill: 'ds-pill--muted' },
-    streaming: { label: 'streaming', pill: '' },
-    complete: { label: 'complete', pill: 'ds-pill--ok' },
-    stalled: { label: 'stalled · logs lagging', pill: 'ds-pill--warn' },
-    error: { label: 'error', pill: 'ds-pill--danger' },
+  const STATUS_META = $derived<Record<TimelineStatus, { label: string; pill: string }>>({
+    pending: { label: $t('timeline.status.pending'), pill: 'ds-pill--muted' },
+    streaming: { label: $t('timeline.status.streaming'), pill: '' },
+    complete: { label: $t('timeline.status.complete'), pill: 'ds-pill--ok' },
+    stalled: { label: $t('timeline.status.stalled'), pill: 'ds-pill--warn' },
+    error: { label: $t('timeline.status.error'), pill: 'ds-pill--danger' },
     // A past decision opened from the rail — a snapshot replay, not a live
     // stream. Green (settled) styling, no streaming dot. Matches the legacy
     // setStatusPill("complete", "historical").
-    historical: { label: 'historical', pill: 'ds-pill--ok' },
-  };
+    historical: { label: $t('timeline.status.historical'), pill: 'ds-pill--ok' },
+  });
 
   const meta = $derived(STATUS_META[status]);
   // Keep the base 'status-pill' class AND the per-state class (the ds-pill
@@ -64,12 +65,12 @@
       type="button"
       class="trace-pill ds-code"
       class:copied
-      title="click to copy trace id"
+      title={$t('timeline.trace.copyTitle')}
       onclick={copyTrace}
     >
       <Icon name="copy" size={12} />
       <span class="trace-pill__id">{shortTrace(traceId)}</span>
-      <span class="trace-pill__hint" aria-hidden="true">{copied ? 'copied' : 'copy'}</span>
+      <span class="trace-pill__hint" aria-hidden="true">{copied ? $t('timeline.trace.copied') : $t('timeline.trace.copy')}</span>
     </button>
     <span id="status-pill" class={statusClass}>
       {#if status === 'streaming'}<span class="status-pill__dot" aria-hidden="true"></span>{/if}

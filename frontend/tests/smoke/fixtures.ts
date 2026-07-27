@@ -3,6 +3,29 @@
 // the JSON/SSE data endpoints with page.route, so it stands in for the
 // dispatch-only cloud e2e (tests/e2e/ui) without a deployed coordinator.
 
+import { test as base } from '@playwright/test';
+
+// i18n: the app DEFAULTS to Japanese, but most of these specs assert English
+// UI strings (mirrors the EN pin in tests/unit/setup.ts). Pin every smoke
+// test's page to `en` via an auto init script — registered on the `page`
+// fixture itself so it runs before ANY test's first `page.goto`, with no
+// per-test boilerplate. A test that wants to exercise the JA default (see the
+// locale-toggle smoke in transparency.smoke.ts) re-pins to `ja` with its own
+// `page.addInitScript` call; init scripts run in registration order, so the
+// test's later call wins over this one.
+export const test = base.extend({
+  page: async ({ page }, use) => {
+    await page.addInitScript(() => {
+      try {
+        localStorage.setItem('driftscribe.locale', 'en');
+      } catch {
+        /* ignore */
+      }
+    });
+    await use(page);
+  },
+});
+
 // Selector contract — kept here so the smoke and the deployed e2e spec agree.
 export const TESTIDS = {
   chatPrompt: 'chat-prompt',

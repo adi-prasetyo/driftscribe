@@ -39,6 +39,7 @@
   import { slide } from 'svelte/transition';
   import { announceHeaderPopoverOpen, HEADER_POPOVER_EVENT } from '../lib/headerPopover';
   import { motionMs } from '../lib/motion';
+  import { t } from '../lib/i18n';
   import Icon from './Icon.svelte';
 
   // search is a prop only for testability; App passes nothing and the default
@@ -175,8 +176,8 @@
     aria-haspopup="true"
     aria-expanded={open}
     aria-label={dismissed
-      ? 'Live sandbox notice'
-      : 'Live sandbox notice, 1 unread'}
+      ? $t('misc.demoBell.ariaLabel')
+      : $t('misc.demoBell.ariaLabelUnread')}
     bind:this={toggleEl}
     onclick={onToggle}
   >
@@ -191,24 +192,17 @@
       class="demo-bell__popover"
       data-testid="demo-notice-popover"
       role="note"
-      aria-label="Live sandbox notice"
+      aria-label={$t('misc.demoBell.ariaLabel')}
       style={popoverStyle}
       transition:slide={{ duration: motionMs(160) }}
     >
-      <p class="demo-bell__lead">This is a live sandbox.</p>
-      <p class="ds-subtle demo-bell__sub">
-        Ask a crew to investigate drift, propose a fix, or roll back the
-        payment-demo service and watch it happen. You can't break it for the
-        next visitor: the service heals itself every couple of hours, the
-        upgrade demo resets within a couple of hours of being fixed, and
-        adoption requests are tidied away after a couple of hours so the next
-        visitor gets the full demo.
-      </p>
+      <p class="demo-bell__lead">{$t('misc.demoBell.lead')}</p>
+      <p class="ds-subtle demo-bell__sub">{$t('misc.demoBell.body')}</p>
       <button
         class="ds-btn ds-btn--ghost demo-bell__dismiss"
         type="button"
         data-testid="demo-notice-dismiss"
-        onclick={() => closeNotice()}>Got it</button
+        onclick={() => closeNotice()}>{$t('misc.demoBell.gotIt')}</button
       >
     </div>
   {/if}

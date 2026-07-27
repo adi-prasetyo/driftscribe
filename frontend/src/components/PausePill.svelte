@@ -14,6 +14,7 @@
   import { slide } from 'svelte/transition';
   import { motionMs } from '../lib/motion';
   import { announceHeaderPopoverOpen, HEADER_POPOVER_EVENT } from '../lib/headerPopover';
+  import { t } from '../lib/i18n';
   import Icon from './Icon.svelte';
   import type { PauseStore } from '../lib/pauseStore';
 
@@ -105,7 +106,7 @@
     if (containerEl && !containerEl.contains(e.target as Node)) closePopover();
   }
 
-  const confirmLabel = $derived(saving ? 'Saving…' : 'Confirm pause');
+  const confirmLabel = $derived(saving ? $t('capability.saving') : $t('capability.pausePill.confirmPause'));
 </script>
 
 <svelte:window onkeydown={onWindowKeydown} onpointerdown={onWindowPointerDown} />
@@ -113,7 +114,7 @@
 <div class="pause-pill" bind:this={containerEl}>
   {#if st.kind === 'loading'}
     <span class="ds-pill ds-pill--muted pause-pill__status" data-testid="pause-pill-state"
-      ><span class="pause-pill__dot" aria-hidden="true"></span>Checking…</span
+      ><span class="pause-pill__dot" aria-hidden="true"></span>{$t('capability.pausePill.checking')}</span
     >
   {:else if st.kind === 'running'}
     <button
@@ -123,10 +124,10 @@
       data-testid="pause-pill-toggle"
       aria-haspopup="dialog"
       aria-expanded={open}
-      aria-label="DriftScribe is active. Agent activity allowed within guardrails. Pause DriftScribe."
+      aria-label={$t('capability.pausePill.activeAria')}
       bind:this={toggleEl}
       onclick={onToggle}
-      ><span class="pause-pill__dot pause-pill__dot--ok" aria-hidden="true"></span>Active<Icon
+      ><span class="pause-pill__dot pause-pill__dot--ok" aria-hidden="true"></span>{$t('capability.pausePill.active')}<Icon
         name="chevron-down"
         size={12}
         extraClass="pause-pill__chev"
@@ -138,20 +139,19 @@
         class="pause-popover"
         data-testid="pause-popover"
         role="dialog"
-        aria-label="Pause DriftScribe"
+        aria-label={$t('capability.pausePill.dialogAria')}
         transition:slide={{ duration: motionMs(160) }}
       >
         <p class="pause-popover__hint">
-          Pause all agent activity? New chats, rechecks, and approvals will be refused until you
-          resume.
+          {$t('capability.pausePill.hint')}
         </p>
-        <label class="pause-popover__label" for="pause-popover-reason">reason (optional)</label>
+        <label class="pause-popover__label" for="pause-popover-reason">{$t('capability.reasonLabel')}</label>
         <input
           id="pause-popover-reason"
           class="pause-popover__reason"
           type="text"
           maxlength="500"
-          placeholder="e.g. scheduled maintenance"
+          placeholder={$t('capability.pausePill.reasonPlaceholder')}
           data-testid="pause-popover-reason"
           bind:this={reasonEl}
           bind:value={reasonInput}
@@ -170,24 +170,24 @@
             type="button"
             data-testid="pause-popover-cancel"
             onclick={() => closePopover()}
-            disabled={saving}><Icon name="x" size={14} />Cancel</button
+            disabled={saving}><Icon name="x" size={14} />{$t('common.cancel')}</button
           >
         </div>
         {#if postError}
           <p class="pause-popover__error" data-testid="pause-popover-error">
-            Could not pause. State unchanged. Please try again.
+            {$t('capability.pausePill.error')}
           </p>
         {/if}
       </div>
     {/if}
   {:else if st.kind === 'paused'}
     <span class="ds-pill ds-pill--warn pause-pill__status" data-testid="pause-pill-state"
-      ><Icon name="pause" size={12} />Paused</span
+      ><Icon name="pause" size={12} />{$t('capability.pausePill.paused')}</span
     >
   {:else}
     <!-- unknown / fail-closed -->
     <span class="ds-pill ds-pill--warn pause-pill__status" data-testid="pause-pill-state"
-      ><Icon name="alert-triangle" size={12} />State unknown</span
+      ><Icon name="alert-triangle" size={12} />{$t('capability.pausePill.stateUnknown')}</span
     >
   {/if}
 </div>

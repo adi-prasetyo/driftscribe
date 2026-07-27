@@ -6,6 +6,7 @@
 // tests/integration/test_ui_transparency.py:59-62 — see plan §3 and Appendix B.
 
 import workloadCatalog from './workloads.catalog.json';
+import type { TranslateFn, MessageKey } from './i18n';
 
 export type Workload = 'drift' | 'upgrade' | 'explore' | 'provision';
 
@@ -38,11 +39,8 @@ export function askPrFromSearch(search: string): number | null {
  * Adopt-button bridge). The PR number rides in the text; the explore agent
  * extracts it for load_iac_plan.
  */
-export function askAboutPrPrefill(pr: number): string {
-  return (
-    `I'm reviewing infrastructure change PR #${pr} before deciding on it. ` +
-    'Load its plan and explain what it would change in plain language.'
-  );
+export function askAboutPrPrefill(pr: number, t: TranslateFn): string {
+  return t('header.prefill.askPr', { pr });
 }
 
 export interface WorkloadOption {
@@ -102,6 +100,24 @@ export const CREW_LIFECYCLE: Record<Workload, string> = {
   explore: 'Explains it. Read-only answers across the whole system.',
 };
 
+/**
+ * i18n equivalents of the three catalog-shaped strings above (lifecycle line)
+ * and in `WORKLOADS` (descriptor/summary), sourced from the `shared.crew.*`
+ * catalog (frontend/src/locales/shared.ts) instead of the always-English
+ * `CREW_LIFECYCLE` map / `workloads.catalog.json`. `value` is the frozen
+ * symbolic workload, so the key is built the same way `plural()` (i18n.ts)
+ * builds a dynamic key — cast through `MessageKey` since it isn't a literal.
+ */
+export function crewLifecycle(value: Workload, t: TranslateFn): string {
+  return t(`shared.crew.${value}.lifecycle` as MessageKey);
+}
+export function crewDescriptor(value: Workload, t: TranslateFn): string {
+  return t(`shared.crew.${value}.descriptor` as MessageKey);
+}
+export function crewSummary(value: Workload, t: TranslateFn): string {
+  return t(`shared.crew.${value}.summary` as MessageKey);
+}
+
 /** value → crew display name, e.g. `drift` → `Anchor`. Built once from the
  *  catalog. */
 const CREW_NAME = new Map<string, string>(WORKLOADS.map((w) => [w.value, w.name]));
@@ -133,9 +149,9 @@ export interface ChatPrefill {
  * once at init) so the seeding rule — explore workload, epoch 1, prefill
  * only — is unit-testable without mounting App.
  */
-export function initialChatPrefill(search: string): ChatPrefill | null {
+export function initialChatPrefill(search: string, t: TranslateFn): ChatPrefill | null {
   const pr = askPrFromSearch(search);
   return pr === null
     ? null
-    : { text: askAboutPrPrefill(pr), workload: 'explore', epoch: 1 };
+    : { text: askAboutPrPrefill(pr, t), workload: 'explore', epoch: 1 };
 }

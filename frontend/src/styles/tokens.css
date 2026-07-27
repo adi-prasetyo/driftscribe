@@ -71,9 +71,12 @@
   --ds-neutral-surface: #efeeea;
 
   /* --- Typography -------------------------------------------------------- */
-  /* humanist UI stack; ui-sans-serif first so the OS face leads */
+  /* humanist UI stack; ui-sans-serif first so the OS face leads. Japanese-native
+     faces (Hiragino / Yu Gothic / Meiryo / Noto Sans JP) follow the Latin faces so
+     JA text renders in a real gothic rather than a synthetic or mismatched fallback. */
   --ds-font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
-    Helvetica, Arial, "Helvetica Neue", sans-serif;
+    Helvetica, Arial, "Helvetica Neue", "Hiragino Sans", "Hiragino Kaku Gothic ProN",
+    "Yu Gothic", YuGothic, Meiryo, "Noto Sans JP", "Noto Sans CJK JP", sans-serif;
   /* monospace reserved for trace ids / tokens / code */
   --ds-font-mono: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono",
     "Roboto Mono", Menlo, Consolas, monospace;

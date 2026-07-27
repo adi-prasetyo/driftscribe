@@ -30,6 +30,8 @@
   import HelpHint from './HelpHint.svelte';
   import Modal from './Modal.svelte';
   import type { Decision } from '../lib/types';
+  import { t, locale, localeTag, type MessageKey, type TranslateFn } from '../lib/i18n';
+  import { modeLabel } from '../lib/autonomy';
 
   let {
     decisions,
@@ -67,7 +69,7 @@
   // ---- search modal ----
   let showSearch = $state(false);
   let query = $state('');
-  const searchItems = $derived(railItems.filter((it) => railItemMatches(it, query)));
+  const searchItems = $derived(railItems.filter((it) => railItemMatches(it, query, $t)));
 
   function openSearch(): void {
     query = '';
@@ -86,7 +88,7 @@
   // origin guard (off-origin, non-http(s), non-/approvals/ path).
   function approveHref(d: Decision): string | null {
     const raw = d.approval?.approval_url;
-    return raw ? safeApprovalHref(raw) : null;
+    return raw ? safeApprovalHref(raw, undefined, $locale) : null;
   }
 
   // Resolve the infra-apply approval link for a row. An iac_apply decision
@@ -103,8 +105,8 @@
       Number.isInteger(d.superseded_by_pr) &&
       d.superseded_by_pr > 0
     )
-      return iacApprovalHref(d.superseded_by_pr);
-    return iacApprovalHref(d.pr_number);
+      return iacApprovalHref(d.superseded_by_pr, $locale);
+    return iacApprovalHref(d.pr_number, $locale);
   }
 
   // Resolve the GitHub PR/issue link for a drift/docs decision. Gated on an
@@ -114,25 +116,27 @@
   // IMPORTANT: use Object.hasOwn, NOT the `in` operator — `'toString' in obj`
   // (and other prototype keys) is true, so `in` would let an unexpected action
   // string slip the gate (Codex review). Object.hasOwn is own-key-only.
-  const GITHUB_LINK_LABEL: Record<string, string> = {
-    drift_issue: 'View issue →',
-    escalation: 'View issue →',
-    docs_pr: 'View PR →',
+  const GITHUB_LINK_LABEL: Record<string, MessageKey> = {
+    drift_issue: 'decisions.row.githubLink.viewIssue',
+    escalation: 'decisions.row.githubLink.viewIssue',
+    docs_pr: 'decisions.row.githubLink.viewPr',
     // `upgrade_pr` is NOT emitted by /recheck in this build (the upgrade
     // workload is unimplemented — agent/main.py:1139), so no such decision
     // currently persists a github.url. Listed for forward-compat only: it
     // renders nothing today and lights up automatically if a future build
     // starts persisting upgrade_pr decisions with a github.url.
-    upgrade_pr: 'View PR →',
+    upgrade_pr: 'decisions.row.githubLink.viewPr',
   };
   function githubHref(d: Decision): string | null {
     if (!Object.hasOwn(GITHUB_LINK_LABEL, d.action)) return null;
     return safeGithubHref(d.github?.url);
   }
   function githubLabel(d: Decision): string {
-    return Object.hasOwn(GITHUB_LINK_LABEL, d.action)
-      ? GITHUB_LINK_LABEL[d.action]
-      : 'View on GitHub →';
+    return $t(
+      Object.hasOwn(GITHUB_LINK_LABEL, d.action)
+        ? GITHUB_LINK_LABEL[d.action]
+        : 'decisions.row.githubLink.viewOnGithub',
+    );
   }
 
   // Dry-run preview pill: ONLY on rows whose GitHub side effect was skipped
@@ -148,14 +152,25 @@
     return Object.hasOwn(GITHUB_LINK_LABEL, d.action) && d.github?.dry_run === true;
   }
 
-  // Render `created_at` as a compact, readable wall-clock string. Falls back to
-  // the raw value when it doesn't parse, and to '' when absent.
+  // Localized label for the suppressed pill's {mode}. Today the backend only
+  // suppresses in observe mode, but all three dial modes localize via the
+  // shared modeLabel; a malformed/unknown value falls back to the raw string.
+  function suppressedModeLabel(mode: string | undefined, tf: TranslateFn): string {
+    return mode === 'observe' || mode === 'propose' || mode === 'propose_apply'
+      ? modeLabel(mode, tf)
+      : (mode ?? '');
+  }
+
+  // Render `created_at` as a compact, readable wall-clock string in the ACTIVE
+  // app locale (not the host browser's), so dates follow the EN/JA toggle like
+  // the rest of the rail. Falls back to the raw value when it doesn't parse,
+  // and to '' when absent.
   function fmtCreatedAt(iso: string | undefined): string {
     if (!iso) return '';
     const parsed = Date.parse(iso);
     if (Number.isNaN(parsed)) return iso;
     try {
-      return new Intl.DateTimeFormat(undefined, {
+      return new Intl.DateTimeFormat(localeTag($locale), {
         month: 'short',
         day: 'numeric',
         hour: '2-digit',
@@ -184,12 +199,12 @@
           data-testid="decision-pr-link"
           href={prHref}
           target="_blank"
-          rel="noopener noreferrer">PR #{d.pr_number} →</a>
+          rel="noopener noreferrer">{$t('decisions.row.prLink', { n: d.pr_number as number })}</a>
       {:else}
         <!-- Non-iac headline: friendly label (no_op → "No action needed"); the
              raw enum stays as the hover tooltip. decisionActionLabel passes
              every other action through verbatim. -->
-        <span class="row-action" title={d.action}>{decisionActionLabel(d.action)}</span>
+        <span class="row-action" title={d.action}>{decisionActionLabel(d.action, $t)}</span>
       {/if}
       {#if d.created_at}
         <time class="row-time" datetime={d.created_at}>{fmtCreatedAt(d.created_at)}</time>
@@ -204,7 +219,7 @@
 
     {#if d.action === 'iac_apply'}
       {@const sha = shortSha(d.head_sha)}
-      {@const meta = iacApplyMeta(d.apply_status, d.merge_state, d.superseded_by_pr)}
+      {@const meta = iacApplyMeta(d.apply_status, d.merge_state, d.superseded_by_pr, $t)}
       {@const toneClass = meta.tone ? `iac-status iac-status--${meta.tone}` : 'iac-status'}
       <!-- Chronology cue: the row time is created_at (last activity, e.g. a later
            merge-only reconcile). When the apply itself happened materially earlier,
@@ -221,7 +236,7 @@
     {/if}
 
     {#if d.action === 'no_op'}
-      {@const noOpHelp = decisionActionHelp(d.action)}
+      {@const noOpHelp = decisionActionHelp(d.action, $t)}
       <!-- The "checked, all clear" receipt surprises operators (nothing visibly
            happened). A faint meta line + HelpHint explains why the row is here.
            Lead is crew-neutral ("all clear", not "no drift") so it stays true if
@@ -229,17 +244,19 @@
            opened panel flows onto its own line below — it lives in a <p> (block,
            full width), so it breaks below the icon instead of being clipped like
            a floating tooltip, the same reason the iac meta line hosts its hint. -->
-      <p class="row-meta">Checked · all clear{#if noOpHelp}<HelpHint testid="action-help" text={noOpHelp} ariaLabel="What “No action needed” means" />{/if}</p>
+      <p class="row-meta">{$t('decisions.noOp.lead')}{#if noOpHelp}<HelpHint testid="action-help" text={noOpHelp} ariaLabel={$t('decisions.noOp.helpAriaLabel')} />{/if}</p>
     {/if}
 
     {#if d.suppressed_by_autonomy === true}
       <span class="rail-status rail-status--muted" data-testid="autonomy-suppressed"
-        >not executed in {d.autonomy_mode === 'observe' ? 'Observe' : d.autonomy_mode} mode</span>
+        >{$t('decisions.autonomy.suppressed', {
+          mode: suppressedModeLabel(d.autonomy_mode, $t),
+        })}</span>
     {/if}
 
     {#if dryRunPill(d)}
       <span class="rail-status rail-status--muted" data-testid="decision-dry-run"
-        >dry run, not created on GitHub</span>
+        >{$t('decisions.dryRun.pill')}</span>
     {/if}
 
     <div class="row-actions">
@@ -249,16 +266,16 @@
           data-testid="open-trace-button"
           type="button"
           onclick={() => handleOpenTrace(d.trace_id as string)}
-        >{traceButtonLabel(d.action)}</button>
+        >{traceButtonLabel(d.action, $t)}</button>
       {/if}
 
       {#if approveHref(d)}
         {@const href = approveHref(d)}
         {#if isExpired(d.approval?.expires_at)}
-          <a class="past-approve-btn expired" aria-disabled="true">Approve →</a>
-          <span class="expired-badge">expired</span>
+          <a class="past-approve-btn expired" aria-disabled="true">{$t('decisions.row.approve')}</a>
+          <span class="expired-badge">{$t('decisions.row.expired')}</span>
         {:else}
-          <a class="past-approve-btn" href={href} target="_blank" rel="noopener">Approve →</a>
+          <a class="past-approve-btn" href={href} target="_blank" rel="noopener">{$t('decisions.row.approve')}</a>
         {/if}
       {/if}
 
@@ -269,7 +286,7 @@
           data-testid="iac-approve-link"
           href={iacHref}
           target="_blank"
-          rel="noopener">{iacApproveLabel(d, resolvedPrs)}</a>
+          rel="noopener">{iacApproveLabel(d, resolvedPrs, $t)}</a>
       {/if}
 
       {#if githubHref(d)}
@@ -292,10 +309,10 @@
         <!-- ONE expression — lifecycleSummaryLabel returns the complete string,
              so this seam has no whitespace to collapse and the exact-string
              test is safe by construction. -->
-        <summary data-testid="iac-lifecycle-summary">{lifecycleSummaryLabel(lifecycle)}</summary>
+        <summary data-testid="iac-lifecycle-summary">{lifecycleSummaryLabel(lifecycle, $t)}</summary>
         <ol class="lifecycle-steps">
           {#each [...lifecycle].reverse() as step (step.decision_id)}
-            {@const stepMeta = iacApplyMeta(step.apply_status, step.merge_state, step.superseded_by_pr)}
+            {@const stepMeta = iacApplyMeta(step.apply_status, step.merge_state, step.superseded_by_pr, $t)}
             {@const stepToneClass = stepMeta.tone
               ? `step-status iac-status iac-status--${stepMeta.tone}`
               : 'step-status iac-status'}
@@ -304,11 +321,11 @@
                    hence no seam-gluing needed (grounding fact 10 applies only
                    where text nodes meet). HelpHint is LAST so its flex-basis:100%
                    panel wraps onto its own line below when opened. -->
-              <span class={stepToneClass}>{#if stepMeta.done}<Icon name="check" size={12} extraClass="iac-status-check" />{/if}{stepMeta.label || 'status not recorded'}</span>
+              <span class={stepToneClass}>{#if stepMeta.done}<Icon name="check" size={12} extraClass="iac-status-check" />{/if}{stepMeta.label || $t('decisions.lifecycle.statusNotRecorded')}</span>
               {#if step.created_at}<time class="row-time" datetime={step.created_at}>{fmtCreatedAt(step.created_at)}</time>{/if}
               {#if step.trace_id}
                 <button class="open-trace-btn" data-testid="lifecycle-open-trace" type="button"
-                  onclick={() => handleOpenTrace(step.trace_id as string)}>{traceButtonLabel(step.action)}</button>
+                  onclick={() => handleOpenTrace(step.trace_id as string)}>{traceButtonLabel(step.action, $t)}</button>
               {/if}
               {#if stepMeta.help}<HelpHint text={stepMeta.help} label={stepMeta.label} />{/if}
             </li>
@@ -332,20 +349,20 @@
   {/if}
 {/snippet}
 
-<aside id="decisions-rail" data-testid="past-decisions-pane" aria-label="Past decisions">
+<aside id="decisions-rail" data-testid="past-decisions-pane" aria-label={$t('decisions.rail.title')}>
   <div class="rail-header">
-    <h2 class="ds-label rail-eyebrow"><span class="eyebrow-icon"><Icon name="history" size={14} /></span>Past decisions</h2>
+    <h2 class="ds-label rail-eyebrow"><span class="eyebrow-icon"><Icon name="history" size={14} /></span>{$t('decisions.rail.title')}</h2>
     {#if showPrHint}
       <HelpHint
         testid="rail-gap-help"
-        ariaLabel="About these pull-request numbers"
-        text="These are real GitHub pull-request numbers, and only infrastructure changes show up here. Pull requests for UI, docs, and other code are left out, so the numbers can skip values."
+        ariaLabel={$t('decisions.rail.prHint.ariaLabel')}
+        text={$t('decisions.rail.prHint.text')}
       />
     {/if}
   </div>
 
   {#if decisions.length === 0}
-    <p class="empty ds-subtle">No decisions yet.</p>
+    <p class="empty ds-subtle">{$t('decisions.rail.empty')}</p>
   {:else}
     <ul id="decisions-list">
       {#each cappedItems as item (item.kind === 'group' ? 'g:' + item.pr : 's:' + item.d.decision_id)}
@@ -361,27 +378,27 @@
         data-testid="decisions-search-open"
         type="button"
         onclick={openSearch}
-      >Search decisions ({railItems.length}) →</button>
+      >{$t('decisions.rail.searchOpen', { n: railItems.length })}</button>
     {/if}
   {/if}
 </aside>
 
-<Modal open={showSearch} title="Search decisions" onClose={() => (showSearch = false)}>
+<Modal open={showSearch} title={$t('decisions.search.title')} onClose={() => (showSearch = false)}>
   <div class="search-pane">
     <input
       class="search-input"
       data-modal-autofocus
       data-testid="decisions-search-input"
       type="search"
-      aria-label="Search decisions by PR, crew, action, or status"
-      placeholder="Search by PR, title, crew, action, or status…"
+      aria-label={$t('decisions.search.inputAriaLabel')}
+      placeholder={$t('decisions.search.placeholder')}
       bind:value={query}
     />
     <p class="search-count" data-testid="decisions-search-count" aria-live="polite">
-      {searchItems.length} of {railItems.length}
+      {$t('decisions.search.count', { shown: searchItems.length, total: railItems.length })}
     </p>
     {#if searchItems.length === 0}
-      <p class="empty ds-subtle">No decisions match “{query}”.</p>
+      <p class="empty ds-subtle">{$t('decisions.search.noMatch', { query })}</p>
     {:else}
       <ul id="decisions-search-list" class="decisions-list">
         {#each searchItems as item (item.kind === 'group' ? 'g:' + item.pr : 's:' + item.d.decision_id)}

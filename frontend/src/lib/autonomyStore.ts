@@ -6,6 +6,7 @@
 // can call fetchAutonomy()/retry.
 import { writable, type Readable } from 'svelte/store';
 import { parseAutonomyDoc, type AutonomyMode } from './autonomy';
+import type { TranslateFn } from './i18n';
 
 export type AutonomyKind = 'loading' | 'loaded' | 'unknown';
 
@@ -145,16 +146,16 @@ export function createAutonomyStore(
  * loaded and below propose_apply (Codex #1: loading/unknown/propose_apply → no
  * note). read_error wins over mode (honest fail-closed copy, never "set to").
  */
-export function autonomyNoteFor(state: AutonomyState): string | null {
+export function autonomyNoteFor(state: AutonomyState, t: TranslateFn): string | null {
   if (state.kind !== 'loaded') return null;
   if (state.readError) {
-    return 'Autonomy state could not be read. The effective mode is Observe (failing closed) until the dial can be read again.';
+    return t('header.autonomyNote.readError');
   }
   if (state.mode === 'observe') {
-    return 'The autonomy dial is currently set to Observe. Tools that open pull requests, issues, or approvals, and anything that merges or applies, are disabled until you raise the dial.';
+    return t('header.autonomyNote.observe');
   }
   if (state.mode === 'propose') {
-    return 'The autonomy dial is currently set to Propose. Pull requests and issues are enabled; anything that merges or applies is disabled until you raise the dial.';
+    return t('header.autonomyNote.propose');
   }
   return null; // propose_apply
 }

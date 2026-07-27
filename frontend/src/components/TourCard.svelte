@@ -12,11 +12,12 @@
     TOUR_STEPS,
     welcomeLine,
     estateLine,
-    CONTROLS_LINE,
-    NEXT_LINE,
+    controlsLine,
+    nextLine,
     adoptStepState,
   } from '../lib/tour';
   import type { InfraGraph, PendingApproval } from '../lib/infra_graph';
+  import { t } from '../lib/i18n';
 
   let {
     graph = null,
@@ -44,7 +45,7 @@
 
   let stepIndex = $state(0);
   const step = $derived(TOUR_STEPS[stepIndex]);
-  const adoptState = $derived(adoptStepState(graph, pendingApprovals));
+  const adoptState = $derived(adoptStepState($t, graph, pendingApprovals));
 
   // Spotlight the current step's target: toggle .tour-spotlight on the
   // matching [data-tour] element and scroll it into view. The effect cleanup
@@ -73,27 +74,27 @@
   }
 </script>
 
-<aside class="ds-card tour-card" data-testid="tour-card" aria-label="Guided tour">
+<aside class="ds-card tour-card" data-testid="tour-card" aria-label={$t('tour.card.ariaLabel')}>
   <header class="tour-card__head">
-    <span class="ds-label tour-card__title">{step.title}</span>
+    <span class="ds-label tour-card__title">{$t(step.titleKey)}</span>
     <span class="ds-subtle tour-card__progress" data-testid="tour-progress"
-      >{stepIndex + 1} of {TOUR_STEPS.length}</span
+      >{$t('tour.card.progress', { current: stepIndex + 1, total: TOUR_STEPS.length })}</span
     >
     <button
       class="ds-btn ds-btn--ghost tour-card__close"
       type="button"
-      aria-label="Close tour"
+      aria-label={$t('tour.card.closeAria')}
       data-testid="tour-close"
       onclick={() => onClose?.()}>×</button
     >
   </header>
 
   <p class="tour-card__body" data-testid="tour-body" aria-live="polite">
-    {#if step.id === 'welcome'}{welcomeLine(graph)}
-    {:else if step.id === 'estate'}{estateLine(graph)}
-    {:else if step.id === 'controls'}{CONTROLS_LINE}
+    {#if step.id === 'welcome'}{welcomeLine($t, graph)}
+    {:else if step.id === 'estate'}{estateLine($t, graph)}
+    {:else if step.id === 'controls'}{controlsLine($t)}
     {:else if step.id === 'adopt'}{adoptState.line}
-    {:else}{NEXT_LINE}{/if}
+    {:else}{nextLine($t)}{/if}
   </p>
 
   {#if step.id === 'adopt' && adoptState.kind === 'target'}
@@ -103,13 +104,11 @@
         type="button"
         data-testid="tour-adopt-btn"
         disabled={adoptDisabled}
-        title={adoptDisabled
-          ? 'Unavailable while the chat is busy or reviewing past reasoning.'
-          : undefined}
-        onclick={prefillAdopt}>Prefill the request</button
+        title={adoptDisabled ? $t('tour.card.adoptDisabledTitle') : undefined}
+        onclick={prefillAdopt}>{$t('tour.card.adoptButton')}</button
       >
       <p class="ds-subtle tour-card__note">
-        This only prefills the chat. Nothing is sent until you press Send.
+        {$t('tour.card.adoptNote')}
       </p>
     </div>
   {/if}
@@ -118,8 +117,7 @@
     <!-- Honesty (Codex MF3): the copy says "when you send" but Send is
          disabled right now (busy stream / historical replay) — say so. -->
     <p class="ds-subtle tour-card__note" data-testid="tour-busy-note">
-      The chat is busy or showing past reasoning right now, so sending becomes
-      available when it finishes.
+      {$t('tour.card.busyNote')}
     </p>
   {/if}
 
@@ -129,15 +127,15 @@
       type="button"
       data-testid="tour-back"
       disabled={stepIndex === 0}
-      onclick={back}>Back</button
+      onclick={back}>{$t('tour.card.back')}</button
     >
     {#if stepIndex < TOUR_STEPS.length - 1}
       <button class="ds-btn" type="button" data-testid="tour-next" onclick={next}
-        >Next</button
+        >{$t('tour.card.next')}</button
       >
     {:else}
       <button class="ds-btn" type="button" data-testid="tour-finish" onclick={() => onClose?.()}
-        >Finish</button
+        >{$t('tour.card.finish')}</button
       >
     {/if}
   </footer>

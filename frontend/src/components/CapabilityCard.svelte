@@ -8,19 +8,44 @@
   //  - Render order is anxiety-first: gates → denylist → workloads.
   //  - The `call` prop is the same token-aware fetch wrapper as InfraDiagram.
 
-  import { groupRules, type Capabilities } from '../lib/capabilities';
+  import {
+    groupRules,
+    categoryHeading,
+    gateTitle,
+    gateDescription,
+    ruleDescription,
+    toolDescription,
+    workerDescription,
+    actionDisplayName,
+    adoptableTypeLabel,
+    type Capabilities,
+  } from '../lib/capabilities';
   import { parseWorkloadPrompts } from '../lib/prompts';
   import type { WorkloadPrompts } from '../lib/prompts';
-  import { CREW_LIFECYCLE, type Workload } from '../lib/workloads';
+  import { crewLifecycle, crewDescriptor, type Workload } from '../lib/workloads';
+  import { t, type TranslateFn } from '../lib/i18n';
   import Icon from './Icon.svelte';
   import CrewGlyph from './CrewGlyph.svelte';
 
   /** The crew's place in the stewardship loop, keyed by the frozen symbolic
-   *  workload name. Empty string for an unknown workload so the {#if} renders
-   *  nothing. Pure copy, not a safety claim — the gates section above is the
-   *  authority on what waits for approval. */
-  function loopRole(name: string): string {
-    return CREW_LIFECYCLE[name as Workload] ?? '';
+   *  workload name. Pure copy, not a safety claim — the gates section above is
+   *  the authority on what waits for approval. An unrecognized future workload
+   *  has no lifecycle key, so its row is hidden ('' → the {#if} guard) instead
+   *  of rendering a raw catalog key. */
+  function loopRole(name: string, t: TranslateFn): string {
+    return KNOWN_WORKLOADS.has(name as Workload) ? crewLifecycle(name as Workload, t) : '';
+  }
+
+  // Frozen symbolic workload values (agent/workloads/spec.py's name Literal).
+  // wl.descriptor (the DTO field) localizes via the shared crew-descriptor
+  // catalog for these four; an unrecognized future workload name falls back
+  // to the DTO's own English descriptor rather than calling crewDescriptor
+  // with an id it has no key for.
+  const KNOWN_WORKLOADS: ReadonlySet<Workload> = new Set(['drift', 'upgrade', 'explore', 'provision']);
+  function workloadDescriptor(wl: { name: string; descriptor: string }, tf: TranslateFn): string {
+    return KNOWN_WORKLOADS.has(wl.name as Workload)
+      ? crewDescriptor(wl.name as Workload, tf)
+      : wl.descriptor;
   }
 
   let {
@@ -141,48 +166,48 @@
 
 <details class="ds-card cap-card" data-testid="capability-card" ontoggle={onToggle}>
   <summary class="cap-summary" data-testid="cap-summary">
-    <span class="cap-summary__title ds-label"><Icon name="shield" size={14} extraClass="cap-eyebrow-icon" />What this agent can and cannot do</span>
-    <span class="cap-summary__hint">safety cage, generated from enforcement code</span>
+    <span class="cap-summary__title ds-label"><Icon name="shield" size={14} extraClass="cap-eyebrow-icon" />{$t('capability.card.title')}</span>
+    <span class="cap-summary__hint">{$t('capability.card.hint')}</span>
   </summary>
 
   <div class="cap-body">
     {#if loading && !data}
-      <p class="ds-subtle cap-loading">Loading…</p>
+      <p class="ds-subtle cap-loading">{$t('common.loading')}</p>
     {:else if fetchError}
       <div class="cap-error-row" data-testid="cap-error">
-        <span class="ds-note">Could not load capability data.</span>
+        <span class="ds-note">{$t('capability.error.load')}</span>
         <button
           class="ds-btn ds-btn--ghost cap-retry"
           type="button"
           data-testid="cap-retry"
           onclick={() => void retry()}
-        >Retry</button>
+        >{$t('common.retry')}</button>
       </div>
     {:else if data}
       <!-- Heading hierarchy: the page has one h1 (App header); these panel
            sections are h2, their sub-groups h3 — no skipped levels. -->
       <!-- 1. Gates — anxiety-first: operator wants to know what requires their approval -->
       <section class="cap-section" data-testid="cap-gates" aria-labelledby="cap-gates-heading">
-        <h2 class="cap-section__heading" id="cap-gates-heading">Always needs your approval</h2>
+        <h2 class="cap-section__heading" id="cap-gates-heading">{$t('capability.gates.heading')}</h2>
         {#each data.human_gates as gate (gate.id)}
           <div class="cap-gate">
-            <p class="cap-gate__title"><strong>{gate.title}</strong></p>
-            <p class="cap-gate__desc ds-subtle">{gate.description}</p>
+            <p class="cap-gate__title"><strong>{gateTitle(gate, $t)}</strong></p>
+            <p class="cap-gate__desc ds-subtle">{gateDescription(gate, $t)}</p>
           </div>
         {/each}
       </section>
 
       <!-- 2. Denylist — blocked outright, approval cannot override -->
       <section class="cap-section" data-testid="cap-denylist" aria-labelledby="cap-denylist-heading">
-        <h2 class="cap-section__heading" id="cap-denylist-heading">What's always blocked</h2>
+        <h2 class="cap-section__heading" id="cap-denylist-heading">{$t('capability.denylist.heading')}</h2>
         <p class="ds-subtle cap-denylist__summary">{data.denylist.summary}</p>
         {#each ruleGroups as group (group.category)}
           <div class="cap-rule-group">
-            <h3 class="cap-rule-group__heading">{group.heading}</h3>
+            <h3 class="cap-rule-group__heading">{categoryHeading(group.category, $t)}</h3>
             <ul class="cap-rule-list">
               {#each group.rules as rule (rule.id)}
                 <li class="cap-rule">
-                  <span class="cap-rule__desc">{rule.description}</span>
+                  <span class="cap-rule__desc">{ruleDescription(rule, $t)}</span>
                   {' '}<code class="cap-rule__id">{rule.id}</code>
                 </li>
               {/each}
@@ -191,11 +216,13 @@
         {/each}
         {#if data.denylist.adoptable_resource_types?.length}
           <p class="ds-subtle cap-denylist__adoptable">
-            Adoptable (import) types: {data.denylist.adoptable_resource_types.map((t) => t.label).join(', ')}
+            {$t('capability.denylist.adoptableTypes', {
+              list: data.denylist.adoptable_resource_types.map((entry) => adoptableTypeLabel(entry, $t)).join(', '),
+            })}
           </p>
         {/if}
         <p class="ds-subtle cap-denylist__enforced">
-          checked at: {data.denylist.enforced_at.join(' → ')}
+          {$t('capability.denylist.enforcedAt', { list: data.denylist.enforced_at.join(' → ') })}
         </p>
       </section>
 
@@ -208,7 +235,7 @@
 
       <!-- 3. Workloads — what each workload can use -->
       <section class="cap-section" data-testid="cap-workloads" aria-labelledby="cap-workloads-heading">
-        <h2 class="cap-section__heading" id="cap-workloads-heading">What each workload can use</h2>
+        <h2 class="cap-section__heading" id="cap-workloads-heading">{$t('capability.workloads.heading')}</h2>
         {#each data.workloads as wl (wl.name)}
           <details class="cap-workload">
             <summary
@@ -225,24 +252,26 @@
                    gotcha, PR #83 lesson): the rendered text is exactly
                    "<display_name> — <descriptor> <pill>", pinned by the
                    glued-exact-string test. The pill vocabulary is the honest
-                   one — only a wired trigger reads "Autonomous". -->
+                   one — only a wired trigger reads "Autonomous". The descriptor
+                   itself localizes via the shared crew-descriptor catalog
+                   (workloads.ts::crewDescriptor), not the raw DTO field. -->
               <span class="cap-workload__name">{wl.display_name}</span>{#if wl.descriptor}<span
-                class="cap-workload__descriptor">{' '}— {wl.descriptor}</span>{/if}{' '}<span
+                class="cap-workload__descriptor">{' '}— {workloadDescriptor(wl, $t)}</span>{/if}{' '}<span
                 class="ds-pill {wl.autonomous ? 'ds-pill--ok' : 'ds-pill--muted'} cap-workload__pill"
-                >{wl.autonomous ? 'Autonomous · also chat' : 'On-demand · chat only'}</span>
+                >{wl.autonomous ? $t('capability.pill.autonomous') : $t('capability.pill.onDemand')}</span>
             </summary>
             <div class="cap-workload__body">
               <p class="ds-subtle cap-workload__desc">{wl.description}</p>
 
-              {#if loopRole(wl.name)}
+              {#if loopRole(wl.name, $t)}
                 <p
                   class="cap-workload__loop ds-subtle"
                   data-testid="cap-workload-{wl.name}-loop"
-                ><span class="cap-workload__loop-label">In the loop ·</span> {loopRole(wl.name)}</p>
+                ><span class="cap-workload__loop-label">{$t('capability.workload.loopLabel')}</span> {loopRole(wl.name, $t)}</p>
               {/if}
 
               {#if wl.tools.length > 0}
-                <p class="cap-workload__sub-heading">Tools</p>
+                <p class="cap-workload__sub-heading">{$t('capability.workload.tools')}</p>
                 <ul class="cap-item-list">
                   {#each wl.tools as tool (tool.name)}
                     <li
@@ -250,35 +279,35 @@
                       data-testid="cap-tool-{tool.name}"
                     >
                       <code class="cap-item__name">{tool.name}</code>
-                      <span class="cap-item__desc ds-subtle">{tool.description}</span>
+                      <span class="cap-item__desc ds-subtle">{toolDescription(tool, $t)}</span>
                       {' '}<span
                         class="ds-pill cap-badge {tool.write_capable ? 'ds-pill--warn' : 'ds-pill--muted'}"
-                      >{tool.write_capable ? 'write-capable' : 'read'}</span>
+                      >{tool.write_capable ? $t('capability.badge.writeCapable') : $t('capability.badge.read')}</span>
                     </li>
                   {/each}
                 </ul>
               {/if}
 
               {#if wl.workers.length > 0}
-                <p class="cap-workload__sub-heading">Workers</p>
+                <p class="cap-workload__sub-heading">{$t('capability.workload.workers')}</p>
                 <ul class="cap-item-list">
                   {#each wl.workers as worker (worker.name)}
                     <li class="cap-worker">
                       <code class="cap-item__name">{worker.name}</code>
-                      <span class="cap-item__desc ds-subtle">{worker.description}</span>
+                      <span class="cap-item__desc ds-subtle">{workerDescription(worker, $t)}</span>
                     </li>
                   {/each}
                 </ul>
               {/if}
 
               {#if wl.actions.length > 0}
-                <p class="cap-workload__sub-heading">Actions</p>
+                <p class="cap-workload__sub-heading">{$t('capability.workload.actions')}</p>
                 <ul class="cap-item-list">
                   {#each wl.actions as action (action.name)}
                     <li class="cap-action">
-                      <span class="cap-item__name">{action.display_name}</span>
+                      <span class="cap-item__name">{actionDisplayName(action, $t)}</span>
                       {#if action.requires_approval}
-                        {' '}<span class="ds-pill ds-pill--warn cap-badge">needs approval</span>
+                        {' '}<span class="ds-pill ds-pill--warn cap-badge">{$t('capability.badge.needsApproval')}</span>
                       {/if}
                     </li>
                   {/each}
@@ -291,24 +320,24 @@
                 ontoggle={(e) => onPromptsToggle(wl.name, e.currentTarget as HTMLDetailsElement)}
               >
                 <summary class="cap-workload__prompts-summary">
-                  <Icon name="file-text" size={14} /> View system prompt{wl.name === 'drift' || wl.name === 'upgrade' ? 's' : ''}
+                  <Icon name="file-text" size={14} /> {wl.name === 'drift' || wl.name === 'upgrade' ? $t('capability.workload.viewPrompts') : $t('capability.workload.viewPrompt')}
                 </summary>
                 {#if promptError[wl.name]}
-                  <p class="ds-subtle">Prompt source is unavailable right now.</p>
+                  <p class="ds-subtle">{$t('capability.prompts.unavailable')}</p>
                 {:else if promptsByName[wl.name]}
                   {@const p = promptsByName[wl.name]}
                   <p class="ds-subtle" data-testid="cap-workload-{wl.name}-prompts-note">{p.demo_note}</p>
-                  <p class="ds-subtle">Running artifact · <code class="ds-code">{p.source_dir}</code> @ <code class="ds-code">{p.revision}</code></p>
-                  <div class="ds-field"><span class="ds-label">recheck prompt</span></div>
+                  <p class="ds-subtle">{$t('capability.prompts.runningArtifact')} <code class="ds-code">{p.source_dir}</code> @ <code class="ds-code">{p.revision}</code></p>
+                  <div class="ds-field"><span class="ds-label">{$t('capability.prompts.recheckLabel')}</span></div>
                   <pre class="ds-pre cap-prompt-pre">{p.recheck_prompt}</pre>
                   {#if p.chat_prompt_distinct && p.chat_prompt}
-                    <div class="ds-field"><span class="ds-label">chat prompt</span></div>
+                    <div class="ds-field"><span class="ds-label">{$t('capability.prompts.chatLabel')}</span></div>
                     <pre class="ds-pre cap-prompt-pre">{p.chat_prompt}</pre>
                   {:else}
-                    <p class="ds-subtle">This crew has no separate chat prompt. It ships a single system prompt file.</p>
+                    <p class="ds-subtle">{$t('capability.prompts.noSeparateChat')}</p>
                   {/if}
                 {:else}
-                  <p class="ds-subtle">Loading…</p>
+                  <p class="ds-subtle">{$t('common.loading')}</p>
                 {/if}
               </details>
             </div>

@@ -11,6 +11,7 @@
 
   import { slide } from 'svelte/transition';
   import { motionMs } from '../lib/motion';
+  import { t, locale, localeTag } from '../lib/i18n';
   import Icon from './Icon.svelte';
   import type { PauseStore } from '../lib/pauseStore';
 
@@ -55,12 +56,12 @@
   }
 
   // Time formatting (mirrors PauseControl / DecisionsRail fmtCreatedAt).
-  function fmtUpdatedAt(iso: string | null): string {
+  function fmtUpdatedAt(iso: string | null, tag: 'ja-JP' | 'en-US'): string {
     if (!iso) return '';
     const parsed = Date.parse(iso);
     if (Number.isNaN(parsed)) return iso;
     try {
-      return new Intl.DateTimeFormat(undefined, {
+      return new Intl.DateTimeFormat(tag, {
         month: 'short',
         day: 'numeric',
         hour: '2-digit',
@@ -71,20 +72,20 @@
     }
   }
 
-  const confirmLabel = $derived(saving ? 'Saving…' : 'Confirm resume');
+  const confirmLabel = $derived(saving ? $t('capability.saving') : $t('capability.pauseBanner.confirmResume'));
 </script>
 
 {#if st.kind === 'unknown'}
   <!-- Unknown / fetch error — amber fail-closed note -->
   <div class="pause-card pause-card--unknown" data-testid="pause-banner" role="alert">
     <span class="pause-state pause-state--unknown" data-testid="pause-state"
-      >Pause state unknown. DriftScribe fails closed: changes are blocked until this resolves.</span
+      >{$t('capability.pauseBanner.unknown')}</span
     >
     <button
       class="ds-btn ds-btn--ghost pause-retry"
       type="button"
       data-testid="pause-retry"
-      onclick={() => void pause.fetchPause()}>Retry</button
+      onclick={() => void pause.fetchPause()}>{$t('common.retry')}</button
     >
   </div>
 {:else if st.kind === 'paused'}
@@ -97,17 +98,17 @@
   >
     <div class="pause-row">
       <!-- Icon is aria-hidden SVG — contributes NO textContent. Exact-string
-           contract: pause-state textContent is
-           "DriftScribe is paused. No new agent activity will start." -->
+           contract: pause-state textContent is the
+           capability.pauseBanner.pausedState EN value. -->
       <span class="pause-state pause-state--paused" data-testid="pause-state"
-        ><Icon name="pause" size={14} />DriftScribe is paused. No new agent activity will start.</span
+        ><Icon name="pause" size={14} />{$t('capability.pauseBanner.pausedState')}</span
       >
       {#if !confirming}
         <button
           class="ds-btn ds-btn--ghost pause-toggle"
           type="button"
           data-testid="pause-toggle"
-          onclick={onResumeClick}><Icon name="play" size={14} />Resume</button
+          onclick={onResumeClick}><Icon name="play" size={14} />{$t('capability.pauseBanner.resume')}</button
         >
       {/if}
     </div>
@@ -115,17 +116,17 @@
     <!-- Meta line: actor · time · reason — sibling spans + CSS gap (no text seams) -->
     <div class="pause-meta">
       {#if st.readError}
-        <span class="pause-meta__warn">pause state could not be read, failing closed</span>
+        <span class="pause-meta__warn">{$t('capability.pauseBanner.readErrorWarn')}</span>
       {:else}
         {#if st.actor}
-          <span class="pause-meta__label">Paused by</span>
+          <span class="pause-meta__label">{$t('capability.pauseBanner.pausedBy')}</span>
           <span class="pause-meta__actor">{st.actor}</span>
         {/if}
         {#if st.updatedAt}
-          <time class="pause-meta__time" datetime={st.updatedAt}>{fmtUpdatedAt(st.updatedAt)}</time>
+          <time class="pause-meta__time" datetime={st.updatedAt}>{fmtUpdatedAt(st.updatedAt, localeTag($locale))}</time>
         {/if}
         {#if st.reason}
-          <span class="pause-meta__label">reason:</span>
+          <span class="pause-meta__label">{$t('capability.reasonMetaLabel')}</span>
           <span class="pause-meta__reason">{st.reason}</span>
         {/if}
       {/if}
@@ -134,7 +135,7 @@
     {#if confirming}
       <div class="pause-confirm-row" data-testid="pause-confirm-row" transition:slide={{ duration: motionMs(200) }}>
         <p class="pause-confirm-hint">
-          Resume agent activity? DriftScribe will be able to start new chats, rechecks, and approvals.
+          {$t('capability.pauseBanner.confirmHint')}
         </p>
         <div class="pause-confirm-actions">
           <button
@@ -149,7 +150,7 @@
             type="button"
             data-testid="pause-cancel"
             onclick={onCancel}
-            disabled={saving}><Icon name="x" size={14} />Cancel</button
+            disabled={saving}><Icon name="x" size={14} />{$t('common.cancel')}</button
           >
         </div>
       </div>
@@ -157,7 +158,7 @@
 
     {#if postError}
       <p class="pause-error" data-testid="pause-error">
-        Could not save. Pause state unchanged. Please try again.
+        {$t('capability.pauseBanner.error')}
       </p>
     {/if}
   </div>

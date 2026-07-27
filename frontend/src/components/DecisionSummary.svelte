@@ -11,15 +11,16 @@
 
   import type { Decision } from '../lib/types';
   import { decisionFields } from '../lib/decision';
+  import { t, locale } from '../lib/i18n';
 
   let { decision }: { decision: Decision | null } = $props();
 
-  const fields = $derived(decisionFields(decision));
+  const fields = $derived(decisionFields(decision, $t, $locale));
 </script>
 
 {#if decision && fields.length > 0}
-  <section class="ds-card decision-summary" data-testid="decision-summary" aria-label="Decision summary">
-    <p class="ds-label decision-summary__label">Decision</p>
+  <section class="ds-card decision-summary" data-testid="decision-summary" aria-label={$t('decisions.summary.ariaLabel')}>
+    <p class="ds-label decision-summary__label">{$t('decisions.summary.label')}</p>
     <dl class="decision-summary__grid">
       {#each fields as f (f.label)}
         <div class="decision-summary__row">
