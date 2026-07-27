@@ -14,7 +14,11 @@ export const desk = {
   ja: {
     'desk.nav.ariaLabel': 'メインナビゲーション',
     'desk.nav.desk': 'デスク',
-    'desk.nav.estate': '推定図',
+    // The mockup called this 推定図, but 推定 reads as "estimation/inference"
+    // — closer to "estimation diagram" than to "your infrastructure". Operator
+    // decision 2026-07-28: use インフラ, matching the term this same domain
+    // already ships under (infra.panel.title). Phase 4's EstateView keeps it.
+    'desk.nav.estate': 'インフラ',
     'desk.nav.chat': 'チャット',
   },
 };
