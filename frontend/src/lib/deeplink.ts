@@ -44,8 +44,11 @@ export function conversationIdFromSearch(search: string): string | null {
 // The SPA's three client-side views. No router library — this is the same
 // pure-function-over-location.search pattern as the deep-link helpers above,
 // just picking a view instead of a resource id.
-export type AppView = 'desk' | 'estate' | 'chat';
-const VIEWS: readonly AppView[] = ['desk', 'estate', 'chat'];
+// VIEWS is the single source of truth and AppView is derived from it, so the
+// allowlist and the type can never drift apart (same idiom as AUTONOMY_MODES /
+// AutonomyMode in lib/autonomy.ts).
+export const VIEWS = ['desk', 'estate', 'chat'] as const;
+export type AppView = (typeof VIEWS)[number];
 
 // 'chat' until the redesigned "approval desk" front door has been visually
 // verified (see the composite-redesign plan, Task 3.6), at which point this
@@ -66,7 +69,8 @@ export const DEFAULT_VIEW: AppView = 'chat';
  * would silently swallow that intent. An empty value ("?ask_pr=") is treated
  * as absent, matching "the param is absent" rather than "the param names something".
  */
-function hasChatIntent(params: URLSearchParams, search: string): boolean {
+function hasChatIntent(search: string): boolean {
+  const params = new URLSearchParams(search);
   return Boolean(
     reasoningTraceFromSearch(search) ||
       conversationIdFromSearch(search) ||
@@ -82,8 +86,9 @@ function hasChatIntent(params: URLSearchParams, search: string): boolean {
  * door. Pure — App.svelte (Task 2.2) owns wiring this into actual navigation.
  */
 export function viewFromSearch(search: string): AppView {
-  const params = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search);
-  if (hasChatIntent(params, search)) return 'chat';
-  const raw = params.get('view');
-  return (VIEWS as readonly string[]).includes(raw ?? '') ? (raw as AppView) : DEFAULT_VIEW;
+  if (hasChatIntent(search)) return 'chat';
+  // URLSearchParams tolerates a leading "?" itself, so — like the two helpers
+  // above — the raw search string goes straight in.
+  const raw = new URLSearchParams(search).get('view');
+  return VIEWS.includes(raw as AppView) ? (raw as AppView) : DEFAULT_VIEW;
 }

@@ -85,6 +85,12 @@ describe('viewFromSearch', () => {
     expect(viewFromSearch('?view=admin')).toBe(DEFAULT_VIEW);
   });
 
+  // A present-but-valueless param reads as '' (distinct from absent, which
+  // reads as null) — neither is in the allowlist, so both fall to the default.
+  it('treats an empty ?view= as absent', () => {
+    expect(viewFromSearch('?view=')).toBe(DEFAULT_VIEW);
+  });
+
   it('works with or without a leading "?"', () => {
     expect(viewFromSearch('view=desk')).toBe('desk');
     expect(viewFromSearch('?view=desk')).toBe('desk');
