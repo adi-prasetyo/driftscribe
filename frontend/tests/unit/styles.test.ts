@@ -129,6 +129,27 @@ describe('tokens.css — design-system custom properties', () => {
   it('pins the warm-neutral page background per design §3 (#fcfcfb)', () => {
     expect(stripComments(tokens)).toMatch(/--ds-bg\s*:\s*#fcfcfb/i);
   });
+
+  it('defines the composite redesign tokens', () => {
+    // Phase 1 of the 2026-07-28 composite redesign (docs/plans/2026-07-28-*):
+    // paper/navy world + Mincho serif for the 判子 (hanko) seal moment.
+    // Nothing consumes these yet — later phases do; this pins the names only.
+    for (const t of [
+      '--ds-paper:',
+      '--ds-navy:',
+      '--ds-drift-amber:',
+      '--ds-seal:',
+      '--ds-font-mincho:',
+    ]) {
+      expect(tokens).toContain(t);
+    }
+  });
+
+  it('reserves vermilion for the seal only', () => {
+    // #c0392b must appear exactly once — as --ds-seal. The 判子 stamp is the
+    // only red thing on the page, so it reads as the moment of approval.
+    expect(tokens.match(/#c0392b/gi)?.length).toBe(1);
+  });
 });
 
 describe('base.css — shared ds-* component classes (consumed by Svelte + Jinja)', () => {
