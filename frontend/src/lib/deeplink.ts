@@ -40,3 +40,50 @@ export function conversationIdFromSearch(search: string): string | null {
   const raw = new URLSearchParams(search).get('conversation');
   return raw !== null && CONVERSATION_ID_RE.test(raw) ? raw : null;
 }
+
+// The SPA's three client-side views. No router library — this is the same
+// pure-function-over-location.search pattern as the deep-link helpers above,
+// just picking a view instead of a resource id.
+export type AppView = 'desk' | 'estate' | 'chat';
+const VIEWS: readonly AppView[] = ['desk', 'estate', 'chat'];
+
+// 'chat' until the redesigned "approval desk" front door has been visually
+// verified (see the composite-redesign plan, Task 3.6), at which point this
+// flips to 'desk' as a deliberate one-line change. Keep it a bare literal —
+// no branching here — so that flip stays exactly one line.
+export const DEFAULT_VIEW: AppView = 'chat';
+
+/**
+ * Whether this URL's purpose lives in the chat view, regardless of any
+ * explicit `?view=` param. Four params carry that signal:
+ *  - `?reasoning=<hex32>` / `?conversation=<id>` — a shared replay or thread,
+ *    validated by the existing helpers above (reuse, don't re-validate).
+ *  - `?ask_pr=<n>` / `?preview_pr=<n>` — composer-prefill and InfraDiagram
+ *    ghost-overlay seeds (see lib/workloads.ts and lib/infra_graph.ts).
+ * ask_pr/preview_pr are read as raw truthiness rather than through their own
+ * parsers: even a malformed value (e.g. "?ask_pr=abc") means the visitor
+ * arrived from the approval page on an errand, and landing them on the desk
+ * would silently swallow that intent. An empty value ("?ask_pr=") is treated
+ * as absent, matching "the param is absent" rather than "the param names something".
+ */
+function hasChatIntent(params: URLSearchParams, search: string): boolean {
+  return Boolean(
+    reasoningTraceFromSearch(search) ||
+      conversationIdFromSearch(search) ||
+      params.get('ask_pr') ||
+      params.get('preview_pr'),
+  );
+}
+
+/**
+ * The view the SPA shell should render for a given `location.search`. Any
+ * chat intent (see hasChatIntent) wins over an explicit `?view=`, because a
+ * shared link's whole point is the thing it points at, not the default front
+ * door. Pure — App.svelte (Task 2.2) owns wiring this into actual navigation.
+ */
+export function viewFromSearch(search: string): AppView {
+  const params = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search);
+  if (hasChatIntent(params, search)) return 'chat';
+  const raw = params.get('view');
+  return (VIEWS as readonly string[]).includes(raw ?? '') ? (raw as AppView) : DEFAULT_VIEW;
+}
