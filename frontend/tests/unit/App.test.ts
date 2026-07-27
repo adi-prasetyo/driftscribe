@@ -2,7 +2,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, cleanup, fireEvent, waitFor } from '@testing-library/svelte';
 import App from '../../src/App.svelte';
-import { VIEWS, viewFromSearch } from '../../src/lib/deeplink';
+import { VIEWS, CHAT_INTENT_PARAMS, viewFromSearch } from '../../src/lib/deeplink';
 
 function okJson(body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -378,10 +378,9 @@ describe('App — view routing (Task 2.2)', () => {
 
     const search = new URLSearchParams(window.location.search);
     expect(search.get('view')).toBe('desk');
-    expect(search.has('reasoning')).toBe(false);
-    expect(search.has('conversation')).toBe(false);
-    expect(search.has('ask_pr')).toBe(false);
-    expect(search.has('preview_pr')).toBe(false);
+    // Iterate the shared list rather than restating it: a fifth chat-intent
+    // param added to CHAT_INTENT_PARAMS is then covered here automatically.
+    for (const p of CHAT_INTENT_PARAMS) expect(search.has(p)).toBe(false);
     // The replay itself closed — returning to chat must not resurrect it.
     expect(getByTestId('approval-desk')).toBeTruthy();
     await fireEvent.click(getByTestId('nav-chat'));

@@ -56,6 +56,19 @@ export type AppView = (typeof VIEWS)[number];
 // no branching here — so that flip stays exactly one line.
 export const DEFAULT_VIEW: AppView = 'chat';
 
+// The chat-intent params, named once. Two consumers must agree on this list:
+// hasChatIntent below (which of them mean "go to chat") and App.svelte's
+// navigate() (which of them to clear when leaving chat). Getting only one side
+// right when a fifth is added is a silent bug — either a param stops forcing
+// chat, or a stale one survives into a copied desk URL and drags a later
+// visitor back into chat on reload. Same drift risk VIEWS/AppView closes above.
+export const CHAT_INTENT_PARAMS = [
+  'reasoning',
+  'conversation',
+  'ask_pr',
+  'preview_pr',
+] as const;
+
 /**
  * Whether this URL's purpose lives in the chat view, regardless of any
  * explicit `?view=` param. Four params carry that signal:

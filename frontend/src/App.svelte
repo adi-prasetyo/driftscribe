@@ -48,6 +48,7 @@
     conversationIdFromSearch,
     viewFromSearch,
     DEFAULT_VIEW,
+    CHAT_INTENT_PARAMS,
     type AppView,
   } from './lib/deeplink';
   import { initialChatPrefill } from './lib/workloads';
@@ -178,13 +179,10 @@
     const u = new URL(window.location.href);
     if (v === DEFAULT_VIEW) u.searchParams.delete('view');
     else u.searchParams.set('view', v);
-    if (v !== 'chat') {
-      u.searchParams.delete('reasoning');
-      u.searchParams.delete('conversation');
-      u.searchParams.delete('ask_pr');
-      u.searchParams.delete('preview_pr');
-    }
+    // CHAT_INTENT_PARAMS is the shared list — see its comment in lib/deeplink.
+    if (v !== 'chat') for (const p of CHAT_INTENT_PARAMS) u.searchParams.delete(p);
     history.replaceState(null, '', u);
+    // Chat is a destination, not an undo: nothing to reset (see the doc above).
     if (v === 'chat') return;
     // Keep in-memory state in lockstep with the URL just written — an open
     // replay or thread would otherwise sit there invisibly (the chat branch
