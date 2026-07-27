@@ -146,7 +146,15 @@
      plan style against these. Vermilion is reserved EXCLUSIVELY for --ds-seal
      below so the seal reads as the only red thing on the page; do not reuse
      that hex elsewhere (see styles.test.ts's "reserves vermilion for the seal
-     only" pin). */
+     only" pin).
+
+     BEWARE two near-duplicate pairs — these are a DIFFERENT world from the
+     legacy tokens above and are not interchangeable with them:
+       --ds-ok-green    (#1a6b52, this world)  vs  --ds-ok    (decision/ok)
+       --ds-drift-amber (#9a5b12, this world)  vs  --ds-warn  (gate/pending)
+     Desk/estate/beats surfaces take the paper-world token; everything that
+     already existed keeps the legacy one. "gblue" = Google blue, the deck
+     palette's #4285f4, used for the "awaiting you" numerals. */
   --ds-paper: #fbfaf8;
   --ds-paper-ink: #12151c;
   --ds-paper-ink-2: #535c6b;
