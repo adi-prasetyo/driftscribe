@@ -16,6 +16,7 @@ import { approval } from './approval';
 import { tour } from './tour';
 import { auth } from './auth';
 import { misc } from './misc';
+import { desk } from './desk';
 
 export type Locale = 'en' | 'ja';
 
@@ -34,6 +35,7 @@ export const NAMESPACES = {
   tour,
   auth,
   misc,
+  desk,
 };
 
 // Merge EN with literal key types preserved (so `keyof` yields the real union).
@@ -51,6 +53,7 @@ export const enMessages = {
   ...tour.en,
   ...auth.en,
   ...misc.en,
+  ...desk.en,
 };
 
 export const jaMessages = {
@@ -67,6 +70,7 @@ export const jaMessages = {
   ...tour.ja,
   ...auth.ja,
   ...misc.ja,
+  ...desk.ja,
 };
 
 /** Every valid message key — inferred from the EN catalog. */

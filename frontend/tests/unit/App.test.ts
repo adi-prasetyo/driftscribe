@@ -2,6 +2,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, cleanup, fireEvent, waitFor } from '@testing-library/svelte';
 import App from '../../src/App.svelte';
+import { VIEWS, CHAT_INTENT_PARAMS, viewFromSearch } from '../../src/lib/deeplink';
 
 function okJson(body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -280,5 +281,170 @@ describe('App — open-trace surfaces the PR body ("what this change did")', () 
     const md = panel.querySelector('[data-testid="pr-body-md"]');
     expect(md?.textContent).toContain('B-BODY');
     expect(md?.textContent).not.toContain('A-BODY');
+  });
+});
+
+describe('App — view routing (Task 2.2)', () => {
+  // 32-hex trace id — the shape reasoningTraceFromSearch/HEX32_RE require.
+  const TID = 'a'.repeat(32);
+
+  function stubFetchWithTrace(): void {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/trace/'))
+          return okJson({ trace_id: TID, complete: true, events: [], decision: null });
+        if (url.includes('/decisions')) return okJson({ decisions: [] });
+        if (url.includes('/infra/graph'))
+          return okJson({
+            generated_at: null,
+            project: 'demo-proj',
+            caveat: '',
+            degraded: false,
+            degraded_reason: null,
+            totals: { resources: 1, managed: 0, drift: 1 },
+            groups: [],
+            edges: [],
+          });
+        return okJson({});
+      }),
+    );
+  }
+
+  it('defaults to the chat layout: composer present, desk/estate placeholders absent', () => {
+    const { queryByTestId } = render(App);
+    expect(document.getElementById('chat-form')).toBeTruthy();
+    expect(queryByTestId('approval-desk')).toBeNull();
+    expect(queryByTestId('estate-view')).toBeNull();
+  });
+
+  it('renders the desk placeholder for ?view=desk, with the composer absent', () => {
+    history.replaceState(null, '', '/?view=desk');
+    const { getByTestId } = render(App);
+    expect(getByTestId('approval-desk')).toBeTruthy();
+    expect(document.getElementById('chat-form')).toBeNull();
+  });
+
+  it('renders the estate placeholder for ?view=estate, with the composer absent', () => {
+    history.replaceState(null, '', '/?view=estate');
+    const { getByTestId } = render(App);
+    expect(getByTestId('estate-view')).toBeTruthy();
+    expect(document.getElementById('chat-form')).toBeNull();
+  });
+
+  it('a chat intent (?reasoning=) wins over an explicit ?view=desk — chat renders, not the desk placeholder', async () => {
+    window.sessionStorage.setItem('driftscribe_token', 'tok');
+    stubFetchWithTrace();
+    history.replaceState(null, '', `/?view=desk&reasoning=${TID}`);
+    const { queryByTestId } = render(App);
+    expect(document.getElementById('chat-form')).toBeTruthy();
+    expect(queryByTestId('approval-desk')).toBeNull();
+    // The boot deep-link replay actually opened, proving the chat view is truly live.
+    await waitFor(() => expect(queryByTestId('historical-banner')).toBeTruthy());
+  });
+
+  it('header nav switches views, marks the active one with aria-current, and back to chat restores the composer', async () => {
+    const { getByTestId, queryByTestId } = render(App);
+    const deskBtn = getByTestId('nav-desk');
+    const chatBtn = getByTestId('nav-chat');
+    expect(chatBtn.getAttribute('aria-current')).toBe('page');
+
+    await fireEvent.click(deskBtn);
+    expect(getByTestId('approval-desk')).toBeTruthy();
+    expect(document.getElementById('chat-form')).toBeNull();
+    expect(deskBtn.getAttribute('aria-current')).toBe('page');
+    expect(chatBtn.getAttribute('aria-current')).not.toBe('page');
+    expect(new URL(window.location.href).searchParams.get('view')).toBe('desk');
+
+    await fireEvent.click(chatBtn);
+    expect(document.getElementById('chat-form')).toBeTruthy();
+    expect(queryByTestId('approval-desk')).toBeNull();
+    // Switching TO chat restores nothing — the view param is simply dropped
+    // (chat is the default; a bare "/" already means chat).
+    expect(new URL(window.location.href).searchParams.get('view')).toBeNull();
+  });
+
+  it('navigating away from chat with an open replay clears reasoning/conversation/ask_pr/preview_pr in the same write that sets view, and closes the replay', async () => {
+    window.sessionStorage.setItem('driftscribe_token', 'tok');
+    stubFetchWithTrace();
+    // Arrive with an open replay AND a leftover ask_pr/preview_pr to prove all
+    // four params are swept, not just reasoning.
+    history.replaceState(null, '', `/?reasoning=${TID}&ask_pr=9&preview_pr=9`);
+    const { getByTestId, queryByTestId } = render(App);
+    await waitFor(() => expect(getByTestId('historical-banner')).toBeTruthy());
+
+    await fireEvent.click(getByTestId('nav-desk'));
+
+    const search = new URLSearchParams(window.location.search);
+    expect(search.get('view')).toBe('desk');
+    // Iterate the shared list rather than restating it: a fifth chat-intent
+    // param added to CHAT_INTENT_PARAMS is then covered here automatically.
+    for (const p of CHAT_INTENT_PARAMS) expect(search.has(p)).toBe(false);
+    // The replay itself closed — returning to chat must not resurrect it.
+    expect(getByTestId('approval-desk')).toBeTruthy();
+    await fireEvent.click(getByTestId('nav-chat'));
+    expect(queryByTestId('historical-banner')).toBeNull();
+  });
+
+  // Round-trip: whatever view you navigate to, the URL that navigate() leaves
+  // behind must resolve back to that SAME view. navigate() omits the `view`
+  // param for whichever view is DEFAULT_VIEW, so this property is what keeps it
+  // honest — and it is deliberately written against the real DEFAULT_VIEW
+  // rather than the literal 'chat'. When Task 3.6 flips DEFAULT_VIEW to 'desk',
+  // an implementation that hardcoded the omission to 'chat' starts writing a
+  // param-less URL for chat that reloads as the desk, and THIS test fails.
+  it('every navigated view round-trips through viewFromSearch (guards the Task 3.6 flip)', async () => {
+    window.sessionStorage.setItem('driftscribe_token', 'tok');
+    const { getByTestId } = render(App);
+    await waitFor(() => expect(getByTestId('nav-desk')).toBeTruthy());
+
+    for (const v of VIEWS) {
+      await fireEvent.click(getByTestId(`nav-${v}`));
+      expect(viewFromSearch(window.location.search)).toBe(v);
+    }
+  });
+
+  it('opening a trace from the decisions rail while on the desk view navigates to chat first', async () => {
+    window.sessionStorage.setItem('driftscribe_token', 'tok');
+    const iac = {
+      decision_id: 'd1',
+      trace_id: TID,
+      action: 'iac_apply',
+      pr_number: 47,
+      apply_status: 'applied',
+      approver: 'op@example.com',
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/trace/'))
+          return okJson({ trace_id: TID, complete: true, events: [], decision: iac });
+        if (url.includes('/decisions')) return okJson({ decisions: [iac] });
+        if (url.includes('/infra/graph'))
+          return okJson({
+            generated_at: null,
+            project: 'demo-proj',
+            caveat: '',
+            degraded: false,
+            degraded_reason: null,
+            totals: { resources: 1, managed: 0, drift: 1 },
+            groups: [],
+            edges: [],
+          });
+        return okJson({});
+      }),
+    );
+    history.replaceState(null, '', '/?view=desk');
+    const { findByTestId, getByTestId, queryByTestId } = render(App);
+    expect(getByTestId('approval-desk')).toBeTruthy();
+
+    const btn = await findByTestId('open-trace-button');
+    await fireEvent.click(btn);
+
+    expect(queryByTestId('approval-desk')).toBeNull();
+    expect(document.getElementById('chat-form')).toBeTruthy();
+    await waitFor(() => expect(getByTestId('historical-banner')).toBeTruthy());
   });
 });
