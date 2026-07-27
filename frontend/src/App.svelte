@@ -43,7 +43,12 @@
   import ConversationThread from './components/ConversationThread.svelte';
   import InfraDiagram from './components/InfraDiagram.svelte';
   import { previewPrFromSearch } from './lib/infra_graph';
-  import { reasoningTraceFromSearch, conversationIdFromSearch } from './lib/deeplink';
+  import {
+    reasoningTraceFromSearch,
+    conversationIdFromSearch,
+    viewFromSearch,
+    type AppView,
+  } from './lib/deeplink';
   import { initialChatPrefill } from './lib/workloads';
   import type { ChatPrefill } from './lib/workloads';
   import CapabilityCard from './components/CapabilityCard.svelte';
@@ -147,6 +152,54 @@
   function setConversationId(id: string | null) {
     conversationId = id;
     syncConversationParam(id);
+  }
+
+  // The SPA's three client-side views (composite-redesign Task 2.2). No router
+  // — same pure-function-over-location.search pattern as the deep-link helpers
+  // above, this time picking a view instead of a resource id. See lib/deeplink
+  // for viewFromSearch/AppView/DEFAULT_VIEW (Task 2.1).
+  let view = $state<AppView>(viewFromSearch(window.location.search));
+
+  // Navigate to view `v`. AWAY from chat, this writes `view` + clears every
+  // chat-intent param (reasoning/conversation/ask_pr/preview_pr) in ONE
+  // replaceState — a copied desk/estate URL must never carry a leftover chat
+  // errand that would silently pull a later visitor back into chat on reload
+  // (viewFromSearch's hasChatIntent treats any of the four as "go to chat").
+  // TO chat, this restores nothing: it's a plain destination, not an undo, so
+  // the `view` param is simply dropped (chat is DEFAULT_VIEW — a bare "/"
+  // already means chat, no need to spell it out).
+  function navigate(v: AppView) {
+    view = v;
+    const u = new URL(window.location.href);
+    if (v === 'chat') {
+      u.searchParams.delete('view');
+    } else {
+      u.searchParams.set('view', v);
+      u.searchParams.delete('reasoning');
+      u.searchParams.delete('conversation');
+      u.searchParams.delete('ask_pr');
+      u.searchParams.delete('preview_pr');
+    }
+    history.replaceState(null, '', u);
+    if (v === 'chat') return;
+    // Keep in-memory state in lockstep with the URL just written — an open
+    // replay or thread would otherwise sit there invisibly (the chat branch
+    // isn't mounted in desk/estate) and reappear out of step with the
+    // now-paramless address bar on a later return to chat.
+    if (historicalActive) {
+      historicalActive = false;
+      historicalTraceId = null;
+      activeTraceId = null;
+      historicalDecision = null;
+      historicalPrBody = null;
+      historicalPrBodyTruncated = false;
+    }
+    if (conversationId !== null) {
+      setConversationId(null); // the only writer of conversationId — see its own doc
+      conversationWorkload = null;
+      conversationTurns = [];
+    }
+    if (previewPr !== null) previewPr = null; // preview_pr already dropped above
   }
 
   let historicalActive = $state(false);
@@ -407,6 +460,7 @@
   // clears the live-run surfaces, then scrolls the thread into view. Guarded so
   // a superseding open/newChat drops a late response.
   async function openConversation(id: string) {
+    navigate('chat'); // the rail is visible in every view — resuming a thread reads chat
     const myRun = ++runSeq;
     busy = false;
     resumingConversation = true;
@@ -797,6 +851,7 @@
 
   // ---- historical replay ----
   async function openTrace(tid: string) {
+    navigate('chat'); // the rail is visible in every view — opening a trace reads chat
     const myRun = ++runSeq; // cancels any in-flight live stream
     busy = false;
     // A replay supersedes any in-flight resume; openConversation's own finally
@@ -964,6 +1019,35 @@
     </span>
     <h1 class="app-title">DriftScribe<span class="app-title__sub">{$t('header.brand.tagline')}</span></h1>
   </a>
+  <!-- The SPA's three-view nav (composite-redesign Task 2.2): desk is the
+       placeholder front door, estate the placeholder resource map, chat is
+       today's unchanged layout (still DEFAULT_VIEW — see lib/deeplink). -->
+  <nav class="app-header__nav" aria-label={$t('desk.nav.ariaLabel')}>
+    <button
+      type="button"
+      class="app-header__nav-btn"
+      class:is-active={view === 'desk'}
+      aria-current={view === 'desk' ? 'page' : undefined}
+      data-testid="nav-desk"
+      onclick={() => navigate('desk')}>{$t('desk.nav.desk')}</button
+    >
+    <button
+      type="button"
+      class="app-header__nav-btn"
+      class:is-active={view === 'estate'}
+      aria-current={view === 'estate' ? 'page' : undefined}
+      data-testid="nav-estate"
+      onclick={() => navigate('estate')}>{$t('desk.nav.estate')}</button
+    >
+    <button
+      type="button"
+      class="app-header__nav-btn"
+      class:is-active={view === 'chat'}
+      aria-current={view === 'chat' ? 'page' : undefined}
+      data-testid="nav-chat"
+      onclick={() => navigate('chat')}>{$t('desk.nav.chat')}</button
+    >
+  </nav>
   <div class="app-header__actions">
     <!-- Language toggle (EN / 日本語). Leads the actions cluster; writing it
          re-renders the whole app via the $t/$locale stores. -->
@@ -1038,6 +1122,7 @@
     <DecisionsRail {decisions} {activeTraceId} onOpenTrace={openTrace} />
   </div>
 
+  {#if view === 'chat'}
   <section id="chat-area" class="chat-area" aria-label={$t('header.chatArea.ariaLabel')}>
     <!-- Historical replay renders FIRST so an opened trace lands at the top of
          the chat column (openTrace scrolls the window to top to reveal it). -->
@@ -1084,6 +1169,19 @@
       {@render traceOutput()}
     {/if}
   </section>
+  {:else if view === 'desk'}
+  <!-- Skeleton only (Task 2.2) — the real approval desk lands in Phase 3
+       (ApprovalDesk.svelte, Task 3.5). -->
+  <section data-testid="approval-desk" class="chat-area">
+    <h2>{$t('desk.nav.desk')}</h2>
+  </section>
+  {:else if view === 'estate'}
+  <!-- Skeleton only (Task 2.2) — the real estate view lands in Phase 4
+       (EstateView.svelte, Task 4.1). -->
+  <section data-testid="estate-view" class="chat-area">
+    <h2>{$t('desk.nav.estate')}</h2>
+  </section>
+  {/if}
 </main>
 
 <AuthPanel open={authPanelOpen} onSubmit={onAuthSubmit} onCancel={onAuthCancel} />
@@ -1142,6 +1240,43 @@
   }
   .app-logo-mark :global(.app-logo-mark__icon) {
     display: block;
+  }
+  /* Desk / Estate / Chat — segmented pill, same recipe as LocaleToggle's
+     is-active fill so the two header controls read as one family. Skeleton
+     only (Task 2.2); Phase 3/4 fill in the destinations this points at. */
+  .app-header__nav {
+    display: inline-flex;
+    align-items: stretch;
+    gap: 2px;
+    padding: 2px;
+    background: var(--ds-surface-2);
+    border: 1px solid var(--ds-border);
+    border-radius: var(--ds-radius-pill);
+  }
+  .app-header__nav-btn {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    color: var(--ds-muted);
+    font-family: inherit;
+    font-size: var(--ds-fs-1);
+    font-weight: var(--ds-fw-semibold);
+    line-height: 1.2;
+    padding: 0.3em 0.85em;
+    border-radius: var(--ds-radius-pill);
+    cursor: pointer;
+    white-space: nowrap;
+    transition:
+      background-color var(--ds-dur) var(--ds-ease),
+      color var(--ds-dur) var(--ds-ease);
+  }
+  .app-header__nav-btn:hover {
+    color: var(--ds-fg);
+  }
+  .app-header__nav-btn.is-active {
+    background: var(--ds-surface);
+    color: var(--ds-fg);
+    box-shadow: var(--ds-shadow-sm);
   }
   .app-header__actions {
     display: inline-flex;
