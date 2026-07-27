@@ -343,3 +343,89 @@ def test_claim_denied_then_claim_pending_both_refuse() -> None:
     assert store.claim_denied(created.approval_id) is not None
     # Worker's transactional claim sees status=denied and refuses.
     assert store.claim_pending(created.approval_id) is None
+
+
+# --------------------------------------------------------------------------- #
+# resolved_at (Task 3.0b, 2026-07-28) — the terminal-transition timestamp
+# --------------------------------------------------------------------------- #
+#
+# ``_claim`` is the ONLY writer of the pending -> {used, denied} transitions;
+# it now stamps a ``resolved_at`` timestamp INSIDE the same transaction as the
+# status flip, so status and timestamp can never disagree. The dataclass field
+# MUST default to None so pre-existing Firestore docs (written before this
+# change) still construct via ``Approval(approval_id=..., **data)`` in both
+# ``get`` and ``_claim`` without a TypeError.
+
+
+def test_create_leaves_resolved_at_none() -> None:
+    """A freshly-created (pending) approval has no resolution timestamp yet."""
+    store, _ = _make_store()
+    approval, _ = store.create(
+        target_revision="r", reason="x", hmac_key="k", created_by="u"
+    )
+    assert approval.resolved_at is None
+
+
+def test_claim_pending_stamps_resolved_at() -> None:
+    store, fake = _make_store()
+    created, _ = store.create(
+        target_revision="r", reason="x", hmac_key="k", created_by="u"
+    )
+    before = dt.datetime.now(dt.timezone.utc)
+    claimed = store.claim_pending(created.approval_id)
+    after = dt.datetime.now(dt.timezone.utc)
+    assert claimed is not None
+    assert claimed.status == "used"
+    assert claimed.resolved_at is not None
+    assert before <= claimed.resolved_at <= after
+    # The persisted doc carries it too (not just the returned dataclass).
+    raw = fake.raw(f"approvals/{created.approval_id}")
+    assert raw["resolved_at"] == claimed.resolved_at
+
+
+def test_claim_denied_stamps_resolved_at() -> None:
+    store, fake = _make_store()
+    created, _ = store.create(
+        target_revision="r", reason="x", hmac_key="k", created_by="u"
+    )
+    before = dt.datetime.now(dt.timezone.utc)
+    denied = store.claim_denied(created.approval_id)
+    after = dt.datetime.now(dt.timezone.utc)
+    assert denied is not None
+    assert denied.status == "denied"
+    assert denied.resolved_at is not None
+    assert before <= denied.resolved_at <= after
+    raw = fake.raw(f"approvals/{created.approval_id}")
+    assert raw["resolved_at"] == denied.resolved_at
+
+
+def test_get_tolerates_old_doc_with_no_resolved_at_key() -> None:
+    """Backward compatibility: a doc written before this change has no
+    ``resolved_at`` key at all. ``get()`` must still construct the dataclass
+    (default None), never raise a TypeError on an unexpected/missing kwarg."""
+    store, fake = _make_store()
+    created, _ = store.create(
+        target_revision="r", reason="x", hmac_key="k", created_by="u"
+    )
+    # Simulate a pre-Part-A doc: status flipped by hand, no resolved_at key.
+    raw = fake.raw(f"approvals/{created.approval_id}")
+    raw["status"] = "used"
+    assert "resolved_at" not in raw
+    fetched = store.get(created.approval_id)
+    assert fetched is not None
+    assert fetched.status == "used"
+    assert fetched.resolved_at is None
+
+
+def test_get_tolerates_new_doc_with_resolved_at_key() -> None:
+    """Forward compatibility: a doc written by the new code has a
+    ``resolved_at`` key. ``get()`` must round-trip it."""
+    store, _ = _make_store()
+    created, _ = store.create(
+        target_revision="r", reason="x", hmac_key="k", created_by="u"
+    )
+    store.claim_pending(created.approval_id)
+    fetched = store.get(created.approval_id)
+    assert fetched is not None
+    assert fetched.status == "used"
+    assert fetched.resolved_at is not None

@@ -2209,14 +2209,22 @@ def list_decisions_endpoint(
     #      merged when GitHub confirms the PR merged out-of-band (compute-only, no
     #      persist). The provider memoizes the github client so a window with N
     #      stale rows builds it once, and a warm merge-cache makes zero GitHub calls.
+    #   4. attach_approval_status (Task 3.0b) — join the approval doc's status +
+    #      resolution timestamp onto rollback rows. The reader memoizes Firestore
+    #      reads per approval_id for this request and is fail-soft (never 500s
+    #      the rail on a Firestore hiccup).
     settings = get_settings()
     repo = settings.github_repo
     repo_provider = _memoized_repo_provider(settings)
+    approval_reader = _memoized_approval_reader()
     rows = [
-        reconcile_merge_state(
-            attach_iac_pr_link(scrub_decision_rationale(d), repo),
-            repo_provider=repo_provider,
-            settings=settings,
+        attach_approval_status(
+            reconcile_merge_state(
+                attach_iac_pr_link(scrub_decision_rationale(d), repo),
+                repo_provider=repo_provider,
+                settings=settings,
+            ),
+            approval_reader=approval_reader,
         )
         for d in state.list_decisions(limit=limit)
     ]
@@ -2545,6 +2553,89 @@ def reconcile_merge_state(decision: object, *, repo_provider, settings: Settings
     if merged is True:
         return {**decision, "merge_state": "merged", "merge_reconciled": True}
     return decision
+
+
+def _memoized_approval_reader():
+    """Return a 0-arg-per-``approval_id`` callable that reads the approval
+    doc's ``(status, resolved_at)`` AT MOST ONCE per approval_id per request
+    (Task 3.0b, 2026-07-28 — mirrors ``_memoized_repo_provider``'s "build the
+    client once per request" shape, applied here to per-row *reads* instead
+    of a single client construction).
+
+    Only rows with an ``approval_id`` ever call this (see
+    ``attach_approval_status``'s entry gate), so a window with N rollback
+    rows referencing the SAME approval (unusual but not impossible — repeated
+    /recheck calls after a stale claim) makes exactly one Firestore read, and
+    a window with none makes zero.
+
+    Fail-soft: a store construction error OR a read error memoizes ``None``
+    so the caller degrades to an un-enriched row — the read must never break
+    GET /decisions, the operator's main surface."""
+    cache: dict[str, object] = {}
+
+    def read(approval_id: str):
+        if approval_id not in cache:
+            try:
+                cache[approval_id] = approval_helpers.get_approval_store().get(approval_id)
+            except Exception as e:  # noqa: BLE001 — fail-soft; must never break the serve path
+                log.warning(
+                    "decision_approval_status_read_failed",
+                    extra={"error": type(e).__name__},
+                )
+                cache[approval_id] = None
+        return cache[approval_id]
+
+    return read
+
+
+def attach_approval_status(decision: object, *, approval_reader) -> object:
+    """Serve-time: for a rollback row (an ``approval`` sub-object carrying a
+    non-empty ``approval_id``), join the approval doc's ``status`` and its
+    resolution timestamp (``resolved_at``, added by Task 3.0b Part A) into a
+    served copy. COMPUTE-ONLY — the approval doc is the source of truth for
+    status; this never persists anything back onto the decision.
+
+    Part C (honest degradation) — the entire point of this transform: a
+    missing approval doc, an unknown/non-string status, or a doc that
+    predates the ``resolved_at`` field (``record.resolved_at is None``) NEVER
+    causes a timestamp to be synthesized. ``resolved_at`` is either the real
+    value from the approval doc or explicit ``None`` — NEVER the decision's
+    own ``created_at`` (that's when the proposal was made, not when a human
+    resolved it). A consumer must be able to tell "resolved, time unknown"
+    apart from "resolved at 14:05".
+
+    ``approval_reader`` is a 0-arg-per-id callable (``str -> Approval |
+    None``); production callers pass :func:`_memoized_approval_reader`,
+    which is ALSO responsible for catching store errors (mirrors the
+    ``reconcile_merge_state`` / ``_resolve_pr_merged`` split — the transform
+    trusts its injected reader and does not itself swallow exceptions).
+
+    Conventions mirror ``reconcile_merge_state`` / ``scrub_decision_rationale``:
+    identity on no-change (non-dict, no ``approval`` sub-object, no/blank
+    ``approval_id``, doc not found, status unknown), copy-on-change
+    otherwise, never mutates the input, and — for rows with NO ``approval``
+    sub-object at all — a byte-identical passthrough."""
+    if not isinstance(decision, dict):
+        return decision
+    approval = decision.get("approval")
+    if not isinstance(approval, dict):
+        return decision
+    approval_id = approval.get("approval_id")
+    if not isinstance(approval_id, str) or not approval_id:
+        return decision
+    record = approval_reader(approval_id)
+    if record is None:
+        return decision
+    status = getattr(record, "status", None)
+    if not isinstance(status, str) or not status:
+        return decision
+    resolved_at = getattr(record, "resolved_at", None)
+    if not isinstance(resolved_at, dt.datetime):
+        resolved_at = None  # never synthesize — see docstring
+    return {
+        **decision,
+        "approval": {**approval, "status": status, "resolved_at": resolved_at},
+    }
 
 
 _INFRA_INVENTORY_CACHE: "tuple[float, dict] | None" = None

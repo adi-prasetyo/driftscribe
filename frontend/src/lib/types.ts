@@ -11,6 +11,23 @@ export interface DecisionApproval {
    *  routed through `safeApprovalHref` before it becomes an anchor href. */
   approval_url?: string;
   expires_at?: string | null;
+  /** Serve-time join (Task 3.0b) of the LIVE approval doc's status, from
+   *  `driftscribe_lib/approvals.py`'s `ApprovalStore._claim` transitions.
+   *  Only `pending`/`used`/`denied` are ever written — `_claim` is the sole
+   *  writer of the two terminal transitions and always passes exactly one of
+   *  `"used"` or `"denied"` as `new_status`; an `"approved"` value never
+   *  occurs despite an older code comment suggesting it. Absent when the
+   *  approval doc could not be read (missing doc, or a soft-failed store
+   *  read) — the row is served un-enriched rather than 500ing. */
+  status?: 'pending' | 'used' | 'denied';
+  /** The transition timestamp, stamped atomically with `status` inside the
+   *  same Firestore transaction (so the two can never disagree) — added by
+   *  the same Task 3.0b change. `null`/absent means "resolved, but we don't
+   *  know when": either still `pending`, or a `used`/`denied` doc written
+   *  BEFORE this field existed (pre-deploy approvals). NEVER falls back to
+   *  the decision's own `created_at` (that's proposal time, not resolution
+   *  time) — treat `null` as genuinely unknown, not "just now". */
+  resolved_at?: string | null;
 }
 
 /** The PR/issue side-channel on a drift/docs/upgrade decision

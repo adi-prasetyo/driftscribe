@@ -92,7 +92,17 @@ class Approval:
     expires_at: dt.datetime
     created_at: dt.datetime
     created_by: str
-    status: str  # "pending" | "approved" | "denied" | "used"
+    status: str  # "pending" | "used" | "denied" — see ``_claim``; "approved" never
+    # occurs (Phase 11.9 renamed the operator-approve outcome to "used" — the
+    # rollback worker's /execute is what actually flips it, and only after
+    # actually executing the traffic shift).
+    # Written atomically WITH the status flip inside ``_claim`` (Task 3.0b,
+    # 2026-07-28), so status and timestamp can never disagree. ``None`` for a
+    # still-``pending`` approval AND for any doc written before this field
+    # existed — ``get``/``_claim`` build this dataclass via ``**data`` from a
+    # raw Firestore dict, so the default is required for backward
+    # compatibility with pre-existing docs that lack the key.
+    resolved_at: dt.datetime | None = None
 
 
 def compute_token_hmac(
@@ -239,7 +249,16 @@ class ApprovalStore:
         transitions. Kept private — callers MUST go through
         :meth:`claim_pending` or :meth:`claim_denied` so the set of
         target statuses stays closed (no caller can flip to an arbitrary
-        string)."""
+        string).
+
+        Task 3.0b (2026-07-28): stamps ``resolved_at`` in the SAME
+        transaction as the status flip, so a reader can never observe a
+        terminal status without its resolution timestamp (or vice versa).
+        Uses the same client-computed-``datetime.now(UTC)`` convention as
+        ``create``'s ``created_at``/``expires_at`` — not
+        ``firestore.SERVER_TIMESTAMP`` — so the value is available
+        immediately on the object this method returns (a server-timestamp
+        sentinel only resolves after the next read)."""
         ref = self._ref(approval_id)
 
         @firestore.transactional
@@ -250,8 +269,10 @@ class ApprovalStore:
             data = snap.to_dict() or {}
             if data.get("status") != "pending":
                 return None
-            transaction.update(ref, {"status": new_status})
+            now = dt.datetime.now(dt.timezone.utc)
+            transaction.update(ref, {"status": new_status, "resolved_at": now})
             data["status"] = new_status
+            data["resolved_at"] = now
             return Approval(approval_id=approval_id, **data)
 
         return txn(self._client.transaction(), ref)
