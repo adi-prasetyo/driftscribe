@@ -47,6 +47,7 @@
     reasoningTraceFromSearch,
     conversationIdFromSearch,
     viewFromSearch,
+    DEFAULT_VIEW,
     type AppView,
   } from './lib/deeplink';
   import { initialChatPrefill } from './lib/workloads';
@@ -165,16 +166,19 @@
   // replaceState — a copied desk/estate URL must never carry a leftover chat
   // errand that would silently pull a later visitor back into chat on reload
   // (viewFromSearch's hasChatIntent treats any of the four as "go to chat").
-  // TO chat, this restores nothing: it's a plain destination, not an undo, so
-  // the `view` param is simply dropped (chat is DEFAULT_VIEW — a bare "/"
-  // already means chat, no need to spell it out).
+  // TO chat, this restores nothing: it's a plain destination, not an undo.
+  //
+  // The `view` param is omitted for whichever view is DEFAULT_VIEW (a bare URL
+  // already means that one) — keyed off the constant, NOT hardcoded to 'chat',
+  // because Task 3.6 flips DEFAULT_VIEW to 'desk'. Hardcoding would mean that
+  // after the flip, navigating to chat wrote a param-less URL that reloaded as
+  // the desk. Reading the constant keeps this correct in both eras.
   function navigate(v: AppView) {
     view = v;
     const u = new URL(window.location.href);
-    if (v === 'chat') {
-      u.searchParams.delete('view');
-    } else {
-      u.searchParams.set('view', v);
+    if (v === DEFAULT_VIEW) u.searchParams.delete('view');
+    else u.searchParams.set('view', v);
+    if (v !== 'chat') {
       u.searchParams.delete('reasoning');
       u.searchParams.delete('conversation');
       u.searchParams.delete('ask_pr');

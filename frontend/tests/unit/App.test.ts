@@ -2,6 +2,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, cleanup, fireEvent, waitFor } from '@testing-library/svelte';
 import App from '../../src/App.svelte';
+import { VIEWS, viewFromSearch } from '../../src/lib/deeplink';
 
 function okJson(body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -385,6 +386,24 @@ describe('App — view routing (Task 2.2)', () => {
     expect(getByTestId('approval-desk')).toBeTruthy();
     await fireEvent.click(getByTestId('nav-chat'));
     expect(queryByTestId('historical-banner')).toBeNull();
+  });
+
+  // Round-trip: whatever view you navigate to, the URL that navigate() leaves
+  // behind must resolve back to that SAME view. navigate() omits the `view`
+  // param for whichever view is DEFAULT_VIEW, so this property is what keeps it
+  // honest — and it is deliberately written against the real DEFAULT_VIEW
+  // rather than the literal 'chat'. When Task 3.6 flips DEFAULT_VIEW to 'desk',
+  // an implementation that hardcoded the omission to 'chat' starts writing a
+  // param-less URL for chat that reloads as the desk, and THIS test fails.
+  it('every navigated view round-trips through viewFromSearch (guards the Task 3.6 flip)', async () => {
+    window.sessionStorage.setItem('driftscribe_token', 'tok');
+    const { getByTestId } = render(App);
+    await waitFor(() => expect(getByTestId('nav-desk')).toBeTruthy());
+
+    for (const v of VIEWS) {
+      await fireEvent.click(getByTestId(`nav-${v}`));
+      expect(viewFromSearch(window.location.search)).toBe(v);
+    }
   });
 
   it('opening a trace from the decisions rail while on the desk view navigates to chat first', async () => {
