@@ -53,4 +53,16 @@ describe('SealStamp', () => {
     const el = getByRole('img');
     expect(el.className).not.toMatch(/animate/);
   });
+
+  it('animate is valid on the sm size too (both markers present)', () => {
+    // The resting opacity for sm (.8) differs from lg (.85) in the mockup —
+    // both are driven off the same --seal-rest-opacity variable so the
+    // stampIn keyframe's endpoint always agrees with the base, whichever
+    // size is animating. This just pins that sm + animate is a supported,
+    // renderable combination, not a desk-only convention baked into markup.
+    const { getByRole } = render(SealStamp, { props: { size: 'sm', animate: true } });
+    const el = getByRole('img');
+    expect(el.className).toContain('sm');
+    expect(el.className).toMatch(/animate/);
+  });
 });

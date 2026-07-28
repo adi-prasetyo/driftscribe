@@ -25,12 +25,20 @@
    * only the single freshly-approved desk stamp should ever fire the
    * animation — so callers opt in explicitly rather than it firing broadly.
    *
-   * The un-animated base CSS state (rotate(-11deg), opacity .85, implicit
-   * scale(1)) is IDENTICAL to `stampIn`'s 100% frame, so a
+   * The un-animated base CSS state (rotate(-11deg), opacity var(--seal-rest-
+   * opacity), implicit scale(1)) is IDENTICAL to `stampIn`'s 100% frame, so a
    * prefers-reduced-motion user (global reset in base.css, plus the local
    * belt-and-suspenders override below, matching CrewGlyph/ReplyPending/
    * TraceBadge) lands on the correct resting picture, not a broken mid-stamp
-   * one.
+   * one. The resting opacity is a custom property (`.85` for `lg`, `.8` for
+   * `sm` — the mockup deliberately makes the mini stamp slightly lighter, so
+   * the two values are NOT unified) rather than a literal, because without
+   * `animation-fill-mode: forwards` a finished CSS animation snaps back to
+   * the element's base state. A literal `.85` end-frame on an `sm` seal would
+   * animate to `.85` and then visibly flicker down to `.8` the instant the
+   * animation ends. Reading the endpoint from the same variable as the base
+   * rule keeps them equal by construction, for either size — so `animate`
+   * is safe to use on `sm` too, not just the desk-only `lg` convention.
    *
    * `role="img"` needs an accessible name: the visible glyph text stays 承認
    * in both locales (it's a hanko, not a translated word), but the
@@ -54,6 +62,10 @@
 
 <style>
   .seal-stamp {
+    /* Default resting opacity; --seal-rest-opacity is overridden per-size
+       below and read by both this base rule and stampIn's 100% frame — see
+       the header comment for why it's a variable, not a literal. */
+    --seal-rest-opacity: 0.85;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -63,7 +75,7 @@
     text-align: center;
     border-radius: 50%;
     transform: rotate(-11deg);
-    opacity: 0.85;
+    opacity: var(--seal-rest-opacity);
   }
 
   .seal-stamp--lg {
@@ -75,13 +87,13 @@
   }
 
   .seal-stamp--sm {
+    --seal-rest-opacity: 0.8;
     width: 30px;
     height: 30px;
     flex: none;
     align-self: center;
     border: 1.5px solid var(--ds-seal);
     font-size: 10px;
-    opacity: 0.8;
   }
 
   .seal-stamp--animate {
@@ -99,7 +111,7 @@
     }
     100% {
       transform: rotate(-11deg) scale(1);
-      opacity: 0.85;
+      opacity: var(--seal-rest-opacity);
     }
   }
 
