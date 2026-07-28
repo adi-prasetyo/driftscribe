@@ -69,6 +69,29 @@ describe('App — tour wiring (smoke)', () => {
     expect(getByTestId('tour-card')).toBeTruthy();
   });
 
+  // ds-5yq proper: on the DESK the popover would land on the instrument band's
+  // first numeral and the resting headline — the thesis screen, and the first
+  // thing a judge sees on the bare domain. It does not auto-open there; the
+  // bell keeps its unread badge so the notice is still one click away, and the
+  // tour offer (which no longer has anything to wait for) appears at once.
+  it('does not auto-open the notice on the desk, and offers the tour banner right away', () => {
+    history.replaceState(null, '', '/');
+    const { getByTestId, queryByTestId } = render(App);
+    expect(getByTestId('approval-desk')).toBeTruthy();
+    expect(queryByTestId('demo-notice-popover')).toBeNull();
+    expect(getByTestId('tour-banner')).toBeTruthy();
+    // Still discoverable — the bell and its unread badge remain.
+    expect(getByTestId('demo-notice-bell')).toBeTruthy();
+    expect(getByTestId('demo-notice-badge')).toBeTruthy();
+    expect(window.localStorage.getItem('driftscribe_demo_notice_dismissed')).toBeNull();
+  });
+
+  it('still auto-opens the notice on a non-desk landing (chat deep link)', () => {
+    history.replaceState(null, '', '/?view=chat');
+    const { getByTestId } = render(App);
+    expect(getByTestId('demo-notice-popover')).toBeTruthy();
+  });
+
   it('suppresses the banner when arriving with ?ask_pr intent', () => {
     history.replaceState(null, '', '/?ask_pr=102');
     const { queryByTestId, getByTestId } = render(App);

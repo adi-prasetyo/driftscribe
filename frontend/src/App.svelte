@@ -358,6 +358,15 @@
   // whole tour. The store already owns exactly these two snapshots and fetches
   // eagerly on creation, so it is the correct source on every view.
   let tourOpen = $state(false);
+  // ds-5yq: the demo-notice popover is bell-anchored and drops into the
+  // top-left, which on the DESK is exactly where the instrument band's first
+  // numeral and the resting headline sit — the product's thesis screen, and the
+  // first thing a judge sees on the bare domain since Task 3.6 made the desk the
+  // front door. It does not auto-open there; the bell keeps its unread badge, so
+  // the notice stays one click away. Boot-time only (never reactive): the notice
+  // decides once, at mount, so a later navigation to the desk must not
+  // retroactively suppress a notice that already opened.
+  const coversPrimaryContent = viewFromSearch(window.location.search) === 'desk';
   let tourOffered = $state(shouldOfferTour(window.location.search, tourDone()));
   function startTour(): void {
     tourOffered = false;
@@ -1113,7 +1122,7 @@
     <!-- Judging-window notice bell (replaces the in-flow DemoNoticeBanner; see
          docs/plans/2026-07-07-demo-notice-bell.md). Deleted whole at
          close-window time. -->
-    <DemoNoticeBell />
+    <DemoNoticeBell {coversPrimaryContent} />
     <!-- data-tour="controls" lives on this always-rendered wrapper (not the
          loaded-only pill button) so the tour spotlight resolves even while
          /autonomy is loading or unknown. -->

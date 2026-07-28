@@ -159,6 +159,14 @@ test('composer New-chat + crew-lock walkthrough', async ({ page }) => {
   // a bare url renders the approval desk, which has no composer to walk through.
   await page.goto('/?view=chat');
 
+  // The demo-notice popover auto-opens at boot on the chat view and drops into
+  // the top-left, where it overlaps the conversations rail and intercepts the
+  // click below. The desk rig dismisses it for the same reason. NB this is a
+  // real overlap a first-time visitor hits on chat too, not a test artifact —
+  // tracked separately; this rig is about the composer.
+  const notice = page.getByTestId('demo-notice-dismiss');
+  if (await notice.isVisible()) await notice.click();
+
   const form = page.locator('#chat-form');
   await expect(form).toBeVisible();
   const newChatBtn = page.getByTestId('composer-new-chat');
