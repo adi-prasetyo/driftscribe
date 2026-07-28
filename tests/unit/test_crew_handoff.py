@@ -187,3 +187,63 @@ def test_denied_tools_are_real_registry_names():
     from agent.workloads.registry import TOOL_REGISTRY
 
     assert HANDOFF_FIRST_TURN_DENIED_TOOLS <= set(TOOL_REGISTRY)
+
+
+# --- the joining crew's first turn -----------------------------------------
+
+def test_crew_display_names_match_the_manifests():
+    """The synthetic prompt names crews the way their own prompts do ("You are
+    Anchor"), not by the frozen symbolic workload name. Pin the map against the
+    manifests so a display rename cannot silently desync."""
+    import pathlib
+
+    import yaml
+
+    from agent.handoff import CREW_DISPLAY_NAMES
+
+    repo = pathlib.Path(__file__).resolve().parents[2]
+    for name in HANDOFF_TARGETS:
+        spec = yaml.safe_load(
+            (repo / "workloads" / name / "workload.yaml").read_text()
+        )
+        assert CREW_DISPLAY_NAMES[name] == spec["display_name"]
+
+
+def test_joining_prompt_quotes_the_brief_as_data_and_names_the_handing_crew():
+    from agent.handoff import handoff_prompt
+
+    _, digest = mint_handoff_nonce()
+    pending = build_pending_handoff(
+        validate_handoff_proposal(
+            target="drift", reason="fixing this needs a rollback",
+            brief="ORDER_TIMEOUT is 90s; the contract pins 30s.",
+            current_workload="explore",
+        ),
+        digest=digest, now=NOW,
+    )
+    text = handoff_prompt(pending)
+
+    assert "Explore" in text
+    assert "ORDER_TIMEOUT is 90s" in text
+    assert "fixing this needs a rollback" in text
+    # The brief is model-authored text arriving from another crew. It must read
+    # as quoted DATA, never as instructions addressed to the joining crew.
+    assert "instructions" in text.lower() or "data" in text.lower()
+    # Never leak the credential into the prompt the model sees.
+    assert digest not in text
+
+
+def test_joining_prompt_survives_an_empty_brief():
+    from agent.handoff import handoff_prompt
+
+    _, digest = mint_handoff_nonce()
+    pending = build_pending_handoff(
+        validate_handoff_proposal(
+            target="upgrade", reason="needs a version bump", brief="",
+            current_workload="explore",
+        ),
+        digest=digest, now=NOW,
+    )
+    text = handoff_prompt(pending)
+    assert "needs a version bump" in text
+    assert text.strip()

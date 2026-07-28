@@ -273,7 +273,7 @@ def test_single_slice_delegates_to_run_chat_stream(monkeypatch):
 
     delegated_to: dict = {}
 
-    async def _fake_run_chat_stream(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply", prior_turns=None, demo_anon=False):
+    async def _fake_run_chat_stream(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply", prior_turns=None, demo_anon=False, denied_tools=None):
         delegated_to["prompt"] = prompt
         delegated_to["session_id"] = session_id
         delegated_to["workload"] = workload
@@ -328,7 +328,7 @@ def test_non_policy_decompose_failure_fails_open(monkeypatch):
 
     delegated: dict = {}
 
-    async def _fake_run_chat_stream(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply", prior_turns=None, demo_anon=False):
+    async def _fake_run_chat_stream(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply", prior_turns=None, demo_anon=False, denied_tools=None):
         delegated["workload"] = workload
         yield {
             "type": "result",
@@ -899,7 +899,7 @@ def test_provision_fanout_observe_delegates_without_editor_call(monkeypatch):
     delegated: dict = {}
 
     async def _fake_run_chat_stream(prompt, session_id=None, *, workload="drift",
-                                    autonomy_mode="propose_apply", prior_turns=None, demo_anon=False):
+                                    autonomy_mode="propose_apply", prior_turns=None, demo_anon=False, denied_tools=None):
         delegated["workload"] = workload
         delegated["autonomy_mode"] = autonomy_mode
         yield {
@@ -940,7 +940,7 @@ def test_provision_fanout_demo_anon_delegates_without_editor_call(monkeypatch):
     delegated: dict = {}
 
     async def _fake_run_chat_stream(prompt, session_id=None, *, workload="drift",
-                                    autonomy_mode="propose_apply", prior_turns=None, demo_anon=False):
+                                    autonomy_mode="propose_apply", prior_turns=None, demo_anon=False, denied_tools=None):
         delegated["workload"] = workload
         delegated["autonomy_mode"] = autonomy_mode
         delegated["demo_anon"] = demo_anon
@@ -1011,7 +1011,7 @@ def test_provision_fanout_single_slice_passes_mode_through(monkeypatch):
     delegated: dict = {}
 
     async def _fake_run_chat_stream(prompt, session_id=None, *, workload="drift",
-                                    autonomy_mode="propose_apply", prior_turns=None, demo_anon=False):
+                                    autonomy_mode="propose_apply", prior_turns=None, demo_anon=False, denied_tools=None):
         delegated["autonomy_mode"] = autonomy_mode
         yield {
             "type": "result",

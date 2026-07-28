@@ -14,6 +14,10 @@ from agent.state_store import FirestoreStateStore
 
 # sentinel matching firestore.SERVER_TIMESTAMP identity in the impl path
 _SERVER_TS = object()
+# sentinel matching firestore.DELETE_FIELD — the handoff burn REMOVES the
+# pending_handoff field rather than writing a falsy tombstone, so the fake
+# has to model deletion for the single-use assertions to mean anything.
+_DELETE = object()
 
 
 class _Snap:
@@ -51,6 +55,9 @@ class _DocRef:
     def _resolve(self, data):
         out = {}
         for k, v in data.items():
+            if v is _DELETE:
+                self._store.docs.get(self._path, {}).pop(k, None)
+                continue
             out[k] = next(self._store._counter) if v is _SERVER_TS else v
         return out
 
@@ -129,6 +136,7 @@ def store(monkeypatch):
     """
     fake_fs = _t.SimpleNamespace(
         SERVER_TIMESTAMP=_SERVER_TS,
+        DELETE_FIELD=_DELETE,
         transactional=lambda fn: fn,
     )
     monkeypatch.setitem(sys.modules, "google.cloud.firestore", fake_fs)
@@ -190,3 +198,105 @@ def test_firestore_list_filters_and_limits(store):
 
 def test_firestore_get_unknown_returns_none(store):
     assert store.get_conversation("nope") is None
+
+
+# --- Crew handoff over the fake client -------------------------------------
+#
+# The in-memory store is what every other test exercises, so these run the
+# SAME scenarios against the Firestore implementation. The two share their
+# decision ladder (``_evaluate_handoff_redemption``) but not their read/write
+# mechanics, and the mechanics are where a burn can silently fail to burn.
+
+import datetime as _dt  # noqa: E402
+
+from agent.handoff import (  # noqa: E402
+    build_pending_handoff,
+    mint_handoff_nonce,
+    validate_handoff_proposal,
+)
+
+_NOW = _dt.datetime(2026, 7, 28, 12, 0, tzinfo=_dt.timezone.utc)
+
+
+def _fs_propose(store, cid, *, to="drift", frm="explore", create=True):
+    nonce, digest = mint_handoff_nonce()
+    store.append_turns(
+        cid,
+        [{"role": "user", "text": "q", "workload": frm},
+         {"role": "crew", "text": "a", "workload": frm}],
+        create_with={"workload": frm, "title": "q"} if create else None,
+        pending_handoff=build_pending_handoff(
+            validate_handoff_proposal(
+                target=to, reason="needs a rollback", brief="b",
+                current_workload=frm,
+            ),
+            digest=digest, now=_NOW,
+        ),
+    )
+    return nonce
+
+
+def test_firestore_proposal_commits_with_the_first_turns(store):
+    _fs_propose(store, "c1")
+    conv = store.get_conversation("c1")
+    assert conv["turn_count"] == 2
+    assert conv["pending_handoff"]["to"] == "drift"
+
+
+def test_firestore_accept_flips_crew_burns_nonce_and_appends_transition(store):
+    nonce = _fs_propose(store, "c1")
+    out = store.redeem_handoff("c1", nonce=nonce, accept=True, now=_NOW)
+
+    assert out["ok"] is True
+    conv = store.get_conversation("c1")
+    assert conv["workload"] == "drift"
+    assert "pending_handoff" not in conv
+    assert conv["turn_count"] == 3
+    assert conv["turns"][-1]["role"] == "crew_change"
+    assert conv["turns"][-1]["handoff"] == {"from": "explore", "to": "drift"}
+    # Single use: the field is gone, so the same nonce can never verify again.
+    assert store.redeem_handoff(
+        "c1", nonce=nonce, accept=True, now=_NOW,
+    )["error"] == "no_pending"
+
+
+def test_firestore_decline_burns_without_flipping(store):
+    nonce = _fs_propose(store, "c1")
+    assert store.redeem_handoff("c1", nonce=nonce, accept=False, now=_NOW)["ok"]
+    conv = store.get_conversation("c1")
+    assert conv["workload"] == "explore"
+    assert conv["turns"][-1]["role"] == "handoff_declined"
+
+
+def test_firestore_supersede_burns_the_earlier_nonce(store):
+    first = _fs_propose(store, "c1")
+    second = _fs_propose(store, "c1", create=False)
+    assert store.redeem_handoff(
+        "c1", nonce=first, accept=True, now=_NOW,
+    )["error"] == "invalid_nonce"
+    assert store.redeem_handoff("c1", nonce=second, accept=True, now=_NOW)["ok"]
+
+
+def test_firestore_expired_proposal_is_refused(store):
+    nonce = _fs_propose(store, "c1")
+    out = store.redeem_handoff(
+        "c1", nonce=nonce, accept=True, now=_NOW + _dt.timedelta(minutes=15),
+    )
+    assert out["error"] == "expired"
+    assert store.get_conversation("c1")["workload"] == "explore"
+
+
+def test_firestore_run_lease_blocks_redemption_until_released(store):
+    nonce = _fs_propose(store, "c1")
+    assert store.begin_chat_run("c1", run_id="a", now=_NOW) is True
+    assert store.begin_chat_run("c1", run_id="b", now=_NOW) is False
+    assert store.redeem_handoff(
+        "c1", nonce=nonce, accept=True, now=_NOW,
+    )["error"] == "busy"
+
+    store.finish_chat_run("c1", run_id="a")
+    assert store.redeem_handoff("c1", nonce=nonce, accept=True, now=_NOW)["ok"]
+
+
+def test_firestore_lease_on_an_absent_conversation_is_granted(store):
+    assert store.begin_chat_run("never-created", run_id="a", now=_NOW) is True

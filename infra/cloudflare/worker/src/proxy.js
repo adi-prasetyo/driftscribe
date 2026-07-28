@@ -56,14 +56,36 @@ export const DEMO_ALLOWLIST = [
   ["GET", /^\/conversations$/],
   ["GET", /^\/conversations\/[^/]+$/],
   ["POST", /^\/chat$/],
+  // Confirming a crew handoff. Without this an anonymous judge who clicks
+  // the confirmation chip gets the token modal instead of the transition —
+  // the same allowlist gap that bit the SPA once already (PR #208).
+  ["POST", /^\/chat\/handoff$/],
 ];
 
 export function demoAllowed(method, pathname) {
   return DEMO_ALLOWLIST.some(([m, re]) => m === method && re.test(pathname));
 }
 
-// Hackathon A.4: per-IP rate limit on the anonymous POST /chat path only —
-// a /chat run holds long Gemini calls, so it is the one allowlisted route
+// The allowlisted routes that start a Gemini run, and therefore cost real
+// money per request. Everything else on the allowlist is a read.
+//
+// POST /chat/handoff belongs here for the same reason POST /chat does: an
+// accepted handoff runs the joining crew's turn immediately ("confirm IS the
+// turn"). Allowlisting it without metering it would have left a second,
+// unmetered path to the same expense — a hole in the anonymous-window budget
+// rail. They share ONE per-visitor bucket rather than getting an allowance
+// each, because a visitor's total spend is what the rail is protecting.
+const METERED_DEMO_ROUTES = [
+  ["POST", /^\/chat$/],
+  ["POST", /^\/chat\/handoff$/],
+];
+
+function isMeteredDemoRoute(method, pathname) {
+  return METERED_DEMO_ROUTES.some(([m, re]) => m === method && re.test(pathname));
+}
+
+// Hackathon A.4: per-IP rate limit on the anonymous cost-amplifying paths —
+// those runs hold long Gemini calls, so they are the allowlisted routes
 // where volume costs real money. Keyed on CF-Connecting-IP (set by
 // Cloudflare, not spoofable from the client). Fail-open by design: the
 // limiter is best-effort defense-in-depth, and a limiter outage must not
@@ -121,10 +143,9 @@ export default {
       demoAllowed(request.method, url.pathname)
     ) {
       // Rate-limit BEFORE granting the token, and only on the anonymous
-      // /chat path — operator (CF JWT) traffic never reaches this branch.
+      // metered paths — operator (CF JWT) traffic never reaches this branch.
       if (
-        request.method === "POST" &&
-        url.pathname === "/chat" &&
+        isMeteredDemoRoute(request.method, url.pathname) &&
         (await chatRateLimited(request, env))
       ) {
         return rateLimitResponse();

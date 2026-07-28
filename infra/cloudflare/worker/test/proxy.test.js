@@ -52,6 +52,7 @@ describe("demoAllowed", () => {
     ["GET", "/conversations", true],
     ["GET", "/conversations/conv-1", true],
     ["POST", "/chat", true],
+    ["POST", "/chat/handoff", true],
     // excluded by design: operator mutations + cost amplification
     ["POST", "/pause", false],
     ["POST", "/autonomy", false],
@@ -59,6 +60,7 @@ describe("demoAllowed", () => {
     ["POST", "/iac-approvals/42", false],
     // method matters
     ["GET", "/chat", false],
+    ["GET", "/chat/handoff", false],
     ["POST", "/infra/pending-approvals", false],
     ["POST", "/conversations/conv-1", false],
     // path shape matters
@@ -68,6 +70,8 @@ describe("demoAllowed", () => {
     ["GET", "/infra/pending-approvals/extra", false],
     ["GET", "/trace/", false],
     ["GET", "/decisions/extra", false],
+    ["POST", "/chat/handoff/extra", false],
+    ["POST", "/chat/", false],
     ["GET", "/", false],
   ])("%s %s -> %s", (method, path, expected) => {
     expect(demoAllowed(method, path)).toBe(expected);
@@ -310,5 +314,70 @@ describe("chat rate limiter (hackathon A.4)", () => {
     await worker.fetch(chatReq(), envWith(limit));
     expect(seen.url).toBe(`https://${ORIGIN}/chat`);
     expect(seen.headers.get("X-DriftScribe-Token")).toBe("the-real-token");
+  });
+});
+
+describe("crew handoff is a second cost-amplification route", () => {
+  const handoffReq = (headers = {}) =>
+    req("/chat/handoff", {
+      method: "POST",
+      body: JSON.stringify({ conversation_id: "c1", nonce: "n", accept: true }),
+      duplex: "half",
+      headers: { "Content-Type": "application/json", ...headers },
+    });
+
+  const envWith = (limit) => ({
+    DEMO_MODE: "1",
+    DEMO_TOKEN: "the-real-token",
+    CHAT_RATE_LIMIT: { limit },
+  });
+
+  // Confirming a handoff immediately starts a Gemini run, exactly like POST
+  // /chat. Allowlisting it without also metering it would leave a hole in the
+  // anonymous-window budget rail that a visitor could drive straight through.
+  it("429s an anonymous confirm when the limiter says no", async () => {
+    const seen = stubFetch();
+    const limit = vi.fn(async () => ({ success: false }));
+    const resp = await worker.fetch(
+      handoffReq({ "CF-Connecting-IP": "203.0.113.9" }),
+      envWith(limit),
+    );
+    expect(resp.status).toBe(429);
+    expect(limit).toHaveBeenCalledWith({ key: "203.0.113.9" });
+    expect(seen.url).toBeUndefined();
+  });
+
+  it("shares one budget with POST /chat, not a second allowance", async () => {
+    stubFetch();
+    const limit = vi.fn(async () => ({ success: true }));
+    const env = envWith(limit);
+    await worker.fetch(
+      req("/chat", {
+        method: "POST",
+        body: JSON.stringify({ prompt: "hi", workload: "explore" }),
+        duplex: "half",
+        headers: { "Content-Type": "application/json",
+                   "CF-Connecting-IP": "203.0.113.9" },
+      }),
+      env,
+    );
+    await worker.fetch(handoffReq({ "CF-Connecting-IP": "203.0.113.9" }), env);
+    // Same key both times: the two routes draw down the same per-visitor bucket.
+    expect(limit.mock.calls.map(([a]) => a.key)).toEqual([
+      "203.0.113.9",
+      "203.0.113.9",
+    ]);
+  });
+
+  it("forwards with token + marker when the limiter allows", async () => {
+    const seen = stubFetch();
+    const resp = await worker.fetch(
+      handoffReq({ "CF-Connecting-IP": "203.0.113.9" }),
+      envWith(vi.fn(async () => ({ success: true }))),
+    );
+    expect(resp.status).toBe(200);
+    expect(seen.url).toBe(`https://${ORIGIN}/chat/handoff`);
+    expect(seen.headers.get("X-DriftScribe-Token")).toBe("the-real-token");
+    expect(seen.headers.get("X-DriftScribe-Demo-Anonymous")).toBe("1");
   });
 });

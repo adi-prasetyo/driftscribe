@@ -1150,6 +1150,7 @@ async def run_provision_fanout_stream(
     autonomy_mode: str,
     prior_turns: list[dict] | None = None,
     demo_anon: bool = False,
+    denied_tools: frozenset[str] | None = None,
 ) -> AsyncIterator[dict]:
     """Stream a parallel fan-out ``provision`` (IaC-authoring) run end to end.
 
@@ -1251,6 +1252,7 @@ async def run_provision_fanout_stream(
         async for item in run_chat_stream(
             prompt, sid, workload="provision", autonomy_mode=autonomy_mode,
             prior_turns=prior_turns, demo_anon=demo_anon,
+            denied_tools=denied_tools,
         ):
             yield item
         return
@@ -1281,6 +1283,7 @@ async def run_provision_fanout_stream(
         async for item in run_chat_stream(
             prompt, sid, workload="provision", autonomy_mode=autonomy_mode,
             prior_turns=prior_turns, demo_anon=demo_anon,
+            denied_tools=denied_tools,
         ):
             yield item
         return
@@ -1291,6 +1294,7 @@ async def run_provision_fanout_stream(
         async for item in run_chat_stream(
             prompt, sid, workload="provision", autonomy_mode=autonomy_mode,
             prior_turns=prior_turns, demo_anon=demo_anon,
+            denied_tools=denied_tools,
         ):
             yield item
         return

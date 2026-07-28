@@ -739,6 +739,7 @@ def build_chat_agent(
     autonomy_mode: str,
     extra_instruction: str | None = None,
     demo_anon: bool = False,
+    denied_tools: frozenset[str] | None = None,
 ) -> Agent:
     """Construct the /chat-flavored ADK Agent for the given workload.
 
@@ -765,6 +766,15 @@ def build_chat_agent(
     authoritative system prompt + autonomy note remain the final, last-read
     text. It is composed per-request and never mutates the cached
     :class:`WorkloadResolution`.
+
+    ``denied_tools`` is an unconditional per-request subtraction, applied AFTER
+    every other filter so nothing can add a name back. Its caller today is the
+    crew-handoff first turn (``HANDOFF_FIRST_TURN_DENIED_TOOLS``): that turn is
+    submitted by a confirm click rather than typed, so the two tools that
+    mutate an existing PR in a single call must be unreachable from it. This
+    cannot be left to the dial or to the demo-anon denylist — the default
+    ``propose_apply`` mode filters nothing, and the demo-anon list deliberately
+    PRESERVES ``upgrade_merge_pr`` as a risk-accepted carve-out.
     """
     allowed = filter_tools_for_mode(workload.tools, TOOL_TIERS, autonomy_mode)
     # Audit H1/M4 (partially reversed 2026-07-09): for anonymous demo callers,
@@ -779,6 +789,11 @@ def build_chat_agent(
         denied = _demo_anon_denied_tools()
         demo_dropped = [name for name in allowed if name in denied]
         allowed = {name: t for name, t in allowed.items() if name not in denied}
+    # LAST, and unconditional: no later filter may re-add these.
+    if denied_tools:
+        allowed = {
+            name: t for name, t in allowed.items() if name not in denied_tools
+        }
     instruction = _dial_instruction(workload.chat_system_prompt, autonomy_mode)
     # ``extra_instruction`` (e.g. the cross-crew conversations breadcrumb) is
     # PREPENDED: it is untrusted, pointer-only DATA, so it must sit BEFORE the
@@ -848,6 +863,7 @@ def _emit_event_logs(
     *,
     tool_calls: list[str] | None = None,
     iac_pr_sink: dict | None = None,
+    handoff_sink: dict | None = None,
 ) -> list[dict]:
     """Emit ``llm_thought`` / ``tool_call`` / ``tool_result`` log lines
     for one ADK event's part list.
@@ -947,6 +963,17 @@ def _emit_event_logs(
                 if pointer is not None:
                     iac_pr_sink.clear()
                     iac_pr_sink.update(pointer)
+            # Capture a crew-handoff proposal. Last write wins, which is the
+            # supersede rule at the turn level: a crew that proposes twice in
+            # one turn gets one chip, for its latest intent.
+            if (
+                handoff_sink is not None
+                and fr.name == request_crew_handoff_tool.__name__
+                and isinstance(response, dict)
+                and isinstance(response.get("handoff"), dict)
+            ):
+                handoff_sink.clear()
+                handoff_sink.update(response["handoff"])
             safe_response = redact_event(response)
             preview = json.dumps(safe_response, default=str)[:2000]
             result_ok = not (
@@ -1195,19 +1222,61 @@ async def run_agent(
 MAX_SEED_TURNS = 20
 
 
-def _seed_event_from_turn(turn: dict, *, agent_name: str) -> Event:
+# Author name for server-written rows (crew transitions). Not a crew and not
+# the operator: ADK rewrites a foreign author into a "For context: X said"
+# user-role message, which is the right frame for a system event the model
+# should read but never mistake for its own output or the operator's words.
+_SERVER_EVENT_AUTHOR = "DriftScribe"
+
+
+def _seed_event_from_turn(
+    turn: dict, *, agent_name: str, current_workload: str | None = None,
+) -> Event:
     """Build an ADK event replaying ONE stored turn into a fresh session.
 
-    User turns are authored ``"user"``; crew turns are authored with the
-    *current agent's name* so ADK renders them as model turns. Any other author
-    makes ``google/adk/flows/llm_flows/contents.py`` rewrite them into
-    user-role "For context: ... said" messages, corrupting role fidelity.
+    User turns are authored ``"user"``. Crew turns from the CURRENT crew are
+    authored with the running agent's name so ADK renders them as model turns —
+    any other author makes ``google/adk/flows/llm_flows/contents.py`` rewrite
+    them into user-role "For context: ... said" messages.
+
+    That suppression is correct for same-crew replay and exactly backwards
+    after a handoff: Explore's findings would read to Anchor as Anchor's own
+    prior output. So a turn belonging to a DIFFERENT crew is authored under
+    that crew's name on purpose, and the rewrite this function otherwise avoids
+    becomes the feature — an attributed quotation, which is what a handoff
+    wants. A turn with no recorded workload counts as the current crew's, so
+    every conversation written before handoffs existed replays unchanged.
     """
+    from agent.handoff import crew_display_name
+
     text = turn.get("text") or ""
-    if turn.get("role") == "user":
+    role = turn.get("role")
+    if role == "user":
         return Event(
             author="user",
             content=types.Content(role="user", parts=[types.Part(text=text)]),
+        )
+    if role in ("crew_change", "handoff_declined"):
+        route = turn.get("handoff") or {}
+        joining = crew_display_name(route.get("to", ""))
+        note = (
+            f"The operator confirmed a crew handoff: {joining} took over this "
+            f"conversation."
+            if role == "crew_change"
+            else f"The operator DECLINED a handoff to {joining}. Do not "
+                 f"propose that handoff again unless they ask for it."
+        )
+        if text:
+            note = f'{note} Reason given at the time: "{text}"'
+        return Event(
+            author=_SERVER_EVENT_AUTHOR,
+            content=types.Content(role="model", parts=[types.Part(text=note)]),
+        )
+    turn_workload = turn.get("workload")
+    if turn_workload and current_workload and turn_workload != current_workload:
+        return Event(
+            author=crew_display_name(turn_workload),
+            content=types.Content(role="model", parts=[types.Part(text=text)]),
         )
     return Event(
         author=agent_name,
@@ -1223,6 +1292,7 @@ async def run_chat_stream(
     autonomy_mode: str,
     prior_turns: list[dict] | None = None,
     demo_anon: bool = False,
+    denied_tools: frozenset[str] | None = None,
 ):
     """Core streaming generator for the chat agent.
 
@@ -1253,7 +1323,7 @@ async def run_chat_stream(
     breadcrumb = await asyncio.to_thread(build_conversations_breadcrumb, workload)
     agent = build_chat_agent(
         resolution, autonomy_mode=autonomy_mode, extra_instruction=breadcrumb,
-        demo_anon=demo_anon,
+        demo_anon=demo_anon, denied_tools=denied_tools,
     )
     session_service = InMemorySessionService()
     sid = session_id or str(uuid.uuid4())
@@ -1291,7 +1361,10 @@ async def run_chat_stream(
         )
     for _turn in turns_to_seed:
         await session_service.append_event(
-            session, _seed_event_from_turn(_turn, agent_name=agent.name)
+            session,
+            _seed_event_from_turn(
+                _turn, agent_name=agent.name, current_workload=workload,
+            ),
         )
     runner = Runner(
         agent=agent,
@@ -1305,6 +1378,12 @@ async def run_chat_stream(
     # Captures a CONFIRMED first-authoring infra PR (open_infra_pr) for the SPA
     # approval CTA; stays empty for every other run (see _emit_event_logs).
     iac_pr: dict = {}
+    # Captures a crew-handoff PROPOSAL for the caller to commit alongside the
+    # turn pair. Same request-scoped-sink shape as ``iac_pr`` above: the tool
+    # returns the validated route to the model, and the server reads it back
+    # out of the event stream rather than letting the tool write state itself
+    # (on turn 1 there is no conversation document for it to write to).
+    handoff: dict = {}
     final_response_logged = False
     seq = 0
 
@@ -1331,7 +1410,8 @@ async def run_chat_stream(
             # non-partial events are eligible to log/stream.
             if event.content and event.content.parts and getattr(event, "partial", None) is not True:
                 for payload in _emit_event_logs(
-                    event, tool_calls=tool_calls, iac_pr_sink=iac_pr
+                    event, tool_calls=tool_calls, iac_pr_sink=iac_pr,
+                    handoff_sink=handoff,
                 ):
                     yield {"type": "event", "event": _stream(payload)}
             # Collect + emit the final natural-language response. This is the
@@ -1364,6 +1444,9 @@ async def run_chat_stream(
         # Only present when this run opened a confirmed infra PR — the SPA reads
         # it to render a clickable first-authoring "Review & approve" CTA.
         **({"iac_pr": dict(iac_pr)} if iac_pr else {}),
+        # Only present when this run proposed a crew handoff. Carries NO nonce
+        # — the credential is minted server-side after the proposal commits.
+        **({"handoff": dict(handoff)} if handoff else {}),
     }
 
 
@@ -1375,6 +1458,7 @@ async def run_chat(
     autonomy_mode: str,
     prior_turns: list[dict] | None = None,
     demo_anon: bool = False,
+    denied_tools: frozenset[str] | None = None,
 ) -> dict:
     """Run the free-form chat agent against `prompt`.
 
@@ -1404,14 +1488,20 @@ async def run_chat(
     async for item in run_chat_stream(
         prompt, session_id=session_id, workload=workload,
         autonomy_mode=autonomy_mode, prior_turns=prior_turns,
-        demo_anon=demo_anon,
+        demo_anon=demo_anon, denied_tools=denied_tools,
     ):
         if item["type"] == "result":
-            return {
+            out = {
                 "reply": item["reply"],
                 "tool_calls": item["tool_calls"],
                 "session_id": item["session_id"],
             }
+            # A crew-handoff proposal must survive this projection or the JSON
+            # transport would silently drop it — the caller mints the nonce
+            # from this key, so losing it here loses the whole handoff.
+            if item.get("handoff"):
+                out["handoff"] = item["handoff"]
+            return out
     # run_chat_stream always ends in a "result" item or raises; this
     # guards a malformed generator that exhausts without either.
     raise RuntimeError("ADK chat agent produced no final response")

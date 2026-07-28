@@ -20,7 +20,7 @@ def client(monkeypatch):
     agent_main.app.dependency_overrides[verify_token] = lambda: None
 
     async def _run_chat(prompt, session_id=None, *, workload="drift",
-                        autonomy_mode="propose_apply", prior_turns=None, demo_anon=False):
+                        autonomy_mode="propose_apply", prior_turns=None, demo_anon=False, denied_tools=None):
         # echo how many prior turns were seeded so tests can assert resume
         return {"reply": f"reply to {prompt} (seeded={len(prior_turns or [])})",
                 "tool_calls": [], "session_id": "sid"}
@@ -157,7 +157,7 @@ def test_ephemeral_sse_done_omits_conversation_id(client, monkeypatch):
     # The SPA uses SSE by default — pin that the ``done`` frame carries no
     # conversation_id (vs. a normal SSE turn, which does) and nothing persists.
     async def _stub_stream(prompt, session_id=None, *, workload="drift",
-                           autonomy_mode="propose_apply", prior_turns=None, demo_anon=False):
+                           autonomy_mode="propose_apply", prior_turns=None, demo_anon=False, denied_tools=None):
         yield {"type": "result", "reply": f"reply to {prompt}",
                "tool_calls": [], "session_id": "sid"}
 
@@ -187,7 +187,7 @@ def test_ephemeral_provision_fanout_persists_nothing(client, monkeypatch):
     # Provision routes through the fan-out stream (a structurally distinct path);
     # the same persist chokepoint must keep ephemeral probes out of history.
     async def _stub_fanout(prompt, session_id=None, *, autonomy_mode="propose_apply",
-                           prior_turns=None, demo_anon=False):
+                           prior_turns=None, demo_anon=False, denied_tools=None):
         yield {"type": "result", "reply": f"provisioned {prompt}",
                "tool_calls": [], "session_id": "sid"}
 
