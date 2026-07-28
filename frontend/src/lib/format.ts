@@ -279,6 +279,44 @@ export function decisionActionHelp(action: string | null | undefined, t: Transla
 }
 
 /**
+ * Render an ISO timestamp as a host-timezone `HH:mm` clock string, for the
+ * ledger strip's per-row time column (lib/ledger.ts's `LedgerRow`, Task 3.4).
+ * Deliberately NOT pinned to Asia/Tokyo: it renders directly beside
+ * DecisionsRail's `fmtCreatedAt` and this module's own `fmtWhen` below,
+ * neither of which pins a zone either — pinning JST here alone would print a
+ * DIFFERENT clock time than the timestamp sitting right next to it for the
+ * very same decision, which reads as a bug, not a feature. Same fallbacks as
+ * `fmtWhen`: unparseable → the raw value, absent → `''`.
+ *
+ * `l` MUST be threaded from the active app locale (`$locale` from i18n.ts),
+ * matching every other caller in this module — an omitted `l` falls back to
+ * the HOST's default locale/hour-cycle, not the app toggle, which is exactly
+ * the bug this signature guards against.
+ *
+ * `hourCycle: 'h23'` is pinned regardless of locale: `localeTag('en')` is
+ * `'en-US'`, whose default hour cycle is 12-hour with an AM/PM suffix
+ * ("09:15 AM") — eight characters into the ledger row's `58px` monospace
+ * time column, sized for a 24-hour reading (the mockup's own times are all
+ * `14:05` / `09:15` / `08:40` / `06:00`). This is purely a same-instant
+ * formatting choice, not a second timezone pin: it does not change what
+ * moment is displayed, only how many characters it takes.
+ */
+export function fmtClock(iso: string, l?: Locale): string {
+  if (!iso) return '';
+  const parsed = Date.parse(iso);
+  if (Number.isNaN(parsed)) return iso;
+  try {
+    return new Intl.DateTimeFormat(l ? localeTag(l) : undefined, {
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    }).format(parsed);
+  } catch {
+    return iso;
+  }
+}
+
+/**
  * Render an ISO timestamp as a readable absolute wall-clock string with the
  * year (used by the DecisionSummary card — a historical decision can be from
  * any date, so unlike the rail's compact no-year form we include the year).

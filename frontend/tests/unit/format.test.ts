@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { fmtTokens, shortTrace, fmtPreview, fmtWhen, shortSha, iacStatusLabel, iacStatusHelp, decisionActionLabel, decisionActionHelp, iacApplyMeta, appliedAtDiffersMaterially, normalizeForSearch } from '../../src/lib/format';
+import { fmtTokens, shortTrace, fmtPreview, fmtWhen, fmtClock, shortSha, iacStatusLabel, iacStatusHelp, decisionActionLabel, decisionActionHelp, iacApplyMeta, appliedAtDiffersMaterially, normalizeForSearch } from '../../src/lib/format';
 import { translate, type TranslateFn } from '../../src/lib/i18n';
 
 // The whole suite asserts English (the shared.en catalog is byte-for-byte the
@@ -165,6 +165,40 @@ describe('fmtWhen', () => {
   it('handles null/undefined input safely (returns "")', () => {
     expect(fmtWhen(null as unknown as string)).toBe('');
     expect(fmtWhen(undefined as unknown as string)).toBe('');
+  });
+});
+
+describe('fmtClock', () => {
+  const ISO = '2026-07-28T09:15:00Z';
+
+  it('returns "" for an empty string', () => {
+    expect(fmtClock('')).toBe('');
+  });
+
+  it('returns the raw value when it does not parse', () => {
+    expect(fmtClock('not-a-date')).toBe('not-a-date');
+  });
+
+  // The actual HH:mm digits are host-timezone-dependent (fmtClock pins no
+  // zone — see its doc comment) — like fmtWhen above, this suite does not
+  // pin a TZ, so we assert the FORMAT (24-hour, zero-padded, no AM/PM), not
+  // an absolute clock value that would only hold on one machine/CI runner.
+  it('formats as 24-hour HH:mm with no AM/PM, in EITHER app locale', () => {
+    const en = fmtClock(ISO, 'en');
+    const ja = fmtClock(ISO, 'ja');
+    expect(en).toMatch(/^\d{2}:\d{2}$/);
+    expect(ja).toMatch(/^\d{2}:\d{2}$/);
+    expect(en).not.toMatch(/AM|PM/i);
+    expect(ja).not.toMatch(/AM|PM/i);
+  });
+
+  // `localeTag('en')` is 'en-US', whose default hour cycle is 12-hour with an
+  // AM/PM suffix — this is the exact regression `hourCycle: 'h23'` guards
+  // against (see fmtClock's doc comment). Pinned to the SAME instant as the
+  // locale-shape test above; both locales must render the identical digits
+  // now that hourCycle is fixed rather than locale-default.
+  it('EN and JA render the identical string for the same instant', () => {
+    expect(fmtClock(ISO, 'en')).toBe(fmtClock(ISO, 'ja'));
   });
 });
 

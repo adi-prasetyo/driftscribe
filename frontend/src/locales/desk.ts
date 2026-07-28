@@ -26,6 +26,13 @@ export const desk = {
     'desk.band.managedAria': '{n} managed by IaC',
     'desk.band.driftAria': '{n} drift detected',
     'desk.band.awaitingAria': '{n} awaiting your approval',
+    // LedgerStrip (Task 3.4) — the "Recent record" strip beneath the desk
+    // hero. `openTitle`/`appliedTitle` cover the two states this module
+    // classifies with fixed copy; `noted` rows fall back to
+    // decisionActionLabel's per-action text instead of a fixed string here.
+    'desk.ledger.heading': 'Recent record',
+    'desk.ledger.appliedTitle': 'You approved · applied',
+    'desk.ledger.openTitle': 'Awaiting your approval',
   },
   ja: {
     'desk.nav.ariaLabel': 'メインナビゲーション',
@@ -47,5 +54,8 @@ export const desk = {
     'desk.band.managedAria': '{n}件、IaC 管理下',
     'desk.band.driftAria': '{n}件、ドリフト検出',
     'desk.band.awaitingAria': '{n}件、あなたの承認待ち',
+    'desk.ledger.heading': '最近の記録',
+    'desk.ledger.appliedTitle': 'あなたが承認 → 適用完了',
+    'desk.ledger.openTitle': 'あなたの承認待ち',
   },
 };
