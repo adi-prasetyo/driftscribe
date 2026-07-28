@@ -386,3 +386,78 @@ anyway.
 deploy note: **infra-reader worker → rollback worker → coordinator →
 `update-traffic`**. The rollback worker must land before the coordinator so the
 projection never reads a field no writer produces.
+
+## Live PROD probe (2026-07-28) — found a shipping blocker
+
+Three review rounds could not have caught this one: it is not in the code.
+
+Everything the reviews flagged as "verified against the pinned library but not
+against real GCP" checked out on a live call (owner credentials, read-only,
+against operation `bc2961ab-…` in `asia-northeast1`):
+
+| Assumption | Live result |
+|---|---|
+| `_get_services_client().transport.operations_client` | ✅ `google.api_core.operations_v1.operations_client.OperationsClient` (transport is gRPC) |
+| `get_operation(name=…, timeout=…)` kwargs | ✅ both are real parameters |
+| return shape | ✅ `google.longrunning.operations_pb2.Operation`; `.done`, `.error.code`, `.HasField("response")` all present |
+| `_operation_name()` / `_is_established_failure()` on a real LRO | ✅ correct; the `/reconcile` predicate walk promotes to `applied` |
+
+**What was actually broken: IAM.** `rollback-agent-sa` could not call
+`operations.get` *anywhere in the project*. Its only Run grant is
+`roles/run.developer` bound to the **`payment-demo` service**. That role does
+contain `run.operations.get`, but an operation is
+`projects/{p}/locations/{l}/operations/{id}` — not a child of the service — so
+the binding does not reach it.
+
+Confirmed with Cloud Asset Policy Analyzer, plus three controls to prove the
+analyzer was not simply blind: the SA's project-level `datastore.entities.get`
+resolved ✅, `run.services.get` via that same service binding resolved ✅, and
+`run.operations.get` for the owner account resolved ✅ — only the SA's
+`run.operations.get` came back NOT GRANTED.
+
+### Why production could not vouch for it
+
+The tempting shortcut — "`op.result()` polls through the same client, and
+rollbacks work live, so the permission must be fine" — is false. The pre-change
+`_apply_traffic` fired `update_service` and returned the LRO name **without ever
+polling**; that is precisely the ds-2mc defect. `main.py:631` is the only LRO
+poll in the entire codebase and this change introduced it. Production had never
+exercised `run.operations.get`.
+
+### Blast radius had this shipped
+
+Every rollback: poll raises `PermissionDenied` → `_is_established_failure()` is
+correctly `False` (nothing established) → `outcome_unknown` + HTTP 502, while
+the traffic shift itself lands fine. `/reconcile` then 403s, so the phase never
+settles. Every approval would have reported "we could not confirm your
+rollback" — strictly worse than the bug being fixed, and aimed straight at the
+demo's headline flow.
+
+`test_execute_broken_poll_is_unknown_not_failed` already pins that exact
+behavior. Its docstring reads *"Concretely: `operations.get` starts returning
+PermissionDenied after an IAM change."* That was written as a hypothetical. It
+was the shipping state.
+
+### Fix
+
+Project-level custom role `driftscribeRunOperationsReader`, one permission,
+bound to the rollback SA (matching the existing `driftscribeTofuApply*` pattern;
+`roles/run.viewer` was rejected as project-wide read for one needed permission):
+
+```bash
+gcloud iam roles create driftscribeRunOperationsReader \
+  --project=driftscribe-hack-2026 --permissions=run.operations.get --stage=GA
+gcloud projects add-iam-policy-binding driftscribe-hack-2026 \
+  --member=serviceAccount:rollback-agent-sa@driftscribe-hack-2026.iam.gserviceaccount.com \
+  --role=projects/driftscribe-hack-2026/roles/driftscribeRunOperationsReader
+```
+
+Applied and re-verified GRANTED (~80s analyzer propagation). `iac/` declares no
+IAM at all, so this creates no OpenTofu drift — and equally, nothing in the repo
+protects it. The dependency is recorded in `_get_operations_client()`'s
+docstring because it is invisible from the code and would break silently.
+
+**Still unproven:** a real `get_operation` call made *by the worker's own
+credentials*. Owner cannot impersonate the SA here (no
+`iam.serviceAccounts.getAccessToken`), so the last mile is the post-deploy
+rollback on PROD.

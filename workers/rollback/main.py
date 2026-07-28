@@ -152,7 +152,25 @@ def _get_operations_client():  # noqa: ANN201 — google.api_core operations cli
     Reached through the ServicesClient's transport rather than constructed
     standalone: the LRO belongs to the Cloud Run service endpoint, so it must be
     read through the same transport/credentials that started it. Same
-    indirection-for-testability rationale as the two clients above."""
+    indirection-for-testability rationale as the two clients above.
+
+    ⚠ IAM: this needs ``run.operations.get`` bound at the PROJECT level. The
+    worker SA's ``roles/run.developer`` is bound to the ``payment-demo``
+    *service*, and that binding cannot reach an operation — operations live at
+    ``projects/{p}/locations/{l}/operations/{id}``, which is not a child of the
+    service, so the role's own ``run.operations.get`` applies to nothing there.
+    Verified 2026-07-28 with Cloud Asset Policy Analyzer: before the grant, the
+    permission resolved to NOT GRANTED anywhere in the project while
+    ``run.services.update`` resolved to the payment-demo binding.
+
+    Granted out-of-band (``iac/`` declares no IAM) as project custom role
+    ``driftscribeRunOperationsReader`` — one permission, nothing else. If that
+    binding is ever dropped, or the SA is recreated, polling degrades to
+    PermissionDenied: ``/execute`` reports every rollback as ``outcome_unknown``
+    (the traffic shift still lands) and ``/reconcile`` can never settle it. That
+    failure is silent from the operator's seat, so grep the worker logs for
+    ``PermissionDenied`` in the ``execute: poll raised`` / ``reconcile: could
+    not read operation`` lines before suspecting anything else."""
     return _get_services_client().transport.operations_client
 
 
