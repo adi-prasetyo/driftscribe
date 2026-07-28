@@ -464,3 +464,41 @@ def test_both_transports_report_which_crew_took_over(client, monkeypatch):
         headers={"Accept": "text/event-stream"},
     )
     assert _sse_done(r.text)["crew_change"] == {"from": "explore", "to": "drift"}
+
+
+def test_no_ordinary_turn_can_slip_between_the_burn_and_the_joining_run(
+    client, state, monkeypatch
+):
+    """The confirmation must never refuse AFTER spending its credential.
+
+    Reserving the joining run in the same transaction that burns the nonce is
+    what closes this: a /chat racing the confirm click now loses the lease
+    rather than winning it and leaving the operator with a flipped crew and a
+    409.
+    """
+    cid, nonce = _propose(client)
+    raced: list[int] = []
+    real_redeem = state.redeem_handoff
+
+    def _redeem_then_race(*a, **kw):
+        out = real_redeem(*a, **kw)
+        # The instant redemption commits, an ordinary turn tries to take over.
+        raced.append(_chat(client, workload="drift", cid=cid).status_code)
+        return out
+
+    monkeypatch.setattr(state, "redeem_handoff", _redeem_then_race)
+    assert _redeem(client, cid, nonce).status_code == 200
+    assert raced == [409], "the racing turn must lose, not the confirmation"
+
+
+def test_the_joining_run_releases_its_reserved_lease(client, state):
+    cid, nonce = _propose(client)
+    assert _redeem(client, cid, nonce).status_code == 200
+    # Immediately usable — no waiting on the lease TTL, and no GC-timed release.
+    assert _chat(client, workload="drift", cid=cid).status_code == 200
+
+
+def test_a_declined_handoff_reserves_nothing(client):
+    cid, nonce = _propose(client)
+    assert _redeem(client, cid, nonce, accept=False).status_code == 200
+    assert _chat(client, cid=cid).status_code == 200

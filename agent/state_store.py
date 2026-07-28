@@ -66,7 +66,8 @@ class StateStore(Protocol):
     def finish_chat_run(self, conversation_id: str, *, run_id: str) -> None: ...
     def redeem_handoff(
         self, conversation_id: str, *, nonce: str, accept: bool, now: Any,
-        trace_id: str | None = None,
+        trace_id: str | None = None, run_id: str | None = None,
+        ttl_seconds: int = ...,
     ) -> dict[str, Any]: ...
     def list_conversations(
         self, *, limit: int = 50, workload: str | None = None
@@ -156,6 +157,12 @@ def _lease_is_free(lease: object, *, now: Any) -> bool:
     return now >= expires_at
 
 
+def _new_lease(run_id: str, now: Any, ttl_seconds: int) -> dict[str, Any]:
+    from datetime import timedelta
+
+    return {"run_id": run_id, "expires_at": now + timedelta(seconds=ttl_seconds)}
+
+
 def _handoff_transition_turn(
     pending: dict[str, Any], *, accept: bool, trace_id: str | None,
 ) -> dict[str, Any]:
@@ -174,9 +181,21 @@ def _handoff_transition_turn(
 
 
 class InMemoryStateStore:
-    """Process-local state. Used in tests and DRY_RUN mode."""
+    """Process-local state. Used in tests and DRY_RUN mode.
+
+    The conversation mutators below hold ``_lock``. Firestore gets its
+    all-or-nothing behavior from ``@firestore.transactional``; this store has
+    to say so explicitly, and it matters: ``_persist_chat_turn`` runs inside
+    ``asyncio.to_thread``, so several OS threads really do reach these methods
+    at once. Without the lock, two callers can both validate a nonce before
+    either burns it and both redeem it. Reentrant because ``redeem_handoff``
+    calls ``append_turns``.
+    """
 
     def __init__(self) -> None:
+        import threading
+
+        self._lock = threading.RLock()
         self._events: dict[str, dict[str, Any]] = {}  # event_key -> {payload, decision_id}
         self._decisions: dict[str, dict[str, Any]] = {}  # decision_id -> full decision
         # Pause flag singleton. None = never written (system is running by default —
@@ -356,6 +375,20 @@ class InMemoryStateStore:
         create_with: dict[str, Any] | None = None,
         pending_handoff: dict[str, Any] | None = None,
     ) -> list[int]:
+        with self._lock:
+            return self._append_turns_locked(
+                conversation_id, turns, create_with=create_with,
+                pending_handoff=pending_handoff,
+            )
+
+    def _append_turns_locked(
+        self,
+        conversation_id: str,
+        turns: list[dict[str, Any]],
+        *,
+        create_with: dict[str, Any] | None = None,
+        pending_handoff: dict[str, Any] | None = None,
+    ) -> list[int]:
         """Append turns; optionally record a crew-handoff proposal with them.
 
         ``pending_handoff`` writes in the SAME operation as the turns, which is
@@ -417,52 +450,63 @@ class InMemoryStateStore:
         self, conversation_id: str, *, run_id: str, now: Any,
         ttl_seconds: int = CHAT_RUN_LEASE_TTL_S,
     ) -> bool:
-        from datetime import timedelta
-
-        conv = self._conversations.get(conversation_id)
-        if conv is None:
-            # Nothing to lease and nothing to race: a conversation with no
-            # document has no proposal either.
+        with self._lock:
+            conv = self._conversations.get(conversation_id)
+            if conv is None:
+                # Nothing to lease and nothing to race: a conversation with no
+                # document has no proposal either.
+                return True
+            if not _lease_is_free(conv.get("chat_run_lease"), now=now):
+                return False
+            conv["chat_run_lease"] = _new_lease(run_id, now, ttl_seconds)
             return True
-        if not _lease_is_free(conv.get("chat_run_lease"), now=now):
-            return False
-        conv["chat_run_lease"] = {
-            "run_id": run_id,
-            "expires_at": now + timedelta(seconds=ttl_seconds),
-        }
-        return True
 
     def finish_chat_run(self, conversation_id: str, *, run_id: str) -> None:
-        conv = self._conversations.get(conversation_id)
-        if conv is None:
-            return
-        lease = conv.get("chat_run_lease")
-        # Only the holder may release: a late finish from a run that already
-        # timed out must not free the lease a newer run now holds.
-        if isinstance(lease, dict) and lease.get("run_id") == run_id:
-            conv.pop("chat_run_lease", None)
+        with self._lock:
+            conv = self._conversations.get(conversation_id)
+            if conv is None:
+                return
+            lease = conv.get("chat_run_lease")
+            # Only the holder may release: a late finish from a run that
+            # already timed out must not free the lease a newer run now holds.
+            if isinstance(lease, dict) and lease.get("run_id") == run_id:
+                conv.pop("chat_run_lease", None)
 
     def redeem_handoff(
         self, conversation_id: str, *, nonce: str, accept: bool, now: Any,
-        trace_id: str | None = None,
+        trace_id: str | None = None, run_id: str | None = None,
+        ttl_seconds: int = CHAT_RUN_LEASE_TTL_S,
     ) -> dict[str, Any]:
-        conv = self._conversations.get(conversation_id)
-        view = self.get_conversation(conversation_id) if conv is not None else None
-        pending, refusal = _evaluate_handoff_redemption(view, nonce=nonce, now=now)
-        if refusal is not None:
-            return {"ok": False, "error": refusal}
-        assert pending is not None and conv is not None
-        # Burn first: even if the append below were to fail, the credential is
-        # spent. A stuck transition the operator can re-request beats a live
-        # nonce whose conversation already moved.
-        conv.pop("pending_handoff", None)
-        if accept:
-            conv["workload"] = pending["to"]
-        self.append_turns(
-            conversation_id,
-            [_handoff_transition_turn(pending, accept=accept, trace_id=trace_id)],
-        )
-        return {"ok": True, "pending": dict(pending), "accepted": accept}
+        with self._lock:
+            conv = self._conversations.get(conversation_id)
+            view = (
+                self.get_conversation(conversation_id)
+                if conv is not None else None
+            )
+            pending, refusal = _evaluate_handoff_redemption(
+                view, nonce=nonce, now=now,
+            )
+            if refusal is not None:
+                return {"ok": False, "error": refusal}
+            assert pending is not None and conv is not None
+            # Burn first: even if the append below were to fail, the credential
+            # is spent. A stuck transition the operator can re-request beats a
+            # live nonce whose conversation already moved.
+            conv.pop("pending_handoff", None)
+            if accept:
+                conv["workload"] = pending["to"]
+                if run_id:
+                    conv["chat_run_lease"] = _new_lease(run_id, now, ttl_seconds)
+            self._append_turns_locked(
+                conversation_id,
+                [_handoff_transition_turn(
+                    pending, accept=accept, trace_id=trace_id,
+                )],
+            )
+            return {
+                "ok": True, "pending": dict(pending), "accepted": accept,
+                "run_id": run_id if accept else None,
+            }
 
     def get_conversation(self, conversation_id: str) -> dict[str, Any] | None:
         conv = self._conversations.get(conversation_id)
@@ -963,15 +1007,22 @@ class FirestoreStateStore:
 
     def redeem_handoff(
         self, conversation_id: str, *, nonce: str, accept: bool, now: Any,
-        trace_id: str | None = None,
+        trace_id: str | None = None, run_id: str | None = None,
+        ttl_seconds: int = CHAT_RUN_LEASE_TTL_S,
     ) -> dict[str, Any]:
-        """Verify, burn, flip, and record — all inside one transaction.
+        """Verify, burn, flip, reserve, and record — all inside one transaction.
 
         Single-use is only real if the check and the burn cannot interleave,
         so the whole ladder runs against the transaction's snapshot: two
         simultaneous redemptions of the same nonce cannot both win. The
         validity rules themselves live in :func:`_evaluate_handoff_redemption`
         so they cannot drift from the in-memory store every test runs against.
+
+        ``run_id`` reserves the conversation for the joining turn in this SAME
+        transaction. Acquiring it afterwards left a gap in which an ordinary
+        turn could take the lease first — and the confirmation would then 409
+        having ALREADY burned its nonce and flipped the crew. Reserving here
+        means the credential and the run it pays for commit together.
         """
         from google.cloud import firestore
 
@@ -1004,8 +1055,15 @@ class FirestoreStateStore:
             }
             if accept:
                 doc_fields["workload"] = pending["to"]
+                if run_id:
+                    doc_fields["chat_run_lease"] = _new_lease(
+                        run_id, now, ttl_seconds,
+                    )
             transaction.update(conv_ref, doc_fields)
-            return {"ok": True, "pending": dict(pending), "accepted": accept}
+            return {
+                "ok": True, "pending": dict(pending), "accepted": accept,
+                "run_id": run_id if accept else None,
+            }
 
         return _txn(self._db.transaction())
 

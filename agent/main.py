@@ -6255,7 +6255,21 @@ async def _drain_chat_stream_result(agen) -> dict:
     optional ``iac_pr`` pointer when a first-authoring infra run produced one).
     Raising on an exhausted stream with no result keeps the "no final response"
     RuntimeError identical to ``run_chat``'s, so the ``/chat`` ``except``
-    tuple maps it the same way."""
+    tuple maps it the same way.
+
+    The generator is closed in a ``finally``. Returning on the terminal item
+    leaves it SUSPENDED at its last ``yield``, so any cleanup it owns — for
+    ``_persisting_chat_stream``, releasing the conversation's run lease — runs
+    only at async-generator finalization, which the event loop schedules
+    whenever the last reference drops. CPython usually gets there quickly; this
+    makes it deterministic rather than usually."""
+    try:
+        return await _drain(agen)
+    finally:
+        await agen.aclose()
+
+
+async def _drain(agen) -> dict:
     async for item in agen:
         if item["type"] == "result":
             out = {
@@ -6727,11 +6741,17 @@ async def chat_handoff(
         )
 
     state = get_state()
+    # The joining run's lease is claimed in the SAME transaction that burns the
+    # nonce. Claiming it afterwards left a window in which an ordinary turn
+    # could take the conversation first — and the confirmation would then have
+    # to refuse having ALREADY spent its credential and moved the crew.
+    joining_run_id = uuid.uuid4().hex
     outcome = await asyncio.to_thread(
         state.redeem_handoff,
         req.conversation_id, nonce=req.nonce, accept=req.accept,
         now=dt.datetime.now(dt.timezone.utc),
         trace_id=current_trace_id_or_new(),
+        run_id=joining_run_id,
     )
     if not outcome.get("ok"):
         reason = outcome.get("error", "no_pending")
@@ -6806,23 +6826,12 @@ async def chat_handoff(
         # transcript whose whole value is being trustworthy.
         "omit_user_turn": True,
         "crew_change": {"from": pending["from"], "to": pending["to"]},
+        # Already held: ``redeem_handoff`` reserved it transactionally. Carried
+        # here so the normal release path in ``_persisting_chat_stream`` (and
+        # the JSON branch's ``finally``) frees it exactly as for a typed turn.
+        "run_id": outcome.get("run_id") or joining_run_id,
     }
     prompt = handoff_prompt(pending)
-    if not _acquire_chat_run(state, conv):
-        # A turn slipped in between the redemption and this claim. The window
-        # is two store operations wide, and the transition has ALREADY
-        # committed — which is the documented resolution for a first run that
-        # fails after the flip: the flip stands, and the operator continues by
-        # typing. Say that plainly rather than reusing the generic message.
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"{crew_display_name(pending['to'])} has taken over this "
-                f"conversation, but another turn was already running so it "
-                f"could not start yet. Send a message to continue."
-            ),
-            headers={"Cache-Control": "no-store"},
-        )
     trace_id = current_trace_id_or_new()
 
     if wants_sse:

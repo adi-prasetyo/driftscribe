@@ -275,3 +275,86 @@ def test_the_lease_ttl_outlives_the_longest_possible_run():
     request_timeout = int(re.search(r"- --timeout=(\d+)", cloudbuild).group(1))
     assert CHAT_RUN_LEASE_TTL_S > request_timeout
     assert CHAT_RUN_LEASE_TTL_S < request_timeout * 2
+
+
+# --- concurrency -----------------------------------------------------------
+
+def test_two_threads_cannot_both_redeem_one_nonce(store):
+    """Single-use has to hold under real concurrency, not just sequentially.
+
+    ``_persist_chat_turn`` runs via ``asyncio.to_thread``, so this store is
+    genuinely reached from multiple threads in DRY_RUN — a check-then-burn with
+    no lock lets two callers both validate before either removes the field, and
+    both win.
+    """
+    import threading
+
+    nonce = _propose(store, "c1")
+    barrier = threading.Barrier(8)
+    results: list[dict] = []
+    lock = threading.Lock()
+
+    def _redeem():
+        barrier.wait()
+        out = store.redeem_handoff("c1", nonce=nonce, accept=True, now=NOW)
+        with lock:
+            results.append(out)
+
+    threads = [threading.Thread(target=_redeem) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert sum(1 for r in results if r.get("ok")) == 1
+    turns = store.get_conversation("c1")["turns"]
+    assert [t["role"] for t in turns].count("crew_change") == 1
+
+
+def test_two_threads_cannot_both_claim_the_run_lease(store):
+    import threading
+
+    store.append_turns(
+        "c1", _turns(), create_with={"workload": "explore", "title": "t"},
+    )
+    barrier = threading.Barrier(8)
+    won: list[bool] = []
+    lock = threading.Lock()
+
+    def _claim(i):
+        barrier.wait()
+        got = store.begin_chat_run("c1", run_id=f"r{i}", now=NOW)
+        with lock:
+            won.append(got)
+
+    threads = [threading.Thread(target=_claim, args=(i,)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert won.count(True) == 1
+
+
+def test_accepting_can_reserve_the_joining_run_in_the_same_transaction(store):
+    """Otherwise the nonce burns and the crew flips, and only THEN does the
+    joining turn try to claim a lease — so an ordinary turn can slip into the
+    gap and the confirmation 409s after having already spent itself."""
+    nonce = _propose(store, "c1")
+    out = store.redeem_handoff(
+        "c1", nonce=nonce, accept=True, now=NOW, run_id="joining",
+    )
+    assert out["ok"] is True
+    # The joining run already holds the conversation; nothing else can start.
+    assert store.begin_chat_run("c1", run_id="other", now=NOW) is False
+    store.finish_chat_run("c1", run_id="joining")
+    assert store.begin_chat_run("c1", run_id="other", now=NOW) is True
+
+
+def test_declining_reserves_nothing(store):
+    """A decline runs no turn, so it must not leave a lease behind."""
+    nonce = _propose(store, "c1")
+    store.redeem_handoff(
+        "c1", nonce=nonce, accept=False, now=NOW, run_id="unused",
+    )
+    assert store.begin_chat_run("c1", run_id="other", now=NOW) is True

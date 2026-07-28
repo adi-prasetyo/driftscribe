@@ -300,3 +300,22 @@ def test_firestore_run_lease_blocks_redemption_until_released(store):
 
 def test_firestore_lease_on_an_absent_conversation_is_granted(store):
     assert store.begin_chat_run("never-created", run_id="a", now=_NOW) is True
+
+
+def test_firestore_accept_reserves_the_joining_run_transactionally(store):
+    nonce = _fs_propose(store, "c1")
+    out = store.redeem_handoff(
+        "c1", nonce=nonce, accept=True, now=_NOW, run_id="joining",
+    )
+    assert out["ok"] is True and out["run_id"] == "joining"
+    assert store.begin_chat_run("c1", run_id="other", now=_NOW) is False
+    store.finish_chat_run("c1", run_id="joining")
+    assert store.begin_chat_run("c1", run_id="other", now=_NOW) is True
+
+
+def test_firestore_decline_reserves_nothing(store):
+    nonce = _fs_propose(store, "c1")
+    store.redeem_handoff(
+        "c1", nonce=nonce, accept=False, now=_NOW, run_id="unused",
+    )
+    assert store.begin_chat_run("c1", run_id="other", now=_NOW) is True

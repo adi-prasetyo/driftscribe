@@ -245,3 +245,49 @@ def test_chat_drift_sse_still_goes_through_run_chat_stream_not_fanout(
     done = [d for ev, d in frames if ev == "done"]
     assert done and done[0]["reply"] == "single-agent reply"
     fanout_called.assert_not_called()
+
+
+def test_json_provision_releases_its_run_lease_before_returning(monkeypatch):
+    """``_drain_chat_stream_result`` returns on the terminal item, which leaves
+    the wrapping generator SUSPENDED at its last yield — so the release its
+    ``finally`` owns happens at async-generator finalization unless the drain
+    closes it explicitly. CPython's refcounting usually gets there in time, so
+    this is a regression guard on the outcome (lease free, next turn accepted)
+    rather than a reproduction of the timing itself."""
+    import agent.main as agent_main
+    from agent.auth import verify_token
+    from agent.state_store import InMemoryStateStore
+
+    monkeypatch.setenv("USE_ADK", "true")
+    agent_main.get_settings.cache_clear()
+    state = InMemoryStateStore()
+    monkeypatch.setattr(agent_main, "_state_singleton", state)
+    monkeypatch.setattr(agent_main, "get_state", lambda: state)
+    monkeypatch.setattr(agent_main, "load_workload", lambda w: object())
+    monkeypatch.setattr(agent_main, "_eager_resolve_upgrade_contract", lambda r: None)
+    agent_main.app.dependency_overrides[verify_token] = lambda: None
+
+    async def _fanout(prompt, session_id=None, *, autonomy_mode="propose_apply",
+                      prior_turns=None, demo_anon=False, denied_tools=None):
+        yield {"type": "result", "reply": "ok", "tool_calls": [],
+               "session_id": "sid"}
+
+    monkeypatch.setattr("agent.fanout.run_provision_fanout_stream", _fanout)
+    try:
+        client = TestClient(agent_main.app)
+        first = client.post(
+            "/chat", json={"prompt": "author a bucket", "workload": "provision"},
+        )
+        cid = first.json()["conversation_id"]
+        # No GC in between: the lease must already be free.
+        assert _lease_of(state, cid) is None
+        assert client.post("/chat", json={
+            "prompt": "again", "workload": "provision", "conversation_id": cid,
+        }).status_code == 200
+    finally:
+        agent_main.app.dependency_overrides.pop(verify_token, None)
+        agent_main.get_settings.cache_clear()
+
+
+def _lease_of(state, cid):
+    return state._conversations[cid].get("chat_run_lease")
