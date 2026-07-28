@@ -10,6 +10,10 @@ export const desk = {
     'desk.nav.desk': 'Desk',
     'desk.nav.estate': 'Estate',
     'desk.nav.chat': 'Chat',
+    // SealStamp's accessible name (Task 3.2). The glyph text stays 承認 in
+    // both locales — it's a hanko, not a translated word — but a screen
+    // reader needs an EN-legible name for the "approved" state it marks.
+    'desk.seal.ariaLabel': 'Approved',
   },
   ja: {
     'desk.nav.ariaLabel': 'メインナビゲーション',
@@ -20,5 +24,6 @@ export const desk = {
     // already ships under (infra.panel.title). Phase 4's EstateView keeps it.
     'desk.nav.estate': 'インフラ',
     'desk.nav.chat': 'チャット',
+    'desk.seal.ariaLabel': '承認済み',
   },
 };
