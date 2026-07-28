@@ -151,6 +151,36 @@ describe('deskModel — rule 1: pending rollback', () => {
       throw new Error('expected the newer rollback to win');
     }
   });
+
+  it('a missing/unparseable created_at still qualifies when it is the only candidate, but never displaces a dated rival', () => {
+    const undated = rollbackDecision({
+      decision_id: 'rb-undated',
+      created_at: undefined,
+      approval: { approval_url: '/approvals/rb-undated?t=1', status: 'pending' },
+    });
+    const solo = deskModel({ decisions: [undated], pendingApprovals: [], now: NOW, origin: ORIGIN });
+    expect(solo.kind).toBe('pending');
+    if (solo.kind === 'pending' && solo.source === 'rollback') {
+      expect(solo.decision.decision_id).toBe('rb-undated');
+    }
+
+    const dated = rollbackDecision({
+      decision_id: 'rb-dated',
+      created_at: '2026-01-01T00:00:00Z', // far older in calendar time than "undated" would sort
+      approval: { approval_url: '/approvals/rb-dated?t=1', status: 'pending' },
+    });
+    // Order shouldn't matter — the undated row sorts as -Infinity either way.
+    const withRival = deskModel({
+      decisions: [undated, dated],
+      pendingApprovals: [],
+      now: NOW,
+      origin: ORIGIN,
+    });
+    expect(withRival.kind).toBe('pending');
+    if (withRival.kind === 'pending' && withRival.source === 'rollback') {
+      expect(withRival.decision.decision_id).toBe('rb-dated');
+    }
+  });
 });
 
 describe('deskModel — rule 2: pending iac approval', () => {
@@ -182,6 +212,26 @@ describe('deskModel — rule 2: pending iac approval', () => {
     });
     expect(model.kind).toBe('pending');
     if (model.kind === 'pending') expect(model.source).toBe('rollback');
+  });
+
+  it('a malformed first item (bad pr_number, dead href) is skipped, falling through to the next entry', () => {
+    // Defensive fallthrough, not part of the literal "first item" spec text —
+    // PendingApproval.pr_number is typed as a real number, so this only bites
+    // a malformed backend row. Still must never render a dead CTA.
+    const items = [pendingIac({ pr_number: 0 }), pendingIac({ pr_number: 9 })];
+    const model = deskModel({
+      decisions: [],
+      pendingApprovals: items,
+      now: NOW,
+      origin: ORIGIN,
+    });
+    expect(model.kind).toBe('pending');
+    if (model.kind === 'pending' && model.source === 'iac') {
+      expect(model.href).toBe('/iac-approvals/9');
+      expect(model.approval).toBe(items[1]);
+    } else {
+      throw new Error('expected the second (valid) iac approval to win');
+    }
   });
 });
 
@@ -303,6 +353,36 @@ describe('deskModel — rule 3: stamped', () => {
     });
     expect(model.kind).toBe('stamped');
     if (model.kind === 'stamped') expect(model.source).toBe('iac');
+  });
+
+  it('mirror: when the rollback resolution is the more recent of the two, the rollback wins', () => {
+    // Same setup as the previous test with the timestamps swapped — pins that
+    // the tiebreak is genuinely recency-based, not "iac always wins" (which
+    // would pass the previous test too).
+    const iac = iacDecision({
+      decision_id: 'iac-older',
+      apply_status: 'applied',
+      applied_at: '2026-07-28T11:50:00Z',
+    });
+    const rb = rollbackDecision({
+      decision_id: 'rb-recent',
+      approval: {
+        approval_url: '/approvals/rb-recent?t=x',
+        status: 'used',
+        resolved_at: '2026-07-28T11:59:00Z',
+      },
+    });
+    const model = deskModel({
+      decisions: [iac, rb],
+      pendingApprovals: [],
+      now: NOW,
+      origin: ORIGIN,
+    });
+    expect(model.kind).toBe('stamped');
+    if (model.kind === 'stamped') {
+      expect(model.source).toBe('rollback');
+      expect(model.decision.decision_id).toBe('rb-recent');
+    }
   });
 
   it('picks the newest applied iac row (by applied_at) among several applied rows', () => {
