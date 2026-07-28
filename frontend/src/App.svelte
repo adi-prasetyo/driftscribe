@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from 'svelte';
+  import { onMount, onDestroy, tick } from 'svelte';
   import {
     apiFetch,
     getStoredToken,
@@ -59,6 +59,7 @@
   import { createPauseStore } from './lib/pauseStore';
   import AutonomyPill from './components/AutonomyPill.svelte';
   import { createAutonomyStore, autonomyNoteFor } from './lib/autonomyStore';
+  import { createOverviewStore, NO_DECISIONS_YET } from './lib/overviewStore';
   import { prefersReducedMotion } from './lib/motion';
   import Timeline from './components/Timeline.svelte';
   import TourBanner from './components/TourBanner.svelte';
@@ -80,8 +81,6 @@
   // Set from the `done` frame's `iac_pr` when a run just opened an infra PR —
   // drives the clickable first-authoring "Review & approve" CTA.
   let iacPr = $state<{ pr_number: number; pr_url: string } | null>(null);
-
-  let decisions = $state<Decision[]>([]);
 
   // ---- multi-turn conversations (P2) ----
   // The history rail's list (metadata only). The currently-open thread's id +
@@ -218,10 +217,11 @@
 
   let authPanelOpen = $state(false);
   let authResolver: ((t: string | null) => void) | null = null;
-  // Single-flight: concurrent callers (loadDecisions + InfraDiagram both fetch
-  // on mount, and either may 401) share ONE prompt and one resolution. Without
-  // this, a second requestToken() overwrites the first's resolver and strands
-  // the first in-flight request forever (Codex review).
+  // Single-flight: concurrent callers (the overview store's creation-time
+  // refresh + InfraDiagram both fetch on mount, and either may 401) share ONE
+  // prompt and one resolution. Without this, a second requestToken() overwrites
+  // the first's resolver and strands the first in-flight request forever
+  // (Codex review).
   let authPromise: Promise<string | null> | null = null;
 
   // Concurrency guard: a monotonically-incrementing run id. submitChat /
@@ -252,7 +252,7 @@
   // settled into the thread yet), render the exchange THROUGH the thread as an
   // optimistic user + crew bubble pair instead of the standalone hero. The crew
   // bubble reads `finalReply` live, so the reply fills that same bubble the
-  // instant the `done` frame arrives — the existing backfill/loadDecisions
+  // instant the `done` frame arrives — the existing backfill/decisions-refresh
   // latency before settle is no longer visible (no blue→green swap, no upward
   // hop). Captured (not reactive) at submit time so the bubble keys/labels stay
   // stable for the whole run. Cleared the MOMENT a non-persistable outcome is
@@ -412,20 +412,17 @@
   const autonomy = createAutonomyStore(call);
   const capabilityAutonomyNote = $derived(autonomyNoteFor($autonomy, $t));
 
-  // ---- decisions rail ----
-  async function loadDecisions() {
-    try {
-      const resp = await call('/decisions?limit=50');
-      if (!resp.ok) return;
-      const body = await resp.json();
-      if (Array.isArray(body?.decisions)) {
-        decisions = body.decisions as Decision[];
-        noteApplied(decisions);
-      }
-    } catch {
-      /* best-effort */
-    }
-  }
+  // ---- desk/estate overview store (Task 3.0a) — single owner of the
+  // graph/pending-approvals/decisions refresh triple (lib/overviewStore.ts).
+  // `decisions` here is a thin derived alias so the many existing readers
+  // below (DecisionsRail, noteApplied, open-trace lookups) don't all need
+  // rewriting to `$overview.decisions`. Torn down on component destroy so its
+  // focus/visibilitychange listeners and poll timer don't leak (matters for
+  // test-suite isolation — a component mounted per-test that never destroys
+  // its listeners would leave them firing against later tests' DOM/timers).
+  const overview = createOverviewStore(call);
+  const decisions = $derived($overview.decisions);
+  onDestroy(() => overview.destroy());
 
   // Detect a freshly-`applied` iac_apply decision (decisions arrive newest-first)
   // so the Infrastructure panel can refresh the resource map after an apply lands.
@@ -436,13 +433,27 @@
     if (bump) appliedEpoch += 1;
   }
 
+  // Advance the watermark whenever the store lands a REAL decisions payload —
+  // keyed on the array's IDENTITY (a fresh reference from a successful fetch),
+  // not on every reactive read, so an unrelated re-render or a soft-failed
+  // refresh (which preserves the prior array unchanged) can't re-run this and
+  // mis-seed/double-bump appliedEpoch. Skips the pre-fetch NO_DECISIONS_YET
+  // placeholder so the store's own eager creation-time fetch (still pending
+  // when this effect first runs) never seeds the watermark on empty data —
+  // see overviewStore.ts's sentinel comment and the boot-seed incident
+  // lib/decision.ts documents (a false bump there DDOSed the coordinator).
+  $effect(() => {
+    const ds = $overview.decisions;
+    if (ds !== NO_DECISIONS_YET) noteApplied(ds);
+  });
+
   const asString = (v: unknown): string | null =>
     typeof v === 'string' && v.length > 0 ? v : null;
 
   // ---- conversations rail + thread (P2) ----
-  // List of recent conversations for the rail (metadata only). Mirrors
-  // loadDecisions: best-effort, single-flight-friendly, refreshed at mount and
-  // after each successful chat turn (a new/updated thread re-sorts to the top).
+  // List of recent conversations for the rail (metadata only). Best-effort,
+  // single-flight-friendly, refreshed at mount and after each successful chat
+  // turn (a new/updated thread re-sorts to the top).
   async function loadConversations() {
     try {
       const resp = await call('/conversations?limit=50');
@@ -716,7 +727,7 @@
           if (jsonRcid === undefined) liveExchange = null;
           await backfillTrace(myRun);
           if (myRun !== runSeq) return;
-          await loadDecisions();
+          await overview.refresh('chat-turn');
           settleConversation(jsonRcid);
           return;
         } catch {
@@ -727,7 +738,7 @@
           liveExchange = null; // nothing persisted → the error belongs in the hero
         }
         await backfillTrace(myRun);
-        if (myRun === runSeq) await loadDecisions();
+        if (myRun === runSeq) await overview.refresh('chat-turn');
         return;
       }
 
@@ -800,12 +811,13 @@
       if (persistableDone) {
         settleConversation(doneConversationId);
         // Background, best-effort, runSeq-guarded (backfillTrace :753/:756;
-        // loadDecisions is fully try/catch'd). A fast follow-up bumps runSeq and
-        // makes the stale backfill no-op cleanly; the only cost is this turn's
-        // side-channel mcp_call rows not filling inline if the operator leaves
-        // immediately — the persisted trace survives and reopening refetches it.
+        // overview.refresh() is internally try/catch'd per fetch — see
+        // overviewStore.ts). A fast follow-up bumps runSeq and makes the stale
+        // backfill no-op cleanly; the only cost is this turn's side-channel
+        // mcp_call rows not filling inline if the operator leaves immediately —
+        // the persisted trace survives and reopening refetches it.
         void backfillTrace(myRun);
-        void loadDecisions();
+        void overview.refresh('chat-turn');
         return; // → finally clears busy (guarded), so the composer releases now
       }
 
@@ -824,7 +836,7 @@
         finalIsError = true;
         liveExchange = null; // interrupted stream persists nothing → hero
       }
-      await loadDecisions();
+      await overview.refresh('chat-turn');
       settleConversation(doneConversationId);
     } finally {
       if (myRun === runSeq) busy = false;
@@ -983,7 +995,9 @@
   }
 
   onMount(() => {
-    void loadDecisions();
+    // No explicit decisions/graph/pending-approvals kickoff here — `overview`
+    // (createOverviewStore) already fired its own eager fetch at store
+    // creation (script setup, before this callback ever runs).
     void loadConversations();
     void pause.fetchPause();
     void autonomy.fetchAutonomy();
