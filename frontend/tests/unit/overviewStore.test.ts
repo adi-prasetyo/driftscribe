@@ -181,6 +181,71 @@ describe('createOverviewStore — single-flight collapse', () => {
     expect(get(s).graph).toEqual(GRAPH);
     s.destroy();
   });
+
+  // ds-6pi. The test above pins that a collapse makes no EXTRA fetches; this one
+  // pins that the collapsed caller's need is actually met. They pull in opposite
+  // directions and both matter: discarding the trigger is what kept the count at
+  // one, and it is also what let an awaited refresh('chat-turn') resume on state
+  // that provably predated the turn it was called for.
+  it('a collapsed refresh is served by a trailing cycle, not by the one it rode', async () => {
+    let resolveGraph!: (r: Response) => void;
+    const blocked = new Promise<Response>((r) => (resolveGraph = r));
+    // The decisions payload GAINS a row partway through, exactly as it would
+    // when a chat turn lands while a slow (CAI-cold) graph fetch is in flight.
+    let decisions: Decision[] = [];
+    const { fn, calls } = makeCall({
+      graph: () => blocked,
+      decisions: () => res({ decisions }),
+    });
+    const s = createOverviewStore(fn);
+    await flush();
+    expect(get(s).decisions).toEqual([]);
+
+    decisions = [{ decision_id: 'from-the-chat-turn', action: 'rollback' }];
+    const chatTurn = s.refresh('chat-turn'); // collapses into the blocked cycle
+
+    resolveGraph(res(GRAPH));
+    await chatTurn;
+    await flush();
+
+    // The in-flight cycle's /decisions read was issued before the turn existed,
+    // so only a SECOND read can see it. Awaiting must not resolve before then.
+    expect(get(s).decisions).toEqual([{ decision_id: 'from-the-chat-turn', action: 'rollback' }]);
+    expect(calls.filter((p) => p.startsWith('/decisions')).length).toBeGreaterThan(1);
+    s.destroy();
+  });
+
+  // The trailing cycle is earned once per collapse, not once per collapsed
+  // CALLER — three triggers arriving during one cycle must not queue three more.
+  it('many collapsed callers share ONE trailing cycle', async () => {
+    let resolveGraph!: (r: Response) => void;
+    const blocked = new Promise<Response>((r) => (resolveGraph = r));
+    const { fn, calls } = makeCall({ graph: () => blocked });
+    const s = createOverviewStore(fn);
+    await flush();
+
+    const all = Promise.all([s.refresh('a'), s.refresh('b'), s.refresh('c')]);
+    resolveGraph(res(GRAPH));
+    await all;
+    await flush();
+
+    // One creation cycle + exactly one trailing cycle.
+    expect(calls.filter((p) => p.startsWith('/decisions'))).toHaveLength(2);
+    s.destroy();
+  });
+
+  // Guards the startup path the trailing cycle made expensive: the store used to
+  // fire refresh('create') AND let scheduler.open(0)'s immediate onFetch collapse
+  // into it. Harmless while collapses were discarded; a second full triple-fetch
+  // on every first paint once they aren't.
+  it('creation makes exactly one cycle, not a cycle plus a trailing one', async () => {
+    const { fn, calls } = makeCall();
+    const s = createOverviewStore(fn);
+    await flush();
+    expect(calls.filter((p) => p.startsWith('/infra/graph'))).toHaveLength(1);
+    expect(calls.filter((p) => p.startsWith('/decisions'))).toHaveLength(1);
+    s.destroy();
+  });
 });
 
 describe('createOverviewStore — independent soft failure', () => {

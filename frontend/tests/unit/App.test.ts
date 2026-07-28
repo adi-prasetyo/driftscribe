@@ -49,6 +49,8 @@ afterEach(() => {
 });
 
 describe('App — tour wiring (smoke)', () => {
+  const CONV_ID = 'conv-tour-1';
+
   it('offers the banner on a fresh profile; Start opens the card; close marks done', async () => {
     const { getByTestId, queryByTestId } = render(App);
     expect(getByTestId('tour-banner')).toBeTruthy();
@@ -58,6 +60,29 @@ describe('App — tour wiring (smoke)', () => {
     await fireEvent.click(getByTestId('tour-close'));
     expect(queryByTestId('tour-card')).toBeNull();
     expect(window.localStorage.getItem('driftscribe_tour_done')).toBe('1');
+  });
+
+  // ds-s9q: the tour borrows the estate view for two of its steps and hands the
+  // visitor back to chat on the last one. Wiring those steps to the full
+  // navigate() applied its leave-chat teardown, so "open a conversation, click
+  // Tour, press Next" discarded the open thread — it survived in the rail, but
+  // the view state and `?conversation=` did not. Asserting on the param is what
+  // makes this a regression test: the old wiring swept it with the rest of
+  // CHAT_INTENT_PARAMS.
+  it('advancing the tour to a view-changing step keeps the open conversation', async () => {
+    window.sessionStorage.setItem('driftscribe_token', 'tok');
+    history.replaceState(null, '', `/?conversation=${CONV_ID}`);
+    const { getByTestId } = render(App);
+
+    await fireEvent.click(getByTestId('tour-open'));
+    // Step 2 of TOUR_STEPS carries view:'estate' — the first one that navigates.
+    await fireEvent.click(getByTestId('tour-next'));
+
+    expect(getByTestId('estate-view')).toBeTruthy();
+    expect(new URLSearchParams(window.location.search).get('conversation')).toBe(CONV_ID);
+    // And the thread is still there when the tour hands the visitor back.
+    await fireEvent.click(getByTestId('tour-next'));
+    expect(new URLSearchParams(window.location.search).get('conversation')).toBe(CONV_ID);
   });
 
   it('dismissing the banner marks done; the header button reopens the tour', async () => {
@@ -86,7 +111,22 @@ describe('App — tour wiring (smoke)', () => {
     expect(window.localStorage.getItem('driftscribe_demo_notice_dismissed')).toBeNull();
   });
 
-  it('still auto-opens the notice on a non-desk landing (chat deep link)', () => {
+  // ds-2co: the estate view puts the same InstrumentBand in the same top-left
+  // corner the popover drops into, so a shared `?view=estate` link reproduced
+  // the overlap ds-5yq removed from the desk. The rule is about the layout, not
+  // about one view.
+  it('does not auto-open the notice on the estate view either', () => {
+    history.replaceState(null, '', '/?view=estate');
+    const { getByTestId, queryByTestId } = render(App);
+    expect(getByTestId('estate-view')).toBeTruthy();
+    expect(queryByTestId('demo-notice-popover')).toBeNull();
+    expect(getByTestId('demo-notice-bell')).toBeTruthy();
+    expect(getByTestId('demo-notice-badge')).toBeTruthy();
+  });
+
+  // Chat is the one view whose top-left is chrome, so it is the one view the
+  // notice may still cover.
+  it('still auto-opens the notice on a chat landing', () => {
     history.replaceState(null, '', '/?view=chat');
     const { getByTestId } = render(App);
     expect(getByTestId('demo-notice-popover')).toBeTruthy();

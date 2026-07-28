@@ -65,9 +65,11 @@ export interface OverviewStore extends Readable<OverviewState> {
   /**
    * Fetch all three endpoints in parallel; each fails independently (a
    * failed fetch preserves its prior value in state). Overlapping calls
-   * collapse into the in-flight cycle (single-flight — see the guard below);
-   * `reason` is a caller-supplied trigger label, carried for future
-   * diagnostics only (never branched on, never rendered).
+   * collapse into the in-flight cycle (single-flight — see the guard below)
+   * and are then served by ONE trailing cycle, so the returned promise always
+   * resolves against state that reflects the caller's own trigger. `reason` is
+   * a caller-supplied trigger label, carried for future diagnostics only
+   * (never branched on, never rendered).
    */
   refresh(reason?: string): Promise<void>;
   /** Removes the focus/visibilitychange listeners and stops the poll timer. Call once, on App teardown. */
@@ -99,6 +101,32 @@ export function createOverviewStore(
   // alone already makes two overlapping cycles impossible in practice.
   let inFlight = false;
   let seq = 0;
+
+  // ds-6pi — TRAILING single-flight. A plain `if (inFlight) return` discards the
+  // collapsed trigger, which is only sound when the running cycle's GETs were
+  // issued AFTER that trigger. They frequently aren't: /infra/graph is CAI-backed
+  // and 10-30s cold, and all three commit together after Promise.all, so a chat
+  // turn that lands mid-cycle collapsed into a cycle whose /decisions read
+  // predated its own new decision — and nothing retried before the next 45s poll.
+  // Three of App's four `refresh('chat-turn')` call sites AWAIT this, so they
+  // resumed on state that provably could not contain what they were waiting for.
+  //
+  // So: a collapse earns exactly one more cycle, and the collapsed caller's
+  // promise resolves when THAT cycle lands. Bounded — collapses during the
+  // trailing cycle earn the next one, never more than one outstanding.
+  interface Deferred {
+    promise: Promise<void>;
+    resolve: () => void;
+  }
+  let pending: Deferred | null = null;
+
+  function deferred(): Deferred {
+    let resolve!: () => void;
+    const promise = new Promise<void>((r) => {
+      resolve = r;
+    });
+    return { promise, resolve };
+  }
 
   async function fetchGraph(): Promise<FetchResult<InfraGraph>> {
     try {
@@ -135,21 +163,47 @@ export function createOverviewStore(
     }
   }
 
-  async function refresh(_reason?: string): Promise<void> {
-    if (inFlight) return; // collapse: a cycle is already running, this trigger rides it
-    inFlight = true;
+  async function runCycle(): Promise<void> {
     const my = ++seq;
+    const [g, p, d] = await Promise.all([fetchGraph(), fetchPendingList(), fetchDecisionsList()]);
+    if (my !== seq) return; // defensive; unreachable while inFlight guards overlap
+    update((state) => ({
+      graph: g.ok ? g.value : state.graph,
+      pendingApprovals: p.ok ? p.value : state.pendingApprovals,
+      decisions: d.ok ? d.value : state.decisions,
+      lastError: !g.ok ? 'graph' : !p.ok ? 'pending' : !d.ok ? 'decisions' : null,
+    }));
+  }
+
+  async function refresh(_reason?: string): Promise<void> {
+    // Collapse — but hand the caller a promise for the trailing cycle that will
+    // actually cover their trigger, rather than resolving against this one.
+    if (inFlight) {
+      pending ??= deferred();
+      return pending.promise;
+    }
+    inFlight = true;
     try {
-      const [g, p, d] = await Promise.all([fetchGraph(), fetchPendingList(), fetchDecisionsList()]);
-      if (my !== seq) return; // defensive; unreachable while inFlight guards overlap
-      update((state) => ({
-        graph: g.ok ? g.value : state.graph,
-        pendingApprovals: p.ok ? p.value : state.pendingApprovals,
-        decisions: d.ok ? d.value : state.decisions,
-        lastError: !g.ok ? 'graph' : !p.ok ? 'pending' : !d.ok ? 'decisions' : null,
-      }));
+      await runCycle();
+      // Null the deferred BEFORE its cycle runs, so a collapse arriving during
+      // the trailing cycle earns the cycle after it instead of being folded into
+      // one it also predates.
+      while (pending) {
+        const waiter = pending;
+        pending = null;
+        await runCycle();
+        waiter.resolve();
+      }
     } finally {
       inFlight = false;
+      // Never strand a waiter. Unreachable today (every fetch is internally
+      // try/caught and returns {ok:false}), but a future throw inside runCycle
+      // would otherwise leave an awaited refresh('chat-turn') hanging forever.
+      if (pending) {
+        const stranded = pending;
+        pending = null;
+        stranded.resolve();
+      }
     }
   }
 
@@ -171,17 +225,23 @@ export function createOverviewStore(
   // interval timer via open(), never via onAppliedEpoch()/onFocus() (which
   // would additionally schedule the 0/10/30/60s ride-out ladder — the wrong
   // shape for a plain "tab got focus" trigger, handled directly above instead).
-  const scheduler = new RefreshScheduler({ onFetch: () => void refresh('poll') });
-
-  // Store creation trigger: fire the first refresh explicitly (rather than
-  // relying solely on scheduler.open()'s own immediate-fetch side effect) so
-  // this line reads as its own named trigger. scheduler.open(0) below ALSO
-  // fires an immediate onFetch per its own contract (epoch 0 === its initial
-  // lastHandledEpoch) — that call lands after `inFlight` is already true (set
-  // synchronously by the line above, before this function's first await), so
-  // it collapses into the cycle just started instead of double-fetching.
-  void refresh('create');
-  scheduler.open(0); // also starts the poll interval (default 45s)
+  // The creation trigger IS the scheduler's immediate fetch — `open(0)` takes
+  // the else branch of its epoch check (0 === its initial lastHandledEpoch) and
+  // calls onFetch synchronously. There used to be an explicit `refresh('create')`
+  // above this as well, on the reasoning that the second call would harmlessly
+  // collapse into the first. That was free only while a collapsed trigger was
+  // DISCARDED; now that a collapse earns a trailing cycle (ds-6pi), a redundant
+  // startup trigger would cost every visitor a second full triple-fetch on first
+  // paint — including the CAI-backed graph and the /decisions read. One trigger,
+  // labelled for what it is on its first firing.
+  let started = false;
+  const scheduler = new RefreshScheduler({
+    onFetch: () => {
+      void refresh(started ? 'poll' : 'create');
+      started = true;
+    },
+  });
+  scheduler.open(0); // fires the creation fetch; also starts the poll interval (default 45s)
 
   function destroy(): void {
     window.removeEventListener('focus', onFocus);

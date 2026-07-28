@@ -450,20 +450,26 @@
      `outcome_unknown` — the visual weight has to differ, or "we could not
      confirm" reads as "it broke" at a glance, which is the exact
      over-claim this state exists to avoid. */
+  /* ds-oz2: the accent rule hangs into the deskwrap's 40px gutter instead of
+     indenting the text. -20 margin + 3 border + 17 padding nets to zero, so the
+     headline and body sit on exactly the same left edge as every other state and
+     switching into this one moves no type — the "no state jumps" rule the desk
+     is built on. Spacing is px and the ink is --ds-paper-mut, matching the
+     siblings above; this block used rem --ds-sp-* and the pre-composite
+     --ds-muted (#6b6b66 warm gray against the desk's #8a9099), which is what
+     made the newest state look bolted on. */
   .approval-desk__unresolved {
     position: relative;
     border-left: 3px solid var(--ds-warn, var(--ds-border-strong));
-    padding-left: var(--ds-sp-4);
+    margin-left: -20px;
+    padding-left: 17px;
   }
   .approval-desk__unresolved[data-phase='failed'] {
     border-left-color: var(--ds-danger);
   }
-  .approval-desk__unresolved h2 {
-    margin: var(--ds-sp-2) 0 0;
-  }
   .approval-desk__unresolved-body {
-    margin: var(--ds-sp-3) 0 var(--ds-sp-4);
-    color: var(--ds-muted);
+    margin: 18px 0 26px;
+    color: var(--ds-paper-mut);
     max-width: 52ch;
   }
 

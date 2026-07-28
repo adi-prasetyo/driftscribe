@@ -402,6 +402,88 @@ describe('ApprovalDesk — stamped state', () => {
   });
 });
 
+// ds-oz2. The newest and most safety-critical desk state had no unit-level
+// rendering test at all — only the visual rig, which checks `data-state` and so
+// cannot see which copy keys were used. A regression that swapped the failed and
+// outcome_unknown strings would have passed `npm run test:unit` clean, and those
+// two must never be interchangeable: "we could not confirm this" rendering as
+// "this failed" is the exact over-claim the state exists to prevent (and the
+// inverse is worse).
+describe('ApprovalDesk — unresolved state', () => {
+  // A rollback whose credential was spent but whose outcome never settled.
+  function unresolved(phase: 'failed' | 'outcome_unknown'): Decision {
+    return rollbackDecision({
+      approval: {
+        approval_url: '/approvals/rb-1?t=x',
+        status: 'used',
+        phase,
+        resolved_at: null,
+      },
+    });
+  }
+
+  const props = (d: Decision) => ({
+    graph: GRAPH,
+    decisions: [d],
+    pendingApprovals: [],
+    onNavigate: vi.fn(),
+  });
+
+  it('renders the unresolved card for a used-but-unconfirmed rollback, tagged with its phase', () => {
+    const { getByTestId } = render(ApprovalDesk, { props: props(unresolved('outcome_unknown')) });
+    const card = getByTestId('approval-desk-unresolved');
+    expect(card.getAttribute('data-phase')).toBe('outcome_unknown');
+    // No seal and no CTA: nothing is confirmed, and there is nothing to approve.
+    expect(within(card).queryByRole('img')).toBeNull();
+    expect(within(card).queryByRole('link')).toBeNull();
+  });
+
+  it('keeps the two phases on SEPARATE copy — unconfirmed never renders as failed', () => {
+    const { getByTestId: getUnknown, unmount } = render(ApprovalDesk, {
+      props: props(unresolved('outcome_unknown')),
+    });
+    const unknownText = getUnknown('approval-desk-unresolved').textContent ?? '';
+    unmount();
+
+    const { getByTestId: getFailed } = render(ApprovalDesk, {
+      props: props(unresolved('failed')),
+    });
+    const failedCard = getFailed('approval-desk-unresolved');
+    expect(failedCard.getAttribute('data-phase')).toBe('failed');
+    // Distinct strings, not a shared template with a swapped word — if the copy
+    // keys were ever collapsed onto one branch these would be equal.
+    expect(failedCard.textContent).not.toBe(unknownText);
+  });
+
+  it('renders the drift the rollback was meant to undo, and keeps the desk heading level', () => {
+    const { getByTestId } = render(ApprovalDesk, { props: props(unresolved('failed')) });
+    const card = getByTestId('approval-desk-unresolved');
+    // The h2 is the desk-wide level (see the "heading level" block above) — the
+    // unresolved state must not introduce its own.
+    expect(within(card).getByRole('heading', { level: 2 })).toBeTruthy();
+    // DriftDiffCard renders the diff that motivated the rollback.
+    expect(card.textContent).toContain('LOG_LEVEL');
+  });
+
+  it('outranks a stamp: an unresolved outcome is not hidden by an older success', () => {
+    const stampedEarlier = iacDecision({
+      decision_id: 'iac-old',
+      apply_status: 'applied',
+      applied_at: '2026-07-28T11:55:00Z',
+    });
+    const { getByTestId, queryByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: GRAPH,
+        decisions: [unresolved('outcome_unknown'), stampedEarlier],
+        pendingApprovals: [],
+        onNavigate: vi.fn(),
+      },
+    });
+    expect(getByTestId('approval-desk-unresolved')).toBeTruthy();
+    expect(queryByTestId('approval-desk-stamped')).toBeNull();
+  });
+});
+
 describe('ApprovalDesk — stamped decay timer', () => {
   beforeEach(() => vi.useFakeTimers({ now: Date.parse('2026-07-28T12:00:00Z') }));
 

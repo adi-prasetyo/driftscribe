@@ -176,16 +176,27 @@
   // because Task 3.6 flips DEFAULT_VIEW to 'desk'. Hardcoding would mean that
   // after the flip, navigating to chat wrote a param-less URL that reloaded as
   // the desk. Reading the constant keeps this correct in both eras.
-  function navigate(v: AppView) {
+  //
+  // `preserveChatState` is for the TOUR (ds-s9q). Everything below the URL write
+  // exists because a DELIBERATE departure from chat should not leave an invisible
+  // thread behind. The tour is not a departure — it borrows the estate view for
+  // two steps and hands the visitor back to chat on its last one, so applying the
+  // teardown there meant "open a conversation, click Tour, press Next" silently
+  // discarded the open thread (it survived in the rail; the view, scroll position
+  // and `?conversation=` did not). The tour keeps its chat errand: the URL it
+  // leaves reloads into the conversation, which is the honest durable intent.
+  function navigate(v: AppView, opts: { preserveChatState?: boolean } = {}) {
     view = v;
     const u = new URL(window.location.href);
     if (v === DEFAULT_VIEW) u.searchParams.delete('view');
     else u.searchParams.set('view', v);
     // CHAT_INTENT_PARAMS is the shared list — see its comment in lib/deeplink.
-    if (v !== 'chat') for (const p of CHAT_INTENT_PARAMS) u.searchParams.delete(p);
+    if (v !== 'chat' && !opts.preserveChatState) {
+      for (const p of CHAT_INTENT_PARAMS) u.searchParams.delete(p);
+    }
     history.replaceState(null, '', u);
     // Chat is a destination, not an undo: nothing to reset (see the doc above).
-    if (v === 'chat') return;
+    if (v === 'chat' || opts.preserveChatState) return;
     // Keep in-memory state in lockstep with the URL just written — an open
     // replay or thread would otherwise sit there invisibly (the chat branch
     // isn't mounted in desk/estate) and reappear out of step with the
@@ -366,8 +377,20 @@
   // the notice stays one click away. Boot-time only (never reactive): the notice
   // decides once, at mount, so a later navigation to the desk must not
   // retroactively suppress a notice that already opened.
-  const coversPrimaryContent = viewFromSearch(window.location.search) === 'desk';
+  //
+  // ds-2co: the constraint is the LAYOUT, not the desk. EstateView renders the
+  // same InstrumentBand in the same top-left corner, so a shared `?view=estate`
+  // link reproduced exactly the overlap ds-5yq removed. Chat is the only view
+  // whose top-left is chrome the popover may cover, so the test is `!== 'chat'`
+  // — which also means a future view is covered by default rather than needing
+  // to be remembered here.
+  const coversPrimaryContent = viewFromSearch(window.location.search) !== 'chat';
   let tourOffered = $state(shouldOfferTour(window.location.search, tourDone()));
+  // The tour spotlights views; it does not navigate away from them. See the
+  // `preserveChatState` note on `navigate` (ds-s9q).
+  function tourNavigate(v: AppView): void {
+    navigate(v, { preserveChatState: true });
+  }
   function startTour(): void {
     tourOffered = false;
     tourOpen = true;
@@ -1287,7 +1310,7 @@
     pendingApprovals={$overview.pendingApprovals}
     adoptDisabled={chatDisabled}
     onAdoptPrefill={handleAdopt}
-    onNavigate={navigate}
+    onNavigate={tourNavigate}
     onClose={closeTour}
   />
 {/if}
