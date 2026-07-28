@@ -155,7 +155,9 @@ async function mockData(page: Page) {
 test('composer New-chat + crew-lock walkthrough', async ({ page }) => {
   await seedToken(page);
   await mockData(page);
-  await page.goto('/');
+  // Explicit ?view=chat: since Task 3.6 step 2 flipped DEFAULT_VIEW to 'desk',
+  // a bare url renders the approval desk, which has no composer to walk through.
+  await page.goto('/?view=chat');
 
   const form = page.locator('#chat-form');
   await expect(form).toBeVisible();
