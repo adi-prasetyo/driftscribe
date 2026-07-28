@@ -146,6 +146,57 @@ redemption requires it free. Add narrow `begin_chat_run` / `finish_chat_run` /
 pattern (`:665`). **Do not expose a generic "set conversation workload" method** —
 the only writer of that field should be redemption.
 
+### `workload` becomes mutable — and three readers assumed it never would
+
+Restricting the *writer* to redemption is only half of it. The moment that write
+exists, an invariant nothing ever wrote down stops holding:
+
+> **A conversation belonged to exactly one crew for its entire life.**
+
+Nothing declared it, so nothing defended it, and three readers had quietly
+encoded it. Each degrades silently — no error, just a wrong answer:
+
+- `list_conversations(workload=...)`, which backs `read_conversations_tool(crew=…)`
+  and so decides what a crew can recall. Explore loses ten turns of its own work
+  the moment it hands off, and Patch inherits threads that are mostly Explore's.
+- `build_conversations_breadcrumb`, the always-on pointer block prepended to
+  **every** chat agent's instruction. It renders a crew name beside a title, and
+  the title is the FIRST user prompt — asked of the ORIGINATING crew. So it
+  prints one crew's name over another crew's question, in the one surface whose
+  entire job is saying what *other* crews did.
+- The rail's "N messages", which means the operator's own prompts and derived
+  them as `ceil(turn_count / 2)`. That holds only while every exchange writes a
+  user turn and a crew reply. A handoff breaks it from both ends: an accepted
+  transition appends a `crew_change` row, and the joining turn writes a reply
+  with no prompt in front of it, because the operator confirmed a suggestion
+  rather than typing one.
+
+The fix is to stop overloading one field with three questions:
+
+| Field | Answers | Written by |
+|---|---|---|
+| `workload` | who is bound RIGHT NOW — crew-lock authority, the 409 | redemption, and nothing else |
+| `crews` | who has taken part | appended on accept, never rewritten |
+| `user_turn_count` | what the operator actually typed | every turn append |
+
+Conversations predating the two new fields fall back exactly rather than
+approximately — the single bound workload IS their whole participant history,
+and their turns landed strictly paired — so neither needs a backfill.
+
+Two consequences worth stating so they are not rediscovered:
+
+- The breadcrumb must exclude on the **bound** crew, not on participation. That
+  is what stops a crew being shown its own live thread as someone else's
+  history, and it now holds for a non-obvious reason: redemption flips
+  `workload` before the joining crew runs, so the bound crew is always the
+  running one. Pin it with a test.
+- **The rail's count cannot be fixed in the frontend.** The rail receives only
+  metadata, so once the pairing invariant is gone the real number is not
+  recoverable from `turn_count` at all. The store has to carry it.
+
+Rule for anything added later: reading `workload` to answer "whose thread is
+this?" is a bug. It answers "who is bound right now" and nothing else.
+
 ### Merge exclusion must be code, not prose
 
 `build_chat_agent` filters by autonomy tier, then applies a demo-anon denylist
