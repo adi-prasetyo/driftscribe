@@ -134,8 +134,23 @@ describe('TOUR_STEPS', () => {
       null,
       'estate',
       'controls',
-      'estate',
+      'adopt-target',
       'composer',
+    ]);
+  });
+
+  // Task 4.1: the estate/adopt targets moved off the chat view's InfraDiagram
+  // onto the real EstateView, and the composer only exists on chat — so a
+  // step whose target lives on a specific view must navigate there first.
+  // `view: null` means either no target (welcome) or a target mounted on
+  // every view (controls, the header anchor).
+  it('carries the view each step must navigate to before its target can resolve', () => {
+    expect(TOUR_STEPS.map((s) => s.view)).toEqual([
+      null,
+      'estate',
+      null,
+      'estate',
+      'chat',
     ]);
   });
 });

@@ -148,6 +148,41 @@ describe('TourCard — adopt step (T4: prefill, never send)', () => {
   });
 });
 
+describe('TourCard — view navigation (Task 4.1)', () => {
+  it('calls onNavigate with each step\'s view, in step order, and never on a null-view step', async () => {
+    const onNavigate = vi.fn();
+    const { getByTestId } = render(TourCard, {
+      props: { graph: graphWithTarget(), onNavigate },
+    });
+    // welcome: view === null — no call yet.
+    expect(onNavigate).not.toHaveBeenCalled();
+
+    await fireEvent.click(getByTestId('tour-next')); // → estate
+    expect(onNavigate).toHaveBeenLastCalledWith('estate');
+    const afterEstate = onNavigate.mock.calls.length;
+
+    await fireEvent.click(getByTestId('tour-next')); // → controls (view: null)
+    expect(onNavigate.mock.calls.length).toBe(afterEstate); // no new call
+
+    await fireEvent.click(getByTestId('tour-next')); // → adopt
+    expect(onNavigate).toHaveBeenLastCalledWith('estate');
+
+    await fireEvent.click(getByTestId('tour-next')); // → next
+    expect(onNavigate).toHaveBeenLastCalledWith('chat');
+  });
+
+  it('back navigation re-fires onNavigate for the step being returned to', async () => {
+    const onNavigate = vi.fn();
+    const { getByTestId } = render(TourCard, {
+      props: { graph: graphWithTarget(), onNavigate },
+    });
+    await advanceTo(getByTestId, 1); // → estate
+    onNavigate.mockClear();
+    await fireEvent.click(getByTestId('tour-back')); // → welcome (view: null)
+    expect(onNavigate).not.toHaveBeenCalled();
+  });
+});
+
 describe('TourCard — spotlight', () => {
   it('toggles .tour-spotlight on the matching [data-tour] element per step', async () => {
     const estate = document.createElement('div');

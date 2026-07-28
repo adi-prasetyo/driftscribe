@@ -84,6 +84,26 @@ describe('App — tour wiring (smoke)', () => {
       expect(getByTestId('tour-body').textContent).toContain('demo-proj'),
     );
   });
+
+  // Regression, Task 4.1: the tour's graph must come from the OVERVIEW STORE,
+  // not from InfraDiagram's onGraph lift. That lift only fires while the CHAT
+  // view is mounted — which stopped being the front door when Task 3.6 flipped
+  // DEFAULT_VIEW to 'desk'. The sibling test above passes on chat and so could
+  // never see this: on the DESK (a bare url) InfraDiagram never mounts, so the
+  // lifted state stayed null and every graph-dependent step degraded to its
+  // "still loading" / "unavailable" copy for the whole tour. Task 4.1 made this
+  // worse still by routing steps 2 and 4 to the ESTATE view, which likewise
+  // does not mount InfraDiagram — so no tour path reached a populated graph.
+  it('the tour opened from the DESK still has the graph (store-fed, not InfraDiagram-fed)', async () => {
+    history.replaceState(null, '', '/');
+    const { getByTestId, queryByTestId } = render(App);
+    // Precondition — without it this test could pass by silently sitting on chat.
+    expect(queryByTestId('chat-form')).toBeNull();
+    await fireEvent.click(getByTestId('tour-open'));
+    await waitFor(() =>
+      expect(getByTestId('tour-body').textContent).toContain('demo-proj'),
+    );
+  });
 });
 
 describe('App — open-trace puts the replay at the top and scrolls the window up', () => {
@@ -561,4 +581,110 @@ describe('App — rails come off the desk (Task 3.5)', () => {
       expect(getByTestId('rails')).toBeTruthy();
     });
   }
+});
+
+describe('App — estate view (Task 4.1)', () => {
+  const BUCKET = 'storage.googleapis.com/Bucket';
+
+  // A graph with one real adoptable drift node (shipping-topic) — used by
+  // every test in this block that needs an actual row / adopt chip to click,
+  // as opposed to the suite-wide beforeEach stub (which returns `groups: []`,
+  // so its `drift: 1` total never resolves to a nameable row).
+  function stubFetchWithAdoptableGraph(): void {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/decisions')) return okJson({ decisions: [] });
+        if (url.includes('/infra/pending-approvals')) return okJson({ approvals: [] });
+        if (url.includes('/infra/graph'))
+          return okJson({
+            generated_at: '2026-07-28T06:00:00Z',
+            project: 'demo-proj',
+            caveat: '',
+            degraded: false,
+            degraded_reason: null,
+            totals: { resources: 2, managed: 0, drift: 1 },
+            groups: [
+              {
+                asset_type: BUCKET,
+                label: 'Storage bucket',
+                count: 1,
+                managed: 0,
+                drift: 1,
+                sensitive: false,
+                adoptable: true,
+                nodes: [
+                  {
+                    id: 'b0',
+                    label: 'shipping-topic',
+                    asset_type: BUCKET,
+                    managed: false,
+                    location: 'asia-northeast1',
+                  },
+                ],
+              },
+            ],
+            edges: [],
+          });
+        return okJson({});
+      }),
+    );
+  }
+
+  it('renders real drift rows sourced from the overview store', async () => {
+    stubFetchWithAdoptableGraph();
+    history.replaceState(null, '', '/?view=estate');
+    const { findByTestId } = render(App);
+    const row = await findByTestId('estate-row');
+    expect(row.textContent).toContain('shipping-topic');
+  });
+
+  it('an instrument-band numeral navigates from the desk to the estate view', async () => {
+    history.replaceState(null, '', '/?view=desk');
+    const { getByTestId, findByTestId } = render(App);
+    await waitFor(() => expect(getByTestId('instrument-band-drift')).toBeTruthy());
+    await fireEvent.click(getByTestId('instrument-band-drift'));
+    expect(await findByTestId('estate-view')).toBeTruthy();
+    expect(new URL(window.location.href).searchParams.get('view')).toBe('estate');
+  });
+
+  it('the nav-estate adopt-target fallback marker is present when the estate has no adoptable row, and absent when one exists', async () => {
+    // Default beforeEach stub: totals.drift === 1 but `groups: []` — no
+    // nameable adoptable row, so the fallback marker belongs on the nav button.
+    const { getByTestId } = render(App);
+    await waitFor(() =>
+      expect(getByTestId('nav-estate').getAttribute('data-tour')).toBe('adopt-target'),
+    );
+    cleanup();
+
+    stubFetchWithAdoptableGraph();
+    const withAdopt = render(App);
+    await withAdopt.findByTestId('nav-estate');
+    await waitFor(() =>
+      expect(withAdopt.getByTestId('nav-estate').getAttribute('data-tour')).toBeNull(),
+    );
+  });
+
+  it('an adopt chip on the estate view lands the operator on a prefilled composer', async () => {
+    stubFetchWithAdoptableGraph();
+    history.replaceState(null, '', '/?view=estate');
+    const { findByTestId } = render(App);
+    const adoptBtn = await findByTestId('estate-adopt-btn');
+    await fireEvent.click(adoptBtn);
+    await waitFor(() => expect(document.getElementById('chat-form')).toBeTruthy());
+    const textarea = document.querySelector('[data-testid="chat-prompt"]') as HTMLTextAreaElement;
+    expect(textarea.value).toContain('shipping-topic');
+  });
+
+  it('the tour adopt step navigates chat → estate and spotlights the first adoptable row (survives the navigate → mount delay)', async () => {
+    stubFetchWithAdoptableGraph();
+    const { getByTestId, findByTestId } = render(App); // default: chat view
+    await fireEvent.click(getByTestId('tour-banner-start'));
+    await fireEvent.click(getByTestId('tour-next')); // welcome → estate
+    await fireEvent.click(getByTestId('tour-next')); // estate → controls
+    await fireEvent.click(getByTestId('tour-next')); // controls → adopt (navigates to 'estate')
+    const row = await findByTestId('estate-row');
+    await waitFor(() => expect(row.classList.contains('tour-spotlight')).toBe(true));
+  });
 });

@@ -43,7 +43,9 @@
   import ConversationThread from './components/ConversationThread.svelte';
   import InfraDiagram from './components/InfraDiagram.svelte';
   import ApprovalDesk from './components/ApprovalDesk.svelte';
+  import EstateView from './components/EstateView.svelte';
   import { previewPrFromSearch } from './lib/infra_graph';
+  import { estateModel, firstAdoptableRow } from './lib/estate';
   import {
     reasoningTraceFromSearch,
     conversationIdFromSearch,
@@ -328,19 +330,33 @@
     // stays reachable from the rail.
     newChat();
     chatPrefill = { text, workload: 'provision', epoch: (chatPrefill?.epoch ?? 0) + 1 };
-    // Bring the composer into view so the prefilled draft is obvious. Best-effort:
-    // the element exists in the live tree; guarded for the historical/SSR-less case.
-    document.getElementById('chat-form')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    // Adopt is reachable from the estate view (Task 4.1) as well as chat, but
+    // the composer only exists on chat — navigate there first, or an
+    // estate-view Adopt click would silently prefill a composer nobody can
+    // see. `navigate('chat')` is a plain destination (see its own doc), so
+    // this is safe even when already on chat.
+    navigate('chat');
+    // The chat view mounts (or, if already mounted, re-renders) on the NEXT
+    // tick — #chat-form doesn't exist yet in the DOM synchronously after a
+    // navigate from desk/estate, so the scroll must wait for it too.
+    void tick().then(() => {
+      document.getElementById('chat-form')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
   }
 
   // Onboarding tour (item 14). The offer is decided ONCE at boot — before
   // onMount strips the intent params — and the header Tour button is the
   // permanent reopen path. Closing OR dismissing marks the tour done; the
   // flag is a UI preference, so localStorage (not sessionStorage) is right.
-  let tourGraph = $state<InfraGraph | null>(null);
-  // Lifted alongside tourGraph (InfraDiagram.onPending) so the tour's first-adoption
-  // suggestion skips a resource that already has an open adoption PR.
-  let tourPending = $state<PendingApproval[]>([]);
+  // The tour's graph + open-adoption-PR list come from the OVERVIEW STORE, not
+  // from InfraDiagram's onGraph/onPending lift. That lift only fired while the
+  // CHAT view was mounted, which stopped being the front door when Task 3.6
+  // flipped DEFAULT_VIEW to 'desk': a first-run visitor who opens the tour from
+  // the desk (or whom Task 4.1 now sends to the ESTATE view for steps 2 and 4 —
+  // neither mounts InfraDiagram) would leave `tourGraph` null forever, so the
+  // estate step read "still loading" and the adopt step "unavailable" for the
+  // whole tour. The store already owns exactly these two snapshots and fetches
+  // eagerly on creation, so it is the correct source on every view.
   let tourOpen = $state(false);
   let tourOffered = $state(shouldOfferTour(window.location.search, tourDone()));
   function startTour(): void {
@@ -424,6 +440,16 @@
   const overview = createOverviewStore(call);
   const decisions = $derived($overview.decisions);
   onDestroy(() => overview.destroy());
+
+  // The tour's adopt step (Task 4.1) spotlights the first adoptable row in
+  // EstateView; when there is none, App marks the nav-estate header button
+  // instead — see lib/estate.ts's firstAdoptableRow header comment for why
+  // BOTH sides call this exact function on the SAME estateModel() output
+  // (never a second hand-rolled predicate) and why the two data-tour="adopt-
+  // target" markers are therefore mutually exclusive.
+  const estateHasAdoptTarget = $derived(
+    firstAdoptableRow(estateModel($overview.graph, $overview.pendingApprovals, $t)) !== null,
+  );
 
   // Detect a freshly-`applied` iac_apply decision (decisions arrive newest-first)
   // so the Infrastructure panel can refresh the resource map after an apply lands.
@@ -1068,6 +1094,7 @@
       class:is-active={view === 'estate'}
       aria-current={view === 'estate' ? 'page' : undefined}
       data-testid="nav-estate"
+      data-tour={estateHasAdoptTarget ? undefined : 'adopt-target'}
       onclick={() => navigate('estate')}>{$t('desk.nav.estate')}</button
     >
     <button
@@ -1154,6 +1181,13 @@
      can strand a visitor on a railless desk (see App.test.ts's
      "rails come off the desk" suite, which pins that guarantee). -->
 <main class="layout" class:layout--full={view !== 'chat'}>
+  <!-- Renders on ANY view (Task 3.5 flipped the bare-URL default to desk, so a
+       first-run visitor who never touches chat must still be offered the
+       tour). shouldOfferTour's own errand-suppression semantics are
+       untouched — this only moved WHERE the offer renders, not when. -->
+  {#if tourOffered && !tourOpen}
+    <TourBanner onStart={startTour} onDismiss={dismissTourOffer} />
+  {/if}
   {#if view === 'chat'}
   <div class="rails" data-testid="rails">
     <ConversationsRail
@@ -1172,13 +1206,10 @@
     {#if historicalActive}
       {@render traceOutput()}
     {/if}
-    {#if tourOffered && !tourOpen}
-      <TourBanner onStart={startTour} onDismiss={dismissTourOffer} />
-    {/if}
     <!-- The autonomy dial moved to the header pill; the "controls" spotlight
          marker moved with it. PauseBanner stays here (only shown when paused). -->
     <PauseBanner {pause} />
-    <div class="tour-target" data-tour="estate">
+    <div class="tour-target">
       <InfraDiagram
         {call}
         {appliedEpoch}
@@ -1187,8 +1218,6 @@
         onAdopt={handleAdopt}
         onInvestigate={handleAdopt}
         adoptDisabled={chatDisabled}
-        onGraph={(g) => (tourGraph = g)}
-        onPending={(a) => (tourPending = a)}
       />
     </div>
     <CapabilityCard {call} autonomyNote={capabilityAutonomyNote} />
@@ -1226,12 +1255,18 @@
     onNavigate={navigate}
   />
   {:else if view === 'estate'}
-  <!-- Skeleton only (Task 2.2) — the real estate view lands in Phase 4
-       (EstateView.svelte, Task 4.1). Task 3.5 only applies the same
-       rails-off treatment for consistency. -->
-  <section data-testid="estate-view" class="chat-area chat-area--full">
-    <h2>{$t('desk.nav.estate')}</h2>
-  </section>
+  <!-- The real estate view (Task 4.1). Data comes exclusively from the
+       overview store's current snapshot — EstateView performs no fetches of
+       its own, same discipline as ApprovalDesk. Adopt routes through the
+       SAME handleAdopt bridge as InfraDiagram's own Adopt buttons. -->
+  <EstateView
+    graph={$overview.graph}
+    decisions={$overview.decisions}
+    pendingApprovals={$overview.pendingApprovals}
+    adoptDisabled={chatDisabled}
+    onAdopt={handleAdopt}
+    onNavigate={navigate}
+  />
   {/if}
 </main>
 
@@ -1239,10 +1274,11 @@
 
 {#if tourOpen}
   <TourCard
-    graph={tourGraph}
-    pendingApprovals={tourPending}
+    graph={$overview.graph}
+    pendingApprovals={$overview.pendingApprovals}
     adoptDisabled={chatDisabled}
     onAdoptPrefill={handleAdopt}
+    onNavigate={navigate}
     onClose={closeTour}
   />
 {/if}
@@ -1392,13 +1428,6 @@
   .chat-area {
     padding: var(--ds-sp-5) var(--ds-sp-6) var(--ds-sp-8);
     max-width: var(--ds-page-max);
-  }
-  /* The estate skeleton (Task 4.1 fills the real view) gets the same
-     centered, full-width treatment ApprovalDesk's own root provides itself —
-     it has no such wrapper of its own yet. */
-  .chat-area--full {
-    max-width: var(--ds-page-max);
-    margin: 0 auto;
   }
   .chat-area > :global(*) {
     margin-bottom: var(--ds-sp-4);

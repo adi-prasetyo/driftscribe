@@ -86,6 +86,31 @@ export const desk = {
     // Only shown when scope.drift === 0 — a true "nothing new" claim, not a
     // fixed decoration (see ApprovalDesk: this segment is conditional).
     'desk.resting.noNewDrift': 'no new drift',
+
+    // EstateView (Task 4.1, mockup "SCREEN 2 — 推定図"). Rows are grouped by
+    // STATUS (drift first, then managed) and flattened across resource types
+    // — see lib/estate.ts's estateModel(). JA copy is verbatim from the
+    // mockup wherever the mockup has a matching string.
+    'desk.estate.ariaLabel': 'Estate',
+    'desk.estate.loading': 'Loading the estate…',
+    'desk.estate.degraded': 'The estate map is temporarily unavailable.',
+    'desk.estate.driftGroup': 'Drift — not managed by IaC ({n})',
+    'desk.estate.managedGroup': 'Managed by IaC ({n})',
+    'desk.estate.untrackedGroup': 'Not managed, not adoptable ({n})',
+    'desk.estate.adoptButton': 'Open an adoption PR',
+    'desk.estate.prPending': 'PR #{pr} awaiting review',
+    'desk.estate.driftMore': '…{n} more drift',
+    'desk.estate.systemManagedFold': 'System-managed resources ({n}) · created by Google',
+    // Pluralized on the TYPE count via i18n.ts's `.one`/`.other` convention —
+    // a live estate very often has exactly one out-of-scope type, and the
+    // single-form string rendered "…across 1 types…" in the EN estate shot.
+    // The call site composes params itself (it needs `other` alongside
+    // `types`, which `plural()` doesn't pass) — same precedent as shared.ts.
+    'desk.estate.otherResources.one': "{other} more resources in 1 type DriftScribe doesn't manage",
+    'desk.estate.otherResources.other':
+      "{other} more resources across {types} types DriftScribe doesn't manage",
+    'desk.estate.legendManaged': 'Managed by IaC',
+    'desk.estate.legendDrift': 'Not managed by IaC · drift',
   },
   ja: {
     'desk.nav.ariaLabel': 'メインナビゲーション',
@@ -136,5 +161,23 @@ export const desk = {
     'desk.resting.scanPending': '走査時刻 取得中',
     'desk.resting.resourceCount': '{n} リソース',
     'desk.resting.noNewDrift': '新規ドリフトなし',
+
+    'desk.estate.ariaLabel': 'インフラ',
+    'desk.estate.loading': 'インフラ情報を読み込み中…',
+    'desk.estate.degraded': 'インフラ図は一時的に取得できません。',
+    'desk.estate.driftGroup': 'ドリフト — IaC 未管理 {n} 件',
+    'desk.estate.managedGroup': '管理下 — {n} 件',
+    'desk.estate.untrackedGroup': '未管理（取り込み対象外） {n} 件',
+    'desk.estate.adoptButton': '取り込み PR を作成',
+    'desk.estate.prPending': 'PR #{pr} レビュー待ち',
+    'desk.estate.driftMore': '…ほか {n} 件のドリフト',
+    'desk.estate.systemManagedFold': 'システム管理リソース（Google が自動作成） {n}件',
+    // JA carries no grammatical plural, so .one/.other are identical text
+    // (i18n.ts `plural()` convention) — both forms still get catalogued.
+    'desk.estate.otherResources.one': '他に DriftScribe が管理しない {types} 種類、{other} 件のリソースがあります',
+    'desk.estate.otherResources.other':
+      '他に DriftScribe が管理しない {types} 種類、{other} 件のリソースがあります',
+    'desk.estate.legendManaged': 'IaC 管理下',
+    'desk.estate.legendDrift': 'IaC 未管理 ・ ドリフト',
   },
 };
