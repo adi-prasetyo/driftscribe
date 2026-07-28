@@ -1057,15 +1057,23 @@
    *  `reloadConversationTurns`: it touches ownership ONLY, leaving the chip and
    *  its explanation standing, because the explanation is the only thing
    *  telling the operator why their click did nothing. */
-  async function reconcileCrew(id: string, myRun: number): Promise<void> {
+  async function reconcileCrew(
+    id: string,
+    myRun: number,
+  ): Promise<ConversationDetail | null> {
     try {
       const resp = await call('/conversations/' + encodeURIComponent(id));
-      if (myRun !== runSeq || !resp.ok) return;
+      if (myRun !== runSeq || !resp.ok) return null;
       const detail = (await resp.json()) as ConversationDetail;
-      if (myRun !== runSeq) return;
+      if (myRun !== runSeq) return null;
       adoptCrew(detail.workload);
+      // Returned, not just applied: the same answer that settles ownership
+      // also settles whether the proposal is still open, and a caller that
+      // ignored it would keep offering a button for a spent nonce.
+      return detail;
     } catch {
       /* Fail-soft: ownership stays as-is, same as before this call existed. */
+      return null;
     }
   }
 
@@ -1206,7 +1214,17 @@
         // a commit that applied while its acknowledgement failed reaches here
         // looking exactly like a refusal. Asking costs one GET on a click that
         // already failed, and is a no-op whenever nothing actually moved.
-        await reconcileCrew(cid, myRun);
+        const settled = await reconcileCrew(cid, myRun);
+        if (myRun !== runSeq) return;
+        // Reconciling already learned whether anything is still awaiting an
+        // answer, so say so now rather than making the operator click a live
+        // -looking button to find out. Only downgrades: a refusal already read
+        // as dead stays dead.
+        if (settled && !settled.pending_handoff && !refusal.dead) {
+          forgetOffer(cid);
+          handoffDead = true;
+          handoffError = $t('conversations.handoff.error.gone');
+        }
         return;
       }
 
@@ -1319,7 +1337,15 @@
         // and lands on the reconciling branch above — and ASK who owns the
         // conversation, since a committed redemption would have moved it.
         liveExchange = null;
-        await reconcileCrew(cid, myRun);
+        // The same answer settles BOTH open questions. If the server reports no
+        // proposal, the redemption committed and the nonce is spent, so custody
+        // is worthless — drop it. If it reports one, this was the paused reply
+        // whose frame went missing, and the credential is exactly what the
+        // operator needs once they resume. Only a fetch that fails leaves us
+        // guessing, and then keeping it is the recoverable guess.
+        const detail = await reconcileCrew(cid, myRun);
+        if (myRun !== runSeq) return;
+        if (detail && !detail.pending_handoff) clearHandoff(cid);
         return;
       }
 

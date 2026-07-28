@@ -438,3 +438,64 @@ def test_firestore_clear_never_beats_a_proposal_minted_by_the_same_write(store):
     assert store.get_conversation("c1")["pending_handoff"]["to"] == "provision"
     out = store.redeem_handoff("c1", nonce=nonce2, accept=True, now=_NOW)
     assert out["ok"] is True
+
+
+# --- the stale-writer fence, on the PRODUCTION path -------------------------
+#
+# The fence's other tests run against InMemoryStateStore. The two stores share
+# `_may_touch_pending_handoff` but NOT the code that calls it: Firestore decides
+# from a doc read inside the transaction and has a separate `is_create` /
+# DELETE_FIELD branch, so a regression confined to this file would leave every
+# in-memory fence test green.
+
+def _pending(digest, frm="explore", to="provision"):
+    return {"from": frm, "to": to, "reason": "r", "nonce_digest": digest}
+
+
+def test_firestore_fence_blocks_a_stale_clear(store):
+    store.create_conversation("c1", workload="explore", title="t")
+    store.append_turns(
+        "c1", [{"role": "crew", "text": "a", "workload": "explore"}],
+        pending_handoff=_pending("digest-live", frm="provision"),
+    )
+    # The conversation has since moved to Provision; a late Explore run tries
+    # to retire the proposal it never saw.
+    store._db.docs["conversations/c1"]["workload"] = "provision"
+    store.append_turns(
+        "c1", [{"role": "user", "text": "late", "workload": "explore"}],
+        clear_pending_handoff=True,
+        expect_workload="explore", expect_pending_digest=None,
+    )
+    conv = store.get_conversation("c1")
+    assert conv["pending_handoff"]["nonce_digest"] == "digest-live"
+    assert conv["turn_count"] == 2, "the turn row itself must still land"
+
+
+def test_firestore_fence_blocks_a_stale_overwrite(store):
+    store.create_conversation("c1", workload="explore", title="t")
+    store.append_turns(
+        "c1", [{"role": "crew", "text": "a", "workload": "explore"}],
+        pending_handoff=_pending("digest-live", frm="provision"),
+    )
+    store._db.docs["conversations/c1"]["workload"] = "provision"
+    store.append_turns(
+        "c1", [{"role": "crew", "text": "late", "workload": "explore"}],
+        pending_handoff=_pending("digest-stale"),
+        expect_workload="explore", expect_pending_digest=None,
+    )
+    assert store.get_conversation("c1")["pending_handoff"]["nonce_digest"] == "digest-live"
+
+
+def test_firestore_fence_admits_the_current_writer(store):
+    """The guard must cost the ordinary path nothing on this store either."""
+    store.create_conversation("c1", workload="explore", title="t")
+    store.append_turns(
+        "c1", [{"role": "crew", "text": "a", "workload": "explore"}],
+        pending_handoff=_pending("digest-live"),
+    )
+    store.append_turns(
+        "c1", [{"role": "user", "text": "answered", "workload": "explore"}],
+        clear_pending_handoff=True,
+        expect_workload="explore", expect_pending_digest="digest-live",
+    )
+    assert store.get_conversation("c1").get("pending_handoff") is None

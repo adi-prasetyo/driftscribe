@@ -489,6 +489,8 @@ def _resolve_chat_conversation(
             "is_new": True,
             "prior_turns": [],
             "ephemeral": ephemeral,
+            # No document yet, so no proposal was open when this turn began.
+            "pending_digest": None,
         }
     conv = state.get_conversation(conversation_id)
     if conv is None:
@@ -523,6 +525,10 @@ def _resolve_chat_conversation(
         "is_new": False,
         "prior_turns": conv.get("turns", []),
         "ephemeral": False,
+        # The proposal this turn is answering, identified rather than merely
+        # counted. Compared again at persist time so a run that started before
+        # a redemption cannot edit a proposal minted after it.
+        "pending_digest": (conv.get("pending_handoff") or {}).get("nonce_digest"),
     }
 
 
@@ -648,6 +654,7 @@ def _persist_chat_turn(
             # open proposal — a stale writer must not delete or overwrite the
             # joining crew's live suggestion. See _may_touch_pending_handoff.
             expect_workload=conv["workload"],
+            expect_pending_digest=conv.get("pending_digest"),
             pending_handoff=pending,
             # An operator turn ANSWERS any outstanding suggestion: being asked
             # "shall I bring in Provision?" and replying with something else is
@@ -7125,6 +7132,10 @@ async def chat_handoff(
             # in a transcript whose whole value is being trustworthy.
             "omit_user_turn": True,
             "crew_change": {"from": pending["from"], "to": pending["to"]},
+            # Redemption deleted the proposal it burned, so nothing is open for
+            # this run to answer. If the joining crew proposes something of its
+            # own, that write compares against this same "none was open".
+            "pending_digest": None,
             # Already held: ``redeem_handoff`` reserved it transactionally.
             # Carried here so the normal release path in
             # ``_persisting_chat_stream`` (and the JSON branch's ``finally``)

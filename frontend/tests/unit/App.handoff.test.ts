@@ -721,13 +721,15 @@ describe('App — leaving the suggestion unanswered', () => {
 });
 
 describe('App — the client does not know what happened', () => {
-  it('keeps custody when the response never says how it ended', async () => {
-    // A 2xx is not an answer on its own: the pause check replies 200 BEFORE
-    // redeeming, so a truncated success and a truncated "paused, nothing
-    // happened" are indistinguishable from the status line. Guessing "spent"
-    // is the one unrecoverable guess — the server keeps only a digest, so a
-    // discarded nonce cannot be reissued, and the proposal would be stranded
-    // open with no way to answer it.
+  // A 2xx is not an answer on its own: the pause check replies 200 BEFORE
+  // redeeming, so a truncated success and a truncated "paused, nothing
+  // happened" arrive identically. The client cannot tell them apart from the
+  // response — so it asks, and the SERVER's answer decides. These two are the
+  // same interrupted request with opposite truths behind it.
+
+  /** Confirm against a 200 whose body is truncated, with the conversation
+   *  reported as `detail` when the client asks what actually happened. */
+  async function confirmAgainstTruncated(detail: unknown) {
     stubFetch((url, init) => {
       if (url.includes('/chat/handoff') && init?.method === 'POST') {
         return new Response('{"reply": "trunca', {
@@ -736,30 +738,41 @@ describe('App — the client does not know what happened', () => {
         });
       }
       if (url.includes('/conversations/')) {
-        return handoffPosts().length ? okJson(JOINED_DETAIL) : okJson(PENDING_DETAIL);
+        return handoffPosts().length ? okJson(detail) : okJson(PENDING_DETAIL);
       }
       return undefined;
     });
     window.sessionStorage.setItem('ds.handoff.c1', JSON.stringify(OFFER));
-    const { findByTestId, getByTestId, container } = render(App);
-    await fireEvent.click(await findByTestId('conversation-open'));
-    await findByTestId('handoff-chip');
-    await fireEvent.click(getByTestId('handoff-confirm'));
+    const r = render(App);
+    await fireEvent.click(await r.findByTestId('conversation-open'));
+    await r.findByTestId('handoff-chip');
+    await fireEvent.click(r.getByTestId('handoff-confirm'));
+    return r;
+  }
 
-    // Wait for the redemption to have SETTLED before judging custody. Polling
-    // for the nonce directly proves nothing — it is in storage from the first
-    // line of this test, so the assertion passes on its way to being wrong.
-    // The reconciling GET is the signal that this branch ran to completion.
-    await waitFor(() => {
-      const afterPost = fetchCalls()
-        .map(([u, i]) => String(u) + (i?.method ?? 'GET'))
-        .filter((c) => c.includes('/conversations/c1') && c.endsWith('GET'));
-      expect(afterPost.length).toBeGreaterThan(1); // the resume, then the reconcile
-    });
-    // Only now: the credential survived, so the suggestion is still answerable.
+  it('keeps custody when the server says the proposal is still open', async () => {
+    // The paused case whose single frame was lost. Nothing was redeemed, so
+    // discarding the nonce would strand a live proposal permanently: the
+    // server keeps only a digest and can never reissue it.
+    const r = await confirmAgainstTruncated(PENDING_DETAIL);
+
+    // Settled = the chip is interactable again. Polling storage for the nonce
+    // would pass instantly, since it is written on this test's first line.
+    await waitFor(() =>
+      expect((r.getByTestId('handoff-confirm') as HTMLButtonElement).disabled).toBe(false),
+    );
     expect(JSON.parse(window.sessionStorage.getItem('ds.handoff.c1')!).nonce).toBe('nonce-abc');
-    // ...and we asked who owns the thread rather than assuming either way.
-    expect(await typeAndReadWorkload(container, 'what happened?')).toBe('provision');
+  });
+
+  it('drops custody when the server says the proposal is gone', async () => {
+    // Same truncated response, opposite truth: it committed. Holding the nonce
+    // would only buy a button that fails, so the chip retires and the composer
+    // moves to the crew that now owns the thread.
+    const r = await confirmAgainstTruncated(JOINED_DETAIL);
+
+    await waitFor(() => expect(r.queryByTestId('handoff-chip')).toBeNull());
+    expect(window.sessionStorage.getItem('ds.handoff.c1')).toBeNull();
+    expect(await typeAndReadWorkload(r.container, 'what happened?')).toBe('provision');
   });
 
   it('a DECLINE with a failed refetch leaves the crew exactly where it was', async () => {

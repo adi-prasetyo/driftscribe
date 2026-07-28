@@ -17,6 +17,10 @@ Idempotency model:
 
 from typing import Any, Protocol
 
+# Sentinel for "the caller stated no expectation", which None cannot express
+# here: None is itself a meaningful expectation ("no proposal was open").
+_UNSET: Any = object()
+
 
 class StateStore(Protocol):
     def record_event(self, event_key: str, payload: dict[str, Any]) -> bool: ...
@@ -57,6 +61,7 @@ class StateStore(Protocol):
         pending_handoff: dict[str, Any] | None = None,
         clear_pending_handoff: bool = False,
         expect_workload: str | None = None,
+        expect_pending_digest: Any = _UNSET,
     ) -> list[int]: ...
     def get_conversation(
         self, conversation_id: str
@@ -222,7 +227,9 @@ def _evaluate_handoff_redemption(
     return pending, None
 
 
-def _may_touch_pending_handoff(conv: Any, expect_workload: str | None) -> bool:
+def _may_touch_pending_handoff(
+    conv: Any, expect_workload: str | None, expect_pending_digest: Any = _UNSET,
+) -> bool:
     """Whether this writer is still current enough to mutate an open proposal.
 
     A turn captures its crew at request entry and can persist much later: the
@@ -239,14 +246,35 @@ def _may_touch_pending_handoff(conv: Any, expect_workload: str | None) -> bool:
     accepts. Deleting live control state is not the same kind of wrong, and
     reading the difference as one cost was the mistake this guard corrects.
 
-    ``None`` means the caller has no expectation and keeps the old behavior.
+    TWO keys, because neither is sufficient alone.
+
+    ``expect_pending_digest`` is a compare-and-swap on the proposal itself: may
+    I still edit the one I saw when I started? Digests come from
+    ``secrets.token_urlsafe(32)`` and never recur, so this survives ownership
+    CYCLING — Explore → Provision → Explore leaves the symbolic name equal to
+    what a stale Explore run captured, and the workload check alone would wave
+    it through to overwrite a proposal minted in between. That is not
+    hypothetical; it was reproduced.
+
+    ``expect_workload`` catches what the digest cannot: a stale run that saw NO
+    proposal, and still sees none, but whose own new proposal carries a
+    ``from`` that is no longer the bound crew. The digests match (both absent)
+    while the offer is already meaningless — it could only ever be refused.
+
+    Either expectation omitted means the caller has none, and keeps the old
+    behavior.
     """
-    if expect_workload is None:
-        return True
-    current = conv.get("workload")
-    # An absent workload means nothing to contradict — treat as current rather
-    # than silently dropping a legitimate write on a partially-shaped doc.
-    return current is None or current == expect_workload
+    if expect_workload is not None:
+        current_wl = conv.get("workload")
+        # An absent workload means nothing to contradict — treat as current
+        # rather than dropping a legitimate write on a partially-shaped doc.
+        if current_wl is not None and current_wl != expect_workload:
+            return False
+    if expect_pending_digest is not _UNSET:
+        current = (conv.get("pending_handoff") or {}).get("nonce_digest")
+        if current != expect_pending_digest:
+            return False
+    return True
 
 
 def _lease_is_free(lease: object, *, now: Any) -> bool:
@@ -486,6 +514,7 @@ class InMemoryStateStore:
         pending_handoff: dict[str, Any] | None = None,
         clear_pending_handoff: bool = False,
         expect_workload: str | None = None,
+        expect_pending_digest: Any = _UNSET,
     ) -> list[int]:
         with self._lock:
             return self._append_turns_locked(
@@ -493,6 +522,7 @@ class InMemoryStateStore:
                 pending_handoff=pending_handoff,
                 clear_pending_handoff=clear_pending_handoff,
                 expect_workload=expect_workload,
+                expect_pending_digest=expect_pending_digest,
             )
 
     def _append_turns_locked(
@@ -504,6 +534,7 @@ class InMemoryStateStore:
         pending_handoff: dict[str, Any] | None = None,
         clear_pending_handoff: bool = False,
         expect_workload: str | None = None,
+        expect_pending_digest: Any = _UNSET,
     ) -> list[int]:
         """Append turns; optionally record a crew-handoff proposal with them.
 
@@ -567,7 +598,9 @@ class InMemoryStateStore:
         conv["user_turn_count"] = prior_user_turns + _count_user_turns(turns)
         conv["updated_at"] = now
         conv["last_trace_id"] = last_trace
-        if not _may_touch_pending_handoff(conv, expect_workload):
+        if not _may_touch_pending_handoff(
+            conv, expect_workload, expect_pending_digest
+        ):
             pending_handoff, clear_pending_handoff = None, False
         if pending_handoff is not None:
             # Overwrites any prior proposal, which IS the supersede-and-burn:
@@ -1007,6 +1040,7 @@ class FirestoreStateStore:
         pending_handoff: dict[str, Any] | None = None,
         clear_pending_handoff: bool = False,
         expect_workload: str | None = None,
+        expect_pending_digest: Any = _UNSET,
     ) -> list[int]:
         """Append ``turns`` atomically, allocating contiguous ``seq`` values.
 
@@ -1060,7 +1094,7 @@ class FirestoreStateStore:
                 # to Firestore's contention retry rather than slipping past
                 # this check.
                 may_touch_handoff = _may_touch_pending_handoff(
-                    data, expect_workload
+                    data, expect_workload, expect_pending_digest
                 )
             # WRITES.
             seqs: list[int] = []

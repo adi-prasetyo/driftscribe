@@ -430,3 +430,59 @@ def test_the_fence_does_not_block_the_crew_that_actually_holds_the_thread(store)
         clear_pending_handoff=True, expect_workload="explore",
     )
     assert store.get_conversation("c1").get("pending_handoff") is None
+
+
+def test_a_stale_run_is_fenced_even_when_ownership_cycles_back(store):
+    """The ABA the workload check alone cannot see, and the reason the fence
+    carries a second key.
+
+    Explore → Provision → Explore leaves the bound crew equal to what a stale
+    Explore run captured at entry, so `expect_workload` waves it through. The
+    proposal digest does not cycle — `secrets.token_urlsafe(32)` never repeats
+    — so comparing THE PROPOSAL rather than the crew's name catches it. Without
+    this the stale run overwrites a live suggestion with its own, and its old
+    nonce becomes redeemable: the operator is shown, and can act on, a
+    suggestion that was superseded two crew changes ago.
+    """
+    # The stale run begins here, seeing proposal P1.
+    p1 = _propose(store, "c1", to="provision", frm="explore")
+    captured = store.get_conversation("c1")["pending_handoff"]["nonce_digest"]
+
+    # Ownership cycles all the way back to Explore.
+    assert store.redeem_handoff("c1", nonce=p1, accept=True, now=NOW)["ok"]
+    back = _propose(store, "c1", to="explore", frm="provision", create=False)
+    assert store.redeem_handoff("c1", nonce=back, accept=True, now=NOW)["ok"]
+    assert store.get_conversation("c1")["workload"] == "explore"
+
+    # The CURRENT Explore crew makes a fresh suggestion.
+    _propose(store, "c1", to="upgrade", frm="explore", create=False)
+    live = dict(store.get_conversation("c1")["pending_handoff"])
+
+    # Only now does the original run persist — with a crew name that matches.
+    stale_nonce, stale_digest = mint_handoff_nonce()
+    store.append_turns(
+        "c1", _turns("explore"),
+        pending_handoff=build_pending_handoff(
+            _proposal(to="drift", frm="explore"), digest=stale_digest, now=NOW,
+        ),
+        expect_workload="explore",
+        expect_pending_digest=captured,
+    )
+
+    assert store.get_conversation("c1")["pending_handoff"] == live
+    assert store.redeem_handoff(
+        "c1", nonce=stale_nonce, accept=True, now=NOW,
+    )["ok"] is False
+
+
+def test_the_digest_key_still_admits_the_writer_that_saw_the_current_proposal(store):
+    """The other side of the CAS: a run that started when P was open, with P
+    still open, is answering exactly that proposal and must retire it."""
+    _propose(store, "c1", to="drift", frm="explore")
+    captured = store.get_conversation("c1")["pending_handoff"]["nonce_digest"]
+    store.append_turns(
+        "c1", _turns("explore"),
+        clear_pending_handoff=True,
+        expect_workload="explore", expect_pending_digest=captured,
+    )
+    assert store.get_conversation("c1").get("pending_handoff") is None
