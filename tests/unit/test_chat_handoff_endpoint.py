@@ -657,3 +657,39 @@ def test_a_pre_commit_refusal_carries_no_redeemed_marker(client):
 
     assert again.status_code == 409
     assert "X-Handoff-Redeemed" not in again.headers
+
+
+def test_the_joining_crew_can_propose_a_handoff_of_its_own(client, state):
+    """The false-negative the stale-writer fence could have introduced.
+
+    ``append_turns`` now refuses to touch ``pending_handoff`` when the caller's
+    expected crew is not the one bound to the conversation — which is exactly
+    what a joining turn looks like if it reports the crew it came FROM. It
+    reports the crew it became, so this must still persist; had it not, a crew
+    that hands on again would drop its own suggestion in silence, and the only
+    symptom would be a chip that never appears.
+    """
+    cid, nonce = _propose(client)
+    # The joining crew (drift) finds this belongs somewhere else again.
+    client.run_chat.propose = {
+        "from": "drift", "to": "provision",
+        "reason": "this needs a bucket, which I cannot create",
+        "brief": "the rollback is fine; the bucket is missing.",
+    }
+    try:
+        r = _redeem(client, cid, nonce)
+    finally:
+        client.run_chat.propose = None
+
+    assert r.status_code == 200
+    conv = state.get_conversation(cid)
+    # Still drift: the joining crew SUGGESTED provision, and a suggestion moves
+    # nothing until the operator confirms it. (Accepting either value here
+    # would have made the rest of this test unfalsifiable.)
+    assert conv["workload"] == "drift"
+    pending = conv.get("pending_handoff")
+    assert pending is not None, "the joining crew's own proposal was dropped"
+    assert pending["from"] == "drift"
+    assert pending["to"] == "provision"
+    # And it is redeemable: a fenced-out write would leave the OLD digest.
+    assert r.json()["handoff"]["nonce"]
