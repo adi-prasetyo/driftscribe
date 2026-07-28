@@ -528,3 +528,78 @@ def test_get_round_trips_resolved_at_and_apply_audit() -> None:
     assert fetched.resolved_at is not None
     assert fetched.apply_audit is not None
     assert fetched.apply_audit["phase"] == approvals.PHASE_APPLIED
+
+
+# --------------------------------------------------------------------------- #
+# Rolling-deploy skew: a doc written by a NEWER writer, read by an OLDER reader
+#
+# The two tests above cover the easy direction (old doc, new reader — absent key
+# falls back to the dataclass default). These cover the direction that actually
+# broke: the rollback worker and the coordinator are separate Cloud Run services
+# deployed one after the other, so between the two deploys a doc carries a field
+# the reading process has never heard of. `Cls(**data)` raised TypeError there,
+# which is a 500 on the operator's approval page for the whole window — and it
+# is sticky, because every later GET of that same doc re-raises until the reader
+# ships. That is ds-wjw; it is why the ds-2mc deploy runs coordinator BEFORE the
+# rollback worker, and these tests are what make the order stop being the only
+# thing standing between us and the 500.
+# --------------------------------------------------------------------------- #
+
+
+def test_get_ignores_a_field_a_newer_writer_added() -> None:
+    store, fake = _make_store()
+    created, _ = store.create(
+        target_revision="r", reason="x", hmac_key="k", created_by="u"
+    )
+    raw = fake.raw(f"approvals/{created.approval_id}")
+    # Exactly the ds-wjw shape: a newer rollback worker claimed this doc and
+    # wrote a key this build's dataclass does not declare.
+    raw["status"] = "used"
+    raw["some_field_from_a_newer_worker"] = {"phase": "claimed"}
+
+    fetched = store.get(created.approval_id)
+
+    assert fetched is not None, "an unknown key must not make the doc unreadable"
+    assert fetched.status == "used"
+    assert fetched.target_revision == "r"
+    assert not hasattr(fetched, "some_field_from_a_newer_worker")
+
+
+def test_claim_pending_ignores_a_field_a_newer_writer_added() -> None:
+    """The transactional path needs the same projection as ``get``.
+
+    Not redundant with the test above: ``_claim`` builds the dataclass from its
+    own read-modify-write copy of the dict, so it is a second, independent
+    construction site — and it is the one on the live Approve click.
+    """
+    store, fake = _make_store()
+    created, _ = store.create(
+        target_revision="r", reason="x", hmac_key="k", created_by="u"
+    )
+    fake.raw(f"approvals/{created.approval_id}")["field_from_the_future"] = 1
+
+    claimed = store.claim_pending(created.approval_id)
+
+    assert claimed is not None
+    assert claimed.status == "used"
+
+
+def test_dropping_unknown_fields_does_not_delete_them_from_the_doc() -> None:
+    """Dropping happens on READ only — the stored doc keeps the key.
+
+    This is the property that makes the projection safe rather than lossy: the
+    older reader ignores what it cannot use, and once the newer reader deploys
+    it finds the field still there. If a read ever wrote back its own projection
+    the skew window would silently destroy the newer writer's data.
+    """
+    store, fake = _make_store()
+    created, _ = store.create(
+        target_revision="r", reason="x", hmac_key="k", created_by="u"
+    )
+    path = f"approvals/{created.approval_id}"
+    fake.raw(path)["field_from_the_future"] = {"nested": "value"}
+
+    store.get(created.approval_id)
+    store.claim_pending(created.approval_id)
+
+    assert fake.raw(path)["field_from_the_future"] == {"nested": "value"}

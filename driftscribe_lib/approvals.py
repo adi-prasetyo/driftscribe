@@ -67,7 +67,7 @@ import json
 import re
 import secrets
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import Any
 
 from google.cloud import firestore
@@ -116,6 +116,32 @@ ROLLBACK_PHASES = frozenset({
 TERMINAL_ROLLBACK_PHASES = frozenset({PHASE_APPLIED, PHASE_FAILED})
 
 
+def _drop_unknown_fields(
+    data: dict[str, Any], *, known: frozenset[str]
+) -> dict[str, Any]:
+    """Project a raw Firestore dict onto the fields its dataclass declares.
+
+    Every READ path that builds an approval dataclass via ``Cls(**data)``
+    goes through here, because a doc can legitimately carry keys this
+    process has never heard of. The writers (rollback worker, tofu-apply
+    worker) deploy SEPARATELY from the coordinator that reads them, so in
+    any rolling deploy there is a window where a newer writer's field sits
+    in a doc an older reader then reads. Without this projection that read
+    raises ``TypeError: unexpected keyword argument`` — which is a 500 on
+    the operator's approval page for the whole window, and the reason the
+    ds-2mc deploy has to run coordinator-before-rollback-worker (ds-wjw).
+
+    Ordering the deploy correctly is still worth doing; this makes the
+    order stop being load-bearing. Dropping is the right failure mode for a
+    reader: an unknown key is by definition one this build has no code to
+    act on, so ignoring it costs nothing while crashing costs the page.
+    Writes are unaffected — ``create``/``record_phase``/``set_apply_audit``
+    build their own dicts and never pass through here, so a typo'd key in a
+    WRITE still surfaces as it always did.
+    """
+    return {k: v for k, v in data.items() if k in known}
+
+
 @dataclass
 class Approval:
     """A single approval record. Mirrors the Firestore doc shape 1:1 so that
@@ -151,6 +177,11 @@ class Approval:
     # ``None`` on pending docs and on any doc written before ds-2mc; consumers
     # MUST treat an absent phase as "outcome unknown", never as success.
     apply_audit: dict[str, Any] | None = None
+
+
+#: Field names :class:`Approval` accepts. Derived from the dataclass rather
+#: than hand-listed so adding a field can never leave this stale.
+_APPROVAL_FIELDS = frozenset(f.name for f in fields(Approval))
 
 
 def compute_token_hmac(
@@ -257,7 +288,10 @@ class ApprovalStore:
         if not snap.exists:
             return None
         data = snap.to_dict() or {}
-        return Approval(approval_id=approval_id, **data)
+        return Approval(
+            approval_id=approval_id,
+            **_drop_unknown_fields(data, known=_APPROVAL_FIELDS),
+        )
 
     def claim_pending(self, approval_id: str) -> Approval | None:
         """Transactionally flip ``status: pending → used`` and mark the
@@ -365,7 +399,10 @@ class ApprovalStore:
                 update["resolved_at"] = _utcnow()
             transaction.update(ref, update)
             data.update(update)
-            return Approval(approval_id=approval_id, **data)
+            return Approval(
+                approval_id=approval_id,
+                **_drop_unknown_fields(data, known=_APPROVAL_FIELDS),
+            )
 
         return txn(self._client.transaction(), ref)
 
@@ -825,6 +862,14 @@ class PlanApproval:
     apply_audit: dict[str, Any] | None = None
 
 
+#: Same role as :data:`_APPROVAL_FIELDS`, for the plan-approval schema. The
+#: nested-``apply_audit`` design below already anticipated this failure class
+#: ("one optional field ... so a growing audit record never breaks
+#: ``PlanApproval(approval_id=id, **data)``"); the projection retires it for
+#: top-level keys too.
+_PLAN_APPROVAL_FIELDS = frozenset(f.name for f in fields(PlanApproval))
+
+
 def _parse_rfc3339_utc(value: str) -> dt.datetime:
     """Parse a frozen-format (``_RFC3339_UTC``) string into a tz-aware UTC
     datetime. Validated upstream in :func:`build_plan_approval_payload`."""
@@ -923,7 +968,10 @@ class PlanApprovalStore:
         if not snap.exists:
             return None
         data = snap.to_dict() or {}
-        return PlanApproval(approval_id=approval_id, **data)
+        return PlanApproval(
+            approval_id=approval_id,
+            **_drop_unknown_fields(data, known=_PLAN_APPROVAL_FIELDS),
+        )
 
     def claim_pending(
         self,
@@ -996,7 +1044,10 @@ class PlanApprovalStore:
             update = {"status": new_status, **extra}
             transaction.update(ref, update)
             data.update(update)
-            return PlanApproval(approval_id=approval_id, **data)
+            return PlanApproval(
+                approval_id=approval_id,
+                **_drop_unknown_fields(data, known=_PLAN_APPROVAL_FIELDS),
+            )
 
         return txn(self._client.transaction(), ref)
 

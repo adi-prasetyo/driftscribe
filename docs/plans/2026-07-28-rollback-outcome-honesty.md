@@ -382,10 +382,32 @@ anyway.
 
 ## Deploy order
 
-`driftscribe_lib/` is shared. Per the existing convention and the Task 3.0b
-deploy note: **infra-reader worker → rollback worker → coordinator →
-`update-traffic`**. The rollback worker must land before the coordinator so the
-projection never reads a field no writer produces.
+`driftscribe_lib/` is shared, so the two services run skewed library versions
+for the length of the deploy. Order:
+
+**infra-reader worker → coordinator → `update-traffic` → rollback worker LAST.**
+
+An earlier version of this section had it backwards — rollback worker before
+coordinator, reasoning "the projection never reads a field no writer produces."
+That protects the harmless direction and breaks the fatal one, because the skew
+runs both ways and only one way crashes:
+
+| Skew | What happens |
+|---|---|
+| New reader, old writer (coordinator first) | `apply_audit`/`resolved_at` absent → dataclass defaults absorb it. `_maybe_reconcile` gates on `apply_audit.detail.operation_name`, which the old worker never persists (it only returns it in the HTTP body), so reconcile no-ops. On the desk, a phase-less doc neither seals (`selectStamped` requires `phase === 'applied'`) nor alarms (`selectUnresolvedRollback` requires an explicit phase) — it falls through to resting. **Degrades to nothing.** |
+| Old reader, new writer (worker first) | The worker's `claim_pending` writes `apply_audit` *atomically with the `pending → used` flip*, so the doc gains the key the instant a judge clicks Approve. The old coordinator's `Approval(approval_id=…, **data)` raises `TypeError: unexpected keyword argument 'apply_audit'`. **The approve POST 500s, and so does every later GET of that approval page** — including the always-200 anti-enumeration property of `approval_get` — until the coordinator ships. |
+
+The rollback worker is the writer, so it goes last. (ds-wjw.)
+
+**The order is no longer load-bearing**, and that is the actual fix: all four
+read-side construction sites — `ApprovalStore.get`/`_claim`,
+`PlanApprovalStore.get`/`_claim` — now project the raw Firestore dict onto the
+fields the dataclass declares (`_drop_unknown_fields`). Dropping is the right
+reader behavior: an unknown key is one this build has no code to act on.
+Read-side only, so the stored doc keeps the newer writer's field and the newer
+reader still finds it. Pinned by four tests that were confirmed to fail with the
+exact `TypeError` before the projection landed. Deploy in the order above
+anyway; it now costs nothing if someone gets it wrong at 2am.
 
 ## Live PROD probe (2026-07-28) — found a shipping blocker
 

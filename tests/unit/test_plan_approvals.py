@@ -523,6 +523,33 @@ def test_get_hit_and_miss() -> None:
     assert store.get("nope") is None
 
 
+def test_get_and_claim_ignore_a_field_a_newer_writer_added() -> None:
+    """Same rolling-deploy projection as ``ApprovalStore`` — see the block
+    comment in ``test_approval_store.py``.
+
+    This store has no live skew bug today (the C4 worker owns both sides of the
+    plan-approval doc), but it has the identical ``PlanApproval(**data)`` read
+    shape, and the dataclass comment on ``apply_audit`` shows the hazard was
+    already understood here first. Pinning it costs one test and means the next
+    field added on the worker side cannot reintroduce ds-wjw in this collection.
+    """
+    store, fake = _make_store()
+    created, _ = store.create(payload=_payload(), hmac_key="k", created_by="u")
+    path = f"plan_approvals/{created.approval_id}"
+    fake.raw(path)["field_from_the_future"] = {"nested": "value"}
+
+    fetched = store.get(created.approval_id)
+    assert fetched is not None
+    assert fetched.status == "pending"
+
+    claimed = store.claim_pending(created.approval_id, used_by="a@x", used_at=_now())
+    assert claimed is not None
+    assert claimed.status == "used"
+
+    # Read-side projection only: the stored doc keeps the newer writer's key.
+    assert fake.raw(path)["field_from_the_future"] == {"nested": "value"}
+
+
 # --------------------------------------------------------------------------- #
 # claim_pending / claim_denied
 # --------------------------------------------------------------------------- #
