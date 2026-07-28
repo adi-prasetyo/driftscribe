@@ -14,9 +14,19 @@
 // flash-then-fill.
 //
 // NOT rewired this phase: InfraDiagram.svelte keeps its own internal graph +
-// pending-approvals fetching for the chat view (this store serves desk/estate
-// only). One redundant fetch pair exists for an operator who visits both
-// views in one session — accepted for now, noted for post-pitch cleanup.
+// pending-approvals fetching for the chat view. One redundant fetch pair
+// exists for an operator who visits both views in one session — accepted for
+// now, noted for post-pitch cleanup.
+//
+// Scope, precisely: only the `graph` and `pendingApprovals` slices are
+// desk/estate-specific. `decisions` is consumed APP-WIDE and is NOT safe to
+// treat as view-scoped — App.svelte renders <DecisionsRail> outside the view
+// branch (visible on chat too), and, less obviously, the decisions payload
+// drives noteApplied() -> appliedEpoch, which the CHAT view's <InfraDiagram>
+// reads to trigger its post-apply CAI-lag ride-out. So this store is already
+// load-bearing for chat's refresh timing: gating or removing it as a
+// "desk/estate thing" would silently break the chat resource map's refresh
+// after an apply lands.
 import { writable, type Readable } from 'svelte/store';
 import type { InfraGraph, PendingApproval } from './infra_graph';
 import type { Decision } from './types';

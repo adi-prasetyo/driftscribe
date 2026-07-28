@@ -299,6 +299,38 @@ describe('createOverviewStore — independent soft failure', () => {
     expect(get(s).graph).toEqual(GRAPH);
     s.destroy();
   });
+
+  // lastError is ONE field, so a cycle with several failures has to pick a
+  // winner. The documented order is graph > pending > decisions (graph is the
+  // slowest and most failure-prone — CAI-backed, 10-30s cold — so it's the one
+  // worth surfacing). Every other failure test fails exactly one endpoint, which
+  // leaves that ternary chain unprotected; these two pin the precedence so a
+  // later reorder can't quietly change which failure the operator is shown.
+  it('when graph and pending both fail in one cycle, graph wins lastError', async () => {
+    const { fn } = makeCall({
+      graph: () => res('err', 500),
+      pending: () => res('err', 500),
+    });
+    const s = createOverviewStore(fn);
+    await flush();
+    expect(get(s).lastError).toBe('graph');
+    // The one endpoint that DID succeed still applied — a multi-failure cycle
+    // is not an all-or-nothing abort.
+    expect(get(s).decisions).toEqual(DECISIONS);
+    s.destroy();
+  });
+
+  it('when pending and decisions both fail but graph succeeds, pending wins lastError', async () => {
+    const { fn } = makeCall({
+      pending: () => res('err', 500),
+      decisions: () => res('err', 500),
+    });
+    const s = createOverviewStore(fn);
+    await flush();
+    expect(get(s).lastError).toBe('pending');
+    expect(get(s).graph).toEqual(GRAPH);
+    s.destroy();
+  });
 });
 
 describe('createOverviewStore — polling via RefreshScheduler', () => {

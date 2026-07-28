@@ -433,15 +433,29 @@
     if (bump) appliedEpoch += 1;
   }
 
-  // Advance the watermark whenever the store lands a REAL decisions payload —
-  // keyed on the array's IDENTITY (a fresh reference from a successful fetch),
-  // not on every reactive read, so an unrelated re-render or a soft-failed
-  // refresh (which preserves the prior array unchanged) can't re-run this and
-  // mis-seed/double-bump appliedEpoch. Skips the pre-fetch NO_DECISIONS_YET
-  // placeholder so the store's own eager creation-time fetch (still pending
-  // when this effect first runs) never seeds the watermark on empty data —
-  // see overviewStore.ts's sentinel comment and the boot-seed incident
-  // lib/decision.ts documents (a false bump there DDOSed the coordinator).
+  // Advance the watermark from the store's decisions payload.
+  //
+  // This effect re-runs on EVERY overview refresh cycle, not only when
+  // `decisions` changed: its one reactive read is `$overview`, and a Svelte
+  // store subscription is tracked at whole-object level (no per-property
+  // granularity like a $state proxy), while refresh() publishes a fresh state
+  // object each cycle. So noteApplied() IS re-invoked with an unchanged array
+  // reference — e.g. a cycle where the graph refreshed but the decisions fetch
+  // soft-failed and kept the prior array.
+  //
+  // That is safe, but NOT because of anything this effect does: the guarantee
+  // lives in nextAppliedWatermark (lib/decision.ts), which bumps only when the
+  // newest applied decision_id DIFFERS from the watermark, so a repeat call on
+  // the same payload always resolves to bump:false. Keep that idempotence if
+  // you ever touch it — it, not the effect's dependency scoping, is what stops
+  // appliedEpoch from double-bumping.
+  //
+  // The NO_DECISIONS_YET guard below is the part that does real work here: it
+  // skips the pre-fetch placeholder so the store's eager creation-time fetch
+  // (still pending when this effect first runs) never SEEDS the watermark on
+  // empty data. A genuinely-empty server payload is a distinct fresh [] and is
+  // correctly seeded. See overviewStore.ts's sentinel comment and the boot-seed
+  // incident lib/decision.ts documents (a false bump there DDOSed the coordinator).
   $effect(() => {
     const ds = $overview.decisions;
     if (ds !== NO_DECISIONS_YET) noteApplied(ds);
