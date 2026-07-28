@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { deskModel, STAMP_WINDOW_MS } from '../../src/lib/desk';
+import { deskModel, awaitingCount, STAMP_WINDOW_MS } from '../../src/lib/desk';
 import type { Decision } from '../../src/lib/types';
 import type { PendingApproval } from '../../src/lib/infra_graph';
 
@@ -679,5 +679,98 @@ describe('deskModel — locale pass-through', () => {
     });
     expect(model.kind).toBe('pending');
     if (model.kind === 'pending') expect(model.href).toBe('/iac-approvals/12?lang=ja');
+  });
+});
+
+describe('awaitingCount — the InstrumentBand "awaiting your approval" figure', () => {
+  it('zero when nothing is awaiting', () => {
+    expect(awaitingCount({ decisions: [], pendingApprovals: [], now: NOW, origin: ORIGIN })).toBe(0);
+  });
+
+  it('both lanes contribute: one pending rollback + one pending iac (from the listing) = 2', () => {
+    const rb = rollbackDecision();
+    const iac = pendingIac({ pr_number: 7 });
+    const n = awaitingCount({ decisions: [rb], pendingApprovals: [iac], now: NOW, origin: ORIGIN });
+    expect(n).toBe(2);
+  });
+
+  it('several awaiting rollbacks all count (not clamped to 1 the way deskModel picks only the newest)', () => {
+    const a = rollbackDecision({
+      decision_id: 'rb-a',
+      approval: { approval_url: '/approvals/rb-a?t=1', status: 'pending' },
+    });
+    const b = rollbackDecision({
+      decision_id: 'rb-b',
+      approval: { approval_url: '/approvals/rb-b?t=1', status: 'pending' },
+    });
+    expect(awaitingCount({ decisions: [a, b], pendingApprovals: [], now: NOW, origin: ORIGIN })).toBe(2);
+  });
+
+  it('several distinct pending iac PRs all count', () => {
+    const items = [pendingIac({ pr_number: 7 }), pendingIac({ pr_number: 9 })];
+    expect(awaitingCount({ decisions: [], pendingApprovals: items, now: NOW, origin: ORIGIN })).toBe(2);
+  });
+
+  it('the SAME PR present in both the listing AND the decisions-derived lane counts ONCE, not twice', () => {
+    const listingItem = pendingIac({ pr_number: 42 });
+    const decisionItem = iacDecision({ pr_number: 42 }); // waiting_for_rebake, same PR
+    const n = awaitingCount({
+      decisions: [decisionItem],
+      pendingApprovals: [listingItem],
+      now: NOW,
+      origin: ORIGIN,
+    });
+    expect(n).toBe(1);
+  });
+
+  it('a decision NOT awaiting (already applied) never inflates the iac count', () => {
+    const applied = iacDecision({ apply_status: 'applied', applied_at: '2026-07-28T11:00:00Z' });
+    expect(awaitingCount({ decisions: [applied], pendingApprovals: [], now: NOW, origin: ORIGIN })).toBe(0);
+  });
+
+  it('an expired rollback approval never inflates the rollback count (mirrors isRollbackAwaitingOperator)', () => {
+    const expired = rollbackDecision({
+      approval: { approval_url: '/approvals/rb-1?t=x', status: 'pending', expires_at: '2026-07-28T11:00:00Z' },
+    });
+    expect(awaitingCount({ decisions: [expired], pendingApprovals: [], now: NOW, origin: ORIGIN })).toBe(0);
+  });
+
+  // The test that pins the actual bug this function exists to fix: the
+  // desk's OWN state (deskModel) shows exactly ONE pending card at a time —
+  // that must never be mistaken for "only one thing is awaiting". Here two
+  // genuinely-independent items are awaiting (a rollback AND a distinct iac
+  // PR); deskModel's rule 1 picks the rollback as the single pending card,
+  // but awaitingCount must still honestly report 2.
+  it('desk shows a single pending card while awaitingCount reports 2 — the numbers are NOT the same fact', () => {
+    const rb = rollbackDecision();
+    const iac = pendingIac({ pr_number: 7 });
+    const model = deskModel({ decisions: [rb], pendingApprovals: [iac], now: NOW, origin: ORIGIN });
+    expect(model.kind).toBe('pending');
+    if (model.kind === 'pending') expect(model.source).toBe('rollback'); // rule 1 wins — only ONE card shown
+
+    const n = awaitingCount({ decisions: [rb], pendingApprovals: [iac], now: NOW, origin: ORIGIN });
+    expect(n).toBeGreaterThan(1);
+    expect(n).toBe(2);
+  });
+
+  it('malformed/null array elements are skipped, not thrown on', () => {
+    const good = rollbackDecision();
+    const n = awaitingCount({
+      decisions: [null, undefined, good] as unknown as Decision[],
+      pendingApprovals: [null, undefined, pendingIac({ pr_number: 3 })] as unknown as PendingApproval[],
+      now: NOW,
+      origin: ORIGIN,
+    });
+    expect(n).toBe(2);
+  });
+
+  it('tolerates a null/undefined decisions and pendingApprovals list entirely (0, not a crash)', () => {
+    const n = awaitingCount({
+      decisions: null as unknown as Decision[],
+      pendingApprovals: undefined as unknown as PendingApproval[],
+      now: NOW,
+      origin: ORIGIN,
+    });
+    expect(n).toBe(0);
   });
 });

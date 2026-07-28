@@ -405,7 +405,14 @@ describe('App — view routing (Task 2.2)', () => {
     }
   });
 
-  it('opening a trace from the decisions rail while on the desk view navigates to chat first', async () => {
+  // Superseded by the Task 3.5 "rails come off the desk" decision: the
+  // decisions rail (and its open-trace-button) is no longer rendered on the
+  // desk view at all (see the "App — rails come off the desk" suite below),
+  // so "open a trace from the rail while on the desk" is no longer a
+  // reachable interaction. This keeps the still-valid part of the old test —
+  // switching to chat surfaces the rail and opening a trace from it works —
+  // with the desk→chat navigation step made explicit first.
+  it('the rail (and its open-trace affordance) only exists on chat; navigating there and opening a trace works', async () => {
     window.sessionStorage.setItem('driftscribe_token', 'tok');
     const iac = {
       decision_id: 'd1',
@@ -439,12 +446,75 @@ describe('App — view routing (Task 2.2)', () => {
     history.replaceState(null, '', '/?view=desk');
     const { findByTestId, getByTestId, queryByTestId } = render(App);
     expect(getByTestId('approval-desk')).toBeTruthy();
+    expect(queryByTestId('open-trace-button')).toBeNull(); // no rail on the desk
 
+    await fireEvent.click(getByTestId('nav-chat'));
     const btn = await findByTestId('open-trace-button');
     await fireEvent.click(btn);
 
     expect(queryByTestId('approval-desk')).toBeNull();
     expect(document.getElementById('chat-form')).toBeTruthy();
+    await waitFor(() => expect(getByTestId('historical-banner')).toBeTruthy());
+  });
+});
+
+describe('App — rails come off the desk (Task 3.5)', () => {
+  // 32-hex trace id, mirrors the "view routing" describe block's own TID.
+  const TID = 'b'.repeat(32);
+
+  it('the rails render on chat (default) and are absent on desk and estate', () => {
+    const { getByTestId } = render(App);
+    expect(getByTestId('rails')).toBeTruthy();
+    cleanup();
+
+    history.replaceState(null, '', '/?view=desk');
+    const desk = render(App);
+    expect(desk.queryByTestId('rails')).toBeNull();
+    expect(desk.getByTestId('approval-desk')).toBeTruthy();
+    cleanup();
+
+    history.replaceState(null, '', '/?view=estate');
+    const estate = render(App);
+    expect(estate.queryByTestId('rails')).toBeNull();
+    expect(estate.getByTestId('estate-view')).toBeTruthy();
+  });
+
+  // Codex finding baked into the plan: the guarantee the railless desk rests
+  // on is that NO chat-intent query param can ever strand a visitor on a
+  // railless desk — deeplink.ts's hasChatIntent() already forces view==='chat'
+  // for ?reasoning=/?conversation=/?ask_pr=/?preview_pr=, overriding even an
+  // explicit ?view=desk. This test pins that a shared ?reasoning= link both
+  // resolves to chat AND renders the rails — so a future refactor of either
+  // the view resolver or the rails' own {#if} can't quietly break it apart.
+  it('a shared ?reasoning=<hex32> link resolves to chat, with the rails rendered (never a railless stranding)', async () => {
+    window.sessionStorage.setItem('driftscribe_token', 'tok');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/trace/'))
+          return okJson({ trace_id: TID, complete: true, events: [], decision: null });
+        if (url.includes('/decisions')) return okJson({ decisions: [] });
+        if (url.includes('/infra/graph'))
+          return okJson({
+            generated_at: null,
+            project: 'demo-proj',
+            caveat: '',
+            degraded: false,
+            degraded_reason: null,
+            totals: { resources: 1, managed: 0, drift: 1 },
+            groups: [],
+            edges: [],
+          });
+        return okJson({});
+      }),
+    );
+    // Even an explicit ?view=desk must lose to the reasoning intent.
+    history.replaceState(null, '', `/?view=desk&reasoning=${TID}`);
+    const { getByTestId, queryByTestId } = render(App);
+    expect(document.getElementById('chat-form')).toBeTruthy();
+    expect(queryByTestId('approval-desk')).toBeNull();
+    expect(getByTestId('rails')).toBeTruthy();
     await waitFor(() => expect(getByTestId('historical-banner')).toBeTruthy());
   });
 });

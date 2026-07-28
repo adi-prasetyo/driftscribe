@@ -33,6 +33,59 @@ export const desk = {
     'desk.ledger.heading': 'Recent record',
     'desk.ledger.appliedTitle': 'You approved · applied',
     'desk.ledger.openTitle': 'Awaiting your approval',
+
+    // ApprovalDesk (Task 3.5) — the three-state front door composed of the
+    // band above + a per-state body + the ledger strip below. Deliberately
+    // NO fabricated narrative: every string below is either generic (true
+    // regardless of which resource/service is involved) or interpolates a
+    // REAL field the decision/approval doc actually carries (pr, time) — see
+    // lib/desk.ts's own header comment on why "no fictional timestamps"
+    // extends to display copy here, not just the selection logic.
+    'desk.region.ariaLabel': 'Approval desk',
+
+    // Rollback proposals are ANCHOR-only (drift/Anchor is the one crew that
+    // runs autonomously and can emit a rollback — see workload_crew_rename),
+    // so naming it here is a true statement, not a guess.
+    'desk.pending.rollback.who': 'Anchor is proposing a fix',
+    'desk.pending.rollback.headline': 'A rollback proposal is waiting for your decision.',
+    // An iac_apply PR can come from Patch (on-demand) or Provision (from a
+    // chat request) — the desk has no reliable field to attribute WHICH crew
+    // authored a given PR, so this stays crew-neutral rather than guessing.
+    'desk.pending.iac.who': 'An infrastructure change is waiting for your review',
+    // Fallback headline for the decisions-derived arm (rule 2b), which never
+    // carries a PR title — see DeskPendingIacProvenance's header comment.
+    'desk.pending.iac.headlineFallback': 'Infrastructure change PR #{pr} is waiting for your approval.',
+    'desk.pending.prMeta': 'PR #{pr}',
+    'desk.pending.subtitleProposedAt': 'Proposed {time}',
+    // Both anchors point at the SAME href (deskModel's `href`) — the actual
+    // Approve/Reject controls live on that HMAC-gated page (agent/main.py's
+    // approval_post decision=approve|reject), never in-app. See the
+    // iac_reject_nonbinding_semantics note: Reject there persists nothing.
+    'desk.pending.approveCta': 'Approve this proposal',
+    'desk.pending.rejectCta': 'Reject',
+
+    'desk.stamped.who': 'You approved',
+    'desk.stamped.rollback.detail': 'Rollback applied',
+    'desk.stamped.iac.detail': 'Change applied',
+    'desk.stamped.rollback.headline': 'The proposed rollback was applied.',
+    'desk.stamped.iac.headlineFallback': 'Infrastructure change PR #{pr} was applied.',
+    'desk.stamped.iac.headlineGeneric': 'An infrastructure change was applied.',
+    'desk.stamped.audit': 'Applied {time}',
+
+    // The resting state's watch line — see ApprovalDesk's header comment:
+    // "nothing needs you right now" is the product's promise kept, so this
+    // line (not the calm headline) is what proves the agent is still awake.
+    'desk.resting.headline': 'Nothing needs your decision right now.',
+    'desk.resting.watching': 'The agent is watching',
+    'desk.resting.lastScan': 'last scan {time}',
+    // Rendered instead of a fabricated time when graph.generated_at is null
+    // — calm must never look dead, but it must also never invent a scan time
+    // that didn't happen (Task 3.5 spec).
+    'desk.resting.scanPending': 'scan time pending',
+    'desk.resting.resourceCount': '{n} resources',
+    // Only shown when scope.drift === 0 — a true "nothing new" claim, not a
+    // fixed decoration (see ApprovalDesk: this segment is conditional).
+    'desk.resting.noNewDrift': 'no new drift',
   },
   ja: {
     'desk.nav.ariaLabel': 'メインナビゲーション',
@@ -57,5 +110,31 @@ export const desk = {
     'desk.ledger.heading': '最近の記録',
     'desk.ledger.appliedTitle': 'あなたが承認 → 適用完了',
     'desk.ledger.openTitle': 'あなたの承認待ち',
+
+    'desk.region.ariaLabel': '承認デスク',
+
+    'desk.pending.rollback.who': 'Anchor が提案しています',
+    'desk.pending.rollback.headline': '承認が必要なロールバック提案があります。',
+    'desk.pending.iac.who': 'インフラ変更があなたの確認を待っています',
+    'desk.pending.iac.headlineFallback': 'インフラ変更 PR #{pr} があなたの承認を待っています。',
+    'desk.pending.prMeta': 'PR #{pr}',
+    'desk.pending.subtitleProposedAt': '提案 {time}',
+    'desk.pending.approveCta': 'この提案を承認する',
+    'desk.pending.rejectCta': '却下する',
+
+    'desk.stamped.who': 'あなたが承認しました',
+    'desk.stamped.rollback.detail': 'ロールバック適用',
+    'desk.stamped.iac.detail': '適用完了',
+    'desk.stamped.rollback.headline': '提案されたロールバックを適用しました。',
+    'desk.stamped.iac.headlineFallback': 'インフラ変更 PR #{pr} を適用しました。',
+    'desk.stamped.iac.headlineGeneric': 'インフラ変更を適用しました。',
+    'desk.stamped.audit': '適用 {time}',
+
+    'desk.resting.headline': 'いま、あなたの判断を待つ提案はありません。',
+    'desk.resting.watching': 'エージェントは監視を継続中',
+    'desk.resting.lastScan': '最終走査 {time}',
+    'desk.resting.scanPending': '走査時刻 取得中',
+    'desk.resting.resourceCount': '{n} リソース',
+    'desk.resting.noNewDrift': '新規ドリフトなし',
   },
 };

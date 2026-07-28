@@ -342,3 +342,70 @@ export function deskModel(input: DeskModelInput): DeskModel {
 
   return { kind: 'resting' };
 }
+
+/** A positive-integer PR number guard, mirroring `iacApprovalHref`'s own
+ *  validation — shared by both lanes below so a malformed `pr_number` (from
+ *  either source) can never inflate the count. */
+function isPositiveIntPr(n: unknown): n is number {
+  return typeof n === 'number' && Number.isInteger(n) && n > 0;
+}
+
+/**
+ * Count of DISTINCT items genuinely awaiting the operator right now, across
+ * BOTH lanes — the InstrumentBand "awaiting your approval" figure (Task
+ * 3.5's ApprovalDesk). This is deliberately NOT the same number as "is
+ * `deskModel` currently `pending`": `deskModel` surfaces one actionable item
+ * at a time as a queue (the CTA card), while this is the honest system-wide
+ * total of everything that queue will eventually work through — the ledger
+ * strip beneath the desk already shows the rest as `◍` rows, so
+ * under-reporting here would contradict what's directly beneath it on the
+ * same screen. A desk showing ONE pending card can still report an
+ * `awaitingCount` of 2 or more; that is correct, not a bug (see the
+ * dedicated test in desk.test.ts that pins exactly this).
+ *
+ * Takes the same `DeskModelInput` shape as `deskModel` so a caller can feed
+ * both from one snapshot (App.svelte's overview store).
+ *
+ * - Rollback lane: the count of `decisions` for which
+ *   `isRollbackAwaitingOperator` (approval.ts) is true — the SAME predicate
+ *   `selectPendingRollback` (rule 1, above) and `ledgerRows`'s `classify`
+ *   use, so this can never disagree with either about which rollback rows
+ *   are actionable.
+ * - Iac lane: the count of DISTINCT `pr_number` values across the UNION of
+ *   `pendingApprovals[].pr_number` and the `pr_number` of `decisions` for
+ *   which `isIacAwaitingOperator` is true (the same predicate rule 2b uses).
+ *   Deduped by PR number — the same PR can legitimately appear in BOTH
+ *   sources (that's exactly the overlap `deskModel`'s rule 2a/2b dedup on
+ *   href already handles for the single-selection case; here the two
+ *   sources are unioned into a Set instead of "listing wins").
+ *
+ * Malformed/null array elements are skipped, not thrown on — mirrors every
+ * other function in this module over the same open `Decision[]` /
+ * `PendingApproval[]` shapes.
+ */
+export function awaitingCount(input: DeskModelInput): number {
+  const now = input.now ?? Date.now();
+  const decisions = input.decisions ?? [];
+  const pendingApprovals = input.pendingApprovals ?? [];
+
+  let rollbackCount = 0;
+  for (const decision of decisions) {
+    if (decision == null) continue;
+    if (isRollbackAwaitingOperator(decision, { now, origin: input.origin })) rollbackCount += 1;
+  }
+
+  const iacPrs = new Set<number>();
+  for (const approval of pendingApprovals) {
+    if (approval == null) continue;
+    if (isPositiveIntPr(approval.pr_number)) iacPrs.add(approval.pr_number);
+  }
+  const resolvedPrs = resolvedIacPrNumbers(decisions);
+  for (const decision of decisions) {
+    if (decision == null) continue;
+    if (isIacAwaitingOperator(decision, resolvedPrs) && isPositiveIntPr(decision.pr_number)) {
+      iacPrs.add(decision.pr_number);
+    }
+  }
+
+  return rollbackCount + iacPrs.size;
+}

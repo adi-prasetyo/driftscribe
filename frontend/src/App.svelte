@@ -42,6 +42,7 @@
   import ConversationsRail from './components/ConversationsRail.svelte';
   import ConversationThread from './components/ConversationThread.svelte';
   import InfraDiagram from './components/InfraDiagram.svelte';
+  import ApprovalDesk from './components/ApprovalDesk.svelte';
   import { previewPrFromSearch } from './lib/infra_graph';
   import {
     reasoningTraceFromSearch,
@@ -1142,8 +1143,19 @@
   <Timeline {events} {status} directlyRecorded={historicalDecision?.action === 'iac_apply'} />
 {/snippet}
 
-<main class="layout">
-  <div class="rails">
+<!-- Rails come off the desk/estate (composite-redesign Task 3.5 decision):
+     the desk is a 780px centered column and LedgerStrip already IS its
+     decisions summary, so DecisionsRail beside it would show the same log
+     twice — the exact 見づらい/後付け texture the redesign answers. `.rails`
+     only renders (and only takes a grid column) on the chat view; `.layout`
+     collapses to a single full-width column otherwise. Nothing becomes
+     unreachable: deeplink.ts's hasChatIntent() already forces view==='chat'
+     for ?reasoning=/?conversation=/?ask_pr=/?preview_pr=, so no shared link
+     can strand a visitor on a railless desk (see App.test.ts's
+     "rails come off the desk" suite, which pins that guarantee). -->
+<main class="layout" class:layout--full={view !== 'chat'}>
+  {#if view === 'chat'}
+  <div class="rails" data-testid="rails">
     <ConversationsRail
       {conversations}
       activeConversationId={conversationId}
@@ -1151,6 +1163,7 @@
     />
     <DecisionsRail {decisions} {activeTraceId} onOpenTrace={openTrace} />
   </div>
+  {/if}
 
   {#if view === 'chat'}
   <section id="chat-area" class="chat-area" aria-label={$t('header.chatArea.ariaLabel')}>
@@ -1200,15 +1213,23 @@
     {/if}
   </section>
   {:else if view === 'desk'}
-  <!-- Skeleton only (Task 2.2) — the real approval desk lands in Phase 3
-       (ApprovalDesk.svelte, Task 3.5). -->
-  <section data-testid="approval-desk" class="chat-area">
-    <h2>{$t('desk.nav.desk')}</h2>
-  </section>
+  <!-- The real approval desk (Task 3.5). Data comes exclusively from the
+       overview store's current snapshot — ApprovalDesk performs no fetches
+       of its own. `refresh={overview.refresh}` lets the desk arm its own
+       short, bounded re-check burst after sending the operator to an
+       approval page (see ApprovalDesk's "fast convergence" comment). -->
+  <ApprovalDesk
+    graph={$overview.graph}
+    decisions={$overview.decisions}
+    pendingApprovals={$overview.pendingApprovals}
+    refresh={overview.refresh}
+    onNavigate={navigate}
+  />
   {:else if view === 'estate'}
   <!-- Skeleton only (Task 2.2) — the real estate view lands in Phase 4
-       (EstateView.svelte, Task 4.1). -->
-  <section data-testid="estate-view" class="chat-area">
+       (EstateView.svelte, Task 4.1). Task 3.5 only applies the same
+       rails-off treatment for consistency. -->
+  <section data-testid="estate-view" class="chat-area chat-area--full">
     <h2>{$t('desk.nav.estate')}</h2>
   </section>
   {/if}
@@ -1352,6 +1373,12 @@
     align-items: start;
     min-height: calc(100vh - 56px);
   }
+  /* Desk/estate: no rails column at all (see the `.rails` {#if} above) —
+     collapse the grid to one full-width column instead of leaving a bare
+     280px gap where the rails used to sit. */
+  .layout--full {
+    grid-template-columns: minmax(0, 1fr);
+  }
   /* Left column holds two stacked rails: conversation history above past
      decisions. Each owns its own internal scroll; the column spaces + insets
      them so neither hugs the very edge. */
@@ -1365,6 +1392,13 @@
   .chat-area {
     padding: var(--ds-sp-5) var(--ds-sp-6) var(--ds-sp-8);
     max-width: var(--ds-page-max);
+  }
+  /* The estate skeleton (Task 4.1 fills the real view) gets the same
+     centered, full-width treatment ApprovalDesk's own root provides itself —
+     it has no such wrapper of its own yet. */
+  .chat-area--full {
+    max-width: var(--ds-page-max);
+    margin: 0 auto;
   }
   .chat-area > :global(*) {
     margin-bottom: var(--ds-sp-4);
