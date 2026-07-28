@@ -14,6 +14,18 @@ export const desk = {
     // both locales — it's a hanko, not a translated word — but a screen
     // reader needs an EN-legible name for the "approved" state it marks.
     'desk.seal.ariaLabel': 'Approved',
+    // InstrumentBand (Task 3.3) — the three-number pulse across the top of
+    // the desk/estate. Visible labels sit under 44px numerals so they stay
+    // short; the *Aria keys are separate because a bare numeral read aloud
+    // ("nine") is meaningless without what it counts, so each stat button's
+    // accessible name pairs the figure with its meaning explicitly rather
+    // than relying on visible-text concatenation order.
+    'desk.band.managedLabel': 'Managed by IaC',
+    'desk.band.driftLabel': 'Drift detected',
+    'desk.band.awaitingLabel': 'Awaiting your approval',
+    'desk.band.managedAria': '{n} managed by IaC',
+    'desk.band.driftAria': '{n} drift detected',
+    'desk.band.awaitingAria': '{n} awaiting your approval',
   },
   ja: {
     'desk.nav.ariaLabel': 'メインナビゲーション',
@@ -25,5 +37,15 @@ export const desk = {
     'desk.nav.estate': 'インフラ',
     'desk.nav.chat': 'チャット',
     'desk.seal.ariaLabel': '承認済み',
+    // Visible labels straight from the mockup (docs/plans/2026-07-28-
+    // composite-mockup.html "instrument band"). Aria variants prefix the
+    // count so a screen reader announces "9件、IaC管理下" rather than a bare
+    // label with no number.
+    'desk.band.managedLabel': 'IaC 管理下',
+    'desk.band.driftLabel': 'ドリフト検出',
+    'desk.band.awaitingLabel': 'あなたの承認待ち',
+    'desk.band.managedAria': '{n}件、IaC 管理下',
+    'desk.band.driftAria': '{n}件、ドリフト検出',
+    'desk.band.awaitingAria': '{n}件、あなたの承認待ち',
   },
 };
