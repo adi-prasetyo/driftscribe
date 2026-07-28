@@ -71,6 +71,11 @@ enabled_tool_names:
   # Cross-crew "team memory" over the conversations log (read-only). Appended
   # LAST to match EXPLORE_WORKLOAD_TOOL_NAMES (tool-order pin).
   - read_conversations
+  # Hand the conversation to another crew, pending operator confirmation.
+  # Coordinator-local control-plane write: no worker, no PR, no notification,
+  # no write-capable credential — and it cannot complete the transition it
+  # proposes (redemption is a separate authenticated request).
+  - request_crew_handoff
 
 # Only read workers. drift_docs / drift_rollback / upgrade_docs (the
 # mutation workers) and notifier are deliberately absent — explore cannot

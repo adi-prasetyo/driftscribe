@@ -71,6 +71,7 @@ from agent.adk_tools import (
     read_live_env_tool,
     read_project_inventory_tool,
     read_team_log_tool,
+    request_crew_handoff_tool,
     search_recent_prs_tool,
     upgrade_close_pr_tool,
     upgrade_merge_pr_tool,
@@ -415,6 +416,13 @@ _TOOL_REGISTRY: Final[dict[str, Callable | None]] = {
     # ``agent.adk_tools.open_infra_pr_tool`` / ``propose_adoption_tool``.
     "provision_open_infra_pr":   open_infra_pr_tool,
     "provision_propose_adoption": propose_adoption_tool,
+    # Crew handoff — propose that a DIFFERENT crew take over this conversation,
+    # subject to operator confirmation. The one control-plane tool: it writes
+    # DriftScribe's own state (a pending proposal) but calls no worker, opens no
+    # PR, and rides no write-capable credential. Enabled on all four crews; see
+    # ``CONTROL_PLANE_PROPOSAL_TOOL_NAMES`` in :mod:`agent.fanout` for why it is
+    # classified apart from both the read tools and ``MUTATION_TOOL_NAMES``.
+    "request_crew_handoff":      request_crew_handoff_tool,
     # Coordinator session memory — reserved, implemented in 17.B.
     "get_session_state":         None,
     "set_session_state":         None,
@@ -467,6 +475,12 @@ _TOOL_TIERS: Final[dict[str, str]] = {
     "retrieve_developer_doc":     "report",
     "provision_open_infra_pr":    "propose",
     "provision_propose_adoption": "propose",
+    # "report", not "propose": the handoff acts on nothing outside DriftScribe,
+    # and the crew it hands off TO has its own propose/apply tools stripped by
+    # this same dial — so Observe cannot be escalated through it. Tiering it
+    # "propose" would instead make Explore a dead end in Observe mode, with no
+    # crew picker left to fall back on once the composer gate is removed.
+    "request_crew_handoff":       "report",
     # Reserved (callable None — can never resolve): tier is moot but must
     # exist so the set-equality drift-pin holds.
     "get_session_state":          "report",

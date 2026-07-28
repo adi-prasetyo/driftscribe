@@ -289,6 +289,21 @@ MUTATION_CALLABLE_NAMES: frozenset[str] = frozenset({
     "propose_adoption_tool",
 })
 
+# Control-plane PROPOSAL tools: they write DriftScribe's own state and mint a
+# transition credential, but touch no external system and ride no write-capable
+# credential. They are deliberately NOT in :data:`MUTATION_TOOL_NAMES` — that
+# set is the EXTERNAL-mutation / credential-containment classifier, and it is
+# what the ``explore`` read-only guarantee is asserted against. Splitting the
+# taxonomy keeps that guarantee meaningful while making this smaller escalation
+# visible to reviewers instead of hiding it inside "read-only".
+#
+# ``request_crew_handoff`` records a proposal that an operator must confirm
+# through a separate authenticated request. It opens no PR, changes no live
+# infra, sends no notification, and cannot complete the transition it proposes.
+CONTROL_PLANE_PROPOSAL_TOOL_NAMES: frozenset[str] = frozenset({
+    "request_crew_handoff",
+})
+
 # Read-only tools that are nonetheless kept OUT of fan-out sub-agents. These are
 # not mutation tools, so the disjointness invariants above don't cover them —
 # the reason to exclude is different: ``read_conversations`` returns untrusted
@@ -339,6 +354,7 @@ def resolve_provision_read_tools() -> dict[str, Callable]:
         symbolic: fn
         for symbolic, fn in resolution.tools.items()
         if symbolic not in MUTATION_TOOL_NAMES
+        and symbolic not in CONTROL_PLANE_PROPOSAL_TOOL_NAMES
         and symbolic not in _FANOUT_EXCLUDED_READ_TOOL_NAMES
         and getattr(fn, "__name__", "") not in MUTATION_CALLABLE_NAMES
     }

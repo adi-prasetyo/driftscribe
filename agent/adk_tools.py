@@ -1759,3 +1759,84 @@ def build_conversations_breadcrumb(
         return _BREADCRUMB_HEADER + "\n" + "\n".join(lines)
     except Exception:  # noqa: BLE001
         return None
+
+
+# --------------------------------------------------------------------------- #
+# Crew handoff — propose a crew change for the operator to confirm
+# --------------------------------------------------------------------------- #
+#
+# The one tool in this module that writes DriftScribe's own control plane
+# rather than reading or calling out to a worker. It is deliberately not a
+# mutation tool (no PR, no rollback, no notification, no write-capable
+# credential) but it is not a plain read either, so the taxonomy splits it out
+# as ``CONTROL_PLANE_PROPOSAL_TOOL_NAMES`` — see ``agent/fanout.py``.
+#
+# Note what this tool CANNOT do, by construction:
+# - It takes no conversation id. The model never names the thread it writes a
+#   proposal onto, so a prompt-injected crew cannot plant a transition on
+#   somebody else's conversation.
+# - It mints nothing. The nonce is minted server-side only after the turn pair
+#   and the proposal commit together, so the model never holds the credential
+#   its own proposal will be confirmed with.
+# - It cannot complete a handoff. Redemption is a separate authenticated HTTP
+#   request; there is no redeem callable in the registry at all.
+
+
+def request_crew_handoff_tool(
+    target: str, reason: str, brief: str = "",
+) -> dict[str, Any]:
+    """Ask the operator to bring in a different crew, and hand it your findings.
+
+    Use this when the operator wants something your crew has no tool for. Do
+    NOT use it for anything you can answer by reading — you see plenty that you
+    cannot act on, and "is this drifted?" is a question you can answer yourself.
+    Only the remedy needs another crew.
+
+    Nothing happens when you call this. The operator sees a short confirmation
+    and decides. Say what you found and that the other crew can take it from
+    here; never say the crew has joined, and never promise to do the work
+    yourself.
+
+    Args:
+        target: which crew to bring in — ``drift`` (undo an unsanctioned change,
+            or record a sanctioned one), ``upgrade`` (bump or pin a dependency),
+            ``provision`` (author new infrastructure, or adopt an untracked
+            resource), or ``explore`` (read-only questions about the estate).
+        reason: one plain sentence the operator reads before confirming. Name
+            the concrete action, not your internal routing.
+        brief: what the joining crew needs to know to start work. Optional but
+            strongly preferred: only the last few turns are replayed, so this is
+            what carries the operator's intent across that boundary.
+
+    Returns a dict describing the proposal. Fail-soft: a bad target or an empty
+    reason comes back as ``{"error": ...}`` so you can correct it and continue
+    the turn.
+    """
+    from agent.handoff import (
+        HANDOFF_TARGETS,
+        HandoffValidationError,
+        validate_handoff_proposal,
+    )
+    from agent.workload_context import current_workload
+
+    here = current_workload()
+    if here not in HANDOFF_TARGETS:
+        # No bound crew identity means this is not an operator chat turn (the
+        # ContextVar is bound at both /chat entrypoints). Refuse rather than
+        # guess which conversation the proposal would land on.
+        return {"error": "a crew handoff can only be proposed during a chat turn"}
+    try:
+        proposal = validate_handoff_proposal(
+            target=target, reason=reason, brief=brief, current_workload=here,
+        )
+    except HandoffValidationError as e:
+        return {"error": str(e)}
+    return {
+        "handoff": proposal,
+        "status": "awaiting_operator_confirmation",
+        "next_steps": (
+            "Tell the operator what you found and that "
+            f"{proposal['to']} can take it from here. They will see a short "
+            "confirmation. Do not say the crew has joined."
+        ),
+    }

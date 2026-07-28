@@ -116,6 +116,7 @@ from agent.adk_tools import (
     read_live_env_tool,
     read_project_inventory_tool,
     read_team_log_tool,
+    request_crew_handoff_tool,
     search_recent_prs_tool,
     upgrade_close_pr_tool,
     upgrade_merge_pr_tool,
@@ -210,6 +211,12 @@ COORDINATOR_TOOLS = [
     # tofu-editor path. Authority-clean: no live infra changes; import only.
     # Symbolic name: ``provision_propose_adoption``.
     propose_adoption_tool,
+    # Crew handoff — propose that a different crew take over this conversation,
+    # pending operator confirmation. Coordinator-local control-plane write: no
+    # worker, no PR, no write-capable credential, and no way to complete the
+    # transition (redemption is a separate authenticated HTTP request, and no
+    # redeem callable exists in the registry). Enabled on all four crews.
+    request_crew_handoff_tool,
 ]
 
 
@@ -225,8 +232,12 @@ COORDINATOR_TOOLS = [
 # fail-closed CI for merge) still applies either way — this is defense in
 # depth at the routing layer, matching the per-workload capability-bound
 # pattern.
+# ``request_crew_handoff`` joins them for a different reason: a handoff exists
+# to be CONFIRMED by an operator, and /recheck is the autonomous Eventarc path —
+# no operator, and no conversation for a transition to land on. An unconfirmable
+# proposal there would be dead weight in the prompt at best.
 CHAT_ONLY_TOOL_NAMES: frozenset[str] = frozenset(
-    {"upgrade_close_pr", "upgrade_merge_pr"}
+    {"upgrade_close_pr", "upgrade_merge_pr", "request_crew_handoff"}
 )
 
 
@@ -280,6 +291,8 @@ DRIFT_WORKLOAD_TOOL_NAMES: tuple[str, ...] = (
     "retrieve_developer_doc",
     # Cross-crew "team memory" — read what other crews discussed (read-only).
     "read_conversations",
+    # Hand the conversation to another crew, pending operator confirmation.
+    "request_crew_handoff",
 )
 
 UPGRADE_WORKLOAD_TOOL_NAMES: tuple[str, ...] = (
@@ -303,6 +316,8 @@ UPGRADE_WORKLOAD_TOOL_NAMES: tuple[str, ...] = (
     # their registry entries to callables can re-add them here.
     # Cross-crew "team memory" — read what other crews discussed (read-only).
     "read_conversations",
+    # Hand the conversation to another crew, pending operator confirmation.
+    "request_crew_handoff",
 )
 
 # The chat-only, strictly read-only workload. Its tools are a read-only
@@ -334,9 +349,14 @@ EXPLORE_WORKLOAD_TOOL_NAMES: tuple[str, ...] = (
     # Coordinator-local StateStore read; no worker, no GitHub PAT — read-only
     # by operation AND credential. Appended to match the YAML tool-order.
     "read_team_log",
-    # Cross-crew "team memory" over the conversations log (read-only). LAST to
-    # match the YAML tool-order.
+    # Cross-crew "team memory" over the conversations log (read-only).
     "read_conversations",
+    # Hand the conversation to another crew, pending operator confirmation.
+    # LAST to match the YAML tool-order. NOT a mutation tool (no PR, no
+    # rollback, no notification, no write-capable credential) — but it is not a
+    # plain read either, so the read-only claim in this workload's manifest is
+    # scoped to EXTERNAL systems. See CONTROL_PLANE_PROPOSAL_TOOL_NAMES.
+    "request_crew_handoff",
 )
 
 # The chat-only IaC-authoring workload (Phase D2). Its read set is
@@ -360,6 +380,9 @@ PROVISION_WORKLOAD_TOOL_NAMES: tuple[str, ...] = (
     # Cross-crew "team memory" — read what other crews discussed (read-only);
     # kept among the read tools so the mutation tools stay last.
     "read_conversations",
+    # Hand the conversation to another crew, pending operator confirmation.
+    # Kept among the non-mutation tools so the two mutation tools stay LAST.
+    "request_crew_handoff",
     "provision_open_infra_pr",
     "provision_propose_adoption",
 )
