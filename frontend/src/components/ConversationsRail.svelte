@@ -82,15 +82,20 @@
     }
   }
 
-  // turn_count is the number of persisted turns — every exchange writes one
-  // user prompt AND one crew reply (user first), so it is normally even. We
-  // report only the operator's own messages: ceil(turn_count / 2) counts the
-  // user turns and is exact for the paired case, while still counting a lone
-  // user turn should a reply ever fail to persist. Absent/zero → nothing.
-  function turnsLabel(n: number | undefined, tf: TranslateFn): string {
-    if (!n || n < 1) return '';
-    const messages = Math.ceil(n / 2);
-    return plural(tf, 'conversations.messageCount', messages);
+  // Messages the OPERATOR sent. The backend counts them (`user_turn_count`)
+  // because the client no longer can: turns used to be strictly paired, so
+  // ceil(turn_count / 2) was exact — but a crew handoff writes a
+  // server-authored transition row, and an accepted handoff writes a crew reply
+  // with NO operator prompt in front of it. Both make turn_count odd in ways no
+  // arithmetic can distinguish from a reply that failed to persist.
+  //
+  // The fallback keeps the old formula for conversations written before the
+  // counter existed. Those predate handoffs by construction, so their turns
+  // really are paired and the old formula really is exact for them.
+  function turnsLabel(c: Conversation, tf: TranslateFn): string {
+    const counted = c.user_turn_count ?? (c.turn_count ? Math.ceil(c.turn_count / 2) : 0);
+    if (!counted || counted < 1) return '';
+    return plural(tf, 'conversations.messageCount', counted);
   }
 </script>
 
@@ -108,12 +113,16 @@
       aria-current={c.conversation_id === activeConversationId ? 'true' : undefined}
       onclick={() => handleOpen(c.conversation_id)}
     >
+      <!-- The crew that holds the thread NOW. A conversation that changed hands
+           shows its current crew, not a stacked trail of everyone who has been
+           in it — the transitions are recorded in the thread itself, where
+           there is room to say who handed over to whom and why. -->
       <span class="conv-glyph"><CrewGlyph verb={c.workload} size={20} animated={false} /></span>
       <span class="conv-body">
         <span class="conv-title">{c.title}</span>
         <span class="conv-meta">
           {#if c.updated_at}<time datetime={c.updated_at}>{fmtTime(c.updated_at, localeTag($locale))}</time>{/if}
-          {#if turnsLabel(c.turn_count, $t)}<span class="conv-count">· {turnsLabel(c.turn_count, $t)}</span>{/if}
+          {#if turnsLabel(c, $t)}<span class="conv-count">· {turnsLabel(c, $t)}</span>{/if}
         </span>
       </span>
     </button>

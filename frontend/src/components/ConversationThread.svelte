@@ -24,6 +24,26 @@
   function prHref(turn: ConversationTurn): string | null {
     return turn.iac_pr ? iacApprovalHref(turn.iac_pr.pr_number, $locale) : null;
   }
+
+  // Server-authored transition rows (`crew_change` / `handoff_declined`) are
+  // NOT crew bubbles: nobody said them. They render as a quiet centered rule
+  // recording that the conversation changed hands — the one place the thread
+  // shows a `workload` rewrite happening, which is why the row names both the
+  // crew that left and the crew that arrived rather than just the survivor.
+  const TRANSITION_ROLES = ['crew_change', 'handoff_declined'];
+  function isTransition(turn: ConversationTurn): boolean {
+    return TRANSITION_ROLES.includes(turn.role);
+  }
+  // Both crews, resolved to display names. Falls back to the row's own
+  // workload so a pre-`handoff` row (or a truncated one) still reads sensibly
+  // instead of rendering an empty proper noun.
+  function transitionCrews(turn: ConversationTurn): { from: string; to: string } {
+    const fallback = crewName(turn.workload);
+    return {
+      from: turn.handoff?.from ? crewName(turn.handoff.from) : fallback,
+      to: turn.handoff?.to ? crewName(turn.handoff.to) : fallback,
+    };
+  }
 </script>
 
 <!-- tabindex=-1 so openConversation can move focus here on resume (mirrors the
@@ -37,7 +57,36 @@
 >
   <ol class="thread">
     {#each turns as turn (turn.seq)}
-      {#if turn.role === 'user'}
+      {#if isTransition(turn)}
+        {@const accepted = turn.role === 'crew_change'}
+        {@const crews = transitionCrews(turn)}
+        <li
+          class="turn turn--transition"
+          class:turn--declined={!accepted}
+          data-testid={accepted ? 'thread-turn-crew-change' : 'thread-turn-handoff-declined'}
+        >
+          <p class="transition__line">
+            <span class="transition__glyph">
+              <CrewGlyph verb={turn.workload ?? ''} size={16} animated={false} />
+            </span>
+            <span
+              class="transition__label"
+              aria-label={accepted
+                ? $t('conversations.thread.crewChangeAria', crews)
+                : $t('conversations.thread.handoffDeclinedAria', crews)}
+              >{accepted
+                ? $t('conversations.thread.crewChange', crews)
+                : $t('conversations.thread.handoffDeclined', crews)}</span>
+          </p>
+          <!-- The proposing crew's stated reason, carried verbatim. Model-
+               authored text about operator-supplied content, so it renders as
+               escaped plain text behind a quotation rule — never as markup,
+               and never styled to look like the system said it. -->
+          {#if turn.text}
+            <p class="transition__reason" data-testid="thread-transition-reason">{turn.text}</p>
+          {/if}
+        </li>
+      {:else if turn.role === 'user'}
         <li class="turn turn--user" data-testid="thread-turn-user">
           <div class="bubble bubble--user">
             <p class="turn__byline">{$t('conversations.thread.you')}</p>
@@ -133,6 +182,64 @@
   .turn--crew {
     justify-content: flex-start;
     align-items: flex-start;
+  }
+
+  /* A transition is neither side of the dialogue — it is the record that the
+     dialogue changed hands. Centered between hairlines so it reads as a seam
+     in the transcript rather than as another speaker. */
+  .turn--transition {
+    flex-direction: column;
+    align-items: center;
+    gap: var(--ds-sp-1);
+  }
+
+  .transition__line {
+    display: flex;
+    align-items: center;
+    gap: var(--ds-sp-2);
+    width: 100%;
+    margin: 0;
+  }
+  .transition__line::before,
+  .transition__line::after {
+    content: '';
+    flex: 1 1 var(--ds-sp-4);
+    border-top: 1px solid var(--ds-border);
+  }
+  /* A declined handoff gets a broken rule: the seam was offered, not crossed. */
+  .turn--declined .transition__line::before,
+  .turn--declined .transition__line::after {
+    border-top-style: dashed;
+  }
+
+  .transition__glyph {
+    display: inline-flex;
+    align-items: center;
+    color: var(--ds-muted);
+    flex-shrink: 0;
+  }
+
+  .transition__label {
+    font-size: 0.6875rem; /* 11px — matches the turn bylines */
+    font-weight: var(--ds-fw-semibold);
+    text-transform: uppercase;
+    letter-spacing: var(--ds-tracking-caps);
+    color: var(--ds-muted);
+    text-align: center;
+  }
+
+  /* The proposing crew's reason, behind a quotation rule so it reads as
+     something a crew said, not as a system statement. */
+  .transition__reason {
+    margin: 0;
+    max-width: min(34rem, 84%);
+    padding-left: var(--ds-sp-3);
+    border-left: 2px solid var(--ds-border);
+    font-size: var(--ds-fs-1);
+    line-height: var(--ds-lh-body);
+    color: var(--ds-muted);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
   }
 
   .turn__glyph {

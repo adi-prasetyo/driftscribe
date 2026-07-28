@@ -165,3 +165,98 @@ describe('ConversationsRail — cap + search', () => {
     expect(getByText((t) => t.startsWith('No chats match'))).toBeTruthy();
   });
 });
+
+// ---------------------------------------------------------------------------
+// "N messages" — the operator's own turns.
+//
+// This used to be ceil(turn_count / 2), which was exact while turns were
+// strictly paired. A crew handoff breaks the pairing in two ways: it writes a
+// server-authored transition row, and an accepted handoff writes a crew reply
+// with no operator prompt in front of it. So the count now comes from the
+// backend, with the old formula kept only for rows written before it existed.
+// ---------------------------------------------------------------------------
+
+describe('ConversationsRail — operator message count', () => {
+  function countText(container: HTMLElement): string {
+    return container.querySelector('.conv-count')?.textContent ?? '';
+  }
+
+  it('reports the backend count verbatim', () => {
+    const { container } = render(ConversationsRail, {
+      props: {
+        conversations: [conv({ conversation_id: 'c1', user_turn_count: 3, turn_count: 9 })],
+        activeConversationId: null,
+        onOpen: noop,
+      },
+    });
+    // 3, not ceil(9/2)=5 — the extra rows are transitions and an un-prompted
+    // reply, none of which the operator typed.
+    expect(countText(container)).toContain('3 messages');
+  });
+
+  it('singularizes one message', () => {
+    const { container } = render(ConversationsRail, {
+      props: {
+        conversations: [conv({ conversation_id: 'c1', user_turn_count: 1, turn_count: 2 })],
+        activeConversationId: null,
+        onOpen: noop,
+      },
+    });
+    expect(countText(container)).toContain('1 message');
+    expect(countText(container)).not.toContain('1 messages');
+  });
+
+  it('falls back to the old pairing formula for pre-counter conversations', () => {
+    // Those rows predate handoffs by construction, so their turns really are
+    // paired and ceil(turn_count / 2) really is exact for them.
+    const { container } = render(ConversationsRail, {
+      props: {
+        conversations: [conv({ conversation_id: 'c1', turn_count: 4 })],
+        activeConversationId: null,
+        onOpen: noop,
+      },
+    });
+    expect(countText(container)).toContain('2 messages');
+  });
+
+  it('shows nothing at all when the operator has sent nothing', () => {
+    // A thread can hold rows the operator did not type; reporting "0 messages"
+    // would be noise, and reporting 1 would be a lie.
+    const { container } = render(ConversationsRail, {
+      props: {
+        conversations: [conv({ conversation_id: 'c1', user_turn_count: 0, turn_count: 2 })],
+        activeConversationId: null,
+        onOpen: noop,
+      },
+    });
+    expect(container.querySelector('.conv-count')).toBeNull();
+  });
+
+  it('prefers the backend count even when it disagrees with the old formula', () => {
+    // Guards against the fallback quietly winning: `?? 0` would have made a
+    // legitimate backend 0 fall through to ceil(turn_count/2).
+    const { container } = render(ConversationsRail, {
+      props: {
+        conversations: [conv({ conversation_id: 'c1', user_turn_count: 0, turn_count: 6 })],
+        activeConversationId: null,
+        onOpen: noop,
+      },
+    });
+    expect(container.querySelector('.conv-count')).toBeNull();
+  });
+
+  it('shows the crew that holds the thread NOW, not a trail of everyone in it', () => {
+    // The stacked-glyph trail is deliberately deferred: list responses carry no
+    // turns, so the rail cannot say who handed over to whom. The thread can.
+    const { container } = render(ConversationsRail, {
+      props: {
+        conversations: [
+          conv({ conversation_id: 'c1', workload: 'provision', crews: ['explore', 'provision'] }),
+        ],
+        activeConversationId: null,
+        onOpen: noop,
+      },
+    });
+    expect(container.querySelectorAll('.conv-glyph')).toHaveLength(1);
+  });
+});

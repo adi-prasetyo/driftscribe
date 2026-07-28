@@ -41,6 +41,9 @@
   import DecisionsRail from './components/DecisionsRail.svelte';
   import ConversationsRail from './components/ConversationsRail.svelte';
   import ConversationThread from './components/ConversationThread.svelte';
+  import HandoffChip from './components/HandoffChip.svelte';
+  import { recallOffer, rememberOffer, forgetOffer, readHandoffOffer } from './lib/handoff';
+  import type { HandoffOffer } from './lib/sse';
   import InfraDiagram from './components/InfraDiagram.svelte';
   import ApprovalDesk from './components/ApprovalDesk.svelte';
   import EstateView from './components/EstateView.svelte';
@@ -54,7 +57,7 @@
     CHAT_INTENT_PARAMS,
     type AppView,
   } from './lib/deeplink';
-  import { initialChatPrefill } from './lib/workloads';
+  import { initialChatPrefill, crewName } from './lib/workloads';
   import type { ChatPrefill } from './lib/workloads';
   import CapabilityCard from './components/CapabilityCard.svelte';
   import PausePill from './components/PausePill.svelte';
@@ -93,9 +96,44 @@
   let conversationId = $state<string | null>(null);
   let conversationWorkload = $state<Workload | null>(null);
   let conversationTurns = $state<ConversationTurn[]>([]);
-  // The composer's selected crew, lifted out of ChatForm so resuming a thread
-  // can snap it to that thread's locked crew (bind:workload on ChatForm).
-  let composerWorkload = $state<Workload>('drift');
+  // The crew the composer will send to, lifted out of ChatForm so resuming a
+  // thread — or completing a handoff — can snap it to whichever crew now holds
+  // the conversation (bind:workload on ChatForm).
+  //
+  // A fresh chat starts at Explore, not Anchor. With the crew picker gone the
+  // operator no longer declares a specialist before they have said what they
+  // want, so the default has to be the crew whose job is working that out; a
+  // crew that finds the question belongs to a sibling proposes the handoff.
+  let composerWorkload = $state<Workload>('explore');
+
+  // ---- crew handoff ----
+  // The live, redeemable proposal for the OPEN conversation, or null. Set from
+  // the `done` frame that minted it (the only time the nonce is transmitted)
+  // and restored on resume by recallOffer, which pairs the server's persisted
+  // proposal with this client's stored nonce — see lib/handoff.ts for why both
+  // halves are needed and why a chip can be absent on another device.
+  let handoffOffer = $state<HandoffOffer | null>(null);
+  // A confirm/decline POST is in flight. Separate from `busy`: the accepted
+  // turn sets `busy` too, but the chip must lock the instant it is clicked,
+  // before the stream starts.
+  let handoffBusy = $state(false);
+  // A refusal, already mapped to display text. Cleared on the next attempt and
+  // whenever the offer changes.
+  let handoffError = $state<string | null>(null);
+  // The proposal was refused in a way that cannot be retried (already used,
+  // superseded, expired). The chip stays on screen carrying its explanation,
+  // but its buttons lock: a second click is guaranteed to fail the same way.
+  let handoffDead = $state(false);
+
+  // Drop the open proposal from screen AND from custody. Called wherever the
+  // conversation the proposal belongs to stops being the one on screen.
+  function clearHandoff(conversationIdToForget: string | null = null) {
+    if (conversationIdToForget) forgetOffer(conversationIdToForget);
+    handoffOffer = null;
+    handoffBusy = false;
+    handoffError = null;
+    handoffDead = false;
+  }
 
   // Bumps when a freshly-`applied` iac_apply decision is observed in /decisions
   // — drives InfraDiagram's delayed resource-map re-fetches (rides out CAI lag).
@@ -234,13 +272,15 @@
   let runSeq = 0;
   let busy = $state(false);
   // True for the span of openConversation: conversationId is set (synchronously,
-  // before the GET) but conversationWorkload is still null, so CrewPicker is
-  // UNLOCKED (lockedCrew derives from conversationWorkload) — without this,
-  // Send is live during that window and submitChat's crew-switch-reset guard
+  // before the GET) but conversationWorkload is still null — without this, Send
+  // is live during that window and submitChat's crew-switch-reset guard
   // (`conversationWorkload !== null`) can't see the mismatch yet, so a submit
-  // rides the half-open thread's id with whatever crew is picked (Codex review
-  // 019f46e8 must-fix). Cleared in openConversation's finally, guarded so a
-  // superseded run can't clear a newer run's flag.
+  // rides the half-open thread's id carrying whatever crew the composer last
+  // held (Codex review 019f46e8 must-fix). Still required with the crew picker
+  // gone: composerWorkload survives from the PREVIOUS thread until the GET
+  // lands, so the mismatch it guards is the same one. Cleared in
+  // openConversation's finally, guarded so a superseded run can't clear a
+  // newer run's flag.
   let resumingConversation = $state(false);
 
   // The ONE chat-disabled condition (busy live stream OR historical replay OR a
@@ -261,7 +301,17 @@
   // stable for the whole run. Cleared the MOMENT a non-persistable outcome is
   // known (paused / one-shot / error) so those fall back to the hero without
   // flashing in a bubble first — see the clear points in submitChat.
-  type LiveExchange = { prompt: string; workload: Workload; baseSeq: number };
+  type LiveExchange = {
+    prompt: string;
+    workload: Workload;
+    baseSeq: number;
+    /** A confirmed handoff runs a turn the operator never typed (the backend
+     *  sets `omit_user_turn` for exactly this reason), so the live exchange is
+     *  a lone crew bubble. Rendering the synthetic brief as an operator prompt
+     *  would put words in their mouth on screen, the same way persisting it
+     *  would in the durable transcript. */
+    omitUserTurn?: boolean;
+  };
   let liveExchange = $state<LiveExchange | null>(null);
 
   // The thread's rendered turns: the persisted turns plus, during a live run,
@@ -272,10 +322,21 @@
   // change.
   const displayTurns = $derived.by((): ConversationTurn[] => {
     if (liveExchange == null) return conversationTurns;
-    const { prompt, workload, baseSeq } = liveExchange;
+    const { prompt, workload, baseSeq, omitUserTurn } = liveExchange;
     return [
       ...conversationTurns,
-      { seq: baseSeq, role: 'user', text: prompt, workload, trace_id: traceId, optimistic: true },
+      ...(omitUserTurn
+        ? []
+        : [
+            {
+              seq: baseSeq,
+              role: 'user',
+              text: prompt,
+              workload,
+              trace_id: traceId,
+              optimistic: true,
+            } satisfies ConversationTurn,
+          ]),
       {
         seq: baseSeq + 1,
         role: 'crew',
@@ -292,11 +353,6 @@
   // clears liveExchange, so both-true is impossible — this guard is belt.
   const liveExchangeActive = $derived(!historicalActive && liveExchange != null);
 
-  // Crew-lock context: an open thread — or the in-flight first exchange — pins
-  // the composer to one crew; CrewPicker greys out the rest. null = no lock.
-  const lockedCrew = $derived<Workload | null>(
-    conversationWorkload ?? liveExchange?.workload ?? null,
-  );
   // The composer's New chat button shows whenever a clean slate would clear
   // something. displayTurns already unifies "persisted thread + optimistic
   // in-flight exchange" (reuse it — one source of thread visibility, no drift);
@@ -329,6 +385,11 @@
     // historical, so there is never a live stream to cancel). The old thread
     // stays reachable from the rail.
     newChat();
+    // Adopt stays a direct door into Provision even though the composer no
+    // longer offers one. This is not a picker: it is a deep link carrying
+    // explicit intent from a specific resource, and it opens a NEW thread, so
+    // it never bypasses an existing lock. Routing it through Explore would turn
+    // one deliberate click into an Explore turn plus a confirmation.
     chatPrefill = { text, workload: 'provision', epoch: (chatPrefill?.epoch ?? 0) + 1 };
     // Adopt is reachable from the estate view (Task 4.1) as well as chat, but
     // the composer only exists on chat — navigate there first, or an
@@ -540,6 +601,10 @@
     iacPr = null;
     liveExchange = null; // cancel any in-flight optimistic exchange
     status = 'pending';
+    // Whatever chip was on screen belonged to the thread we're leaving. Drop
+    // it from view WITHOUT forgetting its nonce (that proposal may still be
+    // open); the incoming thread's chip is rebuilt from its own detail below.
+    clearHandoff();
     // Leaving the replay for a live thread — clear the shareable param.
     syncReasoningParam(null);
     setConversationId(id);
@@ -562,9 +627,17 @@
         conversationTurns = Array.isArray(detail.turns) ? detail.turns : [];
         const wl = detail.workload as Workload | undefined;
         if (wl) {
+          // `workload` is who holds the thread NOW, which a confirmed handoff
+          // rewrites — so this lands the composer on the CURRENT crew, not the
+          // one that started the conversation.
           conversationWorkload = wl;
-          composerWorkload = wl; // land the composer on this thread's locked crew
+          composerWorkload = wl;
         }
+        // Rebuild the confirmation chip for a proposal this thread still has
+        // open. Returns null unless this client also holds the nonce — see
+        // lib/handoff.ts on why a proposal can be visibly open on the server
+        // and still not actionable here.
+        handoffOffer = recallOffer(id, detail.pending_handoff, new Date());
         // Auto-load the latest turn's reasoning into the INLINE timeline so a
         // resumed conversation shows its coordinator reasoning / tools / MCP
         // without the extra per-turn "open trace" click. Prefer the last CREW turn
@@ -663,10 +736,23 @@
     historicalPrBodyTruncated = false;
     status = 'pending';
 
-    // Threads are crew-locked. If the operator switched crews on an open
-    // thread, start a NEW conversation instead of sending the locked id (which
-    // the backend would 409) — the old thread stays in the rail. Detect before
-    // we send; clear the displayed thread since it belonged to the other crew.
+    // Typing IS an answer to an outstanding suggestion: the operator was asked
+    // whether to bring in another crew and chose to keep talking to this one.
+    // So a new prompt retires the chip AND its nonce — including on reload,
+    // which is why custody is dropped and not just the view. The proposal may
+    // still be open server-side (a plain turn doesn't burn it; it expires), but
+    // leaving a clickable chip below a newer reply would attach the suggestion
+    // to a question it was never about. If the crew still thinks a sibling is
+    // needed, it proposes again — and that supersedes the old one anyway.
+    if (conversationId !== null) clearHandoff(conversationId);
+    else clearHandoff();
+
+    // Threads are crew-locked. If the composer's crew no longer matches the
+    // open thread's, start a NEW conversation instead of sending the locked id
+    // (which the backend would 409) — the old thread stays in the rail. With
+    // the picker gone the operator cannot cause this directly; it survives for
+    // the paths that still set the crew for them (an Adopt prefill, a boot
+    // deep link that carries both ?conversation and ?ask_pr).
     if (
       conversationId !== null &&
       conversationWorkload !== null &&
@@ -684,6 +770,12 @@
     // it reflects the (possibly cleared) thread and matches appendLocalTurns.
     liveExchange = { prompt, workload, baseSeq: conversationTurns.length };
 
+    // The proposal this turn minted, if the crew made one. Both transports set
+    // it; settleConversation takes custody, because the backend only emits it
+    // alongside the conversation_id of a turn that actually persisted, and a
+    // nonce for an uncommitted proposal would be unredeemable.
+    let doneHandoff: HandoffOffer | undefined;
+
     // Once the coordinator echoes a conversation_id (persist succeeded), fold
     // the exchange into the open thread and clear the optimistic overlay — the
     // transient bubble becomes the persisted one with no visual change. rcid
@@ -697,6 +789,13 @@
       }
       setConversationId(rcid);
       conversationWorkload = workload;
+      // Take custody of the nonce before anything else can bump runSeq: this
+      // frame is the only time the server will ever hand it over.
+      if (doneHandoff?.nonce) {
+        rememberOffer(rcid, doneHandoff);
+        handoffOffer = doneHandoff;
+        handoffError = null;
+      }
       appendLocalTurns(prompt, finalReply, traceId);
       // Clear the overlay right after the real turns are appended, BEFORE
       // clearing finalReply/iacPr, so a mid-settle read of displayTurns is never
@@ -775,6 +874,7 @@
               ? body.conversation_id
               : undefined;
           if (jsonRcid === undefined) liveExchange = null;
+          doneHandoff = readHandoffOffer(body?.handoff);
           await backfillTrace(myRun);
           if (myRun !== runSeq) return;
           await overview.refresh('chat-turn');
@@ -822,6 +922,7 @@
             if (typeof doneConversationId !== 'string' || doneConversationId.length === 0) {
               liveExchange = null;
             }
+            doneHandoff = readHandoffOffer(d.handoff);
             status = 'complete';
           },
           onError: (er) => {
@@ -890,6 +991,243 @@
       settleConversation(doneConversationId);
     } finally {
       if (myRun === runSeq) busy = false;
+    }
+  }
+
+  // ---- crew handoff: confirm / decline ----
+
+  // Refusal → operator-facing copy, and whether the proposal is DEAD (the chip
+  // locks) or merely blocked (the chip stays clickable). The token comes from
+  // the X-Handoff-Refusal header because the status alone can't separate the
+  // two 409s. An unknown/absent token falls to the retryable branch: guessing
+  // "dead" would strand a chip that might still work.
+  function handoffRefusal(
+    resp: Response,
+    crews: { from: string; to: string },
+  ): { text: string; dead: boolean } {
+    const reason = resp.headers.get('X-Handoff-Refusal') ?? '';
+    if (reason === 'expired') {
+      return { text: $t('conversations.handoff.error.expired'), dead: true };
+    }
+    if (reason === 'busy') {
+      return { text: $t('conversations.handoff.error.busy'), dead: false };
+    }
+    if (reason === 'no_pending' || reason === 'invalid_nonce' || reason === 'stale'
+        || reason === 'not_found') {
+      return { text: $t('conversations.handoff.error.gone'), dead: true };
+    }
+    return { text: $t('conversations.handoff.error.failed', crews), dead: false };
+  }
+
+  // Re-read the thread from the store after a redemption.
+  //
+  // Deliberately NOT an optimistic append like a normal turn: an accepted
+  // handoff writes rows the client cannot reconstruct correctly — a
+  // server-authored transition row, no operator row at all, and a crew reply
+  // attributed to the crew that JOINED. Refetching is one round-trip and gets
+  // the sequence, attribution and roles right by construction. The reply is
+  // already on screen in the live bubble throughout, so nothing stalls.
+  async function reloadConversationTurns(id: string, myRun: number) {
+    try {
+      const resp = await call('/conversations/' + encodeURIComponent(id));
+      if (myRun !== runSeq || !resp.ok) return;
+      const detail = (await resp.json()) as ConversationDetail;
+      if (myRun !== runSeq) return;
+      // ONE synchronous block. The persisted rows must replace the optimistic
+      // overlay in the same update: the live crew bubble is keyed at the seq
+      // the joining crew's real turn lands on, so a render that sees BOTH
+      // throws each_key_duplicate — and a render that sees NEITHER flashes an
+      // empty thread. Same ordering discipline as settleConversation.
+      conversationTurns = Array.isArray(detail.turns) ? detail.turns : [];
+      liveExchange = null;
+      finalReply = null;
+      finalIsError = false;
+      iacPr = null; // the persisted crew turn carries the PR CTA now
+      const wl = detail.workload as Workload | undefined;
+      if (wl) {
+        conversationWorkload = wl;
+        composerWorkload = wl;
+      }
+      // The redeemed proposal is burned; anything here is a NEW one the joining
+      // crew made on its own first turn (it can, and the nonce for it arrived
+      // on this stream's done frame).
+      handoffOffer = recallOffer(id, detail.pending_handoff, new Date());
+    } catch {
+      /* Fail-soft: the live bubble still carries the reply, and the rail
+         reopen path does a full rehydrate. */
+    }
+  }
+
+  /**
+   * Redeem the open proposal — confirm (`accept`) or decline.
+   *
+   * Confirming IS the turn: the joining crew runs immediately against the
+   * handing crew's brief, which is the friction this whole mechanism removes.
+   * So this drives the same stream machinery as submitChat, minus the operator
+   * prompt (there isn't one) and minus the crew-lock reset (the server moves
+   * the lock itself, transactionally, as it burns the nonce).
+   */
+  async function redeemHandoff(accept: boolean) {
+    const offer = handoffOffer;
+    const cid = conversationId;
+    if (offer == null || cid == null) return;
+    if (historicalActive || busy || resumingConversation || handoffBusy || handoffDead) return;
+
+    const crews = { from: crewName(offer.from), to: crewName(offer.to) };
+    handoffBusy = true;
+    handoffError = null;
+    // Reset the stream state up front, exactly like submitChat: one code shape
+    // for "a turn is starting". The cost is that a REFUSED confirm leaves the
+    // inline timeline empty (it had the previous turn's reasoning). Accepted as
+    // the simpler behaviour — the thread's own "view reasoning" link puts it
+    // back in one click, and the chip says plainly that nothing changed.
+    const myRun = ++runSeq;
+    busy = true;
+    events = [];
+    traceId = null;
+    finalReply = null;
+    finalIsError = false;
+    iacPr = null;
+    historicalDecision = null;
+    historicalPrBody = null;
+    historicalPrBodyTruncated = false;
+    status = 'pending';
+    // Only an ACCEPT runs a crew, so only an accept gets a thinking bubble. A
+    // decline is a bookkeeping POST with a one-line canned reply; showing it
+    // "generating" would dramatize a write that involves no model at all.
+    if (accept) {
+      liveExchange = {
+        prompt: '',
+        workload: offer.to as Workload,
+        baseSeq: conversationTurns.length,
+        omitUserTurn: true,
+      };
+    }
+
+    try {
+      let resp: Response;
+      try {
+        resp = await call('/chat/handoff', {
+          method: 'POST',
+          headers: { Accept: 'text/event-stream', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ conversation_id: cid, nonce: offer.nonce, accept }),
+        });
+      } catch {
+        if (myRun !== runSeq) return;
+        liveExchange = null;
+        status = 'pending';
+        handoffError = $t('conversations.handoff.error.failed', crews);
+        return;
+      }
+      if (myRun !== runSeq) return;
+
+      if (!resp.ok) {
+        // Every refusal leaves the conversation exactly as it was — no crew
+        // moved, no turn ran. So this is NOT a chat error: don't touch the
+        // hero, just report it on the chip the operator clicked.
+        liveExchange = null;
+        status = 'pending';
+        const refusal = handoffRefusal(resp, crews);
+        handoffError = refusal.text;
+        if (refusal.dead) forgetOffer(cid); // spent server-side; don't restore it on reload
+        handoffDead = refusal.dead;
+        return;
+      }
+
+      // Past this point the nonce is spent whatever happens next — the server
+      // burned it inside the redemption transaction, before it ran anything.
+      forgetOffer(cid);
+
+      // The joining crew may propose a handoff of its OWN on this first turn
+      // (a crew that finds the question belongs elsewhere again). That is a
+      // brand-new proposal with a brand-new nonce riding this stream's done
+      // frame — the same one-shot delivery as any other turn.
+      let joinHandoff: HandoffOffer | undefined;
+
+      const ctype = resp.headers.get('content-type') ?? '';
+      if (!ctype.includes('text/event-stream')) {
+        try {
+          const body = await resp.json();
+          if (myRun !== runSeq) return;
+          traceId = resp.headers.get('X-Trace-Id');
+          finalReply = typeof body?.reply === 'string' ? body.reply : JSON.stringify(body);
+          const ip = body?.iac_pr;
+          iacPr =
+            ip && typeof ip === 'object' && typeof ip.pr_number === 'number'
+              ? { pr_number: ip.pr_number, pr_url: typeof ip.pr_url === 'string' ? ip.pr_url : '' }
+              : null;
+          joinHandoff = readHandoffOffer(body?.handoff);
+          status = 'complete';
+        } catch {
+          if (myRun !== runSeq) return;
+          status = 'error';
+          finalReply = $t('header.chatError.malformed');
+          finalIsError = true;
+        }
+      } else {
+        let streamErrored = false;
+        try {
+          await consumeSse(resp, {
+            onMeta: (m) => {
+              if (myRun !== runSeq) return;
+              traceId = m.trace_id;
+              status = 'streaming';
+            },
+            onEvent: (e) => {
+              if (myRun !== runSeq) return;
+              events = [...events, e as unknown as TraceEvent];
+            },
+            onDone: (d) => {
+              if (myRun !== runSeq) return;
+              finalReply = d.reply;
+              finalIsError = false;
+              iacPr = d.iac_pr ?? null;
+              joinHandoff = readHandoffOffer(d.handoff);
+              status = 'complete';
+            },
+            onError: (er) => {
+              if (myRun !== runSeq) return;
+              finalReply = er.detail || $t('header.chatError.coordinatorError');
+              finalIsError = true;
+              status = 'error';
+              liveExchange = null;
+            },
+          });
+        } catch {
+          if (myRun !== runSeq) return;
+          streamErrored = true;
+        }
+        if (myRun !== runSeq) return;
+        if (finalReply == null) {
+          status = 'error';
+          finalReply = streamErrored
+            ? $t('header.chatError.streamInterrupted')
+            : $t('header.chatError.streamEnded');
+          finalIsError = true;
+          liveExchange = null;
+        }
+      }
+
+      if (myRun !== runSeq) return;
+      // The transition committed regardless of how the turn itself went, so
+      // the thread is refetched either way — a crew change the operator
+      // confirmed must be visible even if the joining crew's first reply
+      // errored.
+      // Take custody BEFORE the refetch: reloadConversationTurns rebuilds the
+      // chip by pairing the server's persisted proposal with local custody, so
+      // a nonce stored afterwards would arrive one step too late.
+      if (joinHandoff?.nonce) rememberOffer(cid, joinHandoff);
+      await backfillTrace(myRun);
+      if (myRun !== runSeq) return;
+      await reloadConversationTurns(cid, myRun);
+      if (myRun !== runSeq) return;
+      void overview.refresh('chat-turn');
+      void loadConversations(); // the thread's crew + message count just changed
+    } finally {
+      if (myRun === runSeq) {
+        busy = false;
+        handoffBusy = false;
+      }
     }
   }
 
@@ -1037,9 +1375,16 @@
     status = 'pending';
     // Drop out of the open thread too — "new chat" is a clean slate. The thread
     // is still reachable from the rail (its id lives in /conversations).
+    // A pending handoff belongs to THAT thread, so it leaves the screen with
+    // it — but custody of the nonce is kept, not forgotten: the proposal is
+    // still open server-side, and reopening the thread from the rail should
+    // find its chip intact rather than punish the operator for looking away.
+    clearHandoff();
     setConversationId(null);
     conversationWorkload = null;
     conversationTurns = [];
+    // Back to the crew that fields an unrouted question.
+    composerWorkload = 'explore';
     // No replay on screen anymore — clear the shareable param.
     syncReasoningParam(null);
   }
@@ -1236,13 +1581,26 @@
         onSubmit={submitChat}
         prefill={chatPrefill}
         bind:workload={composerWorkload}
-        lockedCrew={lockedCrew}
         showNewChat={composerNewChat}
         onNewChat={newChat}
       />
     </div>
     {#if !historicalActive && displayTurns.length > 0}
       <ConversationThread turns={displayTurns} onOpenTrace={openTrace} />
+    {/if}
+    <!-- The confirmation sits at the END of the transcript, directly under the
+         crew reply that proposed it — the thread runs oldest-first below the
+         composer, so that is where the operator's eye already is. Hidden in
+         historical replay: a past trace is a record, not a live decision. -->
+    {#if !historicalActive && handoffOffer !== null}
+      <HandoffChip
+        offer={handoffOffer}
+        pending={handoffBusy}
+        disabled={chatDisabled || handoffDead}
+        errorText={handoffError}
+        onConfirm={() => void redeemHandoff(true)}
+        onDecline={() => void redeemHandoff(false)}
+      />
     {/if}
     <!-- Live chat output stays BELOW the composer (the natural type-then-stream
          flow); the historical branch above relocates it to the top instead. -->

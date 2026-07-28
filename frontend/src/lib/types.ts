@@ -139,7 +139,12 @@ export interface Decision extends Record<string, unknown> {
  *  reply-plain-text decision); never route it through a Markdown renderer. */
 export interface ConversationTurn {
   seq: number;
-  role: 'user' | 'crew' | string;
+  /** `user` = the operator typed it, `crew` = a crew replied, and the two
+   *  TRANSITION roles are server-authored rows (never model output) recording
+   *  that the conversation changed hands: `crew_change` when the operator
+   *  confirmed a handoff, `handoff_declined` when they turned it down. Both
+   *  carry `handoff`; their `text` is the proposing crew's stated reason. */
+  role: 'user' | 'crew' | 'crew_change' | 'handoff_declined' | string;
   text: string;
   workload?: string;
   trace_id?: string | null;
@@ -147,6 +152,10 @@ export interface ConversationTurn {
   // Crew turns only: present when that turn opened an infrastructure PR.
   iac_pr?: { pr_number: number; pr_url: string } | null;
   tool_calls?: string[];
+  // Transition rows only: the two crews the conversation moved BETWEEN. On a
+  // `crew_change` the row belongs to `to` (the crew that joined); on a
+  // `handoff_declined` it belongs to `from` (the crew that stayed).
+  handoff?: { from: string; to: string };
   // Live/optimistic turns ONLY — the backend never sets these. Drive the
   // chat-native live exchange (App.svelte `displayTurns`): `optimistic` marks a
   // transient turn not yet persisted into the thread (its action links are
@@ -161,14 +170,44 @@ export interface ConversationTurn {
  *  single conversation's full turns via GET /conversations/{id}. */
 export interface Conversation {
   conversation_id: string;
-  /** Crew lock — every turn in this thread runs against this one workload. */
+  /** The crew bound to this thread RIGHT NOW — the crew-lock authority that
+   *  `POST /chat` 409s against. A confirmed handoff REWRITES this, so it is
+   *  "who holds the thread", not "who started it": for the participant history
+   *  read `crews`. */
   workload: string;
+  /** Every crew that has taken part, in joining order (appended, never
+   *  rewritten). Absent on conversations written before the handoff shipped —
+   *  for those the single bound `workload` IS the whole history, so falling
+   *  back to `[workload]` is exact rather than a guess. */
+  crews?: string[];
   /** Truncated first prompt (no LLM summary). May be "(untitled)". */
   title: string;
   created_at?: string;
   updated_at?: string;
+  /** ALL persisted rows, transition rows included — so it is no longer a
+   *  stand-in for "messages the operator sent". Use `user_turn_count`. */
   turn_count?: number;
+  /** Prompts the operator actually typed. Written server-side because a
+   *  transition row is a turn that nobody typed, which no arithmetic over
+   *  `turn_count` can subtract out. Absent on pre-counter conversations. */
+  user_turn_count?: number;
   last_trace_id?: string | null;
+  /** A crew's handoff proposal still awaiting the operator's answer. The
+   *  redemption nonce is deliberately NOT here (the server keeps only a
+   *  digest) — this is what a reload can restore, not what it can act on. */
+  pending_handoff?: PendingHandoff | null;
+}
+
+/** The persisted, client-safe half of an open handoff proposal
+ *  (`_project_pending_handoff` in agent/main.py). */
+export interface PendingHandoff {
+  from: string;
+  to: string;
+  /** The proposing crew's one-line justification, shown verbatim in the chip
+   *  as QUOTED DATA — it is model-authored text about operator-supplied
+   *  content, so it is never rendered as markup. */
+  reason: string;
+  expires_at?: string | null;
 }
 
 /** GET /conversations/{id} response: the conversation doc + its ordered turns

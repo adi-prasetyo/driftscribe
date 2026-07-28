@@ -143,3 +143,151 @@ describe('ConversationThread', () => {
     expect(getByTestId('thread-pr-link')).toBeTruthy();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Crew-handoff transition rows.
+//
+// A conversation's crew used to be fixed for life. Now a confirmed handoff
+// rewrites it, and the thread is the one place that change is legible — so
+// these rows are the transcript's record that the conversation changed hands.
+// They are server-authored: nobody said them, which is why they must not render
+// as a crew bubble.
+// ---------------------------------------------------------------------------
+
+describe('ConversationThread — crew transitions', () => {
+  it('renders an accepted handoff as a transition row naming both crews', () => {
+    const turns = [
+      turn({ seq: 0, role: 'user', text: 'can you create a bucket?', workload: 'explore' }),
+      turn({
+        seq: 1,
+        role: 'crew_change',
+        text: 'this needs a bucket created',
+        workload: 'provision',
+        handoff: { from: 'explore', to: 'provision' },
+      }),
+    ];
+    const { getByTestId, queryAllByTestId } = render(ConversationThread, {
+      props: { turns, onOpenTrace: noop },
+    });
+    const row = getByTestId('thread-turn-crew-change');
+    // Both crews, by display name. A row that named only the survivor would
+    // leave the reader working out who left.
+    expect(row.textContent).toContain('Explore');
+    expect(row.textContent).toContain('Provision');
+    // NOT a crew bubble: no crew said this.
+    expect(queryAllByTestId('thread-turn-crew')).toHaveLength(0);
+  });
+
+  it('renders a declined handoff distinctly, and says who stayed', () => {
+    const turns = [
+      turn({
+        seq: 1,
+        role: 'handoff_declined',
+        text: 'this needs a bucket created',
+        workload: 'explore',
+        handoff: { from: 'explore', to: 'provision' },
+      }),
+    ];
+    const { getByTestId, queryByTestId } = render(ConversationThread, {
+      props: { turns, onOpenTrace: noop },
+    });
+    expect(queryByTestId('thread-turn-crew-change')).toBeNull();
+    const row = getByTestId('thread-turn-handoff-declined');
+    expect(row.textContent).toContain('Explore');
+    expect(row.textContent).toContain('Provision');
+  });
+
+  it("carries the proposing crew's reason as escaped text, never as markup", () => {
+    const turns = [
+      turn({
+        seq: 1,
+        role: 'crew_change',
+        text: '<img src=x onerror=alert(1)>',
+        workload: 'provision',
+        handoff: { from: 'explore', to: 'provision' },
+      }),
+    ];
+    const { container, getByTestId } = render(ConversationThread, {
+      props: { turns, onOpenTrace: noop },
+    });
+    expect(container.querySelector('img')).toBeNull();
+    expect(getByTestId('thread-transition-reason').textContent).toContain(
+      '<img src=x onerror=alert(1)>',
+    );
+  });
+
+  it('omits the reason block when the transition carries none', () => {
+    const turns = [
+      turn({
+        seq: 1,
+        role: 'crew_change',
+        text: '',
+        workload: 'provision',
+        handoff: { from: 'explore', to: 'provision' },
+      }),
+    ];
+    const { queryByTestId } = render(ConversationThread, {
+      props: { turns, onOpenTrace: noop },
+    });
+    expect(queryByTestId('thread-transition-reason')).toBeNull();
+  });
+
+  it('gives a transition row no reasoning/PR actions — it is a record, not a turn', () => {
+    const turns = [
+      turn({
+        seq: 1,
+        role: 'crew_change',
+        text: 'handing over',
+        workload: 'provision',
+        trace_id: 'tid-x',
+        handoff: { from: 'explore', to: 'provision' },
+      }),
+    ];
+    const { queryByTestId } = render(ConversationThread, {
+      props: { turns, onOpenTrace: noop },
+    });
+    expect(queryByTestId('thread-open-trace')).toBeNull();
+    expect(queryByTestId('thread-pr-link')).toBeNull();
+  });
+
+  it('still reads sensibly if a transition row arrives without its handoff pair', () => {
+    // Defensive: a truncated/legacy row must not render an empty proper noun
+    // where a crew name belongs.
+    const turns = [
+      turn({ seq: 1, role: 'crew_change', text: '', workload: 'provision' }),
+    ];
+    const { getByTestId } = render(ConversationThread, {
+      props: { turns, onOpenTrace: noop },
+    });
+    expect(getByTestId('thread-turn-crew-change').textContent).toContain('Provision');
+  });
+
+  it('interleaves transitions with the surrounding dialogue in seq order', () => {
+    // The whole point of the row is WHERE it sits: the turns before it belong
+    // to one crew and the turns after it to another.
+    const turns = [
+      turn({ seq: 0, role: 'user', text: 'can you create a bucket?', workload: 'explore' }),
+      turn({ seq: 1, role: 'crew', text: 'I can only look', workload: 'explore' }),
+      turn({
+        seq: 2,
+        role: 'crew_change',
+        text: 'needs a bucket',
+        workload: 'provision',
+        handoff: { from: 'explore', to: 'provision' },
+      }),
+      turn({ seq: 3, role: 'crew', text: 'opened a PR', workload: 'provision' }),
+    ];
+    const { container } = render(ConversationThread, {
+      props: { turns, onOpenTrace: noop },
+    });
+    const rows = Array.from(container.querySelectorAll('li')).map((li) =>
+      li.getAttribute('data-testid'),
+    );
+    expect(rows).toEqual([
+      'thread-turn-user',
+      'thread-turn-crew',
+      'thread-turn-crew-change',
+      'thread-turn-crew',
+    ]);
+  });
+});
