@@ -14,7 +14,13 @@
 // are likewise threaded through explicitly to approval.ts's helpers rather
 // than reading `window`/an ambient locale store.
 
-import { safeApprovalHref, iacApprovalHref, isExpired } from './approval';
+import {
+  safeApprovalHref,
+  iacApprovalHref,
+  isRollbackAwaitingOperator,
+  isIacAwaitingOperator,
+  resolvedIacPrNumbers,
+} from './approval';
 import type { Decision } from './types';
 import type { PendingApproval } from './infra_graph';
 
@@ -35,13 +41,29 @@ export interface DeskPendingRollback {
   href: string;
 }
 
-/** A pending infra (IaC) approval from the `/infra/pending-approvals` payload. */
+/**
+ * WHERE the desk learned a pending infra (IaC) approval exists — a
+ * discriminated union so a `DeskPendingIac` can never be constructed
+ * carrying neither. `listing`: the `/infra/pending-approvals` open-PR
+ * payload (rule 2a) — carries the PR title the desk card wants. `decision`:
+ * derived from the decisions log (rule 2b, `selectPendingIacFromDecisions`)
+ * for a PR the open-PR listing can no longer see because it already merged —
+ * see that function's header comment for why this fallback exists at all.
+ */
+export type DeskPendingIacProvenance =
+  | { kind: 'listing'; approval: PendingApproval }
+  | { kind: 'decision'; decision: Decision };
+
+/** A pending infra (IaC) approval, from either provenance above. */
 export interface DeskPendingIac {
   kind: 'pending';
   source: 'iac';
-  approval: PendingApproval;
+  /** Positive integer — validated by whichever of `iacApprovalHref`'s calls
+   *  produced `href` below. */
+  prNumber: number;
   /** Same-origin relative href, built by `iacApprovalHref`. */
   href: string;
+  provenance: DeskPendingIacProvenance;
 }
 
 export type DeskPending = DeskPendingRollback | DeskPendingIac;
@@ -141,12 +163,14 @@ function selectPendingRollback(
   let best: { decision: Decision; href: string; ts: number } | null = null;
   for (const decision of decisions) {
     if (decision == null) continue; // defensive: malformed array element, skip not throw
-    const approval = decision.approval;
-    if (!approval || !approval.approval_url) continue;
-    const href = safeApprovalHref(approval.approval_url, origin, locale);
-    if (href == null) continue; // unsafe/off-origin — never a dead CTA, try the next one
-    if (approval.status !== undefined && approval.status !== 'pending') continue;
-    if (isExpired(approval.expires_at, now)) continue;
+    // isRollbackAwaitingOperator (approval.ts) is the single "is this row
+    // actionable" predicate, shared with ledger.ts — see its doc comment.
+    if (!isRollbackAwaitingOperator(decision, { now, origin })) continue;
+    // Recompute WITH `locale` for the href this desk actually renders — the
+    // predicate above already proved safeApprovalHref succeeds for this exact
+    // URL/origin without `locale`, and `locale` only ever adds `?lang=ja`, so
+    // this second call cannot newly fail (non-null asserted below).
+    const href = safeApprovalHref(decision.approval!.approval_url!, origin, locale)!;
     const ts = parseForOrdering(decision.created_at);
     if (best === null || ts > best.ts) {
       best = { decision, href, ts };
@@ -156,11 +180,20 @@ function selectPendingRollback(
 }
 
 /**
- * Rule 2: the first entry of the pending-approvals payload (the backend
+ * Rule 2a: the first entry of the pending-approvals payload (the backend
  * already returns it newest-first; the DTO carries no timestamp of its own,
  * so no cross-kind recency claim is made here). Same skip-on-unsafe-href
  * fallthrough as rule 1, applied defensively — `PendingApproval.pr_number` is
  * typed as a plain number, so this only bites a malformed backend row.
+ *
+ * This listing is `agent/main.py`'s `_list_pending_approvals()` — GitHub
+ * issues with `state="open"`. A PR that has already MERGED drops out of it
+ * forever, even if it still genuinely needs the operator's post-merge,
+ * post-rebake Apply. Rule 2b (`selectPendingIacFromDecisions`) below is the
+ * fallback for exactly that gap; `deskModel` tries this listing FIRST, so
+ * when both sources reference the same PR the listing wins (it carries the
+ * PR title/body the desk card wants) purely by rule ordering — rule 2b never
+ * runs at all once this one returns non-null.
  */
 function selectPendingIac(
   pendingApprovals: ReadonlyArray<PendingApproval | null | undefined>,
@@ -170,9 +203,56 @@ function selectPendingIac(
     if (approval == null) continue; // defensive: malformed array element, skip not throw
     const href = iacApprovalHref(approval.pr_number, locale);
     if (href == null) continue; // malformed pr_number — never a dead CTA, try the next one
-    return { kind: 'pending', source: 'iac', approval, href };
+    return {
+      kind: 'pending',
+      source: 'iac',
+      prNumber: approval.pr_number,
+      href,
+      provenance: { kind: 'listing', approval },
+    };
   }
   return null;
+}
+
+/**
+ * Rule 2b: when the open-PR listing (rule 2a) has no candidate, fall back to
+ * scanning `decisions` for the newest `isIacAwaitingOperator` row (the same
+ * predicate approval.ts's `iacApproveLabel` uses to decide the rail's own
+ * "Review & approve →" CTA — see that predicate's doc comment for the full
+ * gap this closes). Ties break by strict `>` (first-encountered wins),
+ * mirroring rule 1's `selectPendingRollback` — deterministic, not
+ * last-write-wins.
+ *
+ * `resolvedPrs` is computed once by the caller (`deskModel`) and threaded in,
+ * mirroring ledger.ts's `ledgerRows` — it's an O(n) scan of the same
+ * `decisions` list, so recomputing it per candidate here would make this
+ * function O(n²) for a set that never changes mid-scan.
+ */
+function selectPendingIacFromDecisions(
+  decisions: ReadonlyArray<Decision | null | undefined>,
+  resolvedPrs: ReadonlySet<number>,
+  locale: string | undefined,
+): DeskPendingIac | null {
+  let best: { decision: Decision; href: string; prNumber: number; ts: number } | null = null;
+  for (const decision of decisions) {
+    if (decision == null) continue; // defensive: malformed array element, skip not throw
+    if (!isIacAwaitingOperator(decision, resolvedPrs)) continue;
+    const href = iacApprovalHref(decision.pr_number, locale);
+    if (href == null) continue; // malformed/missing pr_number — never a dead CTA, try the next one
+    const ts = parseForOrdering(decision.created_at);
+    if (best === null || ts > best.ts) {
+      best = { decision, href, prNumber: decision.pr_number as number, ts };
+    }
+  }
+  return best === null
+    ? null
+    : {
+        kind: 'pending',
+        source: 'iac',
+        prNumber: best.prNumber,
+        href: best.href,
+        provenance: { kind: 'decision', decision: best.decision },
+      };
 }
 
 /**
@@ -234,9 +314,10 @@ function selectStamped(
 
 /**
  * Selects which of the desk's three states applies, in strict priority order:
- * pending rollback (rule 1) > pending iac approval (rule 2) > stamped (rule
- * 3) > resting (rule 4). See the per-rule helpers above for each rule's exact
- * criteria; this function only sequences them.
+ * pending rollback (rule 1) > pending iac approval, listing-first then
+ * decisions-derived (rule 2a, then rule 2b) > stamped (rule 3) > resting
+ * (rule 4). See the per-rule helpers above for each rule's exact criteria;
+ * this function only sequences them.
  */
 export function deskModel(input: DeskModelInput): DeskModel {
   const now = input.now ?? Date.now();
@@ -246,8 +327,15 @@ export function deskModel(input: DeskModelInput): DeskModel {
   const rollback = selectPendingRollback(decisions, now, input.origin, input.locale);
   if (rollback) return rollback;
 
-  const iac = selectPendingIac(pendingApprovals, input.locale);
-  if (iac) return iac;
+  const iacFromListing = selectPendingIac(pendingApprovals, input.locale);
+  if (iacFromListing) return iacFromListing;
+
+  const iacFromDecisions = selectPendingIacFromDecisions(
+    decisions,
+    resolvedIacPrNumbers(decisions),
+    input.locale,
+  );
+  if (iacFromDecisions) return iacFromDecisions;
 
   const stamped = selectStamped(decisions, now);
   if (stamped) return stamped;

@@ -223,7 +223,8 @@ describe('deskModel — rule 2: pending iac approval', () => {
     expect(model.kind).toBe('pending');
     if (model.kind === 'pending' && model.source === 'iac') {
       expect(model.href).toBe('/iac-approvals/7');
-      expect(model.approval).toBe(items[0]);
+      expect(model.prNumber).toBe(7);
+      expect(model.provenance).toEqual({ kind: 'listing', approval: items[0] });
     } else {
       throw new Error('expected a pending iac approval');
     }
@@ -256,10 +257,148 @@ describe('deskModel — rule 2: pending iac approval', () => {
     expect(model.kind).toBe('pending');
     if (model.kind === 'pending' && model.source === 'iac') {
       expect(model.href).toBe('/iac-approvals/9');
-      expect(model.approval).toBe(items[1]);
+      expect(model.prNumber).toBe(9);
+      expect(model.provenance).toEqual({ kind: 'listing', approval: items[1] });
     } else {
       throw new Error('expected the second (valid) iac approval to win');
     }
+  });
+});
+
+describe('deskModel — rule 2b: pending iac approval derived from decisions (open-PR-listing gap)', () => {
+  // agent/main.py's `_list_pending_approvals()` is `state="open"` GitHub
+  // issues — a MERGED PR drops out of it forever, even though it can still
+  // genuinely need the operator's post-merge, post-rebake Apply (the rail's
+  // own `iacApproveLabel` still calls a non-superseded `waiting_for_rebake`
+  // row "Review & approve →"). This is the gap rule 2b closes: the desk must
+  // reach the same "still awaiting you" verdict as the rail even when the
+  // open-PR listing has nothing to say about it.
+  it('a merged, non-superseded waiting_for_rebake decision is PENDING even with an empty pendingApprovals array', () => {
+    const d = iacDecision(); // apply_status: 'waiting_for_rebake', pr_number: 42 (see helper default)
+    const model = deskModel({ decisions: [d], pendingApprovals: [], now: NOW, origin: ORIGIN });
+    expect(model.kind).toBe('pending');
+    if (model.kind === 'pending' && model.source === 'iac') {
+      expect(model.prNumber).toBe(42);
+      expect(model.href).toBe('/iac-approvals/42');
+      expect(model.provenance).toEqual({ kind: 'decision', decision: d });
+    } else {
+      throw new Error('expected a decisions-derived pending iac approval, not resting');
+    }
+  });
+
+  it('explicit superseded_by_pr → NOT pending (falls through to resting when nothing else qualifies)', () => {
+    const d = iacDecision({ superseded_by_pr: 43 });
+    const model = deskModel({ decisions: [d], pendingApprovals: [], now: NOW, origin: ORIGIN });
+    expect(model.kind).toBe('resting');
+  });
+
+  it('a later applied row for the same PR (resolvedIacPrNumbers) → NOT pending', () => {
+    const waiting = iacDecision({ decision_id: 'iac-waiting', pr_number: 44, created_at: '2026-07-28T10:00:00Z' });
+    const applied = iacDecision({
+      decision_id: 'iac-applied',
+      pr_number: 44,
+      apply_status: 'applied',
+      applied_at: '2026-07-28T10:30:00Z',
+      created_at: '2026-07-28T11:00:00Z',
+    });
+    const model = deskModel({
+      decisions: [waiting, applied],
+      pendingApprovals: [],
+      now: NOW,
+      origin: ORIGIN,
+    });
+    // The applied row IS a valid stamp candidate — but it must not ALSO leave
+    // the superseded waiting row pending. Assert it isn't pending at all.
+    expect(model.kind).not.toBe('pending');
+  });
+
+  it('dedup: the same PR present in BOTH the listing and the decisions log yields exactly one desk state, from the listing', () => {
+    const listingItem = pendingIac({ pr_number: 42, title: 'From the open-PR listing' });
+    const decisionItem = iacDecision({ pr_number: 42 });
+    const model = deskModel({
+      decisions: [decisionItem],
+      pendingApprovals: [listingItem],
+      now: NOW,
+      origin: ORIGIN,
+    });
+    expect(model.kind).toBe('pending');
+    if (model.kind === 'pending' && model.source === 'iac') {
+      expect(model.prNumber).toBe(42);
+      // provenance proves it came from the LISTING (carries the title), not
+      // the decisions-derived fallback (which only carries the decision doc).
+      expect(model.provenance).toEqual({ kind: 'listing', approval: listingItem });
+    } else {
+      throw new Error('expected a pending iac approval sourced from the listing');
+    }
+  });
+
+  it('picks the NEWEST decisions-derived candidate by created_at when several qualify', () => {
+    const older = iacDecision({ decision_id: 'iac-old', pr_number: 50, created_at: '2026-07-28T09:00:00Z' });
+    const newer = iacDecision({ decision_id: 'iac-new', pr_number: 51, created_at: '2026-07-28T11:00:00Z' });
+    const model = deskModel({
+      decisions: [older, newer],
+      pendingApprovals: [],
+      now: NOW,
+      origin: ORIGIN,
+    });
+    expect(model.kind).toBe('pending');
+    if (model.kind === 'pending' && model.source === 'iac') {
+      expect(model.prNumber).toBe(51);
+    } else {
+      throw new Error('expected the newer decisions-derived candidate to win');
+    }
+  });
+
+  it('a pending rollback still beats a decisions-derived pending iac approval', () => {
+    const rb = rollbackDecision();
+    const iac = iacDecision({ decision_id: 'iac-other' });
+    const model = deskModel({
+      decisions: [rb, iac],
+      pendingApprovals: [],
+      now: NOW,
+      origin: ORIGIN,
+    });
+    expect(model.kind).toBe('pending');
+    if (model.kind === 'pending') expect(model.source).toBe('rollback');
+  });
+
+  it('a decisions-derived pending iac approval still beats a stamped candidate', () => {
+    const stampedIac = iacDecision({
+      decision_id: 'iac-done',
+      pr_number: 60,
+      apply_status: 'applied',
+      applied_at: '2026-07-28T11:58:00Z',
+    });
+    const awaitingIac = iacDecision({ decision_id: 'iac-waiting', pr_number: 61 });
+    const model = deskModel({
+      decisions: [stampedIac, awaitingIac],
+      pendingApprovals: [],
+      now: NOW,
+      origin: ORIGIN,
+    });
+    expect(model.kind).toBe('pending');
+    if (model.kind === 'pending' && model.source === 'iac') expect(model.prNumber).toBe(61);
+  });
+
+  // A null-element test for THIS loop specifically turned out toothless:
+  // isIacAwaitingOperator (approval.ts) already null-tolerates internally
+  // (it has to — ledger.ts's classify() passes decisions straight from the
+  // same externally-sourced array with no upstream filtering), so removing
+  // desk.ts's own `if (decision == null) continue` guard here does not
+  // reproduce a failure — the predicate already returns false for null
+  // before this loop's body would do anything unsafe with it. See
+  // approval.test.ts's `isIacAwaitingOperator` suite for the genuine,
+  // fail-first-verified null/undefined coverage instead.
+  it('a null element in decisions does not stop a valid decisions-derived candidate later in the array from winning', () => {
+    const good = iacDecision({ decision_id: 'iac-good', pr_number: 62 });
+    const model = deskModel({
+      decisions: [null, undefined, good] as unknown as Decision[],
+      pendingApprovals: [],
+      now: NOW,
+      origin: ORIGIN,
+    });
+    expect(model.kind).toBe('pending');
+    if (model.kind === 'pending' && model.source === 'iac') expect(model.prNumber).toBe(62);
   });
 });
 
@@ -475,7 +614,8 @@ describe('deskModel — defensive: malformed array elements', () => {
     expect(model.kind).toBe('pending');
     if (model.kind === 'pending' && model.source === 'iac') {
       expect(model.href).toBe('/iac-approvals/11');
-      expect(model.approval).toBe(good);
+      expect(model.prNumber).toBe(11);
+      expect(model.provenance).toEqual({ kind: 'listing', approval: good });
     } else {
       throw new Error('expected the valid pending-approval entry to win despite the null/undefined elements');
     }

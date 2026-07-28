@@ -18,7 +18,7 @@
 // runs before this module could add that row.
 
 import type { Decision } from './types';
-import { isExpired, resolvedIacPrNumbers, safeApprovalHref } from './approval';
+import { resolvedIacPrNumbers, isRollbackAwaitingOperator, isIacAwaitingOperator } from './approval';
 
 export type LedgerState = 'applied' | 'open' | 'noted';
 
@@ -58,40 +58,15 @@ function classify(
     return 'applied';
   }
 
-  // Rollback lane: still genuinely actionable. Mirrors desk.ts's
-  // selectPendingRollback safety gate exactly, INCLUDING safeApprovalHref —
-  // not as a same-origin check the ledger happens to also want, but because
-  // it's the only source of truth for "is there a real gate here". A row
-  // whose approval_url fails it (off-origin, or the `<redacted>` token
-  // literal the surviving scrubbed serves — /runs, decisions-history,
-  // read_conversations — still emit) has no working Approve/Reject path; the
-  // ledger and the desk must never disagree about whether a decision is
-  // awaiting the operator, so both gate on the same predicate.
-  const approval = d.approval;
-  if (
-    approval?.approval_url &&
-    safeApprovalHref(approval.approval_url, origin) !== null &&
-    (approval.status === undefined || approval.status === 'pending') &&
-    !isExpired(approval.expires_at, now)
-  ) {
+  // Both lanes below delegate to approval.ts's shared "is this decision
+  // awaiting the operator" predicates — the SAME ones desk.ts's
+  // selectPendingRollback / selectPendingIacFromDecisions use, so the ledger
+  // and the desk can never disagree about whether a decision needs the
+  // operator. See each predicate's own doc comment for its exact criteria.
+  if (isRollbackAwaitingOperator(d, { now, origin })) {
     return 'open';
   }
-
-  // iac lane: still awaiting the operator's post-rebake Apply, and not
-  // superseded by a later PR that already applied — mirrors approval.ts's
-  // iacApproveLabel "Review & approve" branch (the ONLY actionable iac
-  // label), checking both the explicit superseded_by_pr annotation and the
-  // resolvedIacPrNumbers set.
-  const supersededByPr = d.superseded_by_pr;
-  const explicitlySuperseded =
-    typeof supersededByPr === 'number' && Number.isInteger(supersededByPr) && supersededByPr > 0;
-  const resolvedBySet = typeof d.pr_number === 'number' && resolvedPrs.has(d.pr_number);
-  if (
-    d.action === 'iac_apply' &&
-    d.apply_status === 'waiting_for_rebake' &&
-    !explicitlySuperseded &&
-    !resolvedBySet
-  ) {
+  if (isIacAwaitingOperator(d, resolvedPrs)) {
     return 'open';
   }
 

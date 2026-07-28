@@ -1,4 +1,5 @@
 import type { TranslateFn } from './i18n';
+import type { DecisionApproval } from './types';
 
 // SECURITY-CRITICAL. Same-origin guard for HITL approval links, ported
 // verbatim-in-spirit from the legacy `_safeApprovalHref` renderer guard in
@@ -115,6 +116,41 @@ export function isExpired(
   return parsed <= ref;
 }
 
+/**
+ * True when a rollback decision's `approval` is a genuine, safe, live gate
+ * the operator can act on right now — the SINGLE "is this decision awaiting
+ * the operator" predicate for the rollback lane. Shared by desk.ts's
+ * `selectPendingRollback` (rule 1: what to show as the desk's pending CTA)
+ * and ledger.ts's `classify` (the ledger's `open` state) — both are
+ * answering the exact same question about the exact same field, so they
+ * share one implementation rather than two hand-copied condition lists that
+ * could quietly drift apart.
+ *
+ * Requires ALL of: `approval.approval_url` present, `safeApprovalHref`
+ * resolves it to a non-null href (rejects off-origin URLs AND the
+ * `<redacted>` scrub-placeholder token — a dead button is not "awaiting the
+ * operator", it has no working Approve/Reject path), `status` is `'pending'`
+ * or absent (pre-enrichment rows never had the field at all), and
+ * `expires_at` is not in the past.
+ *
+ * Callers that also need the href itself (desk.ts, to build its `href`
+ * field) call `safeApprovalHref` again directly — the two calls can never
+ * disagree (this function's own href check already proved a non-null result
+ * for this exact URL/origin), and `locale` (only ever added by the second
+ * call) never flips null-vs-non-null, only whether `?lang=ja` is appended.
+ */
+export function isRollbackAwaitingOperator(
+  decision: { approval?: DecisionApproval | null } | null | undefined,
+  opts: { now?: number; origin?: string } = {},
+): boolean {
+  const approval = decision?.approval;
+  if (!approval?.approval_url) return false;
+  if (safeApprovalHref(approval.approval_url, opts.origin) === null) return false;
+  if (approval.status !== undefined && approval.status !== 'pending') return false;
+  if (isExpired(approval.expires_at, opts.now)) return false;
+  return true;
+}
+
 // Canonical PyGithub artifact path: /<owner>/<repo>/(issues|pull)/<number>.
 // PyGithub's html_url only ever emits this shape, so we pin to it (defence in
 // depth — the /trace + /decisions decision docs are UNREDACTED).
@@ -206,6 +242,48 @@ export function resolvedIacPrNumbers(
 }
 
 /**
+ * True when an `iac_apply` decision genuinely still needs the operator's
+ * post-rebake Apply — the SINGLE "is this decision awaiting the operator"
+ * predicate for the iac lane, mirroring `isRollbackAwaitingOperator` above
+ * for the rollback lane. Shared by desk.ts's `selectPendingIacFromDecisions`
+ * (the decisions-derived fallback rule 2b — see its header comment for why
+ * that fallback exists) and ledger.ts's `classify` (the ledger's `open`
+ * state, iac lane).
+ *
+ * MUST stay in lockstep with `iacApproveLabel` below's "Review & approve →"
+ * branch (the ONLY actionable iac label) — that function is the rail's
+ * ground truth for what counts as actionable, and this predicate exists so
+ * every OTHER surface (desk, ledger) agrees with it instead of re-deriving
+ * its own answer. A future edit to one branch that misses the other
+ * silently re-opens the exact bug this predicate was extracted to close
+ * (desk.ts previously had NO rule that could ever surface a merged,
+ * `waiting_for_rebake` decision, because its only iac source was the
+ * open-PR-only GitHub issue listing).
+ *
+ * Requires ALL of: `action === 'iac_apply'`, `apply_status ===
+ * 'waiting_for_rebake'`, no positive-integer `superseded_by_pr` annotation,
+ * and `pr_number` not present in `resolvedPrs` (`resolvedIacPrNumbers`,
+ * above — a later `applied` row for the same PR).
+ */
+export function isIacAwaitingOperator(
+  decision:
+    | { action?: string; apply_status?: string; pr_number?: number; superseded_by_pr?: number }
+    | null
+    | undefined,
+  resolvedPrs: ReadonlySet<number>,
+): boolean {
+  if (decision == null) return false;
+  if (decision.action !== 'iac_apply') return false;
+  if (decision.apply_status !== 'waiting_for_rebake') return false;
+  const supersededByPr = decision.superseded_by_pr;
+  const explicitlySuperseded =
+    typeof supersededByPr === 'number' && Number.isInteger(supersededByPr) && supersededByPr > 0;
+  if (explicitlySuperseded) return false;
+  if (typeof decision.pr_number === 'number' && resolvedPrs.has(decision.pr_number)) return false;
+  return true;
+}
+
+/**
  * Label for an iac_apply row's approval CTA. The link target — `/iac-approvals/<n>`
  * — is unchanged for every state; only the wording reflects how the row reads to
  * an operator.
@@ -220,6 +298,7 @@ export function resolvedIacPrNumbers(
  * - "Review & approve →" — the ONLY actionable label: a `waiting_for_rebake` row
  *   that is NOT superseded (no `applied` row for its PR — see
  *   `resolvedIacPrNumbers`) still needs the operator's second, post-rebake Apply.
+ *   MUST stay in lockstep with `isIacAwaitingOperator` above — see its comment.
  * - "View approval history →" — a DONE row (`applied` + `merge_state==='merged'`):
  *   the gate is closed, so the link is a record to look back at, not an action.
  * - "View failure details →" — a TERMINAL-FAILED row (`failed`,
