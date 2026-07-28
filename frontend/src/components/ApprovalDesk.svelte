@@ -396,6 +396,20 @@
     right: -6px;
     top: -4px;
   }
+  /* Reserve the seal's column. The seal is OUT OF FLOW (absolute, 76px wide,
+     pulled 6px past the right edge), so without this the headline and the
+     status line simply flow underneath it — and they do: the Task 3.6 visual
+     gate caught "Adopt payment-demo Cloud Run service into IaC" running under
+     the stamp, and 「適用完了」/"Change applied" half-hidden behind it, in both
+     locales. 92px = the seal's 76px, less the 6px overhang, plus a ~22px
+     gutter so a descender never kisses the ring.
+     Applied to these two children only, NOT to .approval-desk__deskwrap: the
+     diff card and the audit line below the seal should still use the full
+     column width, and padding the whole wrapper would indent them too. */
+  .approval-desk__stamped .approval-desk__who--done,
+  .approval-desk__stamped h3 {
+    padding-right: 92px;
+  }
 
   /* Restyle DriftDiffCard in place (it stays a single component, used
      unmodified in the chat view too) — scoped under this desk-only wrapper

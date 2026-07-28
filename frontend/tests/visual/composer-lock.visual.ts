@@ -33,7 +33,14 @@ function json(route: Route, body: unknown, status = 200) {
 // One prior Anchor (drift) conversation in the rail — clicking it resumes the
 // thread and engages the crew lock on Anchor.
 async function mockData(page: Page) {
-  await page.route('**/decisions**', (r) => json(r, { decisions: [] }));
+  // Regex, not `**/decisions**` — see the `**/conversations**` note below for
+  // the same class of trap. This one arrived later: `src/locales/decisions.ts`
+  // (the i18n namespace split) postdates this rig, and once it existed the glob
+  // started serving JSON for that JS module, breaking the whole app mount with
+  // a strict-MIME error. Requiring `?` or end-of-URL right after `/decisions`
+  // excludes any `.ts` module path. NB the smoke rigs still use the glob safely
+  // — they drive the BUILT bundle, where source modules have no own URL.
+  await page.route(/\/decisions(\?|$)/, (r) => json(r, { decisions: [] }));
   await page.route('**/pause', (r) => json(r, { paused: false }));
   await page.route('**/autonomy', (r) => json(r, { mode: 'propose_apply', reason: null, actor: null }));
   await page.route('**/capabilities', (r) =>

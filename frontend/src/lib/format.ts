@@ -245,19 +245,43 @@ export function appliedAtDiffersMaterially(
 }
 
 /**
- * Friendly headline label for a decision's `action`, shown on the rail's
- * non-iac rows (the `{:else}` branch). Today only `no_op` is remapped — from
- * the bare backend enum to plain language — because that row produces no
- * GitHub side effect and so has no "View PR/issue →" CTA to give it context;
- * the operator just sees a token. Every other action passes through verbatim
- * (those rows carry their own CTA). Defensively clamps an unexpected long value
- * to 40 chars + '…', matching iacStatusLabel's forward-compat style.
+ * Friendly headline label for a decision's `action`, in plain language rather
+ * than the bare backend enum. Shown on the rail's non-iac rows (the `{:else}`
+ * branch) and, since Task 3.4, as the LedgerStrip's `noted`-row title.
+ *
+ * ALL THREE actions the backend actually writes are mapped: `no_op`,
+ * `rollback`, and `iac_apply` (grep the writers — those are the complete set).
+ * Originally only `no_op` was, on the reasoning that the other rows carry
+ * their own "View PR/issue →" CTA to give them context. The desk's ledger
+ * broke that assumption: it has no CTA column, so an unmapped row rendered a
+ * bare `rollback` — a Latin-script code identifier sitting mid-sentence in
+ * Japanese operator copy on the judge-facing front door (caught by the Task
+ * 3.6 visual gate; violates the standing "no code identifiers in
+ * operator-facing copy" rule).
+ *
+ * The verbatim pass-through below is therefore now what it always claimed to
+ * be — a forward-compat path for an action this frontend has never heard of
+ * (a newer coordinator writing a fourth kind), NOT the normal case. Such a
+ * value is still clamped to 40 chars + '…', matching iacStatusLabel's style.
  * null/undefined/'' → '' (the caller then renders nothing).
+ *
+ * The labels are deliberately neutral NOUNS for the kind of action, not its
+ * outcome ("Rollback", not "Rollback applied"): the same string has to serve a
+ * proposed, an applied, and an expired row, and only the row's own status
+ * column knows which it is.
  */
 const DECISION_ACTION_MAX = 40;
+const DECISION_ACTION_KEYS: Record<string, MessageKey> = {
+  no_op: 'shared.decision.noOp',
+  rollback: 'shared.decision.rollback',
+  iac_apply: 'shared.decision.iacApply',
+};
 export function decisionActionLabel(action: string | null | undefined, t: TranslateFn): string {
   if (typeof action !== 'string' || action === '') return '';
-  if (action === 'no_op') return t('shared.decision.noOp');
+  // Object.hasOwn, not a bare lookup: a decision doc is an open shape, so an
+  // action literally named `toString` / `constructor` would otherwise resolve
+  // to an Object.prototype member and be passed to t() as a key.
+  if (Object.hasOwn(DECISION_ACTION_KEYS, action)) return t(DECISION_ACTION_KEYS[action]);
   return action.length > DECISION_ACTION_MAX
     ? action.slice(0, DECISION_ACTION_MAX) + ELLIPSIS
     : action;
@@ -322,7 +346,16 @@ export function fmtClock(iso: string, l?: Locale): string {
  * any date, so unlike the rail's compact no-year form we include the year).
  * Falls back to the raw value when it doesn't parse, and to '' when absent.
  * `l` is OPTIONAL — a caller with no locale in scope (e.g. decision.ts) still
- * gets Intl's host-default formatting, unchanged from before i18n.
+ * gets Intl's host-default formatting for everything except the hour cycle.
+ *
+ * `hourCycle: 'h23'` is pinned for the same reason `fmtClock` pins it, and the
+ * desk is what forced the issue: `localeTag('en')` is `'en-US'`, whose default
+ * is 12-hour, so the stamped card rendered "Applied Jul 28, 2026, 03:13 PM"
+ * directly above the ledger's "15:06" row FOR THE SAME DECISION — one event,
+ * two clock conventions, ~90px apart (caught by the Task 3.6 visual gate; JA
+ * was always 24h and unaffected). Pinning here rather than un-pinning
+ * `fmtClock` keeps the ledger's 58px time column narrow. This also settles the
+ * hour cycle for locale-less callers, who previously followed the host.
  */
 export function fmtWhen(iso: string, l?: Locale): string {
   if (!iso) return '';
@@ -335,6 +368,7 @@ export function fmtWhen(iso: string, l?: Locale): string {
       day: 'numeric',
       hour: '2-digit',
       minute: '2-digit',
+      hourCycle: 'h23',
     }).format(parsed);
   } catch {
     return iso;

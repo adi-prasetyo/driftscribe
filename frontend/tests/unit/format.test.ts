@@ -154,6 +154,17 @@ describe('fmtWhen', () => {
     expect(out).not.toContain('T08:27');
   });
 
+  it('pins a 24-hour clock in EN, matching fmtClock', () => {
+    // en-US defaults to 12-hour, which put "03:13 PM" from this function
+    // directly above fmtClock's "15:06" for the SAME decision on the desk's
+    // stamped card. Asserted on both an afternoon and a morning timestamp: a
+    // morning one would read "09:xx" under EITHER cycle, so it alone could not
+    // tell h23 from h12 — only the afternoon case has teeth, and the morning
+    // case guards against someone "fixing" this by force-padding to 24h wrongly.
+    expect(fmtWhen('2026-05-31T15:06:00Z', 'en')).not.toMatch(/AM|PM/);
+    expect(fmtWhen('2026-05-31T09:06:00Z', 'en')).not.toMatch(/AM|PM/);
+  });
+
   it('returns "" for an empty string', () => {
     expect(fmtWhen('')).toBe('');
   });
@@ -284,11 +295,31 @@ describe('decisionActionLabel', () => {
     expect(decisionActionLabel('no_op', t)).toBe('No action needed');
   });
 
-  it('passes other action tokens through verbatim (those rows carry their own CTA)', () => {
+  it('remaps the other two actions the backend actually writes', () => {
+    // These used to pass through verbatim, which put a bare `rollback` — a
+    // Latin-script code identifier — into Japanese operator copy on the desk's
+    // ledger, where there is no CTA column to give the row context.
+    expect(decisionActionLabel('rollback', t)).toBe('Rollback');
+    expect(decisionActionLabel('iac_apply', t)).toBe('Infrastructure change');
+  });
+
+  it('passes an action this frontend has never heard of through verbatim', () => {
+    // Forward-compat only: a newer coordinator writing a fourth kind. None of
+    // these are values the backend writes today (the full set is no_op /
+    // rollback / iac_apply), so this is the unknown-action path, not the
+    // normal one.
     expect(decisionActionLabel('docs_pr', t)).toBe('docs_pr');
     expect(decisionActionLabel('drift_issue', t)).toBe('drift_issue');
     expect(decisionActionLabel('escalation', t)).toBe('escalation');
-    expect(decisionActionLabel('rollback', t)).toBe('rollback');
+  });
+
+  it('does not resolve an Object.prototype member as a mapped action', () => {
+    // A decision doc is an open shape; a bare `KEYS[action]` lookup would turn
+    // an action named `toString` into a truthy prototype member and hand that
+    // function to t() as a translation key.
+    expect(decisionActionLabel('toString', t)).toBe('toString');
+    expect(decisionActionLabel('constructor', t)).toBe('constructor');
+    expect(decisionActionLabel('__proto__', t)).toBe('__proto__');
   });
 
   it('clamps an over-long unknown action to 40 chars + ellipsis', () => {

@@ -59,7 +59,13 @@ export const shared = {
       "The apply succeeded, but its pull request hasn't merged yet. Open the approval " +
       'page to check the merge status, or retry once any branch-protection block is resolved.',
 
+    // The complete set of actions the backend writes, in plain language — see
+    // decisionActionLabel. Neutral nouns for the KIND of action, never its
+    // outcome: the same string serves a proposed, an applied and an expired
+    // row, and only that row's own status column knows which it is.
     'shared.decision.noOp': 'No action needed',
+    'shared.decision.rollback': 'Rollback',
+    'shared.decision.iacApply': 'Infrastructure change',
     'shared.decision.noOpHelp':
       'DriftScribe checked and the live state already matched what was expected, ' +
       'so there was nothing to fix: no pull request, issue, or rollback was needed. ' +
@@ -156,6 +162,8 @@ export const shared = {
       '再試行してください。',
 
     'shared.decision.noOp': '対応不要',
+    'shared.decision.rollback': 'ロールバック',
+    'shared.decision.iacApply': 'インフラ変更',
     'shared.decision.noOpHelp':
       'DriftScribe が確認したところ、実環境の状態はすでに想定どおりであったため、' +
       '修正の必要はありませんでした。プルリクエスト、Issue、ロールバックのいずれも' +
