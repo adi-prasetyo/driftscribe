@@ -800,6 +800,77 @@ describe('deskModel — rule 2.5: unresolved rollback outcome', () => {
     expect(model.kind).toBe('unresolved');
   });
 
+  it('a late-reconciled success does not post-date and bury a newer real failure', () => {
+    // The scenario delayed reconciliation creates:
+    //   10:00  attempt A starts, succeeds, but stays unconfirmed
+    //   10:05  attempt B starts
+    //   10:06  attempt B definitely FAILS
+    //   10:07  attempt A is reconciled -> applied, phase_at = 10:07
+    // Superseding by phase_at would read A as "the later rollback" and hide B's
+    // real failure. Supersession is a question about attempt chronology.
+    const attemptA = rollbackDecision({
+      decision_id: 'rb-a-succeeded',
+      created_at: '2026-07-28T10:00:00Z',
+      approval: {
+        approval_url: '/approvals/rb-a?t=x',
+        status: 'used',
+        phase: 'applied',
+        phase_at: '2026-07-28T10:07:00Z', // OBSERVED late by /reconcile
+        // No resolved_at: reconcile never fabricates one.
+      },
+    });
+    const attemptB = rollbackDecision({
+      decision_id: 'rb-b-failed',
+      created_at: '2026-07-28T10:05:00Z',
+      approval: {
+        approval_url: '/approvals/rb-b?t=x',
+        status: 'used',
+        phase: 'failed',
+        phase_at: '2026-07-28T10:06:00Z',
+      },
+    });
+    const model = deskModel({
+      decisions: [attemptA, attemptB], pendingApprovals: [], now: NOW, origin: ORIGIN,
+    });
+    expect(model.kind).toBe('unresolved');
+    if (model.kind === 'unresolved') {
+      expect(model.decision.decision_id).toBe('rb-b-failed');
+      expect(model.phase).toBe('failed');
+    }
+  });
+
+  it('a STALE claimed rollback surfaces as unknown rather than vanishing', () => {
+    // The worker died between burning the credential and writing the operation
+    // handle — possibly AFTER update_service accepted the traffic change.
+    // Nothing can reconcile it (no handle to look up), so if the desk stayed
+    // silent this would be a burned approval with an unknown outcome that the
+    // operator is never told about: the silent `used` in its purest form.
+    const d = rollbackDecision({
+      approval: {
+        approval_url: '/approvals/rb-1?t=x',
+        status: 'used',
+        phase: 'claimed',
+        phase_at: new Date(NOW - STUCK_APPLYING_MS - 60_000).toISOString(),
+      },
+    });
+    const model = deskModel({ decisions: [d], pendingApprovals: [], now: NOW, origin: ORIGIN });
+    expect(model.kind).toBe('unresolved');
+    if (model.kind === 'unresolved') expect(model.phase).toBe('outcome_unknown');
+  });
+
+  it('a FRESH claimed rollback does not surface (execute still owns it)', () => {
+    const d = rollbackDecision({
+      approval: {
+        approval_url: '/approvals/rb-1?t=x',
+        status: 'used',
+        phase: 'claimed',
+        phase_at: new Date(NOW - 5_000).toISOString(),
+      },
+    });
+    const model = deskModel({ decisions: [d], pendingApprovals: [], now: NOW, origin: ORIGIN });
+    expect(model.kind).toBe('resting');
+  });
+
   it('orders by phase_at (observation time), not the proposal time', () => {
     // resolved_at cannot order these — it exists only on a confirmed success,
     // so every failed/unconfirmed row would tie at null.

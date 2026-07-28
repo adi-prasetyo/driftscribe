@@ -32,11 +32,23 @@ from driftscribe_lib.approvals import (
 )
 
 
-def _approval(phase: str | None, *, operation_name: str | None = "operations/op-1") -> Approval:
+def _approval(
+    phase: str | None,
+    *,
+    operation_name: str | None = "operations/op-1",
+    age_s: float = 600.0,
+) -> Approval:
+    """`age_s` defaults to well past `_RECONCILE_MIN_AGE_S` so the common
+    fixture is ELIGIBLE. A fresh doc is deliberately not reconcilable — see
+    test_does_not_reconcile_a_fresh_doc."""
     audit = None
     if phase is not None:
         detail = {"operation_name": operation_name} if operation_name else {}
-        audit = {"phase": phase, "phase_at": dt.datetime.now(dt.timezone.utc), "detail": detail}
+        audit = {
+            "phase": phase,
+            "phase_at": dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=age_s),
+            "detail": detail,
+        }
     return Approval(
         approval_id="ap-1",
         target_revision="payment-demo-00003-xyz",
@@ -103,6 +115,21 @@ def test_does_not_reconcile_without_an_operation_handle(calls) -> None:
     handle. Spending a round-trip to be told there is nothing to look up helps
     nobody — and this case is why the desk copy says "verify in Cloud Run"."""
     record = _approval(PHASE_OUTCOME_UNKNOWN, operation_name=None)
+    assert _maybe_reconcile(_Store(), "ap-1", record, [3]) is record
+    assert calls == []
+
+
+def test_does_not_reconcile_a_fresh_doc(calls) -> None:
+    """The latency guard, and it is load-bearing rather than cosmetic.
+
+    The rollback worker is --concurrency=1, so reconciling a rollback that
+    /execute is still working on queues behind that very call and blocks for its
+    remaining LRO budget. The operator's focus-return refresh lands in exactly
+    that window, and overviewStore awaits /decisions alongside the graph and
+    pending-list fetches — so one avoidable round-trip stalls the whole desk.
+    /execute terminalizes its own doc; reconcile is for what it leaves behind.
+    """
+    record = _approval(PHASE_APPLYING, age_s=5.0)
     assert _maybe_reconcile(_Store(), "ap-1", record, [3]) is record
     assert calls == []
 

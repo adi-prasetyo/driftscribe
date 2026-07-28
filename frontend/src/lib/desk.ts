@@ -30,11 +30,19 @@ import type { PendingApproval } from './infra_graph';
  *  only needs to be right once, here. */
 export const STAMP_WINDOW_MS = 10 * 60 * 1000;
 
-/** How long a rollback may sit in `applying` before the desk treats it as
- *  stuck rather than in progress. Comfortably past the worker's 60s LRO poll
- *  budget: inside that window /execute is still expected to settle the doc
- *  itself, so surfacing it would alarm the operator during a routine rollback;
- *  past it, nothing is coming back for it. */
+/** How long a rollback may sit in an in-flight phase (`claimed`/`applying`)
+ *  before the desk stops calling it "in progress" and surfaces it as an
+ *  unconfirmed outcome.
+ *
+ *  Comfortably past the worker's 60s LRO poll budget: inside that window
+ *  /execute is still expected to settle the doc itself, so surfacing it would
+ *  alarm the operator during a routine rollback.
+ *
+ *  Past it, we simply do not know — which is NOT the same as "nothing is coming
+ *  back for it" (an earlier draft of this comment said that, and it was wrong).
+ *  A long LRO can genuinely exceed five minutes, and the wired-up /reconcile may
+ *  still settle it afterwards. That is exactly why the card says "unconfirmed"
+ *  rather than "failed", and why it yields as soon as a terminal phase lands. */
 export const STUCK_APPLYING_MS = 5 * 60 * 1000;
 
 /** A pending rollback: a decision whose live approval doc is still awaiting
@@ -367,43 +375,77 @@ function selectUnresolvedRollback(
   decisions: ReadonlyArray<Decision | null | undefined>,
   now: number,
 ): DeskUnresolved | null {
-  let best: { decision: Decision; phase: 'failed' | 'outcome_unknown'; ts: number } | null = null;
-  // The newest CONFIRMED rollback. A later success supersedes an earlier
-  // failure: once a subsequent rollback demonstrably applied, the old failed
-  // attempt is history, not an open loop. Without this the desk would pin
-  // itself to an ancient failure forever — a new proposal would only hide it
-  // while pending, and it would re-win over the new success's own seal.
-  let newestApplied = -Infinity;
+  let best: {
+    decision: Decision;
+    phase: 'failed' | 'outcome_unknown';
+    observed: number;
+    attempt: number;
+  } | null = null;
+  // The newest CONFIRMED rollback, keyed by ATTEMPT time. A later success
+  // supersedes an earlier failure: once a subsequent rollback demonstrably
+  // applied, the old failed attempt is history, not an open loop. Without this
+  // the desk pins itself to an ancient failure forever — a new proposal only
+  // hides it while pending, and it re-wins over the new success's own seal.
+  let newestAppliedAttempt = -Infinity;
 
   for (const decision of decisions) {
     if (decision == null) continue; // defensive: malformed array element, skip not throw
     const approval = decision.approval;
     if (approval?.status !== 'used') continue;
-    const observed = parseStrict(approval.phase_at) ?? parseForOrdering(decision.created_at);
+
+    // TWO different clocks, and conflating them hides real failures.
+    //   attempt  — when this rollback was proposed. Attempt chronology.
+    //   observed — when its current phase was recorded. Observation order.
+    // They diverge whenever /reconcile settles something late: a rollback that
+    // succeeded at 10:00 but was only confirmed at 10:07 carries phase_at
+    // 10:07. Ordering supersession by that would let it "post-date" — and
+    // therefore silently bury — a DIFFERENT rollback that genuinely failed at
+    // 10:06. Supersession is a question about which attempt came last, so it
+    // uses `attempt`; picking among unresolved rows is a question about what
+    // we most recently learned, so that uses `observed`.
+    const attempt = parseForOrdering(decision.created_at);
+    const observed = parseStrict(approval.phase_at) ?? attempt;
 
     if (approval.phase === 'applied') {
-      if (observed > newestApplied) newestApplied = observed;
+      if (attempt > newestAppliedAttempt) newestAppliedAttempt = attempt;
       continue;
     }
 
     let phase: 'failed' | 'outcome_unknown' | null = null;
     if (approval.phase === 'failed' || approval.phase === 'outcome_unknown') {
       phase = approval.phase;
-    } else if (approval.phase === 'applying' && now - observed > STUCK_APPLYING_MS) {
-      // Normally transient — /execute settles it within its 60s poll budget,
-      // and showing a scary card during every routine rollback would be its
-      // own kind of dishonesty. But past the threshold nobody is coming back
-      // for it (the worker died mid-wait), and silence would be the same
-      // disappearance this rule exists to prevent. It is genuinely unknown,
-      // so it reports as unknown rather than as failure.
+    } else if (
+      (approval.phase === 'applying' || approval.phase === 'claimed') &&
+      now - observed > STUCK_APPLYING_MS
+    ) {
+      // Both in-flight phases go stale the same way, and BOTH must surface.
+      //
+      // `applying` is the ordinary case: /execute usually settles it inside its
+      // own poll budget, so showing a card during a routine rollback would be
+      // its own dishonesty — hence the age gate rather than an immediate one.
+      //
+      // `claimed` is the nastier one. It means the credential was burned and we
+      // have no operation handle, which happens when the worker dies between
+      // the claim and the handle write — INCLUDING the window where
+      // update_service already accepted the traffic change. Nothing can
+      // reconcile it (there is nothing to look up), so without this branch a
+      // burned approval whose rollback may well have applied would sit
+      // permanently invisible and the desk would render resting. That is
+      // precisely the silent `used` this whole change exists to abolish.
+      //
+      // Neither reports as failure: in both cases the rollback may have
+      // happened. `outcome_unknown` sends the operator to Cloud Run, which is
+      // the only honest instruction available.
       phase = 'outcome_unknown';
     }
     if (phase === null) continue;
 
-    if (best === null || observed > best.ts) best = { decision, phase, ts: observed };
+    if (best === null || observed > best.observed) {
+      best = { decision, phase, observed, attempt };
+    }
   }
 
-  if (best === null || best.ts < newestApplied) return null;
+  if (best === null || best.attempt < newestAppliedAttempt) return null;
   return { kind: 'unresolved', source: 'rollback', decision: best.decision, phase: best.phase };
 }
 

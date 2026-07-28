@@ -468,6 +468,21 @@ def call_execute(approval_id: str, approval_token: str) -> dict:
     )
 
 
+# /reconcile runs inside GET /decisions — the operator's hot path — so its
+# budget is sized for "give up quickly", the opposite of /execute's. The worker
+# side caps its own operations.get at 10s, and this is a single read with no
+# mutation, so anything beyond ~15s means the worker is wedged (most likely
+# queued behind a blocking /execute on its single concurrency slot) and the
+# right move is to serve the un-reconciled record rather than make the operator
+# wait. Inheriting the 30s default here was a latency foot-gun: three eligible
+# rows could burn ~90s of the ~100s edge budget before Firestore and GitHub work
+# even started, and overviewStore awaits /decisions together with the graph and
+# pending-list fetches, so all three would stall.
+_RECONCILE_HTTPX_TIMEOUT: Final = httpx.Timeout(
+    connect=5.0, read=15.0, write=10.0, pool=5.0
+)
+
+
 def call_reconcile(approval_id: str) -> dict:
     """Ask the rollback worker to finalize an approval left non-terminal.
 
@@ -478,7 +493,7 @@ def call_reconcile(approval_id: str) -> dict:
     rollback or move an approval out of ``pending``; it only reads an operation
     the worker already started. Idempotent and safe to call on anything.
     """
-    return call("rollback", {"approval_id": approval_id}, endpoint="/reconcile")
+    return call("rollback", {"approval_id": approval_id}, endpoint="/reconcile", timeout=_RECONCILE_HTTPX_TIMEOUT)
 
 
 # /propose and /deny queue behind a blocking /execute on this worker

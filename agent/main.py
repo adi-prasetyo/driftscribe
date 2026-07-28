@@ -2576,10 +2576,16 @@ _RECONCILABLE_PHASES = frozenset({PHASE_APPLYING, PHASE_OUTCOME_UNKNOWN})
 # Max reconcile round-trips per GET /decisions. See _maybe_reconcile.
 _DECISIONS_RECONCILE_BUDGET = 3
 
+# Don't reconcile a doc whose phase was recorded less than this ago — /execute
+# is still expected to own it, and the worker's single concurrency slot means we
+# would queue behind that very call. Comfortably past its 60s LRO cap.
+_RECONCILE_MIN_AGE_S = 90.0
+
 
 def _memoized_approval_reader():
     """Return a 0-arg-per-``approval_id`` callable that reads the approval
-    doc's ``(status, resolved_at)`` AT MOST ONCE per approval_id per request
+    doc's ``(status, resolved_at)`` ONCE per approval_id per request — twice for
+    the rare row that gets reconciled, which re-reads to serve the settled value
     (Task 3.0b, 2026-07-28 — mirrors ``_memoized_repo_provider``'s "build the
     client once per request" shape, applied here to per-row *reads* instead
     of a single client construction).
@@ -2595,10 +2601,14 @@ def _memoized_approval_reader():
     GET /decisions, the operator's main surface."""
     cache: dict[str, object] = {}
     # Per-request reconcile budget. Deliberately tiny: this is the operator's
-    # main serve path, and each reconcile is a worker round-trip. After ds-2mc
-    # /execute terminalizes the doc itself on every path it survives, so a
-    # non-terminal row is the exception (a poll that outran the 60s cap, or a
-    # container death mid-wait) and the common request spends none of this.
+    # main serve path, and each reconcile is a worker round-trip. /execute
+    # terminalizes the doc itself on every path it survives, so an ELIGIBLE row
+    # (non-terminal, has a handle, and older than _RECONCILE_MIN_AGE_S) is the
+    # exception rather than the rule. A rollback in flight right now is
+    # deliberately NOT eligible — see the age gate in _maybe_reconcile — so the
+    # normal case, including a refresh during a live rollback, spends none of
+    # this. The count bound plus _RECONCILE_HTTPX_TIMEOUT's 15s read caps the
+    # worst case at ~45s, under the ~100s edge budget.
     budget = [_DECISIONS_RECONCILE_BUDGET]
 
     def read(approval_id: str):
@@ -2645,6 +2655,21 @@ def _maybe_reconcile(store, approval_id: str, record, budget: list[int]):
     # Spending a round-trip to be told that helps nobody.
     if not (audit.get("detail") or {}).get("operation_name"):
         return record
+    # Don't chase a rollback /execute is still actively working on.
+    #
+    # This is the load-bearing latency guard, not a nicety. The rollback worker
+    # runs --concurrency=1, so a reconcile for a FRESH `applying` queues behind
+    # the very /execute that owns it and blocks for that call's remaining LRO
+    # budget. The operator's focus-return refresh lands in exactly that window,
+    # which is the worst possible moment to stall GET /decisions — and
+    # overviewStore awaits it alongside the graph and pending-list fetches, so
+    # all three would wait. /execute will terminalize the doc itself; reconcile
+    # exists for what it leaves behind, not to race it.
+    phase_at = audit.get("phase_at")
+    if isinstance(phase_at, dt.datetime):
+        age = (dt.datetime.now(dt.timezone.utc) - phase_at).total_seconds()
+        if age < _RECONCILE_MIN_AGE_S:
+            return record
     if budget[0] <= 0:
         log.info("decisions_reconcile_budget_exhausted", extra={"approval_id": approval_id})
         return record

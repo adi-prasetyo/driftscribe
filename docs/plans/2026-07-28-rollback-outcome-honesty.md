@@ -49,6 +49,41 @@ up on the seal itself but had six real gaps, all now fixed:
 
 Also corrected: the approval page called `applying`/`outcome_unknown`
 "resolved", asserting a terminality the backend does not have.
+
+## Third review correction (Codex, round 3)
+
+Round 2 was committed as `2f989e3` and reviewed again. Five more, all real:
+
+1. **`claimed` was a permanent invisible state.** A crash between the claim and
+   the handle write — including the window where `update_service` had already
+   accepted the traffic change — leaves `phase=claimed` with no handle. Nothing
+   could reconcile it (nothing to look up), rule 2.5 only aged `applying`, and
+   once it fell off the four-row ledger the desk rendered resting. A burned
+   approval with an unknown outcome, silently. Exactly the "silent `used`" this
+   change exists to abolish, hiding one phase to the left. Rule 2.5 now ages
+   `claimed` too.
+2. **Supersession confused observation order with attempt order.** A rollback
+   that succeeded at 10:00 but was only reconciled at 10:07 carried
+   `phase_at=10:07`, which "post-dated" and silently buried a DIFFERENT rollback
+   that genuinely failed at 10:06. Supersession now compares `created_at`
+   (attempt chronology); `phase_at` still picks among unresolved rows (what we
+   most recently learned). The round-2 tests could not catch this — in all of
+   them the two clocks agreed.
+3. **Reconcile was a wall-clock foot-gun.** `call_reconcile` inherited the 30s
+   default, and a reconcile for a FRESH `applying` queues behind the very
+   `/execute` that owns it on the single-concurrency worker. Three eligible rows
+   could burn ~90s of the ~100s edge budget, and `overviewStore` awaits
+   `/decisions` alongside the graph and pending fetches, so the whole desk
+   stalls. Now a 15s client timeout plus a `_RECONCILE_MIN_AGE_S` gate so a
+   live rollback is never chased.
+4. **The approval page still lied for `claimed`** ("still running" when nothing
+   started) **and for an absent phase** ("resolved" when the outcome is
+   unknown). An existing integration test positively pinned the second one; it
+   now asserts the honest wording.
+5. **Four more false comments**, including one introduced in round 2
+   ("nothing is coming back for it" — untrue; a long LRO can exceed the
+   threshold and reconcile can still settle it) and two stale claims in this
+   very plan.
 **Related:** `docs/plans/2026-07-28-composite-redesign-implementation.md` (Tasks 3.0b/3.1/3.4 introduced the defect)
 
 ## Defect
@@ -162,9 +197,11 @@ transport error around the mutation call. It must never be rendered as "failed."
   - `claim_pending` → `False`, writing `apply_audit={"phase": "claimed"}`
     atomically with the flip instead.
 - New `record_phase(approval_id, *, phase, detail=None, resolved_at=None)` —
-  non-transactional (the claim already settled concurrency). **Idempotent, and
-  terminal phases are immutable**: once `applied`/`failed`, a later write cannot
-  downgrade it. Stamps `phase_at` on every transition.
+  **transactional. Terminal phases are immutable**: once `applied`/`failed`, a
+  later write cannot downgrade it. Stamps `phase_at` on every transition.
+  (This bullet originally said "non-transactional (the claim already settled
+  concurrency)". That stopped being true the moment `/reconcile` became a second
+  post-claim writer — review round 2, finding 4.)
 
 ### Timestamps (correction 4 of the review)
 
@@ -195,7 +232,12 @@ try:
 except concurrent.futures.TimeoutError:
     store.record_phase(id, phase="outcome_unknown", ...); raise HTTPException(504, ...)
 except Exception:
-    store.record_phase(id, phase="failed", ...); raise HTTPException(502, ...)
+    # NOT automatically a failure — result() also raises when a POLLING RPC
+    # errors out while the operation itself is still running (review round 2,
+    # blocker). Failure is established only by the raw operation being `done`
+    # with a nonzero error code.
+    phase = "failed" if _is_established_failure(op) else "outcome_unknown"
+    store.record_phase(id, phase=phase, ...); raise HTTPException(502, ...)
 store.record_phase(id, phase="applied", resolved_at=now)
 ```
 
