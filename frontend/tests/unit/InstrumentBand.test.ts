@@ -40,11 +40,13 @@ describe('InstrumentBand', () => {
     expect(drift.tagName).toBe('BUTTON');
     expect(awaiting.tagName).toBe('BUTTON');
     // A bare number is a useless accessible name read aloud — each button's
-    // name must carry both the figure and what it means.
-    expect(managed.getAttribute('aria-label')).toMatch(/9/);
-    expect(managed.getAttribute('aria-label')?.length ?? 0).toBeGreaterThan(2);
-    expect(drift.getAttribute('aria-label')).toMatch(/6/);
-    expect(awaiting.getAttribute('aria-label')).toMatch(/1/);
+    // name must carry both the figure and what it means. Asserted as EXACT
+    // strings, not a loose /9/ match: these are operator-facing copy under a
+    // freeze, and a substring match would still pass if the label degraded to
+    // the bare numeral or the {n} placeholder leaked through uninterpolated.
+    expect(managed.getAttribute('aria-label')).toBe('9 managed by IaC');
+    expect(drift.getAttribute('aria-label')).toBe('6 drift detected');
+    expect(awaiting.getAttribute('aria-label')).toBe('1 awaiting your approval');
   });
 
   it('clicking any stat fires onNavigate("estate")', async () => {
