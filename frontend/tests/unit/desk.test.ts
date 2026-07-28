@@ -152,6 +152,34 @@ describe('deskModel — rule 1: pending rollback', () => {
     }
   });
 
+  it('on an exact created_at tie, the first-encountered candidate wins (deterministic, not last-write-wins)', () => {
+    // Quality review finding #3: `ts > best.ts` (strict greater-than) means a
+    // later element with an EQUAL timestamp never displaces the earlier one.
+    // Pin that explicitly so a future `>=` "simplification" is caught.
+    const first = rollbackDecision({
+      decision_id: 'rb-first',
+      created_at: '2026-07-28T11:00:00Z',
+      approval: { approval_url: '/approvals/rb-first?t=1', status: 'pending' },
+    });
+    const second = rollbackDecision({
+      decision_id: 'rb-second',
+      created_at: '2026-07-28T11:00:00Z', // exact tie with `first`
+      approval: { approval_url: '/approvals/rb-second?t=1', status: 'pending' },
+    });
+    const model = deskModel({
+      decisions: [first, second],
+      pendingApprovals: [],
+      now: NOW,
+      origin: ORIGIN,
+    });
+    expect(model.kind).toBe('pending');
+    if (model.kind === 'pending' && model.source === 'rollback') {
+      expect(model.decision.decision_id).toBe('rb-first');
+    } else {
+      throw new Error('expected the first-encountered candidate to win the tie');
+    }
+  });
+
   it('a missing/unparseable created_at still qualifies when it is the only candidate, but never displaces a dated rival', () => {
     const undated = rollbackDecision({
       decision_id: 'rb-undated',
@@ -404,6 +432,69 @@ describe('deskModel — rule 3: stamped', () => {
     });
     expect(model.kind).toBe('stamped');
     if (model.kind === 'stamped') expect(model.decision.decision_id).toBe('iac-fresh');
+  });
+});
+
+describe('deskModel — defensive: malformed array elements', () => {
+  // Quality review finding #1: /decisions and /infra/pending-approvals are
+  // both open, externally-sourced arrays (cast from JSON.parse output — see
+  // overviewStore.ts's `as Decision[]` / `as PendingApproval[]`), so a
+  // null/undefined element is a realistic runtime shape even though today's
+  // backend never emits one. A null element must be skipped, never thrown on
+  // — this function is the app's front door, and a throw here blanks the
+  // whole desk. Mirrors resolvedIacPrNumbers's tolerance of null/undefined
+  // entries on the same Decision[] shape (approval.ts:194).
+
+  it('a null element in decisions is skipped (rule 1) — a valid rollback later in the array still wins', () => {
+    const good = rollbackDecision({
+      decision_id: 'rb-good',
+      approval: { approval_url: '/approvals/rb-good?t=1', status: 'pending' },
+    });
+    const model = deskModel({
+      decisions: [null, undefined, good] as unknown as Decision[],
+      pendingApprovals: [],
+      now: NOW,
+      origin: ORIGIN,
+    });
+    expect(model.kind).toBe('pending');
+    if (model.kind === 'pending' && model.source === 'rollback') {
+      expect(model.decision.decision_id).toBe('rb-good');
+    } else {
+      throw new Error('expected the valid rollback to win despite the null/undefined elements');
+    }
+  });
+
+  it('a null element in pendingApprovals is skipped (rule 2) — a valid entry later in the array still wins', () => {
+    const good = pendingIac({ pr_number: 11 });
+    const model = deskModel({
+      decisions: [],
+      pendingApprovals: [null, undefined, good] as unknown as PendingApproval[],
+      now: NOW,
+      origin: ORIGIN,
+    });
+    expect(model.kind).toBe('pending');
+    if (model.kind === 'pending' && model.source === 'iac') {
+      expect(model.href).toBe('/iac-approvals/11');
+      expect(model.approval).toBe(good);
+    } else {
+      throw new Error('expected the valid pending-approval entry to win despite the null/undefined elements');
+    }
+  });
+
+  it('a null element in decisions is skipped (rule 3) — a valid applied iac row later in the array still stamps', () => {
+    const applied = iacDecision({
+      decision_id: 'iac-good',
+      apply_status: 'applied',
+      applied_at: '2026-07-28T11:58:00Z',
+    });
+    const model = deskModel({
+      decisions: [null, undefined, applied] as unknown as Decision[],
+      pendingApprovals: [],
+      now: NOW,
+      origin: ORIGIN,
+    });
+    expect(model.kind).toBe('stamped');
+    if (model.kind === 'stamped') expect(model.decision.decision_id).toBe('iac-good');
   });
 });
 

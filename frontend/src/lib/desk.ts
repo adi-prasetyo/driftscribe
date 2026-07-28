@@ -66,8 +66,15 @@ export interface DeskResting {
 export type DeskModel = DeskPending | DeskStamped | DeskResting;
 
 export interface DeskModelInput {
-  decisions: Decision[] | null | undefined;
-  pendingApprovals: PendingApproval[] | null | undefined;
+  // Element type includes null/undefined: both arrays are open, externally-
+  // sourced payloads (overviewStore.ts casts JSON.parse output straight to
+  // `Decision[]` / `PendingApproval[]` — see its fetchDecisionsList /
+  // fetchPendingList), so a malformed element is a real runtime possibility
+  // the static element type doesn't rule out. Mirrors resolvedIacPrNumbers's
+  // `ReadonlyArray<... | null | undefined>` on the same Decision[] shape
+  // (approval.ts:186-192).
+  decisions: ReadonlyArray<Decision | null | undefined> | null | undefined;
+  pendingApprovals: ReadonlyArray<PendingApproval | null | undefined> | null | undefined;
   /** Injected clock (epoch-ms). Defaults to Date.now() — the only place in
    *  this module the ambient clock is read. */
   now?: number;
@@ -110,15 +117,30 @@ function parseStrict(iso: string | null | undefined): number | null {
  * all, so absence must read as pending, not as "not a rollback"), and not
  * expired. A candidate that fails the safety check is skipped rather than
  * surfaced with a dead CTA — the next-newest candidate gets a chance instead.
+ *
+ * Rollback rows are identified by the PRESENCE of `approval.approval_url`,
+ * never by `action === 'rollback'`. This is deliberate, not an oversight: the
+ * coordinator's `_do_rollback` (agent/main.py:1128-1133) documents that a
+ * rollback response carries `approval` in place of `github` — "the schema
+ * divergence is intentional: `github` would be a lie here (no PR/issue was
+ * opened)" — so no other decision shape ever carries `approval.approval_url`,
+ * and gating on the field instead of the action string means a renamed or
+ * variant rollback action can't silently drop a real pending approval. This
+ * is the deliberate asymmetry with rule 3's iac lane below, which IS
+ * action-gated (`action === 'iac_apply'`) — there, `apply_status`/
+ * `applied_at` are generic open-shape fields that a non-iac row could in
+ * principle also carry, so the action check is load-bearing there in a way
+ * it would not be here.
  */
 function selectPendingRollback(
-  decisions: readonly Decision[],
+  decisions: ReadonlyArray<Decision | null | undefined>,
   now: number,
   origin: string | undefined,
   locale: string | undefined,
 ): DeskPendingRollback | null {
   let best: { decision: Decision; href: string; ts: number } | null = null;
   for (const decision of decisions) {
+    if (decision == null) continue; // defensive: malformed array element, skip not throw
     const approval = decision.approval;
     if (!approval || !approval.approval_url) continue;
     const href = safeApprovalHref(approval.approval_url, origin, locale);
@@ -141,10 +163,11 @@ function selectPendingRollback(
  * typed as a plain number, so this only bites a malformed backend row.
  */
 function selectPendingIac(
-  pendingApprovals: readonly PendingApproval[],
+  pendingApprovals: ReadonlyArray<PendingApproval | null | undefined>,
   locale: string | undefined,
 ): DeskPendingIac | null {
   for (const approval of pendingApprovals) {
+    if (approval == null) continue; // defensive: malformed array element, skip not throw
     const href = iacApprovalHref(approval.pr_number, locale);
     if (href == null) continue; // malformed pr_number — never a dead CTA, try the next one
     return { kind: 'pending', source: 'iac', approval, href };
@@ -168,11 +191,15 @@ function selectPendingIac(
  * task text doesn't rank the two kinds against each other, so recency is the
  * tiebreak.
  */
-function selectStamped(decisions: readonly Decision[], now: number): DeskStamped | null {
+function selectStamped(
+  decisions: ReadonlyArray<Decision | null | undefined>,
+  now: number,
+): DeskStamped | null {
   let bestIac: { decision: Decision; ts: number } | null = null;
   let bestRollback: { decision: Decision; ts: number } | null = null;
 
   for (const decision of decisions) {
+    if (decision == null) continue; // defensive: malformed array element, skip not throw
     if (decision.action === 'iac_apply' && decision.apply_status === 'applied') {
       const ts = parseStrict(decision.applied_at);
       if (ts !== null && (bestIac === null || ts > bestIac.ts)) {
