@@ -17,7 +17,12 @@ beforeEach(() => {
   window.HTMLElement.prototype.scrollIntoView = vi.fn();
   // openTrace scrolls the window to top; jsdom doesn't implement scrollTo.
   window.scrollTo = vi.fn() as unknown as typeof window.scrollTo;
-  history.replaceState(null, '', '/');
+  // Explicit `?view=chat` since the Task 3.6 flip made a BARE url resolve to
+  // the desk. Most of this file exercises chat-view behaviour (composer, SSE
+  // turns, thread resume, replays), which a bare url no longer reaches. Tests
+  // that care about the DEFAULT itself set their own bare `/` — see the view
+  // routing suite.
+  history.replaceState(null, '', '/?view=chat');
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: RequestInfo | URL) => {
@@ -312,7 +317,19 @@ describe('App — view routing (Task 2.2)', () => {
     );
   }
 
-  it('defaults to the chat layout: composer present, desk/estate placeholders absent', () => {
+  // Task 3.6 step 2 flipped DEFAULT_VIEW to 'desk'. A BARE url (no ?view=) is
+  // the case that matters — it's what a judge typing the domain gets — so this
+  // deliberately overrides the suite-wide `?view=chat` default set above.
+  it('a bare url defaults to the approval desk: composer absent, estate absent', () => {
+    history.replaceState(null, '', '/');
+    const { getByTestId, queryByTestId } = render(App);
+    expect(getByTestId('approval-desk')).toBeTruthy();
+    expect(document.getElementById('chat-form')).toBeNull();
+    expect(queryByTestId('estate-view')).toBeNull();
+  });
+
+  it('renders the chat layout for an explicit ?view=chat', () => {
+    history.replaceState(null, '', '/?view=chat');
     const { queryByTestId } = render(App);
     expect(document.getElementById('chat-form')).toBeTruthy();
     expect(queryByTestId('approval-desk')).toBeNull();
@@ -355,14 +372,16 @@ describe('App — view routing (Task 2.2)', () => {
     expect(document.getElementById('chat-form')).toBeNull();
     expect(deskBtn.getAttribute('aria-current')).toBe('page');
     expect(chatBtn.getAttribute('aria-current')).not.toBe('page');
-    expect(new URL(window.location.href).searchParams.get('view')).toBe('desk');
+    // navigate() omits ?view= for whatever DEFAULT_VIEW is, so the polarity
+    // here INVERTED at the Task 3.6 flip: the desk is now the paramless
+    // canonical url (a judge typing the bare domain lands here), and chat is
+    // the one that carries an explicit param.
+    expect(new URL(window.location.href).searchParams.get('view')).toBeNull();
 
     await fireEvent.click(chatBtn);
     expect(document.getElementById('chat-form')).toBeTruthy();
     expect(queryByTestId('approval-desk')).toBeNull();
-    // Switching TO chat restores nothing — the view param is simply dropped
-    // (chat is the default; a bare "/" already means chat).
-    expect(new URL(window.location.href).searchParams.get('view')).toBeNull();
+    expect(new URL(window.location.href).searchParams.get('view')).toBe('chat');
   });
 
   it('navigating away from chat with an open replay clears reasoning/conversation/ask_pr/preview_pr in the same write that sets view, and closes the replay', async () => {
@@ -377,7 +396,10 @@ describe('App — view routing (Task 2.2)', () => {
     await fireEvent.click(getByTestId('nav-desk'));
 
     const search = new URLSearchParams(window.location.search);
-    expect(search.get('view')).toBe('desk');
+    // Desk is DEFAULT_VIEW post-flip, so navigate() drops the param entirely
+    // rather than writing view=desk — the assertion that matters here is that
+    // the chat-intent params were swept in that SAME write (below).
+    expect(search.get('view')).toBeNull();
     // Iterate the shared list rather than restating it: a fifth chat-intent
     // param added to CHAT_INTENT_PARAMS is then covered here automatically.
     for (const p of CHAT_INTENT_PARAMS) expect(search.has(p)).toBe(false);

@@ -70,7 +70,12 @@ beforeEach(() => {
   window.HTMLElement.prototype.scrollIntoView = vi.fn();
   // openTrace scrolls the window to top; jsdom doesn't implement scrollTo.
   window.scrollTo = vi.fn() as unknown as typeof window.scrollTo;
-  history.replaceState(null, '', '/');
+  // Explicit `?view=chat` since the Task 3.6 flip made a bare url resolve to
+  // the desk. Every test in this file exercises chat-view behaviour (thread
+  // resume, SSE turns, the composer's crew lock), none of which the desk
+  // renders. The `?conversation=`-bearing tests below would reach chat anyway
+  // via hasChatIntent, but they set their own url and are unaffected by this.
+  history.replaceState(null, '', '/?view=chat');
 });
 afterEach(() => {
   cleanup();
@@ -721,7 +726,10 @@ describe('App — ?conversation boot deep-link', () => {
 
   it('clears both ?conversation and ?reasoning on New chat, preserving unrelated params + hash', async () => {
     stubResumeFetchWithTrace();
-    history.replaceState(null, '', '/?unrelated=1#frag');
+    // `view=chat` explicitly (post-Task-3.6 a bare url is the desk, which has
+    // no conversations rail to click); `unrelated=1` + the hash are what this
+    // test actually asserts survive the New-chat param sweep.
+    history.replaceState(null, '', '/?view=chat&unrelated=1#frag');
     const { findByTestId, container } = render(App);
     await fireEvent.click(await findByTestId('conversation-open'));
     await findByTestId('conversation-thread');
