@@ -94,6 +94,28 @@ describe('App — tour wiring (smoke)', () => {
   // "still loading" / "unavailable" copy for the whole tour. Task 4.1 made this
   // worse still by routing steps 2 and 4 to the ESTATE view, which likewise
   // does not mount InfraDiagram — so no tour path reached a populated graph.
+  // Task 4.1's actual feature: the estate step's target moved onto EstateView,
+  // which is NOT mounted while the tour is opened from the desk. So the step
+  // must navigate AND the spotlight must land — and the lookup has to wait for
+  // that mount, because `navigate()` writes App state from inside TourCard's
+  // effect, scheduling a SEPARATE render pass that has not run when the effect
+  // body continues. A synchronous querySelector therefore finds nothing and
+  // silently spotlights nothing. Without this case the whole tick() deferral
+  // was unpinned: the suite passed identically with the sync version.
+  it('the estate step navigates to the estate view AND spotlights it there', async () => {
+    history.replaceState(null, '', '/');
+    const { getByTestId, queryByTestId } = render(App);
+    expect(queryByTestId('estate-view')).toBeNull(); // starts on the desk
+    await fireEvent.click(getByTestId('tour-open'));
+    await fireEvent.click(getByTestId('tour-next')); // welcome → estate
+    await waitFor(() => expect(getByTestId('estate-view')).toBeTruthy());
+    await waitFor(() =>
+      expect(
+        document.querySelector('[data-tour="estate"]')?.classList.contains('tour-spotlight'),
+      ).toBe(true),
+    );
+  });
+
   it('the tour opened from the DESK still has the graph (store-fed, not InfraDiagram-fed)', async () => {
     history.replaceState(null, '', '/');
     const { getByTestId, queryByTestId } = render(App);

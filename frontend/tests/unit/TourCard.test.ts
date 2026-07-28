@@ -3,6 +3,7 @@ import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/svelte';
 import TourCard from '../../src/components/TourCard.svelte';
 import type { InfraGraph } from '../../src/lib/infra_graph';
+import { tick } from 'svelte';
 
 // jsdom does not implement scrollIntoView — the spotlight effect calls it.
 // Fresh mock per test (Codex should-fix: a shared beforeAll mock leaks call
@@ -236,6 +237,37 @@ describe('TourCard — spotlight', () => {
       await fireEvent.click(getByTestId('tour-next'));
       expect(estate.classList.contains('tour-spotlight')).toBe(true);
       unmount();
+      expect(estate.classList.contains('tour-spotlight')).toBe(false);
+    } finally {
+      estate.remove();
+    }
+  });
+
+  // Pins the `disposed` guard inside the spotlight effect's deferred callback
+  // (Task 4.1). Since some steps' targets only exist on another view, the
+  // lookup is deferred behind tick() so the navigated-to view has mounted —
+  // which opens a window where the card can be torn down BEFORE the deferred
+  // callback runs. The effect's cleanup fires synchronously on unmount, but
+  // the already-scheduled promise does not: without the guard it then paints
+  // .tour-spotlight onto an element belonging to a tour that no longer exists,
+  // and nothing is left to ever remove it.
+  //
+  // The click is deliberately NOT awaited — awaiting it flushes the effect
+  // graph AND the deferred lookup together, closing the very window under
+  // test. That is why this needs its own case rather than an assertion bolted
+  // onto the unmount test above (which awaits, and so passes either way).
+  it('unmounting before the deferred lookup runs never paints a stale spotlight', async () => {
+    const estate = document.createElement('div');
+    estate.setAttribute('data-tour', 'estate');
+    document.body.appendChild(estate);
+    try {
+      const { getByTestId, unmount } = render(TourCard, {
+        props: { graph: graphWithTarget() },
+      });
+      void fireEvent.click(getByTestId('tour-next')); // schedules the lookup
+      unmount(); // …and tears down inside its window
+      await tick();
+      await Promise.resolve(); // let the scheduled .then() callback run
       expect(estate.classList.contains('tour-spotlight')).toBe(false);
     } finally {
       estate.remove();
