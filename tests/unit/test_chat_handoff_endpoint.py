@@ -440,3 +440,27 @@ def test_the_run_lease_is_never_served(client, state):
     rows = client.get("/conversations").json()["conversations"]
     assert all("chat_run_lease" not in r for r in rows)
     assert all("nonce_digest" not in json.dumps(r, default=str) for r in rows)
+
+
+def test_both_transports_report_which_crew_took_over(client, monkeypatch):
+    """The caller named no crew in its request — the route lives in server
+    state — so this is the only place it learns which crew answered."""
+    cid, nonce = _propose(client)
+    assert _redeem(client, cid, nonce).json()["crew_change"] == {
+        "from": "explore", "to": "drift",
+    }
+
+    async def _stream(prompt, session_id=None, *, workload="drift",
+                      autonomy_mode="propose_apply", prior_turns=None,
+                      demo_anon=False, denied_tools=None):
+        yield {"type": "result", "reply": "r", "tool_calls": [],
+               "session_id": "sid"}
+
+    cid2, nonce2 = _propose(client)
+    monkeypatch.setattr("agent.adk_agent.run_chat_stream", _stream)
+    r = client.post(
+        "/chat/handoff",
+        json={"conversation_id": cid2, "nonce": nonce2, "accept": True},
+        headers={"Accept": "text/event-stream"},
+    )
+    assert _sse_done(r.text)["crew_change"] == {"from": "explore", "to": "drift"}

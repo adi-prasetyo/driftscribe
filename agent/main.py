@@ -621,6 +621,12 @@ def _persist_chat_turn(
         )
         conv["is_new"] = False
         out: dict = {"conversation_id": conv["conversation_id"]}
+        # Present only on the turn a confirmed handoff runs: which crew just
+        # took over. Carried on ``conv`` by the redemption endpoint so BOTH
+        # transports report it — the JSON caller named no crew in its request,
+        # so this is the only place it learns which one answered.
+        if conv.get("crew_change"):
+            out["crew_change"] = conv["crew_change"]
         if pending is not None and nonce is not None:
             out["handoff"] = {
                 "from": pending["from"],
@@ -6268,6 +6274,8 @@ async def _drain_chat_stream_result(agen) -> dict:
             # when this turn proposed one AND the proposal committed.
             if item.get("handoff"):
                 out["handoff"] = item["handoff"]
+            if item.get("crew_change"):
+                out["crew_change"] = item["crew_change"]
             return out
     raise RuntimeError("ADK chat agent produced no final response")
 
@@ -6351,6 +6359,8 @@ async def _chat_sse(prompt: str, session_id: str | None, conv: dict,
                     # credential that is not yet real.
                     if item.get("handoff"):
                         done_data["handoff"] = item["handoff"]
+                    if item.get("crew_change"):
+                        done_data["crew_change"] = item["crew_change"]
                     yield _sse_frame(event="done", data=done_data)
             elif kind == "error":
                 status, detail = payload
@@ -6795,12 +6805,22 @@ async def chat_handoff(
         # Recording a user turn here would put words in their mouth in a
         # transcript whose whole value is being trustworthy.
         "omit_user_turn": True,
+        "crew_change": {"from": pending["from"], "to": pending["to"]},
     }
     prompt = handoff_prompt(pending)
     if not _acquire_chat_run(state, conv):
+        # A turn slipped in between the redemption and this claim. The window
+        # is two store operations wide, and the transition has ALREADY
+        # committed — which is the documented resolution for a first run that
+        # fails after the flip: the flip stands, and the operator continues by
+        # typing. Say that plainly rather than reusing the generic message.
         raise HTTPException(
             status_code=409,
-            detail=_HANDOFF_REFUSAL_DETAIL["busy"],
+            detail=(
+                f"{crew_display_name(pending['to'])} has taken over this "
+                f"conversation, but another turn was already running so it "
+                f"could not start yet. Send a message to continue."
+            ),
             headers={"Cache-Control": "no-store"},
         )
     trace_id = current_trace_id_or_new()
@@ -6846,7 +6866,6 @@ async def chat_handoff(
             result.pop("handoff", None)
             if persisted:
                 result.update(persisted)
-            result["crew_change"] = {"from": pending["from"], "to": pending["to"]}
             return result
         finally:
             if workload != "provision":

@@ -257,3 +257,21 @@ def test_the_stored_digest_is_never_the_nonce(store):
     pending = store.get_conversation("c1")["pending_handoff"]
     assert nonce not in str(pending)
     assert pending["nonce_digest"] == handoff_nonce_digest(nonce)
+
+
+def test_the_lease_ttl_outlives_the_longest_possible_run():
+    """The TTL is derived from Cloud Run's request timeout, not picked. Shorter
+    than the request timeout would let a second caller steal a LIVE run's
+    lease; much longer would strand an operator whose browser disconnected."""
+    import pathlib
+    import re
+
+    from agent.state_store import CHAT_RUN_LEASE_TTL_S
+
+    cloudbuild = (
+        pathlib.Path(__file__).resolve().parents[2]
+        / "infra" / "cloudbuild.yaml"
+    ).read_text()
+    request_timeout = int(re.search(r"- --timeout=(\d+)", cloudbuild).group(1))
+    assert CHAT_RUN_LEASE_TTL_S > request_timeout
+    assert CHAT_RUN_LEASE_TTL_S < request_timeout * 2

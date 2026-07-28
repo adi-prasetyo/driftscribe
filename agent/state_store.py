@@ -90,10 +90,16 @@ class StateStore(Protocol):
 # code Firestore runs in production.
 
 # How long a /chat run may hold a conversation's lease before another caller
-# may take it. Generous on purpose: it exists so a crashed or disconnected run
-# cannot wedge a thread forever, NOT to bound a run. A real run finishes and
-# releases explicitly; only an abandoned one waits this out.
-CHAT_RUN_LEASE_TTL_S = 600
+# may take it. This bounds nothing — a real run finishes and releases
+# explicitly — it only decides how long an ABANDONED lease wedges a thread.
+#
+# Derived, not picked: Cloud Run kills the coordinator's requests at 300s
+# (``--timeout=300`` in infra/cloudbuild.yaml, sized so /chat can hold its slot
+# for a whole agent run). A lease older than that necessarily belongs to a run
+# that can no longer be running, so a small margin over the request timeout is
+# the tightest honest value. Longer would strand an operator whose browser
+# disconnected mid-turn; shorter could steal a live run's lease.
+CHAT_RUN_LEASE_TTL_S = 330
 
 
 def _evaluate_handoff_redemption(
