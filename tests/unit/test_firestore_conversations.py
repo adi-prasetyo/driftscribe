@@ -394,3 +394,47 @@ def test_firestore_seeds_the_counter_for_a_doc_predating_it(store):
                {"role": "crew", "text": "a", "workload": "explore"}],
     )
     assert store.get_conversation("c1")["user_turn_count"] == 4
+
+
+def test_firestore_operator_turn_retires_the_proposal(store):
+    """`clear_pending_handoff` has its own Firestore branch (DELETE_FIELD), so
+    the in-memory test does not cover it. An operator turn answers the
+    suggestion, and both stores have to agree that it does."""
+    nonce = _fs_propose(store, "c1")
+    assert store.get_conversation("c1")["pending_handoff"]["to"] == "drift"
+
+    store.append_turns(
+        "c1",
+        [{"role": "user", "text": "no, keep digging here", "workload": "explore"},
+         {"role": "crew", "text": "ok", "workload": "explore"}],
+        clear_pending_handoff=True,
+    )
+
+    assert "pending_handoff" not in store.get_conversation("c1")
+    out = store.redeem_handoff("c1", nonce=nonce, accept=True, now=_NOW)
+    assert out == {"ok": False, "error": "no_pending"}
+
+
+def test_firestore_clear_never_beats_a_proposal_minted_by_the_same_write(store):
+    """A turn that BOTH answers the old suggestion and carries a new one keeps
+    the new one — the clear is the fallback branch, not a separate write that
+    could land after it."""
+    _fs_propose(store, "c1")
+    nonce2, digest2 = mint_handoff_nonce()
+    store.append_turns(
+        "c1",
+        [{"role": "user", "text": "what about infra?", "workload": "explore"},
+         {"role": "crew", "text": "that is Provision's", "workload": "explore"}],
+        pending_handoff=build_pending_handoff(
+            validate_handoff_proposal(
+                target="provision", reason="needs new infra", brief="b",
+                current_workload="explore",
+            ),
+            digest=digest2, now=_NOW,
+        ),
+        clear_pending_handoff=True,
+    )
+
+    assert store.get_conversation("c1")["pending_handoff"]["to"] == "provision"
+    out = store.redeem_handoff("c1", nonce=nonce2, accept=True, now=_NOW)
+    assert out["ok"] is True

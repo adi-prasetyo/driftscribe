@@ -275,6 +275,113 @@ describe('App — confirming a handoff', () => {
   });
 });
 
+describe('App — a redemption that answers 2xx without redeeming', () => {
+  it('keeps the chip and its nonce when the kill switch refuses', async () => {
+    // The pause check runs BEFORE redemption, and answers 200 with paused:true.
+    // "Any 2xx means the nonce is spent" would delete custody for a proposal
+    // that is still open — and since the server keeps only a digest, no reload
+    // could ever bring the chip back.
+    stubFetch((url, init) => {
+      if (url.includes('/chat/handoff') && init?.method === 'POST') {
+        return okJson({
+          reply: 'DriftScribe is paused.',
+          tool_calls: [],
+          session_id: '',
+          paused: true,
+          conversation_id: 'c1',
+        });
+      }
+      return undefined;
+    });
+    window.sessionStorage.setItem('ds.handoff.c1', JSON.stringify(OFFER));
+    const { findByTestId, getByTestId } = render(App);
+    await fireEvent.click(await findByTestId('conversation-open'));
+    await findByTestId('handoff-chip');
+    await fireEvent.click(getByTestId('handoff-confirm'));
+
+    await waitFor(() => expect(handoffPosts()).toHaveLength(1));
+    // Chip survives, unlocked, ready to confirm again once the pause lifts.
+    expect(await findByTestId('handoff-chip')).toBeTruthy();
+    await waitFor(() =>
+      expect((getByTestId('handoff-confirm') as HTMLButtonElement).disabled).toBe(false),
+    );
+    expect(window.sessionStorage.getItem('ds.handoff.c1')).not.toBeNull();
+  });
+});
+
+describe('App — a failure AFTER the redemption committed', () => {
+  it('moves with the crew instead of treating it as retryable', async () => {
+    // The joining crew failed to start, but the flip already committed: the
+    // nonce is spent and the conversation belongs to Provision now. Reading
+    // this as an ordinary refusal would keep a dead chip AND leave the composer
+    // on Explore, whose next typed turn the crew lock refuses — so the
+    // "retry by typing" the backend promises would not work.
+    let redeemed = false;
+    stubFetch((url, init) => {
+      if (url.includes('/chat/handoff') && init?.method === 'POST') {
+        redeemed = true;
+        return errJson(503, "workload 'provision' is not deployed", {
+          'X-Handoff-Redeemed': '1',
+        });
+      }
+      if (url.includes('/conversations/')) {
+        return okJson(
+          redeemed
+            ? { ...JOINED_DETAIL, turns: JOINED_DETAIL.turns.slice(0, 3), pending_handoff: null }
+            : PENDING_DETAIL,
+        );
+      }
+      return undefined;
+    });
+    window.sessionStorage.setItem('ds.handoff.c1', JSON.stringify(OFFER));
+    const { findByTestId, queryByTestId, getByTestId, container } = render(App);
+    await fireEvent.click(await findByTestId('conversation-open'));
+    await findByTestId('handoff-chip');
+    await fireEvent.click(getByTestId('handoff-confirm'));
+
+    // The chip is gone and its credential with it — it is spent, not retryable.
+    await waitFor(() => expect(queryByTestId('handoff-chip')).toBeNull());
+    expect(window.sessionStorage.getItem('ds.handoff.c1')).toBeNull();
+    // The transition the operator confirmed is still visible.
+    await findByTestId('thread-turn-crew-change');
+    // And the composer moved with it, so the retry actually works.
+    const input = container.querySelector('#prompt-input') as HTMLTextAreaElement;
+    await waitFor(() => expect(input.disabled).toBe(false));
+    await fireEvent.input(input, { target: { value: 'try again' } });
+    await fireEvent.submit(document.getElementById('chat-form')!);
+    await waitFor(() => {
+      const post = fetchCalls()
+        .filter(([u, i]) => String(u).endsWith('/chat') && i?.method === 'POST')
+        .at(-1);
+      expect(JSON.parse(String(post![1]!.body)).workload).toBe('provision');
+    });
+  });
+
+  it('retires the chip even when the post-redemption refetch fails', async () => {
+    // Fail-soft on the refetch is fine — the reply is already on screen. What
+    // is not fine is leaving a clickable chip holding a nonce the server
+    // already burned.
+    stubFetch((url, init) => {
+      if (url.includes('/chat/handoff') && init?.method === 'POST') {
+        return okJson({ reply: 'opened PR #42', tool_calls: [], conversation_id: 'c1' });
+      }
+      if (url.includes('/conversations/')) {
+        // First call (the resume) succeeds; the post-redemption refetch 500s.
+        return handoffPosts().length ? errJson(500, 'boom') : okJson(PENDING_DETAIL);
+      }
+      return undefined;
+    });
+    window.sessionStorage.setItem('ds.handoff.c1', JSON.stringify(OFFER));
+    const { findByTestId, queryByTestId, getByTestId } = render(App);
+    await fireEvent.click(await findByTestId('conversation-open'));
+    await findByTestId('handoff-chip');
+    await fireEvent.click(getByTestId('handoff-confirm'));
+
+    await waitFor(() => expect(queryByTestId('handoff-chip')).toBeNull());
+    expect(window.sessionStorage.getItem('ds.handoff.c1')).toBeNull();
+  });
+});
+
 describe('App — declining a handoff', () => {
   it('posts accept:false rather than dismissing client-side', async () => {
     // A client-side dismiss would leave the proposal live: the crew would
@@ -447,7 +554,7 @@ describe('App — a refused confirmation', () => {
   });
 });
 
-describe('App — typing instead of clicking', () => {
+describe('App — leaving the suggestion unanswered', () => {
   it('retires the suggestion: the operator answered it by carrying on', async () => {
     // Leaving a clickable chip under a NEWER reply would attach the suggestion
     // to a question it was never about. If the crew still wants the sibling it
@@ -471,6 +578,28 @@ describe('App — typing instead of clicking', () => {
     await waitFor(() => expect(queryByTestId('handoff-chip')).toBeNull());
     // And it stays gone across a reload — the view and the stored custody agree.
     expect(window.sessionStorage.getItem('ds.handoff.c1')).toBeNull();
+  });
+
+  it('leaving the chat view takes the chip with the thread it belongs to', async () => {
+    // navigate() away from chat drops the open thread, and redeeming needs that
+    // thread's id — a chip left on screen would render a Confirm button whose
+    // handler returns immediately on the null id. A dead button is exactly what
+    // this whole design replaced.
+    stubFetch();
+    window.sessionStorage.setItem('ds.handoff.c1', JSON.stringify(OFFER));
+    const { findByTestId, queryByTestId, getByTestId } = render(App);
+    await fireEvent.click(await findByTestId('conversation-open'));
+    await findByTestId('handoff-chip');
+
+    await fireEvent.click(getByTestId('nav-desk'));
+    await waitFor(() => expect(queryByTestId('handoff-chip')).toBeNull());
+    // Custody survives — the thread is still in the rail, and reopening it
+    // brings the chip back. (The rail only mounts on the chat view, so come
+    // back first, the way an operator would.)
+    expect(window.sessionStorage.getItem('ds.handoff.c1')).not.toBeNull();
+    await fireEvent.click(getByTestId('nav-chat'));
+    await fireEvent.click(await findByTestId('conversation-open'));
+    expect(await findByTestId('handoff-chip')).toBeTruthy();
   });
 
   it('New chat carries the chip away but keeps the proposal reachable from the rail', async () => {

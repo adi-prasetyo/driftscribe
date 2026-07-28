@@ -240,7 +240,14 @@
       setConversationId(null); // the only writer of conversationId — see its own doc
       conversationWorkload = null;
       conversationTurns = [];
+      composerWorkload = 'explore';
     }
+    // A pending handoff belongs to the thread just dropped, and redeeming it
+    // needs that thread's id — leaving the chip on screen past this point would
+    // render a Confirm button whose handler returns immediately on the null id.
+    // View only: custody survives, so reopening the thread from the rail finds
+    // its chip intact (same reasoning as newChat).
+    clearHandoff();
     if (previewPr !== null) previewPr = null; // preview_pr already dropped above
   }
 
@@ -1122,11 +1129,26 @@
       if (myRun !== runSeq) return;
 
       if (!resp.ok) {
-        // Every refusal leaves the conversation exactly as it was — no crew
-        // moved, no turn ran. So this is NOT a chat error: don't touch the
-        // hero, just report it on the chip the operator clicked.
         liveExchange = null;
         status = 'pending';
+        // A failure AFTER the redemption committed is a different animal from
+        // a refusal, and shares its status class — hence the explicit marker
+        // (see `X-Handoff-Redeemed` in agent/main.py). The crew has already
+        // moved and the nonce is spent, so treating it as retryable would keep
+        // a dead chip on screen AND leave the composer bound to the crew that
+        // left, whose next typed turn the crew lock then refuses. The failure
+        // belongs in the hero; the transition still has to land in the thread.
+        if (resp.headers.get('X-Handoff-Redeemed') === '1') {
+          clearHandoff(cid);
+          finalReply = $t('conversations.handoff.error.joinFailed', crews);
+          finalIsError = true;
+          status = 'error';
+          await reloadConversationTurns(cid, myRun);
+          return;
+        }
+        // Otherwise nothing happened: no crew moved, no turn ran. Not a chat
+        // error — report it on the chip the operator clicked and leave the
+        // hero alone.
         const refusal = handoffRefusal(resp, crews);
         handoffError = refusal.text;
         if (refusal.dead) forgetOffer(cid); // spent server-side; don't restore it on reload
@@ -1134,15 +1156,19 @@
         return;
       }
 
-      // Past this point the nonce is spent whatever happens next — the server
-      // burned it inside the redemption transaction, before it ran anything.
-      forgetOffer(cid);
-
       // The joining crew may propose a handoff of its OWN on this first turn
       // (a crew that finds the question belongs elsewhere again). That is a
       // brand-new proposal with a brand-new nonce riding this stream's done
       // frame — the same one-shot delivery as any other turn.
       let joinHandoff: HandoffOffer | undefined;
+      // The kill switch is checked BEFORE redemption (agent/main.py), so a
+      // paused answer is a 200 in which nothing was redeemed: the proposal is
+      // still open and the nonce still valid. Forgetting custody here — which
+      // "any 2xx means the nonce is spent" would do — would hide the chip for
+      // good on a conversation whose proposal is alive, and no reload could
+      // bring it back. Defaults false: a stream that dies before its terminal
+      // frame was not a paused refusal (that answer is a single frame).
+      let refusedByPause = false;
 
       const ctype = resp.headers.get('content-type') ?? '';
       if (!ctype.includes('text/event-stream')) {
@@ -1157,6 +1183,7 @@
               ? { pr_number: ip.pr_number, pr_url: typeof ip.pr_url === 'string' ? ip.pr_url : '' }
               : null;
           joinHandoff = readHandoffOffer(body?.handoff);
+          refusedByPause = body?.paused === true;
           status = 'complete';
         } catch {
           if (myRun !== runSeq) return;
@@ -1183,6 +1210,7 @@
               finalIsError = false;
               iacPr = d.iac_pr ?? null;
               joinHandoff = readHandoffOffer(d.handoff);
+              refusedByPause = d.paused === true;
               status = 'complete';
             },
             onError: (er) => {
@@ -1209,14 +1237,30 @@
       }
 
       if (myRun !== runSeq) return;
+      if (refusedByPause) {
+        // Nothing moved. Leave the chip and its nonce exactly as they were so
+        // the operator can confirm the same suggestion once they resume,
+        // instead of having to coax the crew into making it again.
+        liveExchange = null;
+        return;
+      }
+
+      // The nonce is spent from here: the server burned it inside the
+      // redemption transaction, before it ran anything. Retire the chip NOW
+      // rather than leaving it to the refetch — a refetch that fails (or is
+      // superseded) would otherwise leave a clickable chip holding a credential
+      // that is already gone.
+      clearHandoff(cid);
+      // Then take custody of any NEW proposal the joining crew made on its own
+      // first turn. Order matters both ways round: after the clear, so it is
+      // not immediately forgotten, and before the refetch, because
+      // reloadConversationTurns rebuilds the chip by pairing the server's
+      // persisted proposal with local custody.
+      if (joinHandoff?.nonce) rememberOffer(cid, joinHandoff);
       // The transition committed regardless of how the turn itself went, so
       // the thread is refetched either way — a crew change the operator
       // confirmed must be visible even if the joining crew's first reply
       // errored.
-      // Take custody BEFORE the refetch: reloadConversationTurns rebuilds the
-      // chip by pairing the server's persisted proposal with local custody, so
-      // a nonce stored afterwards would arrive one step too late.
-      if (joinHandoff?.nonce) rememberOffer(cid, joinHandoff);
       await backfillTrace(myRun);
       if (myRun !== runSeq) return;
       await reloadConversationTurns(cid, myRun);
@@ -1224,6 +1268,13 @@
       void overview.refresh('chat-turn');
       void loadConversations(); // the thread's crew + message count just changed
     } finally {
+      // runSeq-guarded like submitChat's `busy`, and for handoffBusy the guard
+      // is load-bearing rather than tidy: a superseded run that released it
+      // unconditionally could free the flag a LATER redemption is holding
+      // (supersede this run, open another thread, confirm its chip, then this
+      // run's fetch finally settles). Every path that supersedes a redemption
+      // — newChat, openConversation, navigate away, submitChat — goes through
+      // clearHandoff, which releases it, so nothing is stranded either way.
       if (myRun === runSeq) {
         busy = false;
         handoffBusy = false;

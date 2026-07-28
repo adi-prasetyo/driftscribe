@@ -55,6 +55,7 @@ class StateStore(Protocol):
         *,
         create_with: dict[str, Any] | None = None,
         pending_handoff: dict[str, Any] | None = None,
+        clear_pending_handoff: bool = False,
     ) -> list[int]: ...
     def get_conversation(
         self, conversation_id: str
@@ -447,11 +448,13 @@ class InMemoryStateStore:
         *,
         create_with: dict[str, Any] | None = None,
         pending_handoff: dict[str, Any] | None = None,
+        clear_pending_handoff: bool = False,
     ) -> list[int]:
         with self._lock:
             return self._append_turns_locked(
                 conversation_id, turns, create_with=create_with,
                 pending_handoff=pending_handoff,
+                clear_pending_handoff=clear_pending_handoff,
             )
 
     def _append_turns_locked(
@@ -461,6 +464,7 @@ class InMemoryStateStore:
         *,
         create_with: dict[str, Any] | None = None,
         pending_handoff: dict[str, Any] | None = None,
+        clear_pending_handoff: bool = False,
     ) -> list[int]:
         """Append turns; optionally record a crew-handoff proposal with them.
 
@@ -469,10 +473,21 @@ class InMemoryStateStore:
         document until its first turns persist, so a tool that wrote the
         proposal itself would have nothing to write to.
 
-        Passing ``None`` leaves any existing proposal untouched rather than
-        clearing it — an operator who types instead of clicking should not
-        silently lose the chip. Staleness is bounded by the proposal's own TTL;
-        clearing is the job of :meth:`redeem_handoff`.
+        ``clear_pending_handoff`` retires an outstanding proposal in that same
+        operation. The caller sets it when the appended turns include one the
+        OPERATOR typed: being asked "shall I bring in Provision?" and replying
+        with something else is an answer, so the proposal is spent.
+
+        This used to be the opposite — ``None`` left the proposal alone, on the
+        reasoning that someone who types should not silently lose the chip. The
+        SPA nonetheless retires the chip on a typed turn, because leaving it
+        under a NEWER reply attaches the suggestion to a question it was never
+        about. That left the view and the store disagreeing, and the gap was
+        reachable: a second tab holding the same nonce could still confirm a
+        suggestion the operator had already answered by typing, moving the
+        conversation on the older of two contradictory instructions. Losing the
+        chip is not silent when the operator's own next message is what caused
+        it, so the store now agrees with the view.
         """
         from datetime import datetime, timezone
 
@@ -519,6 +534,8 @@ class InMemoryStateStore:
             # verifying. Load-bearing — two proposals from the same crew both
             # satisfy ``pending.from == workload``, so nothing else catches it.
             conv["pending_handoff"] = dict(pending_handoff)
+        elif clear_pending_handoff:
+            conv.pop("pending_handoff", None)
         return seqs
 
     # --- Crew handoff -------------------------------------------------------
@@ -947,6 +964,7 @@ class FirestoreStateStore:
         *,
         create_with: dict[str, Any] | None = None,
         pending_handoff: dict[str, Any] | None = None,
+        clear_pending_handoff: bool = False,
     ) -> list[int]:
         """Append ``turns`` atomically, allocating contiguous ``seq`` values.
 
@@ -1024,6 +1042,11 @@ class FirestoreStateStore:
             }
             if pending_handoff is not None:
                 doc_fields["pending_handoff"] = dict(pending_handoff)
+            elif clear_pending_handoff and not is_create:
+                # DELETE_FIELD is invalid inside a ``set`` of a brand-new doc,
+                # and a conversation being created cannot have a proposal to
+                # retire anyway.
+                doc_fields["pending_handoff"] = firestore.DELETE_FIELD
             if is_create:
                 transaction.set(conv_ref, {**base, **doc_fields})
             else:

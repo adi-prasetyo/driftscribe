@@ -623,6 +623,14 @@ def _persist_chat_turn(
         state.append_turns(
             conv["conversation_id"], turns, create_with=create_with,
             pending_handoff=pending,
+            # An operator turn ANSWERS any outstanding suggestion: being asked
+            # "shall I bring in Provision?" and replying with something else is
+            # a reply, so the proposal is spent and retires with this write.
+            # Gated on a typed row, not merely on "no new proposal": the
+            # redemption path omits the user turn precisely because the
+            # operator did not type it, and a crew's own follow-up must not
+            # answer a question that was put to the operator.
+            clear_pending_handoff=any(t["role"] == "user" for t in turns),
         )
         conv["is_new"] = False
         out: dict = {"conversation_id": conv["conversation_id"]}
@@ -7029,6 +7037,16 @@ async def chat_handoff(
         )
 
     # --- accepted: the joining crew runs now --------------------------------
+    #
+    # From here on the redemption HAS COMMITTED: the nonce is spent and the
+    # conversation's crew is already rewritten. Every error raised below is
+    # therefore a *post-commit* error, which is a different thing from the
+    # refusals above even when it shares their status class. The client cannot
+    # tell them apart from the response alone, and getting it wrong is not
+    # cosmetic — it would keep showing a chip for a spent proposal and keep the
+    # composer bound to the crew that already left, so the operator's next
+    # typed turn is refused by the crew lock. ``X-Handoff-Redeemed`` says which
+    # side of the commit the failure fell on.
     workload = pending["to"]
     # Reserving the joining run inside the burn transaction closed the race
     # where an ordinary turn could take the lease first — but it hands this
@@ -7052,6 +7070,11 @@ async def chat_handoff(
             # transition is what the operator confirmed, and a failed first run
             # is an ordinary error they can retry by typing. Undoing the flip
             # here would silently discard a confirmed decision.
+            #
+            # "Retry by typing" only works if the client MOVED WITH the flip.
+            # The marker added below is what lets it: without it the SPA keeps
+            # the departed crew selected and its retry is refused by the very
+            # lock this transition just moved.
             raise HTTPException(
                 status_code=503,
                 detail=f"workload {workload!r} is not deployed: {e}.",
@@ -7147,6 +7170,13 @@ async def chat_handoff(
         ) as e:
             status, detail = _chat_error_payload(e, workload=workload)
             raise HTTPException(status_code=status, detail=detail) from e
+    except HTTPException as e:
+        # Stamp every post-commit failure, whatever raised it. Done here rather
+        # than at each raise site so an error path added later cannot forget
+        # it — past the burn, "the transition happened" is the default and has
+        # to be opt-out, not opt-in.
+        e.headers = {**(e.headers or {}), "X-Handoff-Redeemed": "1"}
+        raise
     finally:
         if _joining_lease_owned:
             _release_chat_run(

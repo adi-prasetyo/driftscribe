@@ -67,6 +67,11 @@ export const conversations = {
       'This conversation already has a turn running. Try again once it finishes.',
     'conversations.handoff.error.failed':
       "Could not bring in {to}. Nothing changed — you're still with {from}.",
+    // Distinct from the above on purpose: the handover DID happen, and only the
+    // joining crew's first reply failed. Saying "nothing changed" here would be
+    // false, and would leave the operator expecting {from} to answer next.
+    'conversations.handoff.error.joinFailed':
+      '{to} has taken over this conversation, but its first reply failed. Ask again and {to} will pick it up.',
   },
   ja: {
     'conversations.rail.title': 'チャット履歴',
@@ -119,5 +124,7 @@ export const conversations = {
       'この会話では現在ターンが実行中です。完了してからもう一度お試しください。',
     'conversations.handoff.error.failed':
       '{to}への引き継ぎに失敗しました。変更は何も行われておらず、引き続き{from}が担当します。',
+    'conversations.handoff.error.joinFailed':
+      '{to}がこの会話を引き継ぎましたが、最初の返信に失敗しました。もう一度尋ねると、{to}が対応します。',
   },
 };

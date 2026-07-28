@@ -350,8 +350,20 @@ The chip therefore requires:
 
 Both, every time. Custody without an open proposal means it was redeemed or
 superseded elsewhere; an open proposal without custody means another device.
-`frontend/src/lib/handoff.ts` owns this and also pins the route (`from`/`to`) so
-a nonce held for a superseded proposal can never be posted against a newer one.
+`frontend/src/lib/handoff.ts` owns this.
+
+It matches on `from`/`to` **and `expires_at`**. The route alone is not identity:
+two successive Explore→Provision proposals have identical route fields, so a
+nonce from the first would route-match the second, and the chip would render a
+button the server was always going to refuse. `expires_at` is `now + TTL` at
+mint time with microsecond resolution, so it separates them. That is a timestamp
+doing an identifier's job — a real proposal id on both the one-shot offer and
+the persisted projection would be the exact fix, and is the thing to add if this
+ever needs to be airtight rather than merely closed.
+
+Custody is also **dropped** whenever the server reports no open proposal, not
+just ignored. A retained nonce for a closed proposal is what makes the
+same-route false match reachable at all.
 
 **On another device the chip is simply absent.** That is correct rather than
 degraded: the nonce is a capability, not a view, and putting it in a shareable
@@ -363,6 +375,44 @@ trip: the crew re-proposes, which supersedes the stale proposal anyway.
 A typed prompt retires the chip *and* drops custody. Typing is an answer, and
 leaving a clickable chip under a newer reply would attach the suggestion to a
 question it was never about.
+
+**The store now agrees.** It did not at first: `append_turns` deliberately left
+`pending_handoff` alone on an ordinary turn, so as not to "silently" cost the
+operator their chip. With the SPA retiring it anyway, the two disagreed — and
+the gap was reachable rather than theoretical. A second client still holding the
+nonce (a duplicated tab copies `sessionStorage`) could confirm a suggestion the
+operator had already answered by typing, moving the conversation on the older of
+two contradictory instructions. `clear_pending_handoff` retires it in the same
+write as the turn. It is gated on a row the OPERATOR typed, not merely on "no
+new proposal": the redemption path omits the user turn precisely because they
+did not type it, and a crew's own follow-up must not answer a question that was
+put to the operator.
+
+### Which side of the commit did it fail on?
+
+Redemption commits — nonce burned, `workload` rewritten — *before* the joining
+crew is loaded and run. So a `/chat/handoff` failure can fall on either side of
+that line, and the two need opposite handling:
+
+- **Before** (`no_pending`, `expired`, `stale`, `busy`, `invalid_nonce`): nothing
+  moved. Report it on the chip; leave the conversation alone.
+- **After** (e.g. the joining crew's worker env is missing → 503): the crew HAS
+  moved and the nonce is spent. The chip must go, and the composer must move
+  with the crew.
+
+The status class cannot express this — a post-commit failure and a refusal can
+share one. `X-Handoff-Redeemed: 1` marks the post-commit side, set on the
+exception rather than at each raise site so an error path added later cannot
+forget it. Without it the SPA keeps a dead chip and leaves the composer bound to
+the crew that already left, whose next typed turn the crew lock refuses — which
+would make the 503 branch's own promise ("an ordinary error they can retry by
+typing") false.
+
+**A paused refusal is the mirror image**: the kill switch is checked *before*
+redemption and answers `200` with `paused: true`. So "any 2xx means the nonce is
+spent" is wrong in the other direction — it would delete custody for a proposal
+that is still open, and since the server keeps only a digest, no reload could
+ever bring that chip back. The chip and its nonce survive a pause untouched.
 
 ### `invalid_nonce` must not be 403
 
@@ -541,9 +591,11 @@ without it and ship after the pitch. A half-migrated composer on camera re-prove
   broken rule. Declining is a real POST that burns the proposal and records the
   refusal; rendering nothing would misrepresent a durable write as a dismiss.
 - **The joining crew's first run fails after the flip.** The flip stands, as
-  proposed. The thread is refetched either way, so the transition the operator
-  confirmed is visible even when the reply that followed it errored — a crew
-  change that happened must not be invisible because of what happened next.
+  proposed, and the thread is refetched so the transition stays visible even
+  when the reply that followed it errored — a crew change that happened must not
+  be invisible because of what happened next. This needs the post-commit marker
+  above to work at all: without it the client cannot tell that failure from a
+  refusal, and "refetched either way" is simply false.
 
 Still open:
 

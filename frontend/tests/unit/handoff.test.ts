@@ -100,11 +100,32 @@ describe('recallOffer — both halves required', () => {
     expect(recallOffer('c1', pending(), NOW)).toEqual(offer());
   });
 
-  it('returns null with custody but NO server-side proposal', () => {
+  it('returns null with custody but NO server-side proposal, and drops it', () => {
     // The proposal was burned elsewhere (redeemed in another tab, superseded).
     // A stored nonce is not evidence that anything is still awaiting an answer.
     rememberOffer('c1', offer());
     expect(recallOffer('c1', null, NOW)).toBeNull();
+    // Dropped, not merely ignored: a retained nonce for a closed proposal can
+    // still route-match a LATER proposal between the same two crews, and would
+    // then render a chip that cannot possibly succeed.
+    expect(window.sessionStorage.getItem('ds.handoff.c1')).toBeNull();
+  });
+
+  it('refuses a nonce from an EARLIER proposal on the same route', () => {
+    // The gap the route check alone leaves open: two successive
+    // Explore→Provision proposals have identical from/to. `expires_at` is
+    // `now + TTL` at mint time, so it separates them.
+    rememberOffer('c1', offer({ nonce: 'first', expires_at: '2026-07-28T12:10:00.123456Z' }));
+    const superseded = pending({ expires_at: '2026-07-28T12:14:00.654321Z' });
+    expect(recallOffer('c1', superseded, NOW)).toBeNull();
+    expect(window.sessionStorage.getItem('ds.handoff.c1')).toBeNull();
+  });
+
+  it('still matches when the server sends no expiry at all', () => {
+    // Fail-open on a missing timestamp, consistent with isOfferExpired: an
+    // absent field must not hide a chip that works.
+    rememberOffer('c1', offer());
+    expect(recallOffer('c1', pending({ expires_at: null }), NOW)?.nonce).toBe('n0nc3');
   });
 
   it('returns null with a server-side proposal but NO custody', () => {

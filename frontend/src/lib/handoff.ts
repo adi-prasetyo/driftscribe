@@ -133,7 +133,15 @@ export function recallOffer(
   pending: PendingHandoff | null | undefined,
   now: Date,
 ): HandoffOffer | null {
-  if (!conversationId || !pending?.to) return null;
+  if (!conversationId) return null;
+  if (!pending?.to) {
+    // The server says nothing is awaiting an answer, so whatever we are
+    // holding is spent. Drop it: a retained nonce for a closed proposal can
+    // still route-match a LATER proposal on the same pair of crews and render
+    // a chip that cannot possibly succeed.
+    forgetOffer(conversationId);
+    return null;
+  }
   const raw = readRaw(storageKey(conversationId));
   if (!raw) return null;
   let stored: Partial<HandoffOffer>;
@@ -144,11 +152,24 @@ export function recallOffer(
     return null;
   }
   if (typeof stored?.nonce !== 'string' || stored.nonce.length === 0) return null;
-  // Route match. Without this a nonce held for an Explore→Provision proposal
-  // could be posted against a later Explore→Patch one; the server would refuse
-  // it (the digest wouldn't match), but the chip would have promised the wrong
-  // crew in the meantime.
-  if (stored.from !== pending.from || stored.to !== pending.to) {
+  // Identity match, in two parts.
+  //
+  // The route (`from`/`to`) catches the obvious case: a nonce held for an
+  // Explore→Provision proposal must not be posted against a later
+  // Explore→Patch one. The server would refuse it anyway (the digest wouldn't
+  // match), but the chip would have promised the wrong crew in the meantime.
+  //
+  // The route ALONE is not identity, though — two successive Explore→Provision
+  // proposals carry identical route fields. `expires_at` separates them: it is
+  // `now + TTL` at mint time with microsecond resolution, so two distinct
+  // proposals cannot share one. It is a timestamp doing an identifier's job
+  // rather than a real proposal id, which would be the exact fix; this closes
+  // the reachable gap without changing the persisted schema.
+  if (
+    stored.from !== pending.from ||
+    stored.to !== pending.to ||
+    (pending.expires_at && stored.expires_at !== pending.expires_at)
+  ) {
     forgetOffer(conversationId);
     return null;
   }

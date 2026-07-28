@@ -566,3 +566,89 @@ def test_a_successful_join_still_releases_exactly_once(client, state):
     cid, nonce = _propose(client)
     assert _redeem(client, cid, nonce).status_code == 200
     assert not _wedged(state, cid)
+
+
+# --- an operator turn is an answer -----------------------------------------
+
+def test_typing_instead_of_clicking_retires_the_proposal(client, state):
+    """Being asked "shall I bring in Anchor?" and replying with something else
+    is an answer, so the proposal is spent.
+
+    This used to be the other way round: an ordinary turn left ``pending_handoff``
+    alone, so as not to "silently" cost the operator their chip. But the SPA
+    retires the chip on a typed turn regardless — a chip sitting under a NEWER
+    reply attaches the suggestion to a question it was never about — and the two
+    disagreeing was reachable, not theoretical: a second client still holding the
+    nonce could confirm a suggestion the operator had already answered, moving
+    the conversation on the older of two contradictory instructions.
+    """
+    cid, nonce = _propose(client)
+    assert state.get_conversation(cid)["pending_handoff"]["to"] == "drift"
+
+    _chat(client, prompt="no, keep digging here", cid=cid)
+
+    assert "pending_handoff" not in state.get_conversation(cid)
+    # And the credential is genuinely dead, not merely hidden.
+    refused = _redeem(client, cid, nonce)
+    assert refused.status_code == 409
+    assert refused.headers["X-Handoff-Refusal"] == "no_pending"
+    assert state.get_conversation(cid)["workload"] == "explore"
+
+
+def test_a_crews_own_follow_up_does_not_answer_for_the_operator(client, state):
+    """The joining crew's first turn writes NO user row (the operator confirmed
+    rather than typed), so it must not retire a proposal put to the operator."""
+    cid, nonce = _propose(client)
+    r = _redeem(client, cid, nonce, accept=True)
+    assert r.status_code == 200
+    # That turn burned the proposal by redeeming it — the point here is that the
+    # crew reply it wrote did not need a user row to do so, and that the joining
+    # crew can immediately propose again without its own reply cancelling it.
+    client.run_chat.propose = {
+        "from": "drift", "to": "provision", "reason": "needs new infra",
+        "brief": "the rollback needs a bucket first",
+    }
+    try:
+        body = _chat(client, prompt="what next?", workload="drift", cid=cid).json()
+    finally:
+        client.run_chat.propose = None
+    # The typed turn cleared the old proposal AND recorded the new one — the
+    # clear must not win over a proposal minted by the same write.
+    assert body["handoff"]["to"] == "provision"
+    assert state.get_conversation(cid)["pending_handoff"]["to"] == "provision"
+
+
+# --- which side of the commit did it fail on? ------------------------------
+
+def test_a_post_commit_failure_says_the_transition_happened(client, state, monkeypatch):
+    """A 503 raised AFTER redemption shares its status class with the refusals,
+    but means the opposite: the crew HAS moved and the nonce is spent.
+
+    Without the marker the SPA reads it as retryable, keeps a dead chip, and
+    leaves the composer bound to the crew that already left — whose next typed
+    turn the crew lock then refuses. That would make this branch's own promise
+    ("an ordinary error they can retry by typing") false.
+    """
+    cid, nonce = _propose(client)
+
+    def _boom(_w):
+        raise agent_main.MissingWorkerEnvError("DRIFT_WORKER_URL unset")
+
+    monkeypatch.setattr(agent_main, "load_workload", _boom)
+    r = _redeem(client, cid, nonce, accept=True)
+
+    assert r.status_code == 503
+    assert r.headers["X-Handoff-Redeemed"] == "1"
+    # The flip really did commit — the marker is not a guess.
+    assert state.get_conversation(cid)["workload"] == "drift"
+    assert "pending_handoff" not in state.get_conversation(cid)
+
+
+def test_a_pre_commit_refusal_carries_no_redeemed_marker(client):
+    """The other side of the same distinction: nothing moved, so no marker."""
+    cid, nonce = _propose(client)
+    _redeem(client, cid, nonce, accept=True)  # spend it
+    again = _redeem(client, cid, nonce, accept=True)
+
+    assert again.status_code == 409
+    assert "X-Handoff-Redeemed" not in again.headers
