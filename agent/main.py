@@ -116,6 +116,7 @@ from driftscribe_lib.approvals import (
     PHASE_APPLYING,
     PHASE_OUTCOME_UNKNOWN,
     ROLLBACK_PHASES,
+    TERMINAL_ROLLBACK_PHASES,
 )
 from driftscribe_lib.auth import verify_oidc_caller
 from driftscribe_lib.cf_access import (
@@ -2663,6 +2664,69 @@ def _phase_at_age_s(audit: dict) -> float | None:
         return None
 
 
+class _ApprovalReadFailed:
+    """Sentinel: the approval doc could not be READ (as opposed to not existing).
+
+    Distinct from ``None`` on purpose — see the ds-mml branch in
+    ``attach_approval_status``. A dedicated object rather than a string or a
+    bool so it can never collide with a real value or be truthiness-confused.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover — debugging aid only
+        return "<approval read failed>"
+
+
+_APPROVAL_READ_FAILED = _ApprovalReadFailed()
+
+
+# ds-ihi — cross-request cache for approvals that can never change again.
+#
+# The per-request memo below keys on approval_id, and every proposal mints a
+# fresh one, so it collapses nothing in practice: GET /decisions?limit=50 made
+# one SEQUENTIAL Firestore read per rollback row, on the route overviewStore
+# polls every 45s and on every focus. Twenty rollback rows meant twenty
+# serialized round-trips inside a fetch the desk awaits alongside the graph and
+# pending-list.
+#
+# Terminality is an invariant here, not a guess, which is what makes caching
+# across requests safe: record_phase REFUSES to overwrite a terminal phase
+# (TERMINAL_ROLLBACK_PHASES), and a denial is terminal at flip time inside
+# _claim. So a doc in one of those states is immutable and re-reading it can
+# only ever return the same bytes. Everything else — pending, claimed, applying,
+# outcome_unknown — is still read every time, because /reconcile exists
+# precisely to change it.
+_TERMINAL_APPROVALS: dict[str, object] = {}
+_TERMINAL_APPROVALS_MAX = 512
+
+
+def _is_terminal_approval(record) -> bool:  # noqa: ANN001
+    """True when nothing can move this approval again. See _TERMINAL_APPROVALS."""
+    if record is None:
+        return False
+    if getattr(record, "status", None) == "denied":
+        return True
+    phase = (getattr(record, "apply_audit", None) or {}).get("phase")
+    return phase in TERMINAL_ROLLBACK_PHASES
+
+
+def _remember_if_terminal(approval_id: str, record) -> None:  # noqa: ANN001
+    if not _is_terminal_approval(record):
+        return
+    if len(_TERMINAL_APPROVALS) >= _TERMINAL_APPROVALS_MAX:
+        # Plain FIFO: insertion order is arrival order, and every entry is
+        # equally immutable, so there is no cleverer eviction to be had.
+        for stale in list(_TERMINAL_APPROVALS)[: _TERMINAL_APPROVALS_MAX // 2]:
+            _TERMINAL_APPROVALS.pop(stale, None)
+    _TERMINAL_APPROVALS[approval_id] = record
+
+
+def _reset_terminal_approval_cache_for_tests() -> None:
+    """Test helper — see ``_reset_reconcile_state_for_tests``."""
+    _TERMINAL_APPROVALS.clear()
+
+
 def _memoized_approval_reader():
     """Return a 0-arg-per-``approval_id`` callable that reads the approval
     doc's ``(status, resolved_at)`` ONCE per approval_id per request — twice for
@@ -2694,16 +2758,24 @@ def _memoized_approval_reader():
 
     def read(approval_id: str):
         if approval_id not in cache:
+            settled = _TERMINAL_APPROVALS.get(approval_id)
+            if settled is not None:
+                cache[approval_id] = settled
+                return settled
             try:
                 store = approval_helpers.get_approval_store()
                 record = store.get(approval_id)
-                cache[approval_id] = _maybe_reconcile(store, approval_id, record, budget)
+                served = _maybe_reconcile(store, approval_id, record, budget)
+                _remember_if_terminal(approval_id, served)
+                cache[approval_id] = served
             except Exception as e:  # noqa: BLE001 — fail-soft; must never break the serve path
                 log.warning(
                     "decision_approval_status_read_failed",
                     extra={"error": type(e).__name__},
                 )
-                cache[approval_id] = None
+                # NOT None — see _APPROVAL_READ_FAILED. Memoized for the request
+                # (one blip shouldn't cost 50 retries) but never beyond it.
+                cache[approval_id] = _APPROVAL_READ_FAILED
         return cache[approval_id]
 
     return read
@@ -2820,6 +2892,19 @@ def attach_approval_status(decision: object, *, approval_reader) -> object:
     if not isinstance(approval_id, str) or not approval_id:
         return decision
     record = approval_reader(approval_id)
+    if record is _APPROVAL_READ_FAILED:
+        # ds-mml: "we could not read this" is NOT the same as "there is no such
+        # doc", and collapsing them costs a real click. The frontend treats an
+        # absent status as still-pending (a compat rule this backend cannot
+        # change — pre-status decisions must keep rendering a CTA), so a
+        # transient Firestore blip on a BURNED approval briefly re-offered a
+        # live Approve button that the worker then refuses: a dead end, and one
+        # that reads as the product being broken. One extra field lets the
+        # frontend tell the two apart and decline to guess.
+        return {
+            **decision,
+            "approval": {**approval, "status_unavailable": True},
+        }
     if record is None:
         return decision
     status = getattr(record, "status", None)

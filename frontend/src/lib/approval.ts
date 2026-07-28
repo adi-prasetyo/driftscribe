@@ -146,6 +146,13 @@ export function isRollbackAwaitingOperator(
   const approval = decision?.approval;
   if (!approval?.approval_url) return false;
   if (safeApprovalHref(approval.approval_url, opts.origin) === null) return false;
+  // ds-mml: the backend could not READ the approval doc, which is a different
+  // thing from the doc not carrying a status. The absent-means-pending rule
+  // below exists for pre-enrichment rows that never had the field; applying it
+  // to a failed read means a transient Firestore blip re-offers a live Approve
+  // button on an already-burned approval, and the click dead-ends at the
+  // worker's refusal. When the server says it doesn't know, don't guess.
+  if (approval.status_unavailable) return false;
   if (approval.status !== undefined && approval.status !== 'pending') return false;
   if (isExpired(approval.expires_at, opts.now)) return false;
   return true;

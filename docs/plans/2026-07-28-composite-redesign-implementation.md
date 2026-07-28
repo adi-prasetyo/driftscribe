@@ -209,7 +209,10 @@ As rev 1: port the mockup's `.seal` CSS (3px `var(--ds-seal)` circle, rotate(-11
 Props `{ managed, drift, awaiting, onNavigate }` — numbers computed in App from the overview store via existing `scopeTotals()`/actionable-drift helpers in `lib/infra_graph.ts` (import, never re-derive). 44px `tabular-nums` numerals (navy/amber/gblue), meter `flex: managed/drift`, stats are `<button>`s → `onNavigate('estate')`. Renders on desk AND estate (compact prop = stretch goal). Test: numbers render; `onNavigate` fires. **Commit.**
 
 ### Task 3.4: `LedgerStrip.svelte` + `ledgerRows()`
-`ledgerRows(decisions, max=4)` pure function in `frontend/src/lib/ledger.ts`: applied rows (`apply_status==='applied'` or `approval.status==='used'`) → ✓ + mini stamp; open proposals → ◍; else ⬤; newest first; times via `format.ts` (JST HH:mm). Supersession treatment = plain text via existing helpers where trivially available; anything clever is cut-list item ③. The 定期点検 quiet-scan row stays **deferred** (scan runs aren't persisted — do not fake). Tests: mapping, ordering, cap. **Commit.**
+`ledgerRows(decisions, max=4)` pure function in `frontend/src/lib/ledger.ts`: applied rows (`apply_status==='applied'` or `approval.status==='used'`) → ✓ + mini stamp; open proposals → ◍; else ⬤; newest first; times via `format.ts` (JST HH:mm).
+
+> **Deviation, deliberate (ds-mml):** `format.ts` follows the BROWSER locale, not a pinned JST. It matches the existing `DecisionsRail` convention and is right for an operator reading their own wall clock; on the JST machine where the video is shot the rendered output is identical to the line above. A judge browsing from another timezone sees their own local time, which is the better default for them too. Recorded here because the plan text says JST literally and the implementation does not.
+ Supersession treatment = plain text via existing helpers where trivially available; anything clever is cut-list item ③. The 定期点検 quiet-scan row stays **deferred** (scan runs aren't persisted — do not fake). Tests: mapping, ordering, cap. **Commit.**
 
 ### Task 3.5: `ApprovalDesk.svelte` + wire the desk view
 **Files:** Create `frontend/src/components/ApprovalDesk.svelte`; modify App desk branch; locale namespace `desk.ts` (JA copy verbatim from the mockup); test `ApprovalDesk.test.ts`.

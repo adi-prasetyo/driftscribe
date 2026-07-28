@@ -616,13 +616,33 @@ def execute(
     # rejected one from here, so the ambiguous paths must NOT claim failure.
     try:
         op = _start_traffic_update(approval.target_revision)
-    except HTTPException:
+    except HTTPException as e:
         # The defense-in-depth tag re-check inside _start_traffic_update, which
         # runs BEFORE update_service. Nothing reached Google: definitely failed.
-        store.record_phase(
-            req.approval_id, phase=PHASE_FAILED,
-            detail={"stage": "preflight", "reason": "tagged_traffic_target"},
-        )
+        #
+        # Gated on 409 rather than catching every HTTPException (ds-mml). The tag
+        # check is the only thing in there that raises TODAY, so the hardcoded
+        # reason is accurate — but a future pre-mutation guard raising 4xx would
+        # inherit a TERMINAL `failed` stamped with a fabricated cause, and
+        # `failed` is one of the two phases record_phase refuses to overwrite.
+        # A wrong terminal outcome is the single worst thing this endpoint can
+        # write, so the branch is narrowed to the case it actually describes.
+        if e.status_code == 409:
+            store.record_phase(
+                req.approval_id, phase=PHASE_FAILED,
+                detail={"stage": "preflight", "reason": "tagged_traffic_target"},
+            )
+        else:
+            # An unrecognized pre-mutation refusal. It is still pre-mutation, so
+            # nothing landed — but we cannot name WHY without guessing, and
+            # `failed` here would be a terminal claim built on a guess.
+            log.exception(
+                "execute: unrecognized pre-mutation refusal id=%s", req.approval_id
+            )
+            store.record_phase(
+                req.approval_id, phase=PHASE_OUTCOME_UNKNOWN,
+                detail={"stage": "preflight", "status_code": e.status_code},
+            )
         raise
     except Exception as e:  # noqa: BLE001 — must not narrow; see below
         # Could be a refused request OR a lost response on a mutation the

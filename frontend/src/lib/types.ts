@@ -20,6 +20,13 @@ export interface DecisionApproval {
    *  approval doc could not be read (missing doc, or a soft-failed store
    *  read) — the row is served un-enriched rather than 500ing. */
   status?: 'pending' | 'used' | 'denied';
+  /** ds-mml. Set only when the backend's approval read THREW, as opposed to
+   *  finding no doc. Absent `status` normally means "pre-enrichment row",
+   *  which consumers treat as still-pending; that inference is wrong for a
+   *  failed read and would re-offer a live Approve CTA on a burned approval.
+   *  Present-and-true means "the server does not know" — refuse to guess.
+   *  Never persisted; computed per-response. */
+  status_unavailable?: boolean;
   /** The transition timestamp. `null`/absent means "resolved, but we don't
    *  know when". NEVER falls back to the decision's own `created_at` (that's
    *  proposal time, not resolution time) — treat `null` as genuinely unknown,

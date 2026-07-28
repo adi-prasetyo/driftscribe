@@ -405,11 +405,11 @@ for (const locale of ['en', 'ja'] as Locale[]) {
       const desk = page.getByTestId('approval-desk');
       await expect(desk).toBeVisible();
 
-      // The demo-notice popover auto-opens on a first visit and floats over the
-      // top-left of the desk (it predates this view). Dismiss it so the shots
-      // show the desk itself — but note that a first-time judge DOES see it
-      // overlapping the hero, which is a finding for the redesign, not
-      // something this rig should hide from the record.
+      // The notice no longer auto-opens here: ds-5yq suppressed it on the desk
+      // (and ds-2co extended that to every non-chat view) precisely because it
+      // floated over the hero — the finding this comment used to record has
+      // since been fixed. The dismiss is kept as a belt-and-braces no-op so the
+      // shots stay deterministic if that suppression ever regresses.
       const dismiss = page.getByTestId('demo-notice-dismiss');
       if (await dismiss.isVisible()) await dismiss.click();
 

@@ -288,7 +288,10 @@ def test_memoized_reader_is_fail_soft_on_store_error(monkeypatch):
     monkeypatch.setattr(main_mod.approval_helpers, "get_approval_store", lambda: _BoomStore())
 
     reader = _memoized_approval_reader()
-    assert reader("ap-1") is None  # never raises
+    # Never raises. The value is the ds-mml sentinel rather than None so a
+    # consumer can tell "the read failed" from "there is no such doc" — the
+    # distinction that keeps a burned approval from re-offering an Approve CTA.
+    assert reader("ap-1") is main_mod._APPROVAL_READ_FAILED
 
 
 def test_memoized_reader_is_fail_soft_on_store_construction_error(monkeypatch):
@@ -299,4 +302,4 @@ def test_memoized_reader_is_fail_soft_on_store_construction_error(monkeypatch):
     monkeypatch.setattr(main_mod.approval_helpers, "get_approval_store", _boom)
 
     reader = _memoized_approval_reader()
-    assert reader("ap-1") is None
+    assert reader("ap-1") is main_mod._APPROVAL_READ_FAILED

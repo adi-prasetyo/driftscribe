@@ -34,13 +34,17 @@ from driftscribe_lib.approvals import (
 
 @pytest.fixture(autouse=True)
 def _clean_reconcile_cooldown():
-    """ds-7j0's cooldown is a process-global dict keyed by approval_id, and every
-    test here uses the same ``ap-1``. Without this reset the first test's attempt
-    suppresses every later one, which looks exactly like the wiring having rotted
-    out — the failure these tests exist to catch."""
+    """Both ds-7j0's cooldown and ds-ihi's terminal-approval cache are
+    process-global dicts keyed by approval_id, and every test here uses the same
+    ``ap-1``. Without this reset one test's attempt suppresses every later one
+    (cooldown), or one test's settled doc is served to the next without a read
+    at all (terminal cache) — either of which looks exactly like the wiring
+    having rotted out, the failure these tests exist to catch."""
     agent_main._reset_reconcile_state_for_tests()
+    agent_main._reset_terminal_approval_cache_for_tests()
     yield
     agent_main._reset_reconcile_state_for_tests()
+    agent_main._reset_terminal_approval_cache_for_tests()
 
 
 def _approval(
@@ -329,3 +333,115 @@ def test_a_phase_at_that_reads_as_the_future_degrades_quietly(calls) -> None:
     out = _maybe_reconcile(_Store(after=_approval(PHASE_APPLIED)), "ap-1", record, [3])
     assert out is record  # enrichment intact; the desk still shows the card
     assert calls == []
+
+
+# --------------------------------------------------------------------------- #
+# ds-ihi — the N+1 on GET /decisions.
+#
+# The per-request memo keys on approval_id and every proposal mints a fresh one,
+# so it collapsed nothing: ?limit=50 made one SEQUENTIAL Firestore read per
+# rollback row, on the route overviewStore polls every 45s and on every focus.
+# Terminal docs can never change again (record_phase refuses to overwrite a
+# terminal phase; a denial is terminal at flip time), so they are the safe half
+# to cache across requests.
+# --------------------------------------------------------------------------- #
+
+
+def _counting_store(record):
+    class _S:
+        reads = 0
+
+        def get(self, approval_id: str):  # noqa: ANN201
+            type(self).reads += 1
+            return record
+
+    return _S
+
+
+@pytest.mark.parametrize("phase", [PHASE_APPLIED, PHASE_FAILED])
+def test_a_terminal_approval_is_read_once_across_requests(phase, monkeypatch) -> None:
+    store_cls = _counting_store(_approval(phase))
+    monkeypatch.setattr(agent_main.approval_helpers, "get_approval_store", store_cls)
+
+    for _ in range(4):  # four separate GET /decisions
+        agent_main._memoized_approval_reader()("ap-1")
+
+    assert store_cls.reads == 1
+
+
+def test_a_denied_approval_is_also_terminal(monkeypatch) -> None:
+    denied = _approval(None)
+    denied.status = "denied"
+    store_cls = _counting_store(denied)
+    monkeypatch.setattr(agent_main.approval_helpers, "get_approval_store", store_cls)
+
+    agent_main._memoized_approval_reader()("ap-1")
+    agent_main._memoized_approval_reader()("ap-1")
+
+    assert store_cls.reads == 1
+
+
+@pytest.mark.parametrize("phase", [PHASE_APPLYING, PHASE_OUTCOME_UNKNOWN, PHASE_CLAIMED])
+def test_a_non_terminal_approval_is_re_read_every_request(phase, monkeypatch, calls) -> None:
+    """The whole point of /reconcile is that these DO change. Caching one would
+    park an `outcome_unknown` on the desk permanently — the ds-2mc defect with
+    extra steps."""
+    store_cls = _counting_store(_approval(phase, operation_name=None))
+    monkeypatch.setattr(agent_main.approval_helpers, "get_approval_store", store_cls)
+
+    agent_main._memoized_approval_reader()("ap-1")
+    agent_main._memoized_approval_reader()("ap-1")
+
+    assert store_cls.reads == 2
+
+
+def test_a_failed_read_is_never_cached_across_requests(monkeypatch) -> None:
+    """A transient Firestore error memoizes None for the REQUEST (honest
+    degradation) but must not persist — the next poll has to try again."""
+    class _S:
+        reads = 0
+
+        def get(self, approval_id: str):  # noqa: ANN201
+            type(self).reads += 1
+            raise RuntimeError("transient")
+
+    monkeypatch.setattr(agent_main.approval_helpers, "get_approval_store", _S)
+    first = agent_main._memoized_approval_reader()
+    assert first("ap-1") is agent_main._APPROVAL_READ_FAILED
+    assert first("ap-1") is agent_main._APPROVAL_READ_FAILED  # memoized per-request
+    assert agent_main._memoized_approval_reader()("ap-1") is agent_main._APPROVAL_READ_FAILED
+    # One read per REQUEST — memoized within, never across.
+    assert _S.reads == 2
+
+
+def test_a_failed_read_is_distinguishable_from_a_missing_doc(monkeypatch) -> None:
+    """ds-mml. The frontend's absent-status-means-pending rule is compat for
+    pre-enrichment rows; applying it to a read that THREW re-offers a live
+    Approve CTA on a burned approval, and the click dead-ends at the worker."""
+    class _S:
+        def get(self, approval_id: str):  # noqa: ANN201
+            raise RuntimeError("transient")
+
+    monkeypatch.setattr(agent_main.approval_helpers, "get_approval_store", _S)
+    row = {"approval": {"approval_id": "ap-1", "approval_url": "https://x/approvals/ap-1"}}
+    out = agent_main.attach_approval_status(
+        row, approval_reader=agent_main._memoized_approval_reader()
+    )
+    assert out["approval"]["status_unavailable"] is True
+    # And it must NOT invent a status.
+    assert "status" not in out["approval"]
+
+
+def test_a_genuinely_missing_doc_is_served_un_enriched_as_before(monkeypatch) -> None:
+    """The other half: no doc is not a read failure, and must stay a byte-identical
+    passthrough so pre-enrichment rows keep rendering their CTA."""
+    class _S:
+        def get(self, approval_id: str):  # noqa: ANN201
+            return None
+
+    monkeypatch.setattr(agent_main.approval_helpers, "get_approval_store", _S)
+    row = {"approval": {"approval_id": "ap-1", "approval_url": "https://x/approvals/ap-1"}}
+    out = agent_main.attach_approval_status(
+        row, approval_reader=agent_main._memoized_approval_reader()
+    )
+    assert out is row

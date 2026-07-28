@@ -409,6 +409,32 @@ reader still finds it. Pinned by four tests that were confirmed to fail with the
 exact `TypeError` before the projection landed. Deploy in the order above
 anyway; it now costs nothing if someone gets it wrong at 2am.
 
+## Rule 2.5 does not decay — decided, not defaulted (ds-mnf)
+
+The unresolved card has no window and no dismissal. During a public demo window
+that means one slow or crashed rollback parks "the rollback's outcome is
+unconfirmed" on every visitor's front door until something else clears it. The
+review asked for that to be a decision on the record rather than something a
+reader discovers. It is kept, deliberately.
+
+**Why.** The exits are real and bounded: `/reconcile` promotes the row the
+moment the LRO settles, a later successful rollback supersedes it by attempt
+time, and it falls out of the served `?limit=50` window. Against that, every
+alternative trades away the thing the desk is for — certifying only what it can
+prove. A timeout would re-create the silent disappearance the rule exists to
+abolish, one phase to the left.
+
+**Dismissal is specifically wrong here**, not merely unnecessary: the demo seat
+IS the visitor seat (the operator-seat window decision), so a dismiss button
+would hand an anonymous judge a control that hides the one state we most want
+to be seen admitting to.
+
+**The compounding risk was removed at its source.** The review noted that ds-z4z
+made `outcome_unknown` routine for any >60s LRO, which would have made this card
+common rather than exceptional. That is fixed: the approve POST now renders the
+recorded phase instead of an outage page, so an unresolved card is the honest
+tail of a flow the operator was already told about.
+
 ## Live PROD probe (2026-07-28) — found a shipping blocker
 
 Three review rounds could not have caught this one: it is not in the code.

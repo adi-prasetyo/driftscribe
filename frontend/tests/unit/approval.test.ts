@@ -615,3 +615,25 @@ describe('iacApproveLabel — retire the stale CTA on superseded rows', () => {
     ).toBe('Review & approve →');
   });
 });
+
+// ds-mml: "the server could not read this" vs "this row predates the field".
+// Collapsing them re-offered a live Approve button on a burned approval after a
+// transient Firestore blip — the click dead-ends at the worker's refusal, which
+// reads as the product being broken rather than as a read having failed.
+describe('isRollbackAwaitingOperator — unreadable approval status', () => {
+  const base = {
+    approval_url: 'https://desk.example.com/approvals/rb-1?t=abc',
+    expires_at: '2099-01-01T00:00:00Z',
+  };
+  const opts = { origin: 'https://desk.example.com' };
+
+  it('still treats an ABSENT status as awaiting (pre-enrichment compat)', () => {
+    expect(isRollbackAwaitingOperator({ approval: { ...base } }, opts)).toBe(true);
+  });
+
+  it('refuses when the backend flags the status as unreadable', () => {
+    expect(
+      isRollbackAwaitingOperator({ approval: { ...base, status_unavailable: true } }, opts),
+    ).toBe(false);
+  });
+});

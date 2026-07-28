@@ -1109,8 +1109,10 @@
     <h1 class="app-title">DriftScribe<span class="app-title__sub">{$t('header.brand.tagline')}</span></h1>
   </a>
   <!-- The SPA's three-view nav (composite-redesign Task 2.2): desk is the
-       placeholder front door, estate the placeholder resource map, chat is
-       today's unchanged layout (still DEFAULT_VIEW — see lib/deeplink). -->
+       front door and DEFAULT_VIEW since the Task 3.6 flip (see lib/deeplink),
+       estate is the resource map, chat the conversation view. Both desk and
+       estate landed as placeholders in Task 2.2 and were built out in Tasks
+       3.x/4.1; this comment outlived that. -->
   <nav class="app-header__nav" aria-label={$t('desk.nav.ariaLabel')}>
     <button
       type="button"

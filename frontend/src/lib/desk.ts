@@ -367,6 +367,23 @@ function selectStamped(
  * disappearance this rule exists to prevent. It clears when the underlying
  * doc does — `/reconcile` promoting it to `applied`, or a new proposal.
  *
+ * ds-mnf reviewed this as a DECISION rather than leaving it a discovery, since
+ * during a public demo window one slow rollback parks "unconfirmed" on every
+ * visitor's front door. Kept as-is, deliberately. The exits are real and
+ * bounded — `/reconcile` promotes the row as soon as the LRO settles, a later
+ * successful rollback supersedes it, and it leaves the served window after 50
+ * decisions — while every alternative trades away the product's actual claim:
+ * a desk that certifies only what it can prove. An operator dismissal would be
+ * worst of all here, because the demo seat IS the visitor seat (see the
+ * operator-seat window decision), so "dismiss" would hand an anonymous judge a
+ * button that hides the one state we most want them to see us admit to.
+ *
+ * The compounding risk the review raised — ds-z4z making `outcome_unknown`
+ * routine for any >60s LRO — was removed at its source rather than papered
+ * over here: the approve POST now renders the recorded phase instead of an
+ * outage page, so an unresolved card is the honest tail of a flow the operator
+ * has already been told about, not a surprise.
+ *
  * Ordered by `phase_at` where available, falling back to the decision's
  * `created_at`: `resolved_at` deliberately does not exist on these rows (it
  * means confirmed success only), so it cannot serve as the ordering key.

@@ -1254,3 +1254,60 @@ def test_real_verify_caller_dep_wired_with_env(monkeypatch: pytest.MonkeyPatch) 
     assert seen["allowed_callers"] == {
         "coordinator@test-proj.iam.gserviceaccount.com",
     }
+
+
+# --------------------------------------------------------------------------- #
+# ds-mml: the post-claim pre-mutation branch records a TERMINAL `failed` with a
+# hardcoded reason. Accurate for the tag check, which is the only thing in
+# _start_traffic_update that raises today — but `failed` is one of the two
+# phases record_phase refuses to overwrite, so a future guard inheriting this
+# branch would write a permanent, confidently-wrong cause. Narrowed to 409.
+# --------------------------------------------------------------------------- #
+
+
+def test_post_claim_tag_conflict_records_failed_with_its_real_reason(
+    monkeypatch: pytest.MonkeyPatch, client, store
+) -> None:
+    proposed = _propose(client)
+
+    def _tagged(target_revision: str):  # noqa: ANN202
+        raise HTTPException(status_code=409, detail="tagged traffic target")
+
+    monkeypatch.setattr(rollback_main, "_start_traffic_update", _tagged)
+    r = client.post(
+        "/execute",
+        json={
+            "approval_id": proposed["approval_id"],
+            "approval_token": proposed["approval_token"],
+        },
+    )
+    assert r.status_code == 409
+    audit = store.docs[proposed["approval_id"]]["apply_audit"]
+    assert audit["phase"] == rollback_main.PHASE_FAILED
+    assert audit["detail"]["reason"] == "tagged_traffic_target"
+
+
+def test_an_unrecognized_pre_mutation_refusal_is_not_stamped_as_a_named_failure(
+    monkeypatch: pytest.MonkeyPatch, client, store
+) -> None:
+    """A future guard raising something other than the tag 409 must not inherit
+    `failed/{reason: tagged_traffic_target}`. Nothing was mutated either way, but
+    naming a cause we did not observe is a terminal claim built on a guess — and
+    terminal is exactly what cannot be corrected later."""
+    proposed = _propose(client)
+
+    def _some_future_guard(target_revision: str):  # noqa: ANN202
+        raise HTTPException(status_code=422, detail="a guard that does not exist yet")
+
+    monkeypatch.setattr(rollback_main, "_start_traffic_update", _some_future_guard)
+    r = client.post(
+        "/execute",
+        json={
+            "approval_id": proposed["approval_id"],
+            "approval_token": proposed["approval_token"],
+        },
+    )
+    assert r.status_code == 422
+    audit = store.docs[proposed["approval_id"]]["apply_audit"]
+    assert audit["phase"] == rollback_main.PHASE_OUTCOME_UNKNOWN
+    assert audit["detail"].get("reason") != "tagged_traffic_target"

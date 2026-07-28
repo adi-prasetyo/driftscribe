@@ -1122,3 +1122,128 @@ describe('awaitingCount — the InstrumentBand "awaiting your approval" figure',
     expect(n).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// ds-mml — the boundaries desk.ts pins religiously everywhere else.
+//
+// Each of these is currently correct; none had a test. They are the kind of
+// thing a well-meaning refactor flips without noticing, and every one of them
+// decides what the product's front door claims about a rollback.
+// ---------------------------------------------------------------------------
+describe('desk — selection boundaries', () => {
+  function inFlight(phase: 'applying' | 'claimed', ageMs: number): Decision {
+    return rollbackDecision({
+      approval: {
+        approval_url: '/approvals/rb-1?t=x',
+        status: 'used',
+        phase,
+        phase_at: new Date(NOW - ageMs).toISOString(),
+        resolved_at: null,
+      },
+    });
+  }
+
+  it.each(['applying', 'claimed'] as const)(
+    'a %s rollback exactly AT the stuck threshold is not yet unresolved',
+    (phase) => {
+      const model = deskModel({
+        decisions: [inFlight(phase, STUCK_APPLYING_MS)],
+        pendingApprovals: [],
+        now: NOW,
+        origin: ORIGIN,
+      });
+      // Strict `>`: at the boundary the rollback is still within its budget, and
+      // calling it unconfirmed one millisecond early is its own dishonesty.
+      expect(model.kind).not.toBe('unresolved');
+    },
+  );
+
+  it.each(['applying', 'claimed'] as const)(
+    'a %s rollback one millisecond PAST the threshold surfaces as unconfirmed',
+    (phase) => {
+      const model = deskModel({
+        decisions: [inFlight(phase, STUCK_APPLYING_MS + 1)],
+        pendingApprovals: [],
+        now: NOW,
+        origin: ORIGIN,
+      });
+      expect(model.kind).toBe('unresolved');
+      // Never "failed" — in both phases the rollback may well have applied.
+      if (model.kind === 'unresolved') expect(model.phase).toBe('outcome_unknown');
+    },
+  );
+
+  it('an applied rollback with NO created_at cannot supersede an unresolved one', () => {
+    // parseForOrdering returns -Infinity for a missing created_at, so such a
+    // decision loses every supersession comparison. That is the safe direction
+    // and it is deliberate: superseding means HIDING an unresolved outcome from
+    // the front door, so a decision we cannot place in time must not win it.
+    const unresolved = rollbackDecision({
+      decision_id: 'rb-unresolved',
+      created_at: '2026-07-28T11:00:00Z',
+      approval: {
+        approval_url: '/approvals/rb-unresolved?t=x',
+        status: 'used',
+        phase: 'outcome_unknown',
+        phase_at: '2026-07-28T11:01:00Z',
+        resolved_at: null,
+      },
+    });
+    const appliedButUndated = rollbackDecision({
+      decision_id: 'rb-applied',
+      created_at: undefined,
+      approval: {
+        approval_url: '/approvals/rb-applied?t=x',
+        status: 'used',
+        phase: 'applied',
+        resolved_at: '2026-07-28T11:59:00Z',
+      },
+    });
+
+    const model = deskModel({
+      decisions: [unresolved, appliedButUndated],
+      pendingApprovals: [],
+      now: NOW,
+      origin: ORIGIN,
+    });
+    expect(model.kind).toBe('unresolved');
+  });
+
+  it('an exact cross-kind tie between an iac stamp and a rollback stamp goes to iac', () => {
+    // `bestIac.ts >= bestRollback.ts` — the tie-break is a real decision, not an
+    // accident of comparison order, and swapping it silently changes which
+    // artifact the hero shows on a dead heat.
+    const tie = '2026-07-28T11:58:00Z';
+    const model = deskModel({
+      decisions: [
+        iacDecision({ decision_id: 'iac-tie', apply_status: 'applied', applied_at: tie }),
+        rollbackDecision({
+          decision_id: 'rb-tie',
+          approval: {
+            approval_url: '/approvals/rb-tie?t=x',
+            status: 'used',
+            phase: 'applied',
+            resolved_at: tie,
+          },
+        }),
+      ],
+      pendingApprovals: [],
+      now: NOW,
+      origin: ORIGIN,
+    });
+    expect(model.kind).toBe('stamped');
+    if (model.kind === 'stamped') expect(model.source).toBe('iac');
+  });
+
+  it('a stamp exactly AT the end of its window is still valid', () => {
+    const appliedAt = new Date(NOW - STAMP_WINDOW_MS).toISOString();
+    const model = deskModel({
+      decisions: [iacDecision({ apply_status: 'applied', applied_at: appliedAt })],
+      pendingApprovals: [],
+      now: NOW,
+      origin: ORIGIN,
+    });
+    // `now <= until` — inclusive, so the receipt does not vanish a tick early.
+    expect(model.kind).toBe('stamped');
+  });
+});
