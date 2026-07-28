@@ -379,10 +379,26 @@ class ApprovalStore:
     ) -> None:
         """Record what actually happened to a claimed rollback.
 
-        Post-claim and non-transactional: the single-use claim already
-        settled all concurrency for this doc, so there is nothing left to
-        guard. Writes only ``apply_audit`` (and ``resolved_at`` when the
-        caller passes one), never ``status`` or any HMAC-bound field.
+        Writes only ``apply_audit`` (and ``resolved_at`` when the caller
+        passes one), never ``status`` or any HMAC-bound field.
+
+        TRANSACTIONAL, unlike ``PlanApprovalStore.set_apply_audit`` which it
+        otherwise mirrors. That sibling can be a plain update because its claim
+        really is the last writer; here ``/reconcile`` is a SECOND post-claim
+        writer, so the read-check-write below would otherwise be a
+        time-of-check/time-of-use race. The interleaving is reachable at the
+        poll-timeout boundary:
+
+          1. ``/execute`` times out and starts recording ``outcome_unknown``.
+          2. ``/reconcile`` reads the same ``applying`` doc, sees the LRO
+             succeeded.
+          3. Both pass the not-yet-terminal check.
+          4. Reconcile writes ``applied``.
+          5. Execute's stale write lands and downgrades it to
+             ``outcome_unknown``.
+
+        A sequential unit test cannot catch that, which is exactly why the
+        guard has to be a transaction rather than a well-behaved caller.
 
         Two invariants, both enforced here rather than trusted to callers:
 
@@ -413,20 +429,24 @@ class ApprovalStore:
             raise TypeError("detail must be a dict")
 
         ref = self._ref(approval_id)
-        snap = ref.get()
-        if not snap.exists:
-            return
-        existing = (snap.to_dict() or {}).get("apply_audit") or {}
-        if isinstance(existing, dict) and existing.get("phase") in TERMINAL_ROLLBACK_PHASES:
-            return  # invariant 1 — never downgrade a settled outcome
 
-        audit: dict[str, Any] = {"phase": phase, "phase_at": _utcnow()}
-        if detail:
-            audit["detail"] = detail
-        update: dict[str, Any] = {"apply_audit": audit}
-        if resolved_at is not None:
-            update["resolved_at"] = resolved_at
-        ref.update(update)
+        @firestore.transactional
+        def txn(transaction, ref):  # noqa: ANN001
+            snap = ref.get(transaction=transaction)
+            if not snap.exists:
+                return
+            existing = (snap.to_dict() or {}).get("apply_audit") or {}
+            if isinstance(existing, dict) and existing.get("phase") in TERMINAL_ROLLBACK_PHASES:
+                return  # invariant 1 — never downgrade a settled outcome
+            audit: dict[str, Any] = {"phase": phase, "phase_at": _utcnow()}
+            if detail:
+                audit["detail"] = detail
+            update: dict[str, Any] = {"apply_audit": audit}
+            if resolved_at is not None:
+                update["resolved_at"] = resolved_at
+            transaction.update(ref, update)
+
+        txn(self._client.transaction(), ref)
 
 
 # =========================================================================== #

@@ -49,6 +49,12 @@ export interface DecisionApproval {
    *  before ds-2mc. Consumers must treat absence as unknown, never as
    *  success — that conflation is the bug this field exists to fix. */
   phase?: 'claimed' | 'applying' | 'applied' | 'failed' | 'outcome_unknown' | null;
+  /** When the CURRENT `phase` was observed. Distinct from `resolved_at`, which
+   *  exists only on a confirmed success — so it is the only timestamp available
+   *  for ordering failed/unconfirmed rows against each other, and the only
+   *  signal separating a rollback applying right now from one whose worker died
+   *  mid-wait an hour ago. `null`/absent on pre-ds-2mc docs. */
+  phase_at?: string | null;
 }
 
 /** The PR/issue side-channel on a drift/docs/upgrade decision

@@ -481,6 +481,26 @@ def call_reconcile(approval_id: str) -> dict:
     return call("rollback", {"approval_id": approval_id}, endpoint="/reconcile")
 
 
+# /propose and /deny queue behind a blocking /execute on this worker
+# (--concurrency=1 --max-instances=1), so their budget has to clear the worst
+# queue delay, not just their own work.
+#
+# This is NOT merely a latency concern, which is how the first cut of ds-2mc
+# mischaracterized it. An HTTP client timeout does not cancel server work, so a
+# coordinator that gives up at 30s while the request is still queued gets the
+# worst of both: it reports an error AND the side effect may land afterwards.
+#   - /deny: the coordinator tells the operator the denial failed; the queued
+#     request then denies the approval anyway.
+#   - /propose: the coordinator times out, the worker later creates the
+#     approval, and its raw token — returned exactly once — is lost. That
+#     orphans a pending approval AND lets a retry mint a second one.
+# 90s clears the 60s LRO cap plus queue and cold-start slack, and still fits
+# under the ~100s Cloudflare budget documented above.
+QUEUED_BEHIND_EXECUTE_TIMEOUT: Final = httpx.Timeout(
+    connect=10.0, read=90.0, write=30.0, pool=10.0
+)
+
+
 def call_deny(approval_id: str, approval_token: str) -> dict:
     """Special-case wrapper for the rollback worker's ``/deny`` endpoint.
 
@@ -500,6 +520,7 @@ def call_deny(approval_id: str, approval_token: str) -> dict:
         "rollback",
         {"approval_id": approval_id, "approval_token": approval_token},
         endpoint="/deny",
+        timeout=QUEUED_BEHIND_EXECUTE_TIMEOUT,
     )
 
 

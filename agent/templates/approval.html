@@ -101,7 +101,22 @@
       {% elif expired %}
         <p class="ds-bad">{% if lang == 'ja' %}この承認は期限切れのため、操作できません。{% else %}This approval has expired and can no longer be acted on.{% endif %}</p>
       {% else %}
-        <p class="ds-bad">{% if lang == 'ja' %}この承認はすでに処理済みです。{% else %}This approval has already been resolved.{% endif %}</p>
+        {# The token is spent either way, so the page is read-only from here.
+           But "resolved" is only true once the OUTCOME is settled: a `used`
+           approval can still be applying, or have an outcome we could not
+           confirm (ds-2mc). Saying "resolved" for those asserts a terminality
+           the backend explicitly does not have. Split the copy on the phase;
+           the desk carries the detail. #}
+        {% set phase = (approval.apply_audit or {}).get('phase') %}
+        {% if phase in ('claimed', 'applying') %}
+          <p class="ds-bad">{% if lang == 'ja' %}この承認は使用済みで、ロールバックを実行中です。結果はデスクでご確認ください。{% else %}This approval has been used and the rollback is still running. The desk shows the outcome once it settles.{% endif %}</p>
+        {% elif phase == 'outcome_unknown' %}
+          <p class="ds-bad">{% if lang == 'ja' %}この承認は使用済みですが、ロールバックの結果を確認できていません。Cloud Run で当該サービスの状態をご確認ください。{% else %}This approval has been used, but the rollback's outcome could not be confirmed. Check the service in Cloud Run.{% endif %}</p>
+        {% elif phase == 'failed' %}
+          <p class="ds-bad">{% if lang == 'ja' %}この承認は使用されましたが、ロールバックは適用されませんでした。{% else %}This approval was used, but the rollback did not apply.{% endif %}</p>
+        {% else %}
+          <p class="ds-bad">{% if lang == 'ja' %}この承認はすでに処理済みです。{% else %}This approval has already been resolved.{% endif %}</p>
+        {% endif %}
       {% endif %}
     {% endif %}
   </main>

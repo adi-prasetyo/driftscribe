@@ -30,6 +30,13 @@ import type { PendingApproval } from './infra_graph';
  *  only needs to be right once, here. */
 export const STAMP_WINDOW_MS = 10 * 60 * 1000;
 
+/** How long a rollback may sit in `applying` before the desk treats it as
+ *  stuck rather than in progress. Comfortably past the worker's 60s LRO poll
+ *  budget: inside that window /execute is still expected to settle the doc
+ *  itself, so surfacing it would alarm the operator during a routine rollback;
+ *  past it, nothing is coming back for it. */
+export const STUCK_APPLYING_MS = 5 * 60 * 1000;
+
 /** A pending rollback: a decision whose live approval doc is still awaiting
  *  the operator (or was never enriched — see `status` below). */
 export interface DeskPendingRollback {
@@ -358,20 +365,46 @@ function selectStamped(
  */
 function selectUnresolvedRollback(
   decisions: ReadonlyArray<Decision | null | undefined>,
+  now: number,
 ): DeskUnresolved | null {
   let best: { decision: Decision; phase: 'failed' | 'outcome_unknown'; ts: number } | null = null;
+  // The newest CONFIRMED rollback. A later success supersedes an earlier
+  // failure: once a subsequent rollback demonstrably applied, the old failed
+  // attempt is history, not an open loop. Without this the desk would pin
+  // itself to an ancient failure forever — a new proposal would only hide it
+  // while pending, and it would re-win over the new success's own seal.
+  let newestApplied = -Infinity;
+
   for (const decision of decisions) {
     if (decision == null) continue; // defensive: malformed array element, skip not throw
     const approval = decision.approval;
     if (approval?.status !== 'used') continue;
-    const phase = approval.phase;
-    if (phase !== 'failed' && phase !== 'outcome_unknown') continue;
-    const ts = parseForOrdering(decision.created_at);
-    if (best === null || ts > best.ts) best = { decision, phase, ts };
+    const observed = parseStrict(approval.phase_at) ?? parseForOrdering(decision.created_at);
+
+    if (approval.phase === 'applied') {
+      if (observed > newestApplied) newestApplied = observed;
+      continue;
+    }
+
+    let phase: 'failed' | 'outcome_unknown' | null = null;
+    if (approval.phase === 'failed' || approval.phase === 'outcome_unknown') {
+      phase = approval.phase;
+    } else if (approval.phase === 'applying' && now - observed > STUCK_APPLYING_MS) {
+      // Normally transient — /execute settles it within its 60s poll budget,
+      // and showing a scary card during every routine rollback would be its
+      // own kind of dishonesty. But past the threshold nobody is coming back
+      // for it (the worker died mid-wait), and silence would be the same
+      // disappearance this rule exists to prevent. It is genuinely unknown,
+      // so it reports as unknown rather than as failure.
+      phase = 'outcome_unknown';
+    }
+    if (phase === null) continue;
+
+    if (best === null || observed > best.ts) best = { decision, phase, ts: observed };
   }
-  return best === null
-    ? null
-    : { kind: 'unresolved', source: 'rollback', decision: best.decision, phase: best.phase };
+
+  if (best === null || best.ts < newestApplied) return null;
+  return { kind: 'unresolved', source: 'rollback', decision: best.decision, phase: best.phase };
 }
 
 /**
@@ -404,7 +437,7 @@ export function deskModel(input: DeskModelInput): DeskModel {
   );
   if (iacFromDecisions) return iacFromDecisions;
 
-  const unresolved = selectUnresolvedRollback(decisions);
+  const unresolved = selectUnresolvedRollback(decisions, now);
   if (unresolved) return unresolved;
 
   const stamped = selectStamped(decisions, now);

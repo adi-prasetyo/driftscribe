@@ -179,8 +179,23 @@ class FakeOperation:
     would fall through to a different branch than the test exercises.
     """
 
-    def __init__(self, name: str = "operations/fake-op-name", raises: BaseException | None = None):
-        self.operation = type("_Op", (), {"name": name})()
+    def __init__(
+        self,
+        name: str = "operations/fake-op-name",
+        raises: BaseException | None = None,
+        *,
+        done: bool = False,
+        error_code: int = 0,
+    ):
+        # The RAW operation, which is what establishes failure. `done` +
+        # a nonzero `error.code` is the ONLY evidence the rollback failed;
+        # result() raising is not (a polling RPC can break while the operation
+        # goes on to succeed).
+        self.operation = type("_Op", (), {
+            "name": name,
+            "done": done,
+            "error": type("_Err", (), {"code": error_code})(),
+        })()
         self._raises = raises
         self.result_calls: list[float | None] = []
 
@@ -640,8 +655,13 @@ def test_execute_lro_timeout_records_outcome_unknown_not_failed(
     assert doc["apply_audit"]["detail"]["operation_name"] == "operations/fake-op-name"
 
 
-def test_execute_lro_terminal_error_records_failed(client, store, operation) -> None:
-    operation.will_raise(RuntimeError("revision deleted"))
+def test_execute_records_failed_only_when_the_operation_itself_errored(
+    client, store, operation
+) -> None:
+    """`done` + a nonzero error code IS evidence of failure."""
+    operation.current = FakeOperation(
+        raises=RuntimeError("revision deleted"), done=True, error_code=5,
+    )
     proposed = _propose(client)
     r = client.post("/execute", json={
         "approval_id": proposed["approval_id"],
@@ -653,6 +673,37 @@ def test_execute_lro_terminal_error_records_failed(client, store, operation) -> 
     assert doc["status"] == "used"
     assert doc["apply_audit"]["phase"] == PHASE_FAILED
     assert doc.get("resolved_at") is None
+
+
+def test_execute_broken_poll_is_unknown_not_failed(client, store, operation) -> None:
+    """A polling RPC that breaks is NOT evidence the rollback failed.
+
+    google.api_core fails the whole future when a polling RPC errors and its
+    retries are exhausted ("If a polling RPC throws an error and retrying it
+    fails, the whole future fails with the corresponding exception") — while
+    the operation itself may still be running, and may still apply. Concretely:
+    `operations.get` starts returning PermissionDenied after an IAM change.
+
+    The operation here is deliberately NOT done and carries no error code, so
+    nothing has been established. Recording `failed` would tell the operator
+    their rollback did not happen when it may well have — the original seal bug
+    aimed the other way.
+    """
+    operation.current = FakeOperation(raises=RuntimeError("PermissionDenied on operations.get"))
+    proposed = _propose(client)
+    r = client.post("/execute", json={
+        "approval_id": proposed["approval_id"],
+        "approval_token": proposed["approval_token"],
+    })
+    assert r.status_code == 502, r.text
+
+    doc = store.docs[proposed["approval_id"]]
+    assert doc["status"] == "used"
+    assert doc["apply_audit"]["phase"] == PHASE_OUTCOME_UNKNOWN
+    assert doc["apply_audit"]["phase"] != PHASE_FAILED
+    assert doc.get("resolved_at") is None
+    # The handle survives so /reconcile can settle it once polling recovers.
+    assert doc["apply_audit"]["detail"]["operation_name"] == "operations/fake-op-name"
 
 
 def test_execute_start_failure_records_outcome_unknown(
@@ -675,6 +726,136 @@ def test_execute_start_failure_records_outcome_unknown(
     doc = store.docs[proposed["approval_id"]]
     assert doc["apply_audit"]["phase"] == PHASE_OUTCOME_UNKNOWN
     assert doc.get("resolved_at") is None
+
+
+# --------------------------------------------------------------------------- #
+# /reconcile — what keeps outcome_unknown temporary rather than permanent
+# --------------------------------------------------------------------------- #
+
+
+def _claimed_doc(store, phase: str, *, operation_name: str | None = "operations/fake-op-name"):
+    """An approval already claimed and left in `phase`, as /execute would."""
+    created, _ = store.create(
+        target_revision="payment-demo-00002-bbb", reason="r",
+        hmac_key="test-hmac-key", created_by="c",
+    )
+    store.claim_pending(created.approval_id)
+    detail = {"operation_name": operation_name} if operation_name else {}
+    store.docs[created.approval_id]["apply_audit"] = {
+        "phase": phase, "phase_at": _now(), "detail": detail,
+    }
+    return created.approval_id
+
+
+class _FakeRawOp:
+    def __init__(self, *, done: bool, error_code: int = 0, has_response: bool = True):
+        self.done = done
+        self.error = type("_Err", (), {"code": error_code})()
+        self._has_response = has_response
+
+    def HasField(self, name: str) -> bool:  # noqa: N802 — protobuf API shape
+        return name == "response" and self._has_response
+
+
+def _mock_operations(monkeypatch, raw):
+    monkeypatch.setattr(
+        rollback_main, "_get_operations_client",
+        lambda: type("_C", (), {"get_operation": lambda self, name, timeout=None: raw})(),
+    )
+
+
+def test_reconcile_promotes_a_completed_operation_to_applied(client, store, monkeypatch) -> None:
+    aid = _claimed_doc(store, PHASE_OUTCOME_UNKNOWN)
+    _mock_operations(monkeypatch, _FakeRawOp(done=True))
+
+    r = client.post("/reconcile", json={"approval_id": aid})
+    assert r.status_code == 200, r.text
+    assert r.json()["phase"] == PHASE_APPLIED
+    assert store.docs[aid]["apply_audit"]["phase"] == PHASE_APPLIED
+
+
+def test_reconcile_does_not_stamp_a_fabricated_resolved_at(client, store, monkeypatch) -> None:
+    """The operation completed at some unknown earlier moment — possibly hours
+    ago on a container-death recovery. `resolved_at` drives BOTH the desk's
+    "Applied {time}" line and its 10-minute seal window, so stamping `now` here
+    would pop a brand-new 判子 reading a time the rollback did not happen at.
+    Right outcome, fabricated story. The IaC lane refuses the same move."""
+    aid = _claimed_doc(store, PHASE_OUTCOME_UNKNOWN)
+    _mock_operations(monkeypatch, _FakeRawOp(done=True))
+
+    client.post("/reconcile", json={"approval_id": aid})
+    assert store.docs[aid]["apply_audit"]["phase"] == PHASE_APPLIED
+    assert store.docs[aid].get("resolved_at") is None
+
+
+def test_reconcile_records_failed_when_the_operation_errored(client, store, monkeypatch) -> None:
+    aid = _claimed_doc(store, PHASE_APPLYING)
+    _mock_operations(monkeypatch, _FakeRawOp(done=True, error_code=7))
+
+    r = client.post("/reconcile", json={"approval_id": aid})
+    assert r.json()["phase"] == PHASE_FAILED
+    assert store.docs[aid]["apply_audit"]["phase"] == PHASE_FAILED
+
+
+def test_reconcile_leaves_a_still_running_operation_alone(client, store, monkeypatch) -> None:
+    aid = _claimed_doc(store, PHASE_OUTCOME_UNKNOWN)
+    _mock_operations(monkeypatch, _FakeRawOp(done=False))
+
+    r = client.post("/reconcile", json={"approval_id": aid})
+    assert r.json()["reconciled"] is False
+    assert store.docs[aid]["apply_audit"]["phase"] == PHASE_OUTCOME_UNKNOWN
+
+
+def test_reconcile_refuses_a_done_operation_with_no_response(client, store, monkeypatch) -> None:
+    """`done` with neither response nor error is malformed. "Not an error" is
+    not the same as "applied" — refuse rather than promote on absence."""
+    aid = _claimed_doc(store, PHASE_OUTCOME_UNKNOWN)
+    _mock_operations(monkeypatch, _FakeRawOp(done=True, has_response=False))
+
+    r = client.post("/reconcile", json={"approval_id": aid})
+    assert r.json()["reconciled"] is False
+    assert store.docs[aid]["apply_audit"]["phase"] == PHASE_OUTCOME_UNKNOWN
+
+
+def test_reconcile_is_a_noop_on_a_terminal_doc(client, store, monkeypatch) -> None:
+    aid = _claimed_doc(store, PHASE_FAILED)
+    _mock_operations(monkeypatch, _FakeRawOp(done=True))
+
+    r = client.post("/reconcile", json={"approval_id": aid})
+    assert r.json()["reconciled"] is False
+    assert store.docs[aid]["apply_audit"]["phase"] == PHASE_FAILED
+
+
+def test_reconcile_without_an_operation_handle_does_nothing(client, store, monkeypatch) -> None:
+    """A transport error around update_service records outcome_unknown with no
+    handle. There is nothing to look up; say so rather than guess."""
+    aid = _claimed_doc(store, PHASE_OUTCOME_UNKNOWN, operation_name=None)
+    called: list[str] = []
+    monkeypatch.setattr(
+        rollback_main, "_get_operations_client",
+        lambda: called.append("x") or type("_C", (), {})(),
+    )
+    r = client.post("/reconcile", json={"approval_id": aid})
+    assert r.json()["reconciled"] is False
+    assert called == []
+
+
+def test_reconcile_unknown_approval_returns_404(client) -> None:
+    r = client.post("/reconcile", json={"approval_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"})
+    assert r.status_code == 404
+
+
+def test_reconcile_cannot_move_a_pending_approval(client, store, monkeypatch) -> None:
+    """It reads an operation; it can never start one or spend a credential.
+    This is why it needs no approval token."""
+    created, _ = store.create(
+        target_revision="payment-demo-00002-bbb", reason="r",
+        hmac_key="test-hmac-key", created_by="c",
+    )
+    _mock_operations(monkeypatch, _FakeRawOp(done=True))
+    r = client.post("/reconcile", json={"approval_id": created.approval_id})
+    assert r.status_code == 200
+    assert store.docs[created.approval_id]["status"] == "pending"
 
 
 def test_execute_missing_token_rejected(client, traffic_calls) -> None:

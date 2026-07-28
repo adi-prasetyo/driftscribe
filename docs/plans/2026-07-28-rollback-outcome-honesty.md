@@ -2,11 +2,53 @@
 
 **Date:** 2026-07-28
 **Bead:** `ds-2mc` (P0)
-**Status:** IMPLEMENTED. Codex-reviewed (findings folded in — see the review
-correction section below; the first draft would have shipped a false *failure*).
-Gates: 3522 backend · 1419 frontend unit · 21 smoke · 23 visual · 0 typecheck
-errors. Mutation-verified: 6 mutations, each fails only its intended tests.
+**Status:** IMPLEMENTED, after TWO Codex review rounds (both found real defects
+in my drafts — see the two correction sections below).
+Gates: 3544 backend · 1423 frontend unit · 21 smoke · 23 visual · 0 typecheck.
+Mutation-verified: 10 mutations, each failing only its intended tests.
 **NOT yet deployed** — see deploy order at the end.
+
+## Second review correction (Codex, round 2 — post-implementation)
+
+The first implementation was committed as `fc28184` and reviewed again. It held
+up on the seal itself but had six real gaps, all now fixed:
+
+1. **Blocker, and the same defect a third time.** `/execute` treated every
+   non-timeout exception from `op.result()` as proof of failure. It isn't:
+   google.api_core fails the whole future when a POLLING RPC errors and its
+   retries are exhausted, while the operation itself may still be running and
+   may still apply. Failure is now recorded only when the raw operation is
+   `done` with a nonzero error code (`_is_established_failure`); anything else
+   is `outcome_unknown`. My test could not have caught this — it raised a bare
+   `RuntimeError`, which represents both cases equally.
+2. **`/reconcile` had no production caller.** The endpoint and
+   `call_reconcile()` both existed with zero invocations — which is precisely
+   the "handle written for a poller that does not exist" defect this whole
+   change was filed about, reintroduced one level up. Now wired into
+   `_memoized_approval_reader` via `_maybe_reconcile`, bounded at 3 round-trips
+   per request, fail-soft. And the plan had claimed `/reconcile` tests existed
+   when they did not.
+3. **A late reconcile fabricated an apply time.** Stamping `resolved_at=now` on
+   an operation that completed hours earlier would pop a fresh 判子 reading the
+   wrong time — right outcome, invented story. Reconcile now promotes the phase
+   WITHOUT a timestamp, so a rollback confirmed only by reconcile never seals.
+   The IaC lane already refuses the same move.
+4. **Terminal immutability was TOCTOU.** `record_phase` did read-check-write
+   non-transactionally. With reconcile as a second post-claim writer, the
+   docstring's "the claim already settled all concurrency" was false. Now a
+   Firestore transaction.
+5. **`concurrency=1` was worse than latency.** `/deny` and `/propose` kept 30s
+   budgets while queueing behind a 60s `/execute`; a client timeout does not
+   cancel server work, so a timed-out `/propose` could still mint an approval
+   whose once-returned token was lost. Both now get a 90s budget.
+6. **Rule 2.5 was permanently sticky, and `phase_at` was never plumbed.** An old
+   failure outranked every later success forever. Now a later CONFIRMED rollback
+   supersedes it, and a stuck `applying` (past `STUCK_APPLYING_MS`) surfaces as
+   unknown. `phase_at` is now actually projected and typed — the previous
+   ordering comment described behavior the code did not have.
+
+Also corrected: the approval page called `applying`/`outcome_unknown`
+"resolved", asserting a terminality the backend does not have.
 **Related:** `docs/plans/2026-07-28-composite-redesign-implementation.md` (Tasks 3.0b/3.1/3.4 introduced the defect)
 
 ## Defect

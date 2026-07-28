@@ -308,6 +308,32 @@ def _start_traffic_update(target_revision: str):  # noqa: ANN201 — google.api_
     )
 
 
+def _is_established_failure(op: Any) -> bool:
+    """True only when the operation itself is demonstrably ``done`` with a
+    nonzero error code.
+
+    ``Operation.result()`` raising is NOT proof the operation failed. The SDK
+    fails the whole future when a POLLING RPC errors and its retries are
+    exhausted ("If a polling RPC throws an error and retrying it fails, the
+    whole future fails with the corresponding exception" —
+    google/api_core/future/polling.py), which can happen while the operation is
+    still running and goes on to succeed. Failure is established only the way
+    google.api_core.operation itself establishes it: ``done`` plus an ``error``
+    field.
+
+    Concretely: ``operations.get`` starts returning PermissionDenied after an
+    IAM change, ``result()`` raises, and the traffic shift applies anyway. A
+    worker that called that "failed" would tell the operator their rollback did
+    not happen when it did — the same over-claim as the original seal bug, just
+    pointing the other way.
+    """
+    raw = getattr(op, "operation", None)
+    if raw is None or not getattr(raw, "done", False):
+        return False
+    err = getattr(raw, "error", None)
+    return bool(err is not None and getattr(err, "code", 0))
+
+
 def _operation_name(op: Any) -> str:
     """LRO name off a google.api_core Operation. Defensive fallback to ``""``
     if the SDK shape ever changes — a missing name costs us reconcilability,
@@ -623,13 +649,24 @@ def execute(
             detail="rollback still in progress; outcome unconfirmed",
         ) from e
     except Exception as e:  # noqa: BLE001
-        # The LRO itself returned a terminal error. This one IS a real failure.
-        log.exception("execute: LRO failed id=%s op=%s", req.approval_id, operation_name)
+        # result() raised — but that alone does not say the ROLLBACK failed, only
+        # that we stopped being able to watch it. Distinguish an operation that
+        # actually reported an error from a polling RPC that broke underneath us
+        # (see _is_established_failure); the latter may still be applying.
+        established = _is_established_failure(op)
+        phase = PHASE_FAILED if established else PHASE_OUTCOME_UNKNOWN
+        log.exception(
+            "execute: poll raised id=%s op=%s established_failure=%s",
+            req.approval_id, operation_name, established,
+        )
         store.record_phase(
-            req.approval_id, phase=PHASE_FAILED,
+            req.approval_id, phase=phase,
             detail={"stage": "poll", "error": type(e).__name__, "operation_name": operation_name},
         )
-        raise HTTPException(status_code=502, detail="rollback failed") from e
+        raise HTTPException(
+            status_code=502,
+            detail="rollback failed" if established else "rollback outcome unconfirmed",
+        ) from e
 
     # Confirmed. This is the only path that may stamp resolved_at, and so the
     # only one that can produce a success seal on the operator desk.
@@ -789,7 +826,9 @@ def reconcile(
         return {"approval_id": req.approval_id, "phase": phase, "reconciled": False}
 
     try:
-        op = _get_operations_client().get_operation(name=operation_name)
+        op = _get_operations_client().get_operation(
+            name=operation_name, timeout=_RECONCILE_TIMEOUT_S
+        )
     except Exception as e:  # noqa: BLE001 — reconcile is best-effort by design
         log.warning(
             "reconcile: could not read operation id=%s op=%s err=%s",
@@ -810,10 +849,29 @@ def reconcile(
         log.info("reconcile: id=%s -> failed", req.approval_id)
         return {"approval_id": req.approval_id, "phase": PHASE_FAILED, "reconciled": True}
 
+    # `done` with neither response nor error is malformed — not evidence of
+    # success. Refuse to promote it rather than read "not an error" as "applied".
+    if hasattr(op, "HasField") and not op.HasField("response"):
+        log.warning("reconcile: done operation has no response id=%s", req.approval_id)
+        return {"approval_id": req.approval_id, "phase": phase, "reconciled": False}
+
+    # Promote the phase WITHOUT stamping resolved_at.
+    #
+    # The operation completed at some unknown earlier moment — possibly hours
+    # ago, if this is a container-death recovery. Stamping `now` would hand the
+    # desk a fresh timestamp it renders BOTH as "Applied {time}" and as the
+    # 10-minute seal-freshness window, so a 4-hour-old rollback would pop a
+    # brand-new 判子 reading the wrong time. The outcome would be right and the
+    # story around it fabricated. The IaC lane already refuses this exact move
+    # (its reconcile carries the original applied_at forward rather than
+    # re-stamping); this matches it.
+    #
+    # Consequence, accepted deliberately: a rollback confirmed only by reconcile
+    # never seals. It lands as `applied` in the ledger with no fresh receipt,
+    # which is the honest rendering of "this succeeded, we found out later".
     store.record_phase(
         req.approval_id, phase=PHASE_APPLIED,
         detail={"stage": "reconcile", "operation_name": operation_name},
-        resolved_at=dt.datetime.now(dt.timezone.utc),
     )
-    log.info("reconcile: id=%s -> applied", req.approval_id)
+    log.info("reconcile: id=%s -> applied (no seal; completion time unknown)", req.approval_id)
     return {"approval_id": req.approval_id, "phase": PHASE_APPLIED, "reconciled": True}

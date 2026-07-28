@@ -112,7 +112,11 @@ from agent.workloads import (
 from agent.workloads.registry import load_workload_spec, resolve_workload_prompts
 from pydantic import ValidationError as PydanticValidationError
 from driftscribe_lib import github
-from driftscribe_lib.approvals import ROLLBACK_PHASES
+from driftscribe_lib.approvals import (
+    PHASE_APPLYING,
+    PHASE_OUTCOME_UNKNOWN,
+    ROLLBACK_PHASES,
+)
 from driftscribe_lib.auth import verify_oidc_caller
 from driftscribe_lib.cf_access import (
     CfAccessJwtError,
@@ -1237,6 +1241,14 @@ def _do_rollback(
                 # closes the `reason` boundary too. (PR 2)
                 "reason": scrub_rationale_text(proposal.rationale, proposal.env_diffs),
             },
+            # The rollback worker is --concurrency=1, so this can queue behind a
+            # blocking /execute (up to its 60s LRO cap). The default 30s budget
+            # would time out while the request is still queued — and a client
+            # timeout does not cancel server work, so the worker could go on to
+            # create the approval whose raw token is returned exactly once,
+            # orphaning it while the retry below mints a second. See the
+            # constant's own comment.
+            timeout=worker_client.QUEUED_BEHIND_EXECUTE_TIMEOUT,
         )
     except WorkerClientError as e:
         # Worker propose failed (auth, schema, or transport). Release the
@@ -2556,6 +2568,15 @@ def reconcile_merge_state(decision: object, *, repo_provider, settings: Settings
     return decision
 
 
+# Non-terminal phases a /reconcile round-trip can actually move. `claimed` is
+# excluded on purpose: nothing was started, so there is no operation to ask
+# about — the worker would just tell us so.
+_RECONCILABLE_PHASES = frozenset({PHASE_APPLYING, PHASE_OUTCOME_UNKNOWN})
+
+# Max reconcile round-trips per GET /decisions. See _maybe_reconcile.
+_DECISIONS_RECONCILE_BUDGET = 3
+
+
 def _memoized_approval_reader():
     """Return a 0-arg-per-``approval_id`` callable that reads the approval
     doc's ``(status, resolved_at)`` AT MOST ONCE per approval_id per request
@@ -2573,11 +2594,19 @@ def _memoized_approval_reader():
     so the caller degrades to an un-enriched row — the read must never break
     GET /decisions, the operator's main surface."""
     cache: dict[str, object] = {}
+    # Per-request reconcile budget. Deliberately tiny: this is the operator's
+    # main serve path, and each reconcile is a worker round-trip. After ds-2mc
+    # /execute terminalizes the doc itself on every path it survives, so a
+    # non-terminal row is the exception (a poll that outran the 60s cap, or a
+    # container death mid-wait) and the common request spends none of this.
+    budget = [_DECISIONS_RECONCILE_BUDGET]
 
     def read(approval_id: str):
         if approval_id not in cache:
             try:
-                cache[approval_id] = approval_helpers.get_approval_store().get(approval_id)
+                store = approval_helpers.get_approval_store()
+                record = store.get(approval_id)
+                cache[approval_id] = _maybe_reconcile(store, approval_id, record, budget)
             except Exception as e:  # noqa: BLE001 — fail-soft; must never break the serve path
                 log.warning(
                     "decision_approval_status_read_failed",
@@ -2587,6 +2616,49 @@ def _memoized_approval_reader():
         return cache[approval_id]
 
     return read
+
+
+def _maybe_reconcile(store, approval_id: str, record, budget: list[int]):
+    """Ask the rollback worker to finalize an approval still recorded as
+    in-flight, then re-read it. Returns the record to serve.
+
+    This is what makes ``applying``/``outcome_unknown`` a temporary state rather
+    than a permanent one. Without a caller, the worker's ``/reconcile`` endpoint
+    and the operation handle it consumes would be exactly the dead machinery
+    ds-2mc was filed about: ``operation_name`` was written for a poller that did
+    not exist, which is how a failed rollback stayed indistinguishable from a
+    successful one.
+
+    Entirely best-effort. Any failure — no budget, worker down, malformed
+    response — degrades to serving the record we already have, which is honest
+    on its own terms (``outcome_unknown`` renders as unconfirmed, not as
+    success). It must never break GET /decisions.
+    """
+    audit = getattr(record, "apply_audit", None)
+    if not isinstance(audit, dict):
+        return record
+    phase = audit.get("phase")
+    if phase not in _RECONCILABLE_PHASES:
+        return record
+    # No operation handle means there is nothing for the worker to look up —
+    # e.g. a transport error around update_service that never got one back.
+    # Spending a round-trip to be told that helps nobody.
+    if not (audit.get("detail") or {}).get("operation_name"):
+        return record
+    if budget[0] <= 0:
+        log.info("decisions_reconcile_budget_exhausted", extra={"approval_id": approval_id})
+        return record
+
+    budget[0] -= 1
+    try:
+        worker_client.call_reconcile(approval_id)
+        return store.get(approval_id)
+    except Exception as e:  # noqa: BLE001 — fail-soft by design
+        log.warning(
+            "decisions_reconcile_failed",
+            extra={"approval_id": approval_id, "error": type(e).__name__},
+        )
+        return record
 
 
 def attach_approval_status(decision: object, *, approval_reader) -> object:
@@ -2645,16 +2717,29 @@ def attach_approval_status(decision: object, *, approval_reader) -> object:
     # type names and operation paths, which are operator-debugging material, not
     # something to ship to every browser polling /decisions. An unrecognized or
     # absent phase degrades to None — "outcome unknown" — never to success.
+    # `phase_at` rides along because `resolved_at` cannot order these rows: it
+    # exists only on a confirmed success, so every failed/unconfirmed row would
+    # tie at null. It is the observation time of the CURRENT phase, and is the
+    # only signal that distinguishes a rollback applying right now from one
+    # whose worker died mid-wait an hour ago.
     phase = None
+    phase_at = None
     audit = getattr(record, "apply_audit", None)
     if isinstance(audit, dict):
         raw_phase = audit.get("phase")
         if isinstance(raw_phase, str) and raw_phase in ROLLBACK_PHASES:
             phase = raw_phase
+        raw_phase_at = audit.get("phase_at")
+        if isinstance(raw_phase_at, dt.datetime):
+            phase_at = raw_phase_at
     return {
         **decision,
         "approval": {
-            **approval, "status": status, "resolved_at": resolved_at, "phase": phase,
+            **approval,
+            "status": status,
+            "resolved_at": resolved_at,
+            "phase": phase,
+            "phase_at": phase_at,
         },
     }
 

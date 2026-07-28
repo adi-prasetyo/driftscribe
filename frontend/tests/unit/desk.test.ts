@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { deskModel, awaitingCount, STAMP_WINDOW_MS } from '../../src/lib/desk';
+import { deskModel, awaitingCount, STAMP_WINDOW_MS, STUCK_APPLYING_MS } from '../../src/lib/desk';
 import type { Decision } from '../../src/lib/types';
 import type { PendingApproval } from '../../src/lib/infra_graph';
 import { ledgerRows } from '../../src/lib/ledger';
@@ -703,11 +703,17 @@ describe('deskModel — rule 2.5: unresolved rollback outcome', () => {
     if (model.kind === 'unresolved') expect(model.decision.decision_id).toBe('rb-old-failed');
   });
 
-  it('does not fire for an in-flight or pre-ds-2mc rollback', () => {
-    // `claimed`/`applying` are transient and self-resolve inside /execute;
-    // a missing phase is an old doc. Neither is an outcome to escalate.
+  it('does not fire for a FRESH in-flight rollback or a pre-ds-2mc doc', () => {
+    // Inside the worker's poll budget /execute is still expected to settle the
+    // doc itself; a scary card during every routine rollback would be its own
+    // dishonesty. A missing phase is an old doc, not an outcome to escalate.
     for (const approval of [
-      { approval_url: '/approvals/rb-1?t=x', status: 'used' as const, phase: 'applying' as const },
+      {
+        approval_url: '/approvals/rb-1?t=x',
+        status: 'used' as const,
+        phase: 'applying' as const,
+        phase_at: new Date(NOW - 30_000).toISOString(), // 30s ago — still working
+      },
       { approval_url: '/approvals/rb-1?t=x', status: 'used' as const },
     ]) {
       const model = deskModel({
@@ -716,6 +722,108 @@ describe('deskModel — rule 2.5: unresolved rollback outcome', () => {
       });
       expect(model.kind).toBe('resting');
     }
+  });
+
+  it('surfaces a STUCK applying rollback as unknown — never as failed', () => {
+    // The worker died mid-wait. Nobody is coming back for it, so silence would
+    // be the same disappearance this rule exists to prevent. But nothing has
+    // been established either, so it reports unknown, not failure.
+    const d = rollbackDecision({
+      approval: {
+        approval_url: '/approvals/rb-1?t=x',
+        status: 'used',
+        phase: 'applying',
+        phase_at: new Date(NOW - STUCK_APPLYING_MS - 60_000).toISOString(),
+      },
+    });
+    const model = deskModel({ decisions: [d], pendingApprovals: [], now: NOW, origin: ORIGIN });
+    expect(model.kind).toBe('unresolved');
+    if (model.kind === 'unresolved') expect(model.phase).toBe('outcome_unknown');
+  });
+
+  it('a later CONFIRMED rollback supersedes an earlier failure', () => {
+    // Otherwise the desk pins itself to an ancient failure forever: a new
+    // proposal only hides it while pending, and rule 2.5 outranks stamped, so
+    // the old failure would re-win over the new success's own seal.
+    const oldFailure = rollbackDecision({
+      decision_id: 'rb-failed',
+      created_at: '2026-07-28T10:00:00Z',
+      approval: {
+        approval_url: '/approvals/rb-failed?t=x',
+        status: 'used',
+        phase: 'failed',
+        phase_at: '2026-07-28T10:05:00Z',
+      },
+    });
+    const laterSuccess = rollbackDecision({
+      decision_id: 'rb-ok',
+      created_at: '2026-07-28T11:30:00Z',
+      approval: {
+        approval_url: '/approvals/rb-ok?t=x',
+        status: 'used',
+        phase: 'applied',
+        phase_at: '2026-07-28T11:55:00Z',
+        resolved_at: '2026-07-28T11:55:00Z',
+      },
+    });
+    const model = deskModel({
+      decisions: [oldFailure, laterSuccess], pendingApprovals: [], now: NOW, origin: ORIGIN,
+    });
+    expect(model.kind).toBe('stamped');
+  });
+
+  it('an EARLIER success does not supersede a later failure', () => {
+    const earlierSuccess = rollbackDecision({
+      decision_id: 'rb-ok',
+      created_at: '2026-07-28T10:00:00Z',
+      approval: {
+        approval_url: '/approvals/rb-ok?t=x',
+        status: 'used',
+        phase: 'applied',
+        phase_at: '2026-07-28T10:05:00Z',
+        resolved_at: '2026-07-28T10:05:00Z',
+      },
+    });
+    const laterFailure = rollbackDecision({
+      decision_id: 'rb-failed',
+      created_at: '2026-07-28T11:30:00Z',
+      approval: {
+        approval_url: '/approvals/rb-failed?t=x',
+        status: 'used',
+        phase: 'failed',
+        phase_at: '2026-07-28T11:35:00Z',
+      },
+    });
+    const model = deskModel({
+      decisions: [earlierSuccess, laterFailure], pendingApprovals: [], now: NOW, origin: ORIGIN,
+    });
+    expect(model.kind).toBe('unresolved');
+  });
+
+  it('orders by phase_at (observation time), not the proposal time', () => {
+    // resolved_at cannot order these — it exists only on a confirmed success,
+    // so every failed/unconfirmed row would tie at null.
+    const proposedFirstFailedLast = rollbackDecision({
+      decision_id: 'rb-a',
+      created_at: '2026-07-28T09:00:00Z',
+      approval: {
+        approval_url: '/approvals/rb-a?t=x', status: 'used', phase: 'failed',
+        phase_at: '2026-07-28T11:50:00Z',
+      },
+    });
+    const proposedLastFailedFirst = rollbackDecision({
+      decision_id: 'rb-b',
+      created_at: '2026-07-28T11:00:00Z',
+      approval: {
+        approval_url: '/approvals/rb-b?t=x', status: 'used', phase: 'failed',
+        phase_at: '2026-07-28T11:10:00Z',
+      },
+    });
+    const model = deskModel({
+      decisions: [proposedFirstFailedLast, proposedLastFailedFirst],
+      pendingApprovals: [], now: NOW, origin: ORIGIN,
+    });
+    expect(model.kind === 'unresolved' && model.decision.decision_id).toBe('rb-a');
   });
 });
 
