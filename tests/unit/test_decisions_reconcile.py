@@ -32,6 +32,17 @@ from driftscribe_lib.approvals import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _clean_reconcile_cooldown():
+    """ds-7j0's cooldown is a process-global dict keyed by approval_id, and every
+    test here uses the same ``ap-1``. Without this reset the first test's attempt
+    suppresses every later one, which looks exactly like the wiring having rotted
+    out — the failure these tests exist to catch."""
+    agent_main._reset_reconcile_state_for_tests()
+    yield
+    agent_main._reset_reconcile_state_for_tests()
+
+
 def _approval(
     phase: str | None,
     *,
@@ -141,10 +152,14 @@ def test_pre_ds2mc_doc_without_apply_audit_is_untouched(calls) -> None:
 
 
 def test_budget_is_consumed_and_then_enforced(calls) -> None:
+    # DISTINCT ids on purpose. The budget caps round-trips across the ROWS of one
+    # GET /decisions, which in reality are distinct approvals; reusing one id here
+    # would instead be measuring ds-7j0's per-approval cooldown and would pass at
+    # len(calls) == 1 no matter what the budget did.
     budget = [2]
     store = _Store(after=_approval(PHASE_APPLIED))
-    for _ in range(3):
-        _maybe_reconcile(store, "ap-1", _approval(PHASE_OUTCOME_UNKNOWN), budget)
+    for approval_id in ("ap-1", "ap-2", "ap-3"):
+        _maybe_reconcile(store, approval_id, _approval(PHASE_OUTCOME_UNKNOWN), budget)
     # Third call finds the budget spent and does not reach the worker.
     assert len(calls) == 2
     assert budget == [0]
@@ -207,3 +222,110 @@ def test_a_reconcile_that_resolves_nothing_still_serves_a_record(calls) -> None:
     out = _maybe_reconcile(_Store(after=still_unknown), "ap-1", _approval(PHASE_OUTCOME_UNKNOWN), [3])
     assert out is still_unknown
     assert calls == ["ap-1"]
+
+
+# --------------------------------------------------------------------------- #
+# ds-7j0 — the brakes on a row that will never settle.
+#
+# /reconcile writes nothing on its three non-settling exits, which is right (a
+# re-stamped phase_at would slide the staleness clock and hide a stuck rollback),
+# but it left the row eligible forever with no counter and no ceiling. The
+# rollback worker is --concurrency=1 --max-instances=1 and also serves Approve,
+# so "every GET /decisions, every 45s poll, per open tab" is a real queue in
+# front of the button a judge is about to press.
+# --------------------------------------------------------------------------- #
+
+
+def test_a_second_request_for_the_same_approval_is_held_off_by_the_cooldown(calls) -> None:
+    """The load fix: N tabs polling every 45s cost ONE attempt per cooldown."""
+    store = _Store(after=_approval(PHASE_OUTCOME_UNKNOWN))
+    for _ in range(5):
+        # A fresh per-request budget each time — as a real sequence of GETs has.
+        _maybe_reconcile(store, "ap-1", _approval(PHASE_OUTCOME_UNKNOWN), [3])
+    assert calls == ["ap-1"]
+
+
+def test_the_cooldown_is_per_approval_not_global(calls) -> None:
+    """One row backing off must not silence a different row's first attempt."""
+    store = _Store(after=_approval(PHASE_OUTCOME_UNKNOWN))
+    _maybe_reconcile(store, "ap-1", _approval(PHASE_OUTCOME_UNKNOWN), [3])
+    _maybe_reconcile(store, "ap-2", _approval(PHASE_OUTCOME_UNKNOWN), [3])
+    assert calls == ["ap-1", "ap-2"]
+
+
+def test_a_failed_attempt_still_starts_the_cooldown(calls, monkeypatch) -> None:
+    """The attempt is marked BEFORE the call. A worker that is timing out is
+    exactly the one that must not be retried by every tab on the next poll —
+    marking only on success would invert the fix."""
+    def _boom(approval_id: str):
+        raise RuntimeError("worker down")
+
+    monkeypatch.setattr(agent_main.worker_client, "call_reconcile", _boom)
+    store = _Store(after=_approval(PHASE_OUTCOME_UNKNOWN))
+    record = _approval(PHASE_OUTCOME_UNKNOWN)
+    first = _maybe_reconcile(store, "ap-1", record, [3])
+    second = _maybe_reconcile(store, "ap-1", record, [3])
+    # Both still serve the honest un-reconciled record.
+    assert first is record
+    assert second is record
+
+
+def test_a_day_old_unsettled_row_is_given_up_on(calls) -> None:
+    """The ceiling. Past a day the answer will not change; this needs an
+    operator, not another round-trip against the Approve worker."""
+    old = _approval(PHASE_OUTCOME_UNKNOWN, age_s=25 * 60 * 60)
+    out = _maybe_reconcile(_Store(after=_approval(PHASE_APPLIED)), "ap-1", old, [3])
+    assert out is old
+    assert calls == []
+
+
+def test_a_row_just_inside_the_ceiling_is_still_reconciled(calls) -> None:
+    recent = _approval(PHASE_OUTCOME_UNKNOWN, age_s=23 * 60 * 60)
+    _maybe_reconcile(_Store(after=_approval(PHASE_APPLIED)), "ap-1", recent, [3])
+    assert calls == ["ap-1"]
+
+
+# --- ds-mml(3): the age gate's own failure modes ---------------------------- #
+
+
+def test_an_unreadable_phase_at_fails_CLOSED(calls) -> None:
+    """It used to fail OPEN — a non-datetime phase_at skipped the check and
+    reconciled anyway, dropping the latency guard exactly when the doc is
+    malformed. The guard is what keeps a reconcile from queueing behind the
+    /execute that still owns the rollback."""
+    record = _approval(PHASE_OUTCOME_UNKNOWN)
+    record.apply_audit["phase_at"] = "2026-07-28T00:00:00Z"  # a string, not a datetime
+    out = _maybe_reconcile(_Store(after=_approval(PHASE_APPLIED)), "ap-1", record, [3])
+    assert out is record
+    assert calls == []
+
+
+def test_a_naive_phase_at_is_read_as_utc_not_raised(calls) -> None:
+    """A naive datetime used to raise TypeError out of _maybe_reconcile, through
+    the reader's blanket except, memoizing None for the row — so the desk lost
+    status AND phase for it and went SILENT rather than showing the unresolved
+    card, which is strictly worse than the state it was hiding.
+
+    Naive values are read as UTC, this codebase's convention everywhere (see
+    _utcnow). This one is a naive UTC instant, so it resolves to a real age and
+    the row reconciles normally.
+    """
+    record = _approval(PHASE_OUTCOME_UNKNOWN)
+    record.apply_audit["phase_at"] = dt.datetime.now(dt.timezone.utc).replace(
+        tzinfo=None
+    ) - dt.timedelta(seconds=600)
+    out = _maybe_reconcile(_Store(after=_approval(PHASE_APPLIED)), "ap-1", record, [3])
+    assert out.apply_audit["phase"] == PHASE_APPLIED  # eligible, not an exception
+    assert calls == ["ap-1"]
+
+
+def test_a_phase_at_that_reads_as_the_future_degrades_quietly(calls) -> None:
+    """The other half of the naive case: a naive LOCAL timestamp read as UTC can
+    land in the future (this repo's operator machine is JST, +9). A negative age
+    fails the freshness check and the row is simply served un-reconciled — the
+    safe direction, and still no exception."""
+    record = _approval(PHASE_OUTCOME_UNKNOWN)
+    record.apply_audit["phase_at"] = dt.datetime.now() + dt.timedelta(hours=9)
+    out = _maybe_reconcile(_Store(after=_approval(PHASE_APPLIED)), "ap-1", record, [3])
+    assert out is record  # enrichment intact; the desk still shows the card
+    assert calls == []

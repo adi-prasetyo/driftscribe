@@ -603,3 +603,68 @@ def test_dropping_unknown_fields_does_not_delete_them_from_the_doc() -> None:
     store.claim_pending(created.approval_id)
 
     assert fake.raw(path)["field_from_the_future"] == {"nested": "value"}
+
+
+# --------------------------------------------------------------------------- #
+# ds-090 — `phase_at` is load-bearing and was unpinned.
+#
+# Mutation-verified: deleting it from BOTH the writer here and the /decisions
+# projection left the whole backend suite green. Two things break when it goes
+# missing, and neither announces itself:
+#   - desk.ts falls back to `created_at` (proposal time), so a healthy rollback
+#     instantly breaches STUCK_APPLYING_MS and the desk reads "unconfirmed"
+#     during a perfectly normal approve — on camera.
+#   - _maybe_reconcile's age gate stops guarding, so reconcile starts chasing
+#     rollbacks /execute still owns, queueing behind them on a --concurrency=1
+#     worker. That is the exact latency foot-gun the gate was added for.
+# --------------------------------------------------------------------------- #
+
+
+def test_claim_pending_stamps_phase_at_with_the_claim() -> None:
+    store, fake = _make_store()
+    created, _ = store.create(
+        target_revision="r", reason="x", hmac_key="k", created_by="u"
+    )
+    before = dt.datetime.now(dt.timezone.utc)
+    claimed = store.claim_pending(created.approval_id)
+    after = dt.datetime.now(dt.timezone.utc)
+
+    assert claimed is not None
+    stamped = claimed.apply_audit["phase_at"]
+    assert before <= stamped <= after
+    # And it is durable, not just present on the returned object.
+    assert fake.raw(f"approvals/{created.approval_id}")["apply_audit"]["phase_at"] == stamped
+
+
+@pytest.mark.parametrize(
+    "phase",
+    [
+        approvals.PHASE_APPLYING,
+        approvals.PHASE_APPLIED,
+        approvals.PHASE_FAILED,
+        approvals.PHASE_OUTCOME_UNKNOWN,
+    ],
+)
+def test_record_phase_restamps_phase_at_on_every_transition(phase: str) -> None:
+    """Every transition, not just terminal ones: the age gate reads this to
+    decide whether /execute still owns the rollback, so a stale stamp on an
+    `applying` is exactly as harmful as a missing one."""
+    store, fake = _make_store()
+    created, _ = store.create(
+        target_revision="r", reason="x", hmac_key="k", created_by="u"
+    )
+    claimed = store.claim_pending(created.approval_id)
+    claim_stamp = claimed.apply_audit["phase_at"]
+
+    store.record_phase(
+        created.approval_id,
+        phase=phase,
+        resolved_at=(
+            dt.datetime.now(dt.timezone.utc) if phase == approvals.PHASE_APPLIED else None
+        ),
+    )
+
+    audit = fake.raw(f"approvals/{created.approval_id}")["apply_audit"]
+    assert audit["phase"] == phase
+    assert isinstance(audit["phase_at"], dt.datetime)
+    assert audit["phase_at"] >= claim_stamp

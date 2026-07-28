@@ -108,7 +108,14 @@
            the backend explicitly does not have. Split the copy on the phase;
            the desk carries the detail. #}
         {% set phase = (approval.apply_audit or {}).get('phase') %}
-        {% if phase == 'applying' %}
+        {% if phase == 'applied' %}
+          {# The one place this page could UNDER-claim: a confirmed `applied` is
+             the only phase the backend will vouch for, and without this branch
+             it fell through to the legacy "already been used" sentence — the
+             same words a pre-ds-2mc doc of unknown outcome gets. Say what we
+             actually know. #}
+          <p class="ds-ok">{% if lang == 'ja' %}この承認は使用され、ロールバックが適用されました。{% else %}This approval was used and the rollback applied.{% endif %}</p>
+        {% elif phase == 'applying' %}
           <p class="ds-bad">{% if lang == 'ja' %}この承認は使用済みで、ロールバックを実行中です。結果はデスクでご確認ください。{% else %}This approval has been used and the rollback is still running. The desk shows the outcome once it settles.{% endif %}</p>
         {% elif phase == 'claimed' %}
           {# NOT "still running" — `claimed` means the credential was burned and

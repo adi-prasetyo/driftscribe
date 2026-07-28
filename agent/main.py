@@ -2581,6 +2581,87 @@ _DECISIONS_RECONCILE_BUDGET = 3
 # would queue behind that very call. Comfortably past its 60s LRO cap.
 _RECONCILE_MIN_AGE_S = 90.0
 
+# ds-7j0 — the two brakes on an UNRESOLVABLE row.
+#
+# /reconcile writes nothing on its three non-settling exits (read failed / not
+# done / done-with-no-response). That is correct — re-stamping `phase_at` there
+# would slide the staleness clock forward and hide a genuinely stuck rollback,
+# which is the ds-2mc defect inverted — but it also means nothing about the row
+# changes, so it stayed eligible forever with no attempt counter and no ceiling.
+# Two ways that becomes permanent load on a worker pinned to --concurrency=1
+# --max-instances=1 (iac/cloudrun.tf) that ALSO serves Approve: the out-of-band
+# `driftscribeRunOperationsReader` binding gets dropped (nothing in iac/ protects
+# it — see the docstring on workers/rollback/main.py::_get_operations_client), or
+# Cloud Run garbage-collects an old LRO and every read is NOT_FOUND. Either way
+# every GET /decisions burned up to _DECISIONS_RECONCILE_BUDGET round-trips, on
+# every 45s poll, per open tab, indefinitely.
+#
+# Neither brake touches the doc: the coordinator's projection is compute-only and
+# the worker owns those writes.
+#
+#   1. A per-approval cooldown, so N open tabs polling at 45s cost at most one
+#      attempt per cooldown per coordinator instance instead of N per poll.
+#   2. A hard ceiling on `phase_at` age. Past it the answer will not change; a
+#      rollback that has been unsettled for a day needs an operator, not another
+#      round-trip.
+_RECONCILE_RETRY_AFTER_S = 300.0
+_RECONCILE_GIVE_UP_AFTER_S = 24 * 60 * 60.0
+
+# approval_id -> monotonic timestamp of the last reconcile ATTEMPT (not of its
+# outcome — a failed attempt is exactly the one worth backing off from). Bounded
+# like _TRACE_CACHE: this keys on approval ids, which are unique per proposal, so
+# an unbounded dict is a slow leak in a long-lived instance.
+_RECONCILE_ATTEMPTED: dict[str, float] = {}
+_RECONCILE_ATTEMPTED_MAX = 512
+
+
+def _reconcile_cooldown_active(approval_id: str, *, now: float) -> bool:
+    """True while ``approval_id`` is inside its post-attempt cooldown."""
+    last = _RECONCILE_ATTEMPTED.get(approval_id)
+    return last is not None and (now - last) < _RECONCILE_RETRY_AFTER_S
+
+
+def _note_reconcile_attempt(approval_id: str, *, now: float) -> None:
+    if len(_RECONCILE_ATTEMPTED) >= _RECONCILE_ATTEMPTED_MAX:
+        # Drop the oldest half rather than clearing outright, so a burst of new
+        # approvals can't wipe every live cooldown and re-open the stampede.
+        for stale, _ in sorted(_RECONCILE_ATTEMPTED.items(), key=lambda kv: kv[1])[
+            : _RECONCILE_ATTEMPTED_MAX // 2
+        ]:
+            _RECONCILE_ATTEMPTED.pop(stale, None)
+    _RECONCILE_ATTEMPTED[approval_id] = now
+
+
+def _reset_reconcile_state_for_tests() -> None:
+    """Test helper — drop the reconcile cooldown table. Mirrors
+    ``_reset_state_for_tests``; the cooldown is process-global, so without this
+    one test's attempt silently suppresses the next test's."""
+    _RECONCILE_ATTEMPTED.clear()
+
+
+def _phase_at_age_s(audit: dict) -> float | None:
+    """Seconds since ``apply_audit.phase_at``, or ``None`` if it cannot be read.
+
+    ``None`` means the caller must NOT reconcile (fail closed). The previous
+    inline version failed OPEN on a non-datetime ``phase_at`` — it skipped the
+    check and reconciled anyway — which drops the latency guard precisely when
+    the doc is malformed. And a NAIVE datetime raised straight out of
+    ``_maybe_reconcile``, through the reader's blanket except, memoizing
+    ``None`` for the row: the desk then lost status AND phase for it and went
+    silent, rather than showing the unresolved card. Both are handled here.
+    """
+    phase_at = audit.get("phase_at")
+    if not isinstance(phase_at, dt.datetime):
+        return None
+    if phase_at.tzinfo is None:
+        # Firestore hands back tz-aware values; a naive one came from somewhere
+        # else. UTC is this codebase's convention everywhere (see _utcnow).
+        phase_at = phase_at.replace(tzinfo=dt.timezone.utc)
+    try:
+        return (dt.datetime.now(dt.timezone.utc) - phase_at).total_seconds()
+    except (TypeError, ValueError, OverflowError):
+        return None
+
 
 def _memoized_approval_reader():
     """Return a 0-arg-per-``approval_id`` callable that reads the approval
@@ -2665,16 +2746,33 @@ def _maybe_reconcile(store, approval_id: str, record, budget: list[int]):
     # overviewStore awaits it alongside the graph and pending-list fetches, so
     # all three would wait. /execute will terminalize the doc itself; reconcile
     # exists for what it leaves behind, not to race it.
-    phase_at = audit.get("phase_at")
-    if isinstance(phase_at, dt.datetime):
-        age = (dt.datetime.now(dt.timezone.utc) - phase_at).total_seconds()
-        if age < _RECONCILE_MIN_AGE_S:
-            return record
+    age = _phase_at_age_s(audit)
+    if age is None or age < _RECONCILE_MIN_AGE_S:
+        return record
+    # ds-7j0's ceiling: past this the answer will not change, and the round-trip
+    # is pure load on the worker that also serves Approve.
+    if age > _RECONCILE_GIVE_UP_AFTER_S:
+        log.info(
+            "decisions_reconcile_gave_up",
+            extra={"approval_id": approval_id, "age_s": int(age)},
+        )
+        return record
+    # ds-7j0's cooldown. Checked BEFORE the budget so a row still cooling down
+    # doesn't consume a slot another row could use — the budget is per-request,
+    # the cooldown is per-approval, and spending the former on a row we have
+    # already decided not to call for would starve the rows we would.
+    now = time.monotonic()
+    if _reconcile_cooldown_active(approval_id, now=now):
+        return record
     if budget[0] <= 0:
         log.info("decisions_reconcile_budget_exhausted", extra={"approval_id": approval_id})
         return record
 
     budget[0] -= 1
+    # Marked before the call, not after: an attempt that throws is exactly the
+    # one worth backing off from, and a worker that is timing out must not be
+    # retried on the very next poll by every open tab.
+    _note_reconcile_attempt(approval_id, now=now)
     try:
         worker_client.call_reconcile(approval_id)
         return store.get(approval_id)
@@ -3976,6 +4074,30 @@ def _map_worker_error(
         status_code=403,
         detail=f"rollback {action} failed",
     )
+
+
+def _approval_with_recorded_phase(store, approval_id: str):  # noqa: ANN001, ANN201
+    """Return the approval doc iff it carries a recorded rollback phase.
+
+    The question this answers is narrow: after the worker refused with a 5xx,
+    did it nonetheless get far enough to write an outcome? ``apply_audit.phase``
+    is written atomically with the ``pending → used`` claim, so its presence
+    means the claim landed and the doc's own account of what happened is more
+    truthful than the transport error. Returns ``None`` when there is no phase,
+    no doc, or the read itself fails — every one of which means "we have nothing
+    better than the error", so the caller raises as before. See the ds-z4z
+    comment at the approve branch's ``except``.
+    """
+    try:
+        approval = store.get(approval_id)
+    except Exception:  # noqa: BLE001 — a failed probe must not mask the worker error
+        log.exception("approve: could not re-read approval after worker error")
+        return None
+    if approval is None:
+        return None
+    if not (getattr(approval, "apply_audit", None) or {}).get("phase"):
+        return None
+    return approval
 
 
 def _map_tofu_apply_error(
@@ -6043,6 +6165,9 @@ def approval_post(
     """
     store = approval_helpers.get_approval_store()
     execute_result: dict | None = None
+    # Set only on the ds-z4z fall-through below (worker 5xx, doc records a
+    # phase) — see the comment there.
+    approval_after_error = None
 
     # Pause gate (kill switch): read ONCE here — the gate below uses it for the
     # approve refusal AND the re-render context carries it to disable Approve in
@@ -6081,11 +6206,43 @@ def approval_post(
         try:
             execute_result = worker_client.call_execute(approval_id, t)
         except worker_client.WorkerClientError as e:
-            # Same mapping as the reject path — see :func:`_map_worker_error`.
-            raise _map_worker_error(e, action="execute") from e
+            # ds-z4z: a 5xx out of /execute is frequently NOT an outage. The
+            # worker answers 504 with "rollback still in progress; outcome
+            # unconfirmed" for any LRO that outlives its poll budget, and 502
+            # when the poll itself broke — both are DESIGNED outcomes of the
+            # ds-2mc work, and in both the traffic shift is usually landing
+            # fine. Raising here produced a FastAPI JSON error body reading
+            # "rollback worker unavailable", so the four phase branches added
+            # to approval.html were unreachable on the POST path (an operator
+            # only ever saw them by hand-revisiting the URL), and the demo's
+            # headline flow narrated a working rollback as a broken system.
+            #
+            # So: ask the doc before calling it an outage. A recorded phase
+            # means the worker got at least as far as claiming the approval,
+            # which makes the doc — not the transport error — the truth worth
+            # rendering. Fall through to the normal re-render with
+            # execute_result still None, so the page shows the phase copy and
+            # NOT the "Rollback dispatched" note.
+            #
+            # No new disclosure: reaching a recorded phase required a valid
+            # single-use token, and GET /approvals already renders this same
+            # phase copy to anyone holding the URL (it is always-200 by
+            # design). Non-5xx keeps collapsing through _map_worker_error so a
+            # probe still cannot enumerate which worker-side check refused it.
+            approval_after_error = _approval_with_recorded_phase(store, approval_id)
+            if approval_after_error is None:
+                raise _map_worker_error(e, action="execute") from e
+            log.warning(
+                "approve: worker %s on execute, but the approval records phase=%s "
+                "— rendering the recorded outcome instead of an outage",
+                e.status_code,
+                (approval_after_error.apply_audit or {}).get("phase"),
+                extra={"approval_id": approval_id},
+            )
 
-    # Re-fetch the doc so the page reflects the new status.
-    approval = store.get(approval_id)
+    # Re-fetch the doc so the page reflects the new status. On the ds-z4z path
+    # above we already hold it — don't pay a second Firestore read for it.
+    approval = approval_after_error if approval_after_error is not None else store.get(approval_id)
     response = _TEMPLATES.TemplateResponse(
         request,
         "approval.html",

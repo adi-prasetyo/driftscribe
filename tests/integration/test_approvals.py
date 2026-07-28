@@ -280,6 +280,25 @@ def test_get_already_used_approval_hides_form(client, store) -> None:
     assert "resolved" not in r.text.lower()
 
 
+def test_get_applied_approval_says_the_rollback_applied(client, store) -> None:
+    """The one place this page could UNDER-claim.
+
+    A confirmed ``applied`` is the only phase the backend will vouch for, and
+    without its own branch it fell through to the same "already been used"
+    sentence a pre-ds-2mc doc of entirely unknown outcome gets. Everywhere else
+    the ds-2mc work removes over-claiming; here it was hiding a real result.
+    """
+    approval = store.create_pending(
+        target_revision="payment-demo-00002-bbb", reason="r"
+    )
+    store.docs[approval.approval_id]["status"] = "used"
+    store.docs[approval.approval_id]["apply_audit"] = {"phase": "applied"}
+    r = client.get(f"/approvals/{approval.approval_id}?t=anything")
+    assert r.status_code == 200
+    assert "the rollback applied" in r.text.lower()
+    assert "already been used" not in r.text.lower()
+
+
 def test_get_expired_approval_shows_expired_message(client, store) -> None:
     """Once past the TTL, the form is hidden and an explicit 'expired'
     message rendered. The TTL is enforced at /execute on the worker
@@ -651,6 +670,82 @@ def test_post_approve_worker_5xx_maps_to_502(
     execute_calls.state["raises"] = worker_client.WorkerClientError(
         503, "rollback unreachable: ConnectError", "rollback"
     )
+    r = client.post(
+        f"/approvals/{approval.approval_id}",
+        data={"t": "tok", "decision": "approve"},
+    )
+    assert r.status_code == 502
+
+
+# ds-z4z: …but a 5xx is only an OUTAGE when the doc has nothing better to say.
+# The worker answers 504 for any LRO that outlives its poll budget and 502 when
+# the poll itself broke — both designed ds-2mc outcomes, both usually with the
+# traffic shift landing fine. Raising on those made the four phase branches in
+# approval.html unreachable from the POST, so the demo's headline flow narrated
+# a working rollback as a broken system.
+
+
+def test_post_approve_5xx_renders_the_recorded_outcome_instead_of_an_outage(
+    client, store, execute_calls
+) -> None:
+    approval = store.create_pending(
+        target_revision="payment-demo-00002-bbb", reason="r"
+    )
+    # The worker claimed the approval and recorded a phase, then its poll blew
+    # its budget — exactly the >60s-LRO shape.
+    store.docs[approval.approval_id]["status"] = "used"
+    store.docs[approval.approval_id]["apply_audit"] = {"phase": "outcome_unknown"}
+    execute_calls.state["raises"] = worker_client.WorkerClientError(
+        504, "rollback still in progress; outcome unconfirmed", "rollback"
+    )
+
+    r = client.post(
+        f"/approvals/{approval.approval_id}",
+        data={"t": "tok", "decision": "approve"},
+    )
+
+    assert r.status_code == 200
+    assert "outcome could not be confirmed" in r.text
+    # Neither over- nor under-claiming: no dispatch note (we have no operation
+    # to name), and no "unavailable" — the worker was reachable and answered.
+    assert "Rollback dispatched" not in r.text
+    assert "unavailable" not in r.text
+
+
+def test_post_approve_5xx_without_a_recorded_phase_is_still_502(
+    client, store, execute_calls
+) -> None:
+    """The doc is the only thing that earns the fall-through. A still-pending
+    approval means the worker never got to the claim, so there is nothing more
+    truthful than the transport error — keep the outage mapping."""
+    approval = store.create_pending(
+        target_revision="payment-demo-00002-bbb", reason="r"
+    )
+    execute_calls.state["raises"] = worker_client.WorkerClientError(
+        503, "rollback unreachable: ConnectError", "rollback"
+    )
+    r = client.post(
+        f"/approvals/{approval.approval_id}",
+        data={"t": "tok", "decision": "approve"},
+    )
+    assert r.status_code == 502
+
+
+def test_post_approve_5xx_with_a_failing_doc_read_is_still_502(
+    client, store, execute_calls, monkeypatch
+) -> None:
+    """A probe that itself fails must not swallow the worker error."""
+    approval = store.create_pending(
+        target_revision="payment-demo-00002-bbb", reason="r"
+    )
+    execute_calls.state["raises"] = worker_client.WorkerClientError(
+        504, "rollback still in progress", "rollback"
+    )
+
+    def boom(_approval_id):  # noqa: ANN001, ANN202
+        raise RuntimeError("firestore is having a day")
+
+    monkeypatch.setattr(store, "get", boom)
     r = client.post(
         f"/approvals/{approval.approval_id}",
         data={"t": "tok", "decision": "approve"},
