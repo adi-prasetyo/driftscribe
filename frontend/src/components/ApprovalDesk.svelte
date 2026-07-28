@@ -84,10 +84,26 @@
   // second approval landing before the first stamp decayed, an unrelated
   // poll refresh, leaving the desk view) tears down the previous timer
   // first, and unmounting the component tears down the last one.
+  //
+  // The trailing `+ 1` is the same off-by-one the return ladder below already
+  // solves with `lastDelay + 1`. `selectStamped` treats the window as
+  // INCLUSIVE (`now <= stampedUntil`), so without it a timer firing at exactly
+  // `stampedUntil` recomputes a model that is STILL 'stamped' and re-arms with
+  // a delay of 0 rather than decaying.
+  //
+  // Measured, not assumed — and it is smaller than it first looks. Spying on
+  // setTimeout across the boundary: without the `+ 1`, the delays are
+  // [540000, 0] (one redundant re-arm, and only one); with it, [540001] and
+  // nothing further. It is a single wasted scheduling, NOT a livelock — an
+  // earlier reading of this as "never converges" mistook a pending-but-not-
+  // yet-due timer for a re-arm loop. Both versions land on resting at
+  // stampedUntil + 1ms, so none of this was ever user-visible; the `+ 1` just
+  // makes the wake-up land just PAST the window it waits on, which is what the
+  // code always meant.
   $effect(() => {
     const m = model;
     if (m.kind !== 'stamped') return;
-    const delay = Math.max(0, m.stampedUntil - Date.now());
+    const delay = Math.max(0, m.stampedUntil - Date.now()) + 1;
     const timer = setTimeout(() => {
       decayTick += 1;
     }, delay);

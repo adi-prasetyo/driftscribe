@@ -363,6 +363,37 @@ describe('ApprovalDesk — stamped state', () => {
 describe('ApprovalDesk — stamped decay timer', () => {
   beforeEach(() => vi.useFakeTimers({ now: Date.parse('2026-07-28T12:00:00Z') }));
 
+  it('does not re-arm in a tie at the exact stampedUntil instant', async () => {
+    // selectStamped's window is INCLUSIVE (now <= stampedUntil), so without the
+    // effect's `+ 1` a decay timer firing at exactly stampedUntil finds the
+    // model still 'stamped' and re-arms with delay 0 instead of decaying.
+    //
+    // The ONLY observable that separates the two is the SCHEDULING, so this
+    // counts setTimeout calls rather than inspecting the DOM: both versions
+    // reach resting at stampedUntil + 1ms and both show "1 pending timer" at
+    // the boundary itself (with the fix it is pending-not-yet-due; without, it
+    // is a re-armed 0ms timer). That equivalence is why the sibling decay test,
+    // which advances with 2s of slack, passes either way.
+    const setSpy = vi.spyOn(globalThis, 'setTimeout');
+    const d = iacDecision({ apply_status: 'applied', applied_at: '2026-07-28T11:59:00Z' });
+    const { queryByTestId } = render(ApprovalDesk, {
+      props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onNavigate: vi.fn() },
+    });
+    expect(setSpy).toHaveBeenCalledTimes(1);
+
+    // 11:59 + STAMP_WINDOW_MS(10min) => stampedUntil is 12:09:00.000 exactly,
+    // and the clock starts at 12:00:00.000 — so this lands ON the boundary.
+    await vi.advanceTimersByTimeAsync(9 * 60 * 1000);
+    // Still stamped, and correctly so: the window includes its own last instant.
+    expect(queryByTestId('approval-desk-stamped')).toBeTruthy();
+    // The decay timer was scheduled ONCE, for stampedUntil + 1. Without the
+    // `+ 1` the calls here are [540000, 0] — the timer fired on the boundary
+    // and the effect re-armed.
+    expect(setSpy).toHaveBeenCalledTimes(1);
+    expect(setSpy.mock.calls[0][1]).toBe(9 * 60 * 1000 + 1);
+    setSpy.mockRestore();
+  });
+
   it('falls back to resting on its own once stampedUntil passes, with no new props', async () => {
     const d = iacDecision({ apply_status: 'applied', applied_at: '2026-07-28T11:59:00Z' }); // 1 min before "now"
     const { getByTestId } = render(ApprovalDesk, {
