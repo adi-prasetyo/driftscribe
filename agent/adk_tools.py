@@ -1537,6 +1537,15 @@ def _project_conversation_meta(conv: object) -> dict[str, Any]:
         # may carry a ?t= token or credentialed URL — so run the FULL redaction
         # pipeline, not just the sanitizer (Codex review).
         out["title"] = _redact_untrusted_text(title, _CONV_TITLE_CAP)
+    # Who took part, not just who holds it now: `workload` alone would tell the
+    # reader that a thread Explore ran for ten turns belongs to whoever answered
+    # last. Falls back to the bound workload for conversations predating the
+    # field, so this key is always present.
+    from agent.state_store import conversation_crews
+
+    crews = conversation_crews(conv)
+    if crews:
+        out["crews"] = [_team_log_sanitize(c, 32) for c in crews]
     return out
 
 
@@ -1731,6 +1740,7 @@ def build_conversations_breadcrumb(
     are untrusted, so they are sanitized."""
     try:
         from agent.main import get_state
+        from agent.state_store import conversation_crews
 
         rows = get_state().list_conversations(limit=50)
     except Exception:  # noqa: BLE001
@@ -1741,10 +1751,15 @@ def build_conversations_breadcrumb(
         ref = now or datetime.now(timezone.utc)
         lines: list[str] = []
         for r in rows:
+            # Excluded on the BOUND crew, not on participation — that is what
+            # keeps a crew from being shown its own live thread as if it were
+            # someone else's history, since the bound crew is always the running
+            # one (redemption flips `workload` before the joining crew runs). A
+            # crew that handed a thread AWAY should still see where it went.
             if not isinstance(r, dict) or r.get("workload") == current_workload:
                 continue
-            wl = r.get("workload")
-            wl = _team_log_sanitize(wl, 32) if isinstance(wl, str) and wl else "?"
+            crews = [_team_log_sanitize(c, 32) for c in conversation_crews(r)]
+            wl = "→".join(crews) if crews else "?"
             # Title is untrusted (raw first prompt) and this breadcrumb is
             # injected into EVERY other crew's instruction — redact it fully so a
             # ?t= token / credentialed URL can't leak via the always-on nudge.

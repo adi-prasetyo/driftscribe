@@ -319,3 +319,53 @@ def test_firestore_decline_reserves_nothing(store):
         "c1", nonce=nonce, accept=False, now=_NOW, run_id="unused",
     )
     assert store.begin_chat_run("c1", run_id="other", now=_NOW) is True
+
+
+# --- Participant list (team memory across a handoff) ------------------------
+#
+# The behaviour and the shared predicate are covered in
+# test_handoff_team_memory.py against the in-memory store. These pin the parts
+# only Firestore can get wrong: that the field is written by BOTH creation paths
+# (the lazy one is the only one the chat path uses), that it commits inside the
+# redemption transaction, and that the crew filter — which no longer has a
+# server-side `where` behind it — still narrows.
+
+def test_firestore_create_records_the_starting_crew(store):
+    store.create_conversation("c1", workload="explore", title="t")
+    assert store.get_conversation("c1")["crews"] == ["explore"]
+
+
+def test_firestore_lazy_create_records_the_starting_crew(store):
+    store.append_turns(
+        "c1", [{"role": "user", "text": "hi", "workload": "explore"}],
+        create_with={"workload": "explore", "title": "hi"},
+    )
+    assert store.get_conversation("c1")["crews"] == ["explore"]
+
+
+def test_firestore_accept_appends_the_joining_crew(store):
+    nonce = _fs_propose(store, "c1", frm="explore", to="drift")
+    store.redeem_handoff("c1", nonce=nonce, accept=True, now=_NOW)
+    assert store.get_conversation("c1")["crews"] == ["explore", "drift"]
+
+
+def test_firestore_decline_leaves_the_participant_list_alone(store):
+    nonce = _fs_propose(store, "c1", frm="explore", to="drift")
+    store.redeem_handoff("c1", nonce=nonce, accept=False, now=_NOW)
+    assert store.get_conversation("c1")["crews"] == ["explore"]
+
+
+def test_firestore_list_finds_a_thread_the_crew_handed_away(store):
+    nonce = _fs_propose(store, "c1", frm="explore", to="drift")
+    store.redeem_handoff("c1", nonce=nonce, accept=True, now=_NOW)
+    for crew in ("explore", "drift"):
+        assert [c["conversation_id"]
+                for c in store.list_conversations(workload=crew)] == ["c1"]
+    assert store.list_conversations(workload="provision") == []
+
+
+def test_firestore_list_still_matches_a_row_predating_the_field(store):
+    store.create_conversation("c1", workload="drift", title="t")
+    del store._db.docs["conversations/c1"]["crews"]
+    assert [c["conversation_id"]
+            for c in store.list_conversations(workload="drift")] == ["c1"]

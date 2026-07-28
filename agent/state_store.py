@@ -103,6 +103,46 @@ class StateStore(Protocol):
 CHAT_RUN_LEASE_TTL_S = 330
 
 
+def conversation_crews(conv: Any) -> list[str]:
+    """Every crew that has taken part in this conversation, in joining order.
+
+    ``workload`` and ``crews`` answer different questions and must not be
+    conflated. ``workload`` is who is bound RIGHT NOW — the crew-lock authority
+    the 409 is built on — and redemption rewrites it. ``crews`` is the
+    participant history, which nothing rewrites; it is what "team memory" has
+    to filter and label on, because a thread's TITLE is the first prompt the
+    ORIGINATING crew was asked.
+
+    Conversations written before this field existed carry no ``crews``. For
+    those the single bound workload is the entire participant history, so the
+    fallback is exact rather than a guess — which is why no backfill is needed.
+    """
+    if not isinstance(conv, dict):
+        return []
+    raw = conv.get("crews")
+    if isinstance(raw, list):
+        out = [c for c in raw if isinstance(c, str) and c]
+        if out:
+            return out
+    bound = conv.get("workload")
+    return [bound] if isinstance(bound, str) and bound else []
+
+
+def conversation_has_crew(conv: Any, crew: str) -> bool:
+    """Whether ``crew`` took part in this conversation at any point."""
+    return crew in conversation_crews(conv)
+
+
+def _with_crew(conv: Any, crew: str) -> list[str]:
+    """The participant list with ``crew`` appended if it is not already there.
+
+    A thread that bounces explore → drift → explore lists two participants, not
+    three: this records who took part, not a move log.
+    """
+    crews = conversation_crews(conv)
+    return crews if crew in crews else [*crews, crew]
+
+
 def _evaluate_handoff_redemption(
     conv: dict[str, Any] | None, *, nonce: str, now: Any,
 ) -> tuple[dict[str, Any] | None, str | None]:
@@ -337,6 +377,7 @@ class InMemoryStateStore:
         doc = {
             "conversation_id": conversation_id,
             "workload": workload,
+            "crews": [workload],
             "title": title,
             "created_at": now,
             "updated_at": now,
@@ -494,6 +535,7 @@ class InMemoryStateStore:
             # live nonce whose conversation already moved.
             conv.pop("pending_handoff", None)
             if accept:
+                conv["crews"] = _with_crew(conv, pending["to"])
                 conv["workload"] = pending["to"]
                 if run_id:
                     conv["chat_run_lease"] = _new_lease(run_id, now, ttl_seconds)
@@ -529,7 +571,7 @@ class InMemoryStateStore:
         rows = [
             dict(c)
             for c in self._conversations.values()
-            if workload is None or c.get("workload") == workload
+            if workload is None or conversation_has_crew(c, workload)
         ]
         rows.sort(key=lambda c: c.get("updated_at") or sentinel, reverse=True)
         return rows[:limit]
@@ -832,6 +874,7 @@ class FirestoreStateStore:
         doc = {
             "conversation_id": conversation_id,
             "workload": workload,
+            "crews": [workload],
             "title": title,
             "created_at": firestore.SERVER_TIMESTAMP,
             "updated_at": firestore.SERVER_TIMESTAMP,
@@ -899,6 +942,7 @@ class FirestoreStateStore:
                 base = {
                     "conversation_id": conversation_id,
                     "workload": create_with["workload"],
+                    "crews": [create_with["workload"]],
                     "title": create_with["title"],
                     "created_at": firestore.SERVER_TIMESTAMP,
                     "last_trace_id": None,
@@ -1055,6 +1099,10 @@ class FirestoreStateStore:
             }
             if accept:
                 doc_fields["workload"] = pending["to"]
+                # Computed from the transaction's own snapshot rather than an
+                # ArrayUnion so the participant list commits with the flip it
+                # describes, under the same read that authorised it.
+                doc_fields["crews"] = _with_crew(conv, pending["to"])
                 if run_id:
                     doc_fields["chat_run_lease"] = _new_lease(
                         run_id, now, ttl_seconds,
@@ -1082,17 +1130,23 @@ class FirestoreStateStore:
     def list_conversations(
         self, *, limit: int = 50, workload: str | None = None
     ) -> list[dict[str, Any]]:
-        query = (
-            self._conversations.where("workload", "==", workload)
-            if workload is not None
-            else self._conversations
-        )
-        snaps = list(query.stream())
+        # Filtered in Python, not by a `where`. A crew now matches a thread it
+        # merely took part in, and the two candidate server-side forms both
+        # fail: `workload ==` misses threads handed away, and `crews
+        # array_contains` misses every conversation written before that field
+        # existed. Unioning two queries would buy nothing here — the unfiltered
+        # path already streams the whole collection and sorts in Python, and the
+        # breadcrumb walks that path on every chat turn, so the scan is the
+        # existing cost profile rather than a new one. Using the same predicate
+        # as the in-memory store is worth more: it is the store every test runs
+        # against, so a rule cannot hold there and quietly differ in prod.
         rows: list[dict[str, Any]] = []
-        for s in snaps:
+        for s in self._conversations.stream():
             d = s.to_dict() or {}
             d.setdefault("created_at", s.create_time)
             d.setdefault("updated_at", d.get("created_at"))
+            if workload is not None and not conversation_has_crew(d, workload):
+                continue
             rows.append(d)
         rows.sort(key=lambda d: d.get("updated_at") or 0, reverse=True)
         return rows[:limit]

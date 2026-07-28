@@ -22,6 +22,9 @@ from agent.adk_tools import read_conversations_tool
 _EXPECTED_META_KEYS = {
     "conversation_id",
     "workload",
+    # every crew that took part — `workload` alone reports only whoever holds
+    # the thread now, which a handoff changes. See test_handoff_team_memory.py.
+    "crews",
     "turn_count",
     "last_trace_id",
     "created_at",
