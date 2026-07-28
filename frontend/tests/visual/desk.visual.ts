@@ -161,6 +161,49 @@ function iacPendingFromDecision() {
   };
 }
 
+// Rule 3 (stamped), ROLLBACK lane (ds-2mc). Requires `phase: 'applied'` — a
+// confirmed traffic shift — on top of `status: 'used'`. The pre-existing
+// `stamped` fixture exercises only the iac lane, so without this one the
+// rollback seal gate has no visual coverage at all.
+function rollbackApplied() {
+  return {
+    decision_id: 'dec-visual-rb-applied',
+    trace_id: 'dddd4444dddd4444dddd4444dddd4444',
+    action: 'rollback',
+    created_at: isoMinsAgo(9),
+    diffs: DIFFS,
+    approval: {
+      approval_id: 'appr-visual-0002',
+      approval_url: '/approvals/appr-visual-0002?t=visualtoken',
+      status: 'used',
+      phase: 'applied',
+      resolved_at: isoMinsAgo(2),
+    },
+  };
+}
+
+// Rule 2.5 (unresolved). `phase` is the ONLY difference between these two, and
+// they must not read alike: one states a fact, the other states an absence of
+// knowledge. Both shots exist so the distinction can be eyeballed in both
+// locales rather than trusted to the copy keys.
+function rollbackUnresolved(phase: 'failed' | 'outcome_unknown') {
+  return {
+    decision_id: `dec-visual-rb-${phase}`,
+    trace_id: 'eeee5555eeee5555eeee5555eeee5555',
+    action: 'rollback',
+    created_at: isoMinsAgo(6),
+    diffs: DIFFS,
+    approval: {
+      approval_id: 'appr-visual-0003',
+      approval_url: '/approvals/appr-visual-0003?t=visualtoken',
+      status: 'used',
+      phase,
+      // No resolved_at: it means confirmed success and these are not that.
+      resolved_at: null,
+    },
+  };
+}
+
 // Rule 3 (stamped), iac lane: keyed off `applied_at`, NOT created_at.
 function iacApplied() {
   return {
@@ -312,18 +355,43 @@ const FIXTURES: Record<string, DeskFixture> = {
     generatedAt: new Date(Date.now() - 3 * 60_000).toISOString(),
     drift: 5,
   },
+  'stamped-rollback': {
+    decisions: [rollbackApplied(), ...ledgerHistory()],
+    pendingApprovals: [],
+    generatedAt: new Date(Date.now() - 3 * 60_000).toISOString(),
+    drift: 5,
+  },
+  'unresolved-failed': {
+    decisions: [rollbackUnresolved('failed'), ...ledgerHistory()],
+    pendingApprovals: [],
+    generatedAt: new Date(Date.now() - 3 * 60_000).toISOString(),
+    drift: 5,
+  },
+  'unresolved-unknown': {
+    decisions: [rollbackUnresolved('outcome_unknown'), ...ledgerHistory()],
+    pendingApprovals: [],
+    generatedAt: new Date(Date.now() - 3 * 60_000).toISOString(),
+    drift: 5,
+  },
 };
 
 // The state each fixture must actually produce. Asserted before the shot so a
 // fixture that silently falls through to `resting` (an expired approval, a
 // stamped timestamp aged out of its window) fails loudly instead of quietly
 // handing back five identical screenshots of the calm state.
-const EXPECTED_STATE: Record<string, 'resting' | 'pending' | 'stamped'> = {
+const EXPECTED_STATE: Record<string, 'resting' | 'pending' | 'stamped' | 'unresolved'> = {
   resting: 'resting',
   'pending-rollback': 'pending',
   'pending-iac-listing': 'pending',
   'pending-iac-decision': 'pending',
   stamped: 'stamped',
+  // A rollback seals ONLY on a confirmed apply. If the phase gate regressed to
+  // sealing on `status: used` alone this would still pass — but the two
+  // `unresolved` rows below would then flip to `stamped` and fail loudly,
+  // which is the actual guard.
+  'stamped-rollback': 'stamped',
+  'unresolved-failed': 'unresolved',
+  'unresolved-unknown': 'unresolved',
 };
 
 for (const locale of ['en', 'ja'] as Locale[]) {

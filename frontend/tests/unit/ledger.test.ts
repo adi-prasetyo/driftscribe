@@ -25,14 +25,69 @@ describe('ledgerRows', () => {
       expect(rows[0].state).toBe('applied');
     });
 
-    it('classifies approval.status==="used" as applied (rollback lane)', () => {
+    // This block previously contained a test literally named
+    // 'classifies approval.status==="used" as applied (rollback lane)'. That
+    // was the defect written down as a specification: the flip to `used` is the
+    // anti-replay claim and runs BEFORE the Cloud Run traffic shift, so it
+    // cannot testify that anything applied. The outcome lives in `phase`
+    // (ds-2mc). Each phase now gets its own row state.
+
+    it('classifies a CONFIRMED rollback (used + phase applied) as applied', () => {
       const d = decision({
         decision_id: 'a2',
-        approval: { approval_url: '/approvals/a2', status: 'used' },
+        approval: { approval_url: '/approvals/a2', status: 'used', phase: 'applied' },
         created_at: '2026-07-28T09:00:00Z',
       });
       const rows = ledgerRows([d], 4, { now: NOW, origin: ORIGIN });
       expect(rows[0].state).toBe('applied');
+    });
+
+    it('classifies a failed rollback (used + phase failed) as failed, not applied', () => {
+      const d = decision({
+        decision_id: 'a3',
+        approval: { approval_url: '/approvals/a3', status: 'used', phase: 'failed' },
+        created_at: '2026-07-28T09:00:00Z',
+      });
+      const rows = ledgerRows([d], 4, { now: NOW, origin: ORIGIN });
+      expect(rows[0].state).toBe('failed');
+    });
+
+    it('classifies an unconfirmed rollback as unconfirmed — NOT failed, NOT applied', () => {
+      // The operation is uncancelled and may yet succeed. Claiming either
+      // outcome would be a false statement; this is the third answer.
+      const d = decision({
+        decision_id: 'a4',
+        approval: { approval_url: '/approvals/a4', status: 'used', phase: 'outcome_unknown' },
+        created_at: '2026-07-28T09:00:00Z',
+      });
+      const rows = ledgerRows([d], 4, { now: NOW, origin: ORIGIN });
+      expect(rows[0].state).toBe('unconfirmed');
+    });
+
+    it.each(['claimed', 'applying'] as const)(
+      'does not report an in-flight rollback (phase %s) as applied',
+      (phase) => {
+        const d = decision({
+          decision_id: `a5-${phase}`,
+          approval: { approval_url: '/approvals/a5', status: 'used', phase },
+          created_at: '2026-07-28T09:00:00Z',
+        });
+        const rows = ledgerRows([d], 4, { now: NOW, origin: ORIGIN });
+        expect(rows[0].state).not.toBe('applied');
+      },
+    );
+
+    it('does not report a pre-ds-2mc rollback (used, no phase) as applied', () => {
+      // Absence of a phase means the outcome is unknown, which is exactly what
+      // it was for every rollback resolved before this field existed. Unknown
+      // must never inherit success from `status: used`.
+      const d = decision({
+        decision_id: 'a6',
+        approval: { approval_url: '/approvals/a6', status: 'used' },
+        created_at: '2026-07-28T09:00:00Z',
+      });
+      const rows = ledgerRows([d], 4, { now: NOW, origin: ORIGIN });
+      expect(rows[0].state).not.toBe('applied');
     });
 
     it('classifies a live pending rollback approval as open', () => {

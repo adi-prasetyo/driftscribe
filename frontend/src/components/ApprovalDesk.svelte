@@ -291,6 +291,27 @@
           >
         </div>
       </div>
+    {:else if model.kind === 'unresolved'}
+      <!-- A rollback whose credential was spent but which did not demonstrably
+           apply. No seal, no CTA, and deliberately no decay timer: unlike a
+           stamp (a receipt whose job ends once seen) this is an open loop, and
+           timing it out would re-create the silent disappearance rule 2.5
+           exists to prevent. The two phases keep separate copy — "unconfirmed"
+           must never render as "failed". -->
+      {@const failed = model.phase === 'failed'}
+      <div class="approval-desk__unresolved" data-testid="approval-desk-unresolved" data-phase={model.phase}>
+        <div class="approval-desk__who">
+          <span>{$t('desk.unresolved.who')}</span>
+          <span class="approval-desk__meta"
+            >{$t(failed ? 'desk.unresolved.failed.detail' : 'desk.unresolved.unknown.detail')}</span
+          >
+        </div>
+        <h2>{$t(failed ? 'desk.unresolved.failed.headline' : 'desk.unresolved.unknown.headline')}</h2>
+        <p class="approval-desk__unresolved-body">
+          {$t(failed ? 'desk.unresolved.failed.body' : 'desk.unresolved.unknown.body')}
+        </p>
+        <DriftDiffCard decision={model.decision} />
+      </div>
     {:else if model.kind === 'stamped'}
       {@const stampedDecision = activeDecision(model)}
       {@const auditTime = stampedAuditTime(model)}
@@ -423,6 +444,27 @@
     font-family: var(--ds-font-mono);
     font-size: 12px;
     color: var(--ds-paper-mut);
+  }
+
+  /* Unresolved outcome. Danger accent for `failed`, muted-warning for
+     `outcome_unknown` — the visual weight has to differ, or "we could not
+     confirm" reads as "it broke" at a glance, which is the exact
+     over-claim this state exists to avoid. */
+  .approval-desk__unresolved {
+    position: relative;
+    border-left: 3px solid var(--ds-warn, var(--ds-border-strong));
+    padding-left: var(--ds-sp-4);
+  }
+  .approval-desk__unresolved[data-phase='failed'] {
+    border-left-color: var(--ds-danger);
+  }
+  .approval-desk__unresolved h2 {
+    margin: var(--ds-sp-2) 0 0;
+  }
+  .approval-desk__unresolved-body {
+    margin: var(--ds-sp-3) 0 var(--ds-sp-4);
+    color: var(--ds-muted);
+    max-width: 52ch;
   }
 
   .approval-desk__stamped {

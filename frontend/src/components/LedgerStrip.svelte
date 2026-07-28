@@ -35,11 +35,18 @@
 
   // Decorative next to a text title — aria-hidden on the glyph span itself
   // (below) keeps a screen reader from reading raw punctuation aloud.
-  const GLYPH: Record<LedgerState, string> = { applied: '✓', open: '◍', noted: '⬤' };
+  // `failed` and `unconfirmed` get DIFFERENT glyphs on purpose. An outcome we
+  // could not confirm is not a failure — the operation may still be running —
+  // so it reads as a question, not a cross (ds-2mc).
+  const GLYPH: Record<LedgerState, string> = {
+    applied: '✓', open: '◍', noted: '⬤', failed: '✕', unconfirmed: '?',
+  };
 
   function titleFor(row: LedgerRow, tf: TranslateFn): string {
     if (row.state === 'applied') return tf('desk.ledger.appliedTitle');
     if (row.state === 'open') return tf('desk.ledger.openTitle');
+    if (row.state === 'failed') return tf('desk.ledger.failedTitle');
+    if (row.state === 'unconfirmed') return tf('desk.ledger.unconfirmedTitle');
     return decisionActionLabel(row.decision.action, tf);
   }
 

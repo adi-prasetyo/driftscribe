@@ -20,7 +20,7 @@
 import type { Decision } from './types';
 import { resolvedIacPrNumbers, isRollbackAwaitingOperator, isIacAwaitingOperator } from './approval';
 
-export type LedgerState = 'applied' | 'open' | 'noted';
+export type LedgerState = 'applied' | 'open' | 'noted' | 'failed' | 'unconfirmed';
 
 export interface LedgerRow {
   decision: Decision;
@@ -54,7 +54,19 @@ function classify(
   now: number,
   origin: string | undefined,
 ): LedgerState {
-  if (d.apply_status === 'applied' || d.approval?.status === 'used') {
+  // Rollback lane: `status === 'used'` means the single-use credential was
+  // spent, NOT that traffic moved — the flip precedes the Cloud Run call by
+  // construction. This branch used to return 'applied' for any `used`
+  // approval, which reported failed and still-running rollbacks as applied
+  // (ds-2mc). The outcome lives in `phase`.
+  const approvalPhase = d.approval?.status === 'used' ? d.approval.phase : undefined;
+  if (approvalPhase === 'failed') return 'failed';
+  // Not shown to have failed — an uncancelled operation may yet succeed, and a
+  // lost response says nothing about the outcome. Distinct state, distinct copy.
+  if (approvalPhase === 'outcome_unknown') return 'unconfirmed';
+  // 'claimed'/'applying' fall through to 'noted': in flight, nothing settled.
+
+  if (d.apply_status === 'applied' || approvalPhase === 'applied') {
     return 'applied';
   }
 

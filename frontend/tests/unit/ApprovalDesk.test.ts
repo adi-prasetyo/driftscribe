@@ -356,6 +356,7 @@ describe('ApprovalDesk — stamped state', () => {
       approval: {
         approval_url: '/approvals/rb-1?t=x',
         status: 'used',
+        phase: 'applied',
         resolved_at: '2026-07-28T11:58:00Z',
       },
     });
@@ -477,7 +478,7 @@ describe('ApprovalDesk — stamped decay timer', () => {
     vi.setSystemTime(Date.parse('2026-07-28T12:05:00Z'));
     const second = rollbackDecision({
       decision_id: 'rb-second',
-      approval: { approval_url: '/approvals/rb-second?t=x', status: 'used', resolved_at: '2026-07-28T12:05:00Z' },
+      approval: { approval_url: '/approvals/rb-second?t=x', status: 'used', phase: 'applied', resolved_at: '2026-07-28T12:05:00Z' },
     });
     await rerender({ graph: GRAPH, decisions: [first, second], pendingApprovals: [], onNavigate: vi.fn() });
     expect(getByTestId('approval-desk-stamped').getAttribute('data-source')).toBe('rollback');

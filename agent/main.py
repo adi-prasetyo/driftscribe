@@ -112,6 +112,7 @@ from agent.workloads import (
 from agent.workloads.registry import load_workload_spec, resolve_workload_prompts
 from pydantic import ValidationError as PydanticValidationError
 from driftscribe_lib import github
+from driftscribe_lib.approvals import ROLLBACK_PHASES
 from driftscribe_lib.auth import verify_oidc_caller
 from driftscribe_lib.cf_access import (
     CfAccessJwtError,
@@ -2632,9 +2633,29 @@ def attach_approval_status(decision: object, *, approval_reader) -> object:
     resolved_at = getattr(record, "resolved_at", None)
     if not isinstance(resolved_at, dt.datetime):
         resolved_at = None  # never synthesize — see docstring
+
+    # Outcome phase (ds-2mc). `status == "used"` only means the single-use
+    # credential was spent — the flip precedes the traffic shift by
+    # construction — so the phase is what tells a consumer whether the rollback
+    # actually happened. Without it the desk seals "applied" on a rollback that
+    # may have failed.
+    #
+    # The phase STRING only, allowlisted against the known vocabulary. The
+    # sibling `detail` map is deliberately never projected: it carries API error
+    # type names and operation paths, which are operator-debugging material, not
+    # something to ship to every browser polling /decisions. An unrecognized or
+    # absent phase degrades to None — "outcome unknown" — never to success.
+    phase = None
+    audit = getattr(record, "apply_audit", None)
+    if isinstance(audit, dict):
+        raw_phase = audit.get("phase")
+        if isinstance(raw_phase, str) and raw_phase in ROLLBACK_PHASES:
+            phase = raw_phase
     return {
         **decision,
-        "approval": {**approval, "status": status, "resolved_at": resolved_at},
+        "approval": {
+            **approval, "status": status, "resolved_at": resolved_at, "phase": phase,
+        },
     }
 
 

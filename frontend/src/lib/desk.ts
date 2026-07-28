@@ -81,11 +81,35 @@ export interface DeskStamped {
   stampedUntil: number;
 }
 
+/**
+ * A rollback whose credential was spent but which did NOT demonstrably apply.
+ *
+ * Exists because "no seal" is not the same as "the operator was told". The
+ * ledger strip cannot be relied on to carry this: `ledgerRows` orders by the
+ * PROPOSAL's `created_at` and caps at four, so a rollback proposed twenty
+ * minutes ago that fails right now is pushed out by four newer decisions and
+ * vanishes — no seal, no row, hero renders resting. A failed rollback silently
+ * disappearing is the same honesty failure as a fake seal, just quieter.
+ *
+ * `failed` and `outcome_unknown` are kept distinct all the way to the copy.
+ * Collapsing them would re-introduce the original defect inverted: an
+ * uncancelled operation that is still running, or one whose response we lost,
+ * has NOT been shown to fail, and saying so would be a second false claim.
+ */
+export interface DeskUnresolved {
+  kind: 'unresolved';
+  source: 'rollback';
+  decision: Decision;
+  /** `failed` — definitely did not apply. `outcome_unknown` — may have applied;
+   *  we could not confirm. Drives which of the two copy variants renders. */
+  phase: 'failed' | 'outcome_unknown';
+}
+
 export interface DeskResting {
   kind: 'resting';
 }
 
-export type DeskModel = DeskPending | DeskStamped | DeskResting;
+export type DeskModel = DeskPending | DeskStamped | DeskUnresolved | DeskResting;
 
 export interface DeskModelInput {
   // Element type includes null/undefined: both arrays are open, externally-
@@ -287,7 +311,13 @@ function selectStamped(
       }
     }
     const approval = decision.approval;
-    if (approval?.status === 'used') {
+    // `status === 'used'` alone is NOT evidence the rollback happened — the
+    // credential flip precedes the traffic shift by construction, so a `used`
+    // approval covers "applied", "still applying", "failed", and "we couldn't
+    // tell" alike. Sealing on it certified rollbacks that never ran (ds-2mc).
+    // Only a confirmed `applied` may seal; an absent phase (a pre-ds-2mc doc)
+    // is unknown, and unknown never seals.
+    if (approval?.status === 'used' && approval.phase === 'applied') {
       const ts = parseStrict(approval.resolved_at);
       if (ts !== null && (bestRollback === null || ts > bestRollback.ts)) {
         bestRollback = { decision, ts };
@@ -313,11 +343,48 @@ function selectStamped(
 }
 
 /**
- * Selects which of the desk's three states applies, in strict priority order:
+ * Rule 2.5: a rollback whose credential was spent but which did not
+ * demonstrably apply — `failed`, or `outcome_unknown`.
+ *
+ * Unlike the stamped lane this has NO window and never decays. A stamp is a
+ * receipt whose job is done once the operator has seen it; an unresolved
+ * outcome is an open loop, and timing it out would just re-create the silent
+ * disappearance this rule exists to prevent. It clears when the underlying
+ * doc does — `/reconcile` promoting it to `applied`, or a new proposal.
+ *
+ * Ordered by `phase_at` where available, falling back to the decision's
+ * `created_at`: `resolved_at` deliberately does not exist on these rows (it
+ * means confirmed success only), so it cannot serve as the ordering key.
+ */
+function selectUnresolvedRollback(
+  decisions: ReadonlyArray<Decision | null | undefined>,
+): DeskUnresolved | null {
+  let best: { decision: Decision; phase: 'failed' | 'outcome_unknown'; ts: number } | null = null;
+  for (const decision of decisions) {
+    if (decision == null) continue; // defensive: malformed array element, skip not throw
+    const approval = decision.approval;
+    if (approval?.status !== 'used') continue;
+    const phase = approval.phase;
+    if (phase !== 'failed' && phase !== 'outcome_unknown') continue;
+    const ts = parseForOrdering(decision.created_at);
+    if (best === null || ts > best.ts) best = { decision, phase, ts };
+  }
+  return best === null
+    ? null
+    : { kind: 'unresolved', source: 'rollback', decision: best.decision, phase: best.phase };
+}
+
+/**
+ * Selects which desk state applies, in strict priority order:
  * pending rollback (rule 1) > pending iac approval, listing-first then
- * decisions-derived (rule 2a, then rule 2b) > stamped (rule 3) > resting
- * (rule 4). See the per-rule helpers above for each rule's exact criteria;
- * this function only sequences them.
+ * decisions-derived (rule 2a, then rule 2b) > unresolved rollback outcome
+ * (rule 2.5) > stamped (rule 3) > resting (rule 4). See the per-rule helpers
+ * above for each rule's exact criteria; this function only sequences them.
+ *
+ * Rule 2.5 sits below the pending rules because something awaiting a decision
+ * outranks something already decided — but ABOVE stamped, because a success
+ * seal is precisely what an operator would otherwise read as "all good" while
+ * a failed rollback sat unmentioned underneath it.
  */
 export function deskModel(input: DeskModelInput): DeskModel {
   const now = input.now ?? Date.now();
@@ -336,6 +403,9 @@ export function deskModel(input: DeskModelInput): DeskModel {
     input.locale,
   );
   if (iacFromDecisions) return iacFromDecisions;
+
+  const unresolved = selectUnresolvedRollback(decisions);
+  if (unresolved) return unresolved;
 
   const stamped = selectStamped(decisions, now);
   if (stamped) return stamped;

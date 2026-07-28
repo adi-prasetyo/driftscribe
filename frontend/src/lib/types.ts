@@ -20,14 +20,35 @@ export interface DecisionApproval {
    *  approval doc could not be read (missing doc, or a soft-failed store
    *  read) — the row is served un-enriched rather than 500ing. */
   status?: 'pending' | 'used' | 'denied';
-  /** The transition timestamp, stamped atomically with `status` inside the
-   *  same Firestore transaction (so the two can never disagree) — added by
-   *  the same Task 3.0b change. `null`/absent means "resolved, but we don't
-   *  know when": either still `pending`, or a `used`/`denied` doc written
-   *  BEFORE this field existed (pre-deploy approvals). NEVER falls back to
-   *  the decision's own `created_at` (that's proposal time, not resolution
-   *  time) — treat `null` as genuinely unknown, not "just now". */
+  /** The transition timestamp. `null`/absent means "resolved, but we don't
+   *  know when". NEVER falls back to the decision's own `created_at` (that's
+   *  proposal time, not resolution time) — treat `null` as genuinely unknown,
+   *  not "just now".
+   *
+   *  Since ds-2mc this is written ONLY for a confirmed terminal outcome: a
+   *  `denied` (terminal at the moment of the flip), or a `used` whose traffic
+   *  shift was observed to succeed. A rollback that is still applying, failed,
+   *  or whose outcome could not be confirmed carries `null` — as does any
+   *  `used`/`denied` doc written before the field existed. */
   resolved_at?: string | null;
+  /** What actually happened to a claimed rollback.
+   *
+   *  `status: 'used'` means only that the single-use credential was SPENT —
+   *  the transactional flip is the anti-replay claim and by construction runs
+   *  BEFORE the Cloud Run traffic shift, so it can never testify that the
+   *  rollback happened. This field is what can:
+   *
+   *  - `claimed` / `applying` — in flight; outcome not yet established
+   *  - `applied`  — confirmed success. The ONLY value that may render a seal.
+   *  - `failed`   — definitely did not apply
+   *  - `outcome_unknown` — the mutation may have landed and we could not
+   *    confirm it (poll expiry, lost response). Must be rendered as
+   *    unconfirmed, NEVER as failed; `/reconcile` resolves it later.
+   *
+   *  `null`/absent = outcome unknown, including for any rollback resolved
+   *  before ds-2mc. Consumers must treat absence as unknown, never as
+   *  success — that conflation is the bug this field exists to fix. */
+  phase?: 'claimed' | 'applying' | 'applied' | 'failed' | 'outcome_unknown' | null;
 }
 
 /** The PR/issue side-channel on a drift/docs/upgrade decision

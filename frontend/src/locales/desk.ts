@@ -33,6 +33,21 @@ export const desk = {
     'desk.ledger.heading': 'Recent record',
     'desk.ledger.appliedTitle': 'You approved · applied',
     'desk.ledger.openTitle': 'Awaiting your approval',
+    'desk.ledger.failedTitle': 'You approved · did not apply',
+    // Deliberately not "failed": the operation may still be running or may
+    // have succeeded with the response lost. Saying "failed" here would be a
+    // second false claim in the opposite direction (ds-2mc).
+    'desk.ledger.unconfirmedTitle': 'You approved · outcome unconfirmed',
+    // ---- unresolved rollback outcome (desk rule 2.5) ----
+    'desk.unresolved.who': 'You approved',
+    'desk.unresolved.failed.detail': 'Did not apply',
+    'desk.unresolved.failed.headline': 'The rollback did not apply.',
+    'desk.unresolved.failed.body':
+      'The approval was used, but the traffic change did not go through. Nothing was rolled back. You can ask for a new rollback.',
+    'desk.unresolved.unknown.detail': 'Outcome unconfirmed',
+    'desk.unresolved.unknown.headline': "The rollback's outcome is unconfirmed.",
+    'desk.unresolved.unknown.body':
+      'The traffic change was accepted but took longer than we waited, so we cannot confirm it either way. Check the service in Cloud Run before acting on this.',
 
     // ApprovalDesk (Task 3.5) — the three-state front door composed of the
     // band above + a per-state body + the ledger strip below. Deliberately
@@ -135,6 +150,18 @@ export const desk = {
     'desk.ledger.heading': '最近の記録',
     'desk.ledger.appliedTitle': 'あなたが承認 → 適用完了',
     'desk.ledger.openTitle': 'あなたの承認待ち',
+    'desk.ledger.failedTitle': 'あなたが承認 → 適用されず',
+    'desk.ledger.unconfirmedTitle': 'あなたが承認 → 結果は未確認',
+    // ---- unresolved rollback outcome (desk rule 2.5) ----
+    'desk.unresolved.who': 'あなたが承認しました',
+    'desk.unresolved.failed.detail': '適用されず',
+    'desk.unresolved.failed.headline': 'ロールバックは適用されませんでした。',
+    'desk.unresolved.failed.body':
+      '承認は使用されましたが、トラフィックの切り替えは行われませんでした。ロールバックは実行されていません。必要であれば、あらためてロールバックを依頼できます。',
+    'desk.unresolved.unknown.detail': '結果は未確認',
+    'desk.unresolved.unknown.headline': 'ロールバックの結果を確認できていません。',
+    'desk.unresolved.unknown.body':
+      'トラフィックの切り替えは受理されましたが、待機時間内に完了を確認できませんでした。成功・失敗のいずれとも断定できません。対応の前に Cloud Run で当該サービスの状態をご確認ください。',
 
     'desk.region.ariaLabel': '承認デスク',
 

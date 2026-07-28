@@ -427,6 +427,29 @@ def call(
         ) from e
 
 
+# /execute now BLOCKS on the Cloud Run traffic-shift LRO (up to
+# _LRO_TIMEOUT_S = 60s in the rollback worker) so the approval doc records a
+# confirmed outcome rather than an optimistic one — see ds-2mc. The default 30s
+# read budget would cut that short and misread a long-but-successful rollback as
+# a transport failure, the same misclassification _APPLY_HTTPX_TIMEOUT exists to
+# prevent.
+#
+# 75s read = the worker's 60s LRO cap + headroom. Unlike /apply this does NOT
+# risk the "timeout-then-skip-merge" divergence its sibling warns about —
+# rollback has no downstream merge step — but a coordinator-side timeout still
+# cannot establish that the rollback failed, which is exactly why the WORKER's
+# recorded phase, not this client's exception, is the source of truth. On a
+# timeout here the worker has already written `applying` or `outcome_unknown`
+# with a durable operation handle, and /reconcile finishes the job.
+#
+# Upper bound is the ~100s Cloudflare proxied-response budget (see
+# _DESCRIBE_HTTPX_TIMEOUT above): the operator reaches the approval POST through
+# the edge, so 75s + overhead must fit under it. It does; 120 would not.
+_EXECUTE_HTTPX_TIMEOUT: Final = httpx.Timeout(
+    connect=10.0, read=75.0, write=30.0, pool=10.0
+)
+
+
 def call_execute(approval_id: str, approval_token: str) -> dict:
     """Special-case wrapper for the rollback worker's ``/execute`` endpoint.
 
@@ -441,7 +464,21 @@ def call_execute(approval_id: str, approval_token: str) -> dict:
         "rollback",
         {"approval_id": approval_id, "approval_token": approval_token},
         endpoint="/execute",
+        timeout=_EXECUTE_HTTPX_TIMEOUT,
     )
+
+
+def call_reconcile(approval_id: str) -> dict:
+    """Ask the rollback worker to finalize an approval left non-terminal.
+
+    Covers the residue ``/execute`` could not settle itself: an LRO that ran
+    past the worker's poll budget, or a container death between persisting the
+    operation handle and recording a result. Carries NO approval token — by then
+    the single-use credential is burned, and this endpoint cannot start a
+    rollback or move an approval out of ``pending``; it only reads an operation
+    the worker already started. Idempotent and safe to call on anything.
+    """
+    return call("rollback", {"approval_id": approval_id}, endpoint="/reconcile")
 
 
 def call_deny(approval_id: str, approval_token: str) -> dict:

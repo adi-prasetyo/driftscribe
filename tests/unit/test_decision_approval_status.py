@@ -96,6 +96,63 @@ def test_denied_approval_gets_status_and_resolved_at():
     assert out["approval"]["resolved_at"] == resolved
 
 
+# --------------------------------------------------------------------------- #
+# outcome phase (ds-2mc)
+#
+# `status == "used"` means the credential was spent, not that the rollback
+# happened. These pin the field the desk seal actually keys off.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "phase", ["claimed", "applying", "applied", "failed", "outcome_unknown"]
+)
+def test_known_phase_is_projected(phase):
+    reader = _reader({"ap-1": _approval(status="used", apply_audit={"phase": phase})})
+    out = attach_approval_status(_rollback_row(), approval_reader=reader)
+    assert out["approval"]["phase"] == phase
+
+
+def test_apply_audit_detail_is_never_projected():
+    """The detail map carries API error type names and operation paths —
+    operator-debugging material, not something to ship to every browser polling
+    /decisions. Only the phase string crosses the boundary."""
+    reader = _reader({"ap-1": _approval(
+        status="used",
+        apply_audit={
+            "phase": "failed",
+            "detail": {"error": "PermissionDenied", "operation_name": "operations/xyz"},
+        },
+    )})
+    out = attach_approval_status(_rollback_row(), approval_reader=reader)
+    assert out["approval"]["phase"] == "failed"
+    assert "detail" not in out["approval"]
+    assert "PermissionDenied" not in repr(out)
+
+
+@pytest.mark.parametrize(
+    "audit",
+    [None, {}, {"phase": None}, {"phase": ""}, {"phase": "applied_probably"}, "nonsense"],
+)
+def test_absent_or_unrecognized_phase_degrades_to_none(audit):
+    """Degrades to "outcome unknown", never to success. An unrecognized phase
+    string must not be passed through to the frontend, where a future writer's
+    typo could otherwise land next to the seal's `=== 'applied'` check."""
+    reader = _reader({"ap-1": _approval(status="used", apply_audit=audit)})
+    out = attach_approval_status(_rollback_row(), approval_reader=reader)
+    assert out["approval"]["phase"] is None
+
+
+def test_old_doc_without_apply_audit_gets_none_phase():
+    """A rollback resolved before ds-2mc has no phase. It must read as unknown
+    — the honest answer — rather than inheriting success from `status: used`."""
+    reader = _reader({"ap-1": _approval(status="used", resolved_at=None)})
+    out = attach_approval_status(_rollback_row(), approval_reader=reader)
+    assert out["approval"]["status"] == "used"
+    assert out["approval"]["phase"] is None
+    assert out["approval"]["resolved_at"] is None
+
+
 def test_preserves_existing_approval_siblings():
     reader = _reader({"ap-1": _approval(status="used", resolved_at=dt.datetime.now(dt.timezone.utc))})
     out = attach_approval_status(_rollback_row(), approval_reader=reader)

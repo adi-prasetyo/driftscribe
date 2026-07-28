@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { deskModel, awaitingCount, STAMP_WINDOW_MS } from '../../src/lib/desk';
 import type { Decision } from '../../src/lib/types';
 import type { PendingApproval } from '../../src/lib/infra_graph';
+import { ledgerRows } from '../../src/lib/ledger';
 
 // deskModel (Task 3.1) is the pure selection logic behind the three-state
 // approval desk: pending / stamped / resting. It is fully time/origin/locale
@@ -419,6 +420,7 @@ describe('deskModel — rule 3: stamped', () => {
       approval: {
         approval_url: '/approvals/rb-1?t=x',
         status: 'used',
+        phase: 'applied',
         resolved_at: '2026-07-28T11:58:00Z',
       },
     });
@@ -449,6 +451,39 @@ describe('deskModel — rule 3: stamped', () => {
     });
     const model = deskModel({ decisions: [d], pendingApprovals: [], now: NOW, origin: ORIGIN });
     expect(model.kind).toBe('resting');
+  });
+
+  it.each(['failed', 'outcome_unknown', 'claimed', 'applying'] as const)(
+    'a used approval with phase %s never seals the desk',
+    (phase) => {
+      const d = rollbackDecision({
+        approval: {
+          approval_url: '/approvals/rb-1?t=x',
+          status: 'used',
+          phase,
+          // Even WITH a fresh resolved_at, only `applied` may seal. Pinned
+          // deliberately: the backend refuses to write resolved_at alongside a
+          // non-applied phase, and this asserts the frontend would not seal on
+          // one anyway. Two independent guards, because the seal is the single
+          // most damaging thing on this screen to get wrong (ds-2mc).
+          resolved_at: '2026-07-28T11:58:00Z',
+        },
+      });
+      const model = deskModel({ decisions: [d], pendingApprovals: [], now: NOW, origin: ORIGIN });
+      expect(model.kind).not.toBe('stamped');
+    },
+  );
+
+  it('a used approval with NO phase (pre-ds-2mc doc) never seals the desk', () => {
+    const d = rollbackDecision({
+      approval: {
+        approval_url: '/approvals/rb-1?t=x',
+        status: 'used',
+        resolved_at: '2026-07-28T11:58:00Z',
+      },
+    });
+    const model = deskModel({ decisions: [d], pendingApprovals: [], now: NOW, origin: ORIGIN });
+    expect(model.kind).not.toBe('stamped');
   });
 
   it('anything pending wins even when a stamped candidate also exists', () => {
@@ -509,6 +544,7 @@ describe('deskModel — rule 3: stamped', () => {
       approval: {
         approval_url: '/approvals/rb-older?t=x',
         status: 'used',
+        phase: 'applied',
         resolved_at: '2026-07-28T11:50:00Z',
       },
     });
@@ -536,6 +572,7 @@ describe('deskModel — rule 3: stamped', () => {
       approval: {
         approval_url: '/approvals/rb-recent?t=x',
         status: 'used',
+        phase: 'applied',
         resolved_at: '2026-07-28T11:59:00Z',
       },
     });
@@ -571,6 +608,114 @@ describe('deskModel — rule 3: stamped', () => {
     });
     expect(model.kind).toBe('stamped');
     if (model.kind === 'stamped') expect(model.decision.decision_id).toBe('iac-fresh');
+  });
+});
+
+describe('deskModel — rule 2.5: unresolved rollback outcome', () => {
+  // A rollback whose credential was spent but which did not demonstrably
+  // apply. The seal ceasing to lie (rule 3's phase gate) is only half the fix:
+  // without this rule a failed rollback produces NO desk state at all, and the
+  // hero falls through to "Nothing needs your decision right now."
+
+  it.each(['failed', 'outcome_unknown'] as const)(
+    'surfaces a %s rollback instead of resting',
+    (phase) => {
+      const d = rollbackDecision({
+        approval: { approval_url: '/approvals/rb-1?t=x', status: 'used', phase },
+      });
+      const model = deskModel({ decisions: [d], pendingApprovals: [], now: NOW, origin: ORIGIN });
+      expect(model.kind).toBe('unresolved');
+      if (model.kind === 'unresolved') expect(model.phase).toBe(phase);
+    },
+  );
+
+  it('keeps failed and outcome_unknown distinct all the way through the model', () => {
+    // Collapsing them would re-introduce the original defect inverted: an
+    // uncancelled operation that may still succeed reported as a failure.
+    const unknown = rollbackDecision({
+      approval: { approval_url: '/approvals/rb-1?t=x', status: 'used', phase: 'outcome_unknown' },
+    });
+    const model = deskModel({
+      decisions: [unknown], pendingApprovals: [], now: NOW, origin: ORIGIN,
+    });
+    expect(model.kind === 'unresolved' && model.phase).toBe('outcome_unknown');
+    expect(model.kind === 'unresolved' && model.phase === 'failed').toBe(false);
+  });
+
+  it('outranks a stamped success seal', () => {
+    // The seal is exactly what an operator reads as "all good". A bad outcome
+    // must not sit silently underneath one.
+    const sealed = iacDecision({
+      decision_id: 'iac-done',
+      apply_status: 'applied',
+      applied_at: '2026-07-28T11:58:00Z',
+    });
+    const bad = rollbackDecision({
+      decision_id: 'rb-bad',
+      approval: { approval_url: '/approvals/rb-bad?t=x', status: 'used', phase: 'failed' },
+    });
+    const model = deskModel({
+      decisions: [sealed, bad], pendingApprovals: [], now: NOW, origin: ORIGIN,
+    });
+    expect(model.kind).toBe('unresolved');
+  });
+
+  it('is outranked by anything actually awaiting a decision', () => {
+    const bad = rollbackDecision({
+      decision_id: 'rb-bad',
+      approval: { approval_url: '/approvals/rb-bad?t=x', status: 'used', phase: 'failed' },
+    });
+    const model = deskModel({
+      decisions: [bad], pendingApprovals: [pendingIac()], now: NOW, origin: ORIGIN,
+    });
+    expect(model.kind).toBe('pending');
+  });
+
+  it('reaches the operator even when the ledger strip has overflowed past it', () => {
+    // The precise scenario that made "it shows up in the ledger" untrue: the
+    // strip orders by the PROPOSAL's created_at and caps at four, so a rollback
+    // proposed long ago that fails NOW is pushed out entirely by four newer
+    // decisions — no seal, no row, hero resting. This is the guaranteed surface.
+    const oldFailedRollback = rollbackDecision({
+      decision_id: 'rb-old-failed',
+      created_at: '2026-07-28T09:00:00Z',
+      approval: { approval_url: '/approvals/rb-old?t=x', status: 'used', phase: 'failed' },
+    });
+    const newer = [1, 2, 3, 4].map((i) =>
+      iacDecision({
+        decision_id: `iac-newer-${i}`,
+        pr_number: 100 + i,
+        apply_status: 'applied',
+        applied_at: `2026-07-28T1${i}:00:00Z`,
+        created_at: `2026-07-28T1${i}:00:00Z`,
+      }),
+    );
+
+    // Precondition: the failed rollback really is off the end of the strip.
+    const rows = ledgerRows([...newer, oldFailedRollback], 4, { now: NOW, origin: ORIGIN });
+    expect(rows).toHaveLength(4);
+    expect(rows.map((r) => r.decision.decision_id)).not.toContain('rb-old-failed');
+
+    const model = deskModel({
+      decisions: [...newer, oldFailedRollback], pendingApprovals: [], now: NOW, origin: ORIGIN,
+    });
+    expect(model.kind).toBe('unresolved');
+    if (model.kind === 'unresolved') expect(model.decision.decision_id).toBe('rb-old-failed');
+  });
+
+  it('does not fire for an in-flight or pre-ds-2mc rollback', () => {
+    // `claimed`/`applying` are transient and self-resolve inside /execute;
+    // a missing phase is an old doc. Neither is an outcome to escalate.
+    for (const approval of [
+      { approval_url: '/approvals/rb-1?t=x', status: 'used' as const, phase: 'applying' as const },
+      { approval_url: '/approvals/rb-1?t=x', status: 'used' as const },
+    ]) {
+      const model = deskModel({
+        decisions: [rollbackDecision({ approval })],
+        pendingApprovals: [], now: NOW, origin: ORIGIN,
+      });
+      expect(model.kind).toBe('resting');
+    }
   });
 });
 
