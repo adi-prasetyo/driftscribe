@@ -517,4 +517,26 @@ describe('App — rails come off the desk (Task 3.5)', () => {
     expect(getByTestId('rails')).toBeTruthy();
     await waitFor(() => expect(getByTestId('historical-banner')).toBeTruthy());
   });
+
+  // …and the two intents that have NO independent redirect.
+  //
+  // The test above passes even if hasChatIntent is removed from the view
+  // resolver entirely: `?reasoning=` also triggers App's onMount openTrace(),
+  // and openTrace() itself calls navigate('chat'). `?conversation=` is
+  // likewise double-protected by openConversation(). `?ask_pr=` and
+  // `?preview_pr=` are NOT — they have no self-redirect anywhere in App, so
+  // hasChatIntent is the only thing standing between a visitor following an
+  // Adopt-flow or approval-page link and a railless desk with no composer to
+  // act on. These two params are exactly where the railless-desk guarantee is
+  // load-bearing, so they get their own App-level pin rather than resting on
+  // deeplink.ts's unit tests alone.
+  for (const param of ['ask_pr', 'preview_pr'] as const) {
+    it(`a ?${param}= link resolves to chat with the rails rendered, even against an explicit ?view=desk`, () => {
+      history.replaceState(null, '', `/?view=desk&${param}=168`);
+      const { getByTestId, queryByTestId } = render(App);
+      expect(queryByTestId('approval-desk')).toBeNull();
+      expect(document.getElementById('chat-form')).toBeTruthy();
+      expect(getByTestId('rails')).toBeTruthy();
+    });
+  }
 });

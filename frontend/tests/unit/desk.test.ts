@@ -764,6 +764,30 @@ describe('awaitingCount — the InstrumentBand "awaiting your approval" figure',
     expect(n).toBe(2);
   });
 
+  it('ignores a malformed pr_number in the pending-approvals LISTING lane', () => {
+    // The decisions lane's isPositiveIntPr guard is covered above; the listing
+    // lane's was not, and deleting it left every awaitingCount test green.
+    // PendingApproval.pr_number is TYPED as a plain number, so only a
+    // malformed backend row reaches this — but that row would inflate the
+    // band's "awaiting your approval" figure, which is a number an operator is
+    // asked to trust, and one the ledger strip directly beneath it would then
+    // contradict. Each bad value is paired with one good row so the assertion
+    // distinguishes "guard dropped the bad one" (1) from "guard dropped
+    // everything" (0).
+    for (const bad of [0, -1, 1.5, NaN, Infinity, '7', null, undefined]) {
+      const n = awaitingCount({
+        decisions: [],
+        pendingApprovals: [
+          pendingIac({ pr_number: bad as unknown as number }),
+          pendingIac({ pr_number: 9 }),
+        ],
+        now: NOW,
+        origin: ORIGIN,
+      });
+      expect(n, `pr_number=${String(bad)} must not be counted`).toBe(1);
+    }
+  });
+
   it('tolerates a null/undefined decisions and pendingApprovals list entirely (0, not a crash)', () => {
     const n = awaitingCount({
       decisions: null as unknown as Decision[],

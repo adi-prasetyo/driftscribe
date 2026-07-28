@@ -3,6 +3,7 @@ import { render, cleanup, fireEvent, within } from '@testing-library/svelte';
 import ApprovalDesk from '../../src/components/ApprovalDesk.svelte';
 import type { Decision } from '../../src/lib/types';
 import type { InfraGraph, PendingApproval } from '../../src/lib/infra_graph';
+import { fmtWhen } from '../../src/lib/format';
 
 // ApprovalDesk composes deskModel() (lib/desk.ts, tested separately) with
 // InstrumentBand/LedgerStrip/SealStamp/DriftDiffCard into the desk's three
@@ -65,7 +66,16 @@ function iacDecision(overrides: Partial<Decision> = {}): Decision {
 function graphWithGroup(managed: number, drift: number): InfraGraph {
   return {
     ...GRAPH,
-    totals: { resources: managed + drift, managed, drift },
+    // `totals` DELIBERATELY diverges from the group's managed/drift. A real
+    // payload's totals agree with its groups, so this shape is a test
+    // instrument, not a realistic fixture — but it is the only way the
+    // band-composition assertion below has any teeth: if totals mirrored the
+    // group (as they did originally), a desk that naively read `graph.totals`
+    // and a desk that correctly derives via resourceCards()+scopeTotals()
+    // would produce IDENTICAL numbers, and the test could not tell them apart.
+    // These sentinel values appear nowhere else, so if one ever surfaces in an
+    // assertion, the derivation has been bypassed.
+    totals: { resources: 735, managed: 111, drift: 222 },
     groups: [
       {
         asset_type: 'run.googleapis.com/Service',
@@ -141,15 +151,22 @@ describe('ApprovalDesk — resting state', () => {
 
 describe('ApprovalDesk — instrument band composition', () => {
   it('feeds InstrumentBand from scopeTotals over the graph, not raw totals', () => {
-    // 1 primary card (adoptable) with managed=9, drift=6 — scopeTotals sums
-    // over PRIMARY cards only; this pins that the desk actually threads the
-    // graph through resourceCards()+scopeTotals() rather than passing
-    // graph.totals directly (which would show 9/0 here, not 9/6).
+    // 1 primary card (adoptable) with managed=9, drift=6, over a graph whose
+    // `totals` say 111/222 instead (see graphWithGroup). scopeTotals sums over
+    // PRIMARY cards only, so 9/6 can ONLY come from
+    // resourceCards()+scopeTotals(); a desk that read graph.totals directly
+    // would render 111/222 here.
     const { getByTestId } = render(ApprovalDesk, {
       props: { graph: graphWithGroup(9, 6), decisions: [], pendingApprovals: [], onNavigate: vi.fn() },
     });
-    expect(getByTestId('instrument-band-managed').textContent).toContain('9');
-    expect(getByTestId('instrument-band-drift').textContent).toContain('6');
+    // Exact text, not toContain: '9' is a substring of '9xx', and more to the
+    // point '222'.toContain('2') would let a raw-totals regression slide past
+    // a loose check on a single digit.
+    expect(getByTestId('instrument-band-managed').textContent?.trim()).toContain('9');
+    expect(getByTestId('instrument-band-drift').textContent?.trim()).toContain('6');
+    // …and prove the raw-totals values are nowhere on the band.
+    expect(getByTestId('instrument-band-managed').textContent).not.toContain('111');
+    expect(getByTestId('instrument-band-drift').textContent).not.toContain('222');
   });
 
   it('awaiting is 0 with nothing pending, 1 with exactly one thing pending', () => {
@@ -291,7 +308,25 @@ describe('ApprovalDesk — stamped state', () => {
     });
     const stamped = getByTestId('approval-desk-stamped');
     expect(stamped.getAttribute('data-source')).toBe('rollback');
-    expect(stamped.textContent).toMatch(/2026|11:58/);
+
+    // Compare against the SAME formatter the component uses. That is circular
+    // for the FORMAT (deliberately — this test makes no claim about how a time
+    // is rendered, and hard-coding a string would just pin the runner's tz),
+    // but it is not circular for the FIELD, which is the whole point: one of
+    // these two strings must be present and the other absent.
+    //
+    // The previous assertion here was `toMatch(/2026|11:58/)`, which BOTH
+    // timestamps satisfy via the shared "2026" — it passed even when
+    // stampedAuditTime() was mutated to key off created_at, so the regression
+    // it names could have shipped silently.
+    const fromResolvedAt = fmtWhen('2026-07-28T11:58:00Z', 'en');
+    const fromCreatedAt = fmtWhen('2026-07-28T00:00:00Z', 'en');
+    // Guard the guard: if the fixture's two timestamps ever collapse to the
+    // same rendered string (a tz/format change), the assertions below would be
+    // vacuous rather than failing, so assert the premise explicitly.
+    expect(fromResolvedAt).not.toBe(fromCreatedAt);
+    expect(stamped.textContent).toContain(fromResolvedAt);
+    expect(stamped.textContent).not.toContain(fromCreatedAt);
   });
 });
 
@@ -312,15 +347,35 @@ describe('ApprovalDesk — stamped decay timer', () => {
     expect(getByTestId('approval-desk-resting')).toBeTruthy();
   });
 
-  it('unmounting the desk mid-stamp clears the timer (no error, no leaked callback)', async () => {
+  it('unmounting the desk mid-stamp actually clears the decay timer', async () => {
     const d = iacDecision({ apply_status: 'applied', applied_at: '2026-07-28T11:59:00Z' });
+    const setSpy = vi.spyOn(globalThis, 'setTimeout');
     const { unmount } = render(ApprovalDesk, {
       props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onNavigate: vi.fn() },
     });
+
+    // The previous version of this test asserted only `resolves.not.toThrow()`
+    // on the strength of "Svelte throws/warns loudly" on a post-unmount state
+    // write. That premise is false on Svelte 5 + jsdom — the write is silently
+    // no-opped, no throw and no console output — so deleting the effect's
+    // `return () => clearTimeout(timer)` left this test green.
+    //
+    // The leak is invisible in the DOM by construction (the whole point is that
+    // nothing renders after unmount), so the only assertion with teeth is that
+    // the exact handle the decay effect scheduled is the one handed to
+    // clearTimeout. `toHaveBeenCalled()` alone would be too loose: Svelte's own
+    // teardown may clear timers of its own.
+    expect(setSpy).toHaveBeenCalled();
+    const scheduled = setSpy.mock.results.map((r) => r.value);
+    const clearSpy = vi.spyOn(globalThis, 'clearTimeout');
+
     unmount();
-    // If the timer weren't cleared, this would fire a state write against a
-    // destroyed component instance — Svelte throws/warns loudly on that.
+
+    const cleared = clearSpy.mock.calls.map((c) => c[0]);
+    expect(scheduled.some((id) => cleared.includes(id))).toBe(true);
+    // …and nothing fires afterwards.
     await expect(vi.advanceTimersByTimeAsync(20 * 60 * 1000)).resolves.not.toThrow();
+    clearSpy.mockRestore();
   });
 
   it('a second, later stamp replaces the first without leaving two timers racing', async () => {
@@ -413,6 +468,69 @@ describe('ApprovalDesk — fast convergence after an approval (bead ds-wd2.2)', 
     window.dispatchEvent(new Event('focus'));
     await vi.advanceTimersByTimeAsync(20_000);
     expect(refresh.mock.calls.length).toBe(total);
+  });
+
+  it('fires exactly three rungs, at 0 / 3000 / 8000 ms', async () => {
+    // Pins RETURN_LADDER_DELAYS_MS itself. Without this, dropping a rung or
+    // moving the middle delay survives every other test in this describe —
+    // they only prove "more than one, eventually bounded". The ladder's whole
+    // purpose is that the seal lands seconds after the operator returns, so
+    // its shape is behaviour, not an implementation detail.
+    const refresh = vi.fn();
+    const { getByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: GRAPH,
+        decisions: [rollbackDecision()],
+        pendingApprovals: [],
+        onNavigate: vi.fn(),
+        refresh,
+      },
+    });
+    await fireEvent.click(getByTestId('approval-desk-approve'));
+    window.dispatchEvent(new Event('focus'));
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(2999);
+    expect(refresh).toHaveBeenCalledTimes(1); // not yet the 3000ms rung
+    await vi.advanceTimersByTimeAsync(1);
+    expect(refresh).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(4999);
+    expect(refresh).toHaveBeenCalledTimes(2); // not yet the 8000ms rung
+    await vi.advanceTimersByTimeAsync(1);
+    expect(refresh).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(refresh).toHaveBeenCalledTimes(3); // and no fourth
+  });
+
+  it('a SECOND approval later in the same session gets its own full ladder', async () => {
+    // The `ladderRunning` flag is reset by its own timer at lastDelay + 1. If
+    // that reset is missing, the flag latches true forever and fast
+    // convergence silently dies after its first use — while every other test
+    // here still passes, because they are satisfied by `armed` alone and never
+    // exercise a second legitimate CTA-click → focus cycle.
+    const refresh = vi.fn();
+    const { getByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: GRAPH,
+        decisions: [rollbackDecision()],
+        pendingApprovals: [],
+        onNavigate: vi.fn(),
+        refresh,
+      },
+    });
+
+    await fireEvent.click(getByTestId('approval-desk-approve'));
+    window.dispatchEvent(new Event('focus'));
+    await vi.advanceTimersByTimeAsync(20_000); // drain the first ladder fully
+    const afterFirst = refresh.mock.calls.length;
+    expect(afterFirst).toBe(3);
+
+    // A fresh CTA click + return focus — the operator approving a second thing.
+    await fireEvent.click(getByTestId('approval-desk-approve'));
+    window.dispatchEvent(new Event('focus'));
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(refresh.mock.calls.length).toBe(afterFirst * 2);
   });
 
   it('unmounting clears any pending ladder timers (no callback after teardown)', async () => {
