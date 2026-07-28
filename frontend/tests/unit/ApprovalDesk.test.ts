@@ -39,7 +39,14 @@ function rollbackDecision(overrides: Partial<Decision> = {}): Decision {
     created_at: '2026-07-28T11:00:00Z',
     approval: {
       approval_url: '/approvals/rb-1?t=abc',
-      expires_at: '2026-07-28T23:00:00Z',
+      // Deliberately RELATIVE. isRollbackAwaitingOperator() drops an approval
+      // from "awaiting" once expires_at is in the past (approval.ts), so a
+      // hardcoded instant here is a fuse: every test in this file that needs a
+      // PENDING rollback — the band counts, the pending cards, the whole
+      // convergence ladder — went red the moment that instant passed, for a
+      // reason having nothing to do with what they assert. Computed lazily so a
+      // block that pins its own clock still gets a future expiry.
+      expires_at: new Date(Date.now() + 12 * 60 * 60 * 1000).toISOString(),
       status: 'pending',
       resolved_at: null,
     },
@@ -330,6 +337,14 @@ describe('ApprovalDesk — pending state, iac source, both provenance arms', () 
 });
 
 describe('ApprovalDesk — stamped state', () => {
+  // The fixtures below sit a few minutes inside STAMP_WINDOW_MS, so "is this
+  // decision still stamped?" is answered against the clock. Without pinning it
+  // these two passed only while the REAL wall clock happened to be between
+  // 11:55Z and 12:05Z on 2026-07-28 — green on the afternoon they were written,
+  // red every moment after. The neighbouring decay block already pins the same
+  // instant; the file-level afterEach restores real timers.
+  beforeEach(() => vi.useFakeTimers({ now: Date.parse('2026-07-28T12:00:00Z') }));
+
   it('renders an animated lg SealStamp and the applied audit line, keyed off applied_at (iac)', () => {
     const d = iacDecision({
       apply_status: 'applied',
