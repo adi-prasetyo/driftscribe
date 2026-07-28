@@ -57,7 +57,7 @@
     CHAT_INTENT_PARAMS,
     type AppView,
   } from './lib/deeplink';
-  import { initialChatPrefill, crewName } from './lib/workloads';
+  import { initialChatPrefill, crewName, WORKLOADS } from './lib/workloads';
   import type { ChatPrefill } from './lib/workloads';
   import CapabilityCard from './components/CapabilityCard.svelte';
   import PausePill from './components/PausePill.svelte';
@@ -1026,6 +1026,42 @@
     return { text: $t('conversations.handoff.error.failed', crews), dead: false };
   }
 
+  /** Move this client onto the crew that now owns the conversation.
+   *
+   *  Ownership is what the composer submits under and what the crew lock
+   *  checks, so a client that is wrong about it cannot type its way out: every
+   *  attempt is refused by a lock naming a crew the operator was never told
+   *  about. Both fields move together — `conversationWorkload` is what the
+   *  thread claims, `composerWorkload` is what the next turn would use, and a
+   *  split between them is the bug wearing a disguise. */
+  function adoptCrew(wl: string | undefined): void {
+    if (!wl || !WORKLOADS.some((w) => w.value === wl)) return;
+    conversationWorkload = wl as Workload;
+    composerWorkload = wl as Workload;
+  }
+
+  /** Ask the server who owns the conversation now, and move to it.
+   *
+   *  For the branches where the client genuinely does not know. A refusal of
+   *  `no_pending` is ambiguous by construction — the proposal may have been
+   *  accepted in another tab (crew moved), declined there (crew did not), or
+   *  simply expired — so unlike the committed paths below, this one cannot
+   *  assume `offer.to` and has to ask. Deliberately narrower than
+   *  `reloadConversationTurns`: it touches ownership ONLY, leaving the chip and
+   *  its explanation standing, because the explanation is the only thing
+   *  telling the operator why their click did nothing. */
+  async function reconcileCrew(id: string, myRun: number): Promise<void> {
+    try {
+      const resp = await call('/conversations/' + encodeURIComponent(id));
+      if (myRun !== runSeq || !resp.ok) return;
+      const detail = (await resp.json()) as ConversationDetail;
+      if (myRun !== runSeq) return;
+      adoptCrew(detail.workload);
+    } catch {
+      /* Fail-soft: ownership stays as-is, same as before this call existed. */
+    }
+  }
+
   // Re-read the thread from the store after a redemption.
   //
   // Deliberately NOT an optimistic append like a normal turn: an accepted
@@ -1050,11 +1086,7 @@
       finalReply = null;
       finalIsError = false;
       iacPr = null; // the persisted crew turn carries the PR CTA now
-      const wl = detail.workload as Workload | undefined;
-      if (wl) {
-        conversationWorkload = wl;
-        composerWorkload = wl;
-      }
+      adoptCrew(detail.workload);
       // The redeemed proposal is burned; anything here is a NEW one the joining
       // crew made on its own first turn (it can, and the nonce for it arrived
       // on this stream's done frame).
@@ -1140,6 +1172,12 @@
         // belongs in the hero; the transition still has to land in the thread.
         if (resp.headers.get('X-Handoff-Redeemed') === '1') {
           clearHandoff(cid);
+          // The marker is stamped only past the burn, and only the ACCEPT
+          // branch gets that far — so the new owner is known here without
+          // asking. Move now rather than letting the refetch below do it: that
+          // refetch can fail, and if it does, this message says the crew
+          // changed while the composer still submits as the crew that left.
+          adoptCrew(offer.to);
           finalReply = $t('conversations.handoff.error.joinFailed', crews);
           finalIsError = true;
           status = 'error';
@@ -1153,6 +1191,12 @@
         handoffError = refusal.text;
         if (refusal.dead) forgetOffer(cid); // spent server-side; don't restore it on reload
         handoffDead = refusal.dead;
+        // A dead refusal means the proposal was answered SOMEWHERE ELSE — the
+        // second tab of a duplicated window, most plainly. Disabling the chip
+        // says the click failed; it does not say who owns the conversation
+        // now, and if the other tab accepted, this one is still pointed at the
+        // crew that left. Ask, because `no_pending` cannot tell us.
+        if (refusal.dead) await reconcileCrew(cid, myRun);
         return;
       }
 
@@ -1251,6 +1295,15 @@
       // superseded) would otherwise leave a clickable chip holding a credential
       // that is already gone.
       clearHandoff(cid);
+      // Ownership moves with the same certainty as the burn, and from the same
+      // knowledge: accepting installs `offer.to`, declining leaves `offer.from`
+      // exactly where it was. Both are known here, so neither needs the refetch
+      // below to be reached — and the refetch is the one step in this sequence
+      // that is allowed to fail silently. Before this, a redemption the server
+      // COMMITTED could leave the composer bound to the departed crew whenever
+      // that GET failed, and the only symptom was the operator's next message
+      // being refused by a crew lock naming a crew they were never shown.
+      adoptCrew(accept ? offer.to : offer.from);
       // Then take custody of any NEW proposal the joining crew made on its own
       // first turn. Order matters both ways round: after the clear, so it is
       // not immediately forgotten, and before the refetch, because

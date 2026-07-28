@@ -555,8 +555,13 @@ def test_any_failure_after_the_burn_releases_the_lease(client, state, monkeypatc
         raise RuntimeError("contract fetch failed")
 
     monkeypatch.setattr(agent_main, "_eager_resolve_upgrade_contract", _boom)
-    with pytest.raises(RuntimeError):
-        _redeem(client, cid, nonce)
+    resp = _redeem(client, cid, nonce)
+    # A non-HTTPException past the burn used to propagate raw, which FastAPI
+    # renders as a 500 carrying NO marker — and an unmarked response is read by
+    # the SPA as a pre-commit refusal, the exact confusion the header exists to
+    # prevent. The transition committed, so it must say so however it failed.
+    assert resp.status_code == 500
+    assert resp.headers.get("X-Handoff-Redeemed") == "1"
     assert not _wedged(state, cid)
 
 

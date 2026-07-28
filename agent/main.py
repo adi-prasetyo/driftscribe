@@ -548,6 +548,15 @@ def _acquire_chat_run(state: StateStore, conv: dict) -> bool:
     already holds the crew it is about to run, and no ordering of these
     requests grants tools it could not otherwise reach. So a store hiccup must
     not refuse an operator's turn — it degrades to today's behavior.
+
+    Worth saying plainly rather than leaving implicit: failing open sacrifices
+    the exact property the lease exists for. Without a stored lease a redemption
+    can flip the crew mid-run, and ``append_turns`` revalidates neither the
+    holder nor the current workload, so this turn can land in the transcript
+    attributed to the crew that has since left. That is a wrong audit line, not
+    a wrong permission, and it is the deliberate trade: a Firestore blip is far
+    more likely than a concurrent redemption, and refusing the operator's turn
+    outright is a worse answer to it than a mislabelled row.
     """
     if conv.get("ephemeral"):
         return True
@@ -7177,6 +7186,23 @@ async def chat_handoff(
         # to be opt-out, not opt-in.
         e.headers = {**(e.headers or {}), "X-Handoff-Redeemed": "1"}
         raise
+    except Exception as e:  # noqa: BLE001
+        # "Whatever raised it" has to mean that literally. An exception that is
+        # not already an HTTPException — a store read that fails after the
+        # burn, a contract fetch, anything added below later — would otherwise
+        # reach the client as a bare 500 carrying no marker, and an unmarked
+        # response is read as a PRE-commit refusal. That is the precise state
+        # this header exists to prevent: chip still live, composer still bound
+        # to the crew that already left, and the operator's next typed turn
+        # refused by the crew lock they cannot see.
+        #
+        # Converting here rather than letting it propagate is the whole point:
+        # the marker cannot ride an exception FastAPI turns into a 500 for us.
+        raise HTTPException(
+            status_code=500,
+            detail="the crew changed, but its first reply could not be started",
+            headers={"X-Handoff-Redeemed": "1"},
+        ) from e
     finally:
         if _joining_lease_owned:
             _release_chat_run(

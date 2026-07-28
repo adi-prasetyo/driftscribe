@@ -95,12 +95,20 @@ class StateStore(Protocol):
 # may take it. This bounds nothing — a real run finishes and releases
 # explicitly — it only decides how long an ABANDONED lease wedges a thread.
 #
-# Derived, not picked: Cloud Run kills the coordinator's requests at 300s
+# Anchored, not picked: Cloud Run stops the coordinator's requests at 300s
 # (``--timeout=300`` in infra/cloudbuild.yaml, sized so /chat can hold its slot
-# for a whole agent run). A lease older than that necessarily belongs to a run
-# that can no longer be running, so a small margin over the request timeout is
-# the tightest honest value. Longer would strand an operator whose browser
+# for a whole agent run), so a small margin over the request timeout is the
+# tightest defensible value. Longer would strand an operator whose browser
 # disconnected mid-turn; shorter could steal a live run's lease.
+#
+# Stated honestly, because an earlier version of this comment claimed more than
+# it can: the request timeout ends the REQUEST, which is not the same as
+# proving the container stopped working on it. There is no application-level
+# cancellation or lease renewal here, so a run that somehow outlives its own
+# request can still append after another caller takes the lease. That costs
+# transcript attribution — the same thing a failed lease acquisition costs
+# below — and never authority, because the crew a run may use was fixed at
+# request entry and no lease decides it.
 CHAT_RUN_LEASE_TTL_S = 330
 
 

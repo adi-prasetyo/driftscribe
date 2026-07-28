@@ -118,6 +118,29 @@ function handoffPosts(): Record<string, unknown>[] {
     .map(([, i]) => JSON.parse(String(i!.body)));
 }
 
+/** The crew the composer would actually submit under, read from the wire.
+ *
+ *  The load-bearing observable for "who owns this conversation now". Asserting
+ *  that the chip vanished says the click was processed; only this says the
+ *  client agrees with the server about the answer. When they disagree the
+ *  server's crew lock refuses the next turn, naming a crew the operator was
+ *  never shown — a dead end reachable only by typing. */
+async function typeAndReadWorkload(container: HTMLElement, text: string): Promise<unknown> {
+  const input = container.querySelector('#prompt-input') as HTMLTextAreaElement;
+  await waitFor(() => expect(input.disabled).toBe(false));
+  await fireEvent.input(input, { target: { value: text } });
+  await fireEvent.submit(document.getElementById('chat-form')!);
+  let body: unknown;
+  await waitFor(() => {
+    const post = fetchCalls()
+      .filter(([u, i]) => String(u).endsWith('/chat') && i?.method === 'POST')
+      .at(-1);
+    expect(post).toBeTruthy();
+    body = JSON.parse(String(post![1]!.body)).workload;
+  });
+  return body;
+}
+
 beforeEach(() => {
   window.localStorage.clear();
   window.sessionStorage.clear();
@@ -372,13 +395,47 @@ describe('App — a failure AFTER the redemption committed', () => {
       return undefined;
     });
     window.sessionStorage.setItem('ds.handoff.c1', JSON.stringify(OFFER));
-    const { findByTestId, queryByTestId, getByTestId } = render(App);
+    const { findByTestId, queryByTestId, getByTestId, container } = render(App);
     await fireEvent.click(await findByTestId('conversation-open'));
     await findByTestId('handoff-chip');
     await fireEvent.click(getByTestId('handoff-confirm'));
 
     await waitFor(() => expect(queryByTestId('handoff-chip')).toBeNull());
     expect(window.sessionStorage.getItem('ds.handoff.c1')).toBeNull();
+    // ...and ownership moved anyway. This is the half the chip assertion above
+    // cannot see: the refetch is the ONLY step here allowed to fail silently,
+    // so hanging the crew flip off it meant a committed redemption could leave
+    // the composer submitting as Explore, which the server's Provision lock
+    // then refuses. The redemption already told us the answer — `offer.to`.
+    expect(await typeAndReadWorkload(container, 'try again')).toBe('provision');
+  });
+
+  it('moves ownership when the JOIN fails post-commit and the refetch fails too', async () => {
+    // The compounding case, and the one that most looks like "nothing
+    // happened": the crew flip COMMITTED, the joining crew's first reply blew
+    // up, and the refetch that would have revealed the new owner also failed.
+    // Every signal the client could passively observe is an error, yet the
+    // conversation genuinely belongs to Provision now — so the retry the error
+    // message promises has to actually go to Provision.
+    stubFetch((url, init) => {
+      if (url.includes('/chat/handoff') && init?.method === 'POST') {
+        return errJson(500, 'the crew changed, but its first reply could not be started', {
+          'X-Handoff-Redeemed': '1',
+        });
+      }
+      if (url.includes('/conversations/')) {
+        return handoffPosts().length ? errJson(500, 'boom') : okJson(PENDING_DETAIL);
+      }
+      return undefined;
+    });
+    window.sessionStorage.setItem('ds.handoff.c1', JSON.stringify(OFFER));
+    const { findByTestId, getByTestId, container } = render(App);
+    await fireEvent.click(await findByTestId('conversation-open'));
+    await findByTestId('handoff-chip');
+    await fireEvent.click(getByTestId('handoff-confirm'));
+
+    await waitFor(() => expect(window.sessionStorage.getItem('ds.handoff.c1')).toBeNull());
+    expect(await typeAndReadWorkload(container, 'try again')).toBe('provision');
   });
 });
 
@@ -505,6 +562,39 @@ describe('App — a refused confirmation', () => {
     );
     expect((await r.findByTestId('handoff-error')).textContent).toContain('no longer available');
     expect((r.getByTestId('handoff-confirm') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('the tab that LOSES a two-tab race still learns who won', async () => {
+    // Duplicate a tab and both hold the same nonce in sessionStorage. Tab A
+    // accepts; tab B's chip is still on screen, and its click gets 409
+    // no_pending. Disabling the chip tells tab B the click failed — it does
+    // NOT tell it that Provision now owns the conversation, and `no_pending`
+    // cannot say on its own (accepted elsewhere, declined elsewhere and
+    // expired all produce it). So tab B has to ask, or it sits on Explore and
+    // every message it sends is refused by a lock it never saw.
+    stubFetch((url, init) => {
+      if (url.includes('/chat/handoff') && init?.method === 'POST') {
+        return errJson(409, 'no crew handoff is awaiting confirmation', {
+          'X-Handoff-Refusal': 'no_pending',
+        });
+      }
+      if (url.includes('/conversations/')) {
+        // The resume still sees the proposal open (tab B loaded first); by the
+        // time it asks again, tab A has already moved the conversation.
+        return handoffPosts().length ? okJson(JOINED_DETAIL) : okJson(PENDING_DETAIL);
+      }
+      return undefined;
+    });
+    window.sessionStorage.setItem('ds.handoff.c1', JSON.stringify(OFFER));
+    const { findByTestId, getByTestId, container } = render(App);
+    await fireEvent.click(await findByTestId('conversation-open'));
+    await findByTestId('handoff-chip');
+    await fireEvent.click(getByTestId('handoff-confirm'));
+
+    // The explanation survives — it is the only thing telling this operator
+    // why their click did nothing, so reconciling must not wipe it.
+    expect((await findByTestId('handoff-error')).textContent).toContain('no longer available');
+    expect(await typeAndReadWorkload(container, 'carry on then')).toBe('provision');
   });
 
   it('reads a 409 "a turn is running" as retryable', async () => {
