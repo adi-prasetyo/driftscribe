@@ -358,3 +358,75 @@ def test_declining_reserves_nothing(store):
         "c1", nonce=nonce, accept=False, now=NOW, run_id="unused",
     )
     assert store.begin_chat_run("c1", run_id="other", now=NOW) is True
+
+
+# --- a stale writer must not touch live control state -----------------------
+#
+# A /chat turn captures its crew at request entry and can persist much later:
+# `_acquire_chat_run` fails OPEN on a store error, and nothing cancels a run
+# that outlives CHAT_RUN_LEASE_TTL_S. That was accepted as costing an audit
+# line. It costs more than that, which is what these pin.
+
+def test_a_stale_run_cannot_clear_the_joining_crews_new_proposal(store):
+    """The interleaving: Explore's turn starts, a redemption moves the thread
+    to Provision, Provision proposes something of its own, and only THEN does
+    the original Explore turn persist. Its `clear_pending_handoff` would retire
+    a suggestion the operator is currently looking at, on the authority of a
+    question that was answered before that suggestion existed."""
+    nonce = _propose(store, "c1", to="provision", frm="explore")
+    assert store.redeem_handoff("c1", nonce=nonce, accept=True, now=NOW)["ok"]
+    _propose(store, "c1", to="drift", frm="provision", create=False)
+    live = dict(store.get_conversation("c1")["pending_handoff"])
+    assert live["from"] == "provision"
+
+    before = store.get_conversation("c1")["turn_count"]
+    store.append_turns(
+        "c1", _turns("explore"),
+        clear_pending_handoff=True, expect_workload="explore",
+    )
+
+    conv = store.get_conversation("c1")
+    assert conv["pending_handoff"] == live
+    assert conv["workload"] == "provision"
+    # The ROWS still land. Refusing them would lose an operator's words to
+    # protect a chip; the fence is deliberately narrower than the write.
+    assert conv["turn_count"] == before + len(_turns())
+
+
+def test_a_stale_run_cannot_overwrite_the_current_crews_proposal(store):
+    """The mirror image, and the worse half: the stale turn proposes too. Its
+    offer says `from: explore`, which no longer matches the bound crew, so it
+    could only ever be refused — and writing it would evict a live one, since
+    a conversation holds exactly one nonce digest."""
+    nonce = _propose(store, "c1", to="provision", frm="explore")
+    assert store.redeem_handoff("c1", nonce=nonce, accept=True, now=NOW)["ok"]
+    _propose(store, "c1", to="drift", frm="provision", create=False)
+    live = dict(store.get_conversation("c1")["pending_handoff"])
+
+    stale_nonce, stale_digest = mint_handoff_nonce()
+    store.append_turns(
+        "c1", _turns("explore"),
+        pending_handoff=build_pending_handoff(
+            _proposal(to="upgrade", frm="explore"), digest=stale_digest, now=NOW,
+        ),
+        expect_workload="explore",
+    )
+
+    assert store.get_conversation("c1")["pending_handoff"] == live
+    # And the stale offer never became redeemable.
+    assert store.redeem_handoff(
+        "c1", nonce=stale_nonce, accept=True, now=NOW,
+    )["ok"] is False
+
+
+def test_the_fence_does_not_block_the_crew_that_actually_holds_the_thread(store):
+    """The guard must cost the ordinary path nothing: a turn typed by the crew
+    that still owns the conversation retires its own outstanding proposal
+    exactly as before."""
+    _propose(store, "c1", to="drift", frm="explore")
+    assert store.get_conversation("c1").get("pending_handoff")
+    store.append_turns(
+        "c1", _turns("explore"),
+        clear_pending_handoff=True, expect_workload="explore",
+    )
+    assert store.get_conversation("c1").get("pending_handoff") is None

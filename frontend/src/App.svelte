@@ -846,6 +846,13 @@
             : $t('header.chatError.requestFailed', { status: resp.status });
         finalIsError = true;
         liveExchange = null; // nothing persisted → the error belongs in the hero
+        // The crew lock refused this turn and said who holds the thread. Adopt
+        // it. This is the LAST line of defence, not the usual route: every
+        // path that moves a conversation already moves the composer with it,
+        // and each of those can fail independently. Without this, a client
+        // that ended up out of step had no way back — every attempt refused,
+        // by a message naming the very crew it should have switched to.
+        adoptCrew(resp.headers.get('X-Conversation-Crew') ?? undefined);
         return;
       }
 
@@ -1191,12 +1198,15 @@
         handoffError = refusal.text;
         if (refusal.dead) forgetOffer(cid); // spent server-side; don't restore it on reload
         handoffDead = refusal.dead;
-        // A dead refusal means the proposal was answered SOMEWHERE ELSE — the
-        // second tab of a duplicated window, most plainly. Disabling the chip
-        // says the click failed; it does not say who owns the conversation
-        // now, and if the other tab accepted, this one is still pointed at the
-        // crew that left. Ask, because `no_pending` cannot tell us.
-        if (refusal.dead) await reconcileCrew(cid, myRun);
+        // Reconcile after ANY refusal, not just a dead one. A dead refusal is
+        // the obvious case — the proposal was answered somewhere else, and if
+        // that answer was "accept", this tab is still pointed at the crew that
+        // left. But an unmarked 5xx is the same problem wearing a different
+        // status: the marker is stamped only once `redeem_handoff` RETURNS, so
+        // a commit that applied while its acknowledgement failed reaches here
+        // looking exactly like a refusal. Asking costs one GET on a click that
+        // already failed, and is a no-op whenever nothing actually moved.
+        await reconcileCrew(cid, myRun);
         return;
       }
 
@@ -1210,9 +1220,15 @@
       // still open and the nonce still valid. Forgetting custody here — which
       // "any 2xx means the nonce is spent" would do — would hide the chip for
       // good on a conversation whose proposal is alive, and no reload could
-      // bring it back. Defaults false: a stream that dies before its terminal
-      // frame was not a paused refusal (that answer is a single frame).
+      // bring it back.
       let refusedByPause = false;
+      // Whether the response ever told us how it ended. A 2xx alone does not:
+      // the pause check answers 200 BEFORE redeeming, so "paused, and the one
+      // frame saying so was lost" and "redeemed, and the frames were lost" are
+      // the same status code with opposite meanings. Reading a silent stream
+      // as success would forget a nonce for a proposal that is still open —
+      // and the server keeps only a digest, so nothing could restore it.
+      let sawTerminal = false;
 
       const ctype = resp.headers.get('content-type') ?? '';
       if (!ctype.includes('text/event-stream')) {
@@ -1228,6 +1244,7 @@
               : null;
           joinHandoff = readHandoffOffer(body?.handoff);
           refusedByPause = body?.paused === true;
+          sawTerminal = true;
           status = 'complete';
         } catch {
           if (myRun !== runSeq) return;
@@ -1255,6 +1272,7 @@
               iacPr = d.iac_pr ?? null;
               joinHandoff = readHandoffOffer(d.handoff);
               refusedByPause = d.paused === true;
+              sawTerminal = true;
               status = 'complete';
             },
             onError: (er) => {
@@ -1263,6 +1281,10 @@
               finalIsError = true;
               status = 'error';
               liveExchange = null;
+              // An error FRAME is still a terminal answer, and it can only
+              // arrive after the burn: the stream begins downstream of the
+              // redemption, so anything streamed at all means it committed.
+              sawTerminal = true;
             },
           });
         } catch {
@@ -1286,6 +1308,18 @@
         // the operator can confirm the same suggestion once they resume,
         // instead of having to coax the crew into making it again.
         liveExchange = null;
+        return;
+      }
+      if (!sawTerminal) {
+        // The response never said how it ended, so this client does not know
+        // whether the nonce was spent. Both mistakes are recoverable except
+        // one: discarding custody for a proposal that is still open cannot be
+        // undone from the server, which holds only a digest. So keep the
+        // credential — a retry that turns out to be too late gets `no_pending`
+        // and lands on the reconciling branch above — and ASK who owns the
+        // conversation, since a committed redemption would have moved it.
+        liveExchange = null;
+        await reconcileCrew(cid, myRun);
         return;
       }
 

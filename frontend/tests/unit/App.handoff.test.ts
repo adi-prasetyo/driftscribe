@@ -606,13 +606,23 @@ describe('App — a refused confirmation', () => {
     expect((await r.findByTestId('handoff-error')).textContent).toContain(
       'already has a turn running',
     );
-    expect((r.getByTestId('handoff-confirm') as HTMLButtonElement).disabled).toBe(false);
+    // Eventually, not immediately: a refusal now reconciles ownership before
+    // it releases the chip, and the button stays locked across that fetch so
+    // a second click cannot race it.
+    await waitFor(() =>
+      expect((r.getByTestId('handoff-confirm') as HTMLButtonElement).disabled).toBe(false),
+    );
   });
 
   it('treats an unknown refusal as retryable rather than stranding the chip', async () => {
     const r = await confirmAgainst(errJson(500, 'boom'));
     await r.findByTestId('handoff-error');
-    expect((r.getByTestId('handoff-confirm') as HTMLButtonElement).disabled).toBe(false);
+    // Eventually, not immediately: a refusal now reconciles ownership before
+    // it releases the chip, and the button stays locked across that fetch so
+    // a second click cannot race it.
+    await waitFor(() =>
+      expect((r.getByTestId('handoff-confirm') as HTMLButtonElement).disabled).toBe(false),
+    );
   });
 
   it('forgets a dead proposal so a reload does not resurrect it', async () => {
@@ -707,5 +717,103 @@ describe('App — leaving the suggestion unanswered', () => {
     // Reopening the thread brings it back.
     await fireEvent.click(await findByTestId('conversation-open'));
     expect(await findByTestId('handoff-chip')).toBeTruthy();
+  });
+});
+
+describe('App — the client does not know what happened', () => {
+  it('keeps custody when the response never says how it ended', async () => {
+    // A 2xx is not an answer on its own: the pause check replies 200 BEFORE
+    // redeeming, so a truncated success and a truncated "paused, nothing
+    // happened" are indistinguishable from the status line. Guessing "spent"
+    // is the one unrecoverable guess — the server keeps only a digest, so a
+    // discarded nonce cannot be reissued, and the proposal would be stranded
+    // open with no way to answer it.
+    stubFetch((url, init) => {
+      if (url.includes('/chat/handoff') && init?.method === 'POST') {
+        return new Response('{"reply": "trunca', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.includes('/conversations/')) {
+        return handoffPosts().length ? okJson(JOINED_DETAIL) : okJson(PENDING_DETAIL);
+      }
+      return undefined;
+    });
+    window.sessionStorage.setItem('ds.handoff.c1', JSON.stringify(OFFER));
+    const { findByTestId, getByTestId, container } = render(App);
+    await fireEvent.click(await findByTestId('conversation-open'));
+    await findByTestId('handoff-chip');
+    await fireEvent.click(getByTestId('handoff-confirm'));
+
+    // Wait for the redemption to have SETTLED before judging custody. Polling
+    // for the nonce directly proves nothing — it is in storage from the first
+    // line of this test, so the assertion passes on its way to being wrong.
+    // The reconciling GET is the signal that this branch ran to completion.
+    await waitFor(() => {
+      const afterPost = fetchCalls()
+        .map(([u, i]) => String(u) + (i?.method ?? 'GET'))
+        .filter((c) => c.includes('/conversations/c1') && c.endsWith('GET'));
+      expect(afterPost.length).toBeGreaterThan(1); // the resume, then the reconcile
+    });
+    // Only now: the credential survived, so the suggestion is still answerable.
+    expect(JSON.parse(window.sessionStorage.getItem('ds.handoff.c1')!).nonce).toBe('nonce-abc');
+    // ...and we asked who owns the thread rather than assuming either way.
+    expect(await typeAndReadWorkload(container, 'what happened?')).toBe('provision');
+  });
+
+  it('a DECLINE with a failed refetch leaves the crew exactly where it was', async () => {
+    // The mirror of the accept case, and the reason ownership is derived from
+    // `accept` rather than from `offer.to` alone: declining moves nothing. A
+    // successful refetch would paper over a regression here, so this one fails
+    // the refetch to make the direct decision the only thing under test.
+    stubFetch((url, init) => {
+      if (url.includes('/chat/handoff') && init?.method === 'POST') {
+        return okJson({
+          reply: 'Staying with Explore. Provision was not brought in.',
+          tool_calls: [],
+          conversation_id: 'c1',
+          handoff_declined: { from: 'explore', to: 'provision' },
+        });
+      }
+      if (url.includes('/conversations/')) {
+        return handoffPosts().length ? errJson(500, 'boom') : okJson(PENDING_DETAIL);
+      }
+      return undefined;
+    });
+    window.sessionStorage.setItem('ds.handoff.c1', JSON.stringify(OFFER));
+    const { findByTestId, getByTestId, container } = render(App);
+    await fireEvent.click(await findByTestId('conversation-open'));
+    await findByTestId('handoff-chip');
+    await fireEvent.click(getByTestId('handoff-decline'));
+
+    await waitFor(() => expect(window.sessionStorage.getItem('ds.handoff.c1')).toBeNull());
+    expect(await typeAndReadWorkload(container, 'ok then')).toBe('explore');
+  });
+
+  it('adopts the crew the lock names when a turn is refused', async () => {
+    // The backstop. Every path that moves a conversation also moves the
+    // composer, and every one of them can fail on its own — so the refusal
+    // itself carries the answer. Without this, a client that fell out of step
+    // was stuck: refused each time, by a message naming the crew it needed.
+    stubFetch((url, init) => {
+      if (url.endsWith('/chat') && init?.method === 'POST') {
+        const first = fetchCalls().filter(
+          ([u, i]) => String(u).endsWith('/chat') && i?.method === 'POST',
+        ).length === 1;
+        return first
+          ? errJson(409, "conversation is locked to crew 'provision'", {
+              'X-Conversation-Crew': 'provision',
+            })
+          : undefined;
+      }
+      return undefined;
+    });
+    const { findByTestId, container } = render(App);
+    await fireEvent.click(await findByTestId('conversation-open'));
+    await findByTestId('chat-prompt');
+
+    expect(await typeAndReadWorkload(container, 'first try')).toBe('explore');
+    expect(await typeAndReadWorkload(container, 'second try')).toBe('provision');
   });
 });

@@ -504,7 +504,18 @@ def _resolve_chat_conversation(
                 f"conversation is locked to crew {conv.get('workload')!r}; "
                 f"start a new chat to talk to {workload!r}"
             ),
-            headers={"Cache-Control": "no-store"},
+            # The lock's own answer to "then who DOES own this?", machine-
+            # readable rather than only in the prose above. Every other way a
+            # client learns the current crew is a separate request that may
+            # fail, which leaves the one failure this refusal should be
+            # incapable of: a composer stuck on a departed crew, refused every
+            # time it tries, by a message naming a crew it never adopts. This
+            # header is the backstop — it rides the refusal itself, so it
+            # cannot be the thing that goes missing.
+            headers={
+                "Cache-Control": "no-store",
+                "X-Conversation-Crew": str(conv.get("workload") or ""),
+            },
         )
     return {
         "conversation_id": conversation_id,
@@ -631,6 +642,12 @@ def _persist_chat_turn(
         pending, nonce = _mint_handoff_for_turn(conv, result)
         state.append_turns(
             conv["conversation_id"], turns, create_with=create_with,
+            # The crew this turn actually ran as, captured at request entry. If
+            # a redemption moved the conversation while this run was in flight,
+            # the store keeps the turn rows but refuses this run's edits to the
+            # open proposal — a stale writer must not delete or overwrite the
+            # joining crew's live suggestion. See _may_touch_pending_handoff.
+            expect_workload=conv["workload"],
             pending_handoff=pending,
             # An operator turn ANSWERS any outstanding suggestion: being asked
             # "shall I bring in Provision?" and replying with something else is

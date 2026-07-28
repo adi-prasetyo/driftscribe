@@ -56,6 +56,7 @@ class StateStore(Protocol):
         create_with: dict[str, Any] | None = None,
         pending_handoff: dict[str, Any] | None = None,
         clear_pending_handoff: bool = False,
+        expect_workload: str | None = None,
     ) -> list[int]: ...
     def get_conversation(
         self, conversation_id: str
@@ -219,6 +220,33 @@ def _evaluate_handoff_redemption(
         # wrong crew in the durable transcript.
         return None, "busy"
     return pending, None
+
+
+def _may_touch_pending_handoff(conv: Any, expect_workload: str | None) -> bool:
+    """Whether this writer is still current enough to mutate an open proposal.
+
+    A turn captures its crew at request entry and can persist much later: the
+    lease fails open on a store error, and nothing cancels a run that outlives
+    its TTL. If a redemption moved the conversation in the meantime, this
+    writer is stale — and BOTH of its effects on ``pending_handoff`` are then
+    destructive. Clearing would delete a proposal the crew that has since
+    JOINED just made, silently retiring a chip the operator can still see.
+    Writing would replace that proposal with one whose ``from`` no longer
+    matches the current crew, so it could only ever be refused.
+
+    Only this is fenced. A late turn ROW still appends: that is a wrong audit
+    line, which is the trade ``_acquire_chat_run``'s fail-open documents and
+    accepts. Deleting live control state is not the same kind of wrong, and
+    reading the difference as one cost was the mistake this guard corrects.
+
+    ``None`` means the caller has no expectation and keeps the old behavior.
+    """
+    if expect_workload is None:
+        return True
+    current = conv.get("workload")
+    # An absent workload means nothing to contradict — treat as current rather
+    # than silently dropping a legitimate write on a partially-shaped doc.
+    return current is None or current == expect_workload
 
 
 def _lease_is_free(lease: object, *, now: Any) -> bool:
@@ -457,12 +485,14 @@ class InMemoryStateStore:
         create_with: dict[str, Any] | None = None,
         pending_handoff: dict[str, Any] | None = None,
         clear_pending_handoff: bool = False,
+        expect_workload: str | None = None,
     ) -> list[int]:
         with self._lock:
             return self._append_turns_locked(
                 conversation_id, turns, create_with=create_with,
                 pending_handoff=pending_handoff,
                 clear_pending_handoff=clear_pending_handoff,
+                expect_workload=expect_workload,
             )
 
     def _append_turns_locked(
@@ -473,6 +503,7 @@ class InMemoryStateStore:
         create_with: dict[str, Any] | None = None,
         pending_handoff: dict[str, Any] | None = None,
         clear_pending_handoff: bool = False,
+        expect_workload: str | None = None,
     ) -> list[int]:
         """Append turns; optionally record a crew-handoff proposal with them.
 
@@ -536,6 +567,8 @@ class InMemoryStateStore:
         conv["user_turn_count"] = prior_user_turns + _count_user_turns(turns)
         conv["updated_at"] = now
         conv["last_trace_id"] = last_trace
+        if not _may_touch_pending_handoff(conv, expect_workload):
+            pending_handoff, clear_pending_handoff = None, False
         if pending_handoff is not None:
             # Overwrites any prior proposal, which IS the supersede-and-burn:
             # only one nonce digest can be stored, so the old one stops
@@ -973,6 +1006,7 @@ class FirestoreStateStore:
         create_with: dict[str, Any] | None = None,
         pending_handoff: dict[str, Any] | None = None,
         clear_pending_handoff: bool = False,
+        expect_workload: str | None = None,
     ) -> list[int]:
         """Append ``turns`` atomically, allocating contiguous ``seq`` values.
 
@@ -1012,12 +1046,22 @@ class FirestoreStateStore:
                 }
                 start, last_trace, is_create = 0, None, True
                 prior_user_turns = 0
+                # Created here, with this caller's own workload — there is no
+                # earlier writer to be stale against.
+                may_touch_handoff = True
             else:
                 data = snap.to_dict() or {}
                 start = int(data.get("turn_count", 0))
                 prior_user_turns = conversation_user_turns(data)
                 last_trace = data.get("last_trace_id")
                 base, is_create = {}, False
+                # Decided from the doc read INSIDE the transaction, so a
+                # redemption that lands between the read and the commit loses
+                # to Firestore's contention retry rather than slipping past
+                # this check.
+                may_touch_handoff = _may_touch_pending_handoff(
+                    data, expect_workload
+                )
             # WRITES.
             seqs: list[int] = []
             for i, t in enumerate(turns):
@@ -1048,9 +1092,9 @@ class FirestoreStateStore:
                 "updated_at": firestore.SERVER_TIMESTAMP,
                 "last_trace_id": last_trace,
             }
-            if pending_handoff is not None:
+            if pending_handoff is not None and may_touch_handoff:
                 doc_fields["pending_handoff"] = dict(pending_handoff)
-            elif clear_pending_handoff and not is_create:
+            elif clear_pending_handoff and not is_create and may_touch_handoff:
                 # DELETE_FIELD is invalid inside a ``set`` of a brand-new doc,
                 # and a conversation being created cannot have a proposal to
                 # retire anyway.
