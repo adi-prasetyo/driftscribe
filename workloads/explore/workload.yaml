@@ -38,7 +38,9 @@ description: >
   Read-only investigation across infra and code. Inspects a Cloud Run
   service's live env vars, the repo's declared ops-contract, the
   dependency lockfile, and authoritative developer docs — then reports.
-  It cannot change anything: no PR, no rollback, no notification.
+  It changes nothing outside DriftScribe: no PR, no rollback, no
+  notification. It can suggest handing the conversation to a crew that
+  can act, which does nothing until the operator confirms.
 
 # The single prompt file. There is intentionally no chat_system_prompt_file:
 # explore is chat-only, so /chat falls back to system_prompt (the registry
