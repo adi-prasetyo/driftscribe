@@ -35,7 +35,11 @@ _EXPECTED_META_KEYS = {
     "turns_omitted",
 }
 # The COMPLETE set of keys a projected TURN may emit.
-_EXPECTED_TURN_KEYS = {"seq", "role", "workload", "trace_id", "created_at", "text", "iac_pr"}
+_EXPECTED_TURN_KEYS = {
+    "seq", "role", "workload", "trace_id", "created_at", "text", "iac_pr",
+    # crew_change / handoff_declined rows only — which crew handed to which.
+    "handoff",
+}
 
 
 # --------------------------------------------------------------------------- #

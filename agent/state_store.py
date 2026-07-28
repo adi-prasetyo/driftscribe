@@ -133,6 +133,37 @@ def conversation_has_crew(conv: Any, crew: str) -> bool:
     return crew in conversation_crews(conv)
 
 
+def conversation_user_turns(conv: Any) -> int:
+    """How many prompts the OPERATOR actually typed in this conversation.
+
+    The rail's "N messages" means this, and used to derive it as
+    ``ceil(turn_count / 2)`` from an invariant that no longer holds: every
+    exchange wrote one user turn and one crew turn, so the total was even. A
+    handoff breaks it from both ends — an accepted transition appends a
+    ``crew_change`` row, and the joining turn writes a reply with no prompt in
+    front of it, because the operator confirmed a suggestion rather than typing
+    one. So the count is carried rather than recomputed.
+
+    Conversations predating the counter are seeded from ``turn_count`` on their
+    next append. For them the old invariant genuinely did hold — turns land two
+    at a time in a single atomic append — so half the total is their exact prior
+    count, not an estimate.
+    """
+    if not isinstance(conv, dict):
+        return 0
+    stored = conv.get("user_turn_count")
+    if isinstance(stored, int) and not isinstance(stored, bool) and stored >= 0:
+        return stored
+    total = conv.get("turn_count")
+    if isinstance(total, int) and not isinstance(total, bool) and total > 0:
+        return (total + 1) // 2
+    return 0
+
+
+def _count_user_turns(turns: list[dict[str, Any]]) -> int:
+    return sum(1 for t in turns if t.get("role") == "user")
+
+
 def _with_crew(conv: Any, crew: str) -> list[str]:
     """The participant list with ``crew`` appended if it is not already there.
 
@@ -382,6 +413,7 @@ class InMemoryStateStore:
             "created_at": now,
             "updated_at": now,
             "turn_count": 0,
+            "user_turn_count": 0,
             "last_trace_id": None,
         }
         self._conversations[conversation_id] = doc
@@ -451,6 +483,7 @@ class InMemoryStateStore:
             self.create_conversation(conversation_id, **create_with)
             conv = self._conversations[conversation_id]
         start = int(conv["turn_count"])
+        prior_user_turns = conversation_user_turns(conv)
         now = datetime.now(timezone.utc)
         last_trace = conv.get("last_trace_id")
         seqs: list[int] = []
@@ -475,6 +508,9 @@ class InMemoryStateStore:
                 last_trace = t["trace_id"]
             seqs.append(seq)
         conv["turn_count"] = start + len(turns)
+        # Read the prior count BEFORE turn_count moves — the legacy seed inside
+        # conversation_user_turns derives from it.
+        conv["user_turn_count"] = prior_user_turns + _count_user_turns(turns)
         conv["updated_at"] = now
         conv["last_trace_id"] = last_trace
         if pending_handoff is not None:
@@ -879,6 +915,7 @@ class FirestoreStateStore:
             "created_at": firestore.SERVER_TIMESTAMP,
             "updated_at": firestore.SERVER_TIMESTAMP,
             "turn_count": 0,
+            "user_turn_count": 0,
             "last_trace_id": None,
         }
         self._conversations.document(conversation_id).set(doc)
@@ -948,9 +985,11 @@ class FirestoreStateStore:
                     "last_trace_id": None,
                 }
                 start, last_trace, is_create = 0, None, True
+                prior_user_turns = 0
             else:
                 data = snap.to_dict() or {}
                 start = int(data.get("turn_count", 0))
+                prior_user_turns = conversation_user_turns(data)
                 last_trace = data.get("last_trace_id")
                 base, is_create = {}, False
             # WRITES.
@@ -979,6 +1018,7 @@ class FirestoreStateStore:
                 seqs.append(seq)
             doc_fields = {
                 "turn_count": start + len(turns),
+                "user_turn_count": prior_user_turns + _count_user_turns(turns),
                 "updated_at": firestore.SERVER_TIMESTAMP,
                 "last_trace_id": last_trace,
             }
@@ -1095,6 +1135,11 @@ class FirestoreStateStore:
             doc_fields: dict[str, Any] = {
                 "pending_handoff": firestore.DELETE_FIELD,
                 "turn_count": seq + 1,
+                # Unchanged in value — a transition row is not something the
+                # operator typed — but pinned explicitly, because leaving it
+                # absent while turn_count moves would let the legacy seed in
+                # conversation_user_turns derive from the larger total later.
+                "user_turn_count": conversation_user_turns(conv),
                 "updated_at": firestore.SERVER_TIMESTAMP,
             }
             if accept:

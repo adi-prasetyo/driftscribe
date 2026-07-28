@@ -234,3 +234,76 @@ def test_read_conversations_exposes_the_participant_list(monkeypatch, store):
     out = read_conversations_tool(crew="explore")
     assert out["found"] is True
     assert out["conversations"][0]["crews"] == ["explore", "upgrade"]
+
+
+# --- Operator-message count ------------------------------------------------ #
+#
+# The rail reports "N messages" meaning the operator's OWN prompts, and derived
+# it as ceil(turn_count / 2) from an invariant its comment states outright:
+# every exchange writes one user turn AND one crew reply, so the count is even.
+# The handoff breaks that from both ends — an accepted transition appends a
+# `crew_change` row, and the joining turn sets `omit_user_turn`, so it writes a
+# reply with no prompt in front of it. The rail only ever receives metadata, so
+# it cannot recover the real number from `turn_count`: the store has to carry it.
+
+def test_a_plain_exchange_counts_one_operator_message(store):
+    store.append_turns(
+        "c1",
+        [{"role": "user", "text": "q", "workload": "explore"},
+         {"role": "crew", "text": "a", "workload": "explore"}],
+        create_with={"workload": "explore", "title": "q"},
+    )
+    conv = store.get_conversation("c1")
+    assert conv["turn_count"] == 2
+    assert conv["user_turn_count"] == 1
+
+
+def test_an_accepted_handoff_adds_turns_but_no_operator_message(store):
+    """Four persisted turns, one thing the operator actually typed. The old
+    ceil(turn_count / 2) would report two."""
+    _hand_off(store, "c1", to="drift", frm="explore")
+    store.append_turns(
+        "c1", [{"role": "crew", "text": "joining reply", "workload": "drift"}],
+    )
+    conv = store.get_conversation("c1")
+    assert conv["turn_count"] == 4
+    assert conv["user_turn_count"] == 1
+
+
+def test_a_declined_handoff_adds_no_operator_message_either(store):
+    _hand_off(store, "c1", to="drift", frm="explore", accept=False)
+    conv = store.get_conversation("c1")
+    assert conv["turn_count"] == 3
+    assert conv["user_turn_count"] == 1
+
+
+def test_a_new_conversation_starts_at_zero_operator_messages(store):
+    store.create_conversation("c1", workload="explore", title="t")
+    assert store.get_conversation("c1")["user_turn_count"] == 0
+
+
+def test_a_conversation_predating_the_counter_is_seeded_exactly(store):
+    """Every conversation written before the handoff existed was strictly
+    paired — turns land two at a time in one atomic append — so deriving the
+    seed from turn_count is exact for legacy docs and never runs for new ones."""
+    store.create_conversation("c1", workload="explore", title="t")
+    conv = store._conversations["c1"]
+    conv.pop("user_turn_count")
+    conv["turn_count"] = 6            # three prior exchanges
+    store.append_turns(
+        "c1", [{"role": "user", "text": "q", "workload": "explore"},
+               {"role": "crew", "text": "a", "workload": "explore"}],
+    )
+    assert store.get_conversation("c1")["user_turn_count"] == 4
+
+
+# --- Cross-thread attribution of a transition ------------------------------ #
+
+def test_reading_another_thread_shows_which_crews_a_transition_joined(monkeypatch, store):
+    """`workload` on a crew_change row names the crew that JOINED; without the
+    pair, a reader cannot tell who handed it over."""
+    _hand_off(store, "c1", to="drift", frm="explore")
+    monkeypatch.setattr(_main_mod, "get_state", lambda: store)
+    conv = read_conversations_tool(conversation_id="c1")["conversation"]
+    row = [t for t in conv["turns"] if t["role"] == "crew_change"][0]
+    assert row["handoff"] == {"from": "explore", "to": "drift"}

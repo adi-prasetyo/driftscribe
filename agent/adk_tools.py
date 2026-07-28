@@ -1601,6 +1601,18 @@ def _project_conversation_turn(turn: object, *, text_cap: int) -> dict[str, Any]
         pr_number = iac_pr.get("pr_number")
         if isinstance(pr_number, int) and not isinstance(pr_number, bool):
             out["iac_pr"] = {"pr_number": pr_number}
+    # A transition row's `workload` names the crew that JOINED; without the pair
+    # a cross-thread reader cannot tell who handed it over. Server-authored
+    # crew names, not model text, but sanitized like everything else here.
+    handoff = turn.get("handoff")
+    if isinstance(handoff, dict):
+        pair = {
+            k: _team_log_sanitize(handoff[k], 32)
+            for k in ("from", "to")
+            if isinstance(handoff.get(k), str) and handoff[k]
+        }
+        if pair:
+            out["handoff"] = pair
     return out
 
 

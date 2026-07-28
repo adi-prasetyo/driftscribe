@@ -369,3 +369,28 @@ def test_firestore_list_still_matches_a_row_predating_the_field(store):
     del store._db.docs["conversations/c1"]["crews"]
     assert [c["conversation_id"]
             for c in store.list_conversations(workload="drift")] == ["c1"]
+
+
+def test_firestore_counts_operator_messages_not_turns(store):
+    """Same arithmetic as the in-memory twin: the transition row and the joining
+    reply both land without a prompt in front of them."""
+    nonce = _fs_propose(store, "c1", frm="explore", to="drift")
+    store.redeem_handoff("c1", nonce=nonce, accept=True, now=_NOW)
+    store.append_turns(
+        "c1", [{"role": "crew", "text": "joining reply", "workload": "drift"}],
+    )
+    conv = store.get_conversation("c1")
+    assert conv["turn_count"] == 4
+    assert conv["user_turn_count"] == 1
+
+
+def test_firestore_seeds_the_counter_for_a_doc_predating_it(store):
+    store.create_conversation("c1", workload="explore", title="t")
+    doc = store._db.docs["conversations/c1"]
+    del doc["user_turn_count"]
+    doc["turn_count"] = 6
+    store.append_turns(
+        "c1", [{"role": "user", "text": "q", "workload": "explore"},
+               {"role": "crew", "text": "a", "workload": "explore"}],
+    )
+    assert store.get_conversation("c1")["user_turn_count"] == 4
