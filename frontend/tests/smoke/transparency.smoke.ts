@@ -22,6 +22,13 @@ import {
 
 const ORIGIN = 'http://127.0.0.1:8765';
 
+// Task 3.6 step 2 flipped DEFAULT_VIEW to 'desk', so a BARE url is now the
+// approval desk, which renders no composer, no timeline and no decisions rail.
+// Everything in this file exercises those, so it navigates explicitly to the
+// chat view. The bare front door gets its own dedicated test below rather than
+// being every test's incidental starting point.
+const CHAT_URL = '/?view=chat';
+
 // Seed the operator token the way the deployed e2e does (sessionStorage), before
 // any page script runs.
 async function seedToken(page: Page, token = 'smoke-token') {
@@ -113,6 +120,27 @@ function freshState(decisionsStatus = 200): RouteState {
 }
 
 test.describe('transparency UI (mock smoke)', () => {
+  // The Task 3.6 flip in one test: what a judge typing the bare domain gets.
+  // Runs against the BUILT bundle served by the real FastAPI shell, so it
+  // catches a desk that unit tests render happily but that dies on the real
+  // asset/route path.
+  test('the bare url is the approval desk, not the chat composer', async ({ page }) => {
+    await seedToken(page);
+    await mockData(page, freshState());
+    await page.goto('/');
+
+    await expect(page.getByTestId('approval-desk')).toBeVisible();
+    await expect(page.getByTestId('instrument-band')).toBeVisible();
+    // The chat shell must be genuinely absent, not merely hidden.
+    await expect(page.locator('#chat-form')).toHaveCount(0);
+    await expect(page.locator(`[data-testid="${TESTIDS.pastDecisionsPane}"]`)).toHaveCount(0);
+
+    // …and the header nav still reaches chat from there.
+    await page.getByTestId('nav-chat').click();
+    await expect(page.locator('#chat-form')).toBeVisible();
+    await expect(page.getByTestId('approval-desk')).toHaveCount(0);
+  });
+
   test('shell + built assets load with no 404 and render the chrome', async ({ page }) => {
     const bad: string[] = [];
     page.on('response', (r) => {
@@ -120,7 +148,7 @@ test.describe('transparency UI (mock smoke)', () => {
     });
     await seedToken(page);
     await mockData(page, freshState());
-    await page.goto('/');
+    await page.goto(CHAT_URL);
 
     await expect(page.locator(`[data-testid="${TESTIDS.chatPrompt}"]`)).toBeVisible();
     await expect(page.locator(`[data-testid="${TESTIDS.chatSubmit}"]`)).toBeVisible();
@@ -136,7 +164,7 @@ test.describe('transparency UI (mock smoke)', () => {
     const state = freshState();
     await seedToken(page);
     await mockData(page, state);
-    await page.goto('/');
+    await page.goto(CHAT_URL);
 
     await page.locator(`[data-testid="${TESTIDS.chatPrompt}"]`).fill('Check payment-demo for drift');
     await page.locator(`[data-testid="${TESTIDS.chatSubmit}"]`).click();
@@ -173,7 +201,7 @@ test.describe('transparency UI (mock smoke)', () => {
     state.chatDelayMs = 800; // hold /chat open so the in-flight state is observable
     await seedToken(page);
     await mockData(page, state);
-    await page.goto('/');
+    await page.goto(CHAT_URL);
 
     await page.locator(`[data-testid="${TESTIDS.chatPrompt}"]`).fill('Check payment-demo for drift');
     await page.locator(`[data-testid="${TESTIDS.chatSubmit}"]`).click();
@@ -199,7 +227,7 @@ test.describe('transparency UI (mock smoke)', () => {
     // No token seeded; first /decisions returns 401.
     const state = freshState(401);
     await mockData(page, state);
-    await page.goto('/');
+    await page.goto(CHAT_URL);
 
     // The inline panel (role=dialog) appears — NOT a native prompt.
     await expect(page.getByRole('dialog')).toBeVisible();
@@ -215,7 +243,7 @@ test.describe('transparency UI (mock smoke)', () => {
   test('malicious off-origin approval URL renders NO link', async ({ page }) => {
     await seedToken(page);
     await mockData(page, freshState());
-    await page.goto('/');
+    await page.goto(CHAT_URL);
 
     // five seeded decisions render (two rollbacks + one iac_apply + two drift_issue)
     await expect(page.locator(`[data-testid="${TESTIDS.pastDecisionItem}"]`)).toHaveCount(5);
@@ -228,7 +256,7 @@ test.describe('transparency UI (mock smoke)', () => {
   test('decision github.url: valid github.com link renders, javascript: url does not', async ({ page }) => {
     await seedToken(page);
     await mockData(page, freshState());
-    await page.goto('/');
+    await page.goto(CHAT_URL);
 
     // Exactly one safe github link — the valid github.com issue. The
     // javascript: row is rejected by safeGithubHref and renders no anchor.
@@ -244,7 +272,7 @@ test.describe('transparency UI (mock smoke)', () => {
   test('historical iac_apply: "historical" pill (not streaming) + decision summary + empty-timeline note', async ({ page }) => {
     await seedToken(page);
     await mockData(page, freshState());
-    await page.goto('/');
+    await page.goto(CHAT_URL);
 
     // Open the iac_apply decision specifically (not .first(), which is a rollback).
     await page
@@ -285,7 +313,7 @@ test.describe('transparency UI (mock smoke)', () => {
   test('infrastructure panel: glanceable drift badge, then expand renders the resource cards', async ({ page }) => {
     await seedToken(page);
     await mockData(page, freshState());
-    await page.goto('/');
+    await page.goto(CHAT_URL);
 
     // Collapsed panel shows a glanceable drift badge (data fetched on mount).
     // Scope-aware: 1 drift in the adoptable Cloud Run type (NOT the secret, which
@@ -327,7 +355,7 @@ test.describe('transparency UI (mock smoke)', () => {
     page.on('request', (req) => {
       if (req.url().includes('/chat') && req.method() === 'POST') chatPosts++;
     });
-    await page.goto('/');
+    await page.goto(CHAT_URL);
 
     // The collapsed summary carries a SEPARATE "N IaC unmatched" badge, distinct
     // from the drift badge (both present, never merged into one number).
@@ -388,7 +416,7 @@ test.describe('transparency UI (mock smoke)', () => {
   test('open-trace enters historical mode; new chat exits', async ({ page }) => {
     await seedToken(page);
     await mockData(page, freshState());
-    await page.goto('/');
+    await page.goto(CHAT_URL);
 
     await page.locator(`[data-testid="${TESTIDS.openTraceButton}"]`).first().click();
     await expect(page.locator(`[data-testid="${TESTIDS.historicalBanner}"]`)).toBeVisible();
@@ -403,7 +431,7 @@ test.describe('transparency UI (mock smoke)', () => {
   test('drift decision: env-diff card shows non-secret values, redacts secret-named + credentialed-URL values, leaks no raw secret', async ({ page }) => {
     await seedToken(page);
     await mockData(page, freshState());
-    await page.goto('/');
+    await page.goto(CHAT_URL);
 
     // Open d-drift-1 specifically. Filter by its exact github href so the
     // selector is unambiguous even if another row later also renders a link.
@@ -458,7 +486,7 @@ test.describe('transparency UI (mock smoke)', () => {
         body: JSON.stringify(conversationDetailResponse()),
       }),
     );
-    await page.goto('/');
+    await page.goto(CHAT_URL);
 
     // The rail lists the persisted conversation.
     const pane = page.locator(`[data-testid="${TESTIDS.conversationsPane}"]`);
@@ -495,7 +523,7 @@ test.describe('transparency UI (mock smoke)', () => {
     });
     await seedToken(page);
     await mockData(page, freshState());
-    await page.goto('/');
+    await page.goto(CHAT_URL);
 
     await expect(page.locator('html')).toHaveAttribute('lang', 'ja');
     await expect(page.locator(`[data-testid="${TESTIDS.chatSubmit}"]`)).toHaveText('送信');

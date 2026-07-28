@@ -79,6 +79,43 @@ from driftscribe_lib.iac_plan_metadata import (
 )
 
 
+def _utcnow() -> dt.datetime:
+    """Client-computed UTC now — the convention this module uses everywhere
+    instead of ``firestore.SERVER_TIMESTAMP`` (a sentinel only resolves on the
+    next read, and these values must be readable on the object we return)."""
+    return dt.datetime.now(dt.timezone.utc)
+
+
+# --------------------------------------------------------------------------- #
+# Rollback outcome phases (ds-2mc)
+#
+# DELIBERATELY SEPARATE from APPLY_AUDIT_PHASES (the IaC/tofu lane, further
+# down). The two vocabularies look similar and mean different things: there,
+# ``failed_state_suspect`` means the apply itself FAILED and may have partially
+# mutated state. Here the ambiguous case is the opposite — the mutation may have
+# SUCCEEDED and we merely could not confirm it. Overloading one frozenset with
+# both meanings is how a "we don't know" becomes a rendered "failed".
+#
+# The distinction that matters to every consumer:
+#   claimed / applying / outcome_unknown  → outcome NOT established
+#   applied / failed                      → outcome established (terminal)
+# Only ``applied`` may drive a success seal. Only ``applied`` carries
+# ``resolved_at``.
+PHASE_CLAIMED = "claimed"  # credential burned, nothing attempted yet
+PHASE_APPLYING = "applying"  # update_service accepted; LRO handle persisted
+PHASE_APPLIED = "applied"  # LRO confirmed success — the only sealable phase
+PHASE_FAILED = "failed"  # definite refusal, or LRO returned a terminal error
+PHASE_OUTCOME_UNKNOWN = "outcome_unknown"  # mutation may have landed; unconfirmed
+
+ROLLBACK_PHASES = frozenset({
+    PHASE_CLAIMED, PHASE_APPLYING, PHASE_APPLIED, PHASE_FAILED, PHASE_OUTCOME_UNKNOWN,
+})
+# Phases that may never be overwritten — see ``ApprovalStore.record_phase``.
+# ``outcome_unknown`` is NOT terminal: it is precisely the state a later
+# /reconcile is expected to resolve into applied or failed.
+TERMINAL_ROLLBACK_PHASES = frozenset({PHASE_APPLIED, PHASE_FAILED})
+
+
 @dataclass
 class Approval:
     """A single approval record. Mirrors the Firestore doc shape 1:1 so that
@@ -92,7 +129,28 @@ class Approval:
     expires_at: dt.datetime
     created_at: dt.datetime
     created_by: str
-    status: str  # "pending" | "approved" | "denied" | "used"
+    status: str  # "pending" | "used" | "denied" — see ``_claim``; "approved" never
+    # occurs (Phase 11.9 renamed the operator-approve outcome to "used").
+    #
+    # ``used`` means THE TOKEN WAS SPENT, not that the rollback happened. The
+    # flip is the anti-replay claim and necessarily precedes the traffic shift.
+    # Whether traffic actually moved lives in ``apply_audit["phase"]``.
+    # (A previous version of this comment claimed the flip happened "only after
+    # actually executing the traffic shift" — it never did, and the desk seal
+    # built on that claim certified rollbacks that had not run: ds-2mc.)
+    #
+    # Set ONLY for a genuinely terminal outcome: a confirmed ``applied`` (written
+    # by ``record_phase`` after the LRO resolves) or a ``denied`` (written inside
+    # ``_claim``, terminal at flip time). ``None`` for a still-``pending``
+    # approval, for one whose apply is in flight or unconfirmed, and for any doc
+    # written before this field existed — ``get``/``_claim`` build this dataclass
+    # via ``**data`` from a raw Firestore dict, so the default is required for
+    # backward compatibility with pre-existing docs that lack the key.
+    resolved_at: dt.datetime | None = None
+    # Rollback outcome record: ``{"phase": ..., "phase_at": ..., "detail": {...}}``.
+    # ``None`` on pending docs and on any doc written before ds-2mc; consumers
+    # MUST treat an absent phase as "outcome unknown", never as success.
+    apply_audit: dict[str, Any] | None = None
 
 
 def compute_token_hmac(
@@ -202,7 +260,8 @@ class ApprovalStore:
         return Approval(approval_id=approval_id, **data)
 
     def claim_pending(self, approval_id: str) -> Approval | None:
-        """Transactionally flip ``status: pending → used``.
+        """Transactionally flip ``status: pending → used`` and mark the
+        outcome as not-yet-known (``apply_audit.phase = "claimed"``).
 
         Returns the updated :class:`Approval` on success, or ``None`` if:
 
@@ -214,32 +273,83 @@ class ApprovalStore:
         guarantees at most one transaction commits the ``status`` write
         for a given doc version; the others retry, observe the new
         status, and return ``None``.
+
+        **This flip is the anti-replay claim, NOT a statement that the
+        rollback happened.** It necessarily runs BEFORE the traffic shift
+        (a credential that could be redeemed twice would not be
+        single-use), so ``status == "used"`` means only "the token was
+        spent". Whether the traffic actually moved is carried by
+        ``apply_audit.phase`` and, on confirmed success only, by
+        ``resolved_at`` — both written afterwards via :meth:`record_phase`.
+
+        Deliberately does NOT stamp ``resolved_at``: nothing is resolved
+        yet. Writing a ``claimed`` phase inline with the flip is what
+        keeps a crashed worker from leaving a silent ``used`` doc whose
+        outcome is indistinguishable from success — the same property
+        :meth:`PlanApprovalStore.claim_pending` gets from its own
+        ``apply_audit`` parameter.
         """
-        return self._claim(approval_id, new_status="used")
+        return self._claim(
+            approval_id,
+            new_status="used",
+            stamp_resolved=False,
+            extra={"apply_audit": {"phase": PHASE_CLAIMED, "phase_at": _utcnow()}},
+        )
 
     def claim_denied(self, approval_id: str) -> Approval | None:
         """Transactionally flip ``status: pending → denied``.
 
-        Mirrors :meth:`claim_pending` but for the coordinator-owned deny
-        path (Phase 11.7). Used when the operator presses "Reject" on
-        the approval page — the coordinator owns this state transition
-        because the rollback worker only knows the ``pending → used``
-        flip. A subsequent ``/execute`` against a denied approval will
-        see ``status != "pending"`` and bounce out at the worker's
-        explicit status check.
+        Mirrors :meth:`claim_pending` but for the deny path. A subsequent
+        ``/execute`` against a denied approval will see
+        ``status != "pending"`` and bounce out at the worker's explicit
+        status check.
+
+        Unlike the used path, deny IS terminal at the moment of the flip:
+        it touches no Cloud Run, starts no long-running operation, and has
+        no outcome to await. ``resolved_at`` is therefore stamped inside
+        the transaction and is honest as written.
+
+        Authority note: both this and ``claim_pending`` are called by the
+        ROLLBACK WORKER, behind its HMAC check — ``/deny`` is a worker
+        endpoint (``workers/rollback/main.py``). An earlier version of this
+        docstring said the coordinator owned the deny transition "because
+        the rollback worker only knows the pending → used flip"; Phase 11.9
+        moved deny authority to the worker precisely so the token could be
+        verified, and that sentence has asserted the opposite of the code
+        ever since.
 
         Concurrency story matches ``claim_pending``: at most one
         transaction wins, others observe the new status and return
         ``None``. This makes the deny path replay-safe.
         """
-        return self._claim(approval_id, new_status="denied")
+        return self._claim(approval_id, new_status="denied", stamp_resolved=True)
 
-    def _claim(self, approval_id: str, *, new_status: str) -> Approval | None:
+    def _claim(
+        self,
+        approval_id: str,
+        *,
+        new_status: str,
+        stamp_resolved: bool,
+        extra: dict[str, Any] | None = None,
+    ) -> Approval | None:
         """Shared transactional flip helper for the two ``pending → X``
         transitions. Kept private — callers MUST go through
         :meth:`claim_pending` or :meth:`claim_denied` so the set of
         target statuses stays closed (no caller can flip to an arbitrary
-        string)."""
+        string).
+
+        ``stamp_resolved`` decides whether ``resolved_at`` is written in
+        the same transaction. It is True ONLY for a transition that is
+        genuinely terminal at flip time (deny). The used path passes False
+        because the traffic shift has not run yet — see
+        :meth:`claim_pending`. Stamping it there is what made the desk seal
+        certify rollbacks that had not happened (ds-2mc).
+
+        Uses the same client-computed-``datetime.now(UTC)`` convention as
+        ``create``'s ``created_at``/``expires_at`` — not
+        ``firestore.SERVER_TIMESTAMP`` — so the value is available
+        immediately on the object this method returns (a server-timestamp
+        sentinel only resolves after the next read)."""
         ref = self._ref(approval_id)
 
         @firestore.transactional
@@ -250,11 +360,93 @@ class ApprovalStore:
             data = snap.to_dict() or {}
             if data.get("status") != "pending":
                 return None
-            transaction.update(ref, {"status": new_status})
-            data["status"] = new_status
+            update: dict[str, Any] = {"status": new_status, **(extra or {})}
+            if stamp_resolved:
+                update["resolved_at"] = _utcnow()
+            transaction.update(ref, update)
+            data.update(update)
             return Approval(approval_id=approval_id, **data)
 
         return txn(self._client.transaction(), ref)
+
+    def record_phase(
+        self,
+        approval_id: str,
+        *,
+        phase: str,
+        detail: dict[str, Any] | None = None,
+        resolved_at: dt.datetime | None = None,
+    ) -> None:
+        """Record what actually happened to a claimed rollback.
+
+        Writes only ``apply_audit`` (and ``resolved_at`` when the caller
+        passes one), never ``status`` or any HMAC-bound field.
+
+        TRANSACTIONAL, unlike ``PlanApprovalStore.set_apply_audit`` which it
+        otherwise mirrors. That sibling can be a plain update because its claim
+        really is the last writer; here ``/reconcile`` is a SECOND post-claim
+        writer, so the read-check-write below would otherwise be a
+        time-of-check/time-of-use race. The interleaving is reachable at the
+        poll-timeout boundary:
+
+          1. ``/execute`` times out and starts recording ``outcome_unknown``.
+          2. ``/reconcile`` reads the same ``applying`` doc, sees the LRO
+             succeeded.
+          3. Both pass the not-yet-terminal check.
+          4. Reconcile writes ``applied``.
+          5. Execute's stale write lands and downgrades it to
+             ``outcome_unknown``.
+
+        A sequential unit test cannot catch that, which is exactly why the
+        guard has to be a transaction rather than a well-behaved caller.
+
+        Two invariants, both enforced here rather than trusted to callers:
+
+        1. **Terminal phases are immutable.** Once the doc records
+           ``applied`` or ``failed``, a later write cannot downgrade or
+           contradict it. A reconcile pass that races the original
+           ``/execute`` therefore cannot turn a confirmed apply back into
+           an unknown, and a retry cannot overwrite a recorded failure.
+        2. **``resolved_at`` means confirmed success only.** Callers pass
+           it exclusively with ``PHASE_APPLIED``; this method refuses it
+           otherwise rather than silently accepting. ``outcome_unknown``
+           in particular must never carry one — the whole point of that
+           phase is that we do not know, and a timestamp would read as
+           resolution to every consumer of the ``/decisions`` projection.
+
+        ``phase_at`` is stamped on every transition (including
+        non-terminal ones) so the UI can order a bad outcome by when it
+        was observed. ``resolved_at`` cannot serve that purpose precisely
+        because failures and unknowns do not get one.
+        """
+        if phase not in ROLLBACK_PHASES:
+            raise ValueError(f"unknown rollback phase: {phase!r}")
+        if resolved_at is not None and phase != PHASE_APPLIED:
+            raise ValueError(
+                f"resolved_at is only valid with phase={PHASE_APPLIED!r}, got {phase!r}"
+            )
+        if detail is not None and not isinstance(detail, dict):
+            raise TypeError("detail must be a dict")
+
+        ref = self._ref(approval_id)
+
+        @firestore.transactional
+        def txn(transaction, ref):  # noqa: ANN001
+            snap = ref.get(transaction=transaction)
+            if not snap.exists:
+                return
+            existing = (snap.to_dict() or {}).get("apply_audit") or {}
+            if isinstance(existing, dict) and existing.get("phase") in TERMINAL_ROLLBACK_PHASES:
+                return  # invariant 1 — never downgrade a settled outcome
+            audit: dict[str, Any] = {"phase": phase, "phase_at": _utcnow()}
+            if detail:
+                audit["detail"] = detail
+            update: dict[str, Any] = {"apply_audit": audit}
+            if resolved_at is not None:
+                update["resolved_at"] = resolved_at
+            transaction.update(ref, update)
+
+        txn(self._client.transaction(), ref)
 
 
 # =========================================================================== #

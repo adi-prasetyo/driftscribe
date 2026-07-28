@@ -3,6 +3,7 @@ import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/svelte';
 import TourCard from '../../src/components/TourCard.svelte';
 import type { InfraGraph } from '../../src/lib/infra_graph';
+import { tick } from 'svelte';
 
 // jsdom does not implement scrollIntoView — the spotlight effect calls it.
 // Fresh mock per test (Codex should-fix: a shared beforeAll mock leaks call
@@ -148,6 +149,41 @@ describe('TourCard — adopt step (T4: prefill, never send)', () => {
   });
 });
 
+describe('TourCard — view navigation (Task 4.1)', () => {
+  it('calls onNavigate with each step\'s view, in step order, and never on a null-view step', async () => {
+    const onNavigate = vi.fn();
+    const { getByTestId } = render(TourCard, {
+      props: { graph: graphWithTarget(), onNavigate },
+    });
+    // welcome: view === null — no call yet.
+    expect(onNavigate).not.toHaveBeenCalled();
+
+    await fireEvent.click(getByTestId('tour-next')); // → estate
+    expect(onNavigate).toHaveBeenLastCalledWith('estate');
+    const afterEstate = onNavigate.mock.calls.length;
+
+    await fireEvent.click(getByTestId('tour-next')); // → controls (view: null)
+    expect(onNavigate.mock.calls.length).toBe(afterEstate); // no new call
+
+    await fireEvent.click(getByTestId('tour-next')); // → adopt
+    expect(onNavigate).toHaveBeenLastCalledWith('estate');
+
+    await fireEvent.click(getByTestId('tour-next')); // → next
+    expect(onNavigate).toHaveBeenLastCalledWith('chat');
+  });
+
+  it('back navigation re-fires onNavigate for the step being returned to', async () => {
+    const onNavigate = vi.fn();
+    const { getByTestId } = render(TourCard, {
+      props: { graph: graphWithTarget(), onNavigate },
+    });
+    await advanceTo(getByTestId, 1); // → estate
+    onNavigate.mockClear();
+    await fireEvent.click(getByTestId('tour-back')); // → welcome (view: null)
+    expect(onNavigate).not.toHaveBeenCalled();
+  });
+});
+
 describe('TourCard — spotlight', () => {
   it('toggles .tour-spotlight on the matching [data-tour] element per step', async () => {
     const estate = document.createElement('div');
@@ -201,6 +237,37 @@ describe('TourCard — spotlight', () => {
       await fireEvent.click(getByTestId('tour-next'));
       expect(estate.classList.contains('tour-spotlight')).toBe(true);
       unmount();
+      expect(estate.classList.contains('tour-spotlight')).toBe(false);
+    } finally {
+      estate.remove();
+    }
+  });
+
+  // Pins the `disposed` guard inside the spotlight effect's deferred callback
+  // (Task 4.1). Since some steps' targets only exist on another view, the
+  // lookup is deferred behind tick() so the navigated-to view has mounted —
+  // which opens a window where the card can be torn down BEFORE the deferred
+  // callback runs. The effect's cleanup fires synchronously on unmount, but
+  // the already-scheduled promise does not: without the guard it then paints
+  // .tour-spotlight onto an element belonging to a tour that no longer exists,
+  // and nothing is left to ever remove it.
+  //
+  // The click is deliberately NOT awaited — awaiting it flushes the effect
+  // graph AND the deferred lookup together, closing the very window under
+  // test. That is why this needs its own case rather than an assertion bolted
+  // onto the unmount test above (which awaits, and so passes either way).
+  it('unmounting before the deferred lookup runs never paints a stale spotlight', async () => {
+    const estate = document.createElement('div');
+    estate.setAttribute('data-tour', 'estate');
+    document.body.appendChild(estate);
+    try {
+      const { getByTestId, unmount } = render(TourCard, {
+        props: { graph: graphWithTarget() },
+      });
+      void fireEvent.click(getByTestId('tour-next')); // schedules the lookup
+      unmount(); // …and tears down inside its window
+      await tick();
+      await Promise.resolve(); // let the scheduled .then() callback run
       expect(estate.classList.contains('tour-spotlight')).toBe(false);
     } finally {
       estate.remove();

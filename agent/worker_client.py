@@ -427,6 +427,29 @@ def call(
         ) from e
 
 
+# /execute now BLOCKS on the Cloud Run traffic-shift LRO (up to
+# _LRO_TIMEOUT_S = 60s in the rollback worker) so the approval doc records a
+# confirmed outcome rather than an optimistic one — see ds-2mc. The default 30s
+# read budget would cut that short and misread a long-but-successful rollback as
+# a transport failure, the same misclassification _APPLY_HTTPX_TIMEOUT exists to
+# prevent.
+#
+# 75s read = the worker's 60s LRO cap + headroom. Unlike /apply this does NOT
+# risk the "timeout-then-skip-merge" divergence its sibling warns about —
+# rollback has no downstream merge step — but a coordinator-side timeout still
+# cannot establish that the rollback failed, which is exactly why the WORKER's
+# recorded phase, not this client's exception, is the source of truth. On a
+# timeout here the worker has already written `applying` or `outcome_unknown`
+# with a durable operation handle, and /reconcile finishes the job.
+#
+# Upper bound is the ~100s Cloudflare proxied-response budget (see
+# _DESCRIBE_HTTPX_TIMEOUT above): the operator reaches the approval POST through
+# the edge, so 75s + overhead must fit under it. It does; 120 would not.
+_EXECUTE_HTTPX_TIMEOUT: Final = httpx.Timeout(
+    connect=10.0, read=75.0, write=30.0, pool=10.0
+)
+
+
 def call_execute(approval_id: str, approval_token: str) -> dict:
     """Special-case wrapper for the rollback worker's ``/execute`` endpoint.
 
@@ -441,7 +464,56 @@ def call_execute(approval_id: str, approval_token: str) -> dict:
         "rollback",
         {"approval_id": approval_id, "approval_token": approval_token},
         endpoint="/execute",
+        timeout=_EXECUTE_HTTPX_TIMEOUT,
     )
+
+
+# /reconcile runs inside GET /decisions — the operator's hot path — so its
+# budget is sized for "give up quickly", the opposite of /execute's. The worker
+# side caps its own operations.get at 10s, and this is a single read with no
+# mutation, so anything beyond ~15s means the worker is wedged (most likely
+# queued behind a blocking /execute on its single concurrency slot) and the
+# right move is to serve the un-reconciled record rather than make the operator
+# wait. Inheriting the 30s default here was a latency foot-gun: three eligible
+# rows could burn ~90s of the ~100s edge budget before Firestore and GitHub work
+# even started, and overviewStore awaits /decisions together with the graph and
+# pending-list fetches, so all three would stall.
+_RECONCILE_HTTPX_TIMEOUT: Final = httpx.Timeout(
+    connect=5.0, read=15.0, write=10.0, pool=5.0
+)
+
+
+def call_reconcile(approval_id: str) -> dict:
+    """Ask the rollback worker to finalize an approval left non-terminal.
+
+    Covers the residue ``/execute`` could not settle itself: an LRO that ran
+    past the worker's poll budget, or a container death between persisting the
+    operation handle and recording a result. Carries NO approval token — by then
+    the single-use credential is burned, and this endpoint cannot start a
+    rollback or move an approval out of ``pending``; it only reads an operation
+    the worker already started. Idempotent and safe to call on anything.
+    """
+    return call("rollback", {"approval_id": approval_id}, endpoint="/reconcile", timeout=_RECONCILE_HTTPX_TIMEOUT)
+
+
+# /propose and /deny queue behind a blocking /execute on this worker
+# (--concurrency=1 --max-instances=1), so their budget has to clear the worst
+# queue delay, not just their own work.
+#
+# This is NOT merely a latency concern, which is how the first cut of ds-2mc
+# mischaracterized it. An HTTP client timeout does not cancel server work, so a
+# coordinator that gives up at 30s while the request is still queued gets the
+# worst of both: it reports an error AND the side effect may land afterwards.
+#   - /deny: the coordinator tells the operator the denial failed; the queued
+#     request then denies the approval anyway.
+#   - /propose: the coordinator times out, the worker later creates the
+#     approval, and its raw token — returned exactly once — is lost. That
+#     orphans a pending approval AND lets a retry mint a second one.
+# 90s clears the 60s LRO cap plus queue and cold-start slack, and still fits
+# under the ~100s Cloudflare budget documented above.
+QUEUED_BEHIND_EXECUTE_TIMEOUT: Final = httpx.Timeout(
+    connect=10.0, read=90.0, write=30.0, pool=10.0
+)
 
 
 def call_deny(approval_id: str, approval_token: str) -> dict:
@@ -463,6 +535,7 @@ def call_deny(approval_id: str, approval_token: str) -> dict:
         "rollback",
         {"approval_id": approval_id, "approval_token": approval_token},
         endpoint="/deny",
+        timeout=QUEUED_BEHIND_EXECUTE_TIMEOUT,
     )
 
 

@@ -112,6 +112,11 @@ from agent.workloads import (
 from agent.workloads.registry import load_workload_spec, resolve_workload_prompts
 from pydantic import ValidationError as PydanticValidationError
 from driftscribe_lib import github
+from driftscribe_lib.approvals import (
+    PHASE_APPLYING,
+    PHASE_OUTCOME_UNKNOWN,
+    ROLLBACK_PHASES,
+)
 from driftscribe_lib.auth import verify_oidc_caller
 from driftscribe_lib.cf_access import (
     CfAccessJwtError,
@@ -1383,6 +1388,14 @@ def _do_rollback(
                 # closes the `reason` boundary too. (PR 2)
                 "reason": scrub_rationale_text(proposal.rationale, proposal.env_diffs),
             },
+            # The rollback worker is --concurrency=1, so this can queue behind a
+            # blocking /execute (up to its 60s LRO cap). The default 30s budget
+            # would time out while the request is still queued — and a client
+            # timeout does not cancel server work, so the worker could go on to
+            # create the approval whose raw token is returned exactly once,
+            # orphaning it while the retry below mints a second. See the
+            # constant's own comment.
+            timeout=worker_client.QUEUED_BEHIND_EXECUTE_TIMEOUT,
         )
     except WorkerClientError as e:
         # Worker propose failed (auth, schema, or transport). Release the
@@ -2356,14 +2369,22 @@ def list_decisions_endpoint(
     #      merged when GitHub confirms the PR merged out-of-band (compute-only, no
     #      persist). The provider memoizes the github client so a window with N
     #      stale rows builds it once, and a warm merge-cache makes zero GitHub calls.
+    #   4. attach_approval_status (Task 3.0b) — join the approval doc's status +
+    #      resolution timestamp onto rollback rows. The reader memoizes Firestore
+    #      reads per approval_id for this request and is fail-soft (never 500s
+    #      the rail on a Firestore hiccup).
     settings = get_settings()
     repo = settings.github_repo
     repo_provider = _memoized_repo_provider(settings)
+    approval_reader = _memoized_approval_reader()
     rows = [
-        reconcile_merge_state(
-            attach_iac_pr_link(scrub_decision_rationale(d), repo),
-            repo_provider=repo_provider,
-            settings=settings,
+        attach_approval_status(
+            reconcile_merge_state(
+                attach_iac_pr_link(scrub_decision_rationale(d), repo),
+                repo_provider=repo_provider,
+                settings=settings,
+            ),
+            approval_reader=approval_reader,
         )
         for d in state.list_decisions(limit=limit)
     ]
@@ -2692,6 +2713,207 @@ def reconcile_merge_state(decision: object, *, repo_provider, settings: Settings
     if merged is True:
         return {**decision, "merge_state": "merged", "merge_reconciled": True}
     return decision
+
+
+# Non-terminal phases a /reconcile round-trip can actually move. `claimed` is
+# excluded on purpose: nothing was started, so there is no operation to ask
+# about — the worker would just tell us so.
+_RECONCILABLE_PHASES = frozenset({PHASE_APPLYING, PHASE_OUTCOME_UNKNOWN})
+
+# Max reconcile round-trips per GET /decisions. See _maybe_reconcile.
+_DECISIONS_RECONCILE_BUDGET = 3
+
+# Don't reconcile a doc whose phase was recorded less than this ago — /execute
+# is still expected to own it, and the worker's single concurrency slot means we
+# would queue behind that very call. Comfortably past its 60s LRO cap.
+_RECONCILE_MIN_AGE_S = 90.0
+
+
+def _memoized_approval_reader():
+    """Return a 0-arg-per-``approval_id`` callable that reads the approval
+    doc's ``(status, resolved_at)`` ONCE per approval_id per request — twice for
+    the rare row that gets reconciled, which re-reads to serve the settled value
+    (Task 3.0b, 2026-07-28 — mirrors ``_memoized_repo_provider``'s "build the
+    client once per request" shape, applied here to per-row *reads* instead
+    of a single client construction).
+
+    Only rows with an ``approval_id`` ever call this (see
+    ``attach_approval_status``'s entry gate), so a window with N rollback
+    rows referencing the SAME approval (unusual but not impossible — repeated
+    /recheck calls after a stale claim) makes exactly one Firestore read, and
+    a window with none makes zero.
+
+    Fail-soft: a store construction error OR a read error memoizes ``None``
+    so the caller degrades to an un-enriched row — the read must never break
+    GET /decisions, the operator's main surface."""
+    cache: dict[str, object] = {}
+    # Per-request reconcile budget. Deliberately tiny: this is the operator's
+    # main serve path, and each reconcile is a worker round-trip. /execute
+    # terminalizes the doc itself on every path it survives, so an ELIGIBLE row
+    # (non-terminal, has a handle, and older than _RECONCILE_MIN_AGE_S) is the
+    # exception rather than the rule. A rollback in flight right now is
+    # deliberately NOT eligible — see the age gate in _maybe_reconcile — so the
+    # normal case, including a refresh during a live rollback, spends none of
+    # this. The count bound plus _RECONCILE_HTTPX_TIMEOUT's 15s read caps the
+    # worst case at ~45s, under the ~100s edge budget.
+    budget = [_DECISIONS_RECONCILE_BUDGET]
+
+    def read(approval_id: str):
+        if approval_id not in cache:
+            try:
+                store = approval_helpers.get_approval_store()
+                record = store.get(approval_id)
+                cache[approval_id] = _maybe_reconcile(store, approval_id, record, budget)
+            except Exception as e:  # noqa: BLE001 — fail-soft; must never break the serve path
+                log.warning(
+                    "decision_approval_status_read_failed",
+                    extra={"error": type(e).__name__},
+                )
+                cache[approval_id] = None
+        return cache[approval_id]
+
+    return read
+
+
+def _maybe_reconcile(store, approval_id: str, record, budget: list[int]):
+    """Ask the rollback worker to finalize an approval still recorded as
+    in-flight, then re-read it. Returns the record to serve.
+
+    This is what makes ``applying``/``outcome_unknown`` a temporary state rather
+    than a permanent one. Without a caller, the worker's ``/reconcile`` endpoint
+    and the operation handle it consumes would be exactly the dead machinery
+    ds-2mc was filed about: ``operation_name`` was written for a poller that did
+    not exist, which is how a failed rollback stayed indistinguishable from a
+    successful one.
+
+    Entirely best-effort. Any failure — no budget, worker down, malformed
+    response — degrades to serving the record we already have, which is honest
+    on its own terms (``outcome_unknown`` renders as unconfirmed, not as
+    success). It must never break GET /decisions.
+    """
+    audit = getattr(record, "apply_audit", None)
+    if not isinstance(audit, dict):
+        return record
+    phase = audit.get("phase")
+    if phase not in _RECONCILABLE_PHASES:
+        return record
+    # No operation handle means there is nothing for the worker to look up —
+    # e.g. a transport error around update_service that never got one back.
+    # Spending a round-trip to be told that helps nobody.
+    if not (audit.get("detail") or {}).get("operation_name"):
+        return record
+    # Don't chase a rollback /execute is still actively working on.
+    #
+    # This is the load-bearing latency guard, not a nicety. The rollback worker
+    # runs --concurrency=1, so a reconcile for a FRESH `applying` queues behind
+    # the very /execute that owns it and blocks for that call's remaining LRO
+    # budget. The operator's focus-return refresh lands in exactly that window,
+    # which is the worst possible moment to stall GET /decisions — and
+    # overviewStore awaits it alongside the graph and pending-list fetches, so
+    # all three would wait. /execute will terminalize the doc itself; reconcile
+    # exists for what it leaves behind, not to race it.
+    phase_at = audit.get("phase_at")
+    if isinstance(phase_at, dt.datetime):
+        age = (dt.datetime.now(dt.timezone.utc) - phase_at).total_seconds()
+        if age < _RECONCILE_MIN_AGE_S:
+            return record
+    if budget[0] <= 0:
+        log.info("decisions_reconcile_budget_exhausted", extra={"approval_id": approval_id})
+        return record
+
+    budget[0] -= 1
+    try:
+        worker_client.call_reconcile(approval_id)
+        return store.get(approval_id)
+    except Exception as e:  # noqa: BLE001 — fail-soft by design
+        log.warning(
+            "decisions_reconcile_failed",
+            extra={"approval_id": approval_id, "error": type(e).__name__},
+        )
+        return record
+
+
+def attach_approval_status(decision: object, *, approval_reader) -> object:
+    """Serve-time: for a rollback row (an ``approval`` sub-object carrying a
+    non-empty ``approval_id``), join the approval doc's ``status`` and its
+    resolution timestamp (``resolved_at``, added by Task 3.0b Part A) into a
+    served copy. COMPUTE-ONLY — the approval doc is the source of truth for
+    status; this never persists anything back onto the decision.
+
+    Part C (honest degradation) — the entire point of this transform: a
+    missing approval doc, an unknown/non-string status, or a doc that
+    predates the ``resolved_at`` field (``record.resolved_at is None``) NEVER
+    causes a timestamp to be synthesized. ``resolved_at`` is either the real
+    value from the approval doc or explicit ``None`` — NEVER the decision's
+    own ``created_at`` (that's when the proposal was made, not when a human
+    resolved it). A consumer must be able to tell "resolved, time unknown"
+    apart from "resolved at 14:05".
+
+    ``approval_reader`` is a 0-arg-per-id callable (``str -> Approval |
+    None``); production callers pass :func:`_memoized_approval_reader`,
+    which is ALSO responsible for catching store errors (mirrors the
+    ``reconcile_merge_state`` / ``_resolve_pr_merged`` split — the transform
+    trusts its injected reader and does not itself swallow exceptions).
+
+    Conventions mirror ``reconcile_merge_state`` / ``scrub_decision_rationale``:
+    identity on no-change (non-dict, no ``approval`` sub-object, no/blank
+    ``approval_id``, doc not found, status unknown), copy-on-change
+    otherwise, never mutates the input, and — for rows with NO ``approval``
+    sub-object at all — a byte-identical passthrough."""
+    if not isinstance(decision, dict):
+        return decision
+    approval = decision.get("approval")
+    if not isinstance(approval, dict):
+        return decision
+    approval_id = approval.get("approval_id")
+    if not isinstance(approval_id, str) or not approval_id:
+        return decision
+    record = approval_reader(approval_id)
+    if record is None:
+        return decision
+    status = getattr(record, "status", None)
+    if not isinstance(status, str) or not status:
+        return decision
+    resolved_at = getattr(record, "resolved_at", None)
+    if not isinstance(resolved_at, dt.datetime):
+        resolved_at = None  # never synthesize — see docstring
+
+    # Outcome phase (ds-2mc). `status == "used"` only means the single-use
+    # credential was spent — the flip precedes the traffic shift by
+    # construction — so the phase is what tells a consumer whether the rollback
+    # actually happened. Without it the desk seals "applied" on a rollback that
+    # may have failed.
+    #
+    # The phase STRING only, allowlisted against the known vocabulary. The
+    # sibling `detail` map is deliberately never projected: it carries API error
+    # type names and operation paths, which are operator-debugging material, not
+    # something to ship to every browser polling /decisions. An unrecognized or
+    # absent phase degrades to None — "outcome unknown" — never to success.
+    # `phase_at` rides along because `resolved_at` cannot order these rows: it
+    # exists only on a confirmed success, so every failed/unconfirmed row would
+    # tie at null. It is the observation time of the CURRENT phase, and is the
+    # only signal that distinguishes a rollback applying right now from one
+    # whose worker died mid-wait an hour ago.
+    phase = None
+    phase_at = None
+    audit = getattr(record, "apply_audit", None)
+    if isinstance(audit, dict):
+        raw_phase = audit.get("phase")
+        if isinstance(raw_phase, str) and raw_phase in ROLLBACK_PHASES:
+            phase = raw_phase
+        raw_phase_at = audit.get("phase_at")
+        if isinstance(raw_phase_at, dt.datetime):
+            phase_at = raw_phase_at
+    return {
+        **decision,
+        "approval": {
+            **approval,
+            "status": status,
+            "resolved_at": resolved_at,
+            "phase": phase,
+            "phase_at": phase_at,
+        },
+    }
 
 
 _INFRA_INVENTORY_CACHE: "tuple[float, dict] | None" = None

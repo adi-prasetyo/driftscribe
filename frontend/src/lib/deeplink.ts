@@ -50,11 +50,18 @@ export function conversationIdFromSearch(search: string): string | null {
 export const VIEWS = ['desk', 'estate', 'chat'] as const;
 export type AppView = (typeof VIEWS)[number];
 
-// 'chat' until the redesigned "approval desk" front door has been visually
-// verified (see the composite-redesign plan, Task 3.6), at which point this
-// flips to 'desk' as a deliberate one-line change. Keep it a bare literal —
-// no branching here — so that flip stays exactly one line.
-export const DEFAULT_VIEW: AppView = 'chat';
+// Flipped from 'chat' to 'desk' at Task 3.6 step 2, after the desk was
+// visually verified in both locales across all three states
+// (tests/visual/desk.visual.ts). This is the line that makes the redesigned
+// "approval desk" the SPA's front door: a bare URL now lands on the desk, and
+// the chat view is reached via the header nav or an explicit ?view=chat.
+// Keep it a bare literal — no branching here — so reverting is one line.
+//
+// Nothing is stranded by this: hasChatIntent() below still forces 'chat' for
+// every chat-intent param, so shared ?reasoning= / ?conversation= / ?ask_pr= /
+// ?preview_pr= links keep working (pinned by tests in both deeplink.test.ts
+// and App.test.ts).
+export const DEFAULT_VIEW: AppView = 'desk';
 
 // The chat-intent params, named once. Two consumers must agree on this list:
 // hasChatIntent below (which of them mean "go to chat") and App.svelte's

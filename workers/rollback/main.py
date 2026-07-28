@@ -54,6 +54,8 @@ import datetime as dt
 import hmac as hmac_mod
 import os
 import re
+from concurrent import futures
+from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from google.cloud import run_v2
@@ -61,6 +63,11 @@ from google.protobuf.field_mask_pb2 import FieldMask
 from pydantic import BaseModel, ConfigDict, Field
 
 from driftscribe_lib.approvals import (
+    PHASE_APPLIED,
+    PHASE_APPLYING,
+    PHASE_FAILED,
+    PHASE_OUTCOME_UNKNOWN,
+    TERMINAL_ROLLBACK_PHASES,
     ApprovalStore,
     compute_token_hmac,
 )
@@ -82,6 +89,29 @@ ALLOWED_CALLERS = frozenset(
     e.strip() for e in os.environ["ALLOWED_CALLERS"].split(",") if e.strip()
 )
 APPROVAL_HMAC_KEY = os.environ["APPROVAL_HMAC_KEY"]
+
+# How long /execute blocks on the traffic-shift LRO before recording
+# outcome_unknown and handing back a 504.
+#
+# 60s, NOT the Cloud Run request ceiling. Observed traffic-shift LROs take
+# 10-30s, so this covers the overwhelming majority while leaving room for the
+# constraint that actually binds: the operator reaches the approval POST through
+# Cloudflare, whose proxied-response budget is ~100s (agent/worker_client.py
+# sizes _DESCRIBE_HTTPX_TIMEOUT against the same ceiling and states outright
+# that "90s read + overhead fits, 120 would not"). This service's own Cloud Run
+# deadline is the 300s default and is not the limiting factor.
+#
+# COST, stated rather than discovered: this worker runs --concurrency=1
+# --max-instances=1, so a blocking /execute serializes it. /propose and an
+# unrelated /deny queue behind it for up to this long. Denying the SAME approval
+# is already moot once its credential is burned. Acceptable for an
+# operator-driven action at demo scale.
+_LRO_TIMEOUT_S = 60.0
+
+# Ceiling on a /reconcile poll. Short on purpose: reconcile is a best-effort
+# catch-up on an already-answered request, not the operator's live path, and it
+# is called from the coordinator's /decisions fan-out where latency is visible.
+_RECONCILE_TIMEOUT_S = 10.0
 
 
 # --------------------------------------------------------------------------- #
@@ -113,6 +143,35 @@ def _get_services_client() -> run_v2.ServicesClient:
 
 def _get_revisions_client() -> run_v2.RevisionsClient:
     return run_v2.RevisionsClient()
+
+
+def _get_operations_client():  # noqa: ANN201 — google.api_core operations client
+    """Operations client for reading a previously-started traffic-shift LRO by
+    name (``/reconcile`` only).
+
+    Reached through the ServicesClient's transport rather than constructed
+    standalone: the LRO belongs to the Cloud Run service endpoint, so it must be
+    read through the same transport/credentials that started it. Same
+    indirection-for-testability rationale as the two clients above.
+
+    ⚠ IAM: this needs ``run.operations.get`` bound at the PROJECT level. The
+    worker SA's ``roles/run.developer`` is bound to the ``payment-demo``
+    *service*, and that binding cannot reach an operation — operations live at
+    ``projects/{p}/locations/{l}/operations/{id}``, which is not a child of the
+    service, so the role's own ``run.operations.get`` applies to nothing there.
+    Verified 2026-07-28 with Cloud Asset Policy Analyzer: before the grant, the
+    permission resolved to NOT GRANTED anywhere in the project while
+    ``run.services.update`` resolved to the payment-demo binding.
+
+    Granted out-of-band (``iac/`` declares no IAM) as project custom role
+    ``driftscribeRunOperationsReader`` — one permission, nothing else. If that
+    binding is ever dropped, or the SA is recreated, polling degrades to
+    PermissionDenied: ``/execute`` reports every rollback as ``outcome_unknown``
+    (the traffic shift still lands) and ``/reconcile`` can never settle it. That
+    failure is silent from the operator's seat, so grep the worker logs for
+    ``PermissionDenied`` in the ``execute: poll raised`` / ``reconcile: could
+    not read operation`` lines before suspecting anything else."""
+    return _get_services_client().transport.operations_client
 
 
 def _service_name() -> str:
@@ -192,13 +251,19 @@ def _assert_no_tagged_targets() -> None:
             )
 
 
-def _apply_traffic(target_revision: str) -> str:
-    """Update ``TARGET_SERVICE``'s traffic to send 100% to ``target_revision``.
+def _start_traffic_update(target_revision: str):  # noqa: ANN201 — google.api_core Operation
+    """Start a traffic update sending 100% to ``target_revision``.
 
-    Returns the long-running operation name. We deliberately don't block
-    on ``.result()`` — Cloud Run's traffic-shift LROs take 10–30s and the
-    coordinator already polls. The operation name lets the coordinator
-    correlate this call with the resulting Cloud Run audit log entry.
+    Returns the long-running operation WITHOUT waiting on it. ``/execute``
+    persists the operation name before blocking on the result, so that a
+    container death mid-wait still leaves a durable handle to reconcile
+    against instead of an approval stuck "in flight" forever.
+
+    (This function used to return only the operation name and never block at
+    all, with a comment claiming "the coordinator already polls". Nothing ever
+    polled — ``operation_name`` had no consumer anywhere in the repo — so a
+    rollback that failed after the approval was claimed left a ``used`` doc
+    indistinguishable from a successful one. See ds-2mc.)
 
     Two safety properties (added per Codex review of Phase 11.5):
 
@@ -253,12 +318,44 @@ def _apply_traffic(target_revision: str) -> str:
             percent=100,
         )
     )
-    op = sclient.update_service(
+    # Returns the LRO WITHOUT waiting. The wait is the caller's job precisely so
+    # the operation handle can be persisted first — see /execute.
+    return sclient.update_service(
         service=svc,
         update_mask=FieldMask(paths=["traffic"]),
     )
-    # ``op`` is a google.api_core.operation.Operation — its ``.operation.name``
-    # is the LRO name. Defensive fallback to "" if the SDK shape ever changes.
+
+
+def _is_established_failure(op: Any) -> bool:
+    """True only when the operation itself is demonstrably ``done`` with a
+    nonzero error code.
+
+    ``Operation.result()`` raising is NOT proof the operation failed. The SDK
+    fails the whole future when a POLLING RPC errors and its retries are
+    exhausted ("If a polling RPC throws an error and retrying it fails, the
+    whole future fails with the corresponding exception" —
+    google/api_core/future/polling.py), which can happen while the operation is
+    still running and goes on to succeed. Failure is established only the way
+    google.api_core.operation itself establishes it: ``done`` plus an ``error``
+    field.
+
+    Concretely: ``operations.get`` starts returning PermissionDenied after an
+    IAM change, ``result()`` raises, and the traffic shift applies anyway. A
+    worker that called that "failed" would tell the operator their rollback did
+    not happen when it did — the same over-claim as the original seal bug, just
+    pointing the other way.
+    """
+    raw = getattr(op, "operation", None)
+    if raw is None or not getattr(raw, "done", False):
+        return False
+    err = getattr(raw, "error", None)
+    return bool(err is not None and getattr(err, "code", 0))
+
+
+def _operation_name(op: Any) -> str:
+    """LRO name off a google.api_core Operation. Defensive fallback to ``""``
+    if the SDK shape ever changes — a missing name costs us reconcilability,
+    so it must not also cost us the apply."""
     try:
         return op.operation.name
     except AttributeError:
@@ -505,11 +602,101 @@ def execute(
         "execute: id=%s rev=%s caller=%s",
         req.approval_id, approval.target_revision, caller,
     )
-    operation_name = _apply_traffic(approval.target_revision)
+
+    # ---- Outcome recording (ds-2mc) ---------------------------------------
+    # The claim above burned the credential; it did NOT roll anything back.
+    # Everything below establishes WHICH outcome this approval reached, because
+    # `status == "used"` alone cannot distinguish success from failure, and the
+    # operator desk seals on that distinction.
+    #
+    # The phase written on each path is chosen by what we can honestly assert:
+    #   - our own pre-mutation refusal  -> failed          (nothing was sent)
+    #   - anything else around the call -> outcome_unknown (may have landed)
+    # A lost response on an accepted mutation is indistinguishable from a
+    # rejected one from here, so the ambiguous paths must NOT claim failure.
+    try:
+        op = _start_traffic_update(approval.target_revision)
+    except HTTPException:
+        # The defense-in-depth tag re-check inside _start_traffic_update, which
+        # runs BEFORE update_service. Nothing reached Google: definitely failed.
+        store.record_phase(
+            req.approval_id, phase=PHASE_FAILED,
+            detail={"stage": "preflight", "reason": "tagged_traffic_target"},
+        )
+        raise
+    except Exception as e:  # noqa: BLE001 — must not narrow; see below
+        # Could be a refused request OR a lost response on a mutation the
+        # server accepted. We cannot tell, so we do not guess.
+        log.exception("execute: traffic update failed to start id=%s", req.approval_id)
+        store.record_phase(
+            req.approval_id, phase=PHASE_OUTCOME_UNKNOWN,
+            detail={"stage": "start", "error": type(e).__name__},
+        )
+        raise HTTPException(
+            status_code=502,
+            detail="traffic update could not be started; outcome unconfirmed",
+        ) from e
+
+    operation_name = _operation_name(op)
+    # Durable handle BEFORE the wait — this is what makes a mid-wait crash
+    # reconcilable rather than permanently ambiguous.
+    store.record_phase(
+        req.approval_id, phase=PHASE_APPLYING,
+        detail={"operation_name": operation_name},
+    )
+
+    try:
+        op.result(timeout=_LRO_TIMEOUT_S)
+    except futures.TimeoutError as e:
+        # Polling expired. The operation is NOT cancelled and may well succeed
+        # a moment from now, so this is emphatically not a failure. It is the
+        # exception type google.api_core raises for polling expiry (it converts
+        # RetryError -> concurrent.futures.TimeoutError); catching some
+        # invented LRO-specific type here would silently fall through to the
+        # failure branch below in production while tests passed.
+        log.warning(
+            "execute: LRO still running after %ss id=%s op=%s",
+            _LRO_TIMEOUT_S, req.approval_id, operation_name,
+        )
+        store.record_phase(
+            req.approval_id, phase=PHASE_OUTCOME_UNKNOWN,
+            detail={"stage": "poll", "reason": "timeout", "operation_name": operation_name},
+        )
+        raise HTTPException(
+            status_code=504,
+            detail="rollback still in progress; outcome unconfirmed",
+        ) from e
+    except Exception as e:  # noqa: BLE001
+        # result() raised — but that alone does not say the ROLLBACK failed, only
+        # that we stopped being able to watch it. Distinguish an operation that
+        # actually reported an error from a polling RPC that broke underneath us
+        # (see _is_established_failure); the latter may still be applying.
+        established = _is_established_failure(op)
+        phase = PHASE_FAILED if established else PHASE_OUTCOME_UNKNOWN
+        log.exception(
+            "execute: poll raised id=%s op=%s established_failure=%s",
+            req.approval_id, operation_name, established,
+        )
+        store.record_phase(
+            req.approval_id, phase=phase,
+            detail={"stage": "poll", "error": type(e).__name__, "operation_name": operation_name},
+        )
+        raise HTTPException(
+            status_code=502,
+            detail="rollback failed" if established else "rollback outcome unconfirmed",
+        ) from e
+
+    # Confirmed. This is the only path that may stamp resolved_at, and so the
+    # only one that can produce a success seal on the operator desk.
+    store.record_phase(
+        req.approval_id, phase=PHASE_APPLIED,
+        detail={"operation_name": operation_name},
+        resolved_at=dt.datetime.now(dt.timezone.utc),
+    )
     return {
         "approval_id": req.approval_id,
         "target_revision": approval.target_revision,
-        "status": "executed",
+        "status": "executed",  # now literally true — the LRO resolved above
         "operation_name": operation_name,
     }
 
@@ -599,3 +786,110 @@ def deny(
         "approval_id": req.approval_id,
         "status": "denied",
     }
+
+
+class ReconcileRequest(BaseModel):
+    """Closed schema for ``/reconcile``. Only an approval_id — this endpoint
+    resolves an outcome that is already recorded as unresolved; it can never
+    initiate one, so it needs no approval token."""
+
+    approval_id: str = Field(min_length=36, max_length=36, pattern=_UUID_SHAPE.pattern)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+@app.post("/reconcile")
+def reconcile(
+    req: ReconcileRequest,
+    caller: str = Depends(_verify_caller_dep),
+) -> dict:
+    """Resolve an approval left in ``applying`` / ``outcome_unknown``.
+
+    This is what keeps ``outcome_unknown`` a temporary state instead of a
+    permanent shrug. ``/execute`` blocks for up to ``_LRO_TIMEOUT_S`` and
+    terminalizes the doc itself on every path it survives; this endpoint covers
+    the residue where it could not:
+
+    - the LRO ran past the 60s poll budget (the operation kept going),
+    - the container died between persisting ``applying`` and recording a result.
+
+    Deliberately NOT token-gated, unlike ``/execute`` and ``/deny``. It mints
+    nothing, mutates no Cloud Run state, and cannot move an approval out of
+    ``pending`` — it only reads a long-running operation this worker already
+    started and writes down how it ended. The caller allowlist
+    (``verify_caller``) remains the access control. Giving it the single-use
+    token would be actively worse: the token is burned by then, so the
+    coordinator could not present one anyway.
+
+    Idempotent and safe to call on anything: a terminal doc returns its recorded
+    phase untouched (``record_phase`` refuses to overwrite terminal phases, so
+    even a racing ``/execute`` cannot be clobbered by a slow reconcile).
+    """
+    store = _get_approval_store()
+
+    approval = store.get(req.approval_id)
+    if approval is None:
+        raise HTTPException(status_code=404, detail="approval not found")
+
+    audit = approval.apply_audit or {}
+    phase = audit.get("phase")
+    if phase in TERMINAL_ROLLBACK_PHASES:
+        return {"approval_id": req.approval_id, "phase": phase, "reconciled": False}
+
+    operation_name = (audit.get("detail") or {}).get("operation_name")
+    if not operation_name:
+        # Nothing was ever started (still `claimed`), or the SDK gave us no
+        # handle. Either way there is no operation to ask about — leave the doc
+        # exactly as it is rather than inventing an outcome for it.
+        return {"approval_id": req.approval_id, "phase": phase, "reconciled": False}
+
+    try:
+        op = _get_operations_client().get_operation(
+            name=operation_name, timeout=_RECONCILE_TIMEOUT_S
+        )
+    except Exception as e:  # noqa: BLE001 — reconcile is best-effort by design
+        log.warning(
+            "reconcile: could not read operation id=%s op=%s err=%s",
+            req.approval_id, operation_name, type(e).__name__,
+        )
+        return {"approval_id": req.approval_id, "phase": phase, "reconciled": False}
+
+    if not getattr(op, "done", False):
+        # Still running. Honest answer is still "unknown".
+        return {"approval_id": req.approval_id, "phase": phase, "reconciled": False}
+
+    if getattr(op, "error", None) and getattr(op.error, "code", 0):
+        store.record_phase(
+            req.approval_id, phase=PHASE_FAILED,
+            detail={"stage": "reconcile", "operation_name": operation_name,
+                    "error_code": op.error.code},
+        )
+        log.info("reconcile: id=%s -> failed", req.approval_id)
+        return {"approval_id": req.approval_id, "phase": PHASE_FAILED, "reconciled": True}
+
+    # `done` with neither response nor error is malformed — not evidence of
+    # success. Refuse to promote it rather than read "not an error" as "applied".
+    if hasattr(op, "HasField") and not op.HasField("response"):
+        log.warning("reconcile: done operation has no response id=%s", req.approval_id)
+        return {"approval_id": req.approval_id, "phase": phase, "reconciled": False}
+
+    # Promote the phase WITHOUT stamping resolved_at.
+    #
+    # The operation completed at some unknown earlier moment — possibly hours
+    # ago, if this is a container-death recovery. Stamping `now` would hand the
+    # desk a fresh timestamp it renders BOTH as "Applied {time}" and as the
+    # 10-minute seal-freshness window, so a 4-hour-old rollback would pop a
+    # brand-new 判子 reading the wrong time. The outcome would be right and the
+    # story around it fabricated. The IaC lane already refuses this exact move
+    # (its reconcile carries the original applied_at forward rather than
+    # re-stamping); this matches it.
+    #
+    # Consequence, accepted deliberately: a rollback confirmed only by reconcile
+    # never seals. It lands as `applied` in the ledger with no fresh receipt,
+    # which is the honest rendering of "this succeeded, we found out later".
+    store.record_phase(
+        req.approval_id, phase=PHASE_APPLIED,
+        detail={"stage": "reconcile", "operation_name": operation_name},
+    )
+    log.info("reconcile: id=%s -> applied (no seal; completion time unknown)", req.approval_id)
+    return {"approval_id": req.approval_id, "phase": PHASE_APPLIED, "reconciled": True}

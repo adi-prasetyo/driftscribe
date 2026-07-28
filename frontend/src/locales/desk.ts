@@ -10,6 +10,122 @@ export const desk = {
     'desk.nav.desk': 'Desk',
     'desk.nav.estate': 'Estate',
     'desk.nav.chat': 'Chat',
+    // SealStamp's accessible name (Task 3.2). The glyph text stays 承認 in
+    // both locales — it's a hanko, not a translated word — but a screen
+    // reader needs an EN-legible name for the "approved" state it marks.
+    'desk.seal.ariaLabel': 'Approved',
+    // InstrumentBand (Task 3.3) — the three-number pulse across the top of
+    // the desk/estate. Visible labels sit under 44px numerals so they stay
+    // short; the *Aria keys are separate because a bare numeral read aloud
+    // ("nine") is meaningless without what it counts, so each stat button's
+    // accessible name pairs the figure with its meaning explicitly rather
+    // than relying on visible-text concatenation order.
+    'desk.band.managedLabel': 'Managed by IaC',
+    'desk.band.driftLabel': 'Drift detected',
+    'desk.band.awaitingLabel': 'Awaiting your approval',
+    'desk.band.managedAria': '{n} managed by IaC',
+    'desk.band.driftAria': '{n} drift detected',
+    'desk.band.awaitingAria': '{n} awaiting your approval',
+    // LedgerStrip (Task 3.4) — the "Recent record" strip beneath the desk
+    // hero. `openTitle`/`appliedTitle` cover the two states this module
+    // classifies with fixed copy; `noted` rows fall back to
+    // decisionActionLabel's per-action text instead of a fixed string here.
+    'desk.ledger.heading': 'Recent record',
+    'desk.ledger.appliedTitle': 'You approved · applied',
+    'desk.ledger.openTitle': 'Awaiting your approval',
+    'desk.ledger.failedTitle': 'You approved · did not apply',
+    // Deliberately not "failed": the operation may still be running or may
+    // have succeeded with the response lost. Saying "failed" here would be a
+    // second false claim in the opposite direction (ds-2mc).
+    'desk.ledger.unconfirmedTitle': 'You approved · outcome unconfirmed',
+    // ---- unresolved rollback outcome (desk rule 2.5) ----
+    'desk.unresolved.who': 'You approved',
+    'desk.unresolved.failed.detail': 'Did not apply',
+    'desk.unresolved.failed.headline': 'The rollback did not apply.',
+    'desk.unresolved.failed.body':
+      'The approval was used, but the traffic change did not go through. Nothing was rolled back. You can ask for a new rollback.',
+    'desk.unresolved.unknown.detail': 'Outcome unconfirmed',
+    'desk.unresolved.unknown.headline': "The rollback's outcome is unconfirmed.",
+    'desk.unresolved.unknown.body':
+      'The traffic change was accepted but took longer than we waited, so we cannot confirm it either way. Check the service in Cloud Run before acting on this.',
+
+    // ApprovalDesk (Task 3.5) — the three-state front door composed of the
+    // band above + a per-state body + the ledger strip below. Deliberately
+    // NO fabricated narrative: every string below is either generic (true
+    // regardless of which resource/service is involved) or interpolates a
+    // REAL field the decision/approval doc actually carries (pr, time) — see
+    // lib/desk.ts's own header comment on why "no fictional timestamps"
+    // extends to display copy here, not just the selection logic.
+    'desk.region.ariaLabel': 'Approval desk',
+
+    // Rollback proposals are ANCHOR-only (drift/Anchor is the one crew that
+    // runs autonomously and can emit a rollback — see workload_crew_rename),
+    // so naming it here is a true statement, not a guess.
+    'desk.pending.rollback.who': 'Anchor is proposing a fix',
+    'desk.pending.rollback.headline': 'A rollback proposal is waiting for your decision.',
+    // An iac_apply PR can come from Patch (on-demand) or Provision (from a
+    // chat request) — the desk has no reliable field to attribute WHICH crew
+    // authored a given PR, so this stays crew-neutral rather than guessing.
+    'desk.pending.iac.who': 'An infrastructure change is waiting for your review',
+    // Fallback headline for the decisions-derived arm (rule 2b), which never
+    // carries a PR title — see DeskPendingIacProvenance's header comment.
+    'desk.pending.iac.headlineFallback': 'Infrastructure change PR #{pr} is waiting for your approval.',
+    'desk.pending.prMeta': 'PR #{pr}',
+    'desk.pending.subtitleProposedAt': 'Proposed {time}',
+    // Both anchors point at the SAME href (deskModel's `href`) — the actual
+    // Approve/Reject controls live on that HMAC-gated page (agent/main.py's
+    // approval_post decision=approve|reject), never in-app. See the
+    // iac_reject_nonbinding_semantics note: Reject there persists nothing.
+    'desk.pending.approveCta': 'Approve this proposal',
+    'desk.pending.rejectCta': 'Reject',
+
+    'desk.stamped.who': 'You approved',
+    'desk.stamped.rollback.detail': 'Rollback applied',
+    'desk.stamped.iac.detail': 'Change applied',
+    'desk.stamped.rollback.headline': 'The proposed rollback was applied.',
+    'desk.stamped.iac.headlineFallback': 'Infrastructure change PR #{pr} was applied.',
+    'desk.stamped.iac.headlineGeneric': 'An infrastructure change was applied.',
+    'desk.stamped.audit': 'Applied {time}',
+
+    // The resting state's watch line — see ApprovalDesk's header comment:
+    // "nothing needs you right now" is the product's promise kept, so this
+    // line (not the calm headline) is what proves the agent is still awake.
+    'desk.resting.headline': 'Nothing needs your decision right now.',
+    'desk.resting.watching': 'The agent is watching',
+    'desk.resting.lastScan': 'last scan {time}',
+    // Rendered instead of a fabricated time when graph.generated_at is null
+    // — calm must never look dead, but it must also never invent a scan time
+    // that didn't happen (Task 3.5 spec).
+    'desk.resting.scanPending': 'scan time pending',
+    'desk.resting.resourceCount': '{n} resources',
+    // Only shown when scope.drift === 0 — a true "nothing new" claim, not a
+    // fixed decoration (see ApprovalDesk: this segment is conditional).
+    'desk.resting.noNewDrift': 'no new drift',
+
+    // EstateView (Task 4.1, mockup "SCREEN 2 — 推定図"). Rows are grouped by
+    // STATUS (drift first, then managed) and flattened across resource types
+    // — see lib/estate.ts's estateModel(). JA copy is verbatim from the
+    // mockup wherever the mockup has a matching string.
+    'desk.estate.ariaLabel': 'Estate',
+    'desk.estate.loading': 'Loading the estate…',
+    'desk.estate.degraded': 'The estate map is temporarily unavailable.',
+    'desk.estate.driftGroup': 'Drift — not managed by IaC ({n})',
+    'desk.estate.managedGroup': 'Managed by IaC ({n})',
+    'desk.estate.untrackedGroup': 'Not managed, not adoptable ({n})',
+    'desk.estate.adoptButton': 'Open an adoption PR',
+    'desk.estate.prPending': 'PR #{pr} awaiting review',
+    'desk.estate.driftMore': '…{n} more drift',
+    'desk.estate.systemManagedFold': 'System-managed resources ({n}) · created by Google',
+    // Pluralized on the TYPE count via i18n.ts's `.one`/`.other` convention —
+    // a live estate very often has exactly one out-of-scope type, and the
+    // single-form string rendered "…across 1 types…" in the EN estate shot.
+    // The call site composes params itself (it needs `other` alongside
+    // `types`, which `plural()` doesn't pass) — same precedent as shared.ts.
+    'desk.estate.otherResources.one': "{other} more resources in 1 type DriftScribe doesn't manage",
+    'desk.estate.otherResources.other':
+      "{other} more resources across {types} types DriftScribe doesn't manage",
+    'desk.estate.legendManaged': 'Managed by IaC',
+    'desk.estate.legendDrift': 'Not managed by IaC · drift',
   },
   ja: {
     'desk.nav.ariaLabel': 'メインナビゲーション',
@@ -20,5 +136,75 @@ export const desk = {
     // already ships under (infra.panel.title). Phase 4's EstateView keeps it.
     'desk.nav.estate': 'インフラ',
     'desk.nav.chat': 'チャット',
+    'desk.seal.ariaLabel': '承認済み',
+    // Visible labels straight from the mockup (docs/plans/2026-07-28-
+    // composite-mockup.html "instrument band"). Aria variants prefix the
+    // count so a screen reader announces "9件、IaC管理下" rather than a bare
+    // label with no number.
+    'desk.band.managedLabel': 'IaC 管理下',
+    'desk.band.driftLabel': 'ドリフト検出',
+    'desk.band.awaitingLabel': 'あなたの承認待ち',
+    'desk.band.managedAria': '{n}件、IaC 管理下',
+    'desk.band.driftAria': '{n}件、ドリフト検出',
+    'desk.band.awaitingAria': '{n}件、あなたの承認待ち',
+    'desk.ledger.heading': '最近の記録',
+    'desk.ledger.appliedTitle': 'あなたが承認 → 適用完了',
+    'desk.ledger.openTitle': 'あなたの承認待ち',
+    'desk.ledger.failedTitle': 'あなたが承認 → 適用されず',
+    'desk.ledger.unconfirmedTitle': 'あなたが承認 → 結果は未確認',
+    // ---- unresolved rollback outcome (desk rule 2.5) ----
+    'desk.unresolved.who': 'あなたが承認しました',
+    'desk.unresolved.failed.detail': '適用されず',
+    'desk.unresolved.failed.headline': 'ロールバックは適用されませんでした。',
+    'desk.unresolved.failed.body':
+      '承認は使用されましたが、トラフィックの切り替えは行われませんでした。ロールバックは実行されていません。必要であれば、あらためてロールバックを依頼できます。',
+    'desk.unresolved.unknown.detail': '結果は未確認',
+    'desk.unresolved.unknown.headline': 'ロールバックの結果を確認できていません。',
+    'desk.unresolved.unknown.body':
+      'トラフィックの切り替えは受理されましたが、待機時間内に完了を確認できませんでした。成功・失敗のいずれとも断定できません。対応の前に Cloud Run で当該サービスの状態をご確認ください。',
+
+    'desk.region.ariaLabel': '承認デスク',
+
+    'desk.pending.rollback.who': 'Anchor が提案しています',
+    'desk.pending.rollback.headline': '承認が必要なロールバック提案があります。',
+    'desk.pending.iac.who': 'インフラ変更があなたの確認を待っています',
+    'desk.pending.iac.headlineFallback': 'インフラ変更 PR #{pr} があなたの承認を待っています。',
+    'desk.pending.prMeta': 'PR #{pr}',
+    'desk.pending.subtitleProposedAt': '提案 {time}',
+    'desk.pending.approveCta': 'この提案を承認する',
+    'desk.pending.rejectCta': '却下する',
+
+    'desk.stamped.who': 'あなたが承認しました',
+    'desk.stamped.rollback.detail': 'ロールバック適用',
+    'desk.stamped.iac.detail': '適用完了',
+    'desk.stamped.rollback.headline': '提案されたロールバックを適用しました。',
+    'desk.stamped.iac.headlineFallback': 'インフラ変更 PR #{pr} を適用しました。',
+    'desk.stamped.iac.headlineGeneric': 'インフラ変更を適用しました。',
+    'desk.stamped.audit': '適用 {time}',
+
+    'desk.resting.headline': 'いま、あなたの判断を待つ提案はありません。',
+    'desk.resting.watching': 'エージェントは監視を継続中',
+    'desk.resting.lastScan': '最終走査 {time}',
+    'desk.resting.scanPending': '走査時刻 取得中',
+    'desk.resting.resourceCount': '{n} リソース',
+    'desk.resting.noNewDrift': '新規ドリフトなし',
+
+    'desk.estate.ariaLabel': 'インフラ',
+    'desk.estate.loading': 'インフラ情報を読み込み中…',
+    'desk.estate.degraded': 'インフラ図は一時的に取得できません。',
+    'desk.estate.driftGroup': 'ドリフト — IaC 未管理 {n} 件',
+    'desk.estate.managedGroup': '管理下 — {n} 件',
+    'desk.estate.untrackedGroup': '未管理（取り込み対象外） {n} 件',
+    'desk.estate.adoptButton': '取り込み PR を作成',
+    'desk.estate.prPending': 'PR #{pr} レビュー待ち',
+    'desk.estate.driftMore': '…ほか {n} 件のドリフト',
+    'desk.estate.systemManagedFold': 'システム管理リソース（Google が自動作成） {n}件',
+    // JA carries no grammatical plural, so .one/.other are identical text
+    // (i18n.ts `plural()` convention) — both forms still get catalogued.
+    'desk.estate.otherResources.one': '他に DriftScribe が管理しない {types} 種類、{other} 件のリソースがあります',
+    'desk.estate.otherResources.other':
+      '他に DriftScribe が管理しない {types} 種類、{other} 件のリソースがあります',
+    'desk.estate.legendManaged': 'IaC 管理下',
+    'desk.estate.legendDrift': 'IaC 未管理 ・ ドリフト',
   },
 };

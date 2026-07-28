@@ -18,6 +18,7 @@ from typing import Any
 
 import pytest
 
+from driftscribe_lib import approvals
 from driftscribe_lib.approvals import (
     Approval,
     ApprovalStore,
@@ -343,3 +344,187 @@ def test_claim_denied_then_claim_pending_both_refuse() -> None:
     assert store.claim_denied(created.approval_id) is not None
     # Worker's transactional claim sees status=denied and refuses.
     assert store.claim_pending(created.approval_id) is None
+
+
+# --------------------------------------------------------------------------- #
+# resolved_at (Task 3.0b, 2026-07-28) — the terminal-transition timestamp
+# --------------------------------------------------------------------------- #
+#
+# ``_claim`` is the ONLY writer of the pending -> {used, denied} transitions;
+# it now stamps a ``resolved_at`` timestamp INSIDE the same transaction as the
+# status flip, so status and timestamp can never disagree. The dataclass field
+# MUST default to None so pre-existing Firestore docs (written before this
+# change) still construct via ``Approval(approval_id=..., **data)`` in both
+# ``get`` and ``_claim`` without a TypeError.
+
+
+def test_create_leaves_resolved_at_none() -> None:
+    """A freshly-created (pending) approval has no resolution timestamp yet."""
+    store, _ = _make_store()
+    approval, _ = store.create(
+        target_revision="r", reason="x", hmac_key="k", created_by="u"
+    )
+    assert approval.resolved_at is None
+
+
+def test_claim_pending_does_not_stamp_resolved_at() -> None:
+    """The claim burns the credential; it does not roll anything back.
+
+    This test previously asserted the OPPOSITE (Task 3.0b stamped resolved_at
+    inside the flip). That stamp is what let the operator desk seal
+    "The proposed rollback was applied." on an approval whose traffic shift had
+    not run — and, if the shift then failed, had not happened at all (ds-2mc).
+    The flip necessarily precedes the apply because the token is single-use, so
+    the only honest thing it can record is that the token was spent.
+    """
+    store, fake = _make_store()
+    created, _ = store.create(
+        target_revision="r", reason="x", hmac_key="k", created_by="u"
+    )
+    claimed = store.claim_pending(created.approval_id)
+    assert claimed is not None
+    assert claimed.status == "used"
+    assert claimed.resolved_at is None
+
+    raw = fake.raw(f"approvals/{created.approval_id}")
+    assert "resolved_at" not in raw
+    # It DOES record that the outcome is not yet known, so a worker that dies
+    # here leaves an explicitly-unresolved doc rather than a silent `used`.
+    assert raw["apply_audit"]["phase"] == approvals.PHASE_CLAIMED
+
+
+def test_record_phase_stamps_resolved_at_only_on_applied() -> None:
+    store, fake = _make_store()
+    created, _ = store.create(
+        target_revision="r", reason="x", hmac_key="k", created_by="u"
+    )
+    store.claim_pending(created.approval_id)
+    now = dt.datetime.now(dt.timezone.utc)
+
+    store.record_phase(created.approval_id, phase=approvals.PHASE_APPLIED, resolved_at=now)
+    raw = fake.raw(f"approvals/{created.approval_id}")
+    assert raw["apply_audit"]["phase"] == approvals.PHASE_APPLIED
+    assert raw["resolved_at"] == now
+
+
+@pytest.mark.parametrize(
+    "phase",
+    [approvals.PHASE_FAILED, approvals.PHASE_OUTCOME_UNKNOWN, approvals.PHASE_APPLYING],
+)
+def test_record_phase_refuses_resolved_at_on_non_applied(phase: str) -> None:
+    """resolved_at is the desk seal's input, so it may accompany a CONFIRMED
+    success and nothing else. Refusing loudly beats accepting silently: an
+    `outcome_unknown` carrying a resolution timestamp would read as resolved to
+    every consumer of the /decisions projection."""
+    store, _ = _make_store()
+    created, _ = store.create(
+        target_revision="r", reason="x", hmac_key="k", created_by="u"
+    )
+    store.claim_pending(created.approval_id)
+    with pytest.raises(ValueError, match="resolved_at"):
+        store.record_phase(
+            created.approval_id, phase=phase,
+            resolved_at=dt.datetime.now(dt.timezone.utc),
+        )
+
+
+def test_record_phase_refuses_unknown_phase() -> None:
+    store, _ = _make_store()
+    created, _ = store.create(
+        target_revision="r", reason="x", hmac_key="k", created_by="u"
+    )
+    store.claim_pending(created.approval_id)
+    with pytest.raises(ValueError, match="unknown rollback phase"):
+        store.record_phase(created.approval_id, phase="totally_fine_honest")
+
+
+@pytest.mark.parametrize("terminal", [approvals.PHASE_APPLIED, approvals.PHASE_FAILED])
+def test_record_phase_never_overwrites_a_terminal_phase(terminal: str) -> None:
+    """A late /reconcile racing the original /execute must not be able to
+    contradict a settled outcome in either direction."""
+    store, fake = _make_store()
+    created, _ = store.create(
+        target_revision="r", reason="x", hmac_key="k", created_by="u"
+    )
+    store.claim_pending(created.approval_id)
+    store.record_phase(created.approval_id, phase=terminal)
+
+    store.record_phase(created.approval_id, phase=approvals.PHASE_OUTCOME_UNKNOWN)
+    assert fake.raw(f"approvals/{created.approval_id}")["apply_audit"]["phase"] == terminal
+
+
+def test_record_phase_may_advance_a_non_terminal_phase() -> None:
+    """outcome_unknown is deliberately NOT terminal — it is precisely the state
+    /reconcile exists to resolve."""
+    store, fake = _make_store()
+    created, _ = store.create(
+        target_revision="r", reason="x", hmac_key="k", created_by="u"
+    )
+    store.claim_pending(created.approval_id)
+    store.record_phase(created.approval_id, phase=approvals.PHASE_OUTCOME_UNKNOWN)
+    store.record_phase(
+        created.approval_id, phase=approvals.PHASE_APPLIED,
+        resolved_at=dt.datetime.now(dt.timezone.utc),
+    )
+    assert fake.raw(f"approvals/{created.approval_id}")["apply_audit"]["phase"] == (
+        approvals.PHASE_APPLIED
+    )
+
+
+def test_claim_denied_stamps_resolved_at() -> None:
+    store, fake = _make_store()
+    created, _ = store.create(
+        target_revision="r", reason="x", hmac_key="k", created_by="u"
+    )
+    before = dt.datetime.now(dt.timezone.utc)
+    denied = store.claim_denied(created.approval_id)
+    after = dt.datetime.now(dt.timezone.utc)
+    assert denied is not None
+    assert denied.status == "denied"
+    assert denied.resolved_at is not None
+    assert before <= denied.resolved_at <= after
+    raw = fake.raw(f"approvals/{created.approval_id}")
+    assert raw["resolved_at"] == denied.resolved_at
+
+
+def test_get_tolerates_old_doc_with_no_resolved_at_key() -> None:
+    """Backward compatibility: a doc written before this change has no
+    ``resolved_at`` key at all. ``get()`` must still construct the dataclass
+    (default None), never raise a TypeError on an unexpected/missing kwarg."""
+    store, fake = _make_store()
+    created, _ = store.create(
+        target_revision="r", reason="x", hmac_key="k", created_by="u"
+    )
+    # Simulate a pre-Part-A doc: status flipped by hand, no resolved_at key.
+    raw = fake.raw(f"approvals/{created.approval_id}")
+    raw["status"] = "used"
+    assert "resolved_at" not in raw
+    fetched = store.get(created.approval_id)
+    assert fetched is not None
+    assert fetched.status == "used"
+    assert fetched.resolved_at is None
+
+
+def test_get_round_trips_resolved_at_and_apply_audit() -> None:
+    """Forward compatibility: a doc carrying the fields the new code writes
+    must round-trip through ``get()``.
+
+    Note the sequence — a resolved_at only exists after a CONFIRMED apply, so
+    reaching that state takes both the claim and the terminal record_phase.
+    That two-step is the fix (ds-2mc), not an awkwardness of the test."""
+    store, _ = _make_store()
+    created, _ = store.create(
+        target_revision="r", reason="x", hmac_key="k", created_by="u"
+    )
+    store.claim_pending(created.approval_id)
+    store.record_phase(
+        created.approval_id,
+        phase=approvals.PHASE_APPLIED,
+        resolved_at=dt.datetime.now(dt.timezone.utc),
+    )
+    fetched = store.get(created.approval_id)
+    assert fetched is not None
+    assert fetched.status == "used"
+    assert fetched.resolved_at is not None
+    assert fetched.apply_audit is not None
+    assert fetched.apply_audit["phase"] == approvals.PHASE_APPLIED

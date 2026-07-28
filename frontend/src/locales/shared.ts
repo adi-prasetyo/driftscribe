@@ -59,7 +59,21 @@ export const shared = {
       "The apply succeeded, but its pull request hasn't merged yet. Open the approval " +
       'page to check the merge status, or retry once any branch-protection block is resolved.',
 
+    // The complete set of actions the backend writes, in plain language — see
+    // decisionActionLabel. Neutral nouns for the KIND of action, never its
+    // outcome: the same string serves a proposed, an applied and an expired
+    // row, and only that row's own status column knows which it is.
     'shared.decision.noOp': 'No action needed',
+    'shared.decision.rollback': 'Rollback',
+    'shared.decision.iacApply': 'Infrastructure change',
+    // Per-variable contract verdicts (agent/models.py:ContractStatus), shown in
+    // the diff card's STATUS column. Phrased from the OPERATOR's view — what the
+    // ops-contract permits for this variable — rather than transliterating the
+    // enum ("present/absent" describes the contract entry, not the situation).
+    'shared.contract.match': 'Matches the contract',
+    'shared.contract.presentAllowManual': 'Manual change allowed',
+    'shared.contract.presentDisallowManual': 'Manual change not allowed',
+    'shared.contract.absent': 'Not in the contract',
     'shared.decision.noOpHelp':
       'DriftScribe checked and the live state already matched what was expected, ' +
       'so there was nothing to fix: no pull request, issue, or rollback was needed. ' +
@@ -156,6 +170,12 @@ export const shared = {
       '再試行してください。',
 
     'shared.decision.noOp': '対応不要',
+    'shared.decision.rollback': 'ロールバック',
+    'shared.decision.iacApply': 'インフラ変更',
+    'shared.contract.match': '契約どおり',
+    'shared.contract.presentAllowManual': '手動変更は許可',
+    'shared.contract.presentDisallowManual': '手動変更は不可',
+    'shared.contract.absent': '契約に未記載',
     'shared.decision.noOpHelp':
       'DriftScribe が確認したところ、実環境の状態はすでに想定どおりであったため、' +
       '修正の必要はありませんでした。プルリクエスト、Issue、ロールバックのいずれも' +

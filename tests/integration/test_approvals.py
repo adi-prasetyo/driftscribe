@@ -259,8 +259,16 @@ def test_get_missing_approval_renders_not_found_page(client) -> None:
 
 
 def test_get_already_used_approval_hides_form(client, store) -> None:
-    """If status != pending, the form is replaced with a 'resolved'
-    message. The page itself doesn't 403 — that's enforced at POST."""
+    """If status != pending, the form is replaced with a read-only message.
+    The page itself doesn't 403 — that's enforced at POST.
+
+    This used to assert the word "resolved" for a phase-less `used` doc, which
+    was the defect ds-2mc is about, stated on a second surface: `used` proves
+    the CREDENTIAL was spent, never that the rollback applied, and a doc written
+    before the phase field exists carries no outcome at all. The page may say
+    the approval cannot be acted on again — that much `status` really does prove
+    — but not that anything was resolved.
+    """
     approval = store.create_pending(
         target_revision="payment-demo-00002-bbb", reason="r"
     )
@@ -268,7 +276,8 @@ def test_get_already_used_approval_hides_form(client, store) -> None:
     r = client.get(f"/approvals/{approval.approval_id}?t=anything")
     assert r.status_code == 200
     assert 'value="approve"' not in r.text
-    assert "resolved" in r.text.lower()
+    assert "already been used" in r.text.lower()
+    assert "resolved" not in r.text.lower()
 
 
 def test_get_expired_approval_shows_expired_message(client, store) -> None:

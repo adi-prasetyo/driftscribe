@@ -8,6 +8,7 @@
   // The adopt step routes through the SAME prefill bridge as the panel's
   // Adopt buttons (App.handleAdopt): prefilled, NEVER auto-sent (T4), and
   // disabled under the same chatDisabled condition.
+  import { tick } from 'svelte';
   import {
     TOUR_STEPS,
     welcomeLine,
@@ -17,6 +18,7 @@
     adoptStepState,
   } from '../lib/tour';
   import type { InfraGraph, PendingApproval } from '../lib/infra_graph';
+  import type { AppView } from '../lib/deeplink';
   import { t } from '../lib/i18n';
 
   let {
@@ -24,6 +26,7 @@
     pendingApprovals = [],
     adoptDisabled = false,
     onAdoptPrefill,
+    onNavigate,
     onClose,
   }: {
     /** Lifted /infra/graph payload (InfraDiagram.onGraph); null until loaded. */
@@ -39,6 +42,10 @@
     adoptDisabled?: boolean;
     /** Routes through App.handleAdopt — prefills the composer, never sends. */
     onAdoptPrefill?: (prefill: string) => void;
+    /** Called with a step's `view` (TOUR_STEPS) before the spotlight effect
+     *  looks for its target — some steps' targets only exist on a specific
+     *  view (Task 4.1: estate/adopt on 'estate', next on 'chat'). */
+    onNavigate?: (v: AppView) => void;
     /** Close/Finish — App marks the tour done and unmounts this card. */
     onClose?: () => void;
   } = $props();
@@ -48,17 +55,33 @@
   const adoptState = $derived(adoptStepState($t, graph, pendingApprovals));
 
   // Spotlight the current step's target: toggle .tour-spotlight on the
-  // matching [data-tour] element and scroll it into view. The effect cleanup
-  // removes the class on step change and on unmount, so a closed tour never
-  // leaves an outline behind.
+  // matching [data-tour] element and scroll it into view. Some targets only
+  // exist on a specific view (Task 4.1), so a step with a `view` navigates
+  // there FIRST — that mount is async (App re-renders on the next tick), so
+  // the DOM lookup is deferred behind `tick()`. An `$effect` must return its
+  // cleanup SYNCHRONOUSLY, so the async work lives in a `.then()` inside the
+  // effect body, not in an `async` effect function; `disposed` guards the
+  // deferred lookup from acting after a step change or unmount already fired
+  // cleanup (Svelte re-runs/tears down effects synchronously, the promise
+  // does not).
   $effect(() => {
     const target = step.target;
+    if (step.view) onNavigate?.(step.view);
     if (target === null) return;
-    const el = document.querySelector(`[data-tour="${target}"]`);
-    if (!(el instanceof HTMLElement)) return;
-    el.classList.add('tour-spotlight');
-    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    return () => el.classList.remove('tour-spotlight');
+    let el: HTMLElement | null = null;
+    let disposed = false;
+    tick().then(() => {
+      if (disposed) return;
+      const found = document.querySelector(`[data-tour="${target}"]`);
+      if (!(found instanceof HTMLElement)) return;
+      el = found;
+      el.classList.add('tour-spotlight');
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+    return () => {
+      disposed = true;
+      el?.classList.remove('tour-spotlight');
+    };
   });
 
   function next(): void {

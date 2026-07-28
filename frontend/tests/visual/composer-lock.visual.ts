@@ -33,7 +33,14 @@ function json(route: Route, body: unknown, status = 200) {
 // One prior Anchor (drift) conversation in the rail — clicking it resumes the
 // thread and engages the crew lock on Anchor.
 async function mockData(page: Page) {
-  await page.route('**/decisions**', (r) => json(r, { decisions: [] }));
+  // Regex, not `**/decisions**` — see the `**/conversations**` note below for
+  // the same class of trap. This one arrived later: `src/locales/decisions.ts`
+  // (the i18n namespace split) postdates this rig, and once it existed the glob
+  // started serving JSON for that JS module, breaking the whole app mount with
+  // a strict-MIME error. Requiring `?` or end-of-URL right after `/decisions`
+  // excludes any `.ts` module path. NB the smoke rigs still use the glob safely
+  // — they drive the BUILT bundle, where source modules have no own URL.
+  await page.route(/\/decisions(\?|$)/, (r) => json(r, { decisions: [] }));
   await page.route('**/pause', (r) => json(r, { paused: false }));
   await page.route('**/autonomy', (r) => json(r, { mode: 'propose_apply', reason: null, actor: null }));
   await page.route('**/capabilities', (r) =>
@@ -148,7 +155,17 @@ async function mockData(page: Page) {
 test('composer New-chat + crew-lock walkthrough', async ({ page }) => {
   await seedToken(page);
   await mockData(page);
-  await page.goto('/');
+  // Explicit ?view=chat: since Task 3.6 step 2 flipped DEFAULT_VIEW to 'desk',
+  // a bare url renders the approval desk, which has no composer to walk through.
+  await page.goto('/?view=chat');
+
+  // The demo-notice popover auto-opens at boot on the chat view and drops into
+  // the top-left, where it overlaps the conversations rail and intercepts the
+  // click below. The desk rig dismisses it for the same reason. NB this is a
+  // real overlap a first-time visitor hits on chat too, not a test artifact —
+  // tracked separately; this rig is about the composer.
+  const notice = page.getByTestId('demo-notice-dismiss');
+  if (await notice.isVisible()) await notice.click();
 
   const form = page.locator('#chat-form');
   await expect(form).toBeVisible();

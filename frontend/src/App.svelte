@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from 'svelte';
+  import { onMount, onDestroy, tick } from 'svelte';
   import {
     apiFetch,
     getStoredToken,
@@ -42,7 +42,10 @@
   import ConversationsRail from './components/ConversationsRail.svelte';
   import ConversationThread from './components/ConversationThread.svelte';
   import InfraDiagram from './components/InfraDiagram.svelte';
+  import ApprovalDesk from './components/ApprovalDesk.svelte';
+  import EstateView from './components/EstateView.svelte';
   import { previewPrFromSearch } from './lib/infra_graph';
+  import { estateModel, firstAdoptableRow } from './lib/estate';
   import {
     reasoningTraceFromSearch,
     conversationIdFromSearch,
@@ -59,6 +62,7 @@
   import { createPauseStore } from './lib/pauseStore';
   import AutonomyPill from './components/AutonomyPill.svelte';
   import { createAutonomyStore, autonomyNoteFor } from './lib/autonomyStore';
+  import { createOverviewStore, NO_DECISIONS_YET } from './lib/overviewStore';
   import { prefersReducedMotion } from './lib/motion';
   import Timeline from './components/Timeline.svelte';
   import TourBanner from './components/TourBanner.svelte';
@@ -80,8 +84,6 @@
   // Set from the `done` frame's `iac_pr` when a run just opened an infra PR —
   // drives the clickable first-authoring "Review & approve" CTA.
   let iacPr = $state<{ pr_number: number; pr_url: string } | null>(null);
-
-  let decisions = $state<Decision[]>([]);
 
   // ---- multi-turn conversations (P2) ----
   // The history rail's list (metadata only). The currently-open thread's id +
@@ -218,10 +220,11 @@
 
   let authPanelOpen = $state(false);
   let authResolver: ((t: string | null) => void) | null = null;
-  // Single-flight: concurrent callers (loadDecisions + InfraDiagram both fetch
-  // on mount, and either may 401) share ONE prompt and one resolution. Without
-  // this, a second requestToken() overwrites the first's resolver and strands
-  // the first in-flight request forever (Codex review).
+  // Single-flight: concurrent callers (the overview store's creation-time
+  // refresh + InfraDiagram both fetch on mount, and either may 401) share ONE
+  // prompt and one resolution. Without this, a second requestToken() overwrites
+  // the first's resolver and strands the first in-flight request forever
+  // (Codex review).
   let authPromise: Promise<string | null> | null = null;
 
   // Concurrency guard: a monotonically-incrementing run id. submitChat /
@@ -252,7 +255,7 @@
   // settled into the thread yet), render the exchange THROUGH the thread as an
   // optimistic user + crew bubble pair instead of the standalone hero. The crew
   // bubble reads `finalReply` live, so the reply fills that same bubble the
-  // instant the `done` frame arrives — the existing backfill/loadDecisions
+  // instant the `done` frame arrives — the existing backfill/decisions-refresh
   // latency before settle is no longer visible (no blue→green swap, no upward
   // hop). Captured (not reactive) at submit time so the bubble keys/labels stay
   // stable for the whole run. Cleared the MOMENT a non-persistable outcome is
@@ -327,20 +330,43 @@
     // stays reachable from the rail.
     newChat();
     chatPrefill = { text, workload: 'provision', epoch: (chatPrefill?.epoch ?? 0) + 1 };
-    // Bring the composer into view so the prefilled draft is obvious. Best-effort:
-    // the element exists in the live tree; guarded for the historical/SSR-less case.
-    document.getElementById('chat-form')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    // Adopt is reachable from the estate view (Task 4.1) as well as chat, but
+    // the composer only exists on chat — navigate there first, or an
+    // estate-view Adopt click would silently prefill a composer nobody can
+    // see. `navigate('chat')` is a plain destination (see its own doc), so
+    // this is safe even when already on chat.
+    navigate('chat');
+    // The chat view mounts (or, if already mounted, re-renders) on the NEXT
+    // tick — #chat-form doesn't exist yet in the DOM synchronously after a
+    // navigate from desk/estate, so the scroll must wait for it too.
+    void tick().then(() => {
+      document.getElementById('chat-form')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
   }
 
   // Onboarding tour (item 14). The offer is decided ONCE at boot — before
   // onMount strips the intent params — and the header Tour button is the
   // permanent reopen path. Closing OR dismissing marks the tour done; the
   // flag is a UI preference, so localStorage (not sessionStorage) is right.
-  let tourGraph = $state<InfraGraph | null>(null);
-  // Lifted alongside tourGraph (InfraDiagram.onPending) so the tour's first-adoption
-  // suggestion skips a resource that already has an open adoption PR.
-  let tourPending = $state<PendingApproval[]>([]);
+  // The tour's graph + open-adoption-PR list come from the OVERVIEW STORE, not
+  // from InfraDiagram's onGraph/onPending lift. That lift only fired while the
+  // CHAT view was mounted, which stopped being the front door when Task 3.6
+  // flipped DEFAULT_VIEW to 'desk': a first-run visitor who opens the tour from
+  // the desk (or whom Task 4.1 now sends to the ESTATE view for steps 2 and 4 —
+  // neither mounts InfraDiagram) would leave `tourGraph` null forever, so the
+  // estate step read "still loading" and the adopt step "unavailable" for the
+  // whole tour. The store already owns exactly these two snapshots and fetches
+  // eagerly on creation, so it is the correct source on every view.
   let tourOpen = $state(false);
+  // ds-5yq: the demo-notice popover is bell-anchored and drops into the
+  // top-left, which on the DESK is exactly where the instrument band's first
+  // numeral and the resting headline sit — the product's thesis screen, and the
+  // first thing a judge sees on the bare domain since Task 3.6 made the desk the
+  // front door. It does not auto-open there; the bell keeps its unread badge, so
+  // the notice stays one click away. Boot-time only (never reactive): the notice
+  // decides once, at mount, so a later navigation to the desk must not
+  // retroactively suppress a notice that already opened.
+  const coversPrimaryContent = viewFromSearch(window.location.search) === 'desk';
   let tourOffered = $state(shouldOfferTour(window.location.search, tourDone()));
   function startTour(): void {
     tourOffered = false;
@@ -412,20 +438,27 @@
   const autonomy = createAutonomyStore(call);
   const capabilityAutonomyNote = $derived(autonomyNoteFor($autonomy, $t));
 
-  // ---- decisions rail ----
-  async function loadDecisions() {
-    try {
-      const resp = await call('/decisions?limit=50');
-      if (!resp.ok) return;
-      const body = await resp.json();
-      if (Array.isArray(body?.decisions)) {
-        decisions = body.decisions as Decision[];
-        noteApplied(decisions);
-      }
-    } catch {
-      /* best-effort */
-    }
-  }
+  // ---- desk/estate overview store (Task 3.0a) — single owner of the
+  // graph/pending-approvals/decisions refresh triple (lib/overviewStore.ts).
+  // `decisions` here is a thin derived alias so the many existing readers
+  // below (DecisionsRail, noteApplied, open-trace lookups) don't all need
+  // rewriting to `$overview.decisions`. Torn down on component destroy so its
+  // focus/visibilitychange listeners and poll timer don't leak (matters for
+  // test-suite isolation — a component mounted per-test that never destroys
+  // its listeners would leave them firing against later tests' DOM/timers).
+  const overview = createOverviewStore(call);
+  const decisions = $derived($overview.decisions);
+  onDestroy(() => overview.destroy());
+
+  // The tour's adopt step (Task 4.1) spotlights the first adoptable row in
+  // EstateView; when there is none, App marks the nav-estate header button
+  // instead — see lib/estate.ts's firstAdoptableRow header comment for why
+  // BOTH sides call this exact function on the SAME estateModel() output
+  // (never a second hand-rolled predicate) and why the two data-tour="adopt-
+  // target" markers are therefore mutually exclusive.
+  const estateHasAdoptTarget = $derived(
+    firstAdoptableRow(estateModel($overview.graph, $overview.pendingApprovals, $t)) !== null,
+  );
 
   // Detect a freshly-`applied` iac_apply decision (decisions arrive newest-first)
   // so the Infrastructure panel can refresh the resource map after an apply lands.
@@ -436,13 +469,41 @@
     if (bump) appliedEpoch += 1;
   }
 
+  // Advance the watermark from the store's decisions payload.
+  //
+  // This effect re-runs on EVERY overview refresh cycle, not only when
+  // `decisions` changed: its one reactive read is `$overview`, and a Svelte
+  // store subscription is tracked at whole-object level (no per-property
+  // granularity like a $state proxy), while refresh() publishes a fresh state
+  // object each cycle. So noteApplied() IS re-invoked with an unchanged array
+  // reference — e.g. a cycle where the graph refreshed but the decisions fetch
+  // soft-failed and kept the prior array.
+  //
+  // That is safe, but NOT because of anything this effect does: the guarantee
+  // lives in nextAppliedWatermark (lib/decision.ts), which bumps only when the
+  // newest applied decision_id DIFFERS from the watermark, so a repeat call on
+  // the same payload always resolves to bump:false. Keep that idempotence if
+  // you ever touch it — it, not the effect's dependency scoping, is what stops
+  // appliedEpoch from double-bumping.
+  //
+  // The NO_DECISIONS_YET guard below is the part that does real work here: it
+  // skips the pre-fetch placeholder so the store's eager creation-time fetch
+  // (still pending when this effect first runs) never SEEDS the watermark on
+  // empty data. A genuinely-empty server payload is a distinct fresh [] and is
+  // correctly seeded. See overviewStore.ts's sentinel comment and the boot-seed
+  // incident lib/decision.ts documents (a false bump there DDOSed the coordinator).
+  $effect(() => {
+    const ds = $overview.decisions;
+    if (ds !== NO_DECISIONS_YET) noteApplied(ds);
+  });
+
   const asString = (v: unknown): string | null =>
     typeof v === 'string' && v.length > 0 ? v : null;
 
   // ---- conversations rail + thread (P2) ----
-  // List of recent conversations for the rail (metadata only). Mirrors
-  // loadDecisions: best-effort, single-flight-friendly, refreshed at mount and
-  // after each successful chat turn (a new/updated thread re-sorts to the top).
+  // List of recent conversations for the rail (metadata only). Best-effort,
+  // single-flight-friendly, refreshed at mount and after each successful chat
+  // turn (a new/updated thread re-sorts to the top).
   async function loadConversations() {
     try {
       const resp = await call('/conversations?limit=50');
@@ -716,7 +777,7 @@
           if (jsonRcid === undefined) liveExchange = null;
           await backfillTrace(myRun);
           if (myRun !== runSeq) return;
-          await loadDecisions();
+          await overview.refresh('chat-turn');
           settleConversation(jsonRcid);
           return;
         } catch {
@@ -727,7 +788,7 @@
           liveExchange = null; // nothing persisted → the error belongs in the hero
         }
         await backfillTrace(myRun);
-        if (myRun === runSeq) await loadDecisions();
+        if (myRun === runSeq) await overview.refresh('chat-turn');
         return;
       }
 
@@ -800,12 +861,13 @@
       if (persistableDone) {
         settleConversation(doneConversationId);
         // Background, best-effort, runSeq-guarded (backfillTrace :753/:756;
-        // loadDecisions is fully try/catch'd). A fast follow-up bumps runSeq and
-        // makes the stale backfill no-op cleanly; the only cost is this turn's
-        // side-channel mcp_call rows not filling inline if the operator leaves
-        // immediately — the persisted trace survives and reopening refetches it.
+        // overview.refresh() is internally try/catch'd per fetch — see
+        // overviewStore.ts). A fast follow-up bumps runSeq and makes the stale
+        // backfill no-op cleanly; the only cost is this turn's side-channel
+        // mcp_call rows not filling inline if the operator leaves immediately —
+        // the persisted trace survives and reopening refetches it.
         void backfillTrace(myRun);
-        void loadDecisions();
+        void overview.refresh('chat-turn');
         return; // → finally clears busy (guarded), so the composer releases now
       }
 
@@ -824,7 +886,7 @@
         finalIsError = true;
         liveExchange = null; // interrupted stream persists nothing → hero
       }
-      await loadDecisions();
+      await overview.refresh('chat-turn');
       settleConversation(doneConversationId);
     } finally {
       if (myRun === runSeq) busy = false;
@@ -983,7 +1045,9 @@
   }
 
   onMount(() => {
-    void loadDecisions();
+    // No explicit decisions/graph/pending-approvals kickoff here — `overview`
+    // (createOverviewStore) already fired its own eager fetch at store
+    // creation (script setup, before this callback ever runs).
     void loadConversations();
     void pause.fetchPause();
     void autonomy.fetchAutonomy();
@@ -1039,6 +1103,7 @@
       class:is-active={view === 'estate'}
       aria-current={view === 'estate' ? 'page' : undefined}
       data-testid="nav-estate"
+      data-tour={estateHasAdoptTarget ? undefined : 'adopt-target'}
       onclick={() => navigate('estate')}>{$t('desk.nav.estate')}</button
     >
     <button
@@ -1057,7 +1122,7 @@
     <!-- Judging-window notice bell (replaces the in-flow DemoNoticeBanner; see
          docs/plans/2026-07-07-demo-notice-bell.md). Deleted whole at
          close-window time. -->
-    <DemoNoticeBell />
+    <DemoNoticeBell {coversPrimaryContent} />
     <!-- data-tour="controls" lives on this always-rendered wrapper (not the
          loaded-only pill button) so the tour spotlight resolves even while
          /autonomy is loading or unknown. -->
@@ -1114,8 +1179,26 @@
   <Timeline {events} {status} directlyRecorded={historicalDecision?.action === 'iac_apply'} />
 {/snippet}
 
-<main class="layout">
-  <div class="rails">
+<!-- Rails come off the desk/estate (composite-redesign Task 3.5 decision):
+     the desk is a 780px centered column and LedgerStrip already IS its
+     decisions summary, so DecisionsRail beside it would show the same log
+     twice — the exact 見づらい/後付け texture the redesign answers. `.rails`
+     only renders (and only takes a grid column) on the chat view; `.layout`
+     collapses to a single full-width column otherwise. Nothing becomes
+     unreachable: deeplink.ts's hasChatIntent() already forces view==='chat'
+     for ?reasoning=/?conversation=/?ask_pr=/?preview_pr=, so no shared link
+     can strand a visitor on a railless desk (see App.test.ts's
+     "rails come off the desk" suite, which pins that guarantee). -->
+<main class="layout" class:layout--full={view !== 'chat'}>
+  <!-- Renders on ANY view (Task 3.5 flipped the bare-URL default to desk, so a
+       first-run visitor who never touches chat must still be offered the
+       tour). shouldOfferTour's own errand-suppression semantics are
+       untouched — this only moved WHERE the offer renders, not when. -->
+  {#if tourOffered && !tourOpen}
+    <TourBanner onStart={startTour} onDismiss={dismissTourOffer} />
+  {/if}
+  {#if view === 'chat'}
+  <div class="rails" data-testid="rails">
     <ConversationsRail
       {conversations}
       activeConversationId={conversationId}
@@ -1123,6 +1206,7 @@
     />
     <DecisionsRail {decisions} {activeTraceId} onOpenTrace={openTrace} />
   </div>
+  {/if}
 
   {#if view === 'chat'}
   <section id="chat-area" class="chat-area" aria-label={$t('header.chatArea.ariaLabel')}>
@@ -1131,13 +1215,10 @@
     {#if historicalActive}
       {@render traceOutput()}
     {/if}
-    {#if tourOffered && !tourOpen}
-      <TourBanner onStart={startTour} onDismiss={dismissTourOffer} />
-    {/if}
     <!-- The autonomy dial moved to the header pill; the "controls" spotlight
          marker moved with it. PauseBanner stays here (only shown when paused). -->
     <PauseBanner {pause} />
-    <div class="tour-target" data-tour="estate">
+    <div class="tour-target">
       <InfraDiagram
         {call}
         {appliedEpoch}
@@ -1146,8 +1227,6 @@
         onAdopt={handleAdopt}
         onInvestigate={handleAdopt}
         adoptDisabled={chatDisabled}
-        onGraph={(g) => (tourGraph = g)}
-        onPending={(a) => (tourPending = a)}
       />
     </div>
     <CapabilityCard {call} autonomyNote={capabilityAutonomyNote} />
@@ -1172,17 +1251,31 @@
     {/if}
   </section>
   {:else if view === 'desk'}
-  <!-- Skeleton only (Task 2.2) — the real approval desk lands in Phase 3
-       (ApprovalDesk.svelte, Task 3.5). -->
-  <section data-testid="approval-desk" class="chat-area">
-    <h2>{$t('desk.nav.desk')}</h2>
-  </section>
+  <!-- The real approval desk (Task 3.5). Data comes exclusively from the
+       overview store's current snapshot — ApprovalDesk performs no fetches
+       of its own. `refresh={overview.refresh}` lets the desk arm its own
+       short, bounded re-check burst after sending the operator to an
+       approval page (see ApprovalDesk's "fast convergence" comment). -->
+  <ApprovalDesk
+    graph={$overview.graph}
+    decisions={$overview.decisions}
+    pendingApprovals={$overview.pendingApprovals}
+    refresh={overview.refresh}
+    onNavigate={navigate}
+  />
   {:else if view === 'estate'}
-  <!-- Skeleton only (Task 2.2) — the real estate view lands in Phase 4
-       (EstateView.svelte, Task 4.1). -->
-  <section data-testid="estate-view" class="chat-area">
-    <h2>{$t('desk.nav.estate')}</h2>
-  </section>
+  <!-- The real estate view (Task 4.1). Data comes exclusively from the
+       overview store's current snapshot — EstateView performs no fetches of
+       its own, same discipline as ApprovalDesk. Adopt routes through the
+       SAME handleAdopt bridge as InfraDiagram's own Adopt buttons. -->
+  <EstateView
+    graph={$overview.graph}
+    decisions={$overview.decisions}
+    pendingApprovals={$overview.pendingApprovals}
+    adoptDisabled={chatDisabled}
+    onAdopt={handleAdopt}
+    onNavigate={navigate}
+  />
   {/if}
 </main>
 
@@ -1190,10 +1283,11 @@
 
 {#if tourOpen}
   <TourCard
-    graph={tourGraph}
-    pendingApprovals={tourPending}
+    graph={$overview.graph}
+    pendingApprovals={$overview.pendingApprovals}
     adoptDisabled={chatDisabled}
     onAdoptPrefill={handleAdopt}
+    onNavigate={navigate}
     onClose={closeTour}
   />
 {/if}
@@ -1323,6 +1417,12 @@
     grid-template-columns: 280px minmax(0, 1fr);
     align-items: start;
     min-height: calc(100vh - 56px);
+  }
+  /* Desk/estate: no rails column at all (see the `.rails` {#if} above) —
+     collapse the grid to one full-width column instead of leaving a bare
+     280px gap where the rails used to sit. */
+  .layout--full {
+    grid-template-columns: minmax(0, 1fr);
   }
   /* Left column holds two stacked rails: conversation history above past
      decisions. Each owns its own internal scroll; the column spaces + insets
