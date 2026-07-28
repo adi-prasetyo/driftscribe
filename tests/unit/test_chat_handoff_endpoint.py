@@ -133,7 +133,9 @@ def test_a_second_proposal_supersedes_the_first(client):
     cid, first = _propose(client)
     _, second = _propose(client, cid=cid)
 
-    assert _redeem(client, cid, first).status_code == 403
+    superseded = _redeem(client, cid, first)
+    assert superseded.status_code == 409
+    assert superseded.headers["X-Handoff-Refusal"] == "invalid_nonce"
     assert _redeem(client, cid, second).status_code == 200
 
 
@@ -243,13 +245,19 @@ def test_a_nonce_is_single_use(client):
     assert _redeem(client, cid, nonce).status_code == 409
 
 
-def test_a_wrong_nonce_is_forbidden_and_leaves_the_chip_alive(client):
+def test_a_wrong_nonce_is_refused_and_leaves_the_chip_alive(client):
     from agent.handoff import mint_handoff_nonce
 
     cid, nonce = _propose(client)
     guess, _ = mint_handoff_nonce()
 
-    assert _redeem(client, cid, guess).status_code == 403
+    refused = _redeem(client, cid, guess)
+    # 409, NOT 403: the caller is authenticated and is presenting a bad
+    # single-use credential, not a bad operator token. The SPA treats 403 as
+    # "your token was rejected" and raises the token modal, which would throw an
+    # anonymous demo visitor out for clicking a superseded chip.
+    assert refused.status_code == 409
+    assert refused.headers["X-Handoff-Refusal"] == "invalid_nonce"
     assert _redeem(client, cid, nonce).status_code == 200
 
 
@@ -269,7 +277,9 @@ def test_redeeming_against_the_wrong_conversation_is_refused(client):
     assert cid_a != cid_b
     # The body carries no target — ``from`` and ``to`` come from persisted
     # server state — so a nonce is bound to exactly one thread.
-    assert _redeem(client, cid_b, nonce_a).status_code == 403
+    crossed = _redeem(client, cid_b, nonce_a)
+    assert crossed.status_code == 409
+    assert crossed.headers["X-Handoff-Refusal"] == "invalid_nonce"
 
 
 def test_an_unknown_conversation_is_not_found(client):

@@ -6886,7 +6886,17 @@ class HandoffRedeemRequest(BaseModel):
 _HANDOFF_REFUSAL_STATUS: dict[str, int] = {
     "not_found": 404,
     "no_pending": 409,   # nothing to confirm — already used, declined, or never made
-    "invalid_nonce": 403,
+    # Deliberately NOT 403. The nonce is a single-use resource credential, not
+    # an authentication factor: the caller is already authenticated (or is an
+    # allowlisted anonymous visitor during the demo window) and is simply
+    # presenting a credential that does not match this conversation's proposal.
+    # 403 said "your operator token was rejected", which the SPA's ``apiFetch``
+    # believes literally — it clears the stored token and raises the token
+    # modal (see the demo-allowlist gap, PR #208, for the same failure shape).
+    # An anonymous judge clicking a superseded chip would be thrown out of the
+    # demo. 409 puts it with its siblings, and X-Handoff-Refusal keeps the
+    # distinction the status no longer carries.
+    "invalid_nonce": 409,
     "expired": 410,      # it existed and the window closed
     "stale": 409,        # the thread moved on; this route no longer starts here
     "busy": 409,         # a turn is in flight
@@ -6980,7 +6990,14 @@ async def chat_handoff(
         raise HTTPException(
             status_code=_HANDOFF_REFUSAL_STATUS.get(reason, 409),
             detail=_HANDOFF_REFUSAL_DETAIL.get(reason, "handoff refused"),
-            headers={"Cache-Control": "no-store"},
+            # The reason as a machine-readable token, because the status alone
+            # is ambiguous where it matters: 409 covers both "already used /
+            # superseded" (the proposal is dead, ask again) and "a turn is
+            # already running" (retry in a moment). Those need different copy,
+            # and the SPA must not have to pattern-match an English sentence to
+            # tell them apart. A header rather than a body field so the error
+            # shape stays exactly what every other endpoint returns.
+            headers={"Cache-Control": "no-store", "X-Handoff-Refusal": reason},
         )
     pending = outcome["pending"]
 
