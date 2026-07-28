@@ -206,7 +206,7 @@
   <div class="approval-desk__deskwrap" data-testid="approval-desk-state" data-state={model.kind}>
     {#if model.kind === 'resting'}
       <div class="approval-desk__calm" data-testid="approval-desk-resting">
-        <h3>{$t('desk.resting.headline')}</h3>
+        <h2>{$t('desk.resting.headline')}</h2>
         <p class="approval-desk__watch" data-testid="approval-desk-watch">
           <span class="approval-desk__watch-dot" aria-hidden="true"></span>
           {$t('desk.resting.watching')}
@@ -222,6 +222,11 @@
         </p>
       </div>
     {:else if model.kind === 'pending'}
+      <!-- {@const} must be the immediate child of a block ({:else if} qualifies,
+           a plain <div> does not), so both are hoisted here rather than sitting
+           next to the markup that uses them. -->
+      {@const proposedAt = pendingSubtitleTime(model)}
+      {@const pendingDecision = activeDecision(model)}
       <div class="approval-desk__proposal" data-testid="approval-desk-pending" data-source={model.source}>
         <div class="approval-desk__who">
           <span
@@ -229,21 +234,28 @@
               ? $t('desk.pending.rollback.who')
               : $t('desk.pending.iac.who')}</span
           >
-          {#if pendingSubtitleTime(model)}
+          {#if proposedAt}
             <span class="approval-desk__meta"
               >{$t('desk.pending.subtitleProposedAt', {
-                time: fmtWhen(pendingSubtitleTime(model) ?? '', $locale),
+                time: fmtWhen(proposedAt, $locale),
               })}</span
             >
           {/if}
         </div>
-        <h3>{pendingHeadline(model, $t)}</h3>
+        <h2>{pendingHeadline(model, $t)}</h2>
         {#if model.source === 'iac'}
           <p class="approval-desk__meta">{$t('desk.pending.prMeta', { pr: model.prNumber })}</p>
         {/if}
-        <div class="approval-desk__diff">
-          <DriftDiffCard decision={activeDecision(model)} />
-        </div>
+        <!-- Wrapper gated on the decision, not rendered unconditionally: the
+             pending+iac+listing arm has no decision doc, so DriftDiffCard
+             self-suppresses to nothing and an unconditional wrapper would
+             leave its bare 26px top margin as a gap before the CTA row —
+             visible in the Task 3.6 listing-arm screenshots. -->
+        {#if pendingDecision}
+          <div class="approval-desk__diff">
+            <DriftDiffCard decision={pendingDecision} />
+          </div>
+        {/if}
         <div class="approval-desk__acts">
           <a
             class="approval-desk__btn approval-desk__btn--primary"
@@ -264,19 +276,23 @@
         </div>
       </div>
     {:else if model.kind === 'stamped'}
+      {@const stampedDecision = activeDecision(model)}
+      {@const auditTime = stampedAuditTime(model)}
       {#key model.decision.decision_id}
         <div class="approval-desk__stamped" data-testid="approval-desk-stamped" data-source={model.source}>
           <div class="approval-desk__who approval-desk__who--done">
             <span>{$t('desk.stamped.who')}</span>
             <span class="approval-desk__meta">{stampedDetail(model, $t)}</span>
           </div>
-          <h3>{stampedHeadline(model, $t)}</h3>
-          <div class="approval-desk__diff">
-            <DriftDiffCard decision={activeDecision(model)} />
-          </div>
-          {#if stampedAuditTime(model)}
+          <h2>{stampedHeadline(model, $t)}</h2>
+          {#if stampedDecision}
+            <div class="approval-desk__diff">
+              <DriftDiffCard decision={stampedDecision} />
+            </div>
+          {/if}
+          {#if auditTime}
             <p class="approval-desk__aud">
-              {$t('desk.stamped.audit', { time: fmtWhen(stampedAuditTime(model) ?? '', $locale) })}
+              {$t('desk.stamped.audit', { time: fmtWhen(auditTime, $locale) })}
             </p>
           {/if}
           <SealStamp size="lg" animate />
@@ -305,7 +321,12 @@
     box-sizing: border-box;
   }
 
-  .approval-desk h3 {
+  /* h2, not h3, even though the plan and the mockup both say "Mincho h3 31px"
+     — that phrase pins the SIZE, which is separable from the semantic level.
+     The page's only h1 is the brand title (App.svelte), so an h3 here would
+     skip a level for anyone navigating by heading, and the sibling estate view
+     already uses h2. The 31px below is what actually delivers the mockup. */
+  .approval-desk h2 {
     font-family: var(--ds-font-mincho);
     font-size: 31px;
     line-height: 1.42;
@@ -407,7 +428,7 @@
      diff card and the audit line below the seal should still use the full
      column width, and padding the whole wrapper would indent them too. */
   .approval-desk__stamped .approval-desk__who--done,
-  .approval-desk__stamped h3 {
+  .approval-desk__stamped h2 {
     padding-right: 92px;
   }
 

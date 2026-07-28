@@ -149,6 +149,36 @@ describe('ApprovalDesk — resting state', () => {
   });
 });
 
+describe('ApprovalDesk — heading level', () => {
+  // The page's only h1 is the brand title in App.svelte, so the desk's state
+  // headline must be h2: an h3 skips a level for anyone navigating by heading,
+  // and the sibling estate view already uses h2. Easy to regress, because both
+  // the plan text and the mockup say "Mincho h3 31px" — that pins the SIZE,
+  // not the semantic level, and the 31px is delivered by CSS either way.
+  // Asserted for ALL THREE states: they are three separate elements in three
+  // separate branches, so fixing one proves nothing about the others.
+  it('every state headline is an h2 (h1 is the brand title; no level skipped)', () => {
+    const states = [
+      { name: 'resting', decisions: [] as Decision[] },
+      { name: 'pending', decisions: [rollbackDecision()] },
+      {
+        name: 'stamped',
+        decisions: [iacDecision({ apply_status: 'applied', applied_at: new Date().toISOString() })],
+      },
+    ];
+    for (const s of states) {
+      const { container } = render(ApprovalDesk, {
+        props: { graph: GRAPH, decisions: s.decisions, pendingApprovals: [], onNavigate: vi.fn() },
+      });
+      const desk = container.querySelector('.approval-desk') as HTMLElement;
+      expect(desk.querySelector('h2'), `${s.name} must use h2`).toBeTruthy();
+      expect(desk.querySelector('h3'), `${s.name} must not use h3`).toBeNull();
+      expect(desk.querySelector('h1'), `${s.name} must not introduce a second h1`).toBeNull();
+      cleanup();
+    }
+  });
+});
+
 describe('ApprovalDesk — instrument band composition', () => {
   it('feeds InstrumentBand from scopeTotals over the graph, not raw totals', () => {
     // 1 primary card (adoptable) with managed=9, drift=6, over a graph whose
