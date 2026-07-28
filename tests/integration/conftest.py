@@ -15,6 +15,7 @@ from agent.main import (
     _reset_infra_graph_cache_for_tests,
     _reset_state_for_tests,
     _reset_reconcile_state_for_tests,
+    _reset_terminal_approval_cache_for_tests,
     _reset_trace_fetcher_for_tests,
     _reset_trace_state_for_tests,
     app,
@@ -70,6 +71,10 @@ def _agent_settings(monkeypatch, request):
     # ds-7j0's reconcile cooldown is process-global — without this one test's
     # attempt silently suppresses the next test's.
     _reset_reconcile_state_for_tests()
+    # ds-ihi's terminal-approval cache is likewise process-global, and these
+    # tests reuse a fixed approval_id — without this, one test's settled doc is
+    # served to the next without a read at all.
+    _reset_terminal_approval_cache_for_tests()
     _reset_trace_fetcher_for_tests()
     _reset_trace_state_for_tests()
     # Drop the /infra/graph inventory cache so a cached success from one test
