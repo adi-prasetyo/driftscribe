@@ -8,6 +8,7 @@
 
   import type { Decision } from '../lib/types';
   import { diffRows } from '../lib/diff';
+  import { contractStatusLabel } from '../lib/format';
   import { t } from '../lib/i18n';
 
   let { decision }: { decision: Decision | null } = $props();
@@ -35,7 +36,11 @@
             <td><code class="ds-code">{r.live}</code></td>
             <td>
               {#if r.status}
-                <span class="ds-pill ds-pill--{r.badge}">{r.status}</span>
+                <!-- Operator-facing label, not the raw snake_case enum. The
+                     badge colour still keys off the RAW status (lib/diff.ts's
+                     CONTRACT_BADGE), so translating the text can't change which
+                     rows read as dangerous. -->
+                <span class="ds-pill ds-pill--{r.badge}">{contractStatusLabel(r.status, $t)}</span>
               {:else}
                 <span class="ds-subtle">—</span>
               {/if}

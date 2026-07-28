@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { fmtTokens, shortTrace, fmtPreview, fmtWhen, fmtClock, shortSha, iacStatusLabel, iacStatusHelp, decisionActionLabel, decisionActionHelp, iacApplyMeta, appliedAtDiffersMaterially, normalizeForSearch } from '../../src/lib/format';
+import { fmtTokens, shortTrace, fmtPreview, fmtWhen, fmtClock, shortSha, iacStatusLabel, iacStatusHelp, decisionActionLabel, decisionActionHelp, contractStatusLabel, iacApplyMeta, appliedAtDiffersMaterially, normalizeForSearch } from '../../src/lib/format';
 import { translate, type TranslateFn } from '../../src/lib/i18n';
 
 // The whole suite asserts English (the shared.en catalog is byte-for-byte the
@@ -327,6 +327,39 @@ describe('decisionActionLabel', () => {
     const out = decisionActionLabel(long, t);
     expect(out).toBe('x'.repeat(40) + '…');
     expect(out.length).toBe(41);
+  });
+
+  it('maps every ContractStatus the backend defines, and only those', () => {
+    // The full set per agent/models.py:ContractStatus — if a fifth value is
+    // added there, the unknown-passthrough case below is what it hits.
+    expect(contractStatusLabel('match', t)).toBe('Matches the contract');
+    expect(contractStatusLabel('present_allow_manual', t)).toBe('Manual change allowed');
+    expect(contractStatusLabel('present_disallow_manual', t)).toBe('Manual change not allowed');
+    expect(contractStatusLabel('absent', t)).toBe('Not in the contract');
+    // None of these may survive as a raw snake_case identifier — that was the
+    // bug: `present_disallow_manual` rendered verbatim in the STATUS column of
+    // the judge-facing desk, in Latin script under Japanese copy.
+    for (const s of ['match', 'present_allow_manual', 'present_disallow_manual', 'absent']) {
+      expect(contractStatusLabel(s, t)).not.toContain('_');
+    }
+  });
+
+  it('passes an unrecognized status through verbatim rather than blanking it', () => {
+    // Honest failure mode for a future backend enum value: show the real thing
+    // so the operator can look it up, never an empty cell or invented label.
+    expect(contractStatusLabel('some_future_verdict', t)).toBe('some_future_verdict');
+  });
+
+  it('does not resolve an Object.prototype member as a mapped status', () => {
+    expect(contractStatusLabel('toString', t)).toBe('toString');
+    expect(contractStatusLabel('constructor', t)).toBe('constructor');
+    expect(contractStatusLabel('__proto__', t)).toBe('__proto__');
+  });
+
+  it('returns "" for an empty / null / undefined status', () => {
+    expect(contractStatusLabel('', t)).toBe('');
+    expect(contractStatusLabel(null, t)).toBe('');
+    expect(contractStatusLabel(undefined, t)).toBe('');
   });
 
   it('returns "" for empty / null / undefined', () => {

@@ -256,6 +256,32 @@ describe('ApprovalDesk — pending state, rollback source', () => {
     expect(approve.getAttribute('rel')).toBe('noopener');
   });
 
+  // ds-hnn: the diff card's STATUS column rendered `contract_status` verbatim,
+  // so the desk — the judge-facing front door — showed the snake_case code
+  // identifier `present_disallow_manual` in Latin script directly beneath
+  // Japanese copy. Same defect class as the bare `rollback` in the ledger.
+  // Asserted HERE rather than only on lib/format's mapper because the bug was
+  // in the render path: a correct mapper the component doesn't call fixes
+  // nothing.
+  it('renders contract_status as an operator label, never the raw enum', () => {
+    const d = rollbackDecision({
+      diffs: [
+        { name: 'LOG_LEVEL', expected: 'info', live: 'debug', contract_status: 'present_disallow_manual' },
+        { name: 'FEATURE_FLAG_X', expected: null, live: 'on', contract_status: 'absent' },
+      ],
+    });
+    const { getByTestId } = render(ApprovalDesk, {
+      props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onNavigate: vi.fn() },
+    });
+    const card = getByTestId('drift-diff-card');
+    expect(card.textContent).toContain('Manual change not allowed');
+    expect(card.textContent).toContain('Not in the contract');
+    expect(card.textContent).not.toContain('present_disallow_manual');
+    // 'absent' is a substring of no other label here, so this is a real check
+    // that the raw enum is gone rather than merely that a label appeared.
+    expect(card.textContent).not.toMatch(/\babsent\b/);
+  });
+
   it('shows the real created_at as the "proposed" time, never a fabricated one', () => {
     const d = rollbackDecision({ created_at: '2026-07-28T09:15:00Z' });
     const { getByTestId } = render(ApprovalDesk, {

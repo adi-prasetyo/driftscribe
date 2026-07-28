@@ -287,6 +287,37 @@ export function decisionActionLabel(action: string | null | undefined, t: Transl
     : action;
 }
 
+// Mirrors agent/models.py:ContractStatus (four values). Same shape and the same
+// Object.hasOwn discipline as DECISION_ACTION_KEYS above, for the same reason:
+// a decision doc is an open shape, so a status literally named `toString` must
+// not resolve an Object.prototype member and be handed to t() as a key.
+const CONTRACT_STATUS_KEYS: Record<string, MessageKey> = {
+  match: 'shared.contract.match',
+  present_allow_manual: 'shared.contract.presentAllowManual',
+  present_disallow_manual: 'shared.contract.presentDisallowManual',
+  absent: 'shared.contract.absent',
+};
+
+/**
+ * Operator-facing label for a per-variable `contract_status`. The raw enum is a
+ * snake_case code identifier (`present_disallow_manual`) that was rendering
+ * verbatim in the STATUS column of the judge-facing desk, in Latin script
+ * directly beneath Japanese copy — the same defect class as the bare `rollback`
+ * that decisionActionLabel above fixes.
+ *
+ * An UNRECOGNIZED status falls through to the raw string rather than to an
+ * empty cell or an invented label: if the backend adds a fifth enum value, the
+ * operator sees the real thing and can look it up, which is the honest failure
+ * mode. Only the four values agent/models.py actually defines are translated.
+ */
+export function contractStatusLabel(status: string | null | undefined, t: TranslateFn): string {
+  if (typeof status !== 'string' || status === '') return '';
+  if (Object.hasOwn(CONTRACT_STATUS_KEYS, status)) return t(CONTRACT_STATUS_KEYS[status]);
+  return status.length > DECISION_ACTION_MAX
+    ? status.slice(0, DECISION_ACTION_MAX) + ELLIPSIS
+    : status;
+}
+
 /**
  * Plain-language help for a decision `action` a non-engineer can't decode from
  * the label alone. Today only `no_op` — the "checked, all clear, nothing to
