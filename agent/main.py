@@ -6791,102 +6791,130 @@ async def chat_handoff(
 
     # --- accepted: the joining crew runs now --------------------------------
     workload = pending["to"]
-    try:
-        resolution = load_workload(workload)
-    except (
-        MissingWorkerEnvError,
-        ReservedToolNotImplementedError,
-        MissingDeveloperKnowledgeApiKeyError,
-    ) as e:
-        # The crew flip has already committed. That is deliberate: the
-        # transition is what the operator confirmed, and a failed first run is
-        # an ordinary error they can retry by typing. Undoing the flip here
-        # would silently discard a confirmed decision.
-        raise HTTPException(
-            status_code=503,
-            detail=f"workload {workload!r} is not deployed: {e}.",
-        ) from e
-    _eager_resolve_upgrade_contract(resolution)
-
-    autonomy = _autonomy_state_fail_closed()
-    # Re-evaluated at redemption, NOT inherited from the proposing turn: the
-    # dial may have moved, and an anonymous visitor's restrictions must apply
-    # to the crew that is actually about to run.
-    demo_anon = _is_demo_anonymous(request)
-
-    stored = state.get_conversation(req.conversation_id) or {}
-    conv = {
-        "conversation_id": req.conversation_id,
-        "workload": workload,
-        "is_new": False,
-        "prior_turns": stored.get("turns", []),
-        "ephemeral": False,
-        # The operator confirmed a suggestion; they did not type this prompt.
-        # Recording a user turn here would put words in their mouth in a
-        # transcript whose whole value is being trustworthy.
-        "omit_user_turn": True,
-        "crew_change": {"from": pending["from"], "to": pending["to"]},
-        # Already held: ``redeem_handoff`` reserved it transactionally. Carried
-        # here so the normal release path in ``_persisting_chat_stream`` (and
-        # the JSON branch's ``finally``) frees it exactly as for a typed turn.
-        "run_id": outcome.get("run_id") or joining_run_id,
-    }
-    prompt = handoff_prompt(pending)
-    trace_id = current_trace_id_or_new()
-
-    if wants_sse:
-        return StreamingResponse(
-            _chat_sse(
-                prompt, None, conv, workload, trace_id,
-                autonomy_mode=autonomy.mode, demo_anon=demo_anon,
-                denied_tools=HANDOFF_FIRST_TURN_DENIED_TOOLS,
-            ),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no",
-                "X-Trace-Id": trace_id,
-            },
-        )
-
-    from agent.adk_agent import run_chat
-
-    _workload_token = set_workload(workload)
+    # Reserving the joining run inside the burn transaction closed the race
+    # where an ordinary turn could take the lease first — but it hands this
+    # function a lease it now has to not drop. Nothing below owns the release
+    # until a runner does, and everything between here and there can raise:
+    # a crew whose worker env is missing, a contract fetch, the autonomy read,
+    # a transient store failure. Leak one and the conversation is wedged for
+    # the full lease TTL, which the operator cannot type their way out of,
+    # because a typed turn takes the same lease. That would make the 503
+    # branch's promise below false.
+    _joining_lease_owned = True
     try:
         try:
-            if workload == "provision":
-                return await _drain_chat_stream_result(
-                    _persisting_chat_stream(
-                        "provision", prompt, conv, trace_id, None,
-                        autonomy_mode=autonomy.mode, demo_anon=demo_anon,
-                        denied_tools=HANDOFF_FIRST_TURN_DENIED_TOOLS,
+            resolution = load_workload(workload)
+        except (
+            MissingWorkerEnvError,
+            ReservedToolNotImplementedError,
+            MissingDeveloperKnowledgeApiKeyError,
+        ) as e:
+            # The crew flip has already committed. That is deliberate: the
+            # transition is what the operator confirmed, and a failed first run
+            # is an ordinary error they can retry by typing. Undoing the flip
+            # here would silently discard a confirmed decision.
+            raise HTTPException(
+                status_code=503,
+                detail=f"workload {workload!r} is not deployed: {e}.",
+            ) from e
+        _eager_resolve_upgrade_contract(resolution)
+
+        autonomy = _autonomy_state_fail_closed()
+        # Re-evaluated at redemption, NOT inherited from the proposing turn: the
+        # dial may have moved, and an anonymous visitor's restrictions must apply
+        # to the crew that is actually about to run.
+        demo_anon = _is_demo_anonymous(request)
+
+        stored = state.get_conversation(req.conversation_id) or {}
+        conv = {
+            "conversation_id": req.conversation_id,
+            "workload": workload,
+            "is_new": False,
+            "prior_turns": stored.get("turns", []),
+            "ephemeral": False,
+            # The operator confirmed a suggestion; they did not type this
+            # prompt. Recording a user turn here would put words in their mouth
+            # in a transcript whose whole value is being trustworthy.
+            "omit_user_turn": True,
+            "crew_change": {"from": pending["from"], "to": pending["to"]},
+            # Already held: ``redeem_handoff`` reserved it transactionally.
+            # Carried here so the normal release path in
+            # ``_persisting_chat_stream`` (and the JSON branch's ``finally``)
+            # frees it exactly as for a typed turn.
+            "run_id": outcome.get("run_id") or joining_run_id,
+        }
+        prompt = handoff_prompt(pending)
+        trace_id = current_trace_id_or_new()
+
+        if wants_sse:
+            response = StreamingResponse(
+                _chat_sse(
+                    prompt, None, conv, workload, trace_id,
+                    autonomy_mode=autonomy.mode, demo_anon=demo_anon,
+                    denied_tools=HANDOFF_FIRST_TURN_DENIED_TOOLS,
+                ),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "X-Accel-Buffering": "no",
+                    "X-Trace-Id": trace_id,
+                },
+            )
+            # Handover: the stream's own ``finally`` owns the release from here,
+            # and ``_drain_chat_stream_result``'s ``aclose`` guarantees it runs
+            # even if the generator is left suspended. Releasing here as well
+            # would free a lease the run still holds.
+            _joining_lease_owned = False
+            return response
+
+        from agent.adk_agent import run_chat
+
+        _workload_token = set_workload(workload)
+        try:
+            try:
+                # Same handover, one frame earlier: both branches below release
+                # in the ``finally`` directly beneath them.
+                _joining_lease_owned = False
+                if workload == "provision":
+                    return await _drain_chat_stream_result(
+                        _persisting_chat_stream(
+                            "provision", prompt, conv, trace_id, None,
+                            autonomy_mode=autonomy.mode, demo_anon=demo_anon,
+                            denied_tools=HANDOFF_FIRST_TURN_DENIED_TOOLS,
+                        )
                     )
+                result = await run_chat(
+                    prompt, session_id=None, workload=workload,
+                    autonomy_mode=autonomy.mode, prior_turns=conv["prior_turns"],
+                    demo_anon=demo_anon,
+                    denied_tools=HANDOFF_FIRST_TURN_DENIED_TOOLS,
                 )
-            result = await run_chat(
-                prompt, session_id=None, workload=workload,
-                autonomy_mode=autonomy.mode, prior_turns=conv["prior_turns"],
-                demo_anon=demo_anon,
-                denied_tools=HANDOFF_FIRST_TURN_DENIED_TOOLS,
+                persisted = await asyncio.to_thread(
+                    _persist_chat_turn, state, conv=conv, prompt=prompt,
+                    trace_id=trace_id, result=result,
+                )
+                result.pop("handoff", None)
+                if persisted:
+                    result.update(persisted)
+                return result
+            finally:
+                if workload != "provision":
+                    _release_chat_run(state, conv)
+                reset_workload(_workload_token)
+        except (
+            worker_client.WorkerClientError,
+            MissingDeveloperKnowledgeApiKeyError,
+            RuntimeError,
+        ) as e:
+            status, detail = _chat_error_payload(e, workload=workload)
+            raise HTTPException(status_code=status, detail=detail) from e
+    finally:
+        if _joining_lease_owned:
+            _release_chat_run(
+                state,
+                {"conversation_id": req.conversation_id,
+                 "run_id": outcome.get("run_id") or joining_run_id},
             )
-            persisted = await asyncio.to_thread(
-                _persist_chat_turn, state, conv=conv, prompt=prompt,
-                trace_id=trace_id, result=result,
-            )
-            result.pop("handoff", None)
-            if persisted:
-                result.update(persisted)
-            return result
-        finally:
-            if workload != "provision":
-                _release_chat_run(state, conv)
-            reset_workload(_workload_token)
-    except (
-        worker_client.WorkerClientError,
-        MissingDeveloperKnowledgeApiKeyError,
-        RuntimeError,
-    ) as e:
-        status, detail = _chat_error_payload(e, workload=workload)
-        raise HTTPException(status_code=status, detail=detail) from e
 
 
 @app.get("/conversations")

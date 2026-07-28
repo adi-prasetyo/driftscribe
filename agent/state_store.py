@@ -1179,10 +1179,13 @@ class FirestoreStateStore:
         # merely took part in, and the two candidate server-side forms both
         # fail: `workload ==` misses threads handed away, and `crews
         # array_contains` misses every conversation written before that field
-        # existed. Unioning two queries would buy nothing here — the unfiltered
-        # path already streams the whole collection and sorts in Python, and the
-        # breadcrumb walks that path on every chat turn, so the scan is the
-        # existing cost profile rather than a new one. Using the same predicate
+        # existed. A deduplicated union of both queries WOULD cut filtered reads
+        # at scale; it is not worth the second round trip here, because the
+        # unfiltered path already streams the whole collection and sorts in
+        # Python and the breadcrumb walks it on every chat turn — so that scan
+        # dominates, and this one is the existing cost profile rather than a new
+        # one. Revisit the union if the breadcrumb ever stops full-scanning.
+        # Using the same predicate
         # as the in-memory store is worth more: it is the store every test runs
         # against, so a rule cannot hold there and quietly differ in prod.
         rows: list[dict[str, Any]] = []

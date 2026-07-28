@@ -502,3 +502,57 @@ def test_a_declined_handoff_reserves_nothing(client):
     cid, nonce = _propose(client)
     assert _redeem(client, cid, nonce, accept=False).status_code == 200
     assert _chat(client, cid=cid).status_code == 200
+
+
+# --- the reserved lease must not outlive a failed join ---------------------- #
+#
+# Redemption reserves the joining run inside the burn transaction, which closes
+# the race where an ordinary turn could steal the lease. But that hands the
+# endpoint something it then has to not drop: between the commit and the runner
+# that owns the release, several ordinary failures can raise. If the lease
+# survives one, the conversation is wedged for the whole TTL — and the operator
+# cannot type their way out, because a typed turn takes the same lease. That is
+# the opposite of what the 503 branch's own comment promises.
+
+def _wedged(state, cid):
+    """Is the conversation still holding a lease no runner owns?"""
+    return state.begin_chat_run(
+        cid, run_id="after", now=dt.datetime.now(dt.timezone.utc),
+    ) is False
+
+
+def test_an_undeployed_joining_crew_releases_the_lease(client, state, monkeypatch):
+    """The 503 branch says the operator can retry by typing. That is only true
+    if the reserved lease goes with the failed join."""
+    cid, nonce = _propose(client)
+
+    def _boom(_w):
+        raise agent_main.MissingWorkerEnvError("READER_URL")
+
+    monkeypatch.setattr(agent_main, "load_workload", _boom)
+    assert _redeem(client, cid, nonce).status_code == 503
+    assert not _wedged(state, cid)
+
+
+def test_any_failure_after_the_burn_releases_the_lease(client, state, monkeypatch):
+    """Anchored on `_eager_resolve_upgrade_contract` because it runs strictly
+    AFTER redemption commits. (Anchoring this on `get_conversation` instead
+    passes vacuously: `redeem_handoff` calls it first, so the failure lands
+    before the burn and there is no reserved lease to leak.)"""
+    cid, nonce = _propose(client)
+
+    def _boom(_resolution):
+        raise RuntimeError("contract fetch failed")
+
+    monkeypatch.setattr(agent_main, "_eager_resolve_upgrade_contract", _boom)
+    with pytest.raises(RuntimeError):
+        _redeem(client, cid, nonce)
+    assert not _wedged(state, cid)
+
+
+def test_a_successful_join_still_releases_exactly_once(client, state):
+    """The guard must not double-release and free a lease the runner still
+    holds — the happy path already releases in the runner's own finally."""
+    cid, nonce = _propose(client)
+    assert _redeem(client, cid, nonce).status_code == 200
+    assert not _wedged(state, cid)
