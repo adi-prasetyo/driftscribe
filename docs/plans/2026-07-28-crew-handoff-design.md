@@ -170,6 +170,15 @@ encoded it. Each degrades silently — no error, just a wrong answer:
   transition appends a `crew_change` row, and the joining turn writes a reply
   with no prompt in front of it, because the operator confirmed a suggestion
   rather than typing one.
+- `matchesConversation` (`frontend/src/lib/conversations.ts`), behind the rail's
+  search modal — the only one of the four an operator sees directly. Its
+  docstring states the assumption outright: the haystack is "the raw workload
+  value, and the crew display name". Searching `explore` stops finding a thread
+  Explore ran and handed away.
+
+Four, and the fourth was found only by sweeping a second time from a different
+angle. Assume there is a fifth: the failure mode is silent, so a reader that
+still assumes immutability looks exactly like one that does not.
 
 The fix is to stop overloading one field with three questions:
 
