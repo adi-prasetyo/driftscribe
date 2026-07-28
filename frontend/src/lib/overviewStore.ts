@@ -187,18 +187,26 @@ export function createOverviewStore(
       await runCycle();
       // Null the deferred BEFORE its cycle runs, so a collapse arriving during
       // the trailing cycle earns the cycle after it instead of being folded into
-      // one it also predates.
+      // one it also predates. That detaching is also why the resolve needs its
+      // own finally: `waiter` is no longer reachable from `pending`, so the
+      // outer handler below cannot see it, and a throw here would leave an
+      // awaited refresh('chat-turn') hanging forever. The outer comment used to
+      // claim it covered this; it did not.
       while (pending) {
         const waiter = pending;
         pending = null;
-        await runCycle();
-        waiter.resolve();
+        try {
+          await runCycle();
+        } finally {
+          waiter.resolve();
+        }
       }
     } finally {
       inFlight = false;
-      // Never strand a waiter. Unreachable today (every fetch is internally
-      // try/caught and returns {ok:false}), but a future throw inside runCycle
-      // would otherwise leave an awaited refresh('chat-turn') hanging forever.
+      // Same guarantee for a waiter that never got its cycle started, e.g. the
+      // FIRST runCycle above threw. Unreachable today (every fetch is internally
+      // try/caught and returns {ok:false}) — but "unreachable" is what the
+      // comment said about the case directly above, too.
       if (pending) {
         const stranded = pending;
         pending = null;

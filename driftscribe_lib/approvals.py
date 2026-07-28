@@ -133,11 +133,22 @@ def _drop_unknown_fields(
 
     Ordering the deploy correctly is still worth doing; this makes the
     order stop being load-bearing. Dropping is the right failure mode for a
-    reader: an unknown key is by definition one this build has no code to
-    act on, so ignoring it costs nothing while crashing costs the page.
-    Writes are unaffected — ``create``/``record_phase``/``set_apply_audit``
-    build their own dicts and never pass through here, so a typo'd key in a
-    WRITE still surfaces as it always did.
+    reader: an unknown key is one this build has no code to act on, so
+    ignoring it changes no behavior this build has, while crashing costs the
+    page. Writes are unaffected — ``create``/``record_phase``/
+    ``set_apply_audit`` build their own dicts and never pass through here, so
+    a typo'd key in a WRITE still surfaces as it always did.
+
+    SCOPE — this is an authorization store, so the rule should not be read as
+    broader than it is. It makes an old reader IGNORE a field it does not
+    understand, which is correct for additive, non-authoritative fields (every
+    field in these schemas today). It is NOT a licence to later add a field
+    that must be OBEYED — a ``revoked`` flag, a fail-closed gate. An old build
+    cannot honour such a field whether it drops it or crashes on it, so this
+    projection neither causes nor solves that; a doc ``schema_version`` the
+    reader refuses to exceed would. Add one before the first authoritative
+    field. (Note the fields that actually gate execution are HMAC-bound
+    already — see ``compute_token_hmac``.)
     """
     return {k: v for k, v in data.items() if k in known}
 
@@ -179,9 +190,13 @@ class Approval:
     apply_audit: dict[str, Any] | None = None
 
 
-#: Field names :class:`Approval` accepts. Derived from the dataclass rather
-#: than hand-listed so adding a field can never leave this stale.
-_APPROVAL_FIELDS = frozenset(f.name for f in fields(Approval))
+#: Field names :class:`Approval` accepts from a raw doc. Derived from the
+#: dataclass rather than hand-listed so adding a field can never leave this
+#: stale, MINUS ``approval_id``: every read site passes that as an explicit
+#: keyword (it is the doc's KEY, not part of its body), so letting it through
+#: from the body would raise "got multiple values for approval_id" — the same
+#: TypeError this projection exists to abolish, wearing a different hat.
+_APPROVAL_FIELDS = frozenset(f.name for f in fields(Approval)) - {"approval_id"}
 
 
 def compute_token_hmac(
@@ -862,12 +877,13 @@ class PlanApproval:
     apply_audit: dict[str, Any] | None = None
 
 
-#: Same role as :data:`_APPROVAL_FIELDS`, for the plan-approval schema. The
+#: Same role as :data:`_APPROVAL_FIELDS` (including the ``approval_id``
+#: exclusion, for the same reason), for the plan-approval schema. The
 #: nested-``apply_audit`` design below already anticipated this failure class
 #: ("one optional field ... so a growing audit record never breaks
 #: ``PlanApproval(approval_id=id, **data)``"); the projection retires it for
 #: top-level keys too.
-_PLAN_APPROVAL_FIELDS = frozenset(f.name for f in fields(PlanApproval))
+_PLAN_APPROVAL_FIELDS = frozenset(f.name for f in fields(PlanApproval)) - {"approval_id"}
 
 
 def _parse_rfc3339_utc(value: str) -> dt.datetime:

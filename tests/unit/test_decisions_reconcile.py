@@ -257,11 +257,20 @@ def test_the_cooldown_is_per_approval_not_global(calls) -> None:
     assert calls == ["ap-1", "ap-2"]
 
 
-def test_a_failed_attempt_still_starts_the_cooldown(calls, monkeypatch) -> None:
+def test_a_failed_attempt_still_starts_the_cooldown(monkeypatch) -> None:
     """The attempt is marked BEFORE the call. A worker that is timing out is
     exactly the one that must not be retried by every tab on the next poll —
-    marking only on success would invert the fix."""
+    marking only on success would invert the fix.
+
+    COUNTS the attempts. An earlier version of this test asserted only that both
+    calls served the un-reconciled record, which is true whether or not a
+    cooldown exists (the raising worker produces that outcome either way) — it
+    would have passed against the unfixed code. Caught in review.
+    """
+    attempts: list[str] = []
+
     def _boom(approval_id: str):
+        attempts.append(approval_id)
         raise RuntimeError("worker down")
 
     monkeypatch.setattr(agent_main.worker_client, "call_reconcile", _boom)
@@ -269,9 +278,37 @@ def test_a_failed_attempt_still_starts_the_cooldown(calls, monkeypatch) -> None:
     record = _approval(PHASE_OUTCOME_UNKNOWN)
     first = _maybe_reconcile(store, "ap-1", record, [3])
     second = _maybe_reconcile(store, "ap-1", record, [3])
-    # Both still serve the honest un-reconciled record.
+
+    assert attempts == ["ap-1"], "the failed attempt must start the cooldown"
+    # …and both still serve the honest un-reconciled record.
     assert first is record
     assert second is record
+
+
+def test_the_give_up_ceiling_sits_where_the_constant_says(calls) -> None:
+    """Pins the ceiling's VALUE, not just that one exists.
+
+    Deliberately a pair either side rather than exact equality: `age` is
+    measured against a live clock, so real time advances between building the
+    fixture and evaluating the gate and an "exactly at the ceiling" fixture
+    always lands a hair over. Exact `>` vs `>=` is unobservable here and
+    operationally identical anyway — a microsecond either side of 24h is the
+    same decision. What CAN regress is the constant moving, and this catches
+    that from either direction.
+    """
+    ceiling = agent_main._RECONCILE_GIVE_UP_AFTER_S
+    store = _Store(after=_approval(PHASE_APPLIED))
+
+    _maybe_reconcile(
+        store, "ap-1", _approval(PHASE_OUTCOME_UNKNOWN, age_s=ceiling - 60), [3]
+    )
+    assert calls == ["ap-1"], "a minute inside the ceiling must still reconcile"
+
+    agent_main._reset_reconcile_state_for_tests()  # clear ap-1's cooldown
+    _maybe_reconcile(
+        store, "ap-1", _approval(PHASE_OUTCOME_UNKNOWN, age_s=ceiling + 60), [3]
+    )
+    assert calls == ["ap-1"], "a minute past it must not"
 
 
 def test_a_day_old_unsettled_row_is_given_up_on(calls) -> None:

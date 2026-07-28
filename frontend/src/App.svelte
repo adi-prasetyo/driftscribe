@@ -388,11 +388,22 @@
   let tourOffered = $state(shouldOfferTour(window.location.search, tourDone()));
   // The tour spotlights views; it does not navigate away from them. See the
   // `preserveChatState` note on `navigate` (ds-s9q).
+  //
+  // Because it preserves the chat errand, the URL it writes mid-tour can read
+  // `?view=estate&conversation=…` — and viewFromSearch gives chat intent
+  // precedence, so RELOADING that exact address lands on chat, not estate.
+  // Harmless while the tour is on screen (nobody reloads mid-spotlight) but it
+  // must not outlive it, or a link copied afterwards resolves somewhere the
+  // operator was not. So the tour remembers where it started and puts the view
+  // back on close, which is also the behavior a visitor expects from a thing
+  // that overlays their screen and then goes away.
+  let tourReturnView: AppView | null = null;
   function tourNavigate(v: AppView): void {
     navigate(v, { preserveChatState: true });
   }
   function startTour(): void {
     tourOffered = false;
+    tourReturnView = view;
     tourOpen = true;
     // The tour's "controls" step spotlights the header corner the popovers hang
     // from — close them (notice included) before the spotlight lands. Pause and
@@ -407,6 +418,13 @@
   function closeTour(): void {
     tourOpen = false;
     markTourDone();
+    // Back to where the operator was before the tour borrowed the screen, so no
+    // view/URL disagreement survives it. Still preserveChatState — an open
+    // thread must come back too, which is the whole point of ds-s9q.
+    if (tourReturnView !== null && tourReturnView !== view) {
+      navigate(tourReturnView, { preserveChatState: true });
+    }
+    tourReturnView = null;
   }
 
   // ---- auth plumbing (replaces window.prompt) ----

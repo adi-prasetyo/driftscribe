@@ -4161,28 +4161,44 @@ def _map_worker_error(
     )
 
 
-def _approval_with_recorded_phase(store, approval_id: str):  # noqa: ANN001, ANN201
-    """Return the approval doc iff it carries a recorded rollback phase.
+def _recorded_phase(store, approval_id: str) -> str | None:  # noqa: ANN001
+    """The rollback phase currently recorded on an approval, or ``None``.
 
-    The question this answers is narrow: after the worker refused with a 5xx,
-    did it nonetheless get far enough to write an outcome? ``apply_audit.phase``
-    is written atomically with the ``pending → used`` claim, so its presence
-    means the claim landed and the doc's own account of what happened is more
-    truthful than the transport error. Returns ``None`` when there is no phase,
-    no doc, or the read itself fails — every one of which means "we have nothing
-    better than the error", so the caller raises as before. See the ds-z4z
-    comment at the approve branch's ``except``.
+    Fail-soft on every failure mode (no doc, read error) because both callers
+    treat ``None`` as "we know nothing", which only ever makes the ds-z4z
+    fall-through stricter.
     """
     try:
         approval = store.get(approval_id)
     except Exception:  # noqa: BLE001 — a failed probe must not mask the worker error
-        log.exception("approve: could not re-read approval after worker error")
+        log.exception("approve: could not read approval phase")
         return None
     if approval is None:
         return None
-    if not (getattr(approval, "apply_audit", None) or {}).get("phase"):
+    phase = (getattr(approval, "apply_audit", None) or {}).get("phase")
+    return phase if isinstance(phase, str) and phase else None
+
+
+def _approval_if_phase_advanced(store, approval_id: str, *, before: str | None):  # noqa: ANN001, ANN201
+    """Return the approval doc iff its phase CHANGED since ``before``.
+
+    The narrow question after a worker 5xx: did *this* request get far enough to
+    write an outcome? ``apply_audit.phase`` is written atomically with the
+    ``pending → used`` claim, so a transition across this call means the claim
+    landed here and the doc's account beats the transport error.
+
+    A phase that was ALREADY there proves only that some earlier request claimed
+    this approval. Accepting that would let a spent-token replay during a real
+    outage render the original outcome at HTTP 200 and hide the outage — so an
+    unchanged phase returns ``None`` and the caller raises as before.
+    """
+    if (after := _recorded_phase(store, approval_id)) is None or after == before:
         return None
-    return approval
+    try:
+        return store.get(approval_id)
+    except Exception:  # noqa: BLE001 — same fail-soft rule as above
+        log.exception("approve: could not re-read approval after worker error")
+        return None
 
 
 def _map_tofu_apply_error(
@@ -6288,6 +6304,11 @@ def approval_post(
                 status_code=409,
                 detail=autonomy_apply_blocked_detail(autonomy.mode),
             )
+        # The phase BEFORE we hand the token to the worker, so the error handler
+        # below can tell "this request claimed and then failed" from "an old
+        # approval plus a current outage". Read fail-soft: None here only ever
+        # makes the fall-through stricter.
+        phase_before = _recorded_phase(store, approval_id)
         try:
             execute_result = worker_client.call_execute(approval_id, t)
         except worker_client.WorkerClientError as e:
@@ -6309,12 +6330,30 @@ def approval_post(
             # execute_result still None, so the page shows the phase copy and
             # NOT the "Rollback dispatched" note.
             #
-            # No new disclosure: reaching a recorded phase required a valid
-            # single-use token, and GET /approvals already renders this same
-            # phase copy to anyone holding the URL (it is always-200 by
-            # design). Non-5xx keeps collapsing through _map_worker_error so a
-            # probe still cannot enumerate which worker-side check refused it.
-            approval_after_error = _approval_with_recorded_phase(store, approval_id)
+            # TWO gates, and both are load-bearing.
+            #
+            # 5xx ONLY. Without this the fall-through fires on a 403 too, so
+            # replaying a spent token against a phased doc answers 200 while the
+            # same replay against a pending one answers 403 — a status-code
+            # oracle for approval state, which is the exact property
+            # _map_worker_error's 4xx collapse exists to deny. (Codex review of
+            # this commit caught it: the comment above described the gate, the
+            # code did not have it.)
+            #
+            # And the phase must have CHANGED across this call. A phase alone
+            # proves only that SOME request once claimed this approval, not that
+            # this one did — so a spent-token replay arriving while the worker is
+            # genuinely unreachable would otherwise render the original outcome
+            # and hide a live outage behind an HTTP 200. Requiring a transition
+            # ties the page we render to the request that caused it.
+            #
+            # Given both, no new disclosure: the doc moved because THIS token
+            # claimed it, and GET /approvals already renders this same phase copy
+            # to anyone holding the URL (it is always-200 by design).
+            if 500 <= e.status_code < 600:
+                approval_after_error = _approval_if_phase_advanced(
+                    store, approval_id, before=phase_before
+                )
             if approval_after_error is None:
                 raise _map_worker_error(e, action="execute") from e
             log.warning(
