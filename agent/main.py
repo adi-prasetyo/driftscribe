@@ -18,7 +18,17 @@ from concurrent.futures import TimeoutError as _FutureTimeout
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import Depends, FastAPI, Form, Header, HTTPException, Query, Request, Response
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+)
 from fastapi.responses import (
     HTMLResponse,
     JSONResponse,
@@ -2218,6 +2228,7 @@ _GOOGLE_AUTH_TRANSPORT_LOCK = threading.Lock()
 @app.post("/eventarc")
 async def eventarc(
     request: Request,
+    background_tasks: BackgroundTasks,
     authorization: str | None = Header(default=None),
 ) -> dict:
     """Eventarc auto-trigger entrypoint (Phase 14.2).
@@ -2258,11 +2269,25 @@ async def eventarc(
       ``(service, region)`` is off-target. Eventarc retries on non-2xx,
       so we explicitly 200 here to acknowledge delivery; the body carries
       ``{"ignored": "non-target-service", ...}``.
-    - **200** — recheck dispatched; body is the standard ``_do_recheck``
-      response with ``trigger="eventarc"``.
-    - **5xx from _do_recheck** — propagated unchanged (worker outage = 502,
-      contract-load failure = 500, etc.). The handler does NOT swallow
-      these — Eventarc retries them, which is the correct behavior.
+    - **200 dispatched** — in-scope event acknowledged; the recheck runs
+      as a background task AFTER this response. Body is
+      ``{"dispatched": "background", "trigger": "eventarc", service,
+      region}`` — it never carries the decision (rationale can quote live
+      secret values; /runs/{id} and /decisions are the scrubbed read
+      surfaces). 2026-07-29 incident: the handler used to await the full
+      Anchor turn (20–120s) here, but Pub/Sub push only waits
+      ``ackDeadlineSeconds`` for the response, so every delivery was
+      treated as failed and redelivered for hours — saturating the
+      maxScale=1/concurrency=2 service ("Rate exceeded." for operators).
+      Ack-fast is the Pub/Sub-documented contract for slow handlers.
+      NOTE: background work needs CPU after the response — the service
+      must run with CPU always allocated (``--no-cpu-throttling``), or
+      the recheck stalls once the request closes.
+    - **_do_recheck failures** — logged, never propagated. A non-2xx here
+      would make Eventarc redeliver into the same storm the fast-ack
+      exists to prevent. Recovery story mirrors the pause gate: the drift
+      is re-discovered by the next audit event, the demo-reset cron, or a
+      manual /recheck. See ``_eventarc_background_recheck``.
 
     Payload-blindness: the handler only reads ``(service, region)`` from
     ``resource.labels`` and intentionally does NOT branch on the audit log's
@@ -2447,12 +2472,11 @@ async def eventarc(
         )
         return {"ignored": "paused", "service": service, "region": region}
 
-    # In-scope event: dispatch through the same recheck pipeline as the
-    # manual /recheck path. ``trigger="eventarc"`` lets ``/runs/{id}`` and
-    # the e2e smoke test identify decisions produced by the auto-trigger.
-    # _do_recheck's HTTPExceptions (worker 502, contract-load 500, claim
-    # 409) propagate unchanged — Eventarc will retry on those, which is
-    # the correct behavior.
+    # In-scope event: ack now, recheck in the background (2026-07-29
+    # incident — see the docstring's 200-dispatched bullet). Starlette
+    # background tasks run after the response body is sent, so the request
+    # slot is freed and Pub/Sub sees its 200 within the ack deadline
+    # regardless of how long the Anchor turn takes.
     #
     # Phase 17.A.3 (Codex blocker): the workload is HARDCODED to "drift"
     # server-side. Cloud Run audit-log events are drift's input source by
@@ -2461,8 +2485,60 @@ async def eventarc(
     # ignored. An event-triggered upgrade workload, if ever added, will
     # get its own endpoint with its own server-side binding (e.g.
     # ``/eventarc-upgrade`` against a dependabot-style trigger).
-    # Serve-time rationale scrub (PR 2) — same wrap as /recheck.
-    return scrub_decision_rationale(await _do_recheck("eventarc", workload="drift"))
+    background_tasks.add_task(_eventarc_background_recheck, service, region)
+    return {
+        "dispatched": "background",
+        "trigger": "eventarc",
+        "service": service,
+        "region": region,
+    }
+
+
+async def _eventarc_background_recheck(service: str, region: str) -> None:
+    """Run the Eventarc-triggered recheck after the push delivery was acked.
+
+    Failure containment is the whole point: whatever ``_do_recheck`` raises,
+    NOTHING may escape — the 200 is already on the wire, and an exception
+    here would surface as an ASGI-cycle error with no one to receive it.
+    Outcomes are logged structured (bounded fields only — decision content
+    like ``rationale`` can quote live secret values and stays out of logs):
+
+    - ``eventarc_background_recheck_done`` — decision recorded/reused.
+    - ``eventarc_background_recheck_rejected`` — _do_recheck refused with
+      an HTTPException (worker 502, claim-race 409, contract 500). The
+      event is dropped, not retried; the next audit event, scheduled
+      recheck, or manual /recheck re-discovers the drift (same recovery
+      story as the pause gate above).
+    - ``eventarc_background_recheck_failed`` — unexpected crash; full
+      traceback via ``log.exception`` for diagnosis.
+    """
+    try:
+        decision = await _do_recheck("eventarc", workload="drift")
+    except HTTPException as e:
+        log.warning(
+            "eventarc_background_recheck_rejected",
+            extra={
+                "service": service,
+                "region": region,
+                "status_code": e.status_code,
+                "detail": str(e.detail),
+            },
+        )
+    except Exception:
+        log.exception(
+            "eventarc_background_recheck_failed",
+            extra={"service": service, "region": region},
+        )
+    else:
+        log.info(
+            "eventarc_background_recheck_done",
+            extra={
+                "service": service,
+                "region": region,
+                "decision_id": decision.get("decision_id"),
+                "action": decision.get("action"),
+            },
+        )
 
 
 # Worker-injected demo marker (see infra/cloudflare/worker/src/proxy.js):

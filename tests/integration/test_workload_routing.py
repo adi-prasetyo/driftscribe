@@ -601,7 +601,11 @@ def test_eventarc_ignores_workload_in_payload_and_routes_to_drift(
         )
 
     assert r.status_code == 200, r.text
-    assert r.json() == recheck_result
+    # Fast-ack (2026-07-29 incident): the recheck runs as a background
+    # task and the ack body no longer carries the decision. The workload
+    # pin below is unaffected — TestClient runs background tasks before
+    # returning, so call_args is populated.
+    assert r.json()["dispatched"] == "background"
 
     # The Codex-blocker assertion: regardless of the smuggled
     # ``workload="upgrade"`` in the body, _do_recheck must be called
