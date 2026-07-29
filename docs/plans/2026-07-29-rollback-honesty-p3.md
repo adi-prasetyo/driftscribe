@@ -126,16 +126,27 @@ closed properly by ds-uwc's source→target comparison.
 ### Correction 3: `live_env` is not complete ground truth
 
 `driftscribe_lib/cloud_run.py:15` **skips Secret-Manager-backed entries**, and
-flattens all containers last-one-wins. So a var missing from `live_env` is either
-genuinely deleted or present-but-opaque.
+flattens all containers last-one-wins. So a declared var missing from `live_env`
+is either genuinely deleted or present-but-opaque.
 
-Checked hard, because unknown-laundered-into-absent is this repo's recurring
-defect. It does not bite in the direction that survives: **both readings are "not
-observably at the declared value"**, and a var the contract pins to the literal
-`"mock"` that now resolves through Secret Manager has departed from the declared
-config as surely as one that was deleted. The ambiguity limits what we may
-*claim*, not which way the verdict falls. It would have bitten in the veto
-direction — which no longer exists here.
+Revision 1 counted a missing key as a violation, arguing both readings are "not
+observably at the declared value". Revision 3 does not, and the argument that
+killed it is the one I had already accepted one layer up:
+
+> I refuse a malformed reader payload rather than coerce it to `{}` **precisely
+> because an empty env would manufacture violations**. A well-formed payload that
+> omits a secret-backed entry manufactures exactly the same one.
+
+And the contract's schema declares a `value`; it never says a declared var must
+be an inline literal. A `PAYMENT_MODE` backed by Secret Manager and resolving to
+`mock` is **compliant** and reads here as missing. *Not observably compliant* is
+not *observably non-compliant*, and this predicate AUTHORIZES a traffic shift, so
+absence of proof must not become the proof.
+
+Rule: **confirmed present and differing**. Missing is unreadable, and unreadable
+counts for nothing. The cost is that a genuinely deleted contract var can no
+longer justify an autonomous rollback — the honest trade, since we cannot tell
+deletion from opacity without presence metadata the reader does not emit.
 
 Single-container is assumed. Stated rather than silently relied on.
 
@@ -181,21 +192,27 @@ declared var read as "not at its contract value" and would **manufacture** the
 violation that authorizes the rollback. That is a fail-OPEN degradation and it has
 its own parametrized test.
 
-### Known residual: the idempotency cache short-circuits the gate
+### The idempotency cache short-circuited the gate — now closed
 
 `validate()` runs at `agent/main.py:1891`, *after* the cached-decision return at
-`:1854`. So a rollback decision already cached under the same event key is served
-without re-validating. Bounded, and left as-is:
+`:1854`, so a decision already cached under the same event key is served without
+re-validating.
 
-- `_cached_rollback_is_expired` evicts a cached rollback past its 15-minute TTL,
-  so the window is one TTL;
-- the event key is derived from `live_env`, so a reconstruction and a real read
-  produce *different* keys — a cache hit on the reconstruction path comes from a
-  prior run that was equally ungrounded, not from a grounded one being reused;
-- nothing executes without the operator's click either way.
+Revision 2 documented this as a bounded residual and claimed the event key made
+it harmless, because a reconstruction and a real read would produce different
+keys. **That claim was false.** `_event_key` hashes dict CONTENT only — no
+provenance — and the model has already seen the reader's result, so an accurate
+report reconstructs the exact dict the coordinator would have read and hashes
+identically. An ungrounded run could therefore be handed a grounded run's
+rollback approval, and the new refusal would never get to speak.
 
-Moving `validate()` ahead of the cache lookup would change the idempotency
-semantics of every action, not just rollback. Not worth doing inside a P3.
+Fixed rather than re-documented: `_event_key` takes `env_observed`, and a
+reconstructed env adds an `env_provenance` component that puts it in a separate
+cache namespace. The marker is added **only** in the reconstructed case, so every
+existing grounded key is byte-identical and this deploy invalidates no cached
+decision. Pinned by an integration test that runs a grounded /recheck, then an
+ungrounded one whose model reports the env perfectly — the worst case for the
+cache — and requires the second to 502 rather than return the first's approval.
 
 ### Demo-path check
 

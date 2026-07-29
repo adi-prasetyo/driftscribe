@@ -1050,6 +1050,7 @@ def _event_key(
     contract_path: str,
     contract_hash: str,
     live_env: dict[str, str],
+    env_observed: bool = True,
 ) -> str:
     """Derive a stable event key from the inputs that define a decision.
 
@@ -1058,6 +1059,20 @@ def _event_key(
 
     Including ``contract_hash`` (not just contract_path) means a contract edit
     while live env stays the same still invalidates the prior cached decision.
+
+    ``env_observed=False`` marks a key derived from the ADK path's
+    RECONSTRUCTED env (rebuilt from ``proposal.env_diffs`` when the Reader
+    Worker read failed) and puts it in a different cache namespace from a key
+    derived from a real read (ds-b3m).
+
+    Without this the two collide, and the collision is not exotic: the model has
+    already seen the reader's result, so an accurate report reconstructs the
+    exact dict the coordinator would have read, hashing identically. The cached
+    decision is returned BEFORE ``validate()`` runs, so an ungrounded run could
+    otherwise be handed a rollback approval minted by a grounded one — and
+    ``validate()``'s refusal of an unobserved env would never get to speak. The
+    namespace split makes "a cache hit on the ungrounded path came from an
+    equally ungrounded run" true by construction instead of by luck.
     """
     payload = {
         "trigger": trigger,
@@ -1066,6 +1081,11 @@ def _event_key(
         "contract_hash": contract_hash,
         "live_env": dict(sorted(live_env.items())),
     }
+    if not env_observed:
+        # Added ONLY in the reconstructed case, so every existing grounded key
+        # is byte-identical to what it was before ds-b3m and no cached decision
+        # is invalidated by this deploy.
+        payload["env_provenance"] = "reconstructed"
     h = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
     return f"{trigger}-{service}-{h}"
 
@@ -1895,7 +1915,12 @@ async def _do_recheck(
 
     contract_hash = _hash_contract(contract)
     event_key = _event_key(
-        trigger, s.target_service, s.contract_path, contract_hash, live_env
+        trigger,
+        s.target_service,
+        s.contract_path,
+        contract_hash,
+        live_env,
+        env_observed=observed_env is not None,
     )
     if force:
         # Distinct key so the forced decision is cached under its own slot

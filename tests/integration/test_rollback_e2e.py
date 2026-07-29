@@ -1208,3 +1208,131 @@ def test_rollback_still_proposed_when_observed_env_corroborates_the_proposal(
     assert r.json()["action"] == "rollback"
     assert r.json()["approval"]["approval_url"] == _APPROVAL_URL
     m_execute.assert_not_called()  # still HITL — nothing executed
+
+
+def test_an_ungrounded_recheck_cannot_reuse_a_grounded_decision_from_the_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The cached decision is returned BEFORE validate() runs, so the event key
+    is what actually keeps an ungrounded run away from a grounded one's approval.
+
+    The collision this pins is not exotic. The model has already seen the
+    reader's result, so an accurate report reconstructs the exact dict the
+    coordinator would have read — same content, same hash, same key. Without a
+    provenance component the second call here would be served the first call's
+    rollback approval and validate()'s refusal would never get to speak.
+
+    Run 1: reader OK, rollback proposed and cached.
+    Run 2: reader down, model reports the SAME env → identical reconstruction.
+           Must 502, not hand back run 1's approval."""
+    monkeypatch.setenv("USE_ADK", "true")
+    get_settings.cache_clear()
+    _reset_state_for_tests()
+
+    grounded_env = {"PAYMENT_MODE": "live", "FEATURE_NEW_CHECKOUT": "false"}
+
+    def failing_reader(worker: str, payload: dict, *args: Any, **kwargs: Any) -> Any:
+        if worker == "reader":
+            raise RuntimeError("reader worker unreachable")
+        if worker == "rollback":
+            raise AssertionError("must not mint a second approval")
+        if worker == "notifier":
+            return _notifier_envelope()
+        raise AssertionError(f"unexpected worker call: {worker!r}")
+
+    # The proposal's diffs reconstruct exactly `grounded_env` (PAYMENT_MODE=live
+    # is reported; FEATURE_NEW_CHECKOUT is what makes them differ, so report it
+    # too — this is the WORST case for the cache, i.e. a perfectly accurate model).
+    proposal = _rollback_proposal()
+    proposal.env_diffs.append(
+        EnvDiff(
+            name="FEATURE_NEW_CHECKOUT",
+            expected="false",
+            live="false",
+            contract_status=ContractStatus.MATCH,
+            debug_config_value=None,
+            recent_pr_match=None,
+        )
+    )
+
+    with (
+        patch("agent.main._run_adk_agent", AsyncMock(return_value=proposal)),
+        patch("agent.main.worker_client.call") as m_call,
+    ):
+        m_call.side_effect = _make_dispatch(live_env=grounded_env)
+        r1 = TestClient(app).post("/recheck")
+    assert r1.status_code == 200, r1.text
+    assert r1.json()["approval"]["approval_url"] == _APPROVAL_URL
+
+    with (
+        patch("agent.main._run_adk_agent", AsyncMock(return_value=proposal)),
+        patch("agent.main.worker_client.call") as m_call,
+    ):
+        m_call.side_effect = failing_reader
+        r2 = TestClient(app).post("/recheck")
+
+    assert r2.status_code == 502, r2.text
+    assert "no observed live env" in r2.text
+    assert _APPROVAL_URL not in r2.text
+
+
+def test_classifier_path_502s_on_a_malformed_reader_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The non-ADK path has no reconstruction to fall back on, so a payload it
+    cannot read is an upstream failure — the same 502 a transport error gets,
+    not a silent empty env fed to the classifier."""
+    monkeypatch.setenv("USE_ADK", "false")
+    get_settings.cache_clear()
+    _reset_state_for_tests()
+
+    def dispatch(worker: str, payload: dict, *args: Any, **kwargs: Any) -> Any:
+        if worker == "reader":
+            return {"service": "payment-demo", "env": ["PAYMENT_MODE=live"]}
+        raise AssertionError(f"unexpected worker call: {worker!r}")
+
+    with patch("agent.main.worker_client.call") as m_call:
+        m_call.side_effect = dispatch
+        r = TestClient(app).post("/recheck")
+
+    assert r.status_code == 502, r.text
+    assert "malformed env payload" in r.text
+
+
+def test_a_well_formed_empty_env_is_treated_as_an_observation_not_a_read_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A service really can have no env block, so `env: {}` from a well-formed
+    payload is something we OBSERVED — not a failure to observe.
+
+    Both outcomes are a refusal, which is why this needs its own test: the
+    difference is only visible in WHICH refusal. An observed empty env refuses
+    for "no hard contract violation" (we looked, and there is nothing to
+    revert); a failed read refuses for "no observed live env" (we could not
+    look). Collapsing the two — `if not live_env` instead of `if live_env is
+    None` at the call site — also silently swaps the idempotency key onto the
+    reconstructed namespace, so a real observation would start colliding with
+    ungrounded runs."""
+    monkeypatch.setenv("USE_ADK", "true")
+    get_settings.cache_clear()
+    _reset_state_for_tests()
+
+    def dispatch(worker: str, payload: dict, *args: Any, **kwargs: Any) -> Any:
+        if worker == "reader":
+            return _reader_envelope({})
+        if worker == "rollback":
+            raise AssertionError("nothing observed justifies a rollback")
+        if worker == "notifier":
+            return _notifier_envelope()
+        raise AssertionError(f"unexpected worker call: {worker!r}")
+
+    with (
+        patch("agent.main._run_adk_agent", AsyncMock(return_value=_rollback_proposal())),
+        patch("agent.main.worker_client.call") as m_call,
+    ):
+        m_call.side_effect = dispatch
+        r = TestClient(app).post("/recheck")
+
+    assert r.status_code == 502, r.text
+    assert "no hard contract violation" in r.text
+    assert "no observed live env" not in r.text

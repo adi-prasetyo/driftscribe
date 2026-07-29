@@ -36,6 +36,14 @@ from agent.validator import ValidationError, validate
 _DRIFTED_LIVE_ENV = {"PAYMENT_MODE": "live", "FEATURE_X": "false"}
 
 
+def _authorize(contract, live_env):
+    """Direct handle on the ds-b3m layer, for tests that isolate IT rather than
+    `validate()`'s composition of the two layers."""
+    from agent.validator import _authorize_rollback_from_live_env
+
+    return _authorize_rollback_from_live_env(contract, live_env)
+
+
 def _contract():
     return OpsContract(
         service="payment-demo",
@@ -519,10 +527,17 @@ def test_validator_treats_a_deleted_disallow_manual_var_as_a_deviation():
         )
     ]
     p = _rollback_proposal(diffs=diffs)
-    # The observed env is missing the key too, so the ds-b3m layer sees the same
-    # deletion the diff reports. An absent declared var is a deviation there as
-    # well — ``.get`` returns None, which never equals the contract's str value.
-    validate(p, _contract(), live_env={"FEATURE_X": "false"})  # must not raise
+    # The observed env DELIBERATELY does not match the reported scenario, and
+    # that is worth spelling out. This test's subject is the reported-diff loop,
+    # which treats live=None as a deviation. The ds-b3m layer cannot agree: the
+    # reader omits a var both when it is deleted and when it is
+    # Secret-Manager-backed, so a missing key is unreadable rather than
+    # violated, and it will not authorize a rollback on its own. Supplying an
+    # env where the key really is missing would make this test pass or fail on
+    # the NEW layer's refusal instead of the OLD layer's acceptance, which is
+    # not what it is here to prove. See
+    # test_an_opaque_or_deleted_disallow_manual_var_cannot_authorize_a_rollback.
+    validate(p, _contract(), live_env=_DRIFTED_LIVE_ENV)  # must not raise
 
 
 def test_validator_skips_absent_unknown_var_instead_of_rejecting_absent():
@@ -637,17 +652,60 @@ def test_validator_rejects_rollback_when_observed_env_shows_no_violation():
         )
 
 
-def test_validator_accepts_a_rollback_the_model_UNDERreported():
-    """Grounding cuts both ways: the model omits the violation entirely and
-    reports an unrelated (undeclared, present) var instead. That proposal is
-    refused by the reported-diff loop for its own reasons — but a proposal that
-    merely under-describes a violation the service really has must not be
-    refused BY THIS LAYER, which is the one thing this test isolates."""
-    _authorize = __import__(
-        "agent.validator", fromlist=["_authorize_rollback_from_live_env"]
-    )._authorize_rollback_from_live_env
-    # No raise: PAYMENT_MODE really is drifted, FEATURE_X really is at contract.
+def test_the_observed_env_layer_alone_accepts_a_real_violation():
+    """Isolates the helper: a genuine PAYMENT_MODE violation with FEATURE_X at
+    its contract value is accepted.
+
+    Named for what it actually proves. It calls the private helper directly, so
+    it says nothing about `validate()`'s wiring or the call site — those are
+    covered by the integration tests in tests/integration/test_rollback_e2e.py.
+    """
     _authorize(_contract(), {"PAYMENT_MODE": "live", "FEATURE_X": "false"})
+
+
+def test_an_allow_manual_deviation_alone_cannot_authorize_a_rollback():
+    """Every hard var at its contract value and only the OPERATOR-SAFE var
+    differing is not a rollback-justifying state.
+
+    Without this, deleting the `allow_manual_change` skip in the loop would
+    change nothing detectable — the other allow_manual tests all carry a real
+    PAYMENT_MODE violation alongside, so the skip could be removed and they
+    would still pass. This is the case that makes the skip load-bearing."""
+    with pytest.raises(ValidationError, match="no hard contract violation"):
+        _authorize(_contract(), {"PAYMENT_MODE": "mock", "FEATURE_X": "true"})
+
+
+def test_an_opaque_or_deleted_disallow_manual_var_cannot_authorize_a_rollback():
+    """THE DISPUTED CASE, pinned.
+
+    The reader omits a var both when it is genuinely deleted AND when it is
+    Secret-Manager-backed (`_extract_env_from_containers` skips `value_source`
+    entries). A secret-backed PAYMENT_MODE resolving to "mock" is CONTRACT
+    COMPLIANT — the schema declares a value, never that it must be an inline
+    literal — and reads here as missing.
+
+    A draft counted a missing key as a violation, on the argument that both
+    branches of the ambiguity are "not observably at the declared value". True,
+    and it does not follow: not observably compliant is not observably
+    non-compliant, and this predicate AUTHORIZES a traffic shift. It was also
+    inconsistent with the malformed-payload rule at the call site, which refuses
+    to coerce a bad reader response to {} precisely because an empty env would
+    manufacture violations — an omitted secret-backed entry manufactures the
+    same one."""
+    with pytest.raises(ValidationError, match="no hard contract violation"):
+        _authorize(_contract(), {"FEATURE_X": "false"})
+
+
+def test_a_genuinely_empty_observed_env_is_an_observation_and_still_refuses():
+    """`{}` from a well-formed reader payload is a real observation (a service
+    can have no env block) — distinct from the `None` a malformed payload
+    produces. Both refuse a rollback here, but for DIFFERENT stated reasons, and
+    the distinction is what stops a truthiness check from quietly replacing the
+    `is None` check at the call site."""
+    with pytest.raises(ValidationError, match="no hard contract violation"):
+        _authorize(_contract(), {})
+    with pytest.raises(ValidationError, match="no observed live env"):
+        _authorize(_contract(), None)
 
 
 def test_validator_refuses_rollback_when_no_observed_env_is_available():
@@ -675,9 +733,6 @@ def test_observed_env_layer_ignores_undeclared_vars_entirely():
     about (PORT, K_SERVICE, ...). Treating their presence as deviation — which
     is what the REPORTED-diff loop does for a var the model names — would refuse
     every rollback that ever ran. The contract governs what it declares."""
-    _authorize = __import__(
-        "agent.validator", fromlist=["_authorize_rollback_from_live_env"]
-    )._authorize_rollback_from_live_env
     _authorize(
         _contract(),
         {

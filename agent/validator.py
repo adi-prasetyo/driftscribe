@@ -44,11 +44,17 @@ def _authorize_rollback_from_live_env(
 
     The per-diff loop in :func:`validate` judges the evidence the MODEL reported.
     This judges the evidence we went and looked at ourselves, and it is the half
-    that can see an OMISSION: a model that wants a drifted ``allow_manual`` var
-    to escape the gate can simply leave it out of ``proposal.env_diffs``, and
-    before this the rollback proceeded and reverted that var anyway. The honest
-    statement of the old guarantee was "of the deviations REPORTED, all are hard
-    violations" — which is not what a safety gate should be promising.
+    that can see an OMISSION: before this, a proposal whose diff array contained
+    no real violation at all — fabricated, or describing a service state that had
+    since changed — satisfied the gate as long as each diff it DID list derived
+    ``present_disallow_manual`` from the contract. The honest statement of the
+    old guarantee was "of the deviations REPORTED, all are hard violations",
+    which is not what a safety gate should be promising. This layer requires
+    that a hard violation actually EXISTS on the service.
+
+    The omission it closes is therefore of a HARD VIOLATION, not of an
+    ``allow_manual`` change — see the scope note below, and note that an earlier
+    version of this docstring claimed the latter while the code did the former.
 
     ``live_env is None`` means we have NO ground truth and the rollback is
     refused. That is not a formality. ``agent/main.py`` has two sources for this
@@ -83,35 +89,21 @@ def _authorize_rollback_from_live_env(
 
     The pre-existing reported-diff loop in :func:`validate` still refuses a
     rollback whose proposal REPORTS a deviating ``allow_manual`` var. That is
-    left exactly as it was: not widened, not narrowed. It is worth being blunt
-    that this leaves a known hole — a model can still change the outcome by
-    OMITTING such a diff — and that grounding it here would not fix it, because
-    the grounded predicate would be the wrong one. See
+    left exactly as it was: not widened, not narrowed. Being blunt about what
+    that leaves: a model can still change the OUTCOME by omitting such a diff —
+    reporting it refuses, omitting it proceeds — and grounding that rule here
+    would not fix it, because the grounded predicate would be the wrong one.
+    ds-uwc SURFACES the consequence on the approval page; it does not by itself
+    close the asymmetry. Closing it means replacing the current-vs-contract veto
+    with a target-aware rule once target state is available to a gate, which is
+    follow-up work, not something ds-uwc delivers. See
     ``test_the_omitted_allow_manual_hole_is_NOT_closed_here``.
 
     ``live_env`` is deliberately NOT treated as a complete picture, because it
     is not one: ``_extract_env_from_containers`` (driftscribe_lib/cloud_run.py)
     SKIPS Secret-Manager-backed entries and flattens every container
-    last-one-wins, so a var missing here is either genuinely deleted or
-    present-but-opaque and we cannot tell which. That ambiguity was worth
-    checking hard — unknown-laundered-into-absent is the defect class this repo
-    keeps re-shipping — but it does not change the verdict, and the reason is
-    worth stating: BOTH readings are "not observably at the declared value". A
-    var the contract pins to the literal ``"mock"`` that now resolves through
-    Secret Manager has departed from the declared config just as surely as one
-    that was deleted. The ambiguity limits what we may CLAIM (the declared
-    config is not in force; we cannot say why), not which way it falls.
-
-    What this does NOT decide: whether the rollback would UNDO an operator's
-    deliberate ``allow_manual`` change. That question is answered by current vs
-    the TARGET REVISION's env, not by current vs contract — a var that has
-    drifted may well hold the same value on the target (rollback preserves it),
-    and a var sitting at its contract value may differ on the target (rollback
-    changes it). Neither case is visible from here. The veto column above is a
-    conservative refusal on "an operator has an outstanding manual change", not
-    a blast-radius answer; the blast radius is ds-uwc, on the approval page,
-    which is the one surface BOTH rollback lanes share (the chat lane never
-    reaches this function at all).
+    last-one-wins. A declared var missing from it is therefore UNREADABLE, not
+    violated, and is not counted — see the loop.
 
     Undeclared vars are ignored entirely. The contract governs what it declares;
     a real Cloud Run service carries plenty of vars it says nothing about, and
@@ -132,12 +124,29 @@ def _authorize_rollback_from_live_env(
     for name, rule in contract.expected_env.items():
         if rule.allow_manual_change:
             continue  # not this function's question — see the docstring
-        # An absent key is a deviation: ``.get`` returns None, which is never
-        # equal to ``rule.value`` (a str by the EnvVarRule validator). Values
-        # compare EXACTLY — no strip, no case-folding, no Unicode normalization
-        # — because env values are opaque bytes to the runtime, so "mock " and
-        # "mock" really are different configurations.
-        if live_env.get(name) != rule.value:
+        if name not in live_env:
+            # UNREADABLE, not "violated". The reader omits a var both when it is
+            # genuinely deleted and when it is Secret-Manager-backed
+            # (``_extract_env_from_containers`` skips ``value_source`` entries),
+            # and the contract's schema never says a declared var must be an
+            # inline literal — so a secret-backed PAYMENT_MODE that resolves to
+            # "mock" is compliant and reads here as missing.
+            #
+            # A draft of this counted a missing key as a violation, reasoning
+            # that both branches of the ambiguity are "not observably at the
+            # declared value". That phrase is true and the conclusion does not
+            # follow: not observably compliant is not the same as observably
+            # non-compliant, and THIS predicate AUTHORIZES a traffic shift, so
+            # absence of proof must never become the proof. It was also flatly
+            # inconsistent with the malformed-payload rule one layer up, which
+            # refuses to coerce a bad reader response to ``{}`` precisely
+            # because an empty env would manufacture violations — an omitted
+            # secret-backed entry manufactures exactly the same one.
+            continue
+        # Values compare EXACTLY — no strip, no case-folding, no Unicode
+        # normalization — because env values are opaque bytes to the runtime,
+        # so "mock " and "mock" really are different configurations.
+        if live_env[name] != rule.value:
             violations += 1
 
     if violations == 0:
