@@ -219,9 +219,12 @@ echo
 #            createTime >= record_iso. Skipped if jq is missing — the
 #            REST response uses typed fields (fields.trigger.stringValue)
 #            which is not safely greppable in combination with createTime.
-#        (b) Logs: an access log on driftscribe-agent for POST /eventarc
-#            returning 200 since record_iso. Works in DRY_RUN=true mode
-#            where Firestore is bypassed (InMemoryStateStore).
+#        (b) Logs: the background audit's structured completion line
+#            (jsonPayload.msg=eventarc_background_recheck_done) since
+#            record_iso — NOT the access-log 200, which since the
+#            2026-07-29 fast-ack only proves the delivery was acked.
+#            Works in DRY_RUN=true mode where Firestore is bypassed
+#            (InMemoryStateStore).
 #      First hit wins; record the path that proved it.
 #   5. On pass, append a row to docs/benchmarks.md.
 #   6. Cleanup runs whether we pass or fail (trap).
@@ -323,13 +326,16 @@ if [ "${RUN_EVENTARC_PROBE:-0}" = "1" ]; then
           fi
         fi
 
-        # (b) Cloud Run access-log probe. --freshness=5m guards against
-        # the deadline drifting past the default log freshness window
-        # while we poll. We require status=200; a 4xx /eventarc means
-        # the trigger reached the handler but auth/whitelist rejected
-        # it — that's not a success signal for this probe.
+        # (b) Cloud Run completion-log probe. --freshness=5m guards
+        # against the deadline drifting past the default log freshness
+        # window while we poll. Since the 2026-07-29 fast-ack change an
+        # /eventarc HTTP 200 only proves the delivery was ACKED — the
+        # audit runs as a background task afterwards and may still fail.
+        # The success signal is the runner's structured completion line
+        # (jsonPayload.msg=eventarc_background_recheck_done), emitted
+        # only when _do_recheck returned a decision.
         LOG_HIT="$(gcloud logging read \
-          'resource.type=cloud_run_revision AND resource.labels.service_name="driftscribe-agent" AND httpRequest.requestUrl=~"/eventarc" AND httpRequest.status=200 AND timestamp>="'"$record_iso"'"' \
+          'resource.type=cloud_run_revision AND resource.labels.service_name="driftscribe-agent" AND jsonPayload.msg="eventarc_background_recheck_done" AND timestamp>="'"$record_iso"'"' \
           --limit=1 --freshness=5m \
           --format='value(timestamp)' \
           --project="$PROJECT" 2>/dev/null || true)"

@@ -2494,14 +2494,43 @@ async def eventarc(
     }
 
 
+class _EventarcCoalescer:
+    """Single-flight state for the Eventarc background audits.
+
+    Codex review of the fast-ack: ``_do_recheck`` runs the Gemini turn
+    BEFORE deriving its idempotency event_key (the key hashes the
+    proposal's env_diffs), so N concurrent background audits are N full
+    LLM turns — the request slots used to bound that at concurrency=2,
+    the background path would not. The audit is payload-blind (it reads
+    CURRENT live state, never the triggering event), so coalescing loses
+    nothing: one in-flight audit plus at most one trailing rerun covers
+    any burst, and the rerun observes everything the coalesced events
+    changed.
+
+    Plain bools, no lock: both check-then-set sites run on the single
+    event loop with no await between check and set.
+    """
+
+    def __init__(self) -> None:
+        self.active = False
+        self.dirty = False
+
+
+_EVENTARC_COALESCER = _EventarcCoalescer()
+
+
 async def _eventarc_background_recheck(service: str, region: str) -> None:
     """Run the Eventarc-triggered recheck after the push delivery was acked.
 
-    Failure containment is the whole point: whatever ``_do_recheck`` raises,
-    NOTHING may escape — the 200 is already on the wire, and an exception
-    here would surface as an ASGI-cycle error with no one to receive it.
-    Outcomes are logged structured (bounded fields only — decision content
-    like ``rationale`` can quote live secret values and stays out of logs):
+    Failure containment is the whole point: whatever ``_do_recheck`` raises
+    or returns, NOTHING may escape — the 200 is already on the wire, and an
+    exception here would surface as an ASGI-cycle error with no one to
+    receive it. Outcomes are logged structured, bounded fields ONLY:
+    decision content (``rationale``) can quote live secret values, and
+    ``HTTPException.detail`` is just as unsafe (validator messages
+    interpolate live env values, ADK parse errors embed raw model output,
+    worker failures carry response bodies) — so neither ever reaches a log
+    field. ``status_code`` alone classifies the rejection.
 
     - ``eventarc_background_recheck_done`` — decision recorded/reused.
     - ``eventarc_background_recheck_rejected`` — _do_recheck refused with
@@ -2509,27 +2538,61 @@ async def _eventarc_background_recheck(service: str, region: str) -> None:
       event is dropped, not retried; the next audit event, scheduled
       recheck, or manual /recheck re-discovers the drift (same recovery
       story as the pause gate above).
-    - ``eventarc_background_recheck_failed`` — unexpected crash; full
-      traceback via ``log.exception`` for diagnosis.
+    - ``eventarc_background_recheck_failed`` — unexpected crash (full
+      traceback via ``log.exception``) or a malformed non-dict return
+      (``reason="non_dict_result"``, no traceback). Never ``_done`` — the
+      e2e smoke reads ``_done`` as audit-completed.
+    - ``eventarc_background_recheck_coalesced`` — an audit was already in
+      flight; this event marked it dirty and the trailing rerun (logged
+      as ``_rerun``) covers it. See :class:`_EventarcCoalescer`.
     """
-    try:
-        decision = await _do_recheck("eventarc", workload="drift")
-    except HTTPException as e:
-        log.warning(
-            "eventarc_background_recheck_rejected",
-            extra={
-                "service": service,
-                "region": region,
-                "status_code": e.status_code,
-                "detail": str(e.detail),
-            },
-        )
-    except Exception:
-        log.exception(
-            "eventarc_background_recheck_failed",
+    co = _EVENTARC_COALESCER
+    if co.active:
+        co.dirty = True
+        log.info(
+            "eventarc_background_recheck_coalesced",
             extra={"service": service, "region": region},
         )
-    else:
+        return
+    co.active = True
+    try:
+        while True:
+            # Cleared BEFORE the audit: an event landing DURING it may
+            # postdate the state the audit read, so it must trigger the
+            # rerun below.
+            co.dirty = False
+            await _run_eventarc_audit_once(service, region)
+            if not co.dirty:
+                break
+            log.info(
+                "eventarc_background_recheck_rerun",
+                extra={"service": service, "region": region},
+            )
+    finally:
+        co.active = False
+        co.dirty = False
+
+
+async def _run_eventarc_audit_once(service: str, region: str) -> None:
+    """One contained audit pass — see ``_eventarc_background_recheck``."""
+    try:
+        decision = await _do_recheck("eventarc", workload="drift")
+        # Result handling stays INSIDE the containment: a malformed
+        # (non-dict) return must not raise into the ASGI cycle — and it
+        # must log ``_failed``, not ``_done``: the e2e smoke's log probe
+        # reads ``_done`` as proof the audit completed, so reporting a
+        # malformed result as done would greenlight the smoke during
+        # contract skew.
+        if not isinstance(decision, dict):
+            log.error(
+                "eventarc_background_recheck_failed",
+                extra={
+                    "service": service,
+                    "region": region,
+                    "reason": "non_dict_result",
+                },
+            )
+            return
         log.info(
             "eventarc_background_recheck_done",
             extra={
@@ -2538,6 +2601,20 @@ async def _eventarc_background_recheck(service: str, region: str) -> None:
                 "decision_id": decision.get("decision_id"),
                 "action": decision.get("action"),
             },
+        )
+    except HTTPException as e:
+        log.warning(
+            "eventarc_background_recheck_rejected",
+            extra={
+                "service": service,
+                "region": region,
+                "status_code": e.status_code,
+            },
+        )
+    except Exception:
+        log.exception(
+            "eventarc_background_recheck_failed",
+            extra={"service": service, "region": region},
         )
 
 

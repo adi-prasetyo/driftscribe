@@ -143,8 +143,10 @@ def scrub_decision_rationale(decision: object) -> object:
     """Serve-time defense: return the decision doc with its free-text
     ``rationale`` scrubbed of any secret-like value present in its own
     ``diffs[]``. Closes the raw-rationale leak on every decision serve/return
-    boundary (GET /trace, /decisions, /runs; POST /recheck, /eventarc),
-    including already-persisted docs — no Firestore backfill.
+    boundary (GET /trace, /decisions, /runs; POST /recheck), including
+    already-persisted docs — no Firestore backfill. (POST /eventarc fast-acks
+    since 2026-07-29 and no longer serves a decision body, so it's off this
+    list.)
 
     The doc is otherwise returned verbatim (the decision is unredacted by
     design; ``rendered_body`` is already scrubbed at persist, and ``diffs[]``

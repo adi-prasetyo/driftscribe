@@ -335,10 +335,14 @@ an empty value fail-closes the handler with 503. Guarded by
 
 Manually mutate `payment-demo` once. Then check both halves of the path:
 the audit log emitted the expected method name (trigger-side), AND the
-coordinator's Cloud Run logs show `/eventarc` ran `_do_recheck` to
-completion (handler-side). The audit-log shape alone only proves the
-trigger *would* match — it doesn't prove Eventarc delivered or that the
-handler completed.
+coordinator's Cloud Run logs show the background audit completed
+(handler-side) — the structured line
+`jsonPayload.msg="eventarc_background_recheck_done"`. Since the
+2026-07-29 fast-ack change an `/eventarc` HTTP 200 only proves the
+delivery was ACKED (the recheck runs as a background task afterwards and
+its failure is logged as `..._rejected`/`..._failed`, never surfaced as a
+status code). The audit-log shape alone only proves the trigger *would*
+match — it doesn't prove Eventarc delivered or that the audit completed.
 
 > **State-store note (DRY_RUN=true demo deploy):** the default
 > `cloudbuild.yaml` deploys the coordinator with `DRY_RUN=true`, which
@@ -358,16 +362,20 @@ gcloud logging read \
   --limit 1 --format='value(protoPayload.methodName)' \
   --project "$PROJECT"
 
-# 2) Handler-side: /eventarc invocation in coordinator logs (~30s later).
+# 2) Handler-side: the background audit's completion line (~30s-2min later;
+#    an /eventarc access-log 200 alone only proves the delivery was ACKED).
 gcloud logging read \
-  'resource.type=cloud_run_revision AND resource.labels.service_name="driftscribe-agent" AND httpRequest.requestUrl=~"/eventarc"' \
-  --limit 5 --format='value(httpRequest.status,httpRequest.requestUrl)' \
+  'resource.type=cloud_run_revision AND resource.labels.service_name="driftscribe-agent" AND jsonPayload.msg=~"eventarc_background_recheck_(done|rejected|failed|coalesced)"' \
+  --limit 5 --format='value(jsonPayload.msg,jsonPayload.decision_id)' \
   --project "$PROJECT"
 ```
 
 A `gcloud run services update` (and CI deploys, and the demo drift-injection)
 emits `google.cloud.run.v1.Services.ReplaceService`. The coordinator logs should
-show a **`200`** on `/eventarc` ~30s later — then you're done. Both method
+show **`eventarc_background_recheck_done`** ~30s–2min later — then you're done
+(`_rejected`/`_failed` mean the audit did not complete; `_coalesced` means it
+was folded into an audit already in flight and the paired `_rerun` covers it).
+Both method
 variants ship as separate triggers by default (§10), so the old manual
 "edit the filter to v1 and recreate" surgery is **no longer needed**; the
 script also verifies an existing trigger's filters and recreates it if they

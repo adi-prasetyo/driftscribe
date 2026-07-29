@@ -5,8 +5,9 @@ the two public entry points layered over the existing, tested
 ``_scrub_secret_values_from_rationale``:
 
 * ``scrub_decision_rationale(decision)`` — applied at every decision serve/
-  return boundary (GET /trace, /decisions, /runs; POST /recheck, /eventarc).
-  Copy-on-change, identity-when-unchanged, never mutates, never raises.
+  return boundary (GET /trace, /decisions, /runs; POST /recheck). Copy-on-
+  change, identity-when-unchanged, never mutates, never raises. (POST
+  /eventarc fast-acks since 2026-07-29 and no longer serves a decision body.)
 * ``scrub_rationale_text(rationale, env_diffs)`` — for the rollback worker
   ``reason`` boundary, where we hold typed ``EnvDiff`` objects.
 
