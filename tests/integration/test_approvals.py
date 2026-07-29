@@ -259,8 +259,16 @@ def test_get_missing_approval_renders_not_found_page(client) -> None:
 
 
 def test_get_already_used_approval_hides_form(client, store) -> None:
-    """If status != pending, the form is replaced with a 'resolved'
-    message. The page itself doesn't 403 — that's enforced at POST."""
+    """If status != pending, the form is replaced with a read-only message.
+    The page itself doesn't 403 — that's enforced at POST.
+
+    This used to assert the word "resolved" for a phase-less `used` doc, which
+    was the defect ds-2mc is about, stated on a second surface: `used` proves
+    the CREDENTIAL was spent, never that the rollback applied, and a doc written
+    before the phase field exists carries no outcome at all. The page may say
+    the approval cannot be acted on again — that much `status` really does prove
+    — but not that anything was resolved.
+    """
     approval = store.create_pending(
         target_revision="payment-demo-00002-bbb", reason="r"
     )
@@ -268,7 +276,27 @@ def test_get_already_used_approval_hides_form(client, store) -> None:
     r = client.get(f"/approvals/{approval.approval_id}?t=anything")
     assert r.status_code == 200
     assert 'value="approve"' not in r.text
-    assert "resolved" in r.text.lower()
+    assert "already been used" in r.text.lower()
+    assert "resolved" not in r.text.lower()
+
+
+def test_get_applied_approval_says_the_rollback_applied(client, store) -> None:
+    """The one place this page could UNDER-claim.
+
+    A confirmed ``applied`` is the only phase the backend will vouch for, and
+    without its own branch it fell through to the same "already been used"
+    sentence a pre-ds-2mc doc of entirely unknown outcome gets. Everywhere else
+    the ds-2mc work removes over-claiming; here it was hiding a real result.
+    """
+    approval = store.create_pending(
+        target_revision="payment-demo-00002-bbb", reason="r"
+    )
+    store.docs[approval.approval_id]["status"] = "used"
+    store.docs[approval.approval_id]["apply_audit"] = {"phase": "applied"}
+    r = client.get(f"/approvals/{approval.approval_id}?t=anything")
+    assert r.status_code == 200
+    assert "the rollback applied" in r.text.lower()
+    assert "already been used" not in r.text.lower()
 
 
 def test_get_expired_approval_shows_expired_message(client, store) -> None:
@@ -642,6 +670,183 @@ def test_post_approve_worker_5xx_maps_to_502(
     execute_calls.state["raises"] = worker_client.WorkerClientError(
         503, "rollback unreachable: ConnectError", "rollback"
     )
+    r = client.post(
+        f"/approvals/{approval.approval_id}",
+        data={"t": "tok", "decision": "approve"},
+    )
+    assert r.status_code == 502
+
+
+# ds-z4z: …but a 5xx is only an OUTAGE when the doc has nothing better to say.
+# The worker answers 504 for any LRO that outlives its poll budget and 502 when
+# the poll itself broke — both designed ds-2mc outcomes, both usually with the
+# traffic shift landing fine. Raising on those made the four phase branches in
+# approval.html unreachable from the POST, so the demo's headline flow narrated
+# a working rollback as a broken system.
+
+
+def test_post_approve_5xx_renders_the_recorded_outcome_instead_of_an_outage(
+    client, store, monkeypatch
+) -> None:
+    approval = store.create_pending(
+        target_revision="payment-demo-00002-bbb", reason="r"
+    )
+
+    # Model what the worker actually does on a >60s LRO: claim the approval
+    # (which writes the phase atomically with pending -> used), then blow the
+    # poll budget and answer 504. Writing the phase INSIDE the call is what
+    # makes this a genuine transition — the coordinator now requires the phase
+    # to have changed across the call, so a fixture that pre-writes it would be
+    # testing the replay path instead of this one.
+    def _claim_then_time_out(approval_id: str, token: str):  # noqa: ANN202
+        store.docs[approval_id]["status"] = "used"
+        store.docs[approval_id]["apply_audit"] = {"phase": "outcome_unknown"}
+        raise worker_client.WorkerClientError(
+            504, "rollback still in progress; outcome unconfirmed", "rollback"
+        )
+
+    monkeypatch.setattr(worker_client, "call_execute", _claim_then_time_out)
+
+    r = client.post(
+        f"/approvals/{approval.approval_id}",
+        data={"t": "tok", "decision": "approve"},
+    )
+
+    assert r.status_code == 200
+    assert "outcome could not be confirmed" in r.text
+    # Neither over- nor under-claiming: no dispatch note (we have no operation
+    # to name), and no "unavailable" — the worker was reachable and answered.
+    assert "Rollback dispatched" not in r.text
+    assert "unavailable" not in r.text
+
+
+def test_post_approve_403_on_a_PHASED_doc_still_collapses_to_403(
+    client, store, execute_calls
+) -> None:
+    """The fall-through is 5xx-ONLY, and this is the test that says so.
+
+    Without the status gate, replaying a spent token against a phased approval
+    answered 200 while the same replay against a pending one answered 403 — a
+    status-code oracle for approval state, which is precisely what
+    _map_worker_error's 4xx collapse exists to deny. The pre-existing 403 test
+    uses a still-pending doc and so cannot see this.
+    """
+    approval = store.create_pending(
+        target_revision="payment-demo-00002-bbb", reason="r"
+    )
+    store.docs[approval.approval_id]["status"] = "used"
+    store.docs[approval.approval_id]["apply_audit"] = {"phase": "applied"}
+    execute_calls.state["raises"] = worker_client.WorkerClientError(
+        403, "approval status is 'used'", "rollback"
+    )
+
+    r = client.post(
+        f"/approvals/{approval.approval_id}",
+        data={"t": "tok", "decision": "approve"},
+    )
+
+    assert r.status_code == 403
+    assert "applied" not in r.text
+
+
+def test_post_approve_409_after_a_real_claim_still_surfaces_the_409(
+    client, store, monkeypatch
+) -> None:
+    """The 5xx gate's load-bearing case, and it is not hypothetical.
+
+    The worker's post-claim tag conflict genuinely DOES both: it records a
+    `failed` phase and answers 409. So the phase legitimately advanced across
+    this call, and the causality check alone would happily render the outcome
+    page at HTTP 200. That would be a real loss — 409 is the one worker refusal
+    the operator can act on (clear the tag, retry the SAME approval), and a
+    200 saying "the rollback did not apply" tells them the what while hiding
+    the what-next.
+    """
+    approval = store.create_pending(
+        target_revision="payment-demo-00002-bbb", reason="r"
+    )
+
+    def _claim_then_tag_conflict(approval_id: str, token: str):  # noqa: ANN202
+        store.docs[approval_id]["status"] = "used"
+        store.docs[approval_id]["apply_audit"] = {
+            "phase": "failed",
+            "detail": {"stage": "preflight", "reason": "tagged_traffic_target"},
+        }
+        raise worker_client.WorkerClientError(
+            409, "service has a tagged traffic target", "rollback"
+        )
+
+    monkeypatch.setattr(worker_client, "call_execute", _claim_then_tag_conflict)
+
+    r = client.post(
+        f"/approvals/{approval.approval_id}",
+        data={"t": "tok", "decision": "approve"},
+    )
+
+    assert r.status_code == 409
+
+
+def test_post_approve_5xx_on_an_ALREADY_phased_doc_does_not_hide_the_outage(
+    client, store, execute_calls
+) -> None:
+    """A phase proves some request once claimed this approval — not that THIS
+    one did. A spent-token replay arriving while the worker is genuinely
+    unreachable must surface the outage, not re-render the original outcome at
+    HTTP 200. The phase has to have CHANGED across the call.
+    """
+    approval = store.create_pending(
+        target_revision="payment-demo-00002-bbb", reason="r"
+    )
+    # Already terminal before the POST, and the worker never writes anything
+    # (it is down), so the phase is identical before and after.
+    store.docs[approval.approval_id]["status"] = "used"
+    store.docs[approval.approval_id]["apply_audit"] = {"phase": "applied"}
+    execute_calls.state["raises"] = worker_client.WorkerClientError(
+        503, "rollback unreachable: ConnectError", "rollback"
+    )
+
+    r = client.post(
+        f"/approvals/{approval.approval_id}",
+        data={"t": "tok", "decision": "approve"},
+    )
+
+    assert r.status_code == 502
+
+
+def test_post_approve_5xx_without_a_recorded_phase_is_still_502(
+    client, store, execute_calls
+) -> None:
+    """The doc is the only thing that earns the fall-through. A still-pending
+    approval means the worker never got to the claim, so there is nothing more
+    truthful than the transport error — keep the outage mapping."""
+    approval = store.create_pending(
+        target_revision="payment-demo-00002-bbb", reason="r"
+    )
+    execute_calls.state["raises"] = worker_client.WorkerClientError(
+        503, "rollback unreachable: ConnectError", "rollback"
+    )
+    r = client.post(
+        f"/approvals/{approval.approval_id}",
+        data={"t": "tok", "decision": "approve"},
+    )
+    assert r.status_code == 502
+
+
+def test_post_approve_5xx_with_a_failing_doc_read_is_still_502(
+    client, store, execute_calls, monkeypatch
+) -> None:
+    """A probe that itself fails must not swallow the worker error."""
+    approval = store.create_pending(
+        target_revision="payment-demo-00002-bbb", reason="r"
+    )
+    execute_calls.state["raises"] = worker_client.WorkerClientError(
+        504, "rollback still in progress", "rollback"
+    )
+
+    def boom(_approval_id):  # noqa: ANN001, ANN202
+        raise RuntimeError("firestore is having a day")
+
+    monkeypatch.setattr(store, "get", boom)
     r = client.post(
         f"/approvals/{approval.approval_id}",
         data={"t": "tok", "decision": "approve"},

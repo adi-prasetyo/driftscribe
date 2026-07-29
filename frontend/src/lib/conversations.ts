@@ -15,15 +15,26 @@ export type ConversationBucket = 'today' | 'yesterday' | 'older';
 
 /**
  * Does a conversation match a free-text query? Case- and separator-insensitive
- * (via `normalizeForSearch`) substring over the title, the raw workload value,
- * and the crew display name — so `anchor` finds a `drift`-crew chat and `drift`
- * finds it too. An empty / whitespace-only query matches everything (the modal
- * shows the full list until the operator types).
+ * (via `normalizeForSearch`) substring over the title plus EVERY crew that has
+ * taken part — raw workload value and display name for each — so `anchor` finds
+ * a `drift`-crew chat and `drift` finds it too.
+ *
+ * Searching the participant list rather than the bound `workload` is what makes
+ * a handed-over conversation findable under the crew that started it: after a
+ * handoff `workload` is the crew that JOINED, so searching it alone would hide
+ * the thread from anyone looking for where they left it. `crews` is absent on
+ * pre-handoff rows, where the single bound workload IS the whole history.
+ *
+ * An empty / whitespace-only query matches everything (the modal shows the full
+ * list until the operator types).
  */
 export function matchesConversation(c: Conversation, query: string): boolean {
   const q = normalizeForSearch(query);
   if (!q) return true;
-  const hay = normalizeForSearch([c.title, c.workload, crewName(c.workload)].join(' '));
+  const crews = c.crews?.length ? c.crews : [c.workload];
+  const hay = normalizeForSearch(
+    [c.title, ...crews.flatMap((w) => [w, crewName(w)])].join(' '),
+  );
   return hay.includes(q);
 }
 

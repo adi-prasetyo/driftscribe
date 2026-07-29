@@ -22,6 +22,9 @@ from agent.adk_tools import read_conversations_tool
 _EXPECTED_META_KEYS = {
     "conversation_id",
     "workload",
+    # every crew that took part — `workload` alone reports only whoever holds
+    # the thread now, which a handoff changes. See test_handoff_team_memory.py.
+    "crews",
     "turn_count",
     "last_trace_id",
     "created_at",
@@ -32,7 +35,11 @@ _EXPECTED_META_KEYS = {
     "turns_omitted",
 }
 # The COMPLETE set of keys a projected TURN may emit.
-_EXPECTED_TURN_KEYS = {"seq", "role", "workload", "trace_id", "created_at", "text", "iac_pr"}
+_EXPECTED_TURN_KEYS = {
+    "seq", "role", "workload", "trace_id", "created_at", "text", "iac_pr",
+    # crew_change / handoff_declined rows only — which crew handed to which.
+    "handoff",
+}
 
 
 # --------------------------------------------------------------------------- #

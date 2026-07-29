@@ -61,7 +61,7 @@ const FIXTURE: Capabilities = {
       name: 'explore',
       display_name: 'Explore',
       descriptor: 'read-only',
-      description: 'Read-only investigation across infra and code. Inspects a Cloud Run service\'s live env vars, the repo\'s declared ops-contract, the dependency lockfile, and authoritative developer docs — then reports. It cannot change anything: no PR, no rollback, no notification.',
+      description: 'Read-only investigation across infra and code. Inspects a Cloud Run service\'s live env vars, the repo\'s declared ops-contract, the dependency lockfile, and authoritative developer docs — then reports. It changes nothing outside DriftScribe: no PR, no rollback, no notification. It can suggest handing the conversation to a crew that can act, which does nothing until the operator confirms.',
       autonomous: false,
       tools: [
         { name: 'drift_read_live_env', description: 'Reads the live Cloud Run environment: deployed image, revision, environment variables, and service configuration.', write_capable: false },

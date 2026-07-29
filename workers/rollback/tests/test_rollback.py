@@ -46,6 +46,13 @@ os.environ.setdefault(
 os.environ.setdefault("APPROVAL_HMAC_KEY", "test-hmac-key")
 
 from driftscribe_lib.approvals import (  # noqa: E402
+    PHASE_APPLIED,
+    PHASE_APPLYING,
+    PHASE_CLAIMED,
+    PHASE_FAILED,
+    PHASE_OUTCOME_UNKNOWN,
+    ROLLBACK_PHASES,
+    TERMINAL_ROLLBACK_PHASES,
     Approval,
     compute_token_hmac,
 )
@@ -110,7 +117,10 @@ class FakeApprovalStore:
         data = self.docs[approval_id]
         if data.get("status") != "pending":
             return None
+        # Mirrors the real store (ds-2mc): the flip records only that the
+        # credential was spent. No resolved_at — nothing is resolved yet.
         data["status"] = "used"
+        data["apply_audit"] = {"phase": PHASE_CLAIMED, "phase_at": _now()}
         return Approval(approval_id=approval_id, **data)
 
     def claim_denied(self, approval_id: str) -> Approval | None:
@@ -119,8 +129,81 @@ class FakeApprovalStore:
         data = self.docs[approval_id]
         if data.get("status") != "pending":
             return None
+        # Deny IS terminal at flip time, so it does stamp resolved_at.
         data["status"] = "denied"
+        data["resolved_at"] = _now()
         return Approval(approval_id=approval_id, **data)
+
+    def record_phase(
+        self,
+        approval_id: str,
+        *,
+        phase: str,
+        detail: dict[str, Any] | None = None,
+        resolved_at: dt.datetime | None = None,
+    ) -> None:
+        """Mirrors ApprovalStore.record_phase, INCLUDING both invariants —
+        terminal phases are immutable and resolved_at is applied-only. The fake
+        enforces them rather than just recording, so a handler that violates
+        either fails here instead of passing against a permissive double."""
+        if phase not in ROLLBACK_PHASES:
+            raise ValueError(f"unknown rollback phase: {phase!r}")
+        if resolved_at is not None and phase != PHASE_APPLIED:
+            raise ValueError(f"resolved_at only valid with applied, got {phase!r}")
+        if approval_id not in self.docs:
+            return
+        data = self.docs[approval_id]
+        existing = data.get("apply_audit") or {}
+        if existing.get("phase") in TERMINAL_ROLLBACK_PHASES:
+            return
+        audit: dict[str, Any] = {"phase": phase, "phase_at": _now()}
+        if detail:
+            audit["detail"] = detail
+        data["apply_audit"] = audit
+        if resolved_at is not None:
+            data["resolved_at"] = resolved_at
+
+
+def _now() -> dt.datetime:
+    return dt.datetime.now(dt.timezone.utc)
+
+
+class FakeOperation:
+    """Stand-in for a google.api_core Operation.
+
+    ``raises`` lets a test choose what ``.result()`` does — crucially including
+    a real ``concurrent.futures.TimeoutError``, which is what google.api_core
+    actually raises on polling expiry (it converts RetryError to that type).
+    Tests MUST use the real exception type here: asserting against an invented
+    LRO-specific error is exactly how this bug class hides, since production
+    would fall through to a different branch than the test exercises.
+    """
+
+    def __init__(
+        self,
+        name: str = "operations/fake-op-name",
+        raises: BaseException | None = None,
+        *,
+        done: bool = False,
+        error_code: int = 0,
+    ):
+        # The RAW operation, which is what establishes failure. `done` +
+        # a nonzero `error.code` is the ONLY evidence the rollback failed;
+        # result() raising is not (a polling RPC can break while the operation
+        # goes on to succeed).
+        self.operation = type("_Op", (), {
+            "name": name,
+            "done": done,
+            "error": type("_Err", (), {"code": error_code})(),
+        })()
+        self._raises = raises
+        self.result_calls: list[float | None] = []
+
+    def result(self, timeout: float | None = None):  # noqa: ANN201
+        self.result_calls.append(timeout)
+        if self._raises is not None:
+            raise self._raises
+        return None
 
 
 # --------------------------------------------------------------------------- #
@@ -144,11 +227,29 @@ def traffic_calls() -> list[str]:
     return []
 
 
+class _OperationHolder:
+    """Mutable holder so a test can swap the LRO the fixture hands back AFTER
+    the client is built (the fixture closes over this, not over the operation)."""
+
+    def __init__(self) -> None:
+        self.current = FakeOperation()
+
+    def will_raise(self, exc: BaseException) -> FakeOperation:
+        self.current = FakeOperation(raises=exc)
+        return self.current
+
+
+@pytest.fixture
+def operation() -> _OperationHolder:
+    return _OperationHolder()
+
+
 @pytest.fixture
 def client(
     monkeypatch: pytest.MonkeyPatch,
     store: FakeApprovalStore,
     traffic_calls: list[str],
+    operation: _OperationHolder,
 ):
     """TestClient with Firestore + Cloud Run admin stubbed and auth bypassed.
 
@@ -159,7 +260,9 @@ def client(
       default is a service with three revisions where revision 3 is
       currently serving. Tests that need a different topology override
       via ``monkeypatch.setattr(rollback_main, "_list_revisions", ...)``.
-    - ``_apply_traffic``: records the call instead of hitting Cloud Run.
+    - ``_start_traffic_update``: records the call and returns a FakeOperation
+      instead of hitting Cloud Run. Tests that need a specific LRO outcome
+      assign to ``operation.holder`` (see the ``operation`` fixture).
     """
     monkeypatch.setattr(rollback_main, "_get_approval_store", lambda: store)
     monkeypatch.setattr(
@@ -171,11 +274,11 @@ def client(
         ),
     )
 
-    def fake_apply_traffic(target_revision: str) -> str:
+    def fake_start_traffic_update(target_revision: str):  # noqa: ANN202
         traffic_calls.append(target_revision)
-        return "operations/fake-op-name"
+        return operation.current
 
-    monkeypatch.setattr(rollback_main, "_apply_traffic", fake_apply_traffic)
+    monkeypatch.setattr(rollback_main, "_start_traffic_update", fake_start_traffic_update)
     # Default: no tagged targets exist, so the /execute preflight is a no-op.
     # Tests that need to simulate a tagged service override this.
     monkeypatch.setattr(rollback_main, "_assert_no_tagged_targets", lambda: None)
@@ -350,7 +453,7 @@ def test_propose_rejects_oversized_reason(client, store) -> None:
     assert store.docs == {}
 
 
-def test_apply_traffic_uses_update_mask_and_refuses_tagged_targets(
+def test_start_traffic_update_uses_update_mask_and_refuses_tagged_targets(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Regression test for Codex review findings #1 + #2 (Phase 11.5):
@@ -388,8 +491,10 @@ def test_apply_traffic_uses_update_mask_and_refuses_tagged_targets(
             return _FakeOp()
 
     monkeypatch.setattr(m, "_get_services_client", _FakeSvcClient)
-    op_name = m._apply_traffic("payment-demo-00002-bbb")
-    assert op_name == "operations/fake-op"
+    op = m._start_traffic_update("payment-demo-00002-bbb")
+    # Returns the OPERATION, not a name, and has not waited on it — /execute
+    # persists the handle before blocking (ds-2mc).
+    assert m._operation_name(op) == "operations/fake-op"
     assert list(captured["update_mask"].paths) == ["traffic"]
     # And the traffic block we sent was the expected single-target shape.
     assert len(captured["service"].traffic) == 1
@@ -422,7 +527,7 @@ def test_apply_traffic_uses_update_mask_and_refuses_tagged_targets(
 
     monkeypatch.setattr(m, "_get_services_client", _FakeSvcClientTagged)
     with pytest.raises(HTTPException) as exc:
-        m._apply_traffic("payment-demo-00002-bbb")
+        m._start_traffic_update("payment-demo-00002-bbb")
     assert exc.value.status_code == 409
     assert "tag" in exc.value.detail.lower()
 
@@ -459,6 +564,298 @@ def test_execute_happy_path(client, traffic_calls) -> None:
     assert body["approval_id"] == proposed["approval_id"]
     # The traffic update was actually called with the right revision.
     assert traffic_calls == ["payment-demo-00002-bbb"]
+
+
+# --------------------------------------------------------------------------- #
+# Outcome recording (ds-2mc)
+#
+# `status == "used"` means the credential was spent, NOT that traffic moved.
+# The claim necessarily precedes the apply (single-use), so these tests pin the
+# separate thing that says what actually happened: apply_audit.phase.
+#
+# The invariant under all four: the approval is `used` on EVERY path — a burned
+# credential must never become reusable just because the apply went badly.
+# --------------------------------------------------------------------------- #
+
+
+def test_execute_success_records_applied_and_stamps_resolved_at(
+    client, store, operation
+) -> None:
+    proposed = _propose(client)
+    r = client.post("/execute", json={
+        "approval_id": proposed["approval_id"],
+        "approval_token": proposed["approval_token"],
+    })
+    assert r.status_code == 200, r.text
+
+    doc = store.docs[proposed["approval_id"]]
+    assert doc["status"] == "used"
+    assert doc["apply_audit"]["phase"] == PHASE_APPLIED
+    # resolved_at is the seal's input and may exist ONLY here.
+    assert doc.get("resolved_at") is not None
+    # And it actually waited on the LRO rather than returning optimistically.
+    assert operation.current.result_calls == [rollback_main._LRO_TIMEOUT_S]
+
+
+def test_execute_persists_operation_name_before_waiting(client, store, operation) -> None:
+    """The durable handle must exist BEFORE the blocking wait.
+
+    Otherwise a container death mid-wait leaves an approval stuck in-flight with
+    nothing to reconcile against — the crash window Codex flagged. Proven by
+    reading the doc from inside .result(): whatever is recorded at that instant
+    is what a crash would leave behind.
+    """
+    seen: dict = {}
+
+    class _RecordingOp(FakeOperation):
+        def result(self, timeout: float | None = None):  # noqa: ANN201
+            seen.update(store.docs[self.approval_id].get("apply_audit") or {})
+            return super().result(timeout)
+
+    op = _RecordingOp()
+    operation.current = op
+    proposed = _propose(client)
+    op.approval_id = proposed["approval_id"]
+
+    r = client.post("/execute", json={
+        "approval_id": proposed["approval_id"],
+        "approval_token": proposed["approval_token"],
+    })
+    assert r.status_code == 200, r.text
+    assert seen.get("phase") == PHASE_APPLYING
+    assert seen.get("detail", {}).get("operation_name") == "operations/fake-op-name"
+
+
+def test_execute_lro_timeout_records_outcome_unknown_not_failed(
+    client, store, operation
+) -> None:
+    """Polling expiry is NOT failure — the operation is uncancelled and may
+    still succeed. Raising the SDK's real exception type on purpose: google's
+    polling helper converts RetryError to concurrent.futures.TimeoutError, and
+    a hand-invented LRO error here would exercise a branch production never
+    takes (the review finding that killed the first draft of this fix).
+    """
+    import concurrent.futures as _f
+
+    operation.will_raise(_f.TimeoutError("did not complete"))
+    proposed = _propose(client)
+    r = client.post("/execute", json={
+        "approval_id": proposed["approval_id"],
+        "approval_token": proposed["approval_token"],
+    })
+    assert r.status_code == 504, r.text
+
+    doc = store.docs[proposed["approval_id"]]
+    assert doc["status"] == "used"           # credential still burned
+    assert doc["apply_audit"]["phase"] == PHASE_OUTCOME_UNKNOWN
+    assert doc["apply_audit"]["phase"] != PHASE_FAILED
+    # No resolved_at: we do not know that it resolved.
+    assert doc.get("resolved_at") is None
+    # The handle survives so /reconcile can finish the job.
+    assert doc["apply_audit"]["detail"]["operation_name"] == "operations/fake-op-name"
+
+
+def test_execute_records_failed_only_when_the_operation_itself_errored(
+    client, store, operation
+) -> None:
+    """`done` + a nonzero error code IS evidence of failure."""
+    operation.current = FakeOperation(
+        raises=RuntimeError("revision deleted"), done=True, error_code=5,
+    )
+    proposed = _propose(client)
+    r = client.post("/execute", json={
+        "approval_id": proposed["approval_id"],
+        "approval_token": proposed["approval_token"],
+    })
+    assert r.status_code == 502, r.text
+
+    doc = store.docs[proposed["approval_id"]]
+    assert doc["status"] == "used"
+    assert doc["apply_audit"]["phase"] == PHASE_FAILED
+    assert doc.get("resolved_at") is None
+
+
+def test_execute_broken_poll_is_unknown_not_failed(client, store, operation) -> None:
+    """A polling RPC that breaks is NOT evidence the rollback failed.
+
+    google.api_core fails the whole future when a polling RPC errors and its
+    retries are exhausted ("If a polling RPC throws an error and retrying it
+    fails, the whole future fails with the corresponding exception") — while
+    the operation itself may still be running, and may still apply. Concretely:
+    `operations.get` starts returning PermissionDenied after an IAM change.
+
+    The operation here is deliberately NOT done and carries no error code, so
+    nothing has been established. Recording `failed` would tell the operator
+    their rollback did not happen when it may well have — the original seal bug
+    aimed the other way.
+    """
+    operation.current = FakeOperation(raises=RuntimeError("PermissionDenied on operations.get"))
+    proposed = _propose(client)
+    r = client.post("/execute", json={
+        "approval_id": proposed["approval_id"],
+        "approval_token": proposed["approval_token"],
+    })
+    assert r.status_code == 502, r.text
+
+    doc = store.docs[proposed["approval_id"]]
+    assert doc["status"] == "used"
+    assert doc["apply_audit"]["phase"] == PHASE_OUTCOME_UNKNOWN
+    assert doc["apply_audit"]["phase"] != PHASE_FAILED
+    assert doc.get("resolved_at") is None
+    # The handle survives so /reconcile can settle it once polling recovers.
+    assert doc["apply_audit"]["detail"]["operation_name"] == "operations/fake-op-name"
+
+
+def test_execute_start_failure_records_outcome_unknown(
+    client, store, monkeypatch
+) -> None:
+    """A transport error around update_service may be a LOST RESPONSE on a
+    mutation the server accepted. Indistinguishable from a rejected one here,
+    so it must not claim failure."""
+    def _boom(target_revision: str):  # noqa: ANN202
+        raise RuntimeError("connection reset")
+
+    monkeypatch.setattr(rollback_main, "_start_traffic_update", _boom)
+    proposed = _propose(client)
+    r = client.post("/execute", json={
+        "approval_id": proposed["approval_id"],
+        "approval_token": proposed["approval_token"],
+    })
+    assert r.status_code == 502, r.text
+
+    doc = store.docs[proposed["approval_id"]]
+    assert doc["apply_audit"]["phase"] == PHASE_OUTCOME_UNKNOWN
+    assert doc.get("resolved_at") is None
+
+
+# --------------------------------------------------------------------------- #
+# /reconcile — what keeps outcome_unknown temporary rather than permanent
+# --------------------------------------------------------------------------- #
+
+
+def _claimed_doc(store, phase: str, *, operation_name: str | None = "operations/fake-op-name"):
+    """An approval already claimed and left in `phase`, as /execute would."""
+    created, _ = store.create(
+        target_revision="payment-demo-00002-bbb", reason="r",
+        hmac_key="test-hmac-key", created_by="c",
+    )
+    store.claim_pending(created.approval_id)
+    detail = {"operation_name": operation_name} if operation_name else {}
+    store.docs[created.approval_id]["apply_audit"] = {
+        "phase": phase, "phase_at": _now(), "detail": detail,
+    }
+    return created.approval_id
+
+
+class _FakeRawOp:
+    def __init__(self, *, done: bool, error_code: int = 0, has_response: bool = True):
+        self.done = done
+        self.error = type("_Err", (), {"code": error_code})()
+        self._has_response = has_response
+
+    def HasField(self, name: str) -> bool:  # noqa: N802 — protobuf API shape
+        return name == "response" and self._has_response
+
+
+def _mock_operations(monkeypatch, raw):
+    monkeypatch.setattr(
+        rollback_main, "_get_operations_client",
+        lambda: type("_C", (), {"get_operation": lambda self, name, timeout=None: raw})(),
+    )
+
+
+def test_reconcile_promotes_a_completed_operation_to_applied(client, store, monkeypatch) -> None:
+    aid = _claimed_doc(store, PHASE_OUTCOME_UNKNOWN)
+    _mock_operations(monkeypatch, _FakeRawOp(done=True))
+
+    r = client.post("/reconcile", json={"approval_id": aid})
+    assert r.status_code == 200, r.text
+    assert r.json()["phase"] == PHASE_APPLIED
+    assert store.docs[aid]["apply_audit"]["phase"] == PHASE_APPLIED
+
+
+def test_reconcile_does_not_stamp_a_fabricated_resolved_at(client, store, monkeypatch) -> None:
+    """The operation completed at some unknown earlier moment — possibly hours
+    ago on a container-death recovery. `resolved_at` drives BOTH the desk's
+    "Applied {time}" line and its 10-minute seal window, so stamping `now` here
+    would pop a brand-new 判子 reading a time the rollback did not happen at.
+    Right outcome, fabricated story. The IaC lane refuses the same move."""
+    aid = _claimed_doc(store, PHASE_OUTCOME_UNKNOWN)
+    _mock_operations(monkeypatch, _FakeRawOp(done=True))
+
+    client.post("/reconcile", json={"approval_id": aid})
+    assert store.docs[aid]["apply_audit"]["phase"] == PHASE_APPLIED
+    assert store.docs[aid].get("resolved_at") is None
+
+
+def test_reconcile_records_failed_when_the_operation_errored(client, store, monkeypatch) -> None:
+    aid = _claimed_doc(store, PHASE_APPLYING)
+    _mock_operations(monkeypatch, _FakeRawOp(done=True, error_code=7))
+
+    r = client.post("/reconcile", json={"approval_id": aid})
+    assert r.json()["phase"] == PHASE_FAILED
+    assert store.docs[aid]["apply_audit"]["phase"] == PHASE_FAILED
+
+
+def test_reconcile_leaves_a_still_running_operation_alone(client, store, monkeypatch) -> None:
+    aid = _claimed_doc(store, PHASE_OUTCOME_UNKNOWN)
+    _mock_operations(monkeypatch, _FakeRawOp(done=False))
+
+    r = client.post("/reconcile", json={"approval_id": aid})
+    assert r.json()["reconciled"] is False
+    assert store.docs[aid]["apply_audit"]["phase"] == PHASE_OUTCOME_UNKNOWN
+
+
+def test_reconcile_refuses_a_done_operation_with_no_response(client, store, monkeypatch) -> None:
+    """`done` with neither response nor error is malformed. "Not an error" is
+    not the same as "applied" — refuse rather than promote on absence."""
+    aid = _claimed_doc(store, PHASE_OUTCOME_UNKNOWN)
+    _mock_operations(monkeypatch, _FakeRawOp(done=True, has_response=False))
+
+    r = client.post("/reconcile", json={"approval_id": aid})
+    assert r.json()["reconciled"] is False
+    assert store.docs[aid]["apply_audit"]["phase"] == PHASE_OUTCOME_UNKNOWN
+
+
+def test_reconcile_is_a_noop_on_a_terminal_doc(client, store, monkeypatch) -> None:
+    aid = _claimed_doc(store, PHASE_FAILED)
+    _mock_operations(monkeypatch, _FakeRawOp(done=True))
+
+    r = client.post("/reconcile", json={"approval_id": aid})
+    assert r.json()["reconciled"] is False
+    assert store.docs[aid]["apply_audit"]["phase"] == PHASE_FAILED
+
+
+def test_reconcile_without_an_operation_handle_does_nothing(client, store, monkeypatch) -> None:
+    """A transport error around update_service records outcome_unknown with no
+    handle. There is nothing to look up; say so rather than guess."""
+    aid = _claimed_doc(store, PHASE_OUTCOME_UNKNOWN, operation_name=None)
+    called: list[str] = []
+    monkeypatch.setattr(
+        rollback_main, "_get_operations_client",
+        lambda: called.append("x") or type("_C", (), {})(),
+    )
+    r = client.post("/reconcile", json={"approval_id": aid})
+    assert r.json()["reconciled"] is False
+    assert called == []
+
+
+def test_reconcile_unknown_approval_returns_404(client) -> None:
+    r = client.post("/reconcile", json={"approval_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"})
+    assert r.status_code == 404
+
+
+def test_reconcile_cannot_move_a_pending_approval(client, store, monkeypatch) -> None:
+    """It reads an operation; it can never start one or spend a credential.
+    This is why it needs no approval token."""
+    created, _ = store.create(
+        target_revision="payment-demo-00002-bbb", reason="r",
+        hmac_key="test-hmac-key", created_by="c",
+    )
+    _mock_operations(monkeypatch, _FakeRawOp(done=True))
+    r = client.post("/reconcile", json={"approval_id": created.approval_id})
+    assert r.status_code == 200
+    assert store.docs[created.approval_id]["status"] == "pending"
 
 
 def test_execute_missing_token_rejected(client, traffic_calls) -> None:
@@ -857,3 +1254,60 @@ def test_real_verify_caller_dep_wired_with_env(monkeypatch: pytest.MonkeyPatch) 
     assert seen["allowed_callers"] == {
         "coordinator@test-proj.iam.gserviceaccount.com",
     }
+
+
+# --------------------------------------------------------------------------- #
+# ds-mml: the post-claim pre-mutation branch records a TERMINAL `failed` with a
+# hardcoded reason. Accurate for the tag check, which is the only thing in
+# _start_traffic_update that raises today — but `failed` is one of the two
+# phases record_phase refuses to overwrite, so a future guard inheriting this
+# branch would write a permanent, confidently-wrong cause. Narrowed to 409.
+# --------------------------------------------------------------------------- #
+
+
+def test_post_claim_tag_conflict_records_failed_with_its_real_reason(
+    monkeypatch: pytest.MonkeyPatch, client, store
+) -> None:
+    proposed = _propose(client)
+
+    def _tagged(target_revision: str):  # noqa: ANN202
+        raise HTTPException(status_code=409, detail="tagged traffic target")
+
+    monkeypatch.setattr(rollback_main, "_start_traffic_update", _tagged)
+    r = client.post(
+        "/execute",
+        json={
+            "approval_id": proposed["approval_id"],
+            "approval_token": proposed["approval_token"],
+        },
+    )
+    assert r.status_code == 409
+    audit = store.docs[proposed["approval_id"]]["apply_audit"]
+    assert audit["phase"] == rollback_main.PHASE_FAILED
+    assert audit["detail"]["reason"] == "tagged_traffic_target"
+
+
+def test_an_unrecognized_pre_mutation_refusal_is_not_stamped_as_a_named_failure(
+    monkeypatch: pytest.MonkeyPatch, client, store
+) -> None:
+    """A future guard raising something other than the tag 409 must not inherit
+    `failed/{reason: tagged_traffic_target}`. Nothing was mutated either way, but
+    naming a cause we did not observe is a terminal claim built on a guess — and
+    terminal is exactly what cannot be corrected later."""
+    proposed = _propose(client)
+
+    def _some_future_guard(target_revision: str):  # noqa: ANN202
+        raise HTTPException(status_code=422, detail="a guard that does not exist yet")
+
+    monkeypatch.setattr(rollback_main, "_start_traffic_update", _some_future_guard)
+    r = client.post(
+        "/execute",
+        json={
+            "approval_id": proposed["approval_id"],
+            "approval_token": proposed["approval_token"],
+        },
+    )
+    assert r.status_code == 422
+    audit = store.docs[proposed["approval_id"]]["apply_audit"]
+    assert audit["phase"] == rollback_main.PHASE_OUTCOME_UNKNOWN
+    assert audit["detail"].get("reason") != "tagged_traffic_target"

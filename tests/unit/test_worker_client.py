@@ -922,3 +922,68 @@ def test_get_baked_iac_hash_transport_error_is_503(_stub_mint_id_token) -> None:
     with pytest.raises(worker_client.WorkerClientError) as ei:
         worker_client.get_baked_iac_hash()
     assert ei.value.status_code == 503
+
+
+# --------------------------------------------------------------------------- #
+# ds-090 — the three ds-2mc timeouts, pinned.
+#
+# Mutation-verified gap: reverting all three to the 30s default left the entire
+# backend suite green. Each one exists for a failure that has already been
+# reasoned about at length in worker_client.py; what was missing was anything
+# that fails when the number changes. The RELATIONSHIPS matter more than the
+# literals, so they are asserted as relationships wherever one exists.
+# --------------------------------------------------------------------------- #
+
+
+@respx.mock
+def test_call_execute_read_budget_outlasts_the_workers_lro_poll(_capture_timeout) -> None:
+    """/execute must not give up before the worker's own poll does.
+
+    The worker polls its traffic-shift LRO for _LRO_TIMEOUT_S (60s) and only
+    then records outcome_unknown. A client read budget below that turns every
+    slow-but-fine rollback into a coordinator-side timeout with NO recorded
+    phase — the operator gets an outage page for a rollback that worked, and
+    /reconcile has nothing to settle. The ceiling is the ~100s Cloudflare
+    proxied-response budget: the operator reaches this through the edge.
+    """
+    respx.post(f"{ROLLBACK_URL}/execute").respond(200, json={"status": "executed"})
+    worker_client.call_execute("aid", "tok")
+    assert _capture_timeout == [worker_client._EXECUTE_HTTPX_TIMEOUT]
+    assert worker_client._EXECUTE_HTTPX_TIMEOUT.read > 60.0
+    assert worker_client._EXECUTE_HTTPX_TIMEOUT.read < 100.0
+
+
+@respx.mock
+def test_call_reconcile_is_far_shorter_than_the_default(_capture_timeout) -> None:
+    """/reconcile runs inside GET /decisions, up to three times per request.
+
+    At the 30s default, three rows could burn ~90s of the ~100s edge budget
+    before Firestore and GitHub work even started — and overviewStore awaits
+    /decisions alongside the graph and pending-list fetches, so the whole desk
+    stalls behind it. This is the one timeout that must be SHORTER than the
+    default, which is why "revert it to 30s" was silently survivable.
+    """
+    respx.post(f"{ROLLBACK_URL}/reconcile").respond(200, json={"reconciled": False})
+    worker_client.call_reconcile("aid")
+    assert _capture_timeout == [worker_client._RECONCILE_HTTPX_TIMEOUT]
+    assert worker_client._RECONCILE_HTTPX_TIMEOUT.read < worker_client._HTTPX_TIMEOUT
+    # Three of them still have to fit inside the edge budget with room to spare.
+    assert worker_client._RECONCILE_HTTPX_TIMEOUT.read * 3 < 90.0
+
+
+@respx.mock
+def test_call_deny_clears_a_blocking_execute(_capture_timeout) -> None:
+    """/deny and /propose queue behind a blocking /execute on a worker pinned to
+    --concurrency=1 --max-instances=1, so their budget must clear the worst-case
+    /execute ahead of them. The failure this prevents is specific and ugly: a
+    /propose that times out while queued loses the raw approval token — returned
+    exactly once — orphaning a pending approval AND letting the retry mint a
+    second one.
+    """
+    respx.post(f"{ROLLBACK_URL}/deny").respond(200, json={"status": "denied"})
+    worker_client.call_deny("aid", "tok")
+    assert _capture_timeout == [worker_client.QUEUED_BEHIND_EXECUTE_TIMEOUT]
+    # Must outlast the LRO cap it may be queued behind, and still fit the edge.
+    assert worker_client.QUEUED_BEHIND_EXECUTE_TIMEOUT.read > 60.0
+    assert worker_client.QUEUED_BEHIND_EXECUTE_TIMEOUT.read < 100.0
+    assert worker_client.QUEUED_BEHIND_EXECUTE_TIMEOUT.read > worker_client._HTTPX_TIMEOUT

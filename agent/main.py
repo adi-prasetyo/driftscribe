@@ -112,6 +112,12 @@ from agent.workloads import (
 from agent.workloads.registry import load_workload_spec, resolve_workload_prompts
 from pydantic import ValidationError as PydanticValidationError
 from driftscribe_lib import github
+from driftscribe_lib.approvals import (
+    PHASE_APPLYING,
+    PHASE_OUTCOME_UNKNOWN,
+    ROLLBACK_PHASES,
+    TERMINAL_ROLLBACK_PHASES,
+)
 from driftscribe_lib.auth import verify_oidc_caller
 from driftscribe_lib.cf_access import (
     CfAccessJwtError,
@@ -413,6 +419,48 @@ def _reset_state_for_tests() -> None:
 
 _CONVERSATION_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
+# Conversation-document fields that are server bookkeeping, never client
+# contract. Both are new with the crew handoff:
+#
+# - ``pending_handoff`` carries ``nonce_digest`` (a hash of a live transition
+#   credential) and ``brief`` (written for the joining crew, not for a reader).
+#   The SPA does need to know a chip is outstanding, so this field is PROJECTED
+#   rather than dropped — see :func:`_project_pending_handoff`.
+# - ``chat_run_lease`` is concurrency plumbing with no reader outside this
+#   module.
+_CONVERSATION_INTERNAL_FIELDS = ("pending_handoff", "chat_run_lease")
+
+
+def _project_pending_handoff(pending: object) -> dict | None:
+    """Allowlist-project an open proposal for the client.
+
+    Enough to re-render the confirmation chip after a reload or a
+    ``?conversation=`` deep link — which is the whole reason the chip reads
+    from persisted state rather than from a one-shot SSE frame — and nothing
+    more. The nonce digest and the crew-facing brief stay server-side.
+    """
+    if not isinstance(pending, dict) or not pending.get("to"):
+        return None
+    expires_at = pending.get("expires_at")
+    return {
+        "from": pending.get("from"),
+        "to": pending.get("to"),
+        "reason": pending.get("reason") or "",
+        "expires_at": (
+            expires_at.isoformat() if hasattr(expires_at, "isoformat")
+            else expires_at
+        ),
+    }
+
+
+def _project_conversation(conv: dict) -> dict:
+    """Strip server-internal fields from a conversation doc before serving it."""
+    out = {k: v for k, v in conv.items() if k not in _CONVERSATION_INTERNAL_FIELDS}
+    projected = _project_pending_handoff(conv.get("pending_handoff"))
+    if projected is not None:
+        out["pending_handoff"] = projected
+    return out
+
 
 def _derive_conversation_title(prompt: str) -> str:
     """First-prompt title: sanitize control/bidi + truncate. No LLM call."""
@@ -442,6 +490,8 @@ def _resolve_chat_conversation(
             "is_new": True,
             "prior_turns": [],
             "ephemeral": ephemeral,
+            # No document yet, so no proposal was open when this turn began.
+            "pending_digest": None,
         }
     conv = state.get_conversation(conversation_id)
     if conv is None:
@@ -457,7 +507,18 @@ def _resolve_chat_conversation(
                 f"conversation is locked to crew {conv.get('workload')!r}; "
                 f"start a new chat to talk to {workload!r}"
             ),
-            headers={"Cache-Control": "no-store"},
+            # The lock's own answer to "then who DOES own this?", machine-
+            # readable rather than only in the prose above. Every other way a
+            # client learns the current crew is a separate request that may
+            # fail, which leaves the one failure this refusal should be
+            # incapable of: a composer stuck on a departed crew, refused every
+            # time it tries, by a message naming a crew it never adopts. This
+            # header is the backstop — it rides the refusal itself, so it
+            # cannot be the thing that goes missing.
+            headers={
+                "Cache-Control": "no-store",
+                "X-Conversation-Crew": str(conv.get("workload") or ""),
+            },
         )
     return {
         "conversation_id": conversation_id,
@@ -465,51 +526,173 @@ def _resolve_chat_conversation(
         "is_new": False,
         "prior_turns": conv.get("turns", []),
         "ephemeral": False,
+        # The proposal this turn is answering, identified rather than merely
+        # counted. Compared again at persist time so a run that started before
+        # a redemption cannot edit a proposal minted after it.
+        "pending_digest": (conv.get("pending_handoff") or {}).get("nonce_digest"),
     }
+
+
+def _mint_handoff_for_turn(conv: dict, result: dict) -> tuple[dict | None, str | None]:
+    """Turn a crew's handoff proposal into a ``pending_handoff`` + its nonce.
+
+    Returns ``(pending, nonce)``, both None when this turn proposed nothing (or
+    proposed something the server refuses to record). The nonce is minted HERE,
+    one step before the commit, and released to the client only after the commit
+    succeeds — the model never holds the credential its own proposal will be
+    confirmed with.
+    """
+    from agent.handoff import build_pending_handoff, mint_handoff_nonce
+
+    proposal = result.get("handoff")
+    if not isinstance(proposal, dict) or not proposal.get("to"):
+        return None, None
+    if proposal.get("from") != conv["workload"]:
+        # Defense in depth: the tool derives ``from`` from the request's bound
+        # workload, so a mismatch means something else wrote this. Drop it
+        # rather than record a route whose origin we cannot vouch for.
+        log.warning("handoff_proposal_origin_mismatch")
+        return None, None
+    nonce, digest = mint_handoff_nonce()
+    return build_pending_handoff(
+        proposal, digest=digest, now=dt.datetime.now(dt.timezone.utc),
+    ), nonce
+
+
+def _acquire_chat_run(state: StateStore, conv: dict) -> bool:
+    """Claim the conversation for this turn. Fail-OPEN on a store error.
+
+    The lease protects transcript ATTRIBUTION, not authority: the caller
+    already holds the crew it is about to run, and no ordering of these
+    requests grants tools it could not otherwise reach. So a store hiccup must
+    not refuse an operator's turn — it degrades to today's behavior.
+
+    Worth saying plainly rather than leaving implicit: failing open sacrifices
+    the exact property the lease exists for. Without a stored lease a redemption
+    can flip the crew mid-run, and ``append_turns`` revalidates neither the
+    holder nor the current workload, so this turn can land in the transcript
+    attributed to the crew that has since left. That is a wrong audit line, not
+    a wrong permission, and it is the deliberate trade: a Firestore blip is far
+    more likely than a concurrent redemption, and refusing the operator's turn
+    outright is a worse answer to it than a mislabelled row.
+    """
+    if conv.get("ephemeral"):
+        return True
+    run_id = uuid.uuid4().hex
+    try:
+        if not state.begin_chat_run(
+            conv["conversation_id"], run_id=run_id,
+            now=dt.datetime.now(dt.timezone.utc),
+        ):
+            return False
+    except Exception:  # noqa: BLE001
+        log.warning("chat_run_lease_acquire_failed", exc_info=True)
+        return True
+    conv["run_id"] = run_id
+    return True
+
+
+def _release_chat_run(state: StateStore, conv: dict) -> None:
+    run_id = conv.pop("run_id", None)
+    if not run_id:
+        return
+    try:
+        state.finish_chat_run(conv["conversation_id"], run_id=run_id)
+    except Exception:  # noqa: BLE001 — the lease TTL is the backstop
+        log.warning("chat_run_lease_release_failed", exc_info=True)
 
 
 def _persist_chat_turn(
     state: StateStore, *, conv: dict, prompt: str, trace_id: str | None,
     result: dict,
-) -> bool:
-    """Atomically append the user+crew turn pair. Fail-soft.
+) -> dict | None:
+    """Atomically append the turn pair (+ any handoff proposal). Fail-soft.
 
-    Returns True iff the pair persisted — the caller attaches ``conversation_id``
-    to the response ONLY on True, so we never hand the client an id that resolves
-    to nothing. The whole exchange (incl. lazy creation for a new conversation)
-    is one transaction, so there are no half-turns.
+    Returns None when nothing persisted, else ``{"conversation_id", "handoff"}``
+    — the caller attaches those to the response ONLY on a non-None result, so we
+    never hand the client an id that resolves to nothing, nor a nonce for a
+    proposal that did not commit. The whole exchange (incl. lazy creation for a
+    new conversation, and the proposal) is one transaction, so there are no
+    half-turns and no orphaned credentials.
 
-    An ``ephemeral`` turn writes nothing and returns False, so both transports
+    An ``ephemeral`` turn writes nothing and returns None, so both transports
     (JSON + SSE) omit the conversation_id automatically — the single place that
-    keeps probe traffic out of the operator's conversation history.
+    keeps probe traffic out of the operator's conversation history. A handoff
+    proposed on an ephemeral turn is therefore dropped too, which is correct:
+    there is no conversation for a transition to land on.
+
+    ``conv["omit_user_turn"]`` suppresses the user row. Set by the handoff
+    redemption path, where the operator confirmed a suggestion rather than
+    typing the prompt — recording their confirmation as a typed message would
+    put words in the operator's mouth in the durable transcript.
     """
     if conv.get("ephemeral"):
-        return False
+        return None
     try:
-        turns = [
-            {"role": "user", "text": prompt, "workload": conv["workload"],
-             "trace_id": trace_id},
+        turns = []
+        if not conv.get("omit_user_turn"):
+            turns.append(
+                {"role": "user", "text": prompt, "workload": conv["workload"],
+                 "trace_id": trace_id}
+            )
+        turns.append(
             {"role": "crew", "text": result.get("reply") or "",
              "workload": conv["workload"], "trace_id": trace_id,
              "iac_pr": result.get("iac_pr"),
-             "tool_calls": result.get("tool_calls")},
-        ]
+             "tool_calls": result.get("tool_calls")}
+        )
         create_with = (
             {"workload": conv["workload"],
              "title": _derive_conversation_title(prompt)}
             if conv.get("is_new") else None
         )
-        state.append_turns(conv["conversation_id"], turns, create_with=create_with)
+        pending, nonce = _mint_handoff_for_turn(conv, result)
+        state.append_turns(
+            conv["conversation_id"], turns, create_with=create_with,
+            # The crew this turn actually ran as, captured at request entry. If
+            # a redemption moved the conversation while this run was in flight,
+            # the store keeps the turn rows but refuses this run's edits to the
+            # open proposal — a stale writer must not delete or overwrite the
+            # joining crew's live suggestion. See _may_touch_pending_handoff.
+            expect_workload=conv["workload"],
+            expect_pending_digest=conv.get("pending_digest"),
+            pending_handoff=pending,
+            # An operator turn ANSWERS any outstanding suggestion: being asked
+            # "shall I bring in Provision?" and replying with something else is
+            # a reply, so the proposal is spent and retires with this write.
+            # Gated on a typed row, not merely on "no new proposal": the
+            # redemption path omits the user turn precisely because the
+            # operator did not type it, and a crew's own follow-up must not
+            # answer a question that was put to the operator.
+            clear_pending_handoff=any(t["role"] == "user" for t in turns),
+        )
         conv["is_new"] = False
-        return True
+        out: dict = {"conversation_id": conv["conversation_id"]}
+        # Present only on the turn a confirmed handoff runs: which crew just
+        # took over. Carried on ``conv`` by the redemption endpoint so BOTH
+        # transports report it — the JSON caller named no crew in its request,
+        # so this is the only place it learns which one answered.
+        if conv.get("crew_change"):
+            out["crew_change"] = conv["crew_change"]
+        if pending is not None and nonce is not None:
+            out["handoff"] = {
+                "from": pending["from"],
+                "to": pending["to"],
+                "reason": pending["reason"],
+                # The one and only time this value is ever transmitted.
+                "nonce": nonce,
+                "expires_at": pending["expires_at"].isoformat(),
+            }
+        return out
     except Exception:  # noqa: BLE001 — reply already produced; never break it
         log.warning("chat_turn_persist_failed", exc_info=True)
-        return False
+        return None
 
 
 async def _persisting_chat_stream(
     workload: str, prompt: str, conv: dict, trace_id: str | None,
     session_id: str | None, *, autonomy_mode: str, demo_anon: bool = False,
+    denied_tools: frozenset[str] | None = None,
 ):
     """Wrap _chat_stream: seed prior turns in, persist the new turn out.
 
@@ -518,22 +701,33 @@ async def _persisting_chat_stream(
     to run_chat_stream is invisible here, so we persist exactly once. The
     caller-supplied ADK session_id is forwarded unchanged (separate concept from
     conversation_id).
+
+    Also the single release site for the conversation's run lease: the lease is
+    acquired at request entry (so a busy thread gets a clean 409 before any
+    streaming starts) and released in the ``finally`` here, AFTER persistence.
+    Releasing earlier would let a redemption land between the run and its own
+    commit, which is exactly the interleave the lease exists to prevent.
     """
     state = get_state()
-    async for item in _chat_stream(
-        workload, prompt, session_id, autonomy_mode=autonomy_mode,
-        prior_turns=conv["prior_turns"], demo_anon=demo_anon,
-    ):
-        if item.get("type") == "result":
-            # Off-load the (possibly Firestore-transactional) write to a thread
-            # so a slow commit can't stall the SSE done/heartbeat frames or
-            # other async requests on the event loop.
-            if await asyncio.to_thread(
-                _persist_chat_turn, state, conv=conv, prompt=prompt,
-                trace_id=trace_id, result=item,
-            ):
-                item = {**item, "conversation_id": conv["conversation_id"]}
-        yield item
+    try:
+        async for item in _chat_stream(
+            workload, prompt, session_id, autonomy_mode=autonomy_mode,
+            prior_turns=conv["prior_turns"], demo_anon=demo_anon,
+            denied_tools=denied_tools,
+        ):
+            if item.get("type") == "result":
+                # Off-load the (possibly Firestore-transactional) write to a
+                # thread so a slow commit can't stall the SSE done/heartbeat
+                # frames or other async requests on the event loop.
+                persisted = await asyncio.to_thread(
+                    _persist_chat_turn, state, conv=conv, prompt=prompt,
+                    trace_id=trace_id, result=item,
+                )
+                if persisted:
+                    item = {**item, **persisted}
+            yield item
+    finally:
+        _release_chat_run(state, conv)
 
 
 _trace_fetcher_singleton: TraceFetcher | None = None
@@ -1236,6 +1430,14 @@ def _do_rollback(
                 # closes the `reason` boundary too. (PR 2)
                 "reason": scrub_rationale_text(proposal.rationale, proposal.env_diffs),
             },
+            # The rollback worker is --concurrency=1, so this can queue behind a
+            # blocking /execute (up to its 60s LRO cap). The default 30s budget
+            # would time out while the request is still queued — and a client
+            # timeout does not cancel server work, so the worker could go on to
+            # create the approval whose raw token is returned exactly once,
+            # orphaning it while the retry below mints a second. See the
+            # constant's own comment.
+            timeout=worker_client.QUEUED_BEHIND_EXECUTE_TIMEOUT,
         )
     except WorkerClientError as e:
         # Worker propose failed (auth, schema, or transport). Release the
@@ -2209,14 +2411,22 @@ def list_decisions_endpoint(
     #      merged when GitHub confirms the PR merged out-of-band (compute-only, no
     #      persist). The provider memoizes the github client so a window with N
     #      stale rows builds it once, and a warm merge-cache makes zero GitHub calls.
+    #   4. attach_approval_status (Task 3.0b) — join the approval doc's status +
+    #      resolution timestamp onto rollback rows. The reader memoizes Firestore
+    #      reads per approval_id for this request and is fail-soft (never 500s
+    #      the rail on a Firestore hiccup).
     settings = get_settings()
     repo = settings.github_repo
     repo_provider = _memoized_repo_provider(settings)
+    approval_reader = _memoized_approval_reader()
     rows = [
-        reconcile_merge_state(
-            attach_iac_pr_link(scrub_decision_rationale(d), repo),
-            repo_provider=repo_provider,
-            settings=settings,
+        attach_approval_status(
+            reconcile_merge_state(
+                attach_iac_pr_link(scrub_decision_rationale(d), repo),
+                repo_provider=repo_provider,
+                settings=settings,
+            ),
+            approval_reader=approval_reader,
         )
         for d in state.list_decisions(limit=limit)
     ]
@@ -2545,6 +2755,389 @@ def reconcile_merge_state(decision: object, *, repo_provider, settings: Settings
     if merged is True:
         return {**decision, "merge_state": "merged", "merge_reconciled": True}
     return decision
+
+
+# Non-terminal phases a /reconcile round-trip can actually move. `claimed` is
+# excluded on purpose: nothing was started, so there is no operation to ask
+# about — the worker would just tell us so.
+_RECONCILABLE_PHASES = frozenset({PHASE_APPLYING, PHASE_OUTCOME_UNKNOWN})
+
+# Max reconcile round-trips per GET /decisions. See _maybe_reconcile.
+_DECISIONS_RECONCILE_BUDGET = 3
+
+# Don't reconcile a doc whose phase was recorded less than this ago — /execute
+# is still expected to own it, and the worker's single concurrency slot means we
+# would queue behind that very call. Comfortably past its 60s LRO cap.
+_RECONCILE_MIN_AGE_S = 90.0
+
+# ds-7j0 — the two brakes on an UNRESOLVABLE row.
+#
+# /reconcile writes nothing on its three non-settling exits (read failed / not
+# done / done-with-no-response). That is correct — re-stamping `phase_at` there
+# would slide the staleness clock forward and hide a genuinely stuck rollback,
+# which is the ds-2mc defect inverted — but it also means nothing about the row
+# changes, so it stayed eligible forever with no attempt counter and no ceiling.
+# Two ways that becomes permanent load on a worker pinned to --concurrency=1
+# --max-instances=1 (iac/cloudrun.tf) that ALSO serves Approve: the out-of-band
+# `driftscribeRunOperationsReader` binding gets dropped (nothing in iac/ protects
+# it — see the docstring on workers/rollback/main.py::_get_operations_client), or
+# Cloud Run garbage-collects an old LRO and every read is NOT_FOUND. Either way
+# every GET /decisions burned up to _DECISIONS_RECONCILE_BUDGET round-trips, on
+# every 45s poll, per open tab, indefinitely.
+#
+# Neither brake touches the doc: the coordinator's projection is compute-only and
+# the worker owns those writes.
+#
+#   1. A per-approval cooldown, so N open tabs polling at 45s cost at most one
+#      attempt per cooldown per coordinator instance instead of N per poll.
+#   2. A hard ceiling on `phase_at` age. Past it the answer will not change; a
+#      rollback that has been unsettled for a day needs an operator, not another
+#      round-trip.
+_RECONCILE_RETRY_AFTER_S = 300.0
+_RECONCILE_GIVE_UP_AFTER_S = 24 * 60 * 60.0
+
+# approval_id -> monotonic timestamp of the last reconcile ATTEMPT (not of its
+# outcome — a failed attempt is exactly the one worth backing off from). Bounded
+# like _TRACE_CACHE: this keys on approval ids, which are unique per proposal, so
+# an unbounded dict is a slow leak in a long-lived instance.
+_RECONCILE_ATTEMPTED: dict[str, float] = {}
+_RECONCILE_ATTEMPTED_MAX = 512
+
+
+def _reconcile_cooldown_active(approval_id: str, *, now: float) -> bool:
+    """True while ``approval_id`` is inside its post-attempt cooldown."""
+    last = _RECONCILE_ATTEMPTED.get(approval_id)
+    return last is not None and (now - last) < _RECONCILE_RETRY_AFTER_S
+
+
+def _note_reconcile_attempt(approval_id: str, *, now: float) -> None:
+    if len(_RECONCILE_ATTEMPTED) >= _RECONCILE_ATTEMPTED_MAX:
+        # Drop the oldest half rather than clearing outright, so a burst of new
+        # approvals can't wipe every live cooldown and re-open the stampede.
+        for stale, _ in sorted(_RECONCILE_ATTEMPTED.items(), key=lambda kv: kv[1])[
+            : _RECONCILE_ATTEMPTED_MAX // 2
+        ]:
+            _RECONCILE_ATTEMPTED.pop(stale, None)
+    _RECONCILE_ATTEMPTED[approval_id] = now
+
+
+def _reset_reconcile_state_for_tests() -> None:
+    """Test helper — drop the reconcile cooldown table. Mirrors
+    ``_reset_state_for_tests``; the cooldown is process-global, so without this
+    one test's attempt silently suppresses the next test's."""
+    _RECONCILE_ATTEMPTED.clear()
+
+
+def _phase_at_age_s(audit: dict) -> float | None:
+    """Seconds since ``apply_audit.phase_at``, or ``None`` if it cannot be read.
+
+    ``None`` means the caller must NOT reconcile (fail closed). The previous
+    inline version failed OPEN on a non-datetime ``phase_at`` — it skipped the
+    check and reconciled anyway — which drops the latency guard precisely when
+    the doc is malformed. And a NAIVE datetime raised straight out of
+    ``_maybe_reconcile``, through the reader's blanket except, memoizing
+    ``None`` for the row: the desk then lost status AND phase for it and went
+    silent, rather than showing the unresolved card. Both are handled here.
+    """
+    phase_at = audit.get("phase_at")
+    if not isinstance(phase_at, dt.datetime):
+        return None
+    if phase_at.tzinfo is None:
+        # Firestore hands back tz-aware values; a naive one came from somewhere
+        # else. UTC is this codebase's convention everywhere (see _utcnow).
+        phase_at = phase_at.replace(tzinfo=dt.timezone.utc)
+    try:
+        return (dt.datetime.now(dt.timezone.utc) - phase_at).total_seconds()
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+class _ApprovalReadFailed:
+    """Sentinel: the approval doc could not be READ (as opposed to not existing).
+
+    Distinct from ``None`` on purpose — see the ds-mml branch in
+    ``attach_approval_status``. A dedicated object rather than a string or a
+    bool so it can never collide with a real value or be truthiness-confused.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover — debugging aid only
+        return "<approval read failed>"
+
+
+_APPROVAL_READ_FAILED = _ApprovalReadFailed()
+
+
+# ds-ihi — cross-request cache for approvals that can never change again.
+#
+# The per-request memo below keys on approval_id, and every proposal mints a
+# fresh one, so it collapses nothing in practice: GET /decisions?limit=50 made
+# one SEQUENTIAL Firestore read per rollback row, on the route overviewStore
+# polls every 45s and on every focus. Twenty rollback rows meant twenty
+# serialized round-trips inside a fetch the desk awaits alongside the graph and
+# pending-list.
+#
+# Terminality is an invariant here, not a guess, which is what makes caching
+# across requests safe: record_phase REFUSES to overwrite a terminal phase
+# (TERMINAL_ROLLBACK_PHASES), and a denial is terminal at flip time inside
+# _claim. So a doc in one of those states is immutable and re-reading it can
+# only ever return the same bytes. Everything else — pending, claimed, applying,
+# outcome_unknown — is still read every time, because /reconcile exists
+# precisely to change it.
+_TERMINAL_APPROVALS: dict[str, object] = {}
+_TERMINAL_APPROVALS_MAX = 512
+
+
+def _is_terminal_approval(record) -> bool:  # noqa: ANN001
+    """True when nothing can move this approval again. See _TERMINAL_APPROVALS."""
+    if record is None:
+        return False
+    if getattr(record, "status", None) == "denied":
+        return True
+    phase = (getattr(record, "apply_audit", None) or {}).get("phase")
+    return phase in TERMINAL_ROLLBACK_PHASES
+
+
+def _remember_if_terminal(approval_id: str, record) -> None:  # noqa: ANN001
+    if not _is_terminal_approval(record):
+        return
+    if len(_TERMINAL_APPROVALS) >= _TERMINAL_APPROVALS_MAX:
+        # Plain FIFO: insertion order is arrival order, and every entry is
+        # equally immutable, so there is no cleverer eviction to be had.
+        for stale in list(_TERMINAL_APPROVALS)[: _TERMINAL_APPROVALS_MAX // 2]:
+            _TERMINAL_APPROVALS.pop(stale, None)
+    _TERMINAL_APPROVALS[approval_id] = record
+
+
+def _reset_terminal_approval_cache_for_tests() -> None:
+    """Test helper — see ``_reset_reconcile_state_for_tests``."""
+    _TERMINAL_APPROVALS.clear()
+
+
+def _memoized_approval_reader():
+    """Return a 0-arg-per-``approval_id`` callable that reads the approval
+    doc's ``(status, resolved_at)`` ONCE per approval_id per request — twice for
+    the rare row that gets reconciled, which re-reads to serve the settled value
+    (Task 3.0b, 2026-07-28 — mirrors ``_memoized_repo_provider``'s "build the
+    client once per request" shape, applied here to per-row *reads* instead
+    of a single client construction).
+
+    Only rows with an ``approval_id`` ever call this (see
+    ``attach_approval_status``'s entry gate), so a window with N rollback
+    rows referencing the SAME approval (unusual but not impossible — repeated
+    /recheck calls after a stale claim) makes exactly one Firestore read, and
+    a window with none makes zero.
+
+    Fail-soft: a store construction error OR a read error memoizes ``None``
+    so the caller degrades to an un-enriched row — the read must never break
+    GET /decisions, the operator's main surface."""
+    cache: dict[str, object] = {}
+    # Per-request reconcile budget. Deliberately tiny: this is the operator's
+    # main serve path, and each reconcile is a worker round-trip. /execute
+    # terminalizes the doc itself on every path it survives, so an ELIGIBLE row
+    # (non-terminal, has a handle, and older than _RECONCILE_MIN_AGE_S) is the
+    # exception rather than the rule. A rollback in flight right now is
+    # deliberately NOT eligible — see the age gate in _maybe_reconcile — so the
+    # normal case, including a refresh during a live rollback, spends none of
+    # this. The count bound plus _RECONCILE_HTTPX_TIMEOUT's 15s read caps the
+    # worst case at ~45s, under the ~100s edge budget.
+    budget = [_DECISIONS_RECONCILE_BUDGET]
+
+    def read(approval_id: str):
+        if approval_id not in cache:
+            settled = _TERMINAL_APPROVALS.get(approval_id)
+            if settled is not None:
+                cache[approval_id] = settled
+                return settled
+            try:
+                store = approval_helpers.get_approval_store()
+                record = store.get(approval_id)
+                served = _maybe_reconcile(store, approval_id, record, budget)
+                _remember_if_terminal(approval_id, served)
+                cache[approval_id] = served
+            except Exception as e:  # noqa: BLE001 — fail-soft; must never break the serve path
+                log.warning(
+                    "decision_approval_status_read_failed",
+                    extra={"error": type(e).__name__},
+                )
+                # NOT None — see _APPROVAL_READ_FAILED. Memoized for the request
+                # (one blip shouldn't cost 50 retries) but never beyond it.
+                cache[approval_id] = _APPROVAL_READ_FAILED
+        return cache[approval_id]
+
+    return read
+
+
+def _maybe_reconcile(store, approval_id: str, record, budget: list[int]):
+    """Ask the rollback worker to finalize an approval still recorded as
+    in-flight, then re-read it. Returns the record to serve.
+
+    This is what makes ``applying``/``outcome_unknown`` a temporary state rather
+    than a permanent one. Without a caller, the worker's ``/reconcile`` endpoint
+    and the operation handle it consumes would be exactly the dead machinery
+    ds-2mc was filed about: ``operation_name`` was written for a poller that did
+    not exist, which is how a failed rollback stayed indistinguishable from a
+    successful one.
+
+    Entirely best-effort. Any failure — no budget, worker down, malformed
+    response — degrades to serving the record we already have, which is honest
+    on its own terms (``outcome_unknown`` renders as unconfirmed, not as
+    success). It must never break GET /decisions.
+    """
+    audit = getattr(record, "apply_audit", None)
+    if not isinstance(audit, dict):
+        return record
+    phase = audit.get("phase")
+    if phase not in _RECONCILABLE_PHASES:
+        return record
+    # No operation handle means there is nothing for the worker to look up —
+    # e.g. a transport error around update_service that never got one back.
+    # Spending a round-trip to be told that helps nobody.
+    if not (audit.get("detail") or {}).get("operation_name"):
+        return record
+    # Don't chase a rollback /execute is still actively working on.
+    #
+    # This is the load-bearing latency guard, not a nicety. The rollback worker
+    # runs --concurrency=1, so a reconcile for a FRESH `applying` queues behind
+    # the very /execute that owns it and blocks for that call's remaining LRO
+    # budget. The operator's focus-return refresh lands in exactly that window,
+    # which is the worst possible moment to stall GET /decisions — and
+    # overviewStore awaits it alongside the graph and pending-list fetches, so
+    # all three would wait. /execute will terminalize the doc itself; reconcile
+    # exists for what it leaves behind, not to race it.
+    age = _phase_at_age_s(audit)
+    if age is None or age < _RECONCILE_MIN_AGE_S:
+        return record
+    # ds-7j0's ceiling: past this the answer will not change, and the round-trip
+    # is pure load on the worker that also serves Approve.
+    if age > _RECONCILE_GIVE_UP_AFTER_S:
+        log.info(
+            "decisions_reconcile_gave_up",
+            extra={"approval_id": approval_id, "age_s": int(age)},
+        )
+        return record
+    # ds-7j0's cooldown. Checked BEFORE the budget so a row still cooling down
+    # doesn't consume a slot another row could use — the budget is per-request,
+    # the cooldown is per-approval, and spending the former on a row we have
+    # already decided not to call for would starve the rows we would.
+    now = time.monotonic()
+    if _reconcile_cooldown_active(approval_id, now=now):
+        return record
+    if budget[0] <= 0:
+        log.info("decisions_reconcile_budget_exhausted", extra={"approval_id": approval_id})
+        return record
+
+    budget[0] -= 1
+    # Marked before the call, not after: an attempt that throws is exactly the
+    # one worth backing off from, and a worker that is timing out must not be
+    # retried on the very next poll by every open tab.
+    _note_reconcile_attempt(approval_id, now=now)
+    try:
+        worker_client.call_reconcile(approval_id)
+        return store.get(approval_id)
+    except Exception as e:  # noqa: BLE001 — fail-soft by design
+        log.warning(
+            "decisions_reconcile_failed",
+            extra={"approval_id": approval_id, "error": type(e).__name__},
+        )
+        return record
+
+
+def attach_approval_status(decision: object, *, approval_reader) -> object:
+    """Serve-time: for a rollback row (an ``approval`` sub-object carrying a
+    non-empty ``approval_id``), join the approval doc's ``status`` and its
+    resolution timestamp (``resolved_at``, added by Task 3.0b Part A) into a
+    served copy. COMPUTE-ONLY — the approval doc is the source of truth for
+    status; this never persists anything back onto the decision.
+
+    Part C (honest degradation) — the entire point of this transform: a
+    missing approval doc, an unknown/non-string status, or a doc that
+    predates the ``resolved_at`` field (``record.resolved_at is None``) NEVER
+    causes a timestamp to be synthesized. ``resolved_at`` is either the real
+    value from the approval doc or explicit ``None`` — NEVER the decision's
+    own ``created_at`` (that's when the proposal was made, not when a human
+    resolved it). A consumer must be able to tell "resolved, time unknown"
+    apart from "resolved at 14:05".
+
+    ``approval_reader`` is a 0-arg-per-id callable (``str -> Approval |
+    None``); production callers pass :func:`_memoized_approval_reader`,
+    which is ALSO responsible for catching store errors (mirrors the
+    ``reconcile_merge_state`` / ``_resolve_pr_merged`` split — the transform
+    trusts its injected reader and does not itself swallow exceptions).
+
+    Conventions mirror ``reconcile_merge_state`` / ``scrub_decision_rationale``:
+    identity on no-change (non-dict, no ``approval`` sub-object, no/blank
+    ``approval_id``, doc not found, status unknown), copy-on-change
+    otherwise, never mutates the input, and — for rows with NO ``approval``
+    sub-object at all — a byte-identical passthrough."""
+    if not isinstance(decision, dict):
+        return decision
+    approval = decision.get("approval")
+    if not isinstance(approval, dict):
+        return decision
+    approval_id = approval.get("approval_id")
+    if not isinstance(approval_id, str) or not approval_id:
+        return decision
+    record = approval_reader(approval_id)
+    if record is _APPROVAL_READ_FAILED:
+        # ds-mml: "we could not read this" is NOT the same as "there is no such
+        # doc", and collapsing them costs a real click. The frontend treats an
+        # absent status as still-pending (a compat rule this backend cannot
+        # change — pre-status decisions must keep rendering a CTA), so a
+        # transient Firestore blip on a BURNED approval briefly re-offered a
+        # live Approve button that the worker then refuses: a dead end, and one
+        # that reads as the product being broken. One extra field lets the
+        # frontend tell the two apart and decline to guess.
+        return {
+            **decision,
+            "approval": {**approval, "status_unavailable": True},
+        }
+    if record is None:
+        return decision
+    status = getattr(record, "status", None)
+    if not isinstance(status, str) or not status:
+        return decision
+    resolved_at = getattr(record, "resolved_at", None)
+    if not isinstance(resolved_at, dt.datetime):
+        resolved_at = None  # never synthesize — see docstring
+
+    # Outcome phase (ds-2mc). `status == "used"` only means the single-use
+    # credential was spent — the flip precedes the traffic shift by
+    # construction — so the phase is what tells a consumer whether the rollback
+    # actually happened. Without it the desk seals "applied" on a rollback that
+    # may have failed.
+    #
+    # The phase STRING only, allowlisted against the known vocabulary. The
+    # sibling `detail` map is deliberately never projected: it carries API error
+    # type names and operation paths, which are operator-debugging material, not
+    # something to ship to every browser polling /decisions. An unrecognized or
+    # absent phase degrades to None — "outcome unknown" — never to success.
+    # `phase_at` rides along because `resolved_at` cannot order these rows: it
+    # exists only on a confirmed success, so every failed/unconfirmed row would
+    # tie at null. It is the observation time of the CURRENT phase, and is the
+    # only signal that distinguishes a rollback applying right now from one
+    # whose worker died mid-wait an hour ago.
+    phase = None
+    phase_at = None
+    audit = getattr(record, "apply_audit", None)
+    if isinstance(audit, dict):
+        raw_phase = audit.get("phase")
+        if isinstance(raw_phase, str) and raw_phase in ROLLBACK_PHASES:
+            phase = raw_phase
+        raw_phase_at = audit.get("phase_at")
+        if isinstance(raw_phase_at, dt.datetime):
+            phase_at = raw_phase_at
+    return {
+        **decision,
+        "approval": {
+            **approval,
+            "status": status,
+            "resolved_at": resolved_at,
+            "phase": phase,
+            "phase_at": phase_at,
+        },
+    }
 
 
 _INFRA_INVENTORY_CACHE: "tuple[float, dict] | None" = None
@@ -3754,6 +4347,46 @@ def _map_worker_error(
         status_code=403,
         detail=f"rollback {action} failed",
     )
+
+
+def _recorded_phase(store, approval_id: str) -> str | None:  # noqa: ANN001
+    """The rollback phase currently recorded on an approval, or ``None``.
+
+    Fail-soft on every failure mode (no doc, read error) because both callers
+    treat ``None`` as "we know nothing", which only ever makes the ds-z4z
+    fall-through stricter.
+    """
+    try:
+        approval = store.get(approval_id)
+    except Exception:  # noqa: BLE001 — a failed probe must not mask the worker error
+        log.exception("approve: could not read approval phase")
+        return None
+    if approval is None:
+        return None
+    phase = (getattr(approval, "apply_audit", None) or {}).get("phase")
+    return phase if isinstance(phase, str) and phase else None
+
+
+def _approval_if_phase_advanced(store, approval_id: str, *, before: str | None):  # noqa: ANN001, ANN201
+    """Return the approval doc iff its phase CHANGED since ``before``.
+
+    The narrow question after a worker 5xx: did *this* request get far enough to
+    write an outcome? ``apply_audit.phase`` is written atomically with the
+    ``pending → used`` claim, so a transition across this call means the claim
+    landed here and the doc's account beats the transport error.
+
+    A phase that was ALREADY there proves only that some earlier request claimed
+    this approval. Accepting that would let a spent-token replay during a real
+    outage render the original outcome at HTTP 200 and hide the outage — so an
+    unchanged phase returns ``None`` and the caller raises as before.
+    """
+    if (after := _recorded_phase(store, approval_id)) is None or after == before:
+        return None
+    try:
+        return store.get(approval_id)
+    except Exception:  # noqa: BLE001 — same fail-soft rule as above
+        log.exception("approve: could not re-read approval after worker error")
+        return None
 
 
 def _map_tofu_apply_error(
@@ -5821,6 +6454,9 @@ def approval_post(
     """
     store = approval_helpers.get_approval_store()
     execute_result: dict | None = None
+    # Set only on the ds-z4z fall-through below (worker 5xx, doc records a
+    # phase) — see the comment there.
+    approval_after_error = None
 
     # Pause gate (kill switch): read ONCE here — the gate below uses it for the
     # approve refusal AND the re-render context carries it to disable Approve in
@@ -5856,14 +6492,69 @@ def approval_post(
                 status_code=409,
                 detail=autonomy_apply_blocked_detail(autonomy.mode),
             )
+        # The phase BEFORE we hand the token to the worker, so the error handler
+        # below can tell "this request claimed and then failed" from "an old
+        # approval plus a current outage". Read fail-soft: None here only ever
+        # makes the fall-through stricter.
+        phase_before = _recorded_phase(store, approval_id)
         try:
             execute_result = worker_client.call_execute(approval_id, t)
         except worker_client.WorkerClientError as e:
-            # Same mapping as the reject path — see :func:`_map_worker_error`.
-            raise _map_worker_error(e, action="execute") from e
+            # ds-z4z: a 5xx out of /execute is frequently NOT an outage. The
+            # worker answers 504 with "rollback still in progress; outcome
+            # unconfirmed" for any LRO that outlives its poll budget, and 502
+            # when the poll itself broke — both are DESIGNED outcomes of the
+            # ds-2mc work, and in both the traffic shift is usually landing
+            # fine. Raising here produced a FastAPI JSON error body reading
+            # "rollback worker unavailable", so the four phase branches added
+            # to approval.html were unreachable on the POST path (an operator
+            # only ever saw them by hand-revisiting the URL), and the demo's
+            # headline flow narrated a working rollback as a broken system.
+            #
+            # So: ask the doc before calling it an outage. A recorded phase
+            # means the worker got at least as far as claiming the approval,
+            # which makes the doc — not the transport error — the truth worth
+            # rendering. Fall through to the normal re-render with
+            # execute_result still None, so the page shows the phase copy and
+            # NOT the "Rollback dispatched" note.
+            #
+            # TWO gates, and both are load-bearing.
+            #
+            # 5xx ONLY. Without this the fall-through fires on a 403 too, so
+            # replaying a spent token against a phased doc answers 200 while the
+            # same replay against a pending one answers 403 — a status-code
+            # oracle for approval state, which is the exact property
+            # _map_worker_error's 4xx collapse exists to deny. (Codex review of
+            # this commit caught it: the comment above described the gate, the
+            # code did not have it.)
+            #
+            # And the phase must have CHANGED across this call. A phase alone
+            # proves only that SOME request once claimed this approval, not that
+            # this one did — so a spent-token replay arriving while the worker is
+            # genuinely unreachable would otherwise render the original outcome
+            # and hide a live outage behind an HTTP 200. Requiring a transition
+            # ties the page we render to the request that caused it.
+            #
+            # Given both, no new disclosure: the doc moved because THIS token
+            # claimed it, and GET /approvals already renders this same phase copy
+            # to anyone holding the URL (it is always-200 by design).
+            if 500 <= e.status_code < 600:
+                approval_after_error = _approval_if_phase_advanced(
+                    store, approval_id, before=phase_before
+                )
+            if approval_after_error is None:
+                raise _map_worker_error(e, action="execute") from e
+            log.warning(
+                "approve: worker %s on execute, but the approval records phase=%s "
+                "— rendering the recorded outcome instead of an outage",
+                e.status_code,
+                (approval_after_error.apply_audit or {}).get("phase"),
+                extra={"approval_id": approval_id},
+            )
 
-    # Re-fetch the doc so the page reflects the new status.
-    approval = store.get(approval_id)
+    # Re-fetch the doc so the page reflects the new status. On the ds-z4z path
+    # above we already hold it — don't pay a second Firestore read for it.
+    approval = approval_after_error if approval_after_error is not None else store.get(approval_id)
     response = _TEMPLATES.TemplateResponse(
         request,
         "approval.html",
@@ -6063,6 +6754,7 @@ _SSE_HEARTBEAT_S = 15
 def _chat_stream(
     workload: str, prompt: str, session_id: str | None, *, autonomy_mode: str,
     prior_turns: list[dict] | None = None, demo_anon: bool = False,
+    denied_tools: frozenset[str] | None = None,
 ):
     """Select the chat-stream async generator for a workload.
 
@@ -6084,12 +6776,13 @@ def _chat_stream(
         return run_provision_fanout_stream(
             prompt, session_id, autonomy_mode=autonomy_mode,
             prior_turns=prior_turns, demo_anon=demo_anon,
+            denied_tools=denied_tools,
         )
     from agent.adk_agent import run_chat_stream
     return run_chat_stream(
         prompt, session_id=session_id, workload=workload,
         autonomy_mode=autonomy_mode, prior_turns=prior_turns,
-        demo_anon=demo_anon,
+        demo_anon=demo_anon, denied_tools=denied_tools,
     )
 
 
@@ -6106,7 +6799,21 @@ async def _drain_chat_stream_result(agen) -> dict:
     optional ``iac_pr`` pointer when a first-authoring infra run produced one).
     Raising on an exhausted stream with no result keeps the "no final response"
     RuntimeError identical to ``run_chat``'s, so the ``/chat`` ``except``
-    tuple maps it the same way."""
+    tuple maps it the same way.
+
+    The generator is closed in a ``finally``. Returning on the terminal item
+    leaves it SUSPENDED at its last ``yield``, so any cleanup it owns — for
+    ``_persisting_chat_stream``, releasing the conversation's run lease — runs
+    only at async-generator finalization, which the event loop schedules
+    whenever the last reference drops. CPython usually gets there quickly; this
+    makes it deterministic rather than usually."""
+    try:
+        return await _drain(agen)
+    finally:
+        await agen.aclose()
+
+
+async def _drain(agen) -> dict:
     async for item in agen:
         if item["type"] == "result":
             out = {
@@ -6121,13 +6828,20 @@ async def _drain_chat_stream_result(agen) -> dict:
             # Multi-turn (P1): echo the durable thread id when the turn persisted.
             if item.get("conversation_id"):
                 out["conversation_id"] = item["conversation_id"]
+            # Crew handoff: the proposal + its single-use nonce, present only
+            # when this turn proposed one AND the proposal committed.
+            if item.get("handoff"):
+                out["handoff"] = item["handoff"]
+            if item.get("crew_change"):
+                out["crew_change"] = item["crew_change"]
             return out
     raise RuntimeError("ADK chat agent produced no final response")
 
 
 async def _chat_sse(prompt: str, session_id: str | None, conv: dict,
                     workload: str, trace_id: str, *, autonomy_mode: str,
-                    demo_anon: bool = False):
+                    demo_anon: bool = False,
+                    denied_tools: frozenset[str] | None = None):
     """SSE generator for the /chat streaming path.
 
     Re-binds the trace_id + workload ContextVars INSIDE the generator
@@ -6154,6 +6868,7 @@ async def _chat_sse(prompt: str, session_id: str | None, conv: dict,
             async for item in _persisting_chat_stream(
                 workload, prompt, conv, trace_id, session_id,
                 autonomy_mode=autonomy_mode, demo_anon=demo_anon,
+                denied_tools=denied_tools,
             ):
                 await queue.put(("item", item))
         except Exception as e:  # noqa: BLE001 - mapped to a status hint
@@ -6195,6 +6910,15 @@ async def _chat_sse(prompt: str, session_id: str | None, conv: dict,
                     # persisted.
                     if item.get("conversation_id"):
                         done_data["conversation_id"] = item["conversation_id"]
+                    # Crew handoff: the proposal rides the TERMINAL frame, not a
+                    # dedicated mid-stream one. The nonce does not exist until
+                    # the proposal persists, and persistence happens at the end
+                    # of the stream — a mid-stream frame could only advertise a
+                    # credential that is not yet real.
+                    if item.get("handoff"):
+                        done_data["handoff"] = item["handoff"]
+                    if item.get("crew_change"):
+                        done_data["crew_change"] = item["crew_change"]
                     yield _sse_frame(event="done", data=done_data)
             elif kind == "error":
                 status, detail = payload
@@ -6344,6 +7068,17 @@ async def chat(
     conv = _resolve_chat_conversation(
         state, req.conversation_id, req.workload, ephemeral=req.ephemeral
     )
+    # Claim the conversation before any LLM work starts. The crew-lock check
+    # above is point-in-time — the agent does not run until the streaming
+    # generator is iterated, and persistence then uses the CAPTURED workload —
+    # so without this a redemption could flip the crew mid-run and the durable
+    # transcript would attribute the turn to a crew that was not driving.
+    if not _acquire_chat_run(state, conv):
+        raise HTTPException(
+            status_code=409,
+            detail="this conversation already has a turn in flight",
+            headers={"Cache-Control": "no-store"},
+        )
     trace_id = current_trace_id_or_new()
 
     # Phase 22: SSE streaming path. Content-negotiated on Accept — the
@@ -6413,15 +7148,26 @@ async def chat(
                 autonomy_mode=autonomy.mode, prior_turns=conv["prior_turns"],
                 demo_anon=demo_anon,
             )
-            if await asyncio.to_thread(
+            persisted = await asyncio.to_thread(
                 _persist_chat_turn, state, conv=conv, prompt=req.prompt,
                 trace_id=trace_id, result=result,
-            ):
-                result["conversation_id"] = conv["conversation_id"]
+            )
+            # Drop the RAW proposal unconditionally: it carries the brief (for
+            # the joining crew, not the client) and no nonce. Only the
+            # persisted projection is a usable contract, and only a committed
+            # proposal has one — an ephemeral turn or a failed write must
+            # advertise no handoff at all.
+            result.pop("handoff", None)
+            if persisted:
+                result.update(persisted)
             # Operator decision 2026-07-09: anon receives the live approval link
             # in the /chat JSON reply, same as the operator (audit C1 reversed).
             return result
         finally:
+            # The SSE + provision paths release inside
+            # ``_persisting_chat_stream``; this branch owns its own release.
+            if req.workload != "provision":
+                _release_chat_run(state, conv)
             reset_workload(_workload_token)
     except (
         worker_client.WorkerClientError,
@@ -6439,6 +7185,340 @@ async def chat(
         # 502 (ADK parse/response failure).
         status, detail = _chat_error_payload(e, workload=req.workload)
         raise HTTPException(status_code=status, detail=detail) from e
+
+
+class HandoffRedeemRequest(BaseModel):
+    """Confirm (or decline) a crew handoff a crew proposed on a previous turn.
+
+    Note what is NOT here: the target crew. ``from`` and ``to`` are read from
+    the persisted proposal, so the caller confirms a specific route the server
+    already recorded rather than naming one. Combined with the nonce, that is
+    what makes this an intent-BOUND confirmation instead of a second way to ask
+    for an arbitrary workload.
+    """
+
+    conversation_id: str
+    nonce: str
+    accept: bool
+
+
+# Refusal token -> HTTP status. Every one of these leaves the conversation
+# exactly as it was; none of them burn the proposal (except the ones where it
+# is already gone), so a refused confirmation costs the operator one click.
+_HANDOFF_REFUSAL_STATUS: dict[str, int] = {
+    "not_found": 404,
+    "no_pending": 409,   # nothing to confirm — already used, declined, or never made
+    # Deliberately NOT 403. The nonce is a single-use resource credential, not
+    # an authentication factor: the caller is already authenticated (or is an
+    # allowlisted anonymous visitor during the demo window) and is simply
+    # presenting a credential that does not match this conversation's proposal.
+    # 403 said "your operator token was rejected", which the SPA's ``apiFetch``
+    # believes literally — it clears the stored token and raises the token
+    # modal (see the demo-allowlist gap, PR #208, for the same failure shape).
+    # An anonymous judge clicking a superseded chip would be thrown out of the
+    # demo. 409 puts it with its siblings, and X-Handoff-Refusal keeps the
+    # distinction the status no longer carries.
+    "invalid_nonce": 409,
+    "expired": 410,      # it existed and the window closed
+    "stale": 409,        # the thread moved on; this route no longer starts here
+    "busy": 409,         # a turn is in flight
+}
+
+_HANDOFF_REFUSAL_DETAIL: dict[str, str] = {
+    "not_found": "conversation not found",
+    "no_pending": "no crew handoff is awaiting confirmation on this conversation",
+    "invalid_nonce": "this confirmation is not valid for this conversation",
+    "expired": "this handoff has expired; ask the crew to suggest it again",
+    "stale": "this conversation has already moved to another crew",
+    "busy": "this conversation already has a turn in flight",
+}
+
+
+@app.post("/chat/handoff", response_model=None)
+async def chat_handoff(
+    req: HandoffRedeemRequest,
+    request: Request,
+    _: None = Depends(verify_token),
+) -> dict | StreamingResponse:
+    """Redeem a single-use crew-handoff proposal.
+
+    This endpoint exists so ``POST /chat`` never has to become a way to change
+    a conversation's crew. ``ChatRequest.workload`` stays a closed ``Literal``
+    and ``_resolve_chat_conversation``'s 409 stays exactly as written — that
+    lock is scar tissue (a workload-less POST once defaulted to the
+    mutation-capable drift workload and an out-of-domain probe prompt became
+    fabricated docs PR #109), so the design works around it rather than
+    loosening it.
+
+    On ``accept`` the confirmation IS the turn: the joining crew runs
+    immediately against the handing crew's brief, because a join that then
+    waits for the operator to retype what they already said is precisely the
+    friction this replaces. That turn runs with
+    ``HANDOFF_FIRST_TURN_DENIED_TOOLS`` subtracted in code.
+
+    What the nonce buys, stated honestly: intent binding, expiry, and replay
+    prevention. NOT "a human clicked" — during the public demo window anonymous
+    visitors deliberately hold the operator seat, so the real guarantee is a
+    separate, authenticated confirmation request bound to a specific proposal.
+    """
+    from agent.handoff import (
+        HANDOFF_FIRST_TURN_DENIED_TOOLS,
+        crew_display_name,
+        handoff_prompt,
+    )
+
+    s = get_settings()
+    if not s.use_adk:
+        raise HTTPException(
+            status_code=503,
+            detail="ADK not enabled (set USE_ADK=true to enable /chat)",
+        )
+    wants_sse = "text/event-stream" in request.headers.get("accept", "")
+    # Path-safe id guard, same as GET /conversations/{id}: a malformed id is
+    # not-found, never a value handed to ``.document()``.
+    if not _CONVERSATION_ID_RE.fullmatch(req.conversation_id):
+        raise HTTPException(
+            status_code=404,
+            detail="conversation not found",
+            headers={"Cache-Control": "no-store"},
+        )
+    # Pause outranks everything, and is checked BEFORE redemption on purpose:
+    # confirming would start an LLM turn, which IS agent activity. Refusing
+    # without burning the proposal means the operator can confirm the same chip
+    # once they resume, instead of having to coax the crew into suggesting it
+    # again.
+    pause = _pause_state_fail_closed()
+    if pause.paused:
+        return _paused_chat_response(
+            pause, wants_sse=wants_sse, session_id=None,
+            conversation_id=req.conversation_id,
+        )
+
+    state = get_state()
+    # The joining run's lease is claimed in the SAME transaction that burns the
+    # nonce. Claiming it afterwards left a window in which an ordinary turn
+    # could take the conversation first — and the confirmation would then have
+    # to refuse having ALREADY spent its credential and moved the crew.
+    joining_run_id = uuid.uuid4().hex
+    outcome = await asyncio.to_thread(
+        state.redeem_handoff,
+        req.conversation_id, nonce=req.nonce, accept=req.accept,
+        now=dt.datetime.now(dt.timezone.utc),
+        trace_id=current_trace_id_or_new(),
+        run_id=joining_run_id,
+    )
+    if not outcome.get("ok"):
+        reason = outcome.get("error", "no_pending")
+        raise HTTPException(
+            status_code=_HANDOFF_REFUSAL_STATUS.get(reason, 409),
+            detail=_HANDOFF_REFUSAL_DETAIL.get(reason, "handoff refused"),
+            # The reason as a machine-readable token, because the status alone
+            # is ambiguous where it matters: 409 covers both "already used /
+            # superseded" (the proposal is dead, ask again) and "a turn is
+            # already running" (retry in a moment). Those need different copy,
+            # and the SPA must not have to pattern-match an English sentence to
+            # tell them apart. A header rather than a body field so the error
+            # shape stays exactly what every other endpoint returns.
+            headers={"Cache-Control": "no-store", "X-Handoff-Refusal": reason},
+        )
+    pending = outcome["pending"]
+
+    if not req.accept:
+        # Declining is a real POST, not a client-side dismiss: it burns the
+        # nonce and records a row the crew reads next turn. Without it the crew
+        # re-proposes every turn and no prompt-level restraint can see the
+        # refusal to respect it. No LLM runs.
+        payload = {
+            "reply": (
+                f"Staying with {crew_display_name(pending['from'])}. "
+                f"{crew_display_name(pending['to'])} was not brought in."
+            ),
+            "tool_calls": [],
+            "session_id": "",
+            "conversation_id": req.conversation_id,
+            "handoff_declined": {"from": pending["from"], "to": pending["to"]},
+        }
+        if not wants_sse:
+            return payload
+
+        async def _one_done_frame():
+            yield _sse_frame(event="done", data=payload)
+
+        return StreamingResponse(
+            _one_done_frame(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    # --- accepted: the joining crew runs now --------------------------------
+    #
+    # From here on the redemption HAS COMMITTED: the nonce is spent and the
+    # conversation's crew is already rewritten. Every error raised below is
+    # therefore a *post-commit* error, which is a different thing from the
+    # refusals above even when it shares their status class. The client cannot
+    # tell them apart from the response alone, and getting it wrong is not
+    # cosmetic — it would keep showing a chip for a spent proposal and keep the
+    # composer bound to the crew that already left, so the operator's next
+    # typed turn is refused by the crew lock. ``X-Handoff-Redeemed`` says which
+    # side of the commit the failure fell on.
+    workload = pending["to"]
+    # Reserving the joining run inside the burn transaction closed the race
+    # where an ordinary turn could take the lease first — but it hands this
+    # function a lease it now has to not drop. Nothing below owns the release
+    # until a runner does, and everything between here and there can raise:
+    # a crew whose worker env is missing, a contract fetch, the autonomy read,
+    # a transient store failure. Leak one and the conversation is wedged for
+    # the full lease TTL, which the operator cannot type their way out of,
+    # because a typed turn takes the same lease. That would make the 503
+    # branch's promise below false.
+    _joining_lease_owned = True
+    try:
+        try:
+            resolution = load_workload(workload)
+        except (
+            MissingWorkerEnvError,
+            ReservedToolNotImplementedError,
+            MissingDeveloperKnowledgeApiKeyError,
+        ) as e:
+            # The crew flip has already committed. That is deliberate: the
+            # transition is what the operator confirmed, and a failed first run
+            # is an ordinary error they can retry by typing. Undoing the flip
+            # here would silently discard a confirmed decision.
+            #
+            # "Retry by typing" only works if the client MOVED WITH the flip.
+            # The marker added below is what lets it: without it the SPA keeps
+            # the departed crew selected and its retry is refused by the very
+            # lock this transition just moved.
+            raise HTTPException(
+                status_code=503,
+                detail=f"workload {workload!r} is not deployed: {e}.",
+            ) from e
+        _eager_resolve_upgrade_contract(resolution)
+
+        autonomy = _autonomy_state_fail_closed()
+        # Re-evaluated at redemption, NOT inherited from the proposing turn: the
+        # dial may have moved, and an anonymous visitor's restrictions must apply
+        # to the crew that is actually about to run.
+        demo_anon = _is_demo_anonymous(request)
+
+        stored = state.get_conversation(req.conversation_id) or {}
+        conv = {
+            "conversation_id": req.conversation_id,
+            "workload": workload,
+            "is_new": False,
+            "prior_turns": stored.get("turns", []),
+            "ephemeral": False,
+            # The operator confirmed a suggestion; they did not type this
+            # prompt. Recording a user turn here would put words in their mouth
+            # in a transcript whose whole value is being trustworthy.
+            "omit_user_turn": True,
+            "crew_change": {"from": pending["from"], "to": pending["to"]},
+            # Redemption deleted the proposal it burned, so nothing is open for
+            # this run to answer. If the joining crew proposes something of its
+            # own, that write compares against this same "none was open".
+            "pending_digest": None,
+            # Already held: ``redeem_handoff`` reserved it transactionally.
+            # Carried here so the normal release path in
+            # ``_persisting_chat_stream`` (and the JSON branch's ``finally``)
+            # frees it exactly as for a typed turn.
+            "run_id": outcome.get("run_id") or joining_run_id,
+        }
+        prompt = handoff_prompt(pending)
+        trace_id = current_trace_id_or_new()
+
+        if wants_sse:
+            response = StreamingResponse(
+                _chat_sse(
+                    prompt, None, conv, workload, trace_id,
+                    autonomy_mode=autonomy.mode, demo_anon=demo_anon,
+                    denied_tools=HANDOFF_FIRST_TURN_DENIED_TOOLS,
+                ),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "X-Accel-Buffering": "no",
+                    "X-Trace-Id": trace_id,
+                },
+            )
+            # Handover: the stream's own ``finally`` owns the release from here,
+            # and ``_drain_chat_stream_result``'s ``aclose`` guarantees it runs
+            # even if the generator is left suspended. Releasing here as well
+            # would free a lease the run still holds.
+            _joining_lease_owned = False
+            return response
+
+        from agent.adk_agent import run_chat
+
+        _workload_token = set_workload(workload)
+        try:
+            try:
+                # Same handover, one frame earlier: both branches below release
+                # in the ``finally`` directly beneath them.
+                _joining_lease_owned = False
+                if workload == "provision":
+                    return await _drain_chat_stream_result(
+                        _persisting_chat_stream(
+                            "provision", prompt, conv, trace_id, None,
+                            autonomy_mode=autonomy.mode, demo_anon=demo_anon,
+                            denied_tools=HANDOFF_FIRST_TURN_DENIED_TOOLS,
+                        )
+                    )
+                result = await run_chat(
+                    prompt, session_id=None, workload=workload,
+                    autonomy_mode=autonomy.mode, prior_turns=conv["prior_turns"],
+                    demo_anon=demo_anon,
+                    denied_tools=HANDOFF_FIRST_TURN_DENIED_TOOLS,
+                )
+                persisted = await asyncio.to_thread(
+                    _persist_chat_turn, state, conv=conv, prompt=prompt,
+                    trace_id=trace_id, result=result,
+                )
+                result.pop("handoff", None)
+                if persisted:
+                    result.update(persisted)
+                return result
+            finally:
+                if workload != "provision":
+                    _release_chat_run(state, conv)
+                reset_workload(_workload_token)
+        except (
+            worker_client.WorkerClientError,
+            MissingDeveloperKnowledgeApiKeyError,
+            RuntimeError,
+        ) as e:
+            status, detail = _chat_error_payload(e, workload=workload)
+            raise HTTPException(status_code=status, detail=detail) from e
+    except HTTPException as e:
+        # Stamp every post-commit failure, whatever raised it. Done here rather
+        # than at each raise site so an error path added later cannot forget
+        # it — past the burn, "the transition happened" is the default and has
+        # to be opt-out, not opt-in.
+        e.headers = {**(e.headers or {}), "X-Handoff-Redeemed": "1"}
+        raise
+    except Exception as e:  # noqa: BLE001
+        # "Whatever raised it" has to mean that literally. An exception that is
+        # not already an HTTPException — a store read that fails after the
+        # burn, a contract fetch, anything added below later — would otherwise
+        # reach the client as a bare 500 carrying no marker, and an unmarked
+        # response is read as a PRE-commit refusal. That is the precise state
+        # this header exists to prevent: chip still live, composer still bound
+        # to the crew that already left, and the operator's next typed turn
+        # refused by the crew lock they cannot see.
+        #
+        # Converting here rather than letting it propagate is the whole point:
+        # the marker cannot ride an exception FastAPI turns into a 500 for us.
+        raise HTTPException(
+            status_code=500,
+            detail="the crew changed, but its first reply could not be started",
+            headers={"X-Handoff-Redeemed": "1"},
+        ) from e
+    finally:
+        if _joining_lease_owned:
+            _release_chat_run(
+                state,
+                {"conversation_id": req.conversation_id,
+                 "run_id": outcome.get("run_id") or joining_run_id},
+            )
 
 
 @app.get("/conversations")
@@ -6465,7 +7545,10 @@ def list_conversations_endpoint(
             headers={"Cache-Control": "no-store"},
         )
     response.headers["Cache-Control"] = "no-store"
-    rows = state.list_conversations(limit=limit, workload=workload)
+    rows = [
+        _project_conversation(r) for r in
+        state.list_conversations(limit=limit, workload=workload)
+    ]
     # Operator decision 2026-07-09 (audit M1 reversed): conversations are shared
     # team memory by design in the public window. The visitor holds the operator
     # seat, so a persisted turn's live ?t= approval link is served to anonymous
@@ -6501,4 +7584,4 @@ def get_conversation_endpoint(
     # Operator decision 2026-07-09 (audit M1 reversed): shared team memory is
     # shared-seat by design in the public window. Anonymous readers get the full
     # turns with any live ?t= approval link intact, same as the operator.
-    return conv
+    return _project_conversation(conv)

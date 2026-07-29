@@ -26,6 +26,35 @@ describe('matchesConversation', () => {
     expect(matchesConversation(c, 'anchor')).toBe(true); // drift → Anchor
   });
 
+  it('finds a handed-over thread under the crew that STARTED it', () => {
+    // After a handoff, `workload` is the crew that joined. Searching that alone
+    // would hide the thread from an operator looking for where they left it —
+    // they remember asking Explore, not Provision.
+    const c = fullConv({
+      workload: 'provision',
+      crews: ['explore', 'provision'],
+      title: 'x',
+    });
+    expect(matchesConversation(c, 'explore')).toBe(true);
+    expect(matchesConversation(c, 'Explore')).toBe(true);
+    expect(matchesConversation(c, 'provision')).toBe(true);
+    // A crew that was never in it still does not match.
+    expect(matchesConversation(c, 'anchor')).toBe(false);
+  });
+
+  it('falls back to the bound workload when `crews` is absent (pre-handoff rows)', () => {
+    // Not a guess: a conversation written before the field existed had exactly
+    // one crew for its whole life, so the bound workload IS the full history.
+    const c = fullConv({ workload: 'upgrade', title: 'x' });
+    expect(matchesConversation(c, 'patch')).toBe(true); // upgrade → Patch
+    expect(matchesConversation(c, 'explore')).toBe(false);
+  });
+
+  it('falls back when `crews` is present but empty', () => {
+    const c = fullConv({ workload: 'upgrade', crews: [], title: 'x' });
+    expect(matchesConversation(c, 'patch')).toBe(true);
+  });
+
   it('is separator-insensitive', () => {
     const c = fullConv({ title: 'check adopt_probe_topic' });
     expect(matchesConversation(c, 'adopt probe')).toBe(true);

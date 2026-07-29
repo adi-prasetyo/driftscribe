@@ -44,3 +44,11 @@ agent/static/
 crash.log
 crash.*.log
 .playwright-mcp/
+
+# Beads / Dolt files (added by bd init)
+# NOTE: bd's stock block also ignores a bare `*.db`; narrowed to beads paths so a
+# future sqlite fixture elsewhere in the repo isn't silently untracked.
+.dolt/
+.beads/*.db
+.beads-credential-key
+.beads/proxieddb/

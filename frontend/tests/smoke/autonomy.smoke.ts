@@ -17,6 +17,13 @@ const AUTONOMY_LOADED = {
 };
 const PAUSE_RUNNING = { paused: false, reason: null, actor: null, updated_at: null, read_error: false };
 
+// The header pill lives on every view, but these tests predate the Task 3.6
+// flip of DEFAULT_VIEW to 'desk' and were written against the chat shell, so
+// they keep navigating there explicitly rather than silently changing which
+// view the header is being measured on (the narrow-viewport overflow case in
+// particular is a layout assertion about a specific page).
+const CHAT_URL = '/?view=chat';
+
 async function seedToken(page: Page, token = 'smoke-token') {
   await page.addInitScript((t) => {
     sessionStorage.setItem('driftscribe_token', t);
@@ -40,7 +47,7 @@ test.describe('autonomy header pill (mock smoke)', () => {
   test('loaded pill opens the popover dial; segments render', async ({ page }) => {
     await seedToken(page);
     await mockData(page);
-    await page.goto('/');
+    await page.goto(CHAT_URL);
 
     const toggle = page.getByTestId('autonomy-pill-toggle');
     await expect(toggle).toBeVisible();
@@ -56,7 +63,7 @@ test.describe('autonomy header pill (mock smoke)', () => {
   test('Pause and Autonomy popovers are mutually exclusive', async ({ page }) => {
     await seedToken(page);
     await mockData(page);
-    await page.goto('/');
+    await page.goto(CHAT_URL);
 
     await page.getByTestId('autonomy-pill-toggle').click();
     await expect(page.getByTestId('autonomy-popover')).toBeVisible();
@@ -81,7 +88,7 @@ test.describe('autonomy header pill (mock smoke)', () => {
       await page.setViewportSize({ width, height: 800 });
       await seedToken(page);
       await mockData(page);
-      await page.goto('/');
+      await page.goto(CHAT_URL);
 
       await page.getByTestId('autonomy-pill-toggle').click();
       const popover = page.getByTestId('autonomy-popover');

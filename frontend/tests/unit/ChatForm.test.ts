@@ -11,16 +11,28 @@ afterEach(cleanup);
 
 const noop = () => {};
 
-/** The workload the crew picker currently has selected (its checked radio). */
-function checkedWorkload(): string | undefined {
-  return (document.querySelector('input[type="radio"]:checked') as HTMLInputElement | null)?.value;
+/**
+ * The crew the composer would send to, observed the only way it is observable
+ * now that the picker is gone: submit and read what onSubmit was handed. The
+ * old helper read the checked radio, which no longer exists — and that is the
+ * point, so asserting through the actual submit path is also the more honest
+ * test.
+ */
+async function submittedWorkload(
+  onSubmit: ReturnType<typeof vi.fn>,
+  input: HTMLTextAreaElement | HTMLInputElement,
+): Promise<string> {
+  await fireEvent.input(input, { target: { value: 'x' } });
+  await fireEvent.submit(document.getElementById('chat-form')!);
+  return onSubmit.mock.calls.at(-1)?.[1] as string;
 }
 
 describe('ChatForm — prefill', () => {
   it('applies the prefilled text + workload and focuses the input', async () => {
+    const onSubmit = vi.fn();
     const { getByTestId } = render(ChatForm, {
       props: {
-        onSubmit: noop,
+        onSubmit,
         prefill: { text: 'Adopt the Storage bucket `x` into IaC management.', workload: 'provision', epoch: 1 },
       },
     });
@@ -28,15 +40,18 @@ describe('ChatForm — prefill', () => {
     await waitFor(() => {
       expect(input.value).toBe('Adopt the Storage bucket `x` into IaC management.');
     });
-    expect(checkedWorkload()).toBe('provision');
     // The $effect focuses the input so the operator can edit / press Send.
     expect(document.activeElement).toBe(input);
+    // Adopt is the one path that still names a crew: the prefill's workload has
+    // to survive to the submit, or an Adopt click would open an Explore thread.
+    expect(await submittedWorkload(onSubmit, input)).toBe('provision');
   });
 
   it('re-applies when the epoch bumps with new text (overwrites the draft)', async () => {
+    const onSubmit = vi.fn();
     const { getByTestId, rerender } = render(ChatForm, {
       props: {
-        onSubmit: noop,
+        onSubmit,
         prefill: { text: 'first', workload: 'provision', epoch: 1 },
       },
     });
@@ -44,11 +59,11 @@ describe('ChatForm — prefill', () => {
     await waitFor(() => expect(input.value).toBe('first'));
 
     await rerender({
-      onSubmit: noop,
+      onSubmit,
       prefill: { text: 'second', workload: 'drift', epoch: 2 },
     });
     await waitFor(() => expect(input.value).toBe('second'));
-    expect(checkedWorkload()).toBe('drift');
+    expect(await submittedWorkload(onSubmit, input)).toBe('drift');
   });
 
   it('does NOT re-apply when prefill stays the same epoch (operator edits survive)', async () => {
@@ -94,7 +109,6 @@ describe('ChatForm — prefill', () => {
     await waitFor(() => {
       expect(input.value).toBe('Explain PR #18 in plain language.');
     });
-    expect(checkedWorkload()).toBe('explore');
     expect(onSubmit).not.toHaveBeenCalled();
   });
 });
@@ -106,7 +120,7 @@ describe('ChatForm — keyboard submit (Enter sends, Shift+Enter is a newline)',
     const input = getByTestId('chat-prompt') as HTMLTextAreaElement;
     await fireEvent.input(input, { target: { value: 'send me' } });
     await fireEvent.keyDown(input, { key: 'Enter' });
-    expect(onSubmit).toHaveBeenCalledWith('send me', 'drift');
+    expect(onSubmit).toHaveBeenCalledWith('send me', 'explore');
     expect(input.value).toBe('');
   });
 
@@ -166,38 +180,40 @@ describe('ChatForm — keyboard submit (Enter sends, Shift+Enter is a newline)',
   });
 });
 
-describe('ChatForm — crew picker integration', () => {
-  it('renders the four crew cards, each describing itself for assistive tech', () => {
+describe('ChatForm — no crew picker (single-door handoff)', () => {
+  it('offers the operator no crew choice at all', () => {
     const { container } = render(ChatForm, { props: { onSubmit: noop } });
+    // No cards, and — the load-bearing half — no control of ANY kind that
+    // selects a workload. Asserting only on the old testids would still pass if
+    // the picker came back wearing a <select>.
     for (const v of ['drift', 'upgrade', 'explore', 'provision']) {
-      const card = container.querySelector(`[data-testid="crew-card-${v}"]`);
-      expect(card, `crew card for ${v}`).not.toBeNull();
-      // The radio carries an aria-describedby pointing at its descriptor hint.
-      const radio = card!.querySelector('input[type="radio"]') as HTMLInputElement;
-      expect(radio.getAttribute('aria-describedby')).toBeTruthy();
+      expect(container.querySelector(`[data-testid="crew-card-${v}"]`)).toBeNull();
     }
+    expect(container.querySelector('input[type="radio"]')).toBeNull();
+    expect(container.querySelector('select')).toBeNull();
   });
 
-  it('submits the prompt with whichever crew card is selected (binding round-trips)', async () => {
-    const onSubmit = vi.fn();
-    const { container, getByTestId } = render(ChatForm, { props: { onSubmit } });
-    // Pick Provision via its card, type, and send.
-    await fireEvent.click(
-      container.querySelector('[data-testid="crew-card-provision"] input')!,
-    );
-    const input = getByTestId('chat-prompt') as HTMLInputElement;
-    await fireEvent.input(input, { target: { value: 'provision please' } });
-    await fireEvent.submit(document.getElementById('chat-form')!);
-    expect(onSubmit).toHaveBeenCalledWith('provision please', 'provision');
-  });
-
-  it('defaults to Anchor (drift) when the picker is left untouched', async () => {
+  it('sends a fresh thread to Explore, the crew that routes an unrouted question', async () => {
     const onSubmit = vi.fn();
     const { getByTestId } = render(ChatForm, { props: { onSubmit } });
     const input = getByTestId('chat-prompt') as HTMLInputElement;
     await fireEvent.input(input, { target: { value: 'hello' } });
     await fireEvent.submit(document.getElementById('chat-form')!);
-    expect(onSubmit).toHaveBeenCalledWith('hello', 'drift');
+    expect(onSubmit).toHaveBeenCalledWith('hello', 'explore');
+  });
+
+  it('still sends to the crew the OPEN THREAD is locked to', async () => {
+    // The lock did not go away with the picker — it moved out of the operator's
+    // hands. App sets `workload` from the resumed thread (or from a completed
+    // handoff), and the composer must carry that crew, not its own default.
+    const onSubmit = vi.fn();
+    const { getByTestId } = render(ChatForm, {
+      props: { onSubmit, workload: 'provision' },
+    });
+    const input = getByTestId('chat-prompt') as HTMLInputElement;
+    await fireEvent.input(input, { target: { value: 'and the bucket?' } });
+    await fireEvent.submit(document.getElementById('chat-form')!);
+    expect(onSubmit).toHaveBeenCalledWith('and the bucket?', 'provision');
   });
 });
 
@@ -227,17 +243,4 @@ describe('ChatForm — composer New chat button', () => {
     expect(onNewChat).toHaveBeenCalledTimes(1);
   });
 
-  it('forwards lockedCrew: a locked card click cannot change the submitted crew', async () => {
-    const onSubmit = vi.fn();
-    const { container } = render(ChatForm, {
-      props: { onSubmit, workload: 'drift', lockedCrew: 'drift' },
-    });
-    await fireEvent.click(
-      container.querySelector('[data-testid="crew-card-explore"] input')!,
-    );
-    const input = container.querySelector('#prompt-input') as HTMLTextAreaElement;
-    await fireEvent.input(input, { target: { value: 'check the service' } });
-    await fireEvent.submit(document.getElementById('chat-form')!);
-    expect(onSubmit).toHaveBeenCalledWith('check the service', 'drift');
-  });
 });

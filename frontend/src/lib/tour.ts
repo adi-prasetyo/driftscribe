@@ -25,6 +25,7 @@ import {
 } from './infra_graph';
 import { coveragePercent } from './coverage';
 import type { MessageKey, TranslateFn } from './i18n';
+import type { AppView } from './deeplink';
 
 export const TOUR_DONE_KEY = 'driftscribe_tour_done';
 
@@ -69,14 +70,27 @@ export interface TourStep {
   titleKey: MessageKey;
   /** data-tour attribute of the page element to spotlight; null = none. */
   target: string | null;
+  /**
+   * The view TourCard must navigate to before it looks for `target` (Task
+   * 4.1 — the estate/adopt targets moved off the chat view's InfraDiagram
+   * onto the real EstateView, and the composer only exists on chat). null =
+   * no navigation needed, either because the step has no target (welcome) or
+   * because its target is mounted regardless of view (controls, the header
+   * anchor).
+   */
+  view: AppView | null;
 }
 
 export const TOUR_STEPS: readonly TourStep[] = [
-  { id: 'welcome', titleKey: 'tour.step.welcome.title', target: null },
-  { id: 'estate', titleKey: 'tour.step.estate.title', target: 'estate' },
-  { id: 'controls', titleKey: 'tour.step.controls.title', target: 'controls' },
-  { id: 'adopt', titleKey: 'tour.step.adopt.title', target: 'estate' },
-  { id: 'next', titleKey: 'tour.step.next.title', target: 'composer' },
+  { id: 'welcome', titleKey: 'tour.step.welcome.title', target: null, view: null },
+  { id: 'estate', titleKey: 'tour.step.estate.title', target: 'estate', view: 'estate' },
+  { id: 'controls', titleKey: 'tour.step.controls.title', target: 'controls', view: null },
+  // Spotlights the FIRST adoptable row in EstateView (data-tour="adopt-target",
+  // written by EstateView.svelte), falling back to the nav-estate header
+  // button (App.svelte) when the estate has no adoptable row right now — see
+  // lib/estate.ts's firstAdoptableRow, the single predicate both sides share.
+  { id: 'adopt', titleKey: 'tour.step.adopt.title', target: 'adopt-target', view: 'estate' },
+  { id: 'next', titleKey: 'tour.step.next.title', target: 'composer', view: 'chat' },
 ];
 
 /** Step 1 — the project is unknown until /infra/graph resolves. */

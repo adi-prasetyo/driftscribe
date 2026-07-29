@@ -13,6 +13,32 @@ function okJson(body: unknown, headers: Record<string, string> = {}): Response {
   });
 }
 
+/**
+ * The crew the composer last sent to.
+ *
+ * With the crew picker gone there is no rendered control holding the composer's
+ * workload, so the only place it is observable is the wire. That is arguably
+ * the better assertion anyway: what matters is which crew the coordinator is
+ * asked for, not which radio looked checked.
+ */
+function lastChatPostWorkload(): string | undefined {
+  const calls = (fetch as unknown as { mock: { calls: [RequestInfo | URL, RequestInit?][] } })
+    .mock.calls;
+  const post = calls
+    .filter(([u, i]) => String(u).includes('/chat') && i?.method === 'POST')
+    .at(-1);
+  if (!post?.[1]?.body) return undefined;
+  return JSON.parse(String(post[1].body)).workload;
+}
+
+/** Type something and press Send, once the composer is actually enabled. */
+async function sendPrompt(container: HTMLElement, text = 'ping'): Promise<void> {
+  const input = container.querySelector('#prompt-input') as HTMLTextAreaElement;
+  await waitFor(() => expect(input.disabled).toBe(false));
+  await fireEvent.input(input, { target: { value: text } });
+  await fireEvent.submit(document.getElementById('chat-form')!);
+}
+
 // A /chat Response the App will treat as an SSE stream: content-type
 // text/event-stream + a ReadableStream body of `event:`/`data:` frames.
 // Modeled on sseResponse in sse.test.ts:16-28, but sets the content-type
@@ -70,7 +96,12 @@ beforeEach(() => {
   window.HTMLElement.prototype.scrollIntoView = vi.fn();
   // openTrace scrolls the window to top; jsdom doesn't implement scrollTo.
   window.scrollTo = vi.fn() as unknown as typeof window.scrollTo;
-  history.replaceState(null, '', '/');
+  // Explicit `?view=chat` since the Task 3.6 flip made a bare url resolve to
+  // the desk. Every test in this file exercises chat-view behaviour (thread
+  // resume, SSE turns, the composer's crew lock), none of which the desk
+  // renders. The `?conversation=`-bearing tests below would reach chat anyway
+  // via hasChatIntent, but they set their own url and are unaffected by this.
+  history.replaceState(null, '', '/?view=chat');
 });
 afterEach(() => {
   cleanup();
@@ -79,11 +110,14 @@ afterEach(() => {
 
 describe('App — resume a conversation from the rail', () => {
   it('opens the thread, renders its turns, and snaps the composer to its crew', async () => {
+    // Deliberately NOT Explore: Explore is the composer's own default, so a
+    // thread on that crew could not tell "snapped to the thread" apart from
+    // "never moved".
     const list = {
       conversations: [
         {
           conversation_id: 'c1',
-          workload: 'explore',
+          workload: 'provision',
           title: 'prior chat about drift',
           updated_at: new Date().toISOString(),
           turn_count: 2,
@@ -92,11 +126,11 @@ describe('App — resume a conversation from the rail', () => {
     };
     const detail = {
       conversation_id: 'c1',
-      workload: 'explore',
+      workload: 'provision',
       title: 'prior chat about drift',
       turns: [
-        { seq: 0, role: 'user', text: 'what changed?', workload: 'explore' },
-        { seq: 1, role: 'crew', text: 'the env var EXTRA drifted', workload: 'explore', trace_id: 't1' },
+        { seq: 0, role: 'user', text: 'what changed?', workload: 'provision' },
+        { seq: 1, role: 'crew', text: 'the env var EXTRA drifted', workload: 'provision', trace_id: 't1' },
       ],
     };
     vi.stubGlobal(
@@ -121,11 +155,10 @@ describe('App — resume a conversation from the rail', () => {
     await waitFor(() => expect(getByText('the env var EXTRA drifted')).toBeTruthy());
     expect(getByText('what changed?')).toBeTruthy();
 
-    // The composer snapped to the thread's locked crew (explore).
-    await waitFor(() => {
-      const checked = container.querySelector('input[type="radio"]:checked') as HTMLInputElement;
-      expect(checked?.value).toBe('explore');
-    });
+    // The composer snapped to the thread's crew: the next prompt goes to
+    // Provision, not to the Explore default it booted with.
+    await sendPrompt(container);
+    await waitFor(() => expect(lastChatPostWorkload()).toBe('provision'));
   });
 
   it("auto-loads the latest crew turn's reasoning into the inline timeline (thread stays visible, NOT full replay)", async () => {
@@ -554,12 +587,15 @@ const UNMATCHED_GRAPH = {
   },
 };
 
+// A resumable thread held by a crew that is NOT the composer's default, so
+// "the composer followed the thread" and "the composer never moved" produce
+// different observable results.
 function resumeFixtures() {
   const list = {
     conversations: [
       {
         conversation_id: 'c1',
-        workload: 'explore',
+        workload: 'drift',
         title: 'prior chat about drift',
         updated_at: new Date().toISOString(),
         turn_count: 2,
@@ -568,11 +604,11 @@ function resumeFixtures() {
   };
   const detail = {
     conversation_id: 'c1',
-    workload: 'explore',
+    workload: 'drift',
     title: 'prior chat about drift',
     turns: [
-      { seq: 0, role: 'user', text: 'what changed?', workload: 'explore' },
-      { seq: 1, role: 'crew', text: 'the env var EXTRA drifted', workload: 'explore', trace_id: 't1' },
+      { seq: 0, role: 'user', text: 'what changed?', workload: 'drift' },
+      { seq: 1, role: 'crew', text: 'the env var EXTRA drifted', workload: 'drift', trace_id: 't1' },
     ],
   };
   return { list, detail };
@@ -625,22 +661,21 @@ describe('App — composer New chat + crew lock', () => {
     expect(queryByTestId('composer-new-chat')).toBeNull();
   });
 
-  it('resuming a thread shows New chat and soft-locks the other crews', async () => {
+  it('resuming a thread shows New chat and keeps sending to that thread\'s crew', async () => {
+    // The crew lock survived the picker's removal — it just stopped being
+    // something the operator has to see and work around. There is nothing to
+    // grey out any more, so the lock is observable only in where the next
+    // prompt goes.
     stubResumeFetch();
     const { findByTestId, container } = render(App);
     await fireEvent.click(await findByTestId('conversation-open'));
     await findByTestId('conversation-thread');
     await findByTestId('composer-new-chat');
-    await waitFor(() => {
-      // Thread crew is explore → the other three lock.
-      const drift = container.querySelector('[data-testid="crew-card-drift"] input')!;
-      expect(drift.getAttribute('aria-disabled')).toBe('true');
-      const explore = container.querySelector('[data-testid="crew-card-explore"] input')!;
-      expect(explore.getAttribute('aria-disabled')).toBeNull();
-    });
+    await sendPrompt(container);
+    await waitFor(() => expect(lastChatPostWorkload()).toBe('drift'));
   });
 
-  it('New chat drops the thread, unlocks the crews, and hides itself', async () => {
+  it('New chat drops the thread, returns the composer to Explore, and hides itself', async () => {
     stubResumeFetch();
     const { findByTestId, queryByTestId, container } = render(App);
     await fireEvent.click(await findByTestId('conversation-open'));
@@ -649,8 +684,11 @@ describe('App — composer New chat + crew lock', () => {
     await waitFor(() => {
       expect(queryByTestId('conversation-thread')).toBeNull();
       expect(queryByTestId('composer-new-chat')).toBeNull();
-      expect(container.querySelector('input[aria-disabled="true"]')).toBeNull();
     });
+    // A clean slate is a clean slate: the next prompt must not inherit the
+    // abandoned thread's crew, it goes back to the routing crew.
+    await sendPrompt(container);
+    await waitFor(() => expect(lastChatPostWorkload()).toBe('explore'));
   });
 
   it('an Adopt click on an open thread starts a clean slate before prefilling', async () => {
@@ -660,14 +698,28 @@ describe('App — composer New chat + crew lock', () => {
     await findByTestId('conversation-thread');
     await fireEvent.click(await findByTestId('card-adopt-btn'));
     await waitFor(() => {
-      // Thread dropped (clean slate), composer prefilled on Provision, unlocked.
+      // Thread dropped (clean slate), composer prefilled.
       expect(queryByTestId('conversation-thread')).toBeNull();
       const input = container.querySelector('#prompt-input') as HTMLTextAreaElement;
       expect(input.value).toContain('my-old-uploads');
-      const checked = container.querySelector('input[type="radio"]:checked') as HTMLInputElement;
-      expect(checked.value).toBe('provision');
-      expect(container.querySelector('input[aria-disabled="true"]')).toBeNull();
     });
+  });
+
+  it('an Adopt click still opens a PROVISION thread, not an Explore one', async () => {
+    // Adopt stays a second door into Provision even though the composer no
+    // longer offers a crew choice: the click carries explicit intent from a
+    // specific resource, so routing it through Explore would cost the operator
+    // an extra turn and a confirmation to say what they already said. The
+    // picker used to prove this with a checked radio; the wire proves it now.
+    stubResumeFetch(ADOPT_GRAPH);
+    const { findByTestId, container } = render(App);
+    await fireEvent.click(await findByTestId('card-adopt-btn'));
+    await waitFor(() => {
+      const input = container.querySelector('#prompt-input') as HTMLTextAreaElement;
+      expect(input.value).toContain('my-old-uploads');
+    });
+    await sendPrompt(container, 'yes please');
+    await waitFor(() => expect(lastChatPostWorkload()).toBe('provision'));
   });
 
   it('an Investigate click starts a clean Provision draft and sends no /chat', async () => {
@@ -678,14 +730,13 @@ describe('App — composer New chat + crew lock', () => {
     await fireEvent.click(await findByTestId('infra-unmatched-investigate'));
     await waitFor(() => {
       // Fresh Provision draft (same handleAdopt bridge): thread dropped, composer
-      // prefilled with the investigation prompt, Provision selected, crews unlocked.
+      // prefilled with the investigation prompt. The crew it targets is asserted
+      // by the Adopt test above — here the point is that NOTHING is sent, so
+      // this test cannot submit to observe it.
       expect(queryByTestId('conversation-thread')).toBeNull();
       const input = container.querySelector('#prompt-input') as HTMLTextAreaElement;
       expect(input.value).toContain('bucket-old');
       expect(input.value).toContain('do not assume a rename');
-      const checked = container.querySelector('input[type="radio"]:checked') as HTMLInputElement;
-      expect(checked.value).toBe('provision');
-      expect(container.querySelector('input[aria-disabled="true"]')).toBeNull();
     });
     // The click prefills a DRAFT ONLY — it must never POST /chat.
     const calls = (fetch as unknown as { mock: { calls: [RequestInfo | URL, RequestInit?][] } }).mock.calls;
@@ -721,7 +772,10 @@ describe('App — ?conversation boot deep-link', () => {
 
   it('clears both ?conversation and ?reasoning on New chat, preserving unrelated params + hash', async () => {
     stubResumeFetchWithTrace();
-    history.replaceState(null, '', '/?unrelated=1#frag');
+    // `view=chat` explicitly (post-Task-3.6 a bare url is the desk, which has
+    // no conversations rail to click); `unrelated=1` + the hash are what this
+    // test actually asserts survive the New-chat param sweep.
+    history.replaceState(null, '', '/?view=chat&unrelated=1#frag');
     const { findByTestId, container } = render(App);
     await fireEvent.click(await findByTestId('conversation-open'));
     await findByTestId('conversation-thread');

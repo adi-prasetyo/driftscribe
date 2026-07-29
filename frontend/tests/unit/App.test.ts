@@ -17,7 +17,12 @@ beforeEach(() => {
   window.HTMLElement.prototype.scrollIntoView = vi.fn();
   // openTrace scrolls the window to top; jsdom doesn't implement scrollTo.
   window.scrollTo = vi.fn() as unknown as typeof window.scrollTo;
-  history.replaceState(null, '', '/');
+  // Explicit `?view=chat` since the Task 3.6 flip made a BARE url resolve to
+  // the desk. Most of this file exercises chat-view behaviour (composer, SSE
+  // turns, thread resume, replays), which a bare url no longer reaches. Tests
+  // that care about the DEFAULT itself set their own bare `/` — see the view
+  // routing suite.
+  history.replaceState(null, '', '/?view=chat');
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: RequestInfo | URL) => {
@@ -44,6 +49,8 @@ afterEach(() => {
 });
 
 describe('App — tour wiring (smoke)', () => {
+  const CONV_ID = 'conv-tour-1';
+
   it('offers the banner on a fresh profile; Start opens the card; close marks done', async () => {
     const { getByTestId, queryByTestId } = render(App);
     expect(getByTestId('tour-banner')).toBeTruthy();
@@ -55,6 +62,29 @@ describe('App — tour wiring (smoke)', () => {
     expect(window.localStorage.getItem('driftscribe_tour_done')).toBe('1');
   });
 
+  // ds-s9q: the tour borrows the estate view for two of its steps and hands the
+  // visitor back to chat on the last one. Wiring those steps to the full
+  // navigate() applied its leave-chat teardown, so "open a conversation, click
+  // Tour, press Next" discarded the open thread — it survived in the rail, but
+  // the view state and `?conversation=` did not. Asserting on the param is what
+  // makes this a regression test: the old wiring swept it with the rest of
+  // CHAT_INTENT_PARAMS.
+  it('advancing the tour to a view-changing step keeps the open conversation', async () => {
+    window.sessionStorage.setItem('driftscribe_token', 'tok');
+    history.replaceState(null, '', `/?conversation=${CONV_ID}`);
+    const { getByTestId } = render(App);
+
+    await fireEvent.click(getByTestId('tour-open'));
+    // Step 2 of TOUR_STEPS carries view:'estate' — the first one that navigates.
+    await fireEvent.click(getByTestId('tour-next'));
+
+    expect(getByTestId('estate-view')).toBeTruthy();
+    expect(new URLSearchParams(window.location.search).get('conversation')).toBe(CONV_ID);
+    // And the thread is still there when the tour hands the visitor back.
+    await fireEvent.click(getByTestId('tour-next'));
+    expect(new URLSearchParams(window.location.search).get('conversation')).toBe(CONV_ID);
+  });
+
   it('dismissing the banner marks done; the header button reopens the tour', async () => {
     const { getByTestId, queryByTestId } = render(App);
     await fireEvent.click(getByTestId('tour-banner-dismiss'));
@@ -62,6 +92,44 @@ describe('App — tour wiring (smoke)', () => {
     expect(window.localStorage.getItem('driftscribe_tour_done')).toBe('1');
     await fireEvent.click(getByTestId('tour-open'));
     expect(getByTestId('tour-card')).toBeTruthy();
+  });
+
+  // ds-5yq proper: on the DESK the popover would land on the instrument band's
+  // first numeral and the resting headline — the thesis screen, and the first
+  // thing a judge sees on the bare domain. It does not auto-open there; the
+  // bell keeps its unread badge so the notice is still one click away, and the
+  // tour offer (which no longer has anything to wait for) appears at once.
+  it('does not auto-open the notice on the desk, and offers the tour banner right away', () => {
+    history.replaceState(null, '', '/');
+    const { getByTestId, queryByTestId } = render(App);
+    expect(getByTestId('approval-desk')).toBeTruthy();
+    expect(queryByTestId('demo-notice-popover')).toBeNull();
+    expect(getByTestId('tour-banner')).toBeTruthy();
+    // Still discoverable — the bell and its unread badge remain.
+    expect(getByTestId('demo-notice-bell')).toBeTruthy();
+    expect(getByTestId('demo-notice-badge')).toBeTruthy();
+    expect(window.localStorage.getItem('driftscribe_demo_notice_dismissed')).toBeNull();
+  });
+
+  // ds-2co: the estate view puts the same InstrumentBand in the same top-left
+  // corner the popover drops into, so a shared `?view=estate` link reproduced
+  // the overlap ds-5yq removed from the desk. The rule is about the layout, not
+  // about one view.
+  it('does not auto-open the notice on the estate view either', () => {
+    history.replaceState(null, '', '/?view=estate');
+    const { getByTestId, queryByTestId } = render(App);
+    expect(getByTestId('estate-view')).toBeTruthy();
+    expect(queryByTestId('demo-notice-popover')).toBeNull();
+    expect(getByTestId('demo-notice-bell')).toBeTruthy();
+    expect(getByTestId('demo-notice-badge')).toBeTruthy();
+  });
+
+  // Chat is the one view whose top-left is chrome, so it is the one view the
+  // notice may still cover.
+  it('still auto-opens the notice on a chat landing', () => {
+    history.replaceState(null, '', '/?view=chat');
+    const { getByTestId } = render(App);
+    expect(getByTestId('demo-notice-popover')).toBeTruthy();
   });
 
   it('suppresses the banner when arriving with ?ask_pr intent', () => {
@@ -75,6 +143,48 @@ describe('App — tour wiring (smoke)', () => {
   it('lifts the fetched graph into the tour (welcome step names the project)', async () => {
     const { getByTestId } = render(App);
     await fireEvent.click(getByTestId('tour-banner-start'));
+    await waitFor(() =>
+      expect(getByTestId('tour-body').textContent).toContain('demo-proj'),
+    );
+  });
+
+  // Regression, Task 4.1: the tour's graph must come from the OVERVIEW STORE,
+  // not from InfraDiagram's onGraph lift. That lift only fires while the CHAT
+  // view is mounted — which stopped being the front door when Task 3.6 flipped
+  // DEFAULT_VIEW to 'desk'. The sibling test above passes on chat and so could
+  // never see this: on the DESK (a bare url) InfraDiagram never mounts, so the
+  // lifted state stayed null and every graph-dependent step degraded to its
+  // "still loading" / "unavailable" copy for the whole tour. Task 4.1 made this
+  // worse still by routing steps 2 and 4 to the ESTATE view, which likewise
+  // does not mount InfraDiagram — so no tour path reached a populated graph.
+  // Task 4.1's actual feature: the estate step's target moved onto EstateView,
+  // which is NOT mounted while the tour is opened from the desk. So the step
+  // must navigate AND the spotlight must land — and the lookup has to wait for
+  // that mount, because `navigate()` writes App state from inside TourCard's
+  // effect, scheduling a SEPARATE render pass that has not run when the effect
+  // body continues. A synchronous querySelector therefore finds nothing and
+  // silently spotlights nothing. Without this case the whole tick() deferral
+  // was unpinned: the suite passed identically with the sync version.
+  it('the estate step navigates to the estate view AND spotlights it there', async () => {
+    history.replaceState(null, '', '/');
+    const { getByTestId, queryByTestId } = render(App);
+    expect(queryByTestId('estate-view')).toBeNull(); // starts on the desk
+    await fireEvent.click(getByTestId('tour-open'));
+    await fireEvent.click(getByTestId('tour-next')); // welcome → estate
+    await waitFor(() => expect(getByTestId('estate-view')).toBeTruthy());
+    await waitFor(() =>
+      expect(
+        document.querySelector('[data-tour="estate"]')?.classList.contains('tour-spotlight'),
+      ).toBe(true),
+    );
+  });
+
+  it('the tour opened from the DESK still has the graph (store-fed, not InfraDiagram-fed)', async () => {
+    history.replaceState(null, '', '/');
+    const { getByTestId, queryByTestId } = render(App);
+    // Precondition — without it this test could pass by silently sitting on chat.
+    expect(queryByTestId('chat-form')).toBeNull();
+    await fireEvent.click(getByTestId('tour-open'));
     await waitFor(() =>
       expect(getByTestId('tour-body').textContent).toContain('demo-proj'),
     );
@@ -312,7 +422,19 @@ describe('App — view routing (Task 2.2)', () => {
     );
   }
 
-  it('defaults to the chat layout: composer present, desk/estate placeholders absent', () => {
+  // Task 3.6 step 2 flipped DEFAULT_VIEW to 'desk'. A BARE url (no ?view=) is
+  // the case that matters — it's what a judge typing the domain gets — so this
+  // deliberately overrides the suite-wide `?view=chat` default set above.
+  it('a bare url defaults to the approval desk: composer absent, estate absent', () => {
+    history.replaceState(null, '', '/');
+    const { getByTestId, queryByTestId } = render(App);
+    expect(getByTestId('approval-desk')).toBeTruthy();
+    expect(document.getElementById('chat-form')).toBeNull();
+    expect(queryByTestId('estate-view')).toBeNull();
+  });
+
+  it('renders the chat layout for an explicit ?view=chat', () => {
+    history.replaceState(null, '', '/?view=chat');
     const { queryByTestId } = render(App);
     expect(document.getElementById('chat-form')).toBeTruthy();
     expect(queryByTestId('approval-desk')).toBeNull();
@@ -355,14 +477,16 @@ describe('App — view routing (Task 2.2)', () => {
     expect(document.getElementById('chat-form')).toBeNull();
     expect(deskBtn.getAttribute('aria-current')).toBe('page');
     expect(chatBtn.getAttribute('aria-current')).not.toBe('page');
-    expect(new URL(window.location.href).searchParams.get('view')).toBe('desk');
+    // navigate() omits ?view= for whatever DEFAULT_VIEW is, so the polarity
+    // here INVERTED at the Task 3.6 flip: the desk is now the paramless
+    // canonical url (a judge typing the bare domain lands here), and chat is
+    // the one that carries an explicit param.
+    expect(new URL(window.location.href).searchParams.get('view')).toBeNull();
 
     await fireEvent.click(chatBtn);
     expect(document.getElementById('chat-form')).toBeTruthy();
     expect(queryByTestId('approval-desk')).toBeNull();
-    // Switching TO chat restores nothing — the view param is simply dropped
-    // (chat is the default; a bare "/" already means chat).
-    expect(new URL(window.location.href).searchParams.get('view')).toBeNull();
+    expect(new URL(window.location.href).searchParams.get('view')).toBe('chat');
   });
 
   it('navigating away from chat with an open replay clears reasoning/conversation/ask_pr/preview_pr in the same write that sets view, and closes the replay', async () => {
@@ -377,7 +501,10 @@ describe('App — view routing (Task 2.2)', () => {
     await fireEvent.click(getByTestId('nav-desk'));
 
     const search = new URLSearchParams(window.location.search);
-    expect(search.get('view')).toBe('desk');
+    // Desk is DEFAULT_VIEW post-flip, so navigate() drops the param entirely
+    // rather than writing view=desk — the assertion that matters here is that
+    // the chat-intent params were swept in that SAME write (below).
+    expect(search.get('view')).toBeNull();
     // Iterate the shared list rather than restating it: a fifth chat-intent
     // param added to CHAT_INTENT_PARAMS is then covered here automatically.
     for (const p of CHAT_INTENT_PARAMS) expect(search.has(p)).toBe(false);
@@ -405,7 +532,14 @@ describe('App — view routing (Task 2.2)', () => {
     }
   });
 
-  it('opening a trace from the decisions rail while on the desk view navigates to chat first', async () => {
+  // Superseded by the Task 3.5 "rails come off the desk" decision: the
+  // decisions rail (and its open-trace-button) is no longer rendered on the
+  // desk view at all (see the "App — rails come off the desk" suite below),
+  // so "open a trace from the rail while on the desk" is no longer a
+  // reachable interaction. This keeps the still-valid part of the old test —
+  // switching to chat surfaces the rail and opening a trace from it works —
+  // with the desk→chat navigation step made explicit first.
+  it('the rail (and its open-trace affordance) only exists on chat; navigating there and opening a trace works', async () => {
     window.sessionStorage.setItem('driftscribe_token', 'tok');
     const iac = {
       decision_id: 'd1',
@@ -439,12 +573,203 @@ describe('App — view routing (Task 2.2)', () => {
     history.replaceState(null, '', '/?view=desk');
     const { findByTestId, getByTestId, queryByTestId } = render(App);
     expect(getByTestId('approval-desk')).toBeTruthy();
+    expect(queryByTestId('open-trace-button')).toBeNull(); // no rail on the desk
 
+    await fireEvent.click(getByTestId('nav-chat'));
     const btn = await findByTestId('open-trace-button');
     await fireEvent.click(btn);
 
     expect(queryByTestId('approval-desk')).toBeNull();
     expect(document.getElementById('chat-form')).toBeTruthy();
     await waitFor(() => expect(getByTestId('historical-banner')).toBeTruthy());
+  });
+});
+
+describe('App — rails come off the desk (Task 3.5)', () => {
+  // 32-hex trace id, mirrors the "view routing" describe block's own TID.
+  const TID = 'b'.repeat(32);
+
+  it('the rails render on chat (default) and are absent on desk and estate', () => {
+    const { getByTestId } = render(App);
+    expect(getByTestId('rails')).toBeTruthy();
+    cleanup();
+
+    history.replaceState(null, '', '/?view=desk');
+    const desk = render(App);
+    expect(desk.queryByTestId('rails')).toBeNull();
+    expect(desk.getByTestId('approval-desk')).toBeTruthy();
+    cleanup();
+
+    history.replaceState(null, '', '/?view=estate');
+    const estate = render(App);
+    expect(estate.queryByTestId('rails')).toBeNull();
+    expect(estate.getByTestId('estate-view')).toBeTruthy();
+  });
+
+  // Codex finding baked into the plan: the guarantee the railless desk rests
+  // on is that NO chat-intent query param can ever strand a visitor on a
+  // railless desk — deeplink.ts's hasChatIntent() already forces view==='chat'
+  // for ?reasoning=/?conversation=/?ask_pr=/?preview_pr=, overriding even an
+  // explicit ?view=desk. This test pins that a shared ?reasoning= link both
+  // resolves to chat AND renders the rails — so a future refactor of either
+  // the view resolver or the rails' own {#if} can't quietly break it apart.
+  it('a shared ?reasoning=<hex32> link resolves to chat, with the rails rendered (never a railless stranding)', async () => {
+    window.sessionStorage.setItem('driftscribe_token', 'tok');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/trace/'))
+          return okJson({ trace_id: TID, complete: true, events: [], decision: null });
+        if (url.includes('/decisions')) return okJson({ decisions: [] });
+        if (url.includes('/infra/graph'))
+          return okJson({
+            generated_at: null,
+            project: 'demo-proj',
+            caveat: '',
+            degraded: false,
+            degraded_reason: null,
+            totals: { resources: 1, managed: 0, drift: 1 },
+            groups: [],
+            edges: [],
+          });
+        return okJson({});
+      }),
+    );
+    // Even an explicit ?view=desk must lose to the reasoning intent.
+    history.replaceState(null, '', `/?view=desk&reasoning=${TID}`);
+    const { getByTestId, queryByTestId } = render(App);
+    expect(document.getElementById('chat-form')).toBeTruthy();
+    expect(queryByTestId('approval-desk')).toBeNull();
+    expect(getByTestId('rails')).toBeTruthy();
+    await waitFor(() => expect(getByTestId('historical-banner')).toBeTruthy());
+  });
+
+  // …and the two intents that have NO independent redirect.
+  //
+  // The test above passes even if hasChatIntent is removed from the view
+  // resolver entirely: `?reasoning=` also triggers App's onMount openTrace(),
+  // and openTrace() itself calls navigate('chat'). `?conversation=` is
+  // likewise double-protected by openConversation(). `?ask_pr=` and
+  // `?preview_pr=` are NOT — they have no self-redirect anywhere in App, so
+  // hasChatIntent is the only thing standing between a visitor following an
+  // Adopt-flow or approval-page link and a railless desk with no composer to
+  // act on. These two params are exactly where the railless-desk guarantee is
+  // load-bearing, so they get their own App-level pin rather than resting on
+  // deeplink.ts's unit tests alone.
+  for (const param of ['ask_pr', 'preview_pr'] as const) {
+    it(`a ?${param}= link resolves to chat with the rails rendered, even against an explicit ?view=desk`, () => {
+      history.replaceState(null, '', `/?view=desk&${param}=168`);
+      const { getByTestId, queryByTestId } = render(App);
+      expect(queryByTestId('approval-desk')).toBeNull();
+      expect(document.getElementById('chat-form')).toBeTruthy();
+      expect(getByTestId('rails')).toBeTruthy();
+    });
+  }
+});
+
+describe('App — estate view (Task 4.1)', () => {
+  const BUCKET = 'storage.googleapis.com/Bucket';
+
+  // A graph with one real adoptable drift node (shipping-topic) — used by
+  // every test in this block that needs an actual row / adopt chip to click,
+  // as opposed to the suite-wide beforeEach stub (which returns `groups: []`,
+  // so its `drift: 1` total never resolves to a nameable row).
+  function stubFetchWithAdoptableGraph(): void {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/decisions')) return okJson({ decisions: [] });
+        if (url.includes('/infra/pending-approvals')) return okJson({ approvals: [] });
+        if (url.includes('/infra/graph'))
+          return okJson({
+            generated_at: '2026-07-28T06:00:00Z',
+            project: 'demo-proj',
+            caveat: '',
+            degraded: false,
+            degraded_reason: null,
+            totals: { resources: 2, managed: 0, drift: 1 },
+            groups: [
+              {
+                asset_type: BUCKET,
+                label: 'Storage bucket',
+                count: 1,
+                managed: 0,
+                drift: 1,
+                sensitive: false,
+                adoptable: true,
+                nodes: [
+                  {
+                    id: 'b0',
+                    label: 'shipping-topic',
+                    asset_type: BUCKET,
+                    managed: false,
+                    location: 'asia-northeast1',
+                  },
+                ],
+              },
+            ],
+            edges: [],
+          });
+        return okJson({});
+      }),
+    );
+  }
+
+  it('renders real drift rows sourced from the overview store', async () => {
+    stubFetchWithAdoptableGraph();
+    history.replaceState(null, '', '/?view=estate');
+    const { findByTestId } = render(App);
+    const row = await findByTestId('estate-row');
+    expect(row.textContent).toContain('shipping-topic');
+  });
+
+  it('an instrument-band numeral navigates from the desk to the estate view', async () => {
+    history.replaceState(null, '', '/?view=desk');
+    const { getByTestId, findByTestId } = render(App);
+    await waitFor(() => expect(getByTestId('instrument-band-drift')).toBeTruthy());
+    await fireEvent.click(getByTestId('instrument-band-drift'));
+    expect(await findByTestId('estate-view')).toBeTruthy();
+    expect(new URL(window.location.href).searchParams.get('view')).toBe('estate');
+  });
+
+  it('the nav-estate adopt-target fallback marker is present when the estate has no adoptable row, and absent when one exists', async () => {
+    // Default beforeEach stub: totals.drift === 1 but `groups: []` — no
+    // nameable adoptable row, so the fallback marker belongs on the nav button.
+    const { getByTestId } = render(App);
+    await waitFor(() =>
+      expect(getByTestId('nav-estate').getAttribute('data-tour')).toBe('adopt-target'),
+    );
+    cleanup();
+
+    stubFetchWithAdoptableGraph();
+    const withAdopt = render(App);
+    await withAdopt.findByTestId('nav-estate');
+    await waitFor(() =>
+      expect(withAdopt.getByTestId('nav-estate').getAttribute('data-tour')).toBeNull(),
+    );
+  });
+
+  it('an adopt chip on the estate view lands the operator on a prefilled composer', async () => {
+    stubFetchWithAdoptableGraph();
+    history.replaceState(null, '', '/?view=estate');
+    const { findByTestId } = render(App);
+    const adoptBtn = await findByTestId('estate-adopt-btn');
+    await fireEvent.click(adoptBtn);
+    await waitFor(() => expect(document.getElementById('chat-form')).toBeTruthy());
+    const textarea = document.querySelector('[data-testid="chat-prompt"]') as HTMLTextAreaElement;
+    expect(textarea.value).toContain('shipping-topic');
+  });
+
+  it('the tour adopt step navigates chat → estate and spotlights the first adoptable row (survives the navigate → mount delay)', async () => {
+    stubFetchWithAdoptableGraph();
+    const { getByTestId, findByTestId } = render(App); // default: chat view
+    await fireEvent.click(getByTestId('tour-banner-start'));
+    await fireEvent.click(getByTestId('tour-next')); // welcome → estate
+    await fireEvent.click(getByTestId('tour-next')); // estate → controls
+    await fireEvent.click(getByTestId('tour-next')); // controls → adopt (navigates to 'estate')
+    const row = await findByTestId('estate-row');
+    await waitFor(() => expect(row.classList.contains('tour-spotlight')).toBe(true));
   });
 });

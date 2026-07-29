@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { fmtTokens, shortTrace, fmtPreview, fmtWhen, shortSha, iacStatusLabel, iacStatusHelp, decisionActionLabel, decisionActionHelp, iacApplyMeta, appliedAtDiffersMaterially, normalizeForSearch } from '../../src/lib/format';
+import { fmtTokens, shortTrace, fmtPreview, fmtWhen, fmtClock, shortSha, iacStatusLabel, iacStatusHelp, decisionActionLabel, decisionActionHelp, contractStatusLabel, iacApplyMeta, appliedAtDiffersMaterially, normalizeForSearch } from '../../src/lib/format';
 import { translate, type TranslateFn } from '../../src/lib/i18n';
 
 // The whole suite asserts English (the shared.en catalog is byte-for-byte the
@@ -154,6 +154,17 @@ describe('fmtWhen', () => {
     expect(out).not.toContain('T08:27');
   });
 
+  it('pins a 24-hour clock in EN, matching fmtClock', () => {
+    // en-US defaults to 12-hour, which put "03:13 PM" from this function
+    // directly above fmtClock's "15:06" for the SAME decision on the desk's
+    // stamped card. Asserted on both an afternoon and a morning timestamp: a
+    // morning one would read "09:xx" under EITHER cycle, so it alone could not
+    // tell h23 from h12 — only the afternoon case has teeth, and the morning
+    // case guards against someone "fixing" this by force-padding to 24h wrongly.
+    expect(fmtWhen('2026-05-31T15:06:00Z', 'en')).not.toMatch(/AM|PM/);
+    expect(fmtWhen('2026-05-31T09:06:00Z', 'en')).not.toMatch(/AM|PM/);
+  });
+
   it('returns "" for an empty string', () => {
     expect(fmtWhen('')).toBe('');
   });
@@ -165,6 +176,40 @@ describe('fmtWhen', () => {
   it('handles null/undefined input safely (returns "")', () => {
     expect(fmtWhen(null as unknown as string)).toBe('');
     expect(fmtWhen(undefined as unknown as string)).toBe('');
+  });
+});
+
+describe('fmtClock', () => {
+  const ISO = '2026-07-28T09:15:00Z';
+
+  it('returns "" for an empty string', () => {
+    expect(fmtClock('')).toBe('');
+  });
+
+  it('returns the raw value when it does not parse', () => {
+    expect(fmtClock('not-a-date')).toBe('not-a-date');
+  });
+
+  // The actual HH:mm digits are host-timezone-dependent (fmtClock pins no
+  // zone — see its doc comment) — like fmtWhen above, this suite does not
+  // pin a TZ, so we assert the FORMAT (24-hour, zero-padded, no AM/PM), not
+  // an absolute clock value that would only hold on one machine/CI runner.
+  it('formats as 24-hour HH:mm with no AM/PM, in EITHER app locale', () => {
+    const en = fmtClock(ISO, 'en');
+    const ja = fmtClock(ISO, 'ja');
+    expect(en).toMatch(/^\d{2}:\d{2}$/);
+    expect(ja).toMatch(/^\d{2}:\d{2}$/);
+    expect(en).not.toMatch(/AM|PM/i);
+    expect(ja).not.toMatch(/AM|PM/i);
+  });
+
+  // `localeTag('en')` is 'en-US', whose default hour cycle is 12-hour with an
+  // AM/PM suffix — this is the exact regression `hourCycle: 'h23'` guards
+  // against (see fmtClock's doc comment). Pinned to the SAME instant as the
+  // locale-shape test above; both locales must render the identical digits
+  // now that hourCycle is fixed rather than locale-default.
+  it('EN and JA render the identical string for the same instant', () => {
+    expect(fmtClock(ISO, 'en')).toBe(fmtClock(ISO, 'ja'));
   });
 });
 
@@ -250,11 +295,31 @@ describe('decisionActionLabel', () => {
     expect(decisionActionLabel('no_op', t)).toBe('No action needed');
   });
 
-  it('passes other action tokens through verbatim (those rows carry their own CTA)', () => {
+  it('remaps the other two actions the backend actually writes', () => {
+    // These used to pass through verbatim, which put a bare `rollback` — a
+    // Latin-script code identifier — into Japanese operator copy on the desk's
+    // ledger, where there is no CTA column to give the row context.
+    expect(decisionActionLabel('rollback', t)).toBe('Rollback');
+    expect(decisionActionLabel('iac_apply', t)).toBe('Infrastructure change');
+  });
+
+  it('passes an action this frontend has never heard of through verbatim', () => {
+    // Forward-compat only: a newer coordinator writing a fourth kind. None of
+    // these are values the backend writes today (the full set is no_op /
+    // rollback / iac_apply), so this is the unknown-action path, not the
+    // normal one.
     expect(decisionActionLabel('docs_pr', t)).toBe('docs_pr');
     expect(decisionActionLabel('drift_issue', t)).toBe('drift_issue');
     expect(decisionActionLabel('escalation', t)).toBe('escalation');
-    expect(decisionActionLabel('rollback', t)).toBe('rollback');
+  });
+
+  it('does not resolve an Object.prototype member as a mapped action', () => {
+    // A decision doc is an open shape; a bare `KEYS[action]` lookup would turn
+    // an action named `toString` into a truthy prototype member and hand that
+    // function to t() as a translation key.
+    expect(decisionActionLabel('toString', t)).toBe('toString');
+    expect(decisionActionLabel('constructor', t)).toBe('constructor');
+    expect(decisionActionLabel('__proto__', t)).toBe('__proto__');
   });
 
   it('clamps an over-long unknown action to 40 chars + ellipsis', () => {
@@ -262,6 +327,39 @@ describe('decisionActionLabel', () => {
     const out = decisionActionLabel(long, t);
     expect(out).toBe('x'.repeat(40) + '…');
     expect(out.length).toBe(41);
+  });
+
+  it('maps every ContractStatus the backend defines, and only those', () => {
+    // The full set per agent/models.py:ContractStatus — if a fifth value is
+    // added there, the unknown-passthrough case below is what it hits.
+    expect(contractStatusLabel('match', t)).toBe('Matches the contract');
+    expect(contractStatusLabel('present_allow_manual', t)).toBe('Manual change allowed');
+    expect(contractStatusLabel('present_disallow_manual', t)).toBe('Manual change not allowed');
+    expect(contractStatusLabel('absent', t)).toBe('Not in the contract');
+    // None of these may survive as a raw snake_case identifier — that was the
+    // bug: `present_disallow_manual` rendered verbatim in the STATUS column of
+    // the judge-facing desk, in Latin script under Japanese copy.
+    for (const s of ['match', 'present_allow_manual', 'present_disallow_manual', 'absent']) {
+      expect(contractStatusLabel(s, t)).not.toContain('_');
+    }
+  });
+
+  it('passes an unrecognized status through verbatim rather than blanking it', () => {
+    // Honest failure mode for a future backend enum value: show the real thing
+    // so the operator can look it up, never an empty cell or invented label.
+    expect(contractStatusLabel('some_future_verdict', t)).toBe('some_future_verdict');
+  });
+
+  it('does not resolve an Object.prototype member as a mapped status', () => {
+    expect(contractStatusLabel('toString', t)).toBe('toString');
+    expect(contractStatusLabel('constructor', t)).toBe('constructor');
+    expect(contractStatusLabel('__proto__', t)).toBe('__proto__');
+  });
+
+  it('returns "" for an empty / null / undefined status', () => {
+    expect(contractStatusLabel('', t)).toBe('');
+    expect(contractStatusLabel(null, t)).toBe('');
+    expect(contractStatusLabel(undefined, t)).toBe('');
   });
 
   it('returns "" for empty / null / undefined', () => {

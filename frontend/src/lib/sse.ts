@@ -71,6 +71,28 @@ export interface ChatDone {
   // conversation_id (for crew-lock symmetry), so the SPA MUST check this flag
   // and NOT settle a paused reply into the thread (it would vanish on reload).
   paused?: boolean;
+  // A crew proposed handing this conversation to a sibling crew, and the
+  // proposal COMMITTED with the turn. `nonce` is the single-use credential that
+  // POST /chat/handoff redeems — this frame is the ONE AND ONLY time the server
+  // transmits it (it stores a digest, so it can never re-serve it). Losing it
+  // costs the operator nothing worse than asking again, but the chip cannot be
+  // rebuilt from GET /conversations/{id} alone. See handoff.ts.
+  handoff?: HandoffOffer;
+  // Set by POST /chat/handoff instead of `handoff`: which crew just took over
+  // (accept) or was turned away (decline). The confirmation named no crew in
+  // its request, so this is where the client learns which one answered.
+  crew_change?: { from: string; to: string };
+  handoff_declined?: { from: string; to: string };
+}
+
+/** A live, redeemable handoff proposal — the persisted `pending_handoff`
+ *  projection PLUS the one-shot nonce that makes it actionable. */
+export interface HandoffOffer {
+  from: string;
+  to: string;
+  reason: string;
+  nonce: string;
+  expires_at: string;
 }
 
 export interface ChatError {

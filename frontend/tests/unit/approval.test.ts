@@ -3,6 +3,8 @@ import {
   safeApprovalHref,
   iacApprovalHref,
   isExpired,
+  isRollbackAwaitingOperator,
+  isIacAwaitingOperator,
   safeGithubHref,
   iacPrHref,
   resolvedIacPrNumbers,
@@ -174,6 +176,71 @@ describe('isExpired', () => {
     const future = new Date(Date.now() + 60_000).toISOString();
     expect(isExpired(past)).toBe(true);
     expect(isExpired(future)).toBe(false);
+  });
+});
+
+describe('isRollbackAwaitingOperator — shared "awaiting the operator" predicate, rollback lane', () => {
+  const NOW = Date.parse('2026-07-28T12:00:00Z');
+
+  it('true: approval_url present + safe, status pending, not expired', () => {
+    const d = {
+      approval: {
+        approval_url: '/approvals/x?t=1',
+        status: 'pending' as const,
+        expires_at: '2026-07-29T00:00:00Z',
+      },
+    };
+    expect(isRollbackAwaitingOperator(d, { now: NOW, origin: ORIGIN })).toBe(true);
+  });
+
+  it('true: status absent (pre-enrichment rows never had the field at all)', () => {
+    const d = { approval: { approval_url: '/approvals/x?t=1' } };
+    expect(isRollbackAwaitingOperator(d, { now: NOW, origin: ORIGIN })).toBe(true);
+  });
+
+  it('false: no approval_url at all', () => {
+    expect(isRollbackAwaitingOperator({ approval: { status: 'pending' as const } }, { now: NOW, origin: ORIGIN })).toBe(
+      false,
+    );
+    expect(isRollbackAwaitingOperator({ approval: null }, { now: NOW, origin: ORIGIN })).toBe(false);
+    expect(isRollbackAwaitingOperator({}, { now: NOW, origin: ORIGIN })).toBe(false);
+  });
+
+  it('false: safeApprovalHref rejects the URL (off-origin)', () => {
+    const d = { approval: { approval_url: 'https://evil.example/approvals/x', status: 'pending' as const } };
+    expect(isRollbackAwaitingOperator(d, { now: NOW, origin: ORIGIN })).toBe(false);
+  });
+
+  it('false: safeApprovalHref rejects the URL (`<redacted>` scrub-placeholder token — dead button)', () => {
+    const d = { approval: { approval_url: '/approvals/x?t=<redacted>', status: 'pending' as const } };
+    expect(isRollbackAwaitingOperator(d, { now: NOW, origin: ORIGIN })).toBe(false);
+  });
+
+  it('false: status is "used" or "denied"', () => {
+    const used = { approval: { approval_url: '/approvals/x?t=1', status: 'used' as const } };
+    const denied = { approval: { approval_url: '/approvals/x?t=1', status: 'denied' as const } };
+    expect(isRollbackAwaitingOperator(used, { now: NOW, origin: ORIGIN })).toBe(false);
+    expect(isRollbackAwaitingOperator(denied, { now: NOW, origin: ORIGIN })).toBe(false);
+  });
+
+  it('false: expired', () => {
+    const d = {
+      approval: { approval_url: '/approvals/x?t=1', status: 'pending' as const, expires_at: '2026-07-28T00:00:00Z' },
+    };
+    expect(isRollbackAwaitingOperator(d, { now: NOW, origin: ORIGIN })).toBe(false);
+  });
+
+  it('tolerates null/undefined decision and null/undefined approval (never throws)', () => {
+    expect(isRollbackAwaitingOperator(null, { now: NOW, origin: ORIGIN })).toBe(false);
+    expect(isRollbackAwaitingOperator(undefined, { now: NOW, origin: ORIGIN })).toBe(false);
+    expect(isRollbackAwaitingOperator({ approval: undefined }, { now: NOW, origin: ORIGIN })).toBe(false);
+  });
+
+  it('opts defaults to {} (now/origin both omitted) without throwing', () => {
+    // now defaults to Date.now() inside isExpired; origin defaults to
+    // window.location.origin inside safeApprovalHref.
+    const d = { approval: { approval_url: '/approvals/x?t=1', status: 'pending' as const } };
+    expect(() => isRollbackAwaitingOperator(d)).not.toThrow();
   });
 });
 
@@ -363,6 +430,67 @@ describe('resolvedIacPrNumbers — PRs with a terminal applied iac_apply row', (
   });
 });
 
+describe('isIacAwaitingOperator — shared "awaiting the operator" predicate, iac lane', () => {
+  it('true: iac_apply + waiting_for_rebake + not superseded + not resolved', () => {
+    const d = { action: 'iac_apply', apply_status: 'waiting_for_rebake', pr_number: 68 };
+    expect(isIacAwaitingOperator(d, new Set())).toBe(true);
+  });
+
+  it('false: action is not iac_apply', () => {
+    const d = { action: 'rollback', apply_status: 'waiting_for_rebake', pr_number: 68 };
+    expect(isIacAwaitingOperator(d, new Set())).toBe(false);
+  });
+
+  it('false: apply_status is not waiting_for_rebake', () => {
+    expect(isIacAwaitingOperator({ action: 'iac_apply', apply_status: 'applied', pr_number: 68 }, new Set())).toBe(
+      false,
+    );
+    expect(isIacAwaitingOperator({ action: 'iac_apply', apply_status: 'failed', pr_number: 68 }, new Set())).toBe(
+      false,
+    );
+  });
+
+  it('false: explicit positive-integer superseded_by_pr', () => {
+    const d = { action: 'iac_apply', apply_status: 'waiting_for_rebake', pr_number: 216, superseded_by_pr: 221 };
+    expect(isIacAwaitingOperator(d, new Set())).toBe(false);
+  });
+
+  it('a 0 / negative / non-integer superseded_by_pr is NOT treated as superseded (mirrors iacApproveLabel)', () => {
+    const base = { action: 'iac_apply', apply_status: 'waiting_for_rebake', pr_number: 216 };
+    expect(isIacAwaitingOperator({ ...base, superseded_by_pr: 0 }, new Set())).toBe(true);
+    expect(isIacAwaitingOperator({ ...base, superseded_by_pr: -1 }, new Set())).toBe(true);
+    expect(isIacAwaitingOperator({ ...base, superseded_by_pr: 1.5 }, new Set())).toBe(true);
+  });
+
+  it('false: pr_number is in resolvedPrs (a later applied row for the same PR)', () => {
+    const d = { action: 'iac_apply', apply_status: 'waiting_for_rebake', pr_number: 68 };
+    expect(isIacAwaitingOperator(d, new Set([68]))).toBe(false);
+  });
+
+  it('a PR NOT in resolvedPrs still keeps its live status (only the matching PR downgrades)', () => {
+    const resolved = new Set([68]);
+    expect(
+      isIacAwaitingOperator({ action: 'iac_apply', apply_status: 'waiting_for_rebake', pr_number: 71 }, resolved),
+    ).toBe(true);
+  });
+
+  it('a missing/invalid pr_number can never be "resolved" — stays awaiting even against a non-empty resolvedPrs', () => {
+    const resolved = new Set([68]);
+    expect(isIacAwaitingOperator({ action: 'iac_apply', apply_status: 'waiting_for_rebake' }, resolved)).toBe(true);
+    expect(
+      isIacAwaitingOperator(
+        { action: 'iac_apply', apply_status: 'waiting_for_rebake', pr_number: 0 },
+        resolved,
+      ),
+    ).toBe(true);
+  });
+
+  it('tolerates null/undefined decision (never throws)', () => {
+    expect(isIacAwaitingOperator(null, new Set())).toBe(false);
+    expect(isIacAwaitingOperator(undefined, new Set())).toBe(false);
+  });
+});
+
 describe('iacApproveLabel — retire the stale CTA on superseded rows', () => {
   it('waiting_for_rebake + PR NOT resolved → "Review & approve →"', () => {
     expect(
@@ -485,5 +613,27 @@ describe('iacApproveLabel — retire the stale CTA on superseded rows', () => {
         t,
       ),
     ).toBe('Review & approve →');
+  });
+});
+
+// ds-mml: "the server could not read this" vs "this row predates the field".
+// Collapsing them re-offered a live Approve button on a burned approval after a
+// transient Firestore blip — the click dead-ends at the worker's refusal, which
+// reads as the product being broken rather than as a read having failed.
+describe('isRollbackAwaitingOperator — unreadable approval status', () => {
+  const base = {
+    approval_url: 'https://desk.example.com/approvals/rb-1?t=abc',
+    expires_at: '2099-01-01T00:00:00Z',
+  };
+  const opts = { origin: 'https://desk.example.com' };
+
+  it('still treats an ABSENT status as awaiting (pre-enrichment compat)', () => {
+    expect(isRollbackAwaitingOperator({ approval: { ...base } }, opts)).toBe(true);
+  });
+
+  it('refuses when the backend flags the status as unreadable', () => {
+    expect(
+      isRollbackAwaitingOperator({ approval: { ...base, status_unavailable: true } }, opts),
+    ).toBe(false);
   });
 });

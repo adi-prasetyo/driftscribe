@@ -11,6 +11,57 @@ export interface DecisionApproval {
    *  routed through `safeApprovalHref` before it becomes an anchor href. */
   approval_url?: string;
   expires_at?: string | null;
+  /** Serve-time join (Task 3.0b) of the LIVE approval doc's status, from
+   *  `driftscribe_lib/approvals.py`'s `ApprovalStore._claim` transitions.
+   *  Only `pending`/`used`/`denied` are ever written — `_claim` is the sole
+   *  writer of the two terminal transitions and always passes exactly one of
+   *  `"used"` or `"denied"` as `new_status`; an `"approved"` value never
+   *  occurs despite an older code comment suggesting it. Absent when the
+   *  approval doc could not be read (missing doc, or a soft-failed store
+   *  read) — the row is served un-enriched rather than 500ing. */
+  status?: 'pending' | 'used' | 'denied';
+  /** ds-mml. Set only when the backend's approval read THREW, as opposed to
+   *  finding no doc. Absent `status` normally means "pre-enrichment row",
+   *  which consumers treat as still-pending; that inference is wrong for a
+   *  failed read and would re-offer a live Approve CTA on a burned approval.
+   *  Present-and-true means "the server does not know" — refuse to guess.
+   *  Never persisted; computed per-response. */
+  status_unavailable?: boolean;
+  /** The transition timestamp. `null`/absent means "resolved, but we don't
+   *  know when". NEVER falls back to the decision's own `created_at` (that's
+   *  proposal time, not resolution time) — treat `null` as genuinely unknown,
+   *  not "just now".
+   *
+   *  Since ds-2mc this is written ONLY for a confirmed terminal outcome: a
+   *  `denied` (terminal at the moment of the flip), or a `used` whose traffic
+   *  shift was observed to succeed. A rollback that is still applying, failed,
+   *  or whose outcome could not be confirmed carries `null` — as does any
+   *  `used`/`denied` doc written before the field existed. */
+  resolved_at?: string | null;
+  /** What actually happened to a claimed rollback.
+   *
+   *  `status: 'used'` means only that the single-use credential was SPENT —
+   *  the transactional flip is the anti-replay claim and by construction runs
+   *  BEFORE the Cloud Run traffic shift, so it can never testify that the
+   *  rollback happened. This field is what can:
+   *
+   *  - `claimed` / `applying` — in flight; outcome not yet established
+   *  - `applied`  — confirmed success. The ONLY value that may render a seal.
+   *  - `failed`   — definitely did not apply
+   *  - `outcome_unknown` — the mutation may have landed and we could not
+   *    confirm it (poll expiry, lost response). Must be rendered as
+   *    unconfirmed, NEVER as failed; `/reconcile` resolves it later.
+   *
+   *  `null`/absent = outcome unknown, including for any rollback resolved
+   *  before ds-2mc. Consumers must treat absence as unknown, never as
+   *  success — that conflation is the bug this field exists to fix. */
+  phase?: 'claimed' | 'applying' | 'applied' | 'failed' | 'outcome_unknown' | null;
+  /** When the CURRENT `phase` was observed. Distinct from `resolved_at`, which
+   *  exists only on a confirmed success — so it is the only timestamp available
+   *  for ordering failed/unconfirmed rows against each other, and the only
+   *  signal separating a rollback applying right now from one whose worker died
+   *  mid-wait an hour ago. `null`/absent on pre-ds-2mc docs. */
+  phase_at?: string | null;
 }
 
 /** The PR/issue side-channel on a drift/docs/upgrade decision
@@ -95,7 +146,12 @@ export interface Decision extends Record<string, unknown> {
  *  reply-plain-text decision); never route it through a Markdown renderer. */
 export interface ConversationTurn {
   seq: number;
-  role: 'user' | 'crew' | string;
+  /** `user` = the operator typed it, `crew` = a crew replied, and the two
+   *  TRANSITION roles are server-authored rows (never model output) recording
+   *  that the conversation changed hands: `crew_change` when the operator
+   *  confirmed a handoff, `handoff_declined` when they turned it down. Both
+   *  carry `handoff`; their `text` is the proposing crew's stated reason. */
+  role: 'user' | 'crew' | 'crew_change' | 'handoff_declined' | string;
   text: string;
   workload?: string;
   trace_id?: string | null;
@@ -103,6 +159,10 @@ export interface ConversationTurn {
   // Crew turns only: present when that turn opened an infrastructure PR.
   iac_pr?: { pr_number: number; pr_url: string } | null;
   tool_calls?: string[];
+  // Transition rows only: the two crews the conversation moved BETWEEN. On a
+  // `crew_change` the row belongs to `to` (the crew that joined); on a
+  // `handoff_declined` it belongs to `from` (the crew that stayed).
+  handoff?: { from: string; to: string };
   // Live/optimistic turns ONLY — the backend never sets these. Drive the
   // chat-native live exchange (App.svelte `displayTurns`): `optimistic` marks a
   // transient turn not yet persisted into the thread (its action links are
@@ -117,14 +177,44 @@ export interface ConversationTurn {
  *  single conversation's full turns via GET /conversations/{id}. */
 export interface Conversation {
   conversation_id: string;
-  /** Crew lock — every turn in this thread runs against this one workload. */
+  /** The crew bound to this thread RIGHT NOW — the crew-lock authority that
+   *  `POST /chat` 409s against. A confirmed handoff REWRITES this, so it is
+   *  "who holds the thread", not "who started it": for the participant history
+   *  read `crews`. */
   workload: string;
+  /** Every crew that has taken part, in joining order (appended, never
+   *  rewritten). Absent on conversations written before the handoff shipped —
+   *  for those the single bound `workload` IS the whole history, so falling
+   *  back to `[workload]` is exact rather than a guess. */
+  crews?: string[];
   /** Truncated first prompt (no LLM summary). May be "(untitled)". */
   title: string;
   created_at?: string;
   updated_at?: string;
+  /** ALL persisted rows, transition rows included — so it is no longer a
+   *  stand-in for "messages the operator sent". Use `user_turn_count`. */
   turn_count?: number;
+  /** Prompts the operator actually typed. Written server-side because a
+   *  transition row is a turn that nobody typed, which no arithmetic over
+   *  `turn_count` can subtract out. Absent on pre-counter conversations. */
+  user_turn_count?: number;
   last_trace_id?: string | null;
+  /** A crew's handoff proposal still awaiting the operator's answer. The
+   *  redemption nonce is deliberately NOT here (the server keeps only a
+   *  digest) — this is what a reload can restore, not what it can act on. */
+  pending_handoff?: PendingHandoff | null;
+}
+
+/** The persisted, client-safe half of an open handoff proposal
+ *  (`_project_pending_handoff` in agent/main.py). */
+export interface PendingHandoff {
+  from: string;
+  to: string;
+  /** The proposing crew's one-line justification, shown verbatim in the chip
+   *  as QUOTED DATA — it is model-authored text about operator-supplied
+   *  content, so it is never rendered as markup. */
+  reason: string;
+  expires_at?: string | null;
 }
 
 /** GET /conversations/{id} response: the conversation doc + its ordered turns

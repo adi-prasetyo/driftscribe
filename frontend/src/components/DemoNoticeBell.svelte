@@ -23,14 +23,41 @@
    * interrupting intent is worse than waiting. The unread badge still shows,
    * so nothing is lost.
    */
-  export function shouldAutoOpenNotice(search: string, dismissed: boolean): boolean {
+  export function shouldAutoOpenNotice(
+    search: string,
+    dismissed: boolean,
+    coversPrimaryContent = false,
+  ): boolean {
     if (dismissed) return false;
+    // The popover is bell-anchored and drops into the top-left, which on the
+    // desk view is where the instrument band's first numeral and the resting
+    // headline sit — the product's thesis screen, and the first thing a judge
+    // sees on the bare domain since Task 3.6 made the desk the front door. At
+    // 1280 (the pinned screenshot width) the desk column starts at x≈272 while
+    // a 384px popover inset 12px ends at x≈396, so no reposition clears it
+    // without shrinking the notice to an unreadable ribbon. Better to leave the
+    // thesis screen unobstructed and let the bell's unread badge carry the
+    // affordance: one click, and the copy is still there. Auto-open survives on
+    // every other view, so a judge arriving on a chat deep link still gets it
+    // unprompted (ds-5yq, whose acceptance criteria sanction exactly this).
+    if (coversPrimaryContent) return false;
     const params = new URLSearchParams(search);
     return (
       params.get('ask_pr') === null &&
       params.get('preview_pr') === null &&
       params.get('reasoning') === null
     );
+  }
+
+  /** Guarded read of the dismissal flag — localStorage can throw under strict
+   *  privacy modes. Exported alongside shouldAutoOpenNotice so the boot
+   *  decision can be reproduced without duplicating the storage key. */
+  export function noticeDismissed(): boolean {
+    try {
+      return window.localStorage.getItem(DEMO_NOTICE_DISMISSED_KEY) === '1';
+    } catch {
+      return false;
+    }
   }
 </script>
 
@@ -46,15 +73,17 @@
   // reads window.location.search once at component initialization — before
   // App's onMount strips the intent params, same boot-decision shape as the
   // tour offer.
-  let { search = window.location.search }: { search?: string } = $props();
+  let {
+    search = window.location.search,
+    coversPrimaryContent = false,
+  }: {
+    search?: string;
+    /** True when the landing view's primary content sits under the popover's
+     *  drop position — see shouldAutoOpenNotice. Boot-time only, like `search`. */
+    coversPrimaryContent?: boolean;
+  } = $props();
 
-  function readDismissed(): boolean {
-    try {
-      return window.localStorage.getItem(DEMO_NOTICE_DISMISSED_KEY) === '1';
-    } catch {
-      return false;
-    }
-  }
+  const readDismissed = noticeDismissed;
   function persistDismissed(): void {
     try {
       window.localStorage.setItem(DEMO_NOTICE_DISMISSED_KEY, '1');
@@ -142,7 +171,7 @@
     // openNotice announces on the bus, which is a no-op at boot (nothing else
     // is open yet) and keeps a single open path. No focus move: the popover is
     // a passive note, keyboard users land in the app as normal.
-    if (shouldAutoOpenNotice(search, dismissed)) openNotice(false);
+    if (shouldAutoOpenNotice(search, dismissed, coversPrimaryContent)) openNotice(false);
     return () => window.removeEventListener(HEADER_POPOVER_EVENT, onForeign);
   });
 

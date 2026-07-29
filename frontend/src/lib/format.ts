@@ -245,22 +245,77 @@ export function appliedAtDiffersMaterially(
 }
 
 /**
- * Friendly headline label for a decision's `action`, shown on the rail's
- * non-iac rows (the `{:else}` branch). Today only `no_op` is remapped — from
- * the bare backend enum to plain language — because that row produces no
- * GitHub side effect and so has no "View PR/issue →" CTA to give it context;
- * the operator just sees a token. Every other action passes through verbatim
- * (those rows carry their own CTA). Defensively clamps an unexpected long value
- * to 40 chars + '…', matching iacStatusLabel's forward-compat style.
+ * Friendly headline label for a decision's `action`, in plain language rather
+ * than the bare backend enum. Shown on the rail's non-iac rows (the `{:else}`
+ * branch) and, since Task 3.4, as the LedgerStrip's `noted`-row title.
+ *
+ * ALL THREE actions the backend actually writes are mapped: `no_op`,
+ * `rollback`, and `iac_apply` (grep the writers — those are the complete set).
+ * Originally only `no_op` was, on the reasoning that the other rows carry
+ * their own "View PR/issue →" CTA to give them context. The desk's ledger
+ * broke that assumption: it has no CTA column, so an unmapped row rendered a
+ * bare `rollback` — a Latin-script code identifier sitting mid-sentence in
+ * Japanese operator copy on the judge-facing front door (caught by the Task
+ * 3.6 visual gate; violates the standing "no code identifiers in
+ * operator-facing copy" rule).
+ *
+ * The verbatim pass-through below is therefore now what it always claimed to
+ * be — a forward-compat path for an action this frontend has never heard of
+ * (a newer coordinator writing a fourth kind), NOT the normal case. Such a
+ * value is still clamped to 40 chars + '…', matching iacStatusLabel's style.
  * null/undefined/'' → '' (the caller then renders nothing).
+ *
+ * The labels are deliberately neutral NOUNS for the kind of action, not its
+ * outcome ("Rollback", not "Rollback applied"): the same string has to serve a
+ * proposed, an applied, and an expired row, and only the row's own status
+ * column knows which it is.
  */
 const DECISION_ACTION_MAX = 40;
+const DECISION_ACTION_KEYS: Record<string, MessageKey> = {
+  no_op: 'shared.decision.noOp',
+  rollback: 'shared.decision.rollback',
+  iac_apply: 'shared.decision.iacApply',
+};
 export function decisionActionLabel(action: string | null | undefined, t: TranslateFn): string {
   if (typeof action !== 'string' || action === '') return '';
-  if (action === 'no_op') return t('shared.decision.noOp');
+  // Object.hasOwn, not a bare lookup: a decision doc is an open shape, so an
+  // action literally named `toString` / `constructor` would otherwise resolve
+  // to an Object.prototype member and be passed to t() as a key.
+  if (Object.hasOwn(DECISION_ACTION_KEYS, action)) return t(DECISION_ACTION_KEYS[action]);
   return action.length > DECISION_ACTION_MAX
     ? action.slice(0, DECISION_ACTION_MAX) + ELLIPSIS
     : action;
+}
+
+// Mirrors agent/models.py:ContractStatus (four values). Same shape and the same
+// Object.hasOwn discipline as DECISION_ACTION_KEYS above, for the same reason:
+// a decision doc is an open shape, so a status literally named `toString` must
+// not resolve an Object.prototype member and be handed to t() as a key.
+const CONTRACT_STATUS_KEYS: Record<string, MessageKey> = {
+  match: 'shared.contract.match',
+  present_allow_manual: 'shared.contract.presentAllowManual',
+  present_disallow_manual: 'shared.contract.presentDisallowManual',
+  absent: 'shared.contract.absent',
+};
+
+/**
+ * Operator-facing label for a per-variable `contract_status`. The raw enum is a
+ * snake_case code identifier (`present_disallow_manual`) that was rendering
+ * verbatim in the STATUS column of the judge-facing desk, in Latin script
+ * directly beneath Japanese copy — the same defect class as the bare `rollback`
+ * that decisionActionLabel above fixes.
+ *
+ * An UNRECOGNIZED status falls through to the raw string rather than to an
+ * empty cell or an invented label: if the backend adds a fifth enum value, the
+ * operator sees the real thing and can look it up, which is the honest failure
+ * mode. Only the four values agent/models.py actually defines are translated.
+ */
+export function contractStatusLabel(status: string | null | undefined, t: TranslateFn): string {
+  if (typeof status !== 'string' || status === '') return '';
+  if (Object.hasOwn(CONTRACT_STATUS_KEYS, status)) return t(CONTRACT_STATUS_KEYS[status]);
+  return status.length > DECISION_ACTION_MAX
+    ? status.slice(0, DECISION_ACTION_MAX) + ELLIPSIS
+    : status;
 }
 
 /**
@@ -279,12 +334,59 @@ export function decisionActionHelp(action: string | null | undefined, t: Transla
 }
 
 /**
+ * Render an ISO timestamp as a host-timezone `HH:mm` clock string, for the
+ * ledger strip's per-row time column (lib/ledger.ts's `LedgerRow`, Task 3.4).
+ * Deliberately NOT pinned to Asia/Tokyo: it renders directly beside
+ * DecisionsRail's `fmtCreatedAt` and this module's own `fmtWhen` below,
+ * neither of which pins a zone either — pinning JST here alone would print a
+ * DIFFERENT clock time than the timestamp sitting right next to it for the
+ * very same decision, which reads as a bug, not a feature. Same fallbacks as
+ * `fmtWhen`: unparseable → the raw value, absent → `''`.
+ *
+ * `l` MUST be threaded from the active app locale (`$locale` from i18n.ts),
+ * matching every other caller in this module — an omitted `l` falls back to
+ * the HOST's default locale/hour-cycle, not the app toggle, which is exactly
+ * the bug this signature guards against.
+ *
+ * `hourCycle: 'h23'` is pinned regardless of locale: `localeTag('en')` is
+ * `'en-US'`, whose default hour cycle is 12-hour with an AM/PM suffix
+ * ("09:15 AM") — eight characters into the ledger row's `58px` monospace
+ * time column, sized for a 24-hour reading (the mockup's own times are all
+ * `14:05` / `09:15` / `08:40` / `06:00`). This is purely a same-instant
+ * formatting choice, not a second timezone pin: it does not change what
+ * moment is displayed, only how many characters it takes.
+ */
+export function fmtClock(iso: string, l?: Locale): string {
+  if (!iso) return '';
+  const parsed = Date.parse(iso);
+  if (Number.isNaN(parsed)) return iso;
+  try {
+    return new Intl.DateTimeFormat(l ? localeTag(l) : undefined, {
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    }).format(parsed);
+  } catch {
+    return iso;
+  }
+}
+
+/**
  * Render an ISO timestamp as a readable absolute wall-clock string with the
  * year (used by the DecisionSummary card — a historical decision can be from
  * any date, so unlike the rail's compact no-year form we include the year).
  * Falls back to the raw value when it doesn't parse, and to '' when absent.
  * `l` is OPTIONAL — a caller with no locale in scope (e.g. decision.ts) still
- * gets Intl's host-default formatting, unchanged from before i18n.
+ * gets Intl's host-default formatting for everything except the hour cycle.
+ *
+ * `hourCycle: 'h23'` is pinned for the same reason `fmtClock` pins it, and the
+ * desk is what forced the issue: `localeTag('en')` is `'en-US'`, whose default
+ * is 12-hour, so the stamped card rendered "Applied Jul 28, 2026, 03:13 PM"
+ * directly above the ledger's "15:06" row FOR THE SAME DECISION — one event,
+ * two clock conventions, ~90px apart (caught by the Task 3.6 visual gate; JA
+ * was always 24h and unaffected). Pinning here rather than un-pinning
+ * `fmtClock` keeps the ledger's 58px time column narrow. This also settles the
+ * hour cycle for locale-less callers, who previously followed the host.
  */
 export function fmtWhen(iso: string, l?: Locale): string {
   if (!iso) return '';
@@ -297,6 +399,7 @@ export function fmtWhen(iso: string, l?: Locale): string {
       day: 'numeric',
       hour: '2-digit',
       minute: '2-digit',
+      hourCycle: 'h23',
     }).format(parsed);
   } catch {
     return iso;

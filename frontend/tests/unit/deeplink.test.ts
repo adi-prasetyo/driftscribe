@@ -70,9 +70,10 @@ describe('conversationIdFromSearch', () => {
 });
 
 describe('viewFromSearch', () => {
-  it('defaults to chat until the flip, then desk (see Task 3.6)', () => {
-    expect(viewFromSearch('')).toBe('chat');
-    expect(DEFAULT_VIEW).toBe('chat');
+  // Flipped at Task 3.6 step 2 — a bare URL is now the approval desk.
+  it('defaults to the desk (the redesigned front door)', () => {
+    expect(viewFromSearch('')).toBe('desk');
+    expect(DEFAULT_VIEW).toBe('desk');
   });
 
   it('accepts the allowlist', () => {
