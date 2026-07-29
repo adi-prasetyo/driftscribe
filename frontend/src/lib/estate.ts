@@ -22,6 +22,34 @@ import {
 } from './infra_graph';
 import type { TranslateFn } from './i18n';
 import { translate } from './i18n';
+import { resolvedIacPrNumbers } from './approval';
+import type { Decision } from './types';
+
+/**
+ * Sanitize an externally-sourced approvals payload AND retire any entry a
+ * decision proves already applied (ds-0rm's filter).
+ *
+ * Exported because THREE surfaces read this list and every one of them must
+ * agree: the estate rows (via `estateModel`), App's adopt-target, and the
+ * tour's step-4 suggestion. When only some applied the filter, one screen
+ * contradicted itself — the InstrumentBand showed "0 awaiting" (its
+ * `awaitingCount` does filter) directly above a row reading "PR #268 awaiting
+ * review" (which did not). One function, one answer.
+ *
+ * Note the asymmetry with `approvalsStale`: that suppresses claims about
+ * ABSENCE. This drops a POSITIVE claim we hold positive counter-evidence for.
+ * Only an `applied` decision qualifies — `resolvedIacPrNumbers` requires it —
+ * so an in-progress or failed apply leaves the entry standing.
+ */
+export function reconcileApprovals(
+  approvals: ReadonlyArray<PendingApproval | null | undefined> | null | undefined,
+  decisions?: ReadonlyArray<Decision | null | undefined> | null,
+): PendingApproval[] {
+  const resolvedPrs = resolvedIacPrNumbers(decisions ?? []);
+  return (approvals ?? []).filter(
+    (a): a is PendingApproval => a != null && !resolvedPrs.has(a.pr_number),
+  );
+}
 
 // EN-bound fallback translator, mirroring infra_graph.ts's own EN_T: a caller
 // that omits `t` (e.g. a quick test) gets byte-identical EN output rather than
@@ -101,17 +129,26 @@ export function estateModel(
   graph: InfraGraph | null,
   approvals: ReadonlyArray<PendingApproval | null | undefined> | null | undefined,
   t: TranslateFn = EN_T,
+  /**
+   * The decisions log, used ONLY to retire listing entries a decision proves
+   * already applied (ds-0rm's filter, third consumer).
+   *
+   * Without it this view contradicted itself on one screen: the backend
+   * listing is cached 60s (`_PENDING_APPROVALS_TTL_S`), so after a PR merges
+   * and applies the row still rendered "PR #268 awaiting review" while the
+   * InstrumentBand directly above it — which DOES apply the filter, via
+   * `awaitingCount` — showed "0 awaiting". The applied decision positively
+   * disproves the chip.
+   *
+   * Optional so existing callers and tests are unchanged; omitted means no
+   * reconciliation, exactly as before.
+   */
+  decisions?: ReadonlyArray<Decision | null | undefined> | null,
 ): EstateModel {
   if (graph === null || graph.degraded) return EMPTY_MODEL;
 
-  // findPendingPr expects a clean PendingApproval[] (no null/undefined
-  // elements) — sanitize once here rather than at every call site below (the
-  // prop itself stays defensively typed, matching ApprovalDesk's own
-  // pendingApprovals prop, for the same "open externally-sourced payload"
-  // reason lib/desk.ts documents).
-  const cleanApprovals: PendingApproval[] = (approvals ?? []).filter(
-    (a): a is PendingApproval => a != null,
-  );
+  // Sanitized + reconciled once here rather than at every call site below.
+  const cleanApprovals = reconcileApprovals(approvals, decisions);
 
   const cards = resourceCards(graph, t);
   const { primary, other } = splitCards(cards);

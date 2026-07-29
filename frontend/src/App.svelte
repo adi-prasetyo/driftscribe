@@ -48,7 +48,7 @@
   import ApprovalDesk from './components/ApprovalDesk.svelte';
   import EstateView from './components/EstateView.svelte';
   import { previewPrFromSearch } from './lib/infra_graph';
-  import { estateModel, firstAdoptableRow } from './lib/estate';
+  import { estateModel, firstAdoptableRow, reconcileApprovals } from './lib/estate';
   import {
     reasoningTraceFromSearch,
     conversationIdFromSearch,
@@ -573,7 +573,9 @@
   // though the estate row itself had stopped offering the button.
   const estateHasAdoptTarget = $derived(
     !$overview.approvalsStale &&
-      firstAdoptableRow(estateModel($overview.graph, $overview.pendingApprovals, $t)) !== null,
+      firstAdoptableRow(
+        estateModel($overview.graph, $overview.pendingApprovals, $t, $overview.decisions),
+      ) !== null,
   );
 
   // Detect a freshly-`applied` iac_apply decision (decisions arrive newest-first)
@@ -1863,7 +1865,7 @@
 {#if tourOpen}
   <TourCard
     graph={$overview.graph}
-    pendingApprovals={$overview.pendingApprovals}
+    pendingApprovals={reconcileApprovals($overview.pendingApprovals, $overview.decisions)}
     approvalsStale={$overview.approvalsStale}
     adoptDisabled={chatDisabled}
     onAdoptPrefill={handleAdopt}

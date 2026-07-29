@@ -72,7 +72,11 @@
   );
 
   // ---- row model ----
-  const model = $derived(estateModel(graph, pendingApprovals, $t));
+  // `decisions` is threaded in for ds-0rm's resolved-PR reconciliation, NOT
+  // for row content — see estateModel's `decisions` param. Both this view and
+  // App's adopt-target call it with the same four arguments so the two can
+  // never disagree about which PRs are still open.
+  const model = $derived(estateModel(graph, pendingApprovals, $t, decisions));
   // The tour's "Adopt your first resource" step spotlights this exact row
   // (data-tour="adopt-target"); App.svelte computes the SAME predicate off the
   // SAME model for its nav-button fallback, so the two markers are always
