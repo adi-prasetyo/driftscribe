@@ -346,7 +346,7 @@ test.describe('transparency UI (mock smoke)', () => {
     await expect(page.locator(`[data-testid="${TESTIDS.infraOtherCards}"]`)).toContainText('1 secret');
   });
 
-  test('unmatched-declarations band: separate badge, Investigate prefills a Provision draft (no /chat), Adopt still present, layout holds', async ({
+  test('unmatched-declarations band: separate badge, Investigate prefills a Provision draft (no /chat on click), Adopt still present, layout holds', async ({
     page,
   }) => {
     await seedToken(page);
@@ -408,9 +408,22 @@ test.describe('transparency UI (mock smoke)', () => {
     const prompt = page.locator('#prompt-input');
     await expect(prompt).toHaveValue(/storefront-old/);
     await expect(prompt).toHaveValue(/do not assume a rename/);
-    await expect(page.locator('input[type="radio"]:checked')).toHaveValue('provision');
     // The click prefilled a draft only — no chat turn was sent.
     expect(chatPosts).toBe(0);
+
+    // ...and the draft is addressed to PROVISION. This used to read the checked
+    // radio, but the crew picker is gone (a thread opens on Explore and moves by
+    // handoff), so the draft's crew is no longer rendered anywhere — Investigate
+    // stays a deep link that carries explicit intent, and its intent is now
+    // invisible until the turn is sent. So send it and read the crew off the
+    // request. That is strictly the better assertion: the radio only proved the
+    // UI DISPLAYED "provision", while the body proves the turn is really
+    // addressed to Provision, which is the thing that mattered all along.
+    const chatReq = page.waitForRequest(
+      (r) => r.url().includes('/chat') && r.method() === 'POST',
+    );
+    await page.locator(`[data-testid="${TESTIDS.chatSubmit}"]`).click();
+    expect(JSON.parse((await chatReq).postData() ?? '{}').workload).toBe('provision');
   });
 
   test('open-trace enters historical mode; new chat exits', async ({ page }) => {

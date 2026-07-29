@@ -386,8 +386,9 @@
   function handleAdopt(text: string) {
     // Adopt starts a NEW provisioning task, so ALWAYS drop to a clean slate
     // first: on an open thread the provision prefill would otherwise fight the
-    // crew lock (CrewPicker snaps the value straight back), and leftover
-    // one-shot output shouldn't sit around a fresh task either. On an already-
+    // crew lock — the thread's own crew still owns it, and the server answers
+    // 409 — and leftover one-shot output shouldn't sit around a fresh task
+    // either. On an already-
     // fresh composer this is a harmless no-op (Adopt is disabled during busy/
     // historical, so there is never a live stream to cancel). The old thread
     // stays reachable from the rail.
