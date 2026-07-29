@@ -4,6 +4,7 @@ import {
   iacApprovalHref,
   isExpired,
   isRollbackAwaitingOperator,
+  isRollbackApprovalUnresolved,
   isIacAwaitingOperator,
   safeGithubHref,
   iacPrHref,
@@ -176,6 +177,34 @@ describe('isExpired', () => {
     const future = new Date(Date.now() + 60_000).toISOString();
     expect(isExpired(past)).toBe(true);
     expect(isExpired(future)).toBe(false);
+  });
+});
+
+describe('isRollbackApprovalUnresolved — the STATUS half, without the clock (ds-d4z)', () => {
+  it('true for pending and for an absent status field', () => {
+    expect(isRollbackApprovalUnresolved({ status: 'pending' })).toBe(true);
+    expect(isRollbackApprovalUnresolved({})).toBe(true);
+  });
+
+  it('false for used and denied — a spent credential is not merely timed out', () => {
+    expect(isRollbackApprovalUnresolved({ status: 'used' })).toBe(false);
+    expect(isRollbackApprovalUnresolved({ status: 'denied' })).toBe(false);
+  });
+
+  it('false when the backend could not read the status (ds-mml)', () => {
+    expect(isRollbackApprovalUnresolved({ status_unavailable: true })).toBe(false);
+    // status_unavailable wins even alongside a stale-looking pending value.
+    expect(isRollbackApprovalUnresolved({ status: 'pending', status_unavailable: true })).toBe(false);
+  });
+
+  it('false for null/undefined', () => {
+    expect(isRollbackApprovalUnresolved(null)).toBe(false);
+    expect(isRollbackApprovalUnresolved(undefined)).toBe(false);
+  });
+
+  it('ignores expires_at entirely — that is the point of the split', () => {
+    const longExpired = { status: 'pending' as const, expires_at: '2000-01-01T00:00:00Z' };
+    expect(isRollbackApprovalUnresolved(longExpired)).toBe(true);
   });
 });
 

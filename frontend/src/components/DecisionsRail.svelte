@@ -3,6 +3,8 @@
     safeApprovalHref,
     iacApprovalHref,
     isExpired,
+    isRollbackAwaitingOperator,
+    isRollbackApprovalUnresolved,
     safeGithubHref,
     iacPrHref,
     resolvedIacPrNumbers,
@@ -89,6 +91,40 @@
   function approveHref(d: Decision): string | null {
     const raw = d.approval?.approval_url;
     return raw ? safeApprovalHref(raw, undefined, $locale) : null;
+  }
+
+  // What the rollback CTA should be for a row (ds-d4z). THREE states, and the
+  // order below is the fix:
+  //
+  //   'live'    — isRollbackAwaitingOperator says this gate is genuinely open
+  //   'expired' — it has a safe href but the TTL has passed: a dead button the
+  //               operator deserves an explanation for
+  //   null      — everything else: no approval, an off-origin/`<redacted>` URL,
+  //               a spent (`used`) or `denied` credential, or a status the
+  //               backend could not read (ds-mml `status_unavailable`)
+  //
+  // This rail used to derive its own answer from `approval_url` + `expires_at`
+  // ALONE and never read `approval.status`, so a `used` approval kept offering a
+  // live-looking Approve link for the rest of its 15-minute TTL and the click
+  // dead-ended at the rollback worker's refusal. `isRollbackAwaitingOperator` is
+  // the SAME predicate desk.ts::selectPendingRollback and ledger.ts::classify
+  // already share — its own doc comment says it exists so every other surface
+  // agrees instead of re-deriving, and the rail was the one caller it had never
+  // been applied to.
+  //
+  // Ordering the two predicates is NOT enough, and getting that wrong was the
+  // first draft of this fix: a `used` approval whose TTL has ALSO passed fails
+  // `isRollbackAwaitingOperator` for the right reason and then matches a bare
+  // `isExpired` anyway, so it renders "expired" — a second wrong answer
+  // replacing the first, and one that misreports a rollback the operator really
+  // did approve. The expired branch therefore gates on status too, via the
+  // shared `isRollbackApprovalUnresolved` rather than a re-derived condition
+  // list (re-deriving is the exact habit this bead exists to end).
+  function rollbackCta(d: Decision): 'live' | 'expired' | null {
+    if (approveHref(d) === null) return null;
+    if (isRollbackAwaitingOperator(d)) return 'live';
+    if (!isRollbackApprovalUnresolved(d.approval)) return null;
+    return isExpired(d.approval?.expires_at) ? 'expired' : null;
   }
 
   // Resolve the infra-apply approval link for a row. An iac_apply decision
@@ -269,13 +305,21 @@
         >{traceButtonLabel(d.action, $t)}</button>
       {/if}
 
-      {#if approveHref(d)}
-        {@const href = approveHref(d)}
-        {#if isExpired(d.approval?.expires_at)}
-          <a class="past-approve-btn expired" aria-disabled="true">{$t('decisions.row.approve')}</a>
+      {#if rollbackCta(d)}
+        {@const cta = rollbackCta(d)}
+        {#if cta === 'expired'}
+          <a
+            class="past-approve-btn expired"
+            data-testid="rollback-approve-expired"
+            aria-disabled="true">{$t('decisions.row.approve')}</a>
           <span class="expired-badge">{$t('decisions.row.expired')}</span>
         {:else}
-          <a class="past-approve-btn" href={href} target="_blank" rel="noopener">{$t('decisions.row.approve')}</a>
+          <a
+            class="past-approve-btn"
+            data-testid="rollback-approve-link"
+            href={approveHref(d)}
+            target="_blank"
+            rel="noopener">{$t('decisions.row.approve')}</a>
         {/if}
       {/if}
 

@@ -146,15 +146,38 @@ export function isRollbackAwaitingOperator(
   const approval = decision?.approval;
   if (!approval?.approval_url) return false;
   if (safeApprovalHref(approval.approval_url, opts.origin) === null) return false;
-  // ds-mml: the backend could not READ the approval doc, which is a different
-  // thing from the doc not carrying a status. The absent-means-pending rule
-  // below exists for pre-enrichment rows that never had the field; applying it
-  // to a failed read means a transient Firestore blip re-offers a live Approve
-  // button on an already-burned approval, and the click dead-ends at the
-  // worker's refusal. When the server says it doesn't know, don't guess.
+  if (!isRollbackApprovalUnresolved(approval)) return false;
+  if (isExpired(approval.expires_at, opts.now)) return false;
+  return true;
+}
+
+/**
+ * The STATUS half of `isRollbackAwaitingOperator`, without the clock: `true`
+ * when the approval's credential is still unspent as far as we can tell.
+ *
+ * Extracted (ds-d4z) because "spent" and "timed out" are different facts and a
+ * surface that distinguishes them needs to ask about status ALONE. The rail
+ * renders a struck-through Approve plus an "expired" badge for a timed-out gate
+ * — correct for a pending approval nobody got to in 15 minutes, and a WRONG
+ * REPORT for one the operator actually used, which merely also sat past its TTL.
+ * Ordering the two checks does not fix that: a `used` approval with a past
+ * `expires_at` fails the awaiting-predicate for the RIGHT reason and then
+ * matches the expired branch anyway. The expired branch has to gate on status
+ * itself, and this is that gate — shared, not re-derived, so the rail cannot
+ * drift from the desk and the ledger again.
+ *
+ * `false` for a `used` or `denied` status, and for ds-mml's
+ * `status_unavailable` (the backend could not READ the doc — a different thing
+ * from the doc not carrying a status; when the server says it doesn't know,
+ * don't guess). `true` when `status` is `'pending'` or absent entirely
+ * (pre-enrichment rows never had the field).
+ */
+export function isRollbackApprovalUnresolved(
+  approval: DecisionApproval | null | undefined,
+): boolean {
+  if (approval == null) return false;
   if (approval.status_unavailable) return false;
   if (approval.status !== undefined && approval.status !== 'pending') return false;
-  if (isExpired(approval.expires_at, opts.now)) return false;
   return true;
 }
 
