@@ -145,9 +145,7 @@ def _approval_url_matches(approval_url: str, approval_id: str) -> bool:
     already shifted traffic: the ds-y5i audit failure again, reached through a
     mismatched pair instead of a missing row.
 
-    Requires the URL path to END WITH ``/approvals/{approval_id}`` (endswith,
-    not equality, so a ``COORDINATOR_URL`` carrying a path prefix still passes)
-    and a non-empty ``t`` credential. The worker builds both fields from one
+    The worker builds both fields from one
     approval object today (``workers/rollback/main.py``), so this can only fire
     on a broken producer — it exists because the invariant is meant to hold
     WITHOUT trusting the producer.
@@ -165,6 +163,7 @@ def _approval_url_matches(approval_url: str, approval_id: str) -> bool:
       used ``endswith`` to tolerate a ``COORDINATOR_URL`` with a path prefix;
       no deployment has one, and if one is ever added the SPA must change in
       the same breath (Codex review of this change);
+    * an empty fragment and exactly one ``t=`` query pair — see below;
     * exactly one non-blank ``t``. ``?t=tok&t=`` is ambiguous — ``parse_qs``
       takes the first, Starlette's scalar query access the last — and an
       ambiguous credential is not one we should be releasing.
@@ -174,9 +173,13 @@ def _approval_url_matches(approval_url: str, approval_id: str) -> bool:
     drifted from the coordinator's before (a full-build deploy re-derives it
     from the run.app host — see docs/runbooks/deploy.md), so an equality check
     would convert a routine config drift into a total outage of chat rollbacks.
-    The browser-side defense already exists where the token would actually
-    leak: the SPA renders a CTA only for a same-origin URL. Filed rather than
-    silently omitted.
+    The residual is real and NOT fully mitigated: the SPA declines to render a
+    CTA for an off-origin URL, but the chat reply and the notifier webhook DO
+    carry the raw string, so an operator could still click it there (Codex
+    corrected an earlier version of this comment that claimed otherwise). It is
+    accepted because a worker able to emit a hostile URL already controls the
+    approval mint and could execute the rollback itself. Filed as ds-x5l rather
+    than silently omitted.
     """
     try:
         parsed = urllib.parse.urlsplit(approval_url)
@@ -194,17 +197,26 @@ def _approval_url_matches(approval_url: str, approval_id: str) -> bool:
         return False
     if parsed.path != f"/approvals/{approval_id}":
         return False
+    # No fragment, and EXACTLY ONE query pair, whose key is ``t``. Validating
+    # only that a good ``t`` is present leaves the rest of the URL free to
+    # carry a second, unrecorded approval's link — ``?t=tokA&next=…/approvals/
+    # B?t=…`` and ``?t=tokA#…/approvals/B?t=…`` both satisfy a "has a good t"
+    # check, and the whole string is what goes to the notifier and the model
+    # (Codex reproduced both). The worker emits exactly one parameter.
+    if parsed.fragment:
+        return False
     # keep_blank_values=True on purpose: the ambiguity to reject is ``?t=tok&t=``,
     # where parse_qs's default silently DROPS the blank and reports a single
     # clean token while Starlette's scalar access takes the last (empty) one.
     # Counting only non-blank values would reproduce exactly that blind spot.
-    tokens = urllib.parse.parse_qs(parsed.query, keep_blank_values=True).get("t", [])
-    return len(tokens) == 1 and bool(tokens[0])
-
-
-# The complete ``/propose`` 200 contract (workers/rollback/main.py). Nothing
-# outside this set ever leaves :func:`propose_rollback_tool` on the success path.
-_APPROVAL_RESPONSE_FIELDS = ("approval_id", "approval_url", "expires_at", "approval_token")
+    pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    if len(pairs) != 1 or pairs[0][0] != "t":
+        return False
+    token = pairs[0][1]
+    # Whitespace is not "present": the approval page itself treats a
+    # whitespace-only ``t`` as missing (``agent/main.py``), so a URL carrying
+    # one is a dead CTA on a row we would have recorded as actionable.
+    return bool(token) and token == token.strip()
 
 
 def _validated_approval(resp: object) -> dict[str, str] | None:
@@ -244,15 +256,27 @@ def _validated_approval(resp: object) -> dict[str, str] | None:
         and _approval_url_matches(approval_url, approval_id)
     ):
         return None
-    out = {
+    # ``approval_token`` must be PRESENT and must be the SAME credential the URL
+    # carries. An earlier draft accepted any non-empty string, which let a valid
+    # response for approval A carry approval B's bare token alongside it — the
+    # ride-along leak in a second spelling. The worker derives both fields from
+    # one ``raw_token`` (workers/rollback/main.py), so requiring them to agree
+    # only ever rejects a broken producer, and it makes the "four-field tuple"
+    # this function promises actually coherent: one credential, stated twice.
+    token = resp.get("approval_token")
+    if not isinstance(token, str) or not token:
+        return None
+    url_token = urllib.parse.parse_qs(
+        urllib.parse.urlsplit(approval_url).query, keep_blank_values=True
+    )["t"][0]
+    if token != url_token:
+        return None
+    return {
         "approval_id": approval_id,
         "approval_url": approval_url,
         "expires_at": expires_at,
+        "approval_token": token,
     }
-    token = resp.get("approval_token")
-    if isinstance(token, str) and token:
-        out["approval_token"] = token
-    return out
 
 
 def _record_chat_rollback_decision(
@@ -409,10 +433,37 @@ def propose_rollback_tool(target_revision: str, reason: str) -> dict:
         f"Rollback to {target_revision} proposed via DriftScribe chat; "
         "see the conversation/trace for the rationale."
     )
-    resp = worker_client.call(
-        "rollback",
-        {"target_revision": target_revision, "reason": safe_reason},
-    )
+    # The THIRD exit path, and the one easiest to miss because it isn't a
+    # ``return``: on a non-2xx the client raises ``WorkerClientError(status,
+    # r.text, …)`` whose ``str()`` embeds the worker's RAW BODY, and /chat
+    # interpolates that into an operator-visible 502. A broken worker or proxy
+    # answering 500 with an approval URL in the body would leak an unrecorded
+    # credential straight past the allowlist below (Codex reproduced it). The
+    # body never reaches the model or the operator: status + worker name are
+    # all the diagnosis anyone gets from here, and the full body is still in
+    # the worker's own logs.
+    try:
+        resp = worker_client.call(
+            "rollback",
+            {"target_revision": target_revision, "reason": safe_reason},
+        )
+    except worker_client.WorkerClientError as e:
+        _log.warning(
+            "rollback_propose_worker_error",
+            extra={
+                "target_revision": target_revision,
+                "status_code": e.status_code,
+                # NOT e.body / str(e) — that is the leak this branch closes.
+            },
+        )
+        return {
+            "error": (
+                "The rollback service refused the request, so no approval link "
+                "was released. No rollback was attempted or executed. Tell the "
+                "operator that the rollback service returned an error."
+            ),
+            "target_revision": target_revision,
+        }
     # ds-y5i — this tool returns exactly ONE of two things: the four-field
     # approval tuple it has just RECORDED, or a sanitized error carrying no
     # worker-supplied content whatsoever. Nothing from the worker is forwarded

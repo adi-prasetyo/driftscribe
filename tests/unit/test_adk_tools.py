@@ -907,6 +907,21 @@ def test_propose_rollback_anon_and_operator_get_the_same_allowlisted_response(an
         # ...or as a bare token beside a broken url.
         {"error": "url build failed", "approval_id": _APPROVAL_UUID,
          "approval_token": "SECRETTOKEN"},
+        # ...or inside an EXTRA query parameter on an otherwise valid url: the
+        # whole string is what reaches the notifier and the model.
+        {"approval_id": _APPROVAL_UUID, "approval_token": "tok",
+         "approval_url": "https://c/approvals/" + _APPROVAL_UUID + "?t=tok"
+         "&next=https%3A%2F%2Fc%2Fapprovals%2FB%3Ft%3DSECRETTOKEN",
+         "expires_at": "2026-01-01T00:15:00+00:00"},
+        # ...or in its fragment.
+        {"approval_id": _APPROVAL_UUID, "approval_token": "tok",
+         "approval_url": "https://c/approvals/" + _APPROVAL_UUID + "?t=tok"
+         "#https://c/approvals/B?t=SECRETTOKEN",
+         "expires_at": "2026-01-01T00:15:00+00:00"},
+        # ...or as a bare approval_token that is NOT the url's credential.
+        {"approval_id": _APPROVAL_UUID, "approval_token": "SECRETTOKEN",
+         "approval_url": "https://c/approvals/" + _APPROVAL_UUID + "?t=tok",
+         "expires_at": "2026-01-01T00:15:00+00:00"},
     ],
 )
 def test_propose_rollback_never_forwards_worker_supplied_content(worker_resp):
@@ -1161,28 +1176,43 @@ def test_propose_rollback_tool_no_notify_when_approval_fields_missing(monkeypatc
     assert any("rollback_propose_invalid_response" in r.message for r in caplog.records)
 
 
-def test_propose_rollback_tool_worker_raises_no_notify():
-    """If the rollback worker itself raises, no notifier call is made and the
-    exception propagates (order pin)."""
+def test_propose_rollback_tool_worker_error_is_sanitized_no_notify():
+    """A non-2xx from the rollback worker: no notifier call, and the worker's
+    RAW BODY never reaches the model or the operator.
+
+    This used to let ``WorkerClientError`` propagate. Its ``str()`` embeds the
+    worker's response body and /chat interpolates that into an operator-visible
+    502 — so a broken worker or proxy answering 500 with an approval URL in the
+    body leaked an unrecorded credential straight past the allowlist (Codex
+    reproduced it). Status code and worker name are all the diagnosis that
+    leaves this function; the full body stays in the worker's own logs.
+    """
     from agent.adk_tools import propose_rollback_tool
     from agent.worker_client import WorkerClientError
 
     notifier_calls = []
+    leaky_body = (
+        "https://evil.example/approvals/"
+        "11111111-2222-3333-4444-555555555555?t=UNRECORDED_TOKEN"
+    )
 
     def _fake_call(worker, payload):
         if worker == "rollback":
-            raise WorkerClientError(503, "down", "rollback")
+            raise WorkerClientError(500, leaky_body, "rollback")
         notifier_calls.append(worker)
         return {}
 
     with patch("agent.adk_tools.worker_client.call", side_effect=_fake_call):
-        with pytest.raises(WorkerClientError):
-            propose_rollback_tool(
-                target_revision="payment-demo-00010-abc",
-                reason="reason",
-            )
+        out = propose_rollback_tool(
+            target_revision="payment-demo-00010-abc",
+            reason="reason",
+        )
 
     assert notifier_calls == []
+    assert "UNRECORDED_TOKEN" not in json.dumps(out)
+    assert "evil.example" not in json.dumps(out)
+    assert "No rollback was attempted or executed" in out["error"]
+    assert out["target_revision"] == "payment-demo-00010-abc"
 
 
 def test_propose_rollback_tool_notifier_raises_suppressed():
