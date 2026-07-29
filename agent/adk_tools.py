@@ -151,15 +151,108 @@ def _approval_url_matches(approval_url: str, approval_id: str) -> bool:
     approval object today (``workers/rollback/main.py``), so this can only fire
     on a broken producer — it exists because the invariant is meant to hold
     WITHOUT trusting the producer.
+
+    Requires, in addition to the id correlation:
+
+    * an http(s) scheme, or none at all (the worker may emit a relative URL) —
+      rejects ``javascript:`` and other non-navigable schemes;
+    * no userinfo — ``https://driftscribe.adp-app.com@evil.example/…`` reads as
+      the real host to a human skimming a chat message;
+    * EXACT path equality with ``/approvals/{approval_id}``. The FastAPI route
+      is exactly that (``agent/main.py``) and the SPA's ``safeApprovalHref``
+      accepts only paths starting ``/approvals/``, so a prefixed variant would
+      pass a laxer check here and then 404 with no desk CTA. An earlier draft
+      used ``endswith`` to tolerate a ``COORDINATOR_URL`` with a path prefix;
+      no deployment has one, and if one is ever added the SPA must change in
+      the same breath (Codex review of this change);
+    * exactly one non-blank ``t``. ``?t=tok&t=`` is ambiguous — ``parse_qs``
+      takes the first, Starlette's scalar query access the last — and an
+      ambiguous credential is not one we should be releasing.
+
+    NOT checked: that the origin equals ``coordinator_origin``. Deliberate.
+    The worker builds this URL from its OWN ``COORDINATOR_URL``, which has
+    drifted from the coordinator's before (a full-build deploy re-derives it
+    from the run.app host — see docs/runbooks/deploy.md), so an equality check
+    would convert a routine config drift into a total outage of chat rollbacks.
+    The browser-side defense already exists where the token would actually
+    leak: the SPA renders a CTA only for a same-origin URL. Filed rather than
+    silently omitted.
     """
     try:
         parsed = urllib.parse.urlsplit(approval_url)
     except ValueError:
         return False
-    if not parsed.path.endswith(f"/approvals/{approval_id}"):
+    if parsed.scheme not in ("", "http", "https"):
         return False
-    token = urllib.parse.parse_qs(parsed.query).get("t") or []
-    return bool(token and token[0])
+    # A schemeless URL is only acceptable as a PATH-relative one. ``//evil/…``
+    # is schemeless but protocol-relative: a browser resolves it to a different
+    # HOST entirely, so it belongs with the userinfo trick below, not with
+    # ``/approvals/…``.
+    if not parsed.scheme and parsed.netloc:
+        return False
+    if parsed.username or parsed.password:
+        return False
+    if parsed.path != f"/approvals/{approval_id}":
+        return False
+    # keep_blank_values=True on purpose: the ambiguity to reject is ``?t=tok&t=``,
+    # where parse_qs's default silently DROPS the blank and reports a single
+    # clean token while Starlette's scalar access takes the last (empty) one.
+    # Counting only non-blank values would reproduce exactly that blind spot.
+    tokens = urllib.parse.parse_qs(parsed.query, keep_blank_values=True).get("t", [])
+    return len(tokens) == 1 and bool(tokens[0])
+
+
+# The complete ``/propose`` 200 contract (workers/rollback/main.py). Nothing
+# outside this set ever leaves :func:`propose_rollback_tool` on the success path.
+_APPROVAL_RESPONSE_FIELDS = ("approval_id", "approval_url", "expires_at", "approval_token")
+
+
+def _validated_approval(resp: object) -> dict[str, str] | None:
+    """The allowlisted approval tuple from a ``/propose`` response, or ``None``.
+
+    ``None`` means "this response cannot be recorded", which the caller turns
+    into a withheld credential. Every rejection reason is a case where handing
+    the link out would break the ds-y5i invariant:
+
+    * not an object — ``worker_client.call`` returns whatever ``response.json()``
+      decodes, and a bare JSON string can itself BE an approval URL;
+    * ``approval_id`` not UUID-shaped — it becomes part of a Firestore document
+      id (mirrors the worker's own ``_UUID_SHAPE`` guard);
+    * ``expires_at`` unparseable — the SPA fail-safes an unparseable expiry to
+      "not expired", stranding a desk CTA that can never retire itself;
+    * ``approval_url`` not a credential for THAT id — see
+      :func:`_approval_url_matches`.
+
+    Returns a FRESH dict containing only the contract's fields, so no extra key
+    the worker happened to include (a second approval's link, a credential
+    embedded in an ``error`` string, a nested ``details`` object) can ride
+    along. ``approval_token`` is included when present: the operator-seat
+    decision requires anonymous callers to receive the same credential the
+    operator does, and dropping it here would reverse that.
+    """
+    if not isinstance(resp, dict):
+        return None
+    approval_id = resp.get("approval_id")
+    approval_url = resp.get("approval_url")
+    expires_at = resp.get("expires_at")
+    if not (isinstance(approval_id, str) and _APPROVAL_ID_SHAPE.match(approval_id)):
+        return None
+    if not (isinstance(expires_at, str) and _parses_as_timestamp(expires_at)):
+        return None
+    if not (
+        isinstance(approval_url, str)
+        and _approval_url_matches(approval_url, approval_id)
+    ):
+        return None
+    out = {
+        "approval_id": approval_id,
+        "approval_url": approval_url,
+        "expires_at": expires_at,
+    }
+    token = resp.get("approval_token")
+    if isinstance(token, str) and token:
+        out["approval_token"] = token
+    return out
 
 
 def _record_chat_rollback_decision(
@@ -320,123 +413,77 @@ def propose_rollback_tool(target_revision: str, reason: str) -> dict:
         "rollback",
         {"target_revision": target_revision, "reason": safe_reason},
     )
-    # ``worker_client.call`` returns whatever ``response.json()`` decodes — it
-    # does NOT enforce an object. A bare JSON string could itself BE an approval
-    # URL, and returning it verbatim would release an unrecorded credential
-    # through the one path that forwards the worker's own payload. There is no
-    # ``approval_id`` to read out of a non-object either, so this is the case
-    # where the gate below cannot see its subject: fail, don't abstain.
-    if not isinstance(resp, dict):
+    # ds-y5i — this tool returns exactly ONE of two things: the four-field
+    # approval tuple it has just RECORDED, or a sanitized error carrying no
+    # worker-supplied content whatsoever. Nothing from the worker is forwarded
+    # on any other path.
+    #
+    # That flat rule replaced a "strip the bad bits and forward the rest"
+    # design, which kept leaking (Codex found two more after the first fix): a
+    # credential can hide in an ``error`` string (``"see https://…?t=…"``), in a
+    # nested ``details`` object, or ride along a VALID response as a second
+    # approval's link. Enumerating hiding places is a losing game; allowlisting
+    # what may leave is not. The allowlist deliberately KEEPS ``approval_token``
+    # — the 2026-07-09 operator-seat decision (docs/plans/2026-07-09-operator-
+    # seat-demo-window.md) requires an anonymous visitor to receive exactly what
+    # the operator receives — so this closes the leak without reversing it.
+    #
+    # Why fail-CLOSED at all, when a post-action audit write would normally be
+    # best-effort: at this point Cloud Run has NOT been mutated and the token
+    # has not left this function. Handing the URL out after a failed record
+    # would let the operator approve a real traffic shift with no audit row —
+    # precisely the ds-y5i incident, recurring under a store failure instead of
+    # a missing code path. Withholding costs an approval doc nobody holds the
+    # token for, which expires on its own 15-min TTL; the alternative costs the
+    # product's core claim. (Codex review made this correction: the first draft
+    # called the write "post-action, therefore best-effort", but the action it
+    # audits is still downstream of the credential about to be released.)
+    approval = _validated_approval(resp)
+    if approval is None:
         _log.warning(
-            "rollback_propose_malformed_response",
+            "rollback_propose_invalid_response",
             extra={
                 "target_revision": target_revision,
-                # The payload itself is never logged: if it IS a URL, it carries
-                # a live ?t= token.
+                # The payload is NEVER logged — it may itself carry a live ?t=
+                # token. Its type is enough to tell a broken worker from a
+                # non-object body.
                 "response_type": type(resp).__name__,
             },
         )
         return {
             "error": (
-                "The rollback service returned an unreadable response, so no "
-                "approval link was released. No rollback was attempted or "
-                "executed. Tell the operator the rollback service is not "
+                "The rollback service returned an invalid approval response, so "
+                "no approval link was released. No rollback was attempted or "
+                "executed. Tell the operator that the rollback service is not "
                 "responding correctly."
             ),
             "target_revision": target_revision,
         }
 
-    # Defensive reads: isinstance(v, str) and v — never str()-coerce (a careless
-    # str(None) would interpolate the literal "None").
-    approval_id = resp.get("approval_id")
-    approval_url = resp.get("approval_url")
-    expires_at = resp.get("expires_at")
-
-    # No usable approval_url in the worker response (its own error shape, or a
-    # malformed one): nothing auditable to record, so hand the response back for
-    # the model to relay the actual error — but STRIP the bare approval_token
-    # first. A response carrying ``approval_id`` + ``approval_token`` with a
-    # broken ``approval_url`` is still a live credential: this tool's own
-    # docstring teaches the model the ``/approvals/{id}?t=<token>`` shape, so it
-    # could reassemble a working link for an unrecorded approval and defeat the
-    # gate below. Without the raw token no approval can be executed — the worker
-    # verifies its HMAC. Copy-on-change / identity-on-no-change, matching the
-    # scrubber conventions in agent/renderer.py.
-    if not (isinstance(approval_url, str) and approval_url):
-        _log.warning(
-            "rollback_propose_notify_failed",
-            extra={"target_revision": target_revision},
-        )
-        if "approval_token" in resp:
-            return {k: v for k, v in resp.items() if k != "approval_token"}
-        return resp
-
-    # ds-y5i — ONE gate, ONE invariant: this tool releases a rollback approval
-    # credential ONLY once it has recorded an auditable, self-expiring decision
-    # row for it. Everything below (the operator notification AND the return
-    # value the model relays) is downstream of that record succeeding.
-    #
-    # Why fail-CLOSED here, when a post-action audit write would normally be
-    # best-effort: at this point Cloud Run has NOT been mutated and the token
-    # has not left this function. Handing the URL out anyway after a failed
-    # record would let the operator approve a real traffic shift with no audit
-    # row — which is precisely the ds-y5i incident, recurring under a store
-    # failure instead of a missing code path. Withholding costs an unusable
-    # approval doc that nobody holds the token for and that expires on its own
-    # 15-min TTL; the alternative costs the product's core claim. (Codex review
-    # of this change made this correction: the first draft called the write
-    # "post-action, therefore best-effort", but the action it audits is still
-    # downstream of the credential this function is about to release.)
-    #
-    # ``expires_at`` must parse, not merely be present: the SPA treats a
-    # missing/unparseable expiry as NOT expired
-    # (frontend/src/lib/approval.ts::isExpired), so recording one would leave a
-    # desk CTA that can never retire itself. ``approval_id`` must be UUID-shaped
-    # because it becomes part of a Firestore document id. And the URL must be a
-    # credential FOR that id — checking each field's well-formedness in
-    # isolation still permits recording one approval while releasing another's
-    # link (Codex review of this change; see _approval_url_matches).
-    recordable = (
-        isinstance(approval_id, str)
-        and _APPROVAL_ID_SHAPE.match(approval_id) is not None
-        and isinstance(expires_at, str)
-        and _parses_as_timestamp(expires_at)
-        and _approval_url_matches(approval_url, approval_id)
-    )
-    if not (
-        recordable
-        and _record_chat_rollback_decision(
-            target_revision=target_revision,
-            approval_id=approval_id,
-            approval_url=approval_url,
-            expires_at=expires_at,
-        )
+    if not _record_chat_rollback_decision(
+        target_revision=target_revision,
+        approval_id=approval["approval_id"],
+        approval_url=approval["approval_url"],
+        expires_at=approval["expires_at"],
     ):
         _log.warning(
             "chat_rollback_proposal_withheld",
-            extra={
-                "target_revision": target_revision,
-                # Never the url or the token — see the helper's except block.
-                # Names the conjunction it actually holds: a False here means
-                # "the response was not recordable", NOT "the id was malformed"
-                # (an unparseable expiry or a mismatched url lands here too).
-                "response_recordable": recordable,
-            },
+            extra={"target_revision": target_revision},
         )
         return {
             "error": (
-                "The rollback approval could not be safely recorded, so no "
-                "approval link was released. No rollback was attempted or "
-                "executed. Tell the operator that audit recording failed and "
-                "to retry once the decision log has recovered."
+                "The rollback approval could not be recorded in the decision "
+                "log, so no approval link was released. No rollback was "
+                "attempted or executed. Tell the operator that audit recording "
+                "failed and to retry once the decision log has recovered."
             ),
             "target_revision": target_revision,
         }
 
     # Best-effort notification. Body is built ONLY from target_revision (caller
-    # arg) + approval_url + expires_at (worker-returned). The model-authored
-    # ``reason`` NEVER appears here (same security stance as safe_reason above —
-    # the model sees raw env).
+    # arg) + the validated approval_url/expires_at. The model-authored ``reason``
+    # NEVER appears here (same security stance as safe_reason above — the model
+    # sees raw env).
     # Contrast with agent/main.py's autonomous rollback: there notify failure
     # 502s because the webhook is the only surface; here the chat reply already
     # carries approval_url, so failure just means the operator doesn't get the
@@ -444,8 +491,8 @@ def propose_rollback_tool(target_revision: str, reason: str) -> dict:
     s = get_settings()
     notify_body = (
         f"Rollback approval pending: roll back {s.target_service} to "
-        f"{target_revision}. Approve or deny (expires {expires_at}): "
-        f"{approval_url}"
+        f"{target_revision}. Approve or deny (expires {approval['expires_at']}): "
+        f"{approval['approval_url']}"
     )
     _notify_approval_pending(
         notify_body,
@@ -460,8 +507,9 @@ def propose_rollback_tool(target_revision: str, reason: str) -> dict:
     # the rollback link: the link is the point of the demo (asking Anchor to roll
     # back really moves payment-demo traffic once approved). Bounds that make this
     # safe: single-use token, 15-min TTL, the worker refuses no-op targets, and
-    # demo-reset.yml restores the payment-demo baseline within ~2h.
-    return resp
+    # demo-reset.yml restores the payment-demo baseline within ~2h. That parity
+    # survives the ds-y5i allowlist: both seats receive the SAME four fields.
+    return approval
 
 
 # Match git refspec rules (https://git-scm.com/docs/git-check-ref-format):

@@ -851,28 +851,78 @@ def test_propose_rollback_anon_gets_same_credential_as_operator():
     assert "SECRETTOKEN" in notifier_calls[0]["body"]
 
 
-@pytest.mark.parametrize(
-    "worker_resp",
-    [
-        # error shape (no approval_url)
-        {"error": "worker exploded", "approval_id": _APPROVAL_UUID},
-        # no approval_url at all
-        {"approval_id": _APPROVAL_UUID, "expires_at": "2026-01-01T00:15:00+00:00"},
-    ],
-)
-def test_propose_rollback_anon_returns_worker_response_unchanged(worker_resp):
-    """For anon callers the tool no longer transforms the worker response at all:
-    whatever shape the worker returns is handed back verbatim (no scrub, no
-    ``approval_note`` injection), identical to the operator path.
+@pytest.mark.parametrize("anon", [True, False], ids=["anon", "operator"])
+def test_propose_rollback_anon_and_operator_get_the_same_allowlisted_response(anon):
+    """The 2026-07-09 operator-seat property — an anonymous demo visitor
+    receives EXACTLY what the operator receives, both credential surfaces
+    included — restated for the ds-y5i allowlist.
 
-    Scoped (ds-y5i) to responses carrying NO approval credential. There is
-    nothing to withhold in that case, so the worker's own error shape is
-    forwarded for the model to relay — unchanged behavior. Responses that DO
-    carry a credential but cannot be recorded are covered by
-    :func:`test_propose_rollback_withholds_credential_when_unrecordable`.
+    This test used to assert the tool returned the worker response *verbatim*.
+    It no longer does: on success it returns only the four contract fields, and
+    on every other outcome a sanitized error. The parity the operator-seat
+    decision is actually about is untouched, and that is what is pinned here.
     """
     from agent.adk_tools import propose_rollback_tool
     from agent.request_context import demo_anonymous_scope
+
+    class _Store:
+        def record_decision(self, *a, **k):
+            return None
+
+    def _fake_call(worker, payload):
+        if worker == "notifier":
+            return {"status": "sent"}
+        return _rollback_worker_response_with_token()
+
+    with patch("agent.adk_tools.worker_client.call", side_effect=_fake_call):
+        with patch("agent.main.get_state", return_value=_Store()):
+            with demo_anonymous_scope(anon):
+                out = propose_rollback_tool(
+                    target_revision="payment-demo-00002-bbb", reason="x"
+                )
+
+    assert out == {
+        "approval_id": _APPROVAL_UUID,
+        "approval_url": f"https://c/approvals/{_APPROVAL_UUID}?t=SECRETTOKEN",
+        "expires_at": "2026-07-07T00:15:00+00:00",
+        "approval_token": "SECRETTOKEN",
+    }
+    assert "approval_note" not in out
+
+
+@pytest.mark.parametrize(
+    "worker_resp",
+    [
+        # A credential hidden in the worker's own error prose.
+        {"error": "see https://c/approvals/" + _APPROVAL_UUID + "?t=SECRETTOKEN"},
+        # ...or nested a level down.
+        {"details": {"approval_url": "https://c/approvals/" + _APPROVAL_UUID
+                     + "?t=SECRETTOKEN"}},
+        # ...or riding along a VALID response as a SECOND approval's link.
+        {"approval_id": _APPROVAL_UUID,
+         "approval_url": "https://c/approvals/" + _APPROVAL_UUID + "?t=tok",
+         "expires_at": "2026-01-01T00:15:00+00:00",
+         "note": "or use https://c/approvals/11111111-2222-3333-4444-555555555555"
+                 "?t=SECRETTOKEN"},
+        # ...or as a bare token beside a broken url.
+        {"error": "url build failed", "approval_id": _APPROVAL_UUID,
+         "approval_token": "SECRETTOKEN"},
+    ],
+)
+def test_propose_rollback_never_forwards_worker_supplied_content(worker_resp):
+    """Nothing the worker says reaches the model except the four allowlisted
+    fields of a response the tool has just RECORDED.
+
+    Each param hides a live credential somewhere the earlier "strip the bad
+    bits and forward the rest" design missed (Codex reproduced the first two
+    against that design). Enumerating hiding places is a losing game — this
+    pins the allowlist that makes enumeration unnecessary.
+    """
+    from agent.adk_tools import propose_rollback_tool
+
+    class _Store:
+        def record_decision(self, *a, **k):
+            return None
 
     def _fake_call(worker, payload):
         if worker == "notifier":
@@ -880,13 +930,18 @@ def test_propose_rollback_anon_returns_worker_response_unchanged(worker_resp):
         return worker_resp
 
     with patch("agent.adk_tools.worker_client.call", side_effect=_fake_call):
-        with demo_anonymous_scope(True):
+        with patch("agent.main.get_state", return_value=_Store()):
             out = propose_rollback_tool(
                 target_revision="payment-demo-00002-bbb", reason="x"
             )
 
-    assert out == worker_resp
-    assert "approval_note" not in out
+    assert "SECRETTOKEN" not in json.dumps(out)
+    assert set(out) <= {
+        "approval_id", "approval_url", "expires_at", "approval_token",
+        "error", "target_revision",
+    }
+    for leaked in ("note", "details", "url build failed"):
+        assert leaked not in json.dumps(out)
 
 
 def test_propose_rollback_strips_a_bare_token_when_the_url_is_unusable():
@@ -918,9 +973,12 @@ def test_propose_rollback_strips_a_bare_token_when_the_url_is_unusable():
 
     assert "approval_token" not in out
     assert "SECRETTOKEN" not in json.dumps(out)
-    assert out["error"] == "coordinator url unset"
-    assert out["approval_id"] == _APPROVAL_UUID
-    # The caller's dict is never mutated (scrubber convention).
+    # ds-y5i round 3: originally this forwarded the worker's own error after
+    # stripping the token. The allowlist replaces the response outright, which
+    # also covers the tokens that hid in OTHER fields.
+    assert "coordinator url unset" not in json.dumps(out)
+    assert "No rollback was attempted or executed" in out["error"]
+    # The caller's dict is never mutated.
     assert worker_resp["approval_token"] == "SECRETTOKEN"
 
 
@@ -1072,14 +1130,13 @@ def test_propose_rollback_operator_keeps_credential():
     ],
 )
 def test_propose_rollback_tool_no_notify_when_approval_fields_missing(monkeypatch, caplog, worker_resp):
-    """Missing/empty/non-str approval_url → ZERO notifier calls + WARNING
-    rollback_propose_notify_failed.
+    """Missing/empty/non-str approval_url → ZERO notifier calls + a WARNING.
 
-    ds-y5i narrowed this to the NO-CREDENTIAL cases. A response carrying a
-    usable ``approval_url`` but an unusable ``expires_at`` used to land here
-    too (notify skipped, credential still returned); it now takes the withhold
-    path and logs ``chat_rollback_proposal_withheld`` instead — see
-    :func:`test_propose_rollback_withholds_credential_when_unrecordable`.
+    ds-y5i folded every unusable-response shape into ONE path: the response
+    fails ``_validated_approval``, so it is neither recorded nor notified nor
+    forwarded, and logs ``rollback_propose_invalid_response``. (It used to log
+    ``rollback_propose_notify_failed`` — a name implying a notification had
+    been attempted, when none ever was.)
     """
     import logging
 
@@ -1101,7 +1158,7 @@ def test_propose_rollback_tool_no_notify_when_approval_fields_missing(monkeypatc
             )
 
     assert notifier_calls == [], f"expected no notifier calls, got {notifier_calls}"
-    assert any("rollback_propose_notify_failed" in r.message for r in caplog.records)
+    assert any("rollback_propose_invalid_response" in r.message for r in caplog.records)
 
 
 def test_propose_rollback_tool_worker_raises_no_notify():
