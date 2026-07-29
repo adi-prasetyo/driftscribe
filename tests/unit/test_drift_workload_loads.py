@@ -112,9 +112,9 @@ Rules:
   yourself from their names — a revision name can be chosen at deploy time, so
   its digits prove nothing about its age.
 - Take the FIRST entry. A rollback reverts the target revision's entire
-  configuration, not just the drifted variable, so each further step back undoes
-  more unrelated change. Choose a later entry only if you can say what is wrong
-  with the ones before it.
+  configuration, not just the drifted variable, so the further back you go the
+  more intervening work you risk reverting. Choose a later entry only if you can
+  say what is wrong with the ones before it.
 - You cannot read a previous revision's env — no tool on this path returns it —
   so you cannot establish that a candidate is contract-compliant. Do not claim
   you have. Name the revision you chose in `rationale` and say that its
