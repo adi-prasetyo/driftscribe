@@ -738,6 +738,49 @@ def test_a_NOT_READY_active_revision_still_anchors_the_comparison():
     assert result == ["payment-demo-00007-aaa"]
 
 
+def test_a_revision_with_no_create_time_is_skipped_not_a_crash():
+    """An unset timestamp comes back as ``None``, and ``None < datetime``
+    raises. That TypeError would escape the reader's
+    ``except GoogleAPICallError`` and 500 the whole /read over a
+    rollback-candidate nicety — and a revision that cannot be placed in time
+    cannot be offered as "the nearest older one" regardless."""
+    rev_client = MagicMock()
+    t0 = dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)
+    undated = _revision("payment-demo-00006-nul", ready=True, create_time=t0)
+    undated.create_time = None
+    rev_client.list_revisions.return_value = [
+        undated,
+        _revision("payment-demo-00007-aaa", ready=True, create_time=t0),
+        _revision("payment-demo-00008-act", ready=True, create_time=t0 + dt.timedelta(hours=1)),
+    ]
+
+    result = list_previous_ready_revisions(
+        "payment-demo", "r", "p", "payment-demo-00008-act",
+        revisions_client=rev_client,
+    )
+
+    assert result == ["payment-demo-00007-aaa"]
+
+
+def test_an_active_revision_with_no_create_time_yields_no_candidates():
+    """Nothing can be ordered against a reference point that has no time."""
+    rev_client = MagicMock()
+    t0 = dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)
+    active = _revision("payment-demo-00008-act", ready=True, create_time=t0)
+    active.create_time = None
+    rev_client.list_revisions.return_value = [
+        _revision("payment-demo-00007-aaa", ready=True, create_time=t0),
+        active,
+    ]
+
+    result = list_previous_ready_revisions(
+        "payment-demo", "r", "p", "payment-demo-00008-act",
+        revisions_client=rev_client,
+    )
+
+    assert result == []
+
+
 def test_list_previous_ready_revisions_passes_correct_parent():
     rev_client = MagicMock()
     rev_client.list_revisions.return_value = []

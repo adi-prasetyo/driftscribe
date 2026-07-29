@@ -256,6 +256,14 @@ def list_previous_ready_revisions(
             continue
         if not _is_ready(rev):
             continue
+        if rev.create_time is None:
+            # An unset timestamp comes back as None, and ``None < datetime``
+            # raises — which would escape as a TypeError the reader's
+            # ``except GoogleAPICallError`` does not catch, 500ing the whole
+            # /read over a rollback-candidate nicety. A revision we cannot
+            # place in time cannot be offered as "the nearest older one"
+            # anyway. (The pre-ds-smi sort had the same exposure.)
+            continue
         candidates.append((rev.create_time, short_name))
     if active_create_time is None:
         return []
