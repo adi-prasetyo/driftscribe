@@ -398,6 +398,45 @@ _EXPECTED_STEPS = [
 ]
 
 
+#: The COMPLETE parsed config. `_EXPECTED_STEPS` pins the PLACEHOLDER
+#: ``${_EXPECT_COORDINATOR_URL}``; the VALUE it binds to lives up here in
+#: `substitutions`, and pinning only the placeholder left the single most
+#: important invariant in this file — the coordinator domain every operator
+#: approval link is built from — free to be changed to the run.app host with
+#: CI fully green. Equality on the whole document also forecloses unpinned
+#: top-level execution influences, e.g. a future key under `options`.
+_EXPECTED_CONFIG = {
+    "substitutions": {
+        "_TAG": "manual",
+        "_REGION": _REGION,
+        "_EXPECT_COORDINATOR_URL": _COORD,
+        "_EXPECT_TARGET_SERVICE": "payment-demo",
+    },
+    "serviceAccount": (
+        "projects/driftscribe-hack-2026/serviceAccounts/"
+        "cloudbuild-deploy-sa@driftscribe-hack-2026.iam.gserviceaccount.com"
+    ),
+    "options": {"logging": "CLOUD_LOGGING_ONLY"},
+    "steps": _EXPECTED_STEPS,
+    "images": [_IMAGE],
+}
+
+
+def test_config_matches_the_pinned_value_exactly():
+    """Whole-document equality. The steps pin below gives a smaller diff for
+    the common case; this one is what stops the expected coordinator domain,
+    the deploy service account, or a new top-level key from drifting."""
+    assert _config() == _EXPECTED_CONFIG
+
+
+def test_the_expected_coordinator_url_is_the_demo_domain_not_runapp():
+    """Stated separately so the failure names the actual stake rather than
+    printing a whole-config diff."""
+    expected = _config()["substitutions"]["_EXPECT_COORDINATOR_URL"]
+    assert expected == _COORD
+    assert "run.app" not in expected
+
+
 def test_steps_match_the_pinned_shape_exactly():
     """Whole-dict equality. A suffix like `|| true` on the assertion, a
     chained mutating command, or a decoy trailing arg all fail here."""
