@@ -152,8 +152,10 @@ def check_service(
     # the service serves LATEST. If that ever stops being true, a plain deploy
     # would create a revision serving 0% while the build reports success.
     traffic = (doc.get("spec") or {}).get("traffic") or []
+    # `is True`, not truthiness: a document carrying the STRING "false" is
+    # truthy, and this checker's job is to fail closed on anything unexpected.
     if not any(
-        isinstance(t, dict) and t.get("latestRevision") and t.get("percent") == 100
+        isinstance(t, dict) and t.get("latestRevision") is True and t.get("percent") == 100
         for t in traffic
     ):
         failures.append(

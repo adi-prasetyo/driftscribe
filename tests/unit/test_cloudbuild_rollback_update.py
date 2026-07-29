@@ -19,13 +19,19 @@ every emitted operator approval link is built from. That is a subtle,
 easily-"corrected" decision, which is why it is pinned here rather than
 left to a header comment.
 
-WHY THE STRUCTURE IS PINNED BY SHAPE, NOT BY SUBSTRING SEARCH: an earlier
-cut scanned step text for banned flags, and a step of the plain form
-``args: [run, services, update, driftscribe-rollback, --concurrency=80]``
-slipped through every scan because no single argument contained both the
-service name and the command. Substring bans are an open-ended arms race;
-pinning the exact five-step shape closes it, and a deliberate sixth step
-then has to come with a deliberate test change.
+WHY THE STRUCTURE IS PINNED BY WHOLE-STEP EQUALITY: this went through three
+weaker cuts, each defeated by a bypass that kept the previous pin green.
+Scanning step text for banned flags missed
+``args: [run, services, update, driftscribe-rollback, --concurrency=80]``,
+because no single argument held both the service name and the command.
+Pinning (image, entrypoint) tuples missed ``allowFailure: true`` and a
+command appended to an existing bash body. Parsing the bash body missed
+``... || true``, ``;``-chaining, ``$(...)`` substitution, and a decoy
+trailing arg — ``bash -c`` executes ``args[1]`` while the scan read
+``args[-1]``. Comparing the COMPLETE step dicts ends the arms race: every
+one of those is a diff. The cost is that any deliberate change to the
+pipeline must be made here too, which for a hand-run production deploy is
+the point rather than the price.
 """
 import importlib.util
 from pathlib import Path
@@ -263,6 +269,15 @@ def test_pinned_traffic_is_caught():
     assert any("latestRevision=100%" in f for f in _check(doc))
 
 
+@pytest.mark.parametrize("bad", ["false", "true", 1, "yes"])
+def test_latest_revision_must_be_the_boolean_true(bad):
+    """Truthiness accepts the STRING "false". A checker meant to fail closed
+    on unexpected documents must compare identity."""
+    doc = _doc()
+    doc["spec"]["traffic"] = [{"latestRevision": bad, "percent": 100}]
+    assert any("latestRevision=100%" in f for f in _check(doc))
+
+
 def test_own_url_placeholder_is_caught():
     doc = _set_env(_doc(), "OWN_URL", "https://placeholder.invalid")
     assert any("placeholder" in f for f in _check(doc))
@@ -331,68 +346,68 @@ def test_config_has_exactly_the_five_expected_steps():
 
 #: Cloud Build fields that change whether/when a step's failure counts.
 #: `allowFailure: true` on the preflight, or `allowExitCodes: [1]` on the
-#: postcondition, turns either assertion into decoration without touching a
-#: single flag or step shape. `waitFor` lets the deploy race the build/push.
+#: postcondition, turns either assertion into decoration. `waitFor` lets the
+#: deploy race the build/push. The whole-step pin below already rejects these
+#: (dict equality catches extra keys); these stay for a legible failure.
 _EXECUTION_CONTROL_FIELDS = ("allowFailure", "allowExitCodes", "waitFor")
 
-#: The ONLY logical commands either bash body may run. Pinning the bodies is
-#: what stops `gcloud run services update driftscribe-rollback --concurrency=80`
-#: being appended to the postcondition: it keeps the five-step shape and uses
-#: no banned flag, so every structural and flag pin passed it.
-_ALLOWED_BASH_COMMANDS = (
-    "set -euo pipefail",
-    "gcloud run services describe driftscribe-rollback",
-    "python3 infra/scripts/assert_rollback_service.py",
-)
+_IMAGE = "asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-rollback:${_TAG}"
 
 
-def _bash_bodies(doc: dict) -> list[str]:
-    return [
-        s["args"][-1]
-        for s in doc["steps"]
-        if s.get("entrypoint") == "bash" and s.get("args")
-    ]
+def _assert_body(outfile: str, phase: str) -> str:
+    return (
+        "set -euo pipefail\n"
+        "gcloud run services describe driftscribe-rollback \\\n"
+        "  --region=${_REGION} --project=$PROJECT_ID --format=json \\\n"
+        f"  > /workspace/{outfile}\n"
+        "python3 infra/scripts/assert_rollback_service.py \\\n"
+        f"  /workspace/{outfile} {phase} \\\n"
+        '  "${_EXPECT_COORDINATOR_URL}" "${_EXPECT_TARGET_SERVICE}" \\\n'
+        '  "${_REGION}" "$PROJECT_ID" "${_TAG}"\n'
+    )
 
 
-def _logical_commands(body: str) -> list[str]:
-    """Split a bash body into logical commands: join backslash continuations,
-    drop comments and blanks."""
-    joined, buf = [], ""
-    for raw in body.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.endswith("\\"):
-            buf += line[:-1].strip() + " "
-            continue
-        joined.append((buf + line).strip())
-        buf = ""
-    if buf.strip():
-        joined.append(buf.strip())
-    return joined
+#: The COMPLETE expected step list. Pinning whole dicts — rather than parsing
+#: the shell — is what closes the last family of bypasses: `... || true`
+#: appended to an allowed command, `;`/`&&` chaining, `$(gcloud run services
+#: update ...)` substitution, and putting the real body in args[1] with a
+#: harmless decoy at args[-1] (bash -c executes args[1]; a scan reading
+#: args[-1] would never see it). Any change to a step, in any position, must
+#: now be made here deliberately.
+_EXPECTED_STEPS = [
+    {
+        "name": _SDK,
+        "entrypoint": "bash",
+        "args": ["-c", _assert_body("rollback-before.json", "preflight")],
+    },
+    {
+        "name": _DOCKER,
+        "args": ["build", "-t", _IMAGE, "-f", "workers/rollback/Dockerfile", "."],
+    },
+    {"name": _DOCKER, "args": ["push", _IMAGE]},
+    {
+        "name": _SDK,
+        "entrypoint": "gcloud",
+        "args": ["run", "deploy", _SERVICE, f"--image={_IMAGE}", "--region=${_REGION}"],
+    },
+    {
+        "name": _SDK,
+        "entrypoint": "bash",
+        "args": ["-c", _assert_body("rollback-after.json", "postcondition")],
+    },
+]
+
+
+def test_steps_match_the_pinned_shape_exactly():
+    """Whole-dict equality. A suffix like `|| true` on the assertion, a
+    chained mutating command, or a decoy trailing arg all fail here."""
+    assert _config()["steps"] == _EXPECTED_STEPS
 
 
 @pytest.mark.parametrize("field", _EXECUTION_CONTROL_FIELDS)
 def test_no_step_relaxes_failure_or_ordering(field):
     offenders = [s for s in _config()["steps"] if field in s]
     assert offenders == [], f"{field} would neuter an assertion or race the build"
-
-
-def test_bash_bodies_run_only_the_allowed_commands():
-    bodies = _bash_bodies(_config())
-    assert len(bodies) == 2, f"expected preflight + postcondition, got {len(bodies)}"
-    for body in bodies:
-        for command in _logical_commands(body):
-            assert command.startswith(_ALLOWED_BASH_COMMANDS), (
-                f"unexpected command in a bash step: {command!r}"
-            )
-
-
-def test_each_bash_body_makes_exactly_one_gcloud_call_and_it_is_read_only():
-    for body in _bash_bodies(_config()):
-        calls = [c for c in _logical_commands(body) if c.startswith("gcloud")]
-        assert len(calls) == 1, f"expected one gcloud call per bash step, got {calls}"
-        assert calls[0].startswith("gcloud run services describe")
 
 
 def test_no_step_uses_the_script_field():
