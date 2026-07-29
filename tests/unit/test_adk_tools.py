@@ -924,6 +924,44 @@ def test_propose_rollback_strips_a_bare_token_when_the_url_is_unusable():
     assert worker_resp["approval_token"] == "SECRETTOKEN"
 
 
+@pytest.mark.parametrize(
+    "worker_resp",
+    [
+        # A bare JSON string that IS a working approval URL — the escape hatch:
+        # worker_client.call returns whatever response.json() decodes, without
+        # enforcing an object, and the pre-fix code forwarded it verbatim.
+        "https://c/approvals/9f2c1b40-6d3e-4a58-9c07-1b8e2f4a6d15?t=SECRETTOKEN",
+        ["https://c/approvals/x?t=SECRETTOKEN"],
+        None,
+        42,
+    ],
+)
+def test_propose_rollback_refuses_a_non_object_worker_response(worker_resp):
+    """A non-object response is the case where the gate cannot see its subject:
+    there is no ``approval_id`` to record, and the payload itself may BE a live
+    approval URL. Fail, don't abstain — return a sanitized error, never the raw
+    payload."""
+    from agent.adk_tools import propose_rollback_tool
+
+    notifier_calls = []
+
+    def _fake_call(worker, payload):
+        if worker == "notifier":
+            notifier_calls.append(payload)
+            return {"status": "sent"}
+        return worker_resp
+
+    with patch("agent.adk_tools.worker_client.call", side_effect=_fake_call):
+        out = propose_rollback_tool(target_revision="payment-demo-00002-bbb", reason="x")
+
+    assert isinstance(out, dict)
+    assert "SECRETTOKEN" not in json.dumps(out)
+    assert "approvals/" not in json.dumps(out)
+    assert notifier_calls == []
+    assert "No rollback was attempted or executed" in out["error"]
+    assert out["target_revision"] == "payment-demo-00002-bbb"
+
+
 @pytest.mark.parametrize("anon", [True, False], ids=["anon", "operator"])
 @pytest.mark.parametrize(
     "worker_resp",
@@ -944,6 +982,16 @@ def test_propose_rollback_strips_a_bare_token_when_the_url_is_unusable():
         # becomes part of a Firestore document id, so it is never interpolated.
         {"approval_id": "../../evil", "approval_token": "tok",
          "approval_url": "https://c/approvals/x?t=tok",
+         "expires_at": "2026-01-01T00:15:00+00:00"},
+        # Well-formed fields that describe DIFFERENT approvals: recording this
+        # would join status from one approval while the operator's click
+        # executes another.
+        {"approval_id": _APPROVAL_UUID, "approval_token": "tok",
+         "approval_url": "https://c/approvals/11111111-2222-3333-4444-555555555555?t=tok",
+         "expires_at": "2026-01-01T00:15:00+00:00"},
+        # A URL for the right approval but carrying no credential at all.
+        {"approval_id": _APPROVAL_UUID, "approval_token": "tok",
+         "approval_url": "https://c/approvals/" + _APPROVAL_UUID + "?t=",
          "expires_at": "2026-01-01T00:15:00+00:00"},
     ],
 )
@@ -986,12 +1034,10 @@ def test_propose_rollback_withholds_credential_when_unrecordable(worker_resp, an
     assert "tok" not in json.dumps(out)
     # ...nor pushed to the operator's inbox.
     assert notifier_calls == []
-    # The model is told plainly that nothing happened, so it cannot report a
-    # rollback as proposed. "rolled back" appears only inside "has been rolled
-    # back" (the negation), which the substring check below cannot distinguish —
-    # so assert on the explicit disclaimers instead.
-    assert "withheld" in out["error"]
-    assert "Nothing has been rolled back" in out["error"]
+    # The model is told plainly that no link went out AND that nothing ran, so
+    # it can report neither "here is your approval" nor "the rollback failed".
+    assert "no approval link was released" in out["error"]
+    assert "No rollback was attempted or executed" in out["error"]
     assert out["target_revision"] == "payment-demo-00002-bbb"
 
 
@@ -1211,6 +1257,12 @@ def test_chat_rollback_event_keys_are_distinct_per_approval():
     _, docs_a, _ = _capture_recorded_decision()
     other = dict(_rollback_worker_response())
     other["approval_id"] = "11111111-2222-3333-4444-555555555555"
+    # The URL must name the SAME approval — _approval_url_matches rejects a
+    # mismatched pair before the record is ever attempted.
+    other["approval_url"] = (
+        "https://driftscribe.example.com/approvals/"
+        "11111111-2222-3333-4444-555555555555?t=tok"
+    )
     _, docs_b, _ = _capture_recorded_decision(worker_resp=other)
 
     assert docs_a[0]["event_key"] != docs_b[0]["event_key"]
@@ -1252,7 +1304,8 @@ def test_chat_rollback_withholds_credential_when_the_store_raises(caplog):
     assert "approval_url" not in out
     assert "approval_token" not in out
     assert notifier_calls == []
-    assert "withheld" in out["error"]
+    assert "no approval link was released" in out["error"]
+    assert "No rollback was attempted or executed" in out["error"]
     assert any("chat_rollback_decision_record_failed" in r.message for r in caplog.records)
     # The store's exception MESSAGE is never logged: the doc it failed to write
     # carries the live ?t= token, and a store error can echo it back.

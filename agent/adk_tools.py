@@ -31,6 +31,7 @@ import re
 import secrets
 import time
 import unicodedata
+import urllib.parse
 import uuid
 from pathlib import Path
 from typing import Any, Callable, NamedTuple
@@ -131,6 +132,34 @@ def _parses_as_timestamp(value: str) -> bool:
         return dt.datetime.fromisoformat(value) is not None
     except (ValueError, TypeError):
         return False
+
+
+def _approval_url_matches(approval_url: str, approval_id: str) -> bool:
+    """True when ``approval_url`` is a live credential FOR ``approval_id``.
+
+    Validating each field's shape in isolation is not enough. If the two
+    disagree — ``approval_id`` naming approval A while ``approval_url`` carries
+    approval B's token — the recorded row joins its status from A
+    (``attach_approval_status`` reads ``approval_id``) while the operator's
+    click executes B. The desk would sit on a pending row for a rollback that
+    already shifted traffic: the ds-y5i audit failure again, reached through a
+    mismatched pair instead of a missing row.
+
+    Requires the URL path to END WITH ``/approvals/{approval_id}`` (endswith,
+    not equality, so a ``COORDINATOR_URL`` carrying a path prefix still passes)
+    and a non-empty ``t`` credential. The worker builds both fields from one
+    approval object today (``workers/rollback/main.py``), so this can only fire
+    on a broken producer — it exists because the invariant is meant to hold
+    WITHOUT trusting the producer.
+    """
+    try:
+        parsed = urllib.parse.urlsplit(approval_url)
+    except ValueError:
+        return False
+    if not parsed.path.endswith(f"/approvals/{approval_id}"):
+        return False
+    token = urllib.parse.parse_qs(parsed.query).get("t") or []
+    return bool(token and token[0])
 
 
 def _record_chat_rollback_decision(
@@ -291,11 +320,37 @@ def propose_rollback_tool(target_revision: str, reason: str) -> dict:
         "rollback",
         {"target_revision": target_revision, "reason": safe_reason},
     )
+    # ``worker_client.call`` returns whatever ``response.json()`` decodes — it
+    # does NOT enforce an object. A bare JSON string could itself BE an approval
+    # URL, and returning it verbatim would release an unrecorded credential
+    # through the one path that forwards the worker's own payload. There is no
+    # ``approval_id`` to read out of a non-object either, so this is the case
+    # where the gate below cannot see its subject: fail, don't abstain.
+    if not isinstance(resp, dict):
+        _log.warning(
+            "rollback_propose_malformed_response",
+            extra={
+                "target_revision": target_revision,
+                # The payload itself is never logged: if it IS a URL, it carries
+                # a live ?t= token.
+                "response_type": type(resp).__name__,
+            },
+        )
+        return {
+            "error": (
+                "The rollback service returned an unreadable response, so no "
+                "approval link was released. No rollback was attempted or "
+                "executed. Tell the operator the rollback service is not "
+                "responding correctly."
+            ),
+            "target_revision": target_revision,
+        }
+
     # Defensive reads: isinstance(v, str) and v — never str()-coerce (a careless
     # str(None) would interpolate the literal "None").
-    approval_id = resp.get("approval_id") if isinstance(resp, dict) else None
-    approval_url = resp.get("approval_url") if isinstance(resp, dict) else None
-    expires_at = resp.get("expires_at") if isinstance(resp, dict) else None
+    approval_id = resp.get("approval_id")
+    approval_url = resp.get("approval_url")
+    expires_at = resp.get("expires_at")
 
     # No usable approval_url in the worker response (its own error shape, or a
     # malformed one): nothing auditable to record, so hand the response back for
@@ -312,7 +367,7 @@ def propose_rollback_tool(target_revision: str, reason: str) -> dict:
             "rollback_propose_notify_failed",
             extra={"target_revision": target_revision},
         )
-        if isinstance(resp, dict) and "approval_token" in resp:
+        if "approval_token" in resp:
             return {k: v for k, v in resp.items() if k != "approval_token"}
         return resp
 
@@ -337,12 +392,16 @@ def propose_rollback_tool(target_revision: str, reason: str) -> dict:
     # missing/unparseable expiry as NOT expired
     # (frontend/src/lib/approval.ts::isExpired), so recording one would leave a
     # desk CTA that can never retire itself. ``approval_id`` must be UUID-shaped
-    # because it becomes part of a Firestore document id.
+    # because it becomes part of a Firestore document id. And the URL must be a
+    # credential FOR that id — checking each field's well-formedness in
+    # isolation still permits recording one approval while releasing another's
+    # link (Codex review of this change; see _approval_url_matches).
     recordable = (
         isinstance(approval_id, str)
         and _APPROVAL_ID_SHAPE.match(approval_id) is not None
         and isinstance(expires_at, str)
         and _parses_as_timestamp(expires_at)
+        and _approval_url_matches(approval_url, approval_id)
     )
     if not (
         recordable
@@ -358,16 +417,18 @@ def propose_rollback_tool(target_revision: str, reason: str) -> dict:
             extra={
                 "target_revision": target_revision,
                 # Never the url or the token — see the helper's except block.
-                "approval_id_shape_ok": bool(recordable),
+                # Names the conjunction it actually holds: a False here means
+                # "the response was not recordable", NOT "the id was malformed"
+                # (an unparseable expiry or a mismatched url lands here too).
+                "response_recordable": recordable,
             },
         )
         return {
             "error": (
-                "The rollback was prepared but could not be written to the "
-                "decision log, so its approval link has been withheld. Nothing "
-                "has been rolled back and no approval was sent. Tell the "
-                "operator that the proposal could not be recorded, and ask "
-                "them to try again."
+                "The rollback approval could not be safely recorded, so no "
+                "approval link was released. No rollback was attempted or "
+                "executed. Tell the operator that audit recording failed and "
+                "to retry once the decision log has recovered."
             ),
             "target_revision": target_revision,
         }
