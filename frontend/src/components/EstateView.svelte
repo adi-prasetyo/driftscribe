@@ -43,6 +43,14 @@
   // never re-derived, so the two views can never disagree about the figures. ----
   const cards = $derived(graph ? resourceCards(graph, $t) : []);
   const scope = $derived(scopeTotals(cards, graph?.totals?.resources ?? 0));
+  // ds-eh6, same rule as ApprovalDesk: an absent OR degraded graph means the
+  // estate was not read, not that it is empty. This view already SAYS the map
+  // is loading/unavailable a few lines down — it was doing so while handing the
+  // band arithmetic zeros to render as exact figures, which contradicted its own
+  // banner on the same screen.
+  const graphUsable = $derived(!!graph && graph.degraded !== true);
+  const bandManaged = $derived(graphUsable ? scope.managed : null);
+  const bandDrift = $derived(graphUsable ? scope.drift : null);
   const awaiting = $derived(awaitingCount({ decisions, pendingApprovals, locale: $locale }));
 
   // ---- row model ----
@@ -65,7 +73,7 @@
   data-tour="estate"
   aria-label={$t('desk.estate.ariaLabel')}
 >
-  <InstrumentBand managed={scope.managed} drift={scope.drift} {awaiting} {onNavigate} />
+  <InstrumentBand managed={bandManaged} drift={bandDrift} {awaiting} {onNavigate} />
 
   {#if graph === null}
     <p class="estate-view__status" data-testid="estate-loading">{$t('desk.estate.loading')}</p>

@@ -73,10 +73,17 @@
   // No graph means the estate has not been read — NOT that it is empty
   // (ds-eh6). `scopeTotals` over zero cards honestly returns zeros, and those
   // zeros are correct as arithmetic; they are only wrong as an ANSWER, because
-  // nothing was counted. Gate on `graph` rather than `settled` so a settled
+  // nothing was counted. Gate on the graph rather than `settled` so a settled
   // cycle whose graph fetch failed also reads as unknown instead of "0".
-  const bandManaged = $derived(graph ? scope.managed : null);
-  const bandDrift = $derived(graph ? scope.drift : null);
+  //
+  // A DEGRADED graph counts as no graph. The backend soft-fails /infra/graph to
+  // a well-formed 200 carrying `degraded: true` and ZERO totals, so a non-null
+  // check alone lets an outage render "0 managed, 0 drift" with full
+  // confidence — the same trap as pending-approvals' degraded 200, one endpoint
+  // over. Everything derived from the graph keys off this, not off `graph`.
+  const graphUsable = $derived(!!graph && graph.degraded !== true);
+  const bandManaged = $derived(graphUsable ? scope.managed : null);
+  const bandDrift = $derived(graphUsable ? scope.drift : null);
 
   // ---- desk state selection ----
   // `decayTick` has no meaning of its own — bumping it is purely "please
@@ -105,8 +112,13 @@
   // have not looked". Once settled the real count renders, INCLUDING a genuine
   // 0 — and including under `degraded`, where the number is the honest floor of
   // what we could see and the hero above it is already saying so.
+  // Also null under `degraded`: after a cycle in which the decisions or
+  // pending-approvals lane failed, an exact "0 awaiting" is a precise figure
+  // derived from a snapshot we just admitted is incomplete — and it would sit
+  // directly above a hero saying a waiting proposal may be missing. Two
+  // statements on one screen, one of them false.
   const awaiting = $derived(
-    settled ? awaitingCount({ decisions, pendingApprovals, locale: $locale }) : null,
+    settled && !degraded ? awaitingCount({ decisions, pendingApprovals, locale: $locale }) : null,
   );
 
   // ---- reasoning link (ds-wd2.15) ----
@@ -294,7 +306,7 @@
                rides along. This is `lastError`'s one consumer (ds-eh6); a
                pending/decisions failure never reaches resting, so `'graph'` is
                the only value that can be observed here. -->
-          {#if graph?.generated_at}
+          {#if graphUsable && graph?.generated_at}
             ・{$t('desk.resting.lastScan', { time: fmtWhen(graph.generated_at, $locale) })}{#if lastError === 'graph'}<span
                 class="approval-desk__stale"
                 data-testid="approval-desk-stale-scan">{$t('desk.resting.scanStale')}</span
@@ -302,9 +314,18 @@
           {:else}
             ・{$t('desk.resting.scanPending')}
           {/if}
-          ・{$t('desk.resting.resourceCount', { n: scope.totalResources })}
-          {#if scope.drift === 0}
-            ・{$t('desk.resting.noNewDrift')}
+          <!-- Both segments are GRAPH-derived, so both need a usable graph.
+               Without this gate an absent or degraded graph rendered
+               "・0 resources ・no new drift" — two confident claims about an
+               estate nothing had successfully read, sitting inside the calm
+               state. `scope.drift === 0` is especially deceptive there,
+               because zero-because-unread is indistinguishable from
+               zero-because-clean once it reaches the copy. -->
+          {#if graphUsable}
+            ・{$t('desk.resting.resourceCount', { n: scope.totalResources })}
+            {#if scope.drift === 0}
+              ・{$t('desk.resting.noNewDrift')}
+            {/if}
           {/if}
         </p>
       </div>

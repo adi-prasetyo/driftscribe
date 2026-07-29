@@ -893,23 +893,33 @@ describe('ApprovalDesk — view the reasoning (ds-wd2.15)', () => {
     };
   }
 
-  it('renders on the LISTING arm, which otherwise shows no evidence at all', () => {
-    // The bead's core case: listing provenance has no decision doc, so
-    // DriftDiffCard self-suppresses and the card is a title, a PR number and
-    // two buttons. The link is what makes the highest-stakes CTA on the front
-    // door inspectable.
+  it('renders on the rollback arm, whose decision IS the authoring run', () => {
     const { getByTestId } = render(ApprovalDesk, {
       props: {
         graph: GRAPH,
-        decisions: [
-          { decision_id: 'note-1', action: 'propose_adoption', pr_number: 7, trace_id: TRACE },
-        ],
-        pendingApprovals: [pendingIac()],
+        decisions: [rollbackDecision({ trace_id: TRACE })],
+        pendingApprovals: [],
         onNavigate: vi.fn(),
         onOpenTrace: vi.fn(),
       },
     });
     expect(getByTestId('approval-desk-why').textContent).toContain('view the reasoning');
+  });
+
+  it('is ABSENT on the iac listing arm even when a decision shares its PR', () => {
+    // An iac_apply trace_id belongs to the approve/apply POST, not to the run
+    // that authored the PR — see desk.ts's DeskPendingIac.traceId. A link there
+    // would send the operator to the trace of their own approval click.
+    const { queryByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: GRAPH,
+        decisions: [iacDecision({ pr_number: 7, trace_id: TRACE })],
+        pendingApprovals: [pendingIac({ pr_number: 7 })],
+        onNavigate: vi.fn(),
+        onOpenTrace: vi.fn(),
+      },
+    });
+    expect(queryByTestId('approval-desk-why')).toBeNull();
   });
 
   it('clicking it opens that trace', () => {
@@ -963,5 +973,96 @@ describe('ApprovalDesk — view the reasoning (ds-wd2.15)', () => {
       },
     });
     expect(queryByTestId('approval-desk-why')).toBeNull();
+  });
+});
+
+// Codex review of #258 — a soft-degraded graph is a well-formed 200 carrying
+// ZERO totals, so a non-null check alone let an outage render confident zeros.
+// Same trap as pending-approvals' degraded 200, one endpoint over.
+describe('ApprovalDesk — a degraded graph is not a read graph (ds-eh6)', () => {
+  const DEGRADED_GRAPH = {
+    ...GRAPH,
+    degraded: true,
+    degraded_reason: 'infra_reader_unavailable',
+    totals: { resources: 0, managed: 0, drift: 0 },
+    groups: [],
+  };
+
+  it('renders "—" rather than 0 for graph-derived figures', () => {
+    const { getByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: DEGRADED_GRAPH,
+        decisions: [],
+        pendingApprovals: [],
+        settled: true,
+        onNavigate: vi.fn(),
+      },
+    });
+    expect(getByTestId('instrument-band-managed').textContent).toContain('—');
+    expect(getByTestId('instrument-band-drift').textContent).toContain('—');
+  });
+
+  it('the resting footer drops the resource count and the "no new drift" claim', () => {
+    // zero-because-unread is indistinguishable from zero-because-clean once it
+    // reaches the copy, so neither segment may render without a usable graph.
+    const { getByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: DEGRADED_GRAPH,
+        decisions: [],
+        pendingApprovals: [],
+        settled: true,
+        onNavigate: vi.fn(),
+      },
+    });
+    const watch = getByTestId('approval-desk-watch').textContent ?? '';
+    expect(watch).not.toContain('resources');
+    expect(watch).not.toContain('no new drift');
+    expect(watch).toContain('scan time pending'); // never a fresh-looking scan time
+  });
+
+  it('a NULL graph drops them too', () => {
+    const { getByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: null,
+        decisions: [],
+        pendingApprovals: [],
+        settled: true,
+        onNavigate: vi.fn(),
+      },
+    });
+    const watch = getByTestId('approval-desk-watch').textContent ?? '';
+    expect(watch).not.toContain('resources');
+    expect(watch).not.toContain('no new drift');
+  });
+
+  it('a healthy graph still renders both', () => {
+    const { getByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: GRAPH,
+        decisions: [],
+        pendingApprovals: [],
+        settled: true,
+        onNavigate: vi.fn(),
+      },
+    });
+    const watch = getByTestId('approval-desk-watch').textContent ?? '';
+    expect(watch).toContain('resources');
+    expect(watch).toContain('no new drift');
+  });
+
+  it('awaiting reads "—" while degraded, not an exact 0', () => {
+    // An exact "0 awaiting" directly above a hero saying a waiting proposal may
+    // be missing is two statements on one screen, one of them false.
+    const { getByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: GRAPH,
+        decisions: [],
+        pendingApprovals: [],
+        settled: true,
+        degraded: true,
+        onNavigate: vi.fn(),
+      },
+    });
+    expect(getByTestId('instrument-band-awaiting').textContent).toContain('—');
   });
 });

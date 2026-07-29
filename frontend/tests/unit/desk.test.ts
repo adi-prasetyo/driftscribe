@@ -1444,6 +1444,8 @@ const TRACE = 'a'.repeat(32);
 
 describe('deskModel — pending traceId (ds-wd2.15)', () => {
   it('the rollback arm carries its decision trace', () => {
+    // Sound ONLY on this arm: a rollback decision is written by the proposing
+    // run itself, so its trace_id really is the reasoning behind the proposal.
     const model = deskModel({
       decisions: [rollbackDecision({ trace_id: TRACE })],
       pendingApprovals: [],
@@ -1454,47 +1456,7 @@ describe('deskModel — pending traceId (ds-wd2.15)', () => {
     expect(model.traceId).toBe(TRACE);
   });
 
-  it('the decisions-derived iac arm carries its decision trace', () => {
-    const model = deskModel({
-      decisions: [iacDecision({ trace_id: TRACE })],
-      pendingApprovals: [],
-      now: NOW,
-      origin: ORIGIN,
-    });
-    if (model.kind !== 'pending') throw new Error('expected pending');
-    expect(model.traceId).toBe(TRACE);
-  });
-
-  it('the LISTING arm joins a trace out of decisions on pr_number', () => {
-    // This is the arm the bead is really about: it renders no DriftDiffCard,
-    // so without this join the highest-stakes CTA carries no evidence at all.
-    const model = deskModel({
-      // The joined row is NOT itself awaiting the operator — it is a noted
-      // proposal for the same PR. The join is on pr_number, not actionability.
-      decisions: [{ decision_id: 'note-1', action: 'propose_adoption', pr_number: 7, trace_id: TRACE }],
-      pendingApprovals: [pendingIac({ pr_number: 7 })],
-      now: NOW,
-      origin: ORIGIN,
-    });
-    if (model.kind !== 'pending' || model.source !== 'iac') throw new Error('expected pending iac');
-    expect(model.provenance.kind).toBe('listing');
-    expect(model.traceId).toBe(TRACE);
-  });
-
-  it('the listing arm is null when no decision carries that PR — never fabricated', () => {
-    const model = deskModel({
-      decisions: [{ decision_id: 'other', action: 'propose_adoption', pr_number: 999, trace_id: TRACE }],
-      pendingApprovals: [pendingIac({ pr_number: 7 })],
-      now: NOW,
-      origin: ORIGIN,
-    });
-    if (model.kind !== 'pending') throw new Error('expected pending');
-    expect(model.traceId).toBeNull();
-  });
-
   it('a trace id that cannot round-trip a ?reasoning= link is refused', () => {
-    // openTrace would accept it, but the resulting shared URL would silently
-    // fail to restore — so the desk must not offer the link at all.
     for (const bad of ['', 'not-hex', 'A'.repeat(32), 'a'.repeat(31), 'a'.repeat(33)]) {
       const model = deskModel({
         decisions: [rollbackDecision({ trace_id: bad })],
@@ -1515,6 +1477,36 @@ describe('deskModel — pending traceId (ds-wd2.15)', () => {
       origin: ORIGIN,
     });
     if (model.kind !== 'pending') throw new Error('expected pending');
+    expect(model.traceId).toBeNull();
+  });
+
+  // The iac arms deliberately carry NO trace. An iac_apply decision's trace_id
+  // is stamped by _record_iac_decision inside the approve/apply POST
+  // (agent/main.py ~5352) — a different request from the crew run that authored
+  // the PR — so linking "view the reasoning behind this" to it would point the
+  // operator at the trace of their own approval click. These two tests exist to
+  // stop someone "fixing" the missing link by reaching for the nearest trace_id.
+  it('the LISTING arm carries no trace, even when a decision shares its PR', () => {
+    const model = deskModel({
+      decisions: [iacDecision({ pr_number: 7, trace_id: TRACE })],
+      pendingApprovals: [pendingIac({ pr_number: 7 })],
+      now: NOW,
+      origin: ORIGIN,
+    });
+    if (model.kind !== 'pending' || model.source !== 'iac') throw new Error('expected pending iac');
+    expect(model.provenance.kind).toBe('listing');
+    expect(model.traceId).toBeNull();
+  });
+
+  it('the decisions-derived iac arm carries no trace either', () => {
+    const model = deskModel({
+      decisions: [iacDecision({ trace_id: TRACE })],
+      pendingApprovals: [],
+      now: NOW,
+      origin: ORIGIN,
+    });
+    if (model.kind !== 'pending' || model.source !== 'iac') throw new Error('expected pending iac');
+    expect(model.provenance.kind).toBe('decision');
     expect(model.traceId).toBeNull();
   });
 });

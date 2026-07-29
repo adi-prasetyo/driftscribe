@@ -55,7 +55,17 @@ export interface DeskPendingRollback {
   decision: Decision;
   /** Same-origin relative href, already validated by `safeApprovalHref`. */
   href: string;
-  /** See `DeskPendingIac.traceId`. */
+  /**
+   * The reasoning trace that AUTHORED this proposal (ds-wd2.15), or null when
+   * the row predates trace capture. Always `?reasoning=`-round-trippable —
+   * gated on `isReplayableTraceId` so the desk can never offer a link that
+   * opens once but fails to restore when shared.
+   *
+   * Sound on this arm specifically because a rollback decision is written BY
+   * the proposing run (`_do_rollback` calls `record_decision` inside the agent
+   * turn), so its `trace_id` really is the reasoning behind the proposal. The
+   * iac arms do not have that property — see `DeskPendingIac.traceId`.
+   */
   traceId: string | null;
 }
 
@@ -83,23 +93,26 @@ export interface DeskPendingIac {
   href: string;
   provenance: DeskPendingIacProvenance;
   /**
-   * The reasoning trace behind this proposal (ds-wd2.15), or null when this
-   * card has none to point at. Always a `?reasoning=`-round-trippable id —
-   * gated on `isReplayableTraceId` so the desk can never render a link that
-   * opens once but fails to restore when shared.
+   * ALWAYS null on this arm today — see `DeskPendingRollback.traceId` for the
+   * arm that does carry one, and the note below for why this one cannot.
    *
-   * Null is a first-class answer and MUST render as no link rather than a
-   * disabled or fabricated one. The three arms source it differently:
-   *  - rollback / decision-provenance: the decision's own `trace_id`.
-   *  - listing provenance: `PendingApproval` carries no trace_id at all, so
-   *    it is joined out of `decisions` on `pr_number`. That join is why the
-   *    link exists: the listing arm has no decision doc, so `DriftDiffCard`
-   *    renders nothing and the card would otherwise ask for approval of an
-   *    infrastructure change with zero supporting evidence on screen. When
-   *    no decision row carries that PR yet, this stays null — the honest
-   *    answer, never a guess.
+   * ⚠️ An `iac_apply` decision's `trace_id` is NOT the authoring reasoning.
+   * `_record_iac_decision` stamps `current_trace_id_or_new()` (agent/main.py
+   * ~5352), and that function runs inside the **approve/apply POST** — a
+   * different HTTP request from the crew run that authored the PR. Linking
+   * "view the reasoning behind this" to it would point the operator at the
+   * trace of their own approval click. That is a new instance of exactly the
+   * over-claiming this module exists to prevent, so the iac arms render no
+   * link at all rather than a confident wrong one.
+   *
+   * The authoring association DOES exist — `append_turns` stores `iac_pr`
+   * beside `trace_id` on the crew turn (agent/main.py ~638) — but only on the
+   * conversation doc, which the desk has no handle on. Surfacing it needs the
+   * backend to carry a trace id on `PendingApproval` (or an equivalent
+   * lookup). Tracked separately; do NOT re-add a `pr_number` join over
+   * `decisions` to fake it.
    */
-  traceId: string | null;
+  traceId: null;
 }
 
 export type DeskPending = DeskPendingRollback | DeskPendingIac;
@@ -302,25 +315,6 @@ function replayableTraceId(decision: Decision | null | undefined): string | null
   return isReplayableTraceId(id) ? id : null;
 }
 
-/** The reasoning trace of the newest decision row carrying `pr` (ds-wd2.15).
- *  The listing DTO has no trace_id of its own, so the desk joins one out of
- *  `decisions` on PR number — the same join rule 2b and `resolvedIacPrNumbers`
- *  already use. Returns null when no row carries that PR yet, which is the
- *  common case for a PR opened seconds ago; the card then simply has no link. */
-function traceIdForPr(
-  decisions: ReadonlyArray<Decision | null | undefined>,
-  pr: number,
-): string | null {
-  let best: { traceId: string; ts: number } | null = null;
-  for (const decision of decisions) {
-    if (decision == null || decision.pr_number !== pr) continue;
-    const traceId = replayableTraceId(decision);
-    if (traceId === null) continue;
-    const ts = parseForOrdering(decision.created_at);
-    if (best === null || ts > best.ts) best = { traceId, ts };
-  }
-  return best === null ? null : best.traceId;
-}
 
 /**
  * Rule 2a: the first entry of the pending-approvals payload (the backend
@@ -364,7 +358,7 @@ function selectPendingIac(
       prNumber: approval.pr_number,
       href,
       provenance: { kind: 'listing', approval },
-      traceId: traceIdForPr(decisions, approval.pr_number),
+      traceId: null, // see DeskPendingIac.traceId — no authoring trace reachable here
     };
   }
   return null;
@@ -408,7 +402,9 @@ function selectPendingIacFromDecisions(
         prNumber: best.prNumber,
         href: best.href,
         provenance: { kind: 'decision', decision: best.decision },
-        traceId: replayableTraceId(best.decision),
+        // NOT best.decision.trace_id: an iac_apply row is written by the
+        // approve POST, not the run that authored the PR. See the field doc.
+        traceId: null,
       };
 }
 

@@ -48,12 +48,16 @@ meantime — see the failure signature in `ds-10m` and in that module's comment.
 
 Requires an operator credential that can administer IAM (project owner does).
 
+The backend is fully specified in `versions.tf`, so `init` takes no
+`-backend-config`. The KMS key is a variable because state encryption is
+early-evaluated and cannot read it from anywhere else.
+
 ```bash
 cd iac-operator
-tofu init -backend-config=... \
-  -var="tofu_state_kms_key=$GCP_TOFU_STATE_KMS_KEY"
-tofu plan  -var="tofu_state_kms_key=$GCP_TOFU_STATE_KMS_KEY"
-tofu apply -var="tofu_state_kms_key=$GCP_TOFU_STATE_KMS_KEY"
+export TF_VAR_tofu_state_kms_key="$GCP_TOFU_STATE_KMS_KEY"   # full key resource path
+tofu init
+tofu plan
+tofu apply
 ```
 
 State lives in the same bucket as `iac/` under a **different prefix**
