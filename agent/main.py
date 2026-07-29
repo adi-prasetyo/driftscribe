@@ -4763,6 +4763,24 @@ def _rollback_change_view(approval: object) -> dict[str, object]:
         ):
             return {"state": "unknown", "reason": "absent"}
 
+    # ``changed_names`` is the whole-env half of the same observation, and the
+    # two halves have to agree. The worker derives both from one pair of
+    # source/target maps so they always do — but this function exists to defend
+    # against a malformed or skewed doc, and "the writer is careful" is not a
+    # check. Silently tolerating a contradiction is the worst outcome available:
+    # a snapshot claiming PAYMENT_MODE changed while its own per-var result says
+    # it did not renders as a clean bill with the variable listed nowhere.
+    changed_names = snapshot.get("changed_names")
+    if not isinstance(changed_names, list) or not all(
+        isinstance(n, str) for n in changed_names
+    ):
+        return {"state": "unknown", "reason": "absent"}
+    changed_set = set(changed_names)
+    for name, entry in snapshot_vars.items():
+        if entry["changed"] != (name in changed_set):
+            log.warning("approval_view_snapshot_inconsistent", extra={"var": name[:64]})
+            return {"state": "unknown", "reason": "absent"}
+
     rows = []
     violates = False
     for name, rule in sorted(contract.expected_env.items()):
@@ -4786,12 +4804,7 @@ def _rollback_change_view(approval: object) -> dict[str, object]:
             }
         )
 
-    changed_names = snapshot.get("changed_names")
-    other_changed = sorted(
-        n
-        for n in (changed_names if isinstance(changed_names, list) else [])
-        if isinstance(n, str) and n not in contract.expected_env
-    )
+    other_changed = sorted(n for n in changed_set if n not in contract.expected_env)
     return {
         "state": "ok",
         "rows": rows,

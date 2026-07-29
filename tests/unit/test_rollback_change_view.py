@@ -101,6 +101,11 @@ def good_hash(contract_path: Path) -> str:
     return contract_hash(load_contract(contract_path))
 
 
+#: Sentinel so a test can pass ``changed_names=None`` and mean it, rather than
+#: getting the derived default.
+_DERIVE = object()
+
+
 def _snapshot(
     *,
     hash_: str,
@@ -108,17 +113,27 @@ def _snapshot(
     payment_matches: bool = True,
     feature_changed: bool = False,
     feature_matches: bool = True,
-    changed_names: Any = None,
+    changed_names: Any = _DERIVE,
     source_revision: str = "payment-demo-00016-w9k",
 ) -> dict[str, Any]:
+    if changed_names is _DERIVE:
+        # DERIVED, not hard-coded. The view now requires the whole-env half and
+        # the per-var half to agree, so a fixture that pins one while varying
+        # the other would be testing an inconsistency the worker cannot produce.
+        changed_names = [
+            n
+            for n, c in (
+                ("PAYMENT_MODE", payment_changed),
+                ("FEATURE_NEW_CHECKOUT", feature_changed),
+            )
+            if c
+        ]
     return {
         "source_revision": source_revision,
         "target_revision": _TARGET,
         "observed_at": "2026-07-29T12:23:56+00:00",
         "contract_hash": hash_,
-        "changed_names": (
-            ["PAYMENT_MODE"] if changed_names is None else changed_names
-        ),
+        "changed_names": changed_names,
         "contract_vars": {
             "PAYMENT_MODE": {
                 "changed": payment_changed,
@@ -495,22 +510,78 @@ def test_changed_vars_outside_the_contract_are_listed_separately(contract_path, 
     [None, "PAYMENT_MODE", 7, {"PAYMENT_MODE": True}],
     ids=["none", "str", "int", "dict"],
 )
-def test_a_non_list_changed_names_yields_no_other_changed(
+def test_a_non_list_changed_names_degrades_the_view(
     contract_path, good_hash, changed_names
 ):
-    view = _rollback_change_view(
+    """``changed_names`` is the whole-env half of the observation. Quietly
+    treating a malformed one as "nothing else changed" is the empty-table
+    failure by another route: the page would promise that no ungoverned var
+    moves, from a field it could not read."""
+    assert _rollback_change_view(
         _FakeApproval(_snapshot(hash_=good_hash, changed_names=changed_names))
-    )
-    assert view["state"] == "ok"
-    assert view["other_changed"] == []
+    ) == {"state": "unknown", "reason": "absent"}
 
 
-def test_non_string_entries_in_changed_names_are_dropped(contract_path, good_hash):
-    view = _rollback_change_view(
+def test_non_string_entries_in_changed_names_degrade_the_view(contract_path, good_hash):
+    """Dropping the junk and rendering the rest would report a change set that
+    is knowably incomplete as if it were the whole answer."""
+    assert _rollback_change_view(
         _FakeApproval(
-            _snapshot(hash_=good_hash, changed_names=["SENTRY_DSN", 7, None, {"x": 1}])
+            _snapshot(
+                hash_=good_hash, changed_names=["PAYMENT_MODE", "SENTRY_DSN", 7, None]
+            )
         )
+    ) == {"state": "unknown", "reason": "absent"}
+
+
+# --------------------------------------------------------------------------- #
+# The two halves of the snapshot must agree
+# --------------------------------------------------------------------------- #
+
+
+def test_a_var_changed_in_one_half_and_not_the_other_degrades_the_view(
+    contract_path, good_hash
+):
+    """The contradiction case, and the worst one available: ``changed_names``
+    said PAYMENT_MODE moved while its own per-var result said it did not, and
+    the page rendered a clean bill with the variable appearing in neither the
+    changed rows nor the ungoverned list.
+
+    The worker derives both halves from one pair of source/target maps, so they
+    always agree in practice — which is exactly why the check is cheap. This
+    function exists to defend against a malformed or skewed document, and "the
+    writer is careful" is not a check.
+    """
+    snap = _snapshot(hash_=good_hash, payment_changed=False)
+    snap["changed_names"] = ["PAYMENT_MODE"]
+    assert _rollback_change_view(_FakeApproval(snap)) == {
+        "state": "unknown",
+        "reason": "absent",
+    }
+
+
+def test_a_var_changed_per_var_but_absent_from_changed_names_degrades(
+    contract_path, good_hash
+):
+    """The other direction."""
+    snap = _snapshot(hash_=good_hash, payment_changed=True)
+    snap["changed_names"] = []
+    assert _rollback_change_view(_FakeApproval(snap)) == {
+        "state": "unknown",
+        "reason": "absent",
+    }
+
+
+def test_consistent_halves_still_render(contract_path, good_hash):
+    """The guard must not reject the shape the worker actually writes."""
+    snap = _snapshot(
+        hash_=good_hash,
+        payment_changed=True,
+        feature_changed=True,
+        changed_names=["PAYMENT_MODE", "FEATURE_NEW_CHECKOUT", "SENTRY_DSN"],
     )
+    view = _rollback_change_view(_FakeApproval(snap))
+    assert view["state"] == "ok"
     assert view["other_changed"] == ["SENTRY_DSN"]
 
 
@@ -574,13 +645,23 @@ def test_the_view_never_raises_on_an_arbitrarily_hostile_snapshot(contract_path,
     assert view["state"] in {"ok", "unknown"}
 
 
-def test_a_hostile_snapshot_that_survives_to_the_row_loop_still_never_raises(
-    contract_path, good_hash
-):
-    """The other half: junk in the fields the row loop reads AFTER the entry
-    checks pass."""
+def test_a_hostile_changed_names_degrades_rather_than_raising(contract_path, good_hash):
+    """Non-string members reach ``isinstance`` checks, never string ops."""
     hostile = _snapshot(hash_=good_hash)
     hostile["changed_names"] = [object(), None, 7]
+    assert _rollback_change_view(_FakeApproval(hostile)) == {
+        "state": "unknown",
+        "reason": "absent",
+    }
+
+
+def test_junk_in_the_purely_DISPLAY_fields_does_not_degrade_the_view(
+    contract_path, good_hash
+):
+    """``source_revision`` and ``observed_at`` are rendered as provenance, not
+    reasoned over. Junk there is ugly but does not make the change set wrong, so
+    it must not throw away an otherwise sound answer — and must not raise."""
+    hostile = _snapshot(hash_=good_hash)
     hostile["source_revision"] = object()
     hostile["observed_at"] = object()
     view = _rollback_change_view(_FakeApproval(hostile))

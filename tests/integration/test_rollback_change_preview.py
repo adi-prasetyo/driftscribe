@@ -175,14 +175,23 @@ def _snapshot(
     *,
     payment_matches: bool = True,
     feature_changed: bool = False,
-    changed_names: list[str] | None = None,
+    extra_changed: tuple[str, ...] = (),
 ) -> dict[str, Any]:
+    # ``changed_names`` is DERIVED from the per-var flags: the view requires the
+    # whole-env half and the per-var half to agree, so a fixture that pinned one
+    # while varying the other would encode an inconsistency the worker cannot
+    # produce. ``extra_changed`` adds ungoverned vars, which is the one thing
+    # only this half can carry.
+    changed_names = ["PAYMENT_MODE"]
+    if feature_changed:
+        changed_names.append("FEATURE_NEW_CHECKOUT")
+    changed_names.extend(extra_changed)
     return {
         "source_revision": "payment-demo-00016-w9k",
         "target_revision": "payment-demo-00015-sgt",
         "observed_at": "2026-07-29T12:23:56+00:00",
         "contract_hash": hash_,
-        "changed_names": changed_names if changed_names is not None else ["PAYMENT_MODE"],
+        "changed_names": changed_names,
         "contract_vars": {
             "PAYMENT_MODE": {"changed": True, "target_matches_contract": payment_matches},
             "FEATURE_NEW_CHECKOUT": {
@@ -287,9 +296,7 @@ def test_get_flags_a_rollback_that_reverts_an_operator_managed_var(
 
 def test_get_lists_changed_vars_the_contract_does_not_govern(client, store, good_hash):
     approval = store.create_pending(
-        env_snapshot=_snapshot(
-            good_hash, changed_names=["PAYMENT_MODE", "SENTRY_DSN", "LOG_LEVEL"]
-        )
+        env_snapshot=_snapshot(good_hash, extra_changed=("SENTRY_DSN", "LOG_LEVEL"))
     )
     body = client.get(f"/approvals/{approval.approval_id}?t=tok").text
     assert 'data-testid="change-other"' in body
