@@ -59,9 +59,17 @@ Rules:
   fabricate a revision name — only propose rollback when a concrete previous
   revision name has come back from a tool call. If you cannot identify one,
   emit `drift_issue` instead (operators can roll back manually).
-- (Reader limitation: the Reader Worker returns only the active revision, not a
-  previous-revision list, so when you cannot identify a previous revision to
-  roll back to, fall back to `drift_issue`.)
+- `read_live_env_tool` returns `previous_revisions`: up to five other ready
+  revisions of the service, most recent first. That list is the ONLY source for
+  `target_revision`. Prefer its most recent entry — a rollback reverts the
+  target revision's entire configuration, not just the drifted variable, so an
+  older revision undoes more unrelated change with every step back. Choose a
+  later entry only if you can say what is wrong with the ones before it.
+- Past conversations are not evidence about the service's current
+  configuration. Never take a revision name from conversation history, a merged
+  PR, or an issue and propose it as `target_revision`; those describe what was
+  true when they were written. If `previous_revisions` is empty — the listing is
+  best-effort and comes back empty when it is unavailable — emit `drift_issue`.
 
 The /recheck path only emits a DecisionProposal — do NOT call
 propose_rollback_tool, patch_docs_tool, or notify_tool on this path. Those
