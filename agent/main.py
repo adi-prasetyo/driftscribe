@@ -4732,12 +4732,43 @@ def _rollback_change_view(approval: object) -> dict[str, object]:
     if snapshot.get("contract_hash") != contract_hash(contract):
         return {"state": "unknown", "reason": "contract_changed"}
 
+    # The snapshot must describe the revision THIS approval will roll onto.
+    # Matching key sets prove the snapshot answered the right QUESTIONS; they
+    # say nothing about whether it answered them about the right SUBJECT, and
+    # the acknowledgment below is derived entirely from these booleans. A
+    # snapshot recorded against some other revision would have the gate judging
+    # a target nobody is about to deploy. (Today the worker writes both fields
+    # in one call so they always agree — which is exactly why this is cheap,
+    # and exactly the kind of assumption that stops holding quietly.)
+    if snapshot.get("target_revision") != getattr(approval, "target_revision", None):
+        log.warning(
+            "approval_view_target_mismatch",
+            extra={"snapshot_target": str(snapshot.get("target_revision"))[:64]},
+        )
+        return {"state": "unknown", "reason": "absent"}
+
+    # Matching NAMES is not a complete answer per var. An entry missing one of
+    # the two booleans would silently read as False below — "unchanged" and, for
+    # an allow_manual var, "fine" — so a partial scan would report a clean bill
+    # from evidence it never had. Demand both results, as real booleans.
+    for entry in snapshot_vars.values():
+        if not isinstance(entry, dict):
+            # Also the totality guard: a truthy non-mapping (``["junk"]``)
+            # would raise on ``.get`` below, and this handler is contractually
+            # always-200.
+            return {"state": "unknown", "reason": "absent"}
+        if not all(
+            isinstance(entry.get(k), bool)
+            for k in ("changed", "target_matches_contract")
+        ):
+            return {"state": "unknown", "reason": "absent"}
+
     rows = []
     violates = False
     for name, rule in sorted(contract.expected_env.items()):
-        entry = snapshot_vars.get(name) or {}
-        # ``is True`` — a truthy string or 1 from a hand-edited/older doc must
-        # not read as a boolean the worker computed.
+        entry = snapshot_vars[name]
+        # ``is True`` — kept even though the loop above has established both are
+        # real booleans, so neither guard silently depends on the other.
         changed = entry.get("changed") is True
         matches = entry.get("target_matches_contract") is True
         if not matches and not rule.allow_manual_change:

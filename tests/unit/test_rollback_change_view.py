@@ -61,13 +61,26 @@ expected_env:
 """
 
 
+#: The revision every snapshot in this file claims to describe. The view binds
+#: the snapshot to the approval's own target, so the two must agree unless a
+#: test is deliberately breaking that.
+_TARGET = "payment-demo-00015-sgt"
+
+
 class _FakeApproval:
-    """Only the attribute the view reads. Deliberately not the real
+    """Only the attributes the view reads. Deliberately not the real
     :class:`~driftscribe_lib.approvals.Approval`: the view uses ``getattr``
     with a default, so it must cope with a doc that has no such field at all,
     which is every approval minted before ds-uwc."""
 
-    def __init__(self, env_snapshot: Any = None, *, omit: bool = False) -> None:
+    def __init__(
+        self,
+        env_snapshot: Any = None,
+        *,
+        omit: bool = False,
+        target_revision: str = _TARGET,
+    ) -> None:
+        self.target_revision = target_revision
         if not omit:
             self.env_snapshot = env_snapshot
 
@@ -100,7 +113,7 @@ def _snapshot(
 ) -> dict[str, Any]:
     return {
         "source_revision": source_revision,
-        "target_revision": "payment-demo-00015-sgt",
+        "target_revision": _TARGET,
         "observed_at": "2026-07-29T12:23:56+00:00",
         "contract_hash": hash_,
         "changed_names": (
@@ -354,42 +367,107 @@ def test_reverts_operator_change_flags_only_a_CHANGED_operator_managed_var(
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.parametrize("truthy", ["yes", 1, "true", [1], {"a": 1}], ids=str)
-def test_a_truthy_non_boolean_changed_does_not_read_as_changed(
-    contract_path, good_hash, truthy
+@pytest.mark.parametrize(
+    "field", ["changed", "target_matches_contract"], ids=["changed", "matches"]
+)
+@pytest.mark.parametrize("junk", ["yes", 1, "true", [1], {"a": 1}, None], ids=str)
+def test_a_non_boolean_result_degrades_the_view_rather_than_reading_as_False(
+    contract_path, good_hash, field, junk
 ):
-    """``is True``, not truthiness. A hand-edited or older doc must not be able
-    to assert a boolean the worker never computed."""
+    """Real booleans, not truthiness and not absence.
+
+    Coercing to ``is True`` would silently turn a junk value into ``False``,
+    which reads as "unchanged" and — for an allow_manual var — "fine". That is a
+    clean bill produced from evidence the view never had. The honest answer is
+    that this snapshot cannot be interpreted.
+    """
     snap = _snapshot(hash_=good_hash)
-    snap["contract_vars"]["PAYMENT_MODE"]["changed"] = truthy
-    view = _rollback_change_view(_FakeApproval(snap))
-    by_name = {r["name"]: r for r in view["rows"]}
-    assert by_name["PAYMENT_MODE"]["changed"] is False
+    snap["contract_vars"]["PAYMENT_MODE"][field] = junk
+    assert _rollback_change_view(_FakeApproval(snap)) == {
+        "state": "unknown",
+        "reason": "absent",
+    }
 
 
-@pytest.mark.parametrize("truthy", ["yes", 1, "true"], ids=str)
-def test_a_truthy_non_boolean_match_does_not_satisfy_the_contract(
-    contract_path, good_hash, truthy
+@pytest.mark.parametrize(
+    "field", ["changed", "target_matches_contract"], ids=["changed", "matches"]
+)
+def test_an_entry_missing_one_of_the_two_results_is_not_a_clean_bill(
+    contract_path, good_hash, field
 ):
-    """This one fails CLOSED and that is the right direction: a value that is
-    not literally ``True`` does not prove the target satisfies the contract, so
-    it counts as a violation and asks for the acknowledgment."""
+    """The partial-scan case, per VAR rather than per name.
+
+    Matching key sets prove the snapshot answered the right questions; an entry
+    that carries only one of the two booleans has not answered this one. Before
+    the per-entry check, the missing result read as ``False`` and the page
+    reported "unchanged, satisfies the contract" for a var nothing was known
+    about.
+    """
     snap = _snapshot(hash_=good_hash)
-    snap["contract_vars"]["PAYMENT_MODE"]["target_matches_contract"] = truthy
-    view = _rollback_change_view(_FakeApproval(snap))
-    assert view["violates"] is True
+    del snap["contract_vars"]["FEATURE_NEW_CHECKOUT"][field]
+    assert _rollback_change_view(_FakeApproval(snap)) == {
+        "state": "unknown",
+        "reason": "absent",
+    }
 
 
-def test_an_entry_that_is_not_a_mapping_at_all_degrades_to_violates(
+@pytest.mark.parametrize(
+    "entry", [["junk"], "junk", 7, {"a"}], ids=["list", "str", "int", "set"]
+)
+def test_a_TRUTHY_non_mapping_entry_degrades_instead_of_raising(
+    contract_path, good_hash, entry
+):
+    """The totality guard, with a truthy value on purpose.
+
+    A falsy non-mapping was already handled by ``... or {}`` — which is why
+    testing with ``None`` proved nothing. A truthy one reaches ``.get`` and
+    raises ``AttributeError``, breaking the always-200 promise the approval GET
+    makes to deny a presence oracle.
+    """
+    snap = _snapshot(hash_=good_hash)
+    snap["contract_vars"]["PAYMENT_MODE"] = entry
+    assert _rollback_change_view(_FakeApproval(snap)) == {
+        "state": "unknown",
+        "reason": "absent",
+    }
+
+
+# --------------------------------------------------------------------------- #
+# The snapshot must describe THIS approval's target
+# --------------------------------------------------------------------------- #
+
+
+def test_a_snapshot_describing_a_DIFFERENT_revision_is_not_used(
     contract_path, good_hash
 ):
-    """``snapshot_vars.get(name) or {}`` — a junk entry yields no positive
-    proof, so the disallow-manual var reads as unproven and gates."""
-    snap = _snapshot(hash_=good_hash)
-    snap["contract_vars"]["PAYMENT_MODE"] = None
-    view = _rollback_change_view(_FakeApproval(snap))
-    assert view["state"] == "ok"
-    assert view["violates"] is True
+    """Right questions, wrong subject.
+
+    Every other check here establishes that the snapshot answered the right
+    QUESTIONS — the contract's vars, against the contract's current hash. None
+    of them establish that it answered them about the revision this approval
+    will actually roll onto, and the acknowledgment gate is derived entirely
+    from these booleans. A snapshot bound to another revision would have the
+    gate judging a target nobody is about to deploy.
+    """
+    view = _rollback_change_view(
+        _FakeApproval(
+            _snapshot(hash_=good_hash, payment_matches=False),
+            target_revision="payment-demo-00009-zzz",
+        )
+    )
+    assert view == {"state": "unknown", "reason": "absent"}
+
+
+def test_an_approval_with_no_target_revision_attribute_is_not_used(
+    contract_path, good_hash
+):
+    """``getattr`` default — an approval shape without the field cannot be
+    proven to match, and unproven is not permission."""
+
+    class _NoTarget:
+        env_snapshot = _snapshot(hash_=good_hash)
+
+    assert _rollback_change_view(_NoTarget()) == {"state": "unknown", "reason": "absent"}
 
 
 # --------------------------------------------------------------------------- #
@@ -486,9 +564,25 @@ def test_the_view_never_raises_on_an_arbitrarily_hostile_snapshot(contract_path,
     hostile = _snapshot(hash_=good_hash)
     hostile["contract_vars"] = {
         "PAYMENT_MODE": {"changed": object(), "target_matches_contract": object()},
-        "FEATURE_NEW_CHECKOUT": [],
+        # TRUTHY non-mapping — a falsy one is absorbed by ``or {}`` and proves
+        # nothing about totality.
+        "FEATURE_NEW_CHECKOUT": ["junk"],
     }
     hostile["changed_names"] = [object()]
     hostile["source_revision"] = object()
     view = _rollback_change_view(_FakeApproval(hostile))
     assert view["state"] in {"ok", "unknown"}
+
+
+def test_a_hostile_snapshot_that_survives_to_the_row_loop_still_never_raises(
+    contract_path, good_hash
+):
+    """The other half: junk in the fields the row loop reads AFTER the entry
+    checks pass."""
+    hostile = _snapshot(hash_=good_hash)
+    hostile["changed_names"] = [object(), None, 7]
+    hostile["source_revision"] = object()
+    hostile["observed_at"] = object()
+    view = _rollback_change_view(_FakeApproval(hostile))
+    assert view["state"] == "ok"
+    assert view["other_changed"] == []

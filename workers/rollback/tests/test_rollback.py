@@ -343,11 +343,18 @@ def test_propose_records_the_change_snapshot_on_the_approval(
     the service at view time."""
     import workers.rollback.main as rm
 
-    monkeypatch.setattr(
-        rm,
-        "_env_change_snapshot",
-        lambda **kw: {"changed_names": ["PAYMENT_MODE"], "kw": sorted(kw)},
-    )
+    seen: dict[str, object] = {}
+
+    def fake_snapshot(**kw):
+        seen.update(kw)
+        # Shaped like the real return so the doc-level consistency below is a
+        # real assertion rather than a property of the fake.
+        return {
+            "changed_names": ["PAYMENT_MODE"],
+            "target_revision": kw["target_revision"],
+        }
+
+    monkeypatch.setattr(rm, "_env_change_snapshot", fake_snapshot)
     r = client.post(
         "/propose",
         json={
@@ -360,15 +367,23 @@ def test_propose_records_the_change_snapshot_on_the_approval(
     assert r.status_code == 200, r.text
     doc = store.docs[r.json()["approval_id"]]
     assert doc["env_snapshot"]["changed_names"] == ["PAYMENT_MODE"]
-    # The comparison is made against the ACTIVE revision, not the caller's
-    # idea of it — the worker knows which revision is serving, the caller does
-    # not, and a caller-supplied source could misdescribe the change.
-    assert doc["env_snapshot"]["kw"] == [
-        "contract_env",
-        "contract_hash",
-        "source_revision",
-        "target_revision",
-    ]
+    # The VALUES, not just the keyword names. The comparison must be made
+    # against the revision the worker itself observed to be serving — the
+    # caller does not know it, cannot be trusted to supply it, and a
+    # caller-supplied source would let a proposal misdescribe its own change.
+    # The ``client`` fixture pins the active revision to ...00003-ccc.
+    assert seen == {
+        "source_revision": "payment-demo-00003-ccc",
+        "target_revision": "payment-demo-00002-bbb",
+        "contract_env": {"PAYMENT_MODE": "mock"},
+        "contract_hash": "abc123",
+    }
+
+
+    # The coordinator's view REFUSES a snapshot whose target_revision does not
+    # match the approval's, so /propose writing the two inconsistently would
+    # silently degrade the preview to "unknown" on every single rollback.
+    assert doc["env_snapshot"]["target_revision"] == doc["target_revision"]
 
 
 def test_propose_still_works_for_a_coordinator_that_sends_no_contract(
