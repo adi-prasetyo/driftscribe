@@ -31,6 +31,7 @@ import re
 import secrets
 import time
 import unicodedata
+import uuid
 from pathlib import Path
 from typing import Any, Callable, NamedTuple
 
@@ -95,6 +96,153 @@ def read_project_inventory_tool() -> dict:
     return worker_client.call("infra_reader", {})
 
 
+# Canonical UUID shape for a rollback ``approval_id``. MIRRORS
+# ``workers/rollback/main.py``'s ``_UUID_SHAPE`` and exists for the same stated
+# reason: the id is interpolated into a Firestore document id
+# (``chat-rollback-{approval_id}``, see
+# :func:`_record_chat_rollback_decision`), so a malformed value from a broken
+# worker must not be able to construct an unexpected path. Deliberately shape-
+# only (not ``uuid.UUID()``): the worker mints ``str(uuid.uuid4())`` today, and
+# over-tightening to a specific UUID *version* would reject legitimate variants
+# if that ever changes, while the path-safety property we actually need (no
+# slashes, dots, or percent-encoding) is what the shape check delivers.
+_APPROVAL_ID_SHAPE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
+
+def _parses_as_timestamp(value: str) -> bool:
+    """True when ``value`` is an ISO-8601 instant we are willing to persist as a
+    rollback approval's ``expires_at``.
+
+    Guards the ONE property the desk depends on: an expiry it can actually
+    compare against the clock. ``frontend/src/lib/approval.ts::isExpired``
+    fail-SAFES an absent/unparseable expiry to "not expired", so persisting one
+    would produce a desk CTA that never retires itself.
+
+    ``fromisoformat`` is a proxy for the browser's ``Date.parse`` rather than an
+    exact match — the two disagree at the edges of the format. That is fine
+    here: this rejects a BROKEN worker, and the worker emits
+    ``datetime.isoformat()`` on an aware datetime, which both parsers accept.
+    """
+    import datetime as dt
+
+    try:
+        return dt.datetime.fromisoformat(value) is not None
+    except (ValueError, TypeError):
+        return False
+
+
+def _record_chat_rollback_decision(
+    *,
+    target_revision: str,
+    approval_id: str,
+    approval_url: str,
+    expires_at: str,
+) -> bool:
+    """Persist the decision row for a CHAT-initiated rollback. True iff written.
+
+    ds-y5i: the autonomous path (``agent/main.py::_do_rollback``) writes a
+    decision doc for every rollback it proposes; this tool did not. So a
+    chat-initiated rollback — a real Cloud Run traffic shift, approved by a
+    real operator — left NO trace on the approval desk, in the ledger, or in
+    the decision rail. Newly load-bearing after the composite redesign made the
+    desk the front door and crew-handoff began steering operators INTO chat:
+    the most natural operator path was also the only unaudited one.
+
+    The doc shape deliberately MIRRORS ``_do_rollback``'s so the desk's
+    existing rollback lanes pick it up with NO frontend change:
+    ``frontend/src/lib/desk.ts`` identifies rollback rows by the PRESENCE of
+    ``approval.approval_url`` (never by ``action``), and ``/decisions``'
+    serve-time ``attach_approval_status`` joins the live status / phase /
+    resolved_at off ``approval.approval_id``.
+
+    Two groups of fields ``_do_rollback`` carries are deliberately OMITTED:
+
+    * ``rationale`` / ``rendered_body`` — this tool already refuses to forward
+      the model-authored ``reason`` to the worker (see
+      :func:`propose_rollback_tool`), because ``read_live_env_tool`` returns
+      live env UNREDACTED and there is no ``EnvDiff`` context here for the
+      value-scoped scrub ``scrub_rationale_text`` applies on the autonomous
+      path. The decision doc is served RAW by ``/decisions`` and ``/trace``, so
+      persisting that prose would reopen exactly the leak ``safe_reason``
+      closes. Omitting them is also the honest rendering: the SPA's trace
+      replay sets ``finalReply = rationale ?? rendered_body``, so a synthetic
+      body would REPLACE the crew's real chat reply in the replay hero.
+      (Replay is not byte-identical to before: a decision now EXISTS for the
+      trace, so ``DecisionSummary`` renders its Action + When rows. That is an
+      addition of true information, not a substitution of false information.)
+    * ``diffs`` — no ``DecisionProposal`` exists on this path. ``DriftDiffCard``
+      self-suppresses on an empty diff list, so absence renders nothing rather
+      than an empty table.
+
+    No ``record_event`` claim, deliberately. ``_do_rollback`` claims BEFORE
+    calling ``/propose`` precisely so a concurrent Eventarc retry cannot
+    double-mint approval docs; here the approval is ALREADY minted by the time
+    we record and there is no retry driver behind a chat turn, so there is
+    nothing left to serialize. Nothing ever looks a ``chat-rollback-*`` key up
+    (``find_decision_for_event`` is only ever called with ``_event_key`` /
+    ``_iac_event_key`` keys), so the in-memory store's "set the event pointer
+    only if previously claimed" divergence from Firestore's unconditional
+    upsert is unobservable for this key class.
+    """
+    from agent.main import get_state
+    from driftscribe_lib.logging import current_trace_id_or_new
+
+    event_key = f"chat-rollback-{approval_id}"
+    decision_id = str(uuid.uuid4())
+    record = {
+        "decision_id": decision_id,
+        "event_key": event_key,
+        "trace_id": current_trace_id_or_new(),
+        "action": "rollback",
+        # Hardcoded "adk" for the same reason _do_rollback hardcodes it: the
+        # classifier has no rollback branch, so every rollback is ADK-authored.
+        "decision_path": "adk",
+        "target_revision": target_revision,
+        "requires_human_review": True,
+        # Mirrors _do_rollback: ``dry_run`` is the coordinator setting, but it
+        # does NOT suppress the rollback worker call, so a real approval doc
+        # was minted either way — which is exactly what dry_run_effective=False
+        # says. The Cloud Run mutation stays gated on the operator's click.
+        "dry_run": get_settings().dry_run,
+        "dry_run_effective": False,
+        "approval": {
+            "approval_id": approval_id,
+            "approval_url": approval_url,
+            "expires_at": expires_at,
+        },
+        "autonomy_mode": get_current_autonomy_mode(),
+        "trigger": "chat",
+    }
+    try:
+        get_state().record_decision(decision_id, event_key, record)
+    except Exception as e:  # noqa: BLE001 — the caller turns False into a withhold
+        # Log the exception TYPE only, never ``str(e)``. ``record`` carries
+        # ``approval_url`` with its live ``?t=`` token, and a store error can
+        # echo back the document it failed to write — so the message is a
+        # credential-leak surface on the one code path whose entire purpose is
+        # auditing that credential.
+        _log.warning(
+            "chat_rollback_decision_record_failed",
+            extra={
+                "target_revision": target_revision,
+                "approval_id": approval_id,
+                "error_type": type(e).__name__,
+            },
+        )
+        return False
+    _log.info(
+        "chat_rollback_decision_recorded",
+        extra={
+            "target_revision": target_revision,
+            "approval_id": approval_id,
+            "decision_id": decision_id,
+        },
+    )
+    return True
+
+
 def propose_rollback_tool(target_revision: str, reason: str) -> dict:
     """Ask the Rollback Agent to create a HITL approval.
 
@@ -143,43 +291,99 @@ def propose_rollback_tool(target_revision: str, reason: str) -> dict:
         "rollback",
         {"target_revision": target_revision, "reason": safe_reason},
     )
-    # Best-effort notification — only if the worker returned usable fields.
-    # Body is built ONLY from target_revision (caller arg) + approval_url +
-    # expires_at (worker-returned). The model-authored ``reason`` NEVER appears
-    # here (same security stance as safe_reason above — the model sees raw env).
     # Defensive reads: isinstance(v, str) and v — never str()-coerce (a careless
     # str(None) would interpolate the literal "None").
-    # Contrast with agent/main.py's autonomous rollback: there notify failure
-    # 502s because the webhook is the only surface; here the chat reply already
-    # carries approval_url, so failure just means the operator doesn't get the
-    # extra push notification.
+    approval_id = resp.get("approval_id") if isinstance(resp, dict) else None
     approval_url = resp.get("approval_url") if isinstance(resp, dict) else None
     expires_at = resp.get("expires_at") if isinstance(resp, dict) else None
-    # Gates the best-effort operator notify below: only attempt the push when
-    # both the approval_url and a well-formed expires_at are present (a malformed
-    # expires_at would otherwise interpolate into a misleading notification body).
-    notify_eligible = bool(
-        isinstance(approval_url, str) and approval_url
-        and isinstance(expires_at, str) and expires_at
-    )
-    if notify_eligible:
-        s = get_settings()
-        notify_body = (
-            f"Rollback approval pending: roll back {s.target_service} to "
-            f"{target_revision}. Approve or deny (expires {expires_at}): "
-            f"{approval_url}"
-        )
-        _notify_approval_pending(
-            notify_body,
-            severity="high",
-            event="rollback_propose_notify_failed",
-            target_revision=target_revision,
-        )
-    else:
+
+    # No usable credential in the worker response (its own error shape, or a
+    # malformed one): there is nothing to withhold and nothing auditable to
+    # record. Hand the worker's response straight back so the model can relay
+    # the actual error — unchanged from the pre-ds-y5i behavior.
+    if not (isinstance(approval_url, str) and approval_url):
         _log.warning(
             "rollback_propose_notify_failed",
             extra={"target_revision": target_revision},
         )
+        return resp
+
+    # ds-y5i — ONE gate, ONE invariant: this tool releases a rollback approval
+    # credential ONLY once it has recorded an auditable, self-expiring decision
+    # row for it. Everything below (the operator notification AND the return
+    # value the model relays) is downstream of that record succeeding.
+    #
+    # Why fail-CLOSED here, when a post-action audit write would normally be
+    # best-effort: at this point Cloud Run has NOT been mutated and the token
+    # has not left this function. Handing the URL out anyway after a failed
+    # record would let the operator approve a real traffic shift with no audit
+    # row — which is precisely the ds-y5i incident, recurring under a store
+    # failure instead of a missing code path. Withholding costs an unusable
+    # approval doc that nobody holds the token for and that expires on its own
+    # 15-min TTL; the alternative costs the product's core claim. (Codex review
+    # of this change made this correction: the first draft called the write
+    # "post-action, therefore best-effort", but the action it audits is still
+    # downstream of the credential this function is about to release.)
+    #
+    # ``expires_at`` must parse, not merely be present: the SPA treats a
+    # missing/unparseable expiry as NOT expired
+    # (frontend/src/lib/approval.ts::isExpired), so recording one would leave a
+    # desk CTA that can never retire itself. ``approval_id`` must be UUID-shaped
+    # because it becomes part of a Firestore document id.
+    recordable = (
+        isinstance(approval_id, str)
+        and _APPROVAL_ID_SHAPE.match(approval_id) is not None
+        and isinstance(expires_at, str)
+        and _parses_as_timestamp(expires_at)
+    )
+    if not (
+        recordable
+        and _record_chat_rollback_decision(
+            target_revision=target_revision,
+            approval_id=approval_id,
+            approval_url=approval_url,
+            expires_at=expires_at,
+        )
+    ):
+        _log.warning(
+            "chat_rollback_proposal_withheld",
+            extra={
+                "target_revision": target_revision,
+                # Never the url or the token — see the helper's except block.
+                "approval_id_shape_ok": bool(recordable),
+            },
+        )
+        return {
+            "error": (
+                "The rollback was prepared but could not be written to the "
+                "decision log, so its approval link has been withheld. Nothing "
+                "has been rolled back and no approval was sent. Tell the "
+                "operator that the proposal could not be recorded, and ask "
+                "them to try again."
+            ),
+            "target_revision": target_revision,
+        }
+
+    # Best-effort notification. Body is built ONLY from target_revision (caller
+    # arg) + approval_url + expires_at (worker-returned). The model-authored
+    # ``reason`` NEVER appears here (same security stance as safe_reason above —
+    # the model sees raw env).
+    # Contrast with agent/main.py's autonomous rollback: there notify failure
+    # 502s because the webhook is the only surface; here the chat reply already
+    # carries approval_url, so failure just means the operator doesn't get the
+    # extra push notification.
+    s = get_settings()
+    notify_body = (
+        f"Rollback approval pending: roll back {s.target_service} to "
+        f"{target_revision}. Approve or deny (expires {expires_at}): "
+        f"{approval_url}"
+    )
+    _notify_approval_pending(
+        notify_body,
+        severity="high",
+        event="rollback_propose_notify_failed",
+        target_revision=target_revision,
+    )
     # Operator decision 2026-07-09 (docs/plans/2026-07-09-operator-seat-demo-
     # window.md): during the public demo window the visitor holds the operator
     # seat, so anonymous callers receive the SAME response the operator does,

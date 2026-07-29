@@ -1510,3 +1510,84 @@ describe('deskModel — pending traceId (ds-wd2.15)', () => {
     expect(model.traceId).toBeNull();
   });
 });
+
+// ds-y5i — the CHAT-initiated rollback lane.
+//
+// `propose_rollback_tool` (agent/adk_tools.py) now records a decision doc for a
+// rollback proposed through chat; before that, only the autonomous path wrote
+// one, so a chat rollback that really shifted Cloud Run traffic produced no
+// pending hero, no seal, and no ledger row.
+//
+// These tests exist to pin the CONTRACT rather than to re-test desk.ts: the fix
+// deliberately changed only the backend, on the claim that the chat row's shape
+// is already one the desk handles. The row is thinner than the autonomous one —
+// no `diffs`, no `rationale`, no `rendered_body` (the model's prose is dropped
+// for the same reason it never reaches the approval page) — so if a future desk
+// change starts depending on any of those, it must fail HERE and not on prod.
+describe('deskModel — a chat-initiated rollback row (ds-y5i)', () => {
+  /** The exact doc agent/adk_tools.py::_record_chat_rollback_decision writes. */
+  function chatRollbackDecision(approval: Decision['approval']): Decision {
+    return {
+      decision_id: 'e0a4b1c2-3d4e-5f60-7a8b-9c0d1e2f3a4b',
+      event_key: 'chat-rollback-9f2c1b40-6d3e-4a58-9c07-1b8e2f4a6d15',
+      trace_id: 'a'.repeat(32),
+      action: 'rollback',
+      decision_path: 'adk',
+      target_revision: 'payment-demo-00010-abc',
+      requires_human_review: true,
+      dry_run: false,
+      dry_run_effective: false,
+      autonomy_mode: 'propose',
+      trigger: 'chat',
+      created_at: '2026-07-28T11:00:00Z',
+      approval,
+    } as Decision;
+  }
+
+  it('surfaces as the pending hero while its approval is live', () => {
+    const d = chatRollbackDecision({
+      approval_id: '9f2c1b40-6d3e-4a58-9c07-1b8e2f4a6d15',
+      approval_url: '/approvals/9f2c1b40-6d3e-4a58-9c07-1b8e2f4a6d15?t=tok',
+      expires_at: '2026-07-28T23:00:00Z',
+      status: 'pending',
+      resolved_at: null,
+    });
+    const model = deskModel({ decisions: [d], pendingApprovals: [], now: NOW, origin: ORIGIN });
+    expect(model.kind).toBe('pending');
+    if (model.kind !== 'pending' || model.source !== 'rollback') throw new Error('expected a pending rollback');
+    expect(model.href).toBe('/approvals/9f2c1b40-6d3e-4a58-9c07-1b8e2f4a6d15?t=tok');
+    // ...and the ledger agrees it is the operator's to act on.
+    expect(ledgerRows([d], 4, { now: NOW, origin: ORIGIN })[0].state).toBe('open');
+  });
+
+  it('stamps the seal once approved and applied, and the ledger reads applied', () => {
+    const resolvedAt = new Date(NOW - 60_000).toISOString();
+    const d = chatRollbackDecision({
+      approval_id: '9f2c1b40-6d3e-4a58-9c07-1b8e2f4a6d15',
+      approval_url: '/approvals/9f2c1b40-6d3e-4a58-9c07-1b8e2f4a6d15?t=tok',
+      expires_at: '2026-07-28T23:00:00Z',
+      status: 'used',
+      phase: 'applied',
+      resolved_at: resolvedAt,
+    });
+    const model = deskModel({ decisions: [d], pendingApprovals: [], now: NOW, origin: ORIGIN });
+    expect(model.kind).toBe('stamped');
+    expect(ledgerRows([d], 4, { now: NOW, origin: ORIGIN })[0].state).toBe('applied');
+  });
+
+  it('does not depend on diffs / rationale / rendered_body being present', () => {
+    const d = chatRollbackDecision({
+      approval_id: '9f2c1b40-6d3e-4a58-9c07-1b8e2f4a6d15',
+      approval_url: '/approvals/9f2c1b40-6d3e-4a58-9c07-1b8e2f4a6d15?t=tok',
+      expires_at: '2026-07-28T23:00:00Z',
+      status: 'pending',
+      resolved_at: null,
+    });
+    // The thin row is the one the backend actually writes: assert the absence
+    // is real, so this test cannot silently start passing on a fatter fixture.
+    expect(d.diffs).toBeUndefined();
+    expect((d as Record<string, unknown>).rationale).toBeUndefined();
+    expect((d as Record<string, unknown>).rendered_body).toBeUndefined();
+    expect(deskModel({ decisions: [d], pendingApprovals: [], now: NOW, origin: ORIGIN }).kind).toBe('pending');
+  });
+});
