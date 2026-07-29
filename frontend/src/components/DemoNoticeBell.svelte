@@ -98,7 +98,10 @@
   // may a close return focus to the bell; a boot auto-open was never focused,
   // so yanking focus to the bell on its close would BE the focus steal the
   // no-steal decision forbids (Codex review, blocking #1).
-  let userOpened = false;
+  //
+  // $state, not a plain let, because the markup now branches on it: a passive
+  // open must not take pointer events (ds-odt).
+  let userOpened = $state(false);
 
   let containerEl = $state<HTMLDivElement | null>(null);
   let toggleEl = $state<HTMLButtonElement | null>(null);
@@ -217,8 +220,24 @@
   </button>
 
   {#if open}
+    <!-- ds-odt. A passively-opened notice must not eat the click meant for
+         whatever it landed on. The popover is bell-anchored and clamps to the
+         viewport's LEFT edge at desktop widths (see positionPopover), which on
+         the chat view is exactly where the conversations rail sits — so the
+         first rail item was unreachable until the visitor clicked once to
+         dismiss and again to act. Suppressing auto-open here as the desk does
+         (ds-5yq) was the other option and is worse: desk + estate + chat is
+         every view, so the notice would never appear unprompted at all.
+         Instead the passive popover is pointer-transparent, so ONE click both
+         reaches the rail and dismisses the notice (window pointerdown sees a
+         target outside the container and closes). "Got it" opts back in below,
+         so the one control it owns still works. A bell-CLICK open stays fully
+         interactive: the visitor asked for it, and a popover that ignores the
+         pointer it was summoned with would be its own bug. -->
     <div
       class="demo-bell__popover"
+      class:demo-bell__popover--passive={!userOpened}
+      data-passive={!userOpened ? 'true' : null}
       data-testid="demo-notice-popover"
       role="note"
       aria-label={$t('misc.demoBell.ariaLabel')}
@@ -289,6 +308,20 @@
     background: var(--ds-surface);
     box-shadow: var(--ds-shadow-md, var(--ds-shadow-sm));
     text-align: left;
+  }
+  /* ds-odt — see the markup comment. Transparent to the pointer while it is
+     showing unbidden, so a click aimed at the content beneath it (the
+     conversations rail, on the chat view) lands there. Purely a pointer
+     concern: it stays fully visible, and the window pointerdown handler still
+     sees the click and dismisses the notice. */
+  .demo-bell__popover--passive {
+    pointer-events: none;
+  }
+  /* The one control the notice owns opts back in, so "Got it" is a real button
+     rather than a decoration the click falls through. Everything else in here
+     is text. */
+  .demo-bell__popover--passive .demo-bell__dismiss {
+    pointer-events: auto;
   }
   /* NB: real placement (position:fixed; top/right/width) is set inline by
      positionPopover() on open, viewport-clamped — the rule above is only a

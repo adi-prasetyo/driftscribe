@@ -129,3 +129,36 @@ describe('DemoNoticeBell', () => {
     expect(window.localStorage.getItem(DEMO_NOTICE_DISMISSED_KEY)).toBe('1');
   });
 });
+
+// ds-odt — the popover clamps to the viewport's left edge at desktop widths,
+// which on the chat view is where the conversations rail sits. A notice the
+// visitor did not ask for must not intercept the click meant for what it
+// happened to land on.
+describe('DemoNoticeBell — a passive notice does not take the pointer (ds-odt)', () => {
+  it('a boot auto-open is pointer-transparent', () => {
+    const { getByTestId } = render(DemoNoticeBell, { props: { search: '' } });
+    const popover = getByTestId('demo-notice-popover');
+    expect(popover.getAttribute('data-passive')).toBe('true');
+    expect(popover.className).toContain('demo-bell__popover--passive');
+  });
+
+  it('a bell-CLICK open is fully interactive', () => {
+    // The visitor summoned it; a popover that ignores the pointer it was
+    // opened with would be its own bug.
+    const { getByTestId } = render(DemoNoticeBell, { props: { search: '' } });
+    fireEvent.click(getByTestId('demo-notice-bell')); // closes the auto-open
+    fireEvent.click(getByTestId('demo-notice-bell')); // reopens, user-initiated
+    const popover = getByTestId('demo-notice-popover');
+    expect(popover.getAttribute('data-passive')).toBeNull();
+    expect(popover.className).not.toContain('demo-bell__popover--passive');
+  });
+
+  it('"Got it" still works while passive', () => {
+    // The one control the notice owns opts back into pointer events, so it is
+    // a real button rather than a decoration clicks fall through.
+    const { getByTestId, queryByTestId } = render(DemoNoticeBell, { props: { search: '' } });
+    expect(getByTestId('demo-notice-popover').getAttribute('data-passive')).toBe('true');
+    fireEvent.click(getByTestId('demo-notice-dismiss'));
+    expect(queryByTestId('demo-notice-popover')).toBeNull();
+  });
+});
