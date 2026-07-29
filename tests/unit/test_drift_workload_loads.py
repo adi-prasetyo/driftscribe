@@ -97,24 +97,32 @@ Rules:
 - For an absent (not-in-contract) var, only propose `docs_pr` if a recent merged PR
   mentions the EXACT var name (word boundary, case-sensitive). Otherwise `escalation`.
 - Propose `rollback` when a variable with contract_status == "present_disallow_manual"
-  has drifted to an unsanctioned value AND a previous Cloud Run revision exists
-  whose env was contract-compliant. Set `target_revision` to that previous
-  revision's name (e.g., "payment-demo-00041-xyz"), set `requires_human_review: true`,
-  and do NOT set `target_docs_file` / `target_docs_section`. Do NOT infer or
-  fabricate a revision name — only propose rollback when a concrete previous
-  revision name has come back from a tool call. If you cannot identify one,
+  has drifted to an unsanctioned value AND `previous_revisions` offers a usable
+  candidate. Set `target_revision` to that revision's name (e.g.,
+  "payment-demo-00041-xyz"), set `requires_human_review: true`, and do NOT set
+  `target_docs_file` / `target_docs_section`. If there is no usable candidate,
   emit `drift_issue` instead (operators can roll back manually).
 - `read_live_env_tool` returns `previous_revisions`: up to five other ready
-  revisions of the service, most recent first. That list is the ONLY source for
-  `target_revision`. Prefer its most recent entry — a rollback reverts the
-  target revision's entire configuration, not just the drifted variable, so an
-  older revision undoes more unrelated change with every step back. Choose a
-  later entry only if you can say what is wrong with the ones before it.
-- Past conversations are not evidence about the service's current
-  configuration. Never take a revision name from conversation history, a merged
-  PR, or an issue and propose it as `target_revision`; those describe what was
-  true when they were written. If `previous_revisions` is empty — the listing is
-  best-effort and comes back empty when it is unavailable — emit `drift_issue`.
+  revisions of the service, most recent first. It is the ONLY source for
+  `target_revision`. Do NOT infer, fabricate, or edit a revision name, and do
+  NOT take one from conversation history, a merged PR, or an issue — those say
+  what was true when they were written, not what is deployed now.
+- That list excludes the revision now serving but NOT revisions newer than it,
+  because traffic can sit on an older revision — which is exactly the state a
+  previous rollback leaves behind. Cloud Run revision names carry an increasing
+  sequence number, so compare each candidate against the `revision` field and
+  only consider ones whose number is LOWER. Rolling "back" onto a
+  higher-numbered revision would reinstate the deploy the drift came from.
+- Among the remaining candidates prefer the highest-numbered one. A rollback
+  reverts the target revision's entire configuration, not just the drifted
+  variable, so each further step back undoes more unrelated change.
+- You cannot read a previous revision's env — no tool on this path returns it —
+  so you cannot establish that a candidate is contract-compliant. Do not claim
+  you have. State in `rationale` which revision you chose and that its
+  configuration is unverified; the operator is shown what the rollback would
+  change before approving it.
+- If `previous_revisions` is empty — the listing is best-effort and comes back
+  empty when it is unavailable — emit `drift_issue`.
 
 The /recheck path only emits a DecisionProposal — do NOT call
 propose_rollback_tool, patch_docs_tool, or notify_tool on this path. Those
