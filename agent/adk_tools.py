@@ -107,6 +107,19 @@ def read_project_inventory_tool() -> dict:
 # over-tightening to a specific UUID *version* would reject legitimate variants
 # if that ever changes, while the path-safety property we actually need (no
 # slashes, dots, or percent-encoding) is what the shape check delivers.
+# The producer contract for a raw approval token: ``secrets.token_urlsafe(32)``
+# (driftscribe_lib/approvals.py) — 43 characters from the URL-safe base64
+# alphabet. Bounded 43..64 to match the rollback worker's own ``/execute``
+# schema, which documents the upper bound as "43 plus a little slack".
+#
+# Constraining the token's VALUE, not just the URL's structure, is what closes
+# the last smuggling path: with a free-form value, ``?t=<urlencoded link to
+# approval B>`` satisfies "exactly one non-blank t" AND equals the top-level
+# ``approval_token``, so a complete unrecorded credential for B rides out
+# inside a well-formed credential for A (Codex reproduced it). The worker's
+# length check on the way back in is too late — the exposure happens first.
+_APPROVAL_TOKEN_SHAPE = re.compile(r"^[A-Za-z0-9_-]{43,64}$")
+
 _APPROVAL_ID_SHAPE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
@@ -213,10 +226,12 @@ def _approval_url_matches(approval_url: str, approval_id: str) -> bool:
     if len(pairs) != 1 or pairs[0][0] != "t":
         return False
     token = pairs[0][1]
-    # Whitespace is not "present": the approval page itself treats a
-    # whitespace-only ``t`` as missing (``agent/main.py``), so a URL carrying
-    # one is a dead CTA on a row we would have recorded as actionable.
-    return bool(token) and token == token.strip()
+    # The token must LOOK LIKE a token, not merely be non-blank. See
+    # _APPROVAL_TOKEN_SHAPE for why the value needs a syntax of its own; the
+    # alphabet also excludes whitespace, which the approval page treats as a
+    # missing ``t`` (``agent/main.py``) and which would therefore have been a
+    # dead CTA on a row recorded as actionable.
+    return _APPROVAL_TOKEN_SHAPE.match(token) is not None
 
 
 def _validated_approval(resp: object) -> dict[str, str] | None:
@@ -266,6 +281,9 @@ def _validated_approval(resp: object) -> dict[str, str] | None:
     token = resp.get("approval_token")
     if not isinstance(token, str) or not token:
         return None
+    # _approval_url_matches has already proved the URL carries exactly one
+    # ``t`` and that it satisfies _APPROVAL_TOKEN_SHAPE, so equality here also
+    # transitively constrains ``approval_token``'s own value.
     url_token = urllib.parse.parse_qs(
         urllib.parse.urlsplit(approval_url).query, keep_blank_values=True
     )["t"][0]
@@ -398,7 +416,10 @@ def propose_rollback_tool(target_revision: str, reason: str) -> dict:
     never a name the model invented. If the operator asks to roll back but
     hasn't named a revision, read ``previous_revisions`` first.
 
-    Returns the worker's response, which includes:
+    On success returns a validated projection of the worker's response — the
+    four contract fields below and nothing else (see ``_validated_approval``);
+    on any failure a sanitized ``{"error", "target_revision"}`` carrying no
+    worker-supplied content. The fields:
 
     - ``approval_id``: UUID of the Firestore doc
     - ``approval_token``: single-use raw token (43 chars). The LLM
@@ -440,8 +461,7 @@ def propose_rollback_tool(target_revision: str, reason: str) -> dict:
     # answering 500 with an approval URL in the body would leak an unrecorded
     # credential straight past the allowlist below (Codex reproduced it). The
     # body never reaches the model or the operator: status + worker name are
-    # all the diagnosis anyone gets from here, and the full body is still in
-    # the worker's own logs.
+    # all the diagnosis that leaves this function.
     try:
         resp = worker_client.call(
             "rollback",
@@ -452,8 +472,12 @@ def propose_rollback_tool(target_revision: str, reason: str) -> dict:
             "rollback_propose_worker_error",
             extra={
                 "target_revision": target_revision,
+                "worker": e.worker,
                 "status_code": e.status_code,
                 # NOT e.body / str(e) — that is the leak this branch closes.
+                # The worker logs its own 5xx bodies; a body synthesized by an
+                # intermediary (proxy, load balancer) may not be recorded
+                # anywhere, which is the cost accepted here.
             },
         )
         return {

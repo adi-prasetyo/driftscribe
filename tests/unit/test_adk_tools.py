@@ -22,6 +22,7 @@ import json
 import re
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
+from urllib.parse import quote
 
 import pytest
 
@@ -34,6 +35,19 @@ import pytest
 # (the id becomes part of a Firestore document id), which is what turned the
 # unrealistic fixture into a visible failure.
 _APPROVAL_UUID = "9f2c1b40-6d3e-4a58-9c07-1b8e2f4a6d15"
+
+# A realistic raw approval token. The fixtures used to say "tok"/_APPROVAL_TOKEN,
+# which secrets.token_urlsafe(32) can never produce (43 URL-safe chars) — and
+# Codex pointed out that the impossible fixture was MASKING the missing check:
+# with no syntax constraint on the token's value, `?t=<urlencoded link to
+# another approval>` was a valid credential. Same lesson as _APPROVAL_UUID.
+_APPROVAL_TOKEN = "fixture-approval-token-NOT-a-real-credential"
+_OTHER_TOKEN = "fixture-OTHER-approval-token-must-never-leak"
+_OTHER_UUID = "11111111-2222-3333-4444-555555555555"
+# The credential this response IS for, and one for a DIFFERENT approval that
+# must never ride out alongside it.
+_GOOD_URL = f"https://c/approvals/{_APPROVAL_UUID}?t={_APPROVAL_TOKEN}"
+_OTHER_URL = f"https://c/approvals/{_OTHER_UUID}?t={_OTHER_TOKEN}"
 
 
 # --------------------------------------------------------------------------- #
@@ -108,8 +122,8 @@ def test_propose_rollback_tool_sends_target_revision_and_safe_reason():
     with patch("agent.adk_tools.worker_client.call") as m:
         m.return_value = {
             "approval_id": _APPROVAL_UUID,
-            "approval_token": "tok",
-            "approval_url": "https://coord/approvals/" + _APPROVAL_UUID + "?t=tok",
+            "approval_token": _APPROVAL_TOKEN,
+            "approval_url": "https://coord/approvals/" + _APPROVAL_UUID + "?t=" + _APPROVAL_TOKEN,
             "expires_at": "2026-01-01T00:00:00+00:00",
         }
         out = propose_rollback_tool(
@@ -138,7 +152,7 @@ def test_propose_rollback_tool_does_not_forward_secret_reason():
     with patch("agent.adk_tools.worker_client.call") as m:
         m.return_value = {
             "approval_id": _APPROVAL_UUID,
-            "approval_url": "https://c/approvals/" + _APPROVAL_UUID + "?t=tok",
+            "approval_url": "https://c/approvals/" + _APPROVAL_UUID + "?t=" + _APPROVAL_TOKEN,
             "expires_at": "2026-01-01T00:15:00+00:00",
         }
         propose_rollback_tool(
@@ -730,12 +744,12 @@ def test_open_infra_pr_tool_return_value_deep_equal_all_cases(monkeypatch):
 
 
 def _rollback_worker_response(
-    approval_url="https://driftscribe.example.com/approvals/" + _APPROVAL_UUID + "?t=tok",
+    approval_url="https://driftscribe.example.com/approvals/" + _APPROVAL_UUID + "?t=" + _APPROVAL_TOKEN,
     expires_at="2026-01-01T00:15:00+00:00",
 ):
     return {
         "approval_id": _APPROVAL_UUID,
-        "approval_token": "tok",
+        "approval_token": _APPROVAL_TOKEN,
         "approval_url": approval_url,
         "expires_at": expires_at,
     }
@@ -769,13 +783,13 @@ def test_propose_rollback_tool_notifies_on_success(monkeypatch):
     assert n["channel"] == "approval"
     assert n["severity"] == "high"
     assert "payment-demo-00010-abc" in n["body"]
-    assert "https://driftscribe.example.com/approvals/" + _APPROVAL_UUID + "?t=tok" in n["body"]
+    assert "https://driftscribe.example.com/approvals/" + _APPROVAL_UUID + "?t=" + _APPROVAL_TOKEN in n["body"]
     assert "2026-01-01T00:15:00+00:00" in n["body"]
     # SECURITY: the reason (which may contain secrets) must NEVER appear in the body
     assert "SECRET-SENTINEL-do-not-leak" not in n["body"]
     # Tool return value still contains the worker response
     assert out["approval_id"] == _APPROVAL_UUID
-    assert out["approval_url"] == "https://driftscribe.example.com/approvals/" + _APPROVAL_UUID + "?t=tok"
+    assert out["approval_url"] == "https://driftscribe.example.com/approvals/" + _APPROVAL_UUID + "?t=" + _APPROVAL_TOKEN
 
 
 def test_propose_rollback_tool_safe_reason_still_sent_to_worker():
@@ -804,7 +818,7 @@ def test_propose_rollback_tool_safe_reason_still_sent_to_worker():
 # --------------------------------------------------------------------------- #
 
 
-def _rollback_worker_response_with_token(token="SECRETTOKEN"):
+def _rollback_worker_response_with_token(token=_APPROVAL_TOKEN):
     """Worker /propose response shape — BOTH the bare ``approval_token`` field
     and the tokenized ``approval_url``, exactly as workers/rollback/main.py emits."""
     return {
@@ -840,15 +854,15 @@ def test_propose_rollback_anon_gets_same_credential_as_operator():
             )
 
     # Anon == operator: both credential surfaces intact.
-    assert out["approval_token"] == "SECRETTOKEN"
-    assert out["approval_url"] == "https://c/approvals/" + _APPROVAL_UUID + "?t=SECRETTOKEN"
+    assert out["approval_token"] == _APPROVAL_TOKEN
+    assert out["approval_url"] == "https://c/approvals/" + _APPROVAL_UUID + "?t=" + _APPROVAL_TOKEN + ""
     # The #226 approval_note concept is gone.
     assert "approval_note" not in out
     assert out["approval_id"] == _APPROVAL_UUID
     assert out["expires_at"] == "2026-07-07T00:15:00+00:00"
     # Operator notifier webhook is UNCHANGED — it still carries the live link.
     assert len(notifier_calls) == 1
-    assert "SECRETTOKEN" in notifier_calls[0]["body"]
+    assert _APPROVAL_TOKEN in notifier_calls[0]["body"]
 
 
 @pytest.mark.parametrize("anon", [True, False], ids=["anon", "operator"])
@@ -883,9 +897,9 @@ def test_propose_rollback_anon_and_operator_get_the_same_allowlisted_response(an
 
     assert out == {
         "approval_id": _APPROVAL_UUID,
-        "approval_url": f"https://c/approvals/{_APPROVAL_UUID}?t=SECRETTOKEN",
+        "approval_url": f"https://c/approvals/{_APPROVAL_UUID}?t=" + _APPROVAL_TOKEN + "",
         "expires_at": "2026-07-07T00:15:00+00:00",
-        "approval_token": "SECRETTOKEN",
+        "approval_token": _APPROVAL_TOKEN,
     }
     assert "approval_note" not in out
 
@@ -893,34 +907,36 @@ def test_propose_rollback_anon_and_operator_get_the_same_allowlisted_response(an
 @pytest.mark.parametrize(
     "worker_resp",
     [
-        # A credential hidden in the worker's own error prose.
-        {"error": "see https://c/approvals/" + _APPROVAL_UUID + "?t=SECRETTOKEN"},
+        {"error": f"see {_GOOD_URL}"},
         # ...or nested a level down.
-        {"details": {"approval_url": "https://c/approvals/" + _APPROVAL_UUID
-                     + "?t=SECRETTOKEN"}},
+        {"details": {"approval_url": _OTHER_URL}},
         # ...or riding along a VALID response as a SECOND approval's link.
-        {"approval_id": _APPROVAL_UUID,
-         "approval_url": "https://c/approvals/" + _APPROVAL_UUID + "?t=tok",
+        {"approval_id": _APPROVAL_UUID, "approval_token": _APPROVAL_TOKEN,
+         "approval_url": _GOOD_URL,
          "expires_at": "2026-01-01T00:15:00+00:00",
-         "note": "or use https://c/approvals/11111111-2222-3333-4444-555555555555"
-                 "?t=SECRETTOKEN"},
+         "note": f"or use {_OTHER_URL}"},
         # ...or as a bare token beside a broken url.
         {"error": "url build failed", "approval_id": _APPROVAL_UUID,
-         "approval_token": "SECRETTOKEN"},
+         "approval_token": _OTHER_TOKEN},
         # ...or inside an EXTRA query parameter on an otherwise valid url: the
         # whole string is what reaches the notifier and the model.
-        {"approval_id": _APPROVAL_UUID, "approval_token": "tok",
-         "approval_url": "https://c/approvals/" + _APPROVAL_UUID + "?t=tok"
-         "&next=https%3A%2F%2Fc%2Fapprovals%2FB%3Ft%3DSECRETTOKEN",
+        {"approval_id": _APPROVAL_UUID, "approval_token": _APPROVAL_TOKEN,
+         "approval_url": f"{_GOOD_URL}&next={quote(_OTHER_URL, safe='')}",
          "expires_at": "2026-01-01T00:15:00+00:00"},
         # ...or in its fragment.
-        {"approval_id": _APPROVAL_UUID, "approval_token": "tok",
-         "approval_url": "https://c/approvals/" + _APPROVAL_UUID + "?t=tok"
-         "#https://c/approvals/B?t=SECRETTOKEN",
+        {"approval_id": _APPROVAL_UUID, "approval_token": _APPROVAL_TOKEN,
+         "approval_url": f"{_GOOD_URL}#{_OTHER_URL}",
          "expires_at": "2026-01-01T00:15:00+00:00"},
         # ...or as a bare approval_token that is NOT the url's credential.
-        {"approval_id": _APPROVAL_UUID, "approval_token": "SECRETTOKEN",
-         "approval_url": "https://c/approvals/" + _APPROVAL_UUID + "?t=tok",
+        {"approval_id": _APPROVAL_UUID, "approval_token": _OTHER_TOKEN,
+         "approval_url": _GOOD_URL,
+         "expires_at": "2026-01-01T00:15:00+00:00"},
+        # ...or AS the token value itself: with no syntax on the token, an
+        # urlencoded link for another approval satisfies "exactly one non-blank
+        # t" AND equals approval_token, so a complete unrecorded credential
+        # rides out inside a well-formed one (Codex reproduced this).
+        {"approval_id": _APPROVAL_UUID, "approval_token": _OTHER_URL,
+         "approval_url": f"/approvals/{_APPROVAL_UUID}?t={quote(_OTHER_URL, safe='')}",
          "expires_at": "2026-01-01T00:15:00+00:00"},
     ],
 )
@@ -950,11 +966,14 @@ def test_propose_rollback_never_forwards_worker_supplied_content(worker_resp):
                 target_revision="payment-demo-00002-bbb", reason="x"
             )
 
-    assert "SECRETTOKEN" not in json.dumps(out)
+    # _APPROVAL_TOKEN may legitimately appear (some params ARE valid responses
+    # that get recorded); the OTHER approval's credential never may.
+    assert _OTHER_TOKEN not in json.dumps(out)
     assert set(out) <= {
         "approval_id", "approval_url", "expires_at", "approval_token",
         "error", "target_revision",
     }
+    assert _OTHER_UUID not in json.dumps(out)
     for leaked in ("note", "details", "url build failed"):
         assert leaked not in json.dumps(out)
 
@@ -974,7 +993,7 @@ def test_propose_rollback_strips_a_bare_token_when_the_url_is_unusable():
     worker_resp = {
         "error": "coordinator url unset",
         "approval_id": _APPROVAL_UUID,
-        "approval_token": "SECRETTOKEN",
+        "approval_token": _APPROVAL_TOKEN,
         "expires_at": "2026-01-01T00:15:00+00:00",
     }
 
@@ -987,14 +1006,14 @@ def test_propose_rollback_strips_a_bare_token_when_the_url_is_unusable():
         out = propose_rollback_tool(target_revision="payment-demo-00002-bbb", reason="x")
 
     assert "approval_token" not in out
-    assert "SECRETTOKEN" not in json.dumps(out)
+    assert _APPROVAL_TOKEN not in json.dumps(out)
     # ds-y5i round 3: originally this forwarded the worker's own error after
     # stripping the token. The allowlist replaces the response outright, which
     # also covers the tokens that hid in OTHER fields.
     assert "coordinator url unset" not in json.dumps(out)
     assert "No rollback was attempted or executed" in out["error"]
     # The caller's dict is never mutated.
-    assert worker_resp["approval_token"] == "SECRETTOKEN"
+    assert worker_resp["approval_token"] == _APPROVAL_TOKEN
 
 
 @pytest.mark.parametrize(
@@ -1003,8 +1022,8 @@ def test_propose_rollback_strips_a_bare_token_when_the_url_is_unusable():
         # A bare JSON string that IS a working approval URL — the escape hatch:
         # worker_client.call returns whatever response.json() decodes, without
         # enforcing an object, and the pre-fix code forwarded it verbatim.
-        "https://c/approvals/9f2c1b40-6d3e-4a58-9c07-1b8e2f4a6d15?t=SECRETTOKEN",
-        ["https://c/approvals/x?t=SECRETTOKEN"],
+        "https://c/approvals/9f2c1b40-6d3e-4a58-9c07-1b8e2f4a6d15?t=" + _APPROVAL_TOKEN + "",
+        ["https://c/approvals/x?t=" + _APPROVAL_TOKEN + ""],
         None,
         42,
     ],
@@ -1028,7 +1047,7 @@ def test_propose_rollback_refuses_a_non_object_worker_response(worker_resp):
         out = propose_rollback_tool(target_revision="payment-demo-00002-bbb", reason="x")
 
     assert isinstance(out, dict)
-    assert "SECRETTOKEN" not in json.dumps(out)
+    assert _APPROVAL_TOKEN not in json.dumps(out)
     assert "approvals/" not in json.dumps(out)
     assert notifier_calls == []
     assert "No rollback was attempted or executed" in out["error"]
@@ -1041,29 +1060,29 @@ def test_propose_rollback_refuses_a_non_object_worker_response(worker_resp):
     [
         # A usable approval_url, but nothing the desk could ever expire:
         # missing expires_at ...
-        {"approval_id": _APPROVAL_UUID, "approval_token": "tok",
-         "approval_url": "https://c/approvals/" + _APPROVAL_UUID + "?t=tok"},
+        {"approval_id": _APPROVAL_UUID, "approval_token": _APPROVAL_TOKEN,
+         "approval_url": "https://c/approvals/" + _APPROVAL_UUID + "?t=" + _APPROVAL_TOKEN},
         # ... empty ...
-        {"approval_id": _APPROVAL_UUID, "approval_token": "tok",
-         "approval_url": "https://c/approvals/" + _APPROVAL_UUID + "?t=tok",
+        {"approval_id": _APPROVAL_UUID, "approval_token": _APPROVAL_TOKEN,
+         "approval_url": "https://c/approvals/" + _APPROVAL_UUID + "?t=" + _APPROVAL_TOKEN,
          "expires_at": ""},
         # ... or unparseable.
-        {"approval_id": _APPROVAL_UUID, "approval_token": "tok",
-         "approval_url": "https://c/approvals/" + _APPROVAL_UUID + "?t=tok",
+        {"approval_id": _APPROVAL_UUID, "approval_token": _APPROVAL_TOKEN,
+         "approval_url": "https://c/approvals/" + _APPROVAL_UUID + "?t=" + _APPROVAL_TOKEN,
          "expires_at": "whenever"},
         # A usable approval_url whose approval_id is not UUID-shaped: the id
         # becomes part of a Firestore document id, so it is never interpolated.
-        {"approval_id": "../../evil", "approval_token": "tok",
-         "approval_url": "https://c/approvals/x?t=tok",
+        {"approval_id": "../../evil", "approval_token": _APPROVAL_TOKEN,
+         "approval_url": "https://c/approvals/x?t=" + _APPROVAL_TOKEN,
          "expires_at": "2026-01-01T00:15:00+00:00"},
         # Well-formed fields that describe DIFFERENT approvals: recording this
         # would join status from one approval while the operator's click
         # executes another.
-        {"approval_id": _APPROVAL_UUID, "approval_token": "tok",
-         "approval_url": "https://c/approvals/11111111-2222-3333-4444-555555555555?t=tok",
+        {"approval_id": _APPROVAL_UUID, "approval_token": _APPROVAL_TOKEN,
+         "approval_url": "https://c/approvals/11111111-2222-3333-4444-555555555555?t=" + _APPROVAL_TOKEN,
          "expires_at": "2026-01-01T00:15:00+00:00"},
         # A URL for the right approval but carrying no credential at all.
-        {"approval_id": _APPROVAL_UUID, "approval_token": "tok",
+        {"approval_id": _APPROVAL_UUID, "approval_token": _APPROVAL_TOKEN,
          "approval_url": "https://c/approvals/" + _APPROVAL_UUID + "?t=",
          "expires_at": "2026-01-01T00:15:00+00:00"},
     ],
@@ -1129,15 +1148,15 @@ def test_propose_rollback_operator_keeps_credential():
             target_revision="payment-demo-00002-bbb", reason="x"
         )
 
-    assert out["approval_token"] == "SECRETTOKEN"
-    assert "?t=SECRETTOKEN" in out["approval_url"]
+    assert out["approval_token"] == _APPROVAL_TOKEN
+    assert "?t=" + _APPROVAL_TOKEN + "" in out["approval_url"]
 
 
 @pytest.mark.parametrize(
     "worker_resp",
     [
         # missing approval_url
-        {"approval_id": _APPROVAL_UUID, "approval_token": "tok", "expires_at": "2026-01-01T00:15:00+00:00"},
+        {"approval_id": _APPROVAL_UUID, "approval_token": _APPROVAL_TOKEN, "expires_at": "2026-01-01T00:15:00+00:00"},
         # empty approval_url
         {"approval_id": _APPROVAL_UUID, "approval_url": "", "expires_at": "2026-01-01T00:15:00+00:00"},
         # non-str approval_url (None)
@@ -1298,7 +1317,7 @@ def test_chat_rollback_records_a_decision_the_desk_can_read():
     # A hex32 trace_id ties the row to the chat turn's reasoning replay.
     assert re.fullmatch(r"[0-9a-f]{32}", d["trace_id"])
     # The credential still reaches the operator — recording is not a scrub.
-    assert out["approval_url"].endswith("?t=tok")
+    assert out["approval_url"].endswith("?t=" + _APPROVAL_TOKEN)
 
 
 def test_chat_rollback_record_omits_model_prose_and_the_bare_token():
@@ -1312,7 +1331,7 @@ def test_chat_rollback_record_omits_model_prose_and_the_bare_token():
     the decision doc RAW, so this is the boundary that enforces it.
     """
     _, docs, _ = _capture_recorded_decision(
-        worker_resp=_rollback_worker_response_with_token("SECRETTOKEN")
+        worker_resp=_rollback_worker_response_with_token(_APPROVAL_TOKEN)
     )
 
     blob = json.dumps(docs[0], default=str)
@@ -1320,7 +1339,7 @@ def test_chat_rollback_record_omits_model_prose_and_the_bare_token():
     # The token survives ONLY inside approval_url (where _do_rollback also keeps
     # it, and where the serve-time /runs scrub knows to find it) — never as a
     # standalone field the scrubbers would miss.
-    assert "SECRETTOKEN" not in blob.replace("?t=SECRETTOKEN", "")
+    assert _APPROVAL_TOKEN not in blob.replace("?t=" + _APPROVAL_TOKEN + "", "")
     assert "approval_token" not in docs[0]["approval"]
     # No prose fields at all: a synthetic rendered_body would also REPLACE the
     # crew's real chat reply in the SPA's trace replay (finalReply = rationale
@@ -1348,7 +1367,7 @@ def test_chat_rollback_event_keys_are_distinct_per_approval():
     # mismatched pair before the record is ever attempted.
     other["approval_url"] = (
         "https://driftscribe.example.com/approvals/"
-        "11111111-2222-3333-4444-555555555555?t=tok"
+        "11111111-2222-3333-4444-555555555555?t=" + _APPROVAL_TOKEN
     )
     _, docs_b, _ = _capture_recorded_decision(worker_resp=other)
 
@@ -1373,7 +1392,7 @@ def test_chat_rollback_withholds_credential_when_the_store_raises(caplog):
 
     class _BrokenStore:
         def record_decision(self, *a, **k):
-            raise RuntimeError("firestore unavailable: token=?t=tok")
+            raise RuntimeError("firestore unavailable: token=?t=" + _APPROVAL_TOKEN)
 
     def _fake_call(worker, payload):
         if worker == "notifier":
