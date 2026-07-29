@@ -483,6 +483,127 @@ def test_propose_missing_field_rejected(client) -> None:
     assert r.status_code == 422
 
 
+def test_list_revisions_resolves_active_when_traffic_is_LATEST(monkeypatch) -> None:
+    """A LATEST traffic target reports an EMPTY ``revision``; the resolved name
+    lives only in ``latest_ready_revision``.
+
+    Found live 2026-07-29: a real /propose against payment-demo — which serves
+    {latestRevision: true} — logged ``active=`` empty. Two things were silently
+    disabled by that:
+
+    1. /propose's Layer-2 guard, which refuses a target that IS the active
+       revision. ``req.target_revision == ""`` is never true, so it could not
+       fire and the worker would mint an approval to roll back onto the
+       revision already serving.
+    2. ds-uwc's change snapshot, whose source is this value — with no source it
+       returns None and the approval page renders "could not be recorded" on
+       every proposal.
+    """
+    import workers.rollback.main as m
+
+    class _LatestSvc:
+        # percent 100, type LATEST, and revision EMPTY — the real API shape.
+        traffic_statuses = [
+            type("TS", (), {"percent": 100, "revision": ""})()
+        ]
+        latest_ready_revision = (
+            "projects/p/locations/r/services/payment-demo/revisions/payment-demo-00018-6pc"
+        )
+
+    class _SvcClient:
+        def get_service(self, name: str):  # noqa: ANN201
+            return _LatestSvc()
+
+    class _RevClient:
+        def list_revisions(self, parent: str):  # noqa: ANN201
+            return [
+                type("R", (), {"name": f"{parent}/revisions/payment-demo-0001{i}-xxx"})()
+                for i in (7, 8)
+            ]
+
+    monkeypatch.setattr(m, "_get_services_client", _SvcClient)
+    monkeypatch.setattr(m, "_get_revisions_client", _RevClient)
+    monkeypatch.setattr(
+        m, "_service_name", lambda: "projects/p/locations/r/services/payment-demo"
+    )
+
+    _revisions, active = m._list_revisions()
+
+    assert active == "payment-demo-00018-6pc"
+
+
+def test_list_revisions_prefers_an_EXPLICIT_revision_target_over_latest_ready(
+    monkeypatch,
+) -> None:
+    """When traffic is pinned to a named revision that name wins — the fallback
+    must not override a real allocation. This is the state a rollback leaves
+    behind, so getting it wrong would misreport the source of the very next
+    proposal."""
+    import workers.rollback.main as m
+
+    class _PinnedSvc:
+        traffic_statuses = [
+            type("TS", (), {"percent": 100, "revision": "payment-demo-00015-sgt"})()
+        ]
+        # Deliberately different: a newer ready revision exists but is NOT serving.
+        latest_ready_revision = (
+            "projects/p/locations/r/services/payment-demo/revisions/payment-demo-00018-6pc"
+        )
+
+    class _SvcClient:
+        def get_service(self, name: str):  # noqa: ANN201
+            return _PinnedSvc()
+
+    class _RevClient:
+        def list_revisions(self, parent: str):  # noqa: ANN201
+            return []
+
+    monkeypatch.setattr(m, "_get_services_client", _SvcClient)
+    monkeypatch.setattr(m, "_get_revisions_client", _RevClient)
+    monkeypatch.setattr(
+        m, "_service_name", lambda: "projects/p/locations/r/services/payment-demo"
+    )
+
+    _revisions, active = m._list_revisions()
+
+    assert active == "payment-demo-00015-sgt"
+
+
+def test_list_revisions_leaves_active_empty_when_no_target_holds_100_percent(
+    monkeypatch,
+) -> None:
+    """Split traffic has no single active revision, and inventing one from
+    latest_ready would name a revision that may be serving 0%."""
+    import workers.rollback.main as m
+
+    class _SplitSvc:
+        traffic_statuses = [
+            type("TS", (), {"percent": 60, "revision": "payment-demo-00017-aaa"})(),
+            type("TS", (), {"percent": 40, "revision": "payment-demo-00018-bbb"})(),
+        ]
+        latest_ready_revision = (
+            "projects/p/locations/r/services/payment-demo/revisions/payment-demo-00018-bbb"
+        )
+
+    class _SvcClient:
+        def get_service(self, name: str):  # noqa: ANN201
+            return _SplitSvc()
+
+    class _RevClient:
+        def list_revisions(self, parent: str):  # noqa: ANN201
+            return []
+
+    monkeypatch.setattr(m, "_get_services_client", _SvcClient)
+    monkeypatch.setattr(m, "_get_revisions_client", _RevClient)
+    monkeypatch.setattr(
+        m, "_service_name", lambda: "projects/p/locations/r/services/payment-demo"
+    )
+
+    _revisions, active = m._list_revisions()
+
+    assert active == ""
+
+
 @pytest.mark.parametrize(
     "revision",
     [

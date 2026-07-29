@@ -210,9 +210,27 @@ def _list_revisions() -> tuple[list[str], str]:
     svc = sclient.get_service(name=_service_name())
     active = ""
     for ts in svc.traffic_statuses:
-        if ts.percent == 100 and ts.revision:
-            active = ts.revision
-            break
+        if ts.percent != 100:
+            continue
+        # A LATEST traffic target reports an EMPTY ``revision``: the resolved
+        # name lives only in ``latest_ready_revision``. Requiring ts.revision to
+        # be truthy therefore left ``active`` as "" for ANY service serving
+        # LATEST — which is payment-demo's normal state — and silently disabled
+        # two things:
+        #
+        #   1. The Layer-2 guard in /propose ("target_revision is the currently
+        #      active revision"). ``req.target_revision == ""`` is never true, so
+        #      the check could not fire and the worker would mint an approval to
+        #      roll back onto the revision already serving — the no-op
+        #      masquerading as work that the guard exists to refuse.
+        #   2. ds-uwc's change snapshot, whose source is this value: with no
+        #      source revision it returns None and the approval page renders
+        #      "could not be recorded" on every proposal.
+        #
+        # Found live 2026-07-29: a real /propose logged ``active=`` empty
+        # against payment-demo serving {latestRevision: true}.
+        active = ts.revision or svc.latest_ready_revision.rsplit("/", 1)[-1]
+        break
 
     revisions: list[str] = []
     rclient = _get_revisions_client()
