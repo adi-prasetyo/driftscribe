@@ -18,6 +18,14 @@ COORDINATOR_URL=https://driftscribe.adp-app.com and that value is what
 every emitted operator approval link is built from. That is a subtle,
 easily-"corrected" decision, which is why it is pinned here rather than
 left to a header comment.
+
+WHY THE STRUCTURE IS PINNED BY SHAPE, NOT BY SUBSTRING SEARCH: an earlier
+cut scanned step text for banned flags, and a step of the plain form
+``args: [run, services, update, driftscribe-rollback, --concurrency=80]``
+slipped through every scan because no single argument contained both the
+service name and the command. Substring bans are an open-ended arms race;
+pinning the exact five-step shape closes it, and a deliberate sixth step
+then has to come with a deliberate test change.
 """
 import importlib.util
 from pathlib import Path
@@ -33,6 +41,11 @@ _COORD = "https://driftscribe.adp-app.com"
 _REGION = "asia-northeast1"
 _PROJECT = "driftscribe-hack-2026"
 _OWN = "https://driftscribe-rollback-u272wv52kq-an.a.run.app"
+_CALLERS = f"driftscribe-agent@{_PROJECT}.iam.gserviceaccount.com"
+_REV = "driftscribe-rollback-00005-abc"
+
+_SDK = "gcr.io/google.com/cloudsdktool/cloud-sdk"
+_DOCKER = "gcr.io/cloud-builders/docker"
 
 
 def _load_module():
@@ -63,10 +76,7 @@ def _doc() -> dict:
                                 {"name": "TARGET_REGION", "value": _REGION},
                                 {"name": "OWN_URL", "value": _OWN},
                                 {"name": "COORDINATOR_URL", "value": _COORD},
-                                {
-                                    "name": "ALLOWED_CALLERS",
-                                    "value": f"driftscribe-agent@{_PROJECT}.iam.gserviceaccount.com",
-                                },
+                                {"name": "ALLOWED_CALLERS", "value": _CALLERS},
                                 {
                                     "name": "APPROVAL_HMAC_KEY",
                                     "valueFrom": {
@@ -85,13 +95,10 @@ def _doc() -> dict:
         },
         "status": {
             "url": _OWN,
-            "latestReadyRevisionName": "driftscribe-rollback-00005-abc",
+            "latestReadyRevisionName": _REV,
+            "latestCreatedRevisionName": _REV,
             "traffic": [
-                {
-                    "latestRevision": True,
-                    "percent": 100,
-                    "revisionName": "driftscribe-rollback-00005-abc",
-                }
+                {"latestRevision": True, "percent": 100, "revisionName": _REV}
             ],
         },
     }
@@ -109,7 +116,7 @@ def _check(doc: dict, phase: str = "postcondition", tag: str = "f72ef29") -> lis
     )
 
 
-def _set_env(doc: dict, name: str, value: str) -> dict:
+def _set_env(doc: dict, name: str, value) -> dict:
     for entry in doc["spec"]["template"]["spec"]["containers"][0]["env"]:
         if entry["name"] == name:
             entry.pop("valueFrom", None)
@@ -125,7 +132,7 @@ def _drop_env(doc: dict, name: str) -> dict:
 
 
 # --------------------------------------------------------------------------
-# check_service
+# check_service — happy path
 # --------------------------------------------------------------------------
 
 
@@ -134,19 +141,21 @@ def test_healthy_service_passes(phase):
     assert _check(_doc(), phase=phase) == []
 
 
+# --------------------------------------------------------------------------
+# check_service — the regression this config exists to prevent
+# --------------------------------------------------------------------------
+
+
 def test_coordinator_url_repointed_at_runapp_is_caught():
-    """THE regression this whole config exists to prevent. Note the name is
-    still present and non-empty — a substring check would pass this."""
+    """Note the name is still present and non-empty — a substring check
+    would pass this."""
     doc = _set_env(
         _doc(), "COORDINATOR_URL", "https://driftscribe-agent-u272wv52kq-an.a.run.app"
     )
-    failures = _check(doc)
-    assert any("COORDINATOR_URL" in f and "run.app" in f for f in failures), failures
+    assert any("COORDINATOR_URL" in f and "run.app" in f for f in _check(doc))
 
 
 def test_renamed_coordinator_url_is_caught():
-    """`OLD_COORDINATOR_URL=...` leaves the substring present but the real
-    variable absent."""
     doc = _drop_env(_doc(), "COORDINATOR_URL")
     doc["spec"]["template"]["spec"]["containers"][0]["env"].append(
         {"name": "OLD_COORDINATOR_URL", "value": _COORD}
@@ -154,17 +163,63 @@ def test_renamed_coordinator_url_is_caught():
     assert any("COORDINATOR_URL missing" in f for f in _check(doc))
 
 
-@pytest.mark.parametrize(
-    "name", ["ALLOWED_CALLERS", "GCP_PROJECT", "OWN_URL", "TARGET_REGION", "TARGET_SERVICE"]
-)
+# --------------------------------------------------------------------------
+# check_service — absence must never be a pass
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", _mod.REQUIRED_ENV)
 def test_each_required_env_var_is_required(name):
     assert any(f.startswith(f"{name} missing") for f in _check(_drop_env(_doc(), name)))
 
 
+@pytest.mark.parametrize("name", _mod.REQUIRED_ENV)
+@pytest.mark.parametrize("bad", [None, "", "   "])
+def test_null_or_empty_env_value_is_not_a_pass(name, bad):
+    """A guard of the form `if value is not None` let a null through and
+    called it verified."""
+    failures = _check(_set_env(_doc(), name, bad))
+    assert any("null or empty" in f and name in f for f in failures), failures
+
+
+def test_missing_status_block_fails_rather_than_abstains():
+    doc = _doc()
+    doc["status"] = {}
+    failures = _check(doc, phase="postcondition")
+    assert any("status.url is missing" in f for f in failures), failures
+    assert any("latestReadyRevisionName is missing" in f for f in failures), failures
+
+
+def test_postcondition_requires_a_latest_ready_revision():
+    doc = _doc()
+    doc["status"].pop("latestReadyRevisionName")
+    assert any("cannot prove the new revision is serving" in f for f in _check(doc))
+
+
+def test_postcondition_rejects_a_tagged_zero_percent_entry():
+    """Membership in status.traffic is not enough — a tagged entry can sit
+    at 0% while an older revision serves."""
+    doc = _doc()
+    doc["status"]["traffic"] = [
+        {"revisionName": _REV, "percent": 0, "tag": "new"},
+        {"revisionName": "driftscribe-rollback-00004-rnn", "percent": 100},
+    ]
+    assert any("is not serving 100%" in f for f in _check(doc))
+
+
+def test_postcondition_catches_a_new_revision_that_never_became_ready():
+    doc = _doc()
+    doc["status"]["latestCreatedRevisionName"] = "driftscribe-rollback-00006-new"
+    assert any("did not come up" in f for f in _check(doc))
+
+
+# --------------------------------------------------------------------------
+# check_service — remaining invariants
+# --------------------------------------------------------------------------
+
+
 def test_hmac_key_as_literal_is_caught():
-    doc = _set_env(_doc(), "APPROVAL_HMAC_KEY", "hunter2")
-    failures = _check(doc)
-    assert any("LITERAL" in f for f in failures), failures
+    assert any("LITERAL" in f for f in _check(_set_env(_doc(), "APPROVAL_HMAC_KEY", "hunter2")))
 
 
 def test_hmac_key_missing_is_caught():
@@ -179,9 +234,14 @@ def test_hmac_key_pointing_at_the_wrong_secret_is_caught():
     assert any("secretKeyRef" in f for f in _check(doc))
 
 
+@pytest.mark.parametrize("bad", ["", "unexpected@example.com"])
+def test_allowed_callers_is_compared_exactly(bad):
+    """Presence-only would accept an empty or foreign caller allowlist —
+    a live auth misconfiguration."""
+    assert _check(_set_env(_doc(), "ALLOWED_CALLERS", bad)) != []
+
+
 def test_pinned_traffic_is_caught():
-    """If the service is ever pinned to a named revision, a plain deploy
-    creates a revision that serves 0% while the build reports success."""
     doc = _doc()
     doc["spec"]["traffic"] = [
         {"revisionName": "driftscribe-rollback-00004-rnn", "percent": 100}
@@ -190,9 +250,8 @@ def test_pinned_traffic_is_caught():
 
 
 def test_own_url_placeholder_is_caught():
-    assert any(
-        "placeholder" in f for f in _check(_set_env(_doc(), "OWN_URL", "https://placeholder.invalid"))
-    )
+    doc = _set_env(_doc(), "OWN_URL", "https://placeholder.invalid")
+    assert any("placeholder" in f for f in _check(doc))
 
 
 def test_own_url_pointing_at_another_service_is_caught():
@@ -206,16 +265,8 @@ def test_wrong_target_service_is_caught():
 
 def test_postcondition_requires_the_deployed_tag():
     """Preflight sees the OLD image and must not care; postcondition must."""
-    doc = _doc()
-    assert _check(doc, phase="preflight", tag="newtag") == []
-    assert any("does not carry tag" in f for f in _check(doc, phase="postcondition", tag="newtag"))
-
-
-def test_postcondition_requires_the_latest_revision_to_be_serving():
-    doc = _doc()
-    doc["status"]["latestReadyRevisionName"] = "driftscribe-rollback-00006-new"
-    failures = _check(doc, phase="postcondition")
-    assert any("is not serving" in f for f in failures), failures
+    assert _check(_doc(), phase="preflight", tag="newtag") == []
+    assert any("does not carry tag" in f for f in _check(_doc(), phase="postcondition", tag="newtag"))
 
 
 def test_malformed_document_raises_rather_than_passing():
@@ -223,8 +274,15 @@ def test_malformed_document_raises_rather_than_passing():
         _check({"spec": {}})
 
 
+def test_malformed_env_entry_raises_rather_than_passing():
+    doc = _doc()
+    doc["spec"]["template"]["spec"]["containers"][0]["env"].append({"value": "orphan"})
+    with pytest.raises(_mod.AssertionFailure):
+        _check(doc)
+
+
 # --------------------------------------------------------------------------
-# config structure
+# config structure — pinned by exact shape
 # --------------------------------------------------------------------------
 
 
@@ -232,20 +290,41 @@ def _config() -> dict:
     return yaml.safe_load(_CONFIG.read_text(encoding="utf-8"))
 
 
-def _all_step_text(doc: dict) -> str:
-    """Every arg of every step, including inline bash bodies — so a pin cannot
-    be dodged by moving the offending command into a script step."""
-    return "\n".join(
-        a for step in doc["steps"] for a in (step.get("args") or []) if isinstance(a, str)
-    )
-
-
 def _deploy_step(doc: dict) -> dict:
-    for step in doc["steps"]:
-        args = step.get("args") or []
-        if step.get("entrypoint") == "gcloud" and "deploy" in args and _SERVICE in args:
-            return step
-    raise AssertionError(f"no {_SERVICE} gcloud run deploy step in {_CONFIG.name}")
+    steps = [
+        s
+        for s in doc["steps"]
+        if s.get("entrypoint") == "gcloud" and "deploy" in (s.get("args") or [])
+    ]
+    assert len(steps) == 1, f"expected exactly one gcloud deploy step, got {len(steps)}"
+    return steps[0]
+
+
+def test_config_has_exactly_the_five_expected_steps():
+    """Pinning the shape is what closes the `args: [run, services, update,
+    driftscribe-rollback, ...]` bypass — a sixth step fails here regardless
+    of how its command is spelled."""
+    expected = [
+        (_SDK, "bash"),  # preflight
+        (_DOCKER, None),  # build
+        (_DOCKER, None),  # push
+        (_SDK, "gcloud"),  # image-only deploy
+        (_SDK, "bash"),  # postcondition
+    ]
+    actual = [(s.get("name"), s.get("entrypoint")) for s in _config()["steps"]]
+    assert actual == expected
+
+
+def test_no_step_uses_the_script_field():
+    """Cloud Build's `script:` is an alternative to `args:` that every
+    args-based scan would miss entirely."""
+    assert [s for s in _config()["steps"] if "script" in s] == []
+
+
+def test_the_only_gcloud_entrypoint_step_is_the_deploy():
+    for step in _config()["steps"]:
+        if step.get("entrypoint") == "gcloud":
+            assert step["args"][:3] == ["run", "deploy", _SERVICE]
 
 
 def test_deploy_step_is_image_only():
@@ -276,33 +355,20 @@ def test_deploy_step_ships_the_tagged_rollback_image():
         "--env-vars-file",
         "--set-secrets",
         "--update-secrets",
+        "--remove-secrets",
         "--clear-secrets",
         "--service-account",
     ],
 )
 def test_no_step_anywhere_mutates_env_or_identity(flag):
-    """Scans inline bash too: a later `gcloud run services update
-    --update-env-vars=...` would bypass a pin that only read the deploy step."""
-    assert flag not in _all_step_text(_config())
-
-
-def test_only_one_step_mutates_the_service():
-    doc = _config()
-    mutating = [
-        step
-        for step in doc["steps"]
+    """Belt to the shape pin's braces. Scans inline bash bodies too."""
+    text = "\n".join(
+        a
+        for step in _config()["steps"]
         for a in (step.get("args") or [])
         if isinstance(a, str)
-        and _SERVICE in a
-        and ("run services update" in a or "run deploy" in a)
-    ]
-    assert mutating == [], f"extra service-mutating step(s): {mutating}"
-    gcloud_deploys = [
-        step
-        for step in doc["steps"]
-        if step.get("entrypoint") == "gcloud" and "deploy" in (step.get("args") or [])
-    ]
-    assert len(gcloud_deploys) == 1
+    )
+    assert flag not in text
 
 
 def test_no_step_assigns_the_coordinator_url():
@@ -310,7 +376,8 @@ def test_no_step_assigns_the_coordinator_url():
     offenders = [
         line
         for line in body.splitlines()
-        if not line.lstrip().startswith("#") and "COORDINATOR_URL=" in line
+        if not line.lstrip().startswith("#")
+        and "COORDINATOR_URL=" in line
         # the substitution DECLARATION and the two assertion invocations pass
         # it as an EXPECTED value; only an assignment onto the service is a bug
         and "_EXPECT_COORDINATOR_URL" not in line
@@ -319,7 +386,12 @@ def test_no_step_assigns_the_coordinator_url():
 
 
 def test_both_assertion_phases_run():
-    text = _all_step_text(_config())
+    text = "\n".join(
+        a
+        for step in _config()["steps"]
+        for a in (step.get("args") or [])
+        if isinstance(a, str)
+    )
     assert "assert_rollback_service.py" in text
     for phase in ("preflight", "postcondition"):
         assert phase in text, phase
@@ -327,10 +399,7 @@ def test_both_assertion_phases_run():
 
 
 def test_preflight_runs_before_anything_is_built():
-    """A create-or-update deploy against a deleted service would build a whole
-    image before discovering the target is wrong."""
-    doc = _config()
-    first = doc["steps"][0]
+    first = _config()["steps"][0]
     assert "preflight" in "\n".join(a for a in first["args"] if isinstance(a, str))
 
 
