@@ -1204,7 +1204,9 @@ def test_propose_rollback_tool_worker_error_is_sanitized_no_notify():
     502 — so a broken worker or proxy answering 500 with an approval URL in the
     body leaked an unrecorded credential straight past the allowlist (Codex
     reproduced it). Status code and worker name are all the diagnosis that
-    leaves this function; the full body stays in the worker's own logs.
+    leaves this function. (The worker logs its own 5xx bodies, but a body
+    synthesized by an intermediary may be recorded nowhere — that is the cost
+    accepted here, not a guarantee.)
     """
     from agent.adk_tools import propose_rollback_tool
     from agent.worker_client import WorkerClientError

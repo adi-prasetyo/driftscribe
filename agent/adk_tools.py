@@ -118,10 +118,12 @@ def read_project_inventory_tool() -> dict:
 # ``approval_token``, so a complete unrecorded credential for B rides out
 # inside a well-formed credential for A (Codex reproduced it). The worker's
 # length check on the way back in is too late — the exposure happens first.
-_APPROVAL_TOKEN_SHAPE = re.compile(r"^[A-Za-z0-9_-]{43,64}$")
+# fullmatch, not match, at both use sites: `$` also matches BEFORE a terminal
+# newline, so `.match()` on these would accept a trailing "\n".
+_APPROVAL_TOKEN_SHAPE = re.compile(r"[A-Za-z0-9_-]{43,64}")
 
 _APPROVAL_ID_SHAPE = re.compile(
-    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 )
 
 
@@ -231,7 +233,7 @@ def _approval_url_matches(approval_url: str, approval_id: str) -> bool:
     # alphabet also excludes whitespace, which the approval page treats as a
     # missing ``t`` (``agent/main.py``) and which would therefore have been a
     # dead CTA on a row recorded as actionable.
-    return _APPROVAL_TOKEN_SHAPE.match(token) is not None
+    return _APPROVAL_TOKEN_SHAPE.fullmatch(token) is not None
 
 
 def _validated_approval(resp: object) -> dict[str, str] | None:
@@ -253,7 +255,7 @@ def _validated_approval(resp: object) -> dict[str, str] | None:
     Returns a FRESH dict containing only the contract's fields, so no extra key
     the worker happened to include (a second approval's link, a credential
     embedded in an ``error`` string, a nested ``details`` object) can ride
-    along. ``approval_token`` is included when present: the operator-seat
+    along. ``approval_token`` is kept rather than dropped: the operator-seat
     decision requires anonymous callers to receive the same credential the
     operator does, and dropping it here would reverse that.
     """
@@ -262,7 +264,7 @@ def _validated_approval(resp: object) -> dict[str, str] | None:
     approval_id = resp.get("approval_id")
     approval_url = resp.get("approval_url")
     expires_at = resp.get("expires_at")
-    if not (isinstance(approval_id, str) and _APPROVAL_ID_SHAPE.match(approval_id)):
+    if not (isinstance(approval_id, str) and _APPROVAL_ID_SHAPE.fullmatch(approval_id)):
         return None
     if not (isinstance(expires_at, str) and _parses_as_timestamp(expires_at)):
         return None
