@@ -662,3 +662,140 @@ Do not prepare those editor, tool, state, or denylist seams in this PR. Prematur
 "future-proofing" would enlarge the security surface without delivering the
 visibility feature. The README/Overview acknowledgement is the only artifact for
 that deferred capability in this plan.
+
+### Addendum 2026-07-28: the blockers verified, and re-attributed
+
+The list above is correctly *sized* but mis-attributes the hard part. Verified
+against the code, then corrected after a Codex review caught a wrong assumption
+(see "Correction" below — an earlier draft of this addendum claimed C1 blocks
+every route; it does not).
+
+**The editor is not the blocker.** `workers/tofu_editor/main.py::open_pr` takes
+`(path, content)` pairs and commits them under `iac/`, overwriting any
+non-foundation file (`driftscribe_lib/github.py:316,335` updates an existing
+file when present). It has no delete verb — but a rename reconciliation mostly
+does not need one, because `removed`, `moved`, and `import` are *block content*,
+not file operations. "Typed delete/move support in tofu-editor and the GitHub
+writer" overstates this. One real residue: `iac_editor_policy.py:118` rejects
+empty content, so a stale file cannot be emptied out of existence — it must
+carry valid nonempty tombstone content.
+
+**The floors are real but they live in two places, and C1 is not the one that
+catches the actual rename case.**
+
+*Config-side routes, while `A` still exists live* — these do hit named C1 floors
+in `driftscribe_lib/iac_plan_denylist.py`:
+
+| Route | Plan JSON | Rule |
+|---|---|---|
+| `removed` block with `destroy = false` | `actions == ["forget"]` | `forget-action-forbidden-v1` (`:77`, enforced `:958`) |
+| Overwrite `A`'s file, dropping the resource | `actions == ["delete"]` | `delete-action-forbidden-v1` (`:76`, `:954`) |
+| Edit `A`'s `name` attribute in place | `["delete","create"]` | `replace-action-forbidden-v1` (`:78`, `:968`) |
+| Delete `A`'s file outright | — | `open_pr` exposes no delete verb |
+
+*But in the rename case `A` is already gone live*, and then the table above does
+not hold. OpenTofu refreshes during plan, so a vanished object is reported under
+`resource_drift`, not as a desired `resource_changes` action. **C1 reads only
+`resource_changes`** (`iac_plan_denylist.py:364,888,897`) and has no rule
+touching `resource_drift` at all. There may therefore be no `delete`/`forget`
+row for C1 to reject.
+
+**What actually blocks it is the tofu-apply freshness gate.** Before applying,
+the worker runs an independent whole-configuration refresh-only plan
+(`workers/tofu_apply/tofu_runner.py:779`) and treats any `resource_drift` action
+outside `no-op`/`read`/`update` as material — "resource appeared/vanished/
+recreated out of band → material, refuse" (`tofu_runner.py:693`). A missing `A`
+lands exactly there. The safety property holds; the mechanism is not the one
+this document previously named.
+
+**`moved` blocks are unblocked by both gates — and are not a rename solution.**
+Neither the static gate nor C1 has any rule for a pure state-address move that
+generates no create/delete/forget action. But `moved` retargets a *Terraform
+address*, not a provider's remote object ID, so it cannot make state for
+physical `A` own physical `B`. Worth knowing it is unguarded; not worth treating
+as a hole.
+
+**The combined-PR shape is separately forbidden — for distinct addresses.**
+`import-mixed-plan-forbidden-v1` (`:996`) rejects any plan containing both
+importing entries and other mutations; `import-batch-forbidden-v1` (`:990`)
+allows one adoption per plan; `import-with-changes-forbidden-v1` (`:925`) pins
+imports to exactly `("no-op",)`; `import-type-not-adoptable-v1` restricts to the
+four-type `ADOPTABLE_RESOURCE_TYPES` (`:320`). `iac/imports.tf` is in
+`PROTECTED_FOUNDATION` (`tools/iac_static_gate.py:65,70`), so agents can never
+edit the shared import-targets file. Note the accurate import invariant is that
+the import block and its target resource must both travel in the PR's
+**changed-file set** — the gate collects declarations across all changed HCL
+files before validating (`iac_static_gate.py:487,493`) — not that they must be
+co-located in one file, as an earlier draft of this addendum said.
+
+**No CLI escape hatch.** C2 runs a fixed untargeted `tofu plan` with no
+`-target`/`-exclude` (`.github/workflows/iac.yml:345`); `/apply` has a closed
+request schema (`workers/tofu_apply/main.py:218`) and applies the exact verified
+saved plan (`tofu_runner.py:810`); `-refresh-only` is used only for
+non-mutating freshness checks; the only state subcommand reachable is
+`state pull` for lineage auditing (`tofu_runner.py:346`). No `state rm`,
+`state mv`, import CLI, or force-unlock.
+
+### Measured 2026-07-28: the rebind question, answered
+
+The open question was whether a rename could be reconciled in a **single PR**
+whose plan carries no destructive verb — yielding one `importing + ["no-op"]`
+entry, the exact shape C1 already admits, needing no policy change. It was
+state-dependent and unverifiable by reading, so it was measured against real
+OpenTofu **1.12.0** (the version `.github/workflows/iac.yml:305,311` pins).
+
+Fixtures, provenance, and the reproduction procedure:
+`tests/fixtures/iac_rename_rebind/` (see its README). Regression tests:
+`tests/unit/test_iac_rename_rebind.py`.
+
+| Scenario | `resource_changes` | `resource_drift` | C1 | Freshness |
+|---|---|---|---|---|
+| Old gone, import at a **new** address | `y: ["no-op"] +importing` | `x: ["delete"]` | **pass** | **refuse** |
+| Old gone, import at the **same** address | `x: ["create"]` | `x: ["delete"]` | **pass** | **refuse** |
+| Old **still live**, import at a new address | `x: ["delete"]`, `y: ["no-op"] +importing` | — | **block** ×2 | n/a |
+| Ordinary adoption (control) | `y: ["no-op"] +importing` | — | pass | not engaged |
+
+**The same-address rebind does not work.** An `import` block whose target is
+already present in prior state is silently skipped — not an error, and not an
+import. Once refresh drops the vanished old object, the plan degrades to a bare
+`create`, which on apply would collide with the already-existing renamed object.
+Reproduced identically on `kreuzwerker/docker` and `hashicorp/tfcoremock`, so it
+is core plan-graph ordering, not provider behavior.
+
+**A new-address rebind does produce the hoped-for `resource_changes` — and is
+still stopped, by the other gate.** Dropping `A`'s block entirely and importing
+`B` at a fresh address gives a lone zero-change import, and **C1 passes it**. The
+vanished `A` surfaces under `resource_drift` as a `delete`, and the freshness
+gate refuses it as material. The AGENT-mode static gate passes the same PR.
+
+So the one-PR route exists at the config layer and is closed at the apply layer.
+This sharpens the correction below rather than reversing it: the safety property
+is real, but it is carried **entirely by the freshness gate**. Any future change
+that relaxes freshness must add an identity-drift rule to C1 in the same change,
+or the rename path opens silently. `test_every_rename_shape_is_stopped_by_some_gate`
+exists to fail loudly if that happens, and was mutation-checked to confirm it
+bites.
+
+**What this means for the deferred design.** The two-operation shape is no longer
+the only candidate, and the one-PR new-address rebind is now the better starting
+point: one PR, one approval, no intermediate unmanaged state, and no change to
+the forget floor. What it *does* need is a way for an operator-approved rebind to
+be exempted from the freshness refusal without weakening that refusal for
+everything else — a narrower and more auditable change than amending the forget
+floor. Neither is scoped or scheduled here.
+
+Corrected from the prior draft: the two-operation design was described as
+"fitting the existing floors." It does not — operation 1 necessarily amends the
+forget floor, which is the rule that makes the "never applies a risky change on
+its own" claim inspectable.
+
+Nothing here changes this plan's scope. It is recorded so the deferral is
+carried at its true size and shape.
+
+**Correction (same day).** The first version of this addendum asserted that
+every retirement route hits a named C1 rule, and attributed the blocking to the
+denylist. That was wrong for the already-gone case — the one that matters for a
+rename. C1 never inspects `resource_drift`; the tofu-apply freshness gate is
+what refuses. It also claimed the import block must be co-located with its
+resource, where the real invariant is the PR's changed-file set. Both errors
+were caught in review, verified against the code, and corrected above.
