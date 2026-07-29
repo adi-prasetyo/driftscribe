@@ -38,6 +38,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+import agent.main as agent_main
+
 from agent import approvals as approval_helpers
 from agent import worker_client
 from agent.config import get_settings
@@ -997,3 +999,586 @@ def test_rollback_on_non_adk_path_is_500(monkeypatch: pytest.MonkeyPatch) -> Non
 
     assert r.status_code == 500
     assert "rollback action emitted on non-ADK path" in r.json()["detail"]
+
+
+# --------------------------------------------------------------------------- #
+# ds-b3m — the /recheck call site must never hand the validator a live_env it
+# rebuilt from the model's own diffs.
+#
+# On the ADK path a failed Reader Worker read is not fatal: the coordinator
+# reconstructs a live_env-shaped dict out of ``proposal.env_diffs`` purely so
+# the idempotency event key stays stable. That reconstruction is the model's
+# array wearing a different name, and feeding it to a gate whose whole job is to
+# corroborate the model INDEPENDENTLY makes the gate re-derive the model's own
+# answer. This is the same laundering shape ds-qua shipped and had to fix.
+# --------------------------------------------------------------------------- #
+
+
+def test_rollback_refused_when_the_reader_read_fails_on_the_adk_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reader down → no ground truth → the rollback is refused (502), NOT
+    proposed off the back of the reconstructed env.
+
+    The reconstruction still happens (the event key needs it), so this test is
+    exactly the difference between "we kept the cache key working" and "we let
+    the cache key vouch for a traffic shift"."""
+    monkeypatch.setenv("USE_ADK", "true")
+    get_settings.cache_clear()
+    _reset_state_for_tests()
+
+    def dispatch(worker: str, payload: dict, *args: Any, **kwargs: Any) -> Any:
+        if worker == "reader":
+            raise RuntimeError("reader worker unreachable")
+        if worker == "rollback":
+            raise AssertionError(
+                "the rollback worker must NOT be called: without an observed "
+                "env there is nothing to corroborate the proposal"
+            )
+        if worker == "notifier":
+            return _notifier_envelope()
+        raise AssertionError(f"unexpected worker call: {worker!r}")
+
+    mock_run_agent = AsyncMock(return_value=_rollback_proposal())
+    with (
+        patch("agent.main._run_adk_agent", mock_run_agent),
+        patch("agent.main.worker_client.call") as m_call,
+        patch("agent.main.worker_client.call_execute") as m_execute,
+    ):
+        m_call.side_effect = dispatch
+        client = TestClient(app)
+        r = client.post("/recheck")
+
+    # 502 with the safety-gate detail — the ADK branch's mapping for a proposal
+    # the deterministic gate refused.
+    assert r.status_code == 502, r.text
+    assert "safety gate" in r.text
+    assert "no observed live env" in r.text
+    m_execute.assert_not_called()
+
+
+def test_rollback_refused_when_the_reader_returns_a_malformed_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 200 from the reader is not the same as an observation.
+
+    A payload whose ``env`` is not a dict of str->str is treated as NO ground
+    truth rather than being coerced to ``{}`` — an empty dict would tell the
+    gate that every contract var is missing, which reads as a confident
+    'everything has drifted' instead of an honest 'we could not look'."""
+    monkeypatch.setenv("USE_ADK", "true")
+    get_settings.cache_clear()
+    _reset_state_for_tests()
+
+    def dispatch(worker: str, payload: dict, *args: Any, **kwargs: Any) -> Any:
+        if worker == "reader":
+            return {"service": "payment-demo", "env": {"PAYMENT_MODE": ["live"]}}
+        if worker == "rollback":
+            raise AssertionError("must not propose off a malformed reader read")
+        if worker == "notifier":
+            return _notifier_envelope()
+        raise AssertionError(f"unexpected worker call: {worker!r}")
+
+    mock_run_agent = AsyncMock(return_value=_rollback_proposal())
+    with (
+        patch("agent.main._run_adk_agent", mock_run_agent),
+        patch("agent.main.worker_client.call") as m_call,
+    ):
+        m_call.side_effect = dispatch
+        client = TestClient(app)
+        r = client.post("/recheck")
+
+    assert r.status_code == 502, r.text
+    assert "no observed live env" in r.text
+
+
+@pytest.mark.parametrize(
+    "bad_payload",
+    [
+        pytest.param({"service": "payment-demo"}, id="env-key-missing"),
+        pytest.param({"service": "payment-demo", "env": None}, id="env-is-null"),
+        pytest.param({"service": "payment-demo", "env": []}, id="env-is-a-list"),
+        pytest.param({"service": "payment-demo", "env": "PAYMENT_MODE=live"}, id="env-is-a-string"),
+        pytest.param("not-a-dict-at-all", id="payload-is-not-a-dict"),
+    ],
+)
+def test_a_reader_payload_with_no_usable_env_block_is_not_read_as_an_empty_env(
+    monkeypatch: pytest.MonkeyPatch, bad_payload: Any
+) -> None:
+    """Coercing an unusable payload to ``{}`` is the dangerous degradation here,
+    not a tidy one, and it is worth its own test because it FAILS OPEN.
+
+    An empty observed env makes every contract-declared disallow_manual var read
+    as "not at its contract value" — so a malformed reader response would
+    manufacture a hard violation and AUTHORIZE the rollback it was supposed to
+    make unprovable. `None` (no observation) refuses; `{}` (a real service with
+    no env block) is a genuine observation. Only the wrapper shape distinguishes
+    them, so the wrapper shape is what gets checked."""
+    monkeypatch.setenv("USE_ADK", "true")
+    get_settings.cache_clear()
+    _reset_state_for_tests()
+
+    def dispatch(worker: str, payload: dict, *args: Any, **kwargs: Any) -> Any:
+        if worker == "reader":
+            return bad_payload
+        if worker == "rollback":
+            raise AssertionError("must not propose off an unusable reader read")
+        if worker == "notifier":
+            return _notifier_envelope()
+        raise AssertionError(f"unexpected worker call: {worker!r}")
+
+    mock_run_agent = AsyncMock(return_value=_rollback_proposal())
+    with (
+        patch("agent.main._run_adk_agent", mock_run_agent),
+        patch("agent.main.worker_client.call") as m_call,
+    ):
+        m_call.side_effect = dispatch
+        client = TestClient(app)
+        r = client.post("/recheck")
+
+    assert r.status_code == 502, r.text
+    assert "no observed live env" in r.text
+
+
+def test_rollback_refused_when_observed_env_contradicts_the_proposal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """THE POINT OF ds-b3m, end to end.
+
+    The model returns a well-formed rollback proposal claiming PAYMENT_MODE has
+    drifted to 'live'. Every check that reads the proposal is satisfied — the
+    diff derives present_disallow_manual from the real contract. But the Reader
+    Worker says PAYMENT_MODE is 'mock'. Before this change the coordinator
+    proposed the rollback and minted an approval anyway, because nothing ever
+    compared the claim to the service."""
+    monkeypatch.setenv("USE_ADK", "true")
+    get_settings.cache_clear()
+    _reset_state_for_tests()
+
+    def dispatch(worker: str, payload: dict, *args: Any, **kwargs: Any) -> Any:
+        if worker == "reader":
+            return _reader_envelope(
+                {"PAYMENT_MODE": "mock", "FEATURE_NEW_CHECKOUT": "false"}
+            )
+        if worker == "rollback":
+            raise AssertionError(
+                "no approval may be minted for a violation the service does "
+                "not actually have"
+            )
+        if worker == "notifier":
+            return _notifier_envelope()
+        raise AssertionError(f"unexpected worker call: {worker!r}")
+
+    mock_run_agent = AsyncMock(return_value=_rollback_proposal())
+    with (
+        patch("agent.main._run_adk_agent", mock_run_agent),
+        patch("agent.main.worker_client.call") as m_call,
+    ):
+        m_call.side_effect = dispatch
+        client = TestClient(app)
+        r = client.post("/recheck")
+
+    assert r.status_code == 502, r.text
+    assert "no CONFIRMED hard contract violation" in r.text
+
+
+def test_rollback_still_proposed_when_observed_env_corroborates_the_proposal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The demo baseline must be unaffected: PAYMENT_MODE drifted, the
+    operator-toggleable FEATURE_NEW_CHECKOUT at its contract value. This is the
+    exact live shape the autonomous self-heal runs against, and ds-2f5 is the
+    reminder of what a gate that over-refuses costs (a genuine violation was
+    rejected 3/3 on prod, and the self-heal was silently dead)."""
+    monkeypatch.setenv("USE_ADK", "true")
+    get_settings.cache_clear()
+    _reset_state_for_tests()
+
+    mock_run_agent = AsyncMock(return_value=_rollback_proposal())
+    with (
+        patch("agent.main._run_adk_agent", mock_run_agent),
+        patch("agent.main.worker_client.call") as m_call,
+        patch("agent.main.worker_client.call_execute") as m_execute,
+    ):
+        m_call.side_effect = _make_dispatch(
+            live_env={"PAYMENT_MODE": "live", "FEATURE_NEW_CHECKOUT": "false"}
+        )
+        client = TestClient(app)
+        r = client.post("/recheck")
+
+    assert r.status_code == 200, r.text
+    assert r.json()["action"] == "rollback"
+    assert r.json()["approval"]["approval_url"] == _APPROVAL_URL
+    m_execute.assert_not_called()  # still HITL — nothing executed
+
+
+def test_an_ungrounded_recheck_cannot_reuse_a_grounded_decision_from_the_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The cached decision is returned BEFORE validate() runs, so the event key
+    is what actually keeps an ungrounded run away from a grounded one's approval.
+
+    The collision this pins is not exotic. The model has already seen the
+    reader's result, so an accurate report reconstructs the exact dict the
+    coordinator would have read — same content, same hash, same key. The key is
+    deliberately left alone; what is guarded is the RETURN. Without that guard
+    the second call here is served the first call's rollback approval and
+    validate()'s refusal never gets to speak.
+
+    Run 1: reader OK, rollback proposed and cached.
+    Run 2: reader down, model reports the SAME env → identical reconstruction.
+           Must 502, not hand back run 1's approval."""
+    monkeypatch.setenv("USE_ADK", "true")
+    get_settings.cache_clear()
+    _reset_state_for_tests()
+
+    grounded_env = {"PAYMENT_MODE": "live", "FEATURE_NEW_CHECKOUT": "false"}
+
+    def failing_reader(worker: str, payload: dict, *args: Any, **kwargs: Any) -> Any:
+        if worker == "reader":
+            raise RuntimeError("reader worker unreachable")
+        if worker == "rollback":
+            raise AssertionError("must not mint a second approval")
+        if worker == "notifier":
+            return _notifier_envelope()
+        raise AssertionError(f"unexpected worker call: {worker!r}")
+
+    # The proposal's diffs reconstruct exactly `grounded_env` (PAYMENT_MODE=live
+    # is reported; FEATURE_NEW_CHECKOUT is what makes them differ, so report it
+    # too — this is the WORST case for the cache, i.e. a perfectly accurate model).
+    proposal = _rollback_proposal()
+    proposal.env_diffs.append(
+        EnvDiff(
+            name="FEATURE_NEW_CHECKOUT",
+            expected="false",
+            live="false",
+            contract_status=ContractStatus.MATCH,
+            debug_config_value=None,
+            recent_pr_match=None,
+        )
+    )
+
+    with (
+        patch("agent.main._run_adk_agent", AsyncMock(return_value=proposal)),
+        patch("agent.main.worker_client.call") as m_call,
+    ):
+        m_call.side_effect = _make_dispatch(live_env=grounded_env)
+        r1 = TestClient(app).post("/recheck")
+    assert r1.status_code == 200, r1.text
+    assert r1.json()["approval"]["approval_url"] == _APPROVAL_URL
+
+    with (
+        patch("agent.main._run_adk_agent", AsyncMock(return_value=proposal)),
+        patch("agent.main.worker_client.call") as m_call,
+    ):
+        m_call.side_effect = failing_reader
+        r2 = TestClient(app).post("/recheck")
+
+    assert r2.status_code == 502, r2.text
+    assert "no observed live env" in r2.text
+    assert _APPROVAL_URL not in r2.text
+
+
+def test_classifier_path_502s_on_a_malformed_reader_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The non-ADK path has no reconstruction to fall back on, so a payload it
+    cannot read is an upstream failure — the same 502 a transport error gets,
+    not a silent empty env fed to the classifier."""
+    monkeypatch.setenv("USE_ADK", "false")
+    get_settings.cache_clear()
+    _reset_state_for_tests()
+
+    def dispatch(worker: str, payload: dict, *args: Any, **kwargs: Any) -> Any:
+        if worker == "reader":
+            return {"service": "payment-demo", "env": ["PAYMENT_MODE=live"]}
+        raise AssertionError(f"unexpected worker call: {worker!r}")
+
+    with patch("agent.main.worker_client.call") as m_call:
+        m_call.side_effect = dispatch
+        r = TestClient(app).post("/recheck")
+
+    assert r.status_code == 502, r.text
+    assert "malformed env payload" in r.text
+
+
+def test_a_well_formed_empty_env_is_treated_as_an_observation_not_a_read_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A service really can have no env block, so `env: {}` from a well-formed
+    payload is something we OBSERVED — not a failure to observe.
+
+    Both outcomes are a refusal, which is why this needs its own test: the
+    difference is only visible in WHICH refusal. An observed empty env refuses
+    for "no hard contract violation" (we looked, and there is nothing to
+    revert); a failed read refuses for "no observed live env" (we could not
+    look). Collapsing the two — `if not live_env` instead of `if live_env is
+    None` at the call site — would also discard a real observation and swap in
+    the model's reconstruction, so the cached-rollback guard would start
+    refusing requests that did in fact observe the service."""
+    monkeypatch.setenv("USE_ADK", "true")
+    get_settings.cache_clear()
+    _reset_state_for_tests()
+
+    def dispatch(worker: str, payload: dict, *args: Any, **kwargs: Any) -> Any:
+        if worker == "reader":
+            return _reader_envelope({})
+        if worker == "rollback":
+            raise AssertionError("nothing observed justifies a rollback")
+        if worker == "notifier":
+            return _notifier_envelope()
+        raise AssertionError(f"unexpected worker call: {worker!r}")
+
+    with (
+        patch("agent.main._run_adk_agent", AsyncMock(return_value=_rollback_proposal())),
+        patch("agent.main.worker_client.call") as m_call,
+    ):
+        m_call.side_effect = dispatch
+        r = TestClient(app).post("/recheck")
+
+    assert r.status_code == 502, r.text
+    assert "no CONFIRMED hard contract violation" in r.text
+    assert "no observed live env" not in r.text
+
+
+def test_a_non_rollback_action_keeps_ONE_idempotency_slot_across_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The provenance namespace must not reach non-rollback actions.
+
+    A first draft closed the rollback hole by splitting the EVENT KEY on env
+    provenance, which gave docs_pr and drift_issue two cache slots — one per
+    provenance. A grounded first attempt followed by a retry that hit a reader
+    blip would then MISS the cache and run `_perform_action` again, opening a
+    SECOND GitHub issue, breaking the duplicate-suppression the `record_event`
+    claim is built on. Guarding the cache READ instead leaves every key
+    untouched, so this case is simply unaffected.
+
+    Caught by Codex — the fix for one lane quietly regressing another.
+    """
+    monkeypatch.setenv("USE_ADK", "true")
+    get_settings.cache_clear()
+    _reset_state_for_tests()
+
+    env = {"PAYMENT_MODE": "live", "FEATURE_NEW_CHECKOUT": "false"}
+    proposal = DecisionProposal(
+        action=DecisionAction.DRIFT_ISSUE,
+        env_diffs=[
+            EnvDiff(
+                name="PAYMENT_MODE",
+                expected="mock",
+                live="live",
+                contract_status=ContractStatus.PRESENT_DISALLOW_MANUAL,
+                debug_config_value=None,
+                recent_pr_match=None,
+            ),
+            EnvDiff(
+                name="FEATURE_NEW_CHECKOUT",
+                expected="false",
+                live="false",
+                contract_status=ContractStatus.MATCH,
+                debug_config_value=None,
+                recent_pr_match=None,
+            ),
+        ],
+        target_docs_file=None,
+        target_docs_section=None,
+        target_revision=None,
+        rationale="PAYMENT_MODE drifted; filing an issue for the operator.",
+        confidence=0.9,
+        requires_human_review=True,
+    )
+
+    side_effects: list[str] = []
+
+    def _perform(*args: Any, **kwargs: Any) -> dict:
+        side_effects.append("issue")
+        return {"url": "https://github.com/x/y/issues/1", "action": "drift_issue"}
+
+    def grounded(worker: str, payload: dict, *a: Any, **k: Any) -> Any:
+        if worker == "reader":
+            return _reader_envelope(env)
+        if worker == "notifier":
+            return _notifier_envelope()
+        raise AssertionError(f"unexpected worker call: {worker!r}")
+
+    def reader_down(worker: str, payload: dict, *a: Any, **k: Any) -> Any:
+        if worker == "reader":
+            raise RuntimeError("reader worker unreachable")
+        if worker == "notifier":
+            return _notifier_envelope()
+        raise AssertionError(f"unexpected worker call: {worker!r}")
+
+    for dispatch in (grounded, reader_down):
+        with (
+            patch("agent.main._run_adk_agent", AsyncMock(return_value=proposal)),
+            patch("agent.main._perform_action", _perform),
+            patch("agent.main.worker_client.call") as m_call,
+        ):
+            m_call.side_effect = dispatch
+            r = TestClient(app).post("/recheck")
+        assert r.status_code == 200, r.text
+
+    # ONE issue, not two: the retry hit the first run's cached decision even
+    # though its env provenance differed.
+    assert side_effects == ["issue"]
+
+
+def test_an_ungrounded_run_cannot_be_served_a_cached_rollback_VIA_ANOTHER_ACTION(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The guard has to judge the CACHED decision's action, not the incoming
+    proposal's — and getting that backwards is a live bypass, not a nicety.
+
+    A first fix split the event key by provenance and scoped the split to
+    proposals whose action was ROLLBACK. That still let this through:
+
+      1. grounded run proposes ROLLBACK, cached under key K;
+      2. ungrounded run reconstructs the identical env, but the model happens
+         to propose DRIFT_ISSUE;
+      3. the new proposal is non-rollback, so the key is still K;
+      4. the cache returns the ROLLBACK approval, before validate() runs.
+
+    What is being handed back is what has to be judged. Caught by Codex on the
+    fourth pass.
+    """
+    monkeypatch.setenv("USE_ADK", "true")
+    get_settings.cache_clear()
+    _reset_state_for_tests()
+
+    env = {"PAYMENT_MODE": "live", "FEATURE_NEW_CHECKOUT": "false"}
+    rollback = _rollback_proposal()
+    rollback.env_diffs.append(
+        EnvDiff(
+            name="FEATURE_NEW_CHECKOUT",
+            expected="false",
+            live="false",
+            contract_status=ContractStatus.MATCH,
+            debug_config_value=None,
+            recent_pr_match=None,
+        )
+    )
+    # Same env_diffs → same reconstruction → same event key as the run above.
+    issue = DecisionProposal(
+        action=DecisionAction.DRIFT_ISSUE,
+        env_diffs=list(rollback.env_diffs),
+        target_docs_file=None,
+        target_docs_section=None,
+        target_revision=None,
+        rationale="Filing an issue instead.",
+        confidence=0.9,
+        requires_human_review=True,
+    )
+
+    with (
+        patch("agent.main._run_adk_agent", AsyncMock(return_value=rollback)),
+        patch("agent.main.worker_client.call") as m_call,
+    ):
+        m_call.side_effect = _make_dispatch(live_env=env)
+        r1 = TestClient(app).post("/recheck")
+    assert r1.status_code == 200, r1.text
+    assert r1.json()["approval"]["approval_url"] == _APPROVAL_URL
+
+    def reader_down(worker: str, payload: dict, *a: Any, **k: Any) -> Any:
+        if worker == "reader":
+            raise RuntimeError("reader worker unreachable")
+        if worker == "notifier":
+            return _notifier_envelope()
+        raise AssertionError(f"unexpected worker call: {worker!r}")
+
+    with (
+        patch("agent.main._run_adk_agent", AsyncMock(return_value=issue)),
+        patch("agent.main.worker_client.call") as m_call,
+    ):
+        m_call.side_effect = reader_down
+        r2 = TestClient(app).post("/recheck")
+
+    assert r2.status_code == 502, r2.text
+    assert _APPROVAL_URL not in r2.text
+
+
+def test_a_claim_LOSER_is_not_handed_a_concurrent_runs_cached_rollback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The third cached-rollback return site: the record_event claim-loser.
+
+    Only a NON-rollback proposal reaches that code (a rollback branches out at
+    _do_rollback well above), so it reads as unrelated to the rollback gate —
+    which is exactly why it was the one of three that got missed. The race:
+
+      1. an ungrounded DRIFT_ISSUE request misses the cache on its first lookup;
+      2. a concurrent GROUNDED run records a rollback under the same key;
+      3. the ungrounded request loses record_event();
+      4. its re-read finds that rollback and returns the approval — before any
+         gate has spoken for this request.
+
+    Driven deterministically by making the claim fail and the SECOND lookup
+    return a rollback decision, rather than by racing real requests.
+    """
+    monkeypatch.setenv("USE_ADK", "true")
+    get_settings.cache_clear()
+    _reset_state_for_tests()
+
+    proposal = DecisionProposal(
+        action=DecisionAction.DRIFT_ISSUE,
+        env_diffs=[
+            EnvDiff(
+                name="PAYMENT_MODE",
+                expected="mock",
+                live="live",
+                contract_status=ContractStatus.PRESENT_DISALLOW_MANUAL,
+                debug_config_value=None,
+                recent_pr_match=None,
+            )
+        ],
+        target_docs_file=None,
+        target_docs_section=None,
+        target_revision=None,
+        rationale="Filing an issue.",
+        confidence=0.9,
+        requires_human_review=True,
+    )
+
+    cached_rollback = {
+        "decision_id": "d-concurrent",
+        "action": "rollback",
+        "approval": {"approval_url": _APPROVAL_URL, "expires_at": _EXPIRES_AT_ISO},
+    }
+
+    lookups: list[int] = []
+
+    # Captured BEFORE the patch, or the delegate below recurses into itself.
+    real_state = agent_main.get_state()
+
+    class _RacingState:
+        """First lookup empty (so we get past the cache check), claim refused,
+        second lookup finds the concurrent run's rollback."""
+
+        def __getattr__(self, name):  # noqa: ANN001 — delegate everything else
+            return getattr(real_state, name)
+
+        def find_decision_for_event(self, key):  # noqa: ANN001
+            lookups.append(1)
+            return None if len(lookups) == 1 else cached_rollback
+
+        def record_event(self, *a: Any, **k: Any) -> bool:
+            return False  # lost the claim
+
+    def reader_down(worker: str, payload: dict, *a: Any, **k: Any) -> Any:
+        if worker == "reader":
+            raise RuntimeError("reader worker unreachable")
+        if worker == "notifier":
+            return _notifier_envelope()
+        raise AssertionError(f"unexpected worker call: {worker!r}")
+
+    with (
+        patch("agent.main._run_adk_agent", AsyncMock(return_value=proposal)),
+        patch("agent.main.get_state", lambda: _RacingState()),
+        patch("agent.main.worker_client.call") as m_call,
+    ):
+        m_call.side_effect = reader_down
+        r = TestClient(app).post("/recheck")
+
+    assert len(lookups) >= 2, "the race did not reach the claim-loser re-read"
+    assert r.status_code == 502, r.text
+    assert _APPROVAL_URL not in r.text

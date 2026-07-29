@@ -659,9 +659,14 @@ def test_chat_drift_workload_agent_has_drift_tools_not_upgrade_tools() -> None:
     # callables plus the two Developer Knowledge MCP wrappers added in
     # 17.B.3 — drift uses these to ground docs PR bodies in
     # authoritative Cloud Run env-variable guidance).
+    # ``propose_rollback_tool`` is deliberately NOT in this set: ds-b3m made it
+    # chat-only, so ``build_agent`` (the /recheck factory this test uses,
+    # despite the name) strips it. The autonomous path must not hold the tool
+    # that mints an approval token, because that tool bypasses the validator.
+    # The chat agent still carries it — pinned in
+    # tests/unit/test_adk_agent_autonomy.py.
     expected_drift = {
         "read_live_env_tool",
-        "propose_rollback_tool",
         "patch_docs_tool",
         "notify_tool",
         "search_recent_prs_tool",
@@ -671,6 +676,10 @@ def test_chat_drift_workload_agent_has_drift_tools_not_upgrade_tools() -> None:
     }
     assert expected_drift.issubset(tool_names), (
         f"drift workload agent missing tools: {expected_drift - tool_names}"
+    )
+    assert "propose_rollback_tool" not in tool_names, (
+        "the autonomous /recheck agent must not carry propose_rollback_tool "
+        "(ds-b3m: it mints a HITL approval without passing the validator)"
     )
 
     # Negative: NO upgrade-only callable is present (they don't exist

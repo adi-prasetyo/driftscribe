@@ -22,6 +22,28 @@ from agent.models import (
 from agent.validator import ValidationError, validate
 
 
+# ds-b3m: the validator's rollback branch now has TWO layers — the reported-diff
+# loop these tests were written for, and an independent check against the env the
+# Reader Worker actually observed. Every test below passes an ``live_env`` that
+# matches the scenario it describes, so the new layer never fires and each test
+# still proves exactly what it was written to prove. A rejection test that
+# passed because the NEW layer refused would be a test proving nothing about its
+# own subject, which is how a suite quietly stops testing.
+#
+# This is the shape of the default ``_rollback_proposal()``: a genuine hard
+# violation on PAYMENT_MODE, with the operator-safe FEATURE_X sitting at its
+# contract value.
+_DRIFTED_LIVE_ENV = {"PAYMENT_MODE": "live", "FEATURE_X": "false"}
+
+
+def _authorize(contract, live_env):
+    """Direct handle on the ds-b3m layer, for tests that isolate IT rather than
+    `validate()`'s composition of the two layers."""
+    from agent.validator import _authorize_rollback_from_live_env
+
+    return _authorize_rollback_from_live_env(contract, live_env)
+
+
 def _contract():
     return OpsContract(
         service="payment-demo",
@@ -72,31 +94,31 @@ def _rollback_proposal(
 
 def test_validator_passes_correct_rollback():
     p = _rollback_proposal()
-    validate(p, _contract())  # must not raise
+    validate(p, _contract(), live_env=_DRIFTED_LIVE_ENV)  # must not raise
 
 
 def test_validator_rejects_rollback_without_target_revision():
     p = _rollback_proposal(target_revision=None)
     with pytest.raises(ValidationError, match="target_revision"):
-        validate(p, _contract())
+        validate(p, _contract(), live_env=_DRIFTED_LIVE_ENV)
 
 
 def test_validator_rejects_rollback_with_empty_target_revision():
     p = _rollback_proposal(target_revision="")
     with pytest.raises(ValidationError, match="target_revision"):
-        validate(p, _contract())
+        validate(p, _contract(), live_env=_DRIFTED_LIVE_ENV)
 
 
 def test_validator_rejects_rollback_with_whitespace_target_revision():
     p = _rollback_proposal(target_revision="   ")
     with pytest.raises(ValidationError, match="target_revision"):
-        validate(p, _contract())
+        validate(p, _contract(), live_env=_DRIFTED_LIVE_ENV)
 
 
 def test_validator_rejects_rollback_without_human_review():
     p = _rollback_proposal(requires_human_review=False)
     with pytest.raises(ValidationError, match="requires_human_review"):
-        validate(p, _contract())
+        validate(p, _contract(), live_env=_DRIFTED_LIVE_ENV)
 
 
 def test_validator_rejects_rollback_with_any_present_allow_manual_diff():
@@ -116,7 +138,7 @@ def test_validator_rejects_rollback_with_any_present_allow_manual_diff():
     ]
     p = _rollback_proposal(diffs=diffs)
     with pytest.raises(ValidationError, match="present_allow_manual"):
-        validate(p, _contract())
+        validate(p, _contract(), live_env=_DRIFTED_LIVE_ENV)
 
 
 def test_validator_rejects_rollback_with_any_absent_diff():
@@ -136,26 +158,26 @@ def test_validator_rejects_rollback_with_any_absent_diff():
     ]
     p = _rollback_proposal(diffs=diffs)
     with pytest.raises(ValidationError, match="absent"):
-        validate(p, _contract())
+        validate(p, _contract(), live_env=_DRIFTED_LIVE_ENV)
 
 
 def test_validator_rejects_rollback_with_path_traversal_target_revision():
     p = _rollback_proposal(target_revision="../etc/passwd")
     with pytest.raises(ValidationError, match="target_revision"):
-        validate(p, _contract())
+        validate(p, _contract(), live_env=_DRIFTED_LIVE_ENV)
 
 
 def test_validator_rejects_rollback_with_uppercase_target_revision():
     # Cloud Run revision names are lowercase only
     p = _rollback_proposal(target_revision="PAYMENT-DEMO-00042")
     with pytest.raises(ValidationError, match="target_revision"):
-        validate(p, _contract())
+        validate(p, _contract(), live_env=_DRIFTED_LIVE_ENV)
 
 
 def test_validator_rejects_rollback_with_shell_metachar_target_revision():
     p = _rollback_proposal(target_revision="payment-demo;rm -rf /")
     with pytest.raises(ValidationError, match="target_revision"):
-        validate(p, _contract())
+        validate(p, _contract(), live_env=_DRIFTED_LIVE_ENV)
 
 
 def test_validator_rejects_rollback_when_llm_lies_about_contract_status():
@@ -188,7 +210,7 @@ def test_validator_rejects_rollback_when_llm_lies_about_contract_status():
     ]
     p = _rollback_proposal(diffs=diffs)
     with pytest.raises(ValidationError, match="present_allow_manual"):
-        validate(p, _contract())
+        validate(p, _contract(), live_env=_DRIFTED_LIVE_ENV)
 
 
 def test_validator_rejects_rollback_when_llm_lies_about_status_for_unknown_var():
@@ -207,7 +229,7 @@ def test_validator_rejects_rollback_when_llm_lies_about_status_for_unknown_var()
     ]
     p = _rollback_proposal(diffs=diffs)
     with pytest.raises(ValidationError, match="absent"):
-        validate(p, _contract())
+        validate(p, _contract(), live_env=_DRIFTED_LIVE_ENV)
 
 
 def test_validator_passes_rollback_when_a_nondrifted_allow_manual_var_rides_along():
@@ -248,7 +270,7 @@ def test_validator_passes_rollback_when_a_nondrifted_allow_manual_var_rides_alon
         ),
     ]
     p = _rollback_proposal(diffs=diffs)
-    validate(p, _contract())  # must not raise
+    validate(p, _contract(), live_env=_DRIFTED_LIVE_ENV)  # must not raise
 
 
 def test_validator_rejects_rollback_when_every_diff_agrees():
@@ -284,7 +306,7 @@ def test_validator_rejects_rollback_when_every_diff_agrees():
     ]
     p = _rollback_proposal(diffs=diffs)
     with pytest.raises(ValidationError, match="no env_diff deviates from the contract"):
-        validate(p, _contract())
+        validate(p, _contract(), live_env=_DRIFTED_LIVE_ENV)
 
 
 def test_validator_rejects_rollback_when_expected_contradicts_the_contract():
@@ -310,7 +332,7 @@ def test_validator_rejects_rollback_when_expected_contradicts_the_contract():
     ]
     p = _rollback_proposal(diffs=diffs)
     with pytest.raises(ValidationError, match="no env_diff deviates from the contract"):
-        validate(p, _contract())
+        validate(p, _contract(), live_env=_DRIFTED_LIVE_ENV)
 
 
 def test_validator_counts_a_declared_var_reported_as_wholly_absent():
@@ -327,7 +349,7 @@ def test_validator_counts_a_declared_var_reported_as_wholly_absent():
         )
     ]
     p = _rollback_proposal(diffs=diffs)
-    validate(p, _contract())  # must not raise
+    validate(p, _contract(), live_env=_DRIFTED_LIVE_ENV)  # must not raise
 
 
 def test_validator_rejects_present_undeclared_var_reported_as_agreement():
@@ -354,7 +376,7 @@ def test_validator_rejects_present_undeclared_var_reported_as_agreement():
     ]
     p = _rollback_proposal(diffs=diffs)
     with pytest.raises(ValidationError, match="absent"):
-        validate(p, _contract())
+        validate(p, _contract(), live_env=_DRIFTED_LIVE_ENV)
 
 
 def test_validator_rejects_conflicting_duplicates_of_a_hard_var():
@@ -389,7 +411,7 @@ def test_validator_rejects_conflicting_duplicates_of_a_hard_var():
     ]
     p = _rollback_proposal(diffs=diffs)
     with pytest.raises(ValidationError, match="conflicting live values"):
-        validate(p, _contract())
+        validate(p, _contract(), live_env=_DRIFTED_LIVE_ENV)
 
 
 def test_validator_rejects_conflicting_duplicates_of_a_soft_var():
@@ -418,7 +440,7 @@ def test_validator_rejects_conflicting_duplicates_of_a_soft_var():
     ]
     p = _rollback_proposal(diffs=diffs)
     with pytest.raises(ValidationError, match="conflicting live values"):
-        validate(p, _contract())
+        validate(p, _contract(), live_env=_DRIFTED_LIVE_ENV)
 
 
 def test_validator_allows_identical_duplicate_entries():
@@ -440,7 +462,7 @@ def test_validator_allows_identical_duplicate_entries():
         ),
     ]
     p = _rollback_proposal(diffs=diffs)
-    validate(p, _contract())  # must not raise
+    validate(p, _contract(), live_env=_DRIFTED_LIVE_ENV)  # must not raise
 
 
 def test_validator_compares_env_values_exactly_without_normalization():
@@ -456,7 +478,13 @@ def test_validator_compares_env_values_exactly_without_normalization():
         )
     ]
     p = _rollback_proposal(diffs=diffs)
-    validate(p, _contract())  # counts as a violation; must not raise
+    # The observed env carries the same trailing space, so BOTH layers are
+    # asked the normalization question, not just the reported-diff loop.
+    validate(
+        p,
+        _contract(),
+        live_env={"PAYMENT_MODE": "mock ", "FEATURE_X": "false"},
+    )  # counts as a violation; must not raise
 
 
 def test_validator_still_rejects_drifted_allow_manual_var_alongside_a_real_violation():
@@ -483,10 +511,10 @@ def test_validator_still_rejects_drifted_allow_manual_var_alongside_a_real_viola
     ]
     p = _rollback_proposal(diffs=diffs)
     with pytest.raises(ValidationError, match="present_allow_manual"):
-        validate(p, _contract())
+        validate(p, _contract(), live_env=_DRIFTED_LIVE_ENV)
 
 
-def test_validator_treats_a_deleted_disallow_manual_var_as_a_deviation():
+def test_reported_diff_loop_treats_a_deleted_disallow_manual_var_as_a_deviation():
     """A contract var missing from live env (expected set, live None) is a
     deviation, not agreement — it must reach the gate and be allowed through
     as a hard violation rather than skipped by the ds-2f5 equality check."""
@@ -499,7 +527,17 @@ def test_validator_treats_a_deleted_disallow_manual_var_as_a_deviation():
         )
     ]
     p = _rollback_proposal(diffs=diffs)
-    validate(p, _contract())  # must not raise
+    # The observed env DELIBERATELY does not match the reported scenario, and
+    # that is worth spelling out. This test's subject is the reported-diff loop,
+    # which treats live=None as a deviation. The ds-b3m layer cannot agree: the
+    # reader omits a var both when it is deleted and when it is
+    # Secret-Manager-backed, so a missing key is unreadable rather than
+    # violated, and it will not authorize a rollback on its own. Supplying an
+    # env where the key really is missing would make this test pass or fail on
+    # the NEW layer's refusal instead of the OLD layer's acceptance, which is
+    # not what it is here to prove. See
+    # test_an_opaque_or_deleted_disallow_manual_var_cannot_authorize_a_rollback.
+    validate(p, _contract(), live_env=_DRIFTED_LIVE_ENV)  # must not raise
 
 
 def test_validator_skips_absent_unknown_var_instead_of_rejecting_absent():
@@ -525,7 +563,7 @@ def test_validator_skips_absent_unknown_var_instead_of_rejecting_absent():
         ),
     ]
     p = _rollback_proposal(diffs=diffs)
-    validate(p, _contract())  # must not raise
+    validate(p, _contract(), live_env=_DRIFTED_LIVE_ENV)  # must not raise
 
 
 def test_validator_docs_pr_unaffected_by_new_target_revision_field():
@@ -547,4 +585,227 @@ def test_validator_docs_pr_unaffected_by_new_target_revision_field():
         rationale="t",
         confidence=0.9,
     )
-    validate(p, _contract())  # must not raise
+    validate(p, _contract(), live_env=_DRIFTED_LIVE_ENV)  # must not raise
+
+
+# --------------------------------------------------------------------------- #
+# ds-b3m — the gate must judge OBSERVED state, not only the model's own array.
+#
+# Everything above pins the reported-diff loop, which reads `proposal.env_diffs`.
+# That array is authored by the LLM, so the loop cannot see an OMISSION: a model
+# that wanted a drifted operator-safe var to escape simply left it out, and the
+# rollback proceeded and reverted that var anyway. These pin the second layer,
+# which reads the env the Reader Worker actually observed.
+# --------------------------------------------------------------------------- #
+
+
+def test_the_omitted_allow_manual_hole_is_NOT_closed_here():
+    """A KNOWN, DELIBERATELY UNCLOSED GAP — pinned so it cannot be mistaken for
+    a property this layer provides.
+
+    The proposal reports only the real PAYMENT_MODE violation and says nothing
+    about FEATURE_X, while the service really does have FEATURE_X flipped away
+    from its contract value. The rollback is allowed.
+
+    The obvious "fix" — veto when an operator-safe var deviates from the
+    contract — is the WRONG PREDICATE, and grounding it in observed env would
+    only make a wrong answer authoritative. Whether this rollback disturbs
+    FEATURE_X depends on the TARGET REVISION's value, not the contract's: if the
+    target also holds "true", the rollback preserves the operator's change and a
+    contract-based veto would refuse it for nothing. That question is answered
+    on the approval page (ds-uwc), which is also the only surface the chat
+    rollback lane passes through — this validator has exactly one call site and
+    the chat lane is not it.
+
+    What ds-b3m does close is the same omission for HARD violations, which is
+    the half this layer can answer correctly. See the tests below."""
+    p = _rollback_proposal()  # default diffs: PAYMENT_MODE only
+    validate(
+        p,
+        _contract(),
+        live_env={"PAYMENT_MODE": "live", "FEATURE_X": "true"},
+    )  # must not raise
+
+
+def test_an_unreadable_allow_manual_var_does_not_block_a_real_violation():
+    """Same boundary from the other side: FEATURE_X missing from the observed
+    env (deleted, or Secret-Manager-backed and dropped by the reader) is not
+    this layer's business either. Refusing here would take out every rollback on
+    a service that keeps an operator-safe var in Secret Manager, in exchange for
+    an answer that would still be the wrong predicate."""
+    p = _rollback_proposal()
+    validate(p, _contract(), live_env={"PAYMENT_MODE": "live"})  # must not raise
+
+
+def test_validator_rejects_rollback_when_observed_env_shows_no_violation():
+    """The model reports a hard violation the service does not actually have.
+
+    The reported-diff loop believes it — the diff it was handed is well-formed
+    and derives present_disallow_manual from the contract. Grounding is the only
+    thing that catches a fabricated justification."""
+    p = _rollback_proposal()
+    with pytest.raises(ValidationError, match="no CONFIRMED hard contract violation"):
+        validate(
+            p,
+            _contract(),
+            live_env={"PAYMENT_MODE": "mock", "FEATURE_X": "false"},
+        )
+
+
+def test_the_observed_env_layer_alone_accepts_a_real_violation():
+    """Isolates the helper: a genuine PAYMENT_MODE violation with FEATURE_X at
+    its contract value is accepted.
+
+    Named for what it actually proves. It calls the private helper directly, so
+    it says nothing about `validate()`'s wiring or the call site — those are
+    covered by the integration tests in tests/integration/test_rollback_e2e.py.
+    """
+    _authorize(_contract(), {"PAYMENT_MODE": "live", "FEATURE_X": "false"})
+
+
+def test_an_allow_manual_deviation_alone_cannot_authorize_a_rollback():
+    """Every hard var at its contract value and only the OPERATOR-SAFE var
+    differing is not a rollback-justifying state.
+
+    Without this, deleting the `allow_manual_change` skip in the loop would
+    change nothing detectable — the other allow_manual tests all carry a real
+    PAYMENT_MODE violation alongside, so the skip could be removed and they
+    would still pass. This is the case that makes the skip load-bearing."""
+    with pytest.raises(ValidationError, match="no CONFIRMED hard contract violation"):
+        _authorize(_contract(), {"PAYMENT_MODE": "mock", "FEATURE_X": "true"})
+
+
+def test_an_opaque_or_deleted_disallow_manual_var_cannot_authorize_a_rollback():
+    """THE DISPUTED CASE, pinned.
+
+    The reader omits a var both when it is genuinely deleted AND when it is
+    Secret-Manager-backed (`_extract_env_from_containers` skips `value_source`
+    entries). A secret-backed PAYMENT_MODE resolving to "mock" is CONTRACT
+    COMPLIANT — the schema declares a value, never that it must be an inline
+    literal — and reads here as missing.
+
+    A draft counted a missing key as a violation, on the argument that both
+    branches of the ambiguity are "not observably at the declared value". True,
+    and it does not follow: not observably compliant is not observably
+    non-compliant, and this predicate AUTHORIZES a traffic shift. It was also
+    inconsistent with the malformed-payload rule at the call site, which refuses
+    to coerce a bad reader response to {} precisely because an empty env would
+    manufacture violations — an omitted secret-backed entry manufactures the
+    same one."""
+    with pytest.raises(ValidationError, match="no CONFIRMED hard contract violation"):
+        _authorize(_contract(), {"FEATURE_X": "false"})
+
+
+def test_a_genuinely_empty_observed_env_is_an_observation_and_still_refuses():
+    """`{}` from a well-formed reader payload is a real observation (a service
+    can have no env block) — distinct from the `None` a malformed payload
+    produces. Both refuse a rollback here, but for DIFFERENT stated reasons, and
+    the distinction is what stops a truthiness check from quietly replacing the
+    `is None` check at the call site."""
+    with pytest.raises(ValidationError, match="no CONFIRMED hard contract violation"):
+        _authorize(_contract(), {})
+    with pytest.raises(ValidationError, match="no observed live env"):
+        _authorize(_contract(), None)
+
+
+def test_validator_refuses_rollback_when_no_observed_env_is_available():
+    """`live_env=None` is the caller saying "the Reader Worker read failed, and
+    the only env picture I hold is the one I rebuilt from this proposal's own
+    diffs". A gate cannot corroborate a proposal against the proposal. It
+    refuses rather than abstaining."""
+    p = _rollback_proposal()
+    with pytest.raises(ValidationError, match="no observed live env"):
+        validate(p, _contract(), live_env=None)
+
+
+def test_validator_refuses_rollback_when_live_env_is_omitted_entirely():
+    """The default is None, so a call site that forgets the argument REFUSES a
+    rollback rather than silently permitting one. Forgetting can only tighten
+    this gate, never loosen it — which is why the parameter is defaulted at all
+    instead of being required like `autonomy_mode`."""
+    p = _rollback_proposal()
+    with pytest.raises(ValidationError, match="no observed live env"):
+        validate(p, _contract())
+
+
+def test_observed_env_layer_ignores_undeclared_vars_entirely():
+    """A real Cloud Run service carries plenty of vars the contract says nothing
+    about (PORT, K_SERVICE, ...). Treating their presence as deviation — which
+    is what the REPORTED-diff loop does for a var the model names — would refuse
+    every rollback that ever ran. The contract governs what it declares."""
+    _authorize(
+        _contract(),
+        {
+            "PAYMENT_MODE": "live",
+            "FEATURE_X": "false",
+            "PORT": "8080",
+            "K_SERVICE": "payment-demo",
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    "action",
+    [DecisionAction.NO_OP, DecisionAction.DOCS_PR, DecisionAction.DRIFT_ISSUE],
+)
+def test_non_rollback_actions_are_unaffected_by_a_missing_live_env(action):
+    """The observed-env requirement is scoped to ROLLBACK. Nothing else changes
+    live state on this path, so nothing else needs grounding — and widening the
+    requirement would take the whole /recheck pipeline down with the reader."""
+    diffs = [
+        EnvDiff(
+            name="FEATURE_X",
+            expected="false",
+            live="true",
+            contract_status=ContractStatus.PRESENT_ALLOW_MANUAL,
+            recent_pr_match="#123 flip the flag",
+        )
+    ]
+    kwargs = {}
+    if action == DecisionAction.DOCS_PR:
+        kwargs = {
+            "target_docs_file": "demo/docs/runbook.md",
+            "target_docs_section": "Feature Flags",
+        }
+    p = DecisionProposal(
+        action=action,
+        confidence=0.9,
+        rationale="r",
+        env_diffs=[] if action == DecisionAction.NO_OP else diffs,
+        requires_human_review=False,
+        **kwargs,
+    )
+    validate(p, _contract())  # live_env omitted entirely: must not raise
+
+
+def test_a_confirmed_EMPTY_STRING_value_is_present_and_differing():
+    """Empty string is a legitimate Cloud Run env value, so `PAYMENT_MODE=""` is
+    a var that is PRESENT and NOT at its contract value — a confirmed violation.
+
+    Pins the presence test against the shape it is easiest to write wrong:
+    `if not live_env.get(name)` reads an empty string as unreadable and would
+    silently drop a real violation. Presence is a key question, never a
+    truthiness one — the same distinction `_extract_env_from_containers` makes
+    for exactly the same reason."""
+    _authorize(_contract(), {"PAYMENT_MODE": "", "FEATURE_X": "false"})
+
+
+def test_undeclared_vars_alone_cannot_authorize_a_rollback():
+    """Every declared hard var at its contract value, with undeclared vars
+    present, is not a rollback-justifying state.
+
+    The other undeclared-var test carries a real PAYMENT_MODE violation
+    alongside, so it would pass even if undeclared vars DID count. This is the
+    case that makes "the contract governs only what it declares" load-bearing:
+    counting them would authorize a rollback on any service that happens to
+    carry PORT or K_SERVICE, which is every Cloud Run service there is."""
+    with pytest.raises(ValidationError, match="no CONFIRMED hard contract violation"):
+        _authorize(
+            _contract(),
+            {
+                "PAYMENT_MODE": "mock",
+                "FEATURE_X": "false",
+                "PORT": "8080",
+                "K_SERVICE": "payment-demo",
+            },
+        )

@@ -1058,6 +1058,7 @@ def _event_key(
 
     Including ``contract_hash`` (not just contract_path) means a contract edit
     while live env stays the same still invalidates the prior cached decision.
+
     """
     payload = {
         "trigger": trigger,
@@ -1078,6 +1079,63 @@ def _hash_contract(contract: OpsContract) -> str:
     """
     blob = contract.model_dump_json()
     return hashlib.sha256(blob.encode()).hexdigest()[:16]
+
+
+def _observed_env_or_none(reader_payload: object) -> dict[str, str] | None:
+    """Return the Reader Worker's ``env`` block, or ``None`` if it is not the
+    shape we are willing to call an observation (ds-b3m).
+
+    ``None`` is the honest answer for a malformed payload, and it matters which
+    way this degrades. The rollback gate treats ``None`` as "no ground truth,
+    refuse"; coercing a bad payload to ``{}`` instead would tell every consumer
+    that the service genuinely has no env vars, which is a confident wrong
+    answer rather than an absent one — and on the gate specifically it would
+    turn every contract var into "unreadable" in one step.
+
+    An EMPTY dict from a well-formed payload is left alone: a service really can
+    have no env block, and that is an observation, not a failure. Only the
+    wrapper shape is checked here — a non-dict payload, a missing/non-dict
+    ``env``, or any non-string key or value in it.
+    """
+    if not isinstance(reader_payload, dict):
+        return None
+    env = reader_payload.get("env")
+    if not isinstance(env, dict):
+        return None
+    for k, v in env.items():
+        if not isinstance(k, str) or not isinstance(v, str):
+            return None
+    return env
+
+
+def _cached_rollback_needs_ground_truth(
+    cached: dict | None, observed_env: dict[str, str] | None
+) -> bool:
+    """True when a cached decision must NOT be served to this request (ds-b3m).
+
+    The idempotency cache is consulted BEFORE ``validate()``, so a cache hit is
+    a second way to obtain a rollback approval — one that skips the gate
+    entirely. The event key is derived from ``live_env`` CONTENT with no
+    provenance, and on the ADK path a failed reader read leaves ``live_env``
+    reconstructed from ``proposal.env_diffs``. The model has already seen the
+    reader's result, so an accurate report reconstructs the exact dict the
+    coordinator would have read and hashes identically: an ungrounded request
+    lands on a grounded run's key and is handed its rollback approval.
+
+    So the rule is about the CACHED DECISION's action, not the incoming
+    proposal's. A first attempt at this scoped an event-key namespace by the
+    NEW proposal's action, which still let a grounded ROLLBACK be served to an
+    ungrounded request whose model happened to propose ``drift_issue`` — the
+    key matched, the guard did not fire, and the response carried the approval
+    anyway. What is being handed back is what has to be judged.
+
+    A cached NON-rollback is still served normally: it is what stops a retry
+    opening a second PR or issue, and no non-rollback action has a gate that
+    reads observed env, so provenance tells us nothing about it.
+    """
+    if observed_env is not None:
+        return False
+    return bool(cached) and cached.get("action") == DecisionAction.ROLLBACK.value
 
 
 def _cached_rollback_is_expired(cached: dict) -> bool:
@@ -1813,8 +1871,10 @@ async def _do_recheck(
         try:
             # Reader Worker enforces TARGET_SERVICE/region/project via its own
             # boot config (Layer 2); the coordinator no longer passes them.
-            live_env = worker_client.call("reader", {})["env"]
+            live_env = _observed_env_or_none(worker_client.call("reader", {}))
         except Exception:
+            live_env = None
+        if live_env is None:
             # Trade-off: when the Reader Worker read fails on the ADK path we
             # hash the diffs the LLM reported instead of the actual live env.
             # That's weaker idempotency (the LLM's tool call already saw the
@@ -1823,21 +1883,43 @@ async def _do_recheck(
             # Sentinel `<ABSENT>` keeps live=None distinct from live="" so the
             # event_key doesn't bucket two genuinely-different states together
             # (Cloud Run treats empty-string-as-value as a valid live state).
+            #
+            # ds-b3m: this reconstruction is for the IDEMPOTENCY KEY ONLY and
+            # must never be handed to the validator as observed state — it is
+            # built out of ``proposal.env_diffs``, so a gate fed this would be
+            # re-reading the model's own array under a name that claims
+            # otherwise. ``observed_env`` stays None so the rollback gate
+            # refuses; ``live_env`` below keeps the old event-key behaviour.
+            observed_env = None
             live_env = {
                 d.name: "<ABSENT>" if d.live is None else d.live
                 for d in proposal.env_diffs
             }
+        else:
+            observed_env = live_env
     else:
         try:
             # Reader Worker enforces TARGET_SERVICE/region/project via its own
             # boot config (Layer 2); the coordinator no longer passes them and
             # no longer holds project-wide roles/run.viewer (Phase 13 trim).
-            live_env = worker_client.call("reader", {})["env"]
+            reader_payload = worker_client.call("reader", {})
         except WorkerClientError as e:
             # Same 502 semantics as before — a Reader Worker failure is still
             # an upstream-dep failure from the operator's POV. The classifier
             # path has no fallback; without live_env we cannot classify.
             raise HTTPException(status_code=502, detail=f"reader worker failed: {e}")
+        observed_env = _observed_env_or_none(reader_payload)
+        if observed_env is None:
+            # The call succeeded but the payload is not the shape we require.
+            # The classifier cannot work from it either, so this is the same
+            # class of failure as the exception above and gets the same 502 —
+            # rather than being coerced into an empty dict, which would read to
+            # every downstream consumer as "the service has no env vars".
+            raise HTTPException(
+                status_code=502,
+                detail="reader worker returned a malformed env payload",
+            )
+        live_env = observed_env
         proposal = classify(
             ClassificationInput(contract=contract, live_env=live_env, recent_prs=[])
         )
@@ -1855,6 +1937,18 @@ async def _do_recheck(
     if not force:
         existing = state.find_decision_for_event(event_key)
         if existing:
+            if _cached_rollback_needs_ground_truth(existing, observed_env):
+                # Refuse rather than fall through and re-propose: falling
+                # through would mint a SECOND approval for the same event.
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        "adk proposal rejected by safety gate: cached rollback "
+                        "not served — no observed live env is available to "
+                        "corroborate it, and the idempotency cache is read "
+                        "before the gate. Retry once the reader is reachable."
+                    ),
+                )
             if _cached_rollback_is_expired(existing):
                 # Phase 14 (Codex Phase 13 second-pass W2): compare-and-
                 # delete instead of unconditional release. Two concurrent
@@ -1878,6 +1972,15 @@ async def _do_recheck(
                     # mint a duplicate /propose. Surface 409 so the
                     # caller retries cleanly.
                     existing = state.find_decision_for_event(event_key)
+                    if _cached_rollback_needs_ground_truth(existing, observed_env):
+                        raise HTTPException(
+                            status_code=502,
+                            detail=(
+                                "adk proposal rejected by safety gate: cached "
+                                "rollback not served — no observed live env is "
+                                "available to corroborate it."
+                            ),
+                        )
                     if existing and not _cached_rollback_is_expired(existing):
                         return existing
                     raise HTTPException(
@@ -1888,7 +1991,14 @@ async def _do_recheck(
                 return existing
 
     try:
-        validate(proposal, contract)
+        # ds-b3m: ``observed_env`` — NOT ``live_env``. On the ADK path those two
+        # differ exactly when the Reader Worker read failed: ``live_env`` is
+        # then a reconstruction from ``proposal.env_diffs``, kept only so the
+        # idempotency key stays stable, while ``observed_env`` is None. Passing
+        # ``live_env`` here would hand the model's own diff array back to the
+        # gate as "observed state" — a strict check whose subject was laundered
+        # by its caller, which is the defect class this repo keeps re-shipping.
+        validate(proposal, contract, live_env=observed_env)
     except ProposalValidationError as e:
         # ADK path: the LLM produced a proposal that violates the safety
         # rules (e.g. docs_pr for a SECRET-named var, allow_manual_change
@@ -1925,6 +2035,26 @@ async def _do_recheck(
     claimed = state.record_event(event_key, {"trigger": trigger})
     if not claimed:
         existing = state.find_decision_for_event(event_key)
+        # THIRD cached-rollback return site, and the least obvious one. Only a
+        # NON-rollback proposal reaches here (a rollback branched out at
+        # _do_rollback well above), so it looks unrelated — but the request can
+        # miss the cache on its first lookup, lose the claim to a CONCURRENT
+        # grounded run that recorded a ROLLBACK under the same key, and have
+        # this re-read hand that rollback's approval back.
+        #
+        # The first two sites were guarded and this one was not, which is the
+        # argument for a named predicate over an inline condition: "may this
+        # request be served this decision" has to be asked everywhere a
+        # decision is served, and it is easy to find two of three.
+        if _cached_rollback_needs_ground_truth(existing, observed_env):
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    "adk proposal rejected by safety gate: cached rollback not "
+                    "served — no observed live env is available to corroborate "
+                    "it."
+                ),
+            )
         if existing:
             return existing
         raise HTTPException(status_code=409, detail="event in-progress, retry")
