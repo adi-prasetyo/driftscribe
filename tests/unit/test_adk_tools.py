@@ -22,8 +22,32 @@ import json
 import re
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
+from urllib.parse import quote
 
 import pytest
+
+
+# A realistic rollback ``approval_id``. The fixtures below used to say ``"id1"``,
+# which the real system can never produce: ``driftscribe_lib.approvals`` mints
+# ``str(uuid.uuid4())`` and ``workers/rollback/main.py``'s ``/execute`` schema
+# REFUSES anything that isn't UUID-shaped — so an ``"id1"`` approval could never
+# have been executed. ds-y5i added the same shape check on the coordinator side
+# (the id becomes part of a Firestore document id), which is what turned the
+# unrealistic fixture into a visible failure.
+_APPROVAL_UUID = "9f2c1b40-6d3e-4a58-9c07-1b8e2f4a6d15"
+
+# A realistic raw approval token. The fixtures used to say "tok"/_APPROVAL_TOKEN,
+# which secrets.token_urlsafe(32) can never produce (43 URL-safe chars) — and
+# Codex pointed out that the impossible fixture was MASKING the missing check:
+# with no syntax constraint on the token's value, `?t=<urlencoded link to
+# another approval>` was a valid credential. Same lesson as _APPROVAL_UUID.
+_APPROVAL_TOKEN = "fixture-approval-token-NOT-a-real-credential"
+_OTHER_TOKEN = "fixture-OTHER-approval-token-must-never-leak"
+_OTHER_UUID = "11111111-2222-3333-4444-555555555555"
+# The credential this response IS for, and one for a DIFFERENT approval that
+# must never ride out alongside it.
+_GOOD_URL = f"https://c/approvals/{_APPROVAL_UUID}?t={_APPROVAL_TOKEN}"
+_OTHER_URL = f"https://c/approvals/{_OTHER_UUID}?t={_OTHER_TOKEN}"
 
 
 # --------------------------------------------------------------------------- #
@@ -97,9 +121,9 @@ def test_propose_rollback_tool_sends_target_revision_and_safe_reason():
 
     with patch("agent.adk_tools.worker_client.call") as m:
         m.return_value = {
-            "approval_id": "id1",
-            "approval_token": "tok",
-            "approval_url": "https://coord/approvals/id1?t=tok",
+            "approval_id": _APPROVAL_UUID,
+            "approval_token": _APPROVAL_TOKEN,
+            "approval_url": "https://coord/approvals/" + _APPROVAL_UUID + "?t=" + _APPROVAL_TOKEN,
             "expires_at": "2026-01-01T00:00:00+00:00",
         }
         out = propose_rollback_tool(
@@ -113,7 +137,7 @@ def test_propose_rollback_tool_sends_target_revision_and_safe_reason():
     assert worker == "rollback"
     assert payload["target_revision"] == "payment-demo-00002-bbb"
     assert "payment-demo-00002-bbb" in payload["reason"]  # safe, revision-derived
-    assert out["approval_id"] == "id1"
+    assert out["approval_id"] == _APPROVAL_UUID
 
 
 def test_propose_rollback_tool_does_not_forward_secret_reason():
@@ -126,7 +150,11 @@ def test_propose_rollback_tool_does_not_forward_secret_reason():
     secret_token = "sk-CHAT-LEAK-8421"
     secret_url = "https://admin:hunter2CHAT@svc.internal/api"
     with patch("agent.adk_tools.worker_client.call") as m:
-        m.return_value = {"approval_id": "id1", "approval_url": "u", "expires_at": "x"}
+        m.return_value = {
+            "approval_id": _APPROVAL_UUID,
+            "approval_url": "https://c/approvals/" + _APPROVAL_UUID + "?t=" + _APPROVAL_TOKEN,
+            "expires_at": "2026-01-01T00:15:00+00:00",
+        }
         propose_rollback_tool(
             target_revision="payment-demo-00002-bbb",
             reason=f"rolling back because TOKEN={secret_token} and DSN={secret_url}",
@@ -716,12 +744,12 @@ def test_open_infra_pr_tool_return_value_deep_equal_all_cases(monkeypatch):
 
 
 def _rollback_worker_response(
-    approval_url="https://driftscribe.example.com/approvals/id1?t=tok",
+    approval_url="https://driftscribe.example.com/approvals/" + _APPROVAL_UUID + "?t=" + _APPROVAL_TOKEN,
     expires_at="2026-01-01T00:15:00+00:00",
 ):
     return {
-        "approval_id": "id1",
-        "approval_token": "tok",
+        "approval_id": _APPROVAL_UUID,
+        "approval_token": _APPROVAL_TOKEN,
         "approval_url": approval_url,
         "expires_at": expires_at,
     }
@@ -755,13 +783,13 @@ def test_propose_rollback_tool_notifies_on_success(monkeypatch):
     assert n["channel"] == "approval"
     assert n["severity"] == "high"
     assert "payment-demo-00010-abc" in n["body"]
-    assert "https://driftscribe.example.com/approvals/id1?t=tok" in n["body"]
+    assert "https://driftscribe.example.com/approvals/" + _APPROVAL_UUID + "?t=" + _APPROVAL_TOKEN in n["body"]
     assert "2026-01-01T00:15:00+00:00" in n["body"]
     # SECURITY: the reason (which may contain secrets) must NEVER appear in the body
     assert "SECRET-SENTINEL-do-not-leak" not in n["body"]
     # Tool return value still contains the worker response
-    assert out["approval_id"] == "id1"
-    assert out["approval_url"] == "https://driftscribe.example.com/approvals/id1?t=tok"
+    assert out["approval_id"] == _APPROVAL_UUID
+    assert out["approval_url"] == "https://driftscribe.example.com/approvals/" + _APPROVAL_UUID + "?t=" + _APPROVAL_TOKEN
 
 
 def test_propose_rollback_tool_safe_reason_still_sent_to_worker():
@@ -790,13 +818,13 @@ def test_propose_rollback_tool_safe_reason_still_sent_to_worker():
 # --------------------------------------------------------------------------- #
 
 
-def _rollback_worker_response_with_token(token="SECRETTOKEN"):
+def _rollback_worker_response_with_token(token=_APPROVAL_TOKEN):
     """Worker /propose response shape — BOTH the bare ``approval_token`` field
     and the tokenized ``approval_url``, exactly as workers/rollback/main.py emits."""
     return {
-        "approval_id": "id1",
+        "approval_id": _APPROVAL_UUID,
         "approval_token": token,
-        "approval_url": f"https://c/approvals/id1?t={token}",
+        "approval_url": f"https://c/approvals/{_APPROVAL_UUID}?t={token}",
         "expires_at": "2026-07-07T00:15:00+00:00",
     }
 
@@ -826,35 +854,106 @@ def test_propose_rollback_anon_gets_same_credential_as_operator():
             )
 
     # Anon == operator: both credential surfaces intact.
-    assert out["approval_token"] == "SECRETTOKEN"
-    assert out["approval_url"] == "https://c/approvals/id1?t=SECRETTOKEN"
+    assert out["approval_token"] == _APPROVAL_TOKEN
+    assert out["approval_url"] == "https://c/approvals/" + _APPROVAL_UUID + "?t=" + _APPROVAL_TOKEN + ""
     # The #226 approval_note concept is gone.
     assert "approval_note" not in out
-    assert out["approval_id"] == "id1"
+    assert out["approval_id"] == _APPROVAL_UUID
     assert out["expires_at"] == "2026-07-07T00:15:00+00:00"
     # Operator notifier webhook is UNCHANGED — it still carries the live link.
     assert len(notifier_calls) == 1
-    assert "SECRETTOKEN" in notifier_calls[0]["body"]
+    assert _APPROVAL_TOKEN in notifier_calls[0]["body"]
+
+
+@pytest.mark.parametrize("anon", [True, False], ids=["anon", "operator"])
+def test_propose_rollback_anon_and_operator_get_the_same_allowlisted_response(anon):
+    """The 2026-07-09 operator-seat property — an anonymous demo visitor
+    receives EXACTLY what the operator receives, both credential surfaces
+    included — restated for the ds-y5i allowlist.
+
+    This test used to assert the tool returned the worker response *verbatim*.
+    It no longer does: on success it returns only the four contract fields, and
+    on every other outcome a sanitized error. The parity the operator-seat
+    decision is actually about is untouched, and that is what is pinned here.
+    """
+    from agent.adk_tools import propose_rollback_tool
+    from agent.request_context import demo_anonymous_scope
+
+    class _Store:
+        def record_decision(self, *a, **k):
+            return None
+
+    def _fake_call(worker, payload):
+        if worker == "notifier":
+            return {"status": "sent"}
+        return _rollback_worker_response_with_token()
+
+    with patch("agent.adk_tools.worker_client.call", side_effect=_fake_call):
+        with patch("agent.main.get_state", return_value=_Store()):
+            with demo_anonymous_scope(anon):
+                out = propose_rollback_tool(
+                    target_revision="payment-demo-00002-bbb", reason="x"
+                )
+
+    assert out == {
+        "approval_id": _APPROVAL_UUID,
+        "approval_url": f"https://c/approvals/{_APPROVAL_UUID}?t=" + _APPROVAL_TOKEN + "",
+        "expires_at": "2026-07-07T00:15:00+00:00",
+        "approval_token": _APPROVAL_TOKEN,
+    }
+    assert "approval_note" not in out
 
 
 @pytest.mark.parametrize(
     "worker_resp",
     [
-        # error shape (no approval_url)
-        {"error": "worker exploded", "approval_id": "id1"},
-        # malformed expires_at → the notify is skipped, but the tool return is
-        # STILL the worker response verbatim for anon (no scrub, no note).
-        {"approval_id": "id1", "approval_url": "https://c/approvals/id1?t=tok"},
-        {"approval_id": "id1", "approval_url": "https://c/approvals/id1?t=tok",
-         "expires_at": ""},
+        {"error": f"see {_GOOD_URL}"},
+        # ...or nested a level down.
+        {"details": {"approval_url": _OTHER_URL}},
+        # ...or riding along a VALID response as a SECOND approval's link.
+        {"approval_id": _APPROVAL_UUID, "approval_token": _APPROVAL_TOKEN,
+         "approval_url": _GOOD_URL,
+         "expires_at": "2026-01-01T00:15:00+00:00",
+         "note": f"or use {_OTHER_URL}"},
+        # ...or as a bare token beside a broken url.
+        {"error": "url build failed", "approval_id": _APPROVAL_UUID,
+         "approval_token": _OTHER_TOKEN},
+        # ...or inside an EXTRA query parameter on an otherwise valid url: the
+        # whole string is what reaches the notifier and the model.
+        {"approval_id": _APPROVAL_UUID, "approval_token": _APPROVAL_TOKEN,
+         "approval_url": f"{_GOOD_URL}&next={quote(_OTHER_URL, safe='')}",
+         "expires_at": "2026-01-01T00:15:00+00:00"},
+        # ...or in its fragment.
+        {"approval_id": _APPROVAL_UUID, "approval_token": _APPROVAL_TOKEN,
+         "approval_url": f"{_GOOD_URL}#{_OTHER_URL}",
+         "expires_at": "2026-01-01T00:15:00+00:00"},
+        # ...or as a bare approval_token that is NOT the url's credential.
+        {"approval_id": _APPROVAL_UUID, "approval_token": _OTHER_TOKEN,
+         "approval_url": _GOOD_URL,
+         "expires_at": "2026-01-01T00:15:00+00:00"},
+        # ...or AS the token value itself: with no syntax on the token, an
+        # urlencoded link for another approval satisfies "exactly one non-blank
+        # t" AND equals approval_token, so a complete unrecorded credential
+        # rides out inside a well-formed one (Codex reproduced this).
+        {"approval_id": _APPROVAL_UUID, "approval_token": _OTHER_URL,
+         "approval_url": f"/approvals/{_APPROVAL_UUID}?t={quote(_OTHER_URL, safe='')}",
+         "expires_at": "2026-01-01T00:15:00+00:00"},
     ],
 )
-def test_propose_rollback_anon_returns_worker_response_unchanged(worker_resp):
-    """For anon callers the tool no longer transforms the worker response at all:
-    whatever shape the worker returns is handed back verbatim (no scrub, no
-    ``approval_note`` injection), identical to the operator path."""
+def test_propose_rollback_never_forwards_worker_supplied_content(worker_resp):
+    """Nothing the worker says reaches the model except the four allowlisted
+    fields of a response the tool has just RECORDED.
+
+    Each param hides a live credential somewhere the earlier "strip the bad
+    bits and forward the rest" design missed (Codex reproduced the first two
+    against that design). Enumerating hiding places is a losing game — this
+    pins the allowlist that makes enumeration unnecessary.
+    """
     from agent.adk_tools import propose_rollback_tool
-    from agent.request_context import demo_anonymous_scope
+
+    class _Store:
+        def record_decision(self, *a, **k):
+            return None
 
     def _fake_call(worker, payload):
         if worker == "notifier":
@@ -862,13 +961,176 @@ def test_propose_rollback_anon_returns_worker_response_unchanged(worker_resp):
         return worker_resp
 
     with patch("agent.adk_tools.worker_client.call", side_effect=_fake_call):
-        with demo_anonymous_scope(True):
+        with patch("agent.main.get_state", return_value=_Store()):
             out = propose_rollback_tool(
                 target_revision="payment-demo-00002-bbb", reason="x"
             )
 
-    assert out == worker_resp
-    assert "approval_note" not in out
+    # _APPROVAL_TOKEN may legitimately appear (some params ARE valid responses
+    # that get recorded); the OTHER approval's credential never may.
+    assert _OTHER_TOKEN not in json.dumps(out)
+    assert set(out) <= {
+        "approval_id", "approval_url", "expires_at", "approval_token",
+        "error", "target_revision",
+    }
+    assert _OTHER_UUID not in json.dumps(out)
+    for leaked in ("note", "details", "url build failed"):
+        assert leaked not in json.dumps(out)
+
+
+def test_propose_rollback_strips_a_bare_token_when_the_url_is_unusable():
+    """A response with approval_id + approval_token but a BROKEN approval_url is
+    still a live credential: this tool's docstring teaches the model the
+    ``/approvals/{id}?t=<token>`` shape, so it could reassemble a working link
+    for an approval that was never recorded — defeating the ds-y5i gate through
+    the one branch that returns the worker response rather than a withhold.
+
+    The rest of the response is forwarded untouched so the model can still
+    relay the worker's error.
+    """
+    from agent.adk_tools import propose_rollback_tool
+
+    worker_resp = {
+        "error": "coordinator url unset",
+        "approval_id": _APPROVAL_UUID,
+        "approval_token": _APPROVAL_TOKEN,
+        "expires_at": "2026-01-01T00:15:00+00:00",
+    }
+
+    def _fake_call(worker, payload):
+        if worker == "notifier":
+            return {"status": "sent"}
+        return worker_resp
+
+    with patch("agent.adk_tools.worker_client.call", side_effect=_fake_call):
+        out = propose_rollback_tool(target_revision="payment-demo-00002-bbb", reason="x")
+
+    assert "approval_token" not in out
+    assert _APPROVAL_TOKEN not in json.dumps(out)
+    # ds-y5i round 3: originally this forwarded the worker's own error after
+    # stripping the token. The allowlist replaces the response outright, which
+    # also covers the tokens that hid in OTHER fields.
+    assert "coordinator url unset" not in json.dumps(out)
+    assert "No rollback was attempted or executed" in out["error"]
+    # The caller's dict is never mutated.
+    assert worker_resp["approval_token"] == _APPROVAL_TOKEN
+
+
+@pytest.mark.parametrize(
+    "worker_resp",
+    [
+        # A bare JSON string that IS a working approval URL — the escape hatch:
+        # worker_client.call returns whatever response.json() decodes, without
+        # enforcing an object, and the pre-fix code forwarded it verbatim.
+        "https://c/approvals/9f2c1b40-6d3e-4a58-9c07-1b8e2f4a6d15?t=" + _APPROVAL_TOKEN + "",
+        ["https://c/approvals/x?t=" + _APPROVAL_TOKEN + ""],
+        None,
+        42,
+    ],
+)
+def test_propose_rollback_refuses_a_non_object_worker_response(worker_resp):
+    """A non-object response is the case where the gate cannot see its subject:
+    there is no ``approval_id`` to record, and the payload itself may BE a live
+    approval URL. Fail, don't abstain — return a sanitized error, never the raw
+    payload."""
+    from agent.adk_tools import propose_rollback_tool
+
+    notifier_calls = []
+
+    def _fake_call(worker, payload):
+        if worker == "notifier":
+            notifier_calls.append(payload)
+            return {"status": "sent"}
+        return worker_resp
+
+    with patch("agent.adk_tools.worker_client.call", side_effect=_fake_call):
+        out = propose_rollback_tool(target_revision="payment-demo-00002-bbb", reason="x")
+
+    assert isinstance(out, dict)
+    assert _APPROVAL_TOKEN not in json.dumps(out)
+    assert "approvals/" not in json.dumps(out)
+    assert notifier_calls == []
+    assert "No rollback was attempted or executed" in out["error"]
+    assert out["target_revision"] == "payment-demo-00002-bbb"
+
+
+@pytest.mark.parametrize("anon", [True, False], ids=["anon", "operator"])
+@pytest.mark.parametrize(
+    "worker_resp",
+    [
+        # A usable approval_url, but nothing the desk could ever expire:
+        # missing expires_at ...
+        {"approval_id": _APPROVAL_UUID, "approval_token": _APPROVAL_TOKEN,
+         "approval_url": "https://c/approvals/" + _APPROVAL_UUID + "?t=" + _APPROVAL_TOKEN},
+        # ... empty ...
+        {"approval_id": _APPROVAL_UUID, "approval_token": _APPROVAL_TOKEN,
+         "approval_url": "https://c/approvals/" + _APPROVAL_UUID + "?t=" + _APPROVAL_TOKEN,
+         "expires_at": ""},
+        # ... or unparseable.
+        {"approval_id": _APPROVAL_UUID, "approval_token": _APPROVAL_TOKEN,
+         "approval_url": "https://c/approvals/" + _APPROVAL_UUID + "?t=" + _APPROVAL_TOKEN,
+         "expires_at": "whenever"},
+        # A usable approval_url whose approval_id is not UUID-shaped: the id
+        # becomes part of a Firestore document id, so it is never interpolated.
+        {"approval_id": "../../evil", "approval_token": _APPROVAL_TOKEN,
+         "approval_url": "https://c/approvals/x?t=" + _APPROVAL_TOKEN,
+         "expires_at": "2026-01-01T00:15:00+00:00"},
+        # Well-formed fields that describe DIFFERENT approvals: recording this
+        # would join status from one approval while the operator's click
+        # executes another.
+        {"approval_id": _APPROVAL_UUID, "approval_token": _APPROVAL_TOKEN,
+         "approval_url": "https://c/approvals/11111111-2222-3333-4444-555555555555?t=" + _APPROVAL_TOKEN,
+         "expires_at": "2026-01-01T00:15:00+00:00"},
+        # A URL for the right approval but carrying no credential at all.
+        {"approval_id": _APPROVAL_UUID, "approval_token": _APPROVAL_TOKEN,
+         "approval_url": "https://c/approvals/" + _APPROVAL_UUID + "?t=",
+         "expires_at": "2026-01-01T00:15:00+00:00"},
+    ],
+)
+def test_propose_rollback_withholds_credential_when_unrecordable(worker_resp, anon):
+    """ds-y5i, fail-CLOSED: a credential the tool cannot record is a credential
+    it does not hand out.
+
+    These responses all carry a live ``?t=`` token but cannot produce a sound
+    decision row — so releasing them would let an operator approve a real Cloud
+    Run traffic shift with no audit row, which IS the ds-y5i incident (just
+    triggered by a broken worker instead of a missing code path). At this point
+    nothing has been mutated and the token has not left the function, so
+    withholding is still available and costs only an approval doc nobody holds
+    the token for, which expires on its own 15-min TTL.
+
+    Parametrized over anon AND operator because the 2026-07-09 operator-seat
+    reversal's property is that the two paths are IDENTICAL — withholding must
+    not quietly reintroduce a split between them.
+    """
+    from agent.adk_tools import propose_rollback_tool
+    from agent.request_context import demo_anonymous_scope
+
+    notifier_calls = []
+
+    def _fake_call(worker, payload):
+        if worker == "notifier":
+            notifier_calls.append(payload)
+            return {"status": "sent"}
+        return worker_resp
+
+    with patch("agent.adk_tools.worker_client.call", side_effect=_fake_call):
+        with demo_anonymous_scope(anon):
+            out = propose_rollback_tool(
+                target_revision="payment-demo-00002-bbb", reason="x"
+            )
+
+    # Neither credential surface is returned to the model...
+    assert "approval_url" not in out
+    assert "approval_token" not in out
+    assert "tok" not in json.dumps(out)
+    # ...nor pushed to the operator's inbox.
+    assert notifier_calls == []
+    # The model is told plainly that no link went out AND that nothing ran, so
+    # it can report neither "here is your approval" nor "the rollback failed".
+    assert "no approval link was released" in out["error"]
+    assert "No rollback was attempted or executed" in out["error"]
+    assert out["target_revision"] == "payment-demo-00002-bbb"
 
 
 def test_propose_rollback_operator_keeps_credential():
@@ -886,30 +1148,30 @@ def test_propose_rollback_operator_keeps_credential():
             target_revision="payment-demo-00002-bbb", reason="x"
         )
 
-    assert out["approval_token"] == "SECRETTOKEN"
-    assert "?t=SECRETTOKEN" in out["approval_url"]
+    assert out["approval_token"] == _APPROVAL_TOKEN
+    assert "?t=" + _APPROVAL_TOKEN + "" in out["approval_url"]
 
 
 @pytest.mark.parametrize(
     "worker_resp",
     [
         # missing approval_url
-        {"approval_id": "id1", "approval_token": "tok", "expires_at": "2026-01-01T00:15:00+00:00"},
+        {"approval_id": _APPROVAL_UUID, "approval_token": _APPROVAL_TOKEN, "expires_at": "2026-01-01T00:15:00+00:00"},
         # empty approval_url
-        {"approval_id": "id1", "approval_url": "", "expires_at": "2026-01-01T00:15:00+00:00"},
+        {"approval_id": _APPROVAL_UUID, "approval_url": "", "expires_at": "2026-01-01T00:15:00+00:00"},
         # non-str approval_url (None)
-        {"approval_id": "id1", "approval_url": None, "expires_at": "2026-01-01T00:15:00+00:00"},
-        # missing expires_at
-        {"approval_id": "id1", "approval_url": "https://coord/approvals/id1?t=tok"},
-        # empty expires_at
-        {"approval_id": "id1", "approval_url": "https://coord/approvals/id1?t=tok", "expires_at": ""},
-        # non-str expires_at (int)
-        {"approval_id": "id1", "approval_url": "https://coord/approvals/id1?t=tok", "expires_at": 12345},
+        {"approval_id": _APPROVAL_UUID, "approval_url": None, "expires_at": "2026-01-01T00:15:00+00:00"},
     ],
 )
 def test_propose_rollback_tool_no_notify_when_approval_fields_missing(monkeypatch, caplog, worker_resp):
-    """Missing/empty/non-str approval_url or expires_at → ZERO notifier calls
-    + WARNING rollback_propose_notify_failed."""
+    """Missing/empty/non-str approval_url → ZERO notifier calls + a WARNING.
+
+    ds-y5i folded every unusable-response shape into ONE path: the response
+    fails ``_validated_approval``, so it is neither recorded nor notified nor
+    forwarded, and logs ``rollback_propose_invalid_response``. (It used to log
+    ``rollback_propose_notify_failed`` — a name implying a notification had
+    been attempted, when none ever was.)
+    """
     import logging
 
     from agent.adk_tools import propose_rollback_tool
@@ -930,31 +1192,48 @@ def test_propose_rollback_tool_no_notify_when_approval_fields_missing(monkeypatc
             )
 
     assert notifier_calls == [], f"expected no notifier calls, got {notifier_calls}"
-    assert any("rollback_propose_notify_failed" in r.message for r in caplog.records)
+    assert any("rollback_propose_invalid_response" in r.message for r in caplog.records)
 
 
-def test_propose_rollback_tool_worker_raises_no_notify():
-    """If the rollback worker itself raises, no notifier call is made and the
-    exception propagates (order pin)."""
+def test_propose_rollback_tool_worker_error_is_sanitized_no_notify():
+    """A non-2xx from the rollback worker: no notifier call, and the worker's
+    RAW BODY never reaches the model or the operator.
+
+    This used to let ``WorkerClientError`` propagate. Its ``str()`` embeds the
+    worker's response body and /chat interpolates that into an operator-visible
+    502 — so a broken worker or proxy answering 500 with an approval URL in the
+    body leaked an unrecorded credential straight past the allowlist (Codex
+    reproduced it). Status code and worker name are all the diagnosis that
+    leaves this function. (The worker logs its own 5xx bodies, but a body
+    synthesized by an intermediary may be recorded nowhere — that is the cost
+    accepted here, not a guarantee.)
+    """
     from agent.adk_tools import propose_rollback_tool
     from agent.worker_client import WorkerClientError
 
     notifier_calls = []
+    leaky_body = (
+        "https://evil.example/approvals/"
+        "11111111-2222-3333-4444-555555555555?t=UNRECORDED_TOKEN"
+    )
 
     def _fake_call(worker, payload):
         if worker == "rollback":
-            raise WorkerClientError(503, "down", "rollback")
+            raise WorkerClientError(500, leaky_body, "rollback")
         notifier_calls.append(worker)
         return {}
 
     with patch("agent.adk_tools.worker_client.call", side_effect=_fake_call):
-        with pytest.raises(WorkerClientError):
-            propose_rollback_tool(
-                target_revision="payment-demo-00010-abc",
-                reason="reason",
-            )
+        out = propose_rollback_tool(
+            target_revision="payment-demo-00010-abc",
+            reason="reason",
+        )
 
     assert notifier_calls == []
+    assert "UNRECORDED_TOKEN" not in json.dumps(out)
+    assert "evil.example" not in json.dumps(out)
+    assert "No rollback was attempted or executed" in out["error"]
+    assert out["target_revision"] == "payment-demo-00010-abc"
 
 
 def test_propose_rollback_tool_notifier_raises_suppressed():
@@ -976,4 +1255,210 @@ def test_propose_rollback_tool_notifier_raises_suppressed():
             reason="reason",
         )
 
-    assert out["approval_id"] == "id1"
+    assert out["approval_id"] == _APPROVAL_UUID
+
+
+# --------------------------------------------------------------------------- #
+# propose_rollback_tool — the chat-path decision record (ds-y5i)
+#
+# Before this, only the AUTONOMOUS path (agent/main.py::_do_rollback) wrote a
+# decision doc. A chat-initiated rollback shifted real Cloud Run traffic and
+# left NO row on the approval desk, in the ledger, or in the decision rail —
+# and the redesign made chat the path operators are steered into.
+# --------------------------------------------------------------------------- #
+
+
+def _capture_recorded_decision(worker_resp=None, *, anon=False, autonomy=None):
+    """Run the tool against a stub store; return ``(tool_out, docs, raw_calls)``."""
+    from agent.adk_tools import propose_rollback_tool
+    from agent.request_context import autonomy_mode_scope, demo_anonymous_scope
+
+    recorded: list[tuple[str, str, dict]] = []
+
+    class _Store:
+        def record_decision(self, decision_id, event_key, decision):
+            recorded.append((decision_id, event_key, decision))
+
+    def _fake_call(worker, payload):
+        if worker == "notifier":
+            return {"status": "sent"}
+        return worker_resp if worker_resp is not None else _rollback_worker_response()
+
+    with patch("agent.adk_tools.worker_client.call", side_effect=_fake_call):
+        with patch("agent.main.get_state", return_value=_Store()):
+            with demo_anonymous_scope(anon), autonomy_mode_scope(autonomy or "propose"):
+                out = propose_rollback_tool(
+                    target_revision="payment-demo-00010-abc",
+                    reason="SECRET-SENTINEL-do-not-persist",
+                )
+    return out, [r[2] for r in recorded], recorded
+
+
+def test_chat_rollback_records_a_decision_the_desk_can_read():
+    """The row carries exactly what the desk's rollback lanes key on: an
+    ``approval`` object with ``approval_url`` (desk.ts identifies rollback rows
+    by that field's PRESENCE, never by ``action``) and ``approval_id`` (which
+    /decisions' ``attach_approval_status`` joins live status/phase off)."""
+    out, docs, raw = _capture_recorded_decision()
+
+    assert len(docs) == 1, f"expected exactly one decision recorded, got {len(docs)}"
+    d = docs[0]
+    assert d["action"] == "rollback"
+    assert d["decision_path"] == "adk"
+    assert d["trigger"] == "chat"
+    assert d["target_revision"] == "payment-demo-00010-abc"
+    assert d["requires_human_review"] is True
+    # A real approval doc WAS minted, dry_run or not — same claim _do_rollback makes.
+    assert d["dry_run_effective"] is False
+    assert d["approval"]["approval_id"] == _APPROVAL_UUID
+    assert d["approval"]["approval_url"] == out["approval_url"]
+    assert d["approval"]["expires_at"] == out["expires_at"]
+    # decision_id + event_key are passed positionally AND embedded in the doc.
+    assert raw[0][0] == d["decision_id"]
+    assert raw[0][1] == d["event_key"] == f"chat-rollback-{_APPROVAL_UUID}"
+    # A hex32 trace_id ties the row to the chat turn's reasoning replay.
+    assert re.fullmatch(r"[0-9a-f]{32}", d["trace_id"])
+    # The credential still reaches the operator — recording is not a scrub.
+    assert out["approval_url"].endswith("?t=" + _APPROVAL_TOKEN)
+
+
+def test_chat_rollback_record_omits_model_prose_and_the_bare_token():
+    """The persisted doc must carry NEITHER the model-authored ``reason`` nor
+    the bare ``approval_token``.
+
+    ``read_live_env_tool`` returns live env UNREDACTED and there is no
+    ``EnvDiff`` context here for the value-scoped scrub the autonomous path
+    applies, so the prose is dropped entirely — the same stance that keeps it
+    off the worker-rendered approval page. ``/decisions`` and ``/trace`` serve
+    the decision doc RAW, so this is the boundary that enforces it.
+    """
+    _, docs, _ = _capture_recorded_decision(
+        worker_resp=_rollback_worker_response_with_token(_APPROVAL_TOKEN)
+    )
+
+    blob = json.dumps(docs[0], default=str)
+    assert "SECRET-SENTINEL-do-not-persist" not in blob
+    # The token survives ONLY inside approval_url (where _do_rollback also keeps
+    # it, and where the serve-time /runs scrub knows to find it) — never as a
+    # standalone field the scrubbers would miss.
+    assert _APPROVAL_TOKEN not in blob.replace("?t=" + _APPROVAL_TOKEN + "", "")
+    assert "approval_token" not in docs[0]["approval"]
+    # No prose fields at all: a synthetic rendered_body would also REPLACE the
+    # crew's real chat reply in the SPA's trace replay (finalReply = rationale
+    # ?? rendered_body), and `diffs` would claim a comparison never made.
+    for absent in ("rationale", "rendered_body", "diffs"):
+        assert absent not in docs[0]
+
+
+def test_chat_rollback_record_carries_the_live_autonomy_mode():
+    """The dial the proposal was made under is recorded, mirroring _do_rollback.
+    (``observe`` cannot reach this tool — Layer 0 filters it out of the tool set
+    — so ``propose``/``propose_apply`` are the reachable values.)"""
+    _, docs, _ = _capture_recorded_decision(autonomy="propose_apply")
+    assert docs[0]["autonomy_mode"] == "propose_apply"
+
+
+def test_chat_rollback_event_keys_are_distinct_per_approval():
+    """Two proposals mint two approvals, so they must produce two rows — the key
+    is derived from approval_id, never from a fixed string that would collapse
+    them onto one another."""
+    _, docs_a, _ = _capture_recorded_decision()
+    other = dict(_rollback_worker_response())
+    other["approval_id"] = "11111111-2222-3333-4444-555555555555"
+    # The URL must name the SAME approval — _approval_url_matches rejects a
+    # mismatched pair before the record is ever attempted.
+    other["approval_url"] = (
+        "https://driftscribe.example.com/approvals/"
+        "11111111-2222-3333-4444-555555555555?t=" + _APPROVAL_TOKEN
+    )
+    _, docs_b, _ = _capture_recorded_decision(worker_resp=other)
+
+    assert docs_a[0]["event_key"] != docs_b[0]["event_key"]
+    assert docs_b[0]["event_key"] == "chat-rollback-11111111-2222-3333-4444-555555555555"
+
+
+def test_chat_rollback_withholds_credential_when_the_store_raises(caplog):
+    """A store failure must NOT degrade to "hand out the link anyway".
+
+    This is the fail-closed boundary: Cloud Run has not been mutated and the
+    token has not left the tool, so an unrecordable proposal is withheld rather
+    than released. Releasing it would let the operator approve a real traffic
+    shift with no audit row — the ds-y5i incident, reached through a store
+    outage instead of a missing code path.
+    """
+    import logging
+
+    from agent.adk_tools import propose_rollback_tool
+
+    notifier_calls = []
+
+    class _BrokenStore:
+        def record_decision(self, *a, **k):
+            raise RuntimeError("firestore unavailable: token=?t=" + _APPROVAL_TOKEN)
+
+    def _fake_call(worker, payload):
+        if worker == "notifier":
+            notifier_calls.append(payload)
+            return {"status": "sent"}
+        return _rollback_worker_response()
+
+    with caplog.at_level(logging.WARNING, logger="driftscribe.agent.adk_tools"):
+        with patch("agent.adk_tools.worker_client.call", side_effect=_fake_call):
+            with patch("agent.main.get_state", return_value=_BrokenStore()):
+                out = propose_rollback_tool(
+                    target_revision="payment-demo-00010-abc", reason="x"
+                )
+
+    assert "approval_url" not in out
+    assert "approval_token" not in out
+    assert notifier_calls == []
+    assert "no approval link was released" in out["error"]
+    assert "No rollback was attempted or executed" in out["error"]
+    assert any("chat_rollback_decision_record_failed" in r.message for r in caplog.records)
+    # The store's exception MESSAGE is never logged: the doc it failed to write
+    # carries the live ?t= token, and a store error can echo it back.
+    assert not any("firestore unavailable" in r.getMessage() for r in caplog.records)
+
+
+def test_chat_rollback_record_reaches_a_real_store_and_lists(monkeypatch):
+    """Producer -> consumer, through the REAL InMemoryStateStore: the row the
+    tool writes is the row ``list_decisions`` (what GET /decisions serves)
+    returns, and ``attach_approval_status`` enriches it off ``approval_id``.
+
+    The per-field unit tests above could all pass while the two halves still
+    failed to meet; this is the one that pins the connection ds-y5i was about.
+    """
+    import agent.main as main_mod
+    from agent.adk_tools import propose_rollback_tool
+    from agent.state_store import InMemoryStateStore
+
+    store = InMemoryStateStore()
+    monkeypatch.setattr(main_mod, "get_state", lambda: store)
+
+    def _fake_call(worker, payload):
+        if worker == "notifier":
+            return {"status": "sent"}
+        return _rollback_worker_response()
+
+    with patch("agent.adk_tools.worker_client.call", side_effect=_fake_call):
+        propose_rollback_tool(target_revision="payment-demo-00010-abc", reason="x")
+
+    rows = store.list_decisions(limit=10)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["action"] == "rollback"
+    # created_at is the store's, not the tool's — the desk orders on it.
+    assert row["created_at"] is not None
+
+    # The serve-time join the desk's seal depends on finds this row by its id.
+    class _Approval:
+        status = "used"
+        resolved_at = datetime(2026, 7, 29, 6, 17, 42, tzinfo=timezone.utc)
+        apply_audit = {"phase": "applied"}
+
+    enriched = main_mod.attach_approval_status(
+        row, approval_reader=lambda _id: _Approval()
+    )
+    assert enriched["approval"]["status"] == "used"
+    assert enriched["approval"]["phase"] == "applied"
+    assert enriched["approval"]["resolved_at"] is not None
