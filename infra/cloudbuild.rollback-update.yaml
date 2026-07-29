@@ -1,0 +1,165 @@
+# Canonical TARGETED deploy for the rollback worker on driftscribe-hack-2026
+# (single-user portfolio). Operator runs by hand; there is NO CI trigger.
+#
+# WHY THIS FILE EXISTS:
+#   The rollback worker is the WRITER of the approval doc's `resolved_at` and
+#   `apply_audit` fields, so it deploys LAST in any rolling deploy (a newer
+#   writer's field in a doc an older reader then splats via `Approval(**data)`
+#   is the ds-wjw 500). But until this file existed the ONLY config that built
+#   driftscribe-rollback was the full-stack infra/cloudbuild.yaml, which is
+#   DO-NOT-RUN on prod: it rebuilds all ~9 images including payment-demo (which
+#   Phase A pinned into OpenTofu state — see cloudbuild.infra-reader.yaml's
+#   header) and it redeploys the coordinator with DRY_RUN=true
+#   (docs/runbooks/deploy.md:344). So "deploy the rollback worker last" had no
+#   safe path to actually run. This file is that path.
+#
+# SCOPE BOUNDARY — this file changes the IMAGE AND NOTHING ELSE:
+#   `gcloud run deploy --image=...` with no other service flags preserves the
+#   running service's env vars, mounted secrets, runtime SA, ingress, scaling
+#   and concurrency. That is deliberate, and it is the main way this file
+#   differs from the rollback steps inside infra/cloudbuild.yaml.
+#
+#   ⚠ Do NOT "fix" this by copying the full build's --set-env-vars +
+#   post-deploy URL-writeback steps. That post-deploy step derives
+#   COORDINATOR_URL from `gcloud run services describe driftscribe-agent
+#   --format='value(status.url)'`, i.e. the *run.app* host — but prod runs
+#   COORDINATOR_URL=https://driftscribe.adp-app.com (the Cloudflare-fronted
+#   demo domain), and that value is what every emitted operator approval link
+#   is built from. Running those steps would silently repoint approval links
+#   off the demo domain. Verified against the live service 2026-07-29.
+#
+#   Verified the same day: the worker reads only ALLOWED_CALLERS,
+#   APPROVAL_HMAC_KEY, COORDINATOR_URL, GCP_PROJECT, OWN_URL, TARGET_REGION,
+#   TARGET_SERVICE (+ optional LOG_LEVEL), and the live service already sets
+#   every one. If a future change ADDS a required env var, this file must gain
+#   an explicit incremental `--update-env-vars` for that var — never a
+#   wholesale `--set-env-vars`, which would drop the ones set out of band.
+#
+# WHY THERE IS NO --no-traffic / tag / promote DANCE (unlike the coordinator):
+#   driftscribe-rollback serves `spec.traffic: [{latestRevision: true,
+#   percent: 100}]`, so a deploy serves immediately and there is no pinned
+#   allocation to shift. Both assertion steps CHECK that rather than assume
+#   it: if the service is ever pinned to a named revision, a plain deploy
+#   would create a revision serving 0% while the build reports success, so the
+#   assertion fails the build instead of silently shipping nothing. Adding
+#   --no-traffic here would introduce the opposite trap — after --no-traffic
+#   the service stays pinned until an explicit `update-traffic --to-latest`
+#   restores LATEST routing — for an internal, ingress-restricted,
+#   concurrency=1 worker whose blast radius is one operator-initiated rollback
+#   and whose revert is redeploying the prior tag.
+#
+# USAGE (operator runs by hand, no CI integration):
+#
+#   gcloud builds submit \
+#     --config=infra/cloudbuild.rollback-update.yaml \
+#     --substitutions=_TAG=$(git rev-parse --short HEAD) \
+#     --project=driftscribe-hack-2026
+#
+#   Run it from a PRISTINE worktree checked out at the SHA you intend to ship:
+#   `gcloud builds submit` uploads the working directory, so a shared-worktree
+#   build would bundle another agent's WIP into the image.
+#
+# ORDER: this is step 4 of 4. infra-reader -> coordinator build ->
+#   coordinator update-traffic -> THIS. See docs/runbooks/deploy.md. Because
+#   the coordinator's OLD revision can still be finishing in-flight requests
+#   after its traffic shift, let it drain (its request timeout, 300s) before
+#   running this file — the writer-last rule is about concurrent READERS, not
+#   just about traffic percentages.
+
+substitutions:
+  _TAG: 'manual'
+  # Region kept as a substitution (not hardcoded) so a future region migration
+  # is one substitution change rather than a search/replace.
+  _REGION: asia-northeast1
+  # The value every emitted operator approval link is built from. Asserted
+  # both BEFORE and AFTER the deploy: this is the single most important thing
+  # this file must not change. A substitution rather than a buried literal so
+  # a legitimate domain migration is one visible flag.
+  _EXPECT_COORDINATOR_URL: 'https://driftscribe.adp-app.com'
+  _EXPECT_TARGET_SERVICE: 'payment-demo'
+
+# Default-compute-SA retirement (Phase 4): run as the dedicated
+# cloudbuild-deploy-sa@ rather than the project's default compute SA, which has
+# had roles/editor stripped. A user-specified serviceAccount REQUIRES an
+# explicit logging option, so options.logging is set in the same block.
+# Hardcoded to driftscribe-hack-2026 for the same reason as
+# cloudbuild.infra-reader.yaml: this file is operator-run on hack-2026 ONLY,
+# and the top-level serviceAccount field is not a documented substitution site.
+serviceAccount: 'projects/driftscribe-hack-2026/serviceAccounts/cloudbuild-deploy-sa@driftscribe-hack-2026.iam.gserviceaccount.com'
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+steps:
+  # 1. PREFLIGHT — read-only, and FIRST so a misconfigured target fails before
+  #    any image is built and before any cloud state changes.
+  #
+  #    `gcloud run deploy` is create-OR-update: against a deleted service, or
+  #    with a wrong _REGION, it would CREATE a service from defaults — no env,
+  #    no secret, default SA — instead of preserving anything. "Image-only" is
+  #    a property of UPDATING AN EXISTING service, so existence is a
+  #    precondition, not an assumption. `describe` exits non-zero when the
+  #    service is absent, and `set -e` turns that into a failed build.
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        gcloud run services describe driftscribe-rollback \
+          --region=${_REGION} --project=$PROJECT_ID --format=json \
+          > /workspace/rollback-before.json
+        python3 infra/scripts/assert_rollback_service.py \
+          /workspace/rollback-before.json preflight \
+          "${_EXPECT_COORDINATOR_URL}" "${_EXPECT_TARGET_SERVICE}" \
+          "${_REGION}" "$PROJECT_ID" "${_TAG}"
+
+  # 2. Build + push ONLY the rollback image. Build context is the repo root
+  #    (the worker depends on driftscribe_lib/ for approvals/auth/logging);
+  #    the Dockerfile lives under workers/rollback/. Same context/Dockerfile
+  #    split as the rollback step in infra/cloudbuild.yaml.
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-rollback:${_TAG}
+      - -f
+      - workers/rollback/Dockerfile
+      - .
+  - name: gcr.io/cloud-builders/docker
+    args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-rollback:${_TAG}']
+
+  # 3. Image-only deploy. Every other setting is inherited from the running
+  #    service ON PURPOSE — see the SCOPE BOUNDARY note above. In particular
+  #    this does NOT re-derive OWN_URL/COORDINATOR_URL: both are already
+  #    correct on the live service, and re-deriving COORDINATOR_URL is the
+  #    exact bug this file exists to avoid.
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - driftscribe-rollback
+      - --image=asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-rollback:${_TAG}
+      - --region=${_REGION}
+
+  # 4. POSTCONDITION — prove the image swap preserved everything that makes
+  #    the worker correct and fail-closed, and that the new image is actually
+  #    SERVING. Exact name+value equality, not substring presence: a
+  #    COORDINATOR_URL repointed at the run.app host contains the string
+  #    "COORDINATOR_URL" just as happily as the right one does.
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        gcloud run services describe driftscribe-rollback \
+          --region=${_REGION} --project=$PROJECT_ID --format=json \
+          > /workspace/rollback-after.json
+        python3 infra/scripts/assert_rollback_service.py \
+          /workspace/rollback-after.json postcondition \
+          "${_EXPECT_COORDINATOR_URL}" "${_EXPECT_TARGET_SERVICE}" \
+          "${_REGION}" "$PROJECT_ID" "${_TAG}"
+
+images:
+  - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-rollback:${_TAG}
