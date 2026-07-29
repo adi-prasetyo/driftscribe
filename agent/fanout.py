@@ -1457,6 +1457,19 @@ async def run_provision_fanout_stream(
         }
         return
 
+    # Record which reasoning run authored this PR, for the approval desk's "view the
+    # reasoning behind this" link (ds-qua). Same predicate and repo scoping as the
+    # single-agent tool path in adk_tools._open_iac_pr_and_notify — see the comment
+    # there for why it is a strict ``is False`` and why the repo is authority's, not
+    # settings'. Off the event loop: Firestore create() is blocking. Ordered BEFORE
+    # the notification, which can burn the full 30 s worker timeout.
+    if result.get("reused") is False:
+        from agent.iac_pr_trace_store import record_authoring_trace
+
+        await asyncio.to_thread(
+            record_authoring_trace, authority.target_repo, iac_pr["pr_number"]
+        )
+
     # Best-effort notification — runs off the event loop (notify_iac_pr_pending
     # calls the synchronous httpx-based worker_client.call; use to_thread to
     # match the surrounding async/sync boundary pattern). The helper never raises.

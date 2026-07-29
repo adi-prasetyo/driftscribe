@@ -150,3 +150,86 @@ def test_dispatch_fail_soft(monkeypatch):
     data = r.json()
     assert data["status"] == "opened"
     assert data["plan_builder_dispatched"] is False
+
+
+# --------------------------------------------------------------------------- #
+# ds-qua — `reused` must reach the caller, not just the dispatch decision above
+# --------------------------------------------------------------------------- #
+def test_response_reports_a_reused_pr(monkeypatch):
+    """The coordinator records the authoring reasoning trace ONLY for a newly-opened
+    PR. Without this field it cannot tell "opened now" from "rediscovered", and would
+    attribute a run's reasoning to a PR it did not author — a false evidence claim on
+    the approval desk, which is the one failure that surface must not have."""
+    monkeypatch.setattr(
+        tofu_editor_main.ds_github, "open_iac_pr", lambda repo, **kw: _fake_pr_result(reused=True)
+    )
+    monkeypatch.setattr(tofu_editor_main, "_get_repo", lambda: object())
+
+    tc = TestClient(app)
+    r = tc.post("/open-pr", json=_valid_body(dispatch_plan_builder=False))
+    assert r.status_code == 200, r.text
+    assert r.json()["reused"] is True
+
+
+def test_response_reports_a_newly_opened_pr(monkeypatch):
+    monkeypatch.setattr(
+        tofu_editor_main.ds_github, "open_iac_pr", lambda repo, **kw: _fake_pr_result(reused=False)
+    )
+    monkeypatch.setattr(tofu_editor_main, "_get_repo", lambda: object())
+
+    tc = TestClient(app)
+    r = tc.post("/open-pr", json=_valid_body(dispatch_plan_builder=False))
+    assert r.status_code == 200, r.text
+    # Strictly the boolean False, not a falsy stand-in: the coordinator's gate is
+    # `is False`, so a None/absent/"" here would silently disable every link.
+    assert r.json()["reused"] is False
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        pytest.param(lambda d: d.pop("reused", None), id="key-absent"),
+        pytest.param(lambda d: d.update(reused=None), id="null"),
+        pytest.param(lambda d: d.update(reused=0), id="int-zero"),
+        pytest.param(lambda d: d.update(reused=""), id="empty-string"),
+    ],
+)
+def test_an_unknown_reuse_state_is_reported_as_REUSED(monkeypatch, mutate):
+    """⚠️ Unknown must degrade to `reused: True`, NOT to False.
+
+    The coordinator's provenance gate is a strict `is False`, so laundering an
+    unknown into False here would defeat that gate at the source and attach a run's
+    reasoning to a PR it may not have authored. An earlier draft emitted
+    `bool(result.get("reused"))` and a test pinned the unsafe answer — the guard was
+    checking a value this worker had already normalized away.
+
+    `open_iac_pr` sets a real boolean on both of its branches today, so none of these
+    shapes can occur right now; they pin the contract against a future regression.
+    """
+    result = _fake_pr_result()
+    mutate(result)
+    monkeypatch.setattr(tofu_editor_main.ds_github, "open_iac_pr", lambda repo, **kw: result)
+    monkeypatch.setattr(tofu_editor_main, "_get_repo", lambda: object())
+
+    tc = TestClient(app)
+    r = tc.post("/open-pr", json=_valid_body(dispatch_plan_builder=False))
+    assert r.json()["reused"] is True
+
+
+def test_an_unknown_reuse_state_also_suppresses_the_plan_builder_dispatch(monkeypatch):
+    """The same conservative value drives both permissions."""
+    dispatch_calls = []
+    result = _fake_pr_result()
+    result.pop("reused", None)
+    monkeypatch.setattr(tofu_editor_main.ds_github, "open_iac_pr", lambda repo, **kw: result)
+    monkeypatch.setattr(tofu_editor_main, "_get_repo", lambda: object())
+    monkeypatch.setattr(
+        tofu_editor_main.ds_github,
+        "dispatch_workflow",
+        lambda *a, **kw: dispatch_calls.append(a),
+    )
+
+    tc = TestClient(app)
+    r = tc.post("/open-pr", json=_valid_body(dispatch_plan_builder=True))
+    assert r.json()["plan_builder_dispatched"] is False
+    assert dispatch_calls == []

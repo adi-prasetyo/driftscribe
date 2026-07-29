@@ -115,6 +115,11 @@ def test_open_pr_happy_multi_file_returns_200(client) -> None:
         "pr_url": "https://github.com/adi-prasetyo/driftscribe/pull/123",
         "branch": "infra/add-two-files",
         "plan_builder_dispatched": False,
+        # ds-qua: whether this response describes a PR opened just now or one that
+        # already existed for the branch. The coordinator records the authoring
+        # reasoning trace ONLY on False — attributing a run's reasoning to a PR it
+        # merely rediscovered would be a false evidence claim on the approval desk.
+        "reused": False,
     }
 
 

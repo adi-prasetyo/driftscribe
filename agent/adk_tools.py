@@ -41,6 +41,7 @@ from agent.config import get_settings
 from agent.contract import load_contract
 from agent.github_actions import get_repo
 from agent.iac_artifacts import load_plan_view_from_gcs
+from agent.iac_pr_trace_store import record_authoring_trace
 from agent.request_context import get_current_autonomy_mode
 from driftscribe_lib.iac_plan_summary import (
     BLAST_CANNOT_TOUCH_NOTE,
@@ -1233,9 +1234,21 @@ def _open_iac_pr_and_notify(
         "next_steps": "PR opened. " + iac_pr_next_steps(pr_number, plan_builder_dispatched=plan_builder_dispatched),
         "plan_builder_dispatched": plan_builder_dispatched,
     }
-    # Best-effort notification — only fires for CONFIRMED PRs (same predicate
-    # as the first-authoring approval CTA, so both surfaces agree by construction).
     if iac_pr_pointer(compact_result) is not None:
+        # Record which reasoning run authored this PR, so the approval desk's pending
+        # card can offer "view the reasoning behind this" (ds-qua). Scoped to the repo
+        # the PR actually opened against — PR numbers are repository-local and
+        # authority.target_repo can diverge from settings.github_repo via
+        # IAC_EDITOR_TARGET_REPO_OVERRIDE, exactly as the dupe-guard above insists.
+        #
+        # ``is False``, strictly: a worker that reports a REUSED PR must not have this
+        # run's reasoning attributed to it, and an older worker that omits the field
+        # cannot tell us either way. Absence is not consent — a missing link is fine,
+        # a link to reasoning that did not author the PR is not.
+        if result.get("reused") is False:
+            record_authoring_trace(authority.target_repo, compact_result["pr_number"])
+        # Best-effort notification — only fires for CONFIRMED PRs (same predicate
+        # as the first-authoring approval CTA, so both surfaces agree by construction).
         notify_iac_pr_pending(
             compact_result["pr_number"],
             compact_result["pr_url"],

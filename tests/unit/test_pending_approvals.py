@@ -51,6 +51,9 @@ def test_build_pending_approval_adoption():
         "url": "https://gh/pr/168",
         "asset_type": "pubsub.googleapis.com/Topic",
         "resource_name": "adopt-probe-topic",
+        # ds-qua: present but blank — this call passes no authoring trace. The key is
+        # always emitted so the SPA never has to distinguish "absent" from "unknown".
+        "authoring_trace_id": "",
     }
 
 
