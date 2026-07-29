@@ -163,9 +163,18 @@ def _get_operations_client():  # noqa: ANN201 — google.api_core operations cli
     permission resolved to NOT GRANTED anywhere in the project while
     ``run.services.update`` resolved to the payment-demo binding.
 
-    Granted out-of-band (``iac/`` declares no IAM) as project custom role
-    ``driftscribeRunOperationsReader`` — one permission, nothing else. If that
-    binding is ever dropped, or the SA is recreated, polling degrades to
+    Created out of band as project custom role
+    ``driftscribeRunOperationsReader`` — one permission, nothing else — and now
+    declared in ``iac-operator/iam_rollback_operations.tf`` (ds-10m). That is a
+    SEPARATE OpenTofu root from ``iac/`` on purpose: ``iac/`` is the agent's
+    authoring surface, and its plan/apply identities hold no IAM permissions at
+    all, so declaring this there would break every plan on refresh and would
+    require granting the SA that applies agent-authored plans the ability to
+    rewrite project IAM. See that directory's README. Consequence worth knowing:
+    nothing plans this root automatically, so drift here surfaces when an
+    operator runs ``tofu plan``, not on a schedule.
+
+    If that binding is ever dropped, or the SA is recreated, polling degrades to
     PermissionDenied: ``/execute`` reports every rollback as ``outcome_unknown``
     (the traffic shift still lands) and ``/reconcile`` can never settle it. That
     failure is silent from the operator's seat, so grep the worker logs for
