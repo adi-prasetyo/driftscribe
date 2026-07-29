@@ -232,6 +232,15 @@ cached decision whose **`action` is rollback** to a request with no observed env
 It refuses rather than falling through, because falling through would mint a
 second approval for the same event.
 
+Applied at **all three** sites that return a cached decision: the normal hit, the
+CAS-loser re-read, and — the one I missed, found by Codex — the `record_event`
+**claim-loser** re-read. That third one only executes for a NON-rollback proposal
+(a rollback branched out at `_do_rollback` far above), so it reads as unrelated to
+the rollback gate; but an ungrounded `drift_issue` can miss the cache, lose the
+claim to a concurrent grounded run that recorded a rollback, and be handed that
+rollback's approval by the re-read. Finding two of three is the argument for a
+named predicate over an inline condition.
+
 Strictly better than either namespace: no event key changes at all, so no cache
 entry is orphaned, no action gains a second idempotency slot, and a cached
 non-rollback still suppresses duplicate side effects exactly as before.

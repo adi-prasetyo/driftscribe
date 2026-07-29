@@ -2035,6 +2035,26 @@ async def _do_recheck(
     claimed = state.record_event(event_key, {"trigger": trigger})
     if not claimed:
         existing = state.find_decision_for_event(event_key)
+        # THIRD cached-rollback return site, and the least obvious one. Only a
+        # NON-rollback proposal reaches here (a rollback branched out at
+        # _do_rollback well above), so it looks unrelated — but the request can
+        # miss the cache on its first lookup, lose the claim to a CONCURRENT
+        # grounded run that recorded a ROLLBACK under the same key, and have
+        # this re-read hand that rollback's approval back.
+        #
+        # The first two sites were guarded and this one was not, which is the
+        # argument for a named predicate over an inline condition: "may this
+        # request be served this decision" has to be asked everywhere a
+        # decision is served, and it is easy to find two of three.
+        if _cached_rollback_needs_ground_truth(existing, observed_env):
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    "adk proposal rejected by safety gate: cached rollback not "
+                    "served — no observed live env is available to corroborate "
+                    "it."
+                ),
+            )
         if existing:
             return existing
         raise HTTPException(status_code=409, detail="event in-progress, retry")

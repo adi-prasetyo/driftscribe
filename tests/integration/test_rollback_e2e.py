@@ -38,6 +38,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+import agent.main as agent_main
+
 from agent import approvals as approval_helpers
 from agent import worker_client
 from agent.config import get_settings
@@ -1218,9 +1220,10 @@ def test_an_ungrounded_recheck_cannot_reuse_a_grounded_decision_from_the_cache(
 
     The collision this pins is not exotic. The model has already seen the
     reader's result, so an accurate report reconstructs the exact dict the
-    coordinator would have read — same content, same hash, same key. Without a
-    guard the second call here would be served the first call's rollback
-    approval and validate()'s refusal would never get to speak.
+    coordinator would have read — same content, same hash, same key. The key is
+    deliberately left alone; what is guarded is the RETURN. Without that guard
+    the second call here is served the first call's rollback approval and
+    validate()'s refusal never gets to speak.
 
     Run 1: reader OK, rollback proposed and cached.
     Run 2: reader down, model reports the SAME env → identical reconstruction.
@@ -1492,3 +1495,90 @@ def test_an_ungrounded_run_cannot_be_served_a_cached_rollback_VIA_ANOTHER_ACTION
 
     assert r2.status_code == 502, r2.text
     assert _APPROVAL_URL not in r2.text
+
+
+def test_a_claim_LOSER_is_not_handed_a_concurrent_runs_cached_rollback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The third cached-rollback return site: the record_event claim-loser.
+
+    Only a NON-rollback proposal reaches that code (a rollback branches out at
+    _do_rollback well above), so it reads as unrelated to the rollback gate —
+    which is exactly why it was the one of three that got missed. The race:
+
+      1. an ungrounded DRIFT_ISSUE request misses the cache on its first lookup;
+      2. a concurrent GROUNDED run records a rollback under the same key;
+      3. the ungrounded request loses record_event();
+      4. its re-read finds that rollback and returns the approval — before any
+         gate has spoken for this request.
+
+    Driven deterministically by making the claim fail and the SECOND lookup
+    return a rollback decision, rather than by racing real requests.
+    """
+    monkeypatch.setenv("USE_ADK", "true")
+    get_settings.cache_clear()
+    _reset_state_for_tests()
+
+    proposal = DecisionProposal(
+        action=DecisionAction.DRIFT_ISSUE,
+        env_diffs=[
+            EnvDiff(
+                name="PAYMENT_MODE",
+                expected="mock",
+                live="live",
+                contract_status=ContractStatus.PRESENT_DISALLOW_MANUAL,
+                debug_config_value=None,
+                recent_pr_match=None,
+            )
+        ],
+        target_docs_file=None,
+        target_docs_section=None,
+        target_revision=None,
+        rationale="Filing an issue.",
+        confidence=0.9,
+        requires_human_review=True,
+    )
+
+    cached_rollback = {
+        "decision_id": "d-concurrent",
+        "action": "rollback",
+        "approval": {"approval_url": _APPROVAL_URL, "expires_at": _EXPIRES_AT_ISO},
+    }
+
+    lookups: list[int] = []
+
+    # Captured BEFORE the patch, or the delegate below recurses into itself.
+    real_state = agent_main.get_state()
+
+    class _RacingState:
+        """First lookup empty (so we get past the cache check), claim refused,
+        second lookup finds the concurrent run's rollback."""
+
+        def __getattr__(self, name):  # noqa: ANN001 — delegate everything else
+            return getattr(real_state, name)
+
+        def find_decision_for_event(self, key):  # noqa: ANN001
+            lookups.append(1)
+            return None if len(lookups) == 1 else cached_rollback
+
+        def record_event(self, *a: Any, **k: Any) -> bool:
+            return False  # lost the claim
+
+    def reader_down(worker: str, payload: dict, *a: Any, **k: Any) -> Any:
+        if worker == "reader":
+            raise RuntimeError("reader worker unreachable")
+        if worker == "notifier":
+            return _notifier_envelope()
+        raise AssertionError(f"unexpected worker call: {worker!r}")
+
+    with (
+        patch("agent.main._run_adk_agent", AsyncMock(return_value=proposal)),
+        patch("agent.main.get_state", lambda: _RacingState()),
+        patch("agent.main.worker_client.call") as m_call,
+    ):
+        m_call.side_effect = reader_down
+        r = TestClient(app).post("/recheck")
+
+    assert len(lookups) >= 2, "the race did not reach the claim-loser re-read"
+    assert r.status_code == 502, r.text
+    assert _APPROVAL_URL not in r.text
