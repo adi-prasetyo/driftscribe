@@ -181,7 +181,16 @@ def check_service(
                 "revision is serving"
             )
         else:
-            if _nonempty_str(latest_created) and latest_created != latest_ready:
+            # Required INDEPENDENTLY, not merely compared when present: a
+            # comparison that only runs `if _nonempty_str(latest_created)`
+            # abstains on a missing field and reports success. That is the
+            # same defect as the null-value guards above, one level deeper.
+            if not _nonempty_str(latest_created):
+                failures.append(
+                    "status.latestCreatedRevisionName is missing — cannot prove the "
+                    "revision just created is the one that became ready"
+                )
+            elif latest_created != latest_ready:
                 failures.append(
                     f"latest created revision {latest_created!r} is not the latest READY "
                     f"revision ({latest_ready!r}) — the new revision did not come up"

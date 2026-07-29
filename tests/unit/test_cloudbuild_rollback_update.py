@@ -213,6 +213,20 @@ def test_postcondition_catches_a_new_revision_that_never_became_ready():
     assert any("did not come up" in f for f in _check(doc))
 
 
+@pytest.mark.parametrize("bad", [None, "", "   "])
+def test_postcondition_requires_latest_created_rather_than_comparing_it_if_present(bad):
+    """A comparison guarded by `if _nonempty_str(latest_created)` abstains on
+    an absent field and reports success — the same defect as the null-value
+    guards, one level deeper."""
+    doc = _doc()
+    if bad is None:
+        doc["status"].pop("latestCreatedRevisionName")
+    else:
+        doc["status"]["latestCreatedRevisionName"] = bad
+    failures = _check(doc)
+    assert any("latestCreatedRevisionName is missing" in f for f in failures), failures
+
+
 # --------------------------------------------------------------------------
 # check_service — remaining invariants
 # --------------------------------------------------------------------------
@@ -313,6 +327,72 @@ def test_config_has_exactly_the_five_expected_steps():
     ]
     actual = [(s.get("name"), s.get("entrypoint")) for s in _config()["steps"]]
     assert actual == expected
+
+
+#: Cloud Build fields that change whether/when a step's failure counts.
+#: `allowFailure: true` on the preflight, or `allowExitCodes: [1]` on the
+#: postcondition, turns either assertion into decoration without touching a
+#: single flag or step shape. `waitFor` lets the deploy race the build/push.
+_EXECUTION_CONTROL_FIELDS = ("allowFailure", "allowExitCodes", "waitFor")
+
+#: The ONLY logical commands either bash body may run. Pinning the bodies is
+#: what stops `gcloud run services update driftscribe-rollback --concurrency=80`
+#: being appended to the postcondition: it keeps the five-step shape and uses
+#: no banned flag, so every structural and flag pin passed it.
+_ALLOWED_BASH_COMMANDS = (
+    "set -euo pipefail",
+    "gcloud run services describe driftscribe-rollback",
+    "python3 infra/scripts/assert_rollback_service.py",
+)
+
+
+def _bash_bodies(doc: dict) -> list[str]:
+    return [
+        s["args"][-1]
+        for s in doc["steps"]
+        if s.get("entrypoint") == "bash" and s.get("args")
+    ]
+
+
+def _logical_commands(body: str) -> list[str]:
+    """Split a bash body into logical commands: join backslash continuations,
+    drop comments and blanks."""
+    joined, buf = [], ""
+    for raw in body.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.endswith("\\"):
+            buf += line[:-1].strip() + " "
+            continue
+        joined.append((buf + line).strip())
+        buf = ""
+    if buf.strip():
+        joined.append(buf.strip())
+    return joined
+
+
+@pytest.mark.parametrize("field", _EXECUTION_CONTROL_FIELDS)
+def test_no_step_relaxes_failure_or_ordering(field):
+    offenders = [s for s in _config()["steps"] if field in s]
+    assert offenders == [], f"{field} would neuter an assertion or race the build"
+
+
+def test_bash_bodies_run_only_the_allowed_commands():
+    bodies = _bash_bodies(_config())
+    assert len(bodies) == 2, f"expected preflight + postcondition, got {len(bodies)}"
+    for body in bodies:
+        for command in _logical_commands(body):
+            assert command.startswith(_ALLOWED_BASH_COMMANDS), (
+                f"unexpected command in a bash step: {command!r}"
+            )
+
+
+def test_each_bash_body_makes_exactly_one_gcloud_call_and_it_is_read_only():
+    for body in _bash_bodies(_config()):
+        calls = [c for c in _logical_commands(body) if c.startswith("gcloud")]
+        assert len(calls) == 1, f"expected one gcloud call per bash step, got {calls}"
+        assert calls[0].startswith("gcloud run services describe")
 
 
 def test_no_step_uses_the_script_field():
