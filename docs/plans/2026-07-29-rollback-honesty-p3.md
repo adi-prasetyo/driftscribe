@@ -180,8 +180,9 @@ Passing that into a gate claiming to read ground truth is the ds-qua defect
 verbatim. The call site now keeps them as separate variables: `live_env` (which
 may be a reconstruction, and still feeds the idempotency key exactly as before)
 and `observed_env` (`None` unless the reader really answered). `validate()` gets
-`observed_env`. The reconstruction still feeds the event key, but no longer under
-the same key as a real read — see the cache section.
+`observed_env`. The event key is untouched — the reconstruction feeds it exactly
+as it always did; what changed is that a cached ROLLBACK is not SERVED to a
+request holding no observation. See the cache section.
 
 Revision 1 justified the refusal by claiming a failed reader read means the
 model's diffs were never grounded either. **Not true** — the model's tool call and

@@ -1313,9 +1313,9 @@ def test_a_well_formed_empty_env_is_treated_as_an_observation_not_a_read_failure
     for "no hard contract violation" (we looked, and there is nothing to
     revert); a failed read refuses for "no observed live env" (we could not
     look). Collapsing the two — `if not live_env` instead of `if live_env is
-    None` at the call site — also silently swaps the idempotency key onto the
-    reconstructed namespace, so a real observation would start colliding with
-    ungrounded runs."""
+    None` at the call site — would also discard a real observation and swap in
+    the model's reconstruction, so the cached-rollback guard would start
+    refusing requests that did in fact observe the service."""
     monkeypatch.setenv("USE_ADK", "true")
     get_settings.cache_clear()
     _reset_state_for_tests()
