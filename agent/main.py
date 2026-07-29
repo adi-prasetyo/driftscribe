@@ -1050,7 +1050,6 @@ def _event_key(
     contract_path: str,
     contract_hash: str,
     live_env: dict[str, str],
-    env_observed: bool = True,
 ) -> str:
     """Derive a stable event key from the inputs that define a decision.
 
@@ -1060,19 +1059,6 @@ def _event_key(
     Including ``contract_hash`` (not just contract_path) means a contract edit
     while live env stays the same still invalidates the prior cached decision.
 
-    ``env_observed=False`` marks a key derived from the ADK path's
-    RECONSTRUCTED env (rebuilt from ``proposal.env_diffs`` when the Reader
-    Worker read failed) and puts it in a different cache namespace from a key
-    derived from a real read (ds-b3m).
-
-    Without this the two collide, and the collision is not exotic: the model has
-    already seen the reader's result, so an accurate report reconstructs the
-    exact dict the coordinator would have read, hashing identically. The cached
-    decision is returned BEFORE ``validate()`` runs, so an ungrounded run could
-    otherwise be handed a rollback approval minted by a grounded one — and
-    ``validate()``'s refusal of an unobserved env would never get to speak. The
-    namespace split makes "a cache hit on the ungrounded path came from an
-    equally ungrounded run" true by construction instead of by luck.
     """
     payload = {
         "trigger": trigger,
@@ -1081,11 +1067,6 @@ def _event_key(
         "contract_hash": contract_hash,
         "live_env": dict(sorted(live_env.items())),
     }
-    if not env_observed:
-        # Added ONLY in the reconstructed case, so every existing grounded key
-        # is byte-identical to what it was before ds-b3m and no cached decision
-        # is invalidated by this deploy.
-        payload["env_provenance"] = "reconstructed"
     h = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
     return f"{trigger}-{service}-{h}"
 
@@ -1125,6 +1106,36 @@ def _observed_env_or_none(reader_payload: object) -> dict[str, str] | None:
         if not isinstance(k, str) or not isinstance(v, str):
             return None
     return env
+
+
+def _cached_rollback_needs_ground_truth(
+    cached: dict | None, observed_env: dict[str, str] | None
+) -> bool:
+    """True when a cached decision must NOT be served to this request (ds-b3m).
+
+    The idempotency cache is consulted BEFORE ``validate()``, so a cache hit is
+    a second way to obtain a rollback approval — one that skips the gate
+    entirely. The event key is derived from ``live_env`` CONTENT with no
+    provenance, and on the ADK path a failed reader read leaves ``live_env``
+    reconstructed from ``proposal.env_diffs``. The model has already seen the
+    reader's result, so an accurate report reconstructs the exact dict the
+    coordinator would have read and hashes identically: an ungrounded request
+    lands on a grounded run's key and is handed its rollback approval.
+
+    So the rule is about the CACHED DECISION's action, not the incoming
+    proposal's. A first attempt at this scoped an event-key namespace by the
+    NEW proposal's action, which still let a grounded ROLLBACK be served to an
+    ungrounded request whose model happened to propose ``drift_issue`` — the
+    key matched, the guard did not fire, and the response carried the approval
+    anyway. What is being handed back is what has to be judged.
+
+    A cached NON-rollback is still served normally: it is what stops a retry
+    opening a second PR or issue, and no non-rollback action has a gate that
+    reads observed env, so provenance tells us nothing about it.
+    """
+    if observed_env is not None:
+        return False
+    return bool(cached) and cached.get("action") == DecisionAction.ROLLBACK.value
 
 
 def _cached_rollback_is_expired(cached: dict) -> bool:
@@ -1915,25 +1926,7 @@ async def _do_recheck(
 
     contract_hash = _hash_contract(contract)
     event_key = _event_key(
-        trigger,
-        s.target_service,
-        s.contract_path,
-        contract_hash,
-        live_env,
-        # SCOPED TO ROLLBACK, and the scoping is the point. The provenance
-        # namespace exists so an ungrounded run cannot be handed a grounded
-        # run's rollback approval. Applying it to every action would give
-        # docs_pr / drift_issue TWO idempotency slots, one per provenance — so a
-        # retry that merely flipped provenance (grounded first attempt, reader
-        # blip on the retry) would miss the cache and open a SECOND PR or issue.
-        # That would break the duplicate-suppression promise the record_event
-        # claim below is built on, in exchange for nothing: those actions have
-        # no gate that reads observed env, so the two namespaces would hold
-        # decisions of identical trustworthiness.
-        env_observed=(
-            observed_env is not None
-            or proposal.action != DecisionAction.ROLLBACK
-        ),
+        trigger, s.target_service, s.contract_path, contract_hash, live_env
     )
     if force:
         # Distinct key so the forced decision is cached under its own slot
@@ -1944,6 +1937,18 @@ async def _do_recheck(
     if not force:
         existing = state.find_decision_for_event(event_key)
         if existing:
+            if _cached_rollback_needs_ground_truth(existing, observed_env):
+                # Refuse rather than fall through and re-propose: falling
+                # through would mint a SECOND approval for the same event.
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        "adk proposal rejected by safety gate: cached rollback "
+                        "not served — no observed live env is available to "
+                        "corroborate it, and the idempotency cache is read "
+                        "before the gate. Retry once the reader is reachable."
+                    ),
+                )
             if _cached_rollback_is_expired(existing):
                 # Phase 14 (Codex Phase 13 second-pass W2): compare-and-
                 # delete instead of unconditional release. Two concurrent
@@ -1967,6 +1972,15 @@ async def _do_recheck(
                     # mint a duplicate /propose. Surface 409 so the
                     # caller retries cleanly.
                     existing = state.find_decision_for_event(event_key)
+                    if _cached_rollback_needs_ground_truth(existing, observed_env):
+                        raise HTTPException(
+                            status_code=502,
+                            detail=(
+                                "adk proposal rejected by safety gate: cached "
+                                "rollback not served — no observed live env is "
+                                "available to corroborate it."
+                            ),
+                        )
                     if existing and not _cached_rollback_is_expired(existing):
                         return existing
                     raise HTTPException(

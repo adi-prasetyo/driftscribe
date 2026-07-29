@@ -1219,8 +1219,8 @@ def test_an_ungrounded_recheck_cannot_reuse_a_grounded_decision_from_the_cache(
     The collision this pins is not exotic. The model has already seen the
     reader's result, so an accurate report reconstructs the exact dict the
     coordinator would have read — same content, same hash, same key. Without a
-    provenance component the second call here would be served the first call's
-    rollback approval and validate()'s refusal would never get to speak.
+    guard the second call here would be served the first call's rollback
+    approval and validate()'s refusal would never get to speak.
 
     Run 1: reader OK, rollback proposed and cached.
     Run 2: reader down, model reports the SAME env → identical reconstruction.
@@ -1343,16 +1343,15 @@ def test_a_non_rollback_action_keeps_ONE_idempotency_slot_across_provenance(
 ) -> None:
     """The provenance namespace must not reach non-rollback actions.
 
-    A first draft keyed it off provenance ALONE, which gave docs_pr and
-    drift_issue two cache slots — one per provenance. A grounded first attempt
-    followed by a retry that hit a reader blip would then MISS the cache and run
-    `_perform_action` again, opening a SECOND GitHub issue. That directly breaks
-    the duplicate-suppression the `record_event` claim is built on, and it buys
-    nothing: no non-rollback action has a gate that reads observed env, so both
-    namespaces would hold decisions of identical trustworthiness.
+    A first draft closed the rollback hole by splitting the EVENT KEY on env
+    provenance, which gave docs_pr and drift_issue two cache slots — one per
+    provenance. A grounded first attempt followed by a retry that hit a reader
+    blip would then MISS the cache and run `_perform_action` again, opening a
+    SECOND GitHub issue, breaking the duplicate-suppression the `record_event`
+    claim is built on. Guarding the cache READ instead leaves every key
+    untouched, so this case is simply unaffected.
 
-    Caught by Codex on the third pass of this change — the fix for one lane
-    quietly regressing another.
+    Caught by Codex — the fix for one lane quietly regressing another.
     """
     monkeypatch.setenv("USE_ADK", "true")
     get_settings.cache_clear()
@@ -1420,3 +1419,76 @@ def test_a_non_rollback_action_keeps_ONE_idempotency_slot_across_provenance(
     # ONE issue, not two: the retry hit the first run's cached decision even
     # though its env provenance differed.
     assert side_effects == ["issue"]
+
+
+def test_an_ungrounded_run_cannot_be_served_a_cached_rollback_VIA_ANOTHER_ACTION(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The guard has to judge the CACHED decision's action, not the incoming
+    proposal's — and getting that backwards is a live bypass, not a nicety.
+
+    A first fix split the event key by provenance and scoped the split to
+    proposals whose action was ROLLBACK. That still let this through:
+
+      1. grounded run proposes ROLLBACK, cached under key K;
+      2. ungrounded run reconstructs the identical env, but the model happens
+         to propose DRIFT_ISSUE;
+      3. the new proposal is non-rollback, so the key is still K;
+      4. the cache returns the ROLLBACK approval, before validate() runs.
+
+    What is being handed back is what has to be judged. Caught by Codex on the
+    fourth pass.
+    """
+    monkeypatch.setenv("USE_ADK", "true")
+    get_settings.cache_clear()
+    _reset_state_for_tests()
+
+    env = {"PAYMENT_MODE": "live", "FEATURE_NEW_CHECKOUT": "false"}
+    rollback = _rollback_proposal()
+    rollback.env_diffs.append(
+        EnvDiff(
+            name="FEATURE_NEW_CHECKOUT",
+            expected="false",
+            live="false",
+            contract_status=ContractStatus.MATCH,
+            debug_config_value=None,
+            recent_pr_match=None,
+        )
+    )
+    # Same env_diffs → same reconstruction → same event key as the run above.
+    issue = DecisionProposal(
+        action=DecisionAction.DRIFT_ISSUE,
+        env_diffs=list(rollback.env_diffs),
+        target_docs_file=None,
+        target_docs_section=None,
+        target_revision=None,
+        rationale="Filing an issue instead.",
+        confidence=0.9,
+        requires_human_review=True,
+    )
+
+    with (
+        patch("agent.main._run_adk_agent", AsyncMock(return_value=rollback)),
+        patch("agent.main.worker_client.call") as m_call,
+    ):
+        m_call.side_effect = _make_dispatch(live_env=env)
+        r1 = TestClient(app).post("/recheck")
+    assert r1.status_code == 200, r1.text
+    assert r1.json()["approval"]["approval_url"] == _APPROVAL_URL
+
+    def reader_down(worker: str, payload: dict, *a: Any, **k: Any) -> Any:
+        if worker == "reader":
+            raise RuntimeError("reader worker unreachable")
+        if worker == "notifier":
+            return _notifier_envelope()
+        raise AssertionError(f"unexpected worker call: {worker!r}")
+
+    with (
+        patch("agent.main._run_adk_agent", AsyncMock(return_value=issue)),
+        patch("agent.main.worker_client.call") as m_call,
+    ):
+        m_call.side_effect = reader_down
+        r2 = TestClient(app).post("/recheck")
+
+    assert r2.status_code == 502, r2.text
+    assert _APPROVAL_URL not in r2.text

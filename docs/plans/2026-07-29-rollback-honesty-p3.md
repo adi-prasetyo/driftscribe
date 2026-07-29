@@ -120,8 +120,10 @@ hard contract violation to revert?*
 outcome by OMITTING a deviating `allow_manual` diff, because the pre-existing
 reported-diff loop rejects one that is reported. Grounding that rule here would
 not fix it — the grounded predicate would still be the wrong one. It is pinned
-as a known gap by `test_the_omitted_allow_manual_hole_is_NOT_closed_here`, and
-closed properly by ds-uwc's source→target comparison.
+as a known gap by `test_the_omitted_allow_manual_hole_is_NOT_closed_here`.
+ds-uwc SURFACES the consequence on the approval page; it does not close the
+asymmetry. Closing it means replacing the current-vs-contract veto with a
+target-aware rule once target state is available to a gate — follow-up work.
 
 ### Correction 3: `live_env` is not complete ground truth
 
@@ -209,30 +211,30 @@ report reconstructs the exact dict the coordinator would have read and hashes
 identically. An ungrounded run could therefore be handed a grounded run's
 rollback approval, and the new refusal would never get to speak.
 
-Fixed rather than re-documented: `_event_key` takes `env_observed`, and a
-reconstructed env adds an `env_provenance` component that puts it in a separate
-cache namespace.
+Fixed by guarding the cache **read**, not the key.
 
-**Scoped to ROLLBACK.** A first cut keyed it off provenance alone, which quietly
-regressed a different lane: `docs_pr` / `drift_issue` would get two cache slots,
-one per provenance, so a grounded first attempt followed by a reader blip on the
-retry would miss the cache and open a **second** PR or issue — breaking the
-duplicate-suppression the `record_event` claim depends on, in exchange for
-nothing, since no non-rollback action has a gate that reads observed env. Caught
-by Codex; it now has its own regression test.
+Two earlier attempts changed `_event_key` instead, and both were wrong in ways
+worth recording because they are the same mistake at different depths:
 
-Backward compatibility, stated precisely rather than broadly. A **grounded** key
-is byte-identical to the pre-change algorithm, pinned against an inlined copy of
-that algorithm — so no grounded cache entry is orphaned, and the obvious wrong
-fix (stamping `env_provenance: "observed"` too) fails that test while passing
-every behavioural one. What this deploy DOES orphan is any decision cached from a
-reconstructed env before it, which becomes unreachable from new reconstructed
-requests. That is a handful of entries inside one 15-minute TTL, and the
-direction is safe: a miss re-proposes, it does not reuse.
+1. **Namespace by provenance, unscoped.** Correct for rollback, but it gave
+   `docs_pr` / `drift_issue` two cache slots — so a grounded first attempt plus a
+   reader blip on the retry would miss the cache and open a **second** PR or
+   issue. A fix for one lane silently regressing another.
+2. **Namespace by provenance, scoped to rollback *proposals*.** Still bypassable:
+   a grounded ROLLBACK caches under key K; an ungrounded run reconstructs the
+   identical env but the model proposes `drift_issue`; the new proposal is
+   non-rollback so the key is still K; the cache hands back the **rollback
+   approval**. I had scoped on the wrong subject — *what is being handed back* is
+   what has to be judged, not what is being asked for.
 
-Pinned by an integration test that runs a grounded /recheck, then an ungrounded
-one whose model reports the env perfectly — the worst case for the cache — and
-requires the second to 502 rather than return the first's approval.
+`_cached_rollback_needs_ground_truth(cached, observed_env)` refuses to serve a
+cached decision whose **`action` is rollback** to a request with no observed env.
+It refuses rather than falling through, because falling through would mint a
+second approval for the same event.
+
+Strictly better than either namespace: no event key changes at all, so no cache
+entry is orphaned, no action gains a second idempotency slot, and a cached
+non-rollback still suppresses duplicate side effects exactly as before.
 
 ### Demo-path check
 
