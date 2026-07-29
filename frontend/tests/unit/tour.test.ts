@@ -732,3 +732,38 @@ describe('adoptStepState', () => {
     if (s.kind === 'target') expect(s.prefill).toContain('`adopt-probe-topic`');
   });
 });
+
+// Codex round 3 of #258 — adoptStepState's ranking skips nodes that already
+// have an open adoption PR, so an unreliable pendingApprovals fetch makes every
+// "no PR here" judgement unsupported and a suggestion built on it would steer
+// the operator at a duplicate adoption.
+describe('adoptStepState — unreliable approvals suppress the suggestion', () => {
+  function adoptableGraph() {
+    return makeGraph({
+      groups: [
+        makeGroup({
+          adopt_rank: 1,
+          adopt_hint: 'Buckets are the simplest first adoption.',
+          nodes: [makeNode({ id: 'g1n0', label: 'demo-bucket' })],
+        }),
+      ],
+    });
+  }
+
+  it('returns an honest none-line instead of a target', () => {
+    const stale = adoptStepState(t, adoptableGraph(), [], true);
+    expect(stale.kind).toBe('none');
+    if (stale.kind === 'none') expect(stale.line).toContain("can't reach the list");
+  });
+
+  it('is checked BEFORE the graph guards, so a good graph cannot override it', () => {
+    // Ordering matters: a healthy graph must not let the suggestion through
+    // just because the graph itself loaded fine.
+    expect(adoptStepState(t, adoptableGraph(), [], true).kind).toBe('none');
+    expect(adoptStepState(t, adoptableGraph(), [], false).kind).toBe('target');
+  });
+
+  it('defaults to reliable so existing callers are unchanged', () => {
+    expect(adoptStepState(t, adoptableGraph(), []).kind).toBe('target');
+  });
+});

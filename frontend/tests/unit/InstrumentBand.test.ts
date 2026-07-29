@@ -106,3 +106,64 @@ describe('InstrumentBand', () => {
     expect(numeral).toBeTruthy();
   });
 });
+
+// ds-eh6 — a figure the consumer has not established yet arrives as `null`.
+// Before this the store's pre-fetch snapshot (graph:null, approvals:[]) came
+// through as three zeros, so a cold desk confidently announced an estate that
+// nothing had looked at.
+describe('InstrumentBand — unknown figures (ds-eh6)', () => {
+  it('renders a placeholder, not 0, for a null figure', () => {
+    const { getByTestId } = render(InstrumentBand, {
+      props: { managed: null, drift: null, awaiting: null, onNavigate: vi.fn() },
+    });
+    for (const id of ['managed', 'drift', 'awaiting']) {
+      const el = getByTestId(`instrument-band-${id}`);
+      expect(el.textContent).toContain('—');
+      expect(el.textContent).not.toContain('0');
+      expect(el.getAttribute('data-unknown')).toBe('true');
+    }
+  });
+
+  it('a known figure carries no unknown marker', () => {
+    const { getByTestId } = render(InstrumentBand, {
+      props: { managed: 0, drift: 0, awaiting: 0, onNavigate: vi.fn() },
+    });
+    for (const id of ['managed', 'drift', 'awaiting']) {
+      expect(getByTestId(`instrument-band-${id}`).getAttribute('data-unknown')).toBeNull();
+    }
+  });
+
+  it('the accessible name says "not yet known" instead of reading a bare dash', () => {
+    // An em dash is announced as nothing at all, so a screen-reader user would
+    // otherwise hear only the label and infer zero.
+    const { getByTestId } = render(InstrumentBand, {
+      props: { managed: null, drift: null, awaiting: null, onNavigate: vi.fn() },
+    });
+    expect(getByTestId('instrument-band-managed').getAttribute('aria-label')).toBe(
+      'Managed by IaC: not yet known',
+    );
+    expect(getByTestId('instrument-band-drift').getAttribute('aria-label')).toBe(
+      'Drift detected: not yet known',
+    );
+    expect(getByTestId('instrument-band-awaiting').getAttribute('aria-label')).toBe(
+      'Awaiting your approval: not yet known',
+    );
+  });
+
+  it('null collapses the meter to the bare "no data" track', () => {
+    const { getByTestId } = render(InstrumentBand, {
+      props: { managed: null, drift: null, awaiting: null, onNavigate: vi.fn() },
+    });
+    expect(getByTestId('instrument-band-meter-managed').getAttribute('style')).toContain('flex: 0');
+    expect(getByTestId('instrument-band-meter-drift').getAttribute('style')).toContain('flex: 0');
+  });
+
+  it('stats stay clickable while unknown', () => {
+    const onNavigate = vi.fn();
+    const { getByTestId } = render(InstrumentBand, {
+      props: { managed: null, drift: null, awaiting: null, onNavigate },
+    });
+    fireEvent.click(getByTestId('instrument-band-managed'));
+    expect(onNavigate).toHaveBeenCalledWith('estate');
+  });
+});

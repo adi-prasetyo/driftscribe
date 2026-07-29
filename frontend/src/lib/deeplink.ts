@@ -14,6 +14,22 @@
 const HEX32_RE = /^[0-9a-f]{32}$/;
 
 /**
+ * Whether `id` is a trace id this module would accept back out of a
+ * `?reasoning=` param — i.e. whether a link built from it can round-trip.
+ *
+ * Exported so a component that OFFERS a reasoning link can gate on the same
+ * rule the parser applies, rather than each side owning its own idea of a
+ * well-formed id. Without it a caller can render a link that opens the replay
+ * once (openTrace takes any string) but silently fails to restore when the
+ * resulting URL is shared or reloaded, because `reasoningTraceFromSearch`
+ * rejects what `syncReasoningParam` just wrote. The desk's pending card
+ * (ds-wd2.15) gates on this for exactly that reason.
+ */
+export function isReplayableTraceId(id: unknown): id is string {
+  return typeof id === 'string' && HEX32_RE.test(id);
+}
+
+/**
  * The trace id to replay from a `?reasoning=<hex32>` query string, or null when
  * the param is absent or malformed. Pure — the caller decides what to do with it
  * (App.svelte calls openTrace on boot; syncReasoningParam writes it back).

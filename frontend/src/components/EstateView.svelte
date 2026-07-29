@@ -26,6 +26,9 @@
     graph,
     decisions,
     pendingApprovals,
+    settled = true,
+    degraded = false,
+    approvalsStale = false,
     adoptDisabled = false,
     onAdopt,
     onNavigate,
@@ -33,6 +36,14 @@
     graph: InfraGraph | null;
     decisions: ReadonlyArray<Decision | null | undefined> | null | undefined;
     pendingApprovals: ReadonlyArray<PendingApproval | null | undefined> | null | undefined;
+    /** Same contract as ApprovalDesk's — see ds-eh6. Defaults keep existing
+     *  test mounts meaning what they meant. */
+    settled?: boolean;
+    degraded?: boolean;
+    /** The pending-approvals lane specifically was unreliable this cycle — see
+     *  OverviewState.approvalsStale. Suppresses ABSENCE-derived affordances
+     *  only; positively observed PR chips still render. */
+    approvalsStale?: boolean;
     adoptDisabled?: boolean;
     /** Adopt chip click → App prefills the chat with this string (NOT auto-sent). */
     onAdopt?: (prefill: string) => void;
@@ -43,15 +54,37 @@
   // never re-derived, so the two views can never disagree about the figures. ----
   const cards = $derived(graph ? resourceCards(graph, $t) : []);
   const scope = $derived(scopeTotals(cards, graph?.totals?.resources ?? 0));
-  const awaiting = $derived(awaitingCount({ decisions, pendingApprovals, locale: $locale }));
+  // ds-eh6, same rule as ApprovalDesk: an absent OR degraded graph means the
+  // estate was not read, not that it is empty. This view already SAYS the map
+  // is loading/unavailable a few lines down — it was doing so while handing the
+  // band arithmetic zeros to render as exact figures, which contradicted its own
+  // banner on the same screen.
+  const graphUsable = $derived(!!graph && graph.degraded !== true);
+  const bandManaged = $derived(graphUsable ? scope.managed : null);
+  const bandDrift = $derived(graphUsable ? scope.drift : null);
+  // Gated exactly as ApprovalDesk gates it. Both views render the SAME
+  // InstrumentBand off the SAME store snapshot, so gating one and not the other
+  // meant a cold `?view=estate` showed a confident "0 awaiting" while the desk
+  // showed "—" for identical state — the two views contradicting each other
+  // about the same fact.
+  const awaiting = $derived(
+    settled && !degraded ? awaitingCount({ decisions, pendingApprovals, locale: $locale }) : null,
+  );
 
   // ---- row model ----
-  const model = $derived(estateModel(graph, pendingApprovals, $t));
+  // `decisions` is threaded in for ds-0rm's resolved-PR reconciliation, NOT
+  // for row content — see estateModel's `decisions` param. Both this view and
+  // App's adopt-target call it with the same four arguments so the two can
+  // never disagree about which PRs are still open.
+  const model = $derived(estateModel(graph, pendingApprovals, $t, decisions));
   // The tour's "Adopt your first resource" step spotlights this exact row
   // (data-tour="adopt-target"); App.svelte computes the SAME predicate off the
   // SAME model for its nav-button fallback, so the two markers are always
   // mutually exclusive (see firstAdoptableRow's own doc comment).
-  const adoptTarget = $derived(firstAdoptableRow(model));
+  // No adopt target while the approvals lane is unreliable — the target is
+  // chosen from rows whose `pendingPr === null`, which is precisely the
+  // unsupported absence. Nulling it here also clears the tour's spotlight.
+  const adoptTarget = $derived(approvalsStale ? null : firstAdoptableRow(model));
 
   function clickAdopt(prefill: string): void {
     if (adoptDisabled) return;
@@ -65,11 +98,16 @@
   data-tour="estate"
   aria-label={$t('desk.estate.ariaLabel')}
 >
-  <InstrumentBand managed={scope.managed} drift={scope.drift} {awaiting} {onNavigate} />
+  <InstrumentBand managed={bandManaged} drift={bandDrift} {awaiting} {onNavigate} />
 
-  {#if graph === null}
+  <!-- A null graph is only "loading" while the first cycle is still out. Once
+       it has settled, a null graph means the fetch FINISHED and failed, and
+       "Loading the estate…" would be a claim that something is still in
+       progress — which can then sit there until the next 45s poll. Same
+       over-claim class as the desk's all-clear, just phrased as optimism. -->
+  {#if graph === null && !settled}
     <p class="estate-view__status" data-testid="estate-loading">{$t('desk.estate.loading')}</p>
-  {:else if graph.degraded}
+  {:else if graph === null || graph.degraded}
     <p class="estate-view__status" data-testid="estate-degraded">{$t('desk.estate.degraded')}</p>
   {:else}
     {#if model.drift.length > 0}
@@ -89,6 +127,18 @@
             {#if row.pendingPr !== null}
               <span class="estate-view__chip estate-view__chip--q" data-testid="estate-pr-chip">
                 {$t('desk.estate.prPending', { pr: row.pendingPr })}
+              </span>
+            {:else if row.adoptable && approvalsStale}
+              <!-- The Adopt button is an ABSENCE claim: it appears exactly when
+                   no open adoption PR was found for this row. On a
+                   pending-approvals soft failure that emptiness means "we could
+                   not ask GitHub", so offering Adopt would assert something we
+                   just failed to establish — and unlike a wrong figure it drives
+                   an action (a duplicate PR). Suppressed with a reason rather
+                   than silently dropped. Note the same outage would break the
+                   adopt itself, since opening the PR needs the same GitHub. -->
+              <span class="estate-view__chip estate-view__chip--mute" data-testid="estate-adopt-unknown">
+                {$t('desk.estate.adoptUnavailable')}
               </span>
             {:else if row.adoptable}
               <button
@@ -271,6 +321,14 @@
   .estate-view__chip:disabled {
     cursor: not-allowed;
     opacity: 0.5;
+  }
+  /* The "adoption status unknown" stand-in. Muted and NOT a button: it must not
+     read as an action, because the whole point is that we cannot say whether
+     the action is appropriate. */
+  .estate-view__chip--mute {
+    color: var(--ds-paper-mut);
+    border-style: dashed;
+    cursor: default;
   }
   .estate-view__chip--q {
     border-color: var(--ds-paper-rule);

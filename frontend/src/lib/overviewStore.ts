@@ -59,6 +59,57 @@ export interface OverviewState {
    * it's the one worth surfacing first), then pending, then decisions.
    */
   lastError: OverviewFetchKind | null;
+  /**
+   * False until the FIRST refresh cycle completes (success or failure); true
+   * forever after. ds-eh6 — consumers must be able to tell "we have not looked
+   * yet" from "we looked and there is nothing", because rendering the second
+   * while the first is true is a confident false claim. The desk keys its
+   * `unknown`/`loading` state off this.
+   *
+   * Deliberately separate from the `NO_DECISIONS_YET` sentinel above, which
+   * answers the narrower question the boot-seed watermark asks ("has the
+   * DECISIONS payload ever landed"). This one covers the whole cycle, so a
+   * consumer reading `pendingApprovals` is not forced to infer its load state
+   * from a sibling slice.
+   */
+  settled: boolean;
+  /**
+   * The last completed cycle could not get a trustworthy answer about pending
+   * work — either `/decisions` or `/infra/pending-approvals` failed outright,
+   * OR pending-approvals soft-failed to `{approvals: [], degraded: true}`
+   * (agent/main.py:3531, its documented GitHub-outage behavior).
+   *
+   * That soft-fail is why this is not simply derived from `lastError`: it
+   * arrives as a 200 with a well-formed empty list, so every ok/Array.isArray
+   * check passes and the failure is invisible unless the flag is read. An
+   * empty list that means "GitHub is down" and one that means "nothing is
+   * pending" are the same bytes apart from this bit.
+   *
+   * Scoped to the two desk lanes ON PURPOSE: a `/infra/graph` failure does not
+   * set it. Graph feeds the estate view, and it is the routinely-slow endpoint
+   * — letting it flip this would put the desk in a degraded state during
+   * ordinary cold starts.
+   */
+  degraded: boolean;
+  /**
+   * The pending-approvals lane SPECIFICALLY could not be trusted in the last
+   * completed cycle — it failed, or answered `degraded: true`.
+   *
+   * Narrower than `degraded` on purpose, and the narrowness IS the point: the
+   * aggregate flag also fires when only `/decisions` failed, which says nothing
+   * about whether an adoption PR exists. A consumer keying an ABSENCE claim off
+   * `pendingApprovals` needs to know about this lane and no other.
+   *
+   * Why it matters more than the display flags: on the soft failure the store
+   * writes `pendingApprovals: []`, and an empty list is indistinguishable from
+   * "no PRs are open". Anything reading "this resource has no adoption PR" out
+   * of that emptiness — the Adopt button, the tour's adopt target — asserts
+   * something the app just failed to establish. Unlike a wrong NUMBER, that
+   * assertion drives an ACTION (a duplicate adoption PR). The backend's
+   * dupe-guard refuses the duplicate, so the blast radius is small; the
+   * operator was still told something false, on the demo's action surface.
+   */
+  approvalsStale: boolean;
 }
 
 export interface OverviewStore extends Readable<OverviewState> {
@@ -84,6 +135,9 @@ const INITIAL: OverviewState = {
   pendingApprovals: [],
   decisions: NO_DECISIONS_YET,
   lastError: null,
+  settled: false,
+  degraded: false,
+  approvalsStale: false,
 };
 
 type FetchResult<T> = { ok: true; value: T } | { ok: false };
@@ -139,13 +193,26 @@ export function createOverviewStore(
     }
   }
 
-  async function fetchPendingList(): Promise<FetchResult<PendingApproval[]>> {
+  // Returns the list AND whether the backend admitted it was guessing. The
+  // `degraded` bit rides alongside rather than collapsing into `ok: false`:
+  // the payload IS usable (it is a well-formed, possibly-partial list, and
+  // overwriting the prior value with it is still correct), it just cannot be
+  // read as authoritative about absence. See OverviewState.degraded.
+  async function fetchPendingList(): Promise<
+    FetchResult<{ approvals: PendingApproval[]; degraded: boolean }>
+  > {
     try {
       const resp = await call('/infra/pending-approvals');
       if (!resp.ok) return { ok: false };
       const body = await resp.json();
       if (!Array.isArray(body?.approvals)) return { ok: false };
-      return { ok: true, value: body.approvals as PendingApproval[] };
+      return {
+        ok: true,
+        value: {
+          approvals: body.approvals as PendingApproval[],
+          degraded: body.degraded === true,
+        },
+      };
     } catch {
       return { ok: false };
     }
@@ -169,9 +236,21 @@ export function createOverviewStore(
     if (my !== seq) return; // defensive; unreachable while inFlight guards overlap
     update((state) => ({
       graph: g.ok ? g.value : state.graph,
-      pendingApprovals: p.ok ? p.value : state.pendingApprovals,
+      pendingApprovals: p.ok ? p.value.approvals : state.pendingApprovals,
       decisions: d.ok ? d.value : state.decisions,
       lastError: !g.ok ? 'graph' : !p.ok ? 'pending' : !d.ok ? 'decisions' : null,
+      // Set once the first cycle completes, whatever the outcome — a cycle in
+      // which everything failed still answers "have we looked yet" with yes.
+      // That is why this is not `g.ok && p.ok && d.ok`: a total outage would
+      // otherwise pin the desk on `loading` forever, promising a resolution
+      // that is not coming. A failed look is reported as `degraded` below.
+      settled: true,
+      // Recomputed per cycle, never latched: a recovered fetch must clear it.
+      // Only the two lanes the desk reads — a graph failure is deliberately
+      // not a desk-degraded signal (see OverviewState.degraded).
+      degraded: !p.ok || !d.ok || (p.ok && p.value.degraded),
+      // The approvals lane alone. Same recompute-never-latch rule.
+      approvalsStale: !p.ok || p.value.degraded,
     }));
   }
 

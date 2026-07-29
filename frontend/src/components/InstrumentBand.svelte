@@ -34,7 +34,7 @@
    * `Math.max(0, …)` below only guards against a negative/non-finite input
    * ever reaching the CSS `flex` shorthand, which a negative number breaks.
    */
-  import { t } from '../lib/i18n';
+  import { t, type TranslateFn } from '../lib/i18n';
   import type { AppView } from '../lib/deeplink';
 
   let {
@@ -43,9 +43,16 @@
     awaiting,
     onNavigate,
   }: {
-    managed: number;
-    drift: number;
-    awaiting: number;
+    /** `null` = NOT YET KNOWN, and it renders as a placeholder rather than a
+     *  numeral (ds-eh6). Before the first refresh cycle settles the store holds
+     *  `graph: null` and an empty approvals list, which used to arrive here as
+     *  three zeros — "0 managed, 0 drift, 0 awaiting" is a confident claim
+     *  about an estate nothing has looked at yet, and it is the same over-claim
+     *  the desk hero made with its all-clear. Zero remains a perfectly good
+     *  ANSWER; it just has to be one we actually got. */
+    managed: number | null;
+    drift: number | null;
+    awaiting: number | null;
     onNavigate: (view: AppView) => void;
   } = $props();
 
@@ -53,13 +60,46 @@
     onNavigate('estate');
   }
 
+  /** The visible stand-in for an unknown figure. An em dash is the typographic
+   *  convention for "no value" in a numeric column and needs no translation;
+   *  the accessible name still gets real words (see `statAria`). */
+  const UNKNOWN_GLYPH = '—';
+
+  function statText(n: number | null): string {
+    return n === null ? UNKNOWN_GLYPH : String(n);
+  }
+
+  /** Screen readers must never hear the em dash — it reads as nothing, or as
+   *  punctuation. An unknown stat announces its label with an explicit
+   *  "not yet known" instead of a bare figure. */
+  // Keys are typed against the catalog (TranslateFn's own key union), not
+  // plain strings — a widened `string` here would silently accept a typo'd or
+  // deleted key and only surface it as a missing translation at runtime.
+  type CatalogKey = Parameters<TranslateFn>[0];
+  function statAria(
+    n: number | null,
+    key: CatalogKey,
+    unknownKey: CatalogKey,
+    tf: TranslateFn,
+  ): string {
+    return n === null ? tf(unknownKey) : tf(key, { n });
+  }
+
   // Defensive clamp for the meter only: scopeTotals() guarantees non-negative
   // finite sums, but this component doesn't re-derive or trust that upstream
   // invariant blindly — a negative flex value is invalid CSS and a non-finite
   // one renders nothing at all, either of which would silently blank the
   // meter rather than showing the honest bare-track "no data" state above.
-  const meterManaged = $derived(Number.isFinite(managed) ? Math.max(0, managed) : 0);
-  const meterDrift = $derived(Number.isFinite(drift) ? Math.max(0, drift) : 0);
+  //
+  // `null` (not yet known) lands on 0 through the same path a non-finite value
+  // does, which is already the right answer: both segments collapse and the
+  // bare track shows through as "no data". That is precisely what an unlooked-at
+  // estate should render, so the unknown case needs no branch of its own here.
+  function meterFlex(n: number | null): number {
+    return n !== null && Number.isFinite(n) ? Math.max(0, n) : 0;
+  }
+  const meterManaged = $derived(meterFlex(managed));
+  const meterDrift = $derived(meterFlex(drift));
 </script>
 
 <div class="instrument-band" data-testid="instrument-band">
@@ -68,30 +108,33 @@
       type="button"
       class="instrument-band__stat"
       data-testid="instrument-band-managed"
-      aria-label={$t('desk.band.managedAria', { n: managed })}
+      aria-label={statAria(managed, 'desk.band.managedAria', 'desk.band.managedUnknownAria', $t)}
+      data-unknown={managed === null ? 'true' : null}
       onclick={goEstate}
     >
-      <span class="instrument-band__num">{managed}</span>
+      <span class="instrument-band__num">{statText(managed)}</span>
       <span class="instrument-band__label">{$t('desk.band.managedLabel')}</span>
     </button>
     <button
       type="button"
       class="instrument-band__stat instrument-band__stat--drift"
       data-testid="instrument-band-drift"
-      aria-label={$t('desk.band.driftAria', { n: drift })}
+      aria-label={statAria(drift, 'desk.band.driftAria', 'desk.band.driftUnknownAria', $t)}
+      data-unknown={drift === null ? 'true' : null}
       onclick={goEstate}
     >
-      <span class="instrument-band__num">{drift}</span>
+      <span class="instrument-band__num">{statText(drift)}</span>
       <span class="instrument-band__label">{$t('desk.band.driftLabel')}</span>
     </button>
     <button
       type="button"
       class="instrument-band__stat instrument-band__stat--wait"
       data-testid="instrument-band-awaiting"
-      aria-label={$t('desk.band.awaitingAria', { n: awaiting })}
+      aria-label={statAria(awaiting, 'desk.band.awaitingAria', 'desk.band.awaitingUnknownAria', $t)}
+      data-unknown={awaiting === null ? 'true' : null}
       onclick={goEstate}
     >
-      <span class="instrument-band__num">{awaiting}</span>
+      <span class="instrument-band__num">{statText(awaiting)}</span>
       <span class="instrument-band__label">{$t('desk.band.awaitingLabel')}</span>
     </button>
   </div>
@@ -157,6 +200,16 @@
   }
   .instrument-band__stat--drift .instrument-band__num {
     color: var(--ds-drift-amber);
+  }
+  /* Unknown reads as muted regardless of which stat it is — the amber "drift"
+     and navy "managed" inks are semantic (they mean "this many are drifting"),
+     so painting a placeholder in them would carry the very meaning the
+     placeholder exists to withhold. Wins over the two per-stat rules below by
+     being an attribute-qualified selector on the same element. Placed after
+     --drift and before --wait would leave --wait winning on source order, so
+     the `[data-unknown]` qualifier is what makes this order-independent. */
+  .instrument-band__stat[data-unknown] .instrument-band__num {
+    color: var(--ds-paper-mut);
   }
   .instrument-band__stat--wait .instrument-band__num {
     color: var(--ds-gblue);

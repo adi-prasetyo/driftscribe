@@ -71,8 +71,11 @@ function baseProps(over: Record<string, unknown> = {}) {
 
 describe('EstateView — loading/degraded honesty', () => {
   it('renders an honest loading line when the graph has not loaded yet', () => {
+    // `settled: false` is what "has not loaded yet" now means precisely — a
+    // null graph on a SETTLED cycle is a finished failure, not a load in
+    // progress, and takes the degraded branch below (Codex review of #258).
     const { getByTestId, queryByTestId } = render(EstateView, {
-      props: baseProps({ graph: null }),
+      props: baseProps({ graph: null, settled: false }),
     });
     expect(getByTestId('estate-loading')).toBeTruthy();
     expect(queryByTestId('estate-row')).toBeNull();
@@ -268,6 +271,92 @@ describe('EstateView — tour target', () => {
 
   it('no row carries the marker when there is no adoptable target', () => {
     const { container } = render(EstateView, { props: baseProps({ graph: graph({ groups: [] }) }) });
+    expect(container.querySelector('[data-tour="adopt-target"]')).toBeNull();
+  });
+});
+
+// Codex re-review of #258 — EstateView renders the SAME InstrumentBand off the
+// SAME store snapshot as ApprovalDesk, so gating one and not the other made the
+// two views contradict each other about the same fact.
+describe('EstateView — unknown figures match the desk (ds-eh6)', () => {
+  it('a cold load shows "—" for awaiting, not a confident 0', () => {
+    const { getByTestId } = render(EstateView, {
+      props: baseProps({ graph: null, settled: false }),
+    });
+    expect(getByTestId('instrument-band-awaiting').textContent).toContain('—');
+  });
+
+  it('a degraded cycle shows "—" for awaiting', () => {
+    const { getByTestId } = render(EstateView, {
+      props: baseProps({ settled: true, degraded: true }),
+    });
+    expect(getByTestId('instrument-band-awaiting').textContent).toContain('—');
+  });
+
+  it('a settled clean cycle still shows a real count', () => {
+    const { getByTestId } = render(EstateView, { props: baseProps({ settled: true }) });
+    expect(getByTestId('instrument-band-awaiting').textContent).toContain('0');
+  });
+
+  it('a SETTLED null graph reads unavailable, not "Loading the estate…"', () => {
+    // The fetch finished and failed. Saying "loading" claims something is still
+    // in progress, and it would sit there until the next 45s poll.
+    const { getByTestId, queryByTestId } = render(EstateView, {
+      props: baseProps({ graph: null, settled: true }),
+    });
+    expect(queryByTestId('estate-loading')).toBeNull();
+    expect(getByTestId('estate-degraded')).toBeTruthy();
+  });
+
+  it('a degraded graph still shows "—" for the graph-derived figures', () => {
+    const { getByTestId } = render(EstateView, {
+      props: baseProps({ graph: graph({ degraded: true }), settled: true }),
+    });
+    expect(getByTestId('instrument-band-managed').textContent).toContain('—');
+    expect(getByTestId('instrument-band-drift').textContent).toContain('—');
+  });
+});
+
+// Codex round 3 of #258 — the most consequential instance of the same defect:
+// this one drives an ACTION. On a pending-approvals soft failure the store
+// writes `pendingApprovals: []`, and the Adopt button appears exactly when no
+// open adoption PR was found for a row. That emptiness means "we could not ask
+// GitHub", so offering Adopt asserts something the app just failed to establish.
+describe('EstateView — unreliable approvals must not imply "safe to adopt" (ds-eh6)', () => {
+  it('suppresses the Adopt button and says why', () => {
+    const { getByTestId, queryByTestId } = render(EstateView, {
+      props: baseProps({ settled: true, approvalsStale: true }),
+    });
+    expect(queryByTestId('estate-adopt-btn')).toBeNull();
+    expect(getByTestId('estate-adopt-unknown').textContent).toContain('adoption status unknown');
+  });
+
+  it('still renders a POSITIVELY observed PR chip', () => {
+    // Only the absence claim is unsupported. A PR we actually saw is still a
+    // fact, and hiding it would be its own information loss.
+    const { getByTestId, queryByTestId } = render(EstateView, {
+      props: baseProps({
+        pendingApprovals: [pending({ resource_name: 'demo-node', asset_type: BUCKET })],
+        settled: true,
+        approvalsStale: true,
+      }),
+    });
+    expect(getByTestId('estate-pr-chip')).toBeTruthy();
+    expect(queryByTestId('estate-adopt-unknown')).toBeNull();
+  });
+
+  it('offers Adopt normally when the approvals lane is reliable', () => {
+    const { getByTestId, queryByTestId } = render(EstateView, {
+      props: baseProps({ settled: true, approvalsStale: false }),
+    });
+    expect(getByTestId('estate-adopt-btn')).toBeTruthy();
+    expect(queryByTestId('estate-adopt-unknown')).toBeNull();
+  });
+
+  it('clears the tour adopt spotlight while approvals are unreliable', () => {
+    const { container } = render(EstateView, {
+      props: baseProps({ settled: true, approvalsStale: true }),
+    });
     expect(container.querySelector('[data-tour="adopt-target"]')).toBeNull();
   });
 });

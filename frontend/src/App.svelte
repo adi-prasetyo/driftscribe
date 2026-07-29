@@ -48,7 +48,7 @@
   import ApprovalDesk from './components/ApprovalDesk.svelte';
   import EstateView from './components/EstateView.svelte';
   import { previewPrFromSearch } from './lib/infra_graph';
-  import { estateModel, firstAdoptableRow } from './lib/estate';
+  import { estateModel, firstAdoptableRow, reconcileApprovals } from './lib/estate';
   import {
     reasoningTraceFromSearch,
     conversationIdFromSearch,
@@ -566,8 +566,16 @@
   // BOTH sides call this exact function on the SAME estateModel() output
   // (never a second hand-rolled predicate) and why the two data-tour="adopt-
   // target" markers are therefore mutually exclusive.
+  // Gated on approvalsStale for the same reason EstateView nulls its own
+  // adoptTarget: the target is chosen from rows with no open adoption PR, and a
+  // soft-failed approvals fetch cannot support that absence. Without this the
+  // tour would still steer a live-demo visitor at a duplicate adoption even
+  // though the estate row itself had stopped offering the button.
   const estateHasAdoptTarget = $derived(
-    firstAdoptableRow(estateModel($overview.graph, $overview.pendingApprovals, $t)) !== null,
+    !$overview.approvalsStale &&
+      firstAdoptableRow(
+        estateModel($overview.graph, $overview.pendingApprovals, $t, $overview.decisions),
+      ) !== null,
   );
 
   // Detect a freshly-`applied` iac_apply decision (decisions arrive newest-first)
@@ -1826,8 +1834,12 @@
     graph={$overview.graph}
     decisions={$overview.decisions}
     pendingApprovals={$overview.pendingApprovals}
+    settled={$overview.settled}
+    degraded={$overview.degraded}
+    lastError={$overview.lastError}
     refresh={overview.refresh}
     onNavigate={navigate}
+    onOpenTrace={openTrace}
   />
   {:else if view === 'estate'}
   <!-- The real estate view (Task 4.1). Data comes exclusively from the
@@ -1838,6 +1850,9 @@
     graph={$overview.graph}
     decisions={$overview.decisions}
     pendingApprovals={$overview.pendingApprovals}
+    settled={$overview.settled}
+    degraded={$overview.degraded}
+    approvalsStale={$overview.approvalsStale}
     adoptDisabled={chatDisabled}
     onAdopt={handleAdopt}
     onNavigate={navigate}
@@ -1850,7 +1865,8 @@
 {#if tourOpen}
   <TourCard
     graph={$overview.graph}
-    pendingApprovals={$overview.pendingApprovals}
+    pendingApprovals={reconcileApprovals($overview.pendingApprovals, $overview.decisions)}
+    approvalsStale={$overview.approvalsStale}
     adoptDisabled={chatDisabled}
     onAdoptPrefill={handleAdopt}
     onNavigate={tourNavigate}

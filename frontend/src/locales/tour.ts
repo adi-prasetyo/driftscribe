@@ -91,6 +91,15 @@ export const tour = {
       'imports a resource into IaC exactly as it is. This zero-change ' +
       'import goes through the same review and approval as any ' +
       'other change. {hint}',
+    // The tour skips resources that already have an open adoption PR, so an
+    // unreliable pending-approvals fetch makes every "no PR here" judgement
+    // unsupported — suggesting one would steer the operator at a duplicate
+    // adoption (Codex review #258).
+    'tour.adopt.approvalsUnknown':
+      "We can't reach the list of open adoption requests right now, so we " +
+      "can't tell which resources already have one in review. Rather than " +
+      'point you at something that may be handled already, come back to this ' +
+      'step in a moment.',
     'tour.adopt.allManaged':
       'Everything in your estate is already under IaC management, so ' +
       'there is nothing left to adopt. You are ahead of this tour.',
@@ -218,6 +227,10 @@ export const tour = {
       'IaC 管理に取り込むと、リソースの現在の状態がそのまま IaC に反映されます。この' +
       '変更を伴わない取り込みも、他の変更と同じレビューと承認のプロセスを経ます。 ' +
       '{hint}',
+    'tour.adopt.approvalsUnknown':
+      'レビュー待ちの取り込み申請の一覧を取得できないため、どのリソースがすでに' +
+      '申請済みかを判断できません。対応済みのものをご案内してしまう可能性がある' +
+      'ため、少し時間をおいてからこのステップにお戻りください。',
     'tour.adopt.allManaged':
       '保有リソースはすべてすでに IaC 管理下にあるため、これ以上取り込むものは' +
       'ありません。このツアーで案内する作業はすでに完了しています。',

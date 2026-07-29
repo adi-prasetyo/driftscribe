@@ -21,6 +21,7 @@ import {
   isIacAwaitingOperator,
   resolvedIacPrNumbers,
 } from './approval';
+import { isReplayableTraceId } from './deeplink';
 import type { Decision } from './types';
 import type { PendingApproval } from './infra_graph';
 
@@ -54,6 +55,18 @@ export interface DeskPendingRollback {
   decision: Decision;
   /** Same-origin relative href, already validated by `safeApprovalHref`. */
   href: string;
+  /**
+   * The reasoning trace that AUTHORED this proposal (ds-wd2.15), or null when
+   * the row predates trace capture. Always `?reasoning=`-round-trippable —
+   * gated on `isReplayableTraceId` so the desk can never offer a link that
+   * opens once but fails to restore when shared.
+   *
+   * Sound on this arm specifically because a rollback decision is written BY
+   * the proposing run (`_do_rollback` calls `record_decision` inside the agent
+   * turn), so its `trace_id` really is the reasoning behind the proposal. The
+   * iac arms do not have that property — see `DeskPendingIac.traceId`.
+   */
+  traceId: string | null;
 }
 
 /**
@@ -79,6 +92,27 @@ export interface DeskPendingIac {
   /** Same-origin relative href, built by `iacApprovalHref`. */
   href: string;
   provenance: DeskPendingIacProvenance;
+  /**
+   * ALWAYS null on this arm today — see `DeskPendingRollback.traceId` for the
+   * arm that does carry one, and the note below for why this one cannot.
+   *
+   * ⚠️ An `iac_apply` decision's `trace_id` is NOT the authoring reasoning.
+   * `_record_iac_decision` stamps `current_trace_id_or_new()` (agent/main.py
+   * ~5352), and that function runs inside the **approve/apply POST** — a
+   * different HTTP request from the crew run that authored the PR. Linking
+   * "view the reasoning behind this" to it would point the operator at the
+   * trace of their own approval click. That is a new instance of exactly the
+   * over-claiming this module exists to prevent, so the iac arms render no
+   * link at all rather than a confident wrong one.
+   *
+   * The authoring association DOES exist — `append_turns` stores `iac_pr`
+   * beside `trace_id` on the crew turn (agent/main.py ~638) — but only on the
+   * conversation doc, which the desk has no handle on. Surfacing it needs the
+   * backend to carry a trace id on `PendingApproval` (or an equivalent
+   * lookup). Tracked separately; do NOT re-add a `pr_number` join over
+   * `decisions` to fake it.
+   */
+  traceId: null;
 }
 
 export type DeskPending = DeskPendingRollback | DeskPendingIac;
@@ -124,7 +158,32 @@ export interface DeskResting {
   kind: 'resting';
 }
 
-export type DeskModel = DeskPending | DeskStamped | DeskUnresolved | DeskResting;
+/**
+ * We do not know whether anything needs the operator (ds-eh6).
+ *
+ * `resting` is a CLAIM — "nothing needs your decision right now" — and the
+ * desk was making it in two states where it had no standing to: before the
+ * first refresh cycle settles, and after a cycle in which a lane the desk
+ * depends on failed. Both rendered as a confident all-clear, which is the
+ * same class of dishonesty as a fake seal, just at the other end.
+ *
+ * The codebase already knew this pre-fetch state was dangerous: App.svelte
+ * guards `noteApplied` on `ds !== NO_DECISIONS_YET` precisely so the applied
+ * watermark is never seeded from placeholder data. The desk now honors the
+ * same distinction.
+ *
+ * `loading` — no cycle has settled yet; this resolves on its own in seconds.
+ * `degraded` — a cycle completed but `/decisions` or `/infra/pending-approvals`
+ * did not answer usefully, so the snapshot may be missing a pending item.
+ * They are kept distinct because the copy must differ: one asks for patience,
+ * the other admits a gap.
+ */
+export interface DeskUnknown {
+  kind: 'unknown';
+  reason: 'loading' | 'degraded';
+}
+
+export type DeskModel = DeskPending | DeskStamped | DeskUnresolved | DeskResting | DeskUnknown;
 
 export interface DeskModelInput {
   // Element type includes null/undefined: both arrays are open, externally-
@@ -144,6 +203,29 @@ export interface DeskModelInput {
   origin?: string;
   /** Passed straight through to safeApprovalHref / iacApprovalHref. */
   locale?: string;
+  /**
+   * Has the first refresh cycle completed (ds-eh6)? DEFAULTS TO TRUE, so
+   * every existing caller and test keeps its current meaning — a caller that
+   * genuinely knows about load state opts in by passing it. `false` suppresses
+   * the `resting` all-clear in favour of `unknown`/`loading`; it never
+   * suppresses a pending/unresolved/stamped result, because a card the desk
+   * CAN prove is worth showing whether or not the rest of the snapshot landed.
+   */
+  settled?: boolean;
+  /**
+   * Did the last completed cycle fail to get a trustworthy answer from a lane
+   * this desk depends on (ds-eh6)? Defaults to false. Same non-suppressing
+   * semantics as `settled`.
+   *
+   * Deliberately a single boolean rather than the store's per-kind error
+   * union: the desk depends on `/decisions` and `/infra/pending-approvals`
+   * only. A `/infra/graph` failure must NOT set this — graph feeds the estate
+   * view and the resting watch line, and treating it as a desk-lane failure
+   * would fire the degraded state on the one endpoint that is routinely slow
+   * (CAI-backed, 10-30s cold). Deciding which errors qualify is the caller's
+   * job precisely because this module has no view of where they came from.
+   */
+  degraded?: boolean;
 }
 
 /** Parses an ISO timestamp to epoch-ms for ORDERING purposes only (picking
@@ -215,8 +297,24 @@ function selectPendingRollback(
       best = { decision, href, ts };
     }
   }
-  return best === null ? null : { kind: 'pending', source: 'rollback', decision: best.decision, href: best.href };
+  return best === null
+    ? null
+    : {
+        kind: 'pending',
+        source: 'rollback',
+        decision: best.decision,
+        href: best.href,
+        traceId: replayableTraceId(best.decision),
+      };
 }
+
+/** The decision's `trace_id` if it can round-trip a `?reasoning=` link, else
+ *  null. See `DeskPendingIac.traceId` — null must render as no link. */
+function replayableTraceId(decision: Decision | null | undefined): string | null {
+  const id = decision?.trace_id;
+  return isReplayableTraceId(id) ? id : null;
+}
+
 
 /**
  * Rule 2a: the first entry of the pending-approvals payload (the backend
@@ -233,13 +331,25 @@ function selectPendingRollback(
  * when both sources reference the same PR the listing wins (it carries the
  * PR title/body the desk card wants) purely by rule ordering — rule 2b never
  * runs at all once this one returns non-null.
+ *
+ * ds-0rm: this listing is CACHED backend-side for 60s
+ * (`_PENDING_APPROVALS_TTL_S`, agent/main.py), so for up to a minute after a
+ * PR merges and applies it still names that PR. Because this rule is tried
+ * FIRST and used to skip the `resolvedPrs` check that rule 2b applies, a
+ * stale cache entry outranked the seal that should have been showing — the
+ * desk asked for a decision that had already been made. It now honors the
+ * same resolved-PR filter, so the two rules can never disagree about whether
+ * a given PR is still open.
  */
 function selectPendingIac(
   pendingApprovals: ReadonlyArray<PendingApproval | null | undefined>,
+  decisions: ReadonlyArray<Decision | null | undefined>,
+  resolvedPrs: ReadonlySet<number>,
   locale: string | undefined,
 ): DeskPendingIac | null {
   for (const approval of pendingApprovals) {
     if (approval == null) continue; // defensive: malformed array element, skip not throw
+    if (resolvedPrs.has(approval.pr_number)) continue; // ds-0rm: already applied, stale cache row
     const href = iacApprovalHref(approval.pr_number, locale);
     if (href == null) continue; // malformed pr_number — never a dead CTA, try the next one
     return {
@@ -248,6 +358,7 @@ function selectPendingIac(
       prNumber: approval.pr_number,
       href,
       provenance: { kind: 'listing', approval },
+      traceId: null, // see DeskPendingIac.traceId — no authoring trace reachable here
     };
   }
   return null;
@@ -291,6 +402,9 @@ function selectPendingIacFromDecisions(
         prNumber: best.prNumber,
         href: best.href,
         provenance: { kind: 'decision', decision: best.decision },
+        // NOT best.decision.trace_id: an iac_apply row is written by the
+        // approve POST, not the run that authored the PR. See the field doc.
+        traceId: null,
       };
 }
 
@@ -486,14 +600,16 @@ export function deskModel(input: DeskModelInput): DeskModel {
   const rollback = selectPendingRollback(decisions, now, input.origin, input.locale);
   if (rollback) return rollback;
 
-  const iacFromListing = selectPendingIac(pendingApprovals, input.locale);
+  // Computed ONCE and threaded into both iac rules. Rule 2a used to skip this
+  // filter entirely (ds-0rm); sharing the set is what makes the two rules
+  // structurally unable to disagree about which PRs are still open, rather
+  // than merely happening to agree.
+  const resolvedPrs = resolvedIacPrNumbers(decisions);
+
+  const iacFromListing = selectPendingIac(pendingApprovals, decisions, resolvedPrs, input.locale);
   if (iacFromListing) return iacFromListing;
 
-  const iacFromDecisions = selectPendingIacFromDecisions(
-    decisions,
-    resolvedIacPrNumbers(decisions),
-    input.locale,
-  );
+  const iacFromDecisions = selectPendingIacFromDecisions(decisions, resolvedPrs, input.locale);
   if (iacFromDecisions) return iacFromDecisions;
 
   const unresolved = selectUnresolvedRollback(decisions, now);
@@ -501,6 +617,15 @@ export function deskModel(input: DeskModelInput): DeskModel {
 
   const stamped = selectStamped(decisions, now);
   if (stamped) return stamped;
+
+  // Everything above is something the desk can PROVE from the snapshot it
+  // holds, so each is returned regardless of load state. Only the all-clear
+  // is a claim about the ABSENCE of work, and absence is exactly what an
+  // unsettled or degraded snapshot cannot establish (ds-eh6). Loading is
+  // reported ahead of degraded: before the first cycle lands there is no
+  // completed cycle for `degraded` to describe.
+  if (input.settled === false) return { kind: 'unknown', reason: 'loading' };
+  if (input.degraded === true) return { kind: 'unknown', reason: 'degraded' };
 
   return { kind: 'resting' };
 }
@@ -556,12 +681,20 @@ export function awaitingCount(input: DeskModelInput): number {
     if (isRollbackAwaitingOperator(decision, { now, origin: input.origin })) rollbackCount += 1;
   }
 
+  // resolvedPrs is computed BEFORE the listing lane, not after it: the listing
+  // lane needs it too (ds-0rm). It previously added every `pr_number` in the
+  // payload unconditionally while the decisions lane filtered, so a merged and
+  // applied PR still sitting in the 60s backend cache inflated this figure by
+  // one — the band over-reported "awaiting your approval" against a desk that,
+  // once rule 2a was also fixed, was correctly showing the seal.
+  const resolvedPrs = resolvedIacPrNumbers(decisions);
+
   const iacPrs = new Set<number>();
   for (const approval of pendingApprovals) {
     if (approval == null) continue;
+    if (resolvedPrs.has(approval.pr_number as number)) continue;
     if (isPositiveIntPr(approval.pr_number)) iacPrs.add(approval.pr_number);
   }
-  const resolvedPrs = resolvedIacPrNumbers(decisions);
   for (const decision of decisions) {
     if (decision == null) continue;
     if (isIacAwaitingOperator(decision, resolvedPrs) && isPositiveIntPr(decision.pr_number)) {

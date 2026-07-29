@@ -26,6 +26,12 @@ export const desk = {
     'desk.band.managedAria': '{n} managed by IaC',
     'desk.band.driftAria': '{n} drift detected',
     'desk.band.awaitingAria': '{n} awaiting your approval',
+    // Read instead of the *Aria keys above when a figure is not yet known
+    // (ds-eh6). The visible numeral becomes an em dash, which a screen reader
+    // announces as nothing at all, so these carry the state in words.
+    'desk.band.managedUnknownAria': 'Managed by IaC: not yet known',
+    'desk.band.driftUnknownAria': 'Drift detected: not yet known',
+    'desk.band.awaitingUnknownAria': 'Awaiting your approval: not yet known',
     // LedgerStrip (Task 3.4) — the "Recent record" strip beneath the desk
     // hero. `openTitle`/`appliedTitle` cover the two states this module
     // classifies with fixed copy; `noted` rows fall back to
@@ -78,6 +84,13 @@ export const desk = {
     // iac_reject_nonbinding_semantics note: Reject there persists nothing.
     'desk.pending.approveCta': 'Approve this proposal',
     'desk.pending.rejectCta': 'Reject',
+    // The mockup's `.why` line reads "view the reasoning behind this (N
+    // steps)". The step count is dropped deliberately: it lives in the trace
+    // this link would open, so printing it would mean either fetching every
+    // trace the desk might show or guessing. Same discipline as the rest of
+    // this namespace (ds-wd2.15). Wording tracks the rail's existing
+    // `shared.rail.traceButton.viewReasoning` so one product means one phrase.
+    'desk.pending.viewReasoning': 'view the reasoning behind this →',
 
     'desk.stamped.who': 'You approved',
     'desk.stamped.rollback.detail': 'Rollback applied',
@@ -97,7 +110,28 @@ export const desk = {
     // — calm must never look dead, but it must also never invent a scan time
     // that didn't happen (Task 3.5 spec).
     'desk.resting.scanPending': 'scan time pending',
+    // Distinct from scanPending: that one promises something in flight. This is
+    // for a cycle that FINISHED without a usable graph, which would otherwise
+    // sit on "pending" until the next 45s poll (Codex review of #258).
+    'desk.resting.scanUnavailable': 'scan time unavailable',
+    // A graph fetch failed this cycle, so the timestamp beside it is the last
+    // GOOD scan, not a current one. Without this the line ages into a quiet
+    // false claim that the estate was just checked (ds-eh6).
+    'desk.resting.scanStale': '(not refreshed just now)',
     'desk.resting.resourceCount': '{n} resources',
+
+    // ---- unknown: we have not established whether anything needs the
+    // operator (ds-eh6). Deliberately NOT phrased as an error or an empty
+    // state. `resting` is a promise kept; these two are the honest admission
+    // that the promise has not been checked yet, which is a different thing
+    // and must never be rendered as the first.
+    'desk.unknown.loading.headline': 'Checking whether anything needs your decision…',
+    'desk.unknown.loading.body': 'Reading the estate and the decision record.',
+    // "could not confirm", never "nothing is pending" and never "something
+    // failed" — the one thing known here is the absence of knowledge.
+    'desk.unknown.degraded.headline': "We couldn't confirm whether anything needs your decision.",
+    'desk.unknown.degraded.body':
+      'Part of the record could not be read just now, so a waiting proposal may not be shown here. This retries on its own.',
     // Only shown when scope.drift === 0 — a true "nothing new" claim, not a
     // fixed decoration (see ApprovalDesk: this segment is conditional).
     'desk.resting.noNewDrift': 'no new drift',
@@ -113,6 +147,10 @@ export const desk = {
     'desk.estate.managedGroup': 'Managed by IaC ({n})',
     'desk.estate.untrackedGroup': 'Not managed, not adoptable ({n})',
     'desk.estate.adoptButton': 'Open an adoption PR',
+    // Shown in the Adopt button's place when the pending-approvals lane was
+    // unreliable this cycle. Offering Adopt there would claim no adoption PR
+    // exists, which is exactly what we failed to establish (Codex review #258).
+    'desk.estate.adoptUnavailable': 'adoption status unknown',
     'desk.estate.prPending': 'PR #{pr} awaiting review',
     'desk.estate.driftMore': '…{n} more drift',
     'desk.estate.systemManagedFold': 'System-managed resources ({n}) · created by Google',
@@ -147,6 +185,9 @@ export const desk = {
     'desk.band.managedAria': '{n}件、IaC 管理下',
     'desk.band.driftAria': '{n}件、ドリフト検出',
     'desk.band.awaitingAria': '{n}件、あなたの承認待ち',
+    'desk.band.managedUnknownAria': 'IaC 管理下：未取得',
+    'desk.band.driftUnknownAria': 'ドリフト検出：未取得',
+    'desk.band.awaitingUnknownAria': 'あなたの承認待ち：未取得',
     'desk.ledger.heading': '最近の記録',
     'desk.ledger.appliedTitle': 'あなたが承認 → 適用完了',
     'desk.ledger.openTitle': 'あなたの承認待ち',
@@ -173,6 +214,7 @@ export const desk = {
     'desk.pending.subtitleProposedAt': '提案 {time}',
     'desk.pending.approveCta': 'この提案を承認する',
     'desk.pending.rejectCta': '却下する',
+    'desk.pending.viewReasoning': 'この提案に至った推論を見る →',
 
     'desk.stamped.who': 'あなたが承認しました',
     'desk.stamped.rollback.detail': 'ロールバック適用',
@@ -186,7 +228,18 @@ export const desk = {
     'desk.resting.watching': 'エージェントは監視を継続中',
     'desk.resting.lastScan': '最終走査 {time}',
     'desk.resting.scanPending': '走査時刻 取得中',
+    // 取得中 means "currently acquiring" — wrong once the fetch has finished
+    // and failed. 取得できず states the settled failure instead.
+    'desk.resting.scanUnavailable': '走査時刻 取得できず',
+    'desk.resting.scanStale': '（今回は更新できていません）',
     'desk.resting.resourceCount': '{n} リソース',
+
+    // ---- unknown（ds-eh6）
+    'desk.unknown.loading.headline': '判断が必要な提案があるか確認しています…',
+    'desk.unknown.loading.body': 'インフラの状態と決定の記録を読み込んでいます。',
+    'desk.unknown.degraded.headline': '判断が必要な提案があるか、確認できませんでした。',
+    'desk.unknown.degraded.body':
+      '記録の一部を取得できなかったため、承認をお待ちしている提案がここに表示されていない可能性があります。自動的に再試行します。',
     'desk.resting.noNewDrift': '新規ドリフトなし',
 
     'desk.estate.ariaLabel': 'インフラ',
@@ -196,6 +249,7 @@ export const desk = {
     'desk.estate.managedGroup': '管理下 — {n} 件',
     'desk.estate.untrackedGroup': '未管理（取り込み対象外） {n} 件',
     'desk.estate.adoptButton': '取り込み PR を作成',
+    'desk.estate.adoptUnavailable': '取り込み状況を確認できません',
     'desk.estate.prPending': 'PR #{pr} レビュー待ち',
     'desk.estate.driftMore': '…ほか {n} 件のドリフト',
     'desk.estate.systemManagedFold': 'システム管理リソース（Google が自動作成） {n}件',

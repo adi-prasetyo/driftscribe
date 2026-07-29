@@ -2779,8 +2779,9 @@ _RECONCILE_MIN_AGE_S = 90.0
 # changes, so it stayed eligible forever with no attempt counter and no ceiling.
 # Two ways that becomes permanent load on a worker pinned to --concurrency=1
 # --max-instances=1 (iac/cloudrun.tf) that ALSO serves Approve: the out-of-band
-# `driftscribeRunOperationsReader` binding gets dropped (nothing in iac/ protects
-# it — see the docstring on workers/rollback/main.py::_get_operations_client), or
+# `driftscribeRunOperationsReader` binding gets dropped (now declared in
+# iac-operator/, but that root is operator-applied and nothing plans it on a
+# schedule — see workers/rollback/main.py::_get_operations_client), or
 # Cloud Run garbage-collects an old LRO and every read is NOT_FOUND. Either way
 # every GET /decisions burned up to _DECISIONS_RECONCILE_BUDGET round-trips, on
 # every 45s poll, per open tab, indefinitely.

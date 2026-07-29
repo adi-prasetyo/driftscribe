@@ -1247,3 +1247,266 @@ describe('desk — selection boundaries', () => {
     expect(model.kind).toBe('stamped');
   });
 });
+
+// ---------------------------------------------------------------------------
+// ds-0rm — the 60s pending-approvals cache must not outrank a terminal applied
+// state. Rule 2a is tried BEFORE rule 2b and used to skip the resolved-PR
+// filter that 2b applies, so a merged+applied PR still sitting in the backend
+// cache re-presented itself as "needs your approval" and inflated the band.
+// ---------------------------------------------------------------------------
+
+describe('deskModel — rule 2a honors resolvedIacPrNumbers (ds-0rm)', () => {
+  it('does not present a listing PR that a decision row shows as already applied', () => {
+    // The exact skew: GitHub's open-PR listing is stale (cached up to 60s), the
+    // decisions log already carries the applied row for the same PR.
+    const applied = iacDecision({
+      decision_id: 'iac-applied',
+      pr_number: 7,
+      apply_status: 'applied',
+      applied_at: '2026-07-28T11:59:00Z',
+    });
+    const model = deskModel({
+      decisions: [applied],
+      pendingApprovals: [pendingIac({ pr_number: 7 })],
+      now: NOW,
+      origin: ORIGIN,
+    });
+    // Must reach the seal, not the CTA — the operator already made this call.
+    expect(model.kind).toBe('stamped');
+  });
+
+  it('still presents a listing PR that is genuinely open', () => {
+    // Control for the test above: a DIFFERENT PR being applied must not
+    // suppress an unrelated open one, or the filter would be over-broad.
+    const applied = iacDecision({
+      decision_id: 'iac-applied',
+      pr_number: 99,
+      apply_status: 'applied',
+      applied_at: '2026-07-28T11:59:00Z',
+    });
+    const model = deskModel({
+      decisions: [applied],
+      pendingApprovals: [pendingIac({ pr_number: 7 })],
+      now: NOW,
+      origin: ORIGIN,
+    });
+    expect(model.kind).toBe('pending');
+    if (model.kind === 'pending' && model.source === 'iac') {
+      expect(model.prNumber).toBe(7);
+    } else {
+      throw new Error('expected a pending iac from the listing');
+    }
+  });
+
+  it('falls through to the next listing entry rather than dropping the lane', () => {
+    // A resolved head-of-list must not hide a genuinely open row behind it.
+    const applied = iacDecision({
+      decision_id: 'iac-applied',
+      pr_number: 7,
+      apply_status: 'applied',
+      applied_at: '2026-07-28T11:59:00Z',
+    });
+    const model = deskModel({
+      decisions: [applied],
+      pendingApprovals: [pendingIac({ pr_number: 7 }), pendingIac({ pr_number: 8 })],
+      now: NOW,
+      origin: ORIGIN,
+    });
+    expect(model.kind).toBe('pending');
+    if (model.kind === 'pending' && model.source === 'iac') {
+      expect(model.prNumber).toBe(8);
+    } else {
+      throw new Error('expected the second listing entry');
+    }
+  });
+});
+
+describe('awaitingCount — listing lane honors resolvedIacPrNumbers (ds-0rm)', () => {
+  it('does not count a listing PR that is already applied', () => {
+    const applied = iacDecision({
+      decision_id: 'iac-applied',
+      pr_number: 7,
+      apply_status: 'applied',
+      applied_at: '2026-07-28T11:59:00Z',
+    });
+    expect(
+      awaitingCount({
+        decisions: [applied],
+        pendingApprovals: [pendingIac({ pr_number: 7 })],
+        now: NOW,
+        origin: ORIGIN,
+      }),
+    ).toBe(0);
+  });
+
+  it('counts an open listing PR exactly once even when both lanes see it', () => {
+    // Dedup across lanes was already correct; this pins that the new filter
+    // did not turn the union into a subtraction.
+    const awaiting = iacDecision({ pr_number: 7, apply_status: 'waiting_for_rebake' });
+    expect(
+      awaitingCount({
+        decisions: [awaiting],
+        pendingApprovals: [pendingIac({ pr_number: 7 })],
+        now: NOW,
+        origin: ORIGIN,
+      }),
+    ).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ds-eh6 — the desk must not assert an all-clear it has not established.
+// ---------------------------------------------------------------------------
+
+describe('deskModel — unknown vs resting (ds-eh6)', () => {
+  it('an empty snapshot that has SETTLED is resting', () => {
+    // The all-clear remains available; it just has to be earned.
+    expect(deskModel({ decisions: [], pendingApprovals: [], now: NOW, settled: true }).kind).toBe(
+      'resting',
+    );
+  });
+
+  it('defaults to settled, so existing callers keep the resting behavior', () => {
+    expect(deskModel({ decisions: [], pendingApprovals: [], now: NOW }).kind).toBe('resting');
+  });
+
+  it('an unsettled snapshot is unknown/loading, NOT resting', () => {
+    const model = deskModel({
+      decisions: [],
+      pendingApprovals: [],
+      now: NOW,
+      settled: false,
+    });
+    expect(model.kind).toBe('unknown');
+    if (model.kind === 'unknown') expect(model.reason).toBe('loading');
+  });
+
+  it('a degraded snapshot is unknown/degraded, NOT resting', () => {
+    const model = deskModel({
+      decisions: [],
+      pendingApprovals: [],
+      now: NOW,
+      settled: true,
+      degraded: true,
+    });
+    expect(model.kind).toBe('unknown');
+    if (model.kind === 'unknown') expect(model.reason).toBe('degraded');
+  });
+
+  it('loading outranks degraded — before the first cycle there is no cycle to describe', () => {
+    const model = deskModel({
+      decisions: [],
+      pendingApprovals: [],
+      now: NOW,
+      settled: false,
+      degraded: true,
+    });
+    expect(model.kind).toBe('unknown');
+    if (model.kind === 'unknown') expect(model.reason).toBe('loading');
+  });
+
+  it('a pending item still wins over unknown — a provable card always shows', () => {
+    // The load state suppresses only the claim about ABSENCE. Anything the
+    // desk can actually prove from the snapshot it holds must still render,
+    // or a slow graph fetch would hide a live approval.
+    const d = rollbackDecision();
+    const model = deskModel({
+      decisions: [d],
+      pendingApprovals: [],
+      now: NOW,
+      origin: ORIGIN,
+      settled: false,
+      degraded: true,
+    });
+    expect(model.kind).toBe('pending');
+  });
+
+  it('a stamped item still wins over unknown', () => {
+    const applied = iacDecision({
+      apply_status: 'applied',
+      applied_at: new Date(NOW - 60_000).toISOString(),
+    });
+    const model = deskModel({
+      decisions: [applied],
+      pendingApprovals: [],
+      now: NOW,
+      settled: false,
+    });
+    expect(model.kind).toBe('stamped');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ds-wd2.15 — the pending card's reasoning link.
+// ---------------------------------------------------------------------------
+
+const TRACE = 'a'.repeat(32);
+
+describe('deskModel — pending traceId (ds-wd2.15)', () => {
+  it('the rollback arm carries its decision trace', () => {
+    // Sound ONLY on this arm: a rollback decision is written by the proposing
+    // run itself, so its trace_id really is the reasoning behind the proposal.
+    const model = deskModel({
+      decisions: [rollbackDecision({ trace_id: TRACE })],
+      pendingApprovals: [],
+      now: NOW,
+      origin: ORIGIN,
+    });
+    if (model.kind !== 'pending') throw new Error('expected pending');
+    expect(model.traceId).toBe(TRACE);
+  });
+
+  it('a trace id that cannot round-trip a ?reasoning= link is refused', () => {
+    for (const bad of ['', 'not-hex', 'A'.repeat(32), 'a'.repeat(31), 'a'.repeat(33)]) {
+      const model = deskModel({
+        decisions: [rollbackDecision({ trace_id: bad })],
+        pendingApprovals: [],
+        now: NOW,
+        origin: ORIGIN,
+      });
+      if (model.kind !== 'pending') throw new Error(`expected pending for ${JSON.stringify(bad)}`);
+      expect(model.traceId).toBeNull();
+    }
+  });
+
+  it('is null when the decision carries no trace at all', () => {
+    const model = deskModel({
+      decisions: [rollbackDecision()],
+      pendingApprovals: [],
+      now: NOW,
+      origin: ORIGIN,
+    });
+    if (model.kind !== 'pending') throw new Error('expected pending');
+    expect(model.traceId).toBeNull();
+  });
+
+  // The iac arms deliberately carry NO trace. An iac_apply decision's trace_id
+  // is stamped by _record_iac_decision inside the approve/apply POST
+  // (agent/main.py ~5352) — a different request from the crew run that authored
+  // the PR — so linking "view the reasoning behind this" to it would point the
+  // operator at the trace of their own approval click. These two tests exist to
+  // stop someone "fixing" the missing link by reaching for the nearest trace_id.
+  it('the LISTING arm carries no trace, even when a decision shares its PR', () => {
+    const model = deskModel({
+      decisions: [iacDecision({ pr_number: 7, trace_id: TRACE })],
+      pendingApprovals: [pendingIac({ pr_number: 7 })],
+      now: NOW,
+      origin: ORIGIN,
+    });
+    if (model.kind !== 'pending' || model.source !== 'iac') throw new Error('expected pending iac');
+    expect(model.provenance.kind).toBe('listing');
+    expect(model.traceId).toBeNull();
+  });
+
+  it('the decisions-derived iac arm carries no trace either', () => {
+    const model = deskModel({
+      decisions: [iacDecision({ trace_id: TRACE })],
+      pendingApprovals: [],
+      now: NOW,
+      origin: ORIGIN,
+    });
+    if (model.kind !== 'pending' || model.source !== 'iac') throw new Error('expected pending iac');
+    expect(model.provenance.kind).toBe('decision');
+    expect(model.traceId).toBeNull();
+  });
+});

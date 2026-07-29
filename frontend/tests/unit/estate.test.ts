@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { estateModel, firstAdoptableRow } from '../../src/lib/estate';
 import type { InfraGraph, InfraGroup, InfraNode, PendingApproval } from '../../src/lib/infra_graph';
 import { translate, type TranslateFn } from '../../src/lib/i18n';
+import type { Decision } from '../../src/lib/types';
 
 // estateModel() re-groups resourceCards()'s own output (single source of
 // truth: lib/infra_graph.ts) — thread an en-bound translator so assertions
@@ -281,5 +282,60 @@ describe('firstAdoptableRow', () => {
     });
     const approvals = [pending({ asset_type: BUCKET, resource_name: 'bucket-a', pr_number: 9 })];
     expect(firstAdoptableRow(estateModel(g, approvals, t))).toBeNull();
+  });
+});
+
+// Codex round 4 of #258 — the third consumer of ds-0rm's filter. The backend
+// listing is cached 60s, so after a PR merges and applies the entry lingers.
+// deskModel and awaitingCount already retired it; estateModel did not, so the
+// InstrumentBand showed "0 awaiting" directly above a row reading
+// "PR #268 awaiting review". One screen, two answers.
+describe('estateModel — retires a listing entry a decision proves applied (ds-0rm)', () => {
+  function driftGraph() {
+    return graph({
+      groups: [
+        group({
+          asset_type: BUCKET,
+          managed: 0,
+          drift: 1,
+          nodes: [node({ id: 'b0', label: 'shipping-topic', managed: false })],
+        }),
+      ],
+    });
+  }
+  const APPROVALS = [
+    pending({ asset_type: BUCKET, resource_name: 'shipping-topic', pr_number: 268 }),
+  ];
+  function applied(pr: number): Decision {
+    return {
+      decision_id: `iac-${pr}`,
+      action: 'iac_apply',
+      pr_number: pr,
+      apply_status: 'applied',
+      applied_at: '2026-07-28T11:59:00Z',
+    };
+  }
+
+  it('drops the chip when an applied decision names the same PR', () => {
+    expect(estateModel(driftGraph(), APPROVALS, t, [applied(268)]).drift[0].pendingPr).toBeNull();
+  });
+
+  it('keeps the chip with no decisions at all (unchanged default)', () => {
+    expect(estateModel(driftGraph(), APPROVALS, t).drift[0].pendingPr).toBe(268);
+  });
+
+  it('keeps the chip while the apply is still in progress', () => {
+    // Only an `applied` decision is counter-evidence; waiting_for_rebake is not.
+    const inFlight: Decision = {
+      decision_id: 'iac-268',
+      action: 'iac_apply',
+      pr_number: 268,
+      apply_status: 'waiting_for_rebake',
+    };
+    expect(estateModel(driftGraph(), APPROVALS, t, [inFlight]).drift[0].pendingPr).toBe(268);
+  });
+
+  it('an applied decision for a DIFFERENT PR does not retire this one', () => {
+    expect(estateModel(driftGraph(), APPROVALS, t, [applied(999)]).drift[0].pendingPr).toBe(268);
   });
 });

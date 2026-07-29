@@ -24,6 +24,7 @@
   let {
     graph = null,
     pendingApprovals = [],
+    approvalsStale = false,
     adoptDisabled = false,
     onAdoptPrefill,
     onNavigate,
@@ -38,6 +39,9 @@
      * duplicate adoption. Empty until loaded / on any fetch error.
      */
     pendingApprovals?: PendingApproval[];
+    /** See OverviewState.approvalsStale — suppresses the adopt suggestion,
+     *  which is an absence claim over `pendingApprovals`. */
+    approvalsStale?: boolean;
     /** Same condition that disables ChatForm/Adopt (busy / historical replay). */
     adoptDisabled?: boolean;
     /** Routes through App.handleAdopt — prefills the composer, never sends. */
@@ -52,7 +56,7 @@
 
   let stepIndex = $state(0);
   const step = $derived(TOUR_STEPS[stepIndex]);
-  const adoptState = $derived(adoptStepState($t, graph, pendingApprovals));
+  const adoptState = $derived(adoptStepState($t, graph, pendingApprovals, approvalsStale));
 
   // Spotlight the current step's target: toggle .tour-spotlight on the
   // matching [data-tour] element and scroll it into view. Some targets only
