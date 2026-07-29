@@ -236,8 +236,28 @@ COORDINATOR_TOOLS = [
 # to be CONFIRMED by an operator, and /recheck is the autonomous Eventarc path —
 # no operator, and no conversation for a transition to land on. An unconfirmable
 # proposal there would be dead weight in the prompt at best.
+# ``drift_propose_rollback`` joins them for the reason the drift /recheck prompt
+# ALREADY states in prose (workloads/drift/system_prompt.md): "The /recheck path
+# only emits a DecisionProposal — do NOT call propose_rollback_tool ... the LLM
+# only outputs the JSON decision and never mints approval tokens directly."
+# Until ds-b3m that was prompt discipline only: the tool is tier ``propose``, so
+# in prod's ``propose_apply`` mode the autonomous agent HELD it and could mint a
+# HITL approval — and its token — without ``agent.validator.validate`` ever
+# running, since the safety gate sits on the DecisionProposal return path
+# (agent/main.py:1891) and not on the tool. Hardening that gate (deriving its
+# deviation set from real live env instead of the model's own diff array) is
+# worth nothing while a second door bypasses it entirely, so the door closes in
+# the same change. The sanctioned autonomous rollback path does not use the
+# tool — proposal -> validate() -> ``_do_rollback`` -> worker ``/propose`` — so
+# nothing legitimate loses a capability here, and the prompt needs no edit
+# (it becomes true rather than aspirational).
 CHAT_ONLY_TOOL_NAMES: frozenset[str] = frozenset(
-    {"upgrade_close_pr", "upgrade_merge_pr", "request_crew_handoff"}
+    {
+        "upgrade_close_pr",
+        "upgrade_merge_pr",
+        "request_crew_handoff",
+        "drift_propose_rollback",
+    }
 )
 
 

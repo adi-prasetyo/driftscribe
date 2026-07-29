@@ -315,7 +315,45 @@ def test_recheck_agent_propose_apply_keeps_mutation_tools(drift_workload_env):
     agent = adk_agent.build_agent(resolution, autonomy_mode="propose_apply")
     tools = _tool_set(agent)
     assert patch_docs_tool in tools
-    assert propose_rollback_tool in tools
+    # propose_rollback is NOT here — see the ds-b3m test below. It is chat-only
+    # now, so the dial is no longer what keeps it away from /recheck.
+
+
+def test_recheck_agent_never_carries_propose_rollback_in_any_dial_mode(
+    drift_workload_env,
+):
+    """ds-b3m: the autonomous /recheck agent must not hold the tool that mints a
+    HITL approval token.
+
+    ``workloads/drift/system_prompt.md`` has always SAID this — "The /recheck
+    path only emits a DecisionProposal - do NOT call propose_rollback_tool ...
+    the LLM only outputs the JSON decision and never mints approval tokens
+    directly" - but until ds-b3m it was prompt discipline alone. The tool is
+    tier ``propose``, so in prod's propose_apply mode the agent held it, and a
+    model that ignored the instruction could mint an approval WITHOUT
+    ``agent.validator.validate`` ever running: the safety gate sits on the
+    DecisionProposal return path (agent/main.py), not on the tool.
+
+    That mattered precisely because ds-b3m hardens that gate. A gate you can
+    walk around is not a gate, so the door closes in the same change. The
+    sanctioned autonomous path is unaffected — it goes proposal -> validate() ->
+    _do_rollback -> the worker's /propose, and never touches this tool."""
+    for mode in ("observe", "propose", "propose_apply"):
+        resolution = load_workload("drift")
+        agent = adk_agent.build_agent(resolution, autonomy_mode=mode)
+        assert propose_rollback_tool not in _tool_set(agent), (
+            f"/recheck agent carries propose_rollback_tool in {mode!r} mode"
+        )
+
+
+def test_chat_agent_still_carries_propose_rollback(drift_workload_env):
+    """The other half: an operator asking Anchor to roll back in /chat must
+    still be able to get an approval link. Removing the tool from /recheck is a
+    routing change, not a capability removal — if this ever fails, ds-b3m broke
+    the operator flow instead of closing the autonomous bypass."""
+    resolution = load_workload("drift")
+    agent = adk_agent.build_chat_agent(resolution, autonomy_mode="propose_apply")
+    assert propose_rollback_tool in _tool_set(agent)
 
 
 # --------------------------------------------------------------------------- #

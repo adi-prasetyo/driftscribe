@@ -37,8 +37,132 @@ def _validate_path(p: str | None) -> None:
     if p.startswith("/") or ".." in Path(p).parts:
         raise ValidationError(f"target docs path rejected (absolute or traversal): {p!r}")
 
-def validate(proposal: DecisionProposal, contract: OpsContract) -> None:
-    """Raise ValidationError if proposal violates safety rules."""
+def _authorize_rollback_from_live_env(
+    contract: OpsContract, live_env: dict[str, str] | None
+) -> None:
+    """Raise ValidationError unless OBSERVED state justifies a rollback (ds-b3m).
+
+    The per-diff loop in :func:`validate` judges the evidence the MODEL reported.
+    This judges the evidence we went and looked at ourselves, and it is the half
+    that can see an OMISSION: a model that wants a drifted ``allow_manual`` var
+    to escape the gate can simply leave it out of ``proposal.env_diffs``, and
+    before this the rollback proceeded and reverted that var anyway. The honest
+    statement of the old guarantee was "of the deviations REPORTED, all are hard
+    violations" — which is not what a safety gate should be promising.
+
+    ``live_env is None`` means we have NO ground truth and the rollback is
+    refused. That is not a formality. ``agent/main.py`` has two sources for this
+    value, and the second one — the ADK path's fallback when the Reader Worker
+    call fails — RECONSTRUCTS it from ``proposal.env_diffs``. Feeding that back
+    in here would make this function launder the model's own array into
+    "observed state" and re-derive exactly the answer it exists to check
+    independently. The caller passes ``None`` for a reconstruction, and a gate
+    that cannot see its subject fails rather than abstains.
+
+    SCOPE — this answers ONE question: *is there a hard contract violation for
+    this rollback to revert?* It counts ``allow_manual_change=False`` vars whose
+    observed value is not the contract's. It says nothing about
+    ``allow_manual_change=True`` vars, and the reason is the whole reason this
+    function is scoped the way it is.
+
+    The tempting rule — "an operator-safe var that deviates from the contract
+    vetoes the rollback" — asks current-vs-contract, and the real question is
+    current-vs-TARGET:
+
+    - current ``true``, target ``true``: the rollback PRESERVES the operator's
+      value, and a current-vs-contract veto would refuse it anyway. A false
+      refusal, and the ds-2f5 availability shape all over again.
+    - current ``false``, target ``true``: the rollback CHANGES it, and
+      current-vs-contract sees nothing wrong.
+
+    A first draft of ds-b3m had that veto here; it was wrong in both rows. The
+    blast-radius question needs the target revision's env, which this function
+    does not have and which the /recheck path does not fetch — so it is answered
+    on the approval page (ds-uwc), the one surface BOTH rollback lanes share.
+    The chat lane never reaches this function at all.
+
+    The pre-existing reported-diff loop in :func:`validate` still refuses a
+    rollback whose proposal REPORTS a deviating ``allow_manual`` var. That is
+    left exactly as it was: not widened, not narrowed. It is worth being blunt
+    that this leaves a known hole — a model can still change the outcome by
+    OMITTING such a diff — and that grounding it here would not fix it, because
+    the grounded predicate would be the wrong one. See
+    ``test_the_omitted_allow_manual_hole_is_NOT_closed_here``.
+
+    ``live_env`` is deliberately NOT treated as a complete picture, because it
+    is not one: ``_extract_env_from_containers`` (driftscribe_lib/cloud_run.py)
+    SKIPS Secret-Manager-backed entries and flattens every container
+    last-one-wins, so a var missing here is either genuinely deleted or
+    present-but-opaque and we cannot tell which. That ambiguity was worth
+    checking hard — unknown-laundered-into-absent is the defect class this repo
+    keeps re-shipping — but it does not change the verdict, and the reason is
+    worth stating: BOTH readings are "not observably at the declared value". A
+    var the contract pins to the literal ``"mock"`` that now resolves through
+    Secret Manager has departed from the declared config just as surely as one
+    that was deleted. The ambiguity limits what we may CLAIM (the declared
+    config is not in force; we cannot say why), not which way it falls.
+
+    What this does NOT decide: whether the rollback would UNDO an operator's
+    deliberate ``allow_manual`` change. That question is answered by current vs
+    the TARGET REVISION's env, not by current vs contract — a var that has
+    drifted may well hold the same value on the target (rollback preserves it),
+    and a var sitting at its contract value may differ on the target (rollback
+    changes it). Neither case is visible from here. The veto column above is a
+    conservative refusal on "an operator has an outstanding manual change", not
+    a blast-radius answer; the blast radius is ds-uwc, on the approval page,
+    which is the one surface BOTH rollback lanes share (the chat lane never
+    reaches this function at all).
+
+    Undeclared vars are ignored entirely. The contract governs what it declares;
+    a real Cloud Run service carries plenty of vars it says nothing about, and
+    treating their presence as deviation would refuse every rollback ever. The
+    model LYING about an undeclared var is still caught — by the reported-diff
+    loop in :func:`validate`, which keeps that rule.
+    """
+    if live_env is None:
+        raise ValidationError(
+            "rollback rejected: no observed live env available to justify it. "
+            "The Reader Worker read failed, so the only env picture we hold is "
+            "the one reconstructed from the proposal's own diffs — which cannot "
+            "independently corroborate the proposal. Retry once the reader is "
+            "reachable."
+        )
+
+    violations = 0
+    for name, rule in contract.expected_env.items():
+        if rule.allow_manual_change:
+            continue  # not this function's question — see the docstring
+        # An absent key is a deviation: ``.get`` returns None, which is never
+        # equal to ``rule.value`` (a str by the EnvVarRule validator). Values
+        # compare EXACTLY — no strip, no case-folding, no Unicode normalization
+        # — because env values are opaque bytes to the runtime, so "mock " and
+        # "mock" really are different configurations.
+        if live_env.get(name) != rule.value:
+            violations += 1
+
+    if violations == 0:
+        raise ValidationError(
+            "rollback rejected: observed live env shows every "
+            "allow_manual_change=false var already at its contract value, so "
+            "there is no hard contract violation to revert"
+        )
+
+
+def validate(
+    proposal: DecisionProposal,
+    contract: OpsContract,
+    *,
+    live_env: dict[str, str] | None = None,
+) -> None:
+    """Raise ValidationError if proposal violates safety rules.
+
+    ``live_env`` is the env the Reader Worker actually observed on the service,
+    or ``None`` when no independent observation is available. It is consulted
+    ONLY on the rollback path — see :func:`_authorize_rollback_from_live_env`,
+    which explains why ``None`` refuses a rollback rather than falling back to
+    the proposal. Keyword-only and defaulted so the many non-rollback callers
+    (and every DOCS_PR / NO_OP test) are unaffected.
+    """
 
     # 1. Action must be a known enum
     if not isinstance(proposal.action, DecisionAction):
@@ -218,6 +342,16 @@ def validate(proposal: DecisionProposal, contract: OpsContract) -> None:
                 "(every declared var was already at its contract value), so "
                 "there is no hard contract violation to revert"
             )
+        # ds-b3m: everything above judged the evidence the MODEL supplied. This
+        # judges what we observed ourselves, and it is the half that can catch
+        # an OMISSION — the reported-diff loop cannot, by construction. Both
+        # layers run; neither replaces the other. The reported diffs are NOT
+        # merely decorative and could not be dropped in favour of this: they
+        # feed ``scrub_rationale_text`` (agent/main.py), which is what keeps a
+        # secret out of the ``reason`` the rollback worker renders on the
+        # operator approval page, and they are the decision record's audit
+        # evidence.
+        _authorize_rollback_from_live_env(contract, live_env)
 
     # 6. Docs PR semantics
     if proposal.action == DecisionAction.DOCS_PR:

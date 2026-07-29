@@ -1080,6 +1080,33 @@ def _hash_contract(contract: OpsContract) -> str:
     return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
 
+def _observed_env_or_none(reader_payload: object) -> dict[str, str] | None:
+    """Return the Reader Worker's ``env`` block, or ``None`` if it is not the
+    shape we are willing to call an observation (ds-b3m).
+
+    ``None`` is the honest answer for a malformed payload, and it matters which
+    way this degrades. The rollback gate treats ``None`` as "no ground truth,
+    refuse"; coercing a bad payload to ``{}`` instead would tell every consumer
+    that the service genuinely has no env vars, which is a confident wrong
+    answer rather than an absent one — and on the gate specifically it would
+    turn every contract var into "unreadable" in one step.
+
+    An EMPTY dict from a well-formed payload is left alone: a service really can
+    have no env block, and that is an observation, not a failure. Only the
+    wrapper shape is checked here — a non-dict payload, a missing/non-dict
+    ``env``, or any non-string key or value in it.
+    """
+    if not isinstance(reader_payload, dict):
+        return None
+    env = reader_payload.get("env")
+    if not isinstance(env, dict):
+        return None
+    for k, v in env.items():
+        if not isinstance(k, str) or not isinstance(v, str):
+            return None
+    return env
+
+
 def _cached_rollback_is_expired(cached: dict) -> bool:
     """Phase 13 Codex W2: a cached rollback decision past its 15-min TTL
     must be treated as a cache miss so ``/recheck`` re-proposes a fresh
@@ -1813,8 +1840,10 @@ async def _do_recheck(
         try:
             # Reader Worker enforces TARGET_SERVICE/region/project via its own
             # boot config (Layer 2); the coordinator no longer passes them.
-            live_env = worker_client.call("reader", {})["env"]
+            live_env = _observed_env_or_none(worker_client.call("reader", {}))
         except Exception:
+            live_env = None
+        if live_env is None:
             # Trade-off: when the Reader Worker read fails on the ADK path we
             # hash the diffs the LLM reported instead of the actual live env.
             # That's weaker idempotency (the LLM's tool call already saw the
@@ -1823,21 +1852,43 @@ async def _do_recheck(
             # Sentinel `<ABSENT>` keeps live=None distinct from live="" so the
             # event_key doesn't bucket two genuinely-different states together
             # (Cloud Run treats empty-string-as-value as a valid live state).
+            #
+            # ds-b3m: this reconstruction is for the IDEMPOTENCY KEY ONLY and
+            # must never be handed to the validator as observed state — it is
+            # built out of ``proposal.env_diffs``, so a gate fed this would be
+            # re-reading the model's own array under a name that claims
+            # otherwise. ``observed_env`` stays None so the rollback gate
+            # refuses; ``live_env`` below keeps the old event-key behaviour.
+            observed_env = None
             live_env = {
                 d.name: "<ABSENT>" if d.live is None else d.live
                 for d in proposal.env_diffs
             }
+        else:
+            observed_env = live_env
     else:
         try:
             # Reader Worker enforces TARGET_SERVICE/region/project via its own
             # boot config (Layer 2); the coordinator no longer passes them and
             # no longer holds project-wide roles/run.viewer (Phase 13 trim).
-            live_env = worker_client.call("reader", {})["env"]
+            reader_payload = worker_client.call("reader", {})
         except WorkerClientError as e:
             # Same 502 semantics as before — a Reader Worker failure is still
             # an upstream-dep failure from the operator's POV. The classifier
             # path has no fallback; without live_env we cannot classify.
             raise HTTPException(status_code=502, detail=f"reader worker failed: {e}")
+        observed_env = _observed_env_or_none(reader_payload)
+        if observed_env is None:
+            # The call succeeded but the payload is not the shape we require.
+            # The classifier cannot work from it either, so this is the same
+            # class of failure as the exception above and gets the same 502 —
+            # rather than being coerced into an empty dict, which would read to
+            # every downstream consumer as "the service has no env vars".
+            raise HTTPException(
+                status_code=502,
+                detail="reader worker returned a malformed env payload",
+            )
+        live_env = observed_env
         proposal = classify(
             ClassificationInput(contract=contract, live_env=live_env, recent_prs=[])
         )
@@ -1888,7 +1939,14 @@ async def _do_recheck(
                 return existing
 
     try:
-        validate(proposal, contract)
+        # ds-b3m: ``observed_env`` — NOT ``live_env``. On the ADK path those two
+        # differ exactly when the Reader Worker read failed: ``live_env`` is
+        # then a reconstruction from ``proposal.env_diffs``, kept only so the
+        # idempotency key stays stable, while ``observed_env`` is None. Passing
+        # ``live_env`` here would hand the model's own diff array back to the
+        # gate as "observed state" — a strict check whose subject was laundered
+        # by its caller, which is the defect class this repo keeps re-shipping.
+        validate(proposal, contract, live_env=observed_env)
     except ProposalValidationError as e:
         # ADK path: the LLM produced a proposal that violates the safety
         # rules (e.g. docs_pr for a SECRET-named var, allow_manual_change
