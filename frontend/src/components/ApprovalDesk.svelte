@@ -311,8 +311,14 @@
                 class="approval-desk__stale"
                 data-testid="approval-desk-stale-scan">{$t('desk.resting.scanStale')}</span
               >{/if}
-          {:else}
+          {:else if !settled}
             ・{$t('desk.resting.scanPending')}
+          {:else}
+            <!-- The cycle FINISHED and we still have no usable graph, so the
+                 scan is not "pending" — that string (JA: 走査時刻 取得中,
+                 literally "acquiring scan time") promises something in flight,
+                 and it would sit there until the next 45s poll. -->
+            ・{$t('desk.resting.scanUnavailable')}
           {/if}
           <!-- Both segments are GRAPH-derived, so both need a usable graph.
                Without this gate an absent or degraded graph rendered

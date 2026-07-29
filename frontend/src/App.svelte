@@ -1842,6 +1842,8 @@
     graph={$overview.graph}
     decisions={$overview.decisions}
     pendingApprovals={$overview.pendingApprovals}
+    settled={$overview.settled}
+    degraded={$overview.degraded}
     adoptDisabled={chatDisabled}
     onAdopt={handleAdopt}
     onNavigate={navigate}

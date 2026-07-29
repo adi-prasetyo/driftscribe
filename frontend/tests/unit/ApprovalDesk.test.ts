@@ -132,7 +132,9 @@ describe('ApprovalDesk — resting state', () => {
         onNavigate: vi.fn(),
       },
     });
-    expect(getByTestId('approval-desk-watch').textContent).toContain('scan time pending');
+    // Settled with no usable scan TIME reads "unavailable"; "pending" is
+    // reserved for a first cycle still in flight (Codex review of #258).
+    expect(getByTestId('approval-desk-watch').textContent).toContain('scan time unavailable');
     expect(queryByText(/last scan/)).toBeNull();
   });
 
@@ -152,7 +154,9 @@ describe('ApprovalDesk — resting state', () => {
     const { getByTestId } = render(ApprovalDesk, {
       props: { graph: null, decisions: [], pendingApprovals: [], onNavigate: vi.fn() },
     });
-    expect(getByTestId('approval-desk-watch').textContent).toContain('scan time pending');
+    // Settled with no usable scan TIME reads "unavailable"; "pending" is
+    // reserved for a first cycle still in flight (Codex review of #258).
+    expect(getByTestId('approval-desk-watch').textContent).toContain('scan time unavailable');
   });
 });
 
@@ -1017,7 +1021,7 @@ describe('ApprovalDesk — a degraded graph is not a read graph (ds-eh6)', () =>
     const watch = getByTestId('approval-desk-watch').textContent ?? '';
     expect(watch).not.toContain('resources');
     expect(watch).not.toContain('no new drift');
-    expect(watch).toContain('scan time pending'); // never a fresh-looking scan time
+    expect(watch).toContain('scan time unavailable'); // never a fresh-looking scan time
   });
 
   it('a NULL graph drops them too', () => {
@@ -1064,5 +1068,39 @@ describe('ApprovalDesk — a degraded graph is not a read graph (ds-eh6)', () =>
       },
     });
     expect(getByTestId('instrument-band-awaiting').textContent).toContain('—');
+  });
+});
+
+// Codex re-review of #258 — a FINISHED graph failure was still described as
+// "scan time pending" (JA 走査時刻 取得中, literally "acquiring scan time"),
+// which promises something in flight and would sit there until the next poll.
+describe('ApprovalDesk — settled graph failure is not "pending" (ds-eh6)', () => {
+  it('reads pending only while the first cycle is still out', () => {
+    const { getByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: null,
+        decisions: [],
+        pendingApprovals: [],
+        settled: false,
+        onNavigate: vi.fn(),
+      },
+    });
+    // Unsettled renders the unknown hero, so the watch line lives there.
+    expect(getByTestId('approval-desk-unknown')).toBeTruthy();
+  });
+
+  it('reads unavailable once the cycle has settled without a graph', () => {
+    const { getByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: null,
+        decisions: [],
+        pendingApprovals: [],
+        settled: true,
+        onNavigate: vi.fn(),
+      },
+    });
+    const watch = getByTestId('approval-desk-watch').textContent ?? '';
+    expect(watch).toContain('scan time unavailable');
+    expect(watch).not.toContain('scan time pending');
   });
 });

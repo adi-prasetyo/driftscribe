@@ -26,6 +26,8 @@
     graph,
     decisions,
     pendingApprovals,
+    settled = true,
+    degraded = false,
     adoptDisabled = false,
     onAdopt,
     onNavigate,
@@ -33,6 +35,10 @@
     graph: InfraGraph | null;
     decisions: ReadonlyArray<Decision | null | undefined> | null | undefined;
     pendingApprovals: ReadonlyArray<PendingApproval | null | undefined> | null | undefined;
+    /** Same contract as ApprovalDesk's — see ds-eh6. Defaults keep existing
+     *  test mounts meaning what they meant. */
+    settled?: boolean;
+    degraded?: boolean;
     adoptDisabled?: boolean;
     /** Adopt chip click → App prefills the chat with this string (NOT auto-sent). */
     onAdopt?: (prefill: string) => void;
@@ -51,7 +57,14 @@
   const graphUsable = $derived(!!graph && graph.degraded !== true);
   const bandManaged = $derived(graphUsable ? scope.managed : null);
   const bandDrift = $derived(graphUsable ? scope.drift : null);
-  const awaiting = $derived(awaitingCount({ decisions, pendingApprovals, locale: $locale }));
+  // Gated exactly as ApprovalDesk gates it. Both views render the SAME
+  // InstrumentBand off the SAME store snapshot, so gating one and not the other
+  // meant a cold `?view=estate` showed a confident "0 awaiting" while the desk
+  // showed "—" for identical state — the two views contradicting each other
+  // about the same fact.
+  const awaiting = $derived(
+    settled && !degraded ? awaitingCount({ decisions, pendingApprovals, locale: $locale }) : null,
+  );
 
   // ---- row model ----
   const model = $derived(estateModel(graph, pendingApprovals, $t));
@@ -75,9 +88,14 @@
 >
   <InstrumentBand managed={bandManaged} drift={bandDrift} {awaiting} {onNavigate} />
 
-  {#if graph === null}
+  <!-- A null graph is only "loading" while the first cycle is still out. Once
+       it has settled, a null graph means the fetch FINISHED and failed, and
+       "Loading the estate…" would be a claim that something is still in
+       progress — which can then sit there until the next 45s poll. Same
+       over-claim class as the desk's all-clear, just phrased as optimism. -->
+  {#if graph === null && !settled}
     <p class="estate-view__status" data-testid="estate-loading">{$t('desk.estate.loading')}</p>
-  {:else if graph.degraded}
+  {:else if graph === null || graph.degraded}
     <p class="estate-view__status" data-testid="estate-degraded">{$t('desk.estate.degraded')}</p>
   {:else}
     {#if model.drift.length > 0}

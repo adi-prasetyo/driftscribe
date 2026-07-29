@@ -110,6 +110,10 @@ export const desk = {
     // — calm must never look dead, but it must also never invent a scan time
     // that didn't happen (Task 3.5 spec).
     'desk.resting.scanPending': 'scan time pending',
+    // Distinct from scanPending: that one promises something in flight. This is
+    // for a cycle that FINISHED without a usable graph, which would otherwise
+    // sit on "pending" until the next 45s poll (Codex review of #258).
+    'desk.resting.scanUnavailable': 'scan time unavailable',
     // A graph fetch failed this cycle, so the timestamp beside it is the last
     // GOOD scan, not a current one. Without this the line ages into a quiet
     // false claim that the estate was just checked (ds-eh6).
@@ -220,6 +224,9 @@ export const desk = {
     'desk.resting.watching': 'エージェントは監視を継続中',
     'desk.resting.lastScan': '最終走査 {time}',
     'desk.resting.scanPending': '走査時刻 取得中',
+    // 取得中 means "currently acquiring" — wrong once the fetch has finished
+    // and failed. 取得できず states the settled failure instead.
+    'desk.resting.scanUnavailable': '走査時刻 取得できず',
     'desk.resting.scanStale': '（今回は更新できていません）',
     'desk.resting.resourceCount': '{n} リソース',
 
