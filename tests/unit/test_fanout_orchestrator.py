@@ -1040,3 +1040,132 @@ def test_provision_fanout_propose_opens_pr(monkeypatch):
     assert "call" in capture  # editor WAS called
     result = _result(items)
     assert result["tool_calls"] == ["open_infra_pr"]
+
+
+# --------------------------------------------------------------------------- #
+# ds-qua — the fan-out gate records the authoring reasoning trace
+#
+# The second of the two places that confirm an opened infra PR (the other is
+# agent.adk_tools._open_iac_pr_and_notify, pinned in
+# test_iac_pr_authoring_trace_recording.py). Both must record, or a Provision PR
+# authored through the fan-out route reaches the approval desk with no evidence.
+#
+# Property throughout: a missing link is fine, a wrong link is not.
+# --------------------------------------------------------------------------- #
+def _patch_trace_store(request):
+    from agent.iac_pr_trace_store import (
+        InMemoryIacPrTraceStore,
+        _reset_iac_pr_trace_store_for_tests,
+        _set_iac_pr_trace_store_for_tests,
+    )
+
+    store = InMemoryIacPrTraceStore()
+    _set_iac_pr_trace_store_for_tests(store)
+    request.addfinalizer(_reset_iac_pr_trace_store_for_tests)
+    return store
+
+
+def _bind_trace(request, trace_id="e" * 32):
+    from driftscribe_lib.logging import reset_trace_id, set_trace_id
+
+    tok = set_trace_id(trace_id)
+    request.addfinalizer(lambda: reset_trace_id(tok))
+    return trace_id
+
+
+def _fanout_to_pr(monkeypatch, *, reused=..., pr_number=42):
+    """Drive the orchestrator to a confirmed PR with a chosen ``reused`` value."""
+    _patch_decompose(monkeypatch, result=_two_slice_plan())
+    _patch_author(monkeypatch, result=_two_file_author_result())
+    _patch_authority(monkeypatch, target_repo="owner/repo", branch="infra/buckets-9-ab")
+    result = {
+        "status": "opened",
+        "pr_number": pr_number,
+        "pr_url": f"https://github.com/owner/repo/pull/{pr_number}",
+        "branch": "infra/buckets-9-ab",
+    }
+    if reused is not ...:
+        result["reused"] = reused
+    _patch_open_pr(monkeypatch, result=result)
+    return asyncio.run(_drain())
+
+
+def test_fanout_records_the_authoring_trace_for_a_new_pr(monkeypatch, request):
+    store = _patch_trace_store(request)
+    trace = _bind_trace(request)
+    items = _fanout_to_pr(monkeypatch, reused=False)
+
+    assert _result(items)["iac_pr"]["pr_number"] == 42
+    # Scoped to the EDITOR TARGET repo (authority's), not settings.github_repo —
+    # PR numbers are repository-local and the two can diverge via the override.
+    assert store.get("owner/repo", 42) == trace
+
+
+def test_fanout_records_nothing_for_a_reused_pr(monkeypatch, request):
+    store = _patch_trace_store(request)
+    _bind_trace(request)
+    _fanout_to_pr(monkeypatch, reused=True)
+    assert store.get("owner/repo", 42) is None
+
+
+@pytest.mark.parametrize(
+    "reused",
+    [
+        pytest.param(..., id="field-absent-old-worker"),
+        pytest.param(None, id="null"),
+        pytest.param("false", id="string-false"),
+        pytest.param(1, id="int-one"),
+    ],
+)
+def test_fanout_records_nothing_when_reused_is_ambiguous(monkeypatch, request, reused):
+    """Strict ``is False``. The old-worker case (field absent) cannot tell us whether
+    the PR is new, and absence is not consent — under ``is not True`` a reused PR would
+    be attributed to a run that did not author it."""
+    store = _patch_trace_store(request)
+    _bind_trace(request)
+    _fanout_to_pr(monkeypatch, reused=reused)
+    assert store.get("owner/repo", 42) is None
+
+
+def test_fanout_records_nothing_when_the_pr_is_not_confirmed(monkeypatch, request):
+    """Same iac_pr_pointer gate as the notification: a malformed 200 fabricates
+    neither a PR nor a provenance record."""
+    store = _patch_trace_store(request)
+    _bind_trace(request)
+    _patch_decompose(monkeypatch, result=_two_slice_plan())
+    _patch_author(monkeypatch, result=_two_file_author_result())
+    _patch_authority(monkeypatch, target_repo="owner/repo", branch="infra/buckets-9-ab")
+    _patch_open_pr(
+        monkeypatch,
+        result={"status": "opened", "pr_url": "https://gh/pr/42", "reused": False},
+    )
+    asyncio.run(_drain())
+    assert store._traces == {}
+
+
+def test_fanout_records_nothing_without_a_bound_trace(monkeypatch, request):
+    store = _patch_trace_store(request)
+    monkeypatch.setattr("driftscribe_lib.logging.get_trace_id", lambda: "")
+    _fanout_to_pr(monkeypatch, reused=False)
+    assert store._traces == {}
+
+
+def test_fanout_pr_still_succeeds_when_the_trace_store_explodes(monkeypatch, request):
+    """Evidence must never break PR authoring."""
+    from agent.iac_pr_trace_store import (
+        _reset_iac_pr_trace_store_for_tests,
+        _set_iac_pr_trace_store_for_tests,
+    )
+
+    class _Exploding:
+        def get(self, repo, pr_number):
+            raise RuntimeError("firestore is down")
+
+        def set_if_absent(self, repo, pr_number, trace_id):
+            raise RuntimeError("firestore is down")
+
+    _set_iac_pr_trace_store_for_tests(_Exploding())
+    request.addfinalizer(_reset_iac_pr_trace_store_for_tests)
+    _bind_trace(request)
+    items = _fanout_to_pr(monkeypatch, reused=False)
+    assert _result(items)["iac_pr"]["pr_number"] == 42

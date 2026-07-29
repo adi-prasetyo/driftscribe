@@ -1486,6 +1486,9 @@ describe('deskModel — pending traceId (ds-wd2.15)', () => {
   // the PR — so linking "view the reasoning behind this" to it would point the
   // operator at the trace of their own approval click. These two tests exist to
   // stop someone "fixing" the missing link by reaching for the nearest trace_id.
+  // Sharper since ds-qua: the listing arm CAN now carry a trace, but only the one
+  // the backend recorded on the approval itself. It must never fall back to a
+  // decision's trace just because the PR numbers line up.
   it('the LISTING arm carries no trace, even when a decision shares its PR', () => {
     const model = deskModel({
       decisions: [iacDecision({ pr_number: 7, trace_id: TRACE })],
@@ -1508,6 +1511,108 @@ describe('deskModel — pending traceId (ds-wd2.15)', () => {
     if (model.kind !== 'pending' || model.source !== 'iac') throw new Error('expected pending iac');
     expect(model.provenance.kind).toBe('decision');
     expect(model.traceId).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ds-qua — the LISTING arm's authoring trace.
+//
+// Rule 2a builds its card from the open-PR listing, which carries no decision
+// document: `activeDecision()` returns null, `DriftDiffCard` self-suppresses, and
+// the card is a title, a PR number and two buttons. That made the front door's
+// highest-stakes CTA the least-evidenced thing on the page.
+//
+// The backend now records, per (repo, PR), which reasoning run actually opened the
+// PR — written at the editor worker's confirm gate from the worker's own result,
+// never from model prose — and ships it as `authoring_trace_id`.
+// ---------------------------------------------------------------------------
+
+describe('deskModel — listing-arm authoring trace (ds-qua)', () => {
+  it('surfaces the trace the backend recorded for this PR', () => {
+    const model = deskModel({
+      decisions: [],
+      pendingApprovals: [pendingIac({ authoring_trace_id: TRACE })],
+      now: NOW,
+      origin: ORIGIN,
+    });
+    if (model.kind !== 'pending' || model.source !== 'iac') throw new Error('expected pending iac');
+    expect(model.provenance.kind).toBe('listing');
+    expect(model.traceId).toBe(TRACE);
+  });
+
+  it('is null when the backend recorded nothing', () => {
+    // A PR opened before the record existed. No link is the honest answer; the
+    // desk must not reach for a nearby trace to fill the gap.
+    for (const value of [undefined, '']) {
+      const model = deskModel({
+        decisions: [],
+        pendingApprovals: [pendingIac({ authoring_trace_id: value })],
+        now: NOW,
+        origin: ORIGIN,
+      });
+      if (model.kind !== 'pending') throw new Error('expected pending');
+      expect(model.traceId).toBeNull();
+    }
+  });
+
+  it('refuses a trace that cannot round-trip a ?reasoning= link', () => {
+    // Same gate as the rollback arm: never offer a link that opens once and then
+    // fails to restore when the operator shares it.
+    for (const bad of ['not-hex', 'A'.repeat(32), 'a'.repeat(31), 'a'.repeat(33), `${TRACE}\n`]) {
+      const model = deskModel({
+        decisions: [],
+        pendingApprovals: [pendingIac({ authoring_trace_id: bad })],
+        now: NOW,
+        origin: ORIGIN,
+      });
+      if (model.kind !== 'pending') throw new Error(`expected pending for ${JSON.stringify(bad)}`);
+      expect(model.traceId).toBeNull();
+    }
+  });
+
+  it('a pending ROLLBACK still outranks it — rule 1 is unchanged', () => {
+    const model = deskModel({
+      decisions: [rollbackDecision({ trace_id: TRACE })],
+      pendingApprovals: [pendingIac({ authoring_trace_id: 'b'.repeat(32) })],
+      now: NOW,
+      origin: ORIGIN,
+    });
+    if (model.kind !== 'pending') throw new Error('expected pending');
+    expect(model.source).toBe('rollback');
+    expect(model.traceId).toBe(TRACE);
+  });
+
+  it('the trace travels with the PR the desk actually selected', () => {
+    // Two open PRs, each with its own recorded trace. Whichever row rule 2a picks,
+    // the trace on the model must be that row's — not the other one's.
+    const first = pendingIac({ pr_number: 11, authoring_trace_id: 'c'.repeat(32) });
+    const second = pendingIac({ pr_number: 12, authoring_trace_id: 'd'.repeat(32) });
+    const model = deskModel({
+      decisions: [],
+      pendingApprovals: [first, second],
+      now: NOW,
+      origin: ORIGIN,
+    });
+    if (model.kind !== 'pending' || model.source !== 'iac') throw new Error('expected pending iac');
+    expect(model.prNumber).toBe(11);
+    expect(model.traceId).toBe('c'.repeat(32));
+  });
+
+  it('a malformed pr_number is skipped, and takes its trace with it', () => {
+    // The href guard skips the row; the next candidate must supply BOTH the PR
+    // number and the trace, never a mix of the two rows.
+    const model = deskModel({
+      decisions: [],
+      pendingApprovals: [
+        pendingIac({ pr_number: 0, authoring_trace_id: 'c'.repeat(32) }),
+        pendingIac({ pr_number: 12, authoring_trace_id: 'd'.repeat(32) }),
+      ],
+      now: NOW,
+      origin: ORIGIN,
+    });
+    if (model.kind !== 'pending' || model.source !== 'iac') throw new Error('expected pending iac');
+    expect(model.prNumber).toBe(12);
+    expect(model.traceId).toBe('d'.repeat(32));
   });
 });
 

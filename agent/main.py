@@ -3487,10 +3487,31 @@ def _list_pending_approvals() -> list[dict]:
     solely from the numeric PR number, so the worst case of a mislabeled PR is a
     spurious row, never a bad action.
     """
+    from agent.iac_pr_trace_store import get_iac_pr_trace_store
     from driftscribe_lib.pending_approvals import build_pending_approval
 
     s = get_settings()
     repo = get_repo(s.github_token, s.github_repo)
+    # ds-qua: the authoring reasoning for each listed PR, keyed by the SAME
+    # ``s.github_repo`` these rows are built from — PR numbers are repository-local,
+    # and the authoring side can target a different repo via
+    # IAC_EDITOR_TARGET_REPO_OVERRIDE. One point lookup per open infra PR (a handful),
+    # per 60s cache miss.
+    #
+    # Every touch is individually guarded, including acquiring the store. The trace is
+    # OPTIONAL evidence; losing it must cost the link, never the row. Unguarded, one
+    # unexpected store exception would escape into this function's caller, which
+    # answers with an empty ``degraded`` list — blanking the whole panel and hiding
+    # approvals the operator can actually act on. The store already fail-softs
+    # internally; this is the belt to that suspenders, because the failure mode it
+    # guards is so much worse than what it costs.
+    def _authoring_trace(pr_number: int) -> str | None:
+        try:
+            return get_iac_pr_trace_store().get(s.github_repo, pr_number)
+        except Exception:  # noqa: BLE001 — optional evidence must never blank the panel
+            log.warning("pending_approval_trace_lookup_failed", exc_info=True)
+            return None
+
     out: list[dict] = []
     # PyGithub accepts label NAMES (strings) here; it resolves them to the GitHub
     # label query param. sort/direction are passed EXPLICITLY (not left to the API
@@ -3502,7 +3523,11 @@ def _list_pending_approvals() -> list[dict]:
             continue  # a real issue, not a PR
         out.append(
             build_pending_approval(
-                issue.number, issue.title or "", issue.html_url or "", issue.body or ""
+                issue.number,
+                issue.title or "",
+                issue.html_url or "",
+                issue.body or "",
+                _authoring_trace(issue.number),
             )
         )
     return out

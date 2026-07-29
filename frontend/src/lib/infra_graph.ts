@@ -324,6 +324,11 @@ export interface PendingApproval {
   url: string;
   asset_type: string;
   resource_name: string;
+  /** The reasoning run that AUTHORED this PR (ds-qua), or `""`/absent when the
+   *  backend has no record — a PR opened before the record existed, or one it could
+   *  not attribute. Optional because an older coordinator omits the field entirely;
+   *  every consumer must treat absent and blank identically. */
+  authoring_trace_id?: string;
 }
 
 /** PR number of an open adoption PR matching this resource row, or null.

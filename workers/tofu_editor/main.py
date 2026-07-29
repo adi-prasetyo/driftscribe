@@ -351,12 +351,23 @@ def open_pr(
         files=committed_files,
     )
 
+    # ONE conservative reading of "did we just open this PR", shared by the dispatch
+    # decision below and the ``reused`` field returned to the caller.
+    #
+    # ⚠️ Strict ``is False``, and NOT ``not result.get("reused")``. Both consumers
+    # treat "newly opened" as permission to act — dispatch a workflow, and (in the
+    # coordinator) record which reasoning run authored this PR. A missing/None/0/""
+    # value means we do not KNOW whether this PR is new, and normalizing that to
+    # "new" would hand out both permissions on an unknown. Unknown must read as
+    # reused: no dispatch, no provenance record.
+    newly_opened = result.get("reused") is False
+
     # Fail-soft C2 plan-builder auto-dispatch: only fires when the request
     # opts in AND the PR is newly opened (not reused). The worker hardcodes
     # the workflow filename, ref, and inputs — the request body cannot influence
     # them. Any exception is caught so the PR response is never lost.
     plan_builder_dispatched = False
-    if req.dispatch_plan_builder and not result.get("reused"):
+    if req.dispatch_plan_builder and newly_opened:
         try:
             ds_github.dispatch_workflow(
                 repo, "iac.yml", "main", {"pr_number": str(result["number"])}
@@ -375,4 +386,17 @@ def open_pr(
         "pr_url": result["url"],
         "branch": result["branch"],
         "plan_builder_dispatched": plan_builder_dispatched,
+        # Whether this response describes a PR we opened just now, or one that
+        # already existed for this branch (open_iac_pr is idempotent — see its
+        # "A pull request already exists" backstop). The coordinator records the
+        # authoring reasoning trace ONLY for a newly-opened PR: attributing the
+        # current run's reasoning to a PR it merely rediscovered would be a false
+        # evidence claim on the approval desk.
+        #
+        # Derived from ``newly_opened``, so an UNKNOWN reuse state reports True.
+        # Reporting ``bool(result.get("reused"))`` here would collapse unknown to
+        # False and defeat the coordinator's strict ``is False`` gate at the
+        # source — the guard would be checking a value this worker had already
+        # laundered.
+        "reused": not newly_opened,
     }

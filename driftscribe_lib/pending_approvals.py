@@ -20,6 +20,11 @@ from driftscribe_lib.adopt_recipe import _ID_SHAPES, _RTYPE_TO_ASSET_TYPE
 # inside single backticks). Tolerant of surrounding whitespace; first match wins.
 _IMPORT_ID_RE = re.compile(r"\*\*Import id:\*\*\s*`([^`]+)`")
 
+# The wire shape of a trace id, and exactly what the SPA's ``?reasoning=`` deep link
+# accepts (frontend/src/lib/deeplink.ts::isReplayableTraceId). Used with ``fullmatch``:
+# ``$`` also matches BEFORE a terminal newline, so ``match`` would accept "…\n".
+_TRACE_ID_RE = re.compile(r"[0-9a-f]{32}")
+
 
 def extract_import_id(pr_body: str | None) -> str | None:
     """The import id from an adoption PR body, or None if absent/empty."""
@@ -51,10 +56,24 @@ def import_id_to_resource(import_id: str) -> tuple[str, str] | None:
 
 
 def build_pending_approval(
-    pr_number: int, title: str, url: str, pr_body: str | None
+    pr_number: int,
+    title: str,
+    url: str,
+    pr_body: str | None,
+    authoring_trace_id: str | None = None,
 ) -> dict:
     """A single pending-approval DTO. ``asset_type``/``resource_name`` are blank
-    when the PR is not a parseable adoption (freehand/new-resource infra PR)."""
+    when the PR is not a parseable adoption (freehand/new-resource infra PR).
+
+    ``authoring_trace_id`` is the reasoning run that opened this PR (ds-qua), looked
+    up by the caller — this module stays I/O-free. Blank when unknown, which the SPA
+    renders as no "view the reasoning" link at all. Validated here against the same
+    hex32 shape the deep link accepts (``isReplayableTraceId``), so a malformed stored
+    value degrades to absent rather than to a link that opens once and then fails to
+    restore when shared. NOTE this is deliberately NOT parsed out of ``pr_body``:
+    freehand PR bodies are model-authored, so a body-derived trace would let the
+    author supply its own evidence pointer.
+    """
     asset_type = ""
     resource_name = ""
     import_id = extract_import_id(pr_body)
@@ -62,10 +81,14 @@ def build_pending_approval(
         resolved = import_id_to_resource(import_id)
         if resolved is not None:
             asset_type, resource_name = resolved
+    trace_id = authoring_trace_id or ""
+    if not _TRACE_ID_RE.fullmatch(trace_id):
+        trace_id = ""
     return {
         "pr_number": pr_number,
         "title": title,
         "url": url,
         "asset_type": asset_type,
         "resource_name": resource_name,
+        "authoring_trace_id": trace_id,
     }

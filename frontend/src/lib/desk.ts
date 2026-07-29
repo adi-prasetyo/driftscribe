@@ -93,26 +93,26 @@ export interface DeskPendingIac {
   href: string;
   provenance: DeskPendingIacProvenance;
   /**
-   * ALWAYS null on this arm today — see `DeskPendingRollback.traceId` for the
-   * arm that does carry one, and the note below for why this one cannot.
+   * The reasoning run that AUTHORED this PR, or null when unknown.
    *
-   * ⚠️ An `iac_apply` decision's `trace_id` is NOT the authoring reasoning.
-   * `_record_iac_decision` stamps `current_trace_id_or_new()` (agent/main.py
-   * ~5352), and that function runs inside the **approve/apply POST** — a
-   * different HTTP request from the crew run that authored the PR. Linking
-   * "view the reasoning behind this" to it would point the operator at the
-   * trace of their own approval click. That is a new instance of exactly the
-   * over-claiming this module exists to prevent, so the iac arms render no
-   * link at all rather than a confident wrong one.
+   * ⚠️ NEVER derived from the decision row. An `iac_apply` decision's `trace_id`
+   * is NOT the authoring reasoning: `_record_iac_decision` stamps
+   * `current_trace_id_or_new()` (agent/main.py ~5352) inside the **approve/apply
+   * POST** — a different HTTP request from the crew run that authored the PR — so
+   * linking "view the reasoning behind this" to it would point the operator at the
+   * trace of their own approval click. Two tests pin that absence. Do NOT re-add a
+   * `pr_number` join over `decisions` to fake it.
    *
-   * The authoring association DOES exist — `append_turns` stores `iac_pr`
-   * beside `trace_id` on the crew turn (agent/main.py ~638) — but only on the
-   * conversation doc, which the desk has no handle on. Surfacing it needs the
-   * backend to carry a trace id on `PendingApproval` (or an equivalent
-   * lookup). Tracked separately; do NOT re-add a `pr_number` join over
-   * `decisions` to fake it.
+   * Populated on the **listing** arm only, from the backend's
+   * `PendingApproval.authoring_trace_id` (ds-qua) — a per-(repo, PR) record written
+   * when the editor worker confirms a newly-opened PR, so it names the run that
+   * really opened it. Gated by `isReplayableTraceId` like the rollback arm.
+   *
+   * Still null on the **decision** arm (rule 2b): `/decisions` carries no authoring
+   * trace, and that arm renders a real diff table anyway, so it is not the one that
+   * reads as evidence-free.
    */
-  traceId: null;
+  traceId: string | null;
 }
 
 export type DeskPending = DeskPendingRollback | DeskPendingIac;
@@ -358,7 +358,12 @@ function selectPendingIac(
       prNumber: approval.pr_number,
       href,
       provenance: { kind: 'listing', approval },
-      traceId: null, // see DeskPendingIac.traceId — no authoring trace reachable here
+      // ds-qua. Same `isReplayableTraceId` gate as the rollback arm, so the desk can
+      // never offer a link that opens once but fails to restore when shared. An older
+      // coordinator omits the field entirely; absent and blank both read as null.
+      traceId: isReplayableTraceId(approval.authoring_trace_id)
+        ? approval.authoring_trace_id
+        : null,
     };
   }
   return null;
