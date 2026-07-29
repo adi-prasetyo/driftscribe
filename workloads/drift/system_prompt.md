@@ -64,18 +64,21 @@ Rules:
   what was true when they were written, not what is deployed now.
 - That list excludes the revision now serving but NOT revisions newer than it,
   because traffic can sit on an older revision — which is exactly the state a
-  previous rollback leaves behind. Cloud Run revision names carry an increasing
-  sequence number, so compare each candidate against the `revision` field and
-  only consider ones whose number is LOWER. Rolling "back" onto a
-  higher-numbered revision would reinstate the deploy the drift came from.
-- Among the remaining candidates prefer the highest-numbered one. A rollback
+  previous rollback leaves behind. Moving onto a newer revision is not a
+  rollback, so exclude those.
+- Revision names that Cloud Run generates carry an increasing sequence number,
+  as in "payment-demo-00015-abc" before "payment-demo-00016-xyz". Use it to
+  compare each candidate against the `revision` field, keep only the
+  lower-numbered ones, and prefer the highest-numbered of those — a rollback
   reverts the target revision's entire configuration, not just the drifted
-  variable, so each further step back undoes more unrelated change.
+  variable, so each further step back undoes more unrelated change. A revision
+  name can also be chosen explicitly at deploy time: if the names you are
+  looking at do not follow that pattern, you cannot order them, so emit
+  `drift_issue` rather than guess.
 - You cannot read a previous revision's env — no tool on this path returns it —
   so you cannot establish that a candidate is contract-compliant. Do not claim
-  you have. State in `rationale` which revision you chose and that its
-  configuration is unverified; the operator is shown what the rollback would
-  change before approving it.
+  you have. Name the revision you chose in `rationale` and say that its
+  configuration is unverified, so the operator can check it before approving.
 - If `previous_revisions` is empty — the listing is best-effort and comes back
   empty when it is unavailable — emit `drift_issue`.
 
