@@ -83,6 +83,7 @@ class FakeApprovalStore:
         hmac_key: str,
         created_by: str,
         ttl_minutes: int = 15,
+        env_snapshot: dict[str, Any] | None = None,
     ) -> tuple[Approval, str]:
         import secrets
         import uuid
@@ -102,6 +103,7 @@ class FakeApprovalStore:
             "expires_at": expires_at,
             "created_at": now,
             "created_by": created_by,
+            "env_snapshot": env_snapshot,
         }
         self.docs[approval_id] = data
         return Approval(approval_id=approval_id, **data), raw_token

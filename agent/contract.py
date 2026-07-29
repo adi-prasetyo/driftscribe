@@ -1,3 +1,5 @@
+import hashlib
+import logging
 from pathlib import Path
 from typing import Dict, Any
 import yaml
@@ -65,3 +67,42 @@ def load_contract(path: Path) -> OpsContract:
     except yaml.YAMLError as e:
         raise ValueError(f"failed to parse contract {path}: {e}") from e
     return OpsContract.model_validate(raw)
+
+
+log = logging.getLogger(__name__)
+
+
+def contract_hash(contract: OpsContract) -> str:
+    """Stable hash of the contract's *content* (not just its path).
+
+    Lives here rather than in ``agent.main`` so the /recheck idempotency key and
+    the rollback preview's freshness marker are provably the same function. Two
+    hashes that are "the same algorithm, written twice" are two hashes.
+    """
+    return hashlib.sha256(contract.model_dump_json().encode()).hexdigest()[:16]
+
+
+def contract_preview_payload(contract_path: str) -> dict[str, Any]:
+    """The contract fields the Rollback Worker needs to describe what a rollback
+    would change (ds-uwc), or ``{}`` if the contract cannot be loaded.
+
+    The worker owns no contract, so it cannot answer "does the TARGET revision
+    satisfy the contract" by itself — and it must not be handed observed env
+    values to answer it with, because it would then be storing them. So it gets
+    the contract's own literals, which are public (they are in
+    ``demo/ops-contract.yaml`` in a public repo), and returns booleans.
+
+    Never raises. On the /recheck path a bad contract is already a 500 further
+    up; on the chat path it must not take down a rollback PROPOSAL over a failed
+    PREVIEW. ``{}`` means the worker records no snapshot and the approval page
+    says it could not read one.
+    """
+    try:
+        contract = load_contract(Path(contract_path))
+    except Exception as e:  # noqa: BLE001
+        log.warning("contract preview unavailable: %s", type(e).__name__)
+        return {}
+    return {
+        "contract_env": {n: r.value for n, r in contract.expected_env.items()},
+        "contract_hash": contract_hash(contract),
+    }

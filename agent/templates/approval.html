@@ -56,6 +56,59 @@
         </div>
       </div>
 
+      {# ds-uwc — what this rollback would change. A rollback reverts the target
+         revision's ENTIRE env, so the revision NAME alone was never enough to
+         approve on. No observed env VALUE appears here by construction: the
+         worker's snapshot carries names and booleans only, and the values shown
+         are the CONTRACT's literals, which are public. This page is reachable
+         by anyone holding the link. #}
+      {% if change_view %}
+      <div class="ds-card">
+        <div class="ds-label">{% if lang == 'ja' %}このロールバックで変わるもの{% else %}What this rollback will change{% endif %}</div>
+        {% if change_view.state != 'ok' %}
+          {# NOT an empty table. Absent evidence must never render as "nothing
+             will change" — that is a promise we cannot make. #}
+          <div class="ds-note" data-testid="change-unknown">
+            {% if change_view.reason == 'contract_unavailable' %}
+              {% if lang == 'ja' %}運用契約を読み込めなかったため、対象リビジョンが契約を満たすか判定できません。変更内容は不明です。{% else %}The ops contract could not be loaded, so we cannot judge whether the target revision satisfies it. What this rollback would change is unknown.{% endif %}
+            {% elif change_view.reason == 'contract_changed' %}
+              {% if lang == 'ja' %}この提案の記録後に運用契約が変更されています。記録された比較は現在の契約と対応しないため、変更内容は不明として扱います。{% else %}The ops contract has changed since this proposal was recorded, so the stored comparison no longer lines up with it. Treating what this rollback would change as unknown.{% endif %}
+            {% else %}
+              {% if lang == 'ja' %}このロールバックが何を変えるかは記録されていません。対象リビジョンの設定を読み取れなかったか、この記録が当該機能より前のものです。承認前に対象リビジョンを直接確認してください。{% else %}What this rollback would change was not recorded — either the target revision's configuration could not be read, or this approval predates that record. Inspect the target revision directly before approving.{% endif %}
+            {% endif %}
+          </div>
+        {% else %}
+          <div class="ds-subtle" data-testid="change-observed-at">
+            {% if lang == 'ja' %}提案時点の比較：{{ change_view.source_revision }} → {{ approval.target_revision }}（{{ change_view.observed_at }} 時点）。以降にサービスが変わっている可能性があります。{% else %}Compared at proposal time: {{ change_view.source_revision }} → {{ approval.target_revision }} (observed {{ change_view.observed_at }}). The service may have moved since.{% endif %}
+          </div>
+          <ul class="ds-changes">
+            {% for row in change_view.rows %}
+              <li data-testid="change-row" data-var="{{ row.name }}">
+                <code class="ds-code">{{ row.name }}</code>
+                {% if row.changed %}
+                  <span data-testid="change-changed">{% if lang == 'ja' %}このロールバックで変わります{% else %}will change{% endif %}</span>
+                {% else %}
+                  <span>{% if lang == 'ja' %}変わりません{% else %}unchanged{% endif %}</span>
+                {% endif %}
+                {% if row.reverts_operator_change %}
+                  <span class="ds-pill ds-pill--warn" data-testid="change-operator-set">{% if lang == 'ja' %}オペレーター変更可の変数を戻します{% else %}reverts an operator-managed var{% endif %}</span>
+                {% endif %}
+                {% if not row.target_matches_contract %}
+                  <span class="ds-pill ds-pill--{{ 'warn' if not row.allow_manual_change else 'muted' }}" data-testid="change-target-mismatch">{% if lang == 'ja' %}対象リビジョンは契約値（{{ row.contract_value }}）と一致しません{% else %}target does not hold the contract value ({{ row.contract_value }}){% endif %}</span>
+                {% endif %}
+              </li>
+            {% endfor %}
+            {% if change_view.other_changed %}
+              <li data-testid="change-other">{% if lang == 'ja' %}契約対象外でこのロールバックが変える変数：{% else %}Also changed, not governed by the contract:{% endif %} <code class="ds-code">{{ change_view.other_changed | join(", ") }}</code></li>
+            {% endif %}
+          </ul>
+          {% if change_view.violates %}
+            <div class="ds-blocked" data-testid="change-violates">{% if lang == 'ja' %}対象リビジョンは、手動変更を許可していない変数について契約値を満たしていません。このロールバックはドリフトを 1 つ解消する一方で別のドリフトを持ち込みます。それでも進める場合は、下のチェックを入れてください。{% else %}The target revision does not satisfy the contract for a variable marked allow_manual_change=false. This rollback would remove one drift and introduce another. If you still want it, tick the box below.{% endif %}</div>
+          {% endif %}
+        {% endif %}
+      </div>
+      {% endif %}
+
       {% if decision_result is defined and decision_result %}
         <div class="ds-note">{% if lang == 'ja' %}ロールバックを開始しました。オペレーション：{{ decision_result.get("operation_name", "(unknown)") }}{% else %}Rollback dispatched. Operation: {{ decision_result.get("operation_name", "(unknown)") }}{% endif %}</div>
       {% endif %}
@@ -92,6 +145,17 @@
              handlers are out of the decision-copy scope). #}
           <form method="post" action="/approvals/{{ approval.approval_id }}{% if lang == 'ja' %}?lang=ja{% endif %}">
             <input type="hidden" name="t" data-testid="token-field" value="{{ token }}">
+            {# ds-uwc: a PROVEN contract-violating target needs a deliberate
+               second click. The POST re-derives this requirement from the
+               approval doc, so an unchecked box (or a hand-crafted POST that
+               omits the field) is refused server-side — this input is the
+               operator's affordance, never the authority. #}
+            {% if change_view and change_view.state == 'ok' and change_view.violates %}
+              <label class="ds-ack" data-testid="violates-ack">
+                <input type="checkbox" name="ack_target_violates_contract" value="1">
+                {% if lang == 'ja' %}対象リビジョンが契約を満たしていないことを理解したうえでロールバックします。{% else %}I understand the target revision does not satisfy the contract, and want this rollback anyway.{% endif %}
+              </label>
+            {% endif %}
             <div class="ds-actions">
               <button class="ds-btn ds-btn--approve" data-testid="approve-button" type="submit" name="decision" value="approve"{% if paused or (autonomy_blocked is defined and autonomy_blocked) %} disabled{% endif %}>{% if lang == 'ja' %}ロールバックを承認{% else %}Approve rollback{% endif %}</button>
               <button class="ds-btn ds-btn--reject" data-testid="reject-button" type="submit" name="decision" value="reject">{% if lang == 'ja' %}却下{% else %}Reject{% endif %}</button>
