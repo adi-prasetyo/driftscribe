@@ -297,15 +297,23 @@ def propose_rollback_tool(target_revision: str, reason: str) -> dict:
     approval_url = resp.get("approval_url") if isinstance(resp, dict) else None
     expires_at = resp.get("expires_at") if isinstance(resp, dict) else None
 
-    # No usable credential in the worker response (its own error shape, or a
-    # malformed one): there is nothing to withhold and nothing auditable to
-    # record. Hand the worker's response straight back so the model can relay
-    # the actual error — unchanged from the pre-ds-y5i behavior.
+    # No usable approval_url in the worker response (its own error shape, or a
+    # malformed one): nothing auditable to record, so hand the response back for
+    # the model to relay the actual error — but STRIP the bare approval_token
+    # first. A response carrying ``approval_id`` + ``approval_token`` with a
+    # broken ``approval_url`` is still a live credential: this tool's own
+    # docstring teaches the model the ``/approvals/{id}?t=<token>`` shape, so it
+    # could reassemble a working link for an unrecorded approval and defeat the
+    # gate below. Without the raw token no approval can be executed — the worker
+    # verifies its HMAC. Copy-on-change / identity-on-no-change, matching the
+    # scrubber conventions in agent/renderer.py.
     if not (isinstance(approval_url, str) and approval_url):
         _log.warning(
             "rollback_propose_notify_failed",
             extra={"target_revision": target_revision},
         )
+        if isinstance(resp, dict) and "approval_token" in resp:
+            return {k: v for k, v in resp.items() if k != "approval_token"}
         return resp
 
     # ds-y5i — ONE gate, ONE invariant: this tool releases a rollback approval

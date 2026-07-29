@@ -889,6 +889,41 @@ def test_propose_rollback_anon_returns_worker_response_unchanged(worker_resp):
     assert "approval_note" not in out
 
 
+def test_propose_rollback_strips_a_bare_token_when_the_url_is_unusable():
+    """A response with approval_id + approval_token but a BROKEN approval_url is
+    still a live credential: this tool's docstring teaches the model the
+    ``/approvals/{id}?t=<token>`` shape, so it could reassemble a working link
+    for an approval that was never recorded — defeating the ds-y5i gate through
+    the one branch that returns the worker response rather than a withhold.
+
+    The rest of the response is forwarded untouched so the model can still
+    relay the worker's error.
+    """
+    from agent.adk_tools import propose_rollback_tool
+
+    worker_resp = {
+        "error": "coordinator url unset",
+        "approval_id": _APPROVAL_UUID,
+        "approval_token": "SECRETTOKEN",
+        "expires_at": "2026-01-01T00:15:00+00:00",
+    }
+
+    def _fake_call(worker, payload):
+        if worker == "notifier":
+            return {"status": "sent"}
+        return worker_resp
+
+    with patch("agent.adk_tools.worker_client.call", side_effect=_fake_call):
+        out = propose_rollback_tool(target_revision="payment-demo-00002-bbb", reason="x")
+
+    assert "approval_token" not in out
+    assert "SECRETTOKEN" not in json.dumps(out)
+    assert out["error"] == "coordinator url unset"
+    assert out["approval_id"] == _APPROVAL_UUID
+    # The caller's dict is never mutated (scrubber convention).
+    assert worker_resp["approval_token"] == "SECRETTOKEN"
+
+
 @pytest.mark.parametrize("anon", [True, False], ids=["anon", "operator"])
 @pytest.mark.parametrize(
     "worker_resp",
