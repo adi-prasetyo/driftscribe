@@ -151,9 +151,11 @@ def _authorize_rollback_from_live_env(
 
     if violations == 0:
         raise ValidationError(
-            "rollback rejected: observed live env shows every "
-            "allow_manual_change=false var already at its contract value, so "
-            "there is no hard contract violation to revert"
+            "rollback rejected: no CONFIRMED hard contract violation was "
+            "observed — every allow_manual_change=false var was either at its "
+            "contract value or not readable at all (a var backed by Secret "
+            "Manager, or deleted, looks the same from here). Nothing observed "
+            "justifies reverting."
         )
 
 

@@ -514,7 +514,7 @@ def test_validator_still_rejects_drifted_allow_manual_var_alongside_a_real_viola
         validate(p, _contract(), live_env=_DRIFTED_LIVE_ENV)
 
 
-def test_validator_treats_a_deleted_disallow_manual_var_as_a_deviation():
+def test_reported_diff_loop_treats_a_deleted_disallow_manual_var_as_a_deviation():
     """A contract var missing from live env (expected set, live None) is a
     deviation, not agreement — it must reach the gate and be allowed through
     as a hard violation rather than skipped by the ds-2f5 equality check."""
@@ -644,7 +644,7 @@ def test_validator_rejects_rollback_when_observed_env_shows_no_violation():
     and derives present_disallow_manual from the contract. Grounding is the only
     thing that catches a fabricated justification."""
     p = _rollback_proposal()
-    with pytest.raises(ValidationError, match="no hard contract violation"):
+    with pytest.raises(ValidationError, match="no CONFIRMED hard contract violation"):
         validate(
             p,
             _contract(),
@@ -671,7 +671,7 @@ def test_an_allow_manual_deviation_alone_cannot_authorize_a_rollback():
     change nothing detectable — the other allow_manual tests all carry a real
     PAYMENT_MODE violation alongside, so the skip could be removed and they
     would still pass. This is the case that makes the skip load-bearing."""
-    with pytest.raises(ValidationError, match="no hard contract violation"):
+    with pytest.raises(ValidationError, match="no CONFIRMED hard contract violation"):
         _authorize(_contract(), {"PAYMENT_MODE": "mock", "FEATURE_X": "true"})
 
 
@@ -692,7 +692,7 @@ def test_an_opaque_or_deleted_disallow_manual_var_cannot_authorize_a_rollback():
     to coerce a bad reader response to {} precisely because an empty env would
     manufacture violations — an omitted secret-backed entry manufactures the
     same one."""
-    with pytest.raises(ValidationError, match="no hard contract violation"):
+    with pytest.raises(ValidationError, match="no CONFIRMED hard contract violation"):
         _authorize(_contract(), {"FEATURE_X": "false"})
 
 
@@ -702,7 +702,7 @@ def test_a_genuinely_empty_observed_env_is_an_observation_and_still_refuses():
     produces. Both refuse a rollback here, but for DIFFERENT stated reasons, and
     the distinction is what stops a truthiness check from quietly replacing the
     `is None` check at the call site."""
-    with pytest.raises(ValidationError, match="no hard contract violation"):
+    with pytest.raises(ValidationError, match="no CONFIRMED hard contract violation"):
         _authorize(_contract(), {})
     with pytest.raises(ValidationError, match="no observed live env"):
         _authorize(_contract(), None)
@@ -776,3 +776,36 @@ def test_non_rollback_actions_are_unaffected_by_a_missing_live_env(action):
         **kwargs,
     )
     validate(p, _contract())  # live_env omitted entirely: must not raise
+
+
+def test_a_confirmed_EMPTY_STRING_value_is_present_and_differing():
+    """Empty string is a legitimate Cloud Run env value, so `PAYMENT_MODE=""` is
+    a var that is PRESENT and NOT at its contract value — a confirmed violation.
+
+    Pins the presence test against the shape it is easiest to write wrong:
+    `if not live_env.get(name)` reads an empty string as unreadable and would
+    silently drop a real violation. Presence is a key question, never a
+    truthiness one — the same distinction `_extract_env_from_containers` makes
+    for exactly the same reason."""
+    _authorize(_contract(), {"PAYMENT_MODE": "", "FEATURE_X": "false"})
+
+
+def test_undeclared_vars_alone_cannot_authorize_a_rollback():
+    """Every declared hard var at its contract value, with undeclared vars
+    present, is not a rollback-justifying state.
+
+    The other undeclared-var test carries a real PAYMENT_MODE violation
+    alongside, so it would pass even if undeclared vars DID count. This is the
+    case that makes "the contract governs only what it declares" load-bearing:
+    counting them would authorize a rollback on any service that happens to
+    carry PORT or K_SERVICE, which is every Cloud Run service there is."""
+    with pytest.raises(ValidationError, match="no CONFIRMED hard contract violation"):
+        _authorize(
+            _contract(),
+            {
+                "PAYMENT_MODE": "mock",
+                "FEATURE_X": "false",
+                "PORT": "8080",
+                "K_SERVICE": "payment-demo",
+            },
+        )

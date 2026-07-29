@@ -178,7 +178,8 @@ Passing that into a gate claiming to read ground truth is the ds-qua defect
 verbatim. The call site now keeps them as separate variables: `live_env` (which
 may be a reconstruction, and still feeds the idempotency key exactly as before)
 and `observed_env` (`None` unless the reader really answered). `validate()` gets
-`observed_env`.
+`observed_env`. The reconstruction still feeds the event key, but no longer under
+the same key as a real read — see the cache section.
 
 Revision 1 justified the refusal by claiming a failed reader read means the
 model's diffs were never grounded either. **Not true** — the model's tool call and
@@ -187,10 +188,12 @@ transiently fail. The refusal is still right; it bites on one-off blips and depl
 skew, not only sustained outages.
 
 The reader response is shape-validated by `_observed_env_or_none`. A malformed
-payload degrades to `None`, never to `{}` — an empty dict would make every
-declared var read as "not at its contract value" and would **manufacture** the
-violation that authorizes the rollback. That is a fail-OPEN degradation and it has
-its own parametrized test.
+payload degrades to `None`, never to `{}`. Under the corrected counting rule `{}`
+no longer manufactures violations (every var is simply unreadable), so the two
+now differ in *which* refusal they produce rather than in whether they refuse —
+and that distinction is still worth keeping: "we looked and saw no confirmed
+violation" and "we could not look" are different facts, they land in different
+idempotency namespaces, and only one of them is a reason to retry.
 
 ### The idempotency cache short-circuited the gate — now closed
 
@@ -208,11 +211,28 @@ rollback approval, and the new refusal would never get to speak.
 
 Fixed rather than re-documented: `_event_key` takes `env_observed`, and a
 reconstructed env adds an `env_provenance` component that puts it in a separate
-cache namespace. The marker is added **only** in the reconstructed case, so every
-existing grounded key is byte-identical and this deploy invalidates no cached
-decision. Pinned by an integration test that runs a grounded /recheck, then an
-ungrounded one whose model reports the env perfectly — the worst case for the
-cache — and requires the second to 502 rather than return the first's approval.
+cache namespace.
+
+**Scoped to ROLLBACK.** A first cut keyed it off provenance alone, which quietly
+regressed a different lane: `docs_pr` / `drift_issue` would get two cache slots,
+one per provenance, so a grounded first attempt followed by a reader blip on the
+retry would miss the cache and open a **second** PR or issue — breaking the
+duplicate-suppression the `record_event` claim depends on, in exchange for
+nothing, since no non-rollback action has a gate that reads observed env. Caught
+by Codex; it now has its own regression test.
+
+Backward compatibility, stated precisely rather than broadly. A **grounded** key
+is byte-identical to the pre-change algorithm, pinned against an inlined copy of
+that algorithm — so no grounded cache entry is orphaned, and the obvious wrong
+fix (stamping `env_provenance: "observed"` too) fails that test while passing
+every behavioural one. What this deploy DOES orphan is any decision cached from a
+reconstructed env before it, which becomes unreachable from new reconstructed
+requests. That is a handful of entries inside one 15-minute TTL, and the
+direction is safe: a miss re-proposes, it does not reuse.
+
+Pinned by an integration test that runs a grounded /recheck, then an ungrounded
+one whose model reports the env perfectly — the worst case for the cache — and
+requires the second to 502 rather than return the first's approval.
 
 ### Demo-path check
 

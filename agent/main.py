@@ -1920,7 +1920,20 @@ async def _do_recheck(
         s.contract_path,
         contract_hash,
         live_env,
-        env_observed=observed_env is not None,
+        # SCOPED TO ROLLBACK, and the scoping is the point. The provenance
+        # namespace exists so an ungrounded run cannot be handed a grounded
+        # run's rollback approval. Applying it to every action would give
+        # docs_pr / drift_issue TWO idempotency slots, one per provenance — so a
+        # retry that merely flipped provenance (grounded first attempt, reader
+        # blip on the retry) would miss the cache and open a SECOND PR or issue.
+        # That would break the duplicate-suppression promise the record_event
+        # claim below is built on, in exchange for nothing: those actions have
+        # no gate that reads observed env, so the two namespaces would hold
+        # decisions of identical trustworthiness.
+        env_observed=(
+            observed_env is not None
+            or proposal.action != DecisionAction.ROLLBACK
+        ),
     )
     if force:
         # Distinct key so the forced decision is cached under its own slot

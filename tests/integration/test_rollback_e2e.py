@@ -1177,7 +1177,7 @@ def test_rollback_refused_when_observed_env_contradicts_the_proposal(
         r = client.post("/recheck")
 
     assert r.status_code == 502, r.text
-    assert "no hard contract violation" in r.text
+    assert "no CONFIRMED hard contract violation" in r.text
 
 
 def test_rollback_still_proposed_when_observed_env_corroborates_the_proposal(
@@ -1334,5 +1334,89 @@ def test_a_well_formed_empty_env_is_treated_as_an_observation_not_a_read_failure
         r = TestClient(app).post("/recheck")
 
     assert r.status_code == 502, r.text
-    assert "no hard contract violation" in r.text
+    assert "no CONFIRMED hard contract violation" in r.text
     assert "no observed live env" not in r.text
+
+
+def test_a_non_rollback_action_keeps_ONE_idempotency_slot_across_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The provenance namespace must not reach non-rollback actions.
+
+    A first draft keyed it off provenance ALONE, which gave docs_pr and
+    drift_issue two cache slots — one per provenance. A grounded first attempt
+    followed by a retry that hit a reader blip would then MISS the cache and run
+    `_perform_action` again, opening a SECOND GitHub issue. That directly breaks
+    the duplicate-suppression the `record_event` claim is built on, and it buys
+    nothing: no non-rollback action has a gate that reads observed env, so both
+    namespaces would hold decisions of identical trustworthiness.
+
+    Caught by Codex on the third pass of this change — the fix for one lane
+    quietly regressing another.
+    """
+    monkeypatch.setenv("USE_ADK", "true")
+    get_settings.cache_clear()
+    _reset_state_for_tests()
+
+    env = {"PAYMENT_MODE": "live", "FEATURE_NEW_CHECKOUT": "false"}
+    proposal = DecisionProposal(
+        action=DecisionAction.DRIFT_ISSUE,
+        env_diffs=[
+            EnvDiff(
+                name="PAYMENT_MODE",
+                expected="mock",
+                live="live",
+                contract_status=ContractStatus.PRESENT_DISALLOW_MANUAL,
+                debug_config_value=None,
+                recent_pr_match=None,
+            ),
+            EnvDiff(
+                name="FEATURE_NEW_CHECKOUT",
+                expected="false",
+                live="false",
+                contract_status=ContractStatus.MATCH,
+                debug_config_value=None,
+                recent_pr_match=None,
+            ),
+        ],
+        target_docs_file=None,
+        target_docs_section=None,
+        target_revision=None,
+        rationale="PAYMENT_MODE drifted; filing an issue for the operator.",
+        confidence=0.9,
+        requires_human_review=True,
+    )
+
+    side_effects: list[str] = []
+
+    def _perform(*args: Any, **kwargs: Any) -> dict:
+        side_effects.append("issue")
+        return {"url": "https://github.com/x/y/issues/1", "action": "drift_issue"}
+
+    def grounded(worker: str, payload: dict, *a: Any, **k: Any) -> Any:
+        if worker == "reader":
+            return _reader_envelope(env)
+        if worker == "notifier":
+            return _notifier_envelope()
+        raise AssertionError(f"unexpected worker call: {worker!r}")
+
+    def reader_down(worker: str, payload: dict, *a: Any, **k: Any) -> Any:
+        if worker == "reader":
+            raise RuntimeError("reader worker unreachable")
+        if worker == "notifier":
+            return _notifier_envelope()
+        raise AssertionError(f"unexpected worker call: {worker!r}")
+
+    for dispatch in (grounded, reader_down):
+        with (
+            patch("agent.main._run_adk_agent", AsyncMock(return_value=proposal)),
+            patch("agent.main._perform_action", _perform),
+            patch("agent.main.worker_client.call") as m_call,
+        ):
+            m_call.side_effect = dispatch
+            r = TestClient(app).post("/recheck")
+        assert r.status_code == 200, r.text
+
+    # ONE issue, not two: the retry hit the first run's cached decision even
+    # though its env provenance differed.
+    assert side_effects == ["issue"]
