@@ -1826,8 +1826,12 @@
     graph={$overview.graph}
     decisions={$overview.decisions}
     pendingApprovals={$overview.pendingApprovals}
+    settled={$overview.settled}
+    degraded={$overview.degraded}
+    lastError={$overview.lastError}
     refresh={overview.refresh}
     onNavigate={navigate}
+    onOpenTrace={openTrace}
   />
   {:else if view === 'estate'}
   <!-- The real estate view (Task 4.1). Data comes exclusively from the

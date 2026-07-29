@@ -743,3 +743,225 @@ describe('ApprovalDesk — ledger strip composition', () => {
     expect(getByTestId('ledger-strip')).toBeTruthy();
   });
 });
+
+// ---------------------------------------------------------------------------
+// ds-eh6 — the desk must not render its all-clear before it has grounds to.
+// ---------------------------------------------------------------------------
+describe('ApprovalDesk — unknown state (ds-eh6)', () => {
+  it('renders loading, not the all-clear, before the first cycle settles', () => {
+    const { getByTestId, queryByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: null,
+        decisions: [],
+        pendingApprovals: [],
+        settled: false,
+        onNavigate: vi.fn(),
+      },
+    });
+    expect(queryByTestId('approval-desk-resting')).toBeNull();
+    const unknown = getByTestId('approval-desk-unknown');
+    expect(unknown.getAttribute('data-reason')).toBe('loading');
+    // The specific sentence the bead names as the false claim.
+    expect(unknown.textContent).not.toContain('Nothing needs your decision right now.');
+  });
+
+  it('renders the degraded admission after a cycle that could not see', () => {
+    const { getByTestId, queryByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: GRAPH,
+        decisions: [],
+        pendingApprovals: [],
+        settled: true,
+        degraded: true,
+        onNavigate: vi.fn(),
+      },
+    });
+    expect(queryByTestId('approval-desk-resting')).toBeNull();
+    const unknown = getByTestId('approval-desk-unknown');
+    expect(unknown.getAttribute('data-reason')).toBe('degraded');
+    // "could not confirm", never "failed" and never "nothing is pending".
+    expect(unknown.textContent).toContain("couldn't confirm");
+  });
+
+  it('still renders the all-clear once a clean cycle settles', () => {
+    const { getByTestId, queryByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: GRAPH,
+        decisions: [],
+        pendingApprovals: [],
+        settled: true,
+        onNavigate: vi.fn(),
+      },
+    });
+    expect(queryByTestId('approval-desk-unknown')).toBeNull();
+    expect(getByTestId('approval-desk-resting')).toBeTruthy();
+  });
+
+  it('the band reads "—", not 0, while unsettled', () => {
+    const { getByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: null,
+        decisions: [],
+        pendingApprovals: [],
+        settled: false,
+        onNavigate: vi.fn(),
+      },
+    });
+    expect(getByTestId('instrument-band-awaiting').textContent).toContain('—');
+    expect(getByTestId('instrument-band-managed').textContent).toContain('—');
+  });
+
+  it('a null graph reads as unknown in the band even after settling', () => {
+    // scopeTotals over zero cards honestly returns zeros; they are correct as
+    // arithmetic and wrong as an ANSWER, because nothing was counted.
+    const { getByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: null,
+        decisions: [],
+        pendingApprovals: [],
+        settled: true,
+        onNavigate: vi.fn(),
+      },
+    });
+    expect(getByTestId('instrument-band-managed').textContent).toContain('—');
+    // awaiting is derived from decisions/approvals, which DID settle — so it
+    // is a real 0, not unknown. The two must not be conflated.
+    expect(getByTestId('instrument-band-awaiting').textContent).toContain('0');
+  });
+
+  it('marks the scan line stale when the graph fetch failed this cycle', () => {
+    // A failed graph fetch leaves the PRIOR graph in place, so generated_at
+    // still parses and still renders — it just no longer describes a scan
+    // that happened. This is lastError's one consumer.
+    const { getByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: GRAPH,
+        decisions: [],
+        pendingApprovals: [],
+        settled: true,
+        lastError: 'graph',
+        onNavigate: vi.fn(),
+      },
+    });
+    expect(getByTestId('approval-desk-stale-scan').textContent).toContain('not refreshed');
+  });
+
+  it('no stale marker on a clean cycle', () => {
+    const { queryByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: GRAPH,
+        decisions: [],
+        pendingApprovals: [],
+        settled: true,
+        lastError: null,
+        onNavigate: vi.fn(),
+      },
+    });
+    expect(queryByTestId('approval-desk-stale-scan')).toBeNull();
+  });
+
+  it('a pending proposal outranks unknown — a provable card always shows', () => {
+    const { getByTestId, queryByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: null,
+        decisions: [rollbackDecision()],
+        pendingApprovals: [],
+        settled: false,
+        degraded: true,
+        onNavigate: vi.fn(),
+      },
+    });
+    expect(queryByTestId('approval-desk-unknown')).toBeNull();
+    expect(getByTestId('approval-desk-pending')).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ds-wd2.15 — the pending card's "view the reasoning" link.
+// ---------------------------------------------------------------------------
+describe('ApprovalDesk — view the reasoning (ds-wd2.15)', () => {
+  const TRACE = 'b'.repeat(32);
+
+  function pendingIac(overrides: Partial<PendingApproval> = {}): PendingApproval {
+    return {
+      pr_number: 7,
+      title: 'Adopt payment-demo Cloud Run service into IaC',
+      url: 'https://github.com/x/y/pull/7',
+      asset_type: 'run.googleapis.com/Service',
+      resource_name: 'payment-demo',
+      ...overrides,
+    };
+  }
+
+  it('renders on the LISTING arm, which otherwise shows no evidence at all', () => {
+    // The bead's core case: listing provenance has no decision doc, so
+    // DriftDiffCard self-suppresses and the card is a title, a PR number and
+    // two buttons. The link is what makes the highest-stakes CTA on the front
+    // door inspectable.
+    const { getByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: GRAPH,
+        decisions: [
+          { decision_id: 'note-1', action: 'propose_adoption', pr_number: 7, trace_id: TRACE },
+        ],
+        pendingApprovals: [pendingIac()],
+        onNavigate: vi.fn(),
+        onOpenTrace: vi.fn(),
+      },
+    });
+    expect(getByTestId('approval-desk-why').textContent).toContain('view the reasoning');
+  });
+
+  it('clicking it opens that trace', () => {
+    const onOpenTrace = vi.fn();
+    const { getByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: GRAPH,
+        decisions: [rollbackDecision({ trace_id: TRACE })],
+        pendingApprovals: [],
+        onNavigate: vi.fn(),
+        onOpenTrace,
+      },
+    });
+    fireEvent.click(getByTestId('approval-desk-why'));
+    expect(onOpenTrace).toHaveBeenCalledWith(TRACE);
+  });
+
+  it('is absent when the proposal carries no usable trace — never inert', () => {
+    const { queryByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: GRAPH,
+        decisions: [],
+        pendingApprovals: [pendingIac()],
+        onNavigate: vi.fn(),
+        onOpenTrace: vi.fn(),
+      },
+    });
+    expect(queryByTestId('approval-desk-why')).toBeNull();
+  });
+
+  it('is absent when no handler is wired, rather than rendering a dead control', () => {
+    const { queryByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: GRAPH,
+        decisions: [rollbackDecision({ trace_id: TRACE })],
+        pendingApprovals: [],
+        onNavigate: vi.fn(),
+      },
+    });
+    expect(queryByTestId('approval-desk-why')).toBeNull();
+  });
+
+  it('does not appear on the resting state', () => {
+    const { queryByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: GRAPH,
+        decisions: [],
+        pendingApprovals: [],
+        onNavigate: vi.fn(),
+        onOpenTrace: vi.fn(),
+      },
+    });
+    expect(queryByTestId('approval-desk-why')).toBeNull();
+  });
+});

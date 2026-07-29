@@ -31,13 +31,35 @@
     graph,
     decisions,
     pendingApprovals,
+    settled = true,
+    degraded = false,
+    lastError = null,
     onNavigate,
+    onOpenTrace,
     refresh,
   }: {
     graph: InfraGraph | null;
     decisions: ReadonlyArray<Decision | null | undefined> | null | undefined;
     pendingApprovals: ReadonlyArray<PendingApproval | null | undefined> | null | undefined;
+    /** Has the overview store's first refresh cycle completed? Defaults to
+     *  true so a test can mount the desk with a ready-made snapshot without
+     *  opting into load state (ds-eh6). */
+    settled?: boolean;
+    /** Did the last completed cycle fail to get a trustworthy answer about
+     *  pending work? See OverviewState.degraded (ds-eh6). */
+    degraded?: boolean;
+    /** The store's last failing fetch kind, or null. Only `'graph'` can reach
+     *  the resting state (a pending/decisions failure sets `degraded`, which
+     *  routes to `unknown` instead), and it is used for exactly one thing:
+     *  refusing to print a fresh-looking "last scan" line for a scan that did
+     *  not refresh. */
+    lastError?: 'graph' | 'pending' | 'decisions' | null;
     onNavigate: (view: AppView) => void;
+    /** Opens a past reasoning timeline (App.svelte's openTrace — it switches
+     *  to the chat view and syncs `?reasoning=`). Optional: when omitted the
+     *  pending card's "view the reasoning" link is not rendered at all, rather
+     *  than rendered inert. */
+    onOpenTrace?: (traceId: string) => void;
     /** overviewStore.refresh, threaded in so the return-ladder below (fast
      *  convergence after an approval) can ask the ALREADY-OWNED store to
      *  refetch sooner — this component still performs no fetch of its own.
@@ -48,6 +70,13 @@
   // ---- instrument band numbers (scope-totals, not re-derived) ----
   const cards = $derived(graph ? resourceCards(graph, $t) : []);
   const scope = $derived(scopeTotals(cards, graph?.totals?.resources ?? 0));
+  // No graph means the estate has not been read — NOT that it is empty
+  // (ds-eh6). `scopeTotals` over zero cards honestly returns zeros, and those
+  // zeros are correct as arithmetic; they are only wrong as an ANSWER, because
+  // nothing was counted. Gate on `graph` rather than `settled` so a settled
+  // cycle whose graph fetch failed also reads as unknown instead of "0".
+  const bandManaged = $derived(graph ? scope.managed : null);
+  const bandDrift = $derived(graph ? scope.drift : null);
 
   // ---- desk state selection ----
   // `decayTick` has no meaning of its own — bumping it is purely "please
@@ -59,7 +88,7 @@
   let decayTick = $state(0);
   const model = $derived.by((): DeskModel => {
     void decayTick;
-    return deskModel({ decisions, pendingApprovals, locale: $locale });
+    return deskModel({ decisions, pendingApprovals, locale: $locale, settled, degraded });
   });
 
   // The honest system-wide total of everything awaiting the operator, NOT
@@ -71,7 +100,23 @@
   // tied to the stamped-decay `decayTick` above: a stamped item was never
   // counted as "awaiting" in the first place (awaitingCount only looks at
   // PENDING rows), so its decay never changes this number.
-  const awaiting = $derived(awaitingCount({ decisions, pendingApprovals, locale: $locale }));
+  // `null` while the first cycle is outstanding (ds-eh6): a count of 0 derived
+  // from an empty placeholder snapshot is not "nothing awaits you", it is "we
+  // have not looked". Once settled the real count renders, INCLUDING a genuine
+  // 0 — and including under `degraded`, where the number is the honest floor of
+  // what we could see and the hero above it is already saying so.
+  const awaiting = $derived(
+    settled ? awaitingCount({ decisions, pendingApprovals, locale: $locale }) : null,
+  );
+
+  // ---- reasoning link (ds-wd2.15) ----
+  // The mockup's `.why` line. Renders only when the model actually carries a
+  // replay-able trace id AND a handler exists — never as a disabled affordance,
+  // and never with the mockup's "(N steps)" count, which the desk has no way to
+  // know without fetching the trace it is offering to open.
+  function openReasoning(traceId: string): void {
+    onOpenTrace?.(traceId);
+  }
 
   // Stamped decay: when `model` is 'stamped', schedule exactly one timer to
   // force a recompute just past `stampedUntil`, so the desk falls back to
@@ -217,17 +262,43 @@
 </script>
 
 <section class="approval-desk" data-testid="approval-desk" aria-label={$t('desk.region.ariaLabel')}>
-  <InstrumentBand managed={scope.managed} drift={scope.drift} {awaiting} {onNavigate} />
+  <InstrumentBand managed={bandManaged} drift={bandDrift} {awaiting} {onNavigate} />
 
   <div class="approval-desk__deskwrap" data-testid="approval-desk-state" data-state={model.kind}>
-    {#if model.kind === 'resting'}
+    {#if model.kind === 'unknown'}
+      <!-- ds-eh6. NOT a variant of resting: resting asserts that nothing needs
+           the operator, and neither of these two states has the standing to say
+           so. `loading` resolves itself in seconds; `degraded` admits a gap that
+           may not. They share a shape but never share copy. -->
+      {@const isLoading = model.reason === 'loading'}
+      <div class="approval-desk__calm" data-testid="approval-desk-unknown" data-reason={model.reason}>
+        <h2>{$t(isLoading ? 'desk.unknown.loading.headline' : 'desk.unknown.degraded.headline')}</h2>
+        <p class="approval-desk__watch" data-testid="approval-desk-watch">
+          <span
+            class="approval-desk__watch-dot approval-desk__watch-dot--unknown"
+            aria-hidden="true"
+          ></span>
+          {$t(isLoading ? 'desk.unknown.loading.body' : 'desk.unknown.degraded.body')}
+        </p>
+      </div>
+    {:else if model.kind === 'resting'}
       <div class="approval-desk__calm" data-testid="approval-desk-resting">
         <h2>{$t('desk.resting.headline')}</h2>
         <p class="approval-desk__watch" data-testid="approval-desk-watch">
           <span class="approval-desk__watch-dot" aria-hidden="true"></span>
           {$t('desk.resting.watching')}
+          <!-- A graph fetch that failed this cycle leaves `graph` at its PRIOR
+               value, so `generated_at` is still populated and still parses —
+               it just no longer describes a scan that happened. Printing it
+               unqualified would age silently into a lie, so a stale marker
+               rides along. This is `lastError`'s one consumer (ds-eh6); a
+               pending/decisions failure never reaches resting, so `'graph'` is
+               the only value that can be observed here. -->
           {#if graph?.generated_at}
-            ・{$t('desk.resting.lastScan', { time: fmtWhen(graph.generated_at, $locale) })}
+            ・{$t('desk.resting.lastScan', { time: fmtWhen(graph.generated_at, $locale) })}{#if lastError === 'graph'}<span
+                class="approval-desk__stale"
+                data-testid="approval-desk-stale-scan">{$t('desk.resting.scanStale')}</span
+              >{/if}
           {:else}
             ・{$t('desk.resting.scanPending')}
           {/if}
@@ -271,6 +342,23 @@
           <div class="approval-desk__diff">
             <DriftDiffCard decision={pendingDecision} />
           </div>
+        {/if}
+        <!-- ds-wd2.15, the mockup's `.why` line. It matters most on the arm
+             that renders NO diff above: with listing provenance there is no
+             decision doc, so DriftDiffCard self-suppresses and the card is
+             otherwise a title, a PR number and two buttons — the page's
+             highest-stakes CTA carrying its least evidence. A button, not an
+             anchor: openTrace is client-side view state, not a navigation. -->
+        {#if model.traceId && onOpenTrace}
+          {@const traceId = model.traceId}
+          <p class="approval-desk__why">
+            <button
+              type="button"
+              class="approval-desk__why-btn"
+              data-testid="approval-desk-why"
+              onclick={() => openReasoning(traceId)}>{$t('desk.pending.viewReasoning')}</button
+            >
+          </p>
         {/if}
         <div class="approval-desk__acts">
           <a
@@ -409,6 +497,40 @@
     border-radius: 50%;
     background: var(--ds-ok-green);
     flex: none;
+  }
+  /* The watch dot is green because it means "watching, all clear". The unknown
+     states are neither, so the dot keeps the shape (same line rhythm, no layout
+     shift when the desk settles into resting) and drops the claim. */
+  .approval-desk__watch-dot--unknown {
+    background: var(--ds-paper-mut);
+  }
+
+  .approval-desk__stale {
+    margin-left: 6px;
+    color: var(--ds-paper-mut);
+  }
+
+  /* The "why" line sits between the evidence and the CTA row, so it reads as
+     part of the case being made rather than as a third action. Muted, small,
+     and underlined on hover only — it must not compete with the primary
+     Approve button directly beneath it. */
+  .approval-desk__why {
+    margin: 22px 0 0;
+  }
+  .approval-desk__why-btn {
+    appearance: none;
+    background: none;
+    border: none;
+    padding: 0;
+    margin: 0;
+    font-family: var(--ds-font-mono);
+    font-size: 12px;
+    color: var(--ds-gblue);
+    cursor: pointer;
+    text-decoration: none;
+  }
+  .approval-desk__why-btn:hover {
+    text-decoration: underline;
   }
 
   .approval-desk__acts {

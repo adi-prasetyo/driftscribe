@@ -444,3 +444,84 @@ describe('createOverviewStore — destroy()', () => {
     expect(calls).toHaveLength(0);
   });
 });
+
+// ds-eh6 — the store must let a consumer tell "we have not looked yet" and
+// "we looked and could not see" apart from "there is nothing". Before this,
+// all three were the same empty snapshot.
+describe('createOverviewStore — settled / degraded (ds-eh6)', () => {
+  it('starts unsettled and becomes settled after the first cycle', async () => {
+    const { fn } = makeCall();
+    const s = createOverviewStore(fn);
+    // The creation trigger fires synchronously but its fetches have not
+    // resolved yet, so this observes the genuine pre-first-settle state.
+    expect(get(s).settled).toBe(false);
+    await flush();
+    expect(get(s).settled).toBe(true);
+    s.destroy();
+  });
+
+  it('settles even when every fetch fails — a failed look is still a look', async () => {
+    // Otherwise a total outage pins the desk on "loading" forever, promising a
+    // resolution that is not coming. The honest report is degraded, not
+    // perpetual patience.
+    const { fn } = makeCall({
+      graph: () => res({}, 500),
+      pending: () => res({}, 500),
+      decisions: () => res({}, 500),
+    });
+    const s = createOverviewStore(fn);
+    await flush();
+    expect(get(s).settled).toBe(true);
+    expect(get(s).degraded).toBe(true);
+    s.destroy();
+  });
+
+  it('a clean cycle is not degraded', async () => {
+    const { fn } = makeCall();
+    const s = createOverviewStore(fn);
+    await flush();
+    expect(get(s).degraded).toBe(false);
+    s.destroy();
+  });
+
+  it('honors the pending-approvals soft-fail flag on an otherwise-ok 200', async () => {
+    // agent/main.py:3531 returns {approvals: [], degraded: true} when GitHub
+    // errors. That is a well-formed 200 with an empty list, so every ok /
+    // Array.isArray check passes and the outage is invisible unless the flag
+    // is read — an empty list meaning "GitHub is down" and one meaning
+    // "nothing is pending" are otherwise the same bytes.
+    const { fn } = makeCall({ pending: () => res({ approvals: [], degraded: true }) });
+    const s = createOverviewStore(fn);
+    await flush();
+    expect(get(s).lastError).toBeNull(); // nothing "failed" by the old measure
+    expect(get(s).degraded).toBe(true);
+    s.destroy();
+  });
+
+  it('a graph failure alone does NOT mark the desk degraded', async () => {
+    // Graph feeds the estate view and is the routinely-slow endpoint
+    // (CAI-backed, 10-30s cold). Letting it flip `degraded` would put the desk
+    // in a degraded state during ordinary cold starts.
+    const { fn } = makeCall({ graph: () => res({}, 500) });
+    const s = createOverviewStore(fn);
+    await flush();
+    expect(get(s).lastError).toBe('graph');
+    expect(get(s).degraded).toBe(false);
+    s.destroy();
+  });
+
+  it('degraded clears when a later cycle succeeds — recomputed, never latched', async () => {
+    let fail = true;
+    const { fn } = makeCall({
+      pending: () => (fail ? res({}, 500) : res({ approvals: APPROVALS })),
+    });
+    const s = createOverviewStore(fn);
+    await flush();
+    expect(get(s).degraded).toBe(true);
+    fail = false;
+    await s.refresh('manual');
+    await flush();
+    expect(get(s).degraded).toBe(false);
+    s.destroy();
+  });
+});
