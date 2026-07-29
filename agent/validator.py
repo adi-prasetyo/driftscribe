@@ -95,14 +95,110 @@ def validate(proposal: DecisionProposal, contract: OpsContract) -> None:
         # hallucinated or prompt-injected label could otherwise bypass the
         # gate by claiming an operator-safe var is present_disallow_manual.
         # The contract YAML is the source of truth — re-derive from it.
+        #
+        # ds-2f5: the gate applies only to diffs that are an actual DEVIATION.
+        # A diff whose live value already matches what the contract requires
+        # reports agreement, not a change: it supplies no violation that could
+        # justify a rollback, so it has no standing to veto one.
+        #
+        # DEVIATION IS MEASURED AGAINST ``rule.value``, NEVER ``diff.expected``
+        # (Codex review of this change). ``diff.expected`` is model-authored,
+        # so believing it lets a fabricated baseline manufacture a violation:
+        #   EnvDiff(name="PAYMENT_MODE", expected="bogus", live="mock")
+        # would count as a hard violation even though ``live`` IS the contract
+        # value and nothing has drifted. The first draft of this fix compared
+        # live/expected and had exactly that hole — the same wrong-subject
+        # mistake it was written to correct, one level in. The contract is
+        # already the source of truth for the STATUS re-derivation above; it is
+        # the source of truth for the VALUE too, so ``diff.expected`` is now
+        # consulted for nothing on a declared var.
+        #
+        # Undeclared vars have no contract value to compare against, so the
+        # only meaningful question is presence: a var the contract does not
+        # govern that is PRESENT on the service is a deviation (and derives
+        # ABSENT, so it rejects — preserving the pre-existing behavior pinned
+        # by test_validator_rejects_rollback_when_llm_lies_about_status_for_
+        # unknown_var); absent-and-undeclared is simply nothing at all.
+        #
+        # Contradictory duplicates are rejected explicitly. An earlier draft of
+        # this comment claimed grounding in ``rule.value`` handled them "for
+        # free"; that is TRUE ONLY for allow_manual vars, where the conflicting
+        # entry rejects. For a disallow_manual var every non-contract value
+        # CLEARS the gate, so:
+        #     EnvDiff("PAYMENT_MODE", live="mock")   -> skipped, matches
+        #     EnvDiff("PAYMENT_MODE", live="live")   -> counted as a violation
+        # passes while asserting two live values the service cannot both have.
+        # If reality is "mock", that authorizes a rollback with no violation
+        # behind it. Caught by Codex re-review; the test that was supposed to
+        # cover this used the allow_manual var and so proved nothing.
+        #
+        # Identical repeats are harmless and stay allowed — only a CONFLICT is
+        # incoherent evidence.
+        seen_live: dict[str, str | None] = {}
+        for diff in proposal.env_diffs:
+            if diff.name in seen_live and seen_live[diff.name] != diff.live:
+                raise ValidationError(
+                    f"rollback rejected: conflicting live values reported for "
+                    f"{diff.name!r} ({seen_live[diff.name]!r} and {diff.live!r}); "
+                    f"a var cannot hold two values at once, so this evidence "
+                    f"cannot support a rollback"
+                )
+            seen_live[diff.name] = diff.live
+        #
+        # NOT ADOPTED from that review: rejecting when ``diff.expected !=
+        # rule.value`` as "contradictory evidence". We hold the authoritative
+        # value, so a model that merely miscopied the baseline is harmless —
+        # and turning a cosmetic mismatch into a hard refusal would rebuild the
+        # availability bug this change exists to remove, keyed on a field that
+        # now influences nothing.
+        #
+        # Stated precisely, because the looser phrasing is wrong: this does
+        # NOT claim the rollback leaves that var untouched. A rollback reverts
+        # the target revision's ENTIRE env, and nothing here or in the worker
+        # ever inspects that revision's config (ds-uwc). The claim is only
+        # that an agreeing var is not evidence OF drift, which is all this
+        # gate is deciding.
+        #
+        # This was not academic. The model returns a FULL comparison array
+        # (every var it inspected, matches included), so on prod a genuine
+        # PAYMENT_MODE violation was rejected 3/3 because the untouched,
+        # operator-toggleable FEATURE_NEW_CHECKOUT rode along as a match —
+        # 502, no approval minted, the autonomous self-heal silently dead.
+        # The gate was asking "is every var the model MENTIONED a hard
+        # violation" when it means "is every var this rollback would REVERT
+        # one".
+        #
+        # Values are compared EXACTLY — no strip(), no case-folding, no Unicode
+        # normalization. Env values are opaque bytes to the runtime, so
+        # "mock " and "mock" really are different configurations and must not
+        # be quietly reconciled here.
+        #
+        # No new bypass, stated explicitly: a model that wanted to hide a
+        # drifted operator-safe var from this gate can already OMIT the diff
+        # entirely. Given a proposal whose diff array is model-authored, the
+        # gate's honest guarantee is "of the deviations REPORTED, all are hard
+        # violations" — skipping non-deviations does not weaken it. Closing
+        # the omission hole needs the reader's real live env passed in so
+        # deviations are derived from ground truth instead of the proposal
+        # (ds-b3m), together with the target revision's env (ds-uwc).
+        violations = 0
         for diff in proposal.env_diffs:
             rule = contract.expected_env.get(diff.name)
             if rule is None:
+                # Undeclared var: no contract value exists, so presence is the
+                # only deviation there is to measure.
+                if diff.live is None:
+                    continue
                 derived_status = ContractStatus.ABSENT
-            elif rule.allow_manual_change:
-                derived_status = ContractStatus.PRESENT_ALLOW_MANUAL
             else:
-                derived_status = ContractStatus.PRESENT_DISALLOW_MANUAL
+                if diff.live == rule.value:
+                    # Agreement with the CONTRACT: not evidence of drift.
+                    continue
+                derived_status = (
+                    ContractStatus.PRESENT_ALLOW_MANUAL
+                    if rule.allow_manual_change
+                    else ContractStatus.PRESENT_DISALLOW_MANUAL
+                )
             if derived_status != ContractStatus.PRESENT_DISALLOW_MANUAL:
                 raise ValidationError(
                     f"rollback rejected: diff {diff.name!r} contract-derived "
@@ -110,6 +206,18 @@ def validate(proposal: DecisionProposal, contract: OpsContract) -> None:
                     f"present_disallow_manual; ignoring LLM-proposed "
                     f"contract_status={diff.contract_status.value})"
                 )
+            violations += 1
+        # MANDATORY companion to the skip above, not a nicety. Without it an
+        # all-agreement diff array satisfies the loop vacuously and authorizes
+        # a rollback backed by no violation at all — a gate that abstains when
+        # it cannot see its subject, which is the exact failure this fix is
+        # correcting. A safety gate that finds nothing must refuse.
+        if violations == 0:
+            raise ValidationError(
+                "rollback rejected: no env_diff deviates from the contract "
+                "(every declared var was already at its contract value), so "
+                "there is no hard contract violation to revert"
+            )
 
     # 6. Docs PR semantics
     if proposal.action == DecisionAction.DOCS_PR:
