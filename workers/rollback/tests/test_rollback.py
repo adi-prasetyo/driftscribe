@@ -335,6 +335,90 @@ def test_propose_happy_path(client, store) -> None:
     assert raw_token_str not in str(doc)
 
 
+def test_propose_records_the_change_snapshot_on_the_approval(
+    client, store, monkeypatch
+) -> None:
+    """ds-uwc: /propose persists what the rollback would change, so the
+    approval page can answer it from the immutable doc rather than re-observing
+    the service at view time."""
+    import workers.rollback.main as rm
+
+    monkeypatch.setattr(
+        rm,
+        "_env_change_snapshot",
+        lambda **kw: {"changed_names": ["PAYMENT_MODE"], "kw": sorted(kw)},
+    )
+    r = client.post(
+        "/propose",
+        json={
+            "target_revision": "payment-demo-00002-bbb",
+            "reason": "restore compliance",
+            "contract_env": {"PAYMENT_MODE": "mock"},
+            "contract_hash": "abc123",
+        },
+    )
+    assert r.status_code == 200, r.text
+    doc = store.docs[r.json()["approval_id"]]
+    assert doc["env_snapshot"]["changed_names"] == ["PAYMENT_MODE"]
+    # The comparison is made against the ACTIVE revision, not the caller's
+    # idea of it — the worker knows which revision is serving, the caller does
+    # not, and a caller-supplied source could misdescribe the change.
+    assert doc["env_snapshot"]["kw"] == [
+        "contract_env",
+        "contract_hash",
+        "source_revision",
+        "target_revision",
+    ]
+
+
+def test_propose_still_works_for_a_coordinator_that_sends_no_contract(
+    client, store
+) -> None:
+    """The deploy-order requirement, as a test. The worker ships BEFORE the
+    coordinator, so for that window it is called by an old coordinator that
+    sends neither contract field. Both are optional and a proposal must still
+    succeed — if it did not, the worker-first order would be impossible to
+    perform without an outage."""
+    r = client.post(
+        "/propose",
+        json={
+            "target_revision": "payment-demo-00002-bbb",
+            "reason": "rollback to last known good",
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["approval_id"] in store.docs
+
+
+def test_propose_rejects_an_unknown_field(client) -> None:
+    """``extra="forbid"`` is what makes the deploy order mandatory in the OTHER
+    direction — a NEW coordinator against an OLD worker 422s every proposal.
+    Pinned so nobody relaxes it without meeting that fact."""
+    r = client.post(
+        "/propose",
+        json={
+            "target_revision": "payment-demo-00002-bbb",
+            "reason": "r",
+            "some_future_field": "x",
+        },
+    )
+    assert r.status_code == 422
+
+
+def test_a_snapshot_failure_does_not_fail_the_proposal(client, store, monkeypatch) -> None:
+    """A preview must not be able to break the proposal it describes. The
+    approval is still minted; the page renders the unknown note."""
+    import workers.rollback.main as rm
+
+    monkeypatch.setattr(rm, "_env_change_snapshot", lambda **kw: None)
+    r = client.post(
+        "/propose",
+        json={"target_revision": "payment-demo-00002-bbb", "reason": "r"},
+    )
+    assert r.status_code == 200, r.text
+    assert store.docs[r.json()["approval_id"]]["env_snapshot"] is None
+
+
 def test_propose_rejects_active_revision(client, store, traffic_calls) -> None:
     """Layer 2: rolling back to the currently-serving revision is a no-op
     masquerading as work — refuse it before creating the approval doc."""

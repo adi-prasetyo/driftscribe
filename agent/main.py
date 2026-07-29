@@ -4717,6 +4717,16 @@ def _rollback_change_view(approval: object) -> dict[str, object]:
     snapshot_vars = snapshot.get("contract_vars")
     if not isinstance(snapshot_vars, dict):
         return {"state": "unknown", "reason": "absent"}
+    # "Recorded no contract information" is NOT "recorded against a contract
+    # that has since moved", and the difference is a live mid-rollout state
+    # rather than a hypothetical: the worker must deploy first (ProposeRequest
+    # is extra="forbid"), so every approval minted in the window before the
+    # coordinator ships carries contract_vars={} and an empty hash. Calling
+    # those "the contract changed" sends the operator hunting for an edit that
+    # never happened. Checked BEFORE the key-set comparison, which would
+    # otherwise claim the same wrong reason first.
+    if not snapshot.get("contract_hash"):
+        return {"state": "unknown", "reason": "absent"}
     if set(snapshot_vars) != set(contract.expected_env):
         return {"state": "unknown", "reason": "contract_changed"}
     if snapshot.get("contract_hash") != contract_hash(contract):
@@ -5686,7 +5696,6 @@ def iac_approval_post(
     cf_access_jwt: str | None = Header(default=None, alias="Cf-Access-Jwt-Assertion"),
     form_token: str = Form(...),
     decision: Literal["approve", "reject"] = Form(...),
-    ack_target_violates_contract: str = Form(""),
 ) -> Response:
     """Propose-on-approve POST: run the §2 orchestration state machine.
 

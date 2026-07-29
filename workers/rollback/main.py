@@ -304,8 +304,12 @@ def _env_change_snapshot(
     """
     if not source_revision or not target_revision:
         return None
-    rclient = _get_revisions_client()
     try:
+        # Client construction is INSIDE the guard on purpose: building the
+        # transport can fail on its own (credentials, quota, a cold metadata
+        # server), and a preview that takes down the proposal it describes is
+        # worse than no preview at all.
+        rclient = _get_revisions_client()
         base = f"{_service_name()}/revisions"
         source = _revision_env_states(
             rclient.get_revision(name=f"{base}/{source_revision}").containers

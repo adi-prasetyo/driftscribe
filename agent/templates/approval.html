@@ -93,8 +93,16 @@
                 {% if row.reverts_operator_change %}
                   <span class="ds-pill ds-pill--warn" data-testid="change-operator-set">{% if lang == 'ja' %}オペレーター変更可の変数を戻します{% else %}reverts an operator-managed var{% endif %}</span>
                 {% endif %}
+                {# "will change" without a destination is half an answer. The
+                   contract's own literal is the one value that is genuinely
+                   public (it lives in the repo), so it is safe to name in BOTH
+                   directions — as the value the target lands on, or as the one
+                   it fails to hold. No observed value is available here by
+                   construction; see the snapshot's docstring. #}
                 {% if not row.target_matches_contract %}
                   <span class="ds-pill ds-pill--{{ 'warn' if not row.allow_manual_change else 'muted' }}" data-testid="change-target-mismatch">{% if lang == 'ja' %}対象リビジョンは契約値（{{ row.contract_value }}）と一致しません{% else %}target does not hold the contract value ({{ row.contract_value }}){% endif %}</span>
+                {% else %}
+                  <span class="ds-pill ds-pill--muted" data-testid="change-target-match">{% if lang == 'ja' %}ロールバック後は契約値（{{ row.contract_value }}）になります{% else %}lands on the contract value ({{ row.contract_value }}){% endif %}</span>
                 {% endif %}
               </li>
             {% endfor %}
