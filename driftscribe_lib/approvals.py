@@ -188,6 +188,25 @@ class Approval:
     # ``None`` on pending docs and on any doc written before ds-2mc; consumers
     # MUST treat an absent phase as "outcome unknown", never as success.
     apply_audit: dict[str, Any] | None = None
+    # ds-uwc: what this rollback would change, as observed at PROPOSE time.
+    # ``{source_revision, target_revision, observed_at, contract_hash,
+    #    changed_names: [str], contract_vars: {name: {changed, target_matches_contract}}}``.
+    #
+    # DISPLAY-ONLY, and deliberately so. It carries NO env value — only names,
+    # booleans and the revisions compared — because the approval page is
+    # reachable by anyone holding the link. It is also not authoritative for
+    # execution: ``/execute`` does not read it, and the acknowledgment the page
+    # asks for on a contract-violating target is a speed bump on the operator's
+    # click, not an authorization control (that remains the single-use HMAC
+    # token). This is what keeps it inside the additive-field rule in
+    # ``_drop_unknown_fields`` — an old reader that drops it renders exactly the
+    # page it rendered before, which is a lesser page, not an unsafe one.
+    #
+    # ``None`` on every doc written before ds-uwc, on any propose where either
+    # revision could not be read, and whenever the caller supplied no contract.
+    # Consumers MUST render absent as "we could not read this", NEVER as
+    # "nothing will change".
+    env_snapshot: dict[str, Any] | None = None
 
 
 #: Field names :class:`Approval` accepts from a raw doc. Derived from the
@@ -259,6 +278,7 @@ class ApprovalStore:
         hmac_key: str,
         created_by: str,
         ttl_minutes: int = 15,
+        env_snapshot: dict[str, Any] | None = None,
     ) -> tuple[Approval, str]:
         """Create a pending approval; return ``(approval, raw_token)``.
 
@@ -287,6 +307,11 @@ class ApprovalStore:
             "expires_at": expires_at,
             "created_at": now,
             "created_by": created_by,
+            # ds-uwc. Written unconditionally, including as None, so a reader
+            # can tell "this build records the preview and had nothing to say"
+            # apart from nothing at all — both render the same unknown note, but
+            # only one of them is a bug worth chasing.
+            "env_snapshot": env_snapshot,
         }
         self._ref(approval_id).set(data)
         return Approval(approval_id=approval_id, **data), raw_token

@@ -53,7 +53,7 @@ from agent.autonomy import FAIL_CLOSED_REASON as AUTONOMY_FAIL_CLOSED_REASON
 from agent.classifier import ClassificationInput, classify
 from agent.config import Settings, artifacts_bucket, get_settings
 from agent.worker_client import WorkerClientError
-from agent.contract import OpsContract, load_contract
+from agent.contract import OpsContract, contract_hash, contract_preview_payload, load_contract
 from agent.github_actions import (
     get_repo,
     open_docs_pr,
@@ -1077,8 +1077,9 @@ def _hash_contract(contract: OpsContract) -> str:
     Used as a component of the event key so editing the contract invalidates
     cached decisions even when the file path is unchanged.
     """
-    blob = contract.model_dump_json()
-    return hashlib.sha256(blob.encode()).hexdigest()[:16]
+    # Delegates so the rollback preview's contract_hash and this key can never
+    # be "the same algorithm written twice" (ds-uwc).
+    return contract_hash(contract)
 
 
 def _observed_env_or_none(reader_payload: object) -> dict[str, str] | None:
@@ -1487,6 +1488,10 @@ def _do_rollback(
                 # body (render_rollback_body below) is already scrubbed; this
                 # closes the `reason` boundary too. (PR 2)
                 "reason": scrub_rationale_text(proposal.rationale, proposal.env_diffs),
+                # ds-uwc: lets the worker record what this rollback would
+                # change. Additive and optional on the worker; see
+                # contract_preview_payload.
+                **contract_preview_payload(s.contract_path),
             },
             # The rollback worker is --concurrency=1, so this can queue behind a
             # blocking /execute (up to its 60s LRO cap). The default 30s budget
@@ -4671,6 +4676,145 @@ def transparency_ui_legacy(request: Request) -> Response:
     return resp
 
 
+def _rollback_change_view(approval: object) -> dict[str, object]:
+    """Turn an approval's ``env_snapshot`` into what the approval page renders
+    for "what this rollback will change" (ds-uwc).
+
+    Always returns a dict with a ``state`` of ``"ok"`` or ``"unknown"``, and
+    NEVER raises — the approval GET is contractually always-200 (a probing GET
+    must not be able to enumerate doc presence by status code).
+
+    ``"unknown"`` is the important one, and it is deliberately not the same as
+    "no changes". A missing snapshot means the approval predates ds-uwc, or the
+    worker could not read one of the two revisions, or the coordinator's
+    contract has moved since — in every case the honest render is *we could not
+    work out what this would change*, because an empty table reads as a promise
+    that nothing will change and that is the one wrong answer here.
+
+    Coverage is checked, not assumed. If the contract now declares a var the
+    snapshot never inspected — a contract edited inside the approval's 15-minute
+    TTL, or a coordinator/worker version skew — the snapshot cannot answer "does
+    the target satisfy the contract" for that var, so the whole view degrades to
+    unknown rather than reporting a clean bill from a partial scan.
+
+    No env VALUE reaches this function. The worker stores names, booleans and
+    the two revision names; the values shown on the page are the CONTRACT's
+    literals, which are public. That is a property of the snapshot's shape, not
+    a redaction step that could be forgotten here.
+    """
+    snapshot = getattr(approval, "env_snapshot", None)
+    if not isinstance(snapshot, dict):
+        return {"state": "unknown", "reason": "absent"}
+    try:
+        contract = load_contract(Path(get_settings().contract_path))
+    except Exception as e:  # noqa: BLE001
+        log.warning("approval_view_contract_unavailable", extra={"error": type(e).__name__})
+        # Distinct reason: "we could not load the contract" is not "we could not
+        # read the target revision", and telling the operator the wrong one
+        # sends them to the wrong place.
+        return {"state": "unknown", "reason": "contract_unavailable"}
+
+    snapshot_vars = snapshot.get("contract_vars")
+    if not isinstance(snapshot_vars, dict):
+        return {"state": "unknown", "reason": "absent"}
+    # "Recorded no contract information" is NOT "recorded against a contract
+    # that has since moved", and the difference is a live mid-rollout state
+    # rather than a hypothetical: the worker must deploy first (ProposeRequest
+    # is extra="forbid"), so every approval minted in the window before the
+    # coordinator ships carries contract_vars={} and an empty hash. Calling
+    # those "the contract changed" sends the operator hunting for an edit that
+    # never happened. Checked BEFORE the key-set comparison, which would
+    # otherwise claim the same wrong reason first.
+    if not snapshot.get("contract_hash"):
+        return {"state": "unknown", "reason": "absent"}
+    if set(snapshot_vars) != set(contract.expected_env):
+        return {"state": "unknown", "reason": "contract_changed"}
+    if snapshot.get("contract_hash") != contract_hash(contract):
+        return {"state": "unknown", "reason": "contract_changed"}
+
+    # The snapshot must describe the revision THIS approval will roll onto.
+    # Matching key sets prove the snapshot answered the right QUESTIONS; they
+    # say nothing about whether it answered them about the right SUBJECT, and
+    # the acknowledgment below is derived entirely from these booleans. A
+    # snapshot recorded against some other revision would have the gate judging
+    # a target nobody is about to deploy. (Today the worker writes both fields
+    # in one call so they always agree — which is exactly why this is cheap,
+    # and exactly the kind of assumption that stops holding quietly.)
+    if snapshot.get("target_revision") != getattr(approval, "target_revision", None):
+        log.warning(
+            "approval_view_target_mismatch",
+            extra={"snapshot_target": str(snapshot.get("target_revision"))[:64]},
+        )
+        return {"state": "unknown", "reason": "absent"}
+
+    # Matching NAMES is not a complete answer per var. An entry missing one of
+    # the two booleans would silently read as False below — "unchanged" and, for
+    # an allow_manual var, "fine" — so a partial scan would report a clean bill
+    # from evidence it never had. Demand both results, as real booleans.
+    for entry in snapshot_vars.values():
+        if not isinstance(entry, dict):
+            # Also the totality guard: a truthy non-mapping (``["junk"]``)
+            # would raise on ``.get`` below, and this handler is contractually
+            # always-200.
+            return {"state": "unknown", "reason": "absent"}
+        if not all(
+            isinstance(entry.get(k), bool)
+            for k in ("changed", "target_matches_contract")
+        ):
+            return {"state": "unknown", "reason": "absent"}
+
+    # ``changed_names`` is the whole-env half of the same observation, and the
+    # two halves have to agree. The worker derives both from one pair of
+    # source/target maps so they always do — but this function exists to defend
+    # against a malformed or skewed doc, and "the writer is careful" is not a
+    # check. Silently tolerating a contradiction is the worst outcome available:
+    # a snapshot claiming PAYMENT_MODE changed while its own per-var result says
+    # it did not renders as a clean bill with the variable listed nowhere.
+    changed_names = snapshot.get("changed_names")
+    if not isinstance(changed_names, list) or not all(
+        isinstance(n, str) for n in changed_names
+    ):
+        return {"state": "unknown", "reason": "absent"}
+    changed_set = set(changed_names)
+    for name, entry in snapshot_vars.items():
+        if entry["changed"] != (name in changed_set):
+            log.warning("approval_view_snapshot_inconsistent", extra={"var": name[:64]})
+            return {"state": "unknown", "reason": "absent"}
+
+    rows = []
+    violates = False
+    for name, rule in sorted(contract.expected_env.items()):
+        entry = snapshot_vars[name]
+        # ``is True`` — kept even though the loop above has established both are
+        # real booleans, so neither guard silently depends on the other.
+        changed = entry.get("changed") is True
+        matches = entry.get("target_matches_contract") is True
+        if not matches and not rule.allow_manual_change:
+            violates = True
+        rows.append(
+            {
+                "name": name,
+                "changed": changed,
+                "target_matches_contract": matches,
+                "contract_value": rule.value,
+                "allow_manual_change": rule.allow_manual_change,
+                # The blast-radius answer ds-b3m could not give: an
+                # operator-toggleable var this rollback would move.
+                "reverts_operator_change": changed and rule.allow_manual_change,
+            }
+        )
+
+    other_changed = sorted(n for n in changed_set if n not in contract.expected_env)
+    return {
+        "state": "ok",
+        "rows": rows,
+        "other_changed": other_changed,
+        "violates": violates,
+        "source_revision": snapshot.get("source_revision") or "",
+        "observed_at": snapshot.get("observed_at") or "",
+    }
+
+
 @app.get("/approvals/{approval_id}", response_class=HTMLResponse)
 def approval_get(request: Request, approval_id: str, t: str = "") -> Response:
     """Render the HITL approval decision page.
@@ -4700,8 +4844,18 @@ def approval_get(request: Request, approval_id: str, t: str = "") -> Response:
     the response code to enumerate doc presence.
     """
     store = approval_helpers.get_approval_store()
-    approval = store.get(approval_id)
+    try:
+        approval = store.get(approval_id)
+    except Exception as e:  # noqa: BLE001
+        # The docstring above promises this handler is always-200 and
+        # probe-safe, but this read was unguarded until ds-uwc: a Firestore
+        # blip produced a 500 and, with it, exactly the presence oracle the
+        # always-200 rule exists to deny. Degrade to the not-found render,
+        # which is what a probe already sees for an id that does not exist.
+        log.warning("approval_page_read_failed", extra={"error": type(e).__name__})
+        approval = None
     expired = bool(approval) and approval_helpers.is_expired(approval)
+    change_view = _rollback_change_view(approval) if approval else None
     # No usable token → the page cannot act: BOTH Approve and Reject hand
     # (approval_id, t) to the rollback worker for HMAC verification, so
     # rendering the form would only manufacture a doomed POST (observed live
@@ -4740,6 +4894,7 @@ def approval_get(request: Request, approval_id: str, t: str = "") -> Response:
             "expired": expired,
             "paused": paused,
             "autonomy_blocked": autonomy_blocked,
+            "change_view": change_view,
             "autonomy_detail": approval_i18n.localize_reason(
                 _autonomy_note_for_display(autonomy), lang
             ),
@@ -6571,6 +6726,7 @@ def approval_post(
     approval_id: str,
     t: str = Form(...),
     decision: Literal["approve", "reject"] = Form(...),
+    ack_target_violates_contract: str = Form(""),
 ) -> Response:
     """Process the operator's Approve / Reject decision.
 
@@ -6654,6 +6810,46 @@ def approval_post(
                 status_code=409,
                 detail=autonomy_apply_blocked_detail(autonomy.mode),
             )
+        # ds-uwc: a target revision that PROVABLY violates the contract needs a
+        # deliberate second click, not just a badge next to an unchanged button.
+        # Rolling onto it removes one drift and introduces another.
+        #
+        # What this is, precisely, so nobody mistakes it for more: a SPEED BUMP,
+        # not an authorization control. Authorization is still — only — the
+        # single-use HMAC token the worker verifies. This page authenticates
+        # possession of a link, not an operator's identity, and it is
+        # anonymously reachable during a demo window. An older coordinator
+        # during a rollout renders no checkbox and executes as it always did;
+        # that is why the snapshot stays a display field under the additive-only
+        # rule in driftscribe_lib/approvals.py.
+        #
+        # Derived from the approval DOC — immutable, worker-written — and never
+        # from a hidden form field, which the same click could have set.
+        #
+        # An UNKNOWN snapshot does not demand the acknowledgment. Every approval
+        # minted before ds-uwc is unknown, as is every one from a worker that
+        # has not deployed yet; requiring it there would put a new obstacle in
+        # front of the operator without a single new fact to justify it. Only a
+        # snapshot that positively PROVES a violation asks for the tick.
+        try:
+            _approval_for_ack = store.get(approval_id)
+        except Exception as e:  # noqa: BLE001 — a read blip must not block a rollback
+            log.warning("approval_ack_read_failed", extra={"error": type(e).__name__})
+            _approval_for_ack = None
+        if _approval_for_ack is not None:
+            _view = _rollback_change_view(_approval_for_ack)
+            if _view.get("state") == "ok" and _view.get("violates"):
+                if ack_target_violates_contract.strip() != "1":
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            "the target revision does not satisfy the ops "
+                            "contract for a var marked allow_manual_change="
+                            "false; approving it needs the acknowledgment on "
+                            "the approval page"
+                        ),
+                    )
+
         # The phase BEFORE we hand the token to the worker, so the error handler
         # below can tell "this request claimed and then failed" from "an old
         # approval plus a current outage". Read fail-soft: None here only ever
@@ -6735,6 +6931,11 @@ def approval_post(
             "decision_result": execute_result,
             "paused": pause.paused,
             "autonomy_blocked": autonomy_blocked,
+            # ds-uwc: the post-decision re-render keeps the "what this changed"
+            # card, so the record of what was approved stays on the page the
+            # operator is looking at. Computed from the same immutable snapshot,
+            # so it does not re-observe the service and cannot rewrite history.
+            "change_view": _rollback_change_view(approval) if approval else None,
             "autonomy_detail": approval_i18n.localize_reason(
                 _autonomy_note_for_display(autonomy),
                 approval_i18n.resolve_lang(request),

@@ -223,6 +223,131 @@ def _list_revisions() -> tuple[list[str], str]:
     return revisions, active
 
 
+# --------------------------------------------------------------------------- #
+# ds-uwc — what will this rollback actually change?
+#
+# A rollback reverts the target revision's ENTIRE env, and until now nothing
+# anywhere read that revision's config. The worker validated only that the
+# target exists and is not active; the coordinator's validator reasons about the
+# CURRENT env. So the operator approved a revision NAME and nothing else, while
+# the change could revert a var they had deliberately set, or move the service
+# onto a revision that violates the contract in its own way — drift removed,
+# drift introduced, and DriftScribe would then detect its own rollback.
+#
+# The snapshot below is computed here, at propose time, rather than on the
+# approval-page GET. Propose time binds the comparison to the state the proposal
+# was actually made against, works for an already-resolved approval (a GET-time
+# recompute would silently rewrite history against today's revision), adds no
+# per-view amplification to an anonymously reachable page, and needs no extra
+# API call: ``list_revisions`` already returns full Revision protos.
+#
+# NO OBSERVED ENV VALUE IS STORED. Not a redaction pass — a design constraint.
+# The approval page is reachable by anyone holding the link, and a name-based
+# heuristic (`is_secret_name`) cannot see a credential sitting under an
+# innocuous name. "This var is declared in the contract" also does NOT make its
+# CURRENT value public: the contract publishing ``PAYMENT_MODE=mock`` says
+# nothing about a bad deploy having set ``PAYMENT_MODE=sk_live_...``. So the
+# snapshot carries names, booleans and tags only, and the page renders contract
+# values (which really are public — they are in the repo) as the reference.
+# --------------------------------------------------------------------------- #
+
+#: Per-var state on one revision. ``("plain", value)`` for a literal env value,
+#: ``("secret", "<secret>/<version>")`` for a Secret-Manager-backed one, and
+#: absent from the mapping when the var is not set at all.
+#:
+#: The distinction is load-bearing. ``driftscribe_lib.cloud_run``'s extractor
+#: SKIPS ``value_source`` entries, which is right for "what is the live value"
+#: but wrong here: two revisions pointing the same var at DIFFERENT secrets
+#: would both read as absent and compare equal, reporting "no change" for a
+#: change. Comparing the reference (never displaying it) keeps that honest.
+def _revision_env_states(containers) -> dict[str, tuple[str, str]]:
+    """Tagged env state for one revision's containers.
+
+    Last-one-wins across containers, mirroring
+    ``_extract_env_from_containers``. The target service is single-container;
+    a multi-container service would need a per-container key here, and the
+    flattening would otherwise let one container's plain value mask another's
+    secret reference.
+    """
+    states: dict[str, tuple[str, str]] = {}
+    for container in containers:
+        for ev in container.env:
+            source = getattr(ev, "value_source", None)
+            if source:
+                ref = getattr(source, "secret_key_ref", None)
+                secret = getattr(ref, "secret", "") if ref is not None else ""
+                version = getattr(ref, "version", "") if ref is not None else ""
+                states[ev.name] = ("secret", f"{secret}/{version}")
+            else:
+                states[ev.name] = ("plain", ev.value or "")
+    return states
+
+
+def _env_change_snapshot(
+    *,
+    source_revision: str,
+    target_revision: str,
+    contract_env: dict[str, str] | None,
+    contract_hash: str | None,
+) -> dict[str, Any] | None:
+    """Compare the ACTIVE revision's env to the target's. Value-free.
+
+    Returns ``None`` — never a partial or empty dict — when either revision
+    cannot be read. The caller stores ``None`` and the approval page renders
+    "we could not read this", because an empty change set is indistinguishable
+    from "nothing will change" and that is the one wrong answer this feature
+    must never give.
+
+    ``contract_env`` maps a declared var name to its expected value. It arrives
+    from the coordinator, which owns the contract; the worker has none. It is
+    used ONLY to compute booleans — the worker never echoes a value back.
+    """
+    if not source_revision or not target_revision:
+        return None
+    try:
+        # Client construction is INSIDE the guard on purpose: building the
+        # transport can fail on its own (credentials, quota, a cold metadata
+        # server), and a preview that takes down the proposal it describes is
+        # worse than no preview at all.
+        rclient = _get_revisions_client()
+        base = f"{_service_name()}/revisions"
+        source = _revision_env_states(
+            rclient.get_revision(name=f"{base}/{source_revision}").containers
+        )
+        target = _revision_env_states(
+            rclient.get_revision(name=f"{base}/{target_revision}").containers
+        )
+    except Exception as e:  # noqa: BLE001 — never break a propose over a preview
+        log.warning("env snapshot unavailable: %s", type(e).__name__)
+        return None
+
+    changed = sorted(
+        name
+        for name in set(source) | set(target)
+        if source.get(name) != target.get(name)
+    )
+
+    contract_vars: dict[str, dict[str, bool]] = {}
+    for name, expected in (contract_env or {}).items():
+        contract_vars[name] = {
+            "changed": source.get(name) != target.get(name),
+            # A secret-backed or absent target can never equal the contract's
+            # literal, so this is False for both — correctly: neither is
+            # observably the declared value.
+            "target_matches_contract": target.get(name) == ("plain", expected),
+        }
+
+    return {
+        "source_revision": source_revision,
+        "target_revision": target_revision,
+        "observed_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "contract_hash": contract_hash or "",
+        # Every var whose state differs between the two revisions, by NAME.
+        "changed_names": changed,
+        "contract_vars": contract_vars,
+    }
+
+
 def _assert_no_tagged_targets() -> None:
     """Raise :class:`HTTPException` (409) if any existing traffic target on
     the service has a tag set.
@@ -413,6 +538,19 @@ class ProposeRequest(BaseModel):
 
     target_revision: str = Field(min_length=1, max_length=64, pattern=_REVISION_NAME.pattern)
     reason: str = Field(min_length=1, max_length=500)
+    # ds-uwc. The coordinator owns the ops contract; this worker has none. These
+    # let it compute the "does the TARGET revision satisfy the contract" booleans
+    # the approval page needs, without ever being handed — or returning — an
+    # observed env value. The values here are the contract's own literals, which
+    # are public (they live in demo/ops-contract.yaml in a public repo).
+    #
+    # BOTH ARE OPTIONAL, and that is a deploy-order requirement rather than
+    # politeness: ``extra="forbid"`` means a NEW coordinator sending these to an
+    # OLD worker gets a 422 and every rollback proposal fails. So the worker
+    # MUST deploy first, and an old coordinator that sends neither must keep
+    # working — it does, and the approval page renders the unknown-state note.
+    contract_env: dict[str, str] | None = Field(default=None, max_length=64)
+    contract_hash: str | None = Field(default=None, max_length=64)
 
     model_config = ConfigDict(extra="forbid")
 
@@ -494,12 +632,24 @@ def propose(
             ),
         )
 
+    # ds-uwc: what this rollback would change, observed now, against the
+    # revision that is serving now. Never raises — a preview must not be able to
+    # break the proposal it describes — and returns None rather than a partial
+    # answer, which the page renders as "could not read" instead of "no changes".
+    env_snapshot = _env_change_snapshot(
+        source_revision=active,
+        target_revision=req.target_revision,
+        contract_env=req.contract_env,
+        contract_hash=req.contract_hash,
+    )
+
     store = _get_approval_store()
     approval, raw_token = store.create(
         target_revision=req.target_revision,
         reason=req.reason,
         hmac_key=APPROVAL_HMAC_KEY,
         created_by=caller,
+        env_snapshot=env_snapshot,
     )
     log.info(
         "propose: id=%s rev=%s active=%s caller=%s",

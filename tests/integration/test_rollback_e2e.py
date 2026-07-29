@@ -232,9 +232,24 @@ def test_rollback_recheck_routes_through_worker_and_renders_approval_url(
     # The rollback worker was called exactly once with the canonical payload.
     rollback_calls = [c for c in m_call.call_args_list if c.args[0] == "rollback"]
     assert len(rollback_calls) == 1
-    assert rollback_calls[0].args[1] == {
-        "target_revision": _TARGET_REVISION,
-        "reason": _rollback_proposal().rationale,
+    # Whole-dict, deliberately: this pins the FULL propose payload, so a field
+    # added to it has to be re-justified here rather than riding along.
+    # ds-uwc adds the contract preview — the contract's own public literals, so
+    # the worker can compute "does the target revision satisfy the contract"
+    # without ever being handed an observed env value.
+    payload = rollback_calls[0].args[1]
+    assert payload["target_revision"] == _TARGET_REVISION
+    assert payload["reason"] == _rollback_proposal().rationale
+    assert payload["contract_env"] == {
+        "PAYMENT_MODE": "mock",
+        "FEATURE_NEW_CHECKOUT": "false",
+    }
+    assert isinstance(payload["contract_hash"], str) and payload["contract_hash"]
+    assert set(payload) == {
+        "target_revision",
+        "reason",
+        "contract_env",
+        "contract_hash",
     }
 
     # The notifier was called exactly once with channel=approval +

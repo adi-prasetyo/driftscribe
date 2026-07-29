@@ -38,7 +38,7 @@ from typing import Any, Callable, NamedTuple
 
 from agent import worker_client
 from agent.config import get_settings
-from agent.contract import load_contract
+from agent.contract import contract_preview_payload, load_contract
 from agent.github_actions import get_repo
 from agent.iac_artifacts import load_plan_view_from_gcs
 from agent.iac_pr_trace_store import record_authoring_trace
@@ -468,7 +468,14 @@ def propose_rollback_tool(target_revision: str, reason: str) -> dict:
     try:
         resp = worker_client.call(
             "rollback",
-            {"target_revision": target_revision, "reason": safe_reason},
+            {
+                "target_revision": target_revision,
+                "reason": safe_reason,
+                # ds-uwc: the chat lane mints approvals too, and it is the lane
+                # with NO validator at all — so the approval page's "what will
+                # change" section matters more here, not less.
+                **contract_preview_payload(get_settings().contract_path),
+            },
         )
     except worker_client.WorkerClientError as e:
         _log.warning(
