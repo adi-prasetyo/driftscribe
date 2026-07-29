@@ -839,3 +839,144 @@ describe('DecisionsRail — cap + search', () => {
     expect(queryByTestId('decisions-search-input')).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// ds-d4z — the rail's rollback CTA must agree with the desk and the ledger.
+//
+// It used to resolve the Approve link from `approval_url` + `expires_at` alone
+// and never read `approval.status`, so a SPENT (`used`) approval kept offering a
+// live-looking Approve for the rest of its 15-minute TTL. Now it routes through
+// `isRollbackAwaitingOperator` — the same predicate desk.ts and ledger.ts share.
+// ---------------------------------------------------------------------------
+describe('DecisionsRail — rollback Approve CTA (ds-d4z)', () => {
+  // Far enough out that `isExpired` is false for every row that doesn't opt in.
+  const FUTURE = new Date(Date.now() + 10 * 60_000).toISOString();
+  const PAST = new Date(Date.now() - 10 * 60_000).toISOString();
+
+  function rollbackRow(approval: Record<string, unknown> | null): Decision {
+    return {
+      decision_id: `rb-${Math.random().toString(36).slice(2)}`,
+      action: 'rollback',
+      approval,
+    } as unknown as Decision;
+  }
+
+  function renderRow(approval: Record<string, unknown> | null) {
+    return render(DecisionsRail, {
+      props: { decisions: [rollbackRow(approval)], activeTraceId: null, onOpenTrace: noop },
+    });
+  }
+
+  const liveUrl = `${location.origin}/approvals/abc?t=tok`;
+
+  it('a USED approval renders no Approve link and no expired badge — the bug', () => {
+    const { queryByTestId } = renderRow({
+      approval_url: liveUrl,
+      expires_at: FUTURE,
+      status: 'used',
+    });
+    // Not merely "not live": it must not fall through to the expired branch
+    // either. A spent credential is not a timed-out one.
+    expect(queryByTestId('rollback-approve-link')).toBeNull();
+    expect(queryByTestId('rollback-approve-expired')).toBeNull();
+  });
+
+  it('a DENIED approval renders no Approve link', () => {
+    const { queryByTestId } = renderRow({
+      approval_url: liveUrl,
+      expires_at: FUTURE,
+      status: 'denied',
+    });
+    expect(queryByTestId('rollback-approve-link')).toBeNull();
+  });
+
+  it('status_unavailable suppresses the CTA — when the server says it does not know, do not guess (ds-mml)', () => {
+    const { queryByTestId } = renderRow({
+      approval_url: liveUrl,
+      expires_at: FUTURE,
+      status_unavailable: true,
+    });
+    expect(queryByTestId('rollback-approve-link')).toBeNull();
+    expect(queryByTestId('rollback-approve-expired')).toBeNull();
+  });
+
+  it('a PENDING, unexpired approval still renders the live link at the same-origin relative href', () => {
+    const { getByTestId } = renderRow({
+      approval_url: liveUrl,
+      expires_at: FUTURE,
+      status: 'pending',
+    });
+    const link = getByTestId('rollback-approve-link');
+    expect(link.getAttribute('href')).toBe('/approvals/abc?t=tok');
+  });
+
+  it('an approval with NO status field (pre-enrichment row) still renders the live link', () => {
+    const { getByTestId } = renderRow({ approval_url: liveUrl, expires_at: FUTURE });
+    expect(getByTestId('rollback-approve-link')).toBeTruthy();
+  });
+
+  it('a pending but EXPIRED approval keeps the disabled button and the expired badge', () => {
+    const { getByTestId, queryByTestId } = renderRow({
+      approval_url: liveUrl,
+      expires_at: PAST,
+      status: 'pending',
+    });
+    expect(getByTestId('rollback-approve-expired')).toBeTruthy();
+    expect(queryByTestId('rollback-approve-link')).toBeNull();
+  });
+
+  // The three cases above, but with the TTL ALSO passed. This is where the first
+  // draft of the fix failed: it checked `isRollbackAwaitingOperator` then fell
+  // through to a bare `isExpired`, so a spent credential picked up an "expired"
+  // badge — a wrong report about a rollback the operator really did approve.
+  it('a USED approval that is ALSO past its TTL renders neither link nor expired badge', () => {
+    const { queryByTestId } = renderRow({
+      approval_url: liveUrl,
+      expires_at: PAST,
+      status: 'used',
+    });
+    expect(queryByTestId('rollback-approve-link')).toBeNull();
+    expect(queryByTestId('rollback-approve-expired')).toBeNull();
+  });
+
+  it('a DENIED approval that is ALSO past its TTL renders neither link nor expired badge', () => {
+    const { queryByTestId } = renderRow({
+      approval_url: liveUrl,
+      expires_at: PAST,
+      status: 'denied',
+    });
+    expect(queryByTestId('rollback-approve-link')).toBeNull();
+    expect(queryByTestId('rollback-approve-expired')).toBeNull();
+  });
+
+  it('status_unavailable + past TTL renders neither link nor expired badge', () => {
+    const { queryByTestId } = renderRow({
+      approval_url: liveUrl,
+      expires_at: PAST,
+      status_unavailable: true,
+    });
+    expect(queryByTestId('rollback-approve-link')).toBeNull();
+    expect(queryByTestId('rollback-approve-expired')).toBeNull();
+  });
+
+  it('an EXPIRED approval with no status field still shows the expired badge (pre-enrichment row)', () => {
+    const { getByTestId } = renderRow({ approval_url: liveUrl, expires_at: PAST });
+    expect(getByTestId('rollback-approve-expired')).toBeTruthy();
+  });
+
+  it('an off-origin approval_url renders nothing at all (unchanged origin guard)', () => {
+    const { queryByTestId } = renderRow({
+      approval_url: 'https://evil.example/approvals/abc?t=tok',
+      expires_at: FUTURE,
+      status: 'pending',
+    });
+    expect(queryByTestId('rollback-approve-link')).toBeNull();
+    expect(queryByTestId('rollback-approve-expired')).toBeNull();
+  });
+
+  it('a row with no approval at all renders nothing', () => {
+    const { queryByTestId } = renderRow(null);
+    expect(queryByTestId('rollback-approve-link')).toBeNull();
+    expect(queryByTestId('rollback-approve-expired')).toBeNull();
+  });
+});
