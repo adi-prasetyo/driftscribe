@@ -88,6 +88,11 @@ enabled_tool_names:
   - retrieve_developer_doc
   # Cross-crew "team memory" — read what other crews discussed (read-only).
   - read_conversations
+  # Hand the conversation to another crew, pending operator confirmation.
+  # Coordinator-local control-plane write: no worker, no PR, no notification,
+  # no write-capable credential — and it cannot complete the transition it
+  # proposes (redemption is a separate authenticated request).
+  - request_crew_handoff
 
 # Symbolic worker names. Drift workers are excluded — upgrade has its
 # own reader/docs workers (different IAM, different repo path

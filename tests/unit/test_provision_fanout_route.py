@@ -83,7 +83,7 @@ def _adk_enabled(monkeypatch):
     agent_main.get_settings.cache_clear()
 
 
-async def _stub_fanout(prompt, session_id=None, *, autonomy_mode="propose_apply", prior_turns=None, demo_anon=False):
+async def _stub_fanout(prompt, session_id=None, *, autonomy_mode="propose_apply", prior_turns=None, demo_anon=False, denied_tools=None):
     """Stub orchestrator: provision-only, so NO ``workload`` kwarg.
 
     Matches :func:`agent.fanout.run_provision_fanout_stream`'s
@@ -97,7 +97,7 @@ async def _stub_fanout(prompt, session_id=None, *, autonomy_mode="propose_apply"
            "tool_calls": ["open_infra_pr"], "session_id": "sid-prov"}
 
 
-async def _stub_chat(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply", prior_turns=None, demo_anon=False):
+async def _stub_chat(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply", prior_turns=None, demo_anon=False, denied_tools=None):
     """Stub single-agent stream: keeps the ``workload`` kwarg ``run_chat_stream``
     actually carries, so a mis-route to it would still produce a usable stream
     (the tests assert on the *reply* text, not the shape, to distinguish)."""
@@ -167,7 +167,7 @@ def test_chat_provision_does_not_invoke_run_chat_stream(_adk_enabled):
     is ever called for provision (it must not be)."""
     chat_stream_called = Mock()
 
-    def _forbidden_chat_stream(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply", prior_turns=None, demo_anon=False):
+    def _forbidden_chat_stream(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply", prior_turns=None, demo_anon=False, denied_tools=None):
         chat_stream_called(workload)
         raise AssertionError(
             "run_chat_stream must NOT be invoked for workload=provision; "
@@ -198,11 +198,11 @@ def test_chat_drift_json_still_goes_through_run_chat_not_fanout(_adk_enabled):
     run_chat_called = Mock()
     fanout_called = Mock()
 
-    async def _run_chat(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply", prior_turns=None, demo_anon=False):
+    async def _run_chat(prompt, session_id=None, *, workload="drift", autonomy_mode="propose_apply", prior_turns=None, demo_anon=False, denied_tools=None):
         run_chat_called(workload)
         return {"reply": "drift reply", "tool_calls": [], "session_id": "sid-d"}
 
-    async def _spy_fanout(prompt, session_id=None, *, autonomy_mode="propose_apply", prior_turns=None, demo_anon=False):
+    async def _spy_fanout(prompt, session_id=None, *, autonomy_mode="propose_apply", prior_turns=None, demo_anon=False, denied_tools=None):
         fanout_called()
         yield {"type": "result", "reply": "x", "tool_calls": [],
                "session_id": "s"}
@@ -227,7 +227,7 @@ def test_chat_drift_sse_still_goes_through_run_chat_stream_not_fanout(
     never the fan-out orchestrator (the SSE byte-compat regression guard)."""
     fanout_called = Mock()
 
-    async def _spy_fanout(prompt, session_id=None, *, autonomy_mode="propose_apply", prior_turns=None, demo_anon=False):
+    async def _spy_fanout(prompt, session_id=None, *, autonomy_mode="propose_apply", prior_turns=None, demo_anon=False, denied_tools=None):
         fanout_called()
         yield {"type": "result", "reply": "x", "tool_calls": [],
                "session_id": "s"}
@@ -245,3 +245,49 @@ def test_chat_drift_sse_still_goes_through_run_chat_stream_not_fanout(
     done = [d for ev, d in frames if ev == "done"]
     assert done and done[0]["reply"] == "single-agent reply"
     fanout_called.assert_not_called()
+
+
+def test_json_provision_releases_its_run_lease_before_returning(monkeypatch):
+    """``_drain_chat_stream_result`` returns on the terminal item, which leaves
+    the wrapping generator SUSPENDED at its last yield — so the release its
+    ``finally`` owns happens at async-generator finalization unless the drain
+    closes it explicitly. CPython's refcounting usually gets there in time, so
+    this is a regression guard on the outcome (lease free, next turn accepted)
+    rather than a reproduction of the timing itself."""
+    import agent.main as agent_main
+    from agent.auth import verify_token
+    from agent.state_store import InMemoryStateStore
+
+    monkeypatch.setenv("USE_ADK", "true")
+    agent_main.get_settings.cache_clear()
+    state = InMemoryStateStore()
+    monkeypatch.setattr(agent_main, "_state_singleton", state)
+    monkeypatch.setattr(agent_main, "get_state", lambda: state)
+    monkeypatch.setattr(agent_main, "load_workload", lambda w: object())
+    monkeypatch.setattr(agent_main, "_eager_resolve_upgrade_contract", lambda r: None)
+    agent_main.app.dependency_overrides[verify_token] = lambda: None
+
+    async def _fanout(prompt, session_id=None, *, autonomy_mode="propose_apply",
+                      prior_turns=None, demo_anon=False, denied_tools=None):
+        yield {"type": "result", "reply": "ok", "tool_calls": [],
+               "session_id": "sid"}
+
+    monkeypatch.setattr("agent.fanout.run_provision_fanout_stream", _fanout)
+    try:
+        client = TestClient(agent_main.app)
+        first = client.post(
+            "/chat", json={"prompt": "author a bucket", "workload": "provision"},
+        )
+        cid = first.json()["conversation_id"]
+        # No GC in between: the lease must already be free.
+        assert _lease_of(state, cid) is None
+        assert client.post("/chat", json={
+            "prompt": "again", "workload": "provision", "conversation_id": cid,
+        }).status_code == 200
+    finally:
+        agent_main.app.dependency_overrides.pop(verify_token, None)
+        agent_main.get_settings.cache_clear()
+
+
+def _lease_of(state, cid):
+    return state._conversations[cid].get("chat_run_lease")

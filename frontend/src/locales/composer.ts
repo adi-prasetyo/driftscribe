@@ -1,5 +1,11 @@
-// composer namespace — ChatForm, CrewPicker, and JA crew descriptors/summaries
+// composer namespace — ChatForm and JA crew descriptors/summaries
 // (workloads.catalog.json is backend-pinned EN; JA lives here keyed by workload).
+//
+// The crew-picker keys are gone with the picker itself: the operator no longer
+// chooses a crew before typing, so there is no "choose a crew" legend and no
+// crew-lock hint to explain why the other three are greyed out. The lock is
+// still real — it is just no longer something the operator has to work around,
+// because a crew that needs a sibling now offers the handoff itself.
 export const composer = {
   en: {
     // ChatForm.svelte — the prompt composer.
@@ -12,12 +18,6 @@ export const composer = {
       'Press Enter to send. Press Shift plus Enter for a new line.',
     'composer.chatForm.newChat': 'New chat',
     'composer.chatForm.send': 'Send',
-    // CrewPicker.svelte — the four crew cards + crew-lock hint.
-    'composer.crewPicker.legend': 'Choose a crew member',
-    // `{crew}` is the crewName() proper noun (e.g. "Anchor") — kept out of the
-    // catalog, interpolated at render time.
-    'composer.crewPicker.lockHint':
-      'This thread is with {crew}. Start a new chat to switch crews.',
   },
   ja: {
     'composer.chatForm.placeholder':
@@ -27,8 +27,5 @@ export const composer = {
       'Enter で送信します。Shift+Enter で改行します。',
     'composer.chatForm.newChat': '新規チャット',
     'composer.chatForm.send': '送信',
-    'composer.crewPicker.legend': 'エージェントチームを選択',
-    'composer.crewPicker.lockHint':
-      'このスレッドは{crew}が担当しています。エージェントチームを切り替えるには、新規チャットを開始してください。',
   },
 };

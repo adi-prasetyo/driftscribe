@@ -17,6 +17,10 @@ Idempotency model:
 
 from typing import Any, Protocol
 
+# Sentinel for "the caller stated no expectation", which None cannot express
+# here: None is itself a meaningful expectation ("no proposal was open").
+_UNSET: Any = object()
+
 
 class StateStore(Protocol):
     def record_event(self, event_key: str, payload: dict[str, Any]) -> bool: ...
@@ -54,10 +58,24 @@ class StateStore(Protocol):
         turns: list[dict[str, Any]],
         *,
         create_with: dict[str, Any] | None = None,
+        pending_handoff: dict[str, Any] | None = None,
+        clear_pending_handoff: bool = False,
+        expect_workload: str | None = None,
+        expect_pending_digest: Any = _UNSET,
     ) -> list[int]: ...
     def get_conversation(
         self, conversation_id: str
     ) -> dict[str, Any] | None: ...
+    def begin_chat_run(
+        self, conversation_id: str, *, run_id: str, now: Any,
+        ttl_seconds: int = ...,
+    ) -> bool: ...
+    def finish_chat_run(self, conversation_id: str, *, run_id: str) -> None: ...
+    def redeem_handoff(
+        self, conversation_id: str, *, nonce: str, accept: bool, now: Any,
+        trace_id: str | None = None, run_id: str | None = None,
+        ttl_seconds: int = ...,
+    ) -> dict[str, Any]: ...
     def list_conversations(
         self, *, limit: int = 50, workload: str | None = None
     ) -> list[dict[str, Any]]: ...
@@ -71,10 +89,249 @@ class StateStore(Protocol):
     ) -> dict[str, Any]: ...
 
 
+# --- Crew handoff: shared decision logic (both stores) ----------------------
+#
+# The two stores differ only in HOW they read/write atomically; WHAT counts as
+# a valid redemption must not differ at all. Keeping the ladder here means a
+# rule can never be tightened in one implementation and forgotten in the other
+# — and the in-memory store, which every test runs against, exercises the exact
+# code Firestore runs in production.
+
+# How long a /chat run may hold a conversation's lease before another caller
+# may take it. This bounds nothing — a real run finishes and releases
+# explicitly — it only decides how long an ABANDONED lease wedges a thread.
+#
+# Anchored, not picked: Cloud Run stops the coordinator's requests at 300s
+# (``--timeout=300`` in infra/cloudbuild.yaml, sized so /chat can hold its slot
+# for a whole agent run), so a small margin over the request timeout is the
+# tightest defensible value. Longer would strand an operator whose browser
+# disconnected mid-turn; shorter could steal a live run's lease.
+#
+# Stated honestly, because an earlier version of this comment claimed more than
+# it can: the request timeout ends the REQUEST, which is not the same as
+# proving the container stopped working on it. There is no application-level
+# cancellation or lease renewal here, so a run that somehow outlives its own
+# request can still append after another caller takes the lease. That costs
+# transcript attribution — the same thing a failed lease acquisition costs
+# below — and never authority, because the crew a run may use was fixed at
+# request entry and no lease decides it.
+CHAT_RUN_LEASE_TTL_S = 330
+
+
+def conversation_crews(conv: Any) -> list[str]:
+    """Every crew that has taken part in this conversation, in joining order.
+
+    ``workload`` and ``crews`` answer different questions and must not be
+    conflated. ``workload`` is who is bound RIGHT NOW — the crew-lock authority
+    the 409 is built on — and redemption rewrites it. ``crews`` is the
+    participant history, which nothing rewrites; it is what "team memory" has
+    to filter and label on, because a thread's TITLE is the first prompt the
+    ORIGINATING crew was asked.
+
+    Conversations written before this field existed carry no ``crews``. For
+    those the single bound workload is the entire participant history, so the
+    fallback is exact rather than a guess — which is why no backfill is needed.
+    """
+    if not isinstance(conv, dict):
+        return []
+    raw = conv.get("crews")
+    if isinstance(raw, list):
+        out = [c for c in raw if isinstance(c, str) and c]
+        if out:
+            return out
+    bound = conv.get("workload")
+    return [bound] if isinstance(bound, str) and bound else []
+
+
+def conversation_has_crew(conv: Any, crew: str) -> bool:
+    """Whether ``crew`` took part in this conversation at any point."""
+    return crew in conversation_crews(conv)
+
+
+def conversation_user_turns(conv: Any) -> int:
+    """How many prompts the OPERATOR actually typed in this conversation.
+
+    The rail's "N messages" means this, and used to derive it as
+    ``ceil(turn_count / 2)`` from an invariant that no longer holds: every
+    exchange wrote one user turn and one crew turn, so the total was even. A
+    handoff breaks it from both ends — an accepted transition appends a
+    ``crew_change`` row, and the joining turn writes a reply with no prompt in
+    front of it, because the operator confirmed a suggestion rather than typing
+    one. So the count is carried rather than recomputed.
+
+    Conversations predating the counter are seeded from ``turn_count`` on their
+    next append. For them the old invariant genuinely did hold — turns land two
+    at a time in a single atomic append — so half the total is their exact prior
+    count, not an estimate.
+    """
+    if not isinstance(conv, dict):
+        return 0
+    stored = conv.get("user_turn_count")
+    if isinstance(stored, int) and not isinstance(stored, bool) and stored >= 0:
+        return stored
+    total = conv.get("turn_count")
+    if isinstance(total, int) and not isinstance(total, bool) and total > 0:
+        return (total + 1) // 2
+    return 0
+
+
+def _count_user_turns(turns: list[dict[str, Any]]) -> int:
+    return sum(1 for t in turns if t.get("role") == "user")
+
+
+def _with_crew(conv: Any, crew: str) -> list[str]:
+    """The participant list with ``crew`` appended if it is not already there.
+
+    A thread that bounces explore → drift → explore lists two participants, not
+    three: this records who took part, not a move log.
+    """
+    crews = conversation_crews(conv)
+    return crews if crew in crews else [*crews, crew]
+
+
+def _evaluate_handoff_redemption(
+    conv: dict[str, Any] | None, *, nonce: str, now: Any,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Return ``(pending, None)`` if this redemption may proceed, else
+    ``(None, reason)``.
+
+    Refusal reasons are stable tokens the HTTP layer maps to status codes.
+    Every one of them fails CLOSED: an unreadable or ambiguous state refuses
+    the transition rather than granting it, because a refused handoff costs
+    the operator one re-ask and a wrongly granted one moves a conversation to
+    a crew with tools the current crew does not have.
+    """
+    from agent.handoff import is_handoff_expired, verify_handoff_nonce
+
+    if conv is None:
+        return None, "not_found"
+    pending = conv.get("pending_handoff")
+    if not isinstance(pending, dict) or not pending.get("nonce_digest"):
+        return None, "no_pending"
+    if not verify_handoff_nonce(nonce, pending.get("nonce_digest")):
+        # Deliberately checked BEFORE expiry/staleness so a wrong guess never
+        # reveals anything about the real proposal — and never burns it.
+        return None, "invalid_nonce"
+    if is_handoff_expired(pending, now=now):
+        return None, "expired"
+    if pending.get("from") != conv.get("workload"):
+        # The thread moved on by some other path; this proposal describes a
+        # route that no longer starts where it claims to.
+        return None, "stale"
+    lease = conv.get("chat_run_lease")
+    if isinstance(lease, dict) and not _lease_is_free(lease, now=now):
+        # A turn is in flight. It will persist using the workload it CAPTURED
+        # at request entry, so flipping now would attribute that turn to the
+        # wrong crew in the durable transcript.
+        return None, "busy"
+    return pending, None
+
+
+def _may_touch_pending_handoff(
+    conv: Any, expect_workload: str | None, expect_pending_digest: Any = _UNSET,
+) -> bool:
+    """Whether this writer is still current enough to mutate an open proposal.
+
+    A turn captures its crew at request entry and can persist much later: the
+    lease fails open on a store error, and nothing cancels a run that outlives
+    its TTL. If a redemption moved the conversation in the meantime, this
+    writer is stale — and BOTH of its effects on ``pending_handoff`` are then
+    destructive. Clearing would delete a proposal the crew that has since
+    JOINED just made, silently retiring a chip the operator can still see.
+    Writing would replace that proposal with one whose ``from`` no longer
+    matches the current crew, so it could only ever be refused.
+
+    Only this is fenced. A late turn ROW still appends: that is a wrong audit
+    line, which is the trade ``_acquire_chat_run``'s fail-open documents and
+    accepts. Deleting live control state is not the same kind of wrong, and
+    reading the difference as one cost was the mistake this guard corrects.
+
+    TWO keys, because neither is sufficient alone.
+
+    ``expect_pending_digest`` is a compare-and-swap on the proposal itself: may
+    I still edit the one I saw when I started? Digests come from
+    ``secrets.token_urlsafe(32)`` and never recur, so this survives ownership
+    CYCLING — Explore → Provision → Explore leaves the symbolic name equal to
+    what a stale Explore run captured, and the workload check alone would wave
+    it through to overwrite a proposal minted in between. That is not
+    hypothetical; it was reproduced.
+
+    ``expect_workload`` catches what the digest cannot: a stale run that saw NO
+    proposal, and still sees none, but whose own new proposal carries a
+    ``from`` that is no longer the bound crew. The digests match (both absent)
+    while the offer is already meaningless — it could only ever be refused.
+
+    Either expectation omitted means the caller has none, and keeps the old
+    behavior.
+    """
+    if expect_workload is not None:
+        current_wl = conv.get("workload")
+        # An absent workload means nothing to contradict — treat as current
+        # rather than dropping a legitimate write on a partially-shaped doc.
+        if current_wl is not None and current_wl != expect_workload:
+            return False
+    if expect_pending_digest is not _UNSET:
+        current = (conv.get("pending_handoff") or {}).get("nonce_digest")
+        if current != expect_pending_digest:
+            return False
+    return True
+
+
+def _lease_is_free(lease: object, *, now: Any) -> bool:
+    """True when no live run holds the conversation. Unreadable lease == free
+    (fail-open) — the lease protects transcript attribution, not authority, and
+    a malformed one must not wedge a thread permanently."""
+    if not isinstance(lease, dict) or not lease.get("run_id"):
+        return True
+    expires_at = lease.get("expires_at")
+    if not hasattr(expires_at, "tzinfo"):
+        return True
+    if expires_at.tzinfo is None:
+        from datetime import timezone as _tz
+
+        expires_at = expires_at.replace(tzinfo=_tz.utc)
+    return now >= expires_at
+
+
+def _new_lease(run_id: str, now: Any, ttl_seconds: int) -> dict[str, Any]:
+    from datetime import timedelta
+
+    return {"run_id": run_id, "expires_at": now + timedelta(seconds=ttl_seconds)}
+
+
+def _handoff_transition_turn(
+    pending: dict[str, Any], *, accept: bool, trace_id: str | None,
+) -> dict[str, Any]:
+    """The server-authored row recording that a transition happened (or was
+    declined). Not model output: it replays to the joining crew as trusted
+    event text, never as a model-authored turn."""
+    return {
+        "role": "crew_change" if accept else "handoff_declined",
+        "text": pending.get("reason") or "",
+        # An accepted transition belongs to the crew that JOINED; a declined
+        # one belongs to the crew that stayed.
+        "workload": pending["to"] if accept else pending["from"],
+        "trace_id": trace_id,
+        "handoff": {"from": pending["from"], "to": pending["to"]},
+    }
+
+
 class InMemoryStateStore:
-    """Process-local state. Used in tests and DRY_RUN mode."""
+    """Process-local state. Used in tests and DRY_RUN mode.
+
+    The conversation mutators below hold ``_lock``. Firestore gets its
+    all-or-nothing behavior from ``@firestore.transactional``; this store has
+    to say so explicitly, and it matters: ``_persist_chat_turn`` runs inside
+    ``asyncio.to_thread``, so several OS threads really do reach these methods
+    at once. Without the lock, two callers can both validate a nonce before
+    either burns it and both redeem it. Reentrant because ``redeem_handoff``
+    calls ``append_turns``.
+    """
 
     def __init__(self) -> None:
+        import threading
+
+        self._lock = threading.RLock()
         self._events: dict[str, dict[str, Any]] = {}  # event_key -> {payload, decision_id}
         self._decisions: dict[str, dict[str, Any]] = {}  # decision_id -> full decision
         # Pause flag singleton. None = never written (system is running by default —
@@ -216,10 +473,12 @@ class InMemoryStateStore:
         doc = {
             "conversation_id": conversation_id,
             "workload": workload,
+            "crews": [workload],
             "title": title,
             "created_at": now,
             "updated_at": now,
             "turn_count": 0,
+            "user_turn_count": 0,
             "last_trace_id": None,
         }
         self._conversations[conversation_id] = doc
@@ -252,7 +511,54 @@ class InMemoryStateStore:
         turns: list[dict[str, Any]],
         *,
         create_with: dict[str, Any] | None = None,
+        pending_handoff: dict[str, Any] | None = None,
+        clear_pending_handoff: bool = False,
+        expect_workload: str | None = None,
+        expect_pending_digest: Any = _UNSET,
     ) -> list[int]:
+        with self._lock:
+            return self._append_turns_locked(
+                conversation_id, turns, create_with=create_with,
+                pending_handoff=pending_handoff,
+                clear_pending_handoff=clear_pending_handoff,
+                expect_workload=expect_workload,
+                expect_pending_digest=expect_pending_digest,
+            )
+
+    def _append_turns_locked(
+        self,
+        conversation_id: str,
+        turns: list[dict[str, Any]],
+        *,
+        create_with: dict[str, Any] | None = None,
+        pending_handoff: dict[str, Any] | None = None,
+        clear_pending_handoff: bool = False,
+        expect_workload: str | None = None,
+        expect_pending_digest: Any = _UNSET,
+    ) -> list[int]:
+        """Append turns; optionally record a crew-handoff proposal with them.
+
+        ``pending_handoff`` writes in the SAME operation as the turns, which is
+        what makes a proposal possible on turn 1: a new conversation has no
+        document until its first turns persist, so a tool that wrote the
+        proposal itself would have nothing to write to.
+
+        ``clear_pending_handoff`` retires an outstanding proposal in that same
+        operation. The caller sets it when the appended turns include one the
+        OPERATOR typed: being asked "shall I bring in Provision?" and replying
+        with something else is an answer, so the proposal is spent.
+
+        This used to be the opposite — ``None`` left the proposal alone, on the
+        reasoning that someone who types should not silently lose the chip. The
+        SPA nonetheless retires the chip on a typed turn, because leaving it
+        under a NEWER reply attaches the suggestion to a question it was never
+        about. That left the view and the store disagreeing, and the gap was
+        reachable: a second tab holding the same nonce could still confirm a
+        suggestion the operator had already answered by typing, moving the
+        conversation on the older of two contradictory instructions. Losing the
+        chip is not silent when the operator's own next message is what caused
+        it, so the store now agrees with the view.
+        """
         from datetime import datetime, timezone
 
         conv = self._conversations.get(conversation_id)
@@ -262,6 +568,7 @@ class InMemoryStateStore:
             self.create_conversation(conversation_id, **create_with)
             conv = self._conversations[conversation_id]
         start = int(conv["turn_count"])
+        prior_user_turns = conversation_user_turns(conv)
         now = datetime.now(timezone.utc)
         last_trace = conv.get("last_trace_id")
         seqs: list[int] = []
@@ -279,14 +586,96 @@ class InMemoryStateStore:
                 turn["iac_pr"] = t["iac_pr"]
             if t.get("tool_calls"):
                 turn["tool_calls"] = t["tool_calls"]
+            if t.get("handoff"):
+                turn["handoff"] = t["handoff"]
             self._conversation_turns.setdefault(conversation_id, []).append(turn)
             if t.get("trace_id"):
                 last_trace = t["trace_id"]
             seqs.append(seq)
         conv["turn_count"] = start + len(turns)
+        # Read the prior count BEFORE turn_count moves — the legacy seed inside
+        # conversation_user_turns derives from it.
+        conv["user_turn_count"] = prior_user_turns + _count_user_turns(turns)
         conv["updated_at"] = now
         conv["last_trace_id"] = last_trace
+        if not _may_touch_pending_handoff(
+            conv, expect_workload, expect_pending_digest
+        ):
+            pending_handoff, clear_pending_handoff = None, False
+        if pending_handoff is not None:
+            # Overwrites any prior proposal, which IS the supersede-and-burn:
+            # only one nonce digest can be stored, so the old one stops
+            # verifying. Load-bearing — two proposals from the same crew both
+            # satisfy ``pending.from == workload``, so nothing else catches it.
+            conv["pending_handoff"] = dict(pending_handoff)
+        elif clear_pending_handoff:
+            conv.pop("pending_handoff", None)
         return seqs
+
+    # --- Crew handoff -------------------------------------------------------
+
+    def begin_chat_run(
+        self, conversation_id: str, *, run_id: str, now: Any,
+        ttl_seconds: int = CHAT_RUN_LEASE_TTL_S,
+    ) -> bool:
+        with self._lock:
+            conv = self._conversations.get(conversation_id)
+            if conv is None:
+                # Nothing to lease and nothing to race: a conversation with no
+                # document has no proposal either.
+                return True
+            if not _lease_is_free(conv.get("chat_run_lease"), now=now):
+                return False
+            conv["chat_run_lease"] = _new_lease(run_id, now, ttl_seconds)
+            return True
+
+    def finish_chat_run(self, conversation_id: str, *, run_id: str) -> None:
+        with self._lock:
+            conv = self._conversations.get(conversation_id)
+            if conv is None:
+                return
+            lease = conv.get("chat_run_lease")
+            # Only the holder may release: a late finish from a run that
+            # already timed out must not free the lease a newer run now holds.
+            if isinstance(lease, dict) and lease.get("run_id") == run_id:
+                conv.pop("chat_run_lease", None)
+
+    def redeem_handoff(
+        self, conversation_id: str, *, nonce: str, accept: bool, now: Any,
+        trace_id: str | None = None, run_id: str | None = None,
+        ttl_seconds: int = CHAT_RUN_LEASE_TTL_S,
+    ) -> dict[str, Any]:
+        with self._lock:
+            conv = self._conversations.get(conversation_id)
+            view = (
+                self.get_conversation(conversation_id)
+                if conv is not None else None
+            )
+            pending, refusal = _evaluate_handoff_redemption(
+                view, nonce=nonce, now=now,
+            )
+            if refusal is not None:
+                return {"ok": False, "error": refusal}
+            assert pending is not None and conv is not None
+            # Burn first: even if the append below were to fail, the credential
+            # is spent. A stuck transition the operator can re-request beats a
+            # live nonce whose conversation already moved.
+            conv.pop("pending_handoff", None)
+            if accept:
+                conv["crews"] = _with_crew(conv, pending["to"])
+                conv["workload"] = pending["to"]
+                if run_id:
+                    conv["chat_run_lease"] = _new_lease(run_id, now, ttl_seconds)
+            self._append_turns_locked(
+                conversation_id,
+                [_handoff_transition_turn(
+                    pending, accept=accept, trace_id=trace_id,
+                )],
+            )
+            return {
+                "ok": True, "pending": dict(pending), "accepted": accept,
+                "run_id": run_id if accept else None,
+            }
 
     def get_conversation(self, conversation_id: str) -> dict[str, Any] | None:
         conv = self._conversations.get(conversation_id)
@@ -309,7 +698,7 @@ class InMemoryStateStore:
         rows = [
             dict(c)
             for c in self._conversations.values()
-            if workload is None or c.get("workload") == workload
+            if workload is None or conversation_has_crew(c, workload)
         ]
         rows.sort(key=lambda c: c.get("updated_at") or sentinel, reverse=True)
         return rows[:limit]
@@ -612,10 +1001,12 @@ class FirestoreStateStore:
         doc = {
             "conversation_id": conversation_id,
             "workload": workload,
+            "crews": [workload],
             "title": title,
             "created_at": firestore.SERVER_TIMESTAMP,
             "updated_at": firestore.SERVER_TIMESTAMP,
             "turn_count": 0,
+            "user_turn_count": 0,
             "last_trace_id": None,
         }
         self._conversations.document(conversation_id).set(doc)
@@ -646,6 +1037,10 @@ class FirestoreStateStore:
         turns: list[dict[str, Any]],
         *,
         create_with: dict[str, Any] | None = None,
+        pending_handoff: dict[str, Any] | None = None,
+        clear_pending_handoff: bool = False,
+        expect_workload: str | None = None,
+        expect_pending_digest: Any = _UNSET,
     ) -> list[int]:
         """Append ``turns`` atomically, allocating contiguous ``seq`` values.
 
@@ -657,6 +1052,12 @@ class FirestoreStateStore:
         transaction so a new conversation + its first turns persist all-or-
         nothing (no empty-doc / half-turn windows). Mirrors the read-before-
         write shape of :meth:`evict_cached_decision`.
+
+        ``pending_handoff`` rides the SAME transaction — that is the whole
+        reason it is a parameter here rather than its own method. A proposal
+        made on turn 1 has no document to attach to until these turns create
+        one, so proposal and turns must commit together or not at all. ``None``
+        leaves any existing proposal untouched; see the in-memory twin.
         """
         from google.cloud import firestore
 
@@ -672,16 +1073,29 @@ class FirestoreStateStore:
                 base = {
                     "conversation_id": conversation_id,
                     "workload": create_with["workload"],
+                    "crews": [create_with["workload"]],
                     "title": create_with["title"],
                     "created_at": firestore.SERVER_TIMESTAMP,
                     "last_trace_id": None,
                 }
                 start, last_trace, is_create = 0, None, True
+                prior_user_turns = 0
+                # Created here, with this caller's own workload — there is no
+                # earlier writer to be stale against.
+                may_touch_handoff = True
             else:
                 data = snap.to_dict() or {}
                 start = int(data.get("turn_count", 0))
+                prior_user_turns = conversation_user_turns(data)
                 last_trace = data.get("last_trace_id")
                 base, is_create = {}, False
+                # Decided from the doc read INSIDE the transaction, so a
+                # redemption that lands between the read and the commit loses
+                # to Firestore's contention retry rather than slipping past
+                # this check.
+                may_touch_handoff = _may_touch_pending_handoff(
+                    data, expect_workload, expect_pending_digest
+                )
             # WRITES.
             seqs: list[int] = []
             for i, t in enumerate(turns):
@@ -698,6 +1112,8 @@ class FirestoreStateStore:
                     turn["iac_pr"] = t["iac_pr"]
                 if t.get("tool_calls"):
                     turn["tool_calls"] = t["tool_calls"]
+                if t.get("handoff"):
+                    turn["handoff"] = t["handoff"]
                 transaction.set(
                     conv_ref.collection("turns").document(f"{seq:06d}"), turn
                 )
@@ -706,14 +1122,150 @@ class FirestoreStateStore:
                 seqs.append(seq)
             doc_fields = {
                 "turn_count": start + len(turns),
+                "user_turn_count": prior_user_turns + _count_user_turns(turns),
                 "updated_at": firestore.SERVER_TIMESTAMP,
                 "last_trace_id": last_trace,
             }
+            if pending_handoff is not None and may_touch_handoff:
+                doc_fields["pending_handoff"] = dict(pending_handoff)
+            elif clear_pending_handoff and not is_create and may_touch_handoff:
+                # DELETE_FIELD is invalid inside a ``set`` of a brand-new doc,
+                # and a conversation being created cannot have a proposal to
+                # retire anyway.
+                doc_fields["pending_handoff"] = firestore.DELETE_FIELD
             if is_create:
                 transaction.set(conv_ref, {**base, **doc_fields})
             else:
                 transaction.update(conv_ref, doc_fields)
             return seqs
+
+        return _txn(self._db.transaction())
+
+    # --- Crew handoff -------------------------------------------------------
+
+    def begin_chat_run(
+        self, conversation_id: str, *, run_id: str, now: Any,
+        ttl_seconds: int = CHAT_RUN_LEASE_TTL_S,
+    ) -> bool:
+        """Claim the conversation for one in-flight chat run.
+
+        Transactional read-then-write for the same reason ``append_turns`` is:
+        two concurrent callers must not both see a free lease. Returns False
+        when a live run already holds it. An absent document returns True —
+        turn 1 has nothing to lease and no proposal to race.
+        """
+        from datetime import timedelta
+
+        from google.cloud import firestore
+
+        conv_ref = self._conversations.document(conversation_id)
+
+        @firestore.transactional
+        def _txn(transaction) -> bool:
+            snap = conv_ref.get(transaction=transaction)
+            if not snap.exists:
+                return True
+            if not _lease_is_free((snap.to_dict() or {}).get("chat_run_lease"),
+                                  now=now):
+                return False
+            transaction.update(conv_ref, {
+                "chat_run_lease": {
+                    "run_id": run_id,
+                    "expires_at": now + timedelta(seconds=ttl_seconds),
+                },
+            })
+            return True
+
+        return _txn(self._db.transaction())
+
+    def finish_chat_run(self, conversation_id: str, *, run_id: str) -> None:
+        """Release the lease, but only if this run still holds it — a late
+        finish from a timed-out run must not free a newer run's claim."""
+        from google.cloud import firestore
+
+        conv_ref = self._conversations.document(conversation_id)
+
+        @firestore.transactional
+        def _txn(transaction) -> None:
+            snap = conv_ref.get(transaction=transaction)
+            if not snap.exists:
+                return
+            lease = (snap.to_dict() or {}).get("chat_run_lease")
+            if isinstance(lease, dict) and lease.get("run_id") == run_id:
+                transaction.update(
+                    conv_ref, {"chat_run_lease": firestore.DELETE_FIELD}
+                )
+
+        _txn(self._db.transaction())
+
+    def redeem_handoff(
+        self, conversation_id: str, *, nonce: str, accept: bool, now: Any,
+        trace_id: str | None = None, run_id: str | None = None,
+        ttl_seconds: int = CHAT_RUN_LEASE_TTL_S,
+    ) -> dict[str, Any]:
+        """Verify, burn, flip, reserve, and record — all inside one transaction.
+
+        Single-use is only real if the check and the burn cannot interleave,
+        so the whole ladder runs against the transaction's snapshot: two
+        simultaneous redemptions of the same nonce cannot both win. The
+        validity rules themselves live in :func:`_evaluate_handoff_redemption`
+        so they cannot drift from the in-memory store every test runs against.
+
+        ``run_id`` reserves the conversation for the joining turn in this SAME
+        transaction. Acquiring it afterwards left a gap in which an ordinary
+        turn could take the lease first — and the confirmation would then 409
+        having ALREADY burned its nonce and flipped the crew. Reserving here
+        means the credential and the run it pays for commit together.
+        """
+        from google.cloud import firestore
+
+        conv_ref = self._conversations.document(conversation_id)
+
+        @firestore.transactional
+        def _txn(transaction) -> dict[str, Any]:
+            # READS FIRST (Firestore requires all reads before any writes).
+            snap = conv_ref.get(transaction=transaction)
+            conv = (snap.to_dict() or {}) if snap.exists else None
+            pending, refusal = _evaluate_handoff_redemption(
+                conv, nonce=nonce, now=now,
+            )
+            if refusal is not None:
+                return {"ok": False, "error": refusal}
+            assert pending is not None and conv is not None
+            # WRITES.
+            seq = int(conv.get("turn_count", 0))
+            turn = _handoff_transition_turn(
+                pending, accept=accept, trace_id=trace_id,
+            )
+            transaction.set(
+                conv_ref.collection("turns").document(f"{seq:06d}"),
+                {**turn, "seq": seq, "created_at": firestore.SERVER_TIMESTAMP},
+            )
+            doc_fields: dict[str, Any] = {
+                "pending_handoff": firestore.DELETE_FIELD,
+                "turn_count": seq + 1,
+                # Unchanged in value — a transition row is not something the
+                # operator typed — but pinned explicitly, because leaving it
+                # absent while turn_count moves would let the legacy seed in
+                # conversation_user_turns derive from the larger total later.
+                "user_turn_count": conversation_user_turns(conv),
+                "updated_at": firestore.SERVER_TIMESTAMP,
+            }
+            if accept:
+                doc_fields["workload"] = pending["to"]
+                # Computed from the transaction's own snapshot rather than an
+                # ArrayUnion so the participant list commits with the flip it
+                # describes, under the same read that authorised it.
+                doc_fields["crews"] = _with_crew(conv, pending["to"])
+                if run_id:
+                    doc_fields["chat_run_lease"] = _new_lease(
+                        run_id, now, ttl_seconds,
+                    )
+            transaction.update(conv_ref, doc_fields)
+            return {
+                "ok": True, "pending": dict(pending), "accepted": accept,
+                "run_id": run_id if accept else None,
+            }
 
         return _txn(self._db.transaction())
 
@@ -732,17 +1284,26 @@ class FirestoreStateStore:
     def list_conversations(
         self, *, limit: int = 50, workload: str | None = None
     ) -> list[dict[str, Any]]:
-        query = (
-            self._conversations.where("workload", "==", workload)
-            if workload is not None
-            else self._conversations
-        )
-        snaps = list(query.stream())
+        # Filtered in Python, not by a `where`. A crew now matches a thread it
+        # merely took part in, and the two candidate server-side forms both
+        # fail: `workload ==` misses threads handed away, and `crews
+        # array_contains` misses every conversation written before that field
+        # existed. A deduplicated union of both queries WOULD cut filtered reads
+        # at scale; it is not worth the second round trip here, because the
+        # unfiltered path already streams the whole collection and sorts in
+        # Python and the breadcrumb walks it on every chat turn — so that scan
+        # dominates, and this one is the existing cost profile rather than a new
+        # one. Revisit the union if the breadcrumb ever stops full-scanning.
+        # Using the same predicate
+        # as the in-memory store is worth more: it is the store every test runs
+        # against, so a rule cannot hold there and quietly differ in prod.
         rows: list[dict[str, Any]] = []
-        for s in snaps:
+        for s in self._conversations.stream():
             d = s.to_dict() or {}
             d.setdefault("created_at", s.create_time)
             d.setdefault("updated_at", d.get("created_at"))
+            if workload is not None and not conversation_has_crew(d, workload):
+                continue
             rows.append(d)
         rows.sort(key=lambda d: d.get("updated_at") or 0, reverse=True)
         return rows[:limit]

@@ -3,18 +3,23 @@
   import { type Workload, type ChatPrefill } from '../lib/workloads';
   import { t } from '../lib/i18n';
   import Icon from './Icon.svelte';
-  import CrewPicker from './CrewPicker.svelte';
 
-  // The prompt composer. A crew-card workload picker sits above a growing
-  // prompt input + Send button. In historical mode the whole form is dimmed
-  // (.historical) and every control is disabled — the operator is reviewing a
-  // past trace, not starting a new one.
+  // The prompt composer: a growing prompt input + Send button. In historical
+  // mode the whole form is dimmed (.historical) and every control is disabled —
+  // the operator is reviewing a past trace, not starting a new one.
+  //
+  // There is no crew picker. Choosing a crew up front asked the operator to
+  // already know which of four specialists owns their question, which is the
+  // system's own taxonomy leaking into the front door. A new thread goes to
+  // Explore, and any crew that finds the question belongs to a sibling offers
+  // the handoff itself for the operator to confirm. `workload` survives as a
+  // prop because the thread is still crew-LOCKED — the composer has to send
+  // whichever crew currently holds the conversation.
   let {
     disabled = false,
     onSubmit,
     prefill = null,
-    workload = $bindable('drift'),
-    lockedCrew = null,
+    workload = $bindable('explore'),
     showNewChat = false,
     onNewChat = () => {},
   }: {
@@ -28,15 +33,15 @@
      */
     prefill?: ChatPrefill | null;
     /**
-     * The selected crew, lifted to a two-way binding (P2): App reads it for the
-     * crew-lock check on a multi-turn thread, and SETS it when the operator
-     * resumes a conversation from the rail so the composer lands on that
-     * thread's locked crew. Defaults to Anchor (drift); the CrewPicker still
-     * drives it via `bind:value`, and the prefill effect still overrides it.
+     * The crew this composer will send to, a two-way binding (P2): App reads it
+     * for the crew-lock check on a multi-turn thread, and SETS it when the
+     * operator resumes a conversation from the rail (or a handoff moves the
+     * thread to a new crew) so the composer follows the thread. With the picker
+     * gone the operator never writes it — only the prefill effect below (Adopt
+     * carries an explicit Provision intent) and App do. A fresh thread defaults
+     * to Explore, the crew whose job is to figure out where a question belongs.
      */
     workload?: Workload;
-    /** Crew-lock passthrough to CrewPicker: the open thread's crew, or null. */
-    lockedCrew?: Workload | null;
     /**
      * Show the composer's New chat button — true whenever a clean slate would
      * clear something (open thread, in-flight exchange, leftover one-shot
@@ -50,12 +55,8 @@
   let prompt = $state('');
   let inputEl = $state<HTMLTextAreaElement | null>(null);
 
-  // The workload picker is the CrewPicker (four mini crew cards) bound to
-  // `workload` below; the autonomy signal + Autonomous/On-demand grouping it
-  // used to carry as optgroups + an adjacent badge now live on the cards.
-
   // Apply the prefill on each NEW epoch (tracked dependency); set the workload
-  // select and focus the input so the operator can edit / press Send. Keyed on
+  // and focus the input so the operator can edit / press Send. Keyed on
   // epoch (not text) so identical re-prefills still re-apply after an edit, and a
   // same-epoch rerender leaves an edited draft alone. untrack the writes so this
   // effect depends ONLY on prefill?.epoch.
@@ -133,20 +134,22 @@
   <!-- Crew-card workload picker, above the input ("who → what"). The selected
        card's glyph loops; the rest are static. Bound to `workload`. The New chat
        button hugs the trailing edge of this row when there's something to reset. -->
-  <div class="chat-form__crew">
-    <CrewPicker bind:value={workload} {disabled} lockedTo={lockedCrew} />
-    {#if showNewChat}
+  <!-- The row the crew cards used to occupy. With the picker gone it carries
+       only the clean-slate action, and it collapses entirely when there is
+       nothing to reset — so a fresh composer is just prompt + Send. -->
+  {#if showNewChat}
+    <div class="chat-form__actions">
       <!-- Deliberately NOT {disabled}: while a reply streams this is the
            cancel/escape hatch (App's newChat bumps runSeq). Pill + borderless
-           at rest so it reads as a quiet action, not a fifth crew card. -->
+           at rest so it reads as a quiet action, not a second Send. -->
       <button
         type="button"
         class="chat-form__new-chat"
         data-testid="composer-new-chat"
         onclick={onNewChat}
       ><Icon name="plus" size={13} />{$t('composer.chatForm.newChat')}</button>
-    {/if}
-  </div>
+    </div>
+  {/if}
 
   <textarea
     id="prompt-input"
@@ -214,7 +217,7 @@
 
   /* The crew picker + New chat button share the full-width row above the input:
      picker grows, button hugs the trailing edge. */
-  .chat-form__crew {
+  .chat-form__actions {
     flex: 1 1 100%;
     min-width: 0;
     display: flex;
@@ -222,15 +225,9 @@
     align-items: center;
     gap: var(--ds-sp-2);
   }
-  .chat-form__crew > :global(.crew-picker) {
-    flex: 1 1 auto;
-    width: auto;
-    min-width: 0;
-  }
 
-  /* Quiet clean-slate action. Distinct from the crew cards on purpose —
-     borderless at rest + pill radius + no glyph, so the row reads as
-     "four choices … one action", not five crew. */
+  /* Quiet clean-slate action: borderless at rest + pill radius + no glyph, so
+     it reads as an escape hatch above the prompt rather than a second Send. */
   .chat-form__new-chat {
     flex: 0 0 auto;
     margin-left: auto;

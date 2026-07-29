@@ -326,8 +326,108 @@ trip URL resolution at `agent/workloads/registry.py:987`.
   (`ConversationThread.svelte:39`) — it needs explicit branches for
   `crew_change` and `handoff_declined`. Per-bubble crew identity via `CrewGlyph`
   and `crewName` already exists (`:55`), so that part is mostly done.
-- The chip renders from persisted `pending_handoff`, so a reload or a
-  `?conversation=` deep link restores it rather than stranding a dead nonce.
+- The chip renders from persisted `pending_handoff`, so a reload restores it
+  rather than stranding a dead nonce.
+
+### The chip needs two halves, and only one of them is on the server
+
+This was wrong in the first draft, which said a `?conversation=` deep link would
+restore the chip. It cannot, and the reason is the same property that makes the
+nonce worth having.
+
+The server persists the proposal but stores only a **digest** of the nonce. The
+plaintext is transmitted exactly once, on the `done` frame of the turn that
+minted it. So the server can always answer *"is a proposal open?"* and can never
+answer *"what redeems it?"* — not as a policy choice, as a fact about what it
+holds.
+
+The chip therefore requires:
+
+| Question | Answered by |
+|---|---|
+| Is the proposal still open? | the server (`pending_handoff` on the conversation) |
+| May *this client* act on it? | local custody of the nonce (`sessionStorage`) |
+
+Both, every time. Custody without an open proposal means it was redeemed or
+superseded elsewhere; an open proposal without custody means another device.
+`frontend/src/lib/handoff.ts` owns this.
+
+It matches on `from`/`to` **and `expires_at`**. The route alone is not identity:
+two successive Explore→Provision proposals have identical route fields, so a
+nonce from the first would route-match the second, and the chip would render a
+button the server was always going to refuse. `expires_at` is `now + TTL` at
+mint time with microsecond resolution, so it separates them. That is a timestamp
+doing an identifier's job — a real proposal id on both the one-shot offer and
+the persisted projection would be the exact fix, and is the thing to add if this
+ever needs to be airtight rather than merely closed.
+
+Custody is also **dropped** whenever the server reports no open proposal, not
+just ignored. A retained nonce for a closed proposal is what makes the
+same-route false match reachable at all.
+
+**On another device the chip is simply absent.** That is correct rather than
+degraded: the nonce is a capability, not a view, and putting it in a shareable
+URL is precisely what a single-use credential exists to prevent. The thread
+still shows what the crew asked, and the operator can answer in the composer —
+the pre-handoff behaviour, and no worse than it. Losing custody costs one round
+trip: the crew re-proposes, which supersedes the stale proposal anyway.
+
+A typed prompt retires the chip *and* drops custody. Typing is an answer, and
+leaving a clickable chip under a newer reply would attach the suggestion to a
+question it was never about.
+
+**The store now agrees.** It did not at first: `append_turns` deliberately left
+`pending_handoff` alone on an ordinary turn, so as not to "silently" cost the
+operator their chip. With the SPA retiring it anyway, the two disagreed — and
+the gap was reachable rather than theoretical. A second client still holding the
+nonce (a duplicated tab copies `sessionStorage`) could confirm a suggestion the
+operator had already answered by typing, moving the conversation on the older of
+two contradictory instructions. `clear_pending_handoff` retires it in the same
+write as the turn. It is gated on a row the OPERATOR typed, not merely on "no
+new proposal": the redemption path omits the user turn precisely because they
+did not type it, and a crew's own follow-up must not answer a question that was
+put to the operator.
+
+### Which side of the commit did it fail on?
+
+Redemption commits — nonce burned, `workload` rewritten — *before* the joining
+crew is loaded and run. So a `/chat/handoff` failure can fall on either side of
+that line, and the two need opposite handling:
+
+- **Before** (`no_pending`, `expired`, `stale`, `busy`, `invalid_nonce`): nothing
+  moved. Report it on the chip; leave the conversation alone.
+- **After** (e.g. the joining crew's worker env is missing → 503): the crew HAS
+  moved and the nonce is spent. The chip must go, and the composer must move
+  with the crew.
+
+The status class cannot express this — a post-commit failure and a refusal can
+share one. `X-Handoff-Redeemed: 1` marks the post-commit side, set on the
+exception rather than at each raise site so an error path added later cannot
+forget it. Without it the SPA keeps a dead chip and leaves the composer bound to
+the crew that already left, whose next typed turn the crew lock refuses — which
+would make the 503 branch's own promise ("an ordinary error they can retry by
+typing") false.
+
+**A paused refusal is the mirror image**: the kill switch is checked *before*
+redemption and answers `200` with `paused: true`. So "any 2xx means the nonce is
+spent" is wrong in the other direction — it would delete custody for a proposal
+that is still open, and since the server keeps only a digest, no reload could
+ever bring that chip back. The chip and its nonce survive a pause untouched.
+
+### `invalid_nonce` must not be 403
+
+Slice 1 mapped it to 403. The SPA's `apiFetch` reads 401/403 as *"your operator
+token was rejected"* — it clears the stored token and raises the auth modal. So
+clicking a superseded chip logged the operator out of their own session, and
+during the public window would have thrown an anonymous judge out entirely. The
+same failure shape as the demo-allowlist gap (PR #208).
+
+It is now 409, with its siblings. The nonce is a single-use *resource*
+credential, not an authentication factor. `X-Handoff-Refusal` carries the
+distinction the status no longer does — which the frontend needs anyway, because
+409 covers both "already used" (dead: lock the chip) and "a turn is running"
+(retryable: leave it live), and no client should have to pattern-match an
+English sentence to tell them apart.
 - **Decline posts too** (`accept: false`): burns the nonce, records a note the
   crew reads next turn. Without it the crew re-proposes every turn and no
   prompt-level restraint can stop it.
@@ -339,11 +439,13 @@ Known consumers of the old shape:
 
 | Site | Breaks how |
 |---|---|
-| `ConversationsRail.svelte:85` | `ceil(turn_count / 2)` misreports once transition rows count as turns — exclude them from `turn_count` |
+| `ConversationsRail.svelte:85` | `ceil(turn_count / 2)` misreports once transition rows count as turns — reads `user_turn_count`, keeping the old formula only as a pre-counter fallback |
+| `frontend/src/lib/conversations.ts:26` | `matchesConversation` searches the BOUND workload, so a handed-over thread stops being findable under the crew that started it — searches `crews` |
 | `frontend/src/lib/types.ts:135` | Types a conversation as having one workload |
 | `frontend/src/locales/conversations.ts:9` | Help copy promises the thread stays with its starting crew |
 | `tests/unit/test_crew_redirect_block.py:68` | Pins the terminal-routing wording being replaced |
 | `CrewPicker.test.ts`, `ChatForm` crew-lock tests | Rewritten or removed |
+| `composer-lock.visual.ts` | Photographs greyed-out crew cards; became `crew-handoff.visual.ts` |
 
 ### Adopt stays a second door
 
@@ -432,6 +534,20 @@ Slice 3 merges **only after** the composite redesign's composer baseline lands,
 and rebases its tests onto it then. Composite already rewrites `App.svelte` and
 the composer; racing it there buys nothing.
 
+**Half of that turned out to be false, and the gate lifted early.** Composite
+rewrites `App.svelte` — view routing (2.2), the desk default (3.6), the estate
+view (4.1) — and that part was the real baseline. It never touches the composer:
+`git log main..approval-desk -- ChatForm.svelte CrewPicker.svelte` is empty, and
+composite's phase list (0 i18n, 1 tokens, 2 view state, 3 desk, 4 estate,
+5 trace beats) has no composer phase at all. So the collision being avoided did
+not exist. Slice 3 was built on `approval-desk` rather than `main`, which is
+where the `App.svelte` baseline actually lives.
+
+The remaining reason not to merge slices 1+2 alone still held right up to slice
+3 landing: slice 2 makes all four crews advertise a confirmation the operator
+has no way to give. Prompts promising an affordance that does not exist is a
+worse dead end than the picker they replace.
+
 The gate is the **video, not a date.** The deck must embed a demo video that
 cannot be paused mid-playback, so whatever the video shows is what judges see on
 8/19. The 8/3 freeze in the composite plan is a self-imposed backstop derived from
@@ -462,13 +578,28 @@ without it and ship after the pitch. A half-migrated composer on camera re-prove
   then waits is the friction being removed. Documented here as the fallback if
   slice 3 runs out of runway.
 
-## Open questions
+## Open questions — settled in slice 3
 
-- Chip placement: inline in the transcript, or docked above the composer? The
-  composite redesign's chat frame decides this; defer to it.
-- Nonce TTL — match the existing approval gate's rather than inventing a number.
-- Is a declined handoff visible in the transcript, or silent? Visible is more
-  honest about what the agent wanted; silent is calmer.
-- What happens if the joining crew's first run *fails* after the workload has
-  already flipped? Leaning: the flip stands, the failure renders as a normal
-  error turn, and the operator retries by typing.
+- **Chip placement.** *Inline, at the end of the transcript.* The chat frame
+  runs the composer above a thread that flows oldest-first, so the newest reply
+  is at the bottom — the chip sits directly under the reply that proposed it,
+  which is where the operator is already reading. Docking it above the composer
+  would have parked it several turns away from its own context.
+- **Nonce TTL.** 15 minutes (`HANDOFF_TTL_MINUTES`), matching the approval gate
+  rather than inventing a number.
+- **Is a declined handoff visible?** *Visible*, as a transition row with a
+  broken rule. Declining is a real POST that burns the proposal and records the
+  refusal; rendering nothing would misrepresent a durable write as a dismiss.
+- **The joining crew's first run fails after the flip.** The flip stands, as
+  proposed, and the thread is refetched so the transition stays visible even
+  when the reply that followed it errored — a crew change that happened must not
+  be invisible because of what happened next. This needs the post-commit marker
+  above to work at all: without it the client cannot tell that failure from a
+  refusal, and "refetched either way" is simply false.
+
+Still open:
+
+- The rail's stacked-glyph trail is still deferred (list responses carry no
+  turns). The rail shows the current crew; the thread carries the transitions.
+- Storage-partitioned or private-mode browsers get no chip at all, since custody
+  fails soft to "no chip". Acceptable; the composer still works.

@@ -134,6 +134,16 @@ EXPECTED_TOOL_NAMES = frozenset({
     # credential, so deliberately NOT in MUTATION_TOOL_NAMES. Allowlist-projected
     # + untrusted turn text secret-redacted/snippet-capped.
     "read_conversations_tool",
+    # Crew handoff — propose that a DIFFERENT crew take over this conversation,
+    # pending operator confirmation. Enabled on all four crews. The only
+    # control-plane tool: it writes DriftScribe's own state and mints (server-
+    # side, after commit) a single-use transition credential, but calls no
+    # worker, opens no PR, sends no notification, and rides no write-capable
+    # credential — so it is deliberately NOT in ``_MUTATION_TOOL_NAMES``, and
+    # ``explore`` stays disjoint from that set. Its own pins (including the
+    # "exactly one control-plane tool on explore" assertion) live in
+    # ``tests/unit/test_crew_handoff_registration.py``.
+    "request_crew_handoff_tool",
 })
 
 
@@ -633,9 +643,15 @@ def test_drift_workload_tool_order_pin(drift_workload_env):
     agent = build_agent(resolution, autonomy_mode="propose_apply")
     actual_callable_order = [t.__name__ for t in agent.tools]
 
+    # ``build_agent`` is the /recheck factory, so the expectation is drift's
+    # tuple MINUS the chat-only tools it strips by design. Drift carried none
+    # of those until ``request_crew_handoff`` (a handoff has no operator to
+    # confirm it on the autonomous Eventarc path), which is why this filter is
+    # newer than the test. Order among the survivors is still pinned exactly.
     expected_callable_order = [
         TOOL_REGISTRY[symbolic].__name__
         for symbolic in DRIFT_WORKLOAD_TOOL_NAMES
+        if symbolic not in CHAT_ONLY_TOOL_NAMES
     ]
 
     assert actual_callable_order == expected_callable_order, (

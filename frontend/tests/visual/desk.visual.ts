@@ -22,7 +22,7 @@ import { resolve } from 'node:path';
 // prod renders. Screenshots land OUTSIDE the repo (scratchpad) so the branch
 // stays clean.
 //
-// Run by hand (NOT wired into CI, same as composer-lock.visual.ts):
+// Run by hand (NOT wired into CI, same as crew-handoff.visual.ts):
 //   npx playwright test --config tests/visual/playwright.visual.config.ts \
 //     desk.visual.ts
 
@@ -292,7 +292,7 @@ async function mockDesk(page: Page, fx: DeskFixture) {
   // `/src/locales/decisions.ts`, and serving JSON for a JS module breaks the
   // whole app mount with a strict-MIME error, so the desk never renders at all.
   // Same class of trap as the `**/conversations**` one below, but a newer one:
-  // the locale namespace file postdates composer-lock.visual.ts, which is why
+  // the locale namespace file postdates the composer rig, which is why
   // that older rig could use the glob safely and this one cannot. Requiring
   // `?` or end-of-URL right after `/decisions` excludes any `.ts` module path.
   await page.route(/\/decisions(\?|$)/, (r) => json(r, { decisions: fx.decisions }));
@@ -307,7 +307,7 @@ async function mockDesk(page: Page, fx: DeskFixture) {
   );
   // Regex, not `**/conversations**` — that glob also matches the vite source
   // module `/src/lib/conversations.ts`, and serving JSON for a JS module breaks
-  // the whole app mount with a MIME error (learned in composer-lock.visual.ts).
+  // the whole app mount with a MIME error (learned in the composer rig).
   await page.route(/\/conversations\?/, (r) => json(r, { conversations: [] }));
 }
 

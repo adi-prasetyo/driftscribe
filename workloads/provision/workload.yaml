@@ -64,6 +64,11 @@ enabled_tool_names:
   # Cross-crew "team memory" — read what other crews discussed (read-only);
   # kept among the read tools so the mutation tools stay last.
   - read_conversations
+  # Hand the conversation to another crew, pending operator confirmation.
+  # Coordinator-local control-plane write: no worker, no PR, no notification,
+  # no write-capable credential — and it cannot complete the transition it
+  # proposes (redemption is a separate authenticated request).
+  - request_crew_handoff
   - provision_open_infra_pr
   - provision_propose_adoption
 

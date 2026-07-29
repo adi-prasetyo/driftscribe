@@ -114,6 +114,14 @@ TOOL_DESCRIPTIONS: Final[Mapping[str, str]] = MappingProxyType({
         "control/bidi-stripped, and snippet-capped; tool call details and "
         "approval tokens are never surfaced."
     ),
+    "request_crew_handoff": (
+        "Asks the operator to bring in a different crew and hands that crew the "
+        "findings so far. Nothing happens until the operator confirms: the crew "
+        "proposes, the operator decides, and only then does the conversation "
+        "change hands. Marked read-only above because it touches nothing outside "
+        "DriftScribe — no pull request, no infrastructure change, no "
+        "notification — though it does record the pending proposal."
+    ),
     "upgrade_read_dependencies": (
         "Reads the target repo's dependency lockfile to identify outdated packages."
     ),

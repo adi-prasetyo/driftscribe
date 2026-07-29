@@ -419,6 +419,48 @@ def _reset_state_for_tests() -> None:
 
 _CONVERSATION_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
+# Conversation-document fields that are server bookkeeping, never client
+# contract. Both are new with the crew handoff:
+#
+# - ``pending_handoff`` carries ``nonce_digest`` (a hash of a live transition
+#   credential) and ``brief`` (written for the joining crew, not for a reader).
+#   The SPA does need to know a chip is outstanding, so this field is PROJECTED
+#   rather than dropped — see :func:`_project_pending_handoff`.
+# - ``chat_run_lease`` is concurrency plumbing with no reader outside this
+#   module.
+_CONVERSATION_INTERNAL_FIELDS = ("pending_handoff", "chat_run_lease")
+
+
+def _project_pending_handoff(pending: object) -> dict | None:
+    """Allowlist-project an open proposal for the client.
+
+    Enough to re-render the confirmation chip after a reload or a
+    ``?conversation=`` deep link — which is the whole reason the chip reads
+    from persisted state rather than from a one-shot SSE frame — and nothing
+    more. The nonce digest and the crew-facing brief stay server-side.
+    """
+    if not isinstance(pending, dict) or not pending.get("to"):
+        return None
+    expires_at = pending.get("expires_at")
+    return {
+        "from": pending.get("from"),
+        "to": pending.get("to"),
+        "reason": pending.get("reason") or "",
+        "expires_at": (
+            expires_at.isoformat() if hasattr(expires_at, "isoformat")
+            else expires_at
+        ),
+    }
+
+
+def _project_conversation(conv: dict) -> dict:
+    """Strip server-internal fields from a conversation doc before serving it."""
+    out = {k: v for k, v in conv.items() if k not in _CONVERSATION_INTERNAL_FIELDS}
+    projected = _project_pending_handoff(conv.get("pending_handoff"))
+    if projected is not None:
+        out["pending_handoff"] = projected
+    return out
+
 
 def _derive_conversation_title(prompt: str) -> str:
     """First-prompt title: sanitize control/bidi + truncate. No LLM call."""
@@ -448,6 +490,8 @@ def _resolve_chat_conversation(
             "is_new": True,
             "prior_turns": [],
             "ephemeral": ephemeral,
+            # No document yet, so no proposal was open when this turn began.
+            "pending_digest": None,
         }
     conv = state.get_conversation(conversation_id)
     if conv is None:
@@ -463,7 +507,18 @@ def _resolve_chat_conversation(
                 f"conversation is locked to crew {conv.get('workload')!r}; "
                 f"start a new chat to talk to {workload!r}"
             ),
-            headers={"Cache-Control": "no-store"},
+            # The lock's own answer to "then who DOES own this?", machine-
+            # readable rather than only in the prose above. Every other way a
+            # client learns the current crew is a separate request that may
+            # fail, which leaves the one failure this refusal should be
+            # incapable of: a composer stuck on a departed crew, refused every
+            # time it tries, by a message naming a crew it never adopts. This
+            # header is the backstop — it rides the refusal itself, so it
+            # cannot be the thing that goes missing.
+            headers={
+                "Cache-Control": "no-store",
+                "X-Conversation-Crew": str(conv.get("workload") or ""),
+            },
         )
     return {
         "conversation_id": conversation_id,
@@ -471,51 +526,173 @@ def _resolve_chat_conversation(
         "is_new": False,
         "prior_turns": conv.get("turns", []),
         "ephemeral": False,
+        # The proposal this turn is answering, identified rather than merely
+        # counted. Compared again at persist time so a run that started before
+        # a redemption cannot edit a proposal minted after it.
+        "pending_digest": (conv.get("pending_handoff") or {}).get("nonce_digest"),
     }
+
+
+def _mint_handoff_for_turn(conv: dict, result: dict) -> tuple[dict | None, str | None]:
+    """Turn a crew's handoff proposal into a ``pending_handoff`` + its nonce.
+
+    Returns ``(pending, nonce)``, both None when this turn proposed nothing (or
+    proposed something the server refuses to record). The nonce is minted HERE,
+    one step before the commit, and released to the client only after the commit
+    succeeds — the model never holds the credential its own proposal will be
+    confirmed with.
+    """
+    from agent.handoff import build_pending_handoff, mint_handoff_nonce
+
+    proposal = result.get("handoff")
+    if not isinstance(proposal, dict) or not proposal.get("to"):
+        return None, None
+    if proposal.get("from") != conv["workload"]:
+        # Defense in depth: the tool derives ``from`` from the request's bound
+        # workload, so a mismatch means something else wrote this. Drop it
+        # rather than record a route whose origin we cannot vouch for.
+        log.warning("handoff_proposal_origin_mismatch")
+        return None, None
+    nonce, digest = mint_handoff_nonce()
+    return build_pending_handoff(
+        proposal, digest=digest, now=dt.datetime.now(dt.timezone.utc),
+    ), nonce
+
+
+def _acquire_chat_run(state: StateStore, conv: dict) -> bool:
+    """Claim the conversation for this turn. Fail-OPEN on a store error.
+
+    The lease protects transcript ATTRIBUTION, not authority: the caller
+    already holds the crew it is about to run, and no ordering of these
+    requests grants tools it could not otherwise reach. So a store hiccup must
+    not refuse an operator's turn — it degrades to today's behavior.
+
+    Worth saying plainly rather than leaving implicit: failing open sacrifices
+    the exact property the lease exists for. Without a stored lease a redemption
+    can flip the crew mid-run, and ``append_turns`` revalidates neither the
+    holder nor the current workload, so this turn can land in the transcript
+    attributed to the crew that has since left. That is a wrong audit line, not
+    a wrong permission, and it is the deliberate trade: a Firestore blip is far
+    more likely than a concurrent redemption, and refusing the operator's turn
+    outright is a worse answer to it than a mislabelled row.
+    """
+    if conv.get("ephemeral"):
+        return True
+    run_id = uuid.uuid4().hex
+    try:
+        if not state.begin_chat_run(
+            conv["conversation_id"], run_id=run_id,
+            now=dt.datetime.now(dt.timezone.utc),
+        ):
+            return False
+    except Exception:  # noqa: BLE001
+        log.warning("chat_run_lease_acquire_failed", exc_info=True)
+        return True
+    conv["run_id"] = run_id
+    return True
+
+
+def _release_chat_run(state: StateStore, conv: dict) -> None:
+    run_id = conv.pop("run_id", None)
+    if not run_id:
+        return
+    try:
+        state.finish_chat_run(conv["conversation_id"], run_id=run_id)
+    except Exception:  # noqa: BLE001 — the lease TTL is the backstop
+        log.warning("chat_run_lease_release_failed", exc_info=True)
 
 
 def _persist_chat_turn(
     state: StateStore, *, conv: dict, prompt: str, trace_id: str | None,
     result: dict,
-) -> bool:
-    """Atomically append the user+crew turn pair. Fail-soft.
+) -> dict | None:
+    """Atomically append the turn pair (+ any handoff proposal). Fail-soft.
 
-    Returns True iff the pair persisted — the caller attaches ``conversation_id``
-    to the response ONLY on True, so we never hand the client an id that resolves
-    to nothing. The whole exchange (incl. lazy creation for a new conversation)
-    is one transaction, so there are no half-turns.
+    Returns None when nothing persisted, else ``{"conversation_id", "handoff"}``
+    — the caller attaches those to the response ONLY on a non-None result, so we
+    never hand the client an id that resolves to nothing, nor a nonce for a
+    proposal that did not commit. The whole exchange (incl. lazy creation for a
+    new conversation, and the proposal) is one transaction, so there are no
+    half-turns and no orphaned credentials.
 
-    An ``ephemeral`` turn writes nothing and returns False, so both transports
+    An ``ephemeral`` turn writes nothing and returns None, so both transports
     (JSON + SSE) omit the conversation_id automatically — the single place that
-    keeps probe traffic out of the operator's conversation history.
+    keeps probe traffic out of the operator's conversation history. A handoff
+    proposed on an ephemeral turn is therefore dropped too, which is correct:
+    there is no conversation for a transition to land on.
+
+    ``conv["omit_user_turn"]`` suppresses the user row. Set by the handoff
+    redemption path, where the operator confirmed a suggestion rather than
+    typing the prompt — recording their confirmation as a typed message would
+    put words in the operator's mouth in the durable transcript.
     """
     if conv.get("ephemeral"):
-        return False
+        return None
     try:
-        turns = [
-            {"role": "user", "text": prompt, "workload": conv["workload"],
-             "trace_id": trace_id},
+        turns = []
+        if not conv.get("omit_user_turn"):
+            turns.append(
+                {"role": "user", "text": prompt, "workload": conv["workload"],
+                 "trace_id": trace_id}
+            )
+        turns.append(
             {"role": "crew", "text": result.get("reply") or "",
              "workload": conv["workload"], "trace_id": trace_id,
              "iac_pr": result.get("iac_pr"),
-             "tool_calls": result.get("tool_calls")},
-        ]
+             "tool_calls": result.get("tool_calls")}
+        )
         create_with = (
             {"workload": conv["workload"],
              "title": _derive_conversation_title(prompt)}
             if conv.get("is_new") else None
         )
-        state.append_turns(conv["conversation_id"], turns, create_with=create_with)
+        pending, nonce = _mint_handoff_for_turn(conv, result)
+        state.append_turns(
+            conv["conversation_id"], turns, create_with=create_with,
+            # The crew this turn actually ran as, captured at request entry. If
+            # a redemption moved the conversation while this run was in flight,
+            # the store keeps the turn rows but refuses this run's edits to the
+            # open proposal — a stale writer must not delete or overwrite the
+            # joining crew's live suggestion. See _may_touch_pending_handoff.
+            expect_workload=conv["workload"],
+            expect_pending_digest=conv.get("pending_digest"),
+            pending_handoff=pending,
+            # An operator turn ANSWERS any outstanding suggestion: being asked
+            # "shall I bring in Provision?" and replying with something else is
+            # a reply, so the proposal is spent and retires with this write.
+            # Gated on a typed row, not merely on "no new proposal": the
+            # redemption path omits the user turn precisely because the
+            # operator did not type it, and a crew's own follow-up must not
+            # answer a question that was put to the operator.
+            clear_pending_handoff=any(t["role"] == "user" for t in turns),
+        )
         conv["is_new"] = False
-        return True
+        out: dict = {"conversation_id": conv["conversation_id"]}
+        # Present only on the turn a confirmed handoff runs: which crew just
+        # took over. Carried on ``conv`` by the redemption endpoint so BOTH
+        # transports report it — the JSON caller named no crew in its request,
+        # so this is the only place it learns which one answered.
+        if conv.get("crew_change"):
+            out["crew_change"] = conv["crew_change"]
+        if pending is not None and nonce is not None:
+            out["handoff"] = {
+                "from": pending["from"],
+                "to": pending["to"],
+                "reason": pending["reason"],
+                # The one and only time this value is ever transmitted.
+                "nonce": nonce,
+                "expires_at": pending["expires_at"].isoformat(),
+            }
+        return out
     except Exception:  # noqa: BLE001 — reply already produced; never break it
         log.warning("chat_turn_persist_failed", exc_info=True)
-        return False
+        return None
 
 
 async def _persisting_chat_stream(
     workload: str, prompt: str, conv: dict, trace_id: str | None,
     session_id: str | None, *, autonomy_mode: str, demo_anon: bool = False,
+    denied_tools: frozenset[str] | None = None,
 ):
     """Wrap _chat_stream: seed prior turns in, persist the new turn out.
 
@@ -524,22 +701,33 @@ async def _persisting_chat_stream(
     to run_chat_stream is invisible here, so we persist exactly once. The
     caller-supplied ADK session_id is forwarded unchanged (separate concept from
     conversation_id).
+
+    Also the single release site for the conversation's run lease: the lease is
+    acquired at request entry (so a busy thread gets a clean 409 before any
+    streaming starts) and released in the ``finally`` here, AFTER persistence.
+    Releasing earlier would let a redemption land between the run and its own
+    commit, which is exactly the interleave the lease exists to prevent.
     """
     state = get_state()
-    async for item in _chat_stream(
-        workload, prompt, session_id, autonomy_mode=autonomy_mode,
-        prior_turns=conv["prior_turns"], demo_anon=demo_anon,
-    ):
-        if item.get("type") == "result":
-            # Off-load the (possibly Firestore-transactional) write to a thread
-            # so a slow commit can't stall the SSE done/heartbeat frames or
-            # other async requests on the event loop.
-            if await asyncio.to_thread(
-                _persist_chat_turn, state, conv=conv, prompt=prompt,
-                trace_id=trace_id, result=item,
-            ):
-                item = {**item, "conversation_id": conv["conversation_id"]}
-        yield item
+    try:
+        async for item in _chat_stream(
+            workload, prompt, session_id, autonomy_mode=autonomy_mode,
+            prior_turns=conv["prior_turns"], demo_anon=demo_anon,
+            denied_tools=denied_tools,
+        ):
+            if item.get("type") == "result":
+                # Off-load the (possibly Firestore-transactional) write to a
+                # thread so a slow commit can't stall the SSE done/heartbeat
+                # frames or other async requests on the event loop.
+                persisted = await asyncio.to_thread(
+                    _persist_chat_turn, state, conv=conv, prompt=prompt,
+                    trace_id=trace_id, result=item,
+                )
+                if persisted:
+                    item = {**item, **persisted}
+            yield item
+    finally:
+        _release_chat_run(state, conv)
 
 
 _trace_fetcher_singleton: TraceFetcher | None = None
@@ -6566,6 +6754,7 @@ _SSE_HEARTBEAT_S = 15
 def _chat_stream(
     workload: str, prompt: str, session_id: str | None, *, autonomy_mode: str,
     prior_turns: list[dict] | None = None, demo_anon: bool = False,
+    denied_tools: frozenset[str] | None = None,
 ):
     """Select the chat-stream async generator for a workload.
 
@@ -6587,12 +6776,13 @@ def _chat_stream(
         return run_provision_fanout_stream(
             prompt, session_id, autonomy_mode=autonomy_mode,
             prior_turns=prior_turns, demo_anon=demo_anon,
+            denied_tools=denied_tools,
         )
     from agent.adk_agent import run_chat_stream
     return run_chat_stream(
         prompt, session_id=session_id, workload=workload,
         autonomy_mode=autonomy_mode, prior_turns=prior_turns,
-        demo_anon=demo_anon,
+        demo_anon=demo_anon, denied_tools=denied_tools,
     )
 
 
@@ -6609,7 +6799,21 @@ async def _drain_chat_stream_result(agen) -> dict:
     optional ``iac_pr`` pointer when a first-authoring infra run produced one).
     Raising on an exhausted stream with no result keeps the "no final response"
     RuntimeError identical to ``run_chat``'s, so the ``/chat`` ``except``
-    tuple maps it the same way."""
+    tuple maps it the same way.
+
+    The generator is closed in a ``finally``. Returning on the terminal item
+    leaves it SUSPENDED at its last ``yield``, so any cleanup it owns — for
+    ``_persisting_chat_stream``, releasing the conversation's run lease — runs
+    only at async-generator finalization, which the event loop schedules
+    whenever the last reference drops. CPython usually gets there quickly; this
+    makes it deterministic rather than usually."""
+    try:
+        return await _drain(agen)
+    finally:
+        await agen.aclose()
+
+
+async def _drain(agen) -> dict:
     async for item in agen:
         if item["type"] == "result":
             out = {
@@ -6624,13 +6828,20 @@ async def _drain_chat_stream_result(agen) -> dict:
             # Multi-turn (P1): echo the durable thread id when the turn persisted.
             if item.get("conversation_id"):
                 out["conversation_id"] = item["conversation_id"]
+            # Crew handoff: the proposal + its single-use nonce, present only
+            # when this turn proposed one AND the proposal committed.
+            if item.get("handoff"):
+                out["handoff"] = item["handoff"]
+            if item.get("crew_change"):
+                out["crew_change"] = item["crew_change"]
             return out
     raise RuntimeError("ADK chat agent produced no final response")
 
 
 async def _chat_sse(prompt: str, session_id: str | None, conv: dict,
                     workload: str, trace_id: str, *, autonomy_mode: str,
-                    demo_anon: bool = False):
+                    demo_anon: bool = False,
+                    denied_tools: frozenset[str] | None = None):
     """SSE generator for the /chat streaming path.
 
     Re-binds the trace_id + workload ContextVars INSIDE the generator
@@ -6657,6 +6868,7 @@ async def _chat_sse(prompt: str, session_id: str | None, conv: dict,
             async for item in _persisting_chat_stream(
                 workload, prompt, conv, trace_id, session_id,
                 autonomy_mode=autonomy_mode, demo_anon=demo_anon,
+                denied_tools=denied_tools,
             ):
                 await queue.put(("item", item))
         except Exception as e:  # noqa: BLE001 - mapped to a status hint
@@ -6698,6 +6910,15 @@ async def _chat_sse(prompt: str, session_id: str | None, conv: dict,
                     # persisted.
                     if item.get("conversation_id"):
                         done_data["conversation_id"] = item["conversation_id"]
+                    # Crew handoff: the proposal rides the TERMINAL frame, not a
+                    # dedicated mid-stream one. The nonce does not exist until
+                    # the proposal persists, and persistence happens at the end
+                    # of the stream — a mid-stream frame could only advertise a
+                    # credential that is not yet real.
+                    if item.get("handoff"):
+                        done_data["handoff"] = item["handoff"]
+                    if item.get("crew_change"):
+                        done_data["crew_change"] = item["crew_change"]
                     yield _sse_frame(event="done", data=done_data)
             elif kind == "error":
                 status, detail = payload
@@ -6847,6 +7068,17 @@ async def chat(
     conv = _resolve_chat_conversation(
         state, req.conversation_id, req.workload, ephemeral=req.ephemeral
     )
+    # Claim the conversation before any LLM work starts. The crew-lock check
+    # above is point-in-time — the agent does not run until the streaming
+    # generator is iterated, and persistence then uses the CAPTURED workload —
+    # so without this a redemption could flip the crew mid-run and the durable
+    # transcript would attribute the turn to a crew that was not driving.
+    if not _acquire_chat_run(state, conv):
+        raise HTTPException(
+            status_code=409,
+            detail="this conversation already has a turn in flight",
+            headers={"Cache-Control": "no-store"},
+        )
     trace_id = current_trace_id_or_new()
 
     # Phase 22: SSE streaming path. Content-negotiated on Accept — the
@@ -6916,15 +7148,26 @@ async def chat(
                 autonomy_mode=autonomy.mode, prior_turns=conv["prior_turns"],
                 demo_anon=demo_anon,
             )
-            if await asyncio.to_thread(
+            persisted = await asyncio.to_thread(
                 _persist_chat_turn, state, conv=conv, prompt=req.prompt,
                 trace_id=trace_id, result=result,
-            ):
-                result["conversation_id"] = conv["conversation_id"]
+            )
+            # Drop the RAW proposal unconditionally: it carries the brief (for
+            # the joining crew, not the client) and no nonce. Only the
+            # persisted projection is a usable contract, and only a committed
+            # proposal has one — an ephemeral turn or a failed write must
+            # advertise no handoff at all.
+            result.pop("handoff", None)
+            if persisted:
+                result.update(persisted)
             # Operator decision 2026-07-09: anon receives the live approval link
             # in the /chat JSON reply, same as the operator (audit C1 reversed).
             return result
         finally:
+            # The SSE + provision paths release inside
+            # ``_persisting_chat_stream``; this branch owns its own release.
+            if req.workload != "provision":
+                _release_chat_run(state, conv)
             reset_workload(_workload_token)
     except (
         worker_client.WorkerClientError,
@@ -6942,6 +7185,340 @@ async def chat(
         # 502 (ADK parse/response failure).
         status, detail = _chat_error_payload(e, workload=req.workload)
         raise HTTPException(status_code=status, detail=detail) from e
+
+
+class HandoffRedeemRequest(BaseModel):
+    """Confirm (or decline) a crew handoff a crew proposed on a previous turn.
+
+    Note what is NOT here: the target crew. ``from`` and ``to`` are read from
+    the persisted proposal, so the caller confirms a specific route the server
+    already recorded rather than naming one. Combined with the nonce, that is
+    what makes this an intent-BOUND confirmation instead of a second way to ask
+    for an arbitrary workload.
+    """
+
+    conversation_id: str
+    nonce: str
+    accept: bool
+
+
+# Refusal token -> HTTP status. Every one of these leaves the conversation
+# exactly as it was; none of them burn the proposal (except the ones where it
+# is already gone), so a refused confirmation costs the operator one click.
+_HANDOFF_REFUSAL_STATUS: dict[str, int] = {
+    "not_found": 404,
+    "no_pending": 409,   # nothing to confirm — already used, declined, or never made
+    # Deliberately NOT 403. The nonce is a single-use resource credential, not
+    # an authentication factor: the caller is already authenticated (or is an
+    # allowlisted anonymous visitor during the demo window) and is simply
+    # presenting a credential that does not match this conversation's proposal.
+    # 403 said "your operator token was rejected", which the SPA's ``apiFetch``
+    # believes literally — it clears the stored token and raises the token
+    # modal (see the demo-allowlist gap, PR #208, for the same failure shape).
+    # An anonymous judge clicking a superseded chip would be thrown out of the
+    # demo. 409 puts it with its siblings, and X-Handoff-Refusal keeps the
+    # distinction the status no longer carries.
+    "invalid_nonce": 409,
+    "expired": 410,      # it existed and the window closed
+    "stale": 409,        # the thread moved on; this route no longer starts here
+    "busy": 409,         # a turn is in flight
+}
+
+_HANDOFF_REFUSAL_DETAIL: dict[str, str] = {
+    "not_found": "conversation not found",
+    "no_pending": "no crew handoff is awaiting confirmation on this conversation",
+    "invalid_nonce": "this confirmation is not valid for this conversation",
+    "expired": "this handoff has expired; ask the crew to suggest it again",
+    "stale": "this conversation has already moved to another crew",
+    "busy": "this conversation already has a turn in flight",
+}
+
+
+@app.post("/chat/handoff", response_model=None)
+async def chat_handoff(
+    req: HandoffRedeemRequest,
+    request: Request,
+    _: None = Depends(verify_token),
+) -> dict | StreamingResponse:
+    """Redeem a single-use crew-handoff proposal.
+
+    This endpoint exists so ``POST /chat`` never has to become a way to change
+    a conversation's crew. ``ChatRequest.workload`` stays a closed ``Literal``
+    and ``_resolve_chat_conversation``'s 409 stays exactly as written — that
+    lock is scar tissue (a workload-less POST once defaulted to the
+    mutation-capable drift workload and an out-of-domain probe prompt became
+    fabricated docs PR #109), so the design works around it rather than
+    loosening it.
+
+    On ``accept`` the confirmation IS the turn: the joining crew runs
+    immediately against the handing crew's brief, because a join that then
+    waits for the operator to retype what they already said is precisely the
+    friction this replaces. That turn runs with
+    ``HANDOFF_FIRST_TURN_DENIED_TOOLS`` subtracted in code.
+
+    What the nonce buys, stated honestly: intent binding, expiry, and replay
+    prevention. NOT "a human clicked" — during the public demo window anonymous
+    visitors deliberately hold the operator seat, so the real guarantee is a
+    separate, authenticated confirmation request bound to a specific proposal.
+    """
+    from agent.handoff import (
+        HANDOFF_FIRST_TURN_DENIED_TOOLS,
+        crew_display_name,
+        handoff_prompt,
+    )
+
+    s = get_settings()
+    if not s.use_adk:
+        raise HTTPException(
+            status_code=503,
+            detail="ADK not enabled (set USE_ADK=true to enable /chat)",
+        )
+    wants_sse = "text/event-stream" in request.headers.get("accept", "")
+    # Path-safe id guard, same as GET /conversations/{id}: a malformed id is
+    # not-found, never a value handed to ``.document()``.
+    if not _CONVERSATION_ID_RE.fullmatch(req.conversation_id):
+        raise HTTPException(
+            status_code=404,
+            detail="conversation not found",
+            headers={"Cache-Control": "no-store"},
+        )
+    # Pause outranks everything, and is checked BEFORE redemption on purpose:
+    # confirming would start an LLM turn, which IS agent activity. Refusing
+    # without burning the proposal means the operator can confirm the same chip
+    # once they resume, instead of having to coax the crew into suggesting it
+    # again.
+    pause = _pause_state_fail_closed()
+    if pause.paused:
+        return _paused_chat_response(
+            pause, wants_sse=wants_sse, session_id=None,
+            conversation_id=req.conversation_id,
+        )
+
+    state = get_state()
+    # The joining run's lease is claimed in the SAME transaction that burns the
+    # nonce. Claiming it afterwards left a window in which an ordinary turn
+    # could take the conversation first — and the confirmation would then have
+    # to refuse having ALREADY spent its credential and moved the crew.
+    joining_run_id = uuid.uuid4().hex
+    outcome = await asyncio.to_thread(
+        state.redeem_handoff,
+        req.conversation_id, nonce=req.nonce, accept=req.accept,
+        now=dt.datetime.now(dt.timezone.utc),
+        trace_id=current_trace_id_or_new(),
+        run_id=joining_run_id,
+    )
+    if not outcome.get("ok"):
+        reason = outcome.get("error", "no_pending")
+        raise HTTPException(
+            status_code=_HANDOFF_REFUSAL_STATUS.get(reason, 409),
+            detail=_HANDOFF_REFUSAL_DETAIL.get(reason, "handoff refused"),
+            # The reason as a machine-readable token, because the status alone
+            # is ambiguous where it matters: 409 covers both "already used /
+            # superseded" (the proposal is dead, ask again) and "a turn is
+            # already running" (retry in a moment). Those need different copy,
+            # and the SPA must not have to pattern-match an English sentence to
+            # tell them apart. A header rather than a body field so the error
+            # shape stays exactly what every other endpoint returns.
+            headers={"Cache-Control": "no-store", "X-Handoff-Refusal": reason},
+        )
+    pending = outcome["pending"]
+
+    if not req.accept:
+        # Declining is a real POST, not a client-side dismiss: it burns the
+        # nonce and records a row the crew reads next turn. Without it the crew
+        # re-proposes every turn and no prompt-level restraint can see the
+        # refusal to respect it. No LLM runs.
+        payload = {
+            "reply": (
+                f"Staying with {crew_display_name(pending['from'])}. "
+                f"{crew_display_name(pending['to'])} was not brought in."
+            ),
+            "tool_calls": [],
+            "session_id": "",
+            "conversation_id": req.conversation_id,
+            "handoff_declined": {"from": pending["from"], "to": pending["to"]},
+        }
+        if not wants_sse:
+            return payload
+
+        async def _one_done_frame():
+            yield _sse_frame(event="done", data=payload)
+
+        return StreamingResponse(
+            _one_done_frame(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    # --- accepted: the joining crew runs now --------------------------------
+    #
+    # From here on the redemption HAS COMMITTED: the nonce is spent and the
+    # conversation's crew is already rewritten. Every error raised below is
+    # therefore a *post-commit* error, which is a different thing from the
+    # refusals above even when it shares their status class. The client cannot
+    # tell them apart from the response alone, and getting it wrong is not
+    # cosmetic — it would keep showing a chip for a spent proposal and keep the
+    # composer bound to the crew that already left, so the operator's next
+    # typed turn is refused by the crew lock. ``X-Handoff-Redeemed`` says which
+    # side of the commit the failure fell on.
+    workload = pending["to"]
+    # Reserving the joining run inside the burn transaction closed the race
+    # where an ordinary turn could take the lease first — but it hands this
+    # function a lease it now has to not drop. Nothing below owns the release
+    # until a runner does, and everything between here and there can raise:
+    # a crew whose worker env is missing, a contract fetch, the autonomy read,
+    # a transient store failure. Leak one and the conversation is wedged for
+    # the full lease TTL, which the operator cannot type their way out of,
+    # because a typed turn takes the same lease. That would make the 503
+    # branch's promise below false.
+    _joining_lease_owned = True
+    try:
+        try:
+            resolution = load_workload(workload)
+        except (
+            MissingWorkerEnvError,
+            ReservedToolNotImplementedError,
+            MissingDeveloperKnowledgeApiKeyError,
+        ) as e:
+            # The crew flip has already committed. That is deliberate: the
+            # transition is what the operator confirmed, and a failed first run
+            # is an ordinary error they can retry by typing. Undoing the flip
+            # here would silently discard a confirmed decision.
+            #
+            # "Retry by typing" only works if the client MOVED WITH the flip.
+            # The marker added below is what lets it: without it the SPA keeps
+            # the departed crew selected and its retry is refused by the very
+            # lock this transition just moved.
+            raise HTTPException(
+                status_code=503,
+                detail=f"workload {workload!r} is not deployed: {e}.",
+            ) from e
+        _eager_resolve_upgrade_contract(resolution)
+
+        autonomy = _autonomy_state_fail_closed()
+        # Re-evaluated at redemption, NOT inherited from the proposing turn: the
+        # dial may have moved, and an anonymous visitor's restrictions must apply
+        # to the crew that is actually about to run.
+        demo_anon = _is_demo_anonymous(request)
+
+        stored = state.get_conversation(req.conversation_id) or {}
+        conv = {
+            "conversation_id": req.conversation_id,
+            "workload": workload,
+            "is_new": False,
+            "prior_turns": stored.get("turns", []),
+            "ephemeral": False,
+            # The operator confirmed a suggestion; they did not type this
+            # prompt. Recording a user turn here would put words in their mouth
+            # in a transcript whose whole value is being trustworthy.
+            "omit_user_turn": True,
+            "crew_change": {"from": pending["from"], "to": pending["to"]},
+            # Redemption deleted the proposal it burned, so nothing is open for
+            # this run to answer. If the joining crew proposes something of its
+            # own, that write compares against this same "none was open".
+            "pending_digest": None,
+            # Already held: ``redeem_handoff`` reserved it transactionally.
+            # Carried here so the normal release path in
+            # ``_persisting_chat_stream`` (and the JSON branch's ``finally``)
+            # frees it exactly as for a typed turn.
+            "run_id": outcome.get("run_id") or joining_run_id,
+        }
+        prompt = handoff_prompt(pending)
+        trace_id = current_trace_id_or_new()
+
+        if wants_sse:
+            response = StreamingResponse(
+                _chat_sse(
+                    prompt, None, conv, workload, trace_id,
+                    autonomy_mode=autonomy.mode, demo_anon=demo_anon,
+                    denied_tools=HANDOFF_FIRST_TURN_DENIED_TOOLS,
+                ),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "X-Accel-Buffering": "no",
+                    "X-Trace-Id": trace_id,
+                },
+            )
+            # Handover: the stream's own ``finally`` owns the release from here,
+            # and ``_drain_chat_stream_result``'s ``aclose`` guarantees it runs
+            # even if the generator is left suspended. Releasing here as well
+            # would free a lease the run still holds.
+            _joining_lease_owned = False
+            return response
+
+        from agent.adk_agent import run_chat
+
+        _workload_token = set_workload(workload)
+        try:
+            try:
+                # Same handover, one frame earlier: both branches below release
+                # in the ``finally`` directly beneath them.
+                _joining_lease_owned = False
+                if workload == "provision":
+                    return await _drain_chat_stream_result(
+                        _persisting_chat_stream(
+                            "provision", prompt, conv, trace_id, None,
+                            autonomy_mode=autonomy.mode, demo_anon=demo_anon,
+                            denied_tools=HANDOFF_FIRST_TURN_DENIED_TOOLS,
+                        )
+                    )
+                result = await run_chat(
+                    prompt, session_id=None, workload=workload,
+                    autonomy_mode=autonomy.mode, prior_turns=conv["prior_turns"],
+                    demo_anon=demo_anon,
+                    denied_tools=HANDOFF_FIRST_TURN_DENIED_TOOLS,
+                )
+                persisted = await asyncio.to_thread(
+                    _persist_chat_turn, state, conv=conv, prompt=prompt,
+                    trace_id=trace_id, result=result,
+                )
+                result.pop("handoff", None)
+                if persisted:
+                    result.update(persisted)
+                return result
+            finally:
+                if workload != "provision":
+                    _release_chat_run(state, conv)
+                reset_workload(_workload_token)
+        except (
+            worker_client.WorkerClientError,
+            MissingDeveloperKnowledgeApiKeyError,
+            RuntimeError,
+        ) as e:
+            status, detail = _chat_error_payload(e, workload=workload)
+            raise HTTPException(status_code=status, detail=detail) from e
+    except HTTPException as e:
+        # Stamp every post-commit failure, whatever raised it. Done here rather
+        # than at each raise site so an error path added later cannot forget
+        # it — past the burn, "the transition happened" is the default and has
+        # to be opt-out, not opt-in.
+        e.headers = {**(e.headers or {}), "X-Handoff-Redeemed": "1"}
+        raise
+    except Exception as e:  # noqa: BLE001
+        # "Whatever raised it" has to mean that literally. An exception that is
+        # not already an HTTPException — a store read that fails after the
+        # burn, a contract fetch, anything added below later — would otherwise
+        # reach the client as a bare 500 carrying no marker, and an unmarked
+        # response is read as a PRE-commit refusal. That is the precise state
+        # this header exists to prevent: chip still live, composer still bound
+        # to the crew that already left, and the operator's next typed turn
+        # refused by the crew lock they cannot see.
+        #
+        # Converting here rather than letting it propagate is the whole point:
+        # the marker cannot ride an exception FastAPI turns into a 500 for us.
+        raise HTTPException(
+            status_code=500,
+            detail="the crew changed, but its first reply could not be started",
+            headers={"X-Handoff-Redeemed": "1"},
+        ) from e
+    finally:
+        if _joining_lease_owned:
+            _release_chat_run(
+                state,
+                {"conversation_id": req.conversation_id,
+                 "run_id": outcome.get("run_id") or joining_run_id},
+            )
 
 
 @app.get("/conversations")
@@ -6968,7 +7545,10 @@ def list_conversations_endpoint(
             headers={"Cache-Control": "no-store"},
         )
     response.headers["Cache-Control"] = "no-store"
-    rows = state.list_conversations(limit=limit, workload=workload)
+    rows = [
+        _project_conversation(r) for r in
+        state.list_conversations(limit=limit, workload=workload)
+    ]
     # Operator decision 2026-07-09 (audit M1 reversed): conversations are shared
     # team memory by design in the public window. The visitor holds the operator
     # seat, so a persisted turn's live ?t= approval link is served to anonymous
@@ -7004,4 +7584,4 @@ def get_conversation_endpoint(
     # Operator decision 2026-07-09 (audit M1 reversed): shared team memory is
     # shared-seat by design in the public window. Anonymous readers get the full
     # turns with any live ?t= approval link intact, same as the operator.
-    return conv
+    return _project_conversation(conv)

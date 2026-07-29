@@ -2,13 +2,14 @@ import { defineConfig, devices } from '@playwright/test';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
-// Visual route-mock rig for the composer New-chat + crew-lock feature
-// (docs/plans/2026-07-08-composer-new-chat-crew-lock.md, Task 5.2).
+// Visual route-mock rig for the chat-composer walkthroughs
+// (crew-handoff.visual.ts; originally the composer New-chat + crew-lock rig,
+// docs/plans/2026-07-08-composer-new-chat-crew-lock.md Task 5.2).
 //
 // Deliberately SEPARATE from the smoke rig (tests/smoke): this one boots the
 // VITE DEV SERVER (not uvicorn, not the live deployment) and mocks every JSON
 // endpoint with page.route, so it needs zero backend and never touches GCP or
-// the public demo host. It exists to eyeball the lock states + capture PNGs, not
+// the public demo host. It exists to eyeball the composer states + capture PNGs, not
 // to gate CI — run it by hand:
 //
 //   npx playwright test --config tests/visual/playwright.visual.config.ts
