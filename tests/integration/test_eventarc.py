@@ -20,6 +20,8 @@ monkeypatch.setenv so the new value is observed.
 """
 
 import asyncio
+import json
+import logging
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -27,6 +29,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from google.auth import exceptions as google_auth_exceptions
 
+import agent.main as main_mod
 from agent.config import get_settings
 from agent.main import app
 from driftscribe_lib import logging as ds_logging
@@ -255,11 +258,21 @@ def test_eventarc_rejects_missing_email_claim(monkeypatch):
 
 
 def test_eventarc_accepts_correct_email_and_dispatches_recheck(monkeypatch):
-    """Full valid path: bearer verifies, email matches, recheck dispatched.
+    """Full valid path: bearer verifies, email matches, recheck dispatched
+    as a BACKGROUND task; the handler acks immediately (fast-ack).
 
-    Pins that ``_do_recheck`` is called with ``trigger="eventarc"`` so the
-    decision document records the auto-trigger source (which the smoke test
-    polls Firestore for).
+    2026-07-29 incident: the handler used to ``await`` the full Anchor turn
+    (20–120s of reader worker + Gemini) before responding, but the Eventarc
+    push subscriptions only wait ``ackDeadlineSeconds`` for the HTTP
+    response — so Pub/Sub treated nearly every delivery as failed and
+    redelivered it for hours. The redelivery train saturated the
+    maxScale=1/concurrency=2 service and operators saw Cloud Run's
+    "Rate exceeded." page. The handler now acks in-scope events with a
+    small dispatch body BEFORE the recheck runs.
+
+    Still pins (Phase 17.A.3 Codex blocker) that ``_do_recheck`` is called
+    with ``trigger="eventarc"`` and workload HARDCODED to "drift" — the
+    payload must not be able to smuggle a different workload in.
     """
     _set_audience(monkeypatch)
     recheck_result = {
@@ -281,11 +294,16 @@ def test_eventarc_accepts_correct_email_and_dispatches_recheck(monkeypatch):
             headers={"Authorization": "Bearer fake-token"},
         )
     assert r.status_code == 200
-    assert r.json() == recheck_result
-    # Phase 17.A.3 (Codex blocker): /eventarc hardcodes workload="drift"
-    # server-side. Pin the full call so a regression that drops the
-    # kwarg — or, worse, lets the payload smuggle a different workload
-    # in — would fail this assertion.
+    # The ack body identifies the dispatch WITHOUT carrying the decision —
+    # the decision lands in Firestore (the smoke test polls it there).
+    assert r.json() == {
+        "dispatched": "background",
+        "trigger": "eventarc",
+        "service": "payment-demo",
+        "region": "asia-northeast1",
+    }
+    # TestClient runs Starlette background tasks before returning, so the
+    # awaited-once assertion below also proves the task actually ran.
     mock_recheck.assert_awaited_once_with("eventarc", workload="drift")
     # The verifier was called with the configured audience — pin that the
     # handler uses settings.eventarc_audience, not a hardcoded value.
@@ -293,11 +311,12 @@ def test_eventarc_accepts_correct_email_and_dispatches_recheck(monkeypatch):
     assert kwargs.get("audience") == _VALID_AUDIENCE or _VALID_AUDIENCE in args
 
 
-def test_eventarc_response_scrubs_secret_in_rationale(monkeypatch):
-    """PR 2 — the /eventarc decision response must scrub a secret quoted in the
-    rationale. /eventarc routes through the same ``_do_recheck`` as /recheck
-    (its real path is tested in test_recheck_use_adk_path); here ``_do_recheck``
-    is mocked to isolate the handler's ``scrub_decision_rationale`` wrap."""
+def test_eventarc_ack_never_carries_decision_content(monkeypatch):
+    """Supersedes the PR 2 scrub test: the strongest rationale scrub is
+    absence. The fast-ack body must not embed ANYTHING derived from
+    ``_do_recheck``'s return — no rationale (which can quote live secret
+    VALUES), no diffs, no decision_id. /runs/{id} and /decisions remain the
+    (scrubbed) read surfaces for the decision itself."""
     _set_audience(monkeypatch)
     secret = "sk-EVT-3030"
     decision = {
@@ -322,10 +341,11 @@ def test_eventarc_response_scrubs_secret_in_rationale(monkeypatch):
             headers={"Authorization": "Bearer fake-token"},
         )
     assert r.status_code == 200
+    assert secret not in r.text
     body = r.json()
-    assert secret not in body["rationale"]        # rationale prose scrubbed
-    assert "API_TOKEN" in body["rationale"]        # var name survives
-    assert body["diffs"][0]["live"] == secret      # diffs[] raw by design
+    assert "rationale" not in body
+    assert "diffs" not in body
+    assert "decision_id" not in body
 
 
 def test_eventarc_rejects_bare_url_audience(monkeypatch):
@@ -606,10 +626,19 @@ def test_eventarc_returns_503_when_gcp_project_unset(monkeypatch):
     assert "gcp_project" in r.json()["detail"].lower()
 
 
-def test_eventarc_propagates_recheck_502(monkeypatch):
-    """If ``_do_recheck`` raises HTTPException(502), the handler does NOT
-    swallow it — the worker-failure status surfaces unchanged to the caller.
-    """
+def test_eventarc_acks_200_when_background_recheck_fails_http(
+    monkeypatch, caplog
+):
+    """Inverts the old propagate-502 contract (2026-07-29 incident). A
+    worker outage (HTTPException 502 from ``_do_recheck``) must NOT become
+    a non-2xx push response: Eventarc redelivers non-2xx, and with a
+    20–120s handler that retry train saturated the service. The delivery
+    is acked 200 up front; the background failure is logged for operators
+    (structured, queryable) and the drift is re-discovered by the next
+    event, the demo-reset cron, or a manual /recheck. This test also
+    proves the wrapper swallows the exception — a leak would propagate
+    through the ASGI cycle and raise right here in TestClient."""
+    caplog.set_level(logging.INFO, logger="driftscribe-agent")
     _set_audience(monkeypatch)
     mock_recheck = AsyncMock(
         side_effect=HTTPException(status_code=502, detail="cloud run read failed")
@@ -625,8 +654,232 @@ def test_eventarc_propagates_recheck_502(monkeypatch):
             json=_audit_log_body(),
             headers={"Authorization": "Bearer fake-token"},
         )
-    assert r.status_code == 502
-    assert "cloud run read failed" in r.json()["detail"]
+    assert r.status_code == 200
+    assert r.json()["dispatched"] == "background"
+    mock_recheck.assert_awaited_once()
+    assert any(
+        rec.getMessage() == "eventarc_background_recheck_rejected"
+        for rec in caplog.records
+    )
+
+
+def test_eventarc_rejected_log_never_carries_exception_detail(
+    monkeypatch, caplog
+):
+    """Codex review of the fast-ack: ``HTTPException.detail`` is neither
+    bounded nor secret-safe — validator errors interpolate live env VALUES,
+    ADK parse errors embed raw model output, worker failures carry response
+    bodies. The rejected-log must record ``status_code`` only; the detail
+    string must not reach the log stream in any field."""
+    caplog.set_level(logging.INFO, logger="driftscribe-agent")
+    _set_audience(monkeypatch)
+    secret = "sk-DETAIL-LEAK-777"
+    mock_recheck = AsyncMock(
+        side_effect=HTTPException(
+            status_code=500, detail=f"validator saw API_TOKEN={secret}"
+        )
+    )
+    with (
+        patch("agent.main.verify_oauth2_token") as m_verify,
+        patch("agent.main._do_recheck", mock_recheck),
+    ):
+        m_verify.return_value = {"email": _EXPECTED_EMAIL, "aud": _VALID_AUDIENCE}
+        r = TestClient(app).post(
+            "/eventarc",
+            json=_audit_log_body(),
+            headers={"Authorization": "Bearer fake-token"},
+        )
+    assert r.status_code == 200
+    rejected = [
+        rec for rec in caplog.records
+        if rec.getMessage() == "eventarc_background_recheck_rejected"
+    ]
+    assert rejected, "expected a rejected log record"
+    assert getattr(rejected[0], "status_code", None) == 500
+    for rec in caplog.records:
+        assert secret not in str(rec.__dict__)
+
+
+def test_eventarc_ack_survives_malformed_recheck_return(monkeypatch, caplog):
+    """Codex review of the fast-ack: the success-path logging must live
+    INSIDE the containment too. A ``_do_recheck`` that returns a non-dict
+    (contract skew, future refactor) must not raise out of the background
+    task into the ASGI cycle — TestClient would surface that raise right
+    here. AND (Codex round 2) it must log ``_failed``, NOT ``_done`` —
+    the e2e smoke's log probe treats ``_done`` as proof the audit
+    completed, so a malformed result reported as done would let the smoke
+    pass during contract skew."""
+    caplog.set_level(logging.INFO, logger="driftscribe-agent")
+    _set_audience(monkeypatch)
+    mock_recheck = AsyncMock(return_value=None)
+    with (
+        patch("agent.main.verify_oauth2_token") as m_verify,
+        patch("agent.main._do_recheck", mock_recheck),
+    ):
+        m_verify.return_value = {"email": _EXPECTED_EMAIL, "aud": _VALID_AUDIENCE}
+        r = TestClient(app).post(
+            "/eventarc",
+            json=_audit_log_body(),
+            headers={"Authorization": "Bearer fake-token"},
+        )
+    assert r.status_code == 200
+    assert r.json()["dispatched"] == "background"
+    mock_recheck.assert_awaited_once()
+    messages = [rec.getMessage() for rec in caplog.records]
+    assert "eventarc_background_recheck_done" not in messages
+    failed = [
+        rec for rec in caplog.records
+        if rec.getMessage() == "eventarc_background_recheck_failed"
+    ]
+    assert failed and getattr(failed[0], "reason", None) == "non_dict_result"
+
+
+async def test_eventarc_background_recheck_single_flight_coalesces():
+    """Codex review of the fast-ack (P1): ``_do_recheck`` runs the Gemini
+    turn BEFORE its event_key dedup, so N concurrent background audits =
+    N LLM turns. The background runner must single-flight: while an audit
+    is in flight, further dispatches mark it dirty and return; ONE trailing
+    rerun covers them all (the audit is payload-blind — it reads live
+    state, so the rerun sees everything the coalesced events changed)."""
+    coalescer = main_mod._EVENTARC_COALESCER
+    coalescer.active = False
+    coalescer.dirty = False
+    release = asyncio.Event()
+    calls: list[tuple] = []
+
+    async def slow_recheck(trigger, *, workload):
+        calls.append((trigger, workload))
+        await release.wait()
+        return {"decision_id": f"d{len(calls)}", "action": "no_op"}
+
+    with patch("agent.main._do_recheck", side_effect=slow_recheck):
+        t1 = asyncio.create_task(
+            main_mod._eventarc_background_recheck("payment-demo", "asia-northeast1")
+        )
+        for _ in range(5):  # let t1 enter the audit and block on release
+            await asyncio.sleep(0)
+        assert calls == [("eventarc", "drift")]
+        # Three more events land while the audit is running.
+        t2 = asyncio.create_task(
+            main_mod._eventarc_background_recheck("payment-demo", "asia-northeast1")
+        )
+        t3 = asyncio.create_task(
+            main_mod._eventarc_background_recheck("payment-demo", "asia-northeast1")
+        )
+        t4 = asyncio.create_task(
+            main_mod._eventarc_background_recheck("payment-demo", "asia-northeast1")
+        )
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert len(calls) == 1, "coalesced dispatches must not start new audits"
+        release.set()
+        await asyncio.wait_for(asyncio.gather(t1, t2, t3, t4), timeout=5)
+    # Exactly ONE trailing rerun for the three coalesced events.
+    assert len(calls) == 2
+    assert coalescer.active is False
+    assert coalescer.dirty is False
+
+
+async def test_eventarc_acks_on_the_wire_before_recheck_completes(monkeypatch):
+    """Codex review of the fast-ack (the ordering proof TestClient cannot
+    give): drive the raw ASGI app with a ``_do_recheck`` that blocks until
+    released, and assert the final ``http.response.body`` message is sent
+    WHILE the recheck is still blocked. A regression that awaits the
+    recheck before responding hangs the response and times out here."""
+    monkeypatch.setenv("EVENTARC_AUDIENCE", _VALID_AUDIENCE)
+    get_settings.cache_clear()
+    main_mod._EVENTARC_COALESCER.active = False
+    main_mod._EVENTARC_COALESCER.dirty = False
+
+    release = asyncio.Event()
+
+    async def blocking_recheck(trigger, *, workload):
+        await release.wait()
+        return {"decision_id": "x", "action": "no_op"}
+
+    body_bytes = json.dumps(_audit_log_body()).encode()
+    sent: list[dict] = []
+    body_complete = asyncio.Event()
+
+    async def send(message):
+        sent.append(message)
+        if message["type"] == "http.response.body" and not message.get(
+            "more_body", False
+        ):
+            body_complete.set()
+
+    consumed = False
+
+    async def receive():
+        nonlocal consumed
+        if not consumed:
+            consumed = True
+            return {"type": "http.request", "body": body_bytes, "more_body": False}
+        return {"type": "http.disconnect"}
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/eventarc",
+        "raw_path": b"/eventarc",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [
+            (b"authorization", b"Bearer fake-token"),
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(body_bytes)).encode()),
+            (b"host", b"testserver"),
+        ],
+        "client": ("testclient", 50000),
+        "server": ("testserver", 80),
+    }
+
+    with (
+        patch("agent.main.verify_oauth2_token") as m_verify,
+        patch("agent.main._do_recheck", side_effect=blocking_recheck),
+    ):
+        m_verify.return_value = {"email": _EXPECTED_EMAIL, "aud": _VALID_AUDIENCE}
+        app_task = asyncio.create_task(app(scope, receive, send))
+        # The full response must hit the wire while the recheck is still
+        # blocked — THIS is the fast-ack contract.
+        await asyncio.wait_for(body_complete.wait(), timeout=5)
+        start = next(m for m in sent if m["type"] == "http.response.start")
+        assert start["status"] == 200
+        release.set()
+        await asyncio.wait_for(app_task, timeout=5)
+
+
+def test_eventarc_acks_200_when_background_recheck_raises_unexpected(
+    monkeypatch, caplog
+):
+    """Same fast-ack contract for a NON-HTTP crash inside the background
+    recheck (bug, worker contract skew, etc.): the 200 was already sent,
+    the wrapper must swallow and log — never re-raise into the ASGI cycle
+    (which TestClient would surface as an exception here)."""
+    caplog.set_level(logging.INFO, logger="driftscribe-agent")
+    _set_audience(monkeypatch)
+    mock_recheck = AsyncMock(side_effect=RuntimeError("boom"))
+    with (
+        patch("agent.main.verify_oauth2_token") as m_verify,
+        patch("agent.main._do_recheck", mock_recheck),
+    ):
+        m_verify.return_value = {"email": _EXPECTED_EMAIL, "aud": _VALID_AUDIENCE}
+        client = TestClient(app)
+        r = client.post(
+            "/eventarc",
+            json=_audit_log_body(),
+            headers={"Authorization": "Bearer fake-token"},
+        )
+    assert r.status_code == 200
+    assert r.json()["dispatched"] == "background"
+    mock_recheck.assert_awaited_once()
+    assert any(
+        rec.getMessage() == "eventarc_background_recheck_failed"
+        for rec in caplog.records
+    )
 
 
 # --------------------------------------------------------------------------- #

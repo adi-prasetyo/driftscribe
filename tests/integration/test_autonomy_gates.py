@@ -290,10 +290,19 @@ def test_eventarc_observe_still_processes(monkeypatch):
 
     assert r.status_code == 200, r.text
     body = r.json()
-    # NOT the pause drop shape.
+    # NOT the pause drop shape — the event was dispatched, not dropped.
     assert body.get("ignored") != "paused"
-    assert body["suppressed_by_autonomy"] is True
-    assert body["github"]["suppressed_by_autonomy"] == "observe"
+    # Fast-ack (2026-07-29 incident): the response no longer carries the
+    # decision — it's the dispatch ack; TestClient runs the background
+    # recheck before returning, so the suppressed-decision shape is read
+    # from the recorded decision instead.
+    assert body["dispatched"] == "background"
+    decisions = get_state().list_decisions(limit=1)
+    assert decisions, "background recheck recorded no decision"
+    recorded = decisions[0]
+    assert recorded["trigger"] == "eventarc"
+    assert recorded["suppressed_by_autonomy"] is True
+    assert recorded["github"]["suppressed_by_autonomy"] == "observe"
 
 
 def test_rollback_observe_suppresses_worker_calls(_live_github, monkeypatch):

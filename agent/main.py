@@ -18,7 +18,17 @@ from concurrent.futures import TimeoutError as _FutureTimeout
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import Depends, FastAPI, Form, Header, HTTPException, Query, Request, Response
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+)
 from fastapi.responses import (
     HTMLResponse,
     JSONResponse,
@@ -2223,6 +2233,7 @@ _GOOGLE_AUTH_TRANSPORT_LOCK = threading.Lock()
 @app.post("/eventarc")
 async def eventarc(
     request: Request,
+    background_tasks: BackgroundTasks,
     authorization: str | None = Header(default=None),
 ) -> dict:
     """Eventarc auto-trigger entrypoint (Phase 14.2).
@@ -2263,11 +2274,25 @@ async def eventarc(
       ``(service, region)`` is off-target. Eventarc retries on non-2xx,
       so we explicitly 200 here to acknowledge delivery; the body carries
       ``{"ignored": "non-target-service", ...}``.
-    - **200** — recheck dispatched; body is the standard ``_do_recheck``
-      response with ``trigger="eventarc"``.
-    - **5xx from _do_recheck** — propagated unchanged (worker outage = 502,
-      contract-load failure = 500, etc.). The handler does NOT swallow
-      these — Eventarc retries them, which is the correct behavior.
+    - **200 dispatched** — in-scope event acknowledged; the recheck runs
+      as a background task AFTER this response. Body is
+      ``{"dispatched": "background", "trigger": "eventarc", service,
+      region}`` — it never carries the decision (rationale can quote live
+      secret values; /runs/{id} and /decisions are the scrubbed read
+      surfaces). 2026-07-29 incident: the handler used to await the full
+      Anchor turn (20–120s) here, but Pub/Sub push only waits
+      ``ackDeadlineSeconds`` for the response, so every delivery was
+      treated as failed and redelivered for hours — saturating the
+      maxScale=1/concurrency=2 service ("Rate exceeded." for operators).
+      Ack-fast is the Pub/Sub-documented contract for slow handlers.
+      NOTE: background work needs CPU after the response — the service
+      must run with CPU always allocated (``--no-cpu-throttling``), or
+      the recheck stalls once the request closes.
+    - **_do_recheck failures** — logged, never propagated. A non-2xx here
+      would make Eventarc redeliver into the same storm the fast-ack
+      exists to prevent. Recovery story mirrors the pause gate: the drift
+      is re-discovered by the next audit event, the demo-reset cron, or a
+      manual /recheck. See ``_eventarc_background_recheck``.
 
     Payload-blindness: the handler only reads ``(service, region)`` from
     ``resource.labels`` and intentionally does NOT branch on the audit log's
@@ -2452,12 +2477,11 @@ async def eventarc(
         )
         return {"ignored": "paused", "service": service, "region": region}
 
-    # In-scope event: dispatch through the same recheck pipeline as the
-    # manual /recheck path. ``trigger="eventarc"`` lets ``/runs/{id}`` and
-    # the e2e smoke test identify decisions produced by the auto-trigger.
-    # _do_recheck's HTTPExceptions (worker 502, contract-load 500, claim
-    # 409) propagate unchanged — Eventarc will retry on those, which is
-    # the correct behavior.
+    # In-scope event: ack now, recheck in the background (2026-07-29
+    # incident — see the docstring's 200-dispatched bullet). Starlette
+    # background tasks run after the response body is sent, so the request
+    # slot is freed and Pub/Sub sees its 200 within the ack deadline
+    # regardless of how long the Anchor turn takes.
     #
     # Phase 17.A.3 (Codex blocker): the workload is HARDCODED to "drift"
     # server-side. Cloud Run audit-log events are drift's input source by
@@ -2466,8 +2490,137 @@ async def eventarc(
     # ignored. An event-triggered upgrade workload, if ever added, will
     # get its own endpoint with its own server-side binding (e.g.
     # ``/eventarc-upgrade`` against a dependabot-style trigger).
-    # Serve-time rationale scrub (PR 2) — same wrap as /recheck.
-    return scrub_decision_rationale(await _do_recheck("eventarc", workload="drift"))
+    background_tasks.add_task(_eventarc_background_recheck, service, region)
+    return {
+        "dispatched": "background",
+        "trigger": "eventarc",
+        "service": service,
+        "region": region,
+    }
+
+
+class _EventarcCoalescer:
+    """Single-flight state for the Eventarc background audits.
+
+    Codex review of the fast-ack: ``_do_recheck`` runs the Gemini turn
+    BEFORE deriving its idempotency event_key (the key hashes the
+    proposal's env_diffs), so N concurrent background audits are N full
+    LLM turns — the request slots used to bound that at concurrency=2,
+    the background path would not. The audit is payload-blind (it reads
+    CURRENT live state, never the triggering event), so coalescing loses
+    nothing: one in-flight audit plus at most one trailing rerun covers
+    any burst, and the rerun observes everything the coalesced events
+    changed.
+
+    Plain bools, no lock: both check-then-set sites run on the single
+    event loop with no await between check and set.
+    """
+
+    def __init__(self) -> None:
+        self.active = False
+        self.dirty = False
+
+
+_EVENTARC_COALESCER = _EventarcCoalescer()
+
+
+async def _eventarc_background_recheck(service: str, region: str) -> None:
+    """Run the Eventarc-triggered recheck after the push delivery was acked.
+
+    Failure containment is the whole point: whatever ``_do_recheck`` raises
+    or returns, NOTHING may escape — the 200 is already on the wire, and an
+    exception here would surface as an ASGI-cycle error with no one to
+    receive it. Outcomes are logged structured, bounded fields ONLY:
+    decision content (``rationale``) can quote live secret values, and
+    ``HTTPException.detail`` is just as unsafe (validator messages
+    interpolate live env values, ADK parse errors embed raw model output,
+    worker failures carry response bodies) — so neither ever reaches a log
+    field. ``status_code`` alone classifies the rejection.
+
+    - ``eventarc_background_recheck_done`` — decision recorded/reused.
+    - ``eventarc_background_recheck_rejected`` — _do_recheck refused with
+      an HTTPException (worker 502, claim-race 409, contract 500). The
+      event is dropped, not retried; the next audit event, scheduled
+      recheck, or manual /recheck re-discovers the drift (same recovery
+      story as the pause gate above).
+    - ``eventarc_background_recheck_failed`` — unexpected crash (full
+      traceback via ``log.exception``) or a malformed non-dict return
+      (``reason="non_dict_result"``, no traceback). Never ``_done`` — the
+      e2e smoke reads ``_done`` as audit-completed.
+    - ``eventarc_background_recheck_coalesced`` — an audit was already in
+      flight; this event marked it dirty and the trailing rerun (logged
+      as ``_rerun``) covers it. See :class:`_EventarcCoalescer`.
+    """
+    co = _EVENTARC_COALESCER
+    if co.active:
+        co.dirty = True
+        log.info(
+            "eventarc_background_recheck_coalesced",
+            extra={"service": service, "region": region},
+        )
+        return
+    co.active = True
+    try:
+        while True:
+            # Cleared BEFORE the audit: an event landing DURING it may
+            # postdate the state the audit read, so it must trigger the
+            # rerun below.
+            co.dirty = False
+            await _run_eventarc_audit_once(service, region)
+            if not co.dirty:
+                break
+            log.info(
+                "eventarc_background_recheck_rerun",
+                extra={"service": service, "region": region},
+            )
+    finally:
+        co.active = False
+        co.dirty = False
+
+
+async def _run_eventarc_audit_once(service: str, region: str) -> None:
+    """One contained audit pass — see ``_eventarc_background_recheck``."""
+    try:
+        decision = await _do_recheck("eventarc", workload="drift")
+        # Result handling stays INSIDE the containment: a malformed
+        # (non-dict) return must not raise into the ASGI cycle — and it
+        # must log ``_failed``, not ``_done``: the e2e smoke's log probe
+        # reads ``_done`` as proof the audit completed, so reporting a
+        # malformed result as done would greenlight the smoke during
+        # contract skew.
+        if not isinstance(decision, dict):
+            log.error(
+                "eventarc_background_recheck_failed",
+                extra={
+                    "service": service,
+                    "region": region,
+                    "reason": "non_dict_result",
+                },
+            )
+            return
+        log.info(
+            "eventarc_background_recheck_done",
+            extra={
+                "service": service,
+                "region": region,
+                "decision_id": decision.get("decision_id"),
+                "action": decision.get("action"),
+            },
+        )
+    except HTTPException as e:
+        log.warning(
+            "eventarc_background_recheck_rejected",
+            extra={
+                "service": service,
+                "region": region,
+                "status_code": e.status_code,
+            },
+        )
+    except Exception:
+        log.exception(
+            "eventarc_background_recheck_failed",
+            extra={"service": service, "region": region},
+        )
 
 
 # Worker-injected demo marker (see infra/cloudflare/worker/src/proxy.js):
