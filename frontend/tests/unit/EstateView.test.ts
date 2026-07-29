@@ -316,3 +316,47 @@ describe('EstateView — unknown figures match the desk (ds-eh6)', () => {
     expect(getByTestId('instrument-band-drift').textContent).toContain('—');
   });
 });
+
+// Codex round 3 of #258 — the most consequential instance of the same defect:
+// this one drives an ACTION. On a pending-approvals soft failure the store
+// writes `pendingApprovals: []`, and the Adopt button appears exactly when no
+// open adoption PR was found for a row. That emptiness means "we could not ask
+// GitHub", so offering Adopt asserts something the app just failed to establish.
+describe('EstateView — unreliable approvals must not imply "safe to adopt" (ds-eh6)', () => {
+  it('suppresses the Adopt button and says why', () => {
+    const { getByTestId, queryByTestId } = render(EstateView, {
+      props: baseProps({ settled: true, approvalsStale: true }),
+    });
+    expect(queryByTestId('estate-adopt-btn')).toBeNull();
+    expect(getByTestId('estate-adopt-unknown').textContent).toContain('adoption status unknown');
+  });
+
+  it('still renders a POSITIVELY observed PR chip', () => {
+    // Only the absence claim is unsupported. A PR we actually saw is still a
+    // fact, and hiding it would be its own information loss.
+    const { getByTestId, queryByTestId } = render(EstateView, {
+      props: baseProps({
+        pendingApprovals: [pending({ resource_name: 'demo-node', asset_type: BUCKET })],
+        settled: true,
+        approvalsStale: true,
+      }),
+    });
+    expect(getByTestId('estate-pr-chip')).toBeTruthy();
+    expect(queryByTestId('estate-adopt-unknown')).toBeNull();
+  });
+
+  it('offers Adopt normally when the approvals lane is reliable', () => {
+    const { getByTestId, queryByTestId } = render(EstateView, {
+      props: baseProps({ settled: true, approvalsStale: false }),
+    });
+    expect(getByTestId('estate-adopt-btn')).toBeTruthy();
+    expect(queryByTestId('estate-adopt-unknown')).toBeNull();
+  });
+
+  it('clears the tour adopt spotlight while approvals are unreliable', () => {
+    const { container } = render(EstateView, {
+      props: baseProps({ settled: true, approvalsStale: true }),
+    });
+    expect(container.querySelector('[data-tour="adopt-target"]')).toBeNull();
+  });
+});

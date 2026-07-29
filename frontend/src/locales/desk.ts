@@ -147,6 +147,10 @@ export const desk = {
     'desk.estate.managedGroup': 'Managed by IaC ({n})',
     'desk.estate.untrackedGroup': 'Not managed, not adoptable ({n})',
     'desk.estate.adoptButton': 'Open an adoption PR',
+    // Shown in the Adopt button's place when the pending-approvals lane was
+    // unreliable this cycle. Offering Adopt there would claim no adoption PR
+    // exists, which is exactly what we failed to establish (Codex review #258).
+    'desk.estate.adoptUnavailable': 'adoption status unknown',
     'desk.estate.prPending': 'PR #{pr} awaiting review',
     'desk.estate.driftMore': '…{n} more drift',
     'desk.estate.systemManagedFold': 'System-managed resources ({n}) · created by Google',
@@ -245,6 +249,7 @@ export const desk = {
     'desk.estate.managedGroup': '管理下 — {n} 件',
     'desk.estate.untrackedGroup': '未管理（取り込み対象外） {n} 件',
     'desk.estate.adoptButton': '取り込み PR を作成',
+    'desk.estate.adoptUnavailable': '取り込み状況を確認できません',
     'desk.estate.prPending': 'PR #{pr} レビュー待ち',
     'desk.estate.driftMore': '…ほか {n} 件のドリフト',
     'desk.estate.systemManagedFold': 'システム管理リソース（Google が自動作成） {n}件',

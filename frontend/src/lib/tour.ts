@@ -170,7 +170,17 @@ export function adoptStepState(
   t: TranslateFn,
   graph: InfraGraph | null,
   pendingApprovals?: PendingApproval[] | null,
+  /** The pending-approvals lane was unreliable this cycle — see
+   *  OverviewState.approvalsStale. Checked FIRST, ahead of every graph guard:
+   *  the ranking below skips nodes with an open adoption PR, so an unreliable
+   *  `pendingApprovals` makes every "no PR here" judgement unsupported, and a
+   *  suggestion built on it would steer the operator at a duplicate adoption.
+   *  Optional so existing callers keep their behavior (Codex review #258). */
+  approvalsStale?: boolean,
 ): AdoptStepState {
+  if (approvalsStale) {
+    return { kind: 'none', line: t('tour.adopt.approvalsUnknown') };
+  }
   if (graph === null || graph.degraded) {
     return { kind: 'unavailable', line: t('tour.adopt.unavailable') };
   }

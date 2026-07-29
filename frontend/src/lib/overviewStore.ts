@@ -91,6 +91,25 @@ export interface OverviewState {
    * ordinary cold starts.
    */
   degraded: boolean;
+  /**
+   * The pending-approvals lane SPECIFICALLY could not be trusted in the last
+   * completed cycle — it failed, or answered `degraded: true`.
+   *
+   * Narrower than `degraded` on purpose, and the narrowness IS the point: the
+   * aggregate flag also fires when only `/decisions` failed, which says nothing
+   * about whether an adoption PR exists. A consumer keying an ABSENCE claim off
+   * `pendingApprovals` needs to know about this lane and no other.
+   *
+   * Why it matters more than the display flags: on the soft failure the store
+   * writes `pendingApprovals: []`, and an empty list is indistinguishable from
+   * "no PRs are open". Anything reading "this resource has no adoption PR" out
+   * of that emptiness — the Adopt button, the tour's adopt target — asserts
+   * something the app just failed to establish. Unlike a wrong NUMBER, that
+   * assertion drives an ACTION (a duplicate adoption PR). The backend's
+   * dupe-guard refuses the duplicate, so the blast radius is small; the
+   * operator was still told something false, on the demo's action surface.
+   */
+  approvalsStale: boolean;
 }
 
 export interface OverviewStore extends Readable<OverviewState> {
@@ -118,6 +137,7 @@ const INITIAL: OverviewState = {
   lastError: null,
   settled: false,
   degraded: false,
+  approvalsStale: false,
 };
 
 type FetchResult<T> = { ok: true; value: T } | { ok: false };
@@ -229,6 +249,8 @@ export function createOverviewStore(
       // Only the two lanes the desk reads — a graph failure is deliberately
       // not a desk-degraded signal (see OverviewState.degraded).
       degraded: !p.ok || !d.ok || (p.ok && p.value.degraded),
+      // The approvals lane alone. Same recompute-never-latch rule.
+      approvalsStale: !p.ok || p.value.degraded,
     }));
   }
 

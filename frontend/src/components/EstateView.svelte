@@ -28,6 +28,7 @@
     pendingApprovals,
     settled = true,
     degraded = false,
+    approvalsStale = false,
     adoptDisabled = false,
     onAdopt,
     onNavigate,
@@ -39,6 +40,10 @@
      *  test mounts meaning what they meant. */
     settled?: boolean;
     degraded?: boolean;
+    /** The pending-approvals lane specifically was unreliable this cycle — see
+     *  OverviewState.approvalsStale. Suppresses ABSENCE-derived affordances
+     *  only; positively observed PR chips still render. */
+    approvalsStale?: boolean;
     adoptDisabled?: boolean;
     /** Adopt chip click → App prefills the chat with this string (NOT auto-sent). */
     onAdopt?: (prefill: string) => void;
@@ -72,7 +77,10 @@
   // (data-tour="adopt-target"); App.svelte computes the SAME predicate off the
   // SAME model for its nav-button fallback, so the two markers are always
   // mutually exclusive (see firstAdoptableRow's own doc comment).
-  const adoptTarget = $derived(firstAdoptableRow(model));
+  // No adopt target while the approvals lane is unreliable — the target is
+  // chosen from rows whose `pendingPr === null`, which is precisely the
+  // unsupported absence. Nulling it here also clears the tour's spotlight.
+  const adoptTarget = $derived(approvalsStale ? null : firstAdoptableRow(model));
 
   function clickAdopt(prefill: string): void {
     if (adoptDisabled) return;
@@ -115,6 +123,18 @@
             {#if row.pendingPr !== null}
               <span class="estate-view__chip estate-view__chip--q" data-testid="estate-pr-chip">
                 {$t('desk.estate.prPending', { pr: row.pendingPr })}
+              </span>
+            {:else if row.adoptable && approvalsStale}
+              <!-- The Adopt button is an ABSENCE claim: it appears exactly when
+                   no open adoption PR was found for this row. On a
+                   pending-approvals soft failure that emptiness means "we could
+                   not ask GitHub", so offering Adopt would assert something we
+                   just failed to establish — and unlike a wrong figure it drives
+                   an action (a duplicate PR). Suppressed with a reason rather
+                   than silently dropped. Note the same outage would break the
+                   adopt itself, since opening the PR needs the same GitHub. -->
+              <span class="estate-view__chip estate-view__chip--mute" data-testid="estate-adopt-unknown">
+                {$t('desk.estate.adoptUnavailable')}
               </span>
             {:else if row.adoptable}
               <button
@@ -297,6 +317,14 @@
   .estate-view__chip:disabled {
     cursor: not-allowed;
     opacity: 0.5;
+  }
+  /* The "adoption status unknown" stand-in. Muted and NOT a button: it must not
+     read as an action, because the whole point is that we cannot say whether
+     the action is appropriate. */
+  .estate-view__chip--mute {
+    color: var(--ds-paper-mut);
+    border-style: dashed;
+    cursor: default;
   }
   .estate-view__chip--q {
     border-color: var(--ds-paper-rule);

@@ -566,8 +566,14 @@
   // BOTH sides call this exact function on the SAME estateModel() output
   // (never a second hand-rolled predicate) and why the two data-tour="adopt-
   // target" markers are therefore mutually exclusive.
+  // Gated on approvalsStale for the same reason EstateView nulls its own
+  // adoptTarget: the target is chosen from rows with no open adoption PR, and a
+  // soft-failed approvals fetch cannot support that absence. Without this the
+  // tour would still steer a live-demo visitor at a duplicate adoption even
+  // though the estate row itself had stopped offering the button.
   const estateHasAdoptTarget = $derived(
-    firstAdoptableRow(estateModel($overview.graph, $overview.pendingApprovals, $t)) !== null,
+    !$overview.approvalsStale &&
+      firstAdoptableRow(estateModel($overview.graph, $overview.pendingApprovals, $t)) !== null,
   );
 
   // Detect a freshly-`applied` iac_apply decision (decisions arrive newest-first)
@@ -1844,6 +1850,7 @@
     pendingApprovals={$overview.pendingApprovals}
     settled={$overview.settled}
     degraded={$overview.degraded}
+    approvalsStale={$overview.approvalsStale}
     adoptDisabled={chatDisabled}
     onAdopt={handleAdopt}
     onNavigate={navigate}
@@ -1857,6 +1864,7 @@
   <TourCard
     graph={$overview.graph}
     pendingApprovals={$overview.pendingApprovals}
+    approvalsStale={$overview.approvalsStale}
     adoptDisabled={chatDisabled}
     onAdoptPrefill={handleAdopt}
     onNavigate={tourNavigate}

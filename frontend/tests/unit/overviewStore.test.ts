@@ -525,3 +525,43 @@ describe('createOverviewStore — settled / degraded (ds-eh6)', () => {
     s.destroy();
   });
 });
+
+// Codex round 3 of #258 — approvalsStale is narrower than `degraded` on
+// purpose: consumers that key an ABSENCE claim off pendingApprovals must not
+// also fire when only /decisions failed.
+describe('createOverviewStore — approvalsStale (ds-eh6)', () => {
+  it('is set by the pending-approvals soft-fail 200', async () => {
+    const { fn } = makeCall({ pending: () => res({ approvals: [], degraded: true }) });
+    const s = createOverviewStore(fn);
+    await flush();
+    expect(get(s).approvalsStale).toBe(true);
+    s.destroy();
+  });
+
+  it('is set by an outright pending-approvals failure', async () => {
+    const { fn } = makeCall({ pending: () => res({}, 500) });
+    const s = createOverviewStore(fn);
+    await flush();
+    expect(get(s).approvalsStale).toBe(true);
+    s.destroy();
+  });
+
+  it('is NOT set when only /decisions failed, though degraded IS', async () => {
+    // The distinction that makes this field worth having: a decisions outage
+    // says nothing about whether an adoption PR exists.
+    const { fn } = makeCall({ decisions: () => res({}, 500) });
+    const s = createOverviewStore(fn);
+    await flush();
+    expect(get(s).degraded).toBe(true);
+    expect(get(s).approvalsStale).toBe(false);
+    s.destroy();
+  });
+
+  it('is NOT set on a clean cycle', async () => {
+    const { fn } = makeCall();
+    const s = createOverviewStore(fn);
+    await flush();
+    expect(get(s).approvalsStale).toBe(false);
+    s.destroy();
+  });
+});
