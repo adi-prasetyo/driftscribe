@@ -263,8 +263,9 @@ link, and confirm it opens **the authoring run's** timeline — not the approval
 
 1. **Ephemeral — write anyway.** `ephemeral` suppresses *conversation* persistence
    (`agent/main.py:618`); it does not make a real GitHub PR or its Cloud Logging trace
-   ephemeral. A PR that will appear on the desk should carry its evidence. Pinned by a
-   test.
+   ephemeral. A PR that will appear on the desk should carry its evidence. This needs no
+   dedicated test — see the Tests section: both write sites sit below
+   `_persist_chat_turn` and neither reads `conv["ephemeral"]`.
 2. **New collection, not the turn store.** The bead's original DESIGN said "the
    conversation turn whose `iac_pr` matches", but turns live in per-conversation `turns`
    subcollections, so resolving by PR needs a collection-group query **and** a

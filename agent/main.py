@@ -3508,8 +3508,14 @@ def _list_pending_approvals() -> list[dict]:
     def _authoring_trace(pr_number: int) -> str | None:
         try:
             return get_iac_pr_trace_store().get(s.github_repo, pr_number)
-        except Exception:  # noqa: BLE001 — optional evidence must never blank the panel
-            log.warning("pending_approval_trace_lookup_failed", exc_info=True)
+        except Exception as e:  # noqa: BLE001 — optional evidence must never blank the panel
+            # Type only, no exc_info: this guard exists to absorb an ARBITRARY broken
+            # store, whose exception text is not ours to trust — and a Firestore
+            # PermissionDenied embeds the full document resource path. Same discipline
+            # the store itself applies.
+            log.warning(
+                "pending_approval_trace_lookup_failed", extra={"error": type(e).__name__}
+            )
             return None
 
     out: list[dict] = []
