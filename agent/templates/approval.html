@@ -111,7 +111,13 @@
             {% endif %}
           </ul>
           {% if change_view.violates %}
-            <div class="ds-blocked" data-testid="change-violates">{% if lang == 'ja' %}対象リビジョンは、手動変更を許可していない変数について契約値を満たしていません。このロールバックはドリフトを 1 つ解消する一方で別のドリフトを持ち込みます。それでも進める場合は、下のチェックを入れてください。{% else %}The target revision does not satisfy the contract for a variable marked allow_manual_change=false. This rollback would remove one drift and introduce another. If you still want it, tick the box below.{% endif %}</div>
+            {# Says only what the snapshot PROVES: the target does not hold the
+               contract value. It deliberately no longer claims the rollback
+               "introduces" a drift — when the source holds the same
+               non-compliant value the rollback preserves that violation rather
+               than creating it, and nothing here establishes that the rollback
+               removes the original drift either. #}
+            <div class="ds-blocked" data-testid="change-violates">{% if lang == 'ja' %}対象リビジョンは、手動変更を許可していない変数について契約値を満たしていません。このロールバックを実行しても、その変数は契約に沿わない状態のままになります。それでも進める場合は、下のチェックを入れてください。{% else %}The target revision does not satisfy the contract for a variable marked allow_manual_change=false. After this rollback that variable will still not match the contract. If you still want it, tick the box below.{% endif %}</div>
           {% endif %}
         {% endif %}
       </div>

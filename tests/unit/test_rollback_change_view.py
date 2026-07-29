@@ -662,8 +662,13 @@ def test_junk_in_the_purely_DISPLAY_fields_does_not_degrade_the_view(
     reasoned over. Junk there is ugly but does not make the change set wrong, so
     it must not throw away an otherwise sound answer — and must not raise."""
     hostile = _snapshot(hash_=good_hash)
-    hostile["source_revision"] = object()
-    hostile["observed_at"] = object()
+    sentinel_source, sentinel_at = object(), object()
+    hostile["source_revision"] = sentinel_source
+    hostile["observed_at"] = sentinel_at
     view = _rollback_change_view(_FakeApproval(hostile))
     assert view["state"] == "ok"
     assert view["other_changed"] == []
+    # Passed through, not silently blanked — the test would otherwise pass just
+    # as happily against an implementation that dropped both fields.
+    assert view["source_revision"] is sentinel_source
+    assert view["observed_at"] is sentinel_at
