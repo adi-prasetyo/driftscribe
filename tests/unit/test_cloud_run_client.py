@@ -589,6 +589,9 @@ def test_list_previous_ready_revisions_filters_not_ready():
         _revision("payment-demo-00007-aaa", ready=True, create_time=t0),
         # Crashed-on-boot deploy: must never be suggested as a rollback target.
         _revision("payment-demo-00008-bad", ready=False, create_time=t0 + dt.timedelta(hours=1)),
+        # The active revision must be IN the listing — ds-smi orders candidates
+        # against its create_time, and without it there is nothing to order by.
+        _revision("payment-demo-00009-active", ready=True, create_time=t0 + dt.timedelta(hours=2)),
     ]
 
     result = list_previous_ready_revisions(
@@ -605,6 +608,10 @@ def test_list_previous_ready_revisions_caps_at_five():
     rev_client.list_revisions.return_value = [
         _revision(f"payment-demo-0000{i}-xxx", ready=True, create_time=t0 + dt.timedelta(hours=i))
         for i in range(7)
+    ] + [
+        _revision(
+            "payment-demo-00099-active", ready=True, create_time=t0 + dt.timedelta(days=1)
+        )
     ]
 
     result = list_previous_ready_revisions(
@@ -637,6 +644,98 @@ def test_list_previous_ready_revisions_no_candidates_returns_empty_list():
     )
 
     assert result == []
+
+
+def test_list_previous_ready_revisions_excludes_revisions_NEWER_than_active():
+    """ds-smi. Excluding the active revision by NAME is not enough.
+
+    Traffic can sit on an older revision — which is exactly the state a rollback
+    leaves behind. After rolling 16 -> 15 the remaining ready revisions are
+    [16, 14, 13, ...] and 16, the deploy the rollback just escaped, sorts FIRST.
+    Anything downstream that prefers the most recent candidate walks straight
+    back into it.
+    """
+    rev_client = MagicMock()
+    t0 = dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)
+    rev_client.list_revisions.return_value = [
+        _revision("payment-demo-00014-old", ready=True, create_time=t0),
+        _revision("payment-demo-00015-act", ready=True, create_time=t0 + dt.timedelta(hours=1)),
+        # The drifted deploy that a rollback just moved traffic OFF.
+        _revision("payment-demo-00016-bad", ready=True, create_time=t0 + dt.timedelta(hours=2)),
+    ]
+
+    result = list_previous_ready_revisions(
+        "payment-demo", "r", "p", "payment-demo-00015-act",
+        revisions_client=rev_client,
+    )
+
+    assert result == ["payment-demo-00014-old"]
+
+
+def test_the_age_filter_runs_BEFORE_the_cap():
+    """Applied after the cap, the ``cap`` newest "other" revisions could all be
+    newer than an old active revision — hiding every valid candidate behind a
+    list that looks full."""
+    rev_client = MagicMock()
+    t0 = dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)
+    rev_client.list_revisions.return_value = (
+        [_revision("payment-demo-00001-old", ready=True, create_time=t0)]
+        + [_revision("payment-demo-00002-act", ready=True, create_time=t0 + dt.timedelta(hours=1))]
+        # Six revisions all NEWER than active: enough to fill the cap twice.
+        + [
+            _revision(
+                f"payment-demo-0001{i}-new", ready=True, create_time=t0 + dt.timedelta(days=i + 1)
+            )
+            for i in range(6)
+        ]
+    )
+
+    result = list_previous_ready_revisions(
+        "payment-demo", "r", "p", "payment-demo-00002-act",
+        revisions_client=rev_client,
+    )
+
+    assert result == ["payment-demo-00001-old"]
+
+
+def test_an_active_revision_missing_from_the_listing_yields_no_candidates():
+    """Without the active revision's create_time nothing can be ordered against
+    it, and offering unorderable candidates is the hazard the filter exists to
+    remove. Refuse rather than guess."""
+    rev_client = MagicMock()
+    t0 = dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)
+    rev_client.list_revisions.return_value = [
+        _revision("payment-demo-00007-aaa", ready=True, create_time=t0),
+        _revision("payment-demo-00008-bbb", ready=True, create_time=t0 + dt.timedelta(hours=1)),
+    ]
+
+    result = list_previous_ready_revisions(
+        "payment-demo", "r", "p", "payment-demo-00009-vanished",
+        revisions_client=rev_client,
+    )
+
+    assert result == []
+
+
+def test_a_NOT_READY_active_revision_still_anchors_the_comparison():
+    """The serving revision's AGE is the reference point whether or not it
+    currently reports Ready — a crashed active revision is precisely when a
+    rollback candidate is wanted, so it must not blank the list."""
+    rev_client = MagicMock()
+    t0 = dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)
+    rev_client.list_revisions.return_value = [
+        _revision("payment-demo-00007-aaa", ready=True, create_time=t0),
+        _revision(
+            "payment-demo-00008-act", ready=False, create_time=t0 + dt.timedelta(hours=1)
+        ),
+    ]
+
+    result = list_previous_ready_revisions(
+        "payment-demo", "r", "p", "payment-demo-00008-act",
+        revisions_client=rev_client,
+    )
+
+    assert result == ["payment-demo-00007-aaa"]
 
 
 def test_list_previous_ready_revisions_passes_correct_parent():

@@ -200,8 +200,8 @@ def list_previous_ready_revisions(
     revisions_client=None,
     cap: int = 5,
 ) -> list[str]:
-    """Return up to ``cap`` READY revision names for ``service``, newest
-    first, excluding ``active_revision``.
+    """Return up to ``cap`` READY revision names for ``service`` that are
+    OLDER than ``active_revision``, newest first.
 
     Powers the drift chat "roll back to..." flow: an operator asking Anchor
     to roll back rarely knows a Cloud Run revision name by heart, and
@@ -221,14 +221,44 @@ def list_previous_ready_revisions(
     Sorted by ``create_time`` descending rather than trusting
     ``list_revisions``' return order (undocumented) or the revision-name
     suffix (a random 3-letter tag, not a sequence number).
+
+    **Only revisions older than the active one (ds-smi).** Excluding the active
+    revision by NAME is not enough: traffic can sit on an older revision, which
+    is exactly the state a rollback leaves behind. After rolling 16 -> 15 the
+    remaining ready revisions are [16, 14, 13, ...] and 16 — the deploy the
+    rollback just escaped — sorts FIRST. Anything downstream that prefers the
+    most recent candidate then walks straight back into it, and "roll back onto
+    a newer revision" is not a rollback in any case.
+
+    Ordering comes from ``create_time``, which is the only ordering signal that
+    holds: ``RevisionTemplate.revision`` lets a caller choose the revision name,
+    so a name's numeric component proves nothing about its age. Consumers may
+    therefore treat entry 0 as the nearest candidate without inspecting names.
+
+    The age filter runs BEFORE the cap. Applied after, the ``cap`` newest
+    "other" revisions could all be newer than an old active revision, hiding
+    every valid candidate behind a full-looking list.
+
+    Returns ``[]`` if ``active_revision`` is not present in the listing: without
+    its ``create_time`` nothing here can be ordered against it, and offering
+    unorderable candidates is the hazard this filter exists to remove.
     """
     revisions_client = revisions_client or run_v2.RevisionsClient()
     parent = f"projects/{project}/locations/{region}/services/{service}"
     candidates = []
+    active_create_time = None
     for rev in revisions_client.list_revisions(parent=parent):
         short_name = rev.name.rsplit("/", 1)[-1]
-        if short_name == active_revision or not _is_ready(rev):
+        if short_name == active_revision:
+            # Captured BEFORE the readiness filter: the serving revision's age
+            # is the reference point whether or not it currently reports Ready.
+            active_create_time = rev.create_time
+            continue
+        if not _is_ready(rev):
             continue
         candidates.append((rev.create_time, short_name))
+    if active_create_time is None:
+        return []
+    candidates = [c for c in candidates if c[0] < active_create_time]
     candidates.sort(key=lambda pair: pair[0], reverse=True)
     return [name for _, name in candidates[:cap]]

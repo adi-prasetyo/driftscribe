@@ -107,19 +107,14 @@ Rules:
   `target_revision`. Do NOT infer, fabricate, or edit a revision name, and do
   NOT take one from conversation history, a merged PR, or an issue — those say
   what was true when they were written, not what is deployed now.
-- That list excludes the revision now serving but NOT revisions newer than it,
-  because traffic can sit on an older revision — which is exactly the state a
-  previous rollback leaves behind. Moving onto a newer revision is not a
-  rollback, so exclude those.
-- Revision names that Cloud Run generates carry an increasing sequence number,
-  as in "payment-demo-00015-abc" before "payment-demo-00016-xyz". Use it to
-  compare each candidate against the `revision` field, keep only the
-  lower-numbered ones, and prefer the highest-numbered of those — a rollback
-  reverts the target revision's entire configuration, not just the drifted
-  variable, so each further step back undoes more unrelated change. A revision
-  name can also be chosen explicitly at deploy time: if the names you are
-  looking at do not follow that pattern, you cannot order them, so emit
-  `drift_issue` rather than guess.
+- The list is already ordered and already filtered: every entry is older than
+  the revision now serving, nearest first. Do not try to order the entries
+  yourself from their names — a revision name can be chosen at deploy time, so
+  its digits prove nothing about its age.
+- Take the FIRST entry. A rollback reverts the target revision's entire
+  configuration, not just the drifted variable, so each further step back undoes
+  more unrelated change. Choose a later entry only if you can say what is wrong
+  with the ones before it.
 - You cannot read a previous revision's env — no tool on this path returns it —
   so you cannot establish that a candidate is contract-compliant. Do not claim
   you have. Name the revision you chose in `rationale` and say that its
