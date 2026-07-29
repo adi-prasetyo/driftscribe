@@ -1,0 +1,160 @@
+# TARGETED image-only deploy for the drift Reader worker (driftscribe-reader).
+#
+# Modelled on infra/cloudbuild.rollback-update.yaml and existing for the same
+# reason: the only committed config that builds driftscribe-reader is the
+# full-stack infra/cloudbuild.yaml, which is DO-NOT-RUN on prod (it rebuilds
+# ~9 images including payment-demo, which OpenTofu owns, and redeploys the
+# coordinator with DRY_RUN=true).
+#
+# SCOPE BOUNDARY — changes the IMAGE AND NOTHING ELSE. `gcloud run deploy
+# --image=...` with no other service flags preserves env vars, runtime SA,
+# ingress, scaling and concurrency. The live service sets GCP_PROJECT,
+# TARGET_SERVICE, TARGET_REGION, OWN_URL and ALLOWED_CALLERS, all plain values,
+# and holds no mounted secrets. If a future change ADDS a required env var this
+# file must gain an explicit incremental --update-env-vars for it — never a
+# wholesale --set-env-vars, which would drop anything set out of band.
+#
+# NO TRAFFIC DANCE: driftscribe-reader serves {latestRevision: true,
+# percent: 100}, so a deploy serves immediately. Both assertion steps CHECK
+# that rather than assume it — if the service is ever pinned to a named
+# revision, a plain deploy would create a revision serving 0% while the build
+# reported success.
+#
+# USAGE (operator runs by hand, no CI integration):
+#
+#   gcloud builds submit \
+#     --config=infra/cloudbuild.reader-update.yaml \
+#     --substitutions=_TAG=$(git rev-parse --short HEAD) \
+#     --project=driftscribe-hack-2026
+#
+#   Run it from a PRISTINE worktree checked out at the SHA you intend to ship:
+#   `gcloud builds submit` uploads the working directory, so a shared-worktree
+#   build would bundle another agent's WIP into the image.
+#
+# ORDER: the reader is a pure READ worker and holds no approval-doc fields, so
+#   the writer-last rule (ds-wjw) does not apply to it. It must ship BEFORE the
+#   coordinator whenever a coordinator prompt or code path depends on a change
+#   to what the reader returns — as with ds-smi, where the drift /recheck prompt
+#   was simplified to "take the first entry" precisely because the reader now
+#   guarantees the list is filtered to revisions older than the active one.
+#   Shipping the coordinator first would have it trusting a guarantee the
+#   reader was not yet applying.
+#
+# Proven on 2026-07-29 deploying ds-smi at tag 787be92
+# (driftscribe-reader-00005-cmq).
+
+substitutions:
+  _TAG: 'manual'
+  _REGION: asia-northeast1
+  _EXPECT_TARGET_SERVICE: 'payment-demo'
+  _EXPECT_SA: 'reader-agent-sa@driftscribe-hack-2026.iam.gserviceaccount.com'
+
+serviceAccount: 'projects/driftscribe-hack-2026/serviceAccounts/cloudbuild-deploy-sa@driftscribe-hack-2026.iam.gserviceaccount.com'
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+steps:
+  # 1. PREFLIGHT — read-only, FIRST. `gcloud run deploy` is create-OR-update:
+  #    against a deleted service or a wrong _REGION it would CREATE one from
+  #    defaults (no env, no SA) instead of preserving anything. "Image-only" is
+  #    a property of UPDATING AN EXISTING service, so existence is a
+  #    precondition, not an assumption.
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        gcloud run services describe driftscribe-reader \
+          --region=${_REGION} --project=$PROJECT_ID --format=json \
+          > /workspace/reader-before.json
+        python3 - /workspace/reader-before.json preflight \
+          "${_EXPECT_TARGET_SERVICE}" "${_EXPECT_SA}" "" <<'PY'
+        import json, sys
+        path, phase, want_target, want_sa, want_tag = sys.argv[1:6]
+        d = json.load(open(path))
+        t = d["spec"]["template"]["spec"]
+        env = {e["name"]: e.get("value") for e in t["containers"][0].get("env", [])}
+        fail = []
+        if env.get("TARGET_SERVICE") != want_target:
+            fail.append(f"TARGET_SERVICE={env.get('TARGET_SERVICE')!r} != {want_target!r}")
+        if t.get("serviceAccountName") != want_sa:
+            fail.append(f"SA={t.get('serviceAccountName')!r} != {want_sa!r}")
+        traffic = d["spec"].get("traffic") or []
+        if not (len(traffic) == 1 and traffic[0].get("latestRevision") and traffic[0].get("percent") == 100):
+            fail.append(f"traffic is not 100% latestRevision: {traffic!r}")
+        if want_tag:
+            img = t["containers"][0]["image"]
+            if not img.endswith(":" + want_tag):
+                fail.append(f"serving image {img!r} does not carry tag {want_tag!r}")
+            ready = d["status"].get("latestReadyRevisionName")
+            if d["status"].get("latestCreatedRevisionName") != ready:
+                fail.append("latest created revision is not the latest ready one")
+        if fail:
+            print(f"{phase} FAILED:"); [print("  -", f) for f in fail]; sys.exit(1)
+        print(f"{phase} ok")
+        PY
+
+  # 2. Build + push ONLY the reader image. Context is the repo root (the worker
+  #    imports driftscribe_lib/); the Dockerfile lives under workers/reader/.
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-reader:${_TAG}
+      - -f
+      - workers/reader/Dockerfile
+      - .
+  - name: gcr.io/cloud-builders/docker
+    args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-reader:${_TAG}']
+
+  # 3. Image-only deploy. Everything else inherited from the running service.
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - driftscribe-reader
+      - --image=asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-reader:${_TAG}
+      - --region=${_REGION}
+
+  # 4. POSTCONDITION — prove the swap preserved what makes the worker correct
+  #    AND that the new image is actually serving.
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        gcloud run services describe driftscribe-reader \
+          --region=${_REGION} --project=$PROJECT_ID --format=json \
+          > /workspace/reader-after.json
+        python3 - /workspace/reader-after.json postcondition \
+          "${_EXPECT_TARGET_SERVICE}" "${_EXPECT_SA}" "${_TAG}" <<'PY'
+        import json, sys
+        path, phase, want_target, want_sa, want_tag = sys.argv[1:6]
+        d = json.load(open(path))
+        t = d["spec"]["template"]["spec"]
+        env = {e["name"]: e.get("value") for e in t["containers"][0].get("env", [])}
+        fail = []
+        if env.get("TARGET_SERVICE") != want_target:
+            fail.append(f"TARGET_SERVICE={env.get('TARGET_SERVICE')!r} != {want_target!r}")
+        if t.get("serviceAccountName") != want_sa:
+            fail.append(f"SA={t.get('serviceAccountName')!r} != {want_sa!r}")
+        traffic = d["spec"].get("traffic") or []
+        if not (len(traffic) == 1 and traffic[0].get("latestRevision") and traffic[0].get("percent") == 100):
+            fail.append(f"traffic is not 100% latestRevision: {traffic!r}")
+        if want_tag:
+            img = t["containers"][0]["image"]
+            if not img.endswith(":" + want_tag):
+                fail.append(f"serving image {img!r} does not carry tag {want_tag!r}")
+            ready = d["status"].get("latestReadyRevisionName")
+            if d["status"].get("latestCreatedRevisionName") != ready:
+                fail.append("latest created revision is not the latest ready one")
+        if fail:
+            print(f"{phase} FAILED:"); [print("  -", f) for f in fail]; sys.exit(1)
+        print(f"{phase} ok")
+        PY
+
+images:
+  - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-reader:${_TAG}
