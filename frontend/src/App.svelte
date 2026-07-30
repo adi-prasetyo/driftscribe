@@ -1790,11 +1790,12 @@
       <AutonomyPill {autonomy} />
     </div>
     <PausePill {pause} />
-    <button
-      class="ds-btn ds-btn--ghost app-tour-btn"
-      type="button"
-      data-testid="tour-open"
-      onclick={startTour}><Icon name="compass" size={14} />{$t('header.tourButton')}</button
+    <!-- Quiet text button, not a ds-btn (ds-7ag.3): a bordered ghost button put
+         "take the tour" at the same weight as the view nav and the autonomy
+         dial. The compass icon stays — it is what makes it findable without
+         chrome. -->
+    <button class="app-tour-btn" type="button" data-testid="tour-open" onclick={startTour}
+      ><Icon name="compass" size={14} />{$t('header.tourButton')}</button
     >
     <TokenStatus state={tokenState} onChange={onChangeToken} />
   </div>
@@ -1974,20 +1975,50 @@
 {/if}
 
 <style>
+  /* Named regions on an explicit grid (ds-7ag.3). This was a wrapping flex row
+     with space-between, which made the nav's position a function of how wide the
+     actions cluster happened to be: it sat hard right when the cluster wrapped
+     to its own line and slid inward when it didn't, so the app's primary
+     navigation moved on you between views (compare desk-live-00181.png with
+     chat-1440.png).
+     The default is TWO rows — identity + navigation on top, operational
+     utilities beneath. The plan asked for a single centred row, and for a
+     two-row fallback with the nav BELOW the actions; both were changed after
+     measuring the real regions at 1920px (brand 539 / nav 271 / actions 637 in
+     JA): a single row needs ~1530px, so at the 1440px this pitch is shot at the
+     tracks were over-committed and the brand tagline wrapped or the nav
+     collided with its neighbours. Two rows is also what production already
+     renders at 1440 — the difference is that the rows now MEAN something, which
+     is the whole point of the demotion in this commit: navigation shares the
+     brand's row, and the six utility chips sit on the quieter one. Above 1560px
+     everything genuinely fits and it collapses to the single row. */
   .app-header {
-    display: flex;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas:
+      'brand nav'
+      'actions actions';
     align-items: center;
-    justify-content: space-between;
-    flex-wrap: wrap;
-    gap: var(--ds-sp-4);
+    column-gap: var(--ds-sp-4);
+    row-gap: var(--ds-sp-2);
     padding: var(--ds-sp-3) var(--ds-sp-6);
     border-bottom: 1px solid var(--ds-border);
     background: var(--ds-surface);
     box-shadow: var(--ds-shadow-sm);
   }
+  /* One row once there is room for all three regions side by side (measured:
+     ~1530px in JA, the wider of the two locales). */
+  @media (min-width: 1560px) {
+    .app-header {
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      grid-template-areas: 'brand nav actions';
+    }
+  }
   .app-header__brand {
     display: inline-flex;
     align-items: center;
+    grid-area: brand;
+    justify-self: start;
     gap: var(--ds-sp-3);
     text-decoration: none;
     color: inherit;
@@ -2019,11 +2050,15 @@
     display: block;
   }
   /* Desk / Estate / Chat — segmented pill, same recipe as LocaleToggle's
-     is-active fill so the two header controls read as one family. Skeleton
-     only (Task 2.2); Phase 3/4 fill in the destinations this points at. */
+     is-active fill so the two header controls read as one family.
+     ds-7ag.3 gave it weight: at 13px among six utility chips it read as one
+     more chip rather than as the app's primary navigation. Still no navy fill —
+     this control has to serve both design worlds (paper desk, legacy chat). */
   .app-header__nav {
     display: inline-flex;
     align-items: stretch;
+    grid-area: nav;
+    justify-self: center;
     gap: 2px;
     padding: 2px;
     background: var(--ds-surface-2);
@@ -2032,19 +2067,23 @@
   }
   .app-header__nav-btn {
     appearance: none;
-    border: 0;
+    /* Transparent on EVERY segment, not just the active one: the base was
+       `border: 0`, so an active-only border added 2px to the row and jiggled
+       the whole nav on every view switch. */
+    border: 1px solid transparent;
     background: transparent;
     color: var(--ds-muted);
     font-family: inherit;
-    font-size: var(--ds-fs-1);
+    font-size: var(--ds-fs-2);
     font-weight: var(--ds-fw-semibold);
     line-height: 1.2;
-    padding: 0.3em 0.85em;
+    padding: 0.35em 1em;
     border-radius: var(--ds-radius-pill);
     cursor: pointer;
     white-space: nowrap;
     transition:
       background-color var(--ds-dur) var(--ds-ease),
+      border-color var(--ds-dur) var(--ds-ease),
       color var(--ds-dur) var(--ds-ease);
   }
   .app-header__nav-btn:hover {
@@ -2052,12 +2091,15 @@
   }
   .app-header__nav-btn.is-active {
     background: var(--ds-surface);
+    border-color: var(--ds-border-strong);
     color: var(--ds-fg);
     box-shadow: var(--ds-shadow-sm);
   }
   .app-header__actions {
     display: inline-flex;
     align-items: center;
+    grid-area: actions;
+    justify-self: end;
     gap: var(--ds-sp-3);
     /* Several controls now live here (notice bell, autonomy, pause, tour,
        token) — let the cluster wrap to a second line on narrow viewports rather
@@ -2069,9 +2111,27 @@
     display: inline-flex;
     align-items: center;
   }
-  /* Give the safety controls room before shrinking them: drop the title
-     subtitle first on narrow screens (Codex #6). */
+  /* Phone widths: the brand and the nav stop fitting on one line together, so
+     the nav takes a row of its own. It must never wrap mid-cluster — three view
+     buttons broken across two lines is the "後付け" texture itself. */
   @media (max-width: 640px) {
+    .app-header {
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-areas:
+        'brand'
+        'nav'
+        'actions';
+    }
+    .app-header__actions {
+      justify-self: start;
+    }
+  }
+  /* Give the nav room before shrinking anything else: the tagline goes first.
+     Raised from 640px to 900px at ds-7ag.3, measured — brand-with-tagline (539)
+     plus nav (271) plus the gutters needs ~875px, so between 640 and 900 the
+     tagline was what pushed the nav off its own row. The positioning copy it
+     repeats is on the desk's resting screen and the homepage. */
+  @media (max-width: 900px) {
     .app-title__sub {
       display: none;
     }
@@ -2080,8 +2140,29 @@
     display: inline-flex;
     align-items: center;
     gap: var(--ds-sp-2);
-    padding: 0.3em 0.85em;
+    appearance: none;
+    border: 0;
+    background: none;
+    /* Vertical padding keeps the hit area ≥ 24px now that the button chrome
+       that used to provide it is gone. */
+    padding: 0.35em 0.2em;
+    margin: 0;
+    font-family: inherit;
     font-size: var(--ds-fs-1);
+    font-weight: var(--ds-fw-medium);
+    line-height: 1.2;
+    color: var(--ds-muted);
+    white-space: nowrap;
+    cursor: pointer;
+    border-radius: var(--ds-radius-sm);
+    transition: color var(--ds-dur-fast) var(--ds-ease);
+  }
+  .app-tour-btn:hover {
+    color: var(--ds-fg);
+  }
+  .app-tour-btn:focus-visible {
+    outline: none;
+    box-shadow: var(--ds-ring);
   }
   .app-title {
     font-size: var(--ds-fs-3);
