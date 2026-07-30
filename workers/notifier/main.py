@@ -75,6 +75,73 @@ if not NOTIFY_WEBHOOK_URL:
     )
 
 
+# --------------------------------------------------------------------------- #
+# Destination compatibility (Discord / Slack / generic)
+# --------------------------------------------------------------------------- #
+#
+# Discord's webhook API renders ``content`` and ignores ``text``. A payload
+# carrying only ``text`` is refused outright with
+# ``400 {"message": "Cannot send an empty message", "code": 50006}`` — verified
+# live against a real Discord webhook on 2026-07-30, not inferred from docs.
+# Slack renders ``text``. Sending BOTH keys satisfies Discord, Slack and a
+# generic viewer at once, which keeps the destination a pure *configuration*
+# choice: repointing NOTIFY_WEBHOOK_URL at another vendor needs no code change.
+# That is the "URL is the capability" model working as intended.
+_DISCORD_CONTENT_LIMIT = 2000
+
+# Discord refuses an oversize ``content`` with
+# ``400 {"content": ["Must be 2000 or fewer in length."]}``. It does NOT
+# truncate on our behalf, so an uncapped long body loses the whole
+# notification — the failure is total, not cosmetic.
+_TRUNCATION_MARKER = "\n\n…[truncated, full detail in the decision record]…\n\n"
+
+# Truncation is MIDDLE-OUT rather than tail-drop, and that is load-bearing.
+# In the rollback approval body the variable-length parts (the model's
+# rationale, then the evidence table) come FIRST, and the approval link sits
+# near the END. So the obvious ``content[:2000]`` would delete precisely the
+# URL the message exists to deliver — and only for the long bodies that a
+# messy drift produces, i.e. exactly when the operator needs it most.
+#
+# 800 is measured, not guessed: the rendered rollback body runs 486 chars from
+# the start of the approval URL to the end, with a maximum-length 64-char
+# token. The remaining headroom absorbs template growth, and
+# ``tests/integration/test_notify_preserves_approval_url.py`` pins the
+# invariant against the REAL renderer — so if the tail ever outgrows this
+# budget, a test fails instead of the link silently vanishing in production.
+_TRUNCATION_TAIL_BUDGET = 800
+
+_TRUNCATION_HEAD_BUDGET = (
+    _DISCORD_CONTENT_LIMIT - len(_TRUNCATION_MARKER) - _TRUNCATION_TAIL_BUDGET
+)
+
+# Fail fast at import, in the same spirit as the empty-URL check above. A
+# non-positive head budget would make ``text[:_TRUNCATION_HEAD_BUDGET]`` slice
+# from the END of the string (Python's negative-index semantics) and quietly
+# emit a corrupted notification rather than raising.
+if _TRUNCATION_HEAD_BUDGET <= 0:
+    raise RuntimeError(
+        "Truncation budgets are inconsistent: "
+        f"tail={_TRUNCATION_TAIL_BUDGET} + marker={len(_TRUNCATION_MARKER)} "
+        f"leaves no room under the {_DISCORD_CONTENT_LIMIT}-char limit."
+    )
+
+
+def _discord_safe_content(text: str) -> str:
+    """Fit ``text`` to Discord's 2000-char ``content`` limit, keeping the tail.
+
+    Returns ``text`` unchanged when it already fits. Otherwise keeps the head
+    and a generous fixed tail, dropping the middle, because the
+    operator-critical payload (the approval URL) lives at the end.
+    """
+    if len(text) <= _DISCORD_CONTENT_LIMIT:
+        return text
+    return (
+        text[:_TRUNCATION_HEAD_BUDGET]
+        + _TRUNCATION_MARKER
+        + text[-_TRUNCATION_TAIL_BUDGET:]
+    )
+
+
 def _verify_caller_dep(request: Request) -> str:
     """Thin wrapper around :func:`verify_caller` so tests can swap auth via
     ``app.dependency_overrides`` without monkey-patching the shared lib."""
@@ -156,10 +223,18 @@ def notify(
     """
     # Build the normalized payload. The ``text`` field exists so the
     # notification is human-readable in any generic webhook viewer
-    # (webhook.site shows it inline). The structured fields (service,
-    # channel, severity) let a future custom receiver route or filter.
+    # (webhook.site shows it inline) and is what Slack renders. ``content`` is
+    # what Discord renders — see the compatibility note above. The structured
+    # fields (service, channel, severity) let a future custom receiver route
+    # or filter.
+    #
+    # Only ``content`` is capped. ``text`` deliberately carries the FULL body
+    # (up to the schema's 10000 chars) so a non-Discord receiver loses nothing
+    # to a limit that isn't theirs.
+    text = f"[DriftScribe/{req.channel}/{req.severity}] {req.body}"
     payload = {
-        "text": f"[DriftScribe/{req.channel}/{req.severity}] {req.body}",
+        "text": text,
+        "content": _discord_safe_content(text),
         "service": "DriftScribe",
         "channel": req.channel,
         "severity": req.severity,

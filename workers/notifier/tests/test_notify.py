@@ -129,6 +129,110 @@ def test_notify_happy_path(client):
     assert payload["channel"] == "info"
     assert payload["severity"] == "low"
     assert "hello" in payload["text"]
+    assert "hello" in payload["content"]
+
+
+# --------------------------------------------------------------------------- #
+# Destination compatibility: Discord ``content`` + the 2000-char cap
+# --------------------------------------------------------------------------- #
+
+
+def test_payload_carries_content_for_discord(client):
+    """Discord renders ``content`` and ignores ``text``.
+
+    A payload carrying only ``text`` is refused by Discord with
+    ``400 {"message": "Cannot send an empty message", "code": 50006}``
+    (verified live against a real webhook, 2026-07-30). Both keys ship so one
+    payload serves Discord, Slack and a generic viewer.
+    """
+    r = client.post(
+        "/notify",
+        json={
+            "channel": "approval",
+            "severity": "high",
+            "body": "rollback proposed",
+        },
+    )
+    assert r.status_code == 200, r.text
+    payload = _FakeClient.last["json"]
+    assert "rollback proposed" in payload["content"]
+    assert "rollback proposed" in payload["text"]
+
+
+def test_short_content_is_identical_to_text(client):
+    """Below the cap, no truncation machinery should engage at all."""
+    r = client.post(
+        "/notify",
+        json={"channel": "info", "severity": "low", "body": "short"},
+    )
+    assert r.status_code == 200, r.text
+    payload = _FakeClient.last["json"]
+    assert payload["content"] == payload["text"]
+
+
+def test_oversize_content_is_capped_but_text_is_not(client):
+    """Discord hard-rejects >2000 chars; it does not truncate for us.
+
+    ``text`` stays uncapped on purpose — the 2000 limit is Discord's, and
+    imposing it on Slack or a generic receiver would lose detail for no reason.
+    """
+    body = "x" * 9000
+    r = client.post(
+        "/notify",
+        json={"channel": "approval", "severity": "high", "body": body},
+    )
+    assert r.status_code == 200, r.text
+    payload = _FakeClient.last["json"]
+    assert len(payload["content"]) <= 2000
+    assert len(payload["text"]) > 2000
+    assert body in payload["text"]
+
+
+def test_truncation_keeps_the_tail_where_the_approval_link_lives(client):
+    """The middle is dropped, never the tail.
+
+    This is the regression guard for the specific silent failure this feature
+    invites: a naive ``content[:2000]`` truncates away the approval URL, which
+    sits at the END of the rendered body — and only does so for long bodies,
+    i.e. exactly the messy drifts where the operator needs the link most.
+    """
+    tail = "APPROVE-HERE-https://example.test/approvals/abc?t=zzz"
+    body = ("R" * 9000) + tail
+    r = client.post(
+        "/notify",
+        json={"channel": "approval", "severity": "high", "body": body},
+    )
+    assert r.status_code == 200, r.text
+    content = _FakeClient.last["json"]["content"]
+    assert len(content) <= 2000
+    assert content.endswith(tail)
+    assert content.startswith("[DriftScribe/approval/high] RRR")
+    # Prove the naive implementation really would have dropped it, so this
+    # test fails if someone "simplifies" the helper back to a head slice.
+    assert tail not in f"[DriftScribe/approval/high] {body}"[:2000]
+
+
+def test_content_at_exactly_the_limit_is_untouched():
+    """Boundary: 2000 passes through verbatim, 2001 is truncated to 2000."""
+    at_limit = "y" * 2000
+    assert notifier_main._discord_safe_content(at_limit) == at_limit
+    assert len(notifier_main._discord_safe_content("y" * 2001)) == 2000
+
+
+def test_truncation_budgets_are_internally_consistent():
+    """A non-positive head budget would corrupt output instead of raising.
+
+    ``text[:negative]`` slices from the END in Python, so a mis-set budget
+    emits a mangled notification silently. The module fails at import if this
+    breaks; the invariant is stated here too so the arithmetic is pinned.
+    """
+    assert notifier_main._TRUNCATION_HEAD_BUDGET > 0
+    assert (
+        notifier_main._TRUNCATION_HEAD_BUDGET
+        + len(notifier_main._TRUNCATION_MARKER)
+        + notifier_main._TRUNCATION_TAIL_BUDGET
+        == notifier_main._DISCORD_CONTENT_LIMIT
+    )
 
 
 def test_caller_url_field_rejected(client):
