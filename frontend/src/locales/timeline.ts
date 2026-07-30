@@ -21,6 +21,13 @@ export const timeline = {
       'summaries entirely, even though the coordinator still reasons; when ' +
       'that happens, a note appears here with the thinking-token count.',
 
+    // The reasoning group's own empty line (plan Task 11). The generic
+    // "No coordinator reasoning yet." reports an absence; on the page's primary
+    // group that wastes the chance to say what produces one. Tools/MCP keep the
+    // generic copy — they are demoted drawers now, and guidance there would just
+    // be more text to read.
+    'timeline.empty.reasoningHint':
+      "Send a question and the coordinator's reasoning will stream here.",
     // Historical-empty state: two honest variants (directly-recorded vs. a
     // reasoning run whose trace just couldn't be loaded).
     'timeline.empty.directlyRecorded':
@@ -109,6 +116,7 @@ export const timeline = {
       'ことがありますが、その場合でもコーディネーターは推論を行っています。そのような' +
       'ときは、思考トークン数とともにここに注記が表示されます。',
 
+    'timeline.empty.reasoningHint': '質問を送ると、コーディネーターの推論がここに流れます。',
     'timeline.empty.directlyRecorded':
       'この判断には推論タイムラインがありません。エージェントによる推論ではなく、' +
       '判断として直接記録されたものです。',

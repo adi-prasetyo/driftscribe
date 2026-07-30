@@ -17,6 +17,8 @@
     open = false,
     empty = false,
     hint,
+    variant = 'card',
+    emptyText,
     children,
   }: {
     key: GroupKey;
@@ -27,6 +29,24 @@
     open?: boolean;
     empty?: boolean;
     /**
+     * Visual weight (ds-7ag.5). `card` is the original boxed look and stays the
+     * default, so no existing consumer changes. `quiet` demotes the group to a
+     * plain disclosure — no box when closed, a muted label row, content on a
+     * well when open — for drawers that hold METADATA rather than substance.
+     * The chat page had six boxes of equal weight, so nothing on it read as the
+     * page's point; this is what lets the reasoning group be the one that does.
+     *
+     * Both variants keep the e2e DOM contract documented above (a real
+     * <details id="group-{key}"> with a [data-group] child).
+     */
+    variant?: 'card' | 'quiet';
+    /**
+     * Replaces the generic "No {title} yet." empty line. Optional, and when
+     * omitted the generic copy is unchanged — so a group opts IN to saying what
+     * would fill it rather than every group having to author the sentence.
+     */
+    emptyText?: string;
+    /**
      * Optional explanatory hover-help. When set, a small help-circle icon is
      * rendered next to the title with this text as its tooltip + aria-label.
      * Supplementary operator hint (hover/SR), not focus/touch-robust help.
@@ -36,7 +56,7 @@
   } = $props();
 </script>
 
-<details id={`group-${key}`} class="group" {open}>
+<details id={`group-${key}`} class="group" class:group--quiet={variant === 'quiet'} {open}>
   <summary class="group__summary">
     <span class="group__title">{#if icon}<Icon name={icon} size={14} extraClass="group__title-icon" />{/if}{title}{#if hint}<span class="group__hint" title={hint} aria-label={hint} role="img"><Icon name="help-circle" size={13} /></span>{/if}</span>
     {#if count > 0}
@@ -46,8 +66,10 @@
   <div class="events" data-group={key}>
     {#if empty}
       <!-- Lowercasing is an EN-only grammar rule (the title lands mid-sentence
-           in 'No {title} yet.'); JA titles like 'MCP 通信' must pass unchanged. -->
-      <p class="group__empty">{$t('misc.group.emptyState', { title: $locale === 'en' ? title.toLowerCase() : title })}</p>
+           in 'No {title} yet.'); JA titles like 'MCP 通信' must pass unchanged.
+           emptyText, when the consumer supplies one, is already a whole
+           sentence in the active locale and interpolates nothing. -->
+      <p class="group__empty">{emptyText ?? $t('misc.group.emptyState', { title: $locale === 'en' ? title.toLowerCase() : title })}</p>
     {:else}
       {@render children?.()}
     {/if}
@@ -108,5 +130,33 @@
     font-size: var(--ds-fs-1);
     font-style: italic;
     padding: var(--ds-sp-2) 0;
+  }
+
+  /* ---- quiet variant (ds-7ag.5) -------------------------------------------
+     A metadata drawer, not a card: the box goes away and a hairline above the
+     summary is all that separates it from what it follows. The label row reads
+     like a .ds-label, and the open content sits on a --ds-surface-2 well so the
+     disclosure still has a visible body without a border around the whole
+     thing. Only the reasoning group keeps the card look, which is the point —
+     it is the page's substance. */
+  .group--quiet {
+    border: none;
+    border-radius: 0;
+    background: none;
+    margin: 0;
+  }
+  .group--quiet > .group__summary {
+    border-top: 1px solid var(--ds-border);
+    padding: var(--ds-sp-3) 0;
+    font-size: var(--ds-fs-1);
+    color: var(--ds-muted);
+    letter-spacing: 0.01em;
+  }
+  .group--quiet > .events {
+    border-top: none;
+    background: var(--ds-surface-2);
+    border-radius: var(--ds-radius);
+    padding: var(--ds-sp-3) var(--ds-sp-4);
+    margin-bottom: var(--ds-sp-3);
   }
 </style>
