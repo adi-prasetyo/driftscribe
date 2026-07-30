@@ -1,5 +1,12 @@
 import { expect, type Page, type Route } from '@playwright/test';
-import { test } from './fixtures';
+import {
+  test,
+  TRACE_ID,
+  CONVERSATION_ID,
+  traceResponse,
+  conversationsListResponse,
+  conversationDetailResponse,
+} from './fixtures';
 
 // Mock-Playwright smoke for browser Back/Forward across the three views
 // (ds-7ag.1). This is the case jsdom CANNOT prove: the unit suite spies on
@@ -33,7 +40,15 @@ async function mockData(page: Page) {
   await page.route('**/autonomy', json(AUTONOMY));
   await page.route('**/pause', json(PAUSE));
   await page.route('**/decisions**', json({ decisions: [] }));
-  await page.route('**/conversations**', json({ conversations: [] }));
+  // ORDER-SENSITIVE: `**/conversations**` also matches the DETAIL url, and
+  // Playwright tries the most recently registered handler first — so the
+  // specific detail route must be registered last, not first.
+  await page.route('**/conversations**', json(conversationsListResponse()));
+  await page.route(
+    new RegExp(`/conversations/${CONVERSATION_ID}$`),
+    json(conversationDetailResponse()),
+  );
+  await page.route('**/trace/**', json(traceResponse()));
   await page.route('**/infra/pending-approvals**', json({ pending: [] }));
   await page.route(
     '**/infra/graph',
@@ -92,5 +107,53 @@ test.describe('view history traversal (mock smoke)', () => {
 
     await page.goBack();
     await expect(page.getByTestId('approval-desk')).toBeVisible();
+  });
+
+  // A shared link's restoration must not COST a history entry, or the visitor's
+  // first Back press looks dead — it pops to the same view they are already on.
+  // Proven by landing on a sentinel page first: one Back must leave the app.
+  for (const [param, value] of [
+    ['conversation', CONVERSATION_ID],
+    ['reasoning', TRACE_ID],
+    ['ask_pr', '168'],
+    ['preview_pr', '168'],
+  ] as const) {
+    test(`a ?${param}= deep link leaves the app in ONE Back press`, async ({ page }) => {
+      await seedToken(page);
+      await mockData(page);
+      await page.goto('about:blank');
+
+      await page.goto(`/?${param}=${value}`);
+      await expect(page.locator('#chat-form')).toBeVisible();
+
+      await page.goBack();
+      expect(page.url()).toBe('about:blank');
+    });
+  }
+
+  // The restore is view-only by design, so a forward entry can still name a
+  // thread this session tore down. The url must stop claiming it rather than
+  // sitting there pointing at content that is not on screen.
+  test('a forward entry stops claiming a conversation that Back tore down', async ({ page }) => {
+    await seedToken(page);
+    await mockData(page);
+    await page.goto('/');
+    await page.getByTestId('nav-chat').click();
+
+    // Open the thread from the rail — that writes ?conversation onto this entry.
+    await page.getByTestId('conversation-open').click();
+    await expect(page.getByTestId('conversation-thread')).toBeVisible();
+    await expect(page).toHaveURL(new RegExp(`conversation=${CONVERSATION_ID}`));
+
+    await page.goBack();
+    await expect(page.getByTestId('approval-desk')).toBeVisible();
+
+    await page.goForward();
+    await expect(page.locator('#chat-form')).toBeVisible();
+    // View-only restore: the thread is NOT reopened, so the url drops the param
+    // and states the view outright (or a reload would land on the desk).
+    await expect(page.getByTestId('conversation-thread')).toHaveCount(0);
+    expect(new URL(page.url()).searchParams.get('conversation')).toBeNull();
+    expect(new URL(page.url()).searchParams.get('view')).toBe('chat');
   });
 });
