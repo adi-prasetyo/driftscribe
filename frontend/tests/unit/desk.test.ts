@@ -1052,60 +1052,59 @@ describe('awaitingCount — the InstrumentBand "awaiting your approval" figure',
     expect(awaitingCount({ decisions: [applied], pendingApprovals: [], now: NOW, origin: ORIGIN })).toBe(0);
   });
 
-  // ds-dzd — the live shape that made the band lie on prod. PR #95's apply ended
-  // in `failed_state_suspect`, and its two OLDER `waiting_for_rebake` rows kept
-  // looking actionable, so the band read "2 awaiting your approval" over a desk
-  // showing ONE item. The phantom was two months old and reachable from no
-  // surface at all: the single CTA slot went to the listing lane, and the ledger
-  // strip only shows recent rows. A count nobody can act on is worse than a wrong
-  // count — it sends the operator hunting for work that does not exist.
-  it('a waiting row an OLDER-than-terminal failure overtook never inflates the count (PR #95)', () => {
+  // ds-dzd — the live shape that made the band lie on prod. PR #95's
+  // `failed_state_suspect` row and BOTH of its `waiting_for_rebake` rows share
+  // ONE event_key, so the failure genuinely is those rows' own outcome. The band
+  // read "2 awaiting your approval" over a desk showing ONE item, and the phantom
+  // was two months old and reachable from no surface at all: the single CTA slot
+  // went to the listing lane, and the ledger strip only shows recent rows. A count
+  // nobody can act on is worse than a wrong count — it sends the operator hunting
+  // for work that does not exist.
+  const EK_A = 'iac-apply-95-312b3cac8ba677d62a138f8050de2a34';
+  const EK_B = 'iac-apply-95-ffffffffffffffffffffffffffffffff';
+
+  it('a waiting row whose OWN generation reached a terminal state never inflates the count (PR #95)', () => {
     const terminal = iacDecision({
       pr_number: 95,
       apply_status: 'failed_state_suspect',
+      event_key: EK_A,
       decision_id: 'term-95',
-      created_at: '2026-06-11T09:00:00Z',
+      created_at: '2026-06-11T05:50:36Z',
     });
     const stale = iacDecision({
       pr_number: 95,
       apply_status: 'waiting_for_rebake',
+      event_key: EK_A,
       decision_id: 'stale-95',
-      created_at: '2026-06-11T08:00:00Z',
+      created_at: '2026-06-11T05:39:09Z',
     });
     expect(
-      awaitingCount({
-        decisions: [terminal, stale],
-        pendingApprovals: [],
-        now: NOW,
-        origin: ORIGIN,
-      }),
+      awaitingCount({ decisions: [terminal, stale], pendingApprovals: [], now: NOW, origin: ORIGIN }),
     ).toBe(0);
   });
 
-  // THE REGRESSION GUARD. A PR-wide "any failure retires the PR" rule passes the
-  // test above and silently breaks this one. The recovery runbook
-  // (docs/runbooks/iac-apply-failure-recovery.md) tells the operator to rebuild
-  // C2 on the SAME PR after a failure and approve the NEWEST generation, and
-  // agent/main.py's _iac_event_key keys approval state per generation — so a live
-  // waiting row sitting after a dead failure is real work, and hiding it is the
-  // expensive direction to fail.
-  it('a NEWER waiting row after an older failure STILL counts (runbook rebuild)', () => {
-    const dead = iacDecision({
-      pr_number: 216,
-      apply_status: 'failed_state_suspect',
-      decision_id: 'dead-216',
-      created_at: '2026-07-30T10:00:00Z',
+  // THE REGRESSION GUARD. Generations are not serialized against each other, so
+  // two can be in flight and finish out of order: terminal(A) can be NEWER than
+  // waiting(B) while saying nothing about generation B. A per-PR "newest terminal"
+  // rule retires the live B row — hiding the exact work the recovery runbook
+  // tells the operator to approve. Matching on event_key cannot.
+  it('a terminal in one generation never retires a live waiting row in another', () => {
+    const waitingA = iacDecision({
+      pr_number: 95, apply_status: 'waiting_for_rebake', event_key: EK_A,
+      decision_id: 'wA', created_at: '2026-07-30T10:00:00Z',
     });
-    const rebuilt = iacDecision({
-      pr_number: 216,
-      apply_status: 'waiting_for_rebake',
-      decision_id: 'rebuilt-216',
-      created_at: '2026-07-30T12:00:00Z',
-      superseded_by_pr: undefined,
+    const waitingB = iacDecision({
+      pr_number: 95, apply_status: 'waiting_for_rebake', event_key: EK_B,
+      decision_id: 'wB', created_at: '2026-07-30T11:00:00Z',
     });
+    const terminalA = iacDecision({
+      pr_number: 95, apply_status: 'failed_state_suspect', event_key: EK_A,
+      decision_id: 'tA', created_at: '2026-07-30T12:00:00Z',
+    });
+    // Generation B is still awaiting the operator, so the PR still counts once.
     expect(
       awaitingCount({
-        decisions: [dead, rebuilt],
+        decisions: [waitingA, waitingB, terminalA],
         pendingApprovals: [],
         now: NOW,
         origin: ORIGIN,
@@ -1117,16 +1116,12 @@ describe('awaitingCount — the InstrumentBand "awaiting your approval" figure',
   // the #95 ghost. The band must read 1 — what the page can actually show.
   it('reports only the reachable item when a superseded ghost sits alongside it', () => {
     const ghostTerminal = iacDecision({
-      pr_number: 95,
-      apply_status: 'failed_state_suspect',
-      decision_id: 'term-95',
-      created_at: '2026-06-11T09:00:00Z',
+      pr_number: 95, apply_status: 'failed_state_suspect', event_key: EK_A,
+      decision_id: 'term-95', created_at: '2026-06-11T05:50:36Z',
     });
     const ghostStale = iacDecision({
-      pr_number: 95,
-      apply_status: 'waiting_for_rebake',
-      decision_id: 'stale-95',
-      created_at: '2026-06-11T08:00:00Z',
+      pr_number: 95, apply_status: 'waiting_for_rebake', event_key: EK_A,
+      decision_id: 'stale-95', created_at: '2026-06-11T05:39:09Z',
     });
     const real = pendingIac({
       pr_number: 168,
@@ -1149,36 +1144,35 @@ describe('awaitingCount — the InstrumentBand "awaiting your approval" figure',
   // for ("an in-progress or failed apply leaves the entry standing").
   it('a terminal failure does not suppress the same PR in the LISTING lane', () => {
     const failed = iacDecision({
-      pr_number: 168,
-      apply_status: 'failed',
-      decision_id: 'f-168',
-      created_at: '2026-07-30T10:00:00Z',
+      pr_number: 168, apply_status: 'failed', event_key: 'iac-apply-168-deadbeef',
+      decision_id: 'f-168', created_at: '2026-07-30T10:00:00Z',
     });
-    const listed = pendingIac({ pr_number: 168 });
     expect(
       awaitingCount({
         decisions: [failed],
-        pendingApprovals: [listed],
+        pendingApprovals: [pendingIac({ pr_number: 168 })],
         now: NOW,
         origin: ORIGIN,
       }),
     ).toBe(1);
   });
 
-  // Fails safe toward showing work: with no usable timestamps we cannot prove
-  // which generation is newer, so the row keeps counting.
-  it('a waiting row with no created_at keeps counting even beside a failure', () => {
+  // Fails safe toward showing work in the degenerate cases.
+  it('a waiting row with no event_key or no created_at keeps counting', () => {
     const terminal = iacDecision({
-      pr_number: 95,
-      apply_status: 'failed',
-      decision_id: 'term-95',
-      created_at: '2026-07-30T12:00:00Z',
+      pr_number: 95, apply_status: 'failed', event_key: EK_A,
+      decision_id: 'term-95', created_at: '2026-07-30T12:00:00Z',
     });
+    const noKey = iacDecision({
+      pr_number: 95, apply_status: 'waiting_for_rebake', event_key: undefined,
+      decision_id: 'no-key', created_at: '2026-07-30T10:00:00Z',
+    });
+    expect(
+      awaitingCount({ decisions: [terminal, noKey], pendingApprovals: [], now: NOW, origin: ORIGIN }),
+    ).toBe(1);
     const noTs = iacDecision({
-      pr_number: 95,
-      apply_status: 'waiting_for_rebake',
-      decision_id: 'w-95',
-      created_at: undefined,
+      pr_number: 95, apply_status: 'waiting_for_rebake', event_key: EK_A,
+      decision_id: 'no-ts', created_at: undefined,
     });
     expect(
       awaitingCount({ decisions: [terminal, noTs], pendingApprovals: [], now: NOW, origin: ORIGIN }),
@@ -1187,10 +1181,8 @@ describe('awaitingCount — the InstrumentBand "awaiting your approval" figure',
 
   it('a waiting_for_rebake row with no terminal sibling still counts', () => {
     const waiting = iacDecision({
-      pr_number: 301,
-      apply_status: 'waiting_for_rebake',
-      decision_id: 'w-301',
-      created_at: '2026-07-30T10:00:00Z',
+      pr_number: 301, apply_status: 'waiting_for_rebake', event_key: 'iac-apply-301-abc',
+      decision_id: 'w-301', created_at: '2026-07-30T10:00:00Z',
     });
     expect(
       awaitingCount({ decisions: [waiting], pendingApprovals: [], now: NOW, origin: ORIGIN }),

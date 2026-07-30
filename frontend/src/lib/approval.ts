@@ -325,9 +325,10 @@ export function resolvedIacPrNumbers(
 type IacGenerationRow = {
   action?: string;
   apply_status?: string;
-  pr_number?: number;
   decision_id?: string;
   created_at?: string;
+  /** Generation identity — see the note on `Decision.event_key`. */
+  event_key?: string;
 };
 
 function parsedTime(iso: string | undefined): number | null {
@@ -338,69 +339,80 @@ function parsedTime(iso: string | undefined): number | null {
 
 /**
  * `decision_id`s of `waiting_for_rebake` rows that a STRICTLY NEWER terminal row
- * for the SAME PR has already overtaken — i.e. the operator was asked to approve
- * a generation of this PR's plan, and a later generation has since finished.
+ * FOR THE SAME GENERATION has already overtaken — i.e. the operator was asked to
+ * approve a specific plan artifact, and that artifact's own run has since
+ * finished (applied, failed, ambiguous). Such a row is no longer the thing to
+ * approve.
  *
  * ds-dzd. This is the question `resolvedIacPrNumbers` cannot answer, because
  * approval state is not PR-wide. `agent/main.py`'s `_iac_event_key` keys an
- * apply on `{repo, pr_number, head_sha, generation_metadata}`, so ONE PR can
- * legitimately carry several generations — and
- * `docs/runbooks/iac-apply-failure-recovery.md` §7e tells the operator to do
- * exactly that after a failure: reconcile state, `gh workflow run iac.yml -f
- * pr_number=<N>` to rebuild the C2 plan on the SAME PR, then Approve the newest
- * one. So "this PR had a failure" and "this PR needs nothing" are different
- * facts, and a PR-wide failure rule would suppress the very row that recovery
- * creates.
+ * apply on `{repo, pr_number, head_sha, generation_metadata}`, and
+ * `docs/runbooks/iac-apply-failure-recovery.md` tells the operator to rebuild the
+ * C2 plan on the SAME PR after a failure and approve the newest one. So one PR
+ * holds several generations — prod already does: PR #32 carries one `applied`
+ * event_key and a separate `failed` one.
  *
- * What IS stale is a waiting row that a newer terminal row has passed. That is
- * PR #95 on prod: a `failed_state_suspect` row plus two OLDER
- * `waiting_for_rebake` rows, which kept `awaitingCount` reporting an item for
- * two months that no surface could render.
+ * MATCHED BY `event_key`, NOT `pr_number`. A per-PR "newest terminal" rule is
+ * unsound, because generations are NOT serialized against each other: the claim
+ * is made per event key, so two can be in flight at once and complete out of
+ * order. That admits
  *
- * FAILS SAFE toward showing work. A row is superseded only when both timestamps
- * are present, parseable, and the terminal one is strictly greater. A missing or
- * unparseable `created_at`, a missing `decision_id`, or equal timestamps all
- * leave the row actionable — the same degradation `resolvedIacPrNumbers`
- * chooses when its window truncates. Hiding real work is the expensive
- * direction: an operator who cannot see a proposal cannot approve it, whereas a
- * stale-looking row costs one click to dismiss.
+ *     waiting(A) -> waiting(B) -> terminal(A)
  *
- * `created_at` is the doc's last-activity time, not strictly its birth time — a
- * merge-only reconcile re-records an outcome with a fresh `created_at` (see
- * types.ts). That only ever moves a TERMINAL row later, which can at worst
- * retire a waiting row a little early; it cannot resurrect one. The alternative
- * discriminators are worse: `head_sha` is unchanged by a same-commit C2 rebuild,
- * and generation metadata is not on the decision doc at all.
+ * where terminal(A) is newer than waiting(B) but says nothing whatsoever about
+ * generation B. A per-PR rule retires the live B row; scoping to the event_key
+ * cannot, because a terminal row only ever speaks for its own artifact.
+ *
+ * What it DOES still catch is the case that started this: PR #95's
+ * `failed_state_suspect` row and both of its `waiting_for_rebake` rows share one
+ * event_key, so the failure is genuinely those rows' own outcome. `awaitingCount`
+ * had been reporting them for two months as an item no surface could render.
+ *
+ * FAILS SAFE toward showing work. A row is retired only when both rows carry the
+ * same non-empty `event_key`, both timestamps parse, and the terminal one is
+ * strictly greater. A missing event_key or `created_at`, a missing
+ * `decision_id`, or a tie all leave the row actionable — the same degradation
+ * `resolvedIacPrNumbers` chooses when its window truncates. Hiding real work is
+ * the expensive direction: an operator who cannot see a proposal cannot approve
+ * it, whereas a stale-looking row costs one click.
+ *
+ * On `created_at`: each `_record_iac_decision` call persists a NEW doc with a
+ * fresh `uuid4()` decision_id, and state_store stamps `created_at` at record
+ * time — so it is per-row birth time, not a field a later reconcile mutates. (A
+ * merge-only reconcile APPENDS an `applied` row, and an `applied` row already
+ * retires its PR's waiting rows through `resolvedIacPrNumbers`.) Within one
+ * event_key the waiting row is always written before the apply runs, so the
+ * strict comparison is belt-and-braces rather than the load-bearing part.
  */
 export function supersededWaitingIds(
   decisions: ReadonlyArray<IacGenerationRow | null | undefined> | null | undefined,
 ): Set<string> {
   const list = decisions ?? [];
-  // Newest terminal outcome per PR — success or failure, since either one means
-  // a later generation has already run to completion.
-  const newestTerminal = new Map<number, number>();
+  // Newest terminal outcome per GENERATION — success or failure, since either
+  // means that artifact's run has completed.
+  const newestTerminal = new Map<string, number>();
   for (const d of list) {
     if (d?.action !== 'iac_apply') continue;
     const status = d.apply_status;
     if (status === undefined) continue;
     if (status !== 'applied' && !TERMINAL_FAILED_APPLY_STATUSES.has(status)) continue;
-    const pr = d.pr_number;
-    if (typeof pr !== 'number' || !Number.isInteger(pr) || pr <= 0) continue;
+    const key = d.event_key;
+    if (typeof key !== 'string' || key === '') continue;
     const at = parsedTime(d.created_at);
     if (at === null) continue;
-    const prev = newestTerminal.get(pr);
-    if (prev === undefined || at > prev) newestTerminal.set(pr, at);
+    const prev = newestTerminal.get(key);
+    if (prev === undefined || at > prev) newestTerminal.set(key, at);
   }
 
   const stale = new Set<string>();
   for (const d of list) {
     if (d?.action !== 'iac_apply' || d.apply_status !== 'waiting_for_rebake') continue;
     const id = d.decision_id;
-    const pr = d.pr_number;
+    const key = d.event_key;
     if (typeof id !== 'string' || id === '') continue;
-    if (typeof pr !== 'number' || !Number.isInteger(pr) || pr <= 0) continue;
+    if (typeof key !== 'string' || key === '') continue;
     const mine = parsedTime(d.created_at);
-    const terminal = newestTerminal.get(pr);
+    const terminal = newestTerminal.get(key);
     if (mine === null || terminal === undefined) continue;
     if (terminal > mine) stale.add(id);
   }

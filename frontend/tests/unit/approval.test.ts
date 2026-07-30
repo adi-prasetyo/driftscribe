@@ -409,85 +409,115 @@ describe('iacPrHref — the rail title link for an iac_apply row', () => {
 // one PR can hold a dead generation and a live one at once.
 describe('supersededWaitingIds — per-GENERATION supersession', () => {
   const row = (o: Record<string, unknown>) => ({ action: 'iac_apply', ...o });
+  const A = 'iac-apply-95-312b3cac8ba677d62a138f8050de2a34';
+  const B = 'iac-apply-95-ffffffffffffffffffffffffffffffff';
 
-  // The prod shape: PR #95's newest row is the failure, so both older waiting
-  // rows are dead. This is the count the operator saw as a phantom "2".
-  it('retires waiting rows an OLDER-than-terminal failure has overtaken (PR #95)', () => {
+  // The prod shape: PR #95's failure and BOTH of its waiting rows share ONE
+  // event_key, so the failure really is those rows' own outcome. This is the
+  // phantom "2" the operator saw.
+  it('retires waiting rows whose OWN generation reached a terminal state (PR #95)', () => {
     const ids = supersededWaitingIds([
-      row({ apply_status: 'failed_state_suspect', pr_number: 95, decision_id: 'term', created_at: '2026-06-11T09:00:00Z' }),
-      row({ apply_status: 'waiting_for_rebake', pr_number: 95, decision_id: 'w1', created_at: '2026-06-11T08:00:00Z' }),
-      row({ apply_status: 'waiting_for_rebake', pr_number: 95, decision_id: 'w2', created_at: '2026-06-11T07:00:00Z' }),
+      row({ apply_status: 'failed_state_suspect', event_key: A, decision_id: 'term', created_at: '2026-06-11T05:50:36Z' }),
+      row({ apply_status: 'waiting_for_rebake', event_key: A, decision_id: 'w1', created_at: '2026-06-11T05:39:09Z' }),
+      row({ apply_status: 'waiting_for_rebake', event_key: A, decision_id: 'w2', created_at: '2026-06-11T05:39:03Z' }),
     ]);
     expect(ids.has('w1')).toBe(true);
     expect(ids.has('w2')).toBe(true);
     expect(ids.size).toBe(2);
   });
 
-  // THE REGRESSION THIS EXISTS FOR. A PR-wide "any failure retires the PR" rule
-  // passes the test above and silently breaks this one — hiding the exact row the
-  // recovery runbook tells the operator to approve.
-  it('leaves a NEWER waiting row actionable after an older failure (runbook rebuild)', () => {
+  // THE INTERLEAVING. Generations are NOT serialized against each other — the
+  // claim is per event_key — so two can be in flight and finish out of order.
+  // terminal(A) is newer than waiting(B) but says nothing about generation B. A
+  // per-PR "newest terminal" rule retires the live B row; matching on event_key
+  // cannot, because a terminal only ever speaks for its own artifact.
+  it('a terminal in generation A never retires a live waiting row in generation B', () => {
     const ids = supersededWaitingIds([
-      row({ apply_status: 'waiting_for_rebake', pr_number: 216, decision_id: 'rebuilt', created_at: '2026-07-30T12:00:00Z' }),
-      row({ apply_status: 'failed_state_suspect', pr_number: 216, decision_id: 'dead', created_at: '2026-07-30T10:00:00Z' }),
+      row({ apply_status: 'waiting_for_rebake', event_key: A, decision_id: 'wA', created_at: '2026-07-30T10:00:00Z' }),
+      row({ apply_status: 'waiting_for_rebake', event_key: B, decision_id: 'wB', created_at: '2026-07-30T11:00:00Z' }),
+      row({ apply_status: 'failed_state_suspect', event_key: A, decision_id: 'tA', created_at: '2026-07-30T12:00:00Z' }),
+    ]);
+    expect(ids.has('wA')).toBe(true); // its own generation finished
+    expect(ids.has('wB')).toBe(false); // nothing has run generation B
+    expect(ids.size).toBe(1);
+  });
+
+  // Prod carries this today: PR #32 has one `applied` event_key and a separate
+  // `failed` one. The failed generation must not speak for the applied one.
+  it('separate event_keys on the SAME pr_number stay independent', () => {
+    const ids = supersededWaitingIds([
+      row({ apply_status: 'failed', event_key: 'iac-apply-32-90e163e5', decision_id: 'tFail', created_at: '2026-05-30T10:52:27Z' }),
+      row({ apply_status: 'waiting_for_rebake', event_key: 'iac-apply-32-a1473c8a', decision_id: 'wOther', created_at: '2026-05-30T11:00:00Z' }),
+    ]);
+    expect(ids.size).toBe(0);
+  });
+
+  // The runbook rebuild, expressed the way it actually happens: recovery builds a
+  // NEW artifact, so the new waiting row carries a NEW event_key and the old
+  // failure cannot touch it.
+  it('leaves a rebuilt generation actionable after an older failure (runbook)', () => {
+    const ids = supersededWaitingIds([
+      row({ apply_status: 'waiting_for_rebake', event_key: B, decision_id: 'rebuilt', created_at: '2026-07-30T12:00:00Z' }),
+      row({ apply_status: 'failed_state_suspect', event_key: A, decision_id: 'dead', created_at: '2026-07-30T10:00:00Z' }),
     ]);
     expect(ids.has('rebuilt')).toBe(false);
     expect(ids.size).toBe(0);
   });
 
-  it('an applied row also overtakes an older waiting row on the same PR', () => {
+  it('an applied row also retires its own generation’s waiting row', () => {
     const ids = supersededWaitingIds([
-      row({ apply_status: 'applied', pr_number: 221, decision_id: 'ok', created_at: '2026-07-08T08:58:00Z' }),
-      row({ apply_status: 'waiting_for_rebake', pr_number: 221, decision_id: 'old', created_at: '2026-07-08T08:49:00Z' }),
+      row({ apply_status: 'applied', event_key: A, decision_id: 'ok', created_at: '2026-07-08T08:58:00Z' }),
+      row({ apply_status: 'waiting_for_rebake', event_key: A, decision_id: 'old', created_at: '2026-07-08T08:49:00Z' }),
     ]);
     expect(ids.has('old')).toBe(true);
   });
 
-  it('never crosses PR boundaries', () => {
-    const ids = supersededWaitingIds([
-      row({ apply_status: 'failed', pr_number: 95, decision_id: 'term', created_at: '2026-07-30T12:00:00Z' }),
-      row({ apply_status: 'waiting_for_rebake', pr_number: 168, decision_id: 'other', created_at: '2026-07-30T10:00:00Z' }),
-    ]);
-    expect(ids.size).toBe(0);
-  });
-
-  // Fails SAFE toward showing work: hiding a proposal the operator cannot then
-  // approve is the expensive direction; a stale-looking row costs one click.
-  it('does not retire a row when either timestamp is missing or unparseable', () => {
+  // Fails SAFE toward showing work in every degenerate case.
+  it('does not retire a row with a missing or empty event_key', () => {
     expect(
       supersededWaitingIds([
-        row({ apply_status: 'failed', pr_number: 95, decision_id: 'term', created_at: '2026-07-30T12:00:00Z' }),
-        row({ apply_status: 'waiting_for_rebake', pr_number: 95, decision_id: 'no-ts' }),
+        row({ apply_status: 'failed', event_key: A, decision_id: 't', created_at: '2026-07-30T12:00:00Z' }),
+        row({ apply_status: 'waiting_for_rebake', decision_id: 'noKey', created_at: '2026-07-30T10:00:00Z' }),
       ]).size,
     ).toBe(0);
     expect(
       supersededWaitingIds([
-        row({ apply_status: 'failed', pr_number: 95, decision_id: 'term', created_at: 'not-a-date' }),
-        row({ apply_status: 'waiting_for_rebake', pr_number: 95, decision_id: 'w', created_at: '2026-07-30T10:00:00Z' }),
+        row({ apply_status: 'failed', event_key: '', decision_id: 't', created_at: '2026-07-30T12:00:00Z' }),
+        row({ apply_status: 'waiting_for_rebake', event_key: '', decision_id: 'w', created_at: '2026-07-30T10:00:00Z' }),
+      ]).size,
+    ).toBe(0);
+  });
+
+  it('does not retire a row when either timestamp is missing or unparseable', () => {
+    expect(
+      supersededWaitingIds([
+        row({ apply_status: 'failed', event_key: A, decision_id: 't', created_at: '2026-07-30T12:00:00Z' }),
+        row({ apply_status: 'waiting_for_rebake', event_key: A, decision_id: 'no-ts' }),
+      ]).size,
+    ).toBe(0);
+    expect(
+      supersededWaitingIds([
+        row({ apply_status: 'failed', event_key: A, decision_id: 't', created_at: 'not-a-date' }),
+        row({ apply_status: 'waiting_for_rebake', event_key: A, decision_id: 'w', created_at: '2026-07-30T10:00:00Z' }),
       ]).size,
     ).toBe(0);
   });
 
   it('equal timestamps do not retire the row (strictly newer only)', () => {
     const at = '2026-07-30T12:00:00Z';
-    const ids = supersededWaitingIds([
-      row({ apply_status: 'failed', pr_number: 95, decision_id: 'term', created_at: at }),
-      row({ apply_status: 'waiting_for_rebake', pr_number: 95, decision_id: 'w', created_at: at }),
-    ]);
-    expect(ids.size).toBe(0);
-  });
-
-  it('ignores non-iac_apply rows and non-positive-integer pr_numbers', () => {
     expect(
       supersededWaitingIds([
-        row({ apply_status: 'failed', pr_number: 95, decision_id: 't', created_at: '2026-07-30T12:00:00Z' }),
-        { action: 'rollback', apply_status: 'waiting_for_rebake', pr_number: 95, decision_id: 'rb', created_at: '2026-07-30T10:00:00Z' },
+        row({ apply_status: 'failed', event_key: A, decision_id: 't', created_at: at }),
+        row({ apply_status: 'waiting_for_rebake', event_key: A, decision_id: 'w', created_at: at }),
       ]).size,
     ).toBe(0);
+  });
+
+  it('ignores non-iac_apply rows even when the event_key matches', () => {
     expect(
       supersededWaitingIds([
-        row({ apply_status: 'failed', pr_number: 0, decision_id: 't', created_at: '2026-07-30T12:00:00Z' }),
-        row({ apply_status: 'waiting_for_rebake', pr_number: 0, decision_id: 'w', created_at: '2026-07-30T10:00:00Z' }),
+        row({ apply_status: 'failed', event_key: A, decision_id: 't', created_at: '2026-07-30T12:00:00Z' }),
+        { action: 'rollback', apply_status: 'waiting_for_rebake', event_key: A, decision_id: 'rb', created_at: '2026-07-30T10:00:00Z' },
       ]).size,
     ).toBe(0);
   });

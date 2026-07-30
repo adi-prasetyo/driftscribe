@@ -119,6 +119,15 @@ export interface Decision extends Record<string, unknown> {
   trace_id?: string;
   action: string;
   created_at?: string;
+  /** The backend's per-ARTIFACT idempotency key — for an iac_apply,
+   *  `iac-apply-<pr>-<sha256({repo,pr_number,head_sha,generation_metadata})>`
+   *  (agent/main.py `_iac_event_key`), persisted on every decision doc by
+   *  state_store's `record_decision`. This is GENERATION IDENTITY, and it is
+   *  strictly finer than `pr_number`: one PR can carry several generations, and
+   *  prod already does (PR #32 holds one `applied` key and one `failed` key). Any
+   *  question of the form "did a later run supersede this row" must be asked
+   *  within one event_key — see approval.ts's `supersededWaitingIds`. */
+  event_key?: string;
   approval?: DecisionApproval | null;
   github?: DecisionGithub | null;
   diffs?: EnvDiff[];
