@@ -129,6 +129,344 @@ def test_notify_happy_path(client):
     assert payload["channel"] == "info"
     assert payload["severity"] == "low"
     assert "hello" in payload["text"]
+    assert "hello" in payload["content"]
+
+
+# --------------------------------------------------------------------------- #
+# Destination compatibility: Discord ``content`` + the 2000-char cap
+# --------------------------------------------------------------------------- #
+
+
+def test_payload_carries_content_for_discord(client):
+    """Discord renders ``content`` and ignores ``text``.
+
+    A payload carrying only ``text`` is refused by Discord with
+    ``400 {"message": "Cannot send an empty message", "code": 50006}``
+    (verified live against a real webhook, 2026-07-30). Both keys ship so one
+    payload serves Discord, Slack and a generic viewer.
+    """
+    r = client.post(
+        "/notify",
+        json={
+            "channel": "approval",
+            "severity": "high",
+            "body": "rollback proposed",
+        },
+    )
+    assert r.status_code == 200, r.text
+    payload = _FakeClient.last["json"]
+    assert "rollback proposed" in payload["content"]
+    assert "rollback proposed" in payload["text"]
+
+
+def test_short_content_is_identical_to_text(client):
+    """Below the cap, no truncation machinery should engage at all."""
+    r = client.post(
+        "/notify",
+        json={"channel": "info", "severity": "low", "body": "short"},
+    )
+    assert r.status_code == 200, r.text
+    payload = _FakeClient.last["json"]
+    assert payload["content"] == payload["text"]
+
+
+def test_oversize_content_is_capped_but_text_is_not(client):
+    """Discord hard-rejects >2000 chars; it does not truncate for us.
+
+    ``text`` stays uncapped on purpose — the 2000 limit is Discord's, and
+    imposing it on Slack or a generic receiver would lose detail for no reason.
+    """
+    body = "x" * 9000
+    r = client.post(
+        "/notify",
+        json={"channel": "approval", "severity": "high", "body": body},
+    )
+    assert r.status_code == 200, r.text
+    payload = _FakeClient.last["json"]
+    assert len(payload["content"]) <= 2000
+    assert len(payload["text"]) > 2000
+    assert body in payload["text"]
+
+
+def test_truncation_keeps_the_tail_where_the_approval_link_lives(client):
+    """The middle is dropped, never the tail.
+
+    This is the regression guard for the specific silent failure this feature
+    invites: a naive ``content[:2000]`` truncates away the approval URL, which
+    sits at the END of the rendered body — and only does so for long bodies,
+    i.e. exactly the messy drifts where the operator needs the link most.
+    """
+    tail = "APPROVE-HERE-https://example.test/approvals/abc?t=zzz"
+    body = ("R" * 9000) + tail
+    r = client.post(
+        "/notify",
+        json={"channel": "approval", "severity": "high", "body": body},
+    )
+    assert r.status_code == 200, r.text
+    content = _FakeClient.last["json"]["content"]
+    assert len(content) <= 2000
+    assert content.endswith(tail)
+    assert content.startswith("[DriftScribe/approval/high] RRR")
+    # Prove the naive implementation really would have dropped it, so this
+    # test fails if someone "simplifies" the helper back to a head slice.
+    assert tail not in f"[DriftScribe/approval/high] {body}"[:2000]
+
+
+def _unfenced_len() -> int:
+    """Output length when no fence repair is needed (the common path)."""
+    return (
+        notifier_main._TRUNCATION_HEAD_BUDGET
+        + len(notifier_main._TRUNCATION_MARKER)
+        + notifier_main._TRUNCATION_TAIL_BUDGET
+    )
+
+
+def test_content_at_exactly_the_limit_is_untouched():
+    """Boundary: 2000 passes through verbatim, 2001 is truncated."""
+    at_limit = "y" * 2000
+    assert notifier_main._discord_safe_content(at_limit) == at_limit
+    over = notifier_main._discord_safe_content("y" * 2001)
+    assert len(over) <= notifier_main._DISCORD_CONTENT_LIMIT
+    # Plain text has no fence to close, so the reserved allowance goes unused.
+    assert len(over) == _unfenced_len()
+
+
+def test_truncation_budgets_are_internally_consistent():
+    """A non-positive head budget would corrupt output instead of raising.
+
+    ``text[:negative]`` slices from the END in Python, so a mis-set budget
+    emits a mangled notification silently. The module fails at import if this
+    breaks; the invariant is stated here too so the arithmetic is pinned.
+    """
+    assert notifier_main._TRUNCATION_HEAD_BUDGET > 0
+    assert (
+        notifier_main._TRUNCATION_HEAD_BUDGET
+        + len(notifier_main._TRUNCATION_MARKER)
+        + notifier_main._TRUNCATION_TAIL_BUDGET
+        + len(notifier_main._FENCE_CLOSE)
+        == notifier_main._DISCORD_CONTENT_LIMIT
+    )
+
+
+def test_the_marker_does_not_promise_a_decision_record():
+    """``/notify`` is generic — callers exist that create no decision record.
+
+    Naming one in the marker sends an operator hunting for something that
+    never existed.
+    """
+    assert "decision record" not in notifier_main._TRUNCATION_MARKER
+
+
+# --------------------------------------------------------------------------- #
+# Markdown safety: an open code fence would swallow the approval link
+# --------------------------------------------------------------------------- #
+
+
+def _fences_before(content: str, needle: str) -> int:
+    """Count fence delimiters preceding ``needle``.
+
+    An EVEN count means ``needle`` renders outside a code block, which is the
+    difference between a clickable link and an inert one. Counts RUNS of 3+
+    backticks rather than "```" substrings, because a six-backtick run is one
+    delimiter and substring counting would score it as a harmless two.
+    """
+    return notifier_main._fence_delimiters(content[: content.index(needle)])
+
+
+def test_an_open_code_fence_in_the_head_is_closed():
+    """Regression guard for the Codex finding on the first cut of this change.
+
+    If the model's rationale opens a ``` block whose closing fence lands in the
+    DELETED middle, the retained tail renders inside a code block: the approval
+    URL is present and visible, but not clickable. Preserving the URL string is
+    not the same as preserving a usable link.
+    """
+    link = "https://example.test/approvals/abc?t=zzz"
+    body = "opening a block:\n```\n" + ("code line\n" * 900) + "\n```\ntail " + link
+    content = notifier_main._discord_safe_content(
+        f"[DriftScribe/approval/high] {body}"
+    )
+    assert len(content) <= 2000
+    assert link in content
+    assert _fences_before(content, link) % 2 == 0, (
+        "the approval URL is inside an unterminated code block"
+    )
+
+
+def test_an_orphan_closing_fence_in_the_tail_is_removed():
+    """The second artifact truncation creates, and the one I first dismissed.
+
+    When the block's OPENER falls in the deleted middle, the surviving closer
+    would instead OPEN a block in the tail and swallow everything after it.
+    ``/notify`` is generic — notify_tool passes arbitrary model-authored
+    text — so the tail is not always the rollback template's fence-free footer.
+    """
+    link = "https://example.test/approvals/abc?t=zzz"
+    body = "intro\n```\n" + ("code line\n" * 900) + "```\nsee " + link
+    content = notifier_main._discord_safe_content(
+        f"[DriftScribe/approval/high] {body}"
+    )
+    assert len(content) <= 2000
+    assert link in content
+    assert _fences_before(content, link) % 2 == 0
+
+
+def test_a_balanced_head_is_not_given_a_spurious_fence():
+    """Only an ODD count triggers repair; balanced Markdown is left alone."""
+    link = "https://example.test/approvals/abc?t=zzz"
+    body = "```\nfenced\n```\n" + ("R" * 9000) + " tail " + link
+    content = notifier_main._discord_safe_content(
+        f"[DriftScribe/approval/high] {body}"
+    )
+    assert len(content) <= 2000
+    # No repair on either side, so the reserved fence allowance is unused.
+    assert len(content) == _unfenced_len()
+    assert _fences_before(content, link) % 2 == 0
+
+
+def test_fence_closing_never_pushes_output_over_the_limit():
+    """The allowance is reserved unconditionally, so both branches fit."""
+    for body in ("```\n" + "x" * 9000, "x" * 9000):
+        content = notifier_main._discord_safe_content(
+            f"[DriftScribe/approval/high] {body}"
+        )
+        assert len(content) <= 2000
+
+
+def test_a_six_backtick_run_is_one_delimiter_not_two():
+    """``count("```")`` reports 2 for a 6-backtick run and repairs nothing.
+
+    It is a single delimiter that OPENS a block, so the tail would be
+    swallowed. Counting runs of 3+ backticks gets this right — the concrete
+    case from the second Codex pass.
+    """
+    assert notifier_main._fence_delimiters("``````") == 1
+    assert notifier_main._fence_delimiters("```") == 1
+    assert notifier_main._fence_delimiters("``` ```") == 2
+    assert notifier_main._fence_delimiters("`` ``") == 0, "inline spans are not fences"
+
+    link = "https://example.test/approvals/abc?t=zzz"
+    body = "open\n``````\n" + ("R" * 9000) + "\nsee " + link
+    content = notifier_main._discord_safe_content(
+        f"[DriftScribe/approval/high] {body}"
+    )
+    assert len(content) <= 2000
+    assert link in content
+    assert notifier_main._fence_delimiters(
+        content[: content.index(link)]
+    ) % 2 == 0
+
+
+# --------------------------------------------------------------------------- #
+# Mention suppression
+# --------------------------------------------------------------------------- #
+
+
+def test_mentions_are_suppressed(client):
+    """The body carries LLM-authored text and live env values.
+
+    Under this project's compromised-model threat model, a rationale
+    containing ``@everyone`` must not page a server on the strength of text
+    the model chose. Probed live 2026-07-30: without this key a mention
+    RESOLVES; with ``parse: []`` it does not.
+    """
+    r = client.post(
+        "/notify",
+        json={
+            "channel": "approval",
+            "severity": "high",
+            "body": "@everyone rollback proposed <@1472813135273529485>",
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert _FakeClient.last["json"]["allowed_mentions"] == {"parse": []}
+
+
+def test_mention_suppression_is_sent_on_every_notification(client):
+    """Not only for the approval channel — any body can contain a mention."""
+    for channel, severity in (("info", "low"), ("alert", "medium")):
+        r = client.post(
+            "/notify",
+            json={"channel": channel, "severity": severity, "body": "hi"},
+        )
+        assert r.status_code == 200, r.text
+        assert _FakeClient.last["json"]["allowed_mentions"] == {"parse": []}
+
+
+# --------------------------------------------------------------------------- #
+# A reflecting destination must not put the approval token in our logs
+# --------------------------------------------------------------------------- #
+
+
+def test_reflected_approval_token_is_scrubbed_from_the_error_snippet():
+    """webhook.site / httpbin.org/post reflect the request body verbatim.
+
+    Discord does not, but the destination is configuration — the guarantee
+    must not rest on which vendor is set today.
+    """
+    reflected = (
+        '{"json": {"content": "click '
+        "https://driftscribe.example/approvals/abc"
+        '?t=driftscribe-fixture-approval-token-not-real"}}'
+    )
+    scrubbed = notifier_main._scrub_approval_tokens(reflected)
+    assert "driftscribe-fixture-approval-token-not-real" not in scrubbed
+    assert "[redacted]" in scrubbed
+
+
+def test_token_scrubbing_survives_truncation_order():
+    """Scrub happens BEFORE the 200-char cut.
+
+    Cutting first could leave a token fragment too short for the pattern to
+    match, which would leak the prefix of a live credential.
+    """
+    prefix = "E" * 150
+    raw = f"{prefix}https://x.test/approvals/a?t=" + "A" * 60
+    snippet = notifier_main._scrub_approval_tokens(raw[:1000])[:200]
+    assert "AAAAAAAAAAAAAAAAAAAA" not in snippet
+
+
+def test_scrubbing_leaves_ordinary_error_text_readable():
+    """The snippet's diagnostic value is why it exists — don't gut it."""
+    body = '{"message": "Cannot send an empty message", "code": 50006}'
+    assert notifier_main._scrub_approval_tokens(body) == body
+
+
+@pytest.mark.parametrize(
+    "reflection",
+    [
+        # Verbatim, the case the context rule already covered.
+        "https://x.test/approvals/a?t={tok}",
+        # Percent-encoded by a proxy — evades a `?t=` context match, but the
+        # token is still a usable credential once decoded.
+        "https://x.test/approvals/a%3Ft%3D{tok}",
+        # Unicode-escaped inside a JSON echo.
+        '{{"u": "https://x.test/approvals/a\\u003ft\\u003d{tok}"}}',
+        # Token as a path segment rather than a query parameter.
+        "https://x.test/approvals/{tok}",
+        # Bare, with no URL around it at all.
+        "echo: {tok}",
+    ],
+)
+def test_the_token_is_scrubbed_regardless_of_how_it_is_reflected(reflection):
+    """A context rule alone is evadable; the shape rule is the net.
+
+    All five of these were verified by Codex against the context-only version;
+    the last four got through. The minter emits ``[A-Za-z0-9_-]{43,64}``, so
+    matching the shape survives any re-encoding that preserves the token's own
+    characters.
+    """
+    tok = "driftscribe-fixture-approval-token-not-real"
+    assert len(tok) == 43, "fixture must match the real minted token length"
+    scrubbed = notifier_main._scrub_approval_tokens(reflection.format(tok=tok))
+    assert tok not in scrubbed
+    assert "[redacted]" in scrubbed
+
+
+def test_the_shape_rule_does_not_eat_short_identifiers():
+    """Below the minted length, ordinary ids stay readable in the log."""
+    body = '{"request_id": "abc123-def456", "trace": "0123456789abcdef"}'
+    assert notifier_main._scrub_approval_tokens(body) == body
 
 
 def test_caller_url_field_rejected(client):
