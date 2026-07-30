@@ -237,6 +237,47 @@ describe('tokens.css — design-system custom properties', () => {
     // only red thing on the page, so it reads as the moment of approval.
     expect(tokens.match(/#c0392b/gi)?.length).toBe(1);
   });
+
+  // ds-s61 — the bug CLASS, not the one instance. `.layout` carried
+  // `min-height: calc(100vh - 56px)` from the first SPA commit, written when the
+  // header was 56px tall. The header later grew to 94px (its two-row grid below
+  // the 1560px breakpoint) or 62px (one row above it) and the constant stayed,
+  // so every view stood exactly `headerHeight - 56` taller than the viewport:
+  // a permanent 38px of scroll with nothing in it. Clicking the desk's awaiting
+  // numeral spent all of it on a scrollIntoView that could not arrive, which
+  // read as the page twitching for no reason.
+  //
+  // A magic number that has to track another element's RENDERED height cannot be
+  // kept correct by review — the two live in different files and nothing fails
+  // when they diverge. So the guard forbids the shape: derive the remainder
+  // (flex/grid), don't subtract a guess.
+  it('never subtracts a hard-coded element height from a viewport unit', () => {
+    const offenders: string[] = [];
+    // Matches calc(100vh - 56px) / calc(100dvh - 3rem) and the svh/lvh variants,
+    // in either order, since `calc(56px - 100vh)` is the same latent coupling.
+    const VIEWPORT_MINUS_CONSTANT =
+      /calc\(\s*(?:100(?:d|l|s)?vh\s*-\s*[\d.]+(?:px|rem|em)|[\d.]+(?:px|rem|em)\s*-\s*100(?:d|l|s)?vh)\s*\)/i;
+    for (const file of svelteAndCssSources()) {
+      const src = stripComments(readFileSync(file, 'utf8'));
+      const hit = src.match(VIEWPORT_MINUS_CONSTANT);
+      if (hit) offenders.push(`${relative(srcDir, file)}: ${hit[0]}`);
+    }
+    expect(
+      offenders,
+      `hard-coded height subtracted from a viewport unit — derive it instead ` +
+        `(see #app in base.css):\n${offenders.join('\n')}`,
+    ).toEqual([]);
+  });
+
+  it('the app shell owns the viewport so the layout can derive its height', () => {
+    // The other half of the guard above: forbidding the bad shape is only useful
+    // if the good one is actually in place. #app is a flex column at 100vh and
+    // `.layout` takes the remainder, so no future header change can re-open it.
+    expect(base).toMatch(/#app\s*\{[^}]*min-height:\s*100vh/);
+    expect(base).toMatch(/#app\s*\{[^}]*flex-direction:\s*column/);
+    const app = readFileSync(resolve(here, '../../src/App.svelte'), 'utf8');
+    expect(app).toMatch(/\.layout\s*\{[^}]*flex:\s*1/);
+  });
 });
 
 describe('base.css — shared ds-* component classes (consumed by Svelte + Jinja)', () => {

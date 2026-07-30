@@ -36,6 +36,25 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+/* The SPA shell owns the viewport, so `.layout` can claim whatever the header
+   and banners leave over (App.svelte: `flex: 1`) instead of subtracting a
+   hard-coded header height from 100vh. It used to be
+   `min-height: calc(100vh - 56px)`, written when the header WAS 56px tall; the
+   header has since grown to 94px (its two-row grid below the 1560px
+   breakpoint) or 62px (one row above it), and the constant stayed. Every view
+   was therefore exactly `headerHeight - 56` taller than the viewport — a
+   permanent 38px of dead scroll that nothing could scroll to. Deriving the
+   remainder means no future header change can re-open it (ds-s61).
+
+   Note this is not what paints the page: `body` already carries --ds-bg, so a
+   short view has a full paper ground either way. What the min-height is for is
+   letting the layout FILL the viewport, and that intent is preserved here. */
+#app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
 h1,
 h2,
 h3,

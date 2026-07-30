@@ -2209,7 +2209,11 @@
     display: grid;
     grid-template-columns: 280px minmax(0, 1fr);
     align-items: start;
-    min-height: calc(100vh - 56px);
+    /* Takes the space the header and banners leave, rather than subtracting a
+       hard-coded header height from 100vh — see the `#app` flex column in
+       base.css for why that constant was a standing 38px of dead scroll
+       (ds-s61). */
+    flex: 1;
   }
   /* Desk/estate: no rails column at all (see the `.rails` {#if} above) —
      collapse the grid to one full-width column instead of leaving a bare
