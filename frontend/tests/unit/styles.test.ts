@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, resolve, relative, join } from 'node:path';
 
 // ---------------------------------------------------------------------------
 // Design-system contract guard (P3, plan §3 "Design system (Editorial Clarity)").
@@ -21,7 +21,19 @@ import { dirname, resolve } from 'node:path';
 // ---------------------------------------------------------------------------
 
 const here = dirname(fileURLToPath(import.meta.url));
-const stylesDir = resolve(here, '../../src/styles');
+const srcDir = resolve(here, '../../src');
+const stylesDir = resolve(srcDir, 'styles');
+
+/** Every .svelte / .css file under src/, recursively. */
+function svelteAndCssSources(dir: string = srcDir): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...svelteAndCssSources(full));
+    else if (/\.(svelte|css)$/.test(entry.name)) out.push(full);
+  }
+  return out;
+}
 
 let tokens = '';
 let base = '';
@@ -136,22 +148,57 @@ describe('tokens.css — design-system custom properties', () => {
     expect(stripComments(tokens)).toMatch(/--ds-bg\s*:\s*#fbfaf8/i);
   });
 
-  it('defines the composite redesign tokens', () => {
-    // Phase 1 of the 2026-07-28 composite redesign (docs/plans/2026-07-28-*):
-    // paper/navy world + Mincho serif for the 判子 (hanko) seal moment. Five
-    // components consume them today (ApprovalDesk, EstateView, InstrumentBand,
-    // LedgerStrip, SealStamp); ds-qbo Phase 3 retires all but --ds-navy,
-    // --ds-seal and --ds-font-mincho, and rewrites this test to match. Names
-    // only — the values are asserted against the main palette elsewhere.
-    for (const t of [
-      '--ds-paper:',
-      '--ds-navy:',
-      '--ds-drift-amber:',
-      '--ds-seal:',
-      '--ds-font-mincho:',
-    ]) {
-      expect(tokens).toContain(t);
+  it('keeps the composite redesign vocabulary that is NOT a duplicate', () => {
+    // The 2026-07-28 composite redesign introduced a second token world
+    // alongside the legacy one. ds-qbo collapsed them: the legacy names took
+    // the paper world's VALUES and the duplicate names were deleted. These
+    // three were never duplicates — they are vocabulary the legacy side never
+    // had — so they survive, promoted into the main palette.
+    for (const t of ['--ds-navy:', '--ds-seal:', '--ds-font-mincho:']) {
+      expect(declaresVar(tokens, t.replace(':', '')), `missing ${t}`).toBe(true);
     }
+  });
+
+  it('has retired the duplicate paper-world tokens — one vocabulary', () => {
+    // ds-qbo Phase 3. Each of these was a literal duplicate of a canonical
+    // token (--ds-paper == --ds-bg, --ds-ok-green == --ds-ok, and so on), and
+    // maintaining two names for one value is what let the desk and the chat
+    // view drift into looking like two different products. If any of these
+    // comes back, the split has started again — re-point the consumer at the
+    // canonical token instead of re-adding the alias.
+    for (const dead of [
+      '--ds-paper',
+      '--ds-paper-ink',
+      '--ds-paper-ink-2',
+      '--ds-paper-mut',
+      '--ds-paper-rule',
+      '--ds-ok-green',
+      '--ds-drift-amber',
+      '--ds-gblue',
+    ]) {
+      expect(declaresVar(tokens, dead), `${dead} should be retired`).toBe(false);
+    }
+  });
+
+  it('has no component still referencing a retired paper-world token', () => {
+    // The declarations being gone is only half of it: a component reading
+    // var(--ds-paper-mut) after the block was deleted would silently render an
+    // UNSET custom property (transparent / inherited), which no unit test that
+    // renders markup would necessarily catch. This walks the real source.
+    const offenders: string[] = [];
+    for (const file of svelteAndCssSources()) {
+      const src = stripComments(readFileSync(file, 'utf8'));
+      for (const dead of [
+        '--ds-paper',
+        '--ds-ok-green',
+        '--ds-drift-amber',
+        '--ds-gblue',
+      ]) {
+        // `--ds-paper` also covers -ink/-ink-2/-mut/-rule by prefix.
+        if (src.includes(dead)) offenders.push(`${relative(srcDir, file)}: ${dead}`);
+      }
+    }
+    expect(offenders, `retired tokens still referenced:\n${offenders.join('\n')}`).toEqual([]);
   });
 
   it('reserves vermilion for the seal only', () => {

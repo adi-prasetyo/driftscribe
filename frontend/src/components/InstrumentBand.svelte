@@ -257,7 +257,7 @@
     display: flex;
     gap: 0;
     padding: 26px 40px 22px;
-    border-bottom: 1px solid var(--ds-paper-rule);
+    border-bottom: 1px solid var(--ds-border);
     margin-top: 14px;
   }
 
@@ -291,7 +291,7 @@
   }
 
   .instrument-band__stat + .instrument-band__stat {
-    border-left: 1px solid var(--ds-paper-rule);
+    border-left: 1px solid var(--ds-border);
     padding-left: 28px;
   }
 
@@ -307,7 +307,7 @@
     transition: opacity var(--ds-dur-fast) var(--ds-ease);
   }
   .instrument-band__stat--drift .instrument-band__num {
-    color: var(--ds-drift-amber);
+    color: var(--ds-warn);
   }
   /* Unknown reads as muted regardless of which stat it is — the amber "drift"
      and navy "managed" inks are semantic (they mean "this many are drifting"),
@@ -317,10 +317,10 @@
      --drift and before --wait would leave --wait winning on source order, so
      the `[data-unknown]` qualifier is what makes this order-independent. */
   .instrument-band__stat[data-unknown] .instrument-band__num {
-    color: var(--ds-paper-mut);
+    color: var(--ds-faint);
   }
   .instrument-band__stat--wait .instrument-band__num {
-    color: var(--ds-gblue);
+    color: var(--ds-stream);
   }
 
   /* Positioned box shared by the label and its hover hint (see the markup). */
@@ -333,7 +333,7 @@
   .instrument-band__label {
     display: block;
     font-size: 11.5px;
-    color: var(--ds-paper-mut);
+    color: var(--ds-faint);
     letter-spacing: 0.04em;
     transition: opacity var(--ds-dur-fast) var(--ds-ease);
   }
@@ -348,7 +348,7 @@
     inset: 0;
     font-size: 11.5px;
     letter-spacing: 0.04em;
-    color: var(--ds-paper-ink-2);
+    color: var(--ds-fg-soft);
     white-space: nowrap;
     opacity: 0;
     pointer-events: none;
@@ -367,7 +367,7 @@
 
   .instrument-band__meter {
     height: 3px;
-    background: var(--ds-paper-rule);
+    background: var(--ds-border);
     margin: 0 40px;
     display: flex;
   }
@@ -379,7 +379,7 @@
     background: var(--ds-navy);
   }
   .instrument-band__meter-seg--drift {
-    background: var(--ds-drift-amber);
+    background: var(--ds-warn);
     transition: flex 0.4s ease;
   }
 </style>
