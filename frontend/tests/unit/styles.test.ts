@@ -77,8 +77,10 @@ describe('tokens.css — design-system custom properties', () => {
   it('declares the four crew identity colors with their pinned hues', () => {
     // Identity, not status: one primary hue per crew agent (consumed by
     // CrewGlyph). Pinned by value, not just name — drifting Anchor off blue or
-    // Patch off green would silently re-skin the glyphs. Kept distinct from the
-    // status accents above so a future status re-tune can't mutate crew identity.
+    // Patch off terracotta would silently re-skin the glyphs. Kept distinct from
+    // the status accents above so a status re-tune can't mutate crew identity —
+    // and ds-qbo was exactly that re-tune: --ds-stream moved to Google blue
+    // while --ds-crew-drift stayed on the editorial blue pinned here.
     const expected: Record<string, string> = {
       '--ds-crew-drift': '#1f6feb', // Anchor — blue
       '--ds-crew-upgrade': '#a8432e', // Patch — brick red (terracotta)
@@ -136,8 +138,11 @@ describe('tokens.css — design-system custom properties', () => {
 
   it('defines the composite redesign tokens', () => {
     // Phase 1 of the 2026-07-28 composite redesign (docs/plans/2026-07-28-*):
-    // paper/navy world + Mincho serif for the 判子 (hanko) seal moment.
-    // Nothing consumes these yet — later phases do; this pins the names only.
+    // paper/navy world + Mincho serif for the 判子 (hanko) seal moment. Five
+    // components consume them today (ApprovalDesk, EstateView, InstrumentBand,
+    // LedgerStrip, SealStamp); ds-qbo Phase 3 retires all but --ds-navy,
+    // --ds-seal and --ds-font-mincho, and rewrites this test to match. Names
+    // only — the values are asserted against the main palette elsewhere.
     for (const t of [
       '--ds-paper:',
       '--ds-navy:',

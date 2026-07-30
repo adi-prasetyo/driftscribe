@@ -34,9 +34,17 @@
   --ds-surface-2: #f6f5f1;     /* sunken rail / inset wells */
   --ds-fg: #12151c;            /* ink */
   --ds-fg-soft: #535c6b;       /* secondary ink */
-  --ds-muted: #676e7c;         /* captions, labels, meta — 4.91:1 on paper */
-  --ds-faint: #8a9099;         /* placeholders, disabled, decorative meta only:
-                                  3.08:1 — never carry meaning through this */
+  /* --ds-muted must clear 4.5:1 on EVERY ground it lands on, not just the page:
+     it is .ds-pill's ink over the unchanged --ds-neutral-surface (#efeeea), and
+     it reads over --ds-surface-2 wells and all four semantic tints. #656c7a is
+     the lightest step that clears all of them — paper 5.06, white 5.28,
+     surface-2 4.84, neutral-chip 4.55, tints 4.66-4.73. */
+  --ds-muted: #656c7a;         /* captions, labels, meta */
+  /* Placeholders, disabled, and small decorative meta. At 3.08:1 on paper this
+     is BELOW the 4.5:1 text floor, so nothing new should carry meaning through
+     it alone. Note it currently does in ~25 legacy consumers (rail/timeline
+     meta); those predate the rule and are tracked separately, not endorsed. */
+  --ds-faint: #8a9099;
   --ds-border: #e6e3dd;        /* hairline rule */
   --ds-border-strong: #d6d2ca; /* rule, slightly heavier */
 
