@@ -126,8 +126,12 @@ describe('tokens.css — design-system custom properties', () => {
     expect(declaresVar(tokens, '--ds-font-mono')).toBe(true);
   });
 
-  it('pins the warm-neutral page background per design §3 (#fcfcfb)', () => {
-    expect(stripComments(tokens)).toMatch(/--ds-bg\s*:\s*#fcfcfb/i);
+  it('pins the paper page background — one world (#fbfaf8)', () => {
+    // ds-qbo: the legacy warm-neutral ground (#fcfcfb) and the composite
+    // redesign's paper ground (#fbfaf8) were near-identical duplicates of the
+    // same idea. There is now ONE ground and it is paper. If this pin drifts
+    // back toward #fcfcfb, the desk and the chat view have split in two again.
+    expect(stripComments(tokens)).toMatch(/--ds-bg\s*:\s*#fbfaf8/i);
   });
 
   it('defines the composite redesign tokens', () => {
