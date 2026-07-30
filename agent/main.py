@@ -1174,60 +1174,58 @@ def _cached_rollback_is_expired(cached: dict) -> bool:
     return when < dt.datetime.now(dt.timezone.utc)
 
 
+def _revision_or_none(reader_payload: object) -> str | None:
+    """The Reader Worker's ``revision``, or ``None`` if it is not a usable one.
+
+    Separate from :func:`_observed_env_or_none` because it answers a different
+    question and must not weaken that one. ``read_live_state`` documents an
+    empty ``revision`` as a real state (a service whose deploys have all
+    failed), so an empty string is NOT a revision we can compare and is folded
+    into ``None`` here — the caller treats unknown as unverifiable, not as
+    equal.
+    """
+    if not isinstance(reader_payload, dict):
+        return None
+    revision = reader_payload.get("revision")
+    if not isinstance(revision, str) or not revision:
+        return None
+    return revision
+
+
 def _observation_skew(
-    observed_env: dict[str, str] | None,
+    observed_env: dict[str, str],
     analyzed_env: dict[str, str],
 ) -> list[str]:
-    """Names on which the snapshot the agent ANALYZED disagrees with the
-    snapshot the event key is HASHED FROM (ds-q38). Empty list == the decision
-    and its key describe the same world.
+    """Names on which what the agent OBSERVED disagrees with what the event key
+    is HASHED FROM (ds-q38). Empty list == the decision and its key describe the
+    same world.
 
-    Both arguments are coordinator-made observations — ``analyzed_env`` is the
-    Reader Worker's own response, captured at the tool boundary by
-    :func:`agent.request_context.record_analyzed_env` before the model saw it.
-    That is what makes this a coherence check rather than a re-reading of the
-    model's report.
+    ``analyzed_env`` is the Reader Worker's own response to the agent's
+    ``read_live_env_tool`` call, reported back through ``run_agent``'s
+    ``reader_sink``; ``observed_env`` is this request's own post-turn read. Two
+    observations, one comparison — which is what makes this a coherence check
+    rather than a re-reading of the model's report.
 
-    There is deliberately NO fallback to ``proposal.env_diffs``. An earlier
-    draft compared those, and it could not work: the collection is incomplete
-    by contract — the drift prompt asks for variables that DIFFER, the
-    deterministic classifier emits ``no_op`` with ``env_diffs=[]``, and the
-    validator accepts it. Such a proposal iterates zero entries and is
-    pronounced "coherent" no matter how far the world has moved, i.e. the
-    original bug surviving its own fix. Every caller now supplies a real
-    snapshot or refuses before reaching here, so a fallback would only be
-    unreachable code wearing the shape of a safety check.
+    The key is hashed from the post-turn read, not from the read the agent
+    reasoned over, and the two can straddle a deploy. On 2026-07-29 one did: the
+    agent read ``PAYMENT_MODE=mock`` at 05:28:28, a revision carrying ``live``
+    was created at 05:28:30, and the post-turn read at 05:28:40 saw ``live``.
+    The resulting ``no_op`` ("no configuration drift is present") was persisted
+    under the DRIFTED env's key, where it then permanently outranked every
+    correct rollback proposal for that env — a ``no_op`` row has no TTL, only
+    rollbacks expire.
 
-    The event key is hashed from a SECOND, INDEPENDENT reader read taken after
-    the agent turn (see the call site) — not from the read the model reasoned
-    over. Those two reads can straddle a deploy, and on 2026-07-29 one did: the
-    model read ``PAYMENT_MODE=mock`` at 05:28:28, a revision carrying
-    ``PAYMENT_MODE=live`` was created at 05:28:30, and the post-turn read at
-    05:28:40 saw ``live``. The resulting ``no_op`` ("no configuration drift is
-    present") was persisted under the DRIFTED env's key, where it then
-    permanently outranked every correct rollback proposal for that env — a
-    ``no_op`` row has no TTL, only rollbacks expire.
+    Deliberately NOT driven by ``proposal.env_diffs``. That collection is
+    incomplete by contract — the drift prompt asks for variables that DIFFER,
+    the deterministic classifier emits ``no_op`` with ``env_diffs=[]``, and the
+    validator accepts it — so a diff-driven comparison iterates zero entries and
+    pronounces the world coherent no matter how far it has moved. That was the
+    first attempted fix, and it would have left the bug intact.
 
-    So this is not a validator and not a second copy of the ds-b3m gate. It
-    asks one question: is the decision we are about to persist ABOUT the world
-    its key names?
-
-    ``observed_env is None`` returns ``[]`` deliberately. That is the
-    reader-failed path, where ``live_env`` is reconstructed from
-    ``proposal.env_diffs`` — so key and proposal are coherent by construction
-    (both derive from the model's report), and there is no independent
-    observation to contradict anything. Judging the model's report against
-    itself would manufacture agreement, and refusing on absent ground truth is
-    already ``_cached_rollback_needs_ground_truth``'s job for the action that
-    needs it.
-
-    ``observed_env is None`` returns ``[]``: the post-turn read failed, so the
-    key is now hashed from ``analyzed_env`` itself and the two are the same
-    world by construction. (That is only true since the key stopped being
-    rebuilt from the model's diffs on that path.)
+    Not a validator and not a second copy of the ds-b3m gate: it asks only
+    whether the row we are about to persist is ABOUT the world its key names.
+    Callers supply two real observations or refuse before reaching here.
     """
-    if observed_env is None:
-        return []
     # Whole-snapshot comparison: an ADDED or REMOVED variable is skew just as
     # much as a changed one.
     return sorted(
@@ -1470,7 +1468,8 @@ def _perform_action(
 
 
 async def _run_adk_agent(
-    user_msg: str, *, workload: str = "drift", autonomy_mode: str
+    user_msg: str, *, workload: str = "drift", autonomy_mode: str,
+    reader_sink: list | None = None,
 ) -> DecisionProposal:
     """Thin wrapper so integration tests have a stable patch target.
 
@@ -1484,10 +1483,22 @@ async def _run_adk_agent(
     ``user_msg`` only still works. ``autonomy_mode`` is a REQUIRED keyword
     arg — forwarded to :func:`agent.adk_agent.run_agent` so the dial filters
     the tool set at Layer 0.
+
+    ``reader_sink`` (ds-q38) collects what the Reader Worker actually told the
+    agent, so the caller can verify the decision describes the world its
+    idempotency key names. Optional and keyword-only so every existing patch
+    site that mocks this function keeps working — a mock that ignores it
+    simply reports no observation, which the caller treats as "the agent never
+    looked" rather than as agreement.
     """
     from agent.adk_agent import run_agent
 
-    return await run_agent(user_msg, workload=workload, autonomy_mode=autonomy_mode)
+    return await run_agent(
+        user_msg,
+        workload=workload,
+        autonomy_mode=autonomy_mode,
+        reader_sink=reader_sink,
+    )
 
 
 def _notify_rollback_approval(rendered: str) -> dict[str, Any]:
@@ -2152,19 +2163,23 @@ async def _do_recheck(
         # ContextVar written inside a tool is invisible here. Measured:
         # child sees the snapshot, parent sees None.
         #
-        # Residual, accepted: a world that changes and changes BACK inside one
-        # turn reads as stable. That needs two mutations inside ~40s landing on
-        # byte-identical env, and each one fires its own Eventarc delivery, so
-        # the next audit re-derives the truth.
-        try:
-            pre_turn_env = _observed_env_or_none(worker_client.call("reader", {}))
-        except Exception:
-            pre_turn_env = None
+        # ds-q38: collect what the Reader Worker actually told the agent, so
+        # the decision can be checked against the world its key will name.
+        # Bracketing the turn with the coordinator's own reads was tried first
+        # and is strictly weaker: it proves the WORLD held still, never that
+        # the agent looked at it, so an agent that skipped the read entirely
+        # (``no_op`` with ``env_diffs=[]`` is legal and the validator accepts
+        # it) sailed through. Reading the agent's own tool results answers both
+        # questions with one mechanism — and costs no extra Reader call.
+        reader_observations: list[dict] = []
         _workload_token = set_workload(workload)
         try:
             try:
                 proposal = await _run_adk_agent(
-                    user_msg, workload=workload, autonomy_mode=autonomy.mode
+                    user_msg,
+                    workload=workload,
+                    autonomy_mode=autonomy.mode,
+                    reader_sink=reader_observations,
                 )
             finally:
                 reset_workload(_workload_token)
@@ -2198,46 +2213,41 @@ async def _do_recheck(
         try:
             # Reader Worker enforces TARGET_SERVICE/region/project via its own
             # boot config (Layer 2); the coordinator no longer passes them.
-            live_env = _observed_env_or_none(worker_client.call("reader", {}))
+            _post_payload = worker_client.call("reader", {})
+            live_env = _observed_env_or_none(_post_payload)
+            post_turn_revision = _revision_or_none(_post_payload)
         except Exception:
             live_env = None
-        # ``analyzed_env`` is the pre-turn observation the coherence gate below
-        # compares against. None means we never got one, so the gate cannot
-        # run; the branches below decide what that is allowed to mean.
-        analyzed_env = pre_turn_env
+            post_turn_revision = None
+        # ds-q38: the agent's OWN observations decide what may be persisted.
+        # One invariant, no degraded branches: a decision is recorded only when
+        # the agent looked exactly once and what it saw is what this request
+        # sees now. Every other shape refuses, because every other shape means
+        # the row would describe a world nobody confirmed.
+        #
+        # The two previous drafts both leaked here. Hashing the key from
+        # ``proposal.env_diffs`` when a read fails uses a SUBSET that can
+        # legally be empty, so a populated service's decision lands under the
+        # `{}`-env key. And hashing it from a coordinator read the agent never
+        # saw proves nothing about the analysis. Both were "tolerances" that
+        # amounted to keeping the poisoning.
+        distinct_observations = []
+        for obs in reader_observations:
+            if obs not in distinct_observations:
+                distinct_observations.append(obs)
         if live_env is None:
-            if pre_turn_env is not None:
-                # Post-turn read failed but the pre-turn one succeeded, so we
-                # still hold a real observation. Hash the key from THAT rather
-                # than reconstructing an env from ``proposal.env_diffs``.
-                #
-                # ds-q38: the old reconstruction was its own incoherence — it
-                # is a SUBSET (only what the model chose to report) and can
-                # legally be empty, so a decision about a populated service
-                # could be cached under the `{}`-env key and later collide with
-                # a genuinely empty one.
-                #
-                # ds-b3m is untouched: ``observed_env`` stays None, so the
-                # rollback gate still refuses for want of corroboration THIS
-                # request made. The preserved distinction is "what may the key
-                # be built from" (an observation) versus "what may a safety
-                # gate treat as observed state" (only this request's own read).
-                observed_env = None
-                live_env = pre_turn_env
-            else:
-                # Neither read landed. This is the documented tolerance for a
-                # coordinator without run.services.get: fall back to hashing
-                # the model's reported diffs so the pipeline still produces a
-                # decision. Nothing corroborates it, so ``observed_env`` stays
-                # None and ds-b3m's gate refuses any rollback — and with no
-                # observation at all there is nothing for the coherence gate to
-                # compare, which is why it is skipped rather than failed.
-                # Sentinel `<ABSENT>` keeps live=None distinct from live="".
-                observed_env = None
-                live_env = {
-                    d.name: "<ABSENT>" if d.live is None else d.live
-                    for d in proposal.env_diffs
-                }
+            # Nothing this request read. Keep the historical shape exactly:
+            # hash from the model's reported diffs so the pipeline still
+            # reaches the ds-b3m gate, which refuses any rollback because
+            # ``observed_env`` is None. The coherence gate REFUSES this case
+            # too, but does so after ``validate`` so ds-b3m keeps its own
+            # 502 — the same ordering lesson as the skew check below.
+            # Sentinel `<ABSENT>` keeps live=None distinct from live="".
+            observed_env = None
+            live_env = {
+                d.name: "<ABSENT>" if d.live is None else d.live
+                for d in proposal.env_diffs
+            }
         else:
             observed_env = live_env
     else:
@@ -2268,7 +2278,11 @@ async def _do_recheck(
         # observed snapshots are the same object. Set explicitly rather than
         # left None so the skew check compares snapshots here too, instead of
         # silently dropping to the diff-list fallback.
-        analyzed_env = observed_env
+        # No agent turn on this path — the classifier is a pure function of
+        # this single read, so the decision and its key are the same
+        # observation by construction and there is nothing to reconcile. The
+        # gate below is scoped to ``s.use_adk`` for exactly that reason.
+        distinct_observations: list[dict] = []
         proposal = classify(
             ClassificationInput(contract=contract, live_env=live_env, recent_prs=[])
         )
@@ -2433,52 +2447,65 @@ async def _do_recheck(
     # A cache HIT above is intentionally left alone: that row is keyed on the
     # same post-turn observation, so serving it is answering about the world we
     # actually observed, and it keeps retries idempotent.
-    if observed_env is not None and analyzed_env is None:
-        # We observed the world after the turn but not before it, so there is
-        # no before-state to prove stability against. Refuse rather than assume
-        # stability: assuming it is precisely how the poisoned row was written.
-        # Only a flaky reader reaches this — a reader that is down for both
-        # reads takes the documented no-observation path above.
-        log.warning(
-            "recheck_no_baseline_observation",
-            extra={"trigger": trigger, "workload": workload},
-        )
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "could not establish the live state before the agent ran, so "
-                "its proposal could not be confirmed to describe the state "
-                "this decision would be keyed on. Not recorded; retry."
-            ),
-        )
-
-    skewed = (
-        _observation_skew(observed_env, analyzed_env)
-        if analyzed_env is not None
-        else []
-    )
-    if skewed:
-        # Count only — never names or values. ``HTTPException.detail`` is
-        # echoed to the caller and log fields are read by operators; this is
-        # exactly the text that has carried live env values before, which is
-        # why the notify path persists a classification rather than a message.
-        log.warning(
-            "recheck_observation_skew",
-            extra={
-                "trigger": trigger,
-                "workload": workload,
-                "skewed_count": len(skewed),
-                "action": proposal.action.value,
-            },
-        )
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "live state changed while the agent was reasoning: the "
-                "proposal describes a different observation than the one this "
-                "decision would be keyed on, so it was not recorded. Retry."
-            ),
-        )
+    if s.use_adk:
+        refusal = None
+        if not distinct_observations:
+            # The agent never read live env, so nothing ties its verdict to any
+            # world. The workload prompt requires the call, but a prompt is not
+            # an enforcement boundary.
+            refusal = "the agent did not read live state"
+        elif len(distinct_observations) > 1:
+            # It watched the world move and there is no honest answer to "which
+            # reading is the conclusion about" — ADK may run function calls in
+            # parallel, so arrival order is not authority either.
+            refusal = "the agent saw live state change while it was reasoning"
+        elif observed_env is None:
+            # This request could not read, so nothing corroborates that what
+            # the agent saw still holds. The historical behaviour hashed the
+            # key from ``proposal.env_diffs`` here — a SUBSET that can legally
+            # be empty, so a populated service's decision could land under the
+            # `{}`-env key and collide with a genuinely empty one later.
+            refusal = "live state could not be read after the agent ran"
+        else:
+            analyzed = distinct_observations[0]
+            # Revision as well as env. Env equality alone is weaker than it
+            # looks: revisions A(mock) -> B(live) -> C(mock) present identical
+            # env at both ends while the world moved twice, and
+            # ``read_live_state`` pairs env with the revision it came from
+            # precisely so the two are not reasoned about separately. Unknown
+            # counts as a mismatch — a check that cannot see its subject must
+            # fail, not abstain.
+            if (
+                analyzed["revision"] is None
+                or post_turn_revision is None
+                or analyzed["revision"] != post_turn_revision
+            ):
+                refusal = "the serving revision changed while the agent was reasoning"
+            elif _observation_skew(observed_env, analyzed["env"]):
+                refusal = "live state changed while the agent was reasoning"
+        if refusal is not None:
+            # Count-only logging — never env names or values. Both this detail
+            # and log fields are read by operators, and this is exactly the
+            # text class that has carried live env values before, which is why
+            # the notify path persists a classification rather than a message.
+            log.warning(
+                "recheck_unverifiable_observation",
+                extra={
+                    "trigger": trigger,
+                    "workload": workload,
+                    "observation_count": len(distinct_observations),
+                    "post_read_ok": observed_env is not None,
+                    "action": proposal.action.value,
+                },
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"{refusal}, so this decision could not be confirmed to "
+                    f"describe the state it would be keyed on. Not recorded; "
+                    f"retry."
+                ),
+            )
 
     if contradicted is not None:
         # NOW the fresh proposal has earned the right to replace the cached

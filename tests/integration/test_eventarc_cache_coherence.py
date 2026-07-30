@@ -16,20 +16,22 @@ correct rollback proposal for ``PAYMENT_MODE=live`` was answered with a
 day-old "no drift is present" — which is what happened on 2026-07-30.
 
 The key is hashed from a read taken AFTER the agent turn, while the decision was
-reasoned out over what the agent saw during it. The coordinator now brackets the
-turn with its own reads: equal ends prove the world held still throughout, so
-whatever the agent read in between saw the same env.
+reasoned out over what the agent saw during it. ``run_agent`` now reports every
+``read_live_env_tool`` response back through ``reader_sink``, so the coordinator
+compares what the agent ACTUALLY observed against what it is about to key the
+row on, and refuses when they disagree.
 
-Tests drive the skew the way production does — the mocked Reader returns a
-different env on the pre-turn and post-turn calls, which is exactly what a
-deploy landing mid-audit produces. Note the call order with ``_run_adk_agent``
-mocked: call 1 is the pre-turn read, call 2 the post-turn read (the agent makes
-none of its own).
+The doubles here read live state the same way the real agent does — through the
+patched ``worker_client.call("reader", {})`` — so the sequencing matches
+production: call 1 is the agent's own read, call 2 is the coordinator's
+post-turn read. A double that returned a proposal WITHOUT reading would model an
+agent that never looked, which the coordinator refuses; keeping the doubles
+faithful is the point, because this incident survived two earlier fixes
+precisely because the doubles did not behave like the pipeline.
 """
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -39,12 +41,10 @@ from fastapi.testclient import TestClient
 
 import agent.main as agent_main
 
+from agent import worker_client
 from agent.config import get_settings
-from agent.contract import load_contract
 from agent.main import (
     _cached_decision_is_contradicted,
-    _event_key,
-    _hash_contract,
     _cached_decision_is_stale,
     _observation_skew,
     _reset_state_for_tests,
@@ -57,6 +57,33 @@ from agent.state_store import FirestoreStateStore
 
 _CLEAN_ENV = {"PAYMENT_MODE": "mock", "FEATURE_NEW_CHECKOUT": "false"}
 _DRIFTED_ENV = {"PAYMENT_MODE": "live", "FEATURE_NEW_CHECKOUT": "false"}
+
+
+def _adk(proposal: DecisionProposal, times: int = 1) -> AsyncMock:
+    """A ``_run_adk_agent`` double that reads live state like the real agent.
+
+    ``times`` > 1 models an agent that called ``read_live_env_tool`` more than
+    once, which is how a turn observes the world changing under itself.
+    """
+
+    async def _run(*_a: Any, reader_sink: list | None = None, **_k: Any) -> Any:
+        for _ in range(times):
+            try:
+                payload = worker_client.call("reader", {})
+            except Exception:
+                payload = None
+            if (
+                reader_sink is not None
+                and isinstance(payload, dict)
+                and isinstance(payload.get("env"), dict)
+            ):
+                reader_sink.append(
+                    {"env": dict(payload["env"]),
+                     "revision": payload.get("revision") or None}
+                )
+        return proposal
+
+    return AsyncMock(side_effect=_run)
 
 
 def _reader_sequence(*envs: dict[str, str] | Exception):
@@ -175,18 +202,6 @@ def test_skew_sees_added_and_removed_variables() -> None:
     ]
 
 
-def test_no_post_turn_observation_is_not_skew() -> None:
-    """``observed_env is None`` means the post-turn read failed, so the key is
-    hashed from the pre-turn observation instead — the two are the same world
-    by construction, and there is nothing to disagree about."""
-    assert _observation_skew(None, _CLEAN_ENV) == []
-
-
-# --------------------------------------------------------------------------- #
-# Cause: a skewed decision is never persisted
-# --------------------------------------------------------------------------- #
-
-
 def test_a_noop_reasoned_over_stale_env_is_refused_and_records_nothing() -> None:
     """THE REGRESSION. Reproduces 2026-07-29 exactly: the model concludes
     ``no_op`` from the pre-deploy env while the coordinator's own read already
@@ -196,7 +211,7 @@ def test_a_noop_reasoned_over_stale_env_is_refused_and_records_nothing() -> None
 
     with (
         patch("agent.main._run_adk_agent",
-              AsyncMock(return_value=_noop_proposal(live="mock"))),
+              _adk(_noop_proposal(live="mock"))),
         patch("agent.main.worker_client.call") as m_call,
     ):
         m_call.side_effect = dispatch
@@ -223,7 +238,7 @@ def test_a_noop_with_no_diffs_is_also_refused_when_the_world_moved() -> None:
         confidence=0.95,
     )
     with (
-        patch("agent.main._run_adk_agent", AsyncMock(return_value=empty)),
+        patch("agent.main._run_adk_agent", _adk(empty)),
         patch("agent.main.worker_client.call") as m_call,
     ):
         m_call.side_effect = dispatch
@@ -240,7 +255,7 @@ def test_the_refusal_leaks_neither_env_names_nor_values() -> None:
 
     with (
         patch("agent.main._run_adk_agent",
-              AsyncMock(return_value=_noop_proposal(live="mock"))),
+              _adk(_noop_proposal(live="mock"))),
         patch("agent.main.worker_client.call") as m_call,
     ):
         m_call.side_effect = dispatch
@@ -251,56 +266,109 @@ def test_the_refusal_leaks_neither_env_names_nor_values() -> None:
     assert "PAYMENT_MODE" not in r.text
 
 
-def test_a_flaky_reader_that_loses_the_baseline_refuses_rather_than_assumes() -> None:
-    """Pre-turn read fails, post-turn read succeeds: there is no before-state to
-    prove stability against.
+def test_the_same_env_on_a_different_revision_is_still_skew() -> None:
+    """Env equality alone is a weaker claim than it looks.
 
-    Assuming stability here is exactly how the poisoned row was written, so this
-    refuses. It is distinct from the reader being down for BOTH reads, which is
-    the documented no-observation tolerance and is NOT refused."""
-    dispatch = _reader_sequence(RuntimeError("reader down"), _CLEAN_ENV)
+    Revisions A(mock) -> B(live) -> C(mock) inside one turn present IDENTICAL
+    env at both ends while the world moved twice, so an env-only check would
+    call that stable and cache the agent's reasoning about B under the mock
+    key. The serving revision is compared too, which is why ``read_live_state``
+    pairs env with the revision it came from."""
+    def dispatch(worker: str, *a: Any, **k: Any) -> Any:
+        if worker != "reader":
+            raise AssertionError(f"unexpected worker call: {worker!r}")
+        dispatch.n = getattr(dispatch, "n", 0) + 1
+        rev = "payment-demo-00020-aaa" if dispatch.n == 1 else "payment-demo-00022-ccc"
+        return dict(_reader_envelope(_CLEAN_ENV), revision=rev)
 
     with (
         patch("agent.main._run_adk_agent",
-              AsyncMock(return_value=_noop_proposal(live="mock"))),
+              _adk(_noop_proposal(live="mock"))),
         patch("agent.main.worker_client.call") as m_call,
     ):
         m_call.side_effect = dispatch
         r = TestClient(app).post("/recheck")
 
     assert r.status_code == 409, r.text
-    assert "before the agent ran" in r.text
+    assert "serving revision changed" in r.text
     assert get_state().list_decisions(limit=50) == []
 
 
-def test_a_reader_down_for_both_reads_still_produces_a_decision() -> None:
-    """The documented tolerance (a coordinator without run.services.get) is
-    preserved: with NO observation at all there is nothing for the coherence
-    gate to compare, so it is skipped rather than failed, and ds-b3m's gate
-    still refuses any rollback because ``observed_env`` stays None."""
-    dispatch = _reader_sequence(RuntimeError("reader down"))
+def test_an_unreadable_revision_refuses_rather_than_abstains() -> None:
+    """A check that cannot see its subject must FAIL, not wave the request
+    through. ``read_live_state`` documents an empty ``revision`` as a real state
+    (all deploys failed), so it is unknown for comparison purposes, never
+    equal-to-empty."""
+    def dispatch(worker: str, *a: Any, **k: Any) -> Any:
+        if worker != "reader":
+            raise AssertionError(f"unexpected worker call: {worker!r}")
+        return dict(_reader_envelope(_CLEAN_ENV), revision="")
 
     with (
-        patch("agent.main._run_adk_agent",
-              AsyncMock(return_value=_noop_proposal(live="mock"))),
+        patch("agent.main._run_adk_agent", _adk(_noop_proposal(live="mock"))),
         patch("agent.main.worker_client.call") as m_call,
     ):
         m_call.side_effect = dispatch
         r = TestClient(app).post("/recheck")
 
-    assert r.status_code == 200, r.text
-    assert r.json()["action"] == "no_op"
+    assert r.status_code == 409, r.text
+    assert "serving revision changed" in r.text
+    assert get_state().list_decisions(limit=50) == []
 
 
-def test_the_key_survives_a_post_turn_read_failure_without_using_model_diffs() -> None:
-    """Pre-turn read succeeded, post-turn failed: the key is hashed from the
-    real pre-turn observation, not from ``proposal.env_diffs``.
+def test_an_agent_that_never_read_live_state_is_refused() -> None:
+    """The hole bracketing could not close.
 
-    The old reconstruction was its own incoherence — a SUBSET of the env that
-    can legally be empty, so a decision about a populated service could land
-    under the `{}`-env key and collide with a genuinely empty one later. Here
-    the proposal carries NO diffs at all, so a diff-derived key would be the
-    empty-env key; asserting the recorded key differs from that pins it."""
+    Comparing the coordinator's own before/after reads proves the WORLD was
+    stable; it never proves the agent LOOKED. An agent that skipped the reader
+    entirely can still emit a legal ``no_op`` (``env_diffs=[]`` passes the
+    validator), and that verdict would then be filed under whatever the
+    coordinator happened to see. Reading the agent's own tool results answers
+    both questions, so this refuses. The workload prompt does require the call,
+    but a prompt is not an enforcement boundary."""
+    dispatch = _reader_sequence(RuntimeError("reader down"), _CLEAN_ENV)
+
+    with (
+        patch("agent.main._run_adk_agent", _adk(_noop_proposal(live="mock"))),
+        patch("agent.main.worker_client.call") as m_call,
+    ):
+        m_call.side_effect = dispatch
+        r = TestClient(app).post("/recheck")
+
+    assert r.status_code == 409, r.text
+    assert "the agent did not read live state" in r.text
+    assert get_state().list_decisions(limit=50) == []
+
+
+def test_an_agent_that_saw_the_world_change_itself_is_refused() -> None:
+    """Two DIFFERENT observations in one turn: the agent watched the change
+    happen, and there is no honest answer to which reading its conclusion rests
+    on. ADK may run function calls in parallel, so arrival order is not
+    authority either — so this refuses rather than picking one."""
+    dispatch = _reader_sequence(_CLEAN_ENV, _DRIFTED_ENV, _DRIFTED_ENV)
+
+    with (
+        patch("agent.main._run_adk_agent", _adk(_noop_proposal(live="mock"), times=2)),
+        patch("agent.main.worker_client.call") as m_call,
+    ):
+        m_call.side_effect = dispatch
+        r = TestClient(app).post("/recheck")
+
+    assert r.status_code == 409, r.text
+    assert "saw live state change" in r.text
+    assert get_state().list_decisions(limit=50) == []
+
+
+def test_a_failed_post_turn_read_refuses_instead_of_hashing_model_diffs() -> None:
+    """The agent read fine, but this request could not, so nothing corroborates
+    that what the agent saw still holds.
+
+    The historical behaviour hashed the key from ``proposal.env_diffs`` here.
+    That is a SUBSET the model chooses and can legally be empty, so a populated
+    service's decision could land under the ``{}``-env key and collide with a
+    genuinely empty one later — a second way to file a row under the wrong
+    world. Refusing loses one audit, which the next event re-discovers; a
+    poisoned key is permanent."""
     empty = DecisionProposal(
         action=DecisionAction.NO_OP,
         env_diffs=[],
@@ -310,20 +378,15 @@ def test_the_key_survives_a_post_turn_read_failure_without_using_model_diffs() -
     dispatch = _reader_sequence(_CLEAN_ENV, RuntimeError("post-turn read down"))
 
     with (
-        patch("agent.main._run_adk_agent", AsyncMock(return_value=empty)),
+        patch("agent.main._run_adk_agent", _adk(empty)),
         patch("agent.main.worker_client.call") as m_call,
     ):
         m_call.side_effect = dispatch
         r = TestClient(app).post("/recheck")
 
-    assert r.status_code == 200, r.text
-    recorded = get_state().list_decisions(limit=50)
-    assert len(recorded) == 1
-    key_from_real_env = _event_key(
-        "manual_recheck", "payment-demo", get_settings().contract_path,
-        _hash_contract(load_contract(Path(get_settings().contract_path))), _CLEAN_ENV,
-    )
-    assert recorded[0]["event_key"] == key_from_real_env
+    assert r.status_code == 409, r.text
+    assert "live state could not be read after the agent ran" in r.text
+    assert get_state().list_decisions(limit=50) == []
 
 
 def test_a_coherent_noop_is_still_recorded_normally() -> None:
@@ -332,7 +395,7 @@ def test_a_coherent_noop_is_still_recorded_normally() -> None:
 
     with (
         patch("agent.main._run_adk_agent",
-              AsyncMock(return_value=_noop_proposal(live="mock"))),
+              _adk(_noop_proposal(live="mock"))),
         patch("agent.main.worker_client.call") as m_call,
     ):
         m_call.side_effect = dispatch
@@ -404,7 +467,7 @@ def test_a_poisoned_noop_does_not_defeat_a_fresh_rollback(
     # learn the real event key rather than hand-computing it.
     with (
         patch("agent.main._run_adk_agent",
-              AsyncMock(return_value=_rollback_proposal())),
+              _adk(_rollback_proposal())),
         patch("agent.main.worker_client.call") as m_call,
     ):
         m_call.side_effect = dispatch
@@ -428,7 +491,7 @@ def test_a_poisoned_noop_does_not_defeat_a_fresh_rollback(
 
     with (
         patch("agent.main._run_adk_agent",
-              AsyncMock(return_value=_rollback_proposal())),
+              _adk(_rollback_proposal())),
         patch("agent.main.worker_client.call") as m_call,
     ):
         m_call.side_effect = dispatch
@@ -482,7 +545,7 @@ def test_a_proposal_that_fails_validation_does_not_evict_the_cached_row() -> Non
     with (
         patch("agent.main._event_key", return_value=key),
         patch("agent.main._run_adk_agent",
-              AsyncMock(return_value=unvalidatable)),
+              _adk(unvalidatable)),
         patch("agent.main.worker_client.call") as m_call,
     ):
         m_call.side_effect = dispatch
@@ -552,7 +615,7 @@ def test_a_claim_loser_refuses_a_resurrected_noop() -> None:
 
     with (
         patch("agent.main._run_adk_agent",
-              AsyncMock(return_value=_rollback_proposal())),
+              _adk(_rollback_proposal())),
         patch("agent.main.worker_client.call") as m_call,
         patch.object(state, "record_event", return_value=False),
         patch.object(state, "find_decision_for_event", return_value=poisoned),
@@ -602,7 +665,7 @@ async def test_concurrent_contradicted_audits_mint_exactly_one_approval() -> Non
     with (
         patch("agent.main._event_key", return_value=key),
         patch("agent.main._run_adk_agent",
-              AsyncMock(return_value=_rollback_proposal())),
+              _adk(_rollback_proposal())),
         patch("agent.main.worker_client.call") as m_call,
     ):
         m_call.side_effect = dispatch
@@ -632,7 +695,7 @@ def test_a_cached_noop_is_still_served_to_a_fresh_noop() -> None:
 
     with (
         patch("agent.main._run_adk_agent",
-              AsyncMock(return_value=_noop_proposal(live="mock"))),
+              _adk(_noop_proposal(live="mock"))),
         patch("agent.main.worker_client.call") as m_call,
     ):
         m_call.side_effect = dispatch

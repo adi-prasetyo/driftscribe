@@ -49,80 +49,59 @@ non-None ⇒ returns False). Bounded to 15 min by the rollback TTL.
 > Two findings were blockers and both were accepted; see "What the review
 > changed" at the end.
 
-### (a) Cause — bracket the turn with the coordinator's own reads
+### (a) Cause — compare what the agent OBSERVED with what the key names
 
-The coordinator reads live env **before** the agent turn as well as after it,
-and refuses to persist anything when the two disagree.
+`run_agent` reports every `read_live_env_tool` response back to `_do_recheck`
+through a `reader_sink` list, populated from the ADK `function_response` events
+the runner already iterates. The coordinator then compares that observation
+against its own post-turn read.
 
 ```
 _observation_skew(observed_env, analyzed_env) -> list[str]
 ```
 
-Whole-snapshot comparison, so an ADDED or REMOVED variable counts as skew too.
+Whole-snapshot comparison, so an ADDED or REMOVED variable counts as skew too,
+plus the serving **revision** — env equality alone is weaker than it looks, as
+revisions A(mock) → B(live) → C(mock) present identical env at both ends while
+the world moved twice.
 
-**Why bracketing rather than watching the agent's own read.** If the before and
-after reads agree, the world was stable across the whole turn — therefore
-whatever the agent read *in between*, once or five times or never, saw the same
-env. The proof holds regardless of how the agent behaves, which is what the two
-alternatives cannot claim:
+**One invariant, no degraded branches.** A decision is persisted only when the
+agent read live state exactly once, this request could read it too, and the two
+agree on env and revision. Everything else is a 409 that records nothing:
 
-- Comparing `proposal.env_diffs` is unsound: the collection is incomplete by
-  contract (the prompt asks for vars that *differ*, the classifier emits `no_op`
-  with `env_diffs=[]`, the validator accepts it), so it iterates zero entries and
-  pronounces any world coherent — the bug surviving its own fix.
-- Capturing the agent's tool result in a ContextVar **does not work at all**.
-  ADK dispatches each function call as its own `asyncio.Task`, and a Task starts
-  from a *copy* of the context, so a `ContextVar` written inside a tool is
-  invisible to the coordinator. Measured: `child sees {...}` / `parent sees
-  None`. A first implementation did exactly this and was inert in production
-  while unit tests — which wrote from the parent's own task — passed.
+| condition | why it refuses |
+|---|---|
+| agent never read | nothing ties its verdict to any world; `no_op` with `env_diffs=[]` is legal |
+| agent read ≥2 distinct states | it watched the world move; "which reading is it about" has no honest answer, and ADK may run calls in parallel so order is not authority |
+| post-turn read failed | nothing corroborates that what the agent saw still holds |
+| revision unknown or changed | a check that cannot see its subject must fail, not abstain |
+| env differs | the ds-q38 case itself |
 
-Reader-outcome matrix:
+The refusals sit **after `validate()`** so ds-b3m keeps its own non-retryable
+502 for an ungrounded rollback; ours is a retry-shaped 409.
 
-| pre-turn | post-turn | behaviour |
-|---|---|---|
-| ok | ok, equal | proceed; key from post-turn read |
-| ok | ok, differs | **409**, nothing recorded (the ds-q38 case) |
-| ok | fails | key hashed from the **pre-turn observation**, `observed_env=None` |
-| fails | ok | **409** — no baseline, and assuming stability is how the row got written |
-| fails | fails | documented no-`run.services.get` tolerance: key from model diffs, `observed_env=None` |
+**Two tolerances were deliberately removed**, because both amounted to keeping
+the poisoning:
 
-The pre-turn-observation row also removes a second incoherence: the old
-reconstruction from `proposal.env_diffs` is a SUBSET that can legally be empty,
-so a decision about a populated service could land under the `{}`-env key and
-collide with a genuinely empty one later.
+- hashing the key from `proposal.env_diffs` when a read fails (a SUBSET that can
+  legally be empty, so a populated service's decision could land under the
+  `{}`-env key and collide with a genuinely empty one);
+- "the agent already read it" as an assumption rather than an observation —
+  precisely the assumption that produced the poisoned row.
 
-`observed_env` stays `None` in every degraded row, so ds-b3m's rollback gate is
-untouched. The preserved distinction is *what the key may be built from* (an
-observation) versus *what a safety gate may treat as observed state* (only this
-request's own read).
+Losing an audit is recoverable: the next event re-discovers the drift. A
+poisoned idempotency key is not.
 
-**Residual, accepted:** a world that changes and changes BACK within one turn
-reads as stable. That needs two mutations inside ~40s landing on byte-identical
-env, and each fires its own Eventarc delivery, so the next audit re-derives the
-truth.
+**Rejected alternatives, both tried and measured:**
 
-On skew, **refuse to record** — `HTTPException(409)`, count-only logging, no
-env names or values in the detail.
-
-**Placement: AFTER `validate()`.** ds-b3m's validator already refuses a skewed
-ROLLBACK, and does so with a 502 shaped "the model responded and the safety
-gate refused" — non-retryable on purpose. Gating first would convert that into
-a retry-shaped 409 and silently retire a distinction ds-b3m's tests exist to
-protect. What was missing was never the rollback case: nothing refused a skewed
-`no_op`.
-
-Why dropping is safe and self-healing: any mid-audit Cloud Run change emits its
-own `ReplaceService` audit log ⇒ its own Eventarc delivery. If it arrives during
-the audit, `_EventarcCoalescer` sets `dirty` and the trailing rerun re-audits a
-consistent world; if it arrives after, it starts a fresh audit. Note
-`_run_eventarc_audit_once` already catches `HTTPException` and logs
-`eventarc_background_recheck_rejected`, then the `while` loop honours `dirty` —
-so the rerun still happens after a refusal.
-
-**Explicitly NOT the fix:** keying off the model-reported env. ds-b3m — the
-idempotency cache is a second route to a rollback approval, so model-reported
-values must never define the key.
+- *Comparing `proposal.env_diffs`* — unsound, see above.
+- *Capturing the tool result in a `ContextVar`* — **does not work at all.** ADK
+  dispatches each function call as its own `asyncio.Task`, and a Task starts
+  from a *copy* of the context, so a write inside the tool is invisible to the
+  coordinator. Measured: `child sees {...}` / `parent sees None`.
+- *Bracketing the turn with the coordinator's own pre/post reads* — sound about
+  the WORLD, silent about whether the agent ever looked, and it cost an extra
+  Reader round-trip per audit that the sink does not.
 
 ### (b) Harm — never discard a fresh action for a cached `no_op`
 
@@ -200,8 +179,15 @@ own fix rather than in the original code.
   tool call in its own `asyncio.Task`. Verified by measurement. The fix was
   inert in production while the new tests passed, because the test double wrote
   from `_do_recheck`'s own task — the same "my own test pinned it" shape as
-  ds-qua. Replaced with the pre/post bracketing above, which depends on no ADK
-  internals and needed **zero changes** to the 53 existing ADK-path tests.
+  ds-qua.
+- **Round 3 blockers:** the pre/post bracketing that replaced it proved the
+  world was stable but never that the agent LOOKED, so an agent that skipped
+  the reader sailed through; and two degraded branches still persisted rows
+  under unconfirmed worlds. Replaced with the `reader_sink`, which answers both
+  questions with one mechanism and costs no extra Reader call. Round 3 also
+  caught that the "53 tests needed no changes" I had cited as evidence was
+  worth little — those doubles never read at all. Making them faithful is now
+  part of the change.
 - **Blocker accepted:** the first draft evicted at cache-lookup time, before
   `validate()`. Combined with ds-bej that is a permanent-409 trap. Eviction is
   now deferred until the proposal has passed the gate.

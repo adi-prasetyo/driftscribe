@@ -35,6 +35,38 @@ from agent.models import ContractStatus, DecisionAction, DecisionProposal, EnvDi
 from agent.pause import PAUSED_DETAIL
 from driftscribe_lib.approvals import Approval
 
+def _adk(proposal):
+    """A ``_run_adk_agent`` double that reads live state the way the real agent
+    does, then reports what it saw (ds-q38).
+
+    The production agent reaches live state through ``read_live_env_tool`` ->
+    ``worker_client.call("reader", {})``, and ``run_agent`` reports each such
+    response back to ``_do_recheck`` via ``reader_sink`` so the coordinator can
+    confirm the decision it is about to persist describes the world its
+    idempotency key names. Performing the same call against whatever dispatcher
+    the test patched in keeps this double faithful automatically.
+    """
+
+    async def _run(*_a, reader_sink=None, **_k):
+        if reader_sink is not None:
+            try:
+                payload = worker_client.call("reader", {})
+            except Exception:
+                # A failed tool call does not end the real turn — ADK hands the
+                # error back to the model, which reasons on without an
+                # observation. Recording nothing is exactly that state.
+                payload = None
+            if isinstance(payload, dict) and isinstance(payload.get("env"), dict):
+                reader_sink.append(
+                    {"env": dict(payload["env"]),
+                     "revision": payload.get("revision") or None}
+                )
+        return proposal
+
+    return AsyncMock(side_effect=_run)
+
+
+
 #: A rollback approval pair in the shapes the WORKER actually mints: a UUID4
 #: id (``str(uuid.uuid4())``) and a 43-char urlsafe token
 #: (``secrets.token_urlsafe(32)``). ``_validated_approval`` enforces both, so a
@@ -166,7 +198,7 @@ def test_recheck_observe_records_suppressed_decision_without_github_call(
     """Observe + a drift_issue proposal → 200; the decision is RECORDED with
     the suppression markers; the GitHub open_drift_issue helper is NOT called;
     the event is claimed (a second identical recheck returns the cached row)."""
-    mock_run_agent = AsyncMock(return_value=_drift_issue_proposal())
+    mock_run_agent = _adk(_drift_issue_proposal())
     issue_calls: list = []
     monkeypatch.setattr(
         main_mod, "get_repo", lambda token, repo: object()
@@ -214,7 +246,7 @@ def test_recheck_observe_no_op_unchanged(_live_github, monkeypatch):
     """A no_op proposal in Observe is NOT suppressed (nothing to suppress): the
     github preview keeps its no_op shape; suppressed_by_autonomy is absent; but
     autonomy_mode IS still stamped (every new decision carries it)."""
-    mock_run_agent = AsyncMock(return_value=_no_op_proposal())
+    mock_run_agent = _adk(_no_op_proposal())
     with (
         patch("agent.main._run_adk_agent", mock_run_agent),
         patch("agent.main.worker_client.call") as m_env,
@@ -236,7 +268,7 @@ def test_recheck_observe_no_op_unchanged(_live_github, monkeypatch):
 def test_recheck_propose_executes_actions_normally(_live_github, monkeypatch):
     """Propose → identical to today's behavior for drift_issue: the GitHub
     helper IS called; no suppression markers beyond autonomy_mode."""
-    mock_run_agent = AsyncMock(return_value=_drift_issue_proposal())
+    mock_run_agent = _adk(_drift_issue_proposal())
     issue_calls: list = []
     monkeypatch.setattr(main_mod, "get_repo", lambda token, repo: object())
     monkeypatch.setattr(
@@ -276,7 +308,7 @@ def test_eventarc_observe_still_processes(monkeypatch):
     monkeypatch.setenv("EVENTARC_AUDIENCE", "https://driftscribe-agent-xyz.a.run.app/eventarc")
     get_settings.cache_clear()
     _reset_state_for_tests()
-    mock_run_agent = AsyncMock(return_value=_drift_issue_proposal())
+    mock_run_agent = _adk(_drift_issue_proposal())
     audit_body = {
         "resource": {
             "type": "cloud_run_revision",
@@ -327,7 +359,7 @@ def test_rollback_observe_suppresses_worker_calls(_live_github, monkeypatch):
     env read — no rollback /propose, no notifier. The decision is recorded with
     action=rollback, suppressed markers, NO 'approval' key, and the event is
     claimed (idempotent)."""
-    mock_run_agent = AsyncMock(return_value=_rollback_proposal())
+    mock_run_agent = _adk(_rollback_proposal())
     worker_calls: list = []
 
     def _dispatch(worker, payload, *a, **k):
@@ -371,7 +403,7 @@ def test_rollback_observe_suppresses_worker_calls(_live_github, monkeypatch):
 def test_rollback_propose_proposes_normally(_live_github, monkeypatch):
     """Propose → _do_rollback behaves exactly as today: rollback /propose +
     notifier called, an approval key is present, autonomy_mode='propose'."""
-    mock_run_agent = AsyncMock(return_value=_rollback_proposal())
+    mock_run_agent = _adk(_rollback_proposal())
     workers: list = []
 
     def _dispatch(worker, payload, *a, **k):
@@ -421,7 +453,7 @@ def test_recheck_fail_closed_read_suppresses(_live_github, monkeypatch):
     """Direct pin of the fail-closed wiring at the pipeline seam: patch
     _autonomy_state_fail_closed to the fail-closed observe state and assert the
     drift_issue action is suppressed."""
-    mock_run_agent = AsyncMock(return_value=_drift_issue_proposal())
+    mock_run_agent = _adk(_drift_issue_proposal())
     issue_calls: list = []
     monkeypatch.setattr(main_mod, "get_repo", lambda token, repo: object())
     monkeypatch.setattr(
