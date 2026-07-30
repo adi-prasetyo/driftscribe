@@ -94,7 +94,13 @@
   // really are paired and the old formula really is exact for them.
   function turnsLabel(c: Conversation, tf: TranslateFn): string {
     const counted = c.user_turn_count ?? (c.turn_count ? Math.ceil(c.turn_count / 2) : 0);
-    if (!counted || counted < 1) return '';
+    // Nothing below 2 (ds-7ag.5). "· 1 message" rendered on nearly every row in
+    // the rail and said nothing that the row's existence did not already say —
+    // repeated identical meta is noise, and this is a narrow column where it
+    // competed with the titles that ARE information. From 2 up the number tells
+    // the operator something (this thread has history), so it stays. The
+    // timestamp is unconditional either way.
+    if (counted < 2) return '';
     return plural(tf, 'conversations.messageCount', counted);
   }
 </script>

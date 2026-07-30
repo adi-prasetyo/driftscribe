@@ -194,7 +194,12 @@ describe('ConversationsRail — operator message count', () => {
     expect(countText(container)).toContain('3 messages');
   });
 
-  it('singularizes one message', () => {
+  // ds-7ag.5 — this used to assert that a one-message row rendered "1 message".
+  // It did, on almost every row in the rail, and it told the operator nothing:
+  // a repeated meta line that is the same everywhere is noise, and the rail is a
+  // narrow column where it competed with the titles that ARE information. A
+  // count only becomes information from 2 up.
+  it('renders no count for a single-message conversation (noise, not information)', () => {
     const { container } = render(ConversationsRail, {
       props: {
         conversations: [conv({ conversation_id: 'c1', user_turn_count: 1, turn_count: 2 })],
@@ -202,8 +207,18 @@ describe('ConversationsRail — operator message count', () => {
         onOpen: noop,
       },
     });
-    expect(countText(container)).toContain('1 message');
-    expect(countText(container)).not.toContain('1 messages');
+    expect(container.querySelector('.conv-count')).toBeNull();
+  });
+
+  it('renders the count from 2 up, where it starts meaning something', () => {
+    const { container } = render(ConversationsRail, {
+      props: {
+        conversations: [conv({ conversation_id: 'c1', user_turn_count: 2, turn_count: 4 })],
+        activeConversationId: null,
+        onOpen: noop,
+      },
+    });
+    expect(countText(container)).toContain('2 messages');
   });
 
   it('falls back to the old pairing formula for pre-counter conversations', () => {
