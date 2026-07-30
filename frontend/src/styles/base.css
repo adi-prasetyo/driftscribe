@@ -109,7 +109,14 @@ pre {
 }
 
 /* --- Typography helpers --------------------------------------------------- */
+/* The display face, used exactly once per page. This is what makes an approval
+   page read as the same document as the desk hero, which is also mincho. .ds-h2
+   and below stay gothic on purpose — the desk uses the serif once and that
+   restraint IS the look, so do not sprinkle --ds-font-mincho elsewhere.
+   Today the only consumers are approval.html and iac_approval.html; an SPA h1
+   that ever wants gothic should scope its own override rather than weaken this. */
 .ds-h1 {
+  font-family: var(--ds-font-mincho);
   font-size: var(--ds-fs-5);
   line-height: var(--ds-lh-tight);
   font-weight: var(--ds-fw-bold);
