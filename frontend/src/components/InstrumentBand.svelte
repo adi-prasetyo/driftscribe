@@ -120,6 +120,17 @@
     drift: { desk: 'desk.band.driftAriaDesk' },
     awaiting: { desk: 'desk.band.awaitingAriaDesk', estate: 'desk.band.awaitingAriaEstate' },
   };
+  /** The VISIBLE hover/focus hint, keyed by the context. Sugar only — the
+   *  accessible destination lives in DEST_ARIA above, because the button's
+   *  aria-label overrides this text entirely. Keys are named for the
+   *  DESTINATION so each string's wording and its key agree: "the queue below"
+   *  is only true from the desk, so the estate's awaiting hint is its own key
+   *  rather than a reused one that would lie about where the queue is. */
+  const HINT: Record<BandStat, Partial<Record<BandContext, CatalogKey>>> = {
+    managed: { desk: 'desk.band.statHintEstate' },
+    drift: { desk: 'desk.band.statHintEstate' },
+    awaiting: { desk: 'desk.band.statHintQueue', estate: 'desk.band.statHintDesk' },
+  };
   const UNKNOWN_ARIA: Record<BandStat, CatalogKey> = {
     managed: 'desk.band.managedUnknownAria',
     drift: 'desk.band.driftUnknownAria',
@@ -182,6 +193,7 @@
          read twice — and, for an unknown figure, hears the "not yet known"
          wording instead of an em dash that announces as nothing at all. -->
     {#each stats as s (s.key)}
+      {@const hint = s.interactive ? HINT[s.key][context] : undefined}
       <svelte:element
         this={s.interactive ? 'button' : 'span'}
         type={s.interactive ? 'button' : undefined}
@@ -194,7 +206,22 @@
         onclick={s.interactive ? () => onStat(s.key) : undefined}
       >
         <span class="instrument-band__num">{statText(s.value)}</span>
-        <span class="instrument-band__label">{$t(LABEL[s.key])}</span>
+        <!-- The label and its hint share one positioned box so the hint lands
+             exactly on the label rather than at the stat's padding edge (an
+             abspos child is placed against the PADDING box, and stats 2-3 carry
+             a 28px padding-left for their divider rule). The wrapper renders
+             unconditionally, so an inert figure keeps identical layout. -->
+        <span class="instrument-band__meta" class:instrument-band__meta--hinted={hint}>
+          <span class="instrument-band__label">{$t(LABEL[s.key])}</span>
+          {#if hint}
+            <!-- Fades in over the label on hover/focus, so the resting band
+                 stays the mockup's calm three numerals while still saying what
+                 a click does before you make it. aria-hidden because the
+                 aria-label already carries the destination — announcing it
+                 twice would be worse than not showing it at all. -->
+            <span class="instrument-band__hint" aria-hidden="true">{$t(hint)}</span>
+          {/if}
+        </span>
       </svelte:element>
     {/each}
   </div>
@@ -237,9 +264,11 @@
     font-family: inherit;
     text-align: left;
     cursor: pointer;
-    transition: opacity var(--ds-dur-fast) var(--ds-ease);
   }
-  .instrument-band__stat:not(.instrument-band__stat--static):hover {
+  /* The hover fade lands on the NUMERAL, not the whole stat: the hint below
+     appears on that same hover, and fading the stat as a whole would fade the
+     hint in and out at the same time (ds-7ag.2). */
+  .instrument-band__stat:not(.instrument-band__stat--static):hover .instrument-band__num {
     opacity: 0.75;
   }
   /* An inert figure must not pretend to be a control (ds-7ag.2). It keeps the
@@ -262,6 +291,7 @@
        shifts its own width or neighboring layout. */
     font-variant-numeric: tabular-nums;
     color: var(--ds-navy);
+    transition: opacity var(--ds-dur-fast) var(--ds-ease);
   }
   .instrument-band__stat--drift .instrument-band__num {
     color: var(--ds-drift-amber);
@@ -280,11 +310,46 @@
     color: var(--ds-gblue);
   }
 
+  /* Positioned box shared by the label and its hover hint (see the markup). */
+  .instrument-band__meta {
+    position: relative;
+    display: block;
+    margin-top: 7px;
+  }
+
   .instrument-band__label {
+    display: block;
     font-size: 11.5px;
     color: var(--ds-paper-mut);
     letter-spacing: 0.04em;
-    margin-top: 7px;
+    transition: opacity var(--ds-dur-fast) var(--ds-ease);
+  }
+
+  /* The visible destination affordance (ds-7ag.2): the numerals looked like
+     figures, so nothing said a click would go anywhere. Hidden at rest —
+     inset over the label, revealed on hover/focus-visible, and never taking
+     pointer events of its own. `nowrap` because it may run slightly wider than
+     the label it covers; the band has room and nothing clips it. */
+  .instrument-band__hint {
+    position: absolute;
+    inset: 0;
+    font-size: 11.5px;
+    letter-spacing: 0.04em;
+    color: var(--ds-paper-ink-2);
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--ds-dur-fast) var(--ds-ease);
+  }
+  /* Gated on --hinted, which the markup sets only when a hint actually rendered
+     — so hovering an inert figure never blanks its label. */
+  .instrument-band__stat:hover .instrument-band__meta--hinted .instrument-band__label,
+  .instrument-band__stat:focus-visible .instrument-band__meta--hinted .instrument-band__label {
+    opacity: 0;
+  }
+  .instrument-band__stat:hover .instrument-band__hint,
+  .instrument-band__stat:focus-visible .instrument-band__hint {
+    opacity: 1;
   }
 
   .instrument-band__meter {
