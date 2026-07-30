@@ -409,3 +409,30 @@ describe('EstateView — band stats route for the estate context', () => {
     expect(onNavigate).not.toHaveBeenCalled();
   });
 });
+
+// Plan Task 4 — arrival context. A visitor who lands here from a desk numeral
+// (or a shared ?view=estate link) had nothing on the page naming where they
+// came from. This is a destination link, not a history pop, so it is always
+// rendered — valid even on a cold deep-link with no desk entry behind it.
+describe('EstateView — back-to-desk affordance', () => {
+  it('renders a quiet back link that navigates to the desk', async () => {
+    const onNavigate = vi.fn();
+    const { getByTestId } = render(EstateView, {
+      props: baseProps({ settled: true, onNavigate }),
+    });
+    const back = getByTestId('estate-back-desk');
+    await fireEvent.click(back);
+    expect(onNavigate).toHaveBeenCalledTimes(1);
+    expect(onNavigate).toHaveBeenCalledWith('desk');
+  });
+
+  it('is present even when the estate itself could not load', () => {
+    // The state where wayfinding matters MOST: nothing to look at here, and the
+    // operator needs the way back more than ever.
+    const { getByTestId } = render(EstateView, {
+      props: baseProps({ graph: null, settled: true }),
+    });
+    expect(getByTestId('estate-degraded')).toBeTruthy();
+    expect(getByTestId('estate-back-desk')).toBeTruthy();
+  });
+});

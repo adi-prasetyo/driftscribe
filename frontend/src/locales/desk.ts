@@ -161,6 +161,9 @@ export const desk = {
     // — see lib/estate.ts's estateModel(). JA copy is verbatim from the
     // mockup wherever the mockup has a matching string.
     'desk.estate.ariaLabel': 'Estate',
+    // Arrival context (plan Task 4). The arrow is part of the copy: it is what
+    // makes a quiet text link read as "back" at a glance.
+    'desk.estate.backToDesk': '← Back to desk',
     'desk.estate.loading': 'Loading the estate…',
     'desk.estate.degraded': 'The estate map is temporarily unavailable.',
     'desk.estate.driftGroup': 'Drift — not managed by IaC ({n})',
@@ -271,6 +274,7 @@ export const desk = {
     'desk.resting.noNewDrift': '新規ドリフトなし',
 
     'desk.estate.ariaLabel': 'インフラ',
+    'desk.estate.backToDesk': '← デスクに戻る',
     'desk.estate.loading': 'インフラ情報を読み込み中…',
     'desk.estate.degraded': 'インフラ図は一時的に取得できません。',
     'desk.estate.driftGroup': 'ドリフト — IaC 未管理 {n} 件',

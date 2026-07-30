@@ -98,6 +98,23 @@
   data-tour="estate"
   aria-label={$t('desk.estate.ariaLabel')}
 >
+  <!-- Arrival context (plan Task 4). A visitor who got here by clicking a desk
+       numeral had nothing on the page naming where they came from, and the
+       browser Back button used to leave the app. This is a DESTINATION link,
+       not a history pop, so it renders unconditionally — including on a cold
+       `?view=estate` deep-link with no desk entry behind it, and on the
+       degraded state, where there is nothing to look at and the way back
+       matters most. Reuses .rail-more (base.css), which is exactly this
+       affordance, re-inked for the paper world. -->
+  <div class="estate-view__wayfind">
+    <button
+      type="button"
+      class="rail-more estate-view__back"
+      data-testid="estate-back-desk"
+      onclick={() => onNavigate('desk')}>{$t('desk.estate.backToDesk')}</button
+    >
+  </div>
+
   <!-- ds-7ag.2 — context="estate": managed/drift render as inert figures here
        (the operator is already looking at the map they would point to), and
        awaiting is the one stat with content elsewhere — the desk's queue. -->
@@ -250,6 +267,23 @@
     border: 1px solid var(--ds-paper-rule);
     border-radius: var(--ds-radius, 6px);
     overflow: hidden;
+  }
+
+  /* Quiet wayfinding strip above the instrument band. Sits inside the paper
+     card's own padding rhythm (40px gutters) and adds no rule of its own — it
+     is meant to be findable, not to announce itself. */
+  .estate-view__wayfind {
+    padding: 12px 40px 0;
+  }
+  .estate-view__back {
+    margin: 0;
+    padding: 2px 0;
+    /* .rail-more is inked for the legacy surface; the estate card is paper. */
+    color: var(--ds-paper-mut);
+    font-size: 12px;
+  }
+  .estate-view__back:hover {
+    color: var(--ds-paper-ink);
   }
 
   .estate-view__status {
