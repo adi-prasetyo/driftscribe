@@ -263,12 +263,14 @@ def test_the_marker_does_not_promise_a_decision_record():
 
 
 def _fences_before(content: str, needle: str) -> int:
-    """Count ``` occurrences preceding ``needle``.
+    """Count fence delimiters preceding ``needle``.
 
     An EVEN count means ``needle`` renders outside a code block, which is the
-    difference between a clickable link and an inert one.
+    difference between a clickable link and an inert one. Counts RUNS of 3+
+    backticks rather than "```" substrings, because a six-backtick run is one
+    delimiter and substring counting would score it as a harmless two.
     """
-    return content[: content.index(needle)].count("```")
+    return notifier_main._fence_delimiters(content[: content.index(needle)])
 
 
 def test_an_open_code_fence_in_the_head_is_closed():
@@ -329,6 +331,30 @@ def test_fence_closing_never_pushes_output_over_the_limit():
             f"[DriftScribe/approval/high] {body}"
         )
         assert len(content) <= 2000
+
+
+def test_a_six_backtick_run_is_one_delimiter_not_two():
+    """``count("```")`` reports 2 for a 6-backtick run and repairs nothing.
+
+    It is a single delimiter that OPENS a block, so the tail would be
+    swallowed. Counting runs of 3+ backticks gets this right — the concrete
+    case from the second Codex pass.
+    """
+    assert notifier_main._fence_delimiters("``````") == 1
+    assert notifier_main._fence_delimiters("```") == 1
+    assert notifier_main._fence_delimiters("``` ```") == 2
+    assert notifier_main._fence_delimiters("`` ``") == 0, "inline spans are not fences"
+
+    link = "https://example.test/approvals/abc?t=zzz"
+    body = "open\n``````\n" + ("R" * 9000) + "\nsee " + link
+    content = notifier_main._discord_safe_content(
+        f"[DriftScribe/approval/high] {body}"
+    )
+    assert len(content) <= 2000
+    assert link in content
+    assert notifier_main._fence_delimiters(
+        content[: content.index(link)]
+    ) % 2 == 0
 
 
 # --------------------------------------------------------------------------- #
@@ -403,6 +429,43 @@ def test_token_scrubbing_survives_truncation_order():
 def test_scrubbing_leaves_ordinary_error_text_readable():
     """The snippet's diagnostic value is why it exists — don't gut it."""
     body = '{"message": "Cannot send an empty message", "code": 50006}'
+    assert notifier_main._scrub_approval_tokens(body) == body
+
+
+@pytest.mark.parametrize(
+    "reflection",
+    [
+        # Verbatim, the case the context rule already covered.
+        "https://x.test/approvals/a?t={tok}",
+        # Percent-encoded by a proxy — evades a `?t=` context match, but the
+        # token is still a usable credential once decoded.
+        "https://x.test/approvals/a%3Ft%3D{tok}",
+        # Unicode-escaped inside a JSON echo.
+        '{{"u": "https://x.test/approvals/a\\u003ft\\u003d{tok}"}}',
+        # Token as a path segment rather than a query parameter.
+        "https://x.test/approvals/{tok}",
+        # Bare, with no URL around it at all.
+        "echo: {tok}",
+    ],
+)
+def test_the_token_is_scrubbed_regardless_of_how_it_is_reflected(reflection):
+    """A context rule alone is evadable; the shape rule is the net.
+
+    All five of these were verified by Codex against the context-only version;
+    the last four got through. The minter emits ``[A-Za-z0-9_-]{43,64}``, so
+    matching the shape survives any re-encoding that preserves the token's own
+    characters.
+    """
+    tok = "driftscribe-fixture-approval-token-not-real"
+    assert len(tok) == 43, "fixture must match the real minted token length"
+    scrubbed = notifier_main._scrub_approval_tokens(reflection.format(tok=tok))
+    assert tok not in scrubbed
+    assert "[redacted]" in scrubbed
+
+
+def test_the_shape_rule_does_not_eat_short_identifiers():
+    """Below the minted length, ordinary ids stay readable in the log."""
+    body = '{"request_id": "abc123-def456", "trace": "0123456789abcdef"}'
     assert notifier_main._scrub_approval_tokens(body) == body
 
 

@@ -114,8 +114,31 @@ _TRUNCATION_MARKER = "\n\n…[truncated]…\n\n"
 # retained tail — approval link included — renders inside a code block. The URL
 # is then present and visible but NOT clickable, which defeats the message as
 # surely as dropping it. Found by Codex review of the first cut of this change.
-_FENCE = "```"
+#
+# Fence delimiters are counted as RUNS of three-or-more backticks, not as
+# occurrences of the literal "```". The distinction is not pedantic: a
+# six-backtick run is ONE delimiter that opens a block, while
+# ``str.count("```")`` reports two and concludes, wrongly, that nothing needs
+# repairing. Counting runs gets that case right.
+#
+# KNOWN RESIDUAL, stated honestly because the alternative is a comment that
+# over-promises: this is a parity heuristic, not a Markdown parser. A code span
+# delimited by a LONGER backtick run and containing literal triple backticks
+# (````  ```  ````) is balanced to a real parser but odd to this counter, so
+# the repair would append a fence that is not wanted. Accepted because it
+# requires a model to emit nested-fence Markdown inside a rollback rationale,
+# and because the consequence is a link that is visible and copyable but not
+# clickable — a degradation, where the bug this whole change fixes was total
+# loss of the notification. A full Markdown parser inside a notification worker
+# is not proportionate to that. If this ever bites, neutralize backticks in the
+# retained fragments instead of deepening the inference.
+_FENCE_RUN = re.compile(r"`{3,}")
 _FENCE_CLOSE = "\n```"
+
+
+def _fence_delimiters(text: str) -> int:
+    """Count fence delimiters (runs of 3+ backticks), not "```" substrings."""
+    return len(_FENCE_RUN.findall(text))
 
 # Truncation is MIDDLE-OUT rather than tail-drop, and that is load-bearing.
 # In the rollback approval body the variable-length parts (the model's
@@ -162,12 +185,32 @@ if _TRUNCATION_HEAD_BUDGET <= 0:
 # value: this guarantee must not rest on which vendor happens to be set today.
 # The coordinator already reduces the 502 to a classification before persisting
 # it (agent/main.py), so this is the log-side half of the same defense.
+#
+# TWO rules, because a context rule alone is evadable. Matching on ``?t=``
+# covers a verbatim reflection, but a proxy that percent-encodes
+# (``%3Ft%3D<token>``) or unicode-escapes (``?t=<token>``) its echo
+# defeats it, and the token stays a usable credential after decoding. So the
+# second rule matches the token's SHAPE instead of its context: the minter
+# emits ``[A-Za-z0-9_-]{43,64}``, and a 43+ char run in that alphabet is not
+# something a webhook error body otherwise contains. Shape survives every
+# re-encoding that preserves the token's own characters.
+#
+# What this does NOT promise: an encoding that rewrites the token's own
+# characters (base64-of-the-body, say) is not caught by either rule. Only
+# dropping the response body entirely would be encoding-independent, and the
+# snippet's diagnostic value is precisely how the Discord 400 was diagnosed.
 _APPROVAL_TOKEN_IN_URL = re.compile(r"([?&]t=)[A-Za-z0-9_-]{20,}")
+_APPROVAL_TOKEN_SHAPE = re.compile(r"[A-Za-z0-9_-]{43,}")
 
 
 def _scrub_approval_tokens(text: str) -> str:
-    """Redact ``?t=<token>`` query values from arbitrary downstream text."""
-    return _APPROVAL_TOKEN_IN_URL.sub(r"\1[redacted]", text)
+    """Redact approval tokens from arbitrary downstream text.
+
+    Context rule first so a verbatim ``?t=`` reflection keeps its readable
+    shape in the log, then the shape rule as an encoding-independent net.
+    """
+    text = _APPROVAL_TOKEN_IN_URL.sub(r"\1[redacted]", text)
+    return _APPROVAL_TOKEN_SHAPE.sub("[redacted]", text)
 
 
 def _discord_safe_content(text: str) -> str:
@@ -198,9 +241,9 @@ def _discord_safe_content(text: str) -> str:
     # Repair 2 is not hypothetical tidiness: /notify is a GENERIC endpoint and
     # notify_tool passes arbitrary model-authored text, so the tail is not
     # always the rollback template's fence-free footer.
-    fence_close = _FENCE_CLOSE if head.count(_FENCE) % 2 else ""
-    if tail.count(_FENCE) % 2:
-        tail = tail.replace(_FENCE, "", 1)
+    fence_close = _FENCE_CLOSE if _fence_delimiters(head) % 2 else ""
+    if _fence_delimiters(tail) % 2:
+        tail = _FENCE_RUN.sub("", tail, count=1)
     return head + fence_close + _TRUNCATION_MARKER + tail
 
 
