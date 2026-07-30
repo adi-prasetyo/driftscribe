@@ -111,7 +111,8 @@
     align-items: center;
     justify-content: center;
     padding: var(--ds-sp-5);
-    background: rgba(26, 26, 24, 0.42);
+    /* scrim = the ink at 42%; the ink went cool in ds-qbo, so this follows */
+    background: rgba(18, 21, 28, 0.42);
     backdrop-filter: blur(2px);
     animation: authpanel-fade var(--ds-dur) var(--ds-ease-out);
   }
