@@ -315,17 +315,25 @@
     box-shadow: none;
   }
 
+  /* Filled controls take navy, not --ds-stream: white on #4285f4 is 3.56:1 and
+     fails AA, while white on navy is 15.7:1. This also makes Send and the
+     desk's "approve" CTA the same control in two places, which is the point of
+     the unification. Hover LIFTS instead of deepening: the old Send deepened
+     #4285f4 -> #1858c0, which was visible because the base was light, but navy
+     is already near-black so darkening it further reads as nothing. The mix is
+     derived from the token rather than a new literal — white text stays 11.2:1. */
   .chat-form__send {
     flex: 0 0 auto;
     display: inline-flex;
     align-items: center;
     gap: var(--ds-sp-2);
-    background: var(--ds-stream);
-    border-color: var(--ds-stream-ink);
+    background: var(--ds-navy);
+    border-color: var(--ds-navy);
     color: #fff;
   }
   .chat-form__send:hover {
-    background: var(--ds-stream-ink);
+    background: color-mix(in srgb, var(--ds-navy) 88%, #fff);
+    border-color: color-mix(in srgb, var(--ds-navy) 88%, #fff);
   }
 
   /* When the row is dimmed for historical mode the disabled input doesn't

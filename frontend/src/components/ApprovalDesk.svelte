@@ -645,10 +645,13 @@
      indenting the text. -20 margin + 3 border + 17 padding nets to zero, so the
      headline and body sit on exactly the same left edge as every other state and
      switching into this one moves no type — the "no state jumps" rule the desk
-     is built on. Spacing is px and the ink is --ds-paper-mut, matching the
-     siblings above; this block used rem --ds-sp-* and the pre-composite
-     --ds-muted (#6b6b66 warm gray against the desk's #8a9099), which is what
-     made the newest state look bolted on. */
+     is built on. Spacing is px, matching the siblings above; this block used rem
+     --ds-sp-* and a warm grey from the other design world, which is what made
+     the newest state look bolted on.
+     ds-qbo: the body ink moved off --ds-paper-mut (3.08:1) onto --ds-paper-ink-2
+     (6.47:1). This paragraph explains an unresolved rollback — an open loop the
+     operator has to act on — so it is body copy, not decoration, and it was the
+     one place on the desk where real prose read through the lightest grey. */
   .approval-desk__unresolved {
     position: relative;
     border-left: 3px solid var(--ds-warn, var(--ds-border-strong));
@@ -660,7 +663,7 @@
   }
   .approval-desk__unresolved-body {
     margin: 18px 0 26px;
-    color: var(--ds-paper-mut);
+    color: var(--ds-paper-ink-2);
     max-width: 52ch;
   }
 

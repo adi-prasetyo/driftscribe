@@ -572,8 +572,10 @@
     transition: color var(--ds-dur-fast) var(--ds-ease);
   }
 
+  /* Hover underlines; it does NOT brighten to --ds-stream. Raw #4285f4 is
+     3.42:1 on paper, so brightening a link on hover would drop it below the
+     text floor at exactly the moment the operator is aiming at it (ds-qbo). */
   .row-action-link:hover {
-    color: var(--ds-stream);
     text-decoration: underline;
   }
 
@@ -663,7 +665,6 @@
   }
 
   .open-trace-btn:hover {
-    color: var(--ds-stream);
     text-decoration: underline;
   }
 

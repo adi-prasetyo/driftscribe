@@ -363,8 +363,9 @@
     text-decoration: none;
     transition: color var(--ds-dur-fast) var(--ds-ease);
   }
+  /* Underline only — brightening to raw --ds-stream would put the text at
+     3.42:1 on paper, under the floor (ds-qbo). */
   .turn-link:hover {
-    color: var(--ds-stream);
     text-decoration: underline;
   }
 </style>

@@ -94,7 +94,9 @@
     text-underline-offset: 0.18em;
   }
 
+  /* :active held --ds-stream, which is 3.42:1 on paper — under the text floor.
+     The press state is carried by the hover ink + underline it inherits. */
   .change-token:active {
-    color: var(--ds-stream);
+    color: var(--ds-stream-ink);
   }
 </style>

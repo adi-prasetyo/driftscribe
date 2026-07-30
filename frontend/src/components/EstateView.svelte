@@ -278,20 +278,27 @@
   .estate-view__back {
     margin: 0;
     padding: 2px 0;
-    /* .rail-more is inked for the legacy surface; the estate card is paper. */
-    color: var(--ds-paper-mut);
+    /* ds-qbo: this is the way back to the desk — navigation, not decoration —
+       so it reads through ink-2 (6.47:1) rather than the lightest grey
+       (3.08:1). It was --ds-paper-mut only because it sits on the paper card
+       and .rail-more's legacy ink would have clashed; that is no longer a
+       choice between two worlds. */
+    color: var(--ds-paper-ink-2);
     font-size: 12px;
   }
   .estate-view__back:hover {
     color: var(--ds-paper-ink);
   }
 
+  /* Loading / degraded status. This is the only thing on the screen when the
+     estate cannot be read, so it carries the entire message — ink-2, not the
+     lightest grey (ds-qbo). */
   .estate-view__status {
     margin: 0;
     padding: 40px;
     font-family: var(--ds-font-mono);
     font-size: 12.5px;
-    color: var(--ds-paper-mut);
+    color: var(--ds-paper-ink-2);
   }
 
   .estate-view__group {

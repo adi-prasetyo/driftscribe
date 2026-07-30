@@ -376,8 +376,9 @@ describe('toMermaid — ghost classDefs gating', () => {
 
   it('pins the ghost classDef colors to the design-token hexes', () => {
     const src = toMermaid(liveGraph(), overlay({ entries: [entry({ verb: 'create', name: 'order-events' })] }), t);
-    expect(src).toContain('classDef ghostCreate fill:#ecf6ef,stroke:#1f8a4c');
-    expect(src).toContain('classDef ghostUpdate fill:#fcf3dc,stroke:#9a6b00');
+    // ds-qbo re-valued the green and amber families; danger was unchanged.
+    expect(src).toContain('classDef ghostCreate fill:#e9f3ef,stroke:#1a6b52');
+    expect(src).toContain('classDef ghostUpdate fill:#f8f0e3,stroke:#9a5b12');
     expect(src).toContain('classDef ghostDestroy fill:#fdeef0,stroke:#c5303f');
   });
 

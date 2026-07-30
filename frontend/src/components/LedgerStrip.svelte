@@ -128,10 +128,14 @@
     border-bottom: 0;
   }
 
+  /* The timestamp is the ledger's whole point — WHEN each decision happened —
+     so it is meaningful text and reads through ink-2 (6.47:1), not the lightest
+     grey (3.08:1) it shared with the eyebrow heading (ds-qbo). At 11.5px mono
+     it needed the contrast more than anything else on the strip. */
   .ledger-strip__time {
     font-family: var(--ds-font-mono);
     font-size: 11.5px;
-    color: var(--ds-paper-mut);
+    color: var(--ds-paper-ink-2);
     font-variant-numeric: tabular-nums;
   }
 
