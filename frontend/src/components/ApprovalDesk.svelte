@@ -20,6 +20,7 @@
   import { deskModel, awaitingCount, type DeskModel, type DeskPending, type DeskStamped } from '../lib/desk';
   import { resourceCards, scopeTotals, type InfraGraph, type PendingApproval } from '../lib/infra_graph';
   import { fmtWhen } from '../lib/format';
+  import { notifyFailed } from '../lib/approval';
   import type { Decision } from '../lib/types';
   import type { AppView } from '../lib/deeplink';
   import InstrumentBand, { type BandStat } from './InstrumentBand.svelte';
@@ -389,6 +390,17 @@
         <h2>{pendingHeadline(model, $t)}</h2>
         {#if model.source === 'iac'}
           <p class="approval-desk__meta">{$t('desk.pending.prMeta', { pr: model.prNumber })}</p>
+        {/if}
+        <!-- ds-hdt. The operator is reading this card because they opened the
+             desk, not because anything told them to. Saying so is the honest
+             move: without it the silence reads as "nothing needed me", which
+             is exactly the impression that let a 503 webhook go unnoticed.
+             Gated on a POSITIVE 'failed' (see notifyFailed) so it never fires
+             on a historical row that simply predates the field. -->
+        {#if pendingDecision && notifyFailed(pendingDecision)}
+          <p class="approval-desk__notice" data-testid="approval-desk-notify-failed">
+            {$t('desk.pending.notifyFailed')}
+          </p>
         {/if}
         <!-- Wrapper gated on the decision, not rendered unconditionally: the
              pending+iac+listing arm has no decision doc, so DriftDiffCard

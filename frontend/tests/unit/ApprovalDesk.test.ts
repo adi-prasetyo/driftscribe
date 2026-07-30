@@ -1149,3 +1149,54 @@ describe('ApprovalDesk — settled graph failure is not "pending" (ds-eh6)', () 
     expect(watch).not.toContain('scan time pending');
   });
 });
+
+describe('ApprovalDesk — undelivered-notification notice (ds-hdt)', () => {
+  it('tells the operator when nothing was sent, so silence is not mistaken for "nothing needed me"', () => {
+    const { getByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: GRAPH,
+        decisions: [rollbackDecision({ notify: { state: 'failed', error_code: 'worker_error', status_code: 503 } })],
+        pendingApprovals: [],
+        onNavigate: vi.fn(),
+      },
+    });
+    expect(getByTestId('approval-desk-notify-failed').textContent).toContain(
+      'No notification could be sent',
+    );
+    // The proposal itself is UNAFFECTED — the notice is a footnote on a card
+    // that still carries its full Approve/Reject path. That is the whole point
+    // of ds-hdt: delivery is advisory, the row is the surface.
+    expect(getByTestId('approval-desk-approve')).toBeTruthy();
+    expect(getByTestId('approval-desk-reject')).toBeTruthy();
+  });
+
+  it.each([
+    ['delivered', { state: 'delivered' as const }],
+    ['pending (not yet known)', { state: 'pending' as const }],
+  ])('stays silent when notify is %s', (_label, notify) => {
+    const { queryByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: GRAPH,
+        decisions: [rollbackDecision({ notify })],
+        pendingApprovals: [],
+        onNavigate: vi.fn(),
+      },
+    });
+    expect(queryByTestId('approval-desk-notify-failed')).toBeNull();
+  });
+
+  it('stays silent on a pre-ds-hdt row that carries no notify field at all', () => {
+    const { getByTestId, queryByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: GRAPH,
+        decisions: [rollbackDecision()],
+        pendingApprovals: [],
+        onNavigate: vi.fn(),
+      },
+    });
+    // The card renders; only the notice is absent. Warning here would fire on
+    // every historical decision in the log.
+    expect(getByTestId('approval-desk-pending')).toBeTruthy();
+    expect(queryByTestId('approval-desk-notify-failed')).toBeNull();
+  });
+});

@@ -109,6 +109,11 @@ export const desk = {
     // Approve/Reject controls live on that HMAC-gated page (agent/main.py's
     // approval_post decision=approve|reject), never in-app. See the
     // iac_reject_nonbinding_semantics note: Reject there persists nothing.
+    // ds-hdt. States the fact (no notification went out) and its
+    // consequence (you are seeing this because you looked), without
+    // alarming: the proposal itself is unaffected and still actionable.
+    'desk.pending.notifyFailed':
+      'No notification could be sent for this proposal, so it has been waiting here unannounced.',
     'desk.pending.approveCta': 'Approve this proposal',
     'desk.pending.rejectCta': 'Reject',
     // The mockup's `.why` line reads "view the reasoning behind this (N
@@ -252,6 +257,8 @@ export const desk = {
     'desk.pending.iac.headlineFallback': 'インフラ変更 PR #{pr} があなたの承認を待っています。',
     'desk.pending.prMeta': 'PR #{pr}',
     'desk.pending.subtitleProposedAt': '提案 {time}',
+    'desk.pending.notifyFailed':
+      'この提案の通知は送信できませんでした。お知らせのないまま、ここでお待ちしていました。',
     'desk.pending.approveCta': 'この提案を承認する',
     'desk.pending.rejectCta': '却下する',
     'desk.pending.viewReasoning': 'この提案に至った推論を見る →',

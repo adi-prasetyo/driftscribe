@@ -35,6 +35,23 @@ from agent.models import ContractStatus, DecisionAction, DecisionProposal, EnvDi
 from agent.pause import PAUSED_DETAIL
 from driftscribe_lib.approvals import Approval
 
+#: A rollback approval pair in the shapes the WORKER actually mints: a UUID4
+#: id (``str(uuid.uuid4())``) and a 43-char urlsafe token
+#: (``secrets.token_urlsafe(32)``). ``_validated_approval`` enforces both, so a
+#: fixture that invents shorter placeholders describes a response the producer
+#: cannot emit — and tests written against one prove nothing about production.
+_FIXTURE_APPROVAL_ID = "3f8a1c22-9d4e-4b7a-8e61-2c5d0f7a93bb"
+# Shape-valid but deliberately LOW-entropy and self-describing. The guard it
+# has to satisfy is _APPROVAL_TOKEN_SHAPE ([A-Za-z0-9_-]{43,64}) — alphabet and
+# length, not randomness — so a readable string exercises it exactly as well as
+# a random one. An earlier version of this fixture used a realistic 43-char
+# base64url token and GitGuardian correctly flagged it as a Generic High
+# Entropy Secret in all three files: making a fixture realistic enough to test
+# the shape guard had made it indistinguishable from a live credential. The
+# lesson from the "impossible fixture" defects was that a fixture must be a
+# shape the producer CAN mint, not that it must look random.
+_FIXTURE_APPROVAL_TOKEN = "driftscribe-fixture-approval-token-not-real"
+
 
 # --------------------------------------------------------------------------- #
 # Helpers
@@ -362,10 +379,18 @@ def test_rollback_propose_proposes_normally(_live_github, monkeypatch):
         if worker == "reader":
             return _reader_envelope({"PAYMENT_MODE": "live"})
         if worker == "rollback":
+            # ds-hdt: shapes the WORKER CAN ACTUALLY MINT. The previous fixture
+            # used "ap-1"/"tok", which workers/rollback/main.py cannot produce
+            # (str(uuid.uuid4()) and secrets.token_urlsafe(32)) — an impossible
+            # response that passed the old truthiness check and would have
+            # skated past _validated_approval's id/token shape guards too.
             return {
-                "approval_id": "ap-1",
-                "approval_token": "tok",
-                "approval_url": "https://x/approvals/ap-1?t=tok",
+                "approval_id": _FIXTURE_APPROVAL_ID,
+                "approval_token": _FIXTURE_APPROVAL_TOKEN,
+                "approval_url": (
+                    f"https://x/approvals/{_FIXTURE_APPROVAL_ID}"
+                    f"?t={_FIXTURE_APPROVAL_TOKEN}"
+                ),
                 "expires_at": "2099-01-01T00:00:00+00:00",
             }
         if worker == "notifier":
@@ -384,7 +409,10 @@ def test_rollback_propose_proposes_normally(_live_github, monkeypatch):
     body = r.json()
     assert body["action"] == "rollback"
     assert "approval" in body
-    assert body["approval"]["approval_id"] == "ap-1"
+    assert body["approval"]["approval_id"] == _FIXTURE_APPROVAL_ID
+    # The approval token rides only inside approval_url; it is never persisted
+    # as a field of its own (see _do_rollback).
+    assert "approval_token" not in body["approval"]
     assert "rollback" in workers
     assert "notifier" in workers
 

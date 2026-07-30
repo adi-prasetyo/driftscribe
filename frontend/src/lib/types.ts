@@ -5,10 +5,29 @@
 import type { TraceEvent } from './timeline';
 
 /** Approval sidecar on a rollback decision (GET /decisions → decision.approval). */
+/** ds-hdt: the advisory outcome of the operator notification for a decision.
+ *  `error_code`/`status_code` are a CLASSIFICATION, never a message — the
+ *  notifier's own error text embeds the downstream webhook's response body,
+ *  which can echo the tokened approval URL back (see
+ *  `agent/main.py::_notify_rollback_approval`). */
+export interface DecisionNotify {
+  state?: 'pending' | 'delivered' | 'failed';
+  error_code?: string;
+  status_code?: number;
+}
+
 export interface DecisionApproval {
   approval_id?: string;
-  /** Server-minted absolute URL (`{COORDINATOR_URL}/approvals/{id}?t=…`). Always
-   *  routed through `safeApprovalHref` before it becomes an anchor href. */
+  /** Server-minted approval link, always routed through `safeApprovalHref`
+   *  before it becomes an anchor href.
+   *
+   *  Shape differs by lane. The autonomous lane canonicalizes to a HOST-LESS
+   *  `/approvals/{id}?t=…` (ds-hdt): the desk is its only surface, and
+   *  `safeApprovalHref` drops an off-origin URL, so a drifted worker
+   *  `COORDINATOR_URL` would otherwise persist an unclickable row. The chat
+   *  lane still relays the worker's absolute URL. Treat this as "a URL to be
+   *  validated", never "an absolute URL" — `safeApprovalHref` resolves both
+   *  against `window.location.origin` and keeps only `pathname + search`. */
   approval_url?: string;
   expires_at?: string | null;
   /** Serve-time join (Task 3.0b) of the LIVE approval doc's status, from
@@ -103,6 +122,15 @@ export interface Decision extends Record<string, unknown> {
   approval?: DecisionApproval | null;
   github?: DecisionGithub | null;
   diffs?: EnvDiff[];
+  // ds-hdt: what became of the operator NOTIFICATION for this row. Advisory —
+  // the row itself is the surface, so a failed delivery does not make the
+  // approval unusable, it only means nobody was paged about it.
+  //
+  // Tri-state on purpose, and ABSENT is a fourth state: every row written
+  // before ds-hdt has no `notify` key at all, which means "never recorded" and
+  // must NOT be read as delivered. "pending" likewise means "not yet known"
+  // (mid-flight, or the outcome patch was lost) — only "delivered" is a claim.
+  notify?: DecisionNotify | null;
   // iac_apply rows: pr_number + head_sha are persisted; pr_title is the as-applied
   // GitHub PR title (write-time snapshot, absent on pre-backfill rows). The rail
   // renders PR # as a linked title, pr_title as the subtitle, head_sha in the meta.

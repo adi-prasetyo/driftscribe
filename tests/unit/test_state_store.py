@@ -379,3 +379,65 @@ def test_firestore_find_decision_for_event_pointer_present_skips_fallback():
     out = store.find_decision_for_event("ev-1")
     assert out == {"action": "applied", "event_key": "ev-1"}
     mock_decisions.where.assert_not_called()
+
+
+# --------------------------------------------------------------------------- #
+# set_decision_notify_outcome (ds-hdt) — the ONE field that legitimately
+# settles after a decision row is written.
+# --------------------------------------------------------------------------- #
+
+
+def test_notify_outcome_patches_only_that_key():
+    s = InMemoryStateStore()
+    s.record_event("ev-1", {})
+    s.record_decision("dec-1", "ev-1", {"action": "rollback", "notify": {"state": "pending"}})
+    s.set_decision_notify_outcome("dec-1", {"state": "delivered"})
+    stored = s.get_decision("dec-1")
+    assert stored["notify"] == {"state": "delivered"}
+    # Everything else survives — this is a patch, not a rewrite. record_decision
+    # would full-replace the doc (and re-stamp created_at), which is exactly why
+    # a narrow method exists instead of calling it twice.
+    assert stored["action"] == "rollback"
+    assert stored["event_key"] == "ev-1"
+    assert "created_at" in stored
+
+
+def test_notify_outcome_copies_so_later_caller_mutation_cannot_reach_the_store():
+    s = InMemoryStateStore()
+    s.record_event("ev-1", {})
+    s.record_decision("dec-1", "ev-1", {"action": "rollback"})
+    outcome = {"state": "failed", "error_code": "worker_error"}
+    s.set_decision_notify_outcome("dec-1", outcome)
+    outcome["error_code"] = "MUTATED"
+    assert s.get_decision("dec-1")["notify"]["error_code"] == "worker_error"
+
+
+def test_notify_outcome_on_missing_decision_raises():
+    """Mirrors the Firestore store's NotFound: this only ever patches a row the
+    same process just wrote, so a missing one is a fault, not an upsert."""
+    s = InMemoryStateStore()
+    try:
+        s.set_decision_notify_outcome("nope", {"state": "delivered"})
+    except KeyError:
+        return
+    raise AssertionError("expected KeyError for a missing decision")
+
+
+def test_firestore_notify_outcome_uses_update_not_set():
+    """``update`` so a missing doc raises NotFound instead of upserting a
+    fragment carrying only a ``notify`` key — such a row would join the
+    /decisions listing with no action, no approval and no timestamp."""
+    mock_db = MagicMock()
+    mock_decisions = MagicMock()
+    mock_db.collection.side_effect = (
+        lambda name: mock_decisions if name == "decisions" else MagicMock()
+    )
+    store = FirestoreStateStore(project="p", client=mock_db)
+
+    store.set_decision_notify_outcome("dec-1", {"state": "delivered"})
+
+    mock_decisions.document.assert_called_with("dec-1")
+    mock_decisions.document.return_value.update.assert_called_once_with(
+        {"notify": {"state": "delivered"}}
+    )
+    mock_decisions.document.return_value.set.assert_not_called()

@@ -81,12 +81,26 @@ def test_scrub_redacts_secret_by_name_value_in_rationale():
     doc = _doc("API_TOKEN changed from sk-OLD-123456 to sk-NEW-789012.",
                [{"name": "API_TOKEN", "expected": "sk-OLD-123456", "live": "sk-NEW-789012",
                  "contract_status": "present_disallow_manual"}])
+    # NOTE: ``doc`` is captured before the call because the helper must never
+    # mutate its input — the raw values below are read back off the original.
+    raw_expected, raw_live = doc["diffs"][0]["expected"], doc["diffs"][0]["live"]
     out = scrub_decision_rationale(doc)
     assert "sk-OLD-123456" not in out["rationale"]
     assert "sk-NEW-789012" not in out["rationale"]
     assert "API_TOKEN" in out["rationale"]   # var name survives
     assert out["rendered_body"] == "BODY"    # rendered_body untouched
-    assert out["diffs"] == doc["diffs"]      # diffs left raw (narrow scope)
+    # diffs[] are scrubbed too (same should_redact rule). This assertion previously read
+    # ``out["diffs"] == doc["diffs"]  # diffs left raw (narrow scope)`` — it
+    # PINNED the leak. Redacting the value in ``rationale`` while publishing it
+    # verbatim one key away was never a policy, and /decisions is served to
+    # anonymous visitors during a public demo window.
+    assert out["diffs"][0]["expected"] == "(redacted)"
+    assert out["diffs"][0]["live"] == "(redacted)"
+    assert out["diffs"][0]["name"] == "API_TOKEN"       # the NAME still survives
+    assert out["diffs"][0]["contract_status"] == "present_disallow_manual"
+    # Never mutates the caller's document.
+    assert doc["diffs"][0]["expected"] == raw_expected
+    assert doc["diffs"][0]["live"] == raw_live
 
 
 def test_scrub_redacts_credentialed_url_value_with_nonsecret_name():

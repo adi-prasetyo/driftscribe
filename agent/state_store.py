@@ -29,6 +29,9 @@ class StateStore(Protocol):
     def record_decision(
         self, decision_id: str, event_key: str, decision: dict[str, Any]
     ) -> None: ...
+    def set_decision_notify_outcome(
+        self, decision_id: str, outcome: dict[str, Any]
+    ) -> None: ...
     def get_decision(self, decision_id: str) -> dict[str, Any] | None: ...
     def evict_cached_decision(self, event_key: str, decision_id: str) -> bool: ...
     def find_decision_by_trace_id(
@@ -382,6 +385,20 @@ class InMemoryStateStore:
         self._decisions[decision_id] = record
         if event_key in self._events:
             self._events[event_key]["decision_id"] = decision_id
+
+    def set_decision_notify_outcome(
+        self, decision_id: str, outcome: dict[str, Any]
+    ) -> None:
+        # Raises KeyError on a missing decision, mirroring the Firestore
+        # store's NotFound: this only ever patches a row this process just
+        # wrote, so "not there" is a real fault worth surfacing, not a
+        # condition to upsert away. Deliberately narrow — it patches ONE
+        # key. A generic patch method would invite arbitrary post-hoc
+        # rewrites of a decision doc that is meant to be an immutable record.
+        record = self._decisions.get(decision_id)
+        if record is None:
+            raise KeyError(decision_id)
+        record["notify"] = dict(outcome)
 
     def get_decision(self, decision_id: str) -> dict[str, Any] | None:
         return self._decisions.get(decision_id)
@@ -858,6 +875,20 @@ class FirestoreStateStore:
             merge=True,
         )
         batch.commit()
+
+    def set_decision_notify_outcome(
+        self, decision_id: str, outcome: dict[str, Any]
+    ) -> None:
+        # ``update`` (not ``set(merge=True)``): this only ever patches a doc
+        # this process just wrote, so a missing doc is a genuine fault and
+        # should raise NotFound rather than upsert a decision-shaped fragment
+        # carrying nothing but a ``notify`` key — a row like that would join
+        # the /decisions listing with no action, no approval and no timestamp.
+        #
+        # Deliberately narrow (one key, not a generic patch): the decision doc
+        # is an audit record, and the only field that legitimately settles
+        # AFTER the row is written is the advisory delivery outcome.
+        self._decisions.document(decision_id).update({"notify": outcome})
 
     def get_decision(self, decision_id: str) -> dict[str, Any] | None:
         snap = self._decisions.document(decision_id).get()

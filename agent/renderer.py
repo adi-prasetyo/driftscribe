@@ -9,6 +9,13 @@ from agent.secret_guard import redact_text, should_redact, value_looks_credentia
 _REPO_SHAPE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
 
 _REDACTED = "`(value redacted: secret-like)`"
+#: JSON-field counterpart to ``_REDACTED``. That one is a Markdown TABLE CELL
+#: (backticked, so it renders as code inside the evidence table); this one goes
+#: into a structured ``diffs[]`` value that consumers read as data, where
+#: backticks would be noise. Matches the marker
+#: :func:`_scrub_secret_values_from_rationale` already substitutes, so a value
+#: redacted in the rationale and in its diff entry reads identically.
+_REDACTED_PLAIN = "(redacted)"
 
 
 def _escape_markdown_cell(s: str) -> str:
@@ -148,12 +155,13 @@ def scrub_decision_rationale(decision: object) -> object:
     since 2026-07-29 and no longer serves a decision body, so it's off this
     list.)
 
-    The doc is otherwise returned verbatim (the decision is unredacted by
-    design; ``rendered_body`` is already scrubbed at persist, and ``diffs[]``
-    are left raw). Never mutates the input: returns it unchanged BY IDENTITY
-    when there is nothing to scrub, else a shallow copy with the new
-    ``rationale``. Accepts ``object`` and returns non-dict inputs as-is; never
-    raises.
+    ALSO redacts secret-like values inside ``diffs[]`` — see
+    :func:`_scrub_diff_secret_values`. The doc is otherwise returned verbatim
+    (the decision is unredacted by design; ``rendered_body`` is already
+    scrubbed at persist). Never mutates the input: returns it unchanged BY
+    IDENTITY when there is nothing to scrub, else a shallow copy carrying the
+    new ``rationale`` and/or ``diffs``. Accepts ``object`` and returns non-dict
+    inputs as-is; never raises.
 
     Intentionally idempotent: an already-redacted rationale stays unchanged
     (the raw diff values are gone, so :func:`_scrub_secret_values_from_rationale`
@@ -161,15 +169,99 @@ def scrub_decision_rationale(decision: object) -> object:
     """
     if not isinstance(decision, dict):
         return decision
+    out = decision
     rationale = decision.get("rationale")
-    if not isinstance(rationale, str) or not rationale:
-        return decision
-    scrubbed = _scrub_secret_values_from_rationale(
-        rationale, _coerce_env_diffs(decision.get("diffs"))
-    )
-    if scrubbed == rationale:
-        return decision
-    return {**decision, "rationale": scrubbed}
+    if isinstance(rationale, str) and rationale:
+        scrubbed = _scrub_secret_values_from_rationale(
+            rationale, _coerce_env_diffs(decision.get("diffs"))
+        )
+        if scrubbed != rationale:
+            out = {**out, "rationale": scrubbed}
+    diffs = _scrub_diff_secret_values(decision.get("diffs"))
+    if diffs is not None:
+        out = {**out, "diffs": diffs}
+    return out
+
+
+#: Value cells inside a persisted ``diffs[]`` entry. ``name`` is deliberately
+#: absent — the VARIABLE NAME is not the secret and the operator needs it to
+#: know what drifted; it is also the input to ``should_redact``.
+_DIFF_VALUE_KEYS: tuple[str, ...] = (
+    "expected",
+    "live",
+    "debug_config_value",
+    "recent_pr_match",
+)
+
+
+def _scrub_diff_secret_values(raw: object) -> list[object] | None:
+    """Redact secret-like values inside a persisted ``diffs[]``, or ``None``
+    when nothing needed changing (so the caller can keep identity).
+
+    The same value was being treated three different ways in ONE
+    document: redacted in ``rendered_body`` (``_format_value_cell`` applies
+    ``should_redact``), redacted in ``rationale``
+    (:func:`_scrub_secret_values_from_rationale`), and published RAW in
+    ``diffs[]``. That is not a policy, it is an oversight — the two scrubs
+    beside it already decided this value class is not for publication, and
+    ``GET /decisions`` is served to anonymous visitors during a public demo
+    window (``infra/cloudflare/worker/src/proxy.js``).
+
+    Same rule as its two neighbours (``should_redact``: secret-like NAME or
+    credentialed-looking VALUE), so a non-secret drift value — ``PAYMENT_MODE``
+    moving to ``live``, the whole point of the demo — still renders in full.
+    This is not a new redaction policy; it is the existing one, applied
+    consistently.
+
+    NOT ds-x1w, and does not close it. That bead asks for a strictly stronger
+    boundary — no OBSERVED env value on the approval doc or the rendered
+    approval page by any lane — on the grounds that ``is_secret_name`` cannot
+    see a credential hiding under an innocuous name. This function inherits
+    exactly that weakness, and it guards a different surface (the ``/decisions``
+    family, not ``agent/templates/approval.html``). Coherence fix here;
+    ds-x1w's value-free-``reason`` decision is still open.
+
+    Serve-time, like the rationale scrub, so it also covers rows already in
+    Firestore with no backfill.
+    """
+    if not isinstance(raw, list):
+        return None
+    out: list[object] = []
+    changed = False
+    for entry in raw:
+        if not isinstance(entry, dict):
+            out.append(entry)
+            continue
+        name = entry.get("name")
+        # A non-str name cannot be classified by ``is_secret_name``; treat it as
+        # unknown and let ``should_redact`` judge the VALUE alone rather than
+        # skipping the entry (fail toward redaction, not away from it).
+        name_s = name if isinstance(name, str) else ""
+        patched: dict[str, object] | None = None
+        for key in _DIFF_VALUE_KEYS:
+            value = entry.get(key)
+            if not isinstance(value, str):
+                continue
+            if not should_redact(name_s, value):
+                continue
+            # Already redacted ⇒ NOT a change. ``should_redact`` still returns
+            # True for the marker itself when the var is secret-NAMED, so
+            # without this the function would rewrite ``(redacted)`` to
+            # ``(redacted)``, report "changed", and hand back a fresh object
+            # every call — breaking the idempotency/identity contract
+            # :func:`scrub_decision_rationale` promises (and which its callers
+            # rely on to avoid copying every row on every serve).
+            if value == _REDACTED_PLAIN:
+                continue
+            if patched is None:
+                patched = dict(entry)
+            patched[key] = _REDACTED_PLAIN
+        if patched is None:
+            out.append(entry)
+        else:
+            out.append(patched)
+            changed = True
+    return out if changed else None
 
 
 def scrub_rationale_text(rationale: str, env_diffs: list[EnvDiff]) -> str:
@@ -229,7 +321,12 @@ def scrub_decision_approval(decision: object) -> object:
     """Strip the tokenized rollback approval link from a decision doc.
 
     Rollback decisions persist ``approval.approval_url`` carrying the live
-    single-use ``?t=`` token, and ``rendered_body`` embeds the same URL.
+    single-use ``?t=`` token, and ``rendered_body`` embeds a URL carrying the
+    SAME token. The two are no longer the same string: since ds-hdt the
+    autonomous lane's ``approval_url`` is host-less (``/approvals/{id}?t=…``)
+    while ``rendered_body`` keeps the worker's absolute form, because that body
+    is what goes to the webhook. Both must be scrubbed — the token is the
+    credential, and it is present in each.
 
     SURVIVING SCOPE (after the 2026-07-09 operator-seat decision, docs/plans/
     2026-07-09-operator-seat-demo-window.md): the anonymous demo-window scrubs of

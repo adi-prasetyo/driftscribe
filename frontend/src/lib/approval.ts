@@ -1,5 +1,5 @@
 import type { TranslateFn } from './i18n';
-import type { DecisionApproval } from './types';
+import type { DecisionApproval, DecisionNotify } from './types';
 
 // SECURITY-CRITICAL. Same-origin guard for HITL approval links, ported
 // verbatim-in-spirit from the legacy `_safeApprovalHref` renderer guard in
@@ -139,6 +139,29 @@ export function isExpired(
  * for this exact URL/origin), and `locale` (only ever added by the second
  * call) never flips null-vs-non-null, only whether `?lang=ja` is appended.
  */
+/**
+ * ds-hdt: TRUE only when the server positively recorded that the operator
+ * notification for this row FAILED.
+ *
+ * Deliberately not `state !== 'delivered'`. Four states have to stay distinct,
+ * and three of them are not "we failed to reach you":
+ *
+ *   - `'failed'`    → say so. Nobody was paged; the operator is looking at
+ *                     this card because they happened to open the desk.
+ *   - `'delivered'` → a notification went out.
+ *   - `'pending'`   → in flight, or the outcome patch was lost. NOT KNOWN.
+ *   - absent        → every row written before ds-hdt. Never recorded.
+ *
+ * Warning on an unknown would cry wolf on every historical row; treating
+ * unknown as delivered would quietly promise a page that never happened. The
+ * same unknown-≠-empty rule the rest of the desk already follows.
+ */
+export function notifyFailed(
+  decision: { notify?: DecisionNotify | null } | null | undefined,
+): boolean {
+  return decision?.notify?.state === 'failed';
+}
+
 export function isRollbackAwaitingOperator(
   decision: { approval?: DecisionApproval | null } | null | undefined,
   opts: { now?: number; origin?: string } = {},
