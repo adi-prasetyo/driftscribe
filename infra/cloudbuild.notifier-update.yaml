@@ -1,0 +1,145 @@
+# Canonical TARGETED deploy for the notifier worker on driftscribe-hack-2026
+# (single-user portfolio). Operator runs by hand; there is NO CI trigger.
+#
+# WHY THIS FILE EXISTS:
+#   Until now the ONLY config that built driftscribe-notifier was the
+#   full-stack infra/cloudbuild.yaml, which is DO-NOT-RUN on prod: it rebuilds
+#   all ~9 images including payment-demo (pinned into OpenTofu state) and
+#   redeploys the coordinator with DRY_RUN=true. Every other worker already had
+#   a targeted *-update.yaml; the notifier was the last one without a safe
+#   path, so shipping a notifier code change had no way to actually run. This
+#   file is that path. Same shape and rationale as
+#   infra/cloudbuild.rollback-update.yaml — read that file's header for the
+#   full reasoning behind the image-only scope boundary.
+#
+# SCOPE BOUNDARY — this file changes the IMAGE AND NOTHING ELSE:
+#   `gcloud run deploy --image=...` with no other service flags preserves env
+#   vars, mounted secrets, runtime SA, ingress, scaling and concurrency.
+#
+#   ⚠ Never "fix" this by adding --set-env-vars. That flag REPLACES the whole
+#   env block, which would drop the NOTIFY_WEBHOOK_URL secret binding and the
+#   worker would then fail closed at boot (KeyError at import). If a future
+#   change ADDS a required env var, add an explicit incremental
+#   --update-env-vars for that var only.
+#
+# THE INVARIANT THIS FILE GUARDS (and why it is worth a preflight):
+#   NOTIFY_WEBHOOK_URL must arrive as a secretKeyRef, never as a literal
+#   `value`. Knowing the URL IS the notifier's entire authorization model — a
+#   literal would put a live credential into the service config, where it is
+#   readable by anything holding run.services.get and echoed into deploy logs
+#   and `gcloud run services describe` output. This mattered little while the
+#   configured URL was a harmless httpbin.org path; from 2026-07-30 the secret
+#   holds a real Discord webhook URL, so the distinction is now load-bearing.
+#   The check is cheap and it fails the build BEFORE any image is pushed.
+#
+# WHY THERE IS NO --no-traffic / tag / promote DANCE (unlike the coordinator):
+#   driftscribe-notifier serves `spec.traffic: [{latestRevision: true,
+#   percent: 100}]`, so a deploy serves immediately. The preflight CHECKS that
+#   rather than assuming it: if the service is ever pinned to a named revision,
+#   a plain deploy would create a revision serving 0% while the build reports
+#   success — shipping nothing, loudly reported as a win.
+#
+# USAGE (operator runs by hand, no CI integration):
+#
+#   gcloud builds submit \
+#     --config=infra/cloudbuild.notifier-update.yaml \
+#     --substitutions=_TAG=$(git rev-parse --short HEAD) \
+#     --project=driftscribe-hack-2026
+#
+#   Run it from a PRISTINE worktree checked out at the SHA you intend to ship:
+#   `gcloud builds submit` uploads the working directory, so a shared-worktree
+#   build would bundle another agent's WIP into the image.
+#
+# ORDERING WHEN CHANGING BOTH THE CODE AND THE SECRET:
+#   NOTIFY_WEBHOOK_URL is a secretKeyRef on `latest`, and Cloud Run resolves an
+#   env-var secret at INSTANCE START, not per request. So a new secret version
+#   reaches the running revision only when it next cold-starts — at an
+#   arbitrary moment decided by autoscaling. Deploy the CODE first and add the
+#   secret version second, or a scale-up can pair the OLD code with the NEW
+#   destination. Then roll one more revision so the pickup is deterministic
+#   rather than whenever an instance happens to recycle.
+
+substitutions:
+  _TAG: 'manual'
+  # Region kept as a substitution (not hardcoded) so a future region migration
+  # is one substitution change rather than a search/replace.
+  _REGION: asia-northeast1
+  # The secret that must back NOTIFY_WEBHOOK_URL. A substitution rather than a
+  # buried literal so a legitimate secret rename is one visible flag.
+  _EXPECT_SECRET: 'driftscribe-webhook-url'
+  # Least-privilege runtime identity: notifier-agent-sa has NO project-level
+  # role grants, only secretAccessor on the one secret above.
+  _EXPECT_SERVICE_ACCOUNT: 'notifier-agent-sa@driftscribe-hack-2026.iam.gserviceaccount.com'
+
+# Default-compute-SA retirement (Phase 4): run as the dedicated
+# cloudbuild-deploy-sa@ rather than the project's default compute SA, which has
+# had roles/editor stripped. A user-specified serviceAccount REQUIRES an
+# explicit logging option, so options.logging is set in the same block.
+serviceAccount: 'projects/driftscribe-hack-2026/serviceAccounts/cloudbuild-deploy-sa@driftscribe-hack-2026.iam.gserviceaccount.com'
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+steps:
+  # 1. PREFLIGHT — read-only, and FIRST so a misconfigured target fails before
+  #    any image is built and before any cloud state changes.
+  #
+  #    `gcloud run deploy` is create-OR-update: against a deleted service, or
+  #    with a wrong _REGION, it would CREATE a service from defaults — no env,
+  #    no secret, default SA. "Image-only" is a property of UPDATING AN
+  #    EXISTING service, so existence is a precondition, not an assumption.
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        gcloud run services describe driftscribe-notifier \
+          --region=${_REGION} --project=$PROJECT_ID --format=json \
+          > /workspace/notifier-before.json
+        python3 infra/scripts/assert_notifier_service.py \
+          /workspace/notifier-before.json preflight \
+          "${_EXPECT_SECRET}" "${_EXPECT_SERVICE_ACCOUNT}" "${_TAG}"
+
+  # 2. Build + push ONLY the notifier image. Build context is the repo root
+  #    (the worker depends on driftscribe_lib/ for auth/logging); the
+  #    Dockerfile lives under workers/notifier/. Same context/Dockerfile split
+  #    as the notifier step in infra/cloudbuild.yaml.
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-notifier:${_TAG}
+      - -f
+      - workers/notifier/Dockerfile
+      - .
+  - name: gcr.io/cloud-builders/docker
+    args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-notifier:${_TAG}']
+
+  # 3. Image-only deploy. Every other setting is inherited from the running
+  #    service ON PURPOSE — see the SCOPE BOUNDARY note above.
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - driftscribe-notifier
+      - --image=asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-notifier:${_TAG}
+      - --region=${_REGION}
+
+  # 4. POSTCONDITION — prove the image swap preserved the secret binding and
+  #    the runtime identity, and that the new image is actually SERVING.
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        gcloud run services describe driftscribe-notifier \
+          --region=${_REGION} --project=$PROJECT_ID --format=json \
+          > /workspace/notifier-after.json
+        python3 infra/scripts/assert_notifier_service.py \
+          /workspace/notifier-after.json postcondition \
+          "${_EXPECT_SECRET}" "${_EXPECT_SERVICE_ACCOUNT}" "${_TAG}"
+
+images:
+  - asia-northeast1-docker.pkg.dev/$PROJECT_ID/driftscribe/driftscribe-notifier:${_TAG}
