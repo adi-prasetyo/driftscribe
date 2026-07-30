@@ -1580,6 +1580,26 @@ describe('awaitingCount — listing lane honors resolvedIacPrNumbers (ds-0rm)', 
     ).toBe(1);
   });
 
+  it('still counts a listing PR when the applied row has NO merge_state', () => {
+    // The unknown-merge twin of the test above: absent merge state is not proof
+    // the PR closed, so the listing entry must survive here too.
+    const appliedUnknownMerge = iacDecision({
+      decision_id: 'iac-applied-unknown-merge',
+      pr_number: 7,
+      apply_status: 'applied',
+      merge_state: undefined,
+      applied_at: '2026-07-28T11:59:00Z',
+    });
+    expect(
+      awaitingCount({
+        decisions: [appliedUnknownMerge],
+        pendingApprovals: [pendingIac({ pr_number: 7 })],
+        now: NOW,
+        origin: ORIGIN,
+      }),
+    ).toBe(1);
+  });
+
   it('counts an open listing PR exactly once even when both lanes see it', () => {
     // Dedup across lanes was already correct; this pins that the new filter
     // did not turn the union into a subtraction.

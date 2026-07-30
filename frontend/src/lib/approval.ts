@@ -406,10 +406,12 @@ function parsedTime(iso: string | undefined): number | null {
  * On `created_at`: each `_record_iac_decision` call persists a NEW doc with a
  * fresh `uuid4()` decision_id, and state_store stamps `created_at` at record
  * time — so it is per-row birth time, not a field a later reconcile mutates. (A
- * merge-only reconcile APPENDS an `applied` row, and an `applied` row already
- * retires its PR's waiting rows through `resolvedIacPrNumbers`.) Within one
- * event_key the waiting row is always written before the apply runs, so the
- * strict comparison is belt-and-braces rather than the load-bearing part.
+ * merge-only reconcile APPENDS a row rather than restamping one, and that new row
+ * carries the same event_key, so it retires this generation's waiting rows
+ * through THIS function — not through the PR-wide set, which no longer touches
+ * decision rows at all.) Within one event_key the waiting row is always written
+ * before the apply runs, so the strict comparison is belt-and-braces rather than
+ * the load-bearing part.
  */
 export function supersededWaitingIds(
   decisions: ReadonlyArray<IacGenerationRow | null | undefined> | null | undefined,
@@ -482,10 +484,13 @@ export function supersededWaitingIds(
  * `supersededWaitingIds` counts `applied` as terminal too.
  *
  * The PR-wide set keeps its own, narrower job: suppressing a stale LISTING entry
- * for a PR whose apply already succeeded (ds-0rm's 60s cache window). That lane
- * has no generation identity to work with — `PendingApproval` carries only
- * pr_number/title/url/asset_type/resource_name — so it stays PR-wide by
- * necessity. See `desk.ts`'s two listing filters and `estate.ts`'s
+ * for a PR this client can PROVE is closed — `applied` AND `merge_state ===
+ * 'merged'` (ds-0rm's 60s cache window). A successful apply alone is NOT
+ * sufficient there: its merge can fail, leaving the PR open. That lane has no
+ * generation identity to work with — `PendingApproval` carries only
+ * pr_number/title/url/asset_type/resource_name — so it stays PR-wide, made safe
+ * by the merged requirement rather than by precision. See `desk.ts`'s two listing
+ * filters and `estate.ts`'s
  * `reconcileApprovals`.
  *
  * `supersededIds` is REQUIRED, not optional. Every caller must compute it,

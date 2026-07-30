@@ -194,7 +194,7 @@ describe('ledgerRows', () => {
       expect(rows[0].state).toBe('noted');
     });
 
-    it('pr_number resolved via resolvedIacPrNumbers (a later applied row for the same PR) → noted, not open', () => {
+    it('this generation’s own applied row (same event_key) → noted, not open', () => {
       const waiting = decision({
         decision_id: 's2',
         action: 'iac_apply',

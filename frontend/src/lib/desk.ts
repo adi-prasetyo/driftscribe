@@ -339,8 +339,16 @@ function replayableTraceId(decision: Decision | null | undefined): string | null
  * FIRST and originally skipped the resolved-PR check, a
  * stale cache entry outranked the seal that should have been showing — the
  * desk asked for a decision that had already been made. It now honors the
- * resolved-PR filter, so the two rules can never disagree about whether
- * a given PR is still open.
+ * resolved-PR filter, so neither rule can present a PR this client can PROVE is
+ * closed (applied AND merged).
+ *
+ * The two rules DO legitimately disagree below that bar, and must (ds-dzd). This
+ * one asks a PR-wide question, because a listing entry carries no generation
+ * identity to ask a finer one. Rule 2b asks a per-GENERATION question, because a
+ * decision row does. A PR whose generation A applied-but-failed-to-merge while
+ * generation B awaits the operator is genuinely open on both counts; a PR whose
+ * only waiting row was overtaken by its own terminal outcome is actionable on
+ * neither. Forcing them to share one answer is what hid live work.
  */
 function selectPendingIac(
   pendingApprovals: ReadonlyArray<PendingApproval | null | undefined>,
@@ -608,10 +616,11 @@ export function deskModel(input: DeskModelInput): DeskModel {
   const rollback = selectPendingRollback(decisions, now, input.origin, input.locale);
   if (rollback) return rollback;
 
-  // Computed ONCE and threaded into both iac rules. Rule 2a used to skip this
-  // filter entirely (ds-0rm); sharing the set is what makes the two rules
-  // structurally unable to disagree about which PRs are still open, rather
-  // than merely happening to agree.
+  // TWO sets for TWO different questions, each computed once (ds-dzd). resolvedPrs
+  // is PR-wide and goes ONLY to the listing rule 2a, which has no generation
+  // identity available; rule 2a used to skip it entirely (ds-0rm). supersededIds
+  // is per GENERATION and goes ONLY to the decisions rule 2b. Making them share
+  // one answer is what deleted a live generation from the desk.
   const resolvedPrs = resolvedIacPrNumbers(decisions);
   const supersededIds = supersededWaitingIds(decisions);
 
