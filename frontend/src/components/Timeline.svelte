@@ -172,6 +172,7 @@
     count={groups.coordinator.length}
     open={true}
     empty={groups.coordinator.length === 0}
+    emptyText={$t('timeline.empty.reasoningHint')}
   >
     {#if omittedTokens > 0}
       <p class="thought-omitted" data-testid="thought-omitted-note">
@@ -192,10 +193,14 @@
     {/each}
   </Group>
 
+  <!-- Tools and MCP are METADATA about the run; the reasoning above is the run
+       itself. `quiet` is what makes that hierarchy visible instead of three
+       identical boxes (ds-7ag.5). -->
   <Group
     key="tools"
     title={titleFor.tools}
     icon="wrench"
+    variant="quiet"
     count={toolCallCount(groups.tools)}
     empty={groups.tools.length === 0}
   >
@@ -220,6 +225,7 @@
     key="mcp"
     title={titleFor.mcp}
     icon="cable"
+    variant="quiet"
     count={groups.mcp.length}
     empty={groups.mcp.length === 0}
   >

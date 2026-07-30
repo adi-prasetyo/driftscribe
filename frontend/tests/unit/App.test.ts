@@ -394,6 +394,286 @@ describe('App — open-trace surfaces the PR body ("what this change did")', () 
   });
 });
 
+// ds-7ag.1 — view navigation writes REAL history entries and Back restores the
+// view. Every view write used to be a replaceState, so the browser Back button
+// left the app entirely: "clicked a desk numeral, landed on the estate view,
+// couldn't find my way back" (the 見づらい half of the judge feedback).
+//
+// jsdom cannot traverse history, so these assert on the WRITE (pushState vs
+// replaceState spies) and simulate the restore (set the url, dispatch
+// PopStateEvent). Real Back/Forward traversal is proven in the Playwright smoke
+// suite (tests/smoke/history.smoke.ts). Deliberately NO assertions on
+// `history.length`: jsdom can't reset it between cases, and a Back leaves
+// forward entries that a later push replaces without growing it.
+describe('App — history-aware view navigation (ds-7ag.1)', () => {
+  const CONV_ID = 'conv-hist-1';
+  const GRAPH = {
+    generated_at: null,
+    project: 'demo-proj',
+    caveat: '',
+    degraded: false,
+    degraded_reason: null,
+    totals: { resources: 1, managed: 0, drift: 1 },
+    groups: [],
+    edges: [],
+  };
+
+  /** Spy on both history writers, keeping the real behaviour (the url must move). */
+  function historySpies() {
+    return {
+      push: vi.spyOn(history, 'pushState'),
+      replace: vi.spyOn(history, 'replaceState'),
+    };
+  }
+
+  /** Simulate the browser restoring `search` via Back/Forward. */
+  function popTo(search: string): void {
+    history.replaceState(null, '', search);
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  }
+
+  /**
+   * A thread whose GET blocks on the returned gate — the shape needed to prove
+   * the teardown CANCELS in-flight work rather than merely clearing fields.
+   * `turns` carries no trace_id, so nothing chases an inline timeline.
+   */
+  function stubGatedConversation(): { release: () => void } {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const detail = {
+      conversation_id: CONV_ID,
+      workload: 'explore',
+      title: 'a thread',
+      turns: [{ seq: 0, role: 'user', text: 'late thread turn', workload: 'explore' }],
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/conversations/')) {
+          await gate;
+          return okJson(detail);
+        }
+        if (url.includes('/conversations')) return okJson({ conversations: [] });
+        if (url.includes('/decisions')) return okJson({ decisions: [] });
+        if (url.includes('/infra/graph')) return okJson(GRAPH);
+        return okJson({});
+      }),
+    );
+    return { release };
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('a header nav click to a different view pushes one history entry', async () => {
+    history.replaceState(null, '', '/?view=desk');
+    const { getByTestId } = render(App);
+    const spies = historySpies();
+
+    await fireEvent.click(getByTestId('nav-chat'));
+
+    expect(spies.push).toHaveBeenCalledTimes(1);
+    expect(String(spies.push.mock.calls[0][2])).toContain('view=chat');
+  });
+
+  // Clicking デスク while already on the desk canonicalizes `?view=desk` to `/`
+  // — the url changes but the VIEW does not, so url inequality alone can't be
+  // the push test or every idle click would stack a dead entry.
+  it('clicking the nav button for the view already on screen never pushes', async () => {
+    history.replaceState(null, '', '/?view=desk');
+    const { getByTestId } = render(App);
+    const spies = historySpies();
+
+    await fireEvent.click(getByTestId('nav-desk'));
+
+    expect(spies.push).not.toHaveBeenCalled();
+    expect(new URL(window.location.href).searchParams.get('view')).toBeNull();
+  });
+
+  // A shared ?conversation= link boots straight into chat, and openConversation
+  // calls navigate('chat') on the way. That must NOT stack a duplicate entry, or
+  // the visitor's first Back press looks dead (it pops to the same view).
+  it('a boot deep-link restores its view without pushing an entry', async () => {
+    window.sessionStorage.setItem('driftscribe_token', 'tok');
+    stubGatedConversation().release();
+    history.replaceState(null, '', `/?conversation=${CONV_ID}`);
+    const spies = historySpies();
+
+    const { findByTestId } = render(App);
+    await findByTestId('conversation-thread');
+
+    expect(spies.push).not.toHaveBeenCalled();
+  });
+
+  it('popstate restores the view named by the restored url', async () => {
+    const { findByTestId } = render(App); // suite default: ?view=chat
+    expect(document.getElementById('chat-form')).toBeTruthy();
+
+    popTo('/?view=desk');
+
+    expect(await findByTestId('instrument-band')).toBeTruthy();
+    expect(document.getElementById('chat-form')).toBeNull();
+  });
+
+  // Leaving chat has to cancel the async work too, not just clear fields: a
+  // GET /conversations/{id} that lands after the departure passes its own
+  // runSeq guard and repopulates the thread behind the operator's back.
+  it('Back off chat cancels an in-flight thread open — no late repopulate', async () => {
+    window.sessionStorage.setItem('driftscribe_token', 'tok');
+    const { release } = stubGatedConversation();
+    history.replaceState(null, '', `/?conversation=${CONV_ID}`);
+    const { findByTestId, queryByTestId } = render(App);
+
+    popTo('/?view=desk'); // Back, while the GET is still in flight
+    await findByTestId('instrument-band');
+
+    release();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    popTo('/?view=chat'); // Forward into chat: the thread must not be there
+    await waitFor(() => expect(document.getElementById('chat-form')).toBeTruthy());
+    expect(queryByTestId('conversation-thread')).toBeNull();
+  });
+
+  // Cancelling an in-flight run is only half the job: the surface it had already
+  // built has to go with it. Leaving `busy` cleared but the timeline and status
+  // in place left a partial run on screen whose status said `streaming` forever
+  // — the guard that would have completed it is the one that just bailed.
+  it('leaving chat mid-stream leaves no half-cancelled run behind', async () => {
+    window.sessionStorage.setItem('driftscribe_token', 'tok');
+    // A /chat response that never resolves: the run is in flight for the whole test.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes('/chat') && init?.method === 'POST') return new Promise<Response>(() => {});
+        if (url.includes('/conversations')) return okJson({ conversations: [] });
+        if (url.includes('/decisions')) return okJson({ decisions: [] });
+        if (url.includes('/infra/graph')) return okJson(GRAPH);
+        return okJson({});
+      }),
+    );
+    history.replaceState(null, '', '/?view=chat');
+    const { getByTestId, queryByTestId, findByTestId } = render(App);
+
+    const input = document.querySelector('#prompt-input') as HTMLTextAreaElement;
+    await waitFor(() => expect(input.disabled).toBe(false));
+    await fireEvent.input(input, { target: { value: 'ping' } });
+    await fireEvent.submit(document.getElementById('chat-form')!);
+    // The live reply streams into the thread's own crew bubble, so the
+    // in-flight signal is the typing bubble, not the standalone shimmer.
+    await findByTestId('thread-typing');
+
+    await fireEvent.click(getByTestId('nav-desk'));
+    await fireEvent.click(getByTestId('nav-chat'));
+
+    await waitFor(() => expect(document.getElementById('chat-form')).toBeTruthy());
+    expect(queryByTestId('thread-typing')).toBeNull();
+    expect(queryByTestId('reply-pending')).toBeNull();
+    expect(queryByTestId('conversation-thread')).toBeNull();
+    // And the composer is usable again rather than stuck disabled behind `busy`.
+    const back = document.querySelector('#prompt-input') as HTMLTextAreaElement;
+    expect(back.disabled).toBe(false);
+  });
+
+  // The restore is view-only, so a restored entry can still name content this
+  // session deliberately tore down. The url must stop claiming it — and since
+  // the chat-intent param is what forced the chat view, the same rewrite has to
+  // say `view=chat` explicitly or a reload would land on the desk.
+  it('a restored entry stops claiming content that is no longer open', async () => {
+    history.replaceState(null, '', '/?view=desk');
+    const { findByTestId } = render(App);
+    await findByTestId('instrument-band');
+    const spies = historySpies();
+
+    popTo(`/?conversation=${CONV_ID}`);
+
+    expect(spies.replace).toHaveBeenCalledTimes(2); // popTo's own write, then the canonicalization
+    const written = new URL(String(spies.replace.mock.calls[1][2]), window.location.origin);
+    expect(written.searchParams.get('conversation')).toBeNull();
+    expect(written.searchParams.get('view')).toBe('chat');
+  });
+
+  // A live entry is not stale: the param names exactly what is on screen, so
+  // the canonicalization must leave it alone.
+  it('a restored entry naming the OPEN thread is left untouched', async () => {
+    window.sessionStorage.setItem('driftscribe_token', 'tok');
+    stubGatedConversation().release();
+    history.replaceState(null, '', `/?conversation=${CONV_ID}`);
+    const { findByTestId } = render(App);
+    await findByTestId('conversation-thread');
+    const spies = historySpies();
+
+    window.dispatchEvent(new PopStateEvent('popstate'));
+
+    expect(spies.replace).not.toHaveBeenCalled();
+    expect(new URL(window.location.href).searchParams.get('conversation')).toBe(CONV_ID);
+  });
+
+  // Back while the tour is borrowing a view: the overlay closes, and its
+  // view-restore must NOT fire — that would replace the very entry the operator
+  // just returned to.
+  it('Back during the tour closes it and lands on the restored view', async () => {
+    const { getByTestId, findByTestId, queryByTestId } = render(App);
+    await fireEvent.click(getByTestId('tour-open'));
+    await fireEvent.click(getByTestId('tour-next')); // step 2 navigates to estate
+    expect(getByTestId('estate-view')).toBeTruthy();
+
+    popTo('/?view=desk');
+
+    expect(await findByTestId('instrument-band')).toBeTruthy();
+    expect(queryByTestId('tour-card')).toBeNull();
+    expect(queryByTestId('estate-view')).toBeNull();
+  });
+
+  // Codex review of this branch: the tour borrows a view while PRESERVING the
+  // chat surface, so a Back press mid-tour arrives with `view === 'estate'` and
+  // an open thread still live behind it. Gating the teardown on
+  // `view === 'chat'` skipped it there, leaving a hidden thread whose later
+  // settle would write ?conversation= onto a DESK url — the exact state/url
+  // disagreement this handler exists to prevent. Needs a REAL open thread; the
+  // sibling tour case above has none, which is why it missed this.
+  it('Back out of a tour-borrowed view still tears down the chat surface behind it', async () => {
+    window.sessionStorage.setItem('driftscribe_token', 'tok');
+    stubGatedConversation().release();
+    history.replaceState(null, '', `/?conversation=${CONV_ID}`);
+    const { getByTestId, queryByTestId, findByTestId } = render(App);
+    await findByTestId('conversation-thread');
+
+    await fireEvent.click(getByTestId('tour-open'));
+    await fireEvent.click(getByTestId('tour-next')); // borrows the estate view
+    expect(getByTestId('estate-view')).toBeTruthy();
+
+    popTo('/?view=desk'); // Back — arrives while `view` is 'estate', not 'chat'
+    await findByTestId('instrument-band');
+
+    // The thread is gone, and the desk url does not claim it.
+    expect(new URL(window.location.href).searchParams.get('conversation')).toBeNull();
+    await fireEvent.click(getByTestId('nav-chat'));
+    await waitFor(() => expect(document.getElementById('chat-form')).toBeTruthy());
+    expect(queryByTestId('conversation-thread')).toBeNull();
+  });
+
+  // The tour borrows views for two of its steps; it must not leave a history
+  // entry per step for the operator to dig back out of.
+  it('the tour never pushes entries while borrowing views', async () => {
+    const { getByTestId } = render(App);
+    await fireEvent.click(getByTestId('tour-open'));
+    const spies = historySpies();
+
+    await fireEvent.click(getByTestId('tour-next')); // → estate
+    await fireEvent.click(getByTestId('tour-next')); // → controls
+    await fireEvent.click(getByTestId('tour-close')); // restores the start view
+
+    expect(spies.push).not.toHaveBeenCalled();
+  });
+});
+
 describe('App — view routing (Task 2.2)', () => {
   // 32-hex trace id — the shape reasoningTraceFromSearch/HEX32_RE require.
   const TID = 'a'.repeat(32);

@@ -376,14 +376,26 @@ code.ds-code {
   background: var(--ds-ok-ink);
 }
 
+/* Outline-danger, not a filled primary (ds-7ag.5). Destructive is not the same
+   as prominent: Approve is the primary action on both approval pages, and a
+   solid red Reject beside a solid Approve made the operator choose between two
+   equally loud buttons.
+   NOT a ghost, though — the semantics differ per page and one of them is
+   binding. The IaC Reject is a non-binding local decline (agent/main.py), but
+   the ROLLBACK Reject calls the worker's deny operation, and under pause or
+   autonomy lockout it is the ONLY enabled control on that page while Approve is
+   disabled (agent/templates/approval.html). It has to keep reading as a live
+   control in that state, so the danger ink stays on the border and the label,
+   and hover fills the surface. */
 .ds-btn--reject {
-  background: var(--ds-danger);
-  border-color: var(--ds-danger-ink);
-  color: #fff;
+  background: transparent;
+  border-color: var(--ds-danger-border);
+  color: var(--ds-danger-ink);
 }
 
 .ds-btn--reject:hover {
-  background: var(--ds-danger-ink);
+  background: var(--ds-danger-surface);
+  border-color: var(--ds-danger);
 }
 
 .ds-btn--ghost {

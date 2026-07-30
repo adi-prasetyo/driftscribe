@@ -215,15 +215,27 @@
   // after the flip, navigating to chat wrote a param-less URL that reloaded as
   // the desk. Reading the constant keeps this correct in both eras.
   //
-  // `preserveChatState` is for the TOUR (ds-s9q). Everything below the URL write
-  // exists because a DELIBERATE departure from chat should not leave an invisible
-  // thread behind. The tour is not a departure — it borrows the estate view for
-  // two steps and hands the visitor back to chat on its last one, so applying the
-  // teardown there meant "open a conversation, click Tour, press Next" silently
-  // discarded the open thread (it survived in the rail; the view, scroll position
-  // and `?conversation=` did not). The tour keeps its chat errand: the URL it
-  // leaves reloads into the conversation, which is the honest durable intent.
-  function navigate(v: AppView, opts: { preserveChatState?: boolean } = {}) {
+  // `preserveChatState` is for the TOUR (ds-s9q). Everything in
+  // teardownChatSurface() exists because a DELIBERATE departure from chat should
+  // not leave an invisible thread behind. The tour is not a departure — it
+  // borrows the estate view for two steps and hands the visitor back to chat on
+  // its last one, so applying the teardown there meant "open a conversation,
+  // click Tour, press Next" silently discarded the open thread (it survived in
+  // the rail; the view, scroll position and `?conversation=` did not). The tour
+  // keeps its chat errand: the URL it leaves reloads into the conversation,
+  // which is the honest durable intent.
+  //
+  // `history` (ds-7ag.1) decides whether the URL write creates a history entry.
+  // A view switch is a NAVIGATION — the browser Back button has to undo it, or
+  // the operator who clicked a desk numeral onto the estate view has no way back
+  // (the reported wayfinding failure). Default 'push'; 'replace' is for writes
+  // that continue the current entry rather than making one (the tour borrowing a
+  // view, and its restore on close).
+  function navigate(
+    v: AppView,
+    opts: { preserveChatState?: boolean; history?: 'push' | 'replace' } = {},
+  ) {
+    const fromView = view; // capture BEFORE the assignment — the push test needs it
     view = v;
     const u = new URL(window.location.href);
     if (v === DEFAULT_VIEW) u.searchParams.delete('view');
@@ -232,21 +244,73 @@
     if (v !== 'chat' && !opts.preserveChatState) {
       for (const p of CHAT_INTENT_PARAMS) u.searchParams.delete(p);
     }
-    history.replaceState(null, '', u);
+    // A push needs BOTH a real view transition and a real URL change. URL
+    // inequality alone is not enough: clicking デスク while already on the desk
+    // canonicalizes `?view=desk` to `/`, which changes the URL without going
+    // anywhere, and stacking an entry there makes Back look dead. The view test
+    // alone is not enough either — it would push on a no-op re-entry the URL
+    // already describes. And this is what keeps the programmatic
+    // navigate('chat') calls inside openConversation/openTrace honest on a boot
+    // deep-link: `view` is ALREADY 'chat' there (hasChatIntent decided it before
+    // mount), so restoring a shared link continues its entry instead of stacking
+    // a duplicate one in front of it.
+    const shouldPush =
+      opts.history !== 'replace' && v !== fromView && u.href !== window.location.href;
+    if (shouldPush) history.pushState(null, '', u);
+    else history.replaceState(null, '', u);
+    // Arriving at chat re-reads the rail — see the same call in onPopstate for
+    // why (a cancelled turn skips the post-turn refresh, so its conversation
+    // would be missing from the already-mounted rail until a reload).
+    if (v === 'chat' && fromView !== 'chat') void loadConversations();
     // Chat is a destination, not an undo: nothing to reset (see the doc above).
     if (v === 'chat' || opts.preserveChatState) return;
-    // Keep in-memory state in lockstep with the URL just written — an open
-    // replay or thread would otherwise sit there invisibly (the chat branch
-    // isn't mounted in desk/estate) and reappear out of step with the
-    // now-paramless address bar on a later return to chat.
-    if (historicalActive) {
-      historicalActive = false;
-      historicalTraceId = null;
-      activeTraceId = null;
-      historicalDecision = null;
-      historicalPrBody = null;
-      historicalPrBodyTruncated = false;
-    }
+    teardownChatSurface();
+  }
+
+  // The live-run surfaces, reset to "nothing is running here". Shared by
+  // newChat() (a deliberate clean slate) and teardownChatSurface() (a departure
+  // from the chat view), because the overlap between them is total: in both
+  // cases whatever run was on screen stops being this screen's business.
+  //
+  // Bumping runSeq is what makes the reset actually CANCEL rather than merely
+  // clear. That matters most for an async open: a GET /conversations/{id} that
+  // lands after a departure still passes its own runSeq guard (:645/:684) and
+  // repopulates conversationTurns behind the operator's back — on a Back press
+  // that is a thread reappearing on a view whose URL says it has none.
+  //
+  // And once the run is cancelled the whole surface has to go with it. Clearing
+  // only `busy` leaves the timeline the cancelled run had built so far, with a
+  // status that says `streaming` forever — the guard that would have completed
+  // it is exactly the one that just bailed. A half-cancelled run left on screen
+  // reads worse than no run at all.
+  function resetChatRun(): void {
+    ++runSeq; // supersede every in-flight run — see the doc above
+    busy = false;
+    resumingConversation = false;
+    historicalActive = false;
+    historicalTraceId = null;
+    activeTraceId = null;
+    historicalDecision = null;
+    historicalPrBody = null;
+    historicalPrBodyTruncated = false;
+    traceId = null;
+    events = [];
+    finalReply = null;
+    finalIsError = false;
+    iacPr = null;
+    liveExchange = null;
+    status = 'pending';
+  }
+
+  // Drop the chat surface on a departure from the chat view, so in-memory state
+  // stays in lockstep with the URL: an open replay or thread would otherwise sit
+  // there invisibly (the chat branch isn't mounted in desk/estate) and reappear
+  // out of step with the now-paramless address bar on a later return.
+  //
+  // Extracted from navigate() at ds-7ag.1 because the popstate handler needs the
+  // same teardown.
+  function teardownChatSurface(): void {
+    resetChatRun();
     if (conversationId !== null) {
       setConversationId(null); // the only writer of conversationId — see its own doc
       conversationWorkload = null;
@@ -260,6 +324,67 @@
     // its chip intact (same reasoning as newChat).
     clearHandoff();
     if (previewPr !== null) previewPr = null; // preview_pr already dropped above
+  }
+
+  // Browser Back/Forward. The restore is VIEW-ONLY by design: reopening deep
+  // state (a thread, a replay) on a pop would fire fetches the operator did not
+  // ask for and race whatever they do next, so the entry is canonicalized
+  // instead — the URL is made to stop claiming content that is not on screen.
+  function onPopstate(): void {
+    const target = viewFromSearch(window.location.search);
+    // Back during the tour dismisses the overlay. Clear tourReturnView FIRST:
+    // closeTour()'s own view-restore would otherwise navigate away from — and
+    // replaceState over — the very entry the operator just came back to.
+    if (tourOpen) {
+      tourReturnView = null;
+      closeTour();
+    }
+    // Unconditional on a non-chat target, NOT gated on `view === 'chat'` (Codex
+    // review of this branch). The tour borrows a view while PRESERVING the chat
+    // surface, so a Back press mid-tour arrives with `view === 'estate'` and an
+    // open thread still live behind it — that gate skipped the teardown and left
+    // a hidden thread whose later settle would write `?conversation=` onto a DESK
+    // url. Exactly the state/url disagreement this handler exists to prevent.
+    // On a target that never had chat state the call is a cheap no-op.
+    if (target !== 'chat') teardownChatSurface();
+    // Entering chat re-reads the rail. Cancelling a run (above, or via newChat)
+    // skips the post-turn loadConversations() at :976, so a conversation the
+    // server created for that cancelled turn would be missing from the
+    // already-mounted rail until a reload — the one case where "the turn
+    // persists and the thread is still reachable from the rail" was not true.
+    if (target === 'chat' && view !== 'chat') void loadConversations();
+    view = target;
+    canonicalizeRestoredEntry();
+  }
+
+  // Make a restored entry describe what is actually on screen. A popped entry can
+  // still carry chat-intent params for content this session tore down (e.g.
+  // `?conversation=c1` after a departure from chat); the view-only restore won't
+  // reopen them, so the URL must stop advertising them or copying the address bar
+  // shares a lie. Only STALE params are dropped — an entry naming the open thread
+  // or replay is left untouched. Because those params are exactly what forced
+  // viewFromSearch to 'chat', the same write states the view explicitly, or a
+  // reload of the cleaned URL would land on the desk instead.
+  function canonicalizeRestoredEntry(): void {
+    const u = new URL(window.location.href);
+    let stale = false;
+    const drop = (p: string) => {
+      u.searchParams.delete(p);
+      stale = true;
+    };
+    const conv = u.searchParams.get('conversation');
+    if (conv !== null && conv !== conversationId) drop('conversation');
+    const reasoning = u.searchParams.get('reasoning');
+    if (reasoning !== null && reasoning !== historicalTraceId) drop('reasoning');
+    // ask_pr is a one-shot composer prefill consumed at boot (onMount strips it);
+    // a restored one has nothing left to hand over, so it is always stale.
+    if (u.searchParams.get('ask_pr')) drop('ask_pr');
+    const preview = u.searchParams.get('preview_pr');
+    if (preview !== null && String(previewPr ?? '') !== preview) drop('preview_pr');
+    if (!stale) return;
+    if (view === DEFAULT_VIEW) u.searchParams.delete('view');
+    else u.searchParams.set('view', view);
+    history.replaceState(null, '', u);
   }
 
   let historicalActive = $state(false);
@@ -466,9 +591,13 @@
   // operator was not. So the tour remembers where it started and puts the view
   // back on close, which is also the behavior a visitor expects from a thing
   // that overlays their screen and then goes away.
+  //
+  // It borrows views without leaving history entries behind either (ds-7ag.1):
+  // an operator who finished the tour should not have to press Back once per
+  // spotlighted step to get out of the app.
   let tourReturnView: AppView | null = null;
   function tourNavigate(v: AppView): void {
-    navigate(v, { preserveChatState: true });
+    navigate(v, { preserveChatState: true, history: 'replace' });
   }
   function startTour(): void {
     tourOffered = false;
@@ -491,7 +620,7 @@
     // view/URL disagreement survives it. Still preserveChatState — an open
     // thread must come back too, which is the whole point of ds-s9q.
     if (tourReturnView !== null && tourReturnView !== view) {
-      navigate(tourReturnView, { preserveChatState: true });
+      navigate(tourReturnView, { preserveChatState: true, history: 'replace' });
     }
     tourReturnView = null;
   }
@@ -1568,25 +1697,11 @@
   }
 
   function newChat() {
-    ++runSeq; // cancel any in-flight live stream
-    busy = false;
-    // A new chat supersedes any in-flight resume; see openTrace's identical
-    // reset for why the superseding run must clear this itself (Codex review
-    // 019f46e8).
-    resumingConversation = false;
-    historicalActive = false;
-    historicalTraceId = null;
-    activeTraceId = null;
-    traceId = null;
-    events = [];
-    finalReply = null;
-    finalIsError = false;
-    iacPr = null;
-    liveExchange = null; // clean slate — no lingering optimistic exchange
-    historicalDecision = null;
-    historicalPrBody = null;
-    historicalPrBodyTruncated = false;
-    status = 'pending';
+    // Cancels any in-flight live stream and clears every live-run surface,
+    // including the in-flight resume a new chat supersedes (see openTrace's
+    // identical reset for why the superseding run must clear that itself —
+    // Codex review 019f46e8). Shared with the leave-chat teardown; see its doc.
+    resetChatRun();
     // Drop out of the open thread too — "new chat" is a clean slate. The thread
     // is still reachable from the rail (its id lives in /conversations).
     // A pending handoff belongs to THAT thread, so it leaves the screen with
@@ -1634,6 +1749,10 @@
       }
       if (bootReasoningTid) openTrace(bootReasoningTid);
     })();
+    // Browser Back/Forward across the three views (ds-7ag.1). Registered here
+    // rather than in the module body so it is torn down with the component.
+    window.addEventListener('popstate', onPopstate);
+    return () => window.removeEventListener('popstate', onPopstate);
   });
 </script>
 
@@ -1691,11 +1810,12 @@
       <AutonomyPill {autonomy} />
     </div>
     <PausePill {pause} />
-    <button
-      class="ds-btn ds-btn--ghost app-tour-btn"
-      type="button"
-      data-testid="tour-open"
-      onclick={startTour}><Icon name="compass" size={14} />{$t('header.tourButton')}</button
+    <!-- Quiet text button, not a ds-btn (ds-7ag.3): a bordered ghost button put
+         "take the tour" at the same weight as the view nav and the autonomy
+         dial. The compass icon stays — it is what makes it findable without
+         chrome. -->
+    <button class="app-tour-btn" type="button" data-testid="tour-open" onclick={startTour}
+      ><Icon name="compass" size={14} />{$t('header.tourButton')}</button
     >
     <TokenStatus state={tokenState} onChange={onChangeToken} />
   </div>
@@ -1875,20 +1995,50 @@
 {/if}
 
 <style>
+  /* Named regions on an explicit grid (ds-7ag.3). This was a wrapping flex row
+     with space-between, which made the nav's position a function of how wide the
+     actions cluster happened to be: it sat hard right when the cluster wrapped
+     to its own line and slid inward when it didn't, so the app's primary
+     navigation moved on you between views (compare desk-live-00181.png with
+     chat-1440.png).
+     The default is TWO rows — identity + navigation on top, operational
+     utilities beneath. The plan asked for a single centred row, and for a
+     two-row fallback with the nav BELOW the actions; both were changed after
+     measuring the real regions at 1920px (brand 539 / nav 271 / actions 637 in
+     JA): a single row needs ~1530px, so at the 1440px this pitch is shot at the
+     tracks were over-committed and the brand tagline wrapped or the nav
+     collided with its neighbours. Two rows is also what production already
+     renders at 1440 — the difference is that the rows now MEAN something, which
+     is the whole point of the demotion in this commit: navigation shares the
+     brand's row, and the six utility chips sit on the quieter one. Above 1560px
+     everything genuinely fits and it collapses to the single row. */
   .app-header {
-    display: flex;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas:
+      'brand nav'
+      'actions actions';
     align-items: center;
-    justify-content: space-between;
-    flex-wrap: wrap;
-    gap: var(--ds-sp-4);
+    column-gap: var(--ds-sp-4);
+    row-gap: var(--ds-sp-2);
     padding: var(--ds-sp-3) var(--ds-sp-6);
     border-bottom: 1px solid var(--ds-border);
     background: var(--ds-surface);
     box-shadow: var(--ds-shadow-sm);
   }
+  /* One row once there is room for all three regions side by side (measured:
+     ~1530px in JA, the wider of the two locales). */
+  @media (min-width: 1560px) {
+    .app-header {
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      grid-template-areas: 'brand nav actions';
+    }
+  }
   .app-header__brand {
     display: inline-flex;
     align-items: center;
+    grid-area: brand;
+    justify-self: start;
     gap: var(--ds-sp-3);
     text-decoration: none;
     color: inherit;
@@ -1920,11 +2070,15 @@
     display: block;
   }
   /* Desk / Estate / Chat — segmented pill, same recipe as LocaleToggle's
-     is-active fill so the two header controls read as one family. Skeleton
-     only (Task 2.2); Phase 3/4 fill in the destinations this points at. */
+     is-active fill so the two header controls read as one family.
+     ds-7ag.3 gave it weight: at 13px among six utility chips it read as one
+     more chip rather than as the app's primary navigation. Still no navy fill —
+     this control has to serve both design worlds (paper desk, legacy chat). */
   .app-header__nav {
     display: inline-flex;
     align-items: stretch;
+    grid-area: nav;
+    justify-self: center;
     gap: 2px;
     padding: 2px;
     background: var(--ds-surface-2);
@@ -1933,19 +2087,23 @@
   }
   .app-header__nav-btn {
     appearance: none;
-    border: 0;
+    /* Transparent on EVERY segment, not just the active one: the base was
+       `border: 0`, so an active-only border added 2px to the row and jiggled
+       the whole nav on every view switch. */
+    border: 1px solid transparent;
     background: transparent;
     color: var(--ds-muted);
     font-family: inherit;
-    font-size: var(--ds-fs-1);
+    font-size: var(--ds-fs-2);
     font-weight: var(--ds-fw-semibold);
     line-height: 1.2;
-    padding: 0.3em 0.85em;
+    padding: 0.35em 1em;
     border-radius: var(--ds-radius-pill);
     cursor: pointer;
     white-space: nowrap;
     transition:
       background-color var(--ds-dur) var(--ds-ease),
+      border-color var(--ds-dur) var(--ds-ease),
       color var(--ds-dur) var(--ds-ease);
   }
   .app-header__nav-btn:hover {
@@ -1953,12 +2111,15 @@
   }
   .app-header__nav-btn.is-active {
     background: var(--ds-surface);
+    border-color: var(--ds-border-strong);
     color: var(--ds-fg);
     box-shadow: var(--ds-shadow-sm);
   }
   .app-header__actions {
     display: inline-flex;
     align-items: center;
+    grid-area: actions;
+    justify-self: end;
     gap: var(--ds-sp-3);
     /* Several controls now live here (notice bell, autonomy, pause, tour,
        token) — let the cluster wrap to a second line on narrow viewports rather
@@ -1970,9 +2131,27 @@
     display: inline-flex;
     align-items: center;
   }
-  /* Give the safety controls room before shrinking them: drop the title
-     subtitle first on narrow screens (Codex #6). */
+  /* Phone widths: the brand and the nav stop fitting on one line together, so
+     the nav takes a row of its own. It must never wrap mid-cluster — three view
+     buttons broken across two lines is the "後付け" texture itself. */
   @media (max-width: 640px) {
+    .app-header {
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-areas:
+        'brand'
+        'nav'
+        'actions';
+    }
+    .app-header__actions {
+      justify-self: start;
+    }
+  }
+  /* Give the nav room before shrinking anything else: the tagline goes first.
+     Raised from 640px to 900px at ds-7ag.3, measured — brand-with-tagline (539)
+     plus nav (271) plus the gutters needs ~875px, so between 640 and 900 the
+     tagline was what pushed the nav off its own row. The positioning copy it
+     repeats is on the desk's resting screen and the homepage. */
+  @media (max-width: 900px) {
     .app-title__sub {
       display: none;
     }
@@ -1981,8 +2160,29 @@
     display: inline-flex;
     align-items: center;
     gap: var(--ds-sp-2);
-    padding: 0.3em 0.85em;
+    appearance: none;
+    border: 0;
+    background: none;
+    /* Vertical padding keeps the hit area ≥ 24px now that the button chrome
+       that used to provide it is gone. */
+    padding: 0.35em 0.2em;
+    margin: 0;
+    font-family: inherit;
     font-size: var(--ds-fs-1);
+    font-weight: var(--ds-fw-medium);
+    line-height: 1.2;
+    color: var(--ds-muted);
+    white-space: nowrap;
+    cursor: pointer;
+    border-radius: var(--ds-radius-sm);
+    transition: color var(--ds-dur-fast) var(--ds-ease);
+  }
+  .app-tour-btn:hover {
+    color: var(--ds-fg);
+  }
+  .app-tour-btn:focus-visible {
+    outline: none;
+    box-shadow: var(--ds-ring);
   }
   .app-title {
     font-size: var(--ds-fs-3);

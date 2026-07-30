@@ -194,9 +194,14 @@
        only accent, marking this as the interactive composer without the heavier
        tinted fill + 3px left accent bar it used to wear. */
     background: var(--ds-surface);
+    /* Promoted one level at ds-7ag.5: the composer is the one thing on this
+       page the operator ACTS with, and at shadow-sm it sat at the same weight as
+       every card around it. The surrounding metadata drawers went quiet in the
+       same change, so this is the page's visual primary by contrast rather than
+       by shouting. The blue 送信 button stays its only saturated element. */
     border: 1px solid var(--ds-stream-border);
     border-radius: var(--ds-radius);
-    box-shadow: var(--ds-shadow-sm);
+    box-shadow: var(--ds-shadow);
     transition: opacity var(--ds-dur) var(--ds-ease),
       box-shadow var(--ds-dur) var(--ds-ease),
       border-color var(--ds-dur) var(--ds-ease);

@@ -387,13 +387,34 @@ describe('Timeline — historical-empty state', () => {
     expect(queryByTestId('timeline-empty')).toBeNull();
   });
 
-  it('live/pending + no events: keeps the groups + the "yet" placeholder (regression guard)', () => {
+  // The empty COPY changed at plan Task 11 (guidance, not absence — the
+  // reasoning group is the page's primary content, so its empty state says what
+  // produces one). What this guards is unchanged: the groups still render, and
+  // the historical "couldn't load" note must NOT appear on a live/pending turn.
+  it('live/pending + no events: keeps the groups + the reasoning guidance line (regression guard)', () => {
     const { getByText, queryByTestId, container } = render(Timeline, {
       props: { events: [], status: 'pending' },
     });
     expect(container.querySelector('#group-coordinator')).not.toBeNull();
-    expect(getByText('No coordinator reasoning yet.')).toBeTruthy();
+    expect(
+      getByText("Send a question and the coordinator's reasoning will stream here."),
+    ).toBeTruthy();
     expect(queryByTestId('timeline-empty')).toBeNull();
+  });
+
+  // The demoted drawers keep the generic absence line: they are metadata, and
+  // guidance there would just be more text on a page being simplified.
+  it('tools/mcp keep the generic empty line, and render as quiet disclosures', () => {
+    const { getByText, container } = render(Timeline, {
+      props: { events: [], status: 'pending' },
+    });
+    expect(getByText('No tools & workers yet.')).toBeTruthy();
+    expect(container.querySelector('#group-tools')?.classList.contains('group--quiet')).toBe(true);
+    expect(container.querySelector('#group-mcp')?.classList.contains('group--quiet')).toBe(true);
+    // The reasoning group stays a card — it is the substance, not metadata.
+    expect(container.querySelector('#group-coordinator')?.classList.contains('group--quiet')).toBe(
+      false,
+    );
   });
 
   it('streaming + no events: keeps the groups (live-chat waiting path regression guard)', () => {

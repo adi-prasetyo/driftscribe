@@ -1,0 +1,94 @@
+import { test, type Page, type Route } from '@playwright/test';
+
+// ── Visual walkthrough of the chat-view hierarchy (ds-7ag.5 / plan Tasks 7-9,
+// 11) ────────────────────────────────────────────────────────────────────────
+// Same hand-run rig as the other *.visual.ts specs. What needs eyeballing here
+// is a COUNT, not a pixel: the chat page carried ~6 boxed cards of equal weight,
+// and after this it should read composer-first with two boxes (composer +
+// reasoning) and everything else a quiet disclosure.
+//
+//   npx playwright test --config tests/visual/playwright.visual.config.ts \
+//     chat-hierarchy.visual.ts
+
+const SHOTS = process.env.VISUAL_OUT ?? '/tmp/driftscribe-chat-screens';
+
+function json(route: Route, body: unknown) {
+  return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+}
+
+async function seed(page: Page, locale: 'en' | 'ja') {
+  await page.addInitScript((l) => {
+    sessionStorage.setItem('driftscribe_token', 'visual-token');
+    localStorage.setItem('driftscribe.locale', l);
+    localStorage.setItem('driftscribe_tour_done', '1');
+    localStorage.setItem('driftscribe_demo_notice_dismissed', '1');
+  }, locale);
+}
+
+// Two threads: one with a single operator message (its count must NOT render)
+// and one with several (its count must).
+const CONVERSATIONS = {
+  conversations: [
+    {
+      conversation_id: 'c-solo',
+      workload: 'explore',
+      title: 'what does DriftScribe watch?',
+      updated_at: '2026-07-30T02:10:00Z',
+      turn_count: 2,
+      user_turn_count: 1,
+    },
+    {
+      conversation_id: 'c-many',
+      workload: 'drift',
+      title: 'why did EXTRA drift on the agent service?',
+      updated_at: '2026-07-30T01:30:00Z',
+      turn_count: 8,
+      user_turn_count: 4,
+    },
+  ],
+};
+
+async function mock(page: Page) {
+  await page.route('**/infra/graph', (r) =>
+    json(r, {
+      generated_at: null,
+      project: 'demo',
+      caveat: '',
+      degraded: false,
+      degraded_reason: null,
+      totals: { resources: 0, managed: 0, drift: 0 },
+      groups: [],
+      edges: [],
+    }),
+  );
+  await page.route('**/infra/pending-approvals', (r) => json(r, { approvals: [] }));
+  await page.route(/\/decisions(\?|$)/, (r) => json(r, { decisions: [] }));
+  await page.route(/\/conversations\?/, (r) => json(r, CONVERSATIONS));
+  await page.route('**/autonomy', (r) => json(r, { mode: 'propose_apply', reason: null, actor: null }));
+  await page.route('**/pause', (r) => json(r, { paused: false }));
+  await page.route('**/capabilities', (r) =>
+    json(r, {
+      autonomy: { mode: 'propose_apply' },
+      gates: [{ name: 'HITL approval', detail: 'Rollbacks need a single-use signed link.' }],
+      denylist: { rules: [{ pattern: 'projects/*/secrets/*', reason: 'secrets are never touched' }] },
+      workloads: [],
+    }),
+  );
+}
+
+for (const locale of ['ja', 'en'] as const) {
+  test(`chat hierarchy — ${locale}`, async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 1100 });
+    await seed(page, locale);
+    await mock(page);
+    await page.goto('/?view=chat');
+    await page.locator('#chat-form').waitFor();
+    await page.waitForTimeout(600);
+    await page.screenshot({ path: `${SHOTS}/${locale}-chat-empty.png`, fullPage: true });
+
+    // Open the capability drawer: its body must sit on a well, not in a card.
+    await page.getByTestId('cap-summary').click();
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: `${SHOTS}/${locale}-chat-cap-open.png`, fullPage: true });
+  });
+}

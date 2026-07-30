@@ -164,7 +164,13 @@
   const ruleGroups = $derived(groupRules(data?.denylist?.rules ?? []));
 </script>
 
-<details class="ds-card cap-card" data-testid="capability-card" ontoggle={onToggle}>
+<!-- Not a .ds-card since ds-7ag.5: this drawer explains what the agent can and
+     cannot do, which is reference material, and as a boxed card it competed with
+     the composer and the reasoning timeline. Same demotion the tools/MCP groups
+     got (Group's `quiet` variant) — no box when closed, a hairline above the
+     label row, and the body on a well when open. The DOM contract is untouched:
+     capability-card / cap-summary and every inner testid stay put. -->
+<details class="cap-card" data-testid="capability-card" ontoggle={onToggle}>
   <summary class="cap-summary" data-testid="cap-summary">
     <span class="cap-summary__title ds-label"><Icon name="shield" size={14} extraClass="cap-eyebrow-icon" />{$t('capability.card.title')}</span>
     <span class="cap-summary__hint">{$t('capability.card.hint')}</span>
@@ -355,8 +361,12 @@
 </details>
 
 <style>
+  /* Quiet disclosure, mirroring Group's `quiet` variant (ds-7ag.5) — see the
+     note on the markup. The margin keeps the vertical rhythm .ds-card used to
+     supply. */
   .cap-card {
     padding: 0; /* summary + body own their padding */
+    margin: var(--ds-sp-5) 0;
   }
 
   .cap-summary {
@@ -364,7 +374,8 @@
     align-items: center;
     justify-content: space-between;
     gap: var(--ds-sp-3);
-    padding: var(--ds-sp-4) var(--ds-sp-5);
+    padding: var(--ds-sp-3) 0;
+    border-top: 1px solid var(--ds-border);
     cursor: pointer;
     list-style: none;
   }
@@ -397,9 +408,12 @@
     font-style: italic;
   }
 
+  /* Open content keeps its inner layout, on a --ds-surface-2 well instead of
+     inside a bordered card. */
   .cap-body {
     padding: var(--ds-sp-4) var(--ds-sp-5) var(--ds-sp-5);
-    border-top: 1px solid var(--ds-border);
+    background: var(--ds-surface-2);
+    border-radius: var(--ds-radius);
   }
 
   .cap-loading {
