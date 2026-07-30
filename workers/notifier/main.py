@@ -38,6 +38,7 @@ to surface the config error in the deploy logs than to silently return
 from __future__ import annotations
 
 import os
+import re
 from typing import Literal
 
 import httpx
@@ -93,7 +94,28 @@ _DISCORD_CONTENT_LIMIT = 2000
 # ``400 {"content": ["Must be 2000 or fewer in length."]}``. It does NOT
 # truncate on our behalf, so an uncapped long body loses the whole
 # notification — the failure is total, not cosmetic.
-_TRUNCATION_MARKER = "\n\n…[truncated, full detail in the decision record]…\n\n"
+#
+# The limit counts CODE POINTS, not UTF-16 code units: 1100 non-BMP emoji
+# (1100 code points, 2200 UTF-16 units) were accepted with 200 when probed
+# live on 2026-07-30. So Python's ``len`` is the correct unit and no
+# surrogate-aware arithmetic is needed. Python slicing also cannot split a
+# surrogate pair, since a pair is a single code point. Grapheme clusters and
+# ZWJ emoji sequences CAN still be split — cosmetic only.
+#
+# Deliberately says nothing about where the omitted text went: ``/notify`` is
+# generic and serves callers (``notify_tool``) that create no decision record,
+# so naming one would send an operator hunting for something that never
+# existed.
+_TRUNCATION_MARKER = "\n\n…[truncated]…\n\n"
+
+# Markdown fences are the reason "keep the tail" is not sufficient on its own.
+# The retained head is an arbitrary Markdown fragment; if the model's rationale
+# opened a ``` block whose closing fence fell in the DELETED middle, the whole
+# retained tail — approval link included — renders inside a code block. The URL
+# is then present and visible but NOT clickable, which defeats the message as
+# surely as dropping it. Found by Codex review of the first cut of this change.
+_FENCE = "```"
+_FENCE_CLOSE = "\n```"
 
 # Truncation is MIDDLE-OUT rather than tail-drop, and that is load-bearing.
 # In the rollback approval body the variable-length parts (the model's
@@ -110,8 +132,14 @@ _TRUNCATION_MARKER = "\n\n…[truncated, full detail in the decision record]…\
 # budget, a test fails instead of the link silently vanishing in production.
 _TRUNCATION_TAIL_BUDGET = 800
 
+# The fence-closing allowance is reserved UNCONDITIONALLY rather than only
+# when a fence is actually open, so the output can never exceed the limit on
+# the branch that appends it. Cost is 4 unused chars on the common path.
 _TRUNCATION_HEAD_BUDGET = (
-    _DISCORD_CONTENT_LIMIT - len(_TRUNCATION_MARKER) - _TRUNCATION_TAIL_BUDGET
+    _DISCORD_CONTENT_LIMIT
+    - len(_TRUNCATION_MARKER)
+    - _TRUNCATION_TAIL_BUDGET
+    - len(_FENCE_CLOSE)
 )
 
 # Fail fast at import, in the same spirit as the empty-URL check above. A
@@ -126,20 +154,54 @@ if _TRUNCATION_HEAD_BUDGET <= 0:
     )
 
 
+# A destination that REFLECTS the request hands the notification body — and so
+# the single-use approval token inside it — straight back in its response.
+# webhook.site, httpbin.org/post and most debugging proxies do exactly that,
+# and the response snippet below reaches Cloud Logging and the 502 detail.
+# Discord measurably does NOT reflect, but the destination is a configuration
+# value: this guarantee must not rest on which vendor happens to be set today.
+# The coordinator already reduces the 502 to a classification before persisting
+# it (agent/main.py), so this is the log-side half of the same defense.
+_APPROVAL_TOKEN_IN_URL = re.compile(r"([?&]t=)[A-Za-z0-9_-]{20,}")
+
+
+def _scrub_approval_tokens(text: str) -> str:
+    """Redact ``?t=<token>`` query values from arbitrary downstream text."""
+    return _APPROVAL_TOKEN_IN_URL.sub(r"\1[redacted]", text)
+
+
 def _discord_safe_content(text: str) -> str:
     """Fit ``text`` to Discord's 2000-char ``content`` limit, keeping the tail.
 
     Returns ``text`` unchanged when it already fits. Otherwise keeps the head
     and a generous fixed tail, dropping the middle, because the
-    operator-critical payload (the approval URL) lives at the end.
+    operator-critical payload (the approval URL) lives at the end. Any code
+    fence left open by the cut is closed, so the tail cannot be swallowed into
+    a code block and rendered unclickable.
     """
     if len(text) <= _DISCORD_CONTENT_LIMIT:
         return text
-    return (
-        text[:_TRUNCATION_HEAD_BUDGET]
-        + _TRUNCATION_MARKER
-        + text[-_TRUNCATION_TAIL_BUDGET:]
-    )
+    head = text[:_TRUNCATION_HEAD_BUDGET]
+    tail = text[-_TRUNCATION_TAIL_BUDGET:]
+
+    # Cutting the middle out of Markdown can create exactly two fence
+    # artifacts, and BOTH render the tail as code:
+    #
+    #   1. a fence opened in the head whose closer was deleted, and
+    #   2. an orphan closer in the tail whose opener was deleted.
+    #
+    # Repair precisely those two and nothing else — fences the caller wrote in
+    # balanced pairs are their own formatting and are left untouched. An odd
+    # count is the signal in both cases, because the head starts outside a
+    # block and (after repair 1) so does the tail.
+    #
+    # Repair 2 is not hypothetical tidiness: /notify is a GENERIC endpoint and
+    # notify_tool passes arbitrary model-authored text, so the tail is not
+    # always the rollback template's fence-free footer.
+    fence_close = _FENCE_CLOSE if head.count(_FENCE) % 2 else ""
+    if tail.count(_FENCE) % 2:
+        tail = tail.replace(_FENCE, "", 1)
+    return head + fence_close + _TRUNCATION_MARKER + tail
 
 
 def _verify_caller_dep(request: Request) -> str:
@@ -235,6 +297,16 @@ def notify(
     payload = {
         "text": text,
         "content": _discord_safe_content(text),
+        # Suppress EVERY mention Discord would otherwise resolve out of the
+        # body. This is not hypothetical politeness: the body embeds an
+        # LLM-authored rationale and live environment values, so under this
+        # project's own compromised-model threat model a rationale containing
+        # "@everyone" would page an entire server on the strength of text the
+        # model chose. Probed live 2026-07-30 — without this key a mention
+        # RESOLVES (the created message reports it in `mentions`); with
+        # `parse: []` the list comes back empty. Unknown keys are ignored by
+        # Slack and generic receivers, so this costs nothing elsewhere.
+        "allowed_mentions": {"parse": []},
         "service": "DriftScribe",
         "channel": req.channel,
         "severity": req.severity,
@@ -269,7 +341,12 @@ def notify(
         # Truncate the downstream body in the surfaced detail — it
         # could be arbitrarily large or contain content we don't want
         # to echo back to the caller.
-        snippet = resp.text[:200] if resp.text else ""
+        #
+        # Scrub BEFORE truncating, on a slice wider than the one we keep: an
+        # approval token is at most 64 chars, so any token appearing within
+        # the retained 200 lies wholly inside the 1000 scanned, and cutting
+        # first could otherwise leave a token fragment too short to match.
+        snippet = _scrub_approval_tokens((resp.text or "")[:1000])[:200]
         log.warning(
             "notify: webhook returned %d (body snippet: %r)",
             resp.status_code, snippet,

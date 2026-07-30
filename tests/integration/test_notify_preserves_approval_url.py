@@ -94,6 +94,45 @@ def test_the_approval_url_survives_the_discord_cap(rationale_len):
         "the approval URL was truncated away — the notification would reach "
         "the operator with nothing to click"
     )
+    # Present is not the same as usable: inside an unterminated code block the
+    # URL renders as inert text. An even fence count means it is outside one.
+    before = content[: content.index(_APPROVAL_URL)]
+    assert before.count("```") % 2 == 0
+
+
+def test_the_url_stays_clickable_when_the_rationale_opens_a_code_fence():
+    """Models emit code blocks. An unclosed one must not swallow the link.
+
+    The plain-``R`` cases above cannot catch this, because they contain no
+    Markdown at all — the gap Codex found in the first cut of this change.
+    """
+    rationale = "Observed config:\n```yaml\n" + ("key: value\n" * 700)
+    content = _notified_content(rationale)
+    assert len(content) <= _DISCORD_CONTENT_LIMIT
+    assert _APPROVAL_URL in content
+    before = content[: content.index(_APPROVAL_URL)]
+    assert before.count("```") % 2 == 0, (
+        "the approval URL rendered inside an unterminated code block"
+    )
+
+
+def test_the_retained_tail_of_a_real_body_contains_no_code_fence():
+    """Pins the assumption the tail-closing fix relies on.
+
+    The notifier closes a fence left open by the HEAD of the cut. A fence
+    living inside the retained TAIL would need separate handling — an orphan
+    closer there would open a spurious block. That case cannot arise today
+    because the rollback template's last 800 chars are the link, the expiry
+    note and a blockquote, with no fenced content. This test is what keeps
+    that true: if the template ever grows fenced content into its tail, fix
+    the truncator rather than deleting this test.
+    """
+    from workers.notifier.main import _TRUNCATION_TAIL_BUDGET
+
+    body = render_rollback_body(
+        _proposal("R" * _MAX_REALISTIC_RATIONALE), _APPROVAL_URL
+    )
+    assert "```" not in body[-_TRUNCATION_TAIL_BUDGET:]
 
 
 def test_a_naive_head_slice_would_have_lost_the_url():
