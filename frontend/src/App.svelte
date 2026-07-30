@@ -263,33 +263,50 @@
     teardownChatSurface();
   }
 
+  // The live-run surfaces, reset to "nothing is running here". Shared by
+  // newChat() (a deliberate clean slate) and teardownChatSurface() (a departure
+  // from the chat view), because the overlap between them is total: in both
+  // cases whatever run was on screen stops being this screen's business.
+  //
+  // Bumping runSeq is what makes the reset actually CANCEL rather than merely
+  // clear. That matters most for an async open: a GET /conversations/{id} that
+  // lands after a departure still passes its own runSeq guard (:645/:684) and
+  // repopulates conversationTurns behind the operator's back — on a Back press
+  // that is a thread reappearing on a view whose URL says it has none.
+  //
+  // And once the run is cancelled the whole surface has to go with it. Clearing
+  // only `busy` leaves the timeline the cancelled run had built so far, with a
+  // status that says `streaming` forever — the guard that would have completed
+  // it is exactly the one that just bailed. A half-cancelled run left on screen
+  // reads worse than no run at all.
+  function resetChatRun(): void {
+    ++runSeq; // supersede every in-flight run — see the doc above
+    busy = false;
+    resumingConversation = false;
+    historicalActive = false;
+    historicalTraceId = null;
+    activeTraceId = null;
+    historicalDecision = null;
+    historicalPrBody = null;
+    historicalPrBodyTruncated = false;
+    traceId = null;
+    events = [];
+    finalReply = null;
+    finalIsError = false;
+    iacPr = null;
+    liveExchange = null;
+    status = 'pending';
+  }
+
   // Drop the chat surface on a departure from the chat view, so in-memory state
   // stays in lockstep with the URL: an open replay or thread would otherwise sit
   // there invisibly (the chat branch isn't mounted in desk/estate) and reappear
   // out of step with the now-paramless address bar on a later return.
   //
   // Extracted from navigate() at ds-7ag.1 because the popstate handler needs the
-  // same teardown, and given the CANCELLATION half of newChat()'s pattern for
-  // the same reason: clearing fields is not enough while an async open is in
-  // flight. A GET /conversations/{id} that lands after the departure still
-  // passes its own runSeq guard (:645/:684) and repopulates conversationTurns
-  // behind the operator's back — on a Back press that is a thread reappearing on
-  // a view the URL says has none. Bumping runSeq is what makes the departure
-  // actually cancel, and `busy`/`resumingConversation`/`liveExchange` are the
-  // flags those in-flight runs would otherwise have owned the clearing of.
+  // same teardown.
   function teardownChatSurface(): void {
-    ++runSeq; // supersede every in-flight run — see the doc above
-    busy = false;
-    resumingConversation = false;
-    liveExchange = null;
-    if (historicalActive) {
-      historicalActive = false;
-      historicalTraceId = null;
-      activeTraceId = null;
-      historicalDecision = null;
-      historicalPrBody = null;
-      historicalPrBodyTruncated = false;
-    }
+    resetChatRun();
     if (conversationId !== null) {
       setConversationId(null); // the only writer of conversationId — see its own doc
       conversationWorkload = null;
@@ -1663,25 +1680,11 @@
   }
 
   function newChat() {
-    ++runSeq; // cancel any in-flight live stream
-    busy = false;
-    // A new chat supersedes any in-flight resume; see openTrace's identical
-    // reset for why the superseding run must clear this itself (Codex review
-    // 019f46e8).
-    resumingConversation = false;
-    historicalActive = false;
-    historicalTraceId = null;
-    activeTraceId = null;
-    traceId = null;
-    events = [];
-    finalReply = null;
-    finalIsError = false;
-    iacPr = null;
-    liveExchange = null; // clean slate — no lingering optimistic exchange
-    historicalDecision = null;
-    historicalPrBody = null;
-    historicalPrBodyTruncated = false;
-    status = 'pending';
+    // Cancels any in-flight live stream and clears every live-run surface,
+    // including the in-flight resume a new chat supersedes (see openTrace's
+    // identical reset for why the superseding run must clear that itself —
+    // Codex review 019f46e8). Shared with the leave-chat teardown; see its doc.
+    resetChatRun();
     // Drop out of the open thread too — "new chat" is a clean slate. The thread
     // is still reachable from the rail (its id lives in /conversations).
     // A pending handoff belongs to THAT thread, so it leaves the screen with

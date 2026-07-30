@@ -540,6 +540,47 @@ describe('App — history-aware view navigation (ds-7ag.1)', () => {
     expect(queryByTestId('conversation-thread')).toBeNull();
   });
 
+  // Cancelling an in-flight run is only half the job: the surface it had already
+  // built has to go with it. Leaving `busy` cleared but the timeline and status
+  // in place left a partial run on screen whose status said `streaming` forever
+  // — the guard that would have completed it is the one that just bailed.
+  it('leaving chat mid-stream leaves no half-cancelled run behind', async () => {
+    window.sessionStorage.setItem('driftscribe_token', 'tok');
+    // A /chat response that never resolves: the run is in flight for the whole test.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes('/chat') && init?.method === 'POST') return new Promise<Response>(() => {});
+        if (url.includes('/conversations')) return okJson({ conversations: [] });
+        if (url.includes('/decisions')) return okJson({ decisions: [] });
+        if (url.includes('/infra/graph')) return okJson(GRAPH);
+        return okJson({});
+      }),
+    );
+    history.replaceState(null, '', '/?view=chat');
+    const { getByTestId, queryByTestId, findByTestId } = render(App);
+
+    const input = document.querySelector('#prompt-input') as HTMLTextAreaElement;
+    await waitFor(() => expect(input.disabled).toBe(false));
+    await fireEvent.input(input, { target: { value: 'ping' } });
+    await fireEvent.submit(document.getElementById('chat-form')!);
+    // The live reply streams into the thread's own crew bubble, so the
+    // in-flight signal is the typing bubble, not the standalone shimmer.
+    await findByTestId('thread-typing');
+
+    await fireEvent.click(getByTestId('nav-desk'));
+    await fireEvent.click(getByTestId('nav-chat'));
+
+    await waitFor(() => expect(document.getElementById('chat-form')).toBeTruthy());
+    expect(queryByTestId('thread-typing')).toBeNull();
+    expect(queryByTestId('reply-pending')).toBeNull();
+    expect(queryByTestId('conversation-thread')).toBeNull();
+    // And the composer is usable again rather than stuck disabled behind `busy`.
+    const back = document.querySelector('#prompt-input') as HTMLTextAreaElement;
+    expect(back.disabled).toBe(false);
+  });
+
   // The restore is view-only, so a restored entry can still name content this
   // session deliberately tore down. The url must stop claiming it — and since
   // the chat-intent param is what forced the chat view, the same rewrite has to
