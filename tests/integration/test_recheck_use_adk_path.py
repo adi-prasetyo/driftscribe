@@ -145,8 +145,11 @@ def test_recheck_response_scrubs_secret_in_rationale(monkeypatch):
     assert "hunter2SECRET" not in body["rationale"]
     assert secret_url not in body["rationale"]
     assert "PAYMENT_MODE" in body["rationale"]   # var name survives
-    # ...diffs[] are returned raw by design (frontend redacts at display).
-    assert body["diffs"][0]["live"] == secret_url
+    # ...and diffs[] are scrubbed too. Note this value is credentialed by
+    # SHAPE (a `user:pass@host` URL) under a NON-secret name, so it exercises
+    # the value_looks_credentialed half of should_redact, not the name half.
+    assert body["diffs"][0]["live"] == "(redacted)"
+    assert body["diffs"][0]["name"] == "PAYMENT_MODE"
 
 
 def test_use_adk_path_tolerates_cloud_run_read_failure(monkeypatch):

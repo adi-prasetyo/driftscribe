@@ -31,7 +31,10 @@ tests 1, 2, 5, 6.
 """
 from __future__ import annotations
 
+import copy
 import datetime as dt
+import json
+import urllib.parse
 from typing import Any, Callable
 from unittest.mock import AsyncMock, patch
 
@@ -54,8 +57,24 @@ from driftscribe_lib.approvals import Approval
 
 
 _TARGET_REVISION = "payment-demo-00041-xyz"
-_APPROVAL_ID = "abc-uuid-1234-5678-9012-345678901234"
-_APPROVAL_TOKEN = "tok-xyz-43chars-aaaaaaaaaaaaaaaaaaaaaaaaa"
+# ds-hdt: shapes the WORKER CAN ACTUALLY MINT — a UUID4 id
+# (``str(uuid.uuid4())``) and a 43-char urlsafe token
+# (``secrets.token_urlsafe(32)``). The previous values were neither: the id
+# carried non-hex characters ("abc-uuid-…") and the token was 41 chars. They
+# passed while _do_rollback only checked truthiness, but described a /propose
+# response ``workers/rollback/main.py`` cannot emit — and a test built on an
+# impossible fixture proves nothing about production.
+_APPROVAL_ID = "3f8a1c22-9d4e-4b7a-8e61-2c5d0f7a93bb"
+# Shape-valid but deliberately LOW-entropy and self-describing. The guard it
+# has to satisfy is _APPROVAL_TOKEN_SHAPE ([A-Za-z0-9_-]{43,64}) — alphabet and
+# length, not randomness — so a readable string exercises it exactly as well as
+# a random one. An earlier version of this fixture used a realistic 43-char
+# base64url token and GitGuardian correctly flagged it as a Generic High
+# Entropy Secret in all three files: making a fixture realistic enough to test
+# the shape guard had made it indistinguishable from a live credential. The
+# lesson from the "impossible fixture" defects was that a fixture must be a
+# shape the producer CAN mint, not that it must look random.
+_APPROVAL_TOKEN = "driftscribe-fixture-approval-token-not-real"
 _APPROVAL_URL = (
     f"https://coordinator.example/approvals/{_APPROVAL_ID}?t={_APPROVAL_TOKEN}"
 )
@@ -64,6 +83,12 @@ _APPROVAL_URL = (
 # rollback decisions whose expires_at is past now-UTC are now treated as
 # cache misses). A specific test below pins the past-expiry behavior.
 _EXPIRES_AT_ISO = "2099-01-01T00:00:00+00:00"
+# What the autonomous lane PERSISTS: same id + token, no host. The row is
+# canonicalized to a relative url so a drifted worker COORDINATOR_URL can never
+# put an off-origin link where the desk is the only surface (safeApprovalHref
+# drops off-origin, which would recreate ds-hdt). The absolute form above is
+# still what the notification body carries.
+_APPROVAL_URL_ROW = f"/approvals/{_APPROVAL_ID}?t={_APPROVAL_TOKEN}"
 
 
 def _rollback_proposal() -> DecisionProposal:
@@ -217,7 +242,7 @@ def test_rollback_recheck_routes_through_worker_and_renders_approval_url(
 
     # Approval block shape — approval_url is the only token carrier.
     assert body["approval"]["approval_id"] == _APPROVAL_ID
-    assert body["approval"]["approval_url"] == _APPROVAL_URL
+    assert body["approval"]["approval_url"] == _APPROVAL_URL_ROW
     assert body["approval"]["expires_at"] == _EXPIRES_AT_ISO
     # approval_token MUST NOT appear anywhere in the response body — the
     # URL already embeds ?t=<token>; exposing it separately doubles the
@@ -526,39 +551,60 @@ def test_operator_reject_post_routes_to_worker_deny(
 # --------------------------------------------------------------------------- #
 
 
-def test_notifier_failure_releases_claim_for_retry(
+def test_notifier_failure_still_records_a_reachable_decision(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Test 5: notifier failure rolls back the event-key claim.
+    """ds-hdt: notifier failure must NOT strand the approval.
 
-    The rollback worker succeeds (the approval doc exists in Firestore
-    with its 15-min TTL), but the notifier raises 503. The coordinator
-    surfaces 502 — and CRITICALLY releases the claim so a subsequent
-    recheck (same input, no force) can re-propose rather than 409.
+    Inverts the previous contract, deliberately. This test used to assert that
+    a notifier 503 produced a 502 and released the claim so a retry could mint
+    a fresh approval. That was the ds-hdt outage: the webhook pointed at
+    httpbin.org, httpbin returned 503 for everything, and because the decision
+    row was written only AFTER a successful notify, every autonomous rollback
+    minted an approval that no surface in the product could reach
+    (``ApprovalStore`` is primary-key-only; ``/infra/pending-approvals`` covers
+    IaC PRs alone). The self-heal could never complete.
 
-    This matches the existing claim-release semantics for the other
-    actions (test_side_effect_failure_releases_claim_so_retry_can_proceed
-    in test_recheck_dry_run.py)."""
+    The row IS the surface now — the desk renders a pending rollback from
+    ``approval.approval_url`` — so notification is advisory:
+
+    * 200, with the decision returned;
+    * the approval block intact, so the desk CTA works;
+    * ``notify.state == "failed"`` — honest, never silently "delivered";
+    * NO exception text persisted (it can echo the tokened URL — see
+      ``_notify_rollback_approval``);
+    * the claim KEPT, so a retry returns the same decision instead of minting
+      a second live approval for one drift.
+    """
     monkeypatch.setenv("USE_ADK", "true")
     get_settings.cache_clear()
     _reset_state_for_tests()
 
     mock_run_agent = AsyncMock(return_value=_rollback_proposal())
 
-    # First call: notifier fails. Second call (same input, no force):
-    # claim must be released so this succeeds with a fresh proposal.
+    # First call: notifier fails. Second call (same input, no force): the claim
+    # is KEPT, so this must return the SAME cached decision — not re-propose.
     notifier_state: dict[str, Any] = {"fail_next": True}
+    propose_calls: list[int] = []
 
     def dispatch(worker: str, payload: dict, *args: Any, **kwargs: Any) -> Any:
         if worker == "reader":
             return _reader_envelope({"PAYMENT_MODE": "live"})
         if worker == "rollback":
+            propose_calls.append(1)
             return _propose_envelope()
         if worker == "notifier":
             if notifier_state["fail_next"]:
                 notifier_state["fail_next"] = False
+                # The body carries the tokened approval URL back — exactly what
+                # httpbin.org/post does by echoing the request, and what the
+                # Notifier then embeds in its own 502 detail. If any of this
+                # reached the persisted row, /decisions would publish a live
+                # single-use credential to anonymous demo visitors.
                 raise worker_client.WorkerClientError(
-                    503, "downstream webhook timeout", "notifier"
+                    503,
+                    f"webhook returned 503: {{\"text\": \"...{_APPROVAL_URL}\"}}",
+                    "notifier",
                 )
             return _notifier_envelope()
         raise AssertionError(f"unexpected worker {worker!r}")
@@ -571,15 +617,35 @@ def test_notifier_failure_releases_claim_for_retry(
         client = TestClient(app)
         r1 = client.post("/recheck")
         # First attempt: notifier raised → 502 with the notify failure detail.
-        assert r1.status_code == 502
-        assert "rollback notify failed" in r1.json()["detail"]
-        # Second attempt — claim was released, so this re-runs cleanly.
+        # The notification failed, but the decision is durable and actionable.
+        assert r1.status_code == 200, r1.text
+        b1 = r1.json()
+        assert b1["action"] == "rollback"
+        assert b1["approval"]["approval_url"] == _APPROVAL_URL_ROW
+        assert b1["notify"] == {
+            "state": "failed",
+            "error_code": "worker_error",
+            "status_code": 503,
+        }
+        # Second attempt — the claim was KEPT, so this returns the SAME
+        # decision rather than minting a second live approval for one drift.
         r2 = client.post("/recheck")
 
     assert r2.status_code == 200, r2.text
     body = r2.json()
     assert body["action"] == "rollback"
-    assert body["approval"]["approval_url"] == _APPROVAL_URL
+    assert body["approval"]["approval_url"] == _APPROVAL_URL_ROW
+    assert body["decision_id"] == b1["decision_id"]
+    assert len(propose_calls) == 1, "a retry must not re-propose"
+
+    # The persisted row carries the failure classification and NOTHING that
+    # could echo the credential: no exception text, no downstream body.
+    stored = agent_main.get_state().get_decision(b1["decision_id"])
+    assert stored["notify"]["state"] == "failed"
+    assert "error" not in stored["notify"]
+    flat = json.dumps(stored["notify"])
+    assert _APPROVAL_TOKEN not in flat
+    assert "webhook returned" not in flat
 
 
 def test_propose_failure_releases_claim_for_retry(
@@ -667,12 +733,74 @@ def test_malformed_propose_response_returns_502_and_releases_claim(
         client = TestClient(app)
         r1 = client.post("/recheck")
         assert r1.status_code == 502
-        assert "missing approval_url" in r1.json()["detail"]
+        # ds-hdt: the check is now _validated_approval (the chat lane's ds-y5i
+        # correlation), not a bare truthiness test, so the detail names the
+        # correlation rather than one absent field.
+        assert "did not carry a usable approval" in r1.json()["detail"]
+        # Nothing was recorded: a decision whose approval the operator cannot
+        # act on is worse than no decision, now that the row IS the surface.
+        assert agent_main.get_state().list_decisions(limit=10) == []
         # Claim was released — retry succeeds with the well-formed response.
         r2 = client.post("/recheck")
 
     assert r2.status_code == 200
-    assert r2.json()["approval"]["approval_url"] == _APPROVAL_URL
+    assert r2.json()["approval"]["approval_url"] == _APPROVAL_URL_ROW
+
+
+@pytest.mark.parametrize(
+    ("mutation", "why"),
+    [
+        ({"approval_url": None}, "absent url"),
+        ({"approval_id": "not-a-uuid"}, "id is not UUID-shaped"),
+        ({"approval_token": "short"}, "token is not token-shaped"),
+        ({"expires_at": "whenever"}, "expiry does not parse"),
+        (
+            {"approval_url": "https://evil.example/approvals/x?t=" + _APPROVAL_TOKEN},
+            "url names a different approval than approval_id",
+        ),
+        (
+            {"approval_url": f"javascript:alert(1)#/approvals/{_APPROVAL_ID}"},
+            "non-navigable scheme",
+        ),
+    ],
+)
+def test_an_unusable_approval_is_never_recorded(
+    monkeypatch: pytest.MonkeyPatch, mutation: dict, why: str
+) -> None:
+    """Every way a /propose response can fail to be ACTIONABLE must 502 before
+    a decision row exists.
+
+    ds-hdt makes the decision row the operator's surface, so a row is a promise
+    that its approval can be acted on. Each mutation below breaks that promise
+    in a different place — a dead CTA, a row whose status joins from one
+    approval while the click executes another (ds-y5i), or an expiry that never
+    retires the card because an unparseable value fail-safes to "not expired".
+    """
+    monkeypatch.setenv("USE_ADK", "true")
+    get_settings.cache_clear()
+    _reset_state_for_tests()
+
+    mock_run_agent = AsyncMock(return_value=_rollback_proposal())
+
+    def dispatch(worker: str, payload: dict, *args: Any, **kwargs: Any) -> Any:
+        if worker == "reader":
+            return _reader_envelope({"PAYMENT_MODE": "live"})
+        if worker == "rollback":
+            return {**_propose_envelope(), **mutation}
+        if worker == "notifier":
+            raise AssertionError("must not notify an unusable approval")
+        raise AssertionError(f"unexpected worker {worker!r}")
+
+    with (
+        patch("agent.main._run_adk_agent", mock_run_agent),
+        patch("agent.main.worker_client.call") as m_call,
+    ):
+        m_call.side_effect = dispatch
+        r = TestClient(app).post("/recheck")
+
+    assert r.status_code == 502, f"{why}: {r.text}"
+    assert "did not carry a usable approval" in r.json()["detail"], why
+    assert agent_main.get_state().list_decisions(limit=10) == [], why
 
 
 def test_idempotent_retry_returns_cached_approval(
@@ -880,7 +1008,7 @@ def test_concurrent_expired_rollback_evictions_only_one_re_proposes(
     assert evict_calls[0][1] == r1.json()["decision_id"]
     # And the loser returns the winner's fresh decision verbatim.
     assert r2.json()["decision_id"] == r1.json()["decision_id"]
-    assert r2.json()["approval"]["approval_url"] == _APPROVAL_URL
+    assert r2.json()["approval"]["approval_url"] == _APPROVAL_URL_ROW
 
 
 def test_cas_loser_with_no_fresh_decision_returns_409(
@@ -1223,7 +1351,7 @@ def test_rollback_still_proposed_when_observed_env_corroborates_the_proposal(
 
     assert r.status_code == 200, r.text
     assert r.json()["action"] == "rollback"
-    assert r.json()["approval"]["approval_url"] == _APPROVAL_URL
+    assert r.json()["approval"]["approval_url"] == _APPROVAL_URL_ROW
     m_execute.assert_not_called()  # still HITL — nothing executed
 
 
@@ -1280,7 +1408,7 @@ def test_an_ungrounded_recheck_cannot_reuse_a_grounded_decision_from_the_cache(
         m_call.side_effect = _make_dispatch(live_env=grounded_env)
         r1 = TestClient(app).post("/recheck")
     assert r1.status_code == 200, r1.text
-    assert r1.json()["approval"]["approval_url"] == _APPROVAL_URL
+    assert r1.json()["approval"]["approval_url"] == _APPROVAL_URL_ROW
 
     with (
         patch("agent.main._run_adk_agent", AsyncMock(return_value=proposal)),
@@ -1291,7 +1419,7 @@ def test_an_ungrounded_recheck_cannot_reuse_a_grounded_decision_from_the_cache(
 
     assert r2.status_code == 502, r2.text
     assert "no observed live env" in r2.text
-    assert _APPROVAL_URL not in r2.text
+    assert _APPROVAL_TOKEN not in r2.text
 
 
 def test_classifier_path_502s_on_a_malformed_reader_payload(
@@ -1492,7 +1620,7 @@ def test_an_ungrounded_run_cannot_be_served_a_cached_rollback_VIA_ANOTHER_ACTION
         m_call.side_effect = _make_dispatch(live_env=env)
         r1 = TestClient(app).post("/recheck")
     assert r1.status_code == 200, r1.text
-    assert r1.json()["approval"]["approval_url"] == _APPROVAL_URL
+    assert r1.json()["approval"]["approval_url"] == _APPROVAL_URL_ROW
 
     def reader_down(worker: str, payload: dict, *a: Any, **k: Any) -> Any:
         if worker == "reader":
@@ -1509,7 +1637,7 @@ def test_an_ungrounded_run_cannot_be_served_a_cached_rollback_VIA_ANOTHER_ACTION
         r2 = TestClient(app).post("/recheck")
 
     assert r2.status_code == 502, r2.text
-    assert _APPROVAL_URL not in r2.text
+    assert _APPROVAL_TOKEN not in r2.text
 
 
 def test_a_claim_LOSER_is_not_handed_a_concurrent_runs_cached_rollback(
@@ -1596,4 +1724,356 @@ def test_a_claim_LOSER_is_not_handed_a_concurrent_runs_cached_rollback(
 
     assert len(lookups) >= 2, "the race did not reach the claim-loser re-read"
     assert r.status_code == 502, r.text
-    assert _APPROVAL_URL not in r.text
+    assert _APPROVAL_TOKEN not in r.text
+
+
+# --------------------------------------------------------------------------- #
+# ds-hdt ordering invariants: the decision row is written BEFORE the
+# notification, and only the notification is allowed to fail softly.
+# --------------------------------------------------------------------------- #
+
+
+def _rollback_dispatch(notifier: Callable[[], Any]) -> Callable[..., Any]:
+    def dispatch(worker: str, payload: dict, *args: Any, **kwargs: Any) -> Any:
+        if worker == "reader":
+            return _reader_envelope({"PAYMENT_MODE": "live"})
+        if worker == "rollback":
+            return _propose_envelope()
+        if worker == "notifier":
+            return notifier()
+        raise AssertionError(f"unexpected worker {worker!r}")
+
+    return dispatch
+
+
+def test_the_decision_is_durable_before_the_notification_is_attempted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The row must already be readable at the moment notify runs.
+
+    This is the ds-hdt ordering, pinned directly rather than inferred from a
+    happy path. It matters because /eventarc fast-acks (#268) and runs the
+    audit in a background task, so nothing re-delivers a coordinator that dies
+    mid-notify: a row written afterwards would simply be lost, stranding the
+    approval with no surface AND no retry.
+    """
+    monkeypatch.setenv("USE_ADK", "true")
+    get_settings.cache_clear()
+    _reset_state_for_tests()
+
+    seen_at_notify_time: list[Any] = []
+
+    def notifier() -> Any:
+        # Read the store from INSIDE the notifier call. DEEP copy: the
+        # in-memory store hands back live references, so the outcome patch that
+        # runs after this returns would otherwise rewrite what we "observed"
+        # mid-flight and the assertion below would read the final state.
+        seen_at_notify_time.append(
+            copy.deepcopy(list(agent_main.get_state().list_decisions(limit=10)))
+        )
+        return _notifier_envelope()
+
+    with (
+        patch("agent.main._run_adk_agent", AsyncMock(return_value=_rollback_proposal())),
+        patch("agent.main.worker_client.call") as m_call,
+    ):
+        m_call.side_effect = _rollback_dispatch(notifier)
+        r = TestClient(app).post("/recheck")
+
+    assert r.status_code == 200, r.text
+    assert len(seen_at_notify_time) == 1
+    rows = seen_at_notify_time[0]
+    assert len(rows) == 1, "the decision must be durable before notify runs"
+    assert rows[0]["approval"]["approval_url"] == _APPROVAL_URL_ROW
+    # Mid-flight the delivery outcome is genuinely not known yet — "pending",
+    # never a premature "delivered".
+    assert rows[0]["notify"] == {"state": "pending"}
+    # ...and it settles to delivered once the call returns.
+    assert r.json()["notify"] == {"state": "delivered"}
+
+
+def test_a_failed_decision_write_suppresses_the_notification_entirely(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No durable surface ⇒ do not notify.
+
+    Delivering a link to an approval that appears nowhere is the ds-hdt failure
+    wearing a different hat: the operator gets a URL, the desk shows nothing,
+    and the approval dies at its 15-min expiry. Release the claim so a retry
+    can mint a fresh one, and 502.
+    """
+    monkeypatch.setenv("USE_ADK", "true")
+    get_settings.cache_clear()
+    _reset_state_for_tests()
+
+    def notifier() -> Any:
+        raise AssertionError("must not notify when the decision was not recorded")
+
+    state = agent_main.get_state()
+    with (
+        patch("agent.main._run_adk_agent", AsyncMock(return_value=_rollback_proposal())),
+        patch("agent.main.worker_client.call") as m_call,
+        patch.object(
+            type(state), "record_decision", side_effect=RuntimeError("firestore down")
+        ),
+    ):
+        m_call.side_effect = _rollback_dispatch(notifier)
+        r = TestClient(app).post("/recheck")
+
+    assert r.status_code == 502
+    assert "could not be recorded" in r.json()["detail"]
+    # Nothing was persisted, and the claim was released so a retry can
+    # re-propose rather than meeting a 409 from an orphan claim.
+    assert agent_main.get_state().list_decisions(limit=10) == []
+
+
+def test_an_unexpected_notifier_exception_is_contained_like_a_worker_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-WorkerClientError escape must not strand the approval either.
+
+    ``except WorkerClientError`` alone would have left a bug in the client, or
+    any transport surprise, re-opening exactly the hole this closes — so the
+    handler is deliberately broad and classifies rather than propagates.
+    """
+    monkeypatch.setenv("USE_ADK", "true")
+    get_settings.cache_clear()
+    _reset_state_for_tests()
+
+    def notifier() -> Any:
+        raise ValueError("not a WorkerClientError at all")
+
+    with (
+        patch("agent.main._run_adk_agent", AsyncMock(return_value=_rollback_proposal())),
+        patch("agent.main.worker_client.call") as m_call,
+    ):
+        m_call.side_effect = _rollback_dispatch(notifier)
+        r = TestClient(app).post("/recheck")
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["approval"]["approval_url"] == _APPROVAL_URL_ROW
+    assert body["notify"] == {"state": "failed", "error_code": "internal_error"}
+    # No status_code (there was no HTTP exchange) and, as ever, no message text.
+    assert "status_code" not in body["notify"]
+    assert "not a WorkerClientError" not in json.dumps(body["notify"])
+
+
+def test_a_failed_outcome_patch_never_fails_the_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The row is already durable and actionable; losing the delivery
+    annotation must not 500 the audit. It stays ``pending``, which is honest —
+    we genuinely no longer know what became of the delivery."""
+    monkeypatch.setenv("USE_ADK", "true")
+    get_settings.cache_clear()
+    _reset_state_for_tests()
+
+    state = agent_main.get_state()
+    with (
+        patch("agent.main._run_adk_agent", AsyncMock(return_value=_rollback_proposal())),
+        patch("agent.main.worker_client.call") as m_call,
+        patch.object(
+            type(state),
+            "set_decision_notify_outcome",
+            side_effect=RuntimeError("firestore blip"),
+        ),
+    ):
+        m_call.side_effect = _rollback_dispatch(_notifier_envelope)
+        r = TestClient(app).post("/recheck")
+
+    assert r.status_code == 200, r.text
+    assert r.json()["approval"]["approval_url"] == _APPROVAL_URL_ROW
+    stored = agent_main.get_state().list_decisions(limit=10)[0]
+    assert stored["notify"] == {"state": "pending"}
+
+
+# --------------------------------------------------------------------------- #
+# ds-hdt: the recorded approval url is canonicalized to same-origin.
+#
+# _approval_url_matches deliberately accepts ANY http(s) origin (see its
+# docstring and ds-x5l): the worker derives the url from its own
+# COORDINATOR_URL, that value has drifted from the coordinator's before, and
+# rejecting a mismatch would turn routine config drift into a total rollback
+# outage. The residual was accepted on the grounds that the SPA declines the
+# CTA but the chat reply and the webhook still carry the raw string.
+#
+# That justification does not survive making the row the operator's only
+# surface: the autonomous lane has no chat reply, and the webhook is the thing
+# that is down. So the row is rebuilt from the two parts already exact-verified
+# (path == /approvals/{id}, exactly one well-shaped t=) with no host at all.
+# --------------------------------------------------------------------------- #
+
+
+def _propose_envelope_on(origin: str) -> dict[str, Any]:
+    """A propose response whose url is valid in every way EXCEPT its host."""
+    return {
+        "approval_id": _APPROVAL_ID,
+        "approval_token": _APPROVAL_TOKEN,
+        "approval_url": f"{origin}/approvals/{_APPROVAL_ID}?t={_APPROVAL_TOKEN}",
+        "expires_at": _EXPIRES_AT_ISO,
+    }
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://coordinator.example",  # the ordinary case
+        "https://evil.example",  # hostile host, otherwise perfectly shaped
+        "http://driftscribe-agent-OLD-hash-an.a.run.app",  # drifted COORDINATOR_URL
+    ],
+)
+def test_the_recorded_approval_url_is_always_same_origin(
+    monkeypatch: pytest.MonkeyPatch, origin: str
+) -> None:
+    """Whatever host the worker names, the persisted row carries none.
+
+    The hostile-host case passes _validated_approval on purpose — id, token,
+    expiry, path and the single query pair all correlate, so shape validation
+    has nothing to object to. The existing malformed-response test does NOT
+    cover it: its foreign-origin url names ``/approvals/x``, so it dies on id
+    correlation long before the origin would matter.
+
+    Note we do NOT reject: a drifted-but-honest COORDINATOR_URL must keep
+    working, which is why the third case is here beside the second.
+    """
+    monkeypatch.setenv("USE_ADK", "true")
+    get_settings.cache_clear()
+    _reset_state_for_tests()
+
+    def dispatch(worker: str, payload: dict, *args: Any, **kwargs: Any) -> Any:
+        if worker == "reader":
+            return _reader_envelope({"PAYMENT_MODE": "live"})
+        if worker == "rollback":
+            return _propose_envelope_on(origin)
+        if worker == "notifier":
+            return _notifier_envelope()
+        raise AssertionError(f"unexpected worker {worker!r}")
+
+    with (
+        patch("agent.main._run_adk_agent", AsyncMock(return_value=_rollback_proposal())),
+        patch("agent.main.worker_client.call") as m_call,
+    ):
+        m_call.side_effect = dispatch
+        r = TestClient(app).post("/recheck")
+
+    assert r.status_code == 200, r.text
+    recorded = r.json()["approval"]["approval_url"]
+    # Host-less, and exactly the id+token the worker minted.
+    assert recorded == _APPROVAL_URL_ROW
+    parsed = urllib.parse.urlsplit(recorded)
+    assert parsed.scheme == "" and parsed.netloc == ""
+    # The property the desk actually needs (safeApprovalHref keeps only
+    # pathname + search, and requires the /approvals/ prefix).
+    assert parsed.path == f"/approvals/{_APPROVAL_ID}"
+    assert urllib.parse.parse_qs(parsed.query)["t"] == [_APPROVAL_TOKEN]
+    # No trace of a foreign host in the persisted APPROVAL BLOCK. Deliberately
+    # not the whole row: ``rendered_body`` is the notification text and keeps
+    # the worker's absolute url by design, so a whole-row assertion here would
+    # be asserting the opposite of
+    # test_the_notification_still_carries_an_absolute_url.
+    stored = agent_main.get_state().list_decisions(limit=10)[0]
+    assert stored["approval"]["approval_url"] == _APPROVAL_URL_ROW
+    assert "evil.example" not in json.dumps(stored["approval"])
+    # The canonical form must still satisfy the validator it came from, so a
+    # round-trip through it is stable.
+    from agent.adk_tools import _approval_url_matches
+
+    assert _approval_url_matches(recorded, _APPROVAL_ID)
+
+
+def test_the_notification_still_carries_an_absolute_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Canonicalizing the ROW must not relativize the NOTIFICATION.
+
+    A relative link in a Discord/Slack message is unusable — there is no page
+    to resolve it against. The row and the notification legitimately differ,
+    so pin the pair together or a later tidy-up will collapse them.
+    """
+    monkeypatch.setenv("USE_ADK", "true")
+    get_settings.cache_clear()
+    _reset_state_for_tests()
+
+    sent: list[dict[str, Any]] = []
+
+    def dispatch(worker: str, payload: dict, *args: Any, **kwargs: Any) -> Any:
+        if worker == "reader":
+            return _reader_envelope({"PAYMENT_MODE": "live"})
+        if worker == "rollback":
+            return _propose_envelope()
+        if worker == "notifier":
+            sent.append(payload)
+            return _notifier_envelope()
+        raise AssertionError(f"unexpected worker {worker!r}")
+
+    with (
+        patch("agent.main._run_adk_agent", AsyncMock(return_value=_rollback_proposal())),
+        patch("agent.main.worker_client.call") as m_call,
+    ):
+        m_call.side_effect = dispatch
+        r = TestClient(app).post("/recheck")
+
+    assert r.status_code == 200, r.text
+    assert len(sent) == 1
+    assert _APPROVAL_URL in sent[0]["body"], "notification lost its absolute url"
+    assert r.json()["approval"]["approval_url"] == _APPROVAL_URL_ROW
+
+
+def test_an_unexpected_notifier_error_never_logs_its_message(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The exception-text ban covers Cloud Logging, not just the decision row.
+
+    An earlier draft used ``log.exception`` here and justified it as "Cloud
+    Logging only, never the body". That is not something the raising code
+    guarantees: a serialization error is exactly the class that quotes the
+    payload it choked on, and the payload is the rendered body carrying the
+    tokened approval url. Cloud Logging is access-controlled, not a safe home
+    for a live credential.
+
+    So this pins THREE things about the log record: no ``exc_info`` (a
+    traceback would carry frame locals holding the body), the raised message
+    absent, and the token absent. Asserting only "state == failed" would pass
+    against the version this exists to prevent.
+    """
+    monkeypatch.setenv("USE_ADK", "true")
+    get_settings.cache_clear()
+    _reset_state_for_tests()
+
+    # A message shaped like the leak we are guarding against: a serializer
+    # quoting the payload it could not encode.
+    secret_bearing_message = (
+        f"cannot serialize field 'body': <{_APPROVAL_URL}> is not JSON"
+    )
+
+    def exploding_notifier() -> Any:
+        raise TypeError(secret_bearing_message)
+
+    with (
+        patch("agent.main._run_adk_agent", AsyncMock(return_value=_rollback_proposal())),
+        patch("agent.main.worker_client.call") as m_call,
+        caplog.at_level("DEBUG"),
+    ):
+        m_call.side_effect = _rollback_dispatch(exploding_notifier)
+        r = TestClient(app).post("/recheck")
+
+    # Contained: the approval is still recorded and actionable.
+    assert r.status_code == 200, r.text
+    assert r.json()["notify"] == {
+        "state": "failed",
+        "error_code": "internal_error",
+    }
+    assert r.json()["approval"]["approval_url"] == _APPROVAL_URL_ROW
+
+    records = [rec for rec in caplog.records if "notify" in rec.getMessage()]
+    assert records, "the unexpected-notifier failure was not logged at all"
+    for rec in records:
+        assert rec.exc_info is None, (
+            "a traceback was attached; frame locals can carry the rendered body"
+        )
+        formatted = rec.getMessage() + repr(getattr(rec, "__dict__", {}))
+        assert secret_bearing_message not in formatted
+        assert _APPROVAL_TOKEN not in formatted
+        # The useful classification IS present — this must not be "log nothing".
+        assert getattr(rec, "exc_type", None) == "TypeError"

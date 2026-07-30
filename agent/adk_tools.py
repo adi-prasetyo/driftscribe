@@ -569,10 +569,11 @@ def propose_rollback_tool(target_revision: str, reason: str) -> dict:
     # arg) + the validated approval_url/expires_at. The model-authored ``reason``
     # NEVER appears here (same security stance as safe_reason above — the model
     # sees raw env).
-    # Contrast with agent/main.py's autonomous rollback: there notify failure
-    # 502s because the webhook is the only surface; here the chat reply already
-    # carries approval_url, so failure just means the operator doesn't get the
-    # extra push notification.
+    # Failure just means the operator doesn't get the extra push notification:
+    # the chat reply already carries approval_url. As of ds-hdt the autonomous
+    # lane in agent/main.py takes the SAME stance — it used to 502 because the
+    # webhook was its only surface, and it now records the decision row (which
+    # the desk renders) before notifying, so nothing there is stranded either.
     s = get_settings()
     notify_body = (
         f"Rollback approval pending: roll back {s.target_service} to "
@@ -1135,8 +1136,10 @@ def _notify_approval_pending(
     **log_extra: object,
 ) -> None:
     """Best-effort operator notification — advisory side-channel, never
-    load-bearing here (the chat reply/CTA already carries the link; contrast
-    agent/main.py's autonomous rollback flow where notify failure 502s).
+    load-bearing here (the chat reply/CTA already carries the link). As of
+    ds-hdt agent/main.py's autonomous rollback is advisory too: it records the
+    desk-rendered decision row before notifying, so neither lane depends on
+    the webhook to keep a minted approval reachable.
     Suppresses EVERYTHING — including a (pathological) raising log handler —
     so NOTHING in this function can propagate to the caller; logs one WARNING
     with identifying extras only (never the body — it may embed a tokened

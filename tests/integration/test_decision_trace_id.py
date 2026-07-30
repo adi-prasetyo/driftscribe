@@ -111,12 +111,28 @@ def _reader_envelope(env: dict[str, str]) -> dict[str, Any]:
     }
 
 
-_APPROVAL_ID = "abc-uuid-1234-5678-9012-345678901234"
-_APPROVAL_TOKEN = "tok-xyz-43chars-aaaaaaaaaaaaaaaaaaaaaaaaa"
+# Worker-mintable shapes — see the equivalent note in test_rollback_e2e.py.
+_APPROVAL_ID = "3f8a1c22-9d4e-4b7a-8e61-2c5d0f7a93bb"
+# Shape-valid but deliberately LOW-entropy and self-describing. The guard it
+# has to satisfy is _APPROVAL_TOKEN_SHAPE ([A-Za-z0-9_-]{43,64}) — alphabet and
+# length, not randomness — so a readable string exercises it exactly as well as
+# a random one. An earlier version of this fixture used a realistic 43-char
+# base64url token and GitGuardian correctly flagged it as a Generic High
+# Entropy Secret in all three files: making a fixture realistic enough to test
+# the shape guard had made it indistinguishable from a live credential. The
+# lesson from the "impossible fixture" defects was that a fixture must be a
+# shape the producer CAN mint, not that it must look random.
+_APPROVAL_TOKEN = "driftscribe-fixture-approval-token-not-real"
 _APPROVAL_URL = (
     f"https://coordinator.example/approvals/{_APPROVAL_ID}?t={_APPROVAL_TOKEN}"
 )
 _EXPIRES_AT_ISO = "2099-01-01T00:00:00+00:00"
+# What the autonomous lane PERSISTS: same id + token, no host. The row is
+# canonicalized to a relative url so a drifted worker COORDINATOR_URL can never
+# put an off-origin link where the desk is the only surface (safeApprovalHref
+# drops off-origin, which would recreate ds-hdt). The absolute form above is
+# still what the notification body carries.
+_APPROVAL_URL_ROW = f"/approvals/{_APPROVAL_ID}?t={_APPROVAL_TOKEN}"
 
 
 def _propose_envelope() -> dict[str, Any]:
@@ -261,4 +277,4 @@ def test_rollback_decision_carries_inbound_trace_id(
     assert cached["trace_id"] == fixed_trace
     # Sanity: the approval block is intact (we didn't break the rollback
     # response schema while adding the trace_id field).
-    assert cached["approval"]["approval_url"] == _APPROVAL_URL
+    assert cached["approval"]["approval_url"] == _APPROVAL_URL_ROW

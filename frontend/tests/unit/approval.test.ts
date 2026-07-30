@@ -4,6 +4,7 @@ import {
   iacApprovalHref,
   isExpired,
   isRollbackAwaitingOperator,
+  notifyFailed,
   isRollbackApprovalUnresolved,
   isIacAwaitingOperator,
   safeGithubHref,
@@ -664,5 +665,42 @@ describe('isRollbackAwaitingOperator — unreadable approval status', () => {
     expect(
       isRollbackAwaitingOperator({ approval: { ...base, status_unavailable: true } }, opts),
     ).toBe(false);
+  });
+});
+
+describe('notifyFailed — ds-hdt', () => {
+  it('is true ONLY for a positively-recorded failure', () => {
+    expect(notifyFailed({ notify: { state: 'failed' } })).toBe(true);
+    expect(notifyFailed({ notify: { state: 'failed', error_code: 'worker_error', status_code: 503 } })).toBe(
+      true,
+    );
+  });
+
+  it('is false for delivered', () => {
+    expect(notifyFailed({ notify: { state: 'delivered' } })).toBe(false);
+  });
+
+  it('is false for "pending" — in flight, or the outcome patch was lost. NOT KNOWN', () => {
+    // The distinction that matters: `state !== 'delivered'` would light the
+    // warning here, telling the operator no notification was sent when one may
+    // well have been.
+    expect(notifyFailed({ notify: { state: 'pending' } })).toBe(false);
+  });
+
+  it('is false when notify is absent — every row written before ds-hdt', () => {
+    // Historical rows carry no `notify` key at all. Warning on them would cry
+    // wolf across the entire decisions log.
+    expect(notifyFailed({})).toBe(false);
+    expect(notifyFailed({ notify: null })).toBe(false);
+    expect(notifyFailed({ notify: {} })).toBe(false);
+  });
+
+  it('is false for null/undefined decisions', () => {
+    expect(notifyFailed(null)).toBe(false);
+    expect(notifyFailed(undefined)).toBe(false);
+  });
+
+  it('is false for an unrecognised state rather than defaulting to alarm', () => {
+    expect(notifyFailed({ notify: { state: 'something_new' as never } })).toBe(false);
   });
 });

@@ -36,8 +36,9 @@ def test_runs_endpoint_scrubs_secret_in_rationale():
     # Rationale prose is scrubbed (PR 2)...
     assert secret not in body["rationale"]
     assert "TOKEN" in body["rationale"]
-    # ...diffs[] stay raw by design (frontend redacts at display — PR 1).
-    assert body["diffs"][0]["live"] == secret
+    # ...and diffs[] are scrubbed by the same rule. "The frontend redacts at
+    # display" only ever protected the rendered pixels, never the JSON.
+    assert body["diffs"][0]["live"] == "(redacted)"
 
 
 def test_runs_endpoint_404_unchanged():

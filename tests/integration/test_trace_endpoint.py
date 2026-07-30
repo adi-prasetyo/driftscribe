@@ -620,9 +620,9 @@ def test_trace_endpoint_scrubs_secret_in_rationale():
     # PR 2 scrubs the free-text RATIONALE prose...
     assert secret not in body["decision"]["rationale"]
     assert "API_TOKEN" in body["decision"]["rationale"]   # var name preserved
-    # ...but deliberately leaves diffs[] RAW (the decision is unredacted by
-    # design; the SPA's env-diff card redacts diff cells client-side — PR 1).
-    assert body["decision"]["diffs"][0]["live"] == secret
+    # ...and the same rule extends to diffs[]. Client-side redaction in
+    # the SPA's env-diff card never covered the JSON this endpoint returns.
+    assert body["decision"]["diffs"][0]["live"] == "(redacted)"
 
 
 # --------------------------------------------------------------------------- #

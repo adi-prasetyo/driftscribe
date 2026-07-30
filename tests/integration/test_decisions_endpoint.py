@@ -85,7 +85,11 @@ def test_list_decisions_scrubs_secret_in_rationale():
     row = resp.json()["decisions"][0]
     assert secret not in row["rationale"]          # rationale prose scrubbed
     assert "DB_PASSWORD" in row["rationale"]        # var name survives
-    assert row["diffs"][0]["live"] == secret        # diffs[] left raw (PR 1's job)
+    # diffs[] are scrubbed by the same rule. /decisions is the rail's
+    # feed AND is served to anonymous visitors during a public demo window, so
+    # "the SPA redacts at display" was never sufficient — the JSON carried it.
+    assert row["diffs"][0]["live"] == "(redacted)"
+    assert row["diffs"][0]["name"] == "DB_PASSWORD"   # the NAME still survives
 
 
 def test_list_decisions_respects_limit_query_param():

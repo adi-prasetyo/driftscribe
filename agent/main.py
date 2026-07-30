@@ -1378,6 +1378,71 @@ async def _run_adk_agent(
     return await run_agent(user_msg, workload=workload, autonomy_mode=autonomy_mode)
 
 
+def _notify_rollback_approval(rendered: str) -> dict[str, Any]:
+    """Deliver a rendered approval body to the operator channel; return a SAFE
+    record of what happened.
+
+    **Advisory by contract.** Every failure is captured and classified — no
+    delivery outcome may strand a minted approval, because the decision row
+    (already durable by the time this runs) is what makes the approval
+    reachable, not the webhook. This is the same stance
+    ``propose_rollback_tool`` has always taken on the chat lane.
+
+    **NEVER persists exception text**, and that is a security property, not
+    tidiness. ``WorkerClientError.__str__`` embeds the worker's response body
+    (``agent/worker_client.py``); the Notifier puts the DOWNSTREAM webhook's
+    body snippet into its own 502 detail (``workers/notifier/main.py``); and a
+    webhook that echoes the request — ``httpbin.org/post`` does exactly that —
+    round-trips the notification body, which carries the tokened
+    ``approval_url``. ``GET /decisions`` is served anonymously during a public
+    demo window (``infra/cloudflare/worker/src/proxy.js``), so persisting
+    ``str(e)`` here would publish a live single-use rollback credential to any
+    visitor. Classification only: never ``str(e)``, ``e.body``, or a downstream
+    snippet.
+    """
+    try:
+        worker_client.call(
+            "notifier",
+            {"channel": "approval", "severity": "high", "body": rendered},
+        )
+    except WorkerClientError as e:
+        # Expected class: the notifier or its downstream refused. Only the
+        # numeric status is safe to keep — see the docstring. The log call is
+        # itself suppressed: this function's contract is that NOTHING escapes
+        # it, and a pathological handler would otherwise be the one path that
+        # still turned a delivery failure into a request failure (same posture
+        # as adk_tools._notify_approval_pending).
+        with contextlib.suppress(Exception):
+            log.warning(
+                "rollback_notify_failed",
+                extra={"error_code": "worker_error", "notify_status": e.status_code},
+            )
+        return {
+            "state": "failed",
+            "error_code": "worker_error",
+            "status_code": e.status_code,
+        }
+    except Exception as e:  # noqa: BLE001 — advisory: must never strand approval
+        # NOT a WorkerClientError: a bug in the client, a transport surprise, a
+        # serialization error. This class is OURS, so we want to know — but only
+        # the exception TYPE is logged, never the message or a traceback. An
+        # earlier draft used log.exception and justified it as "Cloud Logging
+        # only, never the body"; that is not something the raising code
+        # guarantees. A serialization error is precisely the class that quotes
+        # the payload it choked on, and the payload here is the rendered body
+        # carrying the tokened approval url. Cloud Logging is access-controlled,
+        # not a safe place for a live credential (Codex review). Same posture as
+        # adk_tools' store-failure logging, which records type(e).__name__ for
+        # this reason.
+        with contextlib.suppress(Exception):
+            log.warning(
+                "rollback_notify_failed_unexpected",
+                extra={"error_code": "internal_error", "exc_type": type(e).__name__},
+            )
+        return {"state": "failed", "error_code": "internal_error"}
+    return {"state": "delivered"}
+
+
 def _do_rollback(
     s: Settings,
     proposal: DecisionProposal,
@@ -1386,7 +1451,7 @@ def _do_rollback(
     *,
     autonomy_mode: str,
 ) -> dict:
-    """ROLLBACK control flow: propose-via-worker → render → notify-via-worker.
+    """ROLLBACK control flow: propose-via-worker → render → record → notify.
 
     Returns the same shape as the other ``_do_recheck`` actions, EXCEPT the
     ``github`` key is replaced with ``approval`` — rollback's side effect is
@@ -1400,11 +1465,32 @@ def _do_rollback(
     - Other actions: ``render → claim_event → perform_action``. The render is
       a pure function of the proposal, so it runs first to fail-fast on a
       bad proposal without touching state.
-    - ROLLBACK: ``claim_event → propose → render → notify``. Render REQUIRES
-      the approval URL from the worker's response, so it cannot run until
-      the propose call has succeeded. Claiming the event BEFORE propose means
-      a concurrent retry can't double-mint approval docs. On any worker
-      failure the claim is released so retries can proceed.
+    - ROLLBACK: ``claim_event → propose → render → RECORD → notify``. Render
+      REQUIRES the approval URL from the worker's response, so it cannot run
+      until the propose call has succeeded. Claiming the event BEFORE propose
+      means a concurrent retry can't double-mint approval docs. On any failure
+      up to and including the decision write, the claim is released so retries
+      can proceed.
+
+    ds-hdt — why the decision row is written BEFORE the notification, and why
+    a failed notification no longer fails the request:
+
+    * The row IS the operator's surface. The desk renders a pending rollback
+      straight off ``approval.approval_url``
+      (``frontend/src/lib/approval.ts:isRollbackAwaitingOperator``), so an
+      approval with a row is reachable and an approval without one is not:
+      ``ApprovalStore`` is primary-key-only (no list), and
+      ``/infra/pending-approvals`` covers IaC PRs alone.
+    * Nothing retries us. Since the Eventarc fast-ack (#268) ``/eventarc``
+      returns 200 and runs the audit in a background task, so a coordinator
+      that dies between notify and record is not re-delivered by Pub/Sub.
+      Recording second would strand the approval with no surface AND no
+      retry — the exact ds-hdt outage, where a 503 webhook meant the
+      autonomous self-heal could never complete.
+    * Releasing the claim on a notify failure would now be actively wrong.
+      That release existed because the approval was unreachable, so a retry
+      minting a fresh one was the only recovery; with the row durable, a
+      retry would mint a SECOND live approval for one drift.
 
     Phase 13 HITL safety property (Phase 11.9 carry-over #3): there is NO
     code path in this function that calls Cloud Run's admin API. The
@@ -1522,20 +1608,67 @@ def _do_rollback(
             status_code=502, detail=f"rollback propose failed: {e}"
         ) from e
 
-    approval_url = propose_result.get("approval_url")
-    approval_id = propose_result.get("approval_id")
-    expires_at = propose_result.get("expires_at")
-    if not approval_url or not approval_id:
+    # Validate the approval tuple with the SAME correlation the chat lane uses
+    # (ds-y5i). This replaced a bare truthiness check on url/id, which was
+    # tolerable only while the webhook was the operator's surface: a malformed
+    # pair simply produced a bad notification. Now the decision row is the
+    # surface, and an unvalidated pair persists a desk CTA that 404s, never
+    # retires (an unparseable ``expires_at`` fail-safes to "not expired" in
+    # both the SPA and ``_cached_rollback_is_expired``), or — with an id/url
+    # disagreement — joins its status from one approval while the operator's
+    # click executes another. A row is only worth writing if the approval it
+    # names is REACHABLE.
+    #
+    # Local import mirrors the existing ``_team_log_sanitize`` call below:
+    # agent.adk_tools imports agent.main lazily in the other direction.
+    from agent.adk_tools import _validated_approval
+
+    validated = _validated_approval(propose_result)
+    if validated is None:
         # Malformed worker response — bail rather than render a broken body.
         # Release the claim so the operator can retry once the worker is fixed.
         state.release_event(event_key)
         raise HTTPException(
             status_code=502,
             detail=(
-                "rollback worker response missing approval_url/approval_id; "
-                "refusing to render incomplete approval body"
+                "rollback worker response did not carry a usable approval "
+                "(id / url / expiry correlation failed); refusing to record a "
+                "decision whose approval the operator could not act on"
             ),
         )
+    # ``approval_token`` is deliberately dropped here: _validated_approval
+    # returns it (the chat lane must hand it to the caller), but the autonomous
+    # lane persists this dict, and the token already rides inside approval_url.
+    approval_url = validated["approval_url"]
+    approval_id = validated["approval_id"]
+    expires_at = validated["expires_at"]
+    # ds-hdt: the row gets a RELATIVE url; the notification keeps the absolute
+    # one. _approval_url_matches deliberately does NOT require the origin to be
+    # ours (see its docstring + ds-x5l): a worker whose COORDINATOR_URL has
+    # drifted would otherwise lose rollbacks entirely, and the residual was
+    # accepted because "the SPA declines the CTA, but the chat reply and the
+    # webhook still carry the raw string, so the operator can click it there".
+    #
+    # That accepted residual does not survive THIS change. The autonomous lane
+    # has no chat reply, and the webhook is the thing that is broken — so the
+    # desk is the only surface, and the desk is exactly what drops an
+    # off-origin url (safeApprovalHref → selectPendingRollback). A drifted
+    # COORDINATOR_URL would therefore reproduce the ds-hdt symptom this change
+    # exists to remove: a durable decision the operator cannot act on.
+    #
+    # Rejecting off-origin here would trade that for the outage the docstring
+    # warns about. Canonicalizing costs nothing instead: every frontend
+    # consumer already funnels this through safeApprovalHref, which keeps only
+    # ``pathname + search`` and throws the origin away. A host-less url is
+    # inherently same-origin — the same property iacApprovalHref is built on —
+    # so it survives config drift AND cannot name a foreign host. The path and
+    # the single ``t`` pair were both exact-validated above, so this is a
+    # reconstruction of verified parts, not a rewrite of an untrusted string
+    # (and the result still satisfies _approval_url_matches, which accepts a
+    # schemeless path-relative url).
+    approval_url_for_row = (
+        f"/approvals/{approval_id}?t={validated['approval_token']}"
+    )
 
     # render_rollback_body is a pure function over the proposal + URL, so it
     # *shouldn't* raise — but if a future renderer change introduces a code
@@ -1547,28 +1680,6 @@ def _do_rollback(
         state.release_event(event_key)
         raise HTTPException(
             status_code=500, detail=f"rollback render failed: {e}"
-        ) from e
-
-    # Side effect #2: ask the Notifier worker to deliver the rendered body
-    # to the operator-facing channel. severity="high" tracks the approval-
-    # required nature; channel="approval" routes to the operator inbox.
-    #
-    # On notifier failure we release the claim and 502. The orphan approval
-    # doc in Firestore (now invisible to the operator) is bounded by its
-    # 15-min TTL — at-least-once semantics, with the next retry minting a
-    # fresh approval. Operationally: an operator who already received the
-    # webhook before the worker reported failure could still see both the
-    # original and the retry approval as pending; that's HITL-safe (the
-    # operator can deny either) but worth knowing about.
-    try:
-        worker_client.call(
-            "notifier",
-            {"channel": "approval", "severity": "high", "body": rendered},
-        )
-    except WorkerClientError as e:
-        state.release_event(event_key)
-        raise HTTPException(
-            status_code=502, detail=f"rollback notify failed: {e}"
         ) from e
 
     decision_id = str(uuid.uuid4())
@@ -1607,15 +1718,66 @@ def _do_rollback(
         "dry_run_effective": False,
         "approval": {
             "approval_id": approval_id,
-            "approval_url": approval_url,
+            # Relative on purpose — see the canonicalization note above.
+            "approval_url": approval_url_for_row,
             "expires_at": expires_at,
         },
+        # ds-hdt: delivery is settled AFTER this row is durable, so it starts
+        # as ``pending`` and is patched once. A reader that sees ``pending``
+        # must read it as "not yet known", and an ABSENT ``notify`` key (every
+        # row written before ds-hdt) as "never recorded" — neither is
+        # "delivered". Same unknown-≠-empty rule the desk already follows.
+        "notify": {"state": "pending"},
         # Every new rollback decision records the dial mode it was made under
         # (propose / propose_apply here — observe short-circuits above).
         "autonomy_mode": autonomy_mode,
         "trigger": trigger,
     }
-    state.record_decision(decision_id, event_key, response)
+    # Persist BEFORE notifying — see the ds-hdt block in this function's
+    # docstring. The row is the operator's surface; the notification is a
+    # courtesy on top of it.
+    try:
+        state.record_decision(decision_id, event_key, response)
+    except Exception as e:
+        # No durable surface, so do NOT notify: a delivered link to an approval
+        # that appears nowhere is the ds-hdt failure wearing a different hat.
+        # Release the claim so a retry can mint a fresh approval; the orphan is
+        # bounded by the worker's 15-min execute-time expiry check.
+        state.release_event(event_key)
+        # Type only, no message and no traceback: the value that failed to
+        # write is this decision document, which carries the tokened approval
+        # url, and a store exception may echo the document it rejected.
+        log.error(
+            "rollback_decision_record_failed",
+            extra={"exc_type": type(e).__name__},
+        )
+        raise HTTPException(
+            status_code=502,
+            detail="rollback decision could not be recorded; no notification sent",
+        ) from e
+
+    # Side effect #2: ask the Notifier worker to deliver the rendered body to
+    # the operator-facing channel. severity="high" tracks the approval-required
+    # nature; channel="approval" routes to the operator inbox. Advisory — see
+    # _notify_rollback_approval.
+    notify_outcome = _notify_rollback_approval(rendered)
+    response["notify"] = notify_outcome
+    try:
+        state.set_decision_notify_outcome(decision_id, notify_outcome)
+    except Exception:  # noqa: BLE001 — the row is already durable + actionable
+        # Only the delivery annotation is lost; the approval remains reachable,
+        # so this must not fail the request. The row keeps ``pending``, which
+        # is honest: we genuinely no longer know what happened to the delivery.
+        #
+        # Full traceback is safe HERE, unlike the two sites above: the value
+        # handed to the store is ``{"notify": <classification>}`` — three scalar
+        # keys, no credential — so an exception that echoes its payload has
+        # nothing sensitive to echo. The distinction is the payload, not the
+        # log level; don't collapse these three sites to one style.
+        log.exception(
+            "rollback_notify_outcome_patch_failed",
+            extra={"decision_id": decision_id},
+        )
     return response
 
 
