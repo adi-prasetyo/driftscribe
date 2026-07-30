@@ -579,15 +579,37 @@ describe('isIacAwaitingOperator / iacApproveLabel honour supersededIds', () => {
   });
 });
 
-describe('resolvedIacPrNumbers — PRs with a terminal applied iac_apply row', () => {
-  it('collects the pr_number of every applied iac_apply row', () => {
+describe('resolvedIacPrNumbers — PRs provably applied AND merged', () => {
+  it('collects the pr_number of every applied+merged iac_apply row', () => {
     const set = resolvedIacPrNumbers([
-      { action: 'iac_apply', apply_status: 'applied', pr_number: 68 },
-      { action: 'iac_apply', apply_status: 'applied', pr_number: 71 },
+      { action: 'iac_apply', apply_status: 'applied', merge_state: 'merged', pr_number: 68 },
+      { action: 'iac_apply', apply_status: 'applied', merge_state: 'merged', pr_number: 71 },
     ]);
     expect(set.has(68)).toBe(true);
     expect(set.has(71)).toBe(true);
     expect(set.size).toBe(2);
+  });
+
+  // ds-dzd. `applied` alone is not proof a PR is finished with: an apply can
+  // succeed while its MERGE fails, leaving the PR OPEN with real work on it. A
+  // later generation of that PR shows up in the open-PR listing BEFORE it has any
+  // decision row — it only gets one on the operator's first approval click — so
+  // suppressing on `applied` alone made live work vanish from the desk, the count,
+  // the estate view and the tour at once, with nothing anywhere for the
+  // decision-row fallback to find.
+  it('does NOT resolve a PR whose apply succeeded but whose MERGE failed', () => {
+    const set = resolvedIacPrNumbers([
+      { action: 'iac_apply', apply_status: 'applied', merge_state: 'failed', pr_number: 68 },
+    ]);
+    expect(set.size).toBe(0);
+  });
+
+  it('does NOT resolve a PR with no merge_state at all — fails open', () => {
+    const set = resolvedIacPrNumbers([
+      { action: 'iac_apply', apply_status: 'applied', pr_number: 68 },
+      { action: 'iac_apply', apply_status: 'applied', merge_state: 'pending', pr_number: 71 },
+    ]);
+    expect(set.size).toBe(0);
   });
 
   it('ignores an applied row whose action is NOT iac_apply', () => {
@@ -640,7 +662,7 @@ describe('resolvedIacPrNumbers — PRs with a terminal applied iac_apply row', (
     const set = resolvedIacPrNumbers([
       null,
       undefined,
-      { action: 'iac_apply', apply_status: 'applied', pr_number: 68 },
+      { action: 'iac_apply', apply_status: 'applied', merge_state: 'merged', pr_number: 68 },
     ]);
     expect(set.has(68)).toBe(true);
     expect(set.size).toBe(1);

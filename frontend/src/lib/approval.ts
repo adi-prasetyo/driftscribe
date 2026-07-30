@@ -273,32 +273,44 @@ const TERMINAL_FAILED_APPLY_STATUSES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * PR numbers that have a terminal `apply_status === 'applied'` iac_apply row in
- * `decisions`, for suppressing a stale LISTING entry: ds-0rm's 60-second cache
- * window, where a merged-and-applied PR was still being served by the open-PR
- * listing and inflated the count.
+ * PR numbers this client can PROVE are finished with: an `iac_apply` row that is
+ * both `apply_status === 'applied'` AND `merge_state === 'merged'`. Used to
+ * suppress a stale LISTING entry — ds-0rm's 60-second cache window, where a
+ * merged-and-applied PR was still being served by the open-PR listing, so the
+ * desk asked for a decision that had already been made while the seal showed.
  *
- * SCOPE, learned twice the hard way (ds-dzd). Two constraints:
+ * POSITIVE PROOF, not absence of contradiction. Three constraints, each learned
+ * by getting it wrong (ds-dzd):
  *
- * 1. `applied`-ONLY. A terminal FAILURE must not land here. `estate.ts`'s
- *    `reconcileApprovals` DROPS a listing entry on the strength of this set and
- *    states the invariant outright — "an in-progress or failed apply leaves the
- *    entry standing" — because a failed apply is not counter-evidence that the
- *    entry is stale. Widening it to failures was tried and reverted.
+ * 1. `applied` AND `merged`. `applied` alone is not proof: an apply can succeed
+ *    while its MERGE fails, and then the PR is STILL OPEN with real work on it.
+ *    A later generation of that same PR appears in the open-PR listing before it
+ *    has any decision row at all — it only gets one on the operator's first
+ *    approval click — so suppressing on `applied` alone made live work vanish
+ *    from the desk, the count, the estate view and the tour simultaneously, with
+ *    no decision row anywhere for the fallback lane to find. `merge_state` is
+ *    trustworthy here: `reconcile_merge_state` (agent/main.py) promotes a stale
+ *    `applied`+`failed` row to `merged` ONLY when GitHub confirms the PR merged
+ *    at the as-applied `head_sha`. A missing or failed merge state FAILS OPEN.
  *
- * 2. LISTING LANE ONLY. Do not read this to decide whether a DECISION row is
+ * 2. A terminal FAILURE must not land here. `estate.ts`'s `reconcileApprovals`
+ *    DROPS a listing entry on the strength of this set and states the invariant
+ *    outright — "an in-progress or failed apply leaves the entry standing" —
+ *    because a failed apply is not counter-evidence that the entry is stale.
+ *
+ * 3. LISTING LANE ONLY. Do not read this to decide whether a DECISION row is
  *    awaiting the operator. PR-wide is the wrong grain there: an `applied` row on
  *    generation A says nothing about a `waiting_for_rebake` row on generation B,
- *    and the backend permits that pairing. `isIacAwaitingOperator` and
- *    `iacApproveLabel` therefore consult `supersededWaitingIds` instead, and this
- *    set is not passed to either.
+ *    and the backend permits that pairing (its claim and lookup are both per
+ *    event key). `isIacAwaitingOperator` and `iacApproveLabel` consult
+ *    `supersededWaitingIds` instead, and this set is not passed to either.
  *
- * It stays PR-wide because the listing has no finer identity available:
- * `PendingApproval` carries only pr_number/title/url/asset_type/resource_name,
- * with no head_sha or event_key. Failing OPEN there instead would re-admit
- * ds-0rm, an observed over-report, to close a narrower theoretical one — so the
- * honest fix is to give the listing payload a generation identity, which is a
- * backend change (bead ds-qib).
+ * It remains PR-wide rather than per-generation because the listing has no finer
+ * identity to offer: `PendingApproval` carries only
+ * pr_number/title/url/asset_type/resource_name, with no head_sha or event_key.
+ * Requiring merged makes that coarseness safe rather than merely narrow — the
+ * only entries it can now suppress belong to PRs that are provably closed. Exact
+ * generation attribution is still worth having: bead ds-qib.
  *
  * The rail already holds the full list (`/decisions?limit=50`), so supersession
  * is answerable client-side with no backend change. If a list ever exceeds the
@@ -313,7 +325,9 @@ const TERMINAL_FAILED_APPLY_STATUSES: ReadonlySet<string> = new Set([
 export function resolvedIacPrNumbers(
   decisions:
     | ReadonlyArray<
-        { action?: string; apply_status?: string; pr_number?: number } | null | undefined
+        | { action?: string; apply_status?: string; merge_state?: string; pr_number?: number }
+        | null
+        | undefined
       >
     | null
     | undefined,
@@ -323,6 +337,7 @@ export function resolvedIacPrNumbers(
     if (
       d?.action === 'iac_apply' &&
       d?.apply_status === 'applied' &&
+      d?.merge_state === 'merged' &&
       typeof d.pr_number === 'number' &&
       Number.isInteger(d.pr_number) &&
       d.pr_number > 0

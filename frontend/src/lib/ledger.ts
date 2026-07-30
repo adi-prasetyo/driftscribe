@@ -93,13 +93,13 @@ function classify(
  * Reduce `decisions` to at most `max` (default 4) ledger rows: classified,
  * newest-first by `created_at`, capped. Pure and defensive — tolerates a
  * null/undefined list and null/undefined elements (skips, never throws),
- * mirroring desk.ts / resolvedIacPrNumbers's guards on the same open Decision
- * shape.
+ * mirroring desk.ts's guards on the same open Decision shape.
  *
- * `resolvedIacPrNumbers(decisions)` is computed ONCE up front, not per row —
- * it is already an O(n) scan of the same list, so recomputing it inside the
- * per-row loop would make the whole function O(n²) for a set that never
- * changes mid-classification.
+ * `supersededWaitingIds(decisions)` is computed ONCE up front, not per row — it
+ * is already an O(n) scan of the same list, so recomputing it inside the per-row
+ * loop would make the whole function O(n²) for a set that never changes
+ * mid-classification. The PR-wide `resolvedIacPrNumbers` is deliberately NOT
+ * consulted here: iac actionability is per GENERATION (ds-dzd).
  *
  * `max <= 0` returns an empty array; a non-finite `max` (NaN, ±Infinity, or
  * simply omitted) falls back to the default of 4.

@@ -191,7 +191,7 @@ export interface DeskModelInput {
   // sourced payloads (overviewStore.ts casts JSON.parse output straight to
   // `Decision[]` / `PendingApproval[]` — see its fetchDecisionsList /
   // fetchPendingList), so a malformed element is a real runtime possibility
-  // the static element type doesn't rule out. Mirrors resolvedIacPrNumbers's
+  // the static element type doesn't rule out. Mirrors approval.ts's
   // `ReadonlyArray<... | null | undefined>` on the same Decision[] shape
   // (approval.ts:186-192).
   decisions: ReadonlyArray<Decision | null | undefined> | null | undefined;
@@ -690,12 +690,12 @@ export function awaitingCount(input: DeskModelInput): number {
     if (isRollbackAwaitingOperator(decision, { now, origin: input.origin })) rollbackCount += 1;
   }
 
-  // resolvedPrs is computed BEFORE the listing lane, not after it: the listing
-  // lane needs it too (ds-0rm). It previously added every `pr_number` in the
-  // payload unconditionally while the decisions lane filtered, so a merged and
-  // applied PR still sitting in the 60s backend cache inflated this figure by
-  // one — the band over-reported "awaiting your approval" against a desk that,
-  // once rule 2a was also fixed, was correctly showing the seal.
+  // Two DIFFERENT questions, two different sets (ds-dzd). resolvedPrs is PR-wide
+  // and serves the LISTING lane only (ds-0rm: a provably applied-and-merged PR
+  // still named by the 60s backend cache used to inflate this figure by one, so
+  // the band over-reported against a desk that was correctly showing the seal).
+  // supersededIds is per GENERATION and serves the DECISIONS lane: an `applied`
+  // row on generation A says nothing about a waiting row on generation B.
   const resolvedPrs = resolvedIacPrNumbers(decisions);
   const supersededIds = supersededWaitingIds(decisions);
 

@@ -1439,6 +1439,7 @@ describe('deskModel — rule 2a honors resolvedIacPrNumbers (ds-0rm)', () => {
       decision_id: 'iac-applied',
       pr_number: 7,
       apply_status: 'applied',
+      merge_state: 'merged',
       applied_at: '2026-07-28T11:59:00Z',
     });
     const model = deskModel({
@@ -1451,6 +1452,46 @@ describe('deskModel — rule 2a honors resolvedIacPrNumbers (ds-0rm)', () => {
     expect(model.kind).toBe('stamped');
   });
 
+  // ds-dzd: `applied` alone is NOT proof. An apply that succeeded while its merge
+  // FAILED leaves the PR open, and a later generation of it appears in the listing
+  // BEFORE it has any decision row (one is written on the first approval click).
+  // Suppressing here made that live work vanish with nothing for the decision-row
+  // fallback to find. Only applied+merged is positive proof.
+  it('does NOT suppress a listing PR whose apply succeeded but whose merge FAILED', () => {
+    const appliedMergeFailed = iacDecision({
+      decision_id: 'iac-applied-merge-failed',
+      pr_number: 7,
+      apply_status: 'applied',
+      merge_state: 'failed',
+      applied_at: '2026-07-28T11:59:00Z',
+    });
+    const model = deskModel({
+      decisions: [appliedMergeFailed],
+      pendingApprovals: [pendingIac({ pr_number: 7 })],
+      now: NOW,
+      origin: ORIGIN,
+    });
+    expect(model.kind).toBe('pending');
+    if (model.kind === 'pending' && model.source === 'iac') expect(model.prNumber).toBe(7);
+  });
+
+  it('does NOT suppress a listing PR when the applied row has no merge_state', () => {
+    const appliedUnknownMerge = iacDecision({
+      decision_id: 'iac-applied-unknown-merge',
+      pr_number: 7,
+      apply_status: 'applied',
+      merge_state: undefined,
+      applied_at: '2026-07-28T11:59:00Z',
+    });
+    const model = deskModel({
+      decisions: [appliedUnknownMerge],
+      pendingApprovals: [pendingIac({ pr_number: 7 })],
+      now: NOW,
+      origin: ORIGIN,
+    });
+    expect(model.kind).toBe('pending');
+  });
+
   it('still presents a listing PR that is genuinely open', () => {
     // Control for the test above: a DIFFERENT PR being applied must not
     // suppress an unrelated open one, or the filter would be over-broad.
@@ -1458,6 +1499,7 @@ describe('deskModel — rule 2a honors resolvedIacPrNumbers (ds-0rm)', () => {
       decision_id: 'iac-applied',
       pr_number: 99,
       apply_status: 'applied',
+      merge_state: 'merged',
       applied_at: '2026-07-28T11:59:00Z',
     });
     const model = deskModel({
@@ -1480,6 +1522,7 @@ describe('deskModel — rule 2a honors resolvedIacPrNumbers (ds-0rm)', () => {
       decision_id: 'iac-applied',
       pr_number: 7,
       apply_status: 'applied',
+      merge_state: 'merged',
       applied_at: '2026-07-28T11:59:00Z',
     });
     const model = deskModel({
@@ -1503,6 +1546,7 @@ describe('awaitingCount — listing lane honors resolvedIacPrNumbers (ds-0rm)', 
       decision_id: 'iac-applied',
       pr_number: 7,
       apply_status: 'applied',
+      merge_state: 'merged',
       applied_at: '2026-07-28T11:59:00Z',
     });
     expect(
@@ -1513,6 +1557,27 @@ describe('awaitingCount — listing lane honors resolvedIacPrNumbers (ds-0rm)', 
         origin: ORIGIN,
       }),
     ).toBe(0);
+  });
+
+  // The count must not lose a listing-only PR whose earlier generation applied but
+  // failed to merge — there is no decision row for it yet, so nothing else would
+  // report it (ds-dzd).
+  it('still counts a listing PR whose apply succeeded but whose merge FAILED', () => {
+    const appliedMergeFailed = iacDecision({
+      decision_id: 'iac-applied-merge-failed',
+      pr_number: 7,
+      apply_status: 'applied',
+      merge_state: 'failed',
+      applied_at: '2026-07-28T11:59:00Z',
+    });
+    expect(
+      awaitingCount({
+        decisions: [appliedMergeFailed],
+        pendingApprovals: [pendingIac({ pr_number: 7 })],
+        now: NOW,
+        origin: ORIGIN,
+      }),
+    ).toBe(1);
   });
 
   it('counts an open listing PR exactly once even when both lanes see it', () => {
