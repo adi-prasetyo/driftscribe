@@ -49,31 +49,58 @@ non-None ⇒ returns False). Bounded to 15 min by the rollback TTL.
 > Two findings were blockers and both were accepted; see "What the review
 > changed" at the end.
 
-### (a) Cause — coherence gate on two OBSERVATIONS
+### (a) Cause — bracket the turn with the coordinator's own reads
 
-`agent.request_context.record_analyzed_env` captures the Reader Worker's
-response inside `read_live_env_tool`, at the tool boundary, **before the model
-sees it** — so the snapshot the agent reasoned over is a coordinator-made
-observation, not a model-reported value. `analyzed_env_scope()` binds it per
-turn so a reused event-loop task can't inherit turn N-1's snapshot.
+The coordinator reads live env **before** the agent turn as well as after it,
+and refuses to persist anything when the two disagree.
 
 ```
-_observation_skew(proposal, observed_env, analyzed_env) -> list[str]
+_observation_skew(observed_env, analyzed_env) -> list[str]
 ```
 
-Primary path: whole-snapshot comparison of `analyzed_env` vs `observed_env`, so
-an ADDED or REMOVED variable counts as skew too. Falls back to comparing
-`proposal.env_diffs` **only** when the agent never read live env this turn.
+Whole-snapshot comparison, so an ADDED or REMOVED variable counts as skew too.
 
-The fallback must not be primary: `env_diffs` is incomplete by contract — the
-drift prompt asks for variables that *differ*, the deterministic classifier
-emits `no_op` with `env_diffs=[]`, and the validator accepts that. A diff-driven
-check therefore iterates zero entries and pronounces the world coherent no
-matter how far it moved: the original bug surviving its own fix.
+**Why bracketing rather than watching the agent's own read.** If the before and
+after reads agree, the world was stable across the whole turn — therefore
+whatever the agent read *in between*, once or five times or never, saw the same
+env. The proof holds regardless of how the agent behaves, which is what the two
+alternatives cannot claim:
 
-`observed_env is None` ⇒ **not** skew (the reader-failed path reconstructs
-`live_env` from the proposal, so key and proposal are coherent by construction;
-ds-b3m's gate owns the action that needs ground truth).
+- Comparing `proposal.env_diffs` is unsound: the collection is incomplete by
+  contract (the prompt asks for vars that *differ*, the classifier emits `no_op`
+  with `env_diffs=[]`, the validator accepts it), so it iterates zero entries and
+  pronounces any world coherent — the bug surviving its own fix.
+- Capturing the agent's tool result in a ContextVar **does not work at all**.
+  ADK dispatches each function call as its own `asyncio.Task`, and a Task starts
+  from a *copy* of the context, so a `ContextVar` written inside a tool is
+  invisible to the coordinator. Measured: `child sees {...}` / `parent sees
+  None`. A first implementation did exactly this and was inert in production
+  while unit tests — which wrote from the parent's own task — passed.
+
+Reader-outcome matrix:
+
+| pre-turn | post-turn | behaviour |
+|---|---|---|
+| ok | ok, equal | proceed; key from post-turn read |
+| ok | ok, differs | **409**, nothing recorded (the ds-q38 case) |
+| ok | fails | key hashed from the **pre-turn observation**, `observed_env=None` |
+| fails | ok | **409** — no baseline, and assuming stability is how the row got written |
+| fails | fails | documented no-`run.services.get` tolerance: key from model diffs, `observed_env=None` |
+
+The pre-turn-observation row also removes a second incoherence: the old
+reconstruction from `proposal.env_diffs` is a SUBSET that can legally be empty,
+so a decision about a populated service could land under the `{}`-env key and
+collide with a genuinely empty one later.
+
+`observed_env` stays `None` in every degraded row, so ds-b3m's rollback gate is
+untouched. The preserved distinction is *what the key may be built from* (an
+observation) versus *what a safety gate may treat as observed state* (only this
+request's own read).
+
+**Residual, accepted:** a world that changes and changes BACK within one turn
+reads as stable. That needs two mutations inside ~40s landing on byte-identical
+env, and each fires its own Eventarc delivery, so the next audit re-derives the
+truth.
 
 On skew, **refuse to record** — `HTTPException(409)`, count-only logging, no
 env names or values in the detail.
@@ -162,9 +189,19 @@ Firestore surgery is needed.
 
 ## What the review changed
 
-- **Blocker accepted:** the first draft compared `proposal.env_diffs`, which
+Three Codex rounds. Every blocker was accepted; two of them were defects in my
+own fix rather than in the original code.
+
+- **Round 1 blocker:** the first draft compared `proposal.env_diffs`, which
   cannot see a `no_op` with an empty diff list — the bug would have survived its
-  own fix. Replaced with a captured, coordinator-trusted snapshot.
+  own fix.
+- **Round 2 blocker:** the replacement captured the agent's tool result in a
+  `ContextVar`, which **never reaches the coordinator** because ADK runs each
+  tool call in its own `asyncio.Task`. Verified by measurement. The fix was
+  inert in production while the new tests passed, because the test double wrote
+  from `_do_recheck`'s own task — the same "my own test pinned it" shape as
+  ds-qua. Replaced with the pre/post bracketing above, which depends on no ADK
+  internals and needed **zero changes** to the 53 existing ADK-path tests.
 - **Blocker accepted:** the first draft evicted at cache-lookup time, before
   `validate()`. Combined with ds-bej that is a permanent-409 trap. Eviction is
   now deferred until the proposal has passed the gate.
