@@ -622,12 +622,13 @@ describe('resolvedIacPrNumbers — PRs provably applied AND merged', () => {
     expect(set.size).toBe(0);
   });
 
-  // ds-dzd — this set stays applied-ONLY, on purpose. A terminal FAILURE must
-  // NOT resolve a PR here: three callers read it as "this PR is done with", and
-  // estate.ts's reconcileApprovals states the invariant outright ("an in-progress
-  // or failed apply leaves the entry standing") because it DROPS a pending
-  // listing entry. Widening it to failures was tried and reverted — it would have
-  // hidden the recovery work the runbook prescribes. The generation-scoped
+  // ds-dzd — a terminal FAILURE must NOT resolve a PR here. Three callers read
+  // this set as "this PR is provably closed", and estate.ts's reconcileApprovals
+  // states the invariant outright ("an in-progress or failed apply leaves the
+  // entry standing") because it DROPS a pending listing entry. Widening it to
+  // failures was tried and reverted — it would have hidden the recovery work the
+  // runbook prescribes. (Nor is a SUCCESSFUL apply sufficient on its own: see the
+  // merge_state cases above.) The generation-scoped
   // question lives in supersededWaitingIds instead.
   it('does NOT resolve a PR whose apply ended in terminal failure', () => {
     const set = resolvedIacPrNumbers([

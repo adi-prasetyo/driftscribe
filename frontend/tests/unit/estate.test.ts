@@ -345,7 +345,8 @@ describe('estateModel — retires a listing entry a decision proves applied (ds-
   });
 
   it('keeps the chip while the apply is still in progress', () => {
-    // Only an `applied` decision is counter-evidence; waiting_for_rebake is not.
+    // Only an applied AND MERGED decision is counter-evidence; waiting_for_rebake
+    // is not — the apply has not even run yet.
     const inFlight: Decision = {
       decision_id: 'iac-268',
       action: 'iac_apply',
@@ -355,7 +356,12 @@ describe('estateModel — retires a listing entry a decision proves applied (ds-
     expect(estateModel(driftGraph(), APPROVALS, t, [inFlight]).drift[0].pendingPr).toBe(268);
   });
 
-  it('an applied decision for a DIFFERENT PR does not retire this one', () => {
-    expect(estateModel(driftGraph(), APPROVALS, t, [applied(999)]).drift[0].pendingPr).toBe(268);
+  it('an applied AND MERGED decision for a DIFFERENT PR does not retire this one', () => {
+    // 'merged' is REQUIRED for this to test anything: without it PR 999 never
+    // enters resolvedIacPrNumbers at all, and the assertion passes for the wrong
+    // reason — it would no longer detect cross-PR over-suppression.
+    expect(
+      estateModel(driftGraph(), APPROVALS, t, [applied(999, 'merged')]).drift[0].pendingPr,
+    ).toBe(268);
   });
 });
