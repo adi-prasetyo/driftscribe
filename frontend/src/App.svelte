@@ -215,15 +215,27 @@
   // after the flip, navigating to chat wrote a param-less URL that reloaded as
   // the desk. Reading the constant keeps this correct in both eras.
   //
-  // `preserveChatState` is for the TOUR (ds-s9q). Everything below the URL write
-  // exists because a DELIBERATE departure from chat should not leave an invisible
-  // thread behind. The tour is not a departure — it borrows the estate view for
-  // two steps and hands the visitor back to chat on its last one, so applying the
-  // teardown there meant "open a conversation, click Tour, press Next" silently
-  // discarded the open thread (it survived in the rail; the view, scroll position
-  // and `?conversation=` did not). The tour keeps its chat errand: the URL it
-  // leaves reloads into the conversation, which is the honest durable intent.
-  function navigate(v: AppView, opts: { preserveChatState?: boolean } = {}) {
+  // `preserveChatState` is for the TOUR (ds-s9q). Everything in
+  // teardownChatSurface() exists because a DELIBERATE departure from chat should
+  // not leave an invisible thread behind. The tour is not a departure — it
+  // borrows the estate view for two steps and hands the visitor back to chat on
+  // its last one, so applying the teardown there meant "open a conversation,
+  // click Tour, press Next" silently discarded the open thread (it survived in
+  // the rail; the view, scroll position and `?conversation=` did not). The tour
+  // keeps its chat errand: the URL it leaves reloads into the conversation,
+  // which is the honest durable intent.
+  //
+  // `history` (ds-7ag.1) decides whether the URL write creates a history entry.
+  // A view switch is a NAVIGATION — the browser Back button has to undo it, or
+  // the operator who clicked a desk numeral onto the estate view has no way back
+  // (the reported wayfinding failure). Default 'push'; 'replace' is for writes
+  // that continue the current entry rather than making one (the tour borrowing a
+  // view, and its restore on close).
+  function navigate(
+    v: AppView,
+    opts: { preserveChatState?: boolean; history?: 'push' | 'replace' } = {},
+  ) {
+    const fromView = view; // capture BEFORE the assignment — the push test needs it
     view = v;
     const u = new URL(window.location.href);
     if (v === DEFAULT_VIEW) u.searchParams.delete('view');
@@ -232,13 +244,44 @@
     if (v !== 'chat' && !opts.preserveChatState) {
       for (const p of CHAT_INTENT_PARAMS) u.searchParams.delete(p);
     }
-    history.replaceState(null, '', u);
+    // A push needs BOTH a real view transition and a real URL change. URL
+    // inequality alone is not enough: clicking デスク while already on the desk
+    // canonicalizes `?view=desk` to `/`, which changes the URL without going
+    // anywhere, and stacking an entry there makes Back look dead. The view test
+    // alone is not enough either — it would push on a no-op re-entry the URL
+    // already describes. And this is what keeps the programmatic
+    // navigate('chat') calls inside openConversation/openTrace honest on a boot
+    // deep-link: `view` is ALREADY 'chat' there (hasChatIntent decided it before
+    // mount), so restoring a shared link continues its entry instead of stacking
+    // a duplicate one in front of it.
+    const shouldPush =
+      opts.history !== 'replace' && v !== fromView && u.href !== window.location.href;
+    if (shouldPush) history.pushState(null, '', u);
+    else history.replaceState(null, '', u);
     // Chat is a destination, not an undo: nothing to reset (see the doc above).
     if (v === 'chat' || opts.preserveChatState) return;
-    // Keep in-memory state in lockstep with the URL just written — an open
-    // replay or thread would otherwise sit there invisibly (the chat branch
-    // isn't mounted in desk/estate) and reappear out of step with the
-    // now-paramless address bar on a later return to chat.
+    teardownChatSurface();
+  }
+
+  // Drop the chat surface on a departure from the chat view, so in-memory state
+  // stays in lockstep with the URL: an open replay or thread would otherwise sit
+  // there invisibly (the chat branch isn't mounted in desk/estate) and reappear
+  // out of step with the now-paramless address bar on a later return.
+  //
+  // Extracted from navigate() at ds-7ag.1 because the popstate handler needs the
+  // same teardown, and given the CANCELLATION half of newChat()'s pattern for
+  // the same reason: clearing fields is not enough while an async open is in
+  // flight. A GET /conversations/{id} that lands after the departure still
+  // passes its own runSeq guard (:645/:684) and repopulates conversationTurns
+  // behind the operator's back — on a Back press that is a thread reappearing on
+  // a view the URL says has none. Bumping runSeq is what makes the departure
+  // actually cancel, and `busy`/`resumingConversation`/`liveExchange` are the
+  // flags those in-flight runs would otherwise have owned the clearing of.
+  function teardownChatSurface(): void {
+    ++runSeq; // supersede every in-flight run — see the doc above
+    busy = false;
+    resumingConversation = false;
+    liveExchange = null;
     if (historicalActive) {
       historicalActive = false;
       historicalTraceId = null;
@@ -260,6 +303,54 @@
     // its chip intact (same reasoning as newChat).
     clearHandoff();
     if (previewPr !== null) previewPr = null; // preview_pr already dropped above
+  }
+
+  // Browser Back/Forward. The restore is VIEW-ONLY by design: reopening deep
+  // state (a thread, a replay) on a pop would fire fetches the operator did not
+  // ask for and race whatever they do next, so the entry is canonicalized
+  // instead — the URL is made to stop claiming content that is not on screen.
+  function onPopstate(): void {
+    const target = viewFromSearch(window.location.search);
+    // Back during the tour dismisses the overlay. Clear tourReturnView FIRST:
+    // closeTour()'s own view-restore would otherwise navigate away from — and
+    // replaceState over — the very entry the operator just came back to.
+    if (tourOpen) {
+      tourReturnView = null;
+      closeTour();
+    }
+    if (target !== 'chat' && view === 'chat') teardownChatSurface();
+    view = target;
+    canonicalizeRestoredEntry();
+  }
+
+  // Make a restored entry describe what is actually on screen. A popped entry can
+  // still carry chat-intent params for content this session tore down (e.g.
+  // `?conversation=c1` after a departure from chat); the view-only restore won't
+  // reopen them, so the URL must stop advertising them or copying the address bar
+  // shares a lie. Only STALE params are dropped — an entry naming the open thread
+  // or replay is left untouched. Because those params are exactly what forced
+  // viewFromSearch to 'chat', the same write states the view explicitly, or a
+  // reload of the cleaned URL would land on the desk instead.
+  function canonicalizeRestoredEntry(): void {
+    const u = new URL(window.location.href);
+    let stale = false;
+    const drop = (p: string) => {
+      u.searchParams.delete(p);
+      stale = true;
+    };
+    const conv = u.searchParams.get('conversation');
+    if (conv !== null && conv !== conversationId) drop('conversation');
+    const reasoning = u.searchParams.get('reasoning');
+    if (reasoning !== null && reasoning !== historicalTraceId) drop('reasoning');
+    // ask_pr is a one-shot composer prefill consumed at boot (onMount strips it);
+    // a restored one has nothing left to hand over, so it is always stale.
+    if (u.searchParams.get('ask_pr')) drop('ask_pr');
+    const preview = u.searchParams.get('preview_pr');
+    if (preview !== null && String(previewPr ?? '') !== preview) drop('preview_pr');
+    if (!stale) return;
+    if (view === DEFAULT_VIEW) u.searchParams.delete('view');
+    else u.searchParams.set('view', view);
+    history.replaceState(null, '', u);
   }
 
   let historicalActive = $state(false);
@@ -466,9 +557,13 @@
   // operator was not. So the tour remembers where it started and puts the view
   // back on close, which is also the behavior a visitor expects from a thing
   // that overlays their screen and then goes away.
+  //
+  // It borrows views without leaving history entries behind either (ds-7ag.1):
+  // an operator who finished the tour should not have to press Back once per
+  // spotlighted step to get out of the app.
   let tourReturnView: AppView | null = null;
   function tourNavigate(v: AppView): void {
-    navigate(v, { preserveChatState: true });
+    navigate(v, { preserveChatState: true, history: 'replace' });
   }
   function startTour(): void {
     tourOffered = false;
@@ -491,7 +586,7 @@
     // view/URL disagreement survives it. Still preserveChatState — an open
     // thread must come back too, which is the whole point of ds-s9q.
     if (tourReturnView !== null && tourReturnView !== view) {
-      navigate(tourReturnView, { preserveChatState: true });
+      navigate(tourReturnView, { preserveChatState: true, history: 'replace' });
     }
     tourReturnView = null;
   }
@@ -1634,6 +1729,10 @@
       }
       if (bootReasoningTid) openTrace(bootReasoningTid);
     })();
+    // Browser Back/Forward across the three views (ds-7ag.1). Registered here
+    // rather than in the module body so it is torn down with the component.
+    window.addEventListener('popstate', onPopstate);
+    return () => window.removeEventListener('popstate', onPopstate);
   });
 </script>
 
