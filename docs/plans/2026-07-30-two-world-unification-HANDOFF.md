@@ -1,6 +1,7 @@
 # ds-qbo two-world unification — handoff + Codex review (2026-07-30)
 
-**Status: PR #274 open, CI fully green, Codex reviewed. ONE merge-blocking fix outstanding.**
+**Status: PR #274 — CI green, Codex reviewed TWICE, second round returned SHIP. All review findings
+resolved or beaded. Ready to merge + deploy.**
 
 ## Where the work is
 
@@ -11,9 +12,11 @@
 - Codex thread to continue: **`019fb16f-7add-7ae0-9429-f02a1550d6bf`**
   (the plan's original thread `019fb101-…` was already expired/unresumable)
 
-## Commits (all 9 pushed)
+## Commits (11 pushed)
 
 ```
+0247852 docs(handoff): record bead IDs and mark the Codex review items resolved
+e613caf fix(desk): stream-ink for the desk's status line and why-link (Codex review)
 5653a55 refactor(tokens): retire the paper-world duplicates — one vocabulary (ds-qbo)
 c6c75d3 fix(spa): paper-world audit — Mermaid palette, navy fills, blue classified
 6831885 feat(type): mincho display face for page titles (ds-qbo)
@@ -30,7 +33,7 @@ b41fb1a docs(plan): two-world unification (ds-qbo)
 | Gate | Result |
 |---|---|
 | `npx svelte-check` | 0 errors, 0 warnings, 675 files |
-| `npx vitest run` | 1659 passed (2 new) |
+| `npx vitest run` | **1660 passed** (3 new) |
 | `npm run test:smoke` | 28 passed (required `ui-smoke`) |
 | `pytest tests/unit tests/integration` | 3618 passed |
 | GitHub CI on #274 | frontend / lint-test / static-gate / tofu / ui-smoke / worker / GitGuardian **all pass**; plan-builder skipped (not an infra PR) |
@@ -61,7 +64,7 @@ rules.
 - **`:534` `.approval-desk__who`** — meaningful pending/unresolved status, 11.5px
 - **`:589` `.approval-desk__why-btn`** — interactive "view reasoning" control, 12px
 
-Both now read `var(--ds-stream)` = `#4285f4` = **3.416:1 on paper**, under the 4.5:1 floor. They were
+Both *were* reading `var(--ds-stream)` = `#4285f4` = **3.416:1 on paper**, under the 4.5:1 floor. They were
 `--ds-gblue` during the Phase 2 classification pass, so the grep for `var(--ds-stream)` did not see
 them; Phase 3's rename turned them into canonical stream consumers *after* the audit.
 
@@ -72,8 +75,14 @@ on ANY raw-stream text `color:` (allowlisting only InstrumentBand's 44px numeral
 guard bites by reverting one fix and watching it name the offender. Recount: 17 raw-stream refs,
 exactly one a text color, and it is the permitted numeral.
 
-Verify the 44px `.approval-desk__await` numeral (or equivalent) is left alone — large-text
-non-text-accent use of raw stream is permitted.
+Second Codex round confirmed: `.approval-desk__who--done` still overrides to `--ds-ok` (6.16:1); the
+why-link's hover only underlines and its focus does not recolor; the only remaining direct
+`color: var(--ds-stream)` is the sanctioned InstrumentBand numeral.
+
+Codex also noted the guard is useful but not airtight — uppercase `COLOR`, `-webkit-text-fill-color`,
+whitespace/fallback variants, custom-property indirection (`--x: var(--ds-stream); color: var(--x)`),
+and the whole-file InstrumentBand allowlist can all evade it. (`font` shorthand cannot carry color.)
+None of those forms exists today. Folded into `ds-836`, which already covers guard coverage.
 
 ## 2. ~~PR body corrections~~ — DONE (pushed via `gh api PATCH`; `gh pr edit` aborts on this repo
 with a projects-classic GraphQL error)
@@ -116,7 +125,7 @@ with a projects-classic GraphQL error)
   under `src/`. It does not inspect `.ts` (`style.setProperty`), `agent/templates/*.html`, or future
   `.scss`. Codex found no current straggler in any of those, so this is coverage, not a live bug.
 
-## 5. Then
+## 5. Remaining: merge + deploy
 
 - Merge #274, deploy the coordinator per the **`driftscribe-deploy`** skill: the build lands at **0%
   traffic** and `update-traffic` is a REQUIRED second step. Verify `cpu-throttling=false` survives
