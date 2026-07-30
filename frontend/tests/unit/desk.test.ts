@@ -293,11 +293,21 @@ describe('deskModel — rule 2b: pending iac approval derived from decisions (op
     expect(model.kind).toBe('resting');
   });
 
-  it('a later applied row for the same PR (resolvedIacPrNumbers) → NOT pending', () => {
-    const waiting = iacDecision({ decision_id: 'iac-waiting', pr_number: 44, created_at: '2026-07-28T10:00:00Z' });
+  // ds-dzd: matching event_keys, i.e. the applied row IS this waiting row's own
+  // generation finishing. That is the real prod shape — PRs 221/102/96/68/66/47
+  // all carry an applied row and older waiting rows under ONE event_key.
+  it('this generation’s own applied row → NOT pending', () => {
+    const EK = 'iac-apply-44-samegeneration';
+    const waiting = iacDecision({
+      decision_id: 'iac-waiting',
+      pr_number: 44,
+      event_key: EK,
+      created_at: '2026-07-28T10:00:00Z',
+    });
     const applied = iacDecision({
       decision_id: 'iac-applied',
       pr_number: 44,
+      event_key: EK,
       apply_status: 'applied',
       applied_at: '2026-07-28T10:30:00Z',
       created_at: '2026-07-28T11:00:00Z',
@@ -311,6 +321,35 @@ describe('deskModel — rule 2b: pending iac approval derived from decisions (op
     // The applied row IS a valid stamp candidate — but it must not ALSO leave
     // the superseded waiting row pending. Assert it isn't pending at all.
     expect(model.kind).not.toBe('pending');
+  });
+
+  // The negative twin, and the reason event_key scoping exists. Generation A
+  // applied but its merge failed, the PR stayed open, the head advanced, and
+  // generation B recorded its own waiting row. B is real work the operator has to
+  // approve; a PR-wide rule deleted it from the desk entirely.
+  it('a DIFFERENT generation’s applied row leaves this waiting row PENDING', () => {
+    const appliedA = iacDecision({
+      decision_id: 'iac-applied-A',
+      pr_number: 44,
+      event_key: 'iac-apply-44-generationA',
+      apply_status: 'applied',
+      merge_state: 'failed',
+      applied_at: '2026-07-28T10:30:00Z',
+      created_at: '2026-07-28T10:30:00Z',
+    });
+    const waitingB = iacDecision({
+      decision_id: 'iac-waiting-B',
+      pr_number: 44,
+      event_key: 'iac-apply-44-generationB',
+      created_at: '2026-07-28T11:00:00Z',
+    });
+    const model = deskModel({
+      decisions: [appliedA, waitingB],
+      pendingApprovals: [],
+      now: NOW,
+      origin: ORIGIN,
+    });
+    expect(model.kind).toBe('pending');
   });
 
   it('dedup: the same PR present in BOTH the listing and the decisions log yields exactly one desk state, from the listing', () => {
@@ -1052,6 +1091,143 @@ describe('awaitingCount — the InstrumentBand "awaiting your approval" figure',
     expect(awaitingCount({ decisions: [applied], pendingApprovals: [], now: NOW, origin: ORIGIN })).toBe(0);
   });
 
+  // ds-dzd — the live shape that made the band lie on prod. PR #95's
+  // `failed_state_suspect` row and BOTH of its `waiting_for_rebake` rows share
+  // ONE event_key, so the failure genuinely is those rows' own outcome. The band
+  // read "2 awaiting your approval" over a desk showing ONE item, and the phantom
+  // was two months old and reachable from no surface at all: the single CTA slot
+  // went to the listing lane, and the ledger strip only shows recent rows. A count
+  // nobody can act on is worse than a wrong count — it sends the operator hunting
+  // for work that does not exist.
+  const EK_A = 'iac-apply-95-312b3cac8ba677d62a138f8050de2a34';
+  const EK_B = 'iac-apply-95-ffffffffffffffffffffffffffffffff';
+
+  it('a waiting row whose OWN generation reached a terminal state never inflates the count (PR #95)', () => {
+    const terminal = iacDecision({
+      pr_number: 95,
+      apply_status: 'failed_state_suspect',
+      event_key: EK_A,
+      decision_id: 'term-95',
+      created_at: '2026-06-11T05:50:36Z',
+    });
+    const stale = iacDecision({
+      pr_number: 95,
+      apply_status: 'waiting_for_rebake',
+      event_key: EK_A,
+      decision_id: 'stale-95',
+      created_at: '2026-06-11T05:39:09Z',
+    });
+    expect(
+      awaitingCount({ decisions: [terminal, stale], pendingApprovals: [], now: NOW, origin: ORIGIN }),
+    ).toBe(0);
+  });
+
+  // THE REGRESSION GUARD. Generations are not serialized against each other, so
+  // two can be in flight and finish out of order: terminal(A) can be NEWER than
+  // waiting(B) while saying nothing about generation B. A per-PR "newest terminal"
+  // rule retires the live B row — hiding the exact work the recovery runbook
+  // tells the operator to approve. Matching on event_key cannot.
+  it('a terminal in one generation never retires a live waiting row in another', () => {
+    const waitingA = iacDecision({
+      pr_number: 95, apply_status: 'waiting_for_rebake', event_key: EK_A,
+      decision_id: 'wA', created_at: '2026-07-30T10:00:00Z',
+    });
+    const waitingB = iacDecision({
+      pr_number: 95, apply_status: 'waiting_for_rebake', event_key: EK_B,
+      decision_id: 'wB', created_at: '2026-07-30T11:00:00Z',
+    });
+    const terminalA = iacDecision({
+      pr_number: 95, apply_status: 'failed_state_suspect', event_key: EK_A,
+      decision_id: 'tA', created_at: '2026-07-30T12:00:00Z',
+    });
+    // Generation B is still awaiting the operator, so the PR still counts once.
+    expect(
+      awaitingCount({
+        decisions: [waitingA, waitingB, terminalA],
+        pendingApprovals: [],
+        now: NOW,
+        origin: ORIGIN,
+      }),
+    ).toBe(1);
+  });
+
+  // The whole prod snapshot, reduced: one genuinely-actionable listing item plus
+  // the #95 ghost. The band must read 1 — what the page can actually show.
+  it('reports only the reachable item when a superseded ghost sits alongside it', () => {
+    const ghostTerminal = iacDecision({
+      pr_number: 95, apply_status: 'failed_state_suspect', event_key: EK_A,
+      decision_id: 'term-95', created_at: '2026-06-11T05:50:36Z',
+    });
+    const ghostStale = iacDecision({
+      pr_number: 95, apply_status: 'waiting_for_rebake', event_key: EK_A,
+      decision_id: 'stale-95', created_at: '2026-06-11T05:39:09Z',
+    });
+    const real = pendingIac({
+      pr_number: 168,
+      title: 'Adopt Pub/Sub topic adopt-probe-topic into IaC management',
+      asset_type: 'pubsub.googleapis.com/Topic',
+      resource_name: 'adopt-probe-topic',
+    });
+    expect(
+      awaitingCount({
+        decisions: [ghostTerminal, ghostStale],
+        pendingApprovals: [real],
+        now: NOW,
+        origin: ORIGIN,
+      }),
+    ).toBe(1);
+  });
+
+  // A failed apply must NOT retire the PR PR-wide, or estate.ts's
+  // reconcileApprovals would drop a listing entry it holds no counter-evidence
+  // for ("an in-progress or failed apply leaves the entry standing").
+  it('a terminal failure does not suppress the same PR in the LISTING lane', () => {
+    const failed = iacDecision({
+      pr_number: 168, apply_status: 'failed', event_key: 'iac-apply-168-deadbeef',
+      decision_id: 'f-168', created_at: '2026-07-30T10:00:00Z',
+    });
+    expect(
+      awaitingCount({
+        decisions: [failed],
+        pendingApprovals: [pendingIac({ pr_number: 168 })],
+        now: NOW,
+        origin: ORIGIN,
+      }),
+    ).toBe(1);
+  });
+
+  // Fails safe toward showing work in the degenerate cases.
+  it('a waiting row with no event_key or no created_at keeps counting', () => {
+    const terminal = iacDecision({
+      pr_number: 95, apply_status: 'failed', event_key: EK_A,
+      decision_id: 'term-95', created_at: '2026-07-30T12:00:00Z',
+    });
+    const noKey = iacDecision({
+      pr_number: 95, apply_status: 'waiting_for_rebake', event_key: undefined,
+      decision_id: 'no-key', created_at: '2026-07-30T10:00:00Z',
+    });
+    expect(
+      awaitingCount({ decisions: [terminal, noKey], pendingApprovals: [], now: NOW, origin: ORIGIN }),
+    ).toBe(1);
+    const noTs = iacDecision({
+      pr_number: 95, apply_status: 'waiting_for_rebake', event_key: EK_A,
+      decision_id: 'no-ts', created_at: undefined,
+    });
+    expect(
+      awaitingCount({ decisions: [terminal, noTs], pendingApprovals: [], now: NOW, origin: ORIGIN }),
+    ).toBe(1);
+  });
+
+  it('a waiting_for_rebake row with no terminal sibling still counts', () => {
+    const waiting = iacDecision({
+      pr_number: 301, apply_status: 'waiting_for_rebake', event_key: 'iac-apply-301-abc',
+      decision_id: 'w-301', created_at: '2026-07-30T10:00:00Z',
+    });
+    expect(
+      awaitingCount({ decisions: [waiting], pendingApprovals: [], now: NOW, origin: ORIGIN }),
+    ).toBe(1);
+  });
+
   it('an expired rollback approval never inflates the rollback count (mirrors isRollbackAwaitingOperator)', () => {
     const expired = rollbackDecision({
       approval: { approval_url: '/approvals/rb-1?t=x', status: 'pending', expires_at: '2026-07-28T11:00:00Z' },
@@ -1263,6 +1439,7 @@ describe('deskModel — rule 2a honors resolvedIacPrNumbers (ds-0rm)', () => {
       decision_id: 'iac-applied',
       pr_number: 7,
       apply_status: 'applied',
+      merge_state: 'merged',
       applied_at: '2026-07-28T11:59:00Z',
     });
     const model = deskModel({
@@ -1275,6 +1452,46 @@ describe('deskModel — rule 2a honors resolvedIacPrNumbers (ds-0rm)', () => {
     expect(model.kind).toBe('stamped');
   });
 
+  // ds-dzd: `applied` alone is NOT proof. An apply that succeeded while its merge
+  // FAILED leaves the PR open, and a later generation of it appears in the listing
+  // BEFORE it has any decision row (one is written on the first approval click).
+  // Suppressing here made that live work vanish with nothing for the decision-row
+  // fallback to find. Only applied+merged is positive proof.
+  it('does NOT suppress a listing PR whose apply succeeded but whose merge FAILED', () => {
+    const appliedMergeFailed = iacDecision({
+      decision_id: 'iac-applied-merge-failed',
+      pr_number: 7,
+      apply_status: 'applied',
+      merge_state: 'failed',
+      applied_at: '2026-07-28T11:59:00Z',
+    });
+    const model = deskModel({
+      decisions: [appliedMergeFailed],
+      pendingApprovals: [pendingIac({ pr_number: 7 })],
+      now: NOW,
+      origin: ORIGIN,
+    });
+    expect(model.kind).toBe('pending');
+    if (model.kind === 'pending' && model.source === 'iac') expect(model.prNumber).toBe(7);
+  });
+
+  it('does NOT suppress a listing PR when the applied row has no merge_state', () => {
+    const appliedUnknownMerge = iacDecision({
+      decision_id: 'iac-applied-unknown-merge',
+      pr_number: 7,
+      apply_status: 'applied',
+      merge_state: undefined,
+      applied_at: '2026-07-28T11:59:00Z',
+    });
+    const model = deskModel({
+      decisions: [appliedUnknownMerge],
+      pendingApprovals: [pendingIac({ pr_number: 7 })],
+      now: NOW,
+      origin: ORIGIN,
+    });
+    expect(model.kind).toBe('pending');
+  });
+
   it('still presents a listing PR that is genuinely open', () => {
     // Control for the test above: a DIFFERENT PR being applied must not
     // suppress an unrelated open one, or the filter would be over-broad.
@@ -1282,6 +1499,7 @@ describe('deskModel — rule 2a honors resolvedIacPrNumbers (ds-0rm)', () => {
       decision_id: 'iac-applied',
       pr_number: 99,
       apply_status: 'applied',
+      merge_state: 'merged',
       applied_at: '2026-07-28T11:59:00Z',
     });
     const model = deskModel({
@@ -1304,6 +1522,7 @@ describe('deskModel — rule 2a honors resolvedIacPrNumbers (ds-0rm)', () => {
       decision_id: 'iac-applied',
       pr_number: 7,
       apply_status: 'applied',
+      merge_state: 'merged',
       applied_at: '2026-07-28T11:59:00Z',
     });
     const model = deskModel({
@@ -1327,6 +1546,7 @@ describe('awaitingCount — listing lane honors resolvedIacPrNumbers (ds-0rm)', 
       decision_id: 'iac-applied',
       pr_number: 7,
       apply_status: 'applied',
+      merge_state: 'merged',
       applied_at: '2026-07-28T11:59:00Z',
     });
     expect(
@@ -1337,6 +1557,47 @@ describe('awaitingCount — listing lane honors resolvedIacPrNumbers (ds-0rm)', 
         origin: ORIGIN,
       }),
     ).toBe(0);
+  });
+
+  // The count must not lose a listing-only PR whose earlier generation applied but
+  // failed to merge — there is no decision row for it yet, so nothing else would
+  // report it (ds-dzd).
+  it('still counts a listing PR whose apply succeeded but whose merge FAILED', () => {
+    const appliedMergeFailed = iacDecision({
+      decision_id: 'iac-applied-merge-failed',
+      pr_number: 7,
+      apply_status: 'applied',
+      merge_state: 'failed',
+      applied_at: '2026-07-28T11:59:00Z',
+    });
+    expect(
+      awaitingCount({
+        decisions: [appliedMergeFailed],
+        pendingApprovals: [pendingIac({ pr_number: 7 })],
+        now: NOW,
+        origin: ORIGIN,
+      }),
+    ).toBe(1);
+  });
+
+  it('still counts a listing PR when the applied row has NO merge_state', () => {
+    // The unknown-merge twin of the test above: absent merge state is not proof
+    // the PR closed, so the listing entry must survive here too.
+    const appliedUnknownMerge = iacDecision({
+      decision_id: 'iac-applied-unknown-merge',
+      pr_number: 7,
+      apply_status: 'applied',
+      merge_state: undefined,
+      applied_at: '2026-07-28T11:59:00Z',
+    });
+    expect(
+      awaitingCount({
+        decisions: [appliedUnknownMerge],
+        pendingApprovals: [pendingIac({ pr_number: 7 })],
+        now: NOW,
+        origin: ORIGIN,
+      }),
+    ).toBe(1);
   });
 
   it('counts an open listing PR exactly once even when both lanes see it', () => {

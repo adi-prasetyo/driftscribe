@@ -62,7 +62,7 @@ function groupablePr(d: Decision): number | null {
  * iac_apply docs (≥2) collapse into a `group` anchored at the position of the
  * PR's newest doc; everything else stays a `single` in place. Contiguity is
  * NOT assumed. Tolerates a null/undefined list and null entries (dropped),
- * matching `resolvedIacPrNumbers`.
+ * matching approval.ts's guards on the same open Decision shape.
  */
 export function groupRailDecisions(
   decisions: ReadonlyArray<Decision | null | undefined> | null | undefined,

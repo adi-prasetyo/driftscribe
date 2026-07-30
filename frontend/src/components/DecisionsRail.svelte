@@ -7,7 +7,7 @@
     isRollbackApprovalUnresolved,
     safeGithubHref,
     iacPrHref,
-    resolvedIacPrNumbers,
+    supersededWaitingIds,
     iacApproveLabel,
   } from '../lib/approval';
   import {
@@ -49,14 +49,15 @@
     max?: number;
   } = $props();
 
-  // PRs whose iac_apply has terminally `applied` — a `waiting_for_rebake` row
-  // for one of these is superseded, so its CTA downgrades to view-only
-  // (iacApproveLabel). Derived once per render from the list the rail holds.
-  const resolvedPrs = $derived(resolvedIacPrNumbers(decisions));
+  // ds-dzd: per-GENERATION supersession — a waiting row is stale only when a
+  // strictly newer terminal row for its OWN event_key overtook it. Derived once
+  // per render from the list the rail holds. Deliberately NOT the PR-wide
+  // `resolvedIacPrNumbers`, which belongs to the listing lane alone.
+  const supersededIds = $derived(supersededWaitingIds(decisions));
 
-  // Fold same-PR iac_apply docs into one group per PR. resolvedPrs stays derived
-  // from the raw list (App.svelte noteApplied also reads the raw list) — only
-  // the render loop changes.
+  // Fold same-PR iac_apply docs into one group per PR. The supersession set above
+  // stays derived from the RAW list (App.svelte's noteApplied also reads the raw
+  // list) — only the render loop groups.
   const railItems = $derived(groupRailDecisions(decisions));
 
   // The rail shows only the newest `max` grouped rows (plus the active row if it
@@ -330,7 +331,7 @@
           data-testid="iac-approve-link"
           href={iacHref}
           target="_blank"
-          rel="noopener">{iacApproveLabel(d, resolvedPrs, $t)}</a>
+          rel="noopener">{iacApproveLabel(d, supersededIds, $t)}</a>
       {/if}
 
       {#if githubHref(d)}

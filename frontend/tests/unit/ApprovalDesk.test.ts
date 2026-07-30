@@ -254,13 +254,21 @@ describe('ApprovalDesk — instrument band composition', () => {
 // THIS consumer mapping awaiting back to the estate, which is exactly the bug
 // (the approval queue is on the desk, so the numeral that says "you have work"
 // used to walk away from it).
-describe('ApprovalDesk — awaiting band stat stays on the desk', () => {
+describe('ApprovalDesk — awaiting band stat is a figure, not a control', () => {
   beforeEach(() => {
-    // jsdom has no layout, so it implements no scrollIntoView.
+    // jsdom has no layout, so it implements no scrollIntoView. Stubbed so that
+    // if a regression ever reintroduces a scroll, this suite records the call
+    // rather than dying on an undefined method.
     window.HTMLElement.prototype.scrollIntoView = vi.fn();
   });
 
-  it('clicking awaiting navigates nowhere and lands focus on the pending card', async () => {
+  // ds-s61. ds-7ag.2 made this numeral scroll + focus the pending card, which
+  // was the right instinct aimed at the wrong distance: the card is ~270px below
+  // the numeral on the same screen, so scrollIntoView({block:'start'}) asked for
+  // a journey the page had no room to make and merely spent the 38px of dead
+  // scroll a stale `calc(100vh - 56px)` left behind. The operator saw the whole
+  // page twitch and the card not arrive.
+  it('does not scroll, focus, or navigate — the card is already on screen', async () => {
     const onNavigate = vi.fn();
     const { getByTestId } = render(ApprovalDesk, {
       props: {
@@ -271,17 +279,42 @@ describe('ApprovalDesk — awaiting band stat stays on the desk', () => {
       },
     });
     const pending = getByTestId('approval-desk-pending');
-    // An id alone scrolls nothing for keyboard/SR users — the target has to be
-    // focusable, which a plain <div> is not without tabindex="-1".
-    expect(pending.getAttribute('tabindex')).toBe('-1');
+    const awaiting = getByTestId('instrument-band-awaiting');
 
-    await fireEvent.click(getByTestId('instrument-band-awaiting'));
+    expect(awaiting.tagName).not.toBe('BUTTON');
+    await fireEvent.click(awaiting);
 
     expect(onNavigate).not.toHaveBeenCalled();
-    expect(document.activeElement).toBe(pending);
+    expect(window.HTMLElement.prototype.scrollIntoView).not.toHaveBeenCalled();
+    expect(document.activeElement).not.toBe(pending);
   });
 
-  it('with nothing pending, the awaiting stat is inert (no card to land on)', async () => {
+  // The two attributes existed ONLY to serve that jump. A focusable div with no
+  // focus styling and nothing aimed at it is dead weight that a future reader
+  // would have to reverse-engineer.
+  it('the pending card no longer carries the jump-target id or tabindex', () => {
+    const { getByTestId } = render(ApprovalDesk, {
+      props: { graph: GRAPH, decisions: [rollbackDecision()], pendingApprovals: [], onNavigate: vi.fn() },
+    });
+    const pending = getByTestId('approval-desk-pending');
+    expect(pending.getAttribute('tabindex')).toBeNull();
+    expect(pending.getAttribute('id')).toBeNull();
+  });
+
+  // managed/drift are still controls here, and they still reach the estate map —
+  // making awaiting inert must not have flattened the whole band.
+  it('managed and drift still navigate to the estate', async () => {
+    const onNavigate = vi.fn();
+    const { getByTestId } = render(ApprovalDesk, {
+      props: { graph: GRAPH, decisions: [rollbackDecision()], pendingApprovals: [], onNavigate },
+    });
+    await fireEvent.click(getByTestId('instrument-band-managed'));
+    expect(onNavigate).toHaveBeenCalledWith('estate');
+    await fireEvent.click(getByTestId('instrument-band-drift'));
+    expect(onNavigate).toHaveBeenCalledTimes(2);
+  });
+
+  it('with nothing pending, the awaiting stat is still inert', async () => {
     const onNavigate = vi.fn();
     const { getByTestId, queryByTestId } = render(ApprovalDesk, {
       props: { graph: GRAPH, decisions: [], pendingApprovals: [], onNavigate },

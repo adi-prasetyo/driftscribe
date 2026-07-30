@@ -18,7 +18,11 @@
 // runs before this module could add that row.
 
 import type { Decision } from './types';
-import { resolvedIacPrNumbers, isRollbackAwaitingOperator, isIacAwaitingOperator } from './approval';
+import {
+  supersededWaitingIds,
+  isRollbackAwaitingOperator,
+  isIacAwaitingOperator,
+} from './approval';
 
 export type LedgerState = 'applied' | 'open' | 'noted' | 'failed' | 'unconfirmed';
 
@@ -50,7 +54,7 @@ function parseCreatedAt(iso: string | null | undefined): number | null {
  */
 function classify(
   d: Decision,
-  resolvedPrs: ReadonlySet<number>,
+  supersededIds: ReadonlySet<string>,
   now: number,
   origin: string | undefined,
 ): LedgerState {
@@ -78,7 +82,7 @@ function classify(
   if (isRollbackAwaitingOperator(d, { now, origin })) {
     return 'open';
   }
-  if (isIacAwaitingOperator(d, resolvedPrs)) {
+  if (isIacAwaitingOperator(d, supersededIds)) {
     return 'open';
   }
 
@@ -89,13 +93,13 @@ function classify(
  * Reduce `decisions` to at most `max` (default 4) ledger rows: classified,
  * newest-first by `created_at`, capped. Pure and defensive — tolerates a
  * null/undefined list and null/undefined elements (skips, never throws),
- * mirroring desk.ts / resolvedIacPrNumbers's guards on the same open Decision
- * shape.
+ * mirroring desk.ts's guards on the same open Decision shape.
  *
- * `resolvedIacPrNumbers(decisions)` is computed ONCE up front, not per row —
- * it is already an O(n) scan of the same list, so recomputing it inside the
- * per-row loop would make the whole function O(n²) for a set that never
- * changes mid-classification.
+ * `supersededWaitingIds(decisions)` is computed ONCE up front, not per row — it
+ * is already an O(n) scan of the same list, so recomputing it inside the per-row
+ * loop would make the whole function O(n²) for a set that never changes
+ * mid-classification. The PR-wide `resolvedIacPrNumbers` is deliberately NOT
+ * consulted here: iac actionability is per GENERATION (ds-dzd).
  *
  * `max <= 0` returns an empty array; a non-finite `max` (NaN, ±Infinity, or
  * simply omitted) falls back to the default of 4.
@@ -118,12 +122,16 @@ export function ledgerRows(
   if (cap <= 0) return [];
 
   const list = decisions ?? [];
-  const resolvedPrs = resolvedIacPrNumbers(list);
+  const supersededIds = supersededWaitingIds(list);
 
   const rows: LedgerRow[] = [];
   for (const d of list) {
     if (d == null) continue; // defensive: malformed array element, skip not throw
-    rows.push({ decision: d, state: classify(d, resolvedPrs, now, origin), ts: parseCreatedAt(d.created_at) });
+    rows.push({
+      decision: d,
+      state: classify(d, supersededIds, now, origin),
+      ts: parseCreatedAt(d.created_at),
+    });
   }
 
   // Newest first; a null ts (absent/unparseable created_at) sorts LAST. Written

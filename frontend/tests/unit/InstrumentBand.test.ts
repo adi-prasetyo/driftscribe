@@ -89,15 +89,38 @@ describe('InstrumentBand', () => {
 // queue) is on the DESK. Clicking the number that says "you have work" walked
 // away from the work.
 describe('InstrumentBand — per-stat interactivity by context', () => {
-  it('on the desk, all three stats are buttons that emit their own key', async () => {
+  it('on the desk, managed and drift are buttons that emit their own key', async () => {
     const onStat = vi.fn();
     const { getByTestId } = render(InstrumentBand, { props: props({ onStat }) });
 
-    for (const key of ['managed', 'drift', 'awaiting']) {
+    for (const key of ['managed', 'drift']) {
       expect(getByTestId(`instrument-band-${key}`).tagName).toBe('BUTTON');
       await fireEvent.click(getByTestId(`instrument-band-${key}`));
     }
-    expect(onStat.mock.calls.map(([k]) => k)).toEqual(['managed', 'drift', 'awaiting']);
+    expect(onStat.mock.calls.map(([k]) => k)).toEqual(['managed', 'drift']);
+  });
+
+  // ds-s61 — awaiting is a FIGURE on the desk, not a control. ds-7ag.2 pointed
+  // it at the desk's own pending card via scrollIntoView, but that card sits
+  // ~270px below the numeral on the same screen: the jump had nowhere to go and
+  // only spent the dead scroll a stale viewport calc left behind, which read as
+  // an unexplained twitch. A number whose subject is directly beneath it does
+  // not need to be clickable.
+  it('on the desk, awaiting is an inert figure — its subject is already on screen', async () => {
+    const onStat = vi.fn();
+    const { getByTestId } = render(InstrumentBand, { props: props({ onStat }) });
+
+    const el = getByTestId('instrument-band-awaiting');
+    expect(el.tagName).not.toBe('BUTTON');
+    await fireEvent.click(el);
+    expect(onStat).not.toHaveBeenCalled();
+  });
+
+  // The hover/focus hint is the VISIBLE promise that a click goes somewhere. An
+  // inert figure must not carry one, or the band advertises a control it isn't.
+  it('on the desk, awaiting shows no destination hint', () => {
+    const { getByTestId } = render(InstrumentBand, { props: props() });
+    expect(getByTestId('instrument-band-awaiting').textContent).not.toMatch(/queue|↓|→/);
   });
 
   // On the estate view the operator is already looking at the infrastructure
@@ -161,7 +184,7 @@ describe('InstrumentBand — per-stat interactivity by context', () => {
 // hover hint (ds-7ag.2 / plan Task 3) is invisible to screen readers unless the
 // accessible name carries the destination itself.
 describe('InstrumentBand — accessible names name their destination', () => {
-  it('desk: managed/drift say where they go; awaiting points at the queue below', () => {
+  it('desk: managed/drift say where they go; the inert awaiting figure promises nothing', () => {
     const { getByTestId } = render(InstrumentBand, { props: props() });
     // Asserted as EXACT strings, not a loose /9/ match: these are
     // operator-facing copy under a freeze, and a substring match would still
@@ -173,8 +196,10 @@ describe('InstrumentBand — accessible names name their destination', () => {
     expect(getByTestId('instrument-band-drift').getAttribute('aria-label')).toBe(
       '6 drift detected — view infrastructure map',
     );
+    // Plain wording, no destination clause: an aria-label that named one would
+    // promise a screen-reader user a jump that no longer exists (ds-s61).
     expect(getByTestId('instrument-band-awaiting').getAttribute('aria-label')).toBe(
-      '1 awaiting your approval — jump to the queue below',
+      '1 awaiting your approval',
     );
   });
 

@@ -20,6 +20,7 @@ import {
   isRollbackAwaitingOperator,
   isIacAwaitingOperator,
   resolvedIacPrNumbers,
+  supersededWaitingIds,
 } from './approval';
 import { isReplayableTraceId } from './deeplink';
 import type { Decision } from './types';
@@ -190,7 +191,7 @@ export interface DeskModelInput {
   // sourced payloads (overviewStore.ts casts JSON.parse output straight to
   // `Decision[]` / `PendingApproval[]` — see its fetchDecisionsList /
   // fetchPendingList), so a malformed element is a real runtime possibility
-  // the static element type doesn't rule out. Mirrors resolvedIacPrNumbers's
+  // the static element type doesn't rule out. Mirrors approval.ts's
   // `ReadonlyArray<... | null | undefined>` on the same Decision[] shape
   // (approval.ts:186-192).
   decisions: ReadonlyArray<Decision | null | undefined> | null | undefined;
@@ -335,11 +336,19 @@ function replayableTraceId(decision: Decision | null | undefined): string | null
  * ds-0rm: this listing is CACHED backend-side for 60s
  * (`_PENDING_APPROVALS_TTL_S`, agent/main.py), so for up to a minute after a
  * PR merges and applies it still names that PR. Because this rule is tried
- * FIRST and used to skip the `resolvedPrs` check that rule 2b applies, a
+ * FIRST and originally skipped the resolved-PR check, a
  * stale cache entry outranked the seal that should have been showing — the
  * desk asked for a decision that had already been made. It now honors the
- * same resolved-PR filter, so the two rules can never disagree about whether
- * a given PR is still open.
+ * resolved-PR filter, so neither rule can present a PR this client can PROVE is
+ * closed (applied AND merged).
+ *
+ * The two rules DO legitimately disagree below that bar, and must (ds-dzd). This
+ * one asks a PR-wide question, because a listing entry carries no generation
+ * identity to ask a finer one. Rule 2b asks a per-GENERATION question, because a
+ * decision row does. A PR whose generation A applied-but-failed-to-merge while
+ * generation B awaits the operator is genuinely open on both counts; a PR whose
+ * only waiting row was overtaken by its own terminal outcome is actionable on
+ * neither. Forcing them to share one answer is what hid live work.
  */
 function selectPendingIac(
   pendingApprovals: ReadonlyArray<PendingApproval | null | undefined>,
@@ -378,20 +387,22 @@ function selectPendingIac(
  * mirroring rule 1's `selectPendingRollback` — deterministic, not
  * last-write-wins.
  *
- * `resolvedPrs` is computed once by the caller (`deskModel`) and threaded in,
- * mirroring ledger.ts's `ledgerRows` — it's an O(n) scan of the same
- * `decisions` list, so recomputing it per candidate here would make this
- * function O(n²) for a set that never changes mid-scan.
+ * `supersededIds` is computed once by the caller (`deskModel`) and threaded in,
+ * mirroring ledger.ts's `ledgerRows` — it is an O(n) scan of the same `decisions`
+ * list, so recomputing it per candidate here would make this function O(n^2) for
+ * a set that never changes mid-scan. `resolvedPrs` is deliberately NOT passed: it
+ * is PR-wide and belongs to the listing lane alone (ds-dzd — see approval.ts's
+ * `resolvedIacPrNumbers`).
  */
 function selectPendingIacFromDecisions(
   decisions: ReadonlyArray<Decision | null | undefined>,
-  resolvedPrs: ReadonlySet<number>,
+  supersededIds: ReadonlySet<string>,
   locale: string | undefined,
 ): DeskPendingIac | null {
   let best: { decision: Decision; href: string; prNumber: number; ts: number } | null = null;
   for (const decision of decisions) {
     if (decision == null) continue; // defensive: malformed array element, skip not throw
-    if (!isIacAwaitingOperator(decision, resolvedPrs)) continue;
+    if (!isIacAwaitingOperator(decision, supersededIds)) continue;
     const href = iacApprovalHref(decision.pr_number, locale);
     if (href == null) continue; // malformed/missing pr_number — never a dead CTA, try the next one
     const ts = parseForOrdering(decision.created_at);
@@ -605,16 +616,18 @@ export function deskModel(input: DeskModelInput): DeskModel {
   const rollback = selectPendingRollback(decisions, now, input.origin, input.locale);
   if (rollback) return rollback;
 
-  // Computed ONCE and threaded into both iac rules. Rule 2a used to skip this
-  // filter entirely (ds-0rm); sharing the set is what makes the two rules
-  // structurally unable to disagree about which PRs are still open, rather
-  // than merely happening to agree.
+  // TWO sets for TWO different questions, each computed once (ds-dzd). resolvedPrs
+  // is PR-wide and goes ONLY to the listing rule 2a, which has no generation
+  // identity available; rule 2a used to skip it entirely (ds-0rm). supersededIds
+  // is per GENERATION and goes ONLY to the decisions rule 2b. Making them share
+  // one answer is what deleted a live generation from the desk.
   const resolvedPrs = resolvedIacPrNumbers(decisions);
+  const supersededIds = supersededWaitingIds(decisions);
 
   const iacFromListing = selectPendingIac(pendingApprovals, decisions, resolvedPrs, input.locale);
   if (iacFromListing) return iacFromListing;
 
-  const iacFromDecisions = selectPendingIacFromDecisions(decisions, resolvedPrs, input.locale);
+  const iacFromDecisions = selectPendingIacFromDecisions(decisions, supersededIds, input.locale);
   if (iacFromDecisions) return iacFromDecisions;
 
   const unresolved = selectUnresolvedRollback(decisions, now);
@@ -686,13 +699,14 @@ export function awaitingCount(input: DeskModelInput): number {
     if (isRollbackAwaitingOperator(decision, { now, origin: input.origin })) rollbackCount += 1;
   }
 
-  // resolvedPrs is computed BEFORE the listing lane, not after it: the listing
-  // lane needs it too (ds-0rm). It previously added every `pr_number` in the
-  // payload unconditionally while the decisions lane filtered, so a merged and
-  // applied PR still sitting in the 60s backend cache inflated this figure by
-  // one — the band over-reported "awaiting your approval" against a desk that,
-  // once rule 2a was also fixed, was correctly showing the seal.
+  // Two DIFFERENT questions, two different sets (ds-dzd). resolvedPrs is PR-wide
+  // and serves the LISTING lane only (ds-0rm: a provably applied-and-merged PR
+  // still named by the 60s backend cache used to inflate this figure by one, so
+  // the band over-reported against a desk that was correctly showing the seal).
+  // supersededIds is per GENERATION and serves the DECISIONS lane: an `applied`
+  // row on generation A says nothing about a waiting row on generation B.
   const resolvedPrs = resolvedIacPrNumbers(decisions);
+  const supersededIds = supersededWaitingIds(decisions);
 
   const iacPrs = new Set<number>();
   for (const approval of pendingApprovals) {
@@ -702,7 +716,10 @@ export function awaitingCount(input: DeskModelInput): number {
   }
   for (const decision of decisions) {
     if (decision == null) continue;
-    if (isIacAwaitingOperator(decision, resolvedPrs) && isPositiveIntPr(decision.pr_number)) {
+    if (
+      isIacAwaitingOperator(decision, supersededIds) &&
+      isPositiveIntPr(decision.pr_number)
+    ) {
       iacPrs.add(decision.pr_number);
     }
   }

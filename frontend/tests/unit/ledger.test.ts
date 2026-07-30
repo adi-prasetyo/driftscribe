@@ -194,12 +194,13 @@ describe('ledgerRows', () => {
       expect(rows[0].state).toBe('noted');
     });
 
-    it('pr_number resolved via resolvedIacPrNumbers (a later applied row for the same PR) → noted, not open', () => {
+    it('this generation’s own applied row (same event_key) → noted, not open', () => {
       const waiting = decision({
         decision_id: 's2',
         action: 'iac_apply',
         apply_status: 'waiting_for_rebake',
         pr_number: 400,
+        event_key: 'iac-apply-400-samegeneration',
         created_at: '2026-07-28T08:00:00Z',
       });
       const applied = decision({
@@ -207,11 +208,35 @@ describe('ledgerRows', () => {
         action: 'iac_apply',
         apply_status: 'applied',
         pr_number: 400,
+        event_key: 'iac-apply-400-samegeneration',
         created_at: '2026-07-28T09:00:00Z',
       });
       const rows = ledgerRows([waiting, applied], 4, { now: NOW, origin: ORIGIN });
       const waitingRow = rows.find((r) => r.decision.decision_id === 's2');
       expect(waitingRow?.state).toBe('noted');
+    });
+
+    // ds-dzd: a terminal row from a DIFFERENT generation is not this row's
+    // outcome, so the ledger must keep showing it as open work.
+    it('a different generation’s applied row leaves the waiting row OPEN', () => {
+      const waiting = decision({
+        decision_id: 's4',
+        action: 'iac_apply',
+        apply_status: 'waiting_for_rebake',
+        pr_number: 400,
+        event_key: 'iac-apply-400-generationB',
+        created_at: '2026-07-28T09:30:00Z',
+      });
+      const applied = decision({
+        decision_id: 's5',
+        action: 'iac_apply',
+        apply_status: 'applied',
+        pr_number: 400,
+        event_key: 'iac-apply-400-generationA',
+        created_at: '2026-07-28T09:00:00Z',
+      });
+      const rows = ledgerRows([waiting, applied], 4, { now: NOW, origin: ORIGIN });
+      expect(rows.find((r) => r.decision.decision_id === 's4')?.state).toBe('open');
     });
   });
 

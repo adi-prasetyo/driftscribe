@@ -38,8 +38,13 @@ import type { Decision } from './types';
  *
  * Note the asymmetry with `approvalsStale`: that suppresses claims about
  * ABSENCE. This drops a POSITIVE claim we hold positive counter-evidence for.
- * Only an `applied` decision qualifies — `resolvedIacPrNumbers` requires it —
- * so an in-progress or failed apply leaves the entry standing.
+ * Only an applied AND MERGED decision qualifies — `resolvedIacPrNumbers`
+ * requires both — so an in-progress apply, a failed apply, or an apply whose
+ * MERGE failed all leave the entry standing. That last case is load-bearing
+ * (ds-dzd): an apply can succeed while its merge fails, leaving the PR open with
+ * a later generation on it that has no decision row yet, and dropping the chip
+ * there would delete live work from this view and the tour with nothing else to
+ * surface it.
  */
 export function reconcileApprovals(
   approvals: ReadonlyArray<PendingApproval | null | undefined> | null | undefined,
