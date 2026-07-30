@@ -10,6 +10,7 @@ import {
   safeGithubHref,
   iacPrHref,
   resolvedIacPrNumbers,
+  supersededWaitingIds,
   iacApproveLabel,
 } from '../../src/lib/approval';
 import { translate, type TranslateFn } from '../../src/lib/i18n';
@@ -400,7 +401,121 @@ describe('iacPrHref — the rail title link for an iac_apply row', () => {
   });
 });
 
-describe('resolvedIacPrNumbers — PRs whose iac_apply run has FINISHED', () => {
+// ds-dzd. The question resolvedIacPrNumbers CANNOT answer, because approval state
+// is not PR-wide: agent/main.py's _iac_event_key keys an apply on
+// {repo, pr_number, head_sha, generation_metadata}, and
+// docs/runbooks/iac-apply-failure-recovery.md tells the operator to rebuild the
+// C2 plan on the SAME PR after a failure and approve the newest generation. So
+// one PR can hold a dead generation and a live one at once.
+describe('supersededWaitingIds — per-GENERATION supersession', () => {
+  const row = (o: Record<string, unknown>) => ({ action: 'iac_apply', ...o });
+
+  // The prod shape: PR #95's newest row is the failure, so both older waiting
+  // rows are dead. This is the count the operator saw as a phantom "2".
+  it('retires waiting rows an OLDER-than-terminal failure has overtaken (PR #95)', () => {
+    const ids = supersededWaitingIds([
+      row({ apply_status: 'failed_state_suspect', pr_number: 95, decision_id: 'term', created_at: '2026-06-11T09:00:00Z' }),
+      row({ apply_status: 'waiting_for_rebake', pr_number: 95, decision_id: 'w1', created_at: '2026-06-11T08:00:00Z' }),
+      row({ apply_status: 'waiting_for_rebake', pr_number: 95, decision_id: 'w2', created_at: '2026-06-11T07:00:00Z' }),
+    ]);
+    expect(ids.has('w1')).toBe(true);
+    expect(ids.has('w2')).toBe(true);
+    expect(ids.size).toBe(2);
+  });
+
+  // THE REGRESSION THIS EXISTS FOR. A PR-wide "any failure retires the PR" rule
+  // passes the test above and silently breaks this one — hiding the exact row the
+  // recovery runbook tells the operator to approve.
+  it('leaves a NEWER waiting row actionable after an older failure (runbook rebuild)', () => {
+    const ids = supersededWaitingIds([
+      row({ apply_status: 'waiting_for_rebake', pr_number: 216, decision_id: 'rebuilt', created_at: '2026-07-30T12:00:00Z' }),
+      row({ apply_status: 'failed_state_suspect', pr_number: 216, decision_id: 'dead', created_at: '2026-07-30T10:00:00Z' }),
+    ]);
+    expect(ids.has('rebuilt')).toBe(false);
+    expect(ids.size).toBe(0);
+  });
+
+  it('an applied row also overtakes an older waiting row on the same PR', () => {
+    const ids = supersededWaitingIds([
+      row({ apply_status: 'applied', pr_number: 221, decision_id: 'ok', created_at: '2026-07-08T08:58:00Z' }),
+      row({ apply_status: 'waiting_for_rebake', pr_number: 221, decision_id: 'old', created_at: '2026-07-08T08:49:00Z' }),
+    ]);
+    expect(ids.has('old')).toBe(true);
+  });
+
+  it('never crosses PR boundaries', () => {
+    const ids = supersededWaitingIds([
+      row({ apply_status: 'failed', pr_number: 95, decision_id: 'term', created_at: '2026-07-30T12:00:00Z' }),
+      row({ apply_status: 'waiting_for_rebake', pr_number: 168, decision_id: 'other', created_at: '2026-07-30T10:00:00Z' }),
+    ]);
+    expect(ids.size).toBe(0);
+  });
+
+  // Fails SAFE toward showing work: hiding a proposal the operator cannot then
+  // approve is the expensive direction; a stale-looking row costs one click.
+  it('does not retire a row when either timestamp is missing or unparseable', () => {
+    expect(
+      supersededWaitingIds([
+        row({ apply_status: 'failed', pr_number: 95, decision_id: 'term', created_at: '2026-07-30T12:00:00Z' }),
+        row({ apply_status: 'waiting_for_rebake', pr_number: 95, decision_id: 'no-ts' }),
+      ]).size,
+    ).toBe(0);
+    expect(
+      supersededWaitingIds([
+        row({ apply_status: 'failed', pr_number: 95, decision_id: 'term', created_at: 'not-a-date' }),
+        row({ apply_status: 'waiting_for_rebake', pr_number: 95, decision_id: 'w', created_at: '2026-07-30T10:00:00Z' }),
+      ]).size,
+    ).toBe(0);
+  });
+
+  it('equal timestamps do not retire the row (strictly newer only)', () => {
+    const at = '2026-07-30T12:00:00Z';
+    const ids = supersededWaitingIds([
+      row({ apply_status: 'failed', pr_number: 95, decision_id: 'term', created_at: at }),
+      row({ apply_status: 'waiting_for_rebake', pr_number: 95, decision_id: 'w', created_at: at }),
+    ]);
+    expect(ids.size).toBe(0);
+  });
+
+  it('ignores non-iac_apply rows and non-positive-integer pr_numbers', () => {
+    expect(
+      supersededWaitingIds([
+        row({ apply_status: 'failed', pr_number: 95, decision_id: 't', created_at: '2026-07-30T12:00:00Z' }),
+        { action: 'rollback', apply_status: 'waiting_for_rebake', pr_number: 95, decision_id: 'rb', created_at: '2026-07-30T10:00:00Z' },
+      ]).size,
+    ).toBe(0);
+    expect(
+      supersededWaitingIds([
+        row({ apply_status: 'failed', pr_number: 0, decision_id: 't', created_at: '2026-07-30T12:00:00Z' }),
+        row({ apply_status: 'waiting_for_rebake', pr_number: 0, decision_id: 'w', created_at: '2026-07-30T10:00:00Z' }),
+      ]).size,
+    ).toBe(0);
+  });
+
+  it('tolerates a null/undefined list and null entries', () => {
+    expect(supersededWaitingIds(null).size).toBe(0);
+    expect(supersededWaitingIds(undefined).size).toBe(0);
+    expect(supersededWaitingIds([null, undefined]).size).toBe(0);
+  });
+});
+
+// The predicate and the rail label must BOTH honour generation supersession, or
+// the band and the rail disagree again — the drift this whole change closes.
+describe('isIacAwaitingOperator / iacApproveLabel honour supersededIds', () => {
+  const stale = { action: 'iac_apply', apply_status: 'waiting_for_rebake', pr_number: 95, decision_id: 'w1' };
+
+  it('a superseded waiting row is NOT awaiting the operator', () => {
+    expect(isIacAwaitingOperator(stale, new Set(), new Set(['w1']))).toBe(false);
+    expect(isIacAwaitingOperator(stale, new Set(), new Set())).toBe(true);
+  });
+
+  it('a superseded waiting row stops advertising "Review & approve →"', () => {
+    expect(iacApproveLabel(stale, new Set(), new Set(['w1']), t)).toBe('Go to approval page →');
+    expect(iacApproveLabel(stale, new Set(), new Set(), t)).toBe('Review & approve →');
+  });
+});
+
+describe('resolvedIacPrNumbers — PRs with a terminal applied iac_apply row', () => {
   it('collects the pr_number of every applied iac_apply row', () => {
     const set = resolvedIacPrNumbers([
       { action: 'iac_apply', apply_status: 'applied', pr_number: 68 },
@@ -421,57 +536,19 @@ describe('resolvedIacPrNumbers — PRs whose iac_apply run has FINISHED', () => 
     expect(set.size).toBe(0);
   });
 
-  // ds-dzd: a TERMINAL FAILURE finishes a PR as definitively as a success. The
-  // approval page suppresses the Approve form for these statuses, so a PR whose
-  // run ended in one has nothing left for the operator to approve — and must
-  // stop resolving as "still awaiting you".
-  it('collects a pr_number whose run ended in terminal FAILURE, not just applied', () => {
+  // ds-dzd — this set stays applied-ONLY, on purpose. A terminal FAILURE must
+  // NOT resolve a PR here: three callers read it as "this PR is done with", and
+  // estate.ts's reconcileApprovals states the invariant outright ("an in-progress
+  // or failed apply leaves the entry standing") because it DROPS a pending
+  // listing entry. Widening it to failures was tried and reverted — it would have
+  // hidden the recovery work the runbook prescribes. The generation-scoped
+  // question lives in supersededWaitingIds instead.
+  it('does NOT resolve a PR whose apply ended in terminal failure', () => {
     const set = resolvedIacPrNumbers([
       { action: 'iac_apply', apply_status: 'failed', pr_number: 70 },
       { action: 'iac_apply', apply_status: 'failed_state_suspect', pr_number: 95 },
       { action: 'iac_apply', apply_status: 'ambiguous', pr_number: 72 },
-    ]);
-    expect(set.has(70)).toBe(true);
-    expect(set.has(95)).toBe(true);
-    expect(set.has(72)).toBe(true);
-    expect(set.size).toBe(3);
-  });
-
-  it('still ignores a waiting_for_rebake row — that one is genuinely unfinished', () => {
-    const set = resolvedIacPrNumbers([
       { action: 'iac_apply', apply_status: 'waiting_for_rebake', pr_number: 68 },
-    ]);
-    expect(set.size).toBe(0);
-  });
-
-  // The live shape that produced the bug: PR #95 carried a failed_state_suspect
-  // row PLUS two older waiting_for_rebake rows, so the band counted it as
-  // awaiting the operator for two months while no surface could show it.
-  it('resolves PR #95’s shape — a terminal-failed row alongside older waiting rows', () => {
-    const set = resolvedIacPrNumbers([
-      { action: 'iac_apply', apply_status: 'failed_state_suspect', pr_number: 95 },
-      { action: 'iac_apply', apply_status: 'waiting_for_rebake', pr_number: 95 },
-      { action: 'iac_apply', apply_status: 'waiting_for_rebake', pr_number: 95 },
-    ]);
-    expect(set.has(95)).toBe(true);
-  });
-
-  it('ignores a terminal-FAILED row whose action is NOT iac_apply', () => {
-    const set = resolvedIacPrNumbers([
-      { action: 'rollback', apply_status: 'failed', pr_number: 99 },
-      { action: 'drift_issue', apply_status: 'failed_state_suspect', pr_number: 12 },
-    ]);
-    expect(set.size).toBe(0);
-  });
-
-  it('ignores an unknown apply_status — only the named terminals finish a PR', () => {
-    // A future/unrecognised status must fail SAFE: keep the PR unresolved so its
-    // waiting row keeps its live CTA, rather than silently retiring real work.
-    const set = resolvedIacPrNumbers([
-      { action: 'iac_apply', apply_status: 'claimed', pr_number: 68 },
-      { action: 'iac_apply', apply_status: 'lock_refused', pr_number: 70 },
-      { action: 'iac_apply', apply_status: 'something_new', pr_number: 72 },
-      { action: 'iac_apply', pr_number: 74 },
     ]);
     expect(set.size).toBe(0);
   });
@@ -509,74 +586,75 @@ describe('resolvedIacPrNumbers — PRs whose iac_apply run has FINISHED', () => 
 describe('isIacAwaitingOperator — shared "awaiting the operator" predicate, iac lane', () => {
   it('true: iac_apply + waiting_for_rebake + not superseded + not resolved', () => {
     const d = { action: 'iac_apply', apply_status: 'waiting_for_rebake', pr_number: 68 };
-    expect(isIacAwaitingOperator(d, new Set())).toBe(true);
+    expect(isIacAwaitingOperator(d, new Set(), new Set())).toBe(true);
   });
 
   it('false: action is not iac_apply', () => {
     const d = { action: 'rollback', apply_status: 'waiting_for_rebake', pr_number: 68 };
-    expect(isIacAwaitingOperator(d, new Set())).toBe(false);
+    expect(isIacAwaitingOperator(d, new Set(), new Set())).toBe(false);
   });
 
   it('false: apply_status is not waiting_for_rebake', () => {
-    expect(isIacAwaitingOperator({ action: 'iac_apply', apply_status: 'applied', pr_number: 68 }, new Set())).toBe(
+    expect(isIacAwaitingOperator({ action: 'iac_apply', apply_status: 'applied', pr_number: 68 }, new Set(), new Set())).toBe(
       false,
     );
-    expect(isIacAwaitingOperator({ action: 'iac_apply', apply_status: 'failed', pr_number: 68 }, new Set())).toBe(
+    expect(isIacAwaitingOperator({ action: 'iac_apply', apply_status: 'failed', pr_number: 68 }, new Set(), new Set())).toBe(
       false,
     );
   });
 
   it('false: explicit positive-integer superseded_by_pr', () => {
     const d = { action: 'iac_apply', apply_status: 'waiting_for_rebake', pr_number: 216, superseded_by_pr: 221 };
-    expect(isIacAwaitingOperator(d, new Set())).toBe(false);
+    expect(isIacAwaitingOperator(d, new Set(), new Set())).toBe(false);
   });
 
   it('a 0 / negative / non-integer superseded_by_pr is NOT treated as superseded (mirrors iacApproveLabel)', () => {
     const base = { action: 'iac_apply', apply_status: 'waiting_for_rebake', pr_number: 216 };
-    expect(isIacAwaitingOperator({ ...base, superseded_by_pr: 0 }, new Set())).toBe(true);
-    expect(isIacAwaitingOperator({ ...base, superseded_by_pr: -1 }, new Set())).toBe(true);
-    expect(isIacAwaitingOperator({ ...base, superseded_by_pr: 1.5 }, new Set())).toBe(true);
+    expect(isIacAwaitingOperator({ ...base, superseded_by_pr: 0 }, new Set(), new Set())).toBe(true);
+    expect(isIacAwaitingOperator({ ...base, superseded_by_pr: -1 }, new Set(), new Set())).toBe(true);
+    expect(isIacAwaitingOperator({ ...base, superseded_by_pr: 1.5 }, new Set(), new Set())).toBe(true);
   });
 
   it('false: pr_number is in resolvedPrs (a later applied row for the same PR)', () => {
     const d = { action: 'iac_apply', apply_status: 'waiting_for_rebake', pr_number: 68 };
-    expect(isIacAwaitingOperator(d, new Set([68]))).toBe(false);
+    expect(isIacAwaitingOperator(d, new Set([68]), new Set())).toBe(false);
   });
 
   it('a PR NOT in resolvedPrs still keeps its live status (only the matching PR downgrades)', () => {
     const resolved = new Set([68]);
     expect(
-      isIacAwaitingOperator({ action: 'iac_apply', apply_status: 'waiting_for_rebake', pr_number: 71 }, resolved),
+      isIacAwaitingOperator({ action: 'iac_apply', apply_status: 'waiting_for_rebake', pr_number: 71 }, resolved, new Set()),
     ).toBe(true);
   });
 
   it('a missing/invalid pr_number can never be "resolved" — stays awaiting even against a non-empty resolvedPrs', () => {
     const resolved = new Set([68]);
-    expect(isIacAwaitingOperator({ action: 'iac_apply', apply_status: 'waiting_for_rebake' }, resolved)).toBe(true);
+    expect(isIacAwaitingOperator({ action: 'iac_apply', apply_status: 'waiting_for_rebake' }, resolved, new Set())).toBe(true);
     expect(
       isIacAwaitingOperator(
         { action: 'iac_apply', apply_status: 'waiting_for_rebake', pr_number: 0 },
         resolved,
+        new Set(),
       ),
     ).toBe(true);
   });
 
   it('tolerates null/undefined decision (never throws)', () => {
-    expect(isIacAwaitingOperator(null, new Set())).toBe(false);
-    expect(isIacAwaitingOperator(undefined, new Set())).toBe(false);
+    expect(isIacAwaitingOperator(null, new Set(), new Set())).toBe(false);
+    expect(isIacAwaitingOperator(undefined, new Set(), new Set())).toBe(false);
   });
 });
 
 describe('iacApproveLabel — retire the stale CTA on superseded rows', () => {
   it('waiting_for_rebake + PR NOT resolved → "Review & approve →"', () => {
     expect(
-      iacApproveLabel({ apply_status: 'waiting_for_rebake', pr_number: 68 }, new Set(), t),
+      iacApproveLabel({ apply_status: 'waiting_for_rebake', pr_number: 68 }, new Set(), new Set(), t),
     ).toBe('Review & approve →');
   });
 
   it('waiting_for_rebake + PR resolved → "Go to approval page →" (superseded)', () => {
     expect(
-      iacApproveLabel({ apply_status: 'waiting_for_rebake', pr_number: 68 }, new Set([68]), t),
+      iacApproveLabel({ apply_status: 'waiting_for_rebake', pr_number: 68 }, new Set([68]), new Set(), t),
     ).toBe('Go to approval page →');
   });
 
@@ -584,6 +662,7 @@ describe('iacApproveLabel — retire the stale CTA on superseded rows', () => {
     expect(
       iacApproveLabel(
         { apply_status: 'applied', merge_state: 'merged', pr_number: 68 },
+        new Set(),
         new Set(),
         t,
       ),
@@ -596,14 +675,15 @@ describe('iacApproveLabel — retire the stale CTA on superseded rows', () => {
       iacApproveLabel(
         { apply_status: 'applied', merge_state: 'failed', pr_number: 68 },
         new Set(),
+        new Set(),
         t,
       ),
     ).toBe('Go to approval page →');
     // applied with no merge_state → not provably done → neutral wording.
-    expect(iacApproveLabel({ apply_status: 'applied', pr_number: 68 }, new Set(), t)).toBe(
+    expect(iacApproveLabel({ apply_status: 'applied', pr_number: 68 }, new Set(), new Set(), t)).toBe(
       'Go to approval page →',
     );
-    expect(iacApproveLabel({ pr_number: 68 }, new Set(), t)).toBe('Go to approval page →');
+    expect(iacApproveLabel({ pr_number: 68 }, new Set(), new Set(), t)).toBe('Go to approval page →');
   });
 
   it('terminal-failed apply_status → "View failure details →" (no approval action on the page)', () => {
@@ -612,38 +692,39 @@ describe('iacApproveLabel — retire the stale CTA on superseded rows', () => {
     // not promise approval work the page can't offer. Merge state is irrelevant — a
     // terminal failure is terminal whether or not the PR later merged (PR #95: a
     // failed_state_suspect + merged row that read "Go to approval page →" but had no button).
-    expect(iacApproveLabel({ apply_status: 'failed', pr_number: 70 }, new Set(), t)).toBe(
+    expect(iacApproveLabel({ apply_status: 'failed', pr_number: 70 }, new Set(), new Set(), t)).toBe(
       'View failure details →',
     );
     expect(
       iacApproveLabel(
         { apply_status: 'failed_state_suspect', merge_state: 'merged', pr_number: 95 },
         new Set(),
+        new Set(),
         t,
       ),
     ).toBe('View failure details →');
-    expect(iacApproveLabel({ apply_status: 'ambiguous', pr_number: 70 }, new Set(), t)).toBe(
+    expect(iacApproveLabel({ apply_status: 'ambiguous', pr_number: 70 }, new Set(), new Set(), t)).toBe(
       'View failure details →',
     );
   });
 
   it('waiting_for_rebake with an invalid/missing pr_number against a non-empty set → still "Review & approve →"', () => {
     // A row that can't be matched to a PR can't be superseded → keep the live CTA.
-    expect(iacApproveLabel({ apply_status: 'waiting_for_rebake' }, new Set([68]), t)).toBe(
+    expect(iacApproveLabel({ apply_status: 'waiting_for_rebake' }, new Set([68]), new Set(), t)).toBe(
       'Review & approve →',
     );
     expect(
-      iacApproveLabel({ apply_status: 'waiting_for_rebake', pr_number: 0 }, new Set([68]), t),
+      iacApproveLabel({ apply_status: 'waiting_for_rebake', pr_number: 0 }, new Set([68]), new Set(), t),
     ).toBe('Review & approve →');
   });
 
   it('PR A resolved, PR B waiting → only A downgrades, B keeps the live CTA', () => {
     const resolved = new Set([68]); // PR A (68) is resolved; PR B (71) is not
     expect(
-      iacApproveLabel({ apply_status: 'waiting_for_rebake', pr_number: 68 }, resolved, t),
+      iacApproveLabel({ apply_status: 'waiting_for_rebake', pr_number: 68 }, resolved, new Set(), t),
     ).toBe('Go to approval page →');
     expect(
-      iacApproveLabel({ apply_status: 'waiting_for_rebake', pr_number: 71 }, resolved, t),
+      iacApproveLabel({ apply_status: 'waiting_for_rebake', pr_number: 71 }, resolved, new Set(), t),
     ).toBe('Review & approve →');
   });
 
@@ -651,6 +732,7 @@ describe('iacApproveLabel — retire the stale CTA on superseded rows', () => {
     expect(
       iacApproveLabel(
         { apply_status: 'waiting_for_rebake', pr_number: 216, superseded_by_pr: 221 },
+        new Set(),
         new Set(),
         t,
       ),
@@ -662,6 +744,7 @@ describe('iacApproveLabel — retire the stale CTA on superseded rows', () => {
       iacApproveLabel(
         { apply_status: 'failed', superseded_by_pr: 221, pr_number: 216 },
         new Set(),
+        new Set(),
         t,
       ),
     ).toBe('View failure details →');
@@ -672,6 +755,7 @@ describe('iacApproveLabel — retire the stale CTA on superseded rows', () => {
       iacApproveLabel(
         { apply_status: 'waiting_for_rebake', pr_number: 216, superseded_by_pr: 0 },
         new Set(),
+        new Set(),
         t,
       ),
     ).toBe('Review & approve →');
@@ -679,12 +763,14 @@ describe('iacApproveLabel — retire the stale CTA on superseded rows', () => {
       iacApproveLabel(
         { apply_status: 'waiting_for_rebake', pr_number: 216, superseded_by_pr: -1 },
         new Set(),
+        new Set(),
         t,
       ),
     ).toBe('Review & approve →');
     expect(
       iacApproveLabel(
         { apply_status: 'waiting_for_rebake', pr_number: 216, superseded_by_pr: 1.5 },
+        new Set(),
         new Set(),
         t,
       ),

@@ -273,32 +273,24 @@ const TERMINAL_FAILED_APPLY_STATUSES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * PR numbers whose iac_apply run has FINISHED — either `apply_status ===
- * 'applied'` or one of `TERMINAL_FAILED_APPLY_STATUSES`. A `waiting_for_rebake`
- * row whose PR is in this set is stale: a later request for the same PR already
- * reached a terminal state, so its "Review & approve →" CTA must downgrade to
- * the neutral view-only label, and every "is this awaiting the operator" caller
- * must stop counting it.
+ * PR numbers that have a terminal `apply_status === 'applied'` iac_apply row in
+ * `decisions`. A `waiting_for_rebake` row whose PR is in this set is SUPERSEDED
+ * — its apply already succeeded on a later request, so its "Review & approve →"
+ * CTA is stale and must downgrade to the neutral view-only label.
  *
- * ds-dzd — this used to admit ONLY `applied`, which asked "which PRs were
- * applied" when every caller needs "which PRs are finished". A terminal FAILURE
- * finishes a PR just as definitively: the approval page suppresses the Approve
- * form, so there is nothing left to approve either way. The consequence was
- * live and visible — PR #95 (one `failed_state_suspect` row plus two older
- * `waiting_for_rebake` rows) was counted by `awaitingCount` forever, so the desk
- * band read "2 awaiting your approval" against a page showing exactly one
- * actionable item, with the phantom two months old and reachable from nowhere.
+ * DELIBERATELY `applied`-ONLY, and PR-wide. A terminal FAILURE must NOT land
+ * here (ds-dzd): three callers read this set as "this PR is done with", and for
+ * a failed apply that is false in a way that HIDES WORK.
+ * `estate.ts`'s `reconcileApprovals` states the invariant outright — "an
+ * in-progress or failed apply leaves the entry standing" — because it drops a
+ * pending-approval listing entry it holds counter-evidence for, and a failed
+ * apply is not counter-evidence. Widening this set to failures was tried and
+ * reverted: see `supersededWaitingIds` below for the generation-scoped question
+ * a stale waiting row actually needs to ask.
  *
- * The bitter part: `iacApproveLabel` below already names PR #95 as the case its
- * "View failure details →" branch exists for. That diagnosis was right and the
- * fix landed on the LABEL only, while the shared predicate its own docstring
- * says it must stay in lockstep with kept the old answer. Fixing it here means
- * the band, the desk's rule 2b, the ledger's `open` state and the rail's label
- * all move together — which is the only way they cannot drift apart again.
- *
- * The rail already holds the full list (`/decisions?limit=50`), so this is
- * answerable client-side with no backend change. If a list ever exceeds the
- * window and the terminal row falls outside it, the matching waiting row simply
+ * The rail already holds the full list (`/decisions?limit=50`), so supersession
+ * is answerable client-side with no backend change. If a list ever exceeds the
+ * window and an `applied` row falls outside it, the matching waiting row simply
  * keeps its live CTA — a fail-safe degradation (shows actionable, the status
  * quo), never a false "resolved".
  *
@@ -316,11 +308,9 @@ export function resolvedIacPrNumbers(
 ): Set<number> {
   const resolved = new Set<number>();
   for (const d of decisions ?? []) {
-    const status = d?.apply_status;
-    const finished = status === 'applied' || (status !== undefined && TERMINAL_FAILED_APPLY_STATUSES.has(status));
     if (
       d?.action === 'iac_apply' &&
-      finished &&
+      d?.apply_status === 'applied' &&
       typeof d.pr_number === 'number' &&
       Number.isInteger(d.pr_number) &&
       d.pr_number > 0
@@ -329,6 +319,92 @@ export function resolvedIacPrNumbers(
     }
   }
   return resolved;
+}
+
+/** The shape `supersededWaitingIds` needs off each decision. */
+type IacGenerationRow = {
+  action?: string;
+  apply_status?: string;
+  pr_number?: number;
+  decision_id?: string;
+  created_at?: string;
+};
+
+function parsedTime(iso: string | undefined): number | null {
+  if (typeof iso !== 'string' || iso === '') return null;
+  const t = Date.parse(iso);
+  return Number.isFinite(t) ? t : null;
+}
+
+/**
+ * `decision_id`s of `waiting_for_rebake` rows that a STRICTLY NEWER terminal row
+ * for the SAME PR has already overtaken — i.e. the operator was asked to approve
+ * a generation of this PR's plan, and a later generation has since finished.
+ *
+ * ds-dzd. This is the question `resolvedIacPrNumbers` cannot answer, because
+ * approval state is not PR-wide. `agent/main.py`'s `_iac_event_key` keys an
+ * apply on `{repo, pr_number, head_sha, generation_metadata}`, so ONE PR can
+ * legitimately carry several generations — and
+ * `docs/runbooks/iac-apply-failure-recovery.md` §7e tells the operator to do
+ * exactly that after a failure: reconcile state, `gh workflow run iac.yml -f
+ * pr_number=<N>` to rebuild the C2 plan on the SAME PR, then Approve the newest
+ * one. So "this PR had a failure" and "this PR needs nothing" are different
+ * facts, and a PR-wide failure rule would suppress the very row that recovery
+ * creates.
+ *
+ * What IS stale is a waiting row that a newer terminal row has passed. That is
+ * PR #95 on prod: a `failed_state_suspect` row plus two OLDER
+ * `waiting_for_rebake` rows, which kept `awaitingCount` reporting an item for
+ * two months that no surface could render.
+ *
+ * FAILS SAFE toward showing work. A row is superseded only when both timestamps
+ * are present, parseable, and the terminal one is strictly greater. A missing or
+ * unparseable `created_at`, a missing `decision_id`, or equal timestamps all
+ * leave the row actionable — the same degradation `resolvedIacPrNumbers`
+ * chooses when its window truncates. Hiding real work is the expensive
+ * direction: an operator who cannot see a proposal cannot approve it, whereas a
+ * stale-looking row costs one click to dismiss.
+ *
+ * `created_at` is the doc's last-activity time, not strictly its birth time — a
+ * merge-only reconcile re-records an outcome with a fresh `created_at` (see
+ * types.ts). That only ever moves a TERMINAL row later, which can at worst
+ * retire a waiting row a little early; it cannot resurrect one. The alternative
+ * discriminators are worse: `head_sha` is unchanged by a same-commit C2 rebuild,
+ * and generation metadata is not on the decision doc at all.
+ */
+export function supersededWaitingIds(
+  decisions: ReadonlyArray<IacGenerationRow | null | undefined> | null | undefined,
+): Set<string> {
+  const list = decisions ?? [];
+  // Newest terminal outcome per PR — success or failure, since either one means
+  // a later generation has already run to completion.
+  const newestTerminal = new Map<number, number>();
+  for (const d of list) {
+    if (d?.action !== 'iac_apply') continue;
+    const status = d.apply_status;
+    if (status === undefined) continue;
+    if (status !== 'applied' && !TERMINAL_FAILED_APPLY_STATUSES.has(status)) continue;
+    const pr = d.pr_number;
+    if (typeof pr !== 'number' || !Number.isInteger(pr) || pr <= 0) continue;
+    const at = parsedTime(d.created_at);
+    if (at === null) continue;
+    const prev = newestTerminal.get(pr);
+    if (prev === undefined || at > prev) newestTerminal.set(pr, at);
+  }
+
+  const stale = new Set<string>();
+  for (const d of list) {
+    if (d?.action !== 'iac_apply' || d.apply_status !== 'waiting_for_rebake') continue;
+    const id = d.decision_id;
+    const pr = d.pr_number;
+    if (typeof id !== 'string' || id === '') continue;
+    if (typeof pr !== 'number' || !Number.isInteger(pr) || pr <= 0) continue;
+    const mine = parsedTime(d.created_at);
+    const terminal = newestTerminal.get(pr);
+    if (mine === null || terminal === undefined) continue;
+    if (terminal > mine) stale.add(id);
+  }
+  return stale;
 }
 
 /**
@@ -352,15 +428,29 @@ export function resolvedIacPrNumbers(
  *
  * Requires ALL of: `action === 'iac_apply'`, `apply_status ===
  * 'waiting_for_rebake'`, no positive-integer `superseded_by_pr` annotation,
- * and `pr_number` not present in `resolvedPrs` (`resolvedIacPrNumbers`,
- * above — a later `applied` row for the same PR).
+ * `pr_number` not present in `resolvedPrs` (`resolvedIacPrNumbers`, above — a
+ * later `applied` row for the same PR), and this row's own `decision_id` not in
+ * `supersededIds` (`supersededWaitingIds` — a strictly newer TERMINAL row for the
+ * same PR, success or failure).
+ *
+ * `supersededIds` is REQUIRED, not optional (ds-dzd). Every caller must compute
+ * it, because an optional parameter is precisely how a shared predicate drifts:
+ * the surface that forgets it silently keeps the old, wrong answer, which is the
+ * failure this pair of fixes exists to close.
  */
 export function isIacAwaitingOperator(
   decision:
-    | { action?: string; apply_status?: string; pr_number?: number; superseded_by_pr?: number }
+    | {
+        action?: string;
+        apply_status?: string;
+        pr_number?: number;
+        superseded_by_pr?: number;
+        decision_id?: string;
+      }
     | null
     | undefined,
   resolvedPrs: ReadonlySet<number>,
+  supersededIds: ReadonlySet<string>,
 ): boolean {
   if (decision == null) return false;
   if (decision.action !== 'iac_apply') return false;
@@ -370,6 +460,8 @@ export function isIacAwaitingOperator(
     typeof supersededByPr === 'number' && Number.isInteger(supersededByPr) && supersededByPr > 0;
   if (explicitlySuperseded) return false;
   if (typeof decision.pr_number === 'number' && resolvedPrs.has(decision.pr_number)) return false;
+  if (typeof decision.decision_id === 'string' && supersededIds.has(decision.decision_id))
+    return false;
   return true;
 }
 
@@ -399,7 +491,8 @@ export function isIacAwaitingOperator(
  *   invitation to approve when the page had nothing to approve (PR #95: a
  *   `failed_state_suspect` + merged row whose page had no button).
  * - "Go to approval page →" — every other (non-actionable, not-yet-done) state: a
- *   superseded (via `resolvedIacPrNumbers`) waiting row, applied-but-merge-pending
+ *   superseded waiting row (via `resolvedIacPrNumbers` PR-wide, or
+ *   `supersededWaitingIds` per generation), applied-but-merge-pending
  *   (still actionable via the merge-only reconcile), or an unmatchable
  *   `pr_number`. Neutral wording so a parked row doesn't imply pending approval
  *   work (Codex review, PR #71: no stale "Review & approve" affordance).
@@ -410,8 +503,10 @@ export function iacApproveLabel(
     merge_state?: string;
     pr_number?: number;
     superseded_by_pr?: number;
+    decision_id?: string;
   },
   resolvedPrs: ReadonlySet<number>,
+  supersededIds: ReadonlySet<string>,
   t: TranslateFn,
 ): string {
   if (
@@ -421,7 +516,12 @@ export function iacApproveLabel(
     d.superseded_by_pr > 0
   )
     return t('shared.approve.supersededBy', { pr: d.superseded_by_pr });
-  const superseded = typeof d.pr_number === 'number' && resolvedPrs.has(d.pr_number);
+  // Superseded either PR-wide (a later `applied` row) or per-GENERATION (a
+  // strictly newer terminal row overtook this one) — ds-dzd. Both mean this
+  // particular waiting row is no longer the thing to approve.
+  const superseded =
+    (typeof d.pr_number === 'number' && resolvedPrs.has(d.pr_number)) ||
+    (typeof d.decision_id === 'string' && supersededIds.has(d.decision_id));
   if (d.apply_status === 'waiting_for_rebake' && !superseded) return t('shared.approve.reviewApprove');
   if (d.apply_status === 'applied' && d.merge_state === 'merged')
     return t('shared.approve.viewHistory');

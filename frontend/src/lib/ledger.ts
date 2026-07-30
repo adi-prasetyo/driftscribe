@@ -18,7 +18,12 @@
 // runs before this module could add that row.
 
 import type { Decision } from './types';
-import { resolvedIacPrNumbers, isRollbackAwaitingOperator, isIacAwaitingOperator } from './approval';
+import {
+  resolvedIacPrNumbers,
+  supersededWaitingIds,
+  isRollbackAwaitingOperator,
+  isIacAwaitingOperator,
+} from './approval';
 
 export type LedgerState = 'applied' | 'open' | 'noted' | 'failed' | 'unconfirmed';
 
@@ -51,6 +56,7 @@ function parseCreatedAt(iso: string | null | undefined): number | null {
 function classify(
   d: Decision,
   resolvedPrs: ReadonlySet<number>,
+  supersededIds: ReadonlySet<string>,
   now: number,
   origin: string | undefined,
 ): LedgerState {
@@ -78,7 +84,7 @@ function classify(
   if (isRollbackAwaitingOperator(d, { now, origin })) {
     return 'open';
   }
-  if (isIacAwaitingOperator(d, resolvedPrs)) {
+  if (isIacAwaitingOperator(d, resolvedPrs, supersededIds)) {
     return 'open';
   }
 
@@ -119,11 +125,16 @@ export function ledgerRows(
 
   const list = decisions ?? [];
   const resolvedPrs = resolvedIacPrNumbers(list);
+  const supersededIds = supersededWaitingIds(list);
 
   const rows: LedgerRow[] = [];
   for (const d of list) {
     if (d == null) continue; // defensive: malformed array element, skip not throw
-    rows.push({ decision: d, state: classify(d, resolvedPrs, now, origin), ts: parseCreatedAt(d.created_at) });
+    rows.push({
+      decision: d,
+      state: classify(d, resolvedPrs, supersededIds, now, origin),
+      ts: parseCreatedAt(d.created_at),
+    });
   }
 
   // Newest first; a null ts (absent/unparseable created_at) sorts LAST. Written

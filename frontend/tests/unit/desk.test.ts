@@ -1053,20 +1053,28 @@ describe('awaitingCount — the InstrumentBand "awaiting your approval" figure',
   });
 
   // ds-dzd — the live shape that made the band lie on prod. PR #95's apply ended
-  // in `failed_state_suspect`, and its two older `waiting_for_rebake` rows kept
-  // looking actionable because `resolvedIacPrNumbers` only admitted `applied`.
-  // The band read "2 awaiting your approval" over a desk showing ONE item, and
-  // the phantom was two months old and reachable from no surface at all: the
-  // single CTA slot went to the listing lane, and the ledger strip only shows
-  // recent rows. A count nobody can act on is worse than a wrong count — it
-  // sends the operator hunting for work that does not exist.
-  it('a PR whose apply ended in TERMINAL FAILURE never inflates the count (PR #95)', () => {
-    const terminal = iacDecision({ pr_number: 95, apply_status: 'failed_state_suspect' });
-    const stale1 = iacDecision({ pr_number: 95, apply_status: 'waiting_for_rebake' });
-    const stale2 = iacDecision({ pr_number: 95, apply_status: 'waiting_for_rebake' });
+  // in `failed_state_suspect`, and its two OLDER `waiting_for_rebake` rows kept
+  // looking actionable, so the band read "2 awaiting your approval" over a desk
+  // showing ONE item. The phantom was two months old and reachable from no
+  // surface at all: the single CTA slot went to the listing lane, and the ledger
+  // strip only shows recent rows. A count nobody can act on is worse than a wrong
+  // count — it sends the operator hunting for work that does not exist.
+  it('a waiting row an OLDER-than-terminal failure overtook never inflates the count (PR #95)', () => {
+    const terminal = iacDecision({
+      pr_number: 95,
+      apply_status: 'failed_state_suspect',
+      decision_id: 'term-95',
+      created_at: '2026-06-11T09:00:00Z',
+    });
+    const stale = iacDecision({
+      pr_number: 95,
+      apply_status: 'waiting_for_rebake',
+      decision_id: 'stale-95',
+      created_at: '2026-06-11T08:00:00Z',
+    });
     expect(
       awaitingCount({
-        decisions: [terminal, stale1, stale2],
+        decisions: [terminal, stale],
         pendingApprovals: [],
         now: NOW,
         origin: ORIGIN,
@@ -1074,11 +1082,52 @@ describe('awaitingCount — the InstrumentBand "awaiting your approval" figure',
     ).toBe(0);
   });
 
+  // THE REGRESSION GUARD. A PR-wide "any failure retires the PR" rule passes the
+  // test above and silently breaks this one. The recovery runbook
+  // (docs/runbooks/iac-apply-failure-recovery.md) tells the operator to rebuild
+  // C2 on the SAME PR after a failure and approve the NEWEST generation, and
+  // agent/main.py's _iac_event_key keys approval state per generation — so a live
+  // waiting row sitting after a dead failure is real work, and hiding it is the
+  // expensive direction to fail.
+  it('a NEWER waiting row after an older failure STILL counts (runbook rebuild)', () => {
+    const dead = iacDecision({
+      pr_number: 216,
+      apply_status: 'failed_state_suspect',
+      decision_id: 'dead-216',
+      created_at: '2026-07-30T10:00:00Z',
+    });
+    const rebuilt = iacDecision({
+      pr_number: 216,
+      apply_status: 'waiting_for_rebake',
+      decision_id: 'rebuilt-216',
+      created_at: '2026-07-30T12:00:00Z',
+      superseded_by_pr: undefined,
+    });
+    expect(
+      awaitingCount({
+        decisions: [dead, rebuilt],
+        pendingApprovals: [],
+        now: NOW,
+        origin: ORIGIN,
+      }),
+    ).toBe(1);
+  });
+
   // The whole prod snapshot, reduced: one genuinely-actionable listing item plus
-  // the #95 ghost. The band must read 1, which is what the page can show.
-  it('reports only the reachable item when a terminal-failed ghost sits alongside it', () => {
-    const ghostTerminal = iacDecision({ pr_number: 95, apply_status: 'failed_state_suspect' });
-    const ghostStale = iacDecision({ pr_number: 95, apply_status: 'waiting_for_rebake' });
+  // the #95 ghost. The band must read 1 — what the page can actually show.
+  it('reports only the reachable item when a superseded ghost sits alongside it', () => {
+    const ghostTerminal = iacDecision({
+      pr_number: 95,
+      apply_status: 'failed_state_suspect',
+      decision_id: 'term-95',
+      created_at: '2026-06-11T09:00:00Z',
+    });
+    const ghostStale = iacDecision({
+      pr_number: 95,
+      apply_status: 'waiting_for_rebake',
+      decision_id: 'stale-95',
+      created_at: '2026-06-11T08:00:00Z',
+    });
     const real = pendingIac({
       pr_number: 168,
       title: 'Adopt Pub/Sub topic adopt-probe-topic into IaC management',
@@ -1095,23 +1144,54 @@ describe('awaitingCount — the InstrumentBand "awaiting your approval" figure',
     ).toBe(1);
   });
 
-  // `failed` and `ambiguous` are the same class of terminal as
-  // failed_state_suspect (agent/main.py's _IAC_RUN_ENDED_STATUSES) — pinned so a
-  // future edit cannot fix one status and leave its siblings counting.
-  for (const status of ['failed', 'ambiguous'] as const) {
-    it(`a ${status} apply also retires its stale waiting rows`, () => {
-      const terminal = iacDecision({ pr_number: 77, apply_status: status });
-      const stale = iacDecision({ pr_number: 77, apply_status: 'waiting_for_rebake' });
-      expect(
-        awaitingCount({ decisions: [terminal, stale], pendingApprovals: [], now: NOW, origin: ORIGIN }),
-      ).toBe(0);
+  // A failed apply must NOT retire the PR PR-wide, or estate.ts's
+  // reconcileApprovals would drop a listing entry it holds no counter-evidence
+  // for ("an in-progress or failed apply leaves the entry standing").
+  it('a terminal failure does not suppress the same PR in the LISTING lane', () => {
+    const failed = iacDecision({
+      pr_number: 168,
+      apply_status: 'failed',
+      decision_id: 'f-168',
+      created_at: '2026-07-30T10:00:00Z',
     });
-  }
+    const listed = pendingIac({ pr_number: 168 });
+    expect(
+      awaitingCount({
+        decisions: [failed],
+        pendingApprovals: [listed],
+        now: NOW,
+        origin: ORIGIN,
+      }),
+    ).toBe(1);
+  });
 
-  // Fail SAFE the other way: a waiting row with NO terminal sibling is real work
-  // and must still count, or this fix would silently hide the queue.
+  // Fails safe toward showing work: with no usable timestamps we cannot prove
+  // which generation is newer, so the row keeps counting.
+  it('a waiting row with no created_at keeps counting even beside a failure', () => {
+    const terminal = iacDecision({
+      pr_number: 95,
+      apply_status: 'failed',
+      decision_id: 'term-95',
+      created_at: '2026-07-30T12:00:00Z',
+    });
+    const noTs = iacDecision({
+      pr_number: 95,
+      apply_status: 'waiting_for_rebake',
+      decision_id: 'w-95',
+      created_at: undefined,
+    });
+    expect(
+      awaitingCount({ decisions: [terminal, noTs], pendingApprovals: [], now: NOW, origin: ORIGIN }),
+    ).toBe(1);
+  });
+
   it('a waiting_for_rebake row with no terminal sibling still counts', () => {
-    const waiting = iacDecision({ pr_number: 301, apply_status: 'waiting_for_rebake' });
+    const waiting = iacDecision({
+      pr_number: 301,
+      apply_status: 'waiting_for_rebake',
+      decision_id: 'w-301',
+      created_at: '2026-07-30T10:00:00Z',
+    });
     expect(
       awaitingCount({ decisions: [waiting], pendingApprovals: [], now: NOW, origin: ORIGIN }),
     ).toBe(1);

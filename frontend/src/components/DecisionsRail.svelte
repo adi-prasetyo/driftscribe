@@ -8,6 +8,7 @@
     safeGithubHref,
     iacPrHref,
     resolvedIacPrNumbers,
+    supersededWaitingIds,
     iacApproveLabel,
   } from '../lib/approval';
   import {
@@ -53,6 +54,9 @@
   // for one of these is superseded, so its CTA downgrades to view-only
   // (iacApproveLabel). Derived once per render from the list the rail holds.
   const resolvedPrs = $derived(resolvedIacPrNumbers(decisions));
+  // ds-dzd companion: per-GENERATION supersession, which a PR-wide set cannot
+  // express. Same compute-once-per-render treatment.
+  const supersededIds = $derived(supersededWaitingIds(decisions));
 
   // Fold same-PR iac_apply docs into one group per PR. resolvedPrs stays derived
   // from the raw list (App.svelte noteApplied also reads the raw list) — only
@@ -330,7 +334,7 @@
           data-testid="iac-approve-link"
           href={iacHref}
           target="_blank"
-          rel="noopener">{iacApproveLabel(d, resolvedPrs, $t)}</a>
+          rel="noopener">{iacApproveLabel(d, resolvedPrs, supersededIds, $t)}</a>
       {/if}
 
       {#if githubHref(d)}

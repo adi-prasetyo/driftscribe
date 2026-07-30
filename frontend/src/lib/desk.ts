@@ -20,6 +20,7 @@ import {
   isRollbackAwaitingOperator,
   isIacAwaitingOperator,
   resolvedIacPrNumbers,
+  supersededWaitingIds,
 } from './approval';
 import { isReplayableTraceId } from './deeplink';
 import type { Decision } from './types';
@@ -378,20 +379,21 @@ function selectPendingIac(
  * mirroring rule 1's `selectPendingRollback` — deterministic, not
  * last-write-wins.
  *
- * `resolvedPrs` is computed once by the caller (`deskModel`) and threaded in,
- * mirroring ledger.ts's `ledgerRows` — it's an O(n) scan of the same
- * `decisions` list, so recomputing it per candidate here would make this
- * function O(n²) for a set that never changes mid-scan.
+ * `resolvedPrs` and `supersededIds` are computed once by the caller
+ * (`deskModel`) and threaded in, mirroring ledger.ts's `ledgerRows` — each is an
+ * O(n) scan of the same `decisions` list, so recomputing them per candidate here
+ * would make this function O(n^2) for sets that never change mid-scan.
  */
 function selectPendingIacFromDecisions(
   decisions: ReadonlyArray<Decision | null | undefined>,
   resolvedPrs: ReadonlySet<number>,
+  supersededIds: ReadonlySet<string>,
   locale: string | undefined,
 ): DeskPendingIac | null {
   let best: { decision: Decision; href: string; prNumber: number; ts: number } | null = null;
   for (const decision of decisions) {
     if (decision == null) continue; // defensive: malformed array element, skip not throw
-    if (!isIacAwaitingOperator(decision, resolvedPrs)) continue;
+    if (!isIacAwaitingOperator(decision, resolvedPrs, supersededIds)) continue;
     const href = iacApprovalHref(decision.pr_number, locale);
     if (href == null) continue; // malformed/missing pr_number — never a dead CTA, try the next one
     const ts = parseForOrdering(decision.created_at);
@@ -610,11 +612,12 @@ export function deskModel(input: DeskModelInput): DeskModel {
   // structurally unable to disagree about which PRs are still open, rather
   // than merely happening to agree.
   const resolvedPrs = resolvedIacPrNumbers(decisions);
+  const supersededIds = supersededWaitingIds(decisions);
 
   const iacFromListing = selectPendingIac(pendingApprovals, decisions, resolvedPrs, input.locale);
   if (iacFromListing) return iacFromListing;
 
-  const iacFromDecisions = selectPendingIacFromDecisions(decisions, resolvedPrs, input.locale);
+  const iacFromDecisions = selectPendingIacFromDecisions(decisions, resolvedPrs, supersededIds, input.locale);
   if (iacFromDecisions) return iacFromDecisions;
 
   const unresolved = selectUnresolvedRollback(decisions, now);
@@ -693,6 +696,7 @@ export function awaitingCount(input: DeskModelInput): number {
   // one — the band over-reported "awaiting your approval" against a desk that,
   // once rule 2a was also fixed, was correctly showing the seal.
   const resolvedPrs = resolvedIacPrNumbers(decisions);
+  const supersededIds = supersededWaitingIds(decisions);
 
   const iacPrs = new Set<number>();
   for (const approval of pendingApprovals) {
@@ -702,7 +706,10 @@ export function awaitingCount(input: DeskModelInput): number {
   }
   for (const decision of decisions) {
     if (decision == null) continue;
-    if (isIacAwaitingOperator(decision, resolvedPrs) && isPositiveIntPr(decision.pr_number)) {
+    if (
+      isIacAwaitingOperator(decision, resolvedPrs, supersededIds) &&
+      isPositiveIntPr(decision.pr_number)
+    ) {
       iacPrs.add(decision.pr_number);
     }
   }
