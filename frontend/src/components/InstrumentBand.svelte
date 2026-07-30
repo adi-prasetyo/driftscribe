@@ -30,12 +30,21 @@
    *   ----------|-----------------------------|---------------------------
    *   managed   | → estate map                | inert figure
    *   drift     | → estate map                | inert figure
-   *   awaiting  | → the desk's pending card   | → the desk
+   *   awaiting  | inert figure                | → the desk
    *
-   * with awaiting inert in BOTH when it is 0 or unknown — there is nothing to
-   * land on, and a control that goes nowhere is worse than a figure. An inert
-   * stat renders as a `<span>`, never a disabled `<button>`: a disabled button
-   * drops out of keyboard navigation and helps nobody.
+   * with awaiting also inert on the ESTATE when it is 0 or unknown — there is
+   * nothing to land on, and a control that goes nowhere is worse than a figure.
+   * An inert stat renders as a `<span>`, never a disabled `<button>`: a disabled
+   * button drops out of keyboard navigation and helps nobody.
+   *
+   * ds-s61 made awaiting inert on the DESK too. ds-7ag.2 had pointed it at this
+   * page's own pending card via scrollIntoView, but that card sits ~270px below
+   * the numeral on the same screen — already fully visible. The "jump" had
+   * nowhere to go, so all it did was spend whatever scroll happened to exist
+   * (38px of it, from a stale viewport calc) and stop, which read as an
+   * unexplained twitch. A number whose subject is directly beneath it does not
+   * need to be a control; on the estate, where the queue is a page away, it
+   * still does.
    *
    * Each stat's accessible name is a dedicated *Aria catalog key (not the
    * concatenated visible text) so a screen reader always pairs the figure with
@@ -118,7 +127,7 @@
   const DEST_ARIA: Record<BandStat, Partial<Record<BandContext, CatalogKey>>> = {
     managed: { desk: 'desk.band.managedAriaDesk' },
     drift: { desk: 'desk.band.driftAriaDesk' },
-    awaiting: { desk: 'desk.band.awaitingAriaDesk', estate: 'desk.band.awaitingAriaEstate' },
+    awaiting: { estate: 'desk.band.awaitingAriaEstate' },
   };
   /** The VISIBLE hover/focus hint, keyed by the context. Sugar only — the
    *  accessible destination lives in DEST_ARIA above, because the button's
@@ -129,7 +138,7 @@
   const HINT: Record<BandStat, Partial<Record<BandContext, CatalogKey>>> = {
     managed: { desk: 'desk.band.statHintEstate' },
     drift: { desk: 'desk.band.statHintEstate' },
-    awaiting: { desk: 'desk.band.statHintQueue', estate: 'desk.band.statHintDesk' },
+    awaiting: { estate: 'desk.band.statHintDesk' },
   };
   const UNKNOWN_ARIA: Record<BandStat, CatalogKey> = {
     managed: 'desk.band.managedUnknownAria',
@@ -175,7 +184,7 @@
     {
       key: 'awaiting' as BandStat,
       value: awaiting,
-      interactive: awaiting !== null && awaiting > 0,
+      interactive: context === 'estate' && awaiting !== null && awaiting > 0,
       extraClass: 'instrument-band__stat--wait',
     },
   ]);

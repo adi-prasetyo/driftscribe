@@ -36,15 +36,13 @@ export const desk = {
     // managed/drift have no Estate variant because they are inert there.
     'desk.band.managedAriaDesk': '{n} managed by IaC — view infrastructure map',
     'desk.band.driftAriaDesk': '{n} drift detected — view infrastructure map',
-    'desk.band.awaitingAriaDesk': '{n} awaiting your approval — jump to the queue below',
     'desk.band.awaitingAriaEstate': '{n} awaiting your approval — view on desk',
     // The VISIBLE hover/focus hint on an interactive numeral (plan Task 3). The
     // numerals read as figures, so nothing said a click went anywhere. Keyed by
-    // DESTINATION, not by context, so each string's wording and its key agree:
-    // "the queue below" is only true on the desk, so the estate's awaiting hint
-    // is its own key rather than a reused one that would misplace the queue.
+    // DESTINATION, not by context, so each string's wording and its key agree.
+    // (A third hint, "to the queue below", went with ds-s61's retirement of the
+    // desk's awaiting jump — the queue was already on screen beneath it.)
     'desk.band.statHintEstate': 'View infrastructure →',
-    'desk.band.statHintQueue': 'To the queue below ↓',
     'desk.band.statHintDesk': 'View on desk →',
     // Read instead of the *Aria keys above when a figure is not yet known
     // (ds-eh6). The visible numeral becomes an em dash, which a screen reader
@@ -223,10 +221,8 @@ export const desk = {
     // ds-7ag.2 — 操作できる数値だけが遷移先を名乗る（EN 側の命名規則コメント参照）。
     'desk.band.managedAriaDesk': '{n}件、IaC 管理下 — インフラを見る',
     'desk.band.driftAriaDesk': '{n}件、ドリフト検出 — インフラを見る',
-    'desk.band.awaitingAriaDesk': '{n}件、あなたの承認待ち — 下の承認キューへ',
     'desk.band.awaitingAriaEstate': '{n}件、あなたの承認待ち — デスクで見る',
     'desk.band.statHintEstate': 'インフラを見る →',
-    'desk.band.statHintQueue': '下の承認キューへ ↓',
     'desk.band.statHintDesk': 'デスクで見る →',
     'desk.band.managedUnknownAria': 'IaC 管理下：未取得',
     'desk.band.driftUnknownAria': 'ドリフト検出：未取得',

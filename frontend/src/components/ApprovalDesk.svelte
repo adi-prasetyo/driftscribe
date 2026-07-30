@@ -273,26 +273,18 @@
     return m.source === 'rollback' ? (m.decision.approval?.resolved_at ?? null) : (m.decision.applied_at ?? null);
   }
 
-  // ds-7ag.2 — where each band numeral goes FROM THE DESK. managed/drift point
-  // at the infrastructure map; awaiting points at this page's own pending card,
-  // because that IS the approval queue. Sending it to the estate view (what the
-  // band used to do for all three) walked away from the work it announces.
-  //
-  // Scroll AND focus: the card is a plain <div>, so an id and a scroll leave a
-  // keyboard or screen-reader user exactly where they were, with the page
-  // silently moved underneath them. `preventScroll` keeps the two from fighting
-  // — scrollIntoView has already chosen the position.
-  function onStat(stat: BandStat): void {
-    if (stat !== 'awaiting') {
-      onNavigate('estate');
-      return;
-    }
-    const el = document.getElementById(PENDING_CARD_ID);
-    if (el === null) return; // inert when there is nothing pending; belt and braces
-    el.scrollIntoView({ block: 'start' });
-    el.focus({ preventScroll: true });
+  // ds-7ag.2 — where each band numeral goes FROM THE DESK: managed and drift
+  // point at the infrastructure map. `awaiting` is deliberately NOT routed here
+  // and never reaches this handler, because the band renders it as an inert
+  // figure in the 'desk' context (ds-s61 — see InstrumentBand's routing table).
+  // It used to scrollIntoView + focus this page's own pending card, but that
+  // card is already on screen ~270px below the numeral, so the scroll had
+  // nowhere to go and merely consumed the dead 38px the old viewport calc left
+  // lying around. The number sits directly above its own subject; that is the
+  // wayfinding, and it needs no click.
+  function onStat(_stat: BandStat): void {
+    onNavigate('estate');
   }
-  const PENDING_CARD_ID = 'desk-pending';
 </script>
 
 <section class="approval-desk" data-testid="approval-desk" aria-label={$t('desk.region.ariaLabel')}>
@@ -363,13 +355,12 @@
            next to the markup that uses them. -->
       {@const proposedAt = pendingSubtitleTime(model)}
       {@const pendingDecision = activeDecision(model)}
-      <!-- id + tabindex="-1": the band's awaiting numeral scrolls AND focuses
-           this card (ds-7ag.2), and a <div> cannot take focus without it. -1
-           keeps it out of the tab order — it is a jump TARGET, not a stop. -->
+      <!-- Carried an id + tabindex="-1" so the band's awaiting numeral could
+           scroll and focus it (ds-7ag.2). That numeral is an inert figure now
+           (ds-s61), and nothing else referenced either attribute — a focusable
+           div with no focus rule and no jump aimed at it is dead weight. -->
       <div
         class="approval-desk__proposal"
-        id={PENDING_CARD_ID}
-        tabindex="-1"
         data-testid="approval-desk-pending"
         data-source={model.source}
       >
