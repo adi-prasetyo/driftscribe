@@ -46,39 +46,40 @@
 </div>
 
 <style>
+  /* ds-7ag.3 — de-emphasized to a plain inline pair. This was a segmented pill
+     with its own border, surface and shadowed active fill, which put it at the
+     same visual weight as the view nav and the autonomy control; the header read
+     as six competing chips (見づらい). Refactoring UI's rule is to quiet the
+     secondaries, not to shout the primary louder. Weight now carries the state:
+     the active language is ink, the other is faint. */
   .locale-toggle {
     display: inline-flex;
     align-items: stretch;
-    gap: 2px;
-    padding: 2px;
-    background: var(--ds-surface-2);
-    border: 1px solid var(--ds-border);
-    border-radius: var(--ds-radius-pill);
+    gap: var(--ds-sp-2);
   }
   .locale-toggle__seg {
     appearance: none;
     border: 0;
     background: transparent;
-    color: var(--ds-muted);
+    color: var(--ds-faint);
     font-family: inherit;
     font-size: var(--ds-fs-1);
-    font-weight: var(--ds-fw-semibold);
+    font-weight: var(--ds-fw-medium);
     line-height: 1.2;
-    padding: 0.28em 0.7em;
-    border-radius: var(--ds-radius-pill);
+    /* Keeps the hit area ≥ 24px tall despite the 13px text — the chrome went
+       away, the target must not. */
+    padding: 0.35em 0.2em;
+    border-radius: var(--ds-radius-sm);
     cursor: pointer;
     white-space: nowrap;
-    transition:
-      background-color var(--ds-dur) var(--ds-ease),
-      color var(--ds-dur) var(--ds-ease);
+    transition: color var(--ds-dur) var(--ds-ease);
   }
   .locale-toggle__seg:hover {
     color: var(--ds-fg);
   }
   .locale-toggle__seg.is-active {
-    background: var(--ds-surface);
     color: var(--ds-fg);
-    box-shadow: var(--ds-shadow-sm);
+    font-weight: var(--ds-fw-semibold);
   }
   .locale-toggle__seg:active {
     transform: translateY(1px);
