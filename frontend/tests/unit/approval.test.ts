@@ -400,7 +400,7 @@ describe('iacPrHref — the rail title link for an iac_apply row', () => {
   });
 });
 
-describe('resolvedIacPrNumbers — PRs with a terminal applied iac_apply row', () => {
+describe('resolvedIacPrNumbers — PRs whose iac_apply run has FINISHED', () => {
   it('collects the pr_number of every applied iac_apply row', () => {
     const set = resolvedIacPrNumbers([
       { action: 'iac_apply', apply_status: 'applied', pr_number: 68 },
@@ -421,11 +421,57 @@ describe('resolvedIacPrNumbers — PRs with a terminal applied iac_apply row', (
     expect(set.size).toBe(0);
   });
 
-  it('ignores non-applied iac_apply rows (waiting_for_rebake / failed / ambiguous)', () => {
+  // ds-dzd: a TERMINAL FAILURE finishes a PR as definitively as a success. The
+  // approval page suppresses the Approve form for these statuses, so a PR whose
+  // run ended in one has nothing left for the operator to approve — and must
+  // stop resolving as "still awaiting you".
+  it('collects a pr_number whose run ended in terminal FAILURE, not just applied', () => {
+    const set = resolvedIacPrNumbers([
+      { action: 'iac_apply', apply_status: 'failed', pr_number: 70 },
+      { action: 'iac_apply', apply_status: 'failed_state_suspect', pr_number: 95 },
+      { action: 'iac_apply', apply_status: 'ambiguous', pr_number: 72 },
+    ]);
+    expect(set.has(70)).toBe(true);
+    expect(set.has(95)).toBe(true);
+    expect(set.has(72)).toBe(true);
+    expect(set.size).toBe(3);
+  });
+
+  it('still ignores a waiting_for_rebake row — that one is genuinely unfinished', () => {
     const set = resolvedIacPrNumbers([
       { action: 'iac_apply', apply_status: 'waiting_for_rebake', pr_number: 68 },
-      { action: 'iac_apply', apply_status: 'failed', pr_number: 70 },
-      { action: 'iac_apply', apply_status: 'ambiguous', pr_number: 72 },
+    ]);
+    expect(set.size).toBe(0);
+  });
+
+  // The live shape that produced the bug: PR #95 carried a failed_state_suspect
+  // row PLUS two older waiting_for_rebake rows, so the band counted it as
+  // awaiting the operator for two months while no surface could show it.
+  it('resolves PR #95’s shape — a terminal-failed row alongside older waiting rows', () => {
+    const set = resolvedIacPrNumbers([
+      { action: 'iac_apply', apply_status: 'failed_state_suspect', pr_number: 95 },
+      { action: 'iac_apply', apply_status: 'waiting_for_rebake', pr_number: 95 },
+      { action: 'iac_apply', apply_status: 'waiting_for_rebake', pr_number: 95 },
+    ]);
+    expect(set.has(95)).toBe(true);
+  });
+
+  it('ignores a terminal-FAILED row whose action is NOT iac_apply', () => {
+    const set = resolvedIacPrNumbers([
+      { action: 'rollback', apply_status: 'failed', pr_number: 99 },
+      { action: 'drift_issue', apply_status: 'failed_state_suspect', pr_number: 12 },
+    ]);
+    expect(set.size).toBe(0);
+  });
+
+  it('ignores an unknown apply_status — only the named terminals finish a PR', () => {
+    // A future/unrecognised status must fail SAFE: keep the PR unresolved so its
+    // waiting row keeps its live CTA, rather than silently retiring real work.
+    const set = resolvedIacPrNumbers([
+      { action: 'iac_apply', apply_status: 'claimed', pr_number: 68 },
+      { action: 'iac_apply', apply_status: 'lock_refused', pr_number: 70 },
+      { action: 'iac_apply', apply_status: 'something_new', pr_number: 72 },
+      { action: 'iac_apply', pr_number: 74 },
     ]);
     expect(set.size).toBe(0);
   });

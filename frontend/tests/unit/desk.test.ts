@@ -1052,6 +1052,71 @@ describe('awaitingCount — the InstrumentBand "awaiting your approval" figure',
     expect(awaitingCount({ decisions: [applied], pendingApprovals: [], now: NOW, origin: ORIGIN })).toBe(0);
   });
 
+  // ds-dzd — the live shape that made the band lie on prod. PR #95's apply ended
+  // in `failed_state_suspect`, and its two older `waiting_for_rebake` rows kept
+  // looking actionable because `resolvedIacPrNumbers` only admitted `applied`.
+  // The band read "2 awaiting your approval" over a desk showing ONE item, and
+  // the phantom was two months old and reachable from no surface at all: the
+  // single CTA slot went to the listing lane, and the ledger strip only shows
+  // recent rows. A count nobody can act on is worse than a wrong count — it
+  // sends the operator hunting for work that does not exist.
+  it('a PR whose apply ended in TERMINAL FAILURE never inflates the count (PR #95)', () => {
+    const terminal = iacDecision({ pr_number: 95, apply_status: 'failed_state_suspect' });
+    const stale1 = iacDecision({ pr_number: 95, apply_status: 'waiting_for_rebake' });
+    const stale2 = iacDecision({ pr_number: 95, apply_status: 'waiting_for_rebake' });
+    expect(
+      awaitingCount({
+        decisions: [terminal, stale1, stale2],
+        pendingApprovals: [],
+        now: NOW,
+        origin: ORIGIN,
+      }),
+    ).toBe(0);
+  });
+
+  // The whole prod snapshot, reduced: one genuinely-actionable listing item plus
+  // the #95 ghost. The band must read 1, which is what the page can show.
+  it('reports only the reachable item when a terminal-failed ghost sits alongside it', () => {
+    const ghostTerminal = iacDecision({ pr_number: 95, apply_status: 'failed_state_suspect' });
+    const ghostStale = iacDecision({ pr_number: 95, apply_status: 'waiting_for_rebake' });
+    const real = pendingIac({
+      pr_number: 168,
+      title: 'Adopt Pub/Sub topic adopt-probe-topic into IaC management',
+      asset_type: 'pubsub.googleapis.com/Topic',
+      resource_name: 'adopt-probe-topic',
+    });
+    expect(
+      awaitingCount({
+        decisions: [ghostTerminal, ghostStale],
+        pendingApprovals: [real],
+        now: NOW,
+        origin: ORIGIN,
+      }),
+    ).toBe(1);
+  });
+
+  // `failed` and `ambiguous` are the same class of terminal as
+  // failed_state_suspect (agent/main.py's _IAC_RUN_ENDED_STATUSES) — pinned so a
+  // future edit cannot fix one status and leave its siblings counting.
+  for (const status of ['failed', 'ambiguous'] as const) {
+    it(`a ${status} apply also retires its stale waiting rows`, () => {
+      const terminal = iacDecision({ pr_number: 77, apply_status: status });
+      const stale = iacDecision({ pr_number: 77, apply_status: 'waiting_for_rebake' });
+      expect(
+        awaitingCount({ decisions: [terminal, stale], pendingApprovals: [], now: NOW, origin: ORIGIN }),
+      ).toBe(0);
+    });
+  }
+
+  // Fail SAFE the other way: a waiting row with NO terminal sibling is real work
+  // and must still count, or this fix would silently hide the queue.
+  it('a waiting_for_rebake row with no terminal sibling still counts', () => {
+    const waiting = iacDecision({ pr_number: 301, apply_status: 'waiting_for_rebake' });
+    expect(
+      awaitingCount({ decisions: [waiting], pendingApprovals: [], now: NOW, origin: ORIGIN }),
+    ).toBe(1);
+  });
+
   it('an expired rollback approval never inflates the rollback count (mirrors isRollbackAwaitingOperator)', () => {
     const expired = rollbackDecision({
       approval: { approval_url: '/approvals/rb-1?t=x', status: 'pending', expires_at: '2026-07-28T11:00:00Z' },

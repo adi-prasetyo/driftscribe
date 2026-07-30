@@ -256,14 +256,49 @@ export function iacPrHref(decision: {
 }
 
 /**
- * PR numbers that have a terminal `apply_status === 'applied'` iac_apply row in
- * `decisions`. A `waiting_for_rebake` row whose PR is in this set is SUPERSEDED
- * — its apply already succeeded on a later request, so its "Review & approve →"
- * CTA is stale and must downgrade to the neutral view-only label.
+ * The apply_status values that mean an iac_apply REQUEST ended in failure and
+ * no operator action remains. Mirrors `_IAC_RUN_ENDED_STATUSES` in
+ * agent/main.py, minus `applied` — that one is handled as its own branch
+ * everywhere here because success and failure read differently to an operator
+ * even though both are terminal.
  *
- * The rail already holds the full list (`/decisions?limit=50`), so supersession
- * is answerable client-side with no backend change. If a list ever exceeds the
- * window and an `applied` row falls outside it, the matching waiting row simply
+ * `agent/main.py`'s `iac_approval_get` renders these as a no-action failure
+ * banner and SUPPRESSES the Approve form, so a surface that still offers to
+ * approve one is describing a page that has no button (see `iacApproveLabel`).
+ */
+const TERMINAL_FAILED_APPLY_STATUSES: ReadonlySet<string> = new Set([
+  'failed',
+  'failed_state_suspect',
+  'ambiguous',
+]);
+
+/**
+ * PR numbers whose iac_apply run has FINISHED — either `apply_status ===
+ * 'applied'` or one of `TERMINAL_FAILED_APPLY_STATUSES`. A `waiting_for_rebake`
+ * row whose PR is in this set is stale: a later request for the same PR already
+ * reached a terminal state, so its "Review & approve →" CTA must downgrade to
+ * the neutral view-only label, and every "is this awaiting the operator" caller
+ * must stop counting it.
+ *
+ * ds-dzd — this used to admit ONLY `applied`, which asked "which PRs were
+ * applied" when every caller needs "which PRs are finished". A terminal FAILURE
+ * finishes a PR just as definitively: the approval page suppresses the Approve
+ * form, so there is nothing left to approve either way. The consequence was
+ * live and visible — PR #95 (one `failed_state_suspect` row plus two older
+ * `waiting_for_rebake` rows) was counted by `awaitingCount` forever, so the desk
+ * band read "2 awaiting your approval" against a page showing exactly one
+ * actionable item, with the phantom two months old and reachable from nowhere.
+ *
+ * The bitter part: `iacApproveLabel` below already names PR #95 as the case its
+ * "View failure details →" branch exists for. That diagnosis was right and the
+ * fix landed on the LABEL only, while the shared predicate its own docstring
+ * says it must stay in lockstep with kept the old answer. Fixing it here means
+ * the band, the desk's rule 2b, the ledger's `open` state and the rail's label
+ * all move together — which is the only way they cannot drift apart again.
+ *
+ * The rail already holds the full list (`/decisions?limit=50`), so this is
+ * answerable client-side with no backend change. If a list ever exceeds the
+ * window and the terminal row falls outside it, the matching waiting row simply
  * keeps its live CTA — a fail-safe degradation (shows actionable, the status
  * quo), never a false "resolved".
  *
@@ -281,9 +316,11 @@ export function resolvedIacPrNumbers(
 ): Set<number> {
   const resolved = new Set<number>();
   for (const d of decisions ?? []) {
+    const status = d?.apply_status;
+    const finished = status === 'applied' || (status !== undefined && TERMINAL_FAILED_APPLY_STATUSES.has(status));
     if (
       d?.action === 'iac_apply' &&
-      d?.apply_status === 'applied' &&
+      finished &&
       typeof d.pr_number === 'number' &&
       Number.isInteger(d.pr_number) &&
       d.pr_number > 0
@@ -349,7 +386,7 @@ export function isIacAwaitingOperator(
  *   the `waiting_for_rebake` shape so a mis-annotated `failed` row still reads
  *   "View failure details →" instead of being masked.
  * - "Review & approve →" — the ONLY actionable label: a `waiting_for_rebake` row
- *   that is NOT superseded (no `applied` row for its PR — see
+ *   that is NOT superseded (no terminal row for its PR, success OR failure — see
  *   `resolvedIacPrNumbers`) still needs the operator's second, post-rebake Apply.
  *   MUST stay in lockstep with `isIacAwaitingOperator` above — see its comment.
  * - "View approval history →" — a DONE row (`applied` + `merge_state==='merged'`):
@@ -367,12 +404,6 @@ export function isIacAwaitingOperator(
  *   `pr_number`. Neutral wording so a parked row doesn't imply pending approval
  *   work (Codex review, PR #71: no stale "Review & approve" affordance).
  */
-const TERMINAL_FAILED_APPLY_STATUSES: ReadonlySet<string> = new Set([
-  'failed',
-  'failed_state_suspect',
-  'ambiguous',
-]);
-
 export function iacApproveLabel(
   d: {
     apply_status?: string;
