@@ -183,6 +183,29 @@ describe('base.css — shared ds-* component classes (consumed by Svelte + Jinja
     expect(definesClass(base, cls), `base.css must define .${cls}`).toBe(true);
   });
 
+  // ds-7ag.5 — the roster above pins only that `.ds-btn--reject` EXISTS, which a
+  // solid-red fill satisfies as happily as an outline. Reject is destructive but
+  // it is not the primary action on either approval page (Approve is), and a
+  // filled red button competing with a filled Approve is the "everything shouts"
+  // texture the redesign answers. But it must stay unmistakably present: on the
+  // rollback page under pause/autonomy lockout, Reject is the ONLY enabled
+  // control (agent/templates/approval.html) — so this pins outline, not ghost.
+  it('renders .ds-btn--reject as outline-danger, not a filled primary', () => {
+    const m = stripComments(base).match(/\.ds-btn--reject\s*\{([\s\S]*?)\}/);
+    expect(m, '.ds-btn--reject rule not found').not.toBeNull();
+    const decls = m![1];
+    expect(decls).toMatch(/background\s*:\s*transparent/);
+    expect(decls).toMatch(/color\s*:\s*var\(--ds-danger-ink\)/);
+    // The danger ink stays on the border too — this is a demotion in weight,
+    // not a removal of the affordance.
+    expect(decls).toMatch(/border-color\s*:\s*var\(--ds-danger-border\)/);
+    // The hover state must still fill, so the control reads as live on a page
+    // where it may be the only thing the operator can press.
+    const hover = stripComments(base).match(/\.ds-btn--reject:hover\s*\{([\s\S]*?)\}/);
+    expect(hover, '.ds-btn--reject:hover rule not found').not.toBeNull();
+    expect(hover![1]).toMatch(/background\s*:\s*var\(--ds-danger-surface\)/);
+  });
+
   it('resets the box model and base body element', () => {
     const stripped = stripComments(base);
     expect(stripped).toMatch(/box-sizing\s*:\s*border-box/);
