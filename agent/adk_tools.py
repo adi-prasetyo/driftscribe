@@ -42,7 +42,7 @@ from agent.contract import contract_preview_payload, load_contract
 from agent.github_actions import get_repo
 from agent.iac_artifacts import load_plan_view_from_gcs
 from agent.iac_pr_trace_store import record_authoring_trace
-from agent.request_context import get_current_autonomy_mode
+from agent.request_context import get_current_autonomy_mode, record_analyzed_env
 from driftscribe_lib.iac_plan_summary import (
     BLAST_CANNOT_TOUCH_NOTE,
     blast_radius_phrase,
@@ -75,6 +75,17 @@ def read_live_env_tool() -> dict:
     """
     resp = worker_client.call("reader", {})
     resp.setdefault("previous_revisions", [])
+    # ds-q38: remember what the WORKER said, here, before the model sees it.
+    # /recheck hashes its idempotency key from a SECOND reader read taken after
+    # this turn ends; if a deploy lands in between, the decision gets filed
+    # under a world it never analyzed. Capturing the snapshot at the tool
+    # boundary is what makes that comparison observation-vs-observation rather
+    # than a re-reading of the model's own report (ds-b3m).
+    env = resp.get("env")
+    if isinstance(env, dict) and all(
+        isinstance(k, str) and isinstance(v, str) for k, v in env.items()
+    ):
+        record_analyzed_env(env)
     return resp
 
 

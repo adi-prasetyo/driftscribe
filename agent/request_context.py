@@ -66,3 +66,56 @@ def demo_anonymous_scope(flag: bool):
         yield
     finally:
         _demo_anonymous.reset(token)
+
+
+_analyzed_env: contextvars.ContextVar[dict[str, str] | None] = contextvars.ContextVar(
+    "analyzed_live_env", default=None
+)
+
+
+def record_analyzed_env(env: dict[str, str]) -> None:
+    """Remember the live env the Reader Worker returned to ``read_live_env_tool``
+    during this agent turn — the snapshot the model actually reasoned over
+    (ds-q38).
+
+    This is written by the coordinator's own tool wrapper from the WORKER's
+    response, before the model ever sees it. That provenance is the whole
+    value: it is an observation we made, not a value the model handed back, so
+    comparing it with the post-turn read is observation-vs-observation. ds-b3m's
+    rule is untouched — nothing here is ever fed to a gate as "observed state"
+    for the request; it exists solely to answer "did the world move under the
+    agent while it was reasoning".
+
+    Last write wins: if the model reads twice, the later snapshot is the one its
+    conclusion rests on.
+    """
+    _analyzed_env.set(dict(env))
+
+
+def get_analyzed_env() -> dict[str, str] | None:
+    """The snapshot :func:`record_analyzed_env` captured, or ``None`` when the
+    agent never read live env in this turn.
+
+    ``None`` is meaningfully different from ``{}``: a service really can have no
+    env vars, and that is an observation. Callers must not collapse the two —
+    the same unknown-vs-empty distinction ``_observed_env_or_none`` keeps.
+    """
+    return _analyzed_env.get()
+
+
+@contextmanager
+def analyzed_env_scope():
+    """Clear the analyzed-env snapshot for the duration of one agent turn and
+    reset it afterwards.
+
+    Required, not hygiene: the coordinator runs with ``max-instances=1`` and a
+    reused event-loop task would otherwise let turn N-1's snapshot answer for
+    turn N — which would make the coherence check compare a proposal against
+    some earlier request's observation and either miss a real skew or invent
+    one.
+    """
+    token = _analyzed_env.set(None)
+    try:
+        yield
+    finally:
+        _analyzed_env.reset(token)

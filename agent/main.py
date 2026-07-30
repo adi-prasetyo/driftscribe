@@ -119,6 +119,7 @@ from agent.workloads import (
     reset_workload,
     set_workload,
 )
+from agent.request_context import analyzed_env_scope, get_analyzed_env
 from agent.workloads.registry import load_workload_spec, resolve_workload_prompts
 from pydantic import ValidationError as PydanticValidationError
 from driftscribe_lib import github
@@ -1174,6 +1175,126 @@ def _cached_rollback_is_expired(cached: dict) -> bool:
     return when < dt.datetime.now(dt.timezone.utc)
 
 
+def _observation_skew(
+    proposal: DecisionProposal,
+    observed_env: dict[str, str] | None,
+    analyzed_env: dict[str, str] | None,
+) -> list[str]:
+    """Names on which the snapshot the agent ANALYZED disagrees with the
+    snapshot the event key is HASHED FROM (ds-q38). Empty list == the decision
+    and its key describe the same world.
+
+    ``analyzed_env`` is the authoritative subject: the Reader Worker's own
+    response, captured at the tool boundary by
+    :func:`agent.request_context.record_analyzed_env` before the model saw it.
+    Comparing two coordinator-made observations is what makes this a coherence
+    check rather than a re-reading of the model's report.
+
+    ``proposal.env_diffs`` is the FALLBACK, used only when the agent never read
+    live env this turn, and it is deliberately not the primary: that collection
+    is incomplete by contract. The drift prompt asks for variables that DIFFER,
+    the deterministic classifier emits ``no_op`` with ``env_diffs=[]``, and the
+    validator accepts that. So a ``no_op`` carrying no diffs would iterate zero
+    entries and be pronounced "coherent" no matter how far the world had moved
+    — the original bug, surviving its own fix. An empty diff list can only ever
+    prove nothing; a captured snapshot can prove disagreement.
+
+    The event key is hashed from a SECOND, INDEPENDENT reader read taken after
+    the agent turn (see the call site) — not from the read the model reasoned
+    over. Those two reads can straddle a deploy, and on 2026-07-29 one did: the
+    model read ``PAYMENT_MODE=mock`` at 05:28:28, a revision carrying
+    ``PAYMENT_MODE=live`` was created at 05:28:30, and the post-turn read at
+    05:28:40 saw ``live``. The resulting ``no_op`` ("no configuration drift is
+    present") was persisted under the DRIFTED env's key, where it then
+    permanently outranked every correct rollback proposal for that env — a
+    ``no_op`` row has no TTL, only rollbacks expire.
+
+    So this is not a validator and not a second copy of the ds-b3m gate. It
+    asks one question: is the decision we are about to persist ABOUT the world
+    its key names?
+
+    ``observed_env is None`` returns ``[]`` deliberately. That is the
+    reader-failed path, where ``live_env`` is reconstructed from
+    ``proposal.env_diffs`` — so key and proposal are coherent by construction
+    (both derive from the model's report), and there is no independent
+    observation to contradict anything. Judging the model's report against
+    itself would manufacture agreement, and refusing on absent ground truth is
+    already ``_cached_rollback_needs_ground_truth``'s job for the action that
+    needs it.
+
+    ``EnvDiff.live is None`` means the var is ABSENT live, so the fallback's
+    skew test is presence, not value equality.
+    """
+    if observed_env is None:
+        return []
+    if analyzed_env is not None:
+        # Whole-snapshot comparison: an ADDED or REMOVED variable is skew just
+        # as much as a changed one, which is precisely what the diff-list
+        # fallback below cannot see.
+        return sorted(
+            name
+            for name in set(analyzed_env) | set(observed_env)
+            if analyzed_env.get(name) != observed_env.get(name)
+        )
+    skewed = []
+    for diff in proposal.env_diffs:
+        if diff.live is None:
+            if diff.name in observed_env:
+                skewed.append(diff.name)
+        elif observed_env.get(diff.name) != diff.live:
+            skewed.append(diff.name)
+    return skewed
+
+
+def _cached_decision_is_contradicted(
+    cached: dict | None, proposal: DecisionProposal
+) -> bool:
+    """True when a cached ``no_op`` must not be served to a request whose own
+    fresh proposal is an ACTION (ds-q38).
+
+    Scoped to a cached ``no_op`` on purpose, and the asymmetry is the point:
+    ``no_op`` is the only action that persists a claim about the world
+    ("nothing is wrong here") while creating no artifact an operator can see.
+    Every other cached action already leaves a PR, an issue, or an approval —
+    serving one again is the idempotency this cache exists to provide, and
+    re-proposing over it would duplicate that artifact.
+
+    Failing toward silence is what makes the ``no_op`` direction the dangerous
+    one: the operator sees nothing at all, so there is no dead link or stale
+    PR to notice. A fresh non-``no_op`` proposal is grounded in a read taken
+    now, so when the two disagree the cached row is the one describing a world
+    that has moved on.
+
+    Deliberately NOT keyed off the model-reported env (ds-b3m): the cache is a
+    second route to a rollback approval, so what is compared here is the
+    ACTION the pipeline arrived at, never values the model handed us.
+    """
+    if not cached:
+        return False
+    if cached.get("action") != DecisionAction.NO_OP.value:
+        return False
+    return proposal.action != DecisionAction.NO_OP
+
+
+def _cached_decision_is_stale(
+    cached: dict | None, proposal: DecisionProposal
+) -> bool:
+    """Single "may this cached decision still be served" question, so the two
+    reasons a cache entry can be dead cannot be checked in one place and
+    forgotten in the other.
+
+    Both call sites below must ask the SAME question — the CAS-loser re-read
+    especially, or it hands back the very row it just declined to serve. That
+    is the ds-uwc/desk lesson again: a predicate consulted in three places and
+    guarded in two is a bug with a delay on it.
+    """
+    if not cached:
+        return False
+    return _cached_rollback_is_expired(cached) or _cached_decision_is_contradicted(
+        cached, proposal
+    )
+
+
 @app.get("/healthz")
 @app.get("/health")
 def healthz():
@@ -1527,6 +1648,16 @@ def _do_rollback(
     claimed = state.record_event(event_key, {"trigger": trigger})
     if not claimed:
         existing = state.find_decision_for_event(event_key)
+        # ds-q38: reached only after the caller's cache check already declined
+        # (and CAS-evicted) whatever was here, so a contradicted ``no_op``
+        # surfacing NOW means the Firestore store's event_key recovery query
+        # resurrected it between the evict and a competitor's re-claim
+        # (ds-bej). Handing it back would answer a rollback proposal with
+        # "no configuration drift is present" — the exact ds-q38 failure, one
+        # layer down. 409 instead: the caller retries and the winner's real
+        # decision is there by then.
+        if _cached_decision_is_stale(existing, proposal):
+            raise HTTPException(status_code=409, detail="event in-progress, retry")
         if existing:
             return existing
         raise HTTPException(status_code=409, detail="event in-progress, retry")
@@ -2013,9 +2144,14 @@ async def _do_recheck(
         _workload_token = set_workload(workload)
         try:
             try:
-                proposal = await _run_adk_agent(
-                    user_msg, workload=workload, autonomy_mode=autonomy.mode
-                )
+                # ds-q38: scope the analyzed-env snapshot to THIS turn, so the
+                # coherence check below can never compare this proposal against
+                # a previous request's observation.
+                with analyzed_env_scope():
+                    proposal = await _run_adk_agent(
+                        user_msg, workload=workload, autonomy_mode=autonomy.mode
+                    )
+                    analyzed_env = get_analyzed_env()
             finally:
                 reset_workload(_workload_token)
         except (
@@ -2097,6 +2233,12 @@ async def _do_recheck(
                 detail="reader worker returned a malformed env payload",
             )
         live_env = observed_env
+        # Coherent by construction on this path: the classifier is a pure
+        # function of the very read the key is hashed from, so the analyzed and
+        # observed snapshots are the same object. Set explicitly rather than
+        # left None so the skew check compares snapshots here too, instead of
+        # silently dropping to the diff-list fallback.
+        analyzed_env = observed_env
         proposal = classify(
             ClassificationInput(contract=contract, live_env=live_env, recent_prs=[])
         )
@@ -2111,6 +2253,10 @@ async def _do_recheck(
         event_key = f"{event_key}-force-{uuid.uuid4().hex[:8]}"
 
     state = get_state()
+    # ds-q38: a cached decision this run's proposal contradicts, held back for
+    # eviction until AFTER validate() + the coherence gate. See the branch that
+    # sets it for why the CAS cannot happen at lookup time.
+    contradicted: dict | None = None
     if not force:
         existing = state.find_decision_for_event(event_key)
         if existing:
@@ -2126,7 +2272,24 @@ async def _do_recheck(
                         "before the gate. Retry once the reader is reachable."
                     ),
                 )
-            if _cached_rollback_is_expired(existing):
+            if _cached_decision_is_contradicted(existing, proposal):
+                # ds-q38: a contradicted ``no_op`` is NOT evicted here, and the
+                # ordering is the whole point. ``validate()`` runs below, AFTER
+                # this block — so evicting now would let a schema-valid but
+                # policy-invalid proposal (a bad rollback target, a forbidden
+                # docs_pr) compare-and-delete a legitimate cached decision and
+                # only then fail the safety gate. The decision doc would
+                # survive with its pointer gone, the Firestore store's
+                # event_key recovery query would keep resurfacing it (ds-bej),
+                # and — because ``evict_cached_decision`` compare-and-deletes a
+                # pointer that no longer exists — nothing could ever evict it
+                # again. Every later request would take the CAS-loser branch
+                # and 409 forever.
+                #
+                # So: remember it, let the proposal earn the right to replace
+                # it, and do the CAS after validate() + the coherence gate.
+                contradicted = existing
+            elif _cached_rollback_is_expired(existing):
                 # Phase 14 (Codex Phase 13 second-pass W2): compare-and-
                 # delete instead of unconditional release. Two concurrent
                 # retries seeing the same expired decision would otherwise
@@ -2158,7 +2321,13 @@ async def _do_recheck(
                                 "available to corroborate it."
                             ),
                         )
-                    if existing and not _cached_rollback_is_expired(existing):
+                    # Same predicate as the branch above, not just the expiry
+                    # half: a loser that re-reads the contradicted ``no_op``
+                    # (which the Firestore store can still surface via its
+                    # event_key recovery query even after the pointer is
+                    # deleted — ds-bej) must NOT hand it back as "the winner's
+                    # fresh decision".
+                    if existing and not _cached_decision_is_stale(existing, proposal):
                         return existing
                     raise HTTPException(
                         status_code=409,
@@ -2193,6 +2362,99 @@ async def _do_recheck(
                 detail=f"adk proposal rejected by safety gate: {e}",
             )
         raise HTTPException(status_code=500, detail=f"validator rejected proposal: {e}")
+
+    # ds-q38: refuse to PERSIST a decision that is not about the world its key
+    # names. ``event_key`` above is hashed from ``live_env`` — the
+    # coordinator's own read, taken AFTER the agent turn — while ``proposal``
+    # was reasoned out over the read the model made ~12s earlier. Those two
+    # reads can straddle a deploy, and on 2026-07-29 one did: the model read
+    # ``PAYMENT_MODE=mock``, a revision carrying ``live`` was created 1.5s
+    # later, and the post-turn read saw ``live``. The resulting ``no_op`` was
+    # filed under the DRIFTED key, where it outranked every correct rollback
+    # proposal for that env from then on — a ``no_op`` row has no TTL.
+    #
+    # AFTER ``validate``, deliberately. ds-b3m's validator already refuses a
+    # skewed ROLLBACK, and refuses it with a 502 whose shape says "the model
+    # responded and the safety gate refused" — non-retryable on purpose.
+    # Running this gate first would convert that into a retry-shaped 409 and
+    # silently retire a distinction ds-b3m's tests exist to protect. What was
+    # missing was never the rollback case: it is that NOTHING refused a skewed
+    # ``no_op``, the one action that persists "nothing is wrong here" while
+    # creating no artifact an operator could notice.
+    #
+    # Dropping the event is safe and self-healing because the change that
+    # caused the skew announces itself: a service mutation emits an audit log
+    # (v1 ``ReplaceService`` or v2 ``UpdateService`` depending on the client —
+    # both wired as triggers, see infra/scripts/setup_secrets.sh) and therefore
+    # its own delivery. One arriving mid-audit sets ``_EventarcCoalescer.dirty``
+    # and the trailing rerun re-audits a consistent world; one arriving later
+    # starts a fresh audit. ``_run_eventarc_audit_once`` catches HTTPException
+    # and logs ``_rejected``, and the coalescer loop still honours ``dirty``
+    # after a refusal — pinned by
+    # ``test_a_refused_audit_still_gets_its_trailing_rerun``.
+    #
+    # The recovery is therefore only as good as trigger coverage: a mutation
+    # path that emits neither methodName would skew an audit with nothing
+    # scheduled to look again. That is the same coverage assumption the
+    # autonomous lane already rests on, not a new one introduced here.
+    #
+    # A cache HIT above is intentionally left alone: that row is keyed on the
+    # same post-turn observation, so serving it is answering about the world we
+    # actually observed, and it keeps retries idempotent.
+    skewed = _observation_skew(proposal, observed_env, analyzed_env)
+    if skewed:
+        # Count only — never names or values. ``HTTPException.detail`` is
+        # echoed to the caller and log fields are read by operators; this is
+        # exactly the text that has carried live env values before, which is
+        # why the notify path persists a classification rather than a message.
+        log.warning(
+            "recheck_observation_skew",
+            extra={
+                "trigger": trigger,
+                "workload": workload,
+                "skewed_count": len(skewed),
+                "action": proposal.action.value,
+            },
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "live state changed while the agent was reasoning: the "
+                "proposal describes a different observation than the one this "
+                "decision would be keyed on, so it was not recorded. Retry."
+            ),
+        )
+
+    if contradicted is not None:
+        # NOW the fresh proposal has earned the right to replace the cached
+        # ``no_op``: it passed the deterministic validator and it is about the
+        # same world its key names. Compare-and-delete, never an unconditional
+        # release — two concurrent Eventarc deliveries seeing the same
+        # contradicted row must not both re-propose and double-mint approvals
+        # for one drift. Same protocol as the expired-rollback branch above,
+        # for the same reason.
+        contradicted_id = contradicted.get("decision_id")
+        if not (
+            contradicted_id
+            and state.evict_cached_decision(event_key, contradicted_id)
+        ):
+            # CAS lost: another request is already repairing this key. Re-read
+            # and hand back its result if it has landed and is itself servable;
+            # otherwise 409 so the caller retries cleanly rather than falling
+            # through to claim an event slot the winner is mid-flight on.
+            existing = state.find_decision_for_event(event_key)
+            if existing and not _cached_decision_is_stale(existing, proposal):
+                return existing
+            raise HTTPException(status_code=409, detail="event in-progress, retry")
+        log.info(
+            "recheck_evicted_contradicted_decision",
+            extra={
+                "trigger": trigger,
+                "workload": workload,
+                "cached_action": contradicted.get("action"),
+                "fresh_action": proposal.action.value,
+            },
+        )
 
     # ROLLBACK branches out before render because the render needs the
     # approval URL minted by the Rollback Worker's /propose. The Phase 11.9
@@ -2232,6 +2494,14 @@ async def _do_recheck(
                     "it."
                 ),
             )
+        # ds-q38 completes the set the comment above argues for: this site now
+        # asks the SAME "may this request be served this decision" question as
+        # the other three. A contradicted ``no_op`` can reach here the same way
+        # a rollback can — the first lookup missed, the claim was lost, and the
+        # re-read resurfaced a row (ds-bej) that says nothing is wrong while
+        # this run concluded something is.
+        if _cached_decision_is_stale(existing, proposal):
+            raise HTTPException(status_code=409, detail="event in-progress, retry")
         if existing:
             return existing
         raise HTTPException(status_code=409, detail="event in-progress, retry")
