@@ -19,7 +19,6 @@
 
 import type { Decision } from './types';
 import {
-  resolvedIacPrNumbers,
   supersededWaitingIds,
   isRollbackAwaitingOperator,
   isIacAwaitingOperator,
@@ -55,7 +54,6 @@ function parseCreatedAt(iso: string | null | undefined): number | null {
  */
 function classify(
   d: Decision,
-  resolvedPrs: ReadonlySet<number>,
   supersededIds: ReadonlySet<string>,
   now: number,
   origin: string | undefined,
@@ -84,7 +82,7 @@ function classify(
   if (isRollbackAwaitingOperator(d, { now, origin })) {
     return 'open';
   }
-  if (isIacAwaitingOperator(d, resolvedPrs, supersededIds)) {
+  if (isIacAwaitingOperator(d, supersededIds)) {
     return 'open';
   }
 
@@ -124,7 +122,6 @@ export function ledgerRows(
   if (cap <= 0) return [];
 
   const list = decisions ?? [];
-  const resolvedPrs = resolvedIacPrNumbers(list);
   const supersededIds = supersededWaitingIds(list);
 
   const rows: LedgerRow[] = [];
@@ -132,7 +129,7 @@ export function ledgerRows(
     if (d == null) continue; // defensive: malformed array element, skip not throw
     rows.push({
       decision: d,
-      state: classify(d, resolvedPrs, supersededIds, now, origin),
+      state: classify(d, supersededIds, now, origin),
       ts: parseCreatedAt(d.created_at),
     });
   }

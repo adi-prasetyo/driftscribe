@@ -7,7 +7,6 @@
     isRollbackApprovalUnresolved,
     safeGithubHref,
     iacPrHref,
-    resolvedIacPrNumbers,
     supersededWaitingIds,
     iacApproveLabel,
   } from '../lib/approval';
@@ -53,9 +52,10 @@
   // PRs whose iac_apply has terminally `applied` — a `waiting_for_rebake` row
   // for one of these is superseded, so its CTA downgrades to view-only
   // (iacApproveLabel). Derived once per render from the list the rail holds.
-  const resolvedPrs = $derived(resolvedIacPrNumbers(decisions));
-  // ds-dzd companion: per-GENERATION supersession, which a PR-wide set cannot
-  // express. Same compute-once-per-render treatment.
+  // ds-dzd: per-GENERATION supersession — a waiting row is stale only when a
+  // strictly newer terminal row for its OWN event_key overtook it. Derived once
+  // per render from the list the rail holds. Deliberately NOT the PR-wide
+  // `resolvedIacPrNumbers`, which belongs to the listing lane alone.
   const supersededIds = $derived(supersededWaitingIds(decisions));
 
   // Fold same-PR iac_apply docs into one group per PR. resolvedPrs stays derived
@@ -334,7 +334,7 @@
           data-testid="iac-approve-link"
           href={iacHref}
           target="_blank"
-          rel="noopener">{iacApproveLabel(d, resolvedPrs, supersededIds, $t)}</a>
+          rel="noopener">{iacApproveLabel(d, supersededIds, $t)}</a>
       {/if}
 
       {#if githubHref(d)}

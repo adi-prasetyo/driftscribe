@@ -293,11 +293,21 @@ describe('deskModel — rule 2b: pending iac approval derived from decisions (op
     expect(model.kind).toBe('resting');
   });
 
-  it('a later applied row for the same PR (resolvedIacPrNumbers) → NOT pending', () => {
-    const waiting = iacDecision({ decision_id: 'iac-waiting', pr_number: 44, created_at: '2026-07-28T10:00:00Z' });
+  // ds-dzd: matching event_keys, i.e. the applied row IS this waiting row's own
+  // generation finishing. That is the real prod shape — PRs 221/102/96/68/66/47
+  // all carry an applied row and older waiting rows under ONE event_key.
+  it('this generation’s own applied row → NOT pending', () => {
+    const EK = 'iac-apply-44-samegeneration';
+    const waiting = iacDecision({
+      decision_id: 'iac-waiting',
+      pr_number: 44,
+      event_key: EK,
+      created_at: '2026-07-28T10:00:00Z',
+    });
     const applied = iacDecision({
       decision_id: 'iac-applied',
       pr_number: 44,
+      event_key: EK,
       apply_status: 'applied',
       applied_at: '2026-07-28T10:30:00Z',
       created_at: '2026-07-28T11:00:00Z',
@@ -311,6 +321,35 @@ describe('deskModel — rule 2b: pending iac approval derived from decisions (op
     // The applied row IS a valid stamp candidate — but it must not ALSO leave
     // the superseded waiting row pending. Assert it isn't pending at all.
     expect(model.kind).not.toBe('pending');
+  });
+
+  // The negative twin, and the reason event_key scoping exists. Generation A
+  // applied but its merge failed, the PR stayed open, the head advanced, and
+  // generation B recorded its own waiting row. B is real work the operator has to
+  // approve; a PR-wide rule deleted it from the desk entirely.
+  it('a DIFFERENT generation’s applied row leaves this waiting row PENDING', () => {
+    const appliedA = iacDecision({
+      decision_id: 'iac-applied-A',
+      pr_number: 44,
+      event_key: 'iac-apply-44-generationA',
+      apply_status: 'applied',
+      merge_state: 'failed',
+      applied_at: '2026-07-28T10:30:00Z',
+      created_at: '2026-07-28T10:30:00Z',
+    });
+    const waitingB = iacDecision({
+      decision_id: 'iac-waiting-B',
+      pr_number: 44,
+      event_key: 'iac-apply-44-generationB',
+      created_at: '2026-07-28T11:00:00Z',
+    });
+    const model = deskModel({
+      decisions: [appliedA, waitingB],
+      pendingApprovals: [],
+      now: NOW,
+      origin: ORIGIN,
+    });
+    expect(model.kind).toBe('pending');
   });
 
   it('dedup: the same PR present in BOTH the listing and the decisions log yields exactly one desk state, from the listing', () => {

@@ -336,10 +336,10 @@ function replayableTraceId(decision: Decision | null | undefined): string | null
  * ds-0rm: this listing is CACHED backend-side for 60s
  * (`_PENDING_APPROVALS_TTL_S`, agent/main.py), so for up to a minute after a
  * PR merges and applies it still names that PR. Because this rule is tried
- * FIRST and used to skip the `resolvedPrs` check that rule 2b applies, a
+ * FIRST and originally skipped the resolved-PR check, a
  * stale cache entry outranked the seal that should have been showing — the
  * desk asked for a decision that had already been made. It now honors the
- * same resolved-PR filter, so the two rules can never disagree about whether
+ * resolved-PR filter, so the two rules can never disagree about whether
  * a given PR is still open.
  */
 function selectPendingIac(
@@ -379,21 +379,22 @@ function selectPendingIac(
  * mirroring rule 1's `selectPendingRollback` — deterministic, not
  * last-write-wins.
  *
- * `resolvedPrs` and `supersededIds` are computed once by the caller
- * (`deskModel`) and threaded in, mirroring ledger.ts's `ledgerRows` — each is an
- * O(n) scan of the same `decisions` list, so recomputing them per candidate here
- * would make this function O(n^2) for sets that never change mid-scan.
+ * `supersededIds` is computed once by the caller (`deskModel`) and threaded in,
+ * mirroring ledger.ts's `ledgerRows` — it is an O(n) scan of the same `decisions`
+ * list, so recomputing it per candidate here would make this function O(n^2) for
+ * a set that never changes mid-scan. `resolvedPrs` is deliberately NOT passed: it
+ * is PR-wide and belongs to the listing lane alone (ds-dzd — see approval.ts's
+ * `resolvedIacPrNumbers`).
  */
 function selectPendingIacFromDecisions(
   decisions: ReadonlyArray<Decision | null | undefined>,
-  resolvedPrs: ReadonlySet<number>,
   supersededIds: ReadonlySet<string>,
   locale: string | undefined,
 ): DeskPendingIac | null {
   let best: { decision: Decision; href: string; prNumber: number; ts: number } | null = null;
   for (const decision of decisions) {
     if (decision == null) continue; // defensive: malformed array element, skip not throw
-    if (!isIacAwaitingOperator(decision, resolvedPrs, supersededIds)) continue;
+    if (!isIacAwaitingOperator(decision, supersededIds)) continue;
     const href = iacApprovalHref(decision.pr_number, locale);
     if (href == null) continue; // malformed/missing pr_number — never a dead CTA, try the next one
     const ts = parseForOrdering(decision.created_at);
@@ -617,7 +618,7 @@ export function deskModel(input: DeskModelInput): DeskModel {
   const iacFromListing = selectPendingIac(pendingApprovals, decisions, resolvedPrs, input.locale);
   if (iacFromListing) return iacFromListing;
 
-  const iacFromDecisions = selectPendingIacFromDecisions(decisions, resolvedPrs, supersededIds, input.locale);
+  const iacFromDecisions = selectPendingIacFromDecisions(decisions, supersededIds, input.locale);
   if (iacFromDecisions) return iacFromDecisions;
 
   const unresolved = selectUnresolvedRollback(decisions, now);
@@ -707,7 +708,7 @@ export function awaitingCount(input: DeskModelInput): number {
   for (const decision of decisions) {
     if (decision == null) continue;
     if (
-      isIacAwaitingOperator(decision, resolvedPrs, supersededIds) &&
+      isIacAwaitingOperator(decision, supersededIds) &&
       isPositiveIntPr(decision.pr_number)
     ) {
       iacPrs.add(decision.pr_number);
