@@ -52,9 +52,9 @@ rules.
 
 ---
 
-# ⚠ OUTSTANDING WORK
+# WORK AFTER THE REVIEW
 
-## 1. MERGE-BLOCKING — raw stream blue on small approval-desk text (Codex finding 1)
+## 1. ~~MERGE-BLOCKING~~ — FIXED in `e613caf`: raw stream blue on small approval-desk text
 
 `frontend/src/components/ApprovalDesk.svelte`:
 
@@ -65,13 +65,18 @@ Both now read `var(--ds-stream)` = `#4285f4` = **3.416:1 on paper**, under the 4
 `--ds-gblue` during the Phase 2 classification pass, so the grep for `var(--ds-stream)` did not see
 them; Phase 3's rename turned them into canonical stream consumers *after* the audit.
 
-**Fix:** both → `var(--ds-stream-ink)` (`#2a63c9`, 5.402:1). Do it as a NEW commit on top of
-`5653a55`, so the retirement commit stays a pure zero-delta mechanical rename.
+**FIXED** in `e613caf` — both → `var(--ds-stream-ink)` (`#2a63c9`, 5.402:1), as a new commit on top
+of `5653a55` so the retirement commit stays a pure zero-delta mechanical rename. Codex's line numbers
+were 534/589; the actual declarations were at 538/597. Also added a `styles.test.ts` guard that fails
+on ANY raw-stream text `color:` (allowlisting only InstrumentBand's 44px numeral), and verified the
+guard bites by reverting one fix and watching it name the offender. Recount: 17 raw-stream refs,
+exactly one a text color, and it is the permitted numeral.
 
 Verify the 44px `.approval-desk__await` numeral (or equivalent) is left alone — large-text
 non-text-accent use of raw stream is permitted.
 
-## 2. PR body corrections (it currently overstates two things)
+## 2. ~~PR body corrections~~ — DONE (pushed via `gh api PATCH`; `gh pr edit` aborts on this repo
+with a projects-classic GraphQL error)
 
 - "14 raw-stream consumers remain, zero are text" — **false after Phase 3**; source has 17
   occurrences including the two above. Recount and restate after fixing #1.
@@ -82,32 +87,32 @@ non-text-accent use of raw stream is permitted.
   mechanical mapping, which Codex accepts as sufficient.
 - The muted explanation should say **six** non-white grounds fail at `#6a7180`, not "three".
 
-## 3. Stale comments (Codex finding 4)
+## 3. ~~Stale comments~~ — FIXED in `e613caf` (Codex finding 4)
 
 - `frontend/src/components/InfraDiagram.svelte:1316` — says Adopt's hover "mirrors the Send button's
   deepen-on-hover". Send now **lifts** (`color-mix` 88% navy + white). Correct the comment.
 - `frontend/src/styles/tokens.css:74` — says `--ds-seal` is "declared once below"; it was promoted
   **above** in Phase 3. Correct to "above".
 
-## 4. Beads to file (needs an EMPTY git index in the shared main worktree first)
+## 4. Beads — FILED 2026-07-30 (index was empty; bd swept nothing)
 
-- **`--ds-ring` focus-contrast audit.** Translucent ring measures 1.36–1.54:1 across grounds and
+- **`ds-dce` (P1) — `--ds-ring` focus-contrast audit.** Translucent ring measures 1.36–1.54:1 across grounds and
   fails 1.4.11's 3:1; `base.css:89` suppresses the native outline and relies on it. Opaque `#4285f4`
   clears every ground Codex checked (lowest: neutral chip 3.069:1; navy 4.395:1). Tractable,
   high priority, deliberately not absorbed by this PR.
-- **Desk `unresolved` state boxes DriftDiffCard.** `ApprovalDesk.svelte:470` lacks the
+- **`ds-b52` (P3) — desk `unresolved` state boxes DriftDiffCard.** `ApprovalDesk.svelte:470` lacks the
   `.approval-desk__diff` wrapper that lines 411 and 483 have, so it renders as a boxed white panel
   while its siblings render as borderless rules. Pre-existing; fixing it is a DOM change this plan
   forbade and the acceptance matrix pinned the desk as unchanged.
-- **`InstrumentBand.svelte:284` opacity fade** (Codex finding 2). `opacity: .75` on interactive
+- **`ds-16e` (P2) — `InstrumentBand.svelte:284` opacity fade** (Codex finding 2). `opacity: .75` on interactive
   numerals takes the awaiting numeral to ≈2.46:1 (44px/600 needs 3:1); resting is 3.416:1. Needs
   ≈`0.91`, or just drop the numeral fade since the hover hint already signals interactivity.
   **Pre-existing** — old `--ds-gblue` was the same value — so not a regression from this PR.
-- **`--ds-shadow-md` is undefined.** `AutonomyPill:506`, `PausePill:248`, `DemoNoticeBell:309` use
+- **`ds-b42` (P3) — `--ds-shadow-md` is undefined.** `AutonomyPill:506`, `PausePill:248`, `DemoNoticeBell:309` use
   `var(--ds-shadow-md, var(--ds-shadow-sm))`, so popovers get the LIGHTEST shadow. Polish debt, not
   a correctness bug (border + overlap + z-position still separate them). `--ds-shadow` would express
   the intended middle elevation.
-- **Retired-token guard coverage** (Codex finding 3). `styles.test.ts:183` walks only `.svelte`/`.css`
+- **`ds-836` (P3) — retired-token guard coverage** (Codex finding 3). `styles.test.ts:183` walks only `.svelte`/`.css`
   under `src/`. It does not inspect `.ts` (`style.setProperty`), `agent/templates/*.html`, or future
   `.scss`. Codex found no current straggler in any of those, so this is coverage, not a live bug.
 
