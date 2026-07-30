@@ -71,6 +71,12 @@ def _adk(proposal: DecisionProposal, times: int = 1) -> AsyncMock:
             try:
                 payload = worker_client.call("reader", {})
             except Exception:
+                # DELIBERATE SIMPLIFICATION — see the note in
+                # test_rollback_e2e._adk. In production a Reader failure inside
+                # the tool aborts the turn (ADK re-raises; build_agent installs
+                # no on_tool_error callback), so it surfaces as 502 and never
+                # reaches the coherence gate. Pinned by
+                # test_a_reader_failure_inside_the_turn_is_a_502.
                 payload = None
             if (
                 reader_sink is not None
@@ -326,10 +332,14 @@ def test_an_agent_that_never_read_live_state_is_refused() -> None:
     coordinator happened to see. Reading the agent's own tool results answers
     both questions, so this refuses. The workload prompt does require the call,
     but a prompt is not an enforcement boundary."""
-    dispatch = _reader_sequence(RuntimeError("reader down"), _CLEAN_ENV)
+    dispatch = _reader_sequence(_CLEAN_ENV)
 
     with (
-        patch("agent.main._run_adk_agent", _adk(_noop_proposal(live="mock"))),
+        # times=0: the agent never called the reader at all. Modelled as a
+        # CHOICE, not as a failed read — a read that fails aborts the turn in
+        # production (502) and is covered separately.
+        patch("agent.main._run_adk_agent",
+              _adk(_noop_proposal(live="mock"), times=0)),
         patch("agent.main.worker_client.call") as m_call,
     ):
         m_call.side_effect = dispatch
@@ -706,3 +716,32 @@ def test_a_cached_noop_is_still_served_to_a_fresh_noop() -> None:
     assert first.status_code == 200 and second.status_code == 200
     assert first.json()["decision_id"] == second.json()["decision_id"]
     assert len(get_state().list_decisions(limit=50)) == 1
+
+
+def test_a_reader_failure_inside_the_turn_is_a_502() -> None:
+    """Production behaviour the doubles above deliberately simplify away.
+
+    ``read_live_env_tool`` does not catch ``WorkerClientError``, and ADK
+    re-raises a tool exception when no ``on_tool_error`` callback handles it —
+    ``build_agent`` installs none. So a Reader that is down during the agent's
+    own read ABORTS the turn: ``_do_recheck`` maps it to ``502 adk agent
+    failed`` and never reaches the coherence gate at all.
+
+    Worth pinning because the doubles swallow that failure, and a reader of
+    those tests could otherwise conclude the 409 "did not read live state" path
+    covers a reader outage. It does not — that path is for an agent that had a
+    working reader and did not use it.
+    """
+    async def _raising_agent(*_a: Any, **_k: Any) -> DecisionProposal:
+        raise worker_client.WorkerClientError(503, "reader unreachable", "reader")
+
+    with (
+        patch("agent.main._run_adk_agent", AsyncMock(side_effect=_raising_agent)),
+        patch("agent.main.worker_client.call") as m_call,
+    ):
+        m_call.side_effect = _reader_sequence(_CLEAN_ENV)
+        r = TestClient(app).post("/recheck")
+
+    assert r.status_code == 502, r.text
+    assert "adk agent failed" in r.text
+    assert get_state().list_decisions(limit=50) == []

@@ -60,9 +60,16 @@ def _adk(proposal):
             try:
                 payload = worker_client.call("reader", {})
             except Exception:
-                # A failed tool call does not end the real turn — ADK hands the
-                # error back to the model, which reasons on without an
-                # observation. Recording nothing is exactly that state.
+                # DELIBERATE SIMPLIFICATION, and the direction matters. In
+                # production a Reader failure inside the tool ABORTS the turn:
+                # read_live_env_tool does not catch WorkerClientError and ADK
+                # re-raises a tool exception when no on_tool_error callback
+                # handles it (build_agent installs none), so _do_recheck sees
+                # "adk agent failed" -> 502 and never reaches the coherence
+                # gate. Swallowing here lets a test keep exercising the
+                # COORDINATOR-side read failure it actually cares about, with
+                # the agent's own read having succeeded. The real abort is
+                # pinned by test_a_reader_failure_inside_the_turn_is_a_502.
                 payload = None
             if isinstance(payload, dict) and isinstance(payload.get("env"), dict):
                 reader_sink.append(

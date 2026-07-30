@@ -135,6 +135,10 @@ Firestore surgery is needed.
 
 ## Scope / non-goals
 
+- **The gate refuses to PERSIST, not to SERVE.** A cache hit returns before it,
+  so an already-cached decision can still be served under a key this request did
+  not corroborate. That is a stale answer, not a new poisoned row; closing it
+  means moving the cache lookup after the gate, which changes ds-b3m's ordering.
 - **ds-bej is NOT fixed here.** `find_decision_for_event`'s recovery fallback
   (`decisions.where("event_key","==",…)`) means a CAS-evicted pointer still
   resolves via the field on the decision doc. After (b)'s evict → re-propose the
@@ -149,9 +153,10 @@ Firestore surgery is needed.
    post-ADK observed env is `live` ⇒ no row is written under the drifted key,
    409 raised.
 2. Coherence gate passes when reported == observed (the 07-30 trace's shape).
-3. `observed_env is None` ⇒ gate does not fire (reader-failure path unchanged).
-4. Absent-var handling: `d.live is None` and the name present in observed ⇒
-   contradiction; absent in both ⇒ fine.
+3. A failed post-turn read REFUSES (it no longer hashes a key from model
+   diffs), with a bounded retry first so a transient blip does not drop the
+   only audit.
+4. Agent never read / saw two distinct states ⇒ refused.
 5. **Poisoned-row recovery:** cached `no_op` under the drifted key + fresh
    rollback proposal ⇒ CAS-evict + re-propose, exactly one approval minted.
 6. Cached `no_op` + fresh `no_op` ⇒ still served from cache (idempotency intact).
@@ -180,6 +185,15 @@ own fix rather than in the original code.
   inert in production while the new tests passed, because the test double wrote
   from `_do_recheck`'s own task — the same "my own test pinned it" shape as
   ds-qua.
+- **Round 4 blockers:** the expired-rollback eviction still ran BEFORE the gate
+  — a regression I introduced, since adding refusals after that point recreated
+  the very ds-bej permanent-409 trap the contradicted-row deferral existed to
+  avoid. Both eviction reasons now share one deferred CAS. Also: refusing on a
+  failed post-turn read had no retry driver behind it (a failed read emits no
+  Eventarc delivery), so one blip could drop the only audit for a real drift —
+  now a bounded read-only retry. And the capture seam itself was untested,
+  which would have let a regression there refuse every production audit with a
+  green suite.
 - **Round 3 blockers:** the pre/post bracketing that replaced it proved the
   world was stable but never that the agent LOOKED, so an agent that skipped
   the reader sailed through; and two degraded branches still persisted rows

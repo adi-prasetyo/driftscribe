@@ -1174,6 +1174,41 @@ def _cached_rollback_is_expired(cached: dict) -> bool:
     return when < dt.datetime.now(dt.timezone.utc)
 
 
+_READER_RETRY_DELAYS = (0.5, 1.5)
+
+
+async def _read_with_retry() -> object:
+    """Call the Reader Worker, retrying a transient failure a bounded number of
+    times before giving up (ds-q38).
+
+    Exists for liveness, not correctness. The coherence gate refuses to record
+    anything when this read fails — which is right, because nothing would
+    corroborate what the agent saw — but on the autonomous lane that refusal has
+    NO retry driver behind it: a failed read is not a Cloud Run mutation, so it
+    emits no audit log and no new Eventarc delivery, the original event is
+    already fast-acked, and ``_EventarcCoalescer`` only reruns when a separate
+    delivery set ``dirty``. So a single transient blip would drop the only audit
+    for a real drift, silently and indefinitely — the same class of outcome as
+    the bug being fixed.
+
+    Bounded on purpose: a Reader that is genuinely down must still fail fast
+    rather than spin inside a background task. Only the READ is retried, never
+    the agent turn, so the cost is two short sleeps against a turn that already
+    took tens of seconds.
+    """
+    last: Exception | None = None
+    for delay in (*_READER_RETRY_DELAYS, None):
+        try:
+            return worker_client.call("reader", {})
+        except Exception as e:  # noqa: BLE001 — re-raised below if all fail
+            last = e
+            if delay is None:
+                break
+            await asyncio.sleep(delay)
+    assert last is not None
+    raise last
+
+
 def _revision_or_none(reader_payload: object) -> str | None:
     """The Reader Worker's ``revision``, or ``None`` if it is not a usable one.
 
@@ -2213,7 +2248,17 @@ async def _do_recheck(
         try:
             # Reader Worker enforces TARGET_SERVICE/region/project via its own
             # boot config (Layer 2); the coordinator no longer passes them.
-            _post_payload = worker_client.call("reader", {})
+            #
+            # ds-q38: retried, because refusing on this read has no retry driver
+            # behind it. A failed read is not a Cloud Run mutation, so it emits
+            # no audit log and no new Eventarc delivery; the original event was
+            # already fast-acked, and the coalescer only reruns when a SEPARATE
+            # delivery marked it dirty. Without this, one transient Reader blip
+            # loses the only audit for a real drift, indefinitely. Bounded (not
+            # a loop) so a Reader that is genuinely down still fails fast, and
+            # cheap next to the model turn that already ran — this retries the
+            # read alone, never the turn.
+            _post_payload = await _read_with_retry()
             live_env = _observed_env_or_none(_post_payload)
             post_turn_revision = _revision_or_none(_post_payload)
         except Exception:
@@ -2297,10 +2342,11 @@ async def _do_recheck(
         event_key = f"{event_key}-force-{uuid.uuid4().hex[:8]}"
 
     state = get_state()
-    # ds-q38: a cached decision this run's proposal contradicts, held back for
-    # eviction until AFTER validate() + the coherence gate. See the branch that
-    # sets it for why the CAS cannot happen at lookup time.
-    contradicted: dict | None = None
+    # ds-q38: a cached decision that may no longer be served — expired rollback
+    # or a ``no_op`` this run's proposal contradicts — held back for eviction
+    # until AFTER validate() + the coherence gate. See the branch that sets it
+    # for why the CAS cannot happen at lookup time.
+    stale_cached: dict | None = None
     if not force:
         existing = state.find_decision_for_event(event_key)
         if existing:
@@ -2316,67 +2362,27 @@ async def _do_recheck(
                         "before the gate. Retry once the reader is reachable."
                     ),
                 )
-            if _cached_decision_is_contradicted(existing, proposal):
-                # ds-q38: a contradicted ``no_op`` is NOT evicted here, and the
-                # ordering is the whole point. ``validate()`` runs below, AFTER
-                # this block — so evicting now would let a schema-valid but
-                # policy-invalid proposal (a bad rollback target, a forbidden
-                # docs_pr) compare-and-delete a legitimate cached decision and
-                # only then fail the safety gate. The decision doc would
-                # survive with its pointer gone, the Firestore store's
-                # event_key recovery query would keep resurfacing it (ds-bej),
-                # and — because ``evict_cached_decision`` compare-and-deletes a
-                # pointer that no longer exists — nothing could ever evict it
-                # again. Every later request would take the CAS-loser branch
-                # and 409 forever.
+            if _cached_decision_is_stale(existing, proposal):
+                # NOT evicted here — remembered, and the CAS happens after
+                # validate() + the coherence gate. The ordering is the whole
+                # point, and it now covers BOTH staleness reasons.
                 #
-                # So: remember it, let the proposal earn the right to replace
-                # it, and do the CAS after validate() + the coherence gate.
-                contradicted = existing
-            elif _cached_rollback_is_expired(existing):
-                # Phase 14 (Codex Phase 13 second-pass W2): compare-and-
-                # delete instead of unconditional release. Two concurrent
-                # retries seeing the same expired decision would otherwise
-                # both release+re-claim, double-minting approval docs.
-                # The CAS only deletes when the cached decision_id still
-                # matches; the loser re-reads and returns the winner's
-                # fresh decision rather than re-proposing.
-                cached_decision_id = existing.get("decision_id")
-                if cached_decision_id and state.evict_cached_decision(
-                    event_key, cached_decision_id
-                ):
-                    pass  # CAS won — fall through to re-propose
-                else:
-                    # Phase 15.3: CAS-loser short-circuit (Codex carry-over
-                    # from Phase 14). If the re-read finds the winner's
-                    # fresh decision, return it. Otherwise the winner is
-                    # mid-flight: do NOT fall through to record_event —
-                    # that path could succeed (event slot transiently
-                    # empty between winner's evict and re-claim) and
-                    # mint a duplicate /propose. Surface 409 so the
-                    # caller retries cleanly.
-                    existing = state.find_decision_for_event(event_key)
-                    if _cached_rollback_needs_ground_truth(existing, observed_env):
-                        raise HTTPException(
-                            status_code=502,
-                            detail=(
-                                "adk proposal rejected by safety gate: cached "
-                                "rollback not served — no observed live env is "
-                                "available to corroborate it."
-                            ),
-                        )
-                    # Same predicate as the branch above, not just the expiry
-                    # half: a loser that re-reads the contradicted ``no_op``
-                    # (which the Firestore store can still surface via its
-                    # event_key recovery query even after the pointer is
-                    # deleted — ds-bej) must NOT hand it back as "the winner's
-                    # fresh decision".
-                    if existing and not _cached_decision_is_stale(existing, proposal):
-                        return existing
-                    raise HTTPException(
-                        status_code=409,
-                        detail="event in-progress, retry",
-                    )
+                # Evicting at lookup time lets a request that is about to be
+                # REFUSED destroy good cached state on its way out: a
+                # policy-invalid proposal fails validate(), or an incoherent one
+                # fails the gate, but the pointer is already gone. The decision
+                # document survives, the Firestore store's event_key recovery
+                # query keeps resurfacing it (ds-bej), and because
+                # ``evict_cached_decision`` compare-and-deletes a pointer that
+                # no longer exists, nothing can ever evict it again — every
+                # later request takes the CAS-loser branch and 409s forever.
+                #
+                # The expired-rollback branch used to evict here safely, because
+                # nothing between the CAS and the re-propose could refuse. Since
+                # ds-q38 added refusals after this point that is no longer true,
+                # so it moves too rather than being left as the one path that
+                # still mutates before the request has earned it.
+                stale_cached = existing
             else:
                 return existing
 
@@ -2416,8 +2422,10 @@ async def _do_recheck(
     # filed under the DRIFTED key, where it outranked every correct rollback
     # proposal for that env from then on — a ``no_op`` row has no TTL.
     #
-    # The gate compares the reads that BRACKET the turn: equal ends mean the
-    # world held still throughout, so the agent's own read saw the same env.
+    # The gate compares what the agent ACTUALLY observed (reported back through
+    # ``reader_sink``) with what the key is hashed from. An earlier draft
+    # bracketed the turn with the coordinator's own reads instead; that proved
+    # the world held still but never that the agent looked at it.
     #
     # AFTER ``validate``, deliberately. ds-b3m's validator already refuses a
     # skewed ROLLBACK, and refuses it with a 502 whose shape says "the model
@@ -2444,9 +2452,14 @@ async def _do_recheck(
     # scheduled to look again. That is the same coverage assumption the
     # autonomous lane already rests on, not a new one introduced here.
     #
-    # A cache HIT above is intentionally left alone: that row is keyed on the
-    # same post-turn observation, so serving it is answering about the world we
-    # actually observed, and it keeps retries idempotent.
+    # ⚠️ Scope, stated precisely: this refuses to PERSIST. A cache HIT above
+    # returns before any of it, so "everything else is a 409" is true of new
+    # rows only — an already-cached decision can still be served for a key this
+    # request never corroborated (notably when the post-turn read failed and the
+    # key came from ``proposal.env_diffs``). That serves a stale answer; it does
+    # not create a poisoned row, and closing it means moving the cache lookup
+    # after the gate, which would change ds-b3m's ordering. Left explicit rather
+    # than implied.
     if s.use_adk:
         refusal = None
         if not distinct_observations:
@@ -2507,33 +2520,37 @@ async def _do_recheck(
                 ),
             )
 
-    if contradicted is not None:
-        # NOW the fresh proposal has earned the right to replace the cached
-        # ``no_op``: it passed the deterministic validator and it is about the
-        # same world its key names. Compare-and-delete, never an unconditional
-        # release — two concurrent Eventarc deliveries seeing the same
-        # contradicted row must not both re-propose and double-mint approvals
-        # for one drift. Same protocol as the expired-rollback branch above,
-        # for the same reason.
-        contradicted_id = contradicted.get("decision_id")
-        if not (
-            contradicted_id
-            and state.evict_cached_decision(event_key, contradicted_id)
-        ):
+    if stale_cached is not None:
+        # NOW the fresh proposal has earned the right to replace what was
+        # cached: it passed the deterministic validator and it is about the same
+        # world its key names. Compare-and-delete, never an unconditional
+        # release — two concurrent Eventarc deliveries seeing the same stale row
+        # must not both re-propose and double-mint approvals for one drift.
+        stale_id = stale_cached.get("decision_id")
+        if not (stale_id and state.evict_cached_decision(event_key, stale_id)):
             # CAS lost: another request is already repairing this key. Re-read
             # and hand back its result if it has landed and is itself servable;
             # otherwise 409 so the caller retries cleanly rather than falling
             # through to claim an event slot the winner is mid-flight on.
             existing = state.find_decision_for_event(event_key)
+            if _cached_rollback_needs_ground_truth(existing, observed_env):
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        "adk proposal rejected by safety gate: cached rollback "
+                        "not served — no observed live env is available to "
+                        "corroborate it."
+                    ),
+                )
             if existing and not _cached_decision_is_stale(existing, proposal):
                 return existing
             raise HTTPException(status_code=409, detail="event in-progress, retry")
         log.info(
-            "recheck_evicted_contradicted_decision",
+            "recheck_evicted_stale_decision",
             extra={
                 "trigger": trigger,
                 "workload": workload,
-                "cached_action": contradicted.get("action"),
+                "cached_action": stale_cached.get("action"),
                 "fresh_action": proposal.action.value,
             },
         )
