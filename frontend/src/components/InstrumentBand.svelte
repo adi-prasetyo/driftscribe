@@ -15,12 +15,35 @@
    * just be a second place for the two to quietly disagree. See Task 3.5
    * (App.svelte wiring) for the actual computation.
    *
-   * Every stat is a `<button>` that calls `onNavigate('estate')` — including
-   * "awaiting your approval", which is a known oddity (approvals don't live
-   * on the estate view) the plan keeps as specified; Task 3.5 may revisit
-   * the routing. Each button's accessible name is a dedicated *Aria catalog
-   * key (not the concatenated visible text) so a screen reader always pairs
-   * the figure with what it counts — a bare "7" read aloud is meaningless.
+   * ds-7ag.2 settled the routing this used to flag as an open oddity. Every
+   * stat used to be a `<button>` calling `onNavigate('estate')`, including
+   * "awaiting your approval" — whose content, the approval queue, is on the
+   * DESK. Clicking the number that says "you have work" walked away from the
+   * work, and that is the wayfinding failure the judges hit.
+   *
+   * So the band no longer decides destinations at all: it emits
+   * `onStat(stat)` and the CONSUMER routes it. `context` is the part a
+   * callback cannot express — which stats are interactive at all here, and
+   * how their accessible names read:
+   *
+   *   stat      | context 'desk'              | context 'estate'
+   *   ----------|-----------------------------|---------------------------
+   *   managed   | → estate map                | inert figure
+   *   drift     | → estate map                | inert figure
+   *   awaiting  | → the desk's pending card   | → the desk
+   *
+   * with awaiting inert in BOTH when it is 0 or unknown — there is nothing to
+   * land on, and a control that goes nowhere is worse than a figure. An inert
+   * stat renders as a `<span>`, never a disabled `<button>`: a disabled button
+   * drops out of keyboard navigation and helps nobody.
+   *
+   * Each stat's accessible name is a dedicated *Aria catalog key (not the
+   * concatenated visible text) so a screen reader always pairs the figure with
+   * what it counts — a bare "7" read aloud is meaningless. An INTERACTIVE stat
+   * also names its destination there, because the aria-label overrides all
+   * descendant text: the visible hover hint below is invisible to a screen
+   * reader, so the label has to carry the same promise. Inert figures and
+   * not-yet-known figures keep the plain wording — they promise nothing.
    *
    * The meter is two flex segments sized directly off `managed`/`drift`
    * (mockup: `.meter i { flex: <managed> }` / `.meter u { flex: <drift> }`).
@@ -35,13 +58,18 @@
    * ever reaching the CSS `flex` shorthand, which a negative number breaks.
    */
   import { t, type TranslateFn } from '../lib/i18n';
-  import type { AppView } from '../lib/deeplink';
+
+  /** Which numeral was activated. The consumer owns what that means. */
+  export type BandStat = 'managed' | 'drift' | 'awaiting';
+  /** Which view is rendering the band — see the routing table above. */
+  export type BandContext = 'desk' | 'estate';
 
   let {
     managed,
     drift,
     awaiting,
-    onNavigate,
+    context,
+    onStat,
   }: {
     /** `null` = NOT YET KNOWN, and it renders as a placeholder rather than a
      *  numeral (ds-eh6). Before the first refresh cycle settles the store holds
@@ -53,12 +81,9 @@
     managed: number | null;
     drift: number | null;
     awaiting: number | null;
-    onNavigate: (view: AppView) => void;
+    context: BandContext;
+    onStat: (stat: BandStat) => void;
   } = $props();
-
-  function goEstate(): void {
-    onNavigate('estate');
-  }
 
   /** The visible stand-in for an unknown figure. An em dash is the typographic
    *  convention for "no value" in a numeric column and needs no translation;
@@ -76,14 +101,60 @@
   // plain strings — a widened `string` here would silently accept a typo'd or
   // deleted key and only surface it as a missing translation at runtime.
   type CatalogKey = Parameters<TranslateFn>[0];
-  function statAria(
-    n: number | null,
-    key: CatalogKey,
-    unknownKey: CatalogKey,
-    tf: TranslateFn,
-  ): string {
-    return n === null ? tf(unknownKey) : tf(key, { n });
+
+  const LABEL: Record<BandStat, CatalogKey> = {
+    managed: 'desk.band.managedLabel',
+    drift: 'desk.band.driftLabel',
+    awaiting: 'desk.band.awaitingLabel',
+  };
+  /** Plain "{n} <what it counts>" — for an inert figure, which promises nothing. */
+  const PLAIN_ARIA: Record<BandStat, CatalogKey> = {
+    managed: 'desk.band.managedAria',
+    drift: 'desk.band.driftAria',
+    awaiting: 'desk.band.awaitingAria',
+  };
+  /** The same, plus where activating it goes. Keyed by the CONTEXT the band is
+   *  rendered in; a missing entry means that stat is never interactive there. */
+  const DEST_ARIA: Record<BandStat, Partial<Record<BandContext, CatalogKey>>> = {
+    managed: { desk: 'desk.band.managedAriaDesk' },
+    drift: { desk: 'desk.band.driftAriaDesk' },
+    awaiting: { desk: 'desk.band.awaitingAriaDesk', estate: 'desk.band.awaitingAriaEstate' },
+  };
+  const UNKNOWN_ARIA: Record<BandStat, CatalogKey> = {
+    managed: 'desk.band.managedUnknownAria',
+    drift: 'desk.band.driftUnknownAria',
+    awaiting: 'desk.band.awaitingUnknownAria',
+  };
+
+  function statAria(stat: BandStat, n: number | null, interactive: boolean, tf: TranslateFn): string {
+    if (n === null) return tf(UNKNOWN_ARIA[stat]);
+    const dest = interactive ? DEST_ARIA[stat][context] : undefined;
+    return tf(dest ?? PLAIN_ARIA[stat], { n });
   }
+
+  // Which stats are live, per the routing table in the header comment. awaiting
+  // is the one that depends on its own VALUE rather than only on the context:
+  // with nothing pending there is no card to land on.
+  const stats = $derived([
+    {
+      key: 'managed' as BandStat,
+      value: managed,
+      interactive: context === 'desk',
+      extraClass: '',
+    },
+    {
+      key: 'drift' as BandStat,
+      value: drift,
+      interactive: context === 'desk',
+      extraClass: 'instrument-band__stat--drift',
+    },
+    {
+      key: 'awaiting' as BandStat,
+      value: awaiting,
+      interactive: awaiting !== null && awaiting > 0,
+      extraClass: 'instrument-band__stat--wait',
+    },
+  ]);
 
   // Defensive clamp for the meter only: scopeTotals() guarantees non-negative
   // finite sums, but this component doesn't re-derive or trust that upstream
@@ -104,39 +175,28 @@
 
 <div class="instrument-band" data-testid="instrument-band">
   <div class="instrument-band__stats">
-    <button
-      type="button"
-      class="instrument-band__stat"
-      data-testid="instrument-band-managed"
-      aria-label={statAria(managed, 'desk.band.managedAria', 'desk.band.managedUnknownAria', $t)}
-      data-unknown={managed === null ? 'true' : null}
-      onclick={goEstate}
-    >
-      <span class="instrument-band__num">{statText(managed)}</span>
-      <span class="instrument-band__label">{$t('desk.band.managedLabel')}</span>
-    </button>
-    <button
-      type="button"
-      class="instrument-band__stat instrument-band__stat--drift"
-      data-testid="instrument-band-drift"
-      aria-label={statAria(drift, 'desk.band.driftAria', 'desk.band.driftUnknownAria', $t)}
-      data-unknown={drift === null ? 'true' : null}
-      onclick={goEstate}
-    >
-      <span class="instrument-band__num">{statText(drift)}</span>
-      <span class="instrument-band__label">{$t('desk.band.driftLabel')}</span>
-    </button>
-    <button
-      type="button"
-      class="instrument-band__stat instrument-band__stat--wait"
-      data-testid="instrument-band-awaiting"
-      aria-label={statAria(awaiting, 'desk.band.awaitingAria', 'desk.band.awaitingUnknownAria', $t)}
-      data-unknown={awaiting === null ? 'true' : null}
-      onclick={goEstate}
-    >
-      <span class="instrument-band__num">{statText(awaiting)}</span>
-      <span class="instrument-band__label">{$t('desk.band.awaitingLabel')}</span>
-    </button>
+    <!-- `<button>` when the stat leads somewhere, `<span role="img">` when it is
+         a figure. role="img" (not "group") because it reproduces the button's
+         own behaviour: the aria-label REPLACES the descendant text, so a screen
+         reader hears "9 managed by IaC" rather than the numeral and its label
+         read twice — and, for an unknown figure, hears the "not yet known"
+         wording instead of an em dash that announces as nothing at all. -->
+    {#each stats as s (s.key)}
+      <svelte:element
+        this={s.interactive ? 'button' : 'span'}
+        type={s.interactive ? 'button' : undefined}
+        role={s.interactive ? undefined : 'img'}
+        class="instrument-band__stat {s.extraClass}"
+        class:instrument-band__stat--static={!s.interactive}
+        data-testid="instrument-band-{s.key}"
+        aria-label={statAria(s.key, s.value, s.interactive, $t)}
+        data-unknown={s.value === null ? 'true' : null}
+        onclick={s.interactive ? () => onStat(s.key) : undefined}
+      >
+        <span class="instrument-band__num">{statText(s.value)}</span>
+        <span class="instrument-band__label">{$t(LABEL[s.key])}</span>
+      </svelte:element>
+    {/each}
   </div>
   <div class="instrument-band__meter" aria-hidden="true">
     <span
@@ -179,8 +239,13 @@
     cursor: pointer;
     transition: opacity var(--ds-dur-fast) var(--ds-ease);
   }
-  .instrument-band__stat:hover {
+  .instrument-band__stat:not(.instrument-band__stat--static):hover {
     opacity: 0.75;
+  }
+  /* An inert figure must not pretend to be a control (ds-7ag.2). It keeps the
+     stat's layout and type, and loses only the affordances. */
+  .instrument-band__stat--static {
+    cursor: default;
   }
 
   .instrument-band__stat + .instrument-band__stat {

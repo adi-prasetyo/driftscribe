@@ -360,3 +360,52 @@ describe('EstateView — unreliable approvals must not imply "safe to adopt" (ds
     expect(container.querySelector('[data-tour="adopt-target"]')).toBeNull();
   });
 });
+
+// ds-7ag.2 — the band is shared with the desk, but its stats mean different
+// things depending on where it is rendered. On the estate the operator is
+// already looking at the infrastructure map, so managed/drift have nowhere to
+// send them; awaiting is the only stat with content elsewhere, and that content
+// is the desk queue.
+describe('EstateView — band stats route for the estate context', () => {
+  it('managed and drift are inert figures here, not buttons back to this same view', async () => {
+    const onNavigate = vi.fn();
+    const { getByTestId } = render(EstateView, {
+      props: baseProps({ settled: true, onNavigate }),
+    });
+    for (const key of ['managed', 'drift']) {
+      const el = getByTestId(`instrument-band-${key}`);
+      expect(el.tagName).not.toBe('BUTTON');
+      await fireEvent.click(el);
+    }
+    expect(onNavigate).not.toHaveBeenCalled();
+  });
+
+  it('clicking awaiting sends the operator to the desk, where the queue is', async () => {
+    const onNavigate = vi.fn();
+    const { getByTestId } = render(EstateView, {
+      props: baseProps({
+        settled: true,
+        pendingApprovals: [pending()],
+        onNavigate,
+      }),
+    });
+    const awaiting = getByTestId('instrument-band-awaiting');
+    expect(awaiting.textContent).toContain('1'); // a real pending count, or the stat would be inert
+    expect(awaiting.tagName).toBe('BUTTON');
+    await fireEvent.click(awaiting);
+    expect(onNavigate).toHaveBeenCalledTimes(1);
+    expect(onNavigate).toHaveBeenCalledWith('desk');
+  });
+
+  it('with nothing awaiting, the stat is inert here too', async () => {
+    const onNavigate = vi.fn();
+    const { getByTestId } = render(EstateView, {
+      props: baseProps({ settled: true, onNavigate }),
+    });
+    const awaiting = getByTestId('instrument-band-awaiting');
+    expect(awaiting.textContent).toContain('0');
+    expect(awaiting.tagName).not.toBe('BUTTON');
+    await fireEvent.click(awaiting);
+    expect(onNavigate).not.toHaveBeenCalled();
+  });
+});

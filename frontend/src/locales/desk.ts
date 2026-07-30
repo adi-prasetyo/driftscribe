@@ -26,6 +26,18 @@ export const desk = {
     'desk.band.managedAria': '{n} managed by IaC',
     'desk.band.driftAria': '{n} drift detected',
     'desk.band.awaitingAria': '{n} awaiting your approval',
+    // ds-7ag.2 — an INTERACTIVE stat names its destination, because the
+    // aria-label overrides all descendant text: the visible hover hint is
+    // invisible to a screen reader, so the accessible name has to make the same
+    // promise. Naming rule: `<stat>Aria` is the plain figure (used for an inert
+    // one, which promises nothing) and `<stat>Aria<Context>` adds the
+    // destination for the context named by the suffix — so awaiting reads
+    // "the queue below" on the desk and "on desk" from the estate, and
+    // managed/drift have no Estate variant because they are inert there.
+    'desk.band.managedAriaDesk': '{n} managed by IaC — view infrastructure map',
+    'desk.band.driftAriaDesk': '{n} drift detected — view infrastructure map',
+    'desk.band.awaitingAriaDesk': '{n} awaiting your approval — jump to the queue below',
+    'desk.band.awaitingAriaEstate': '{n} awaiting your approval — view on desk',
     // Read instead of the *Aria keys above when a figure is not yet known
     // (ds-eh6). The visible numeral becomes an em dash, which a screen reader
     // announces as nothing at all, so these carry the state in words.
@@ -185,6 +197,11 @@ export const desk = {
     'desk.band.managedAria': '{n}件、IaC 管理下',
     'desk.band.driftAria': '{n}件、ドリフト検出',
     'desk.band.awaitingAria': '{n}件、あなたの承認待ち',
+    // ds-7ag.2 — 操作できる数値だけが遷移先を名乗る（EN 側の命名規則コメント参照）。
+    'desk.band.managedAriaDesk': '{n}件、IaC 管理下 — インフラを見る',
+    'desk.band.driftAriaDesk': '{n}件、ドリフト検出 — インフラを見る',
+    'desk.band.awaitingAriaDesk': '{n}件、あなたの承認待ち — 下の承認キューへ',
+    'desk.band.awaitingAriaEstate': '{n}件、あなたの承認待ち — デスクで見る',
     'desk.band.managedUnknownAria': 'IaC 管理下：未取得',
     'desk.band.driftUnknownAria': 'ドリフト検出：未取得',
     'desk.band.awaitingUnknownAria': 'あなたの承認待ち：未取得',

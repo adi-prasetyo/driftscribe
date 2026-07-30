@@ -239,13 +239,58 @@ describe('ApprovalDesk — instrument band composition', () => {
     expect(getByTestId('instrument-band-awaiting').textContent).toContain('2');
   });
 
-  it('a click on any band stat calls onNavigate("estate")', async () => {
+  it('a click on the managed or drift band stat calls onNavigate("estate")', async () => {
     const onNavigate = vi.fn();
     const { getByTestId } = render(ApprovalDesk, {
       props: { graph: GRAPH, decisions: [], pendingApprovals: [], onNavigate },
     });
     await fireEvent.click(getByTestId('instrument-band-managed'));
-    expect(onNavigate).toHaveBeenCalledWith('estate');
+    await fireEvent.click(getByTestId('instrument-band-drift'));
+    expect(onNavigate.mock.calls).toEqual([['estate'], ['estate']]);
+  });
+});
+
+// ds-7ag.2 — the band's own test can only prove `onStat` fired; it cannot catch
+// THIS consumer mapping awaiting back to the estate, which is exactly the bug
+// (the approval queue is on the desk, so the numeral that says "you have work"
+// used to walk away from it).
+describe('ApprovalDesk — awaiting band stat stays on the desk', () => {
+  beforeEach(() => {
+    // jsdom has no layout, so it implements no scrollIntoView.
+    window.HTMLElement.prototype.scrollIntoView = vi.fn();
+  });
+
+  it('clicking awaiting navigates nowhere and lands focus on the pending card', async () => {
+    const onNavigate = vi.fn();
+    const { getByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: GRAPH,
+        decisions: [rollbackDecision()],
+        pendingApprovals: [],
+        onNavigate,
+      },
+    });
+    const pending = getByTestId('approval-desk-pending');
+    // An id alone scrolls nothing for keyboard/SR users — the target has to be
+    // focusable, which a plain <div> is not without tabindex="-1".
+    expect(pending.getAttribute('tabindex')).toBe('-1');
+
+    await fireEvent.click(getByTestId('instrument-band-awaiting'));
+
+    expect(onNavigate).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(pending);
+  });
+
+  it('with nothing pending, the awaiting stat is inert (no card to land on)', async () => {
+    const onNavigate = vi.fn();
+    const { getByTestId, queryByTestId } = render(ApprovalDesk, {
+      props: { graph: GRAPH, decisions: [], pendingApprovals: [], onNavigate },
+    });
+    expect(queryByTestId('approval-desk-pending')).toBeNull();
+    const awaiting = getByTestId('instrument-band-awaiting');
+    expect(awaiting.tagName).not.toBe('BUTTON');
+    await fireEvent.click(awaiting);
+    expect(onNavigate).not.toHaveBeenCalled();
   });
 });
 

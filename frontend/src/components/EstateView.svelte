@@ -98,7 +98,16 @@
   data-tour="estate"
   aria-label={$t('desk.estate.ariaLabel')}
 >
-  <InstrumentBand managed={bandManaged} drift={bandDrift} {awaiting} {onNavigate} />
+  <!-- ds-7ag.2 — context="estate": managed/drift render as inert figures here
+       (the operator is already looking at the map they would point to), and
+       awaiting is the one stat with content elsewhere — the desk's queue. -->
+  <InstrumentBand
+    managed={bandManaged}
+    drift={bandDrift}
+    {awaiting}
+    context="estate"
+    onStat={() => onNavigate('desk')}
+  />
 
   <!-- A null graph is only "loading" while the first cycle is still out. Once
        it has settled, a null graph means the fetch FINISHED and failed, and

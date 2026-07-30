@@ -22,7 +22,7 @@
   import { fmtWhen } from '../lib/format';
   import type { Decision } from '../lib/types';
   import type { AppView } from '../lib/deeplink';
-  import InstrumentBand from './InstrumentBand.svelte';
+  import InstrumentBand, { type BandStat } from './InstrumentBand.svelte';
   import LedgerStrip from './LedgerStrip.svelte';
   import SealStamp from './SealStamp.svelte';
   import DriftDiffCard from './DriftDiffCard.svelte';
@@ -271,10 +271,31 @@
   function stampedAuditTime(m: DeskStamped): string | null {
     return m.source === 'rollback' ? (m.decision.approval?.resolved_at ?? null) : (m.decision.applied_at ?? null);
   }
+
+  // ds-7ag.2 — where each band numeral goes FROM THE DESK. managed/drift point
+  // at the infrastructure map; awaiting points at this page's own pending card,
+  // because that IS the approval queue. Sending it to the estate view (what the
+  // band used to do for all three) walked away from the work it announces.
+  //
+  // Scroll AND focus: the card is a plain <div>, so an id and a scroll leave a
+  // keyboard or screen-reader user exactly where they were, with the page
+  // silently moved underneath them. `preventScroll` keeps the two from fighting
+  // — scrollIntoView has already chosen the position.
+  function onStat(stat: BandStat): void {
+    if (stat !== 'awaiting') {
+      onNavigate('estate');
+      return;
+    }
+    const el = document.getElementById(PENDING_CARD_ID);
+    if (el === null) return; // inert when there is nothing pending; belt and braces
+    el.scrollIntoView({ block: 'start' });
+    el.focus({ preventScroll: true });
+  }
+  const PENDING_CARD_ID = 'desk-pending';
 </script>
 
 <section class="approval-desk" data-testid="approval-desk" aria-label={$t('desk.region.ariaLabel')}>
-  <InstrumentBand managed={bandManaged} drift={bandDrift} {awaiting} {onNavigate} />
+  <InstrumentBand managed={bandManaged} drift={bandDrift} {awaiting} context="desk" {onStat} />
 
   <div class="approval-desk__deskwrap" data-testid="approval-desk-state" data-state={model.kind}>
     {#if model.kind === 'unknown'}
@@ -341,7 +362,16 @@
            next to the markup that uses them. -->
       {@const proposedAt = pendingSubtitleTime(model)}
       {@const pendingDecision = activeDecision(model)}
-      <div class="approval-desk__proposal" data-testid="approval-desk-pending" data-source={model.source}>
+      <!-- id + tabindex="-1": the band's awaiting numeral scrolls AND focuses
+           this card (ds-7ag.2), and a <div> cannot take focus without it. -1
+           keeps it out of the tab order — it is a jump TARGET, not a stop. -->
+      <div
+        class="approval-desk__proposal"
+        id={PENDING_CARD_ID}
+        tabindex="-1"
+        data-testid="approval-desk-pending"
+        data-source={model.source}
+      >
         <div class="approval-desk__who">
           <span
             >{model.source === 'rollback'
