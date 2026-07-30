@@ -161,12 +161,17 @@ pre {
   cursor: help;
 }
 
-/* --- Card: the primary surface ------------------------------------------- */
+/* --- Card: the primary surface -------------------------------------------
+   ds-qbo: rules, not boxes. A resting card is a white sheet, a hairline and a
+   radius — no shadow. Elevation is reserved for things that genuinely sit above
+   the page: the chat composer (the acting surface), modals, and popovers. This
+   rule reaches the Jinja approval pages too, which is the point — they are the
+   surface the desk is compared against. */
 .ds-card {
   background: var(--ds-surface);
   border: 1px solid var(--ds-border);
   border-radius: var(--ds-radius);
-  box-shadow: var(--ds-shadow-sm);
+  box-shadow: none;
   padding: var(--ds-sp-5) var(--ds-sp-6);
   margin: var(--ds-sp-5) 0;
 }

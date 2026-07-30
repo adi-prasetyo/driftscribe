@@ -34,7 +34,6 @@
     position: relative;
     border-left: 3px solid var(--ds-stream);
     padding: var(--ds-sp-5) var(--ds-sp-6);
-    box-shadow: var(--ds-shadow);
   }
 
   .reply-pending::before {
