@@ -258,6 +258,10 @@
       opts.history !== 'replace' && v !== fromView && u.href !== window.location.href;
     if (shouldPush) history.pushState(null, '', u);
     else history.replaceState(null, '', u);
+    // Arriving at chat re-reads the rail — see the same call in onPopstate for
+    // why (a cancelled turn skips the post-turn refresh, so its conversation
+    // would be missing from the already-mounted rail until a reload).
+    if (v === 'chat' && fromView !== 'chat') void loadConversations();
     // Chat is a destination, not an undo: nothing to reset (see the doc above).
     if (v === 'chat' || opts.preserveChatState) return;
     teardownChatSurface();
@@ -335,7 +339,20 @@
       tourReturnView = null;
       closeTour();
     }
-    if (target !== 'chat' && view === 'chat') teardownChatSurface();
+    // Unconditional on a non-chat target, NOT gated on `view === 'chat'` (Codex
+    // review of this branch). The tour borrows a view while PRESERVING the chat
+    // surface, so a Back press mid-tour arrives with `view === 'estate'` and an
+    // open thread still live behind it — that gate skipped the teardown and left
+    // a hidden thread whose later settle would write `?conversation=` onto a DESK
+    // url. Exactly the state/url disagreement this handler exists to prevent.
+    // On a target that never had chat state the call is a cheap no-op.
+    if (target !== 'chat') teardownChatSurface();
+    // Entering chat re-reads the rail. Cancelling a run (above, or via newChat)
+    // skips the post-turn loadConversations() at :976, so a conversation the
+    // server created for that cancelled turn would be missing from the
+    // already-mounted rail until a reload — the one case where "the turn
+    // persists and the thread is still reachable from the rail" was not true.
+    if (target === 'chat' && view !== 'chat') void loadConversations();
     view = target;
     canonicalizeRestoredEntry();
   }

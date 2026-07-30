@@ -631,6 +631,34 @@ describe('App — history-aware view navigation (ds-7ag.1)', () => {
     expect(queryByTestId('estate-view')).toBeNull();
   });
 
+  // Codex review of this branch: the tour borrows a view while PRESERVING the
+  // chat surface, so a Back press mid-tour arrives with `view === 'estate'` and
+  // an open thread still live behind it. Gating the teardown on
+  // `view === 'chat'` skipped it there, leaving a hidden thread whose later
+  // settle would write ?conversation= onto a DESK url — the exact state/url
+  // disagreement this handler exists to prevent. Needs a REAL open thread; the
+  // sibling tour case above has none, which is why it missed this.
+  it('Back out of a tour-borrowed view still tears down the chat surface behind it', async () => {
+    window.sessionStorage.setItem('driftscribe_token', 'tok');
+    stubGatedConversation().release();
+    history.replaceState(null, '', `/?conversation=${CONV_ID}`);
+    const { getByTestId, queryByTestId, findByTestId } = render(App);
+    await findByTestId('conversation-thread');
+
+    await fireEvent.click(getByTestId('tour-open'));
+    await fireEvent.click(getByTestId('tour-next')); // borrows the estate view
+    expect(getByTestId('estate-view')).toBeTruthy();
+
+    popTo('/?view=desk'); // Back — arrives while `view` is 'estate', not 'chat'
+    await findByTestId('instrument-band');
+
+    // The thread is gone, and the desk url does not claim it.
+    expect(new URL(window.location.href).searchParams.get('conversation')).toBeNull();
+    await fireEvent.click(getByTestId('nav-chat'));
+    await waitFor(() => expect(document.getElementById('chat-form')).toBeTruthy());
+    expect(queryByTestId('conversation-thread')).toBeNull();
+  });
+
   // The tour borrows views for two of its steps; it must not leave a history
   // entry per step for the operator to dig back out of.
   it('the tour never pushes entries while borrowing views', async () => {

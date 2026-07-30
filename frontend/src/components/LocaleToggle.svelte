@@ -66,9 +66,11 @@
     font-size: var(--ds-fs-1);
     font-weight: var(--ds-fw-medium);
     line-height: 1.2;
-    /* Keeps the hit area ≥ 24px tall despite the 13px text — the chrome went
-       away, the target must not. */
+    /* Keeps the hit area ≥ 24px in BOTH axes despite the 13px text — the chrome
+       went away, the target must not. The explicit min-width is for "EN", which
+       is narrow enough to fall under 24px on padding alone (Codex review). */
     padding: 0.35em 0.2em;
+    min-inline-size: 24px;
     border-radius: var(--ds-radius-sm);
     cursor: pointer;
     white-space: nowrap;

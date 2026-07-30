@@ -136,9 +136,22 @@
     drift: 'desk.band.driftUnknownAria',
     awaiting: 'desk.band.awaitingUnknownAria',
   };
+  /** Unknown AND still a control. managed/drift stay clickable while unknown —
+   *  the map is where you go to find out — so their accessible name has to carry
+   *  the destination too, or a screen-reader user hears a button that never says
+   *  what it opens while the sighted hint (aria-hidden) does. awaiting has no
+   *  entry: it is inert whenever it is unknown, so it promises nothing. */
+  const UNKNOWN_DEST_ARIA: Record<BandStat, Partial<Record<BandContext, CatalogKey>>> = {
+    managed: { desk: 'desk.band.managedUnknownAriaDesk' },
+    drift: { desk: 'desk.band.driftUnknownAriaDesk' },
+    awaiting: {},
+  };
 
   function statAria(stat: BandStat, n: number | null, interactive: boolean, tf: TranslateFn): string {
-    if (n === null) return tf(UNKNOWN_ARIA[stat]);
+    if (n === null) {
+      const dest = interactive ? UNKNOWN_DEST_ARIA[stat][context] : undefined;
+      return tf(dest ?? UNKNOWN_ARIA[stat]);
+    }
     const dest = interactive ? DEST_ARIA[stat][context] : undefined;
     return tf(dest ?? PLAIN_ARIA[stat], { n });
   }

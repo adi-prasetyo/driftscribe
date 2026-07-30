@@ -52,6 +52,13 @@ export const desk = {
     'desk.band.managedUnknownAria': 'Managed by IaC: not yet known',
     'desk.band.driftUnknownAria': 'Drift detected: not yet known',
     'desk.band.awaitingUnknownAria': 'Awaiting your approval: not yet known',
+    // Unknown AND still a control: managed/drift stay clickable while unknown
+    // (the map is where you go to find out), so their accessible name carries
+    // the destination as well. awaiting has no such pair — it is inert whenever
+    // it is unknown, so it promises nothing.
+    'desk.band.managedUnknownAriaDesk':
+      'Managed by IaC: not yet known — view infrastructure map',
+    'desk.band.driftUnknownAriaDesk': 'Drift detected: not yet known — view infrastructure map',
     // LedgerStrip (Task 3.4) — the "Recent record" strip beneath the desk
     // hero. `openTitle`/`appliedTitle` cover the two states this module
     // classifies with fixed copy; `noted` rows fall back to
@@ -219,6 +226,8 @@ export const desk = {
     'desk.band.managedUnknownAria': 'IaC 管理下：未取得',
     'desk.band.driftUnknownAria': 'ドリフト検出：未取得',
     'desk.band.awaitingUnknownAria': 'あなたの承認待ち：未取得',
+    'desk.band.managedUnknownAriaDesk': 'IaC 管理下：未取得 — インフラを見る',
+    'desk.band.driftUnknownAriaDesk': 'ドリフト検出：未取得 — インフラを見る',
     'desk.ledger.heading': '最近の記録',
     'desk.ledger.appliedTitle': 'あなたが承認 → 適用完了',
     'desk.ledger.openTitle': 'あなたの承認待ち',

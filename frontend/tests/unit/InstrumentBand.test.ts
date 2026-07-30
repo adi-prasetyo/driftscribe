@@ -225,19 +225,35 @@ describe('InstrumentBand — unknown figures (ds-eh6)', () => {
 
   it('the accessible name says "not yet known" instead of reading a bare dash', () => {
     // An em dash is announced as nothing at all, so a screen-reader user would
-    // otherwise hear only the label and infer zero. An unknown figure promises
-    // no destination either, so these stay the plain unknown wording.
+    // otherwise hear only the label and infer zero.
     const { getByTestId } = render(InstrumentBand, {
       props: props({ managed: null, drift: null, awaiting: null }),
+    });
+    // managed/drift stay CLICKABLE while unknown, so their name must carry the
+    // destination too — the visible hint is aria-hidden, and a button that never
+    // says what it opens is the gap that leaves (Codex review).
+    expect(getByTestId('instrument-band-managed').getAttribute('aria-label')).toBe(
+      'Managed by IaC: not yet known — view infrastructure map',
+    );
+    expect(getByTestId('instrument-band-drift').getAttribute('aria-label')).toBe(
+      'Drift detected: not yet known — view infrastructure map',
+    );
+    // awaiting is inert whenever it is unknown, so it promises nothing.
+    expect(getByTestId('instrument-band-awaiting').getAttribute('aria-label')).toBe(
+      'Awaiting your approval: not yet known',
+    );
+  });
+
+  it('an unknown figure that is INERT keeps the plain unknown wording', () => {
+    // Same null figures on the estate, where managed/drift lead nowhere.
+    const { getByTestId } = render(InstrumentBand, {
+      props: props({ context: 'estate', managed: null, drift: null, awaiting: null }),
     });
     expect(getByTestId('instrument-band-managed').getAttribute('aria-label')).toBe(
       'Managed by IaC: not yet known',
     );
     expect(getByTestId('instrument-band-drift').getAttribute('aria-label')).toBe(
       'Drift detected: not yet known',
-    );
-    expect(getByTestId('instrument-band-awaiting').getAttribute('aria-label')).toBe(
-      'Awaiting your approval: not yet known',
     );
   });
 
