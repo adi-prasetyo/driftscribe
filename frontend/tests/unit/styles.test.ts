@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, resolve, relative, join } from 'node:path';
 
 // ---------------------------------------------------------------------------
 // Design-system contract guard (P3, plan §3 "Design system (Editorial Clarity)").
@@ -21,7 +21,19 @@ import { dirname, resolve } from 'node:path';
 // ---------------------------------------------------------------------------
 
 const here = dirname(fileURLToPath(import.meta.url));
-const stylesDir = resolve(here, '../../src/styles');
+const srcDir = resolve(here, '../../src');
+const stylesDir = resolve(srcDir, 'styles');
+
+/** Every .svelte / .css file under src/, recursively. */
+function svelteAndCssSources(dir: string = srcDir): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...svelteAndCssSources(full));
+    else if (/\.(svelte|css)$/.test(entry.name)) out.push(full);
+  }
+  return out;
+}
 
 let tokens = '';
 let base = '';
@@ -77,8 +89,10 @@ describe('tokens.css — design-system custom properties', () => {
   it('declares the four crew identity colors with their pinned hues', () => {
     // Identity, not status: one primary hue per crew agent (consumed by
     // CrewGlyph). Pinned by value, not just name — drifting Anchor off blue or
-    // Patch off green would silently re-skin the glyphs. Kept distinct from the
-    // status accents above so a future status re-tune can't mutate crew identity.
+    // Patch off terracotta would silently re-skin the glyphs. Kept distinct from
+    // the status accents above so a status re-tune can't mutate crew identity —
+    // and ds-qbo was exactly that re-tune: --ds-stream moved to Google blue
+    // while --ds-crew-drift stayed on the editorial blue pinned here.
     const expected: Record<string, string> = {
       '--ds-crew-drift': '#1f6feb', // Anchor — blue
       '--ds-crew-upgrade': '#a8432e', // Patch — brick red (terracotta)
@@ -126,23 +140,96 @@ describe('tokens.css — design-system custom properties', () => {
     expect(declaresVar(tokens, '--ds-font-mono')).toBe(true);
   });
 
-  it('pins the warm-neutral page background per design §3 (#fcfcfb)', () => {
-    expect(stripComments(tokens)).toMatch(/--ds-bg\s*:\s*#fcfcfb/i);
+  it('pins the paper page background — one world (#fbfaf8)', () => {
+    // ds-qbo: the legacy warm-neutral ground (#fcfcfb) and the composite
+    // redesign's paper ground (#fbfaf8) were near-identical duplicates of the
+    // same idea. There is now ONE ground and it is paper. If this pin drifts
+    // back toward #fcfcfb, the desk and the chat view have split in two again.
+    expect(stripComments(tokens)).toMatch(/--ds-bg\s*:\s*#fbfaf8/i);
   });
 
-  it('defines the composite redesign tokens', () => {
-    // Phase 1 of the 2026-07-28 composite redesign (docs/plans/2026-07-28-*):
-    // paper/navy world + Mincho serif for the 判子 (hanko) seal moment.
-    // Nothing consumes these yet — later phases do; this pins the names only.
-    for (const t of [
-      '--ds-paper:',
-      '--ds-navy:',
-      '--ds-drift-amber:',
-      '--ds-seal:',
-      '--ds-font-mincho:',
-    ]) {
-      expect(tokens).toContain(t);
+  it('keeps the composite redesign vocabulary that is NOT a duplicate', () => {
+    // The 2026-07-28 composite redesign introduced a second token world
+    // alongside the legacy one. ds-qbo collapsed them: the legacy names took
+    // the paper world's VALUES and the duplicate names were deleted. These
+    // three were never duplicates — they are vocabulary the legacy side never
+    // had — so they survive, promoted into the main palette.
+    for (const t of ['--ds-navy:', '--ds-seal:', '--ds-font-mincho:']) {
+      expect(declaresVar(tokens, t.replace(':', '')), `missing ${t}`).toBe(true);
     }
+  });
+
+  it('has retired the duplicate paper-world tokens — one vocabulary', () => {
+    // ds-qbo Phase 3. Each of these was a literal duplicate of a canonical
+    // token (--ds-paper == --ds-bg, --ds-ok-green == --ds-ok, and so on), and
+    // maintaining two names for one value is what let the desk and the chat
+    // view drift into looking like two different products. If any of these
+    // comes back, the split has started again — re-point the consumer at the
+    // canonical token instead of re-adding the alias.
+    for (const dead of [
+      '--ds-paper',
+      '--ds-paper-ink',
+      '--ds-paper-ink-2',
+      '--ds-paper-mut',
+      '--ds-paper-rule',
+      '--ds-ok-green',
+      '--ds-drift-amber',
+      '--ds-gblue',
+    ]) {
+      expect(declaresVar(tokens, dead), `${dead} should be retired`).toBe(false);
+    }
+  });
+
+  it('never inks TEXT with raw --ds-stream (3.42:1) — that is stream-ink’s job', () => {
+    // ds-qbo design decision 3b: blue does three jobs and they are not
+    // interchangeable. --ds-navy fills, --ds-stream-ink inks text (5.40:1 on
+    // paper), and raw --ds-stream (#4285f4, 3.42:1) is for NON-TEXT accents
+    // only — borders, rails, meters, glows.
+    //
+    // This guard exists because the Phase 2 audit grepped `var(--ds-stream)`
+    // and passed, and then Phase 3's rename turned two --ds-gblue consumers on
+    // the approval desk into raw-stream TEXT consumers — 11.5px status copy and
+    // a 12px control, both landing under the floor. An audit is a moment; this
+    // is the invariant. Same lesson as #216 and #258: a value reaches a surface
+    // through more paths than the grep you happened to write.
+    //
+    // The one sanctioned exception is the instrument band's awaiting numeral,
+    // which is 44px/600 — large text, so its floor is 3:1, which 3.42:1 clears.
+    const ALLOWED = new Set(['InstrumentBand.svelte']);
+    const offenders: string[] = [];
+    for (const file of svelteAndCssSources()) {
+      const src = stripComments(readFileSync(file, 'utf8'));
+      // `color:` but not `border-color:` / `border-left-color:` / `outline-color:`
+      if (/(?<![\w-])color\s*:\s*var\(--ds-stream\)/.test(src)) {
+        const base = file.split('/').pop()!;
+        if (!ALLOWED.has(base)) offenders.push(relative(srcDir, file));
+      }
+    }
+    expect(
+      offenders,
+      `raw --ds-stream used as text color (use --ds-stream-ink):\n${offenders.join('\n')}`,
+    ).toEqual([]);
+  });
+
+  it('has no component still referencing a retired paper-world token', () => {
+    // The declarations being gone is only half of it: a component reading
+    // var(--ds-paper-mut) after the block was deleted would silently render an
+    // UNSET custom property (transparent / inherited), which no unit test that
+    // renders markup would necessarily catch. This walks the real source.
+    const offenders: string[] = [];
+    for (const file of svelteAndCssSources()) {
+      const src = stripComments(readFileSync(file, 'utf8'));
+      for (const dead of [
+        '--ds-paper',
+        '--ds-ok-green',
+        '--ds-drift-amber',
+        '--ds-gblue',
+      ]) {
+        // `--ds-paper` also covers -ink/-ink-2/-mut/-rule by prefix.
+        if (src.includes(dead)) offenders.push(`${relative(srcDir, file)}: ${dead}`);
+      }
+    }
+    expect(offenders, `retired tokens still referenced:\n${offenders.join('\n')}`).toEqual([]);
   });
 
   it('reserves vermilion for the seal only', () => {

@@ -281,14 +281,12 @@
     transition:
       border-color var(--ds-dur) var(--ds-ease),
       background-color var(--ds-dur) var(--ds-ease),
-      box-shadow var(--ds-dur) var(--ds-ease),
       transform var(--ds-dur-fast) var(--ds-ease);
   }
 
   .conv-row:hover {
     background: var(--ds-surface-2);
     border-color: var(--ds-border-strong);
-    box-shadow: var(--ds-shadow-sm);
     transform: translateY(-1px);
   }
 

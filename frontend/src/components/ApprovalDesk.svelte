@@ -502,9 +502,9 @@
   .approval-desk {
     max-width: 780px;
     margin: 0 auto;
-    background: var(--ds-paper);
-    color: var(--ds-paper-ink);
-    border: 1px solid var(--ds-paper-rule);
+    background: var(--ds-bg);
+    color: var(--ds-fg);
+    border: 1px solid var(--ds-border);
     border-radius: var(--ds-radius, 6px);
     overflow: hidden;
   }
@@ -528,24 +528,29 @@
     margin: 14px 0 0;
     letter-spacing: 0.01em;
     text-wrap: balance;
-    color: var(--ds-paper-ink);
+    color: var(--ds-fg);
   }
 
+  /* Reads through stream-INK, not raw stream: this is the meaningful status line
+     ("Anchor is proposing" / "you approved") at 11.5px, and #4285f4 is 3.42:1 on
+     paper against a 4.5:1 floor. It was --ds-gblue until the ds-qbo retirement
+     renamed it, which is how it slipped past the raw-stream audit one commit
+     earlier — the audit grepped var(--ds-stream), and this was not that yet. */
   .approval-desk__who {
     font-family: var(--ds-font-mono);
     font-size: 11.5px;
     letter-spacing: 0.08em;
-    color: var(--ds-gblue);
+    color: var(--ds-stream-ink);
     display: flex;
     justify-content: space-between;
     gap: 10px;
     flex-wrap: wrap;
   }
   .approval-desk__who--done {
-    color: var(--ds-ok-green);
+    color: var(--ds-ok);
   }
   .approval-desk__meta {
-    color: var(--ds-paper-mut);
+    color: var(--ds-faint);
     font-family: var(--ds-font-mono);
     font-size: 11.5px;
   }
@@ -554,7 +559,7 @@
     margin-top: 18px;
     font-family: var(--ds-font-mono);
     font-size: 12px;
-    color: var(--ds-paper-mut);
+    color: var(--ds-faint);
     display: flex;
     gap: 4px;
     align-items: center;
@@ -564,19 +569,19 @@
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: var(--ds-ok-green);
+    background: var(--ds-ok);
     flex: none;
   }
   /* The watch dot is green because it means "watching, all clear". The unknown
      states are neither, so the dot keeps the shape (same line rhythm, no layout
      shift when the desk settles into resting) and drops the claim. */
   .approval-desk__watch-dot--unknown {
-    background: var(--ds-paper-mut);
+    background: var(--ds-faint);
   }
 
   .approval-desk__stale {
     margin-left: 6px;
-    color: var(--ds-paper-mut);
+    color: var(--ds-faint);
   }
 
   /* The "why" line sits between the evidence and the CTA row, so it reads as
@@ -594,7 +599,9 @@
     margin: 0;
     font-family: var(--ds-font-mono);
     font-size: 12px;
-    color: var(--ds-gblue);
+    /* stream-INK — an interactive 12px control cannot sit at raw stream's
+       3.42:1 (same ds-qbo reason as .approval-desk__who above). */
+    color: var(--ds-stream-ink);
     cursor: pointer;
     text-decoration: none;
   }
@@ -626,15 +633,15 @@
   }
   .approval-desk__btn--ghost {
     background: transparent;
-    color: var(--ds-paper-ink-2);
-    border: 1px solid var(--ds-paper-rule);
+    color: var(--ds-fg-soft);
+    border: 1px solid var(--ds-border);
   }
 
   .approval-desk__aud {
     margin-top: 26px;
     font-family: var(--ds-font-mono);
     font-size: 12px;
-    color: var(--ds-paper-mut);
+    color: var(--ds-faint);
   }
 
   /* Unresolved outcome. Danger accent for `failed`, muted-warning for
@@ -645,10 +652,13 @@
      indenting the text. -20 margin + 3 border + 17 padding nets to zero, so the
      headline and body sit on exactly the same left edge as every other state and
      switching into this one moves no type — the "no state jumps" rule the desk
-     is built on. Spacing is px and the ink is --ds-paper-mut, matching the
-     siblings above; this block used rem --ds-sp-* and the pre-composite
-     --ds-muted (#6b6b66 warm gray against the desk's #8a9099), which is what
-     made the newest state look bolted on. */
+     is built on. Spacing is px, matching the siblings above; this block used rem
+     --ds-sp-* and a warm grey from the other design world, which is what made
+     the newest state look bolted on.
+     ds-qbo: the body ink moved off --ds-faint (3.08:1) onto --ds-fg-soft
+     (6.47:1). This paragraph explains an unresolved rollback — an open loop the
+     operator has to act on — so it is body copy, not decoration, and it was the
+     one place on the desk where real prose read through the lightest grey. */
   .approval-desk__unresolved {
     position: relative;
     border-left: 3px solid var(--ds-warn, var(--ds-border-strong));
@@ -660,7 +670,7 @@
   }
   .approval-desk__unresolved-body {
     margin: 18px 0 26px;
-    color: var(--ds-paper-mut);
+    color: var(--ds-fg-soft);
     max-width: 52ch;
   }
 
@@ -696,28 +706,28 @@
   .approval-desk__diff :global(.drift-diff-card) {
     background: transparent;
     border: none;
-    border-top: 1px solid var(--ds-paper-rule);
-    border-bottom: 1px solid var(--ds-paper-rule);
+    border-top: 1px solid var(--ds-border);
+    border-bottom: 1px solid var(--ds-border);
     box-shadow: none;
     border-radius: 0;
     padding: 11px 0;
     margin: 0;
   }
   .approval-desk__diff :global(.drift-diff-card__label) {
-    color: var(--ds-paper-mut);
+    color: var(--ds-faint);
   }
   .approval-desk__diff :global(.drift-diff-card__table th) {
-    color: var(--ds-paper-mut);
-    border-bottom-color: var(--ds-paper-rule);
+    color: var(--ds-faint);
+    border-bottom-color: var(--ds-border);
   }
   .approval-desk__diff :global(.drift-diff-card__table td) {
-    border-bottom-color: var(--ds-paper-rule);
-    color: var(--ds-paper-ink);
+    border-bottom-color: var(--ds-border);
+    color: var(--ds-fg);
   }
   .approval-desk__diff :global(.ds-code) {
     background: transparent;
     border: none;
     padding: 0;
-    color: var(--ds-paper-ink-2);
+    color: var(--ds-fg-soft);
   }
 </style>

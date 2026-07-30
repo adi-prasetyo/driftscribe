@@ -98,8 +98,8 @@
     font-family: var(--ds-font-mono);
     font-size: 10.5px;
     letter-spacing: 0.2em;
-    color: var(--ds-paper-mut);
-    border-top: 1px solid var(--ds-paper-rule);
+    color: var(--ds-faint);
+    border-top: 1px solid var(--ds-border);
     display: flex;
     align-items: center;
     gap: 14px;
@@ -108,7 +108,7 @@
     content: '';
     flex: 1;
     height: 1px;
-    background: var(--ds-paper-rule);
+    background: var(--ds-border);
   }
 
   .ledger-strip__rows {
@@ -120,7 +120,7 @@
     grid-template-columns: 58px 18px 1fr auto;
     gap: 14px;
     padding: 10px 0;
-    border-bottom: 1px solid var(--ds-paper-rule);
+    border-bottom: 1px solid var(--ds-border);
     align-items: baseline;
     font-size: 12.5px;
   }
@@ -128,10 +128,14 @@
     border-bottom: 0;
   }
 
+  /* The timestamp is the ledger's whole point — WHEN each decision happened —
+     so it is meaningful text and reads through ink-2 (6.47:1), not the lightest
+     grey (3.08:1) it shared with the eyebrow heading (ds-qbo). At 11.5px mono
+     it needed the contrast more than anything else on the strip. */
   .ledger-strip__time {
     font-family: var(--ds-font-mono);
     font-size: 11.5px;
-    color: var(--ds-paper-mut);
+    color: var(--ds-fg-soft);
     font-variant-numeric: tabular-nums;
   }
 
@@ -140,22 +144,22 @@
     line-height: 1.3;
   }
   .ledger-strip__glyph--applied {
-    color: var(--ds-ok-green);
+    color: var(--ds-ok);
   }
   .ledger-strip__glyph--open {
-    color: var(--ds-drift-amber);
+    color: var(--ds-warn);
   }
   .ledger-strip__glyph--noted {
-    color: var(--ds-paper-mut);
+    color: var(--ds-faint);
   }
 
   .ledger-strip__title {
-    color: var(--ds-paper-ink);
+    color: var(--ds-fg);
   }
   .ledger-strip__title small {
     display: block;
     font-size: 11.5px;
-    color: var(--ds-paper-ink-2);
+    color: var(--ds-fg-soft);
     margin-top: 1px;
   }
 </style>

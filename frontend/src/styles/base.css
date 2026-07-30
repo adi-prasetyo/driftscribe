@@ -109,7 +109,14 @@ pre {
 }
 
 /* --- Typography helpers --------------------------------------------------- */
+/* The display face, used exactly once per page. This is what makes an approval
+   page read as the same document as the desk hero, which is also mincho. .ds-h2
+   and below stay gothic on purpose — the desk uses the serif once and that
+   restraint IS the look, so do not sprinkle --ds-font-mincho elsewhere.
+   Today the only consumers are approval.html and iac_approval.html; an SPA h1
+   that ever wants gothic should scope its own override rather than weaken this. */
 .ds-h1 {
+  font-family: var(--ds-font-mincho);
   font-size: var(--ds-fs-5);
   line-height: var(--ds-lh-tight);
   font-weight: var(--ds-fw-bold);
@@ -161,12 +168,17 @@ pre {
   cursor: help;
 }
 
-/* --- Card: the primary surface ------------------------------------------- */
+/* --- Card: the primary surface -------------------------------------------
+   ds-qbo: rules, not boxes. A resting card is a white sheet, a hairline and a
+   radius — no shadow. Elevation is reserved for things that genuinely sit above
+   the page: the chat composer (the acting surface), modals, and popovers. This
+   rule reaches the Jinja approval pages too, which is the point — they are the
+   surface the desk is compared against. */
 .ds-card {
   background: var(--ds-surface);
   border: 1px solid var(--ds-border);
   border-radius: var(--ds-radius);
-  box-shadow: var(--ds-shadow-sm);
+  box-shadow: none;
   padding: var(--ds-sp-5) var(--ds-sp-6);
   margin: var(--ds-sp-5) 0;
 }

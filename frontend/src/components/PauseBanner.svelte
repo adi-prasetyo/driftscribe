@@ -173,7 +173,6 @@
     padding: var(--ds-sp-3) var(--ds-sp-4);
     border-radius: var(--ds-radius);
     border: 1px solid var(--ds-border);
-    box-shadow: var(--ds-shadow-sm);
   }
 
   /* Calm neutral/amber surface — NOT the error color */

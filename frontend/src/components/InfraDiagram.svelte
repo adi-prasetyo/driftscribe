@@ -1305,15 +1305,18 @@
     padding: 0.2em 0.7em;
     font-size: var(--ds-fs-1);
     /* The opaque base ds-btn fixes label legibility, but its --ds-border-strong
-       (#d8d7d1) hairline is only ~1.3:1 against the beige drift row (#fcf3dc) —
+       (#d6d2ca) hairline is only ~1.3:1 against the beige drift row (#f8f0e3) —
        below WCAG 1.4.11's 3:1 for the button's own boundary. The --ds-warn border
-       (#9a6b00, ~4.2:1 on beige) makes the button shape perceptible AND ties it
-       to the drift category (Workflow finding, a11y lens). */
+       (#9a5b12, ~4.8:1 on beige) makes the button shape perceptible AND ties it
+       to the drift category (Workflow finding, a11y lens). Hexes re-measured
+       against the ds-qbo amber; the rationale is unchanged. */
     border-color: var(--ds-warn);
     color: var(--ds-warn-ink);
   }
-  /* Hover = solid deep-gold fill (mirrors the Send button's deepen-on-hover).
-     The old --ds-warn-surface fill was the SAME #fcf3dc as the drift row it sits
+  /* Hover = solid deep-gold fill. (Send used to deepen on hover too; as of
+     ds-qbo it is navy and LIFTS instead, because darkening a near-black fill
+     reads as nothing. Amber is light enough that deepening still works here.)
+     The old --ds-warn-surface fill was the SAME beige as the drift row it sits
      on, so the button dissolved into the row; a filled --ds-warn-ink chip with
      white text stays legible AND clearly distinct from the beige row. */
   .infra-card__btn:hover {

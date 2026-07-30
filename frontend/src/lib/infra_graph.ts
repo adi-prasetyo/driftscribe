@@ -201,11 +201,14 @@ export interface PlanOverlay {
 
 // classDef colors are literal hex (Mermaid can't read CSS custom props in a
 // classDef). These mirror the design tokens: green = managed/ok, amber =
-// drift/warn, neutral = hidden/counts-only.
+// drift/warn, neutral = hidden/counts-only. Because they are literals they do
+// NOT follow a token re-value — when the palette moves, these move by hand and
+// infra_graph.test.ts's pinned hexes move with them (ds-qbo did exactly that).
+// Label contrast on its own fill: managed 8.03:1, drift 6.59:1, hidden 4.55:1.
 const CLASS_DEFS = [
-  'classDef managed fill:#ecf6ef,stroke:#1f8a4c,color:#176b3b;',
-  'classDef drift fill:#fcf3dc,stroke:#9a6b00,color:#7d5700;',
-  'classDef hidden fill:#efeeea,stroke:#d8d7d1,color:#6b6b66;',
+  'classDef managed fill:#e9f3ef,stroke:#1a6b52,color:#14523f;',
+  'classDef drift fill:#f8f0e3,stroke:#9a5b12,color:#7c490e;',
+  'classDef hidden fill:#efeeea,stroke:#d6d2ca,color:#656c7a;',
 ].join('\n');
 
 // Ghost classDefs (Decision 5): dashed swatches mirroring the green/amber/red
@@ -213,8 +216,8 @@ const CLASS_DEFS = [
 // when an overlay actually contributes ghosts (entries or hidden > 0) so the
 // no-overlay output stays byte-identical to today.
 const GHOST_CLASS_DEFS = [
-  'classDef ghostCreate fill:#ecf6ef,stroke:#1f8a4c,color:#176b3b,stroke-width:2px,stroke-dasharray:6 4;',
-  'classDef ghostUpdate fill:#fcf3dc,stroke:#9a6b00,color:#7d5700,stroke-width:2px,stroke-dasharray:6 4;',
+  'classDef ghostCreate fill:#e9f3ef,stroke:#1a6b52,color:#14523f,stroke-width:2px,stroke-dasharray:6 4;',
+  'classDef ghostUpdate fill:#f8f0e3,stroke:#9a5b12,color:#7c490e,stroke-width:2px,stroke-dasharray:6 4;',
   'classDef ghostDestroy fill:#fdeef0,stroke:#c5303f,color:#9e2531,stroke-width:2px,stroke-dasharray:6 4;',
 ].join('\n');
 

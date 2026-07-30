@@ -262,9 +262,9 @@
   .estate-view {
     max-width: 780px;
     margin: 0 auto;
-    background: var(--ds-paper);
-    color: var(--ds-paper-ink);
-    border: 1px solid var(--ds-paper-rule);
+    background: var(--ds-bg);
+    color: var(--ds-fg);
+    border: 1px solid var(--ds-border);
     border-radius: var(--ds-radius, 6px);
     overflow: hidden;
   }
@@ -278,20 +278,27 @@
   .estate-view__back {
     margin: 0;
     padding: 2px 0;
-    /* .rail-more is inked for the legacy surface; the estate card is paper. */
-    color: var(--ds-paper-mut);
+    /* ds-qbo: this is the way back to the desk — navigation, not decoration —
+       so it reads through ink-2 (6.47:1) rather than the lightest grey
+       (3.08:1). It was --ds-faint only because it sits on the paper card
+       and .rail-more's legacy ink would have clashed; that is no longer a
+       choice between two worlds. */
+    color: var(--ds-fg-soft);
     font-size: 12px;
   }
   .estate-view__back:hover {
-    color: var(--ds-paper-ink);
+    color: var(--ds-fg);
   }
 
+  /* Loading / degraded status. This is the only thing on the screen when the
+     estate cannot be read, so it carries the entire message — ink-2, not the
+     lightest grey (ds-qbo). */
   .estate-view__status {
     margin: 0;
     padding: 40px;
     font-family: var(--ds-font-mono);
     font-size: 12.5px;
-    color: var(--ds-paper-mut);
+    color: var(--ds-fg-soft);
   }
 
   .estate-view__group {
@@ -304,7 +311,7 @@
        have one, and adding it renders our own term "IaC" as "IAC" in every EN
        group header — the estate view's most repeated string. Casing belongs in
        the catalog, where a translator can see it. */
-    color: var(--ds-paper-mut);
+    color: var(--ds-faint);
     font-weight: 400;
   }
 
@@ -316,7 +323,7 @@
     grid-template-columns: 20px 1fr auto auto;
     gap: 14px;
     padding: 11px 0;
-    border-bottom: 1px solid var(--ds-paper-rule);
+    border-bottom: 1px solid var(--ds-border);
     align-items: center;
     font-size: 13.5px;
   }
@@ -328,25 +335,25 @@
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: var(--ds-ok-green);
+    background: var(--ds-ok);
     justify-self: center;
   }
   .estate-view__row--un .estate-view__dot {
     background: transparent;
-    border: 1.5px solid var(--ds-drift-amber);
+    border: 1.5px solid var(--ds-warn);
   }
   .estate-view__dot--sys {
-    background: var(--ds-paper-rule);
+    background: var(--ds-border);
   }
 
   .estate-view__name {
-    color: var(--ds-paper-ink);
+    color: var(--ds-fg);
     overflow-wrap: break-word;
   }
   .estate-view__type {
     font-family: var(--ds-font-mono);
     font-size: 11px;
-    color: var(--ds-paper-mut);
+    color: var(--ds-faint);
     white-space: nowrap;
   }
 
@@ -369,13 +376,13 @@
      read as an action, because the whole point is that we cannot say whether
      the action is appropriate. */
   .estate-view__chip--mute {
-    color: var(--ds-paper-mut);
+    color: var(--ds-faint);
     border-style: dashed;
     cursor: default;
   }
   .estate-view__chip--q {
-    border-color: var(--ds-paper-rule);
-    color: var(--ds-paper-mut);
+    border-color: var(--ds-border);
+    color: var(--ds-faint);
     cursor: default;
   }
 
@@ -384,16 +391,16 @@
     padding: 12px 40px 6px;
     font-family: var(--ds-font-mono);
     font-size: 11.5px;
-    color: var(--ds-paper-mut);
+    color: var(--ds-faint);
   }
 
   .estate-view__fold {
     margin: 10px 40px 24px;
-    border: 1px solid var(--ds-paper-rule);
+    border: 1px solid var(--ds-border);
     border-radius: 4px;
     padding: 11px 16px;
     font-size: 12px;
-    color: var(--ds-paper-mut);
+    color: var(--ds-faint);
     font-family: var(--ds-font-mono);
   }
   .estate-view__fold .estate-view__rows {
@@ -406,7 +413,7 @@
     padding: 0 40px 20px;
     font-family: var(--ds-font-mono);
     font-size: 11.5px;
-    color: var(--ds-paper-mut);
+    color: var(--ds-faint);
   }
 
   .estate-view__legend {
@@ -414,8 +421,8 @@
     gap: 20px;
     padding: 16px 40px 24px;
     font-size: 11.5px;
-    color: var(--ds-paper-mut);
-    border-top: 1px solid var(--ds-paper-rule);
+    color: var(--ds-faint);
+    border-top: 1px solid var(--ds-border);
   }
   .estate-view__legend-item {
     display: inline-flex;
@@ -426,11 +433,11 @@
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: var(--ds-ok-green);
+    background: var(--ds-ok);
     margin-right: 7px;
   }
   .estate-view__legend-dot--un {
     background: transparent;
-    border: 1.5px solid var(--ds-drift-amber);
+    border: 1.5px solid var(--ds-warn);
   }
 </style>

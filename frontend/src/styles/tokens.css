@@ -1,63 +1,99 @@
 /* ===========================================================================
-   DriftScribe design tokens — "Editorial Clarity" (light)
+   DriftScribe design tokens — one paper world (light)
    ---------------------------------------------------------------------------
    Single source of truth for color, type scale, spacing, radii, shadow, and
    motion. Loaded first (main.ts imports tokens.css before base.css) so every
    later rule — in base.css, in Svelte component styles, and in the Jinja
    approval pages that <link> the built bundle — can read these custom props.
 
-   Direction (design §3): warm-neutral light ground, ink text, hairline
-   borders, generous whitespace, a large humanist type scale, and four
-   semantic accents — green=decision/ok, amber=gate/pending, red=error/danger,
-   blue=streaming/MCP. Monospace is reserved (via --ds-font-mono) for trace
-   ids, tokens, and code/diff — never for prose.
+   Direction: a paper ground (#fbfaf8) under cool navy-leaning ink, hairline
+   RULES rather than shadowed boxes, generous whitespace, a large type scale,
+   and a mincho display face used exactly once per page (.ds-h1) so the hero
+   line reads as a document heading. Accents: green=decision/ok,
+   amber=gate/pending, red=error/danger, blue=streaming/MCP — plus navy for
+   navigation/identity and a single vermilion reserved for the 判子 seal.
+   Monospace (--ds-font-mono) is reserved for trace ids, tokens, and code/diff
+   — never for prose.
+
+   Blue does THREE jobs and they are not interchangeable (ds-qbo):
+     --ds-navy       filled controls (Send, CTA) — white text needs ~15:1
+     --ds-stream-ink text-level blue (links, inline accents) — 5.4:1 on paper
+     --ds-stream     non-text accents only (borders, meters, glows, numerals);
+                     #4285f4 under white text is 3.56:1 and fails AA
    =========================================================================== */
 
 :root {
   color-scheme: light;
 
-  /* --- Palette: warm-neutral ground -------------------------------------- */
-  --ds-bg: #fcfcfb;            /* page: warm off-white */
-  --ds-surface: #ffffff;       /* cards / raised panels */
+  /* --- Palette: paper ground, cool ink ----------------------------------- */
+  /* ds-qbo: these values WERE the "Editorial Clarity" warm-neutral set and are
+     now the composite redesign's paper world — one ground, one ink ramp, for
+     the SPA and the Jinja approval pages alike. */
+  --ds-bg: #fbfaf8;            /* page: paper */
+  --ds-surface: #ffffff;       /* cards / raised sheets */
   --ds-surface-2: #f6f5f1;     /* sunken rail / inset wells */
-  --ds-fg: #1a1a18;            /* ink */
-  --ds-fg-soft: #3a3a36;       /* secondary ink */
-  --ds-muted: #6b6b66;         /* captions, labels, meta */
-  --ds-faint: #9a9a93;         /* placeholders, disabled */
-  --ds-border: #e7e6e1;        /* hairline */
-  --ds-border-strong: #d8d7d1; /* hairline, slightly heavier */
+  --ds-fg: #12151c;            /* ink */
+  --ds-fg-soft: #535c6b;       /* secondary ink */
+  /* --ds-muted must clear 4.5:1 on EVERY ground it lands on, not just the page:
+     it is .ds-pill's ink over the unchanged --ds-neutral-surface (#efeeea), and
+     it reads over --ds-surface-2 wells and all four semantic tints. #656c7a is
+     the lightest step that clears all of them — paper 5.06, white 5.28,
+     surface-2 4.84, neutral-chip 4.55, tints 4.66-4.73. */
+  --ds-muted: #656c7a;         /* captions, labels, meta */
+  /* Placeholders, disabled, and small decorative meta. At 3.08:1 on paper this
+     is BELOW the 4.5:1 text floor, so nothing new should carry meaning through
+     it alone. Note it currently does in ~25 legacy consumers (rail/timeline
+     meta); those predate the rule and are tracked separately, not endorsed. */
+  --ds-faint: #8a9099;
+  --ds-border: #e6e3dd;        /* hairline rule */
+  --ds-border-strong: #d6d2ca; /* rule, slightly heavier */
+
+  /* Navigation + identity. Filled controls (the composer's Send, the desk's
+     approve CTA) and the header's active view segment. White on navy is
+     15.66:1, which is why filled controls live here and not on --ds-stream. */
+  --ds-navy: #0e1b5f;
+  /* 判子 (hanko) ONLY — the single approval moment, and the only vermilion on
+     the page. Never reuse this hex elsewhere; styles.test.ts's "reserves
+     vermilion for the seal only" pin counts raw occurrences in this file,
+     comments included, and it is not to be relaxed. */
+  --ds-seal: #c0392b;
 
   /* --- Semantic accents (hue + tinted surface + readable text) ----------- */
   /* green — decision / ok / approve */
-  --ds-ok: #1f8a4c;
-  --ds-ok-ink: #176b3b;
-  --ds-ok-surface: #ecf6ef;
-  --ds-ok-border: #bfe3cb;
+  --ds-ok: #1a6b52;
+  --ds-ok-ink: #14523f;
+  --ds-ok-surface: #e9f3ef;
+  --ds-ok-border: #bfdcd1;
 
   /* amber — gate / pending */
-  --ds-warn: #9a6b00;
-  --ds-warn-ink: #7d5700;
-  --ds-warn-surface: #fcf3dc;
-  --ds-warn-border: #ecd79a;
+  --ds-warn: #9a5b12;
+  --ds-warn-ink: #7c490e;
+  --ds-warn-surface: #f8f0e3;
+  --ds-warn-border: #e8d3b4;
 
-  /* red — error / danger / reject */
+  /* red — error / danger / reject. Deliberately kept clear of the seal's
+     vermilion (--ds-seal, declared once in the palette above) so the 判子 stays
+     the only red moment on the page. */
   --ds-danger: #c5303f;
   --ds-danger-ink: #9e2531;
   --ds-danger-surface: #fdeef0;
   --ds-danger-border: #f0c2c8;
 
-  /* blue — streaming / MCP / links */
-  --ds-stream: #1f6feb;
-  --ds-stream-ink: #1858c0;
-  --ds-stream-surface: #ecf2fd;
-  --ds-stream-border: #c4dafb;
+  /* blue — streaming / MCP / links. --ds-stream is the deck palette's Google
+     blue: NON-TEXT accents only (see the three-jobs note in the file header).
+     Text reads through --ds-stream-ink; filled controls take --ds-navy. */
+  --ds-stream: #4285f4;
+  --ds-stream-ink: #2a63c9;
+  --ds-stream-surface: #ecf3fe;
+  --ds-stream-border: #c7dcfb;
 
   /* --- Crew identity colors --------------------------------------------- */
   /* One primary hue per crew agent, consumed by CrewGlyph for the looping
      glyph's square + verb accents. These are IDENTITY, not status, so they are
-     declared separately from the semantic accents above: Anchor's blue happens
-     to match the stream blue today, but reading it through a dedicated crew
-     token keeps a future status re-tune from silently re-skinning the crews.
+     declared separately from the semantic accents above — and ds-qbo is exactly
+     the re-tune that separation was for: --ds-stream moved to Google blue while
+     Anchor's editorial blue stayed put, so the crew glyphs kept their identity
+     while the status palette shifted underneath them.
      The four hues are spread around the wheel for at-a-glance separation. Patch's
      brick red is deliberately an earthy terracotta, kept clear of the pinker
      error/danger signal red (--ds-danger #c5303f) so a Patch glyph never reads
@@ -80,6 +116,10 @@
   /* monospace reserved for trace ids / tokens / code */
   --ds-font-mono: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono",
     "Roboto Mono", Menlo, Consolas, monospace;
+  /* Display face, used exactly ONCE per page (.ds-h1 in base.css, and the desk
+     hero). The restraint is the look — do not spread it to .ds-h2 or below. */
+  --ds-font-mincho: "Hiragino Mincho ProN", "Yu Mincho", YuMincho,
+    "Noto Serif JP", Georgia, serif;
 
   /* Type scale — large & editorial. 13 / 15 / 18 / 24 / 32 / 44 px.
      Used directly (font-size: var(--ds-fs-4)) by base + components. */
@@ -121,15 +161,19 @@
   --ds-radius-lg: 14px;
   --ds-radius-pill: 999px;
 
-  /* --- Elevation (soft, low-contrast — editorial, not material) ---------- */
-  --ds-shadow-sm: 0 1px 2px rgba(26, 26, 24, 0.04);
-  --ds-shadow: 0 1px 3px rgba(26, 26, 24, 0.06),
-    0 6px 18px -8px rgba(26, 26, 24, 0.10);
-  --ds-shadow-lg: 0 4px 10px rgba(26, 26, 24, 0.07),
-    0 18px 44px -16px rgba(26, 26, 24, 0.16);
+  /* --- Elevation (soft, low-contrast — and sparingly used) ---------------
+     Rules carry structure in this world, not boxes: resting cards are a
+     hairline + radius with NO shadow. Elevation is reserved for things that
+     genuinely sit above the page — the composer (the acting surface), modals,
+     and popovers. The tint derives from the ink, which went cool in ds-qbo. */
+  --ds-shadow-sm: 0 1px 2px rgba(18, 21, 28, 0.04);
+  --ds-shadow: 0 1px 3px rgba(18, 21, 28, 0.06),
+    0 6px 18px -8px rgba(18, 21, 28, 0.10);
+  --ds-shadow-lg: 0 4px 10px rgba(18, 21, 28, 0.07),
+    0 18px 44px -16px rgba(18, 21, 28, 0.16);
 
-  /* focus ring */
-  --ds-ring: 0 0 0 3px rgba(31, 111, 235, 0.28);
+  /* focus ring — follows --ds-stream */
+  --ds-ring: 0 0 0 3px rgba(66, 133, 244, 0.30);
 
   /* --- Motion ------------------------------------------------------------ */
   --ds-dur-fast: 120ms;
@@ -139,32 +183,4 @@
   --ds-ease-out: cubic-bezier(0.16, 1, 0.3, 1);     /* entrances */
   --ds-ease-in: cubic-bezier(0.4, 0, 1, 1);
 
-  /* --- Composite redesign world (2026-07-28 mockup) ----------------------
-     Phase 1 of the "approval desk" redesign (docs/plans/2026-07-28-*): a
-     paper/navy instrument band with a 判子 (hanko) seal stamp as the sole
-     approval moment. Not yet consumed by any component — later phases in the
-     plan style against these. Vermilion is reserved EXCLUSIVELY for --ds-seal
-     below so the seal reads as the only red thing on the page; do not reuse
-     that hex elsewhere (see styles.test.ts's "reserves vermilion for the seal
-     only" pin).
-
-     BEWARE two near-duplicate pairs — these are a DIFFERENT world from the
-     legacy tokens above and are not interchangeable with them:
-       --ds-ok-green    (#1a6b52, this world)  vs  --ds-ok    (decision/ok)
-       --ds-drift-amber (#9a5b12, this world)  vs  --ds-warn  (gate/pending)
-     Desk/estate/beats surfaces take the paper-world token; everything that
-     already existed keeps the legacy one. "gblue" = Google blue, the deck
-     palette's #4285f4, used for the "awaiting you" numerals. */
-  --ds-paper: #fbfaf8;
-  --ds-paper-ink: #12151c;
-  --ds-paper-ink-2: #535c6b;
-  --ds-paper-mut: #8a9099;
-  --ds-paper-rule: #e6e3dd;
-  --ds-navy: #0e1b5f;
-  --ds-gblue: #4285f4;
-  --ds-drift-amber: #9a5b12;
-  --ds-ok-green: #1a6b52;
-  --ds-seal: #c0392b; /* 判子 ONLY */
-  --ds-font-mincho: "Hiragino Mincho ProN", "Yu Mincho", YuMincho,
-    "Noto Serif JP", Georgia, serif;
 }

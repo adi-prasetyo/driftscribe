@@ -2022,9 +2022,12 @@
     column-gap: var(--ds-sp-4);
     row-gap: var(--ds-sp-2);
     padding: var(--ds-sp-3) var(--ds-sp-6);
+    /* ds-qbo: the header sits ON the page rather than floating above it — paper
+       ground, one hairline rule, no shadow. It was --ds-surface + --ds-shadow-sm,
+       which read as a raised bar in a world that has since decided structure is
+       carried by rules. The rule below is the only edge it needs. */
     border-bottom: 1px solid var(--ds-border);
-    background: var(--ds-surface);
-    box-shadow: var(--ds-shadow-sm);
+    background: var(--ds-bg);
   }
   /* One row once there is room for all three regions side by side (measured:
      ~1530px in JA, the wider of the two locales). */
@@ -2072,8 +2075,11 @@
   /* Desk / Estate / Chat — segmented pill, same recipe as LocaleToggle's
      is-active fill so the two header controls read as one family.
      ds-7ag.3 gave it weight: at 13px among six utility chips it read as one
-     more chip rather than as the app's primary navigation. Still no navy fill —
-     this control has to serve both design worlds (paper desk, legacy chat). */
+     more chip rather than as the app's primary navigation. #272 stopped short of
+     a navy fill because the control had to serve two design worlds at once
+     (paper desk, legacy chat) and navy belonged to only one of them. ds-qbo
+     removed that constraint — there is one world now — so the active segment
+     below finally takes the fill. */
   .app-header__nav {
     display: inline-flex;
     align-items: stretch;
@@ -2109,11 +2115,16 @@
   .app-header__nav-btn:hover {
     color: var(--ds-fg);
   }
+  /* The active view is the one thing in the header that must be unmissable, so
+     it is a filled navy chip (white on navy = 15.7:1) rather than the old
+     white-surface + border + shadow, which was a slightly-lighter chip among
+     chips. Navy is this world's navigation/identity color; the shadow is gone
+     because nothing in the header floats. Border stays navy so the 1px
+     transparent border every segment carries does not change the box size. */
   .app-header__nav-btn.is-active {
-    background: var(--ds-surface);
-    border-color: var(--ds-border-strong);
-    color: var(--ds-fg);
-    box-shadow: var(--ds-shadow-sm);
+    background: var(--ds-navy);
+    border-color: var(--ds-navy);
+    color: #fff;
   }
   .app-header__actions {
     display: inline-flex;

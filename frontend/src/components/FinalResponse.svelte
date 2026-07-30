@@ -73,7 +73,6 @@
     position: relative;
     border-left: 3px solid var(--ds-ok);
     padding: var(--ds-sp-5) var(--ds-sp-6);
-    box-shadow: var(--ds-shadow);
   }
 
   /* A faint top-of-rail glow so the hero reads as "the answer," not just

@@ -69,26 +69,28 @@
     font-weight: var(--ds-fw-medium);
   }
 
-  /* small pulsing amber dot signalling "not live" */
+  /* small pulsing amber dot signalling "not live". The rgba pulse is --ds-warn
+     (#9a5b12) spelled out because a keyframe ring needs an alpha ramp; keep it
+     in step with the token if the amber ever moves again. */
   .historical-banner__dot {
     width: 0.5em;
     height: 0.5em;
     flex: 0 0 auto;
     border-radius: var(--ds-radius-pill);
     background: var(--ds-warn);
-    box-shadow: 0 0 0 0 rgba(154, 107, 0, 0.4);
+    box-shadow: 0 0 0 0 rgba(154, 91, 18, 0.4);
     animation: historical-pulse 2.2s var(--ds-ease) infinite;
   }
 
   @keyframes historical-pulse {
     0% {
-      box-shadow: 0 0 0 0 rgba(154, 107, 0, 0.4);
+      box-shadow: 0 0 0 0 rgba(154, 91, 18, 0.4);
     }
     70% {
-      box-shadow: 0 0 0 0.35em rgba(154, 107, 0, 0);
+      box-shadow: 0 0 0 0.35em rgba(154, 91, 18, 0);
     }
     100% {
-      box-shadow: 0 0 0 0 rgba(154, 107, 0, 0);
+      box-shadow: 0 0 0 0 rgba(154, 91, 18, 0);
     }
   }
 
