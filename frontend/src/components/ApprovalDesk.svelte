@@ -531,11 +531,16 @@
     color: var(--ds-fg);
   }
 
+  /* Reads through stream-INK, not raw stream: this is the meaningful status line
+     ("Anchor is proposing" / "you approved") at 11.5px, and #4285f4 is 3.42:1 on
+     paper against a 4.5:1 floor. It was --ds-gblue until the ds-qbo retirement
+     renamed it, which is how it slipped past the raw-stream audit one commit
+     earlier — the audit grepped var(--ds-stream), and this was not that yet. */
   .approval-desk__who {
     font-family: var(--ds-font-mono);
     font-size: 11.5px;
     letter-spacing: 0.08em;
-    color: var(--ds-stream);
+    color: var(--ds-stream-ink);
     display: flex;
     justify-content: space-between;
     gap: 10px;
@@ -594,7 +599,9 @@
     margin: 0;
     font-family: var(--ds-font-mono);
     font-size: 12px;
-    color: var(--ds-stream);
+    /* stream-INK — an interactive 12px control cannot sit at raw stream's
+       3.42:1 (same ds-qbo reason as .approval-desk__who above). */
+    color: var(--ds-stream-ink);
     cursor: pointer;
     text-decoration: none;
   }

@@ -1313,7 +1313,9 @@
     border-color: var(--ds-warn);
     color: var(--ds-warn-ink);
   }
-  /* Hover = solid deep-gold fill (mirrors the Send button's deepen-on-hover).
+  /* Hover = solid deep-gold fill. (Send used to deepen on hover too; as of
+     ds-qbo it is navy and LIFTS instead, because darkening a near-black fill
+     reads as nothing. Amber is light enough that deepening still works here.)
      The old --ds-warn-surface fill was the SAME beige as the drift row it sits
      on, so the button dissolved into the row; a filled --ds-warn-ink chip with
      white text stays legible AND clearly distinct from the beige row. */

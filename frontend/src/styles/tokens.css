@@ -72,8 +72,8 @@
   --ds-warn-border: #e8d3b4;
 
   /* red — error / danger / reject. Deliberately kept clear of the seal's
-     vermilion (--ds-seal, declared once below) so the 判子 stays the only red
-     moment on the page. */
+     vermilion (--ds-seal, declared once in the palette above) so the 判子 stays
+     the only red moment on the page. */
   --ds-danger: #c5303f;
   --ds-danger-ink: #9e2531;
   --ds-danger-surface: #fdeef0;

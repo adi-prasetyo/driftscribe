@@ -180,6 +180,37 @@ describe('tokens.css — design-system custom properties', () => {
     }
   });
 
+  it('never inks TEXT with raw --ds-stream (3.42:1) — that is stream-ink’s job', () => {
+    // ds-qbo design decision 3b: blue does three jobs and they are not
+    // interchangeable. --ds-navy fills, --ds-stream-ink inks text (5.40:1 on
+    // paper), and raw --ds-stream (#4285f4, 3.42:1) is for NON-TEXT accents
+    // only — borders, rails, meters, glows.
+    //
+    // This guard exists because the Phase 2 audit grepped `var(--ds-stream)`
+    // and passed, and then Phase 3's rename turned two --ds-gblue consumers on
+    // the approval desk into raw-stream TEXT consumers — 11.5px status copy and
+    // a 12px control, both landing under the floor. An audit is a moment; this
+    // is the invariant. Same lesson as #216 and #258: a value reaches a surface
+    // through more paths than the grep you happened to write.
+    //
+    // The one sanctioned exception is the instrument band's awaiting numeral,
+    // which is 44px/600 — large text, so its floor is 3:1, which 3.42:1 clears.
+    const ALLOWED = new Set(['InstrumentBand.svelte']);
+    const offenders: string[] = [];
+    for (const file of svelteAndCssSources()) {
+      const src = stripComments(readFileSync(file, 'utf8'));
+      // `color:` but not `border-color:` / `border-left-color:` / `outline-color:`
+      if (/(?<![\w-])color\s*:\s*var\(--ds-stream\)/.test(src)) {
+        const base = file.split('/').pop()!;
+        if (!ALLOWED.has(base)) offenders.push(relative(srcDir, file));
+      }
+    }
+    expect(
+      offenders,
+      `raw --ds-stream used as text color (use --ds-stream-ink):\n${offenders.join('\n')}`,
+    ).toEqual([]);
+  });
+
   it('has no component still referencing a retired paper-world token', () => {
     // The declarations being gone is only half of it: a component reading
     // var(--ds-paper-mut) after the block was deleted would silently render an
