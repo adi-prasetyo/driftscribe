@@ -391,4 +391,40 @@
     background: transparent;
     border: 1.5px solid var(--ds-warn);
   }
+
+  /* Phone widths: the row restacks instead of clipping.
+     `20px 1fr auto auto` needs the type label AND the adopt chip to fit beside
+     the name, and both refuse to shrink (`white-space: nowrap` on each, and the
+     chip is a tap target). Below ~410px they don't, and the chip runs past the
+     card — measured 2026-07-31: last broken at 390 (ja 4px over, en 16px),
+     clean from 420.
+     The reason this was never noticed is worth keeping: `.estate-view` is
+     `overflow: hidden`, so the button is CLIPPED rather than scrolled to, and a
+     document-level `scrollWidth === clientWidth` check — the exact narrow-width
+     check this plan prescribes — calls the page clean while a control sits half
+     off the card. The pin in transparency.smoke.ts measures the button against
+     the card instead, for that reason.
+     Restack, don't shrink: line 1 is dot + name (the identity), line 2 is type +
+     action. 460 rather than 410 leaves room for a longer resource name or a
+     wider translated chip before it clips again. */
+  @media (max-width: 460px) {
+    .estate-view__row {
+      grid-template-columns: 20px minmax(0, 1fr) auto;
+      row-gap: 6px;
+    }
+    .estate-view__dot {
+      grid-area: 1 / 1;
+    }
+    .estate-view__name {
+      grid-area: 1 / 2 / auto / -1;
+    }
+    .estate-view__type {
+      grid-area: 2 / 2;
+      justify-self: start;
+    }
+    .estate-view__chip {
+      grid-area: 2 / 3;
+      justify-self: end;
+    }
+  }
 </style>

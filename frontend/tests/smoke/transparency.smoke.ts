@@ -165,6 +165,54 @@ test.describe('transparency UI (mock smoke)', () => {
     expect(Math.round(estate!.width)).toBe(Math.round(desk!.width));
   });
 
+  // Phone width. The estate is on the FRONT DOOR since the merge, so a visitor
+  // on a phone meets these rows without clicking anything.
+  //
+  // Measured against the CARD, not the document, and that distinction is the
+  // whole point: `.estate-view` is `overflow: hidden`, so a chip that runs past
+  // the card is CLIPPED, never scrolled to. A document-level `scrollWidth ===
+  // clientWidth` check — the narrow-width check the plan prescribes, and the one
+  // this suite would naturally reach for — passes happily with a control sitting
+  // half off the card. It did: at 390px the adopt button was cut by 4px in ja
+  // and 16px in en until the row learned to restack (EstateView.svelte's 460px
+  // query). Both checks are below; only the first can see that failure.
+  //
+  // Every chip, not one testid: a drift row ends in exactly one of three (the
+  // adopt button, the "PR #n awaiting review" marker, or the mute "adoption
+  // status unknown" — which is what THIS fixture produces, since mockData
+  // leaves /infra/pending-approvals unrouted and an unsupported absence must
+  // not offer an Adopt). They share `.estate-view__chip`, they are the widest
+  // thing in a row, and the invariant belongs to all of them equally.
+  test('at phone width no estate chip escapes the card', async ({ page }) => {
+    await seedToken(page);
+    await mockData(page, freshState());
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto('/');
+
+    const estate = page.getByTestId('estate-view');
+    await expect(estate).toBeVisible();
+
+    const chips = estate.locator('.estate-view__chip');
+    // The fixture's own premise. Without it, a graph fixture that stopped
+    // producing chip-bearing rows would leave this passing on an empty set.
+    await expect(chips.first()).toBeVisible();
+
+    const card = (await estate.boundingBox())!;
+    const padRight = await estate.evaluate((el) => parseFloat(getComputedStyle(el).paddingRight));
+    const limit = Math.round(card.x + card.width - padRight);
+    for (let i = 0; i < (await chips.count()); i++) {
+      const box = (await chips.nth(i).boundingBox())!;
+      expect(Math.round(box.x + box.width), `chip ${i}`).toBeLessThanOrEqual(limit);
+    }
+
+    // …and the page itself still does not scroll sideways.
+    const { scrollWidth, clientWidth } = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth,
+    }));
+    expect(scrollWidth).toBe(clientWidth);
+  });
+
   test('shell + built assets load with no 404 and render the chrome', async ({ page }) => {
     const bad: string[] = [];
     page.on('response', (r) => {
