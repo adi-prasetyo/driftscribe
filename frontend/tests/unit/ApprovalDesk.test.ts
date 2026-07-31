@@ -487,6 +487,35 @@ describe('ApprovalDesk — pending state, iac source, both provenance arms', () 
     expect(pending).toContain('approved');
   });
 
+  // The negative twin (Codex). The proof-of-approval join is PR-WIDE and the
+  // listing DTO carries no generation identity, so it must accept ONLY
+  // evidence that cannot be misattributed across generations. After
+  // `generation A applied → merge FAILED → head advances → generation B
+  // unapproved`, the listing legitimately points at B while A's terminal
+  // decision still names the same PR. Vouching for B there would tell the
+  // operator they had approved something they had not — the dangerous
+  // direction, and the ds-0rm mistake (desk.ts:620) repeated one layer up.
+  it('a terminal decision whose merge FAILED never vouches for a newer generation', () => {
+    const approval = pendingIac({ title: undefined }); // PR #7, genuinely open generation B
+    const failedMerge = iacDecision({
+      pr_number: 7,
+      pr_title: undefined,
+      apply_status: 'applied',
+      merge_state: 'pending', // merge never landed → cannot prove B was approved
+    });
+    const { getByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: GRAPH,
+        decisions: [failedMerge],
+        pendingApprovals: [approval],
+        onShowEstate: vi.fn(),
+      },
+    });
+    const pending = getByTestId('approval-desk-pending').textContent ?? '';
+    expect(pending).toContain('waiting for your approval');
+    expect(pending).not.toContain('approved and waiting to be applied');
+  });
+
   // ds-db0: the decision arm exists only for a PR the open-PR listing can no
   // longer see BECAUSE IT ALREADY MERGED (desk.ts:78-84), so its copy must say
   // "waiting to be applied". Claiming it awaits approval contradicts the

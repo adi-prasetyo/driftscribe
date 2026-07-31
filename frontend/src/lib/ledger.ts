@@ -49,17 +49,12 @@ export interface LedgerRow {
 
 const DEFAULT_MAX = 4;
 
-/** Mirrors `_IAC_RUN_ENDED_STATUSES` (agent/main.py:918) — the apply_status
- *  values meaning the apply REQUEST already ended. `waiting_for_rebake` is
- *  deliberately absent there and here: it is the pre-merge crash-recovery
- *  pointer, a phase rather than an outcome. Only such unfinished phases may be
- *  collapsed into a newer doc for the same event (ds-b0k). */
-const IAC_RUN_ENDED_STATUSES: ReadonlySet<string> = new Set([
-  'applied',
-  'failed',
-  'failed_state_suspect',
-  'ambiguous',
-]);
+/** The ONE apply_status that may be collapsed into a newer doc for the same
+ *  event_key (ds-b0k). `waiting_for_rebake` is the pre-merge crash-recovery
+ *  pointer — a phase, not an outcome — which is exactly why it is excluded
+ *  from the server's own `_IAC_RUN_ENDED_STATUSES` (agent/main.py:918). Every
+ *  other status, INCLUDING one this build does not recognise, keeps its row. */
+const IAC_FOLDABLE_STATUS = 'waiting_for_rebake';
 
 /** Parses `created_at` to epoch-ms, or null if absent/unparseable. Unlike
  *  desk.ts's `parseForOrdering` (which substitutes -Infinity so a missing
@@ -222,8 +217,14 @@ export function ledgerRows(
       deduped.push(row);
       continue;
     }
-    // Unfinished phase pointer superseded by a newer doc for the same event.
-    if (!IAC_RUN_ENDED_STATUSES.has(d.apply_status ?? '') && seenIacEventKeys.has(key)) {
+    // Fold ONLY the one phase proven redundant. Written as a positive test
+    // against `waiting_for_rebake` rather than as `!IAC_RUN_ENDED_STATUSES`,
+    // because a negative test silently makes every UNKNOWN status foldable —
+    // a legacy row with no apply_status, a malformed doc, or a status added
+    // server-side later would all be discarded sight unseen. On an audit
+    // surface unknown must fail toward RETENTION: show a redundant row rather
+    // than delete an unrecognised one.
+    if (d.apply_status === IAC_FOLDABLE_STATUS && seenIacEventKeys.has(key)) {
       continue;
     }
     seenIacEventKeys.add(key);

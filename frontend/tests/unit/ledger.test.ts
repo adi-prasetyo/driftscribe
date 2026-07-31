@@ -303,6 +303,86 @@ describe('ledgerRows', () => {
       expect(rows[0].decision.decision_id).toBe('f66d3ce4');
     });
 
+    // Unknown must fail toward RETENTION on an audit surface (Codex). The fold
+    // is a positive test against waiting_for_rebake, so a legacy row with no
+    // apply_status — or a status this build has never heard of — keeps its row
+    // rather than being discarded sight unseen. A `!isTerminal` test would
+    // have silently swallowed both.
+    it.each([undefined, 'some_future_status'])(
+      'never folds an iac row whose apply_status is unrecognised (%s)',
+      (status) => {
+        const older = decision({
+          decision_id: 'u1',
+          action: 'iac_apply',
+          apply_status: status,
+          pr_number: 700,
+          event_key: 'iac-apply-700-onegeneration',
+          created_at: '2026-07-28T08:00:00Z',
+        });
+        const newer = decision({
+          decision_id: 'u2',
+          action: 'iac_apply',
+          apply_status: 'waiting_for_rebake',
+          merge_state: 'merged',
+          pr_number: 700,
+          event_key: 'iac-apply-700-onegeneration',
+          created_at: '2026-07-28T09:00:00Z',
+        });
+        const rows = ledgerRows([older, newer], 4, { now: NOW, origin: ORIGIN });
+        expect(rows).toHaveLength(2);
+      },
+    );
+
+    // A terminal record is a completed historical fact. Two applies 27 days
+    // apart really do share an event_key in the live feed (iac-apply-32-...),
+    // so collapsing them would delete a real record.
+    it('never folds a terminal iac row into a newer one sharing its event_key', () => {
+      const first = decision({
+        decision_id: 't1',
+        action: 'iac_apply',
+        apply_status: 'applied',
+        merge_state: 'merged',
+        pr_number: 32,
+        event_key: 'iac-apply-32-a1473c8a',
+        created_at: '2026-05-30T11:16:12Z',
+      });
+      const second = decision({
+        decision_id: 't2',
+        action: 'iac_apply',
+        apply_status: 'applied',
+        merge_state: 'merged',
+        pr_number: 32,
+        event_key: 'iac-apply-32-a1473c8a',
+        created_at: '2026-06-26T16:03:27Z',
+      });
+      const rows = ledgerRows([first, second], 4, { now: NOW, origin: ORIGIN });
+      expect(rows).toHaveLength(2);
+    });
+
+    // The rollback/eventarc key namespace identifies {trigger, service,
+    // contract, live_env} — NOT one approval attempt — and an expired approval
+    // is deliberately replaced under the same key (agent/main.py:1155, :2486).
+    // Folding there would hide a FAILED rollback behind a newer benign row.
+    it('never folds non-iac lanes, so a failed rollback survives a newer retry', () => {
+      const failed = decision({
+        decision_id: 'rb1',
+        action: 'rollback',
+        approval: { approval_url: '/approvals/rb1', status: 'used', phase: 'failed' },
+        event_key: 'eventarc-payment-demo-ae4170632c79c599',
+        created_at: '2026-07-29T05:28:40Z',
+      });
+      const retry = decision({
+        decision_id: 'rb2',
+        action: 'rollback',
+        approval: { approval_url: '/approvals/rb2', status: 'pending', expires_at: '2026-07-31T23:00:00Z' },
+        event_key: 'eventarc-payment-demo-ae4170632c79c599',
+        created_at: '2026-07-31T02:18:12Z',
+      });
+      const rows = ledgerRows([failed, retry], 4, { now: NOW, origin: ORIGIN });
+      expect(rows).toHaveLength(2);
+      expect(rows.find((r) => r.decision.decision_id === 'rb1')?.state).toBe('failed');
+    });
+
     // An absent event_key is UNKNOWN identity, not SHARED identity — folding
     // those together would merge unrelated decisions into one row.
     it('never collapses rows that carry no event_key', () => {

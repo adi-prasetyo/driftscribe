@@ -281,14 +281,23 @@
       (d) =>
         d?.action === 'iac_apply' &&
         d?.pr_number === prNumber &&
-        // Every status at or past the approval: waiting_for_rebake is written
-        // when the operator's approval is acted on (agent/main.py:7280), and
-        // the run-ended statuses are all downstream of it.
-        (d?.apply_status === 'waiting_for_rebake' ||
-          d?.apply_status === 'applied' ||
-          d?.apply_status === 'failed' ||
-          d?.apply_status === 'failed_state_suspect' ||
-          d?.apply_status === 'ambiguous'),
+        // ⚠️ This join is PR-WIDE, and the listing DTO carries no generation
+        // identity to narrow it with (no event_key, no head_sha). So it must
+        // only accept evidence that is impossible to misattribute across
+        // generations: `waiting_for_rebake`+`merged` proves the PR ITSELF
+        // merged, and a merged PR cannot simultaneously be genuinely open with
+        // a newer unapproved generation — any listing row for it is therefore
+        // the stale cache, which is exactly the case this exists to fix.
+        //
+        // A broader "any status at or past approval" test would repeat the
+        // ds-0rm mistake (desk.ts:620) one layer up: after `generation A
+        // applied → merge FAILED → head advances → generation B unapproved`,
+        // A's terminal decision would vouch for B and the desk would tell the
+        // operator they had already approved something they had not. Claiming
+        // a missing approval is the dangerous direction; a merge that failed
+        // never reaches merge_state 'merged', so it is excluded here.
+        d?.apply_status === 'waiting_for_rebake' &&
+        d?.merge_state === 'merged',
     );
   }
 
