@@ -346,18 +346,38 @@ its own bug.
    `len(text) <= cap - reserve`, so bodies of 9993–10000 characters were cut
    even though the worker accepts them. The reserve pays for repairs a *cut*
    makes; it has no bearing on whether to cut. Now tested against `cap`.
-2. **The fence repair was wrong for longer delimiters.** Appending
-   ``` ``` ``` cannot close a block opened with four or six backticks —
-   CommonMark requires a closing fence at least as long as the opener. The
-   repair looked right to a backtick *counter* while a real parser left the
-   block open through the approval URL, rendering it inert. Worse, the
-   six-backtick test I wrote "passed" because it asserted regex parity rather
-   than parse state. The head repair now **drops** the unmatched opener instead
-   of closing it: correct at any delimiter length, and it can only shrink the
-   output, so the head needs no reserve. The tail repair was already correct —
-   a closing fence may be longer than its opener. Tests now decide by
-   CommonMark's actual rule, and catch the old repair at 4, 6 and 12 backticks
-   while still passing the 3-backtick case that was genuinely fine.
+2. **The fence repair was wrong — three times.** This one took four attempts
+   and is the most useful thing in this bead:
+
+   1. *Append ``` ``` ``` to a head with an odd delimiter count.* CommonMark
+      closes a fence only with a run at least as long as the opener, so a four-
+      or six-backtick block is not closed by three.
+   2. *Drop the last unmatched run instead.* Still wrong: it decides which runs
+      are unmatched by **parity**, and parity cannot see length. Codex's
+      counterexample — a 12-backtick opener followed by a too-short
+      three-backtick line — counts as "even", so the block stays open through
+      the URL. Reproduced against `markdown-it`: zero link tokens.
+   3. *Prepend an opener to a tail with an odd count.* Wrong in the other
+      direction: an inline ``` ``` ``` in ordinary prose is not a fence, so the
+      prepended opener never closes and the "repair" **creates** the failure.
+
+   Each delivers the notification while silently disabling the one thing it
+   exists to deliver — strictly worse than the 422 it replaces.
+
+   **Shipped: no inference at all.** Both retained fragments have their fence
+   delimiters deleted (`_neutralize_fences`). Nothing can be left open if
+   nothing can open; correct for every arrangement; only ever shrinks, so the
+   cut needs no repair reserve. The cost is that a *truncated* notification
+   loses code-block formatting in the fragments that survive — a body on that
+   path has already lost its middle, and monospace is worth far less than a
+   clickable link. A body that fits is untouched. This is what the Notifier's
+   own comment recommended as the fallback: "neutralize backticks in the
+   retained fragments instead of deepening the inference."
+
+   The test oracle is now **`markdown-it`**, declared as a dev dependency. Each
+   broken repair had shipped with a hand-rolled assertion that shared its blind
+   spot — a parity check cannot detect a parity bug — so the oracle must not be
+   ours. Re-injecting attempts 1 and 2 fails 51 and 4 tests respectively.
 3. **The guard accepted exactly what the worker rejects.** `re.match` with a
    `$`-anchored pattern also matches just before a *final newline*, so
    `"payment-demo-00024-f6v\n"` passed the coordinator and was rejected by

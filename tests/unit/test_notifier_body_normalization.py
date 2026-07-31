@@ -113,56 +113,76 @@ def test_a_six_backtick_run_counts_as_one_delimiter() -> None:
     assert _fences(before_url) % 2 == 0
 
 
-def _url_is_inside_a_code_block(text: str) -> bool:
-    """Decide by CommonMark's ACTUAL rule, not by counting backticks.
+def _url_renders_as_a_link(text: str) -> bool:
+    """Ask a REAL CommonMark parser, not a backtick counter.
 
-    A fence is closed only by a run at least as long as the one that opened it,
-    so ``open == 3`` cannot be closed by nothing and ``open == 6`` cannot be
-    closed by ``` ``` ```. A parity counter cannot express that, which is how
-    the broken head repair passed its own test: the counts matched while a real
-    parser left the block open straight through the approval URL.
+    This is the load-bearing choice in this file. Three hand-rolled fence
+    heuristics were each wrong, and each shipped with a hand-rolled assertion
+    that shared its blind spot — a parity check cannot detect a parity bug. So
+    the oracle is markdown-it: render, and look for an actual link token
+    carrying the URL. Inside a code block there is no link token, which is
+    exactly the operator-visible failure ("present, but not clickable").
     """
-    open_len = 0
-    for line in text.split("\n"):
-        run = _FENCE_RUN.match(line.strip())
-        if not run:
-            if open_len and "https://" in line:
-                return True
-            continue
-        length = len(run.group(0))
-        if open_len == 0:
-            open_len = length
-        elif length >= open_len:
-            open_len = 0
-    return False
+    from markdown_it import MarkdownIt
+
+    html = MarkdownIt().enable("linkify").render(text)
+    return f'href="{_URL[1:-1]}"' in html
 
 
-@pytest.mark.parametrize("opener", ["```", "````", "``````", "`" * 12])
-def test_a_longer_opening_fence_cannot_be_closed_by_a_shorter_one(opener: str) -> None:
-    """The blocker Codex found. Appending ``\\n``` `` "repairs" a four- or
-    six-backtick opener only as far as a backtick counter can see; a real
-    parser keeps the block open and the approval URL renders as inert text —
-    present, visible, unclickable. Dropping the unmatched opener instead is
-    correct at every delimiter length.
-    """
-    body = "intro\n" + opener + "\n" + ("k: v\n" * 4000) + "\nepilogue\n" + _URL
+@pytest.mark.parametrize(
+    "opener, mid",
+    [
+        ("```", ""),
+        ("````", ""),
+        ("``````", ""),
+        ("`" * 12, ""),
+        # Codex's counterexample: a 12-backtick opener with a THREE-backtick
+        # line after it. Too short to close a 12-backtick fence, but a parity
+        # counter sees two runs, calls it balanced, and leaves the block open
+        # through the URL.
+        ("`" * 12, "```\n"),
+        ("````````", "```\n``````\n"),
+    ],
+)
+def test_the_url_stays_clickable_for_every_fence_arrangement(
+    opener: str, mid: str
+) -> None:
+    body = "intro\n" + opener + "\n" + mid + ("k: v\n" * 4000) + "\nepi\n" + _URL
     out = normalize_notifier_body(body)
     assert len(out) <= CAP
     assert _URL in out
-    assert not _url_is_inside_a_code_block(out), (
-        f"a {len(opener)}-backtick block was left open through the URL"
+    assert _url_renders_as_a_link(out), (
+        f"a {len(opener)}-backtick block swallowed the approval URL"
     )
 
 
 def test_a_fence_run_split_by_the_cut_still_leaves_the_url_reachable() -> None:
     """The cut can land INSIDE a delimiter, leaving a partial run in the head —
-    a shorter fence than the author wrote, and one the deleted closer no longer
+    a shorter fence than the author wrote, which the deleted closer no longer
     matches."""
     body = "a\n" + "`" * 8 + "\n" + ("x" * 3 + "\n") * 4000 + "\ntail\n" + _URL
     out = normalize_notifier_body(body)
     assert len(out) <= CAP
-    assert _URL in out
-    assert not _url_is_inside_a_code_block(out)
+    assert _url_renders_as_a_link(out)
+
+
+def test_inline_backtick_runs_in_prose_are_not_treated_as_fences() -> None:
+    """The other direction, and the one the 'prepend an opener' repair got
+    backwards: an inline ``` ``` ``` inside ordinary prose is not a fence, so
+    prepending an opener to 'balance' it CREATES an unclosed block and makes
+    harmless Markdown fail. Codex reproduced exactly that."""
+    body = "x" * 6000 + "\nprose with ``` inline delimiters here\n\n" + _URL
+    out = normalize_notifier_body(body)
+    assert len(out) <= CAP
+    assert _url_renders_as_a_link(out)
+
+
+def test_an_untruncated_body_keeps_its_code_blocks_intact() -> None:
+    """Neutralization is scoped to the truncated path. A body that fits is
+    returned verbatim, fences and all — which is every ordinary notification."""
+    body = "Observed:\n```yaml\nPAYMENT_MODE: live\n```\n\n" + _URL
+    assert normalize_notifier_body(body) == body
+    assert "```" in normalize_notifier_body(body)
 
 
 def test_the_tail_survives_so_the_url_does() -> None:

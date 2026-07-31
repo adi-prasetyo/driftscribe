@@ -321,6 +321,10 @@ def clamp_middle_out(
         # claiming to have clamped it. Callers pass a module constant, so a
         # non-positive cap is a programming error, not an input to absorb.
         raise ValueError(f"cap must be positive, got {cap}")
+    if reserve < 0:
+        # A negative reserve would ENLARGE the budget past ``cap`` and quietly
+        # break the one guarantee this function makes.
+        raise ValueError(f"reserve must be non-negative, got {reserve}")
     # ``cap``, NOT ``cap - reserve``. The reserve pays for repairs a CUT makes,
     # so it has no bearing on whether a cut is needed — subtracting it here
     # truncated bodies the consumer would have accepted verbatim (9993..10000
@@ -394,48 +398,56 @@ def normalize_rollback_reason(scrubbed: str) -> str:
 # fine, and is exactly what keeps the two honest.
 NOTIFIER_BODY_MAX_CHARS = 10000
 
-# Fence repair, deliberately DUPLICATED from ``workers/notifier/main.py``
-# instead of hoisted into ``driftscribe_lib``. That package is split
+# Fence handling, deliberately DUPLICATED from ``workers/notifier/main.py``
+# rather than hoisted into ``driftscribe_lib``. That package is split
 # coordinator/worker, so sharing this would couple their deploys (the
-# infra-drift worker-skew canary is the prior incident) to share a heuristic
-# the two sides may legitimately want to evolve apart.
+# infra-drift worker-skew canary is the prior incident) for the sake of one
+# heuristic the two sides may legitimately want to evolve apart.
 #
 # Runs of three-or-more backticks, not occurrences of the literal "```": a
-# six-backtick run is ONE delimiter opening a block, while ``count("```")``
-# reports two and concludes, wrongly, that nothing needs repairing.
+# six-backtick run is ONE delimiter, while ``count("```")`` reports two.
 _FENCE_RUN = re.compile(r"`{3,}")
-_FENCE_OPEN = "```\n"
-# Reserved UNCONDITIONALLY, before the cut. A clamp that cuts to the cap and
-# THEN prepends an opener emits cap+4 and recreates the 422 it exists to
-# prevent. Only the TAIL repair needs budget — the head repair below removes
-# text rather than adding it. Cost is 4 unused characters on the common path.
-_FENCE_RESERVE = len(_FENCE_OPEN)
 
 
-def _fence_delimiters(text: str) -> int:
-    return len(_FENCE_RUN.findall(text))
+def _neutralize_fences(fragment: str) -> str:
+    """Remove every code-fence delimiter from a TRUNCATED fragment.
 
+    Three attempts at *repairing* fences came before this one. Each was wrong,
+    and each looked right to the test that shipped with it, so the reasoning is
+    worth keeping:
 
-def _close_open_fence_in_head(head: str) -> str:
-    """Drop an unmatched fence opener from ``head`` instead of closing it.
+    1. Append ``\\n``` `` to a head with an odd delimiter count. Wrong —
+       CommonMark closes a fence only with a run at least as long as the
+       opener, so a four- or six-backtick block is not closed by three.
+    2. Drop the last unmatched run instead. Still wrong — it decides WHICH runs
+       are unmatched by parity, and parity cannot see length. A 12-backtick
+       opener followed by a too-short three-backtick line counts as "even" and
+       is left alone, with the block open straight through the approval URL.
+    3. Prepend an opener to a tail whose delimiter count is odd. Wrong in the
+       other direction — an inline ``` ``` ``` inside ordinary prose is not a
+       fence at all, so the prepended opener never closes and the "repair"
+       CREATES the failure it was added to prevent.
 
-    The obvious repair — append ``\\n``` `` — is WRONG for a longer delimiter:
-    CommonMark requires a closing fence at least as long as the opening one, so
-    a block opened with four or six backticks is NOT closed by three. It looks
-    repaired to a backtick counter while a real parser leaves the block open
-    through the approval URL, rendering it inert. Codex reproduced exactly that
-    against a Markdown parser; the six-backtick test that "passed" was
-    asserting regex parity, not parse state.
+    Every one of those delivers the notification while silently disabling the
+    one thing it exists to deliver, which is strictly worse than the 422 this
+    clamp replaces. Parity cannot model fence state; a real fence-state walker
+    is not proportionate here (the Notifier says the same of its own copy).
 
-    Removing the unmatched run and everything after it in the head is correct
-    for ANY delimiter length, and it can only shrink the output — which is why
-    the head needs no share of the reserve. The discarded text was the start of
-    a code block whose remainder the cut had already deleted.
+    So: no inference. Delete the delimiters. Nothing can be left open if
+    nothing can open, it is correct for every arrangement, and it can only
+    SHRINK — which is why the cut needs no repair reserve at all.
+
+    The cost is honest and small: a truncated notification loses code-block
+    *formatting* in the fragments that survive. A body on this path has already
+    lost its middle, and monospace rendering is worth far less than a clickable
+    approval link.
+
+    Runs of ONE or TWO backticks are left alone on purpose. Those are inline
+    spans, and CommonMark does not let an inline span cross a blank line — the
+    omission marker carries ``\\n\\n`` on both sides, so an unclosed span in
+    the head cannot reach the tail.
     """
-    runs = list(_FENCE_RUN.finditer(head))
-    if len(runs) % 2 == 0:
-        return head
-    return head[: runs[-1].start()]
+    return _FENCE_RUN.sub("", fragment)
 
 
 def normalize_notifier_body(body: str) -> str:
@@ -454,38 +466,28 @@ def normalize_notifier_body(body: str) -> str:
     strands a code fence reaches Slack and every generic receiver as malformed
     Markdown, with nothing downstream to fix it.
 
-    Two distinct artifacts, repaired independently:
+    A cut through arbitrary Markdown can leave a code fence open, and anything
+    after an open fence — the approval URL included — renders as inert text
+    rather than a link. So both retained fragments have their fence delimiters
+    NEUTRALIZED rather than repaired; :func:`_neutralize_fences` records why
+    three cleverer attempts were each wrong.
 
-    - an opener retained in the HEAD whose closer fell in the deleted middle —
-      DROPPED, not closed (see :func:`_close_open_fence_in_head`: a four- or
-      six-backtick opener cannot be closed by three);
-    - an orphan closer retained in the TAIL whose opener was deleted — that
-      closer would otherwise act as an OPENER in the reassembled text. Prepend
-      a three-backtick opener so it closes what it was always closing. Safe at
-      any delimiter length, because a closing fence may be LONGER than its
-      opener. This faithfully reproduces the original: a tail holding an orphan
-      closer *was* inside a code block before the cut.
+    Untouched when the body already fits, which is the overwhelmingly common
+    case: a body only reaches the neutralizer once it is over the cap and has
+    already lost its middle.
 
-    After both repairs the delimiter count preceding the tail's final segment
-    is even, so the approval URL sits outside any block — which is the property
-    ``tests/integration/test_notify_preserves_approval_url.py`` pins end to end
-    against the real renderer.
-
-    **Honest about what this is:** a parity heuristic, not a Markdown parser,
-    exactly as the Notifier's own copy says of itself. It counts backtick runs
-    that may be inline spans rather than fences, and it ignores ``~~~`` fences
-    entirely. It is a best effort on a last-resort path — the alternative to a
-    cut here is no notification at all.
+    ``tests/integration/test_notify_preserves_approval_url.py`` pins the
+    end-to-end property (URL present AND outside a code block) against the real
+    renderer and the Notifier's real Discord cut.
     """
     text = body or ""
-    parts = clamp_middle_out(text, NOTIFIER_BODY_MAX_CHARS, reserve=_FENCE_RESERVE)
+    # No reserve: neutralizing only ever removes characters, so nothing is
+    # appended after the cut and the cap cannot be exceeded afterwards.
+    parts = clamp_middle_out(text, NOTIFIER_BODY_MAX_CHARS)
     if parts is None:
         return text
     head, marker, tail = parts
-    head = _close_open_fence_in_head(head)
-    if _fence_delimiters(tail) % 2:
-        tail = _FENCE_OPEN + tail
-    return head + marker + tail
+    return _neutralize_fences(head) + marker + _neutralize_fences(tail)
 
 
 # The Upgrade Docs worker's ``ClosePrRequest.reason`` bound (ds-thm). Mirrored;

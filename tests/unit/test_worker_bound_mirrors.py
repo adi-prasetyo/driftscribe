@@ -240,15 +240,38 @@ def test_the_guard_and_the_worker_agree_on_every_candidate(candidate: str) -> No
     )
 
 
-def test_the_autonomous_validator_uses_the_same_call_as_the_chat_guard() -> None:
-    """The trailing-newline defect above was present in ``agent/validator.py``
-    too, where it predates ds-thm — the autonomous lane would have passed
-    validation and then 422'd at the worker with no model in the loop to
-    recover. Pinned by source so a future edit cannot quietly revert one lane
-    to ``.match(`` while the other keeps ``.fullmatch(``."""
-    src = Path("agent/validator.py").read_text(encoding="utf-8")
-    assert "_REVISION_NAME.fullmatch(" in src
-    assert "_REVISION_NAME.match(" not in src
+def test_the_autonomous_validator_rejects_what_the_worker_rejects() -> None:
+    """The trailing-newline defect was in ``agent/validator.py`` too, where it
+    PREDATES ds-thm: the autonomous lane would pass validation and then 422 at
+    the worker, with no model in the loop to recover — ds-j0i's exact shape.
+
+    Behavioural, not a source-text pin. An earlier version of this test grepped
+    for ``.fullmatch(``, which passes for any code that merely contains the
+    string and proves nothing about what the validator decides.
+    """
+    from agent.contract import load_contract
+    from agent.models import ContractStatus, DecisionAction, DecisionProposal, EnvDiff
+    from agent.validator import ValidationError, validate
+
+    proposal = DecisionProposal(
+        action=DecisionAction.ROLLBACK,
+        env_diffs=[
+            EnvDiff(
+                name="PAYMENT_MODE",
+                expected="mock",
+                live="live",
+                contract_status=ContractStatus.PRESENT_DISALLOW_MANUAL,
+            )
+        ],
+        target_revision="payment-demo-00024-f6v\n",
+        rationale="drifted",
+        confidence=0.9,
+        requires_human_review=True,
+    )
+    contract = load_contract(Path("demo/ops-contract.yaml"))
+
+    with pytest.raises(ValidationError, match="revision-name regex"):
+        validate(proposal, contract, live_env={"PAYMENT_MODE": "live"})
 
 
 def test_the_coordinator_regex_is_anchored() -> None:
