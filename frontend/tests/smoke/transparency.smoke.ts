@@ -270,9 +270,15 @@ test.describe('transparency UI (mock smoke)', () => {
     );
     await page.goto('/');
 
+    // Wait for RESTING specifically. Both slim states carry the class, and the
+    // store starts `settled: false` — which deskModel reports as
+    // `unknown/loading` (desk.ts) — so a bare class check can be satisfied by
+    // the loading strip before the three lanes land. The CSS pin below would
+    // still bite either way, but "this is the resting state a judge lands on"
+    // would be an unproven claim about which strip was measured.
+    await expect(page.getByTestId('approval-desk-resting')).toBeVisible();
     const slim = page.locator('.approval-desk__calm--slim');
-    // Fixture premise: one of the two slim states (resting / unknown) must be
-    // showing, or this would assert nothing at all.
+    // Fixture premise: the slim wrapper must really be there to measure.
     await expect(slim).toHaveCount(1);
     const h2 = slim.locator('h2');
     await expect(h2).toBeVisible();
