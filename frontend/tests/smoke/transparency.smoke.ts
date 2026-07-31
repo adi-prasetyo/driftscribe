@@ -247,6 +247,57 @@ test.describe('transparency UI (mock smoke)', () => {
     });
   }
 
+  // The slim hero is a TYPOGRAPHY change, and typography is the one thing none
+  // of the other gates can see: jsdom does not run the cascade, so a unit test
+  // asserting the --slim class passes whether or not the rule inside it applies,
+  // and the visual rigs measure geometry, not computed font. This shipped dead
+  // for exactly that reason — `.approval-desk__calm--slim h2` and
+  // `.approval-desk h2` are BOTH (0,2,1) once Svelte scopes them, so the later
+  // (31px Mincho) rule won every property and the "slim" strip carried a full
+  // hero headline. Assert the computed values, not the class.
+  test('the slim hero headline is body-size, not the 31px Mincho hero rule', async ({ page }) => {
+    await seedToken(page);
+    await mockData(page, freshState());
+    // freshState's decisions fixture carries a PENDING approval, which renders
+    // the tall pending card and no calm strip at all. Override both lanes to
+    // reach the resting state — the default a judge actually lands on. Routes
+    // registered later win, so these supersede mockData's.
+    await page.route('**/decisions**', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ decisions: [] }) }),
+    );
+    await page.route('**/infra/pending-approvals**', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ approvals: [] }) }),
+    );
+    await page.goto('/');
+
+    // Wait for RESTING specifically. Both slim states carry the class, and the
+    // store starts `settled: false` — which deskModel reports as
+    // `unknown/loading` (desk.ts) — so a bare class check can be satisfied by
+    // the loading strip before the three lanes land. The CSS pin below would
+    // still bite either way, but "this is the resting state a judge lands on"
+    // would be an unproven claim about which strip was measured.
+    await expect(page.getByTestId('approval-desk-resting')).toBeVisible();
+    const slim = page.locator('.approval-desk__calm--slim');
+    // Fixture premise: the slim wrapper must really be there to measure.
+    await expect(slim).toHaveCount(1);
+    const h2 = slim.locator('h2');
+    await expect(h2).toBeVisible();
+
+    const cs = await h2.evaluate((el) => {
+      const s = getComputedStyle(el);
+      return {
+        fontSize: s.fontSize,
+        fontWeight: s.fontWeight,
+        marginTop: s.marginTop,
+        fontFamily: s.fontFamily,
+      };
+    });
+    expect(cs.fontSize, 'slim headline size').toBe('15px');
+    expect(cs.fontWeight, 'slim headline weight').toBe('600');
+    expect(cs.marginTop, 'slim headline margin').toBe('0px');
+    expect(cs.fontFamily, 'slim headline must not use the Mincho hero face').not.toMatch(/Mincho/i);
+  });
+
   test('shell + built assets load with no 404 and render the chrome', async ({ page }) => {
     const bad: string[] = [];
     page.on('response', (r) => {
