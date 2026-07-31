@@ -68,6 +68,18 @@ export const desk = {
     // have succeeded with the response lost. Saying "failed" here would be a
     // second false claim in the opposite direction (ds-2mc).
     'desk.ledger.unconfirmedTitle': 'You approved · outcome unconfirmed',
+    // DecisionRecord (ds-jns PR 2) — one decision opened on the desk: the
+    // ledger row's accordion body, and the pinned card a bare `?reasoning=`
+    // link lands on. Both lines are quiet statements of fact, not errors —
+    // the reasoning above them may have loaded perfectly.
+    //
+    // `incomplete` is reachable without anything having gone wrong: a
+    // `?reasoning=` link can legitimately name a CHAT turn's trace, which is
+    // reasoning with no decision doc behind it.
+    'desk.record.incomplete': 'No decision record is attached to this trace.',
+    // Only ever shown once the overview has SETTLED — claiming a record is
+    // older than a list that has not loaded yet would be a guess.
+    'desk.record.outOfWindow': 'This decision is older than the records listed below.',
     // ---- unresolved rollback outcome (desk rule 2.5) ----
     'desk.unresolved.who': 'You approved',
     'desk.unresolved.failed.detail': 'Did not apply',
@@ -221,6 +233,8 @@ export const desk = {
     'desk.ledger.openTitle': 'あなたの承認待ち',
     'desk.ledger.failedTitle': 'あなたが承認 → 適用されず',
     'desk.ledger.unconfirmedTitle': 'あなたが承認 → 結果は未確認',
+    'desk.record.incomplete': 'このトレースには判断の記録が紐づいていません。',
+    'desk.record.outOfWindow': 'この判断は、下の一覧より古い記録です。',
     // ---- unresolved rollback outcome (desk rule 2.5) ----
     'desk.unresolved.who': 'あなたが承認しました',
     'desk.unresolved.failed.detail': '適用されず',
