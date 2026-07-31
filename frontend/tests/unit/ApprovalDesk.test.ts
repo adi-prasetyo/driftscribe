@@ -516,6 +516,48 @@ describe('ApprovalDesk — pending state, iac source, both provenance arms', () 
     expect(pending).not.toContain('approved and waiting to be applied');
   });
 
+  // The OTHER way the witness can lie (Codex r3). Decision docs accumulate —
+  // the waiting_for_rebake+merged row is never rewritten, so it is still there
+  // after the resume-apply appends a terminal failure (agent/main.py:7452). A
+  // stale listing still naming the PR (the pending fetch can fail while the
+  // decisions refresh, overviewStore.ts:237) then produced "approved and
+  // waiting to be applied" over an apply that had terminally FROZEN — a runbook
+  // condition dressed up as ordinary pending work. The witness must be
+  // uncontradicted, not merely present. Both docs are supplied here precisely
+  // because the earlier tests supply only one.
+  it.each(['failed', 'failed_state_suspect', 'ambiguous'])(
+    'a later %s decision withdraws the "waiting to be applied" claim',
+    (terminalStatus) => {
+      const approval = pendingIac({ title: undefined }); // PR #7, stale listing row
+      const approved = iacDecision({
+        decision_id: 'iac-witness',
+        pr_number: 7,
+        pr_title: undefined,
+        apply_status: 'waiting_for_rebake',
+        merge_state: 'merged', // the witness — still on file, never rewritten
+        created_at: '2026-07-28T11:00:00Z',
+      });
+      const frozen = iacDecision({
+        decision_id: 'iac-frozen',
+        pr_number: 7,
+        pr_title: undefined,
+        apply_status: terminalStatus,
+        merge_state: 'merged',
+        created_at: '2026-07-28T11:06:00Z',
+      });
+      const { getByTestId } = render(ApprovalDesk, {
+        props: {
+          graph: GRAPH,
+          decisions: [frozen, approved],
+          pendingApprovals: [approval],
+          onShowEstate: vi.fn(),
+        },
+      });
+      const pending = getByTestId('approval-desk-pending').textContent ?? '';
+      expect(pending).not.toContain('approved and waiting to be applied');
+    },
+  );
+
   // ds-db0: the decision arm exists only for a PR the open-PR listing can no
   // longer see BECAUSE IT ALREADY MERGED (desk.ts:78-84), so its copy must say
   // "waiting to be applied". Claiming it awaits approval contradicts the

@@ -168,6 +168,14 @@ export interface Decision extends Record<string, unknown> {
   // / /trace reconcile_merge_state.
   merge_state?: string;
   merge_reconciled?: boolean;
+  // Identity of ONE apply attempt, minted by the worker per apply and CARRIED
+  // FORWARD across merge-only reconciles of that same attempt (agent/main.py:7219
+  // passes `existing.get("apply_attempt_id")` straight through). So two rows
+  // sharing this value are the same apply seen at two moments, not two applies —
+  // which is exactly the identity `ledgerRows` needs to stop one reconciled apply
+  // from drawing several indistinguishable "Approved · applied" rows. Absent on
+  // pre-attempt-id docs and on non-apply rows; absence is NOT shared identity.
+  apply_attempt_id?: string;
   // Autonomy dial fields (ClickOps item 11). Present on decisions created while
   // the dial is configured; absent on pre-dial decisions (stale-coordinator
   // fail-quiet: the rail renders nothing when absent).

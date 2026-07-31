@@ -38,12 +38,12 @@
   // `failed` and `unconfirmed` get DIFFERENT glyphs on purpose. An outcome we
   // could not confirm is not a failure — the operation may still be running —
   // so it reads as a question, not a cross (ds-2mc).
-  // `awaiting_rebake` shares the in-flight glyph with `open` — both are work
+  // `awaiting_apply` shares the in-flight glyph with `open` — both are work
   // that has not landed — but keeps its own state so the copy, the CSS hook and
-  // `data-state` can distinguish "nobody has approved this" from "you approved
-  // it and the re-bake has not run yet" (ds-db0).
+  // `data-state` can distinguish "nobody has approved this" from "this was
+  // approved and merged, and the apply has not run yet" (ds-db0).
   const GLYPH: Record<LedgerState, string> = {
-    applied: '✓', open: '◍', awaiting_merge: '◍', awaiting_rebake: '◍',
+    applied: '✓', open: '◍', awaiting_merge: '◍', awaiting_apply: '◍',
     noted: '⬤', failed: '✕', unconfirmed: '?',
   };
 
@@ -51,7 +51,7 @@
     if (row.state === 'applied') return tf('desk.ledger.appliedTitle');
     if (row.state === 'open') return tf('desk.ledger.openTitle');
     if (row.state === 'awaiting_merge') return tf('desk.ledger.mergingTitle');
-    if (row.state === 'awaiting_rebake') return tf('desk.ledger.rebakeTitle');
+    if (row.state === 'awaiting_apply') return tf('desk.ledger.applyPendingTitle');
     if (row.state === 'failed') return tf('desk.ledger.failedTitle');
     if (row.state === 'unconfirmed') return tf('desk.ledger.unconfirmedTitle');
     return decisionActionLabel(row.decision.action, tf);
@@ -155,7 +155,7 @@
   }
   .ledger-strip__glyph--open,
   .ledger-strip__glyph--awaiting_merge,
-  .ledger-strip__glyph--awaiting_rebake {
+  .ledger-strip__glyph--awaiting_apply {
     color: var(--ds-warn);
   }
   .ledger-strip__glyph--noted {

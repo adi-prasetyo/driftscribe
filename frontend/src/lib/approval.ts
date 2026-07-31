@@ -266,7 +266,7 @@ export function iacPrHref(decision: {
  * banner and SUPPRESSES the Approve form, so a surface that still offers to
  * approve one is describing a page that has no button (see `iacApproveLabel`).
  */
-const TERMINAL_FAILED_APPLY_STATUSES: ReadonlySet<string> = new Set([
+export const TERMINAL_FAILED_APPLY_STATUSES: ReadonlySet<string> = new Set([
   'failed',
   'failed_state_suspect',
   'ambiguous',

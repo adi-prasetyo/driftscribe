@@ -20,7 +20,7 @@
   import { deskModel, awaitingCount, type DeskModel, type DeskPending, type DeskStamped } from '../lib/desk';
   import { resourceCards, scopeTotals, type InfraGraph, type PendingApproval } from '../lib/infra_graph';
   import { fmtWhen } from '../lib/format';
-  import { notifyFailed } from '../lib/approval';
+  import { notifyFailed, TERMINAL_FAILED_APPLY_STATUSES } from '../lib/approval';
   import type { Decision } from '../lib/types';
   import InstrumentBand, { type BandStat } from './InstrumentBand.svelte';
   import LedgerStrip from './LedgerStrip.svelte';
@@ -258,7 +258,9 @@
   }
 
   /**
-   * True when some decision PROVES the operator already approved this PR.
+   * True when some decision PROVES the operator already approved this PR AND
+   * no decision contradicts that the change is still on its way to being
+   * applied. Both halves are load-bearing; see the two comments inside.
    *
    * Provenance alone is not enough (Codex review). `selectPendingIac` (the
    * listing arm) is tried FIRST and returns immediately (desk.ts:627), and the
@@ -277,6 +279,31 @@
     prNumber: number,
     list: ReadonlyArray<Decision | null | undefined>,
   ): boolean {
+    // A witness is not enough on its own — it must also be UNCONTRADICTED
+    // (Codex review r3). Decision docs ACCUMULATE: the `waiting_for_rebake`+
+    // `merged` row is never rewritten, so it is still sitting there after the
+    // resume-apply appends `failed_state_suspect` or `ambiguous`
+    // (agent/main.py:7452). With a stale listing still naming the PR — the
+    // pending fetch can fail while the decisions refresh (overviewStore.ts:237),
+    // and the listing arm wins regardless (desk.ts:627) — this byline would
+    // report a terminally frozen apply as "approved and waiting to be applied",
+    // dressing a runbook condition up as ordinary pending work. Exactly the
+    // ds-2mc mistake: a spent credential is not a landed change.
+    //
+    // Any terminal failure for this PR disqualifies the claim, without
+    // consulting timestamps. Suppressing here costs only the improved wording
+    // (the neutral listing copy still renders, and the card's link still reaches
+    // the page that explains the failure), whereas a wrong "all is well" is the
+    // one outcome this whole change exists to prevent.
+    const contradicted = list.some(
+      (d) =>
+        d?.action === 'iac_apply' &&
+        d?.pr_number === prNumber &&
+        typeof d?.apply_status === 'string' &&
+        TERMINAL_FAILED_APPLY_STATUSES.has(d.apply_status),
+    );
+    if (contradicted) return false;
+
     return list.some(
       (d) =>
         d?.action === 'iac_apply' &&

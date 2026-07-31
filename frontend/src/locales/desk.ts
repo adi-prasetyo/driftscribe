@@ -73,11 +73,16 @@ export const desk = {
     'desk.ledger.appliedTitle': 'Approved · applied',
     'desk.ledger.openTitle': 'Awaiting your approval',
     // NOT "awaiting your approval": the backend records waiting_for_rebake at
-    // merge time, so the operator has already approved and is waiting on the
-    // C6 re-bake, not on themselves (ds-db0).
-    'desk.ledger.rebakeTitle': 'Approved · awaiting re-bake',
+    // merge time, so the operator has already approved (ds-db0).
+    //
+    // Names the APPLY, not the re-bake. The coordinator never observes the
+    // external build — it writes waiting_for_rebake at merge and leaves it until
+    // the operator's second submit resumes the apply — so "awaiting re-bake"
+    // would go stale the moment the build finished, while the apply is genuinely
+    // outstanding for the whole window (Codex review r3).
+    'desk.ledger.applyPendingTitle': 'Approved · awaiting apply',
     // merge_state 'pending': approval is recorded but the merge has not landed
-    // (or is blocked), so the re-bake is not yet what this is waiting on.
+    // (or is blocked), so the apply is not yet what this is waiting on.
     'desk.ledger.mergingTitle': 'Approved · not yet applied',
     'desk.ledger.failedTitle': 'Approved · did not apply',
     // Deliberately not "failed": the operation may still be running or may
@@ -249,8 +254,10 @@ export const desk = {
     'desk.ledger.appliedTitle': '承認済み → 適用完了',
     'desk.ledger.openTitle': 'あなたの承認待ち',
     // 「承認待ち」ではない。waiting_for_rebake はマージ時点で記録されるため、
-    // 承認は済んでおり、待っているのは C6 再ビルド（ds-db0）。
-    'desk.ledger.rebakeTitle': '承認済み → 再ビルド待ち',
+    // 承認は済んでいる（ds-db0）。再ビルドの完了はコーディネーターからは
+    // 観測できないため「再ビルド待ち」とは書かず、実際に未完了である「適用」を
+    // 主語にする（Codex review r3）。
+    'desk.ledger.applyPendingTitle': '承認済み → 適用待ち',
     'desk.ledger.mergingTitle': '承認済み → 未適用',
     'desk.ledger.failedTitle': '承認済み → 適用されず',
     'desk.ledger.unconfirmedTitle': '承認済み → 結果は未確認',

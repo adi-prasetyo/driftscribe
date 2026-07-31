@@ -107,7 +107,7 @@ describe('LedgerStrip', () => {
   // ds-db0: an IaC row reaching the strip is in waiting_for_rebake, which the
   // backend records at merge — the operator already approved it. Borrowing the
   // rollback lane's solicitation copy told them otherwise.
-  it('a merged iac row awaits the re-bake, never the approval already given', () => {
+  it('a merged iac row awaits the apply, never the approval already given', () => {
     const d = decision({
       decision_id: 'r1',
       action: 'iac_apply',
@@ -116,8 +116,14 @@ describe('LedgerStrip', () => {
       pr_number: 168,
     });
     const { getByText, container } = render(LedgerStrip, { props: { decisions: [d] } });
-    expect(getByText('Approved · awaiting re-bake')).toBeTruthy();
+    expect(getByText('Approved · awaiting apply')).toBeTruthy();
     expect(container.textContent).not.toContain('Awaiting your approval');
+    // Codex r3: name the APPLY, not the re-bake. The coordinator never observes
+    // the external build — it writes waiting_for_rebake at merge and leaves it
+    // until the operator's second submit — so a row claiming the re-bake is
+    // outstanding goes stale the moment the build finishes, and this surface has
+    // no way to notice. The apply is genuinely outstanding for the whole window.
+    expect(container.textContent).not.toMatch(/re-?bake/i);
   });
 
   it('noted row title falls back to decisionActionLabel (e.g. no_op → the friendly label)', () => {
