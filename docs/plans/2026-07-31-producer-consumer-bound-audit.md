@@ -458,7 +458,28 @@ its own bug.
    assertions fail. Structural guarantees do not depend on the sanitizer being
    right — that is the point of moving the budget.
 
-   **What this cost.** Seven wrong implementations and two rounds of invalid
+   8. *Bound the sections, but leave the link only in the footer.* Incomplete,
+      and it exposed a defect **older than this bead**: neutralization runs
+      only when the rationale is TRUNCATED, so a model emitting an unclosed
+      ``` in a 900-character rationale broke the approval link in every
+      notification — bounded or not, and long before ds-thm. Budgeting cannot
+      help; the body was never over the cap.
+
+      Fixed structurally, per Codex: an approval link now appears **above** the
+      model's rationale. Markdown parses forwards, so a link already rendered
+      cannot be captured by anything written below it. That cures the old bug
+      and demotes neutralization from safety-critical to a readability nicety.
+      The footer link stays — it carries the expiry and traffic warning.
+
+   9. *Emit the pathological fallback unchecked.* The "template does not fit"
+      branch returned a body without measuring it: 172 chars against a cap of
+      100, and 20 173 against 10 000 for an absurd URL. Now every branch is
+      measured, degrading to a link-only body and finally to a hard bound.
+      It deliberately does **not** raise: this runs after the approval is
+      minted and before the decision row is written, so an exception would
+      strand the approval for real (ds-hdt).
+
+   **What this cost.** Nine wrong implementations and two rounds of invalid
    fixtures, on a path that fires only when a model writes a ~9400-character
    rationale. Without any clamp that path is a guaranteed 422 and *no*
    notification, so every version was an improvement on the status quo — but

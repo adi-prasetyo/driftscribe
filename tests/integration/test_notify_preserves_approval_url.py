@@ -147,18 +147,29 @@ def test_the_retained_tail_of_a_real_body_contains_no_code_fence():
     assert "```" not in body[-_TRUNCATION_TAIL_BUDGET:]
 
 
-def test_a_naive_head_slice_would_have_lost_the_url():
-    """Justifies the middle-out design by proving the obvious one fails.
+def test_even_a_naive_head_slice_would_now_keep_a_link():
+    """ds-thm inverted this test, and the inversion is the point.
 
-    Without this, a future reader sees only that both implementations pass the
-    short-body cases and may 'simplify' the helper into the bug.
+    It used to assert the opposite — that the URL was absent from the first
+    2000 characters — as the justification for the notifier's middle-out cut,
+    on the premise that the link lived ONLY at the end. Putting an approval
+    link above the model's rationale (so forward-parsed Markdown cannot swallow
+    it) deliberately breaks that premise, and leaves the body robust to a
+    head-slicing consumer as a side effect.
+
+    The notifier's middle-out cut is still worth keeping: it is generic across
+    bodies, and retaining the tail preserves the expiry note and the traffic
+    warning. It is simply no longer the ONLY thing standing between the
+    operator and an unusable notification.
     """
     body = render_rollback_body(
         _proposal("R" * _MAX_REALISTIC_RATIONALE), _APPROVAL_URL
     )
     text = f"[DriftScribe/approval/high] {body}"
     assert len(text) > _DISCORD_CONTENT_LIMIT, "fixture must exceed the cap"
-    assert _APPROVAL_URL not in text[:_DISCORD_CONTENT_LIMIT]
+    assert _APPROVAL_URL in text[:_DISCORD_CONTENT_LIMIT], (
+        "the leading approval link should survive even a naive head slice"
+    )
 
 
 def test_the_rendered_body_still_fits_the_notifier_schema():
@@ -259,6 +270,72 @@ def test_the_approval_link_still_RENDERS_for_every_hostile_rationale(name: str):
         "the link is present but does not render — something above it is still "
         "swallowing it"
     )
+
+
+@pytest.mark.parametrize("name", sorted(_HOSTILE))
+def test_a_SHORT_hostile_rationale_also_keeps_the_link_clickable(name: str):
+    """The defect that predates ds-thm, and the reason the link moved above the
+    rationale.
+
+    Neutralization only runs when the rationale is TRUNCATED, so a model that
+    emitted an unclosed ``` in a 926-character rationale broke the approval
+    link in every notification — bounded or not, before this change or after.
+    Budgeting cannot help: the body was never over the cap.
+
+    Markdown parses forwards, so a link rendered ABOVE the model's text cannot
+    be captured by anything the model writes below it. That is structural, and
+    it is why this passes on the UNBOUNDED path too.
+    """
+    from markdown_it import MarkdownIt
+
+    short = _HOSTILE[name][:900]
+    for kwargs in ({}, {"max_chars": _CAP}):
+        body = render_rollback_body(_proposal(short), _APPROVAL_URL, **kwargs)
+        assert f'href="{_APPROVAL_URL}"' in MarkdownIt().render(body), (
+            f"{name} ({'bounded' if kwargs else 'unbounded'}): no clickable link"
+        )
+
+
+@pytest.mark.parametrize("cap", [1, 50, 261, 500, 5000])
+def test_an_impossible_cap_still_produces_a_conforming_body(cap: int):
+    """No implementation can preserve an arbitrary URL AND fit a cap shorter
+    than that URL — but it must never emit an over-cap body either, because
+    that is the 422 this whole bead exists to prevent. Degrade, never exceed.
+    """
+    body = render_rollback_body(_proposal("x" * 5000), _APPROVAL_URL, max_chars=cap)
+    assert len(body) <= cap
+
+
+def test_an_absurd_approval_url_degrades_instead_of_overflowing():
+    """Only reachable through a misconfigured ``COORDINATOR_URL``. It must not
+    raise either: this runs after the approval is minted and before the
+    decision row is written, so an exception would strand it (ds-hdt)."""
+    body = render_rollback_body(
+        _proposal("x" * 200), "https://x/" + "u" * 20_000, max_chars=_CAP
+    )
+    assert len(body) <= _CAP
+
+
+@pytest.mark.parametrize("rows", [1, 2, 5, 20])
+def test_the_evidence_table_is_never_cut_mid_row(rows: int):
+    """Rows are dropped whole. Half a row is malformed Markdown: the pipes stop
+    matching the header and the table degrades to prose, which on an approval
+    page reads as though the evidence were something other than a table."""
+    p = _proposal("x" * 4000)
+    p.env_diffs = [
+        EnvDiff(
+            name=f"VAR_{i}_{'n' * 200}",
+            expected="mock",
+            live="live",
+            contract_status=ContractStatus.PRESENT_DISALLOW_MANUAL,
+        )
+        for i in range(rows)
+    ]
+    body = render_rollback_body(p, _APPROVAL_URL, max_chars=_CAP)
+    assert len(body) <= _CAP
+    table_rows = [ln for ln in body.split("\n") if ln.startswith("| `VAR_")]
+    for line in table_rows:
+        assert line.count("|") == 7, f"row was cut mid-way: {line[-40:]!r}"
 
 
 def test_an_ordinary_rollback_body_is_not_abridged_at_all():

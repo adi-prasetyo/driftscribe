@@ -793,10 +793,29 @@ _EVIDENCE_OMITTED = (
 def _rollback_body(
     p: DecisionProposal, approval_url: str, rationale: str, evidence: str
 ) -> str:
-    """The template. Split out so the budget can be measured against the REAL
-    fixed text rather than an estimate that drifts as the copy is edited."""
+    """The template.
+
+    Split out so the budget can be measured against the REAL fixed text rather
+    than an estimate that drifts as the copy is edited.
+
+    **The approval link appears BEFORE the model-authored rationale, and that
+    ordering is a safety property, not a layout choice.** Markdown is parsed
+    forwards: an unclosed fence or an ``<!--`` in the rationale swallows
+    everything AFTER it, so a link that has already been rendered above cannot
+    be retroactively captured. This closes a defect that predates ds-thm
+    entirely — a model that emitted an unclosed ``` in even a SHORT rationale
+    broke the approval link in every notification, truncated or not.
+
+    The footer link is kept as well: it carries the expiry and traffic warning,
+    it is where an operator reading the whole message expects the call to
+    action, and a second copy costs one line.
+    """
     return f"""\
 ## DriftScribe — rollback proposed (approval required)
+
+**Approve or reject:** <{approval_url}>
+
+Rolling back `payment-demo` to `{p.target_revision}`.
 
 {rationale}
 
@@ -824,6 +843,17 @@ re-propose to mint a fresh token.
 > to revision `{p.target_revision}`. Rejecting leaves traffic on the current
 > revision and DriftScribe will not retry automatically.
 """
+
+
+def _minimal_rollback_body(p: DecisionProposal, approval_url: str) -> str:
+    """Everything except the link is expendable; the link is why the message
+    exists. Used when the fixed template cannot fit the cap at all."""
+    return (
+        "## DriftScribe — rollback proposed (approval required)\n\n"
+        f"Roll back `payment-demo` to `{p.target_revision}`. The details did "
+        "not fit this notification — approve or reject here:\n\n"
+        f"<{approval_url}>\n"
+    )
 
 
 def _bounded_evidence(p: DecisionProposal, budget: int) -> str:
@@ -914,28 +944,32 @@ def render_rollback_body(
     # invalidate the arithmetic here.
     overhead = len(_rollback_body(p, approval_url, "", ""))
     available = max_chars - overhead
-    if available <= 0:
-        # Pathological (an absurd approval_url or revision name). Everything
-        # except the link is expendable; the link is the reason the message
-        # exists, so it is what survives.
-        return (
-            "## DriftScribe — rollback proposed (approval required)\n\n"
-            f"Roll back `payment-demo` to `{p.target_revision}`. The details "
-            "did not fit this notification — approve or reject here:\n\n"
-            f"<{approval_url}>\n"
+    if available > 0:
+        # Rationale first, at up to half; whatever it leaves goes to evidence.
+        parts = clamp_middle_out(rationale, max(1, available // 2))
+        if parts is not None:
+            head, marker, tail = parts
+            rationale = _neutralize_fences(head) + marker + _neutralize_fences(tail)
+        body = _rollback_body(
+            p, approval_url, rationale, _bounded_evidence(p, available - len(rationale))
         )
+        if len(body) <= max_chars:
+            return body
 
-    # Rationale first, at up to half; whatever it leaves goes to the evidence.
-    parts = clamp_middle_out(rationale, max(1, available // 2))
-    if parts is not None:
-        head, marker, tail = parts
-        rationale = _neutralize_fences(head) + marker + _neutralize_fences(tail)
-    evidence = _bounded_evidence(p, available - len(rationale))
-    body = _rollback_body(p, approval_url, rationale, evidence)
-    # Belt and braces: the arithmetic above is measured, not estimated, but a
-    # 422 here is the outage this whole bead is about. A final hard bound costs
-    # nothing and cannot be reasoned wrong.
-    return body if len(body) <= max_chars else body[:max_chars]
+    # The template alone does not fit — only reachable via an absurd
+    # ``approval_url`` (i.e. a misconfigured ``COORDINATOR_URL``), since the
+    # revision name is schema-bounded at 64. Degrade to the link.
+    minimal = _minimal_rollback_body(p, approval_url)
+    if len(minimal) <= max_chars:
+        return minimal
+
+    # Not even the link fits. NOTHING can preserve an arbitrary URL under a cap
+    # shorter than that URL, so this is a config error, not an input to absorb
+    # — but it must still not 422 the worker and strand the approval, and it
+    # must not raise: this runs AFTER the approval is minted and BEFORE the
+    # decision row is written, so an exception here would strand it for real
+    # (ds-hdt). Bounded output, honestly degraded, is the least-bad outcome.
+    return minimal[:max_chars]
 
 
 def render_escalation_issue_body(p: DecisionProposal) -> str:
