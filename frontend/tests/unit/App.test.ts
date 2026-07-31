@@ -1057,19 +1057,134 @@ describe('App — estate view (Task 4.1)', () => {
   // not navigation, so it must leave no history entry and not touch the URL —
   // otherwise Back would have a phantom step to undo.
   it('an instrument-band numeral scrolls to the estate section without navigating', async () => {
-    window.HTMLElement.prototype.scrollIntoView = vi.fn();
     history.replaceState(null, '', '/?view=desk');
     const { getByTestId } = render(App);
     await waitFor(() => expect(getByTestId('instrument-band-drift')).toBeTruthy());
+    // Spied AFTER render so boot-time writes don't count. Asserting the URL
+    // string alone is not enough: a regression that pushed the SAME url would
+    // leave a phantom Back step and still pass (Codex review of this branch).
+    const push = vi.spyOn(history, 'pushState');
+    const replace = vi.spyOn(history, 'replaceState');
+    // The suite-wide beforeEach installs a fresh scrollIntoView mock per test.
+    const scrollSpy = window.HTMLElement.prototype.scrollIntoView as ReturnType<typeof vi.fn>;
     const before = window.location.href;
 
     await fireEvent.click(getByTestId('instrument-band-drift'));
 
-    expect(window.HTMLElement.prototype.scrollIntoView).toHaveBeenCalled();
+    // setup.ts forces matchMedia('reduce') → matches:true, so
+    // prefersReducedMotion() picks 'auto'. Asserting the ARGUMENTS is what
+    // pins the reduced-motion branch — an unconditional 'smooth' would
+    // otherwise pass this test unnoticed.
+    expect(scrollSpy).toHaveBeenCalledWith({ behavior: 'auto', block: 'start' });
+    // A scroll is not navigation: no history entry, no url rewrite.
+    expect(push).not.toHaveBeenCalled();
+    expect(replace).not.toHaveBeenCalled();
     expect(window.location.href).toBe(before);
     // Focus follows the scroll, or a keyboard user stays parked on the band
     // button that just scrolled out of view.
     expect(document.activeElement).toBe(getByTestId('estate-view'));
+  });
+
+  // The design's central merge invariant: the hero's state machine and the
+  // estate section's own status are INDEPENDENT. Each area reports its own
+  // truth rather than one dragging the other into a shared "something is
+  // wrong" state (ds-eh6, "unknown ≠ empty"). Both halves are covered at
+  // component level; these pin the COMPOSITION, which is where the merge could
+  // couple them.
+  //
+  // The two cases are deliberately the two DIRECTIONS, chosen so each can
+  // actually fail: overviewStore keeps a graph failure out of `degraded`
+  // (overviewStore.ts:251), so a graph outage moves ONLY the estate, and a
+  // decisions outage moves ONLY the hero.
+  //
+  // NB a provable pending decision outranks `degraded` in deskModel (desk.ts:645
+  // — absence is the only claim load state can veto), so a pending-hero fixture
+  // would render `pending` no matter how the props were wired and would pin
+  // nothing here. Hence resting/unknown.
+  it('a failed estate fetch does not drag the hero out of its all-clear', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        // Both pending-work lanes answer cleanly → the desk CAN say "all clear".
+        if (url.includes('/decisions')) return okJson({ decisions: [] });
+        if (url.includes('/infra/pending-approvals')) return okJson({ approvals: [] });
+        // …while the estate map could not be read at all.
+        if (url.includes('/infra/graph')) return new Response('boom', { status: 500 });
+        return okJson({});
+      }),
+    );
+    history.replaceState(null, '', '/');
+    const { findByTestId, getByTestId, queryByTestId } = render(App);
+
+    // The estate admits it could not be read — never a fake-empty "all clear".
+    expect(await findByTestId('estate-degraded')).toBeTruthy();
+    expect(queryByTestId('estate-row')).toBeNull();
+    // The hero keeps its own (separately established) truth.
+    expect(getByTestId('approval-desk-resting')).toBeTruthy();
+    expect(queryByTestId('approval-desk-unknown')).toBeNull();
+    // …and is honest about the scan time it no longer has.
+    expect(getByTestId('approval-desk-watch').textContent).toContain('scan time unavailable');
+  });
+
+  it('a degraded hero does not drag the estate section down with it', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        // /decisions fails → overviewStore sets degraded → the hero cannot
+        // claim the all-clear.
+        if (url.includes('/decisions')) return new Response('boom', { status: 500 });
+        if (url.includes('/infra/pending-approvals')) return okJson({ approvals: [] });
+        // …while the estate map read perfectly well.
+        if (url.includes('/infra/graph'))
+          return okJson({
+            generated_at: '2026-07-31T06:00:00Z',
+            project: 'demo-proj',
+            caveat: '',
+            degraded: false,
+            degraded_reason: null,
+            totals: { resources: 2, managed: 0, drift: 1 },
+            groups: [
+              {
+                asset_type: BUCKET,
+                label: 'Storage bucket',
+                count: 1,
+                managed: 0,
+                drift: 1,
+                sensitive: false,
+                adoptable: true,
+                nodes: [
+                  {
+                    id: 'b0',
+                    label: 'shipping-topic',
+                    asset_type: BUCKET,
+                    managed: false,
+                    location: 'asia-northeast1',
+                  },
+                ],
+              },
+            ],
+            edges: [],
+          });
+        return okJson({});
+      }),
+    );
+    history.replaceState(null, '', '/');
+    const { findByTestId, getByTestId, queryByTestId } = render(App);
+
+    // The hero admits the gap. waitFor the REASON, not just the element: the
+    // unknown state is also what a still-loading first cycle renders, so
+    // asserting on first sight would pass on 'loading' and prove nothing.
+    await waitFor(() =>
+      expect(getByTestId('approval-desk-unknown').getAttribute('data-reason')).toBe('degraded'),
+    );
+    expect(queryByTestId('approval-desk-resting')).toBeNull();
+    // …while the estate renders the rows it genuinely read.
+    const row = await findByTestId('estate-row');
+    expect(row.textContent).toContain('shipping-topic');
+    expect(queryByTestId('estate-degraded')).toBeNull();
+    expect(queryByTestId('estate-loading')).toBeNull();
   });
 
   it('an adopt chip on the estate section lands the operator on a prefilled composer', async () => {
