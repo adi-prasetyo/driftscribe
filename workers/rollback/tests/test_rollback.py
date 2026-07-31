@@ -663,16 +663,57 @@ def test_execute_rejects_malformed_approval_id(
     assert traffic_calls == []
 
 
+def _reason_cap() -> int:
+    """The declared cap, read off the model rather than copied.
+
+    ds-j0i: this test used to hardcode ``"x" * 501`` against a 500-char cap, so
+    raising the cap made it fail for the right reason but the wrong shape — the
+    number lived in two places. Deriving it means the boundary test follows the
+    schema, which matters because the coordinator clamps to this same number
+    (``agent.renderer.ROLLBACK_REASON_MAX_CHARS``) and a silent skew between the
+    two IS the outage this whole file now guards.
+    """
+    from annotated_types import MaxLen
+
+    for m in rollback_main.ProposeRequest.model_fields["reason"].metadata:
+        if isinstance(m, MaxLen):
+            return m.max_length
+    raise AssertionError("ProposeRequest.reason has no declared max_length")
+
+
 def test_propose_rejects_oversized_reason(client, store) -> None:
     r = client.post(
         "/propose",
         json={
             "target_revision": "payment-demo-00002-bbb",
-            "reason": "x" * 501,  # 1 over the 500-char cap
+            "reason": "x" * (_reason_cap() + 1),
         },
     )
     assert r.status_code == 422
     assert store.docs == {}
+
+
+def test_propose_accepts_a_reason_at_the_cap(client, store) -> None:
+    """The raise itself, pinned (ds-j0i).
+
+    Without this, the cap could be lowered back toward 500 and only the
+    rejection test above would move — which is exactly how autonomous self-heal
+    broke on 2026-07-31: a 581-char model rationale met a 500-char cap, /propose
+    returned 422, and no approval was ever minted.
+    """
+    assert _reason_cap() >= 581, (
+        "the cap must clear real model rationales; 581 chars is the length that "
+        "took self-heal down on prod"
+    )
+    r = client.post(
+        "/propose",
+        json={
+            "target_revision": "payment-demo-00002-bbb",
+            "reason": "x" * _reason_cap(),
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert store.docs, "an approval must actually be minted at the boundary"
 
 
 def test_start_traffic_update_uses_update_mask_and_refuses_tagged_targets(

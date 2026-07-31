@@ -549,13 +549,26 @@ class ProposeRequest(BaseModel):
       chars). Catches gross malformations before the Cloud Run admin
       lookup runs and refuses path-traversal-style inputs at the
       schema layer.
-    - ``reason`` is capped at 500 chars. The approval page renders this
+    - ``reason`` is capped at 2000 chars. The approval page renders this
       verbatim to the operator; bounding it keeps the Firestore doc
       cheap and the UI legible.
+
+      Raised from 500 (ds-j0i, 2026-07-31). 500 was too tight for real model
+      output and took autonomous self-heal down on prod: a 581-char rationale
+      hit ``string_too_long``, this endpoint returned 422, and no approval was
+      ever minted. The coordinator now clamps to the SAME number
+      (``agent.renderer.ROLLBACK_REASON_MAX_CHARS``) before sending, so this
+      bound is the trust boundary rather than the thing ordinary traffic
+      collides with. 2000 is still trivial for Firestore and still reviewable
+      on the approval page.
+
+      ⚠️ DEPLOY ORDER: this worker must ship BEFORE a coordinator that sends
+      more than 500 chars — same ``extra="forbid"`` asymmetry the ds-uwc
+      fields document below.
     """
 
     target_revision: str = Field(min_length=1, max_length=64, pattern=_REVISION_NAME.pattern)
-    reason: str = Field(min_length=1, max_length=500)
+    reason: str = Field(min_length=1, max_length=2000)
     # ds-uwc. The coordinator owns the ops contract; this worker has none. These
     # let it compute the "does the TARGET revision satisfy the contract" booleans
     # the approval page needs, without ever being handed — or returning — an

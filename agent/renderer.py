@@ -272,6 +272,75 @@ def scrub_rationale_text(rationale: str, env_diffs: list[EnvDiff]) -> str:
     return _scrub_secret_values_from_rationale(rationale, env_diffs)
 
 
+# The Rollback Worker's ``ProposeRequest.reason`` bound (ds-j0i). Kept equal to
+# the worker's ``max_length`` on purpose: the worker cap is the trust-boundary
+# invariant, this clamp is the guarantee that ordinary producer output conforms
+# to the deployed wire contract. Raising one without the other re-opens the
+# outage, so they are asserted equal by test_propose_reason_boundary.
+ROLLBACK_REASON_MAX_CHARS = 2000
+
+# Unicode characters, matching pydantic's ``max_length`` unit — NOT encoded
+# bytes. A JA rationale would fail a byte-based clamp while passing the worker's.
+_OMISSION_MARKER = "\n\n[… {n} characters omitted by DriftScribe …]\n\n"
+
+# ds-j0i: ``DecisionProposal.rationale`` has no minimum length while the worker
+# requires ``min_length=1``, so an empty model rationale is its own 422 — the
+# same outage by a different route. This is what the operator sees instead.
+ROLLBACK_REASON_ABSENT = (
+    "DriftScribe proposed this rollback without a model rationale. Inspect the "
+    "recorded change evidence and target revision before approving."
+)
+
+
+def normalize_rollback_reason(scrubbed: str) -> str:
+    """Bound an already-SCRUBBED rationale to the worker's ``reason`` contract.
+
+    ds-j0i, proven on prod 2026-07-31: the coordinator sent this field
+    unbounded while ``workers/rollback`` declares
+    ``reason: Field(min_length=1, max_length=500)`` with ``extra="forbid"``. A
+    581-char model rationale produced a pydantic 422, the approval was never
+    minted, and autonomous self-heal died one step after the ds-q38 fix had
+    correctly evicted the poisoned row.
+
+    **Order matters: scrub FIRST, then clamp.** Redaction replaces values with
+    ``(redacted)`` and so changes length; clamping first could hand the worker a
+    string that is over the cap again after scrubbing, or cut a credential in
+    half so the scrubber no longer matches it.
+
+    **Truncation preserves the TAIL, not just the head.** The model puts its
+    operator caveat last — the rationale that triggered this bug ended "...the
+    configuration of the chosen candidate is unverified and should be checked by
+    the operator prior to approval." A head-only truncation silently drops
+    exactly the sentence an operator most needs before approving a rollback, so
+    roughly half the budget is reserved for the tail and the omission is stated
+    in DriftScribe's own voice rather than left to look like the model stopped
+    talking.
+
+    No second model call to summarize: that could discard the very caveat this
+    is protecting.
+    """
+    text = (scrubbed or "").strip()
+    if not text:
+        return ROLLBACK_REASON_ABSENT
+    if len(text) <= ROLLBACK_REASON_MAX_CHARS:
+        return text
+
+    # Size the marker against the WHOLE length first, so the real marker (whose
+    # number is smaller) can never be longer than the space reserved for it.
+    reserved = len(_OMISSION_MARKER.format(n=len(text)))
+    budget = ROLLBACK_REASON_MAX_CHARS - reserved
+    if budget <= 0:  # pragma: no cover — only if the cap is set absurdly low
+        return text[:ROLLBACK_REASON_MAX_CHARS]
+    head_budget = budget // 2
+    tail_budget = budget - head_budget
+    omitted = len(text) - head_budget - tail_budget
+    return (
+        text[:head_budget]
+        + _OMISSION_MARKER.format(n=omitted)
+        + text[len(text) - tail_budget:]
+    )
+
+
 # Tokenized rollback-approval link, wherever it hides in a served string
 # (decision ``rendered_body``, a model reply echoed into a trace event, a
 # tool-result preview). The single-use approval TOKEN is the secret — the

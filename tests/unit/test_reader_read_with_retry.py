@@ -225,9 +225,10 @@ async def test_a_slow_reader_stops_accumulating_attempts() -> None:
 
 
 async def test_a_fast_failing_reader_still_gets_all_three_attempts() -> None:
-    """The deadline must not silently eat the retries it is meant to bound —
-    the failure mode of a too-tight budget is the liveness bug this whole
-    helper exists to prevent."""
+    """The admission budget must not silently eat the retries it is meant to
+    bound — the failure mode of a too-tight budget is the liveness bug this
+    whole helper exists to prevent. (Called a budget, not a deadline: see the
+    module docstring for why that distinction was overstated twice.)"""
     now = [0.0]
     calls: list[int] = []
 

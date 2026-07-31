@@ -260,8 +260,10 @@ consistently the riskier thing in this change.
   reverting to the unordered read and watching the regression fail. Round 6 also
   corrected a **false claim of mine**: the retry's "cannot push any caller past
   a deadline it used to make" is not true of a scalar httpx timeout, which is
-  per-phase. The test is renamed to what it actually proves and a real
-  loop-clock deadline now bounds the ladder.
+  per-phase. The test is renamed to what it actually proves and a loop-clock
+  check now bounds how many further attempts may START. (Round 7 corrected this
+  entry too: that check is retry ADMISSION, not a deadline — it cannot
+  interrupt an attempt in flight. Nothing here bounds total wall clock.)
 
 - **Round 5 blocker:** deferring the eviction (round 4) made a *permanent* wedge
   reachable — see (c). Verified by reverting the contract and watching
