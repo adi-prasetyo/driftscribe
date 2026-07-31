@@ -602,9 +602,8 @@ def test_a_resurrected_firestore_row_is_still_recognised_as_stale() -> None:
 
     resurrected = MagicMock()
     resurrected.to_dict.return_value = poisoned
-    decisions.where.return_value.limit.return_value.stream.return_value = iter(
-        [resurrected]
-    )
+    resurrected.create_time = 100
+    decisions.where.return_value.stream.return_value = iter([resurrected])
 
     store = FirestoreStateStore(project="p", client=mock_db)
     found = store.find_decision_for_event("eventarc-payment-demo-drifted")
@@ -744,12 +743,27 @@ def test_recovery_returns_the_newest_row_so_one_drift_cannot_mint_twice() -> Non
     where the tie-break lives and where an in-memory store cannot model it.
     """
     key = "eventarc-payment-demo-orphaned"
-    older_stale = {"decision_id": "D0-stale-noop", "action": "no_op",
-                   "event_key": key,
-                   "rationale": "No configuration drift is present."}
-    newer_valid = {"decision_id": "D1-rollback", "action": "rollback",
-                   "event_key": key,
-                   "expires_at": "2099-01-01T00:00:00+00:00"}
+    # TWELVE older stale rows, so a ``.limit(10)`` on the unordered stream would
+    # page the newest one out entirely. Reachable: every failed replacement
+    # under the same env/contract key leaves another row behind. Firestore's
+    # implicit ordering is by document ID (random UUIDs), so a capped read takes
+    # an ARBITRARY subset, not the newest — the trap ``list_decisions`` already
+    # documents as invariant 2, and one this fix violated at first.
+    older_stale = [
+        {"decision_id": f"D{i}-stale-noop", "action": "no_op", "event_key": key,
+         "rationale": "No configuration drift is present."}
+        for i in range(12)
+    ]
+    # The real persisted shape: ``_cached_rollback_is_expired`` reads
+    # ``cached["approval"]["expires_at"]``, NOT a top-level key. An earlier
+    # version of this fixture put it at the top level, so the "servable"
+    # assertion below passed through the malformed-expiry fail-safe instead of
+    # proving an unexpired approval is served — the same impossible-fixture
+    # shape that hid a defect twice in ds-y5i.
+    newer_valid = {
+        "decision_id": "D12-rollback", "action": "rollback", "event_key": key,
+        "approval": {"expires_at": "2099-01-01T00:00:00+00:00"},
+    }
 
     mock_db = MagicMock()
     events, decisions = MagicMock(), MagicMock()
@@ -759,26 +773,37 @@ def test_recovery_returns_the_newest_row_so_one_drift_cannot_mint_twice() -> Non
     missing_pointer.exists = False
     events.document.return_value.get.return_value = missing_pointer
 
-    d0, d1 = MagicMock(), MagicMock()
-    d0.to_dict.return_value = older_stale
-    d0.create_time = 100
-    d1.to_dict.return_value = newer_valid
-    d1.create_time = 200
-    # Returned OLDEST-FIRST on purpose: an implementation that takes the first
-    # row of the page rather than the newest one fails here.
-    decisions.where.return_value.limit.return_value.stream.return_value = iter(
-        [d0, d1]
+    def _snap(doc: dict, created: int) -> MagicMock:
+        s = MagicMock()
+        s.to_dict.return_value = doc
+        s.create_time = created
+        return s
+
+    # Oldest-first on purpose: an implementation that takes the FIRST row rather
+    # than the newest fails here.
+    page = [_snap(d, 100 + i) for i, d in enumerate(older_stale)]
+    page.append(_snap(newer_valid, 999))
+
+    query = decisions.where.return_value
+    query.stream.side_effect = lambda *a, **k: iter(page)
+    # A re-introduced .limit(N) gets a TRUNCATED page that excludes the newest
+    # row — exactly what Firestore would return — so this test fails rather
+    # than silently passing on a capped read.
+    query.limit.side_effect = lambda n: MagicMock(
+        stream=lambda *a, **k: iter(page[:n])
     )
 
     store = FirestoreStateStore(project="p", client=mock_db)
     found = store.find_decision_for_event(key)
 
     assert found == newer_valid, (
-        "recovery must return the newest decision; returning the older stale "
+        "recovery must return the newest decision; returning an older stale "
         "row lets the caller evict-and-re-mint a second approval for one drift"
     )
     # And the row it returns is one the caller will SERVE rather than replace —
-    # which is the whole point: no eviction, no re-claim, no second mint.
+    # which is the whole point: no eviction, no re-claim, no second mint. This
+    # now exercises the real unexpired-approval path rather than the fail-safe.
+    assert found["approval"]["expires_at"] > "2090", "premise: genuinely unexpired"
     assert _cached_decision_is_stale(found, _rollback_proposal()) is False
 
 

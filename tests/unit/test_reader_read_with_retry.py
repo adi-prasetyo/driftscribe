@@ -20,9 +20,13 @@ written in the first place:
   comparison against the 30s default this read would otherwise inherit — a
   scalar httpx timeout is per-phase, and ID-token minting happens outside it,
   so this is not wall-clock;
-* the **deadline** is the real end-to-end bound, checked against the loop clock
-  between attempts, and it is what stops a slow-but-not-failing reader from
-  stacking three attempts up.
+* the **admission budget** is NOT a deadline either — round 7 corrected that
+  too. It gates whether the next attempt may start, so it bounds the attempt
+  COUNT under slowness; it cannot interrupt a call already in flight, and three
+  ordinary failures still cost more than it.
+
+Total wall clock is bounded by neither. Saying so plainly here because this
+same guarantee was overstated twice.
 """
 from __future__ import annotations
 
@@ -33,7 +37,7 @@ import pytest
 
 from agent.main import (
     _READER_ATTEMPT_TIMEOUT_S,
-    _READER_RETRY_DEADLINE_S,
+    _READER_RETRY_ADMISSION_S,
     _READER_RETRY_DELAYS,
     _read_with_retry,
 )
@@ -150,8 +154,11 @@ def test_the_configured_retry_budget_stays_under_the_default_it_replaced() -> No
     So what is pinned here is narrow and true: the configured per-attempt
     budget times the attempt count, plus the sleeps, stays under the 30s
     default this read would otherwise inherit. That keeps a future change from
-    quietly restoring the ~92s ladder. The end-to-end bound that IS enforced
-    lives in the next test.
+    quietly restoring the ~92s ladder.
+
+    There is no end-to-end bound anywhere in this file to point at. The next
+    test covers retry ADMISSION, which bounds the attempt count under slowness
+    and nothing more.
     """
     from agent.worker_client import _HTTPX_TIMEOUT, _WORKER_DEFAULT_TIMEOUTS
 
@@ -167,23 +174,27 @@ def test_the_configured_retry_budget_stays_under_the_default_it_replaced() -> No
     )
 
 
-async def test_a_slow_reader_stops_the_ladder_at_the_deadline() -> None:
-    """The bound that is genuinely enforced end to end.
+async def test_a_slow_reader_stops_accumulating_attempts() -> None:
+    """Admission control, named for what it is — NOT a deadline.
 
-    Per-attempt timeouts are per-phase, so three attempts against a slow (not
-    failing) reader could stack up well past the configured budget. The elapsed
-    check against the loop clock is what stops that, and it is checked BEFORE
-    the sleep so the sleep cannot be what overshoots.
+    ⚠️ Read the numbers before trusting the name. This simulates attempts of
+    20s each, so the run it describes takes ~40.5s of simulated time and then
+    stops. That is well past ``_READER_RETRY_ADMISSION_S``, and it is supposed
+    to be: the check gates whether the NEXT attempt may start, and cannot
+    interrupt one already running. An earlier version of this test called that
+    "stopping at a 25s deadline" while asserting only the call count — the
+    assertion was fine, the claim around it was not (Codex round 7).
 
-    Simulated by advancing a fake loop clock inside the failing call, which is
-    the only way to exercise a deadline without actually burning the time.
+    So what is pinned is the attempt COUNT under slowness: retries must not
+    keep stacking on a reader that is answering slowly, which is the case where
+    retrying makes things worse rather than better.
     """
     now = [0.0]
     calls: list[int] = []
 
     def _call(worker: str, payload: dict, **_kw: Any) -> dict:
         calls.append(1)
-        now[0] += 20.0  # a slow attempt, well inside the deadline on its own
+        now[0] += 20.0  # slow, but not failing fast
         raise _Boom("slow")
 
     async def _sleep(d: float) -> None:
@@ -202,8 +213,14 @@ async def test_a_slow_reader_stops_the_ladder_at_the_deadline() -> None:
             await _read_with_retry()
 
     assert len(calls) == 2, (
-        "after 20s elapsed, a second attempt is fine but a third must be cut "
-        f"off by the {_READER_RETRY_DEADLINE_S}s deadline; got {len(calls)}"
+        "a third attempt must not be admitted once 20s+ has elapsed against "
+        f"the {_READER_RETRY_ADMISSION_S}s admission budget; got {len(calls)}"
+    )
+    assert now[0] > _READER_RETRY_ADMISSION_S, (
+        "and this is deliberately NOT a wall-clock bound: the run overshoots "
+        "the admission budget because the attempt already in flight cannot be "
+        "interrupted. Pinned so the weaker guarantee is not re-read as a "
+        "deadline."
     )
 
 

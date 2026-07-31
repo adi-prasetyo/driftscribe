@@ -1182,10 +1182,15 @@ _READER_RETRY_DELAYS = (0.5, 1.0)
 # burn ~92s of connect+read alone. See the sizing argument in _read_with_retry.
 _READER_ATTEMPT_TIMEOUT_S = 9.0
 
-# The one budget that IS enforced end to end. Checked between attempts against
-# the loop clock, so a slow-but-not-failing reader cannot make the ladder run
-# indefinitely even though no single attempt is wall-clock bounded.
-_READER_RETRY_DEADLINE_S = 25.0
+# Retry ADMISSION budget — deliberately not called a deadline, because it is
+# not one. It gates whether another attempt may START; it cannot interrupt an
+# attempt already running, and a first call that hangs for a minute returns
+# without this ever being consulted. What it buys is that a SLOW reader stops
+# accumulating attempts, which is the failure mode retries would otherwise make
+# worse. See _read_with_retry for the full statement of what is and is not
+# bounded. Enforcing a real caller deadline needs an interruptible/off-loop call
+# (ds-99u), which is out of scope here.
+_READER_RETRY_ADMISSION_S = 25.0
 
 
 async def _read_with_retry() -> object:
@@ -1217,11 +1222,19 @@ async def _read_with_retry() -> object:
     configured-budget comparison, not a wall-clock guarantee, and it is labelled
     that way in the test that pins it. Codex round 6 caught the stronger claim.
 
-    What IS enforced end to end is ``_READER_RETRY_DEADLINE_S``: the elapsed
-    time is checked against the loop clock before each retry, so a slow reader
-    stops the ladder early instead of letting three attempts stack up. That
-    bounds the RETRIES; a single hung attempt is still bounded only per phase,
-    exactly as it was before this function existed.
+    **Nothing here is a deadline, and the earlier drafts of this docstring said
+    otherwise twice.** ``_READER_RETRY_ADMISSION_S`` gates whether another
+    attempt may START — it cannot interrupt one already running, so a single
+    call that hangs returns whenever it returns and never consults it. It is
+    also not a cap on the total: three ordinary 9s failures cost 28.5s and are
+    all admitted, because each admission check passes at the moment it runs.
+    What it does buy is that a SLOW reader stops accumulating attempts, which is
+    precisely the case where retrying makes things worse rather than better.
+
+    A genuine caller deadline would need the blocking call to be interruptible
+    or off-loop (ds-99u). Until then the honest summary is: attempts are bounded
+    per phase by httpx, their COUNT is bounded by admission, and total wall
+    clock is bounded by neither.
 
     9s per attempt is also enough to survive a Reader COLD START, and a cold
     start is precisely the transient this is for: attempt 1 may time out while
@@ -1246,10 +1259,10 @@ async def _read_with_retry() -> object:
             last = e
             if delay is None:
                 break
-            # Stop early rather than stacking another attempt on top of a read
-            # that has already eaten the budget. Checked BEFORE sleeping so the
-            # sleep itself cannot be what pushes us past the deadline.
-            if loop.time() - started + delay >= _READER_RETRY_DEADLINE_S:
+            # Admission, not interruption: stop stacking attempts on top of a
+            # read that has already eaten the budget. Checked BEFORE sleeping so
+            # the sleep is counted rather than being what overshoots.
+            if loop.time() - started + delay >= _READER_RETRY_ADMISSION_S:
                 break
             await asyncio.sleep(delay)
     assert last is not None

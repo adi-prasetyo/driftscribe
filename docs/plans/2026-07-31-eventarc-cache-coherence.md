@@ -198,12 +198,15 @@ its own:
   synchronous). Pre-existing — the single call it replaced blocked the same way
   — and the configured budget reduces the worst case rather than growing it.
   Filed as ds-99u.
-- **The per-attempt timeout is per-PHASE, not end-to-end.** A scalar httpx
-  timeout applies separately to connect/read/write/pool, and `worker_client`
-  mints an ID token before HTTPX is reached. So "9 × 3 + sleeps = 28.5s" is a
-  configured-budget comparison, *not* a wall-clock guarantee — an earlier draft
-  claimed the stronger thing and was wrong. The bound that IS enforced is
-  `_READER_RETRY_DEADLINE_S`, checked against the loop clock between attempts.
+- **Nothing about the retry is a wall-clock bound**, and two earlier drafts of
+  this doc claimed otherwise. A scalar httpx timeout applies per *phase*
+  (connect/read/write/pool), and `worker_client` mints an ID token before HTTPX
+  is reached, so "9 × 3 + sleeps = 28.5s" is a configured-budget comparison
+  only. `_READER_RETRY_ADMISSION_S` is *admission control*, not a deadline: it
+  gates whether the next attempt may start, cannot interrupt one in flight, and
+  three ordinary 9s failures (28.5s) are all admitted against its nominal 25s.
+  What it buys is that a slow reader stops accumulating attempts. A real caller
+  deadline needs an interruptible/off-loop call — ds-99u.
 - No change to `_cached_rollback_needs_ground_truth` or the rollback TTL.
 
 ## Tests
@@ -232,9 +235,22 @@ its own:
 
 ## What the review changed
 
-Six Codex rounds. Every blocker was accepted; **five of the six were defects in
-my own fix rather than in the original code** — the fix, not the bug, was
+Seven Codex rounds. Every blocker was accepted; **six of the seven were defects
+in my own fix rather than in the original code** — the fix, not the bug, was
 consistently the riskier thing in this change.
+
+- **Round 7 blocker:** the round-6 newest-wins fix capped the recovery read at
+  `.limit(10)` on an *unordered* stream — which re-opens the double-mint past
+  ten rows, because Firestore's implicit ordering is by document ID and a cap
+  therefore takes an arbitrary subset, not the newest. `list_decisions` already
+  documents this exact trap as an invariant three definitions away in the same
+  file; I broke a rule the codebase had already written down. Now unpaged, with
+  the regression streaming 13 rows so a re-introduced cap fails it. Round 7 also
+  caught that my `_READER_RETRY_DEADLINE_S` was not a deadline (it gates
+  admission and cannot interrupt an attempt) — renamed and re-documented — and
+  that the new rollback fixture put `expires_at` at the top level while
+  production stores it under `approval`, so its "servable" assertion passed
+  through the malformed-expiry fail-safe instead of proving anything.
 
 - **Round 6 blocker:** the round-5 relaxation made ds-bej's arbitrary tie-break
   an approval-safety problem — an orphaned *completed* decision plus an older
@@ -294,10 +310,12 @@ consistently the riskier thing in this change.
 
 ## Known residuals (not fixed here)
 
-- **ds-bej** — `find_decision_for_event`'s recovery query can resurrect an
-  evicted row; every consumer now declines it and (c) keeps that from wedging
-  the key, but the row itself persists and the `.limit(1)` tie-break between two
-  rows sharing an `event_key` is still arbitrary.
+- **ds-bej** — `find_decision_for_event`'s recovery query can still resurrect an
+  evicted row. What is FIXED here: the tie-break is no longer arbitrary
+  (newest-wins, unpaged), and (c) keeps a failed repair from wedging the key.
+  What remains: the row itself persists, so recovery can return a decision whose
+  pointer was deliberately deleted. Every consumer declines a stale one, so
+  nothing acts on it wrongly.
 - **The reader read blocks the event loop** (`worker_client.call` is sync).
   Bounded well under the pre-existing worst case, but a slow reader still stalls
   concurrent SSE chat streams on the same instance.

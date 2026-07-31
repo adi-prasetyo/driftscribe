@@ -863,9 +863,18 @@ class FirestoreStateStore:
         # find_decision_by_trace_id and list_decisions: a server-side
         # ``order_by("created_at")`` would EXCLUDE pre-19.A.7 rows missing the
         # field, turning a recovery query into a silent miss.
-        snaps = list(
-            self._decisions.where("event_key", "==", event_key).limit(10).stream()
-        )
+        #
+        # And NO ``.limit()`` on the unordered stream — the trap list_decisions
+        # already documents (invariant 2 in its docstring). Firestore's implicit
+        # ordering is by document ID, and decision ids are random UUIDs, so
+        # ``.limit(N)`` takes an ARBITRARY N rather than the newest N. Capping
+        # here would have re-opened the very double-mint this sort exists to
+        # close, just past N rows: the newest decision falls outside the page,
+        # recovery hands back an older stale row, and the caller evicts,
+        # re-claims and mints a second approval. The equality filter is what
+        # bounds this read (rows sharing one event_key are a handful even in the
+        # pathological repeated-replacement case), not a page size.
+        snaps = list(self._decisions.where("event_key", "==", event_key).stream())
         if not snaps:
             return None
         newest = max(snaps, key=lambda s: s.create_time)

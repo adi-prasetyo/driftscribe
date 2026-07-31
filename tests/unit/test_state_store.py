@@ -349,12 +349,15 @@ def test_firestore_find_decision_for_event_query_fallback():
     missing_snap.exists = False
     mock_events.document.return_value.get.return_value = missing_snap
 
-    # decisions.where("event_key","==","ev-1").limit(1).stream() → one match.
+    # decisions.where("event_key","==","ev-1").stream() → one match. NOT
+    # .limit(...): a cap on the unordered stream takes an arbitrary subset
+    # rather than the newest row (see find_decision_for_event).
     mock_decisions = MagicMock()
     recovered = MagicMock()
     recovered.to_dict.return_value = {"action": "applied", "event_key": "ev-1"}
+    recovered.create_time = 100
     where_q = MagicMock()
-    where_q.limit.return_value.stream.return_value = iter([recovered])
+    where_q.stream.return_value = iter([recovered])
     mock_decisions.where.return_value = where_q
 
     def collection_dispatch(name):
@@ -379,7 +382,7 @@ def test_firestore_find_decision_for_event_query_fallback_no_match_returns_none(
 
     mock_decisions = MagicMock()
     where_q = MagicMock()
-    where_q.limit.return_value.stream.return_value = iter([])
+    where_q.stream.return_value = iter([])
     mock_decisions.where.return_value = where_q
 
     def collection_dispatch(name):
