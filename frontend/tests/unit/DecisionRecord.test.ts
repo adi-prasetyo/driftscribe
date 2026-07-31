@@ -223,6 +223,26 @@ describe('DecisionRecord — the decision’s own prose', () => {
   });
 });
 
+describe('DecisionRecord — one card, one decision', () => {
+  it('the panel reads the same decision the header names, even when /trace has none', async () => {
+    // The ledger row supplies an iac_apply; GET /trace answers with no decision
+    // doc. Without the override the header would say "Infra apply" while the
+    // panel beneath it said the reasoning could not be loaded.
+    const { getByTestId } = mount(() => res(traceResponse()), {
+      decision: { ...ROLLBACK, action: 'iac_apply' },
+    });
+    await waitFor(() =>
+      expect(getByTestId('trace-detail-empty').textContent).toContain('recorded directly'),
+    );
+    // ...and the header and the summary row now agree on the action's NAME.
+    // They did not before ds-jns consolidated the two label tables: this card
+    // rendered "Infrastructure change" above "Infra apply" for one decision.
+    expect(getByTestId('decision-record-action').textContent).toBe('Infrastructure change');
+    expect(getByTestId('decision-summary').textContent).toContain('Infrastructure change');
+    expect(getByTestId('decision-summary').textContent).not.toContain('Infra apply');
+  });
+});
+
 describe('DecisionRecord — record incomplete', () => {
   it('says so when the trace loaded and no decision doc is attached', async () => {
     // Reachable: a bare ?reasoning= link can name a CHAT turn's trace, which has

@@ -177,7 +177,10 @@
     </div>
   {/if}
 
-  <TraceDetail {traceId} {entry} onRetry={() => void cache.retry(traceId)} />
+  <!-- `decision={doc}`: the panel must reason about the SAME decision the header
+       above it names, or one card can say "Infra apply" and "this reasoning
+       couldn't be loaded" about one row. -->
+  <TraceDetail {traceId} {entry} decision={doc} onRetry={() => void cache.retry(traceId)} />
 
   {#if incomplete}
     <p class="record__incomplete" data-testid="decision-record-incomplete">

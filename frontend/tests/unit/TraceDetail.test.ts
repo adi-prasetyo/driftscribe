@@ -175,6 +175,33 @@ describe('TraceDetail — omitted thought note', () => {
   });
 });
 
+describe('TraceDetail — the caller can name the decision (ds-jns)', () => {
+  // A desk ledger row holds its own copy of the decision, from GET /decisions.
+  // Without a way to hand it over, one card could name the action in its header
+  // and, in the panel directly below, say the trace could not be loaded — two
+  // statements about one decision, one of them wrong.
+  const IAC: Decision = { decision_id: 'd', action: 'iac_apply' };
+
+  it('uses the caller’s decision when the fetched trace carries none', () => {
+    const { getByTestId } = mount(entry({ enrich: 'loaded' }), { decision: IAC });
+    expect(getByTestId('trace-detail-empty').textContent).toContain('recorded directly');
+    expect(getByTestId('decision-summary')).toBeTruthy();
+  });
+
+  it('an OMITTED prop still means "use the entry’s" — not "there is none"', () => {
+    const { getByTestId } = mount(entry({ enrich: 'loaded', decision: IAC }));
+    expect(getByTestId('trace-detail-empty').textContent).toContain('recorded directly');
+  });
+
+  it('an explicit null overrides the entry’s decision', () => {
+    // The distinction the `undefined` default exists for: a caller that knows
+    // there is no decision can say so, and is not confused with one that has
+    // not been asked.
+    const { getByTestId } = mount(entry({ enrich: 'loaded', decision: IAC }), { decision: null });
+    expect(getByTestId('trace-detail-empty').textContent).toContain("couldn't be loaded");
+  });
+});
+
 describe('TraceDetail — enrichment cards', () => {
   it('renders the diff card for a decision carrying diffs', () => {
     const decision: Decision = {
@@ -230,11 +257,18 @@ describe('TraceDetail — copyable deep link', () => {
     expect(url.searchParams.get('reasoning')).toBe(TID);
   });
 
-  it('copies the bare trace id when there is no conversation to frame it', async () => {
+  it('copies a bare-reasoning URL when there is no conversation to frame it', async () => {
+    // ds-jns gave `?reasoning=` a destination of its own (a desk decision
+    // record), so the conversation-less shape is a URL too. It used to copy the
+    // raw trace id — which the footer already displays two elements away, and
+    // which nobody can paste anywhere useful.
     const writeText = stubClipboard();
     const { getByTestId } = mount(entry({ enrich: 'loaded' }));
     await fireEvent.click(getByTestId('trace-copy-link'));
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith(TID));
+    await waitFor(() => expect(writeText).toHaveBeenCalledOnce());
+    const url = new URL(writeText.mock.calls[0][0]);
+    expect(url.searchParams.get('reasoning')).toBe(TID);
+    expect(url.searchParams.get('conversation')).toBeNull();
   });
 
   it('is a button, not a link (it copies, it does not navigate)', () => {

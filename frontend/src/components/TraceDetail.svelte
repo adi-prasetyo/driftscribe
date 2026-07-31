@@ -23,6 +23,7 @@
   import { workerLabel } from '../lib/labels';
   import { fmtPreview } from '../lib/format';
   import { t, locale, fmtNumber } from '../lib/i18n';
+  import type { Decision } from '../lib/types';
   import DriftDiffCard from './DriftDiffCard.svelte';
   import DecisionSummary from './DecisionSummary.svelte';
   import PrBodyDisclosure from './PrBodyDisclosure.svelte';
@@ -32,15 +33,25 @@
     traceId,
     entry,
     conversationId = null,
+    decision = undefined,
     onRetry,
   }: {
     traceId: string;
     entry: TraceCacheEntry;
     /** Present for a chat turn; absent for a conversation-less decision record.
-     *  Decides whether the copied link can carry thread context (design §4). */
+     *  Decides which of the two shapes the copied link takes (design §4). */
     conversationId?: string | null;
+    /** The decision this trace belongs to, when the CALLER knows one the
+     *  fetched trace does not carry — a desk ledger row supplies its own copy
+     *  from GET /decisions (ds-jns). Omitted (not null) means "use the entry's",
+     *  so passing nothing keeps the previous behaviour exactly. Without it a
+     *  record could name an action in its header while the panel below it said
+     *  the trace could not be loaded, about the same decision. */
+    decision?: Decision | null;
     onRetry: () => void;
   } = $props();
+
+  const doc = $derived(decision === undefined ? entry.decision : decision);
 
   const rows = $derived(interleaveTimeline(entry.events));
 
@@ -57,7 +68,7 @@
   // legitimately has no coordinator reasoning run, so an empty timeline there
   // is expected rather than a failure to load. Every other decision's empty
   // timeline means "couldn't load", and says so.
-  const directlyRecorded = $derived(entry.decision?.action === 'iac_apply');
+  const directlyRecorded = $derived(doc?.action === 'iac_apply');
 
   const str = (v: unknown): string => (typeof v === 'string' ? v : v == null ? '' : String(v));
   const num = (v: unknown): number | null => (typeof v === 'number' ? v : null);
@@ -66,14 +77,18 @@
     return workerLabel(str(row.call?.tool_name || row.result?.tool_name) || '(unknown)', $t);
   }
 
-  // The shareable link. With a conversation it points at the thread AND the
-  // message (design §4's URL-context rule, which PR 2's router reads); without
-  // one there is no thread to frame it, so the bare trace id is what there is
-  // to hand over. A button, not an anchor: it copies, it does not navigate.
+  // The shareable link, in the two shapes design §4's URL-context rule defines.
+  // With a conversation it points at the thread AND the message; without one it
+  // points at the trace alone, which the router resolves to a desk decision
+  // record. Both are URLs — the bare trace id this used to hand over stopped
+  // being the honest answer the moment `?reasoning=` gained a destination of
+  // its own, and a button sitting beside the id already displayed in this
+  // footer should hand over something the id itself cannot.
+  // A button, not an anchor: it copies, it does not navigate.
   const copyText = $derived(
     conversationId
       ? `${window.location.origin}/?conversation=${encodeURIComponent(conversationId)}&reasoning=${encodeURIComponent(traceId)}`
-      : traceId,
+      : `${window.location.origin}/?reasoning=${encodeURIComponent(traceId)}`,
   );
 
   let copied = $state(false);
@@ -174,9 +189,9 @@
   <!-- Enrichment the live stream never carried: these come from the lazy
        /trace + /pr-body loads, which is what makes per-message action cards
        possible at all. Each self-suppresses when it has nothing to show. -->
-  {#if entry.decision}
-    <DriftDiffCard decision={entry.decision} />
-    <DecisionSummary decision={entry.decision} />
+  {#if doc}
+    <DriftDiffCard decision={doc} />
+    <DecisionSummary decision={doc} />
   {/if}
   <PrBodyDisclosure body={entry.prBody?.body ?? null} truncated={entry.prBody?.body_truncated ?? false} />
   {#if entry.prBodyMissing}

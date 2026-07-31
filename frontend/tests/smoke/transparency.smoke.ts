@@ -453,7 +453,8 @@ test.describe('transparency UI (mock smoke)', () => {
     // The DecisionSummary card renders the curated, safe fields.
     const summary = record.locator('[data-testid="decision-summary"]');
     await expect(summary).toBeVisible();
-    await expect(summary).toContainText('Infra apply');
+    // One name for the action, shared with the record header above it (ds-jns).
+    await expect(summary).toContainText('Infrastructure change');
     await expect(summary).toContainText('#47');
     await expect(summary).toContainText('op@example.com');
 
