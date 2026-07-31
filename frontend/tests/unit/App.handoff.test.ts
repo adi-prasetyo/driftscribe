@@ -876,3 +876,108 @@ describe('App — a committed handoff whose join failed keeps its explanation', 
     );
   });
 });
+
+describe('App — the failure turn keeps its reasoning across the refetch', () => {
+  const TRACE = 'b'.repeat(32);
+
+  /** A /chat/handoff Response the App treats as SSE (see App.conversations.test.ts). */
+  function sseChat(frames: string): Response {
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(new TextEncoder().encode(frames));
+        c.close();
+      },
+    });
+    return new Response(stream as unknown as BodyInit, {
+      headers: { 'content-type': 'text/event-stream' },
+    });
+  }
+
+  it('the failure turn and its inline reasoning both survive the refetch', async () => {
+    // A trace-bearing failure turn (the joining crew streamed a meta frame, then
+    // errored) has to keep BOTH halves of its explanation once the persisted
+    // rows land underneath it: the prose AND the trace behind the disclosure.
+    //
+    // KNOWN RESIDUAL, pinned deliberately rather than papered over: the
+    // disclosure comes back CLOSED. Re-seating moves the turn's `seq`, `seq` is
+    // the {#each} key (ConversationThread.svelte), so Svelte destroys and
+    // recreates the component and its local `open` state goes with it. Making
+    // the clear + re-seat atomic (which it now is) removes the intermediate
+    // render but cannot prevent this — the key genuinely changes. Surviving it
+    // needs expansion state owned ABOVE the component, which is exactly the
+    // `autoExpandTraceId` prop PR 2 introduces; ds-jns carries the follow-up.
+    let releaseRefetch!: () => void;
+    const refetchGate = new Promise<void>((r) => {
+      releaseRefetch = r;
+    });
+    let redeemed = false;
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes('/chat/handoff') && init?.method === 'POST') {
+          redeemed = true;
+          return sseChat(
+            `event: meta\ndata: {"trace_id":"${TRACE}"}\n\n` +
+              'event: error\ndata: {"detail":"the provision crew crashed"}\n\n',
+          );
+        }
+        if (url.includes('/conversations/')) {
+          if (!redeemed) return okJson(PENDING_DETAIL);
+          // Held open so the operator can expand the disclosure mid-flight.
+          await refetchGate;
+          return okJson({
+            ...JOINED_DETAIL,
+            turns: JOINED_DETAIL.turns.slice(0, 3),
+            pending_handoff: null,
+          });
+        }
+        if (url.includes('/conversations')) return okJson(LIST);
+        if (url.includes('/trace/')) {
+          return okJson({
+            trace_id: TRACE,
+            events: [
+              {
+                event: 'llm_thought',
+                trace_id: TRACE,
+                insert_id: 'i1',
+                thought_text: '**Checking the provision crew**',
+              },
+            ],
+            complete: true,
+          });
+        }
+        if (url.includes('/decisions')) return okJson({ decisions: [] });
+        if (url.includes('/infra/pending-approvals')) return okJson({ approvals: [] });
+        if (url.includes('/infra/graph')) return okJson(GRAPH);
+        return okJson({});
+      }),
+    );
+
+    window.sessionStorage.setItem('ds.handoff.c1', JSON.stringify(OFFER));
+    const { findByTestId, getByTestId, queryByTestId } = render(App);
+    await fireEvent.click(await findByTestId('conversation-open'));
+    await findByTestId('handoff-chip');
+    await fireEvent.click(getByTestId('handoff-confirm'));
+
+    // The failure turn is on screen, and its reasoning is reachable inline.
+    await findByTestId('thread-turn-error');
+    await fireEvent.click(await findByTestId('reasoning-disclosure'));
+    await findByTestId('trace-detail');
+
+    // …now the persisted rows land underneath it.
+    releaseRefetch();
+    await findByTestId('thread-turn-crew-change');
+
+    // The turn is still there, still carrying its prose explanation…
+    expect(getByTestId('thread-turn-error')).toBeTruthy();
+    // …and its reasoning is still REACHABLE — the disclosure survives the
+    // re-seat even though its open state does not (see the note above).
+    const reopened = await findByTestId('reasoning-disclosure');
+    expect(queryByTestId('trace-detail')).toBeNull(); // pins the residual
+    await fireEvent.click(reopened);
+    const detail = await findByTestId('trace-detail');
+    expect(detail.textContent).toContain('Checking the provision crew');
+  });
+});

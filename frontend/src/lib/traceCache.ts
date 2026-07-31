@@ -40,6 +40,21 @@ export interface TraceCacheEntry {
   /** The pr-body fetch failed fail-soft. The trace itself stays usable, so this
    *  is NOT `enrich: 'error'` — it renders one quiet line, not an error state. */
   prBodyMissing: boolean;
+  /** The last snapshot's `TraceResponse.complete`. Meaningful only once
+   *  `enrich === 'loaded'`.
+   *
+   *  `complete: false` is ROUTINE, not exceptional: a cold post-restart
+   *  observation cache returns it on a single fetch, and iac_apply traces never
+   *  carry a final_response (App.svelte's openTrace documents both). So a
+   *  `loaded` entry is NOT proof we hold the whole trace — without this flag an
+   *  entry that settled from a too-early snapshot would be pinned to it for its
+   *  whole cache lifetime, since ensure() re-fetches only 'idle'/'error'. In the
+   *  worst case that shows "no reasoning recorded" forever for a trace whose
+   *  rows simply had not landed in Cloud Logging yet.
+   *
+   *  It gates a RE-fetch, never a status label — deriving user-visible state
+   *  from it would mislabel the routine cases above. */
+  complete: boolean;
 }
 
 export interface TraceCache extends Readable<ReadonlyMap<string, TraceCacheEntry>> {
@@ -68,7 +83,9 @@ export interface TraceCache extends Readable<ReadonlyMap<string, TraceCacheEntry
    *     because a settled LIVE entry got its decision from the backfill and
    *     never had a pr-body fetch of its own. */
   ensure(traceId: string): Promise<void>;
-  /** Operator-driven recovery from `enrich: 'error'` / a missing pr-body. */
+  /** Operator-driven recovery: an explicit "ask again" that ALWAYS re-fetches a
+   *  settled entry, whatever state it is in. Anything narrower makes the retry
+   *  button a no-op in exactly the states an operator would press it. */
   retry(traceId: string): Promise<void>;
 }
 
@@ -84,7 +101,17 @@ function blank(): TraceCacheEntry {
     decision: null,
     prBody: null,
     prBodyMissing: false,
+    complete: false,
   };
+}
+
+/** Never let a re-fetch SHRINK what is already on screen. GET /trace accumulates
+ *  as Cloud Logging ingestion catches up, so a shorter snapshot means a colder
+ *  backend cache, not a corrected record — blanking rows the operator is reading
+ *  would be a regression wearing a refresh's clothes. Equal lengths take the
+ *  fetched copy: same size, newer read. */
+function preferLonger(prev: TraceEvent[], fetched: TraceEvent[]): TraceEvent[] {
+  return fetched.length >= prev.length ? fetched : prev;
 }
 
 export function createTraceCache(call: CallFn): TraceCache {
@@ -169,8 +196,12 @@ export function createTraceCache(call: CallFn): TraceCache {
       // snapshot and adds only the trace-only mcp_call side-channel. On an
       // entry with no live events it returns the snapshot wholesale.
       events: reconcileBackfill(prev.events, events),
-      decision: fetched.decision ?? null,
+      // Non-destructive, same rule as fetchTrace: an expand's ensure() can have
+      // landed a decision doc first, and this snapshot arriving without one is
+      // an absence of news, not news of an absence.
+      decision: fetched.decision ?? prev.decision ?? null,
       enrich: 'loaded',
+      complete: fetched.complete === true,
     }));
   }
 
@@ -182,17 +213,26 @@ export function createTraceCache(call: CallFn): TraceCache {
    *  disclosure and ensure() starts its own request. If the racing request
    *  loses, the entry demonstrably HAS its trace — the events and decision are
    *  already on screen — so claiming "couldn't load" would be a visible lie
-   *  with a retry button attached to it. */
-  function failEnrich(traceId: string): void {
-    patch(traceId, (prev) => (prev.enrich === 'loaded' ? prev : { ...prev, enrich: 'error' }));
+   *  with a retry button attached to it.
+   *
+   *  The same reasoning covers a RE-fetch of an already-loaded entry (an
+   *  incomplete snapshot looking again): that attempt sets 'loading' over its
+   *  own 'loaded', so the guard below cannot see what it replaced — hence
+   *  `fallback`, which the caller captures BEFORE overwriting the state. */
+  function failEnrich(traceId: string, fallback: 'loaded' | 'error'): void {
+    patch(traceId, (prev) => (prev.enrich === 'loaded' ? prev : { ...prev, enrich: fallback }));
   }
 
   async function fetchTrace(traceId: string): Promise<void> {
+    // An entry that already holds a snapshot must survive a failed refresh as
+    // 'loaded', not 'error': the events are still on screen, `complete` is still
+    // false, and the next expand will simply try again.
+    const fallback = read(traceId)?.enrich === 'loaded' ? 'loaded' : 'error';
     patch(traceId, (prev) => ({ ...prev, enrich: 'loading' }));
     try {
       const resp = await call('/trace/' + encodeURIComponent(traceId));
       if (!resp.ok) {
-        failEnrich(traceId);
+        failEnrich(traceId, fallback);
         return;
       }
       const t = (await resp.json()) as TraceResponse;
@@ -200,14 +240,22 @@ export function createTraceCache(call: CallFn): TraceCache {
       patch(traceId, (prev) => ({
         ...prev,
         // An entry that never streamed has no live timeline to protect, so the
-        // snapshot IS the truth. One that did keeps its live events and gains
-        // only the mcp side-channel (see reconcileBackfill's contract).
-        events: prev.stream === 'idle' ? fetchedEvents : reconcileBackfill(prev.events, fetchedEvents),
-        decision: t.decision ?? null,
+        // snapshot IS the truth — subject to preferLonger, which matters now
+        // that an incomplete entry can be fetched more than once. One that did
+        // stream keeps its live events and gains only the mcp side-channel (see
+        // reconcileBackfill's contract).
+        events:
+          prev.stream === 'idle'
+            ? preferLonger(prev.events, fetchedEvents)
+            : reconcileBackfill(prev.events, fetchedEvents),
+        // A re-fetch that came back without a decision doc must not erase the
+        // one an earlier snapshot already carried — same non-destructive rule.
+        decision: t.decision ?? prev.decision ?? null,
         enrich: 'loaded',
+        complete: t.complete === true,
       }));
     } catch {
-      failEnrich(traceId);
+      failEnrich(traceId, fallback);
     }
   }
 
@@ -233,7 +281,13 @@ export function createTraceCache(call: CallFn): TraceCache {
     const before = read(traceId);
     const streaming = before?.stream === 'streaming';
     const enrich = before?.enrich ?? 'idle';
-    if (!streaming && (enrich === 'idle' || enrich === 'error')) {
+    // 'loaded' is not the end of the story when the snapshot said it was
+    // incomplete: look again. ensure() runs only when the operator opens a
+    // disclosure, so this is bounded by clicks — and preferLonger makes a colder
+    // answer harmless. Without it a trace that settled early stays partial (or
+    // reads "no reasoning recorded") for its whole cache lifetime.
+    const stale = enrich === 'loaded' && before?.complete !== true;
+    if (!streaming && (enrich === 'idle' || enrich === 'error' || stale)) {
       await fetchTrace(traceId);
     }
     const after = read(traceId);
@@ -250,7 +304,12 @@ export function createTraceCache(call: CallFn): TraceCache {
   async function retry(traceId: string): Promise<void> {
     patch(traceId, (prev) => ({
       ...prev,
-      enrich: prev.enrich === 'error' ? 'idle' : prev.enrich,
+      // Unconditional for anything not mid-stream. Resetting only 'error' left
+      // retry a silent no-op on a 'loaded' entry — including the one case an
+      // operator most wants it for, a settled-but-empty trace whose rows had not
+      // been ingested yet. 'streaming' is the one state to leave alone: the
+      // stream is authoritative and /trace has nothing to add yet.
+      enrich: prev.stream === 'streaming' ? prev.enrich : 'idle',
       // A retry is the operator asking again for everything that failed, and
       // the pr-body's absence is one of the things they can see.
       prBodyMissing: false,

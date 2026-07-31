@@ -22,6 +22,7 @@ function entry(over: Partial<TraceCacheEntry> = {}): TraceCacheEntry {
     decision: null,
     prBody: null,
     prBodyMissing: false,
+    complete: true,
     ...over,
   };
 }

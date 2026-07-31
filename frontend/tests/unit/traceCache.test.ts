@@ -454,3 +454,158 @@ describe('createTraceCache — store notification', () => {
     expect(seen.length).toBeGreaterThanOrEqual(3);
   });
 });
+
+describe('createTraceCache — an incomplete snapshot is not the end of the story', () => {
+  // `complete: false` is ROUTINE, not exceptional — App.svelte's openTrace
+  // documents both causes: a cold post-restart observation cache, and iac_apply
+  // traces that never carry a final_response. Before this, settleBackfill and
+  // fetchTrace stamped enrich:'loaded' regardless, ensure() re-fetched only
+  // 'idle'/'error', and retry() reset only 'error'. An entry that settled from a
+  // too-early snapshot was therefore pinned to it for its whole cache lifetime —
+  // worst case showing "no reasoning recorded" forever for a trace whose rows
+  // simply had not landed in Cloud Logging yet.
+
+  it('re-fetches on the next expand when the snapshot was incomplete', async () => {
+    let n = 0;
+    const { fn, paths } = makeCall({
+      trace: () => {
+        n += 1;
+        return n === 1
+          ? res(traceResponse({ events: [], complete: false }))
+          : res(traceResponse({ events: [thought('landed late', 'i1')], complete: true }));
+      },
+    });
+    const cache = createTraceCache(fn);
+
+    await cache.ensure(TID);
+    expect(entryOf(cache, TID)!.events).toEqual([]);
+    expect(entryOf(cache, TID)!.complete).toBe(false);
+
+    await cache.ensure(TID); // the operator expands it again
+    const e = entryOf(cache, TID)!;
+    expect(e.events).toHaveLength(1);
+    expect(e.complete).toBe(true);
+    expect(paths.filter((p) => !p.endsWith('/pr-body'))).toHaveLength(2);
+  });
+
+  it('stops re-fetching once the snapshot reports itself complete', async () => {
+    const { fn, paths } = makeCall({ trace: () => res(traceResponse({ complete: true })) });
+    const cache = createTraceCache(fn);
+    await cache.ensure(TID);
+    await cache.ensure(TID);
+    await cache.ensure(TID);
+    expect(paths).toHaveLength(1);
+  });
+
+  it('never lets a colder re-fetch shrink what is already on screen', async () => {
+    let n = 0;
+    const { fn } = makeCall({
+      trace: () => {
+        n += 1;
+        return n === 1
+          ? res(traceResponse({ events: [thought('a', 'i1'), thought('b', 'i2')], complete: false }))
+          : res(traceResponse({ events: [], complete: false })); // backend cache went cold
+      },
+    });
+    const cache = createTraceCache(fn);
+    await cache.ensure(TID);
+    await cache.ensure(TID);
+    expect(entryOf(cache, TID)!.events).toHaveLength(2);
+  });
+
+  it('a re-fetch that comes back without a decision keeps the one we had', async () => {
+    const decision: Decision = { decision_id: 'd1', action: 'drift_pr' };
+    let n = 0;
+    const { fn } = makeCall({
+      trace: () => {
+        n += 1;
+        return n === 1
+          ? res(traceResponse({ decision, complete: false }))
+          : res(traceResponse({ decision: null, complete: false }));
+      },
+    });
+    const cache = createTraceCache(fn);
+    await cache.ensure(TID);
+    await cache.ensure(TID);
+    expect(entryOf(cache, TID)!.decision).toEqual(decision);
+  });
+
+  it('a failed refresh of a loaded entry stays loaded, not error', async () => {
+    // The refresh sets enrich:'loading' over its OWN 'loaded', so the
+    // concurrent-writer guard cannot see what it replaced — hence the fallback
+    // captured before the overwrite.
+    let n = 0;
+    const { fn } = makeCall({
+      trace: () => {
+        n += 1;
+        if (n === 1) return res(traceResponse({ events: [thought('held', 'i1')], complete: false }));
+        throw new Error('offline');
+      },
+    });
+    const cache = createTraceCache(fn);
+    await cache.ensure(TID);
+    await cache.ensure(TID);
+
+    const e = entryOf(cache, TID)!;
+    expect(e.enrich).toBe('loaded'); // NOT 'error' — the events are still on screen
+    expect(e.events).toHaveLength(1);
+  });
+});
+
+describe('createTraceCache — retry() always means "ask again"', () => {
+  it('re-fetches a settled-but-empty entry (retry used to be a no-op here)', async () => {
+    // complete:true, so ensure() alone would never look again — this isolates
+    // the retry fix from the incomplete-snapshot one above.
+    let n = 0;
+    const { fn } = makeCall({
+      trace: () => {
+        n += 1;
+        return n === 1
+          ? res(traceResponse({ events: [], complete: true }))
+          : res(traceResponse({ events: [thought('there it is', 'i1')], complete: true }));
+      },
+    });
+    const cache = createTraceCache(fn);
+    await cache.ensure(TID);
+    expect(entryOf(cache, TID)!.enrich).toBe('loaded');
+    expect(entryOf(cache, TID)!.events).toEqual([]);
+
+    await cache.retry(TID);
+    expect(entryOf(cache, TID)!.events).toHaveLength(1);
+  });
+
+  it('leaves a streaming entry alone — the stream is authoritative', async () => {
+    const { fn, paths } = makeCall();
+    const cache = createTraceCache(fn);
+    cache.beginLive(TID);
+    cache.appendLive(TID, thought('arriving', 'i1'));
+
+    await cache.retry(TID);
+    expect(paths).toHaveLength(0);
+    const e = entryOf(cache, TID)!;
+    expect(e.stream).toBe('streaming');
+    expect(e.events).toHaveLength(1);
+  });
+});
+
+describe('createTraceCache — a late backfill never erases what an expand already had', () => {
+  it('settleBackfill without a decision keeps the one ensure() loaded', async () => {
+    // Reachable because ensure() is unblocked the moment endLive lands, while
+    // App's post-`done` backfill is still in flight: the operator expands in
+    // that window, ensure() loads the decision doc, and the backfill then
+    // settles. Its answer arriving without a decision is an absence of news,
+    // not news of an absence.
+    const decision: Decision = { decision_id: 'd1', action: 'drift_pr' };
+    const { fn } = makeCall({ trace: () => res(traceResponse({ decision, complete: true })) });
+    const cache = createTraceCache(fn);
+    cache.beginLive(TID);
+    cache.appendLive(TID, thought('streamed', 'i1'));
+    cache.endLive(TID, 'complete');
+
+    await cache.ensure(TID);
+    expect(entryOf(cache, TID)!.decision).toEqual(decision);
+
+    cache.settleBackfill(TID, traceResponse({ events: [], decision: null }));
+    expect(entryOf(cache, TID)!.decision).toEqual(decision);
+  });
+});

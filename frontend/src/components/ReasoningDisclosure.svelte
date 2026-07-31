@@ -38,6 +38,7 @@
     decision: null,
     prBody: null,
     prBodyMissing: false,
+    complete: false,
   };
   const entry = $derived($cache.get(traceId) ?? BLANK);
 

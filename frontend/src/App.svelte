@@ -502,16 +502,6 @@
   };
   let ephemeralExchange = $state<EphemeralExchange | null>(null);
 
-  /** Re-seat the current ephemeral turn against the persisted turns as they
-   *  stand NOW. Callers use it around reloadConversationTurns, which clears
-   *  every overlay in one synchronous block (an overlay keyed against the old
-   *  turn count would collide with the refetched rows). The original
-   *  `createdAt` is carried, so the turn keeps the time it actually happened. */
-  function reseatEphemeral(carried: EphemeralExchange | null): void {
-    if (carried == null) return;
-    ephemeralExchange = { ...carried, baseSeq: conversationTurns.length };
-  }
-
   /** Record a non-persisted outcome as a thread turn. Always clears
    *  `liveExchange` — the optimistic bubble and this are the same exchange. */
   function setEphemeral(
@@ -1435,7 +1425,19 @@
   // attributed to the crew that JOINED. Refetching is one round-trip and gets
   // the sequence, attribution and roles right by construction. The reply is
   // already on screen in the live bubble throughout, so nothing stalls.
-  async function reloadConversationTurns(id: string, myRun: number) {
+  //
+  // `carry` is an ephemeral turn the caller wants to KEEP across the refetch —
+  // a non-persisted outcome (a failed join) whose explanation must survive the
+  // rows arriving. It is re-seated here rather than by the caller after the
+  // await, so the clear and the re-seat land in the SAME update: an overlay
+  // re-added a tick later leaves one render without that turn, and the render
+  // in between destroys any disclosure the operator had expanded on it (a
+  // disclosure's open/closed state lives in the component, not the cache).
+  async function reloadConversationTurns(
+    id: string,
+    myRun: number,
+    carry: EphemeralExchange | null = null,
+  ) {
     try {
       const resp = await call('/conversations/' + encodeURIComponent(id));
       if (myRun !== runSeq || !resp.ok) return;
@@ -1448,7 +1450,12 @@
       // empty thread. Same ordering discipline as settleConversation.
       conversationTurns = Array.isArray(detail.turns) ? detail.turns : [];
       liveExchange = null;
-      ephemeralExchange = null;
+      // Re-based against the persisted turns as they stand NOW — an overlay
+      // still keyed at the old turn count would collide with the refetched
+      // rows. The original `createdAt` is carried, so the turn keeps the time
+      // it actually happened.
+      ephemeralExchange =
+        carry == null ? null : { ...carry, baseSeq: conversationTurns.length };
       finalReply = null;
       finalIsError = false;
       iacPr = null; // the persisted crew turn carries the PR CTA now
@@ -1560,12 +1567,9 @@
             traceId: null, // nothing streamed — the failure is the response itself
             omitUserTurn: true,
           });
-          {
-            const carried = ephemeralExchange;
-            await reloadConversationTurns(cid, myRun);
-            if (myRun !== runSeq) return;
-            reseatEphemeral(carried);
-          }
+          // Carried, not dropped: this ephemeral turn IS the explanation for a
+          // crew change with no reply behind it.
+          await reloadConversationTurns(cid, myRun, ephemeralExchange);
           return;
         }
         // Otherwise nothing happened: no crew moved, no turn ran. Not a chat
@@ -1793,10 +1797,8 @@
       // errored.
       await backfillTrace(myRun, liveTraceId);
       if (myRun !== runSeq) return;
-      const carried = ephemeralExchange;
-      await reloadConversationTurns(cid, myRun);
+      await reloadConversationTurns(cid, myRun, ephemeralExchange);
       if (myRun !== runSeq) return;
-      reseatEphemeral(carried);
       void overview.refresh('chat-turn');
       void loadConversations(); // the thread's crew + message count just changed
     } finally {
