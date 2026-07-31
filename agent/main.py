@@ -1944,8 +1944,21 @@ def _do_rollback(
         # because rejecting here would strand an already-minted approval
         # (ds-hdt). If neither origin is configured the link cannot be made
         # absolute by anyone, and the body still carries the path as text.
+        # "Is it absolute?" is decided with the SAME semantics the validator
+        # used to accept it — ``urlsplit``'s scheme, which is case-insensitive.
+        # A ``startswith(("http://", "https://"))`` check disagrees on
+        # ``HTTPS://…``: the validator admits it, the prefix check calls it
+        # relative, and the result is
+        # ``https://coordinator/HTTPS://worker/approvals/…`` — a link that
+        # renders perfectly and points at a coordinator path that does not
+        # exist. Two checks for the same question must not use two definitions
+        # (Codex); that disagreement is this bead's whole subject.
         notify_url = approval_url
-        if not notify_url.startswith(("http://", "https://")):
+        try:
+            absolute = bool(urllib.parse.urlsplit(notify_url).scheme)
+        except ValueError:  # pragma: no cover — validated upstream
+            absolute = False
+        if not absolute:
             origin = (get_settings().coordinator_origin or "").rstrip("/")
             if origin:
                 notify_url = f"{origin}/{notify_url.lstrip('/')}"

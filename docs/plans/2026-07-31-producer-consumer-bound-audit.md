@@ -507,7 +507,17 @@ its own bug.
       rather than rejected, because rejecting after the approval is minted
       would strand it (ds-hdt).
 
-   **What this cost.** Eleven wrong implementations and two rounds of invalid
+  12. *Decide "is it absolute?" differently from the validator.* The
+      canonicalizer used `startswith(("http://", "https://"))` while
+      `_validated_approval` uses `urlsplit().scheme`, which is
+      case-insensitive. `HTTPS://worker/approvals/…` is admitted by one and
+      called relative by the other, yielding
+      `https://coordinator/HTTPS://worker/approvals/…` — a link that renders
+      perfectly and points at a coordinator path that does not exist. **Two
+      checks for one question must not use two definitions**, which is this
+      bead's subject stated in one line.
+
+   **What this cost.** Twelve wrong implementations and two rounds of invalid
    fixtures, on a path that fires only when a model writes a ~9400-character
    rationale. Without any clamp that path is a guaranteed 422 and *no*
    notification, so every version was an improvement on the status quo — but

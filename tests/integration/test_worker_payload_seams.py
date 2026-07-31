@@ -159,8 +159,31 @@ def test_the_approval_url_survives_the_coordinator_side_cut() -> None:
     assert "/approvals/8f14e45f-ceea-467a-9a3c-2b1d5f6a7b8c?t=" in payload["body"]
 
 
+@pytest.mark.parametrize(
+    "worker_url, expected_href",
+    [
+        # The reachable case: a worker booted with an empty COORDINATOR_URL.
+        (
+            "/approvals/8f14e45f-ceea-467a-9a3c-2b1d5f6a7b8c?t=" + "t" * 43,
+            "https://coord.example.com/approvals/"
+            "8f14e45f-ceea-467a-9a3c-2b1d5f6a7b8c?t=" + "t" * 43,
+        ),
+        # ⚠️ An UPPERCASE scheme. ``_validated_approval`` accepts it (urlsplit
+        # lowercases the scheme), so a ``startswith(("http://", "https://"))``
+        # test disagrees with the validator and treats it as relative —
+        # producing ``https://coord.example.com/HTTPS://worker…``, a link that
+        # renders perfectly and points at a coordinator path that does not
+        # exist. Two checks for one question must not use two definitions.
+        (
+            "HTTPS://worker.example.com/approvals/"
+            "8f14e45f-ceea-467a-9a3c-2b1d5f6a7b8c?t=" + "t" * 43,
+            "HTTPS://worker.example.com/approvals/"
+            "8f14e45f-ceea-467a-9a3c-2b1d5f6a7b8c?t=" + "t" * 43,
+        ),
+    ],
+)
 def test_a_relative_approval_url_is_made_absolute_before_it_is_rendered(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, worker_url: str, expected_href: str
 ) -> None:
     """ds-thm: ``_approval_url_matches`` deliberately accepts the relative
     ``/approvals/{id}?t=…`` form (a worker whose COORDINATOR_URL has drifted
@@ -180,7 +203,6 @@ def test_a_relative_approval_url_is_made_absolute_before_it_is_rendered(
     get_settings.cache_clear()
 
     captured: dict[str, Any] = {}
-    relative = "/approvals/8f14e45f-ceea-467a-9a3c-2b1d5f6a7b8c?t=" + "t" * 43
 
     async def _agent(*_a: Any, reader_sink: list | None = None, **_k: Any) -> Any:
         payload = worker_call("reader", {})
@@ -208,11 +230,10 @@ def test_a_relative_approval_url_is_made_absolute_before_it_is_rendered(
                 "revision": "payment-demo-00042-cur",
             }
         if worker == "rollback":
-            # A worker booted with an empty COORDINATOR_URL emits exactly this.
             return {
                 "approval_id": "8f14e45f-ceea-467a-9a3c-2b1d5f6a7b8c",
                 "approval_token": "t" * 43,
-                "approval_url": relative,
+                "approval_url": worker_url,
                 "expires_at": "2099-01-01T00:00:00+00:00",
             }
         if worker == "notifier":
@@ -228,10 +249,9 @@ def test_a_relative_approval_url_is_made_absolute_before_it_is_rendered(
     assert r.status_code == 200, r.text
     assert captured, "premise: the notifier was called"
 
-    absolute = f"https://coord.example.com{relative}"
-    assert f'href="{absolute}"' in MarkdownIt().render(captured["body"]), (
-        "the relative approval url was rendered as inert text — the operator "
-        "receives a notification with nothing to click"
+    assert f'href="{expected_href}"' in MarkdownIt().render(captured["body"]), (
+        "the approval url did not render as a link to the right place — the "
+        "operator receives a notification that is unusable or misdirected"
     )
 
 
