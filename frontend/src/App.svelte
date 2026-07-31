@@ -1541,6 +1541,14 @@
           finalReply = $t('conversations.handoff.error.joinFailed', crews);
           finalIsError = true;
           status = 'error';
+          setEphemeral({
+            prompt: '',
+            workload: offer.to as Workload,
+            reply: finalReply,
+            isError: true,
+            traceId: null, // nothing streamed — the failure is the response itself
+            omitUserTurn: true,
+          });
           await reloadConversationTurns(cid, myRun);
           return;
         }
@@ -1615,6 +1623,14 @@
           status = 'error';
           finalReply = $t('header.chatError.malformed');
           finalIsError = true;
+          setEphemeral({
+            prompt: '',
+            workload: offer.to as Workload,
+            reply: finalReply,
+            isError: true,
+            traceId: null,
+            omitUserTurn: true,
+          });
         }
       } else {
         let streamErrored = false;

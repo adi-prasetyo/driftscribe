@@ -92,3 +92,150 @@ for (const locale of ['ja', 'en'] as const) {
     await page.screenshot({ path: `${SHOTS}/${locale}-chat-cap-open.png`, fullPage: true });
   });
 }
+
+// ── Inline reasoning disclosure (ds-jns) ─────────────────────────────────────
+// jsdom cannot see the CSS cascade (the ds-akf lesson: a scoped modifier TIED
+// the base rule and the "fix" shipped as dead CSS while every unit test stayed
+// green). The unit suites only assert that the disclosure's testids exist, so
+// the claim that it reads as a QUIET footnote under the reply — smaller, muted,
+// italic — is unverifiable there by construction. It gets pinned here, against
+// real computed styles.
+
+const THREAD_TRACE = 'a'.repeat(32);
+
+const THREAD_DETAIL = {
+  conversation_id: 'c-many',
+  workload: 'drift',
+  title: 'why did EXTRA drift on the agent service?',
+  turns: [
+    { seq: 0, role: 'user', text: 'why did EXTRA drift on the agent service?' },
+    {
+      seq: 1,
+      role: 'crew',
+      text: 'Someone set EXTRA directly on the running revision, so the live service no longer matches ops-contract.yaml.',
+      workload: 'drift',
+      trace_id: THREAD_TRACE,
+    },
+  ],
+};
+
+const TRACE = {
+  trace_id: THREAD_TRACE,
+  complete: true,
+  decision: null,
+  events: [
+    {
+      event: 'llm_thought',
+      trace_id: THREAD_TRACE,
+      insert_id: 't1',
+      timestamp: '2026-07-30T01:30:01Z',
+      thought_text: '**Assessing the drift**\nComparing the live revision against the contract.',
+    },
+    {
+      event: 'tool_call',
+      trace_id: THREAD_TRACE,
+      insert_id: 'c1',
+      timestamp: '2026-07-30T01:30:03Z',
+      tool_name: 'read_live_env_tool',
+      tool_args: { service: 'driftscribe-agent' },
+    },
+    {
+      event: 'tool_result',
+      trace_id: THREAD_TRACE,
+      insert_id: 'r1',
+      timestamp: '2026-07-30T01:30:05Z',
+      tool_name: 'read_live_env_tool',
+      result_ok: true,
+      result_preview: '{"EXTRA": "set-by-hand"}',
+      latency_ms: 1840,
+    },
+    {
+      event: 'mcp_call',
+      trace_id: THREAD_TRACE,
+      insert_id: 'm1',
+      timestamp: '2026-07-30T01:30:02Z',
+      mcp_server: 'developer_knowledge',
+      mcp_tool: 'search_documents',
+      latency_ms: 420,
+    },
+  ],
+};
+
+for (const locale of ['ja', 'en'] as const) {
+  test(`inline reasoning disclosure — ${locale}`, async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 1100 });
+    await seed(page, locale);
+    await mock(page);
+    await page.route(/\/conversations\/c-many/, (r) => json(r, THREAD_DETAIL));
+    await page.route(/\/trace\/[a-f0-9]+$/, (r) => json(r, TRACE));
+
+    await page.goto(`/?view=chat&conversation=c-many`);
+    const line = page.getByTestId('reasoning-disclosure');
+    await line.waitFor();
+    await page.waitForTimeout(400);
+    await page.screenshot({ path: `${SHOTS}/${locale}-chat-disclosure-collapsed.png`, fullPage: true });
+
+    // The line must be QUIETER than the reply it belongs to. Comparing against
+    // the sibling reply body rather than a hard-coded px value: the claim is
+    // about hierarchy, and a token change that moved both together would not
+    // break it, while dead CSS (the ds-akf failure) makes them equal and does.
+    const measured = await page.evaluate(() => {
+      const sub = document.querySelector('[data-testid="reasoning-subtitle"]') as HTMLElement;
+      const body = document.querySelector('.bubble--crew .turn__text') as HTMLElement;
+      const line = document.querySelector('[data-testid="reasoning-disclosure"]') as HTMLElement;
+      const px = (v: string) => parseFloat(v);
+      const cs = getComputedStyle(sub);
+      const cb = getComputedStyle(body);
+      return {
+        subFont: px(cs.fontSize),
+        bodyFont: px(cb.fontSize),
+        subStyle: cs.fontStyle,
+        subColor: cs.color,
+        bodyColor: cb.color,
+        // The collapsed line must not be a second heavyweight action next to
+        // the reply: no card border, no filled background.
+        lineBorder: getComputedStyle(line).borderTopWidth,
+        subTop: sub.getBoundingClientRect().top,
+        bodyTop: body.getBoundingClientRect().top,
+      };
+    });
+    if (!(measured.subFont < measured.bodyFont)) {
+      throw new Error(
+        `reasoning line is not quieter than the reply: ${measured.subFont}px vs ${measured.bodyFont}px`,
+      );
+    }
+    if (measured.subStyle !== 'italic') {
+      throw new Error(`reasoning line should be italic, got ${measured.subStyle}`);
+    }
+    if (measured.subColor === measured.bodyColor) {
+      throw new Error(`reasoning line shares the reply's ink (${measured.subColor}) — no hierarchy`);
+    }
+    if (parseFloat(measured.lineBorder) !== 0) {
+      throw new Error(`collapsed line should carry no box, got border ${measured.lineBorder}`);
+    }
+    // It sits ABOVE the reply body — thinking, then answer.
+    if (!(measured.subTop < measured.bodyTop)) {
+      throw new Error('reasoning line must render above the reply body');
+    }
+
+    // Expanded: the interleaved rows render in chronological order. The mcp
+    // event is LAST in the payload (reconcileBackfill appends the trace-only
+    // side-channel) but stamped :02, before the tool call at :03 — so it has to
+    // lift above the tool row. The tool row itself anchors at its CALL, not at
+    // its result at :05.
+    await line.click();
+    await page.getByTestId('trace-detail').waitFor();
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: `${SHOTS}/${locale}-chat-disclosure-open.png`, fullPage: true });
+
+    const kinds = await page.evaluate(() =>
+      [...document.querySelectorAll('[data-testid="trace-detail"] [data-testid^="trace-row-"]')].map(
+        (n) => n.getAttribute('data-testid'),
+      ),
+    );
+    const expected = ['trace-row-thought', 'trace-row-mcp', 'trace-row-tool'];
+    if (JSON.stringify(kinds) !== JSON.stringify(expected)) {
+      throw new Error(`interleaved rows out of order: ${JSON.stringify(kinds)}`);
+    }
+  });
+}
