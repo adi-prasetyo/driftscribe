@@ -595,7 +595,7 @@ describe('resolvedIacPrNumbers — PRs provably applied AND merged', () => {
   // later generation of that PR shows up in the open-PR listing BEFORE it has any
   // decision row — it only gets one on the operator's first approval click — so
   // suppressing on `applied` alone made live work vanish from the desk, the count,
-  // the estate view and the tour at once, with nothing anywhere for the
+  // the estate section and the tour at once, with nothing anywhere for the
   // decision-row fallback to find.
   it('does NOT resolve a PR whose apply succeeded but whose MERGE failed', () => {
     const set = resolvedIacPrNumbers([

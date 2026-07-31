@@ -59,12 +59,32 @@ function pending(over: Partial<PendingApproval> = {}): PendingApproval {
   };
 }
 
+/** A PRIMARY card (managed > 0) of a NON-adoptable type, so its unmanaged node
+ *  buckets as `untracked` rather than drift — the fixture the fold needs. */
+function untrackedGraph(): InfraGraph {
+  return graph({
+    groups: [
+      group({
+        asset_type: RUN,
+        label: 'Cloud Run',
+        count: 2,
+        managed: 1,
+        drift: 1,
+        adoptable: false,
+        nodes: [
+          node({ id: 'r0', label: 'checkout', asset_type: RUN, managed: true }),
+          node({ id: 'r1', label: 'legacy-worker', asset_type: RUN, managed: false }),
+        ],
+      }),
+    ],
+  });
+}
+
 function baseProps(over: Record<string, unknown> = {}) {
   return {
     graph: graph(),
     decisions: [] as Decision[],
     pendingApprovals: [] as PendingApproval[],
-    onNavigate: vi.fn(),
     ...over,
   };
 }
@@ -117,26 +137,50 @@ describe('EstateView — rows', () => {
     expect(rows.some((r) => r.textContent?.includes('checkout'))).toBe(true);
   });
 
-  it('the InstrumentBand numbers are driven by resourceCards()+scopeTotals(), matching the desk', () => {
-    const g = graph({
-      totals: { resources: 999, managed: 111, drift: 222 }, // sentinel — must NOT surface
-      groups: [
-        {
-          asset_type: RUN,
-          label: 'Cloud Run',
-          count: 2,
-          managed: 1,
-          drift: 1,
-          sensitive: false,
-          adoptable: true,
-          nodes: [],
-        } as unknown as InfraGroup,
-      ],
+  it('collapses the untracked group into a fold, count in the summary', () => {
+    const { getByTestId, getAllByTestId } = render(EstateView, {
+      props: baseProps({ graph: untrackedGraph() }),
     });
-    const { getByTestId } = render(EstateView, { props: baseProps({ graph: g }) });
-    expect(getByTestId('instrument-band-managed').textContent).toContain('1');
-    expect(getByTestId('instrument-band-drift').textContent).toContain('1');
-    expect(getByTestId('instrument-band-managed').textContent).not.toContain('111');
+    const fold = getByTestId('estate-untracked-fold');
+    expect(fold.tagName).toBe('DETAILS');
+    expect(fold.hasAttribute('open')).toBe(false);
+    // The count is the information; the rows are detail-on-demand.
+    expect(fold.querySelector('summary')?.textContent).toContain('1');
+    // Rows still render (inside the fold) under the unchanged testid.
+    const inFold = getAllByTestId('estate-row').filter((r) => fold.contains(r));
+    expect(inFold).toHaveLength(1);
+    expect(inFold[0].textContent).toContain('legacy-worker');
+  });
+
+  it('omits the untracked fold entirely when nothing is untracked', () => {
+    const { queryByTestId } = render(EstateView, { props: baseProps() });
+    expect(queryByTestId('estate-untracked-fold')).toBeNull();
+  });
+});
+
+// 2026-07-31 desk+estate merge — this is a SECTION of the desk page now, not a
+// screen of its own. The desk owns the single instrument band, and the way back
+// to the desk is "you are already there".
+describe('EstateView — a section, not a screen', () => {
+  it('renders no instrument band of its own (the desk owns the band)', () => {
+    const { queryByTestId } = render(EstateView, { props: baseProps({ settled: true }) });
+    expect(queryByTestId('instrument-band-managed')).toBeNull();
+    expect(queryByTestId('instrument-band-drift')).toBeNull();
+    expect(queryByTestId('instrument-band-awaiting')).toBeNull();
+  });
+
+  it('renders no back-to-desk button (it lives on the desk now)', () => {
+    const { queryByTestId } = render(EstateView, { props: baseProps({ settled: true }) });
+    expect(queryByTestId('estate-back-desk')).toBeNull();
+  });
+
+  it('carries id="estate" and tabindex="-1" on the section root — the band scroll target', () => {
+    // tabindex is what lets scrollToEstate() MOVE FOCUS with the scroll, so a
+    // keyboard user does not stay parked on the band button above the viewport.
+    const { getByTestId } = render(EstateView, { props: baseProps({ settled: true }) });
+    const root = getByTestId('estate-view');
+    expect(root.id).toBe('estate');
+    expect(root.getAttribute('tabindex')).toBe('-1');
   });
 });
 
@@ -275,29 +319,10 @@ describe('EstateView — tour target', () => {
   });
 });
 
-// Codex re-review of #258 — EstateView renders the SAME InstrumentBand off the
-// SAME store snapshot as ApprovalDesk, so gating one and not the other made the
-// two views contradict each other about the same fact.
+// Codex re-review of #258. The band cases moved to the desk with the band
+// (2026-07-31 merge); the section's OWN unknown-vs-empty discipline stays here,
+// and stays independent of the hero's state machine.
 describe('EstateView — unknown figures match the desk (ds-eh6)', () => {
-  it('a cold load shows "—" for awaiting, not a confident 0', () => {
-    const { getByTestId } = render(EstateView, {
-      props: baseProps({ graph: null, settled: false }),
-    });
-    expect(getByTestId('instrument-band-awaiting').textContent).toContain('—');
-  });
-
-  it('a degraded cycle shows "—" for awaiting', () => {
-    const { getByTestId } = render(EstateView, {
-      props: baseProps({ settled: true, degraded: true }),
-    });
-    expect(getByTestId('instrument-band-awaiting').textContent).toContain('—');
-  });
-
-  it('a settled clean cycle still shows a real count', () => {
-    const { getByTestId } = render(EstateView, { props: baseProps({ settled: true }) });
-    expect(getByTestId('instrument-band-awaiting').textContent).toContain('0');
-  });
-
   it('a SETTLED null graph reads unavailable, not "Loading the estate…"', () => {
     // The fetch finished and failed. Saying "loading" claims something is still
     // in progress, and it would sit there until the next 45s poll.
@@ -306,14 +331,6 @@ describe('EstateView — unknown figures match the desk (ds-eh6)', () => {
     });
     expect(queryByTestId('estate-loading')).toBeNull();
     expect(getByTestId('estate-degraded')).toBeTruthy();
-  });
-
-  it('a degraded graph still shows "—" for the graph-derived figures', () => {
-    const { getByTestId } = render(EstateView, {
-      props: baseProps({ graph: graph({ degraded: true }), settled: true }),
-    });
-    expect(getByTestId('instrument-band-managed').textContent).toContain('—');
-    expect(getByTestId('instrument-band-drift').textContent).toContain('—');
   });
 });
 
@@ -361,78 +378,3 @@ describe('EstateView — unreliable approvals must not imply "safe to adopt" (ds
   });
 });
 
-// ds-7ag.2 — the band is shared with the desk, but its stats mean different
-// things depending on where it is rendered. On the estate the operator is
-// already looking at the infrastructure map, so managed/drift have nowhere to
-// send them; awaiting is the only stat with content elsewhere, and that content
-// is the desk queue.
-describe('EstateView — band stats route for the estate context', () => {
-  it('managed and drift are inert figures here, not buttons back to this same view', async () => {
-    const onNavigate = vi.fn();
-    const { getByTestId } = render(EstateView, {
-      props: baseProps({ settled: true, onNavigate }),
-    });
-    for (const key of ['managed', 'drift']) {
-      const el = getByTestId(`instrument-band-${key}`);
-      expect(el.tagName).not.toBe('BUTTON');
-      await fireEvent.click(el);
-    }
-    expect(onNavigate).not.toHaveBeenCalled();
-  });
-
-  it('clicking awaiting sends the operator to the desk, where the queue is', async () => {
-    const onNavigate = vi.fn();
-    const { getByTestId } = render(EstateView, {
-      props: baseProps({
-        settled: true,
-        pendingApprovals: [pending()],
-        onNavigate,
-      }),
-    });
-    const awaiting = getByTestId('instrument-band-awaiting');
-    expect(awaiting.textContent).toContain('1'); // a real pending count, or the stat would be inert
-    expect(awaiting.tagName).toBe('BUTTON');
-    await fireEvent.click(awaiting);
-    expect(onNavigate).toHaveBeenCalledTimes(1);
-    expect(onNavigate).toHaveBeenCalledWith('desk');
-  });
-
-  it('with nothing awaiting, the stat is inert here too', async () => {
-    const onNavigate = vi.fn();
-    const { getByTestId } = render(EstateView, {
-      props: baseProps({ settled: true, onNavigate }),
-    });
-    const awaiting = getByTestId('instrument-band-awaiting');
-    expect(awaiting.textContent).toContain('0');
-    expect(awaiting.tagName).not.toBe('BUTTON');
-    await fireEvent.click(awaiting);
-    expect(onNavigate).not.toHaveBeenCalled();
-  });
-});
-
-// Plan Task 4 — arrival context. A visitor who lands here from a desk numeral
-// (or a shared ?view=estate link) had nothing on the page naming where they
-// came from. This is a destination link, not a history pop, so it is always
-// rendered — valid even on a cold deep-link with no desk entry behind it.
-describe('EstateView — back-to-desk affordance', () => {
-  it('renders a quiet back link that navigates to the desk', async () => {
-    const onNavigate = vi.fn();
-    const { getByTestId } = render(EstateView, {
-      props: baseProps({ settled: true, onNavigate }),
-    });
-    const back = getByTestId('estate-back-desk');
-    await fireEvent.click(back);
-    expect(onNavigate).toHaveBeenCalledTimes(1);
-    expect(onNavigate).toHaveBeenCalledWith('desk');
-  });
-
-  it('is present even when the estate itself could not load', () => {
-    // The state where wayfinding matters MOST: nothing to look at here, and the
-    // operator needs the way back more than ever.
-    const { getByTestId } = render(EstateView, {
-      props: baseProps({ graph: null, settled: true }),
-    });
-    expect(getByTestId('estate-degraded')).toBeTruthy();
-    expect(getByTestId('estate-back-desk')).toBeTruthy();
-  });
-});

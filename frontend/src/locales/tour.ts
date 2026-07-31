@@ -30,30 +30,47 @@ export const tour = {
       'only at the Propose + Apply setting.',
 
     // Step 2 — estate (estateLine).
+    //
+    // This step spotlights the estate SECTION of the desk (lib/tour.ts routes
+    // it to `view: 'desk'`), so its copy may only point at things that share
+    // that page. Two pointers here used to break that rule and were fixed by
+    // the 2026-07-31 merge sweep:
+    //   - "the Infrastructure panel below" named InfraDiagram, which mounts on
+    //     CHAT. It has never been below this card in any layout.
+    //   - "the coverage meter below" named CoverageMeter, which lives INSIDE
+    //     that same chat panel. The desk has no meter; what carries the same
+    //     figure is the instrument band's managed numeral, and it is literally
+    //     the same number — the band derives it from `scopeTotals()` over
+    //     `resourceCards()`, exactly as estateLine does.
+    // Keep it that way: a direction word here is only honest if its subject is
+    // on the desk.
     'tour.estate.loading':
-      'Your estate is still loading. The Infrastructure panel below will ' +
-      'fill in shortly.',
+      'Your estate is still loading. The highlighted section will fill in ' +
+      'shortly.',
     'tour.estate.degraded':
       'The resource inventory is unavailable right now (Cloud Asset ' +
       'Inventory may still be initializing). You can keep going and check ' +
-      'the panel later.',
+      'this section later.',
     'tour.estate.zeroWithOther':
       '{total} resources indexed, none are in resource types DriftScribe ' +
       'supports. They are types like Cloud Run revisions and container images ' +
-      'it does not manage. The coverage meter below tracks your migration.',
+      'it does not manage. The Managed by IaC figure at the top of this page ' +
+      'tracks your migration.',
     'tour.estate.zeroAlone':
       '{total} resources indexed, none are in resource types DriftScribe ' +
-      'supports yet. The coverage meter below tracks your migration.',
+      'supports yet. The Managed by IaC figure at the top of this page tracks ' +
+      'your migration.',
     'tour.estate.inScope':
       '{total} resources indexed. In the resource types DriftScribe ' +
       'supports, {managed} of {resources} are under IaC management ({pct}%), ' +
-      '{drift} not yet. The coverage meter below tracks your migration.',
+      '{drift} not yet. The Managed by IaC figure at the top of this page ' +
+      'tracks your migration.',
     'tour.estate.inScopeWithOther':
       '{total} resources indexed. In the resource types DriftScribe ' +
       'supports, {managed} of {resources} are under IaC management ({pct}%), ' +
       '{drift} not yet. The other {other} are types it does not manage, like ' +
-      'Cloud Run revisions and container images. The coverage meter below ' +
-      'tracks your migration.',
+      'Cloud Run revisions and container images. The Managed by IaC figure at ' +
+      'the top of this page tracks your migration.',
 
     // Step 3 — controls (controlsLine). Honesty T2: the always-gated claim is
     // scoped to INFRASTRUCTURE edits; Propose + Apply may finish routine
@@ -77,10 +94,15 @@ export const tour = {
       'the header.',
 
     // Step 4 — adopt suggestion (adoptStepState).
+    // Step 4 spotlights an adoptable ROW in that same estate section (falling
+    // back to the section itself), so these lines follow the same rule as the
+    // step-2 block above: "the Infrastructure panel" sent a visitor standing on
+    // the desk to a differently-named panel on the chat view. What they can
+    // actually see is the section under the spotlight.
     'tour.adopt.unavailable':
       'The estate inventory is not available yet, so the tour cannot ' +
-      'suggest a first adoption. When it returns, the Adopt buttons live ' +
-      'in the Infrastructure panel.',
+      'suggest a first adoption. When it returns, an adoption button appears ' +
+      'beside every resource you can adopt.',
     'tour.adopt.target.plain':
       'A good first adoption: the {groupLabel} `{nodeLabel}`. Adopting ' +
       'imports a resource into IaC exactly as it is. This zero-change ' +
@@ -105,25 +127,24 @@ export const tour = {
       'there is nothing left to adopt. You are ahead of this tour.',
     'tour.adopt.allPending':
       'Everything the tour could suggest adopting next already has an ' +
-      'adoption PR open and waiting for review. Open it from the Open infra ' +
-      'changes band at the top of the Infrastructure panel instead of ' +
-      'starting a second adoption of the same resource.',
+      'adoption PR open and waiting for review. Open the existing PR rather ' +
+      'than starting a second adoption of the same resource.',
     'tour.adopt.systemManagedOnly':
       'The unmanaged resources the agent could otherwise adopt are ' +
       'system-managed infrastructure: DriftScribe control-plane services ' +
       'and IaC state/artifact buckets, or resources a Google service ' +
       'auto-creates, like Cloud Build buckets and Eventarc trigger ' +
       'transport. The always-on denylist blocks the agent from ' +
-      'changing these, adoption included. The Infrastructure panel shows ' +
-      'everything that is there.',
+      'changing these, adoption included. This section shows everything that ' +
+      'is there.',
     'tour.adopt.noNamedTarget':
       'There are unmanaged resources the agent could adopt, but none ' +
-      'has a named adopt target the tour can prefill. The ' +
-      'Infrastructure panel shows what the live graph can show.',
+      'has a named adopt target the tour can prefill. This section shows ' +
+      'what the live graph can show.',
     'tour.adopt.notAdoptableTypes':
       'Your remaining unmanaged resources are not adoptable types. ' +
-      'The Infrastructure panel shows what is there, and you can ask ' +
-      'about any of them in chat.',
+      'This section shows what is there, and you can ask about any of them ' +
+      'in chat.',
 
     // TourCard chrome.
     'tour.card.ariaLabel': 'Guided tour',
@@ -171,32 +192,38 @@ export const tour = {
       '完了できるのは日常的な依存関係の更新のみで、しかも自律動作レベルが' +
       '「提案＋適用」の場合に限られます。',
 
+    // EN 側の同ブロックのコメント参照。ここは「デスク」の保有リソースセクションを
+    // ハイライトするステップなので、同じページにないものを指し示さないこと。
+    // 「下のインフラパネル」はチャットの InfraDiagram、「下の IaC 管理率メーター」は
+    // その中の CoverageMeter を指していた。デスク側で同じ数値を担うのは
+    // インストゥルメントバンドの「IaC 管理下」で、算出元も同一（scopeTotals）。
     'tour.estate.loading':
-      '保有リソースの情報を読み込んでいます。下のインフラパネルにまもなく表示され' +
-      'ます。',
+      '保有リソースの情報を読み込んでいます。ハイライトされているセクションに' +
+      'まもなく表示されます。',
     'tour.estate.degraded':
       '現在、リソース一覧を取得できません（Cloud Asset Inventory がまだ初期化中の' +
-      '可能性があります）。そのままツアーを進めて、パネルは後で確認できます。',
+      '可能性があります）。そのままツアーを進めて、このセクションは後で確認でき' +
+      'ます。',
     'tour.estate.zeroWithOther':
       '{total}件のリソースがインデックスされていますが、いずれも DriftScribe が' +
       '対応するリソースタイプではありません。Cloud Run のリビジョンやコンテナ' +
-      'イメージなど、管理対象外の種類です。下の IaC 管理率メーターが移行の進み' +
-      '具合を示します。',
+      'イメージなど、管理対象外の種類です。ページ上部の「IaC 管理下」の数値が' +
+      '移行の進み具合を示します。',
     'tour.estate.zeroAlone':
       '{total}件のリソースがインデックスされていますが、DriftScribe が対応する' +
-      'リソースタイプはまだありません。下の IaC 管理率メーターが移行の進み具合を' +
-      '示します。',
+      'リソースタイプはまだありません。ページ上部の「IaC 管理下」の数値が移行の' +
+      '進み具合を示します。',
     'tour.estate.inScope':
       '{total}件のリソースがインデックスされています。DriftScribe が対応する' +
       'リソースタイプのうち、{resources}件中{managed}件が IaC 管理下にあり' +
-      '（{pct}%）、残り{drift}件は IaC 未管理です。下の IaC 管理率メーターが移行の進み具合を' +
-      '示します。',
+      '（{pct}%）、残り{drift}件は IaC 未管理です。ページ上部の「IaC 管理下」の' +
+      '数値が移行の進み具合を示します。',
     'tour.estate.inScopeWithOther':
       '{total}件のリソースがインデックスされています。DriftScribe が対応する' +
       'リソースタイプのうち、{resources}件中{managed}件が IaC 管理下にあり' +
       '（{pct}%）、残り{drift}件は IaC 未管理です。残り {other}件は、Cloud Run の' +
-      'リビジョンやコンテナイメージなど、管理対象外の種類です。下の IaC 管理率' +
-      'メーターが移行の進み具合を示します。',
+      'リビジョンやコンテナイメージなど、管理対象外の種類です。ページ上部の' +
+      '「IaC 管理下」の数値が移行の進み具合を示します。',
 
     'tour.controls.body':
       '画面上部の自律動作レベルが、変化を検知したときに Anchor が自律的に' +
@@ -214,10 +241,12 @@ export const tour = {
       'の変更は、レビューページであなたが承認した後にのみ適用されます。この' +
       'ツアーは、ヘッダーの「ツアー」ボタンからいつでも再開できます。',
 
+    // ステップ 4 も同じセクションの行をハイライトするため、EN 側と同様に
+    // 「インフラパネル」（チャット側）への誘導をやめ、目の前のセクションを指す。
     'tour.adopt.unavailable':
       '保有リソースの一覧がまだ取得できないため、ツアーは最初の IaC 管理への取り込み候補を' +
-      '提案できません。取得でき次第、インフラパネルに「IaC 管理に取り込む」ボタンが表示' +
-      'されます。',
+      '提案できません。取得でき次第、取り込めるリソースの横に取り込み用のボタンが' +
+      '表示されます。',
     'tour.adopt.target.plain':
       '最初の IaC 管理への取り込み候補としておすすめなのは、{groupLabel} の「{nodeLabel}」です。' +
       'IaC 管理に取り込むと、リソースの現在の状態がそのまま IaC に反映されます。この' +
@@ -236,22 +265,22 @@ export const tour = {
       'ありません。このツアーで案内する作業はすでに完了しています。',
     'tour.adopt.allPending':
       'ツアーが次に提案できる IaC 管理への取り込み候補は、すべてすでにレビュー待ちの取り込み ' +
-      'PR が開かれています。同じリソースを二重に取り込むのではなく、インフラ' +
-      'パネル上部の「開いているインフラの変更」から開いて確認してください。',
+      'PR が開かれています。同じリソースを二重に取り込むのではなく、すでに開いて' +
+      'いる PR をご確認ください。',
     'tour.adopt.systemManagedOnly':
       'エージェントが本来取り込めるはずの IaC 未管理リソースは、システムが管理する' +
       'インフラです。DriftScribe 自身のコントロールプレーンのサービスや IaC の' +
       '状態・成果物用バケット、あるいは Cloud Build 用バケットや Eventarc トリガー' +
       'の転送経路のように Google のサービスが自動作成するリソースが該当します。' +
       '常時有効な拒否リストが、これらの変更を IaC 管理への取り込みも含めて禁止して' +
-      'います。インフラパネルには、そこにあるものがすべて表示されます。',
+      'います。このセクションには、そこにあるものがすべて表示されます。',
     'tour.adopt.noNamedTarget':
       'エージェントが取り込める IaC 未管理リソースはありますが、ツアーが事前入力' +
-      'できる名前付きの IaC 管理への取り込み対象がありません。インフラパネルには、' +
+      'できる名前付きの IaC 管理への取り込み対象がありません。このセクションには、' +
       '実環境のグラフで確認できる範囲が表示されます。',
     'tour.adopt.notAdoptableTypes':
       '残りの IaC 未管理リソースは、IaC 管理に取り込めるリソースタイプではありません。' +
-      'インフラパネルにはそこにあるものが表示されており、チャットでいつでも質問' +
+      'このセクションにはそこにあるものが表示されており、チャットでいつでも質問' +
       'できます。',
 
     'tour.card.ariaLabel': 'ガイドツアー',

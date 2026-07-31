@@ -9,6 +9,13 @@ import { test, type Page, type Route } from '@playwright/test';
 // 861-1024px band is where that cluster fights the grid hardest, and 860px is
 // the breakpoint where the nav takes a row of its own. 390 and 1440 bracket it.
 //
+// After the 2026-07-31 merge the nav is two tabs, not three. That only NARROWS
+// it (~271px measured for three JA tabs), so the ds-7ag.3 breakpoints — single
+// row ≥1560px, tagline hidden <900px, nav on its own row <640px — were all
+// sized against a wider nav and stay valid. Do not retune them from these
+// frames; what to check is that the single-row mode at 1600 still looks
+// deliberate rather than sparse now that a tab is gone.
+//
 // NOT wired into CI (no assertions; it produces frames). Run by hand:
 //   npx playwright test --config tests/visual/playwright.visual.config.ts \
 //     header.visual.ts

@@ -13,6 +13,10 @@ import {
 } from '../../src/lib/tour';
 import type { InfraGraph, InfraGroup, InfraNode, PendingApproval } from '../../src/lib/infra_graph';
 import { translate, type TranslateFn } from '../../src/lib/i18n';
+// The raw catalog, not the translator: the off-view guard at the bottom of this
+// file walks EVERY string a step can render, including the branches no fixture
+// in this file reaches.
+import { tour as tourCatalog } from '../../src/locales/tour';
 
 // tour.ts's copy-producing functions take a `t: TranslateFn` (i18n fan-out) —
 // thread an en-bound translator so these assertions keep reading the exact
@@ -144,14 +148,29 @@ describe('TOUR_STEPS', () => {
   // step whose target lives on a specific view must navigate there first.
   // `view: null` means either no target (welcome) or a target mounted on
   // every view (controls, the header anchor).
+  //
+  // 2026-07-31: EstateView is a SECTION of the desk, so both of those steps
+  // now navigate to 'desk'. The targets themselves are unchanged.
   it('carries the view each step must navigate to before its target can resolve', () => {
     expect(TOUR_STEPS.map((s) => s.view)).toEqual([
       null,
-      'estate',
+      'desk',
       null,
-      'estate',
+      'desk',
       'chat',
     ]);
+  });
+
+  // The adopt step's target is the FIRST adoptable row, which does not exist
+  // when nothing is adoptable right now. It used to fall back to the nav-estate
+  // header button; that button is gone with the merge, so the fallback is
+  // declared on the step and resolved by TourCard.
+  it('the adopt step declares the estate section as its spotlight fallback', () => {
+    const byId = Object.fromEntries(TOUR_STEPS.map((s) => [s.id, s]));
+    expect(byId.adopt.fallback).toBe('estate');
+    // Only that step needs one — every other target is unconditionally mounted
+    // on the view it navigates to.
+    expect(TOUR_STEPS.filter((s) => s.fallback !== undefined).map((s) => s.id)).toEqual(['adopt']);
   });
 });
 
@@ -221,7 +240,7 @@ describe('step copy', () => {
     expect(line).toContain('2 of 3'); // scope managed / scope resources
     expect(line).toContain('(67%)');
     expect(line).toContain('10'); // out-of-scope count
-    expect(line).toContain('The coverage meter below tracks your migration.');
+    expect(line).toContain('The Managed by IaC figure at the top of this page tracks your migration.');
     expect(line).not.toContain('9 of 13');
     expect(line).not.toContain('2 of 13');
   });
@@ -258,7 +277,7 @@ describe('step copy', () => {
     expect(line).toContain('10 resources indexed');
     expect(line).toContain('none are in resource types DriftScribe supports');
     expect(line).not.toContain('The other');
-    expect(line).toContain('The coverage meter below tracks your migration.');
+    expect(line).toContain('The Managed by IaC figure at the top of this page tracks your migration.');
   });
 
   it('estateLine is honest while loading and when degraded (T3)', () => {
@@ -680,7 +699,12 @@ describe('adoptStepState', () => {
     expect(s.kind).toBe('none');
     if (s.kind === 'none') {
       expect(s.line).toContain('already');
-      expect(s.line).toContain('Open infra changes');
+      // Points at the EXISTING PR. It used to name "the Open infra changes band
+      // at the top of the Infrastructure panel" — a place on the CHAT view,
+      // named for a visitor who is standing on the desk (the 2026-07-31 merge
+      // routes both estate steps there). The instruction is the durable part;
+      // the address was the part that could go stale, so it is gone.
+      expect(s.line).toContain('Open the existing PR');
       // honesty: not misdescribed as a naming/type/system-managed problem
       expect(s.line).not.toContain('named adopt target');
       expect(s.line).not.toContain('not adoptable types');
@@ -766,4 +790,45 @@ describe('adoptStepState — unreliable approvals suppress the suggestion', () =
   it('defaults to reliable so existing callers are unchanged', () => {
     expect(adoptStepState(t, adoptableGraph(), []).kind).toBe('target');
   });
+});
+
+// ── A desk-routed step may not point at a chat-only surface ──────────────────
+// The 2026-07-31 desk+estate merge routed both the estate step and the adopt
+// step to `view: 'desk'`. Sweeping their copy afterwards turned up nine strings
+// (per locale) still directing the reader to the "Infrastructure panel" and the
+// "coverage meter" — both of which belong to InfraDiagram, which mounts ONLY on
+// chat. Someone standing on the desk was being told to look at something that
+// was not on their screen.
+//
+// A guard, not an audit (ds-qbo lesson): the forbidden words are checked
+// against each step's DECLARED `view`, so re-routing a step to chat legitimately
+// frees its copy, and a NEW desk step inherits the rule without anyone
+// remembering to re-run a grep. Checked in both locales — the JA copy is where
+// the collision was worst, since the panel and the deleted nav tab shared the
+// single word インフラ.
+describe('step copy never points off the step\'s own view', () => {
+  // Surfaces that exist only inside InfraDiagram (chat). Deliberately the
+  // rendered PHRASES, not key names: copy is what a visitor reads, and a
+  // rewrite that reintroduces the phrase under a new key is the same defect.
+  const CHAT_ONLY: Record<'en' | 'ja', readonly RegExp[]> = {
+    en: [/Infrastructure panel/i, /coverage meter/i, /Open infra changes/i],
+    ja: [/インフラパネル/, /管理率メーター/, /開いているインフラの変更/],
+  };
+
+  for (const step of TOUR_STEPS.filter((s) => s.view === 'desk')) {
+    for (const locale of ['en', 'ja'] as const) {
+      it(`${step.id} (${locale}) names nothing that lives on the chat view`, () => {
+        const prefix = `tour.${step.id}.`;
+        const lines = Object.entries(tourCatalog[locale]).filter(([k]) => k.startsWith(prefix));
+        // The fixture's own premise: this step HAS copy to check. Without it an
+        // empty match set would pass vacuously (a-test-can-share-its-blind-spot).
+        expect(lines.length).toBeGreaterThan(0);
+        for (const [key, text] of lines) {
+          for (const pattern of CHAT_ONLY[locale]) {
+            expect(text, `${locale}:${key}`).not.toMatch(pattern);
+          }
+        }
+      });
+    }
+  }
 });

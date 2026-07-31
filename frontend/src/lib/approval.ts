@@ -287,7 +287,7 @@ const TERMINAL_FAILED_APPLY_STATUSES: ReadonlySet<string> = new Set([
  *    A later generation of that same PR appears in the open-PR listing before it
  *    has any decision row at all — it only gets one on the operator's first
  *    approval click — so suppressing on `applied` alone made live work vanish
- *    from the desk, the count, the estate view and the tour simultaneously, with
+ *    from the desk, the count, the estate section and the tour simultaneously, with
  *    no decision row anywhere for the fallback lane to find. `merge_state` is
  *    trustworthy here: `reconcile_merge_state` (agent/main.py) promotes a stale
  *    `applied`+`failed` row to `merged` ONLY when GitHub confirms the PR merged

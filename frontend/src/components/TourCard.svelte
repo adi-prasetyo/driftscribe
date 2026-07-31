@@ -48,7 +48,7 @@
     onAdoptPrefill?: (prefill: string) => void;
     /** Called with a step's `view` (TOUR_STEPS) before the spotlight effect
      *  looks for its target — some steps' targets only exist on a specific
-     *  view (Task 4.1: estate/adopt on 'estate', next on 'chat'). */
+     *  view (estate/adopt on 'desk' since the 2026-07-31 merge, next on 'chat'). */
     onNavigate?: (v: AppView) => void;
     /** Close/Finish — App marks the tour done and unmounts this card. */
     onClose?: () => void;
@@ -76,7 +76,12 @@
     let disposed = false;
     tick().then(() => {
       if (disposed) return;
-      const found = document.querySelector(`[data-tour="${target}"]`);
+      // A step may declare a fallback for a target that is only CONDITIONALLY
+      // present (the adopt row). Without it the spotlight lands on nothing and
+      // the step silently points at empty air.
+      const found =
+        document.querySelector(`[data-tour="${target}"]`) ??
+        (step.fallback ? document.querySelector(`[data-tour="${step.fallback}"]`) : null);
       if (!(found instanceof HTMLElement)) return;
       el = found;
       el.classList.add('tour-spotlight');

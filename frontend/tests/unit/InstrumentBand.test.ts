@@ -2,17 +2,20 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/svelte';
 import InstrumentBand from '../../src/components/InstrumentBand.svelte';
 
-// InstrumentBand is the desk/estate pulse: three big numbers (managed / drift
-// / awaiting) plus a proportional flex meter (docs/plans/2026-07-28-composite-
+// InstrumentBand is the desk's pulse: three big numbers (managed / drift /
+// awaiting) plus a proportional flex meter (docs/plans/2026-07-28-composite-
 // mockup.html "instrument band"). It computes nothing — the consumer feeds it
 // scopeTotals()-derived numbers via props; here we only exercise rendering,
 // the per-stat interactivity contract, and the meter's flex proportions.
 //
 // ds-7ag.2 replaced the old "every stat is a button that goes to the estate"
 // contract. The band no longer decides destinations at all: it emits
-// `onStat(stat)` and the CONSUMER routes it (awaiting belongs on the desk, not
-// the estate). `context` is what a callback alone cannot express — which stats
-// are interactive at all on this consumer, and how their accessible names read.
+// `onStat(stat)` and the CONSUMER routes it.
+//
+// The desk+estate merge (2026-07-31) then removed the `context` prop entirely.
+// There is one page now, so there is one routing table: managed/drift are
+// controls that name where they lead, awaiting is always a figure. The cases
+// that used to run twice — once per context — collapse to one each.
 
 afterEach(cleanup);
 
@@ -21,7 +24,6 @@ function props(over: Record<string, unknown> = {}) {
     managed: 9,
     drift: 6,
     awaiting: 1,
-    context: 'desk' as const,
     onStat: vi.fn(),
     ...over,
   };
@@ -88,8 +90,8 @@ describe('InstrumentBand', () => {
 // onNavigate('estate'), including あなたの承認待ち, whose content (the approval
 // queue) is on the DESK. Clicking the number that says "you have work" walked
 // away from the work.
-describe('InstrumentBand — per-stat interactivity by context', () => {
-  it('on the desk, managed and drift are buttons that emit their own key', async () => {
+describe('InstrumentBand — per-stat interactivity', () => {
+  it('managed and drift are buttons that emit their own key', async () => {
     const onStat = vi.fn();
     const { getByTestId } = render(InstrumentBand, { props: props({ onStat }) });
 
@@ -106,7 +108,7 @@ describe('InstrumentBand — per-stat interactivity by context', () => {
   // only spent the dead scroll a stale viewport calc left behind, which read as
   // an unexplained twitch. A number whose subject is directly beneath it does
   // not need to be clickable.
-  it('on the desk, awaiting is an inert figure — its subject is already on screen', async () => {
+  it('awaiting is an inert figure — its subject is already on screen', async () => {
     const onStat = vi.fn();
     const { getByTestId } = render(InstrumentBand, { props: props({ onStat }) });
 
@@ -118,73 +120,49 @@ describe('InstrumentBand — per-stat interactivity by context', () => {
 
   // The hover/focus hint is the VISIBLE promise that a click goes somewhere. An
   // inert figure must not carry one, or the band advertises a control it isn't.
-  it('on the desk, awaiting shows no destination hint', () => {
+  it('awaiting shows no destination hint', () => {
     const { getByTestId } = render(InstrumentBand, { props: props() });
     expect(getByTestId('instrument-band-awaiting').textContent).not.toMatch(/queue|↓|→/);
   });
 
-  // On the estate view the operator is already looking at the infrastructure
-  // map, so managed/drift have nowhere to send them. They become figures. A
-  // <span>, NOT a disabled <button>: a disabled button drops out of keyboard
-  // navigation and helps nobody.
-  it('on the estate view, managed and drift are inert figures, not buttons', async () => {
-    const onStat = vi.fn();
-    const { getByTestId } = render(InstrumentBand, {
-      props: props({ context: 'estate', onStat }),
-    });
-
-    for (const key of ['managed', 'drift']) {
-      const el = getByTestId(`instrument-band-${key}`);
+  // awaiting's inertness no longer depends on its VALUE either — the merge
+  // removed the one context where it led somewhere, so there is nothing left
+  // for a count to enable. Both value cases stay pinned anyway: a future edit
+  // that reintroduces a value-gated jump has to fail here first.
+  for (const [name, awaiting] of [
+    ['0 (nothing pending)', 0],
+    ['null (not yet known)', null],
+  ] as const) {
+    it(`awaiting at ${name} is inert too`, async () => {
+      const onStat = vi.fn();
+      const { getByTestId } = render(InstrumentBand, {
+        props: props({ awaiting, onStat }),
+      });
+      const el = getByTestId('instrument-band-awaiting');
       expect(el.tagName).not.toBe('BUTTON');
       await fireEvent.click(el);
-    }
-    expect(onStat).not.toHaveBeenCalled();
-  });
-
-  it('on the estate view, awaiting stays a button (the desk is where its work lives)', async () => {
-    const onStat = vi.fn();
-    const { getByTestId } = render(InstrumentBand, {
-      props: props({ context: 'estate', onStat }),
-    });
-    const awaiting = getByTestId('instrument-band-awaiting');
-    expect(awaiting.tagName).toBe('BUTTON');
-    await fireEvent.click(awaiting);
-    expect(onStat).toHaveBeenCalledTimes(1);
-    expect(onStat).toHaveBeenCalledWith('awaiting');
-  });
-
-  // Nothing pending means there is nothing to land on, in either context — a
-  // control that goes nowhere is worse than a figure.
-  for (const context of ['desk', 'estate'] as const) {
-    it(`awaiting at 0 is inert on the ${context} (nothing to jump to)`, async () => {
-      const onStat = vi.fn();
-      const { getByTestId } = render(InstrumentBand, {
-        props: props({ context, awaiting: 0, onStat }),
-      });
-      const awaiting = getByTestId('instrument-band-awaiting');
-      expect(awaiting.tagName).not.toBe('BUTTON');
-      await fireEvent.click(awaiting);
-      expect(onStat).not.toHaveBeenCalled();
-    });
-
-    it(`awaiting at null (not yet known) is inert on the ${context}`, async () => {
-      const onStat = vi.fn();
-      const { getByTestId } = render(InstrumentBand, {
-        props: props({ context, awaiting: null, onStat }),
-      });
-      const awaiting = getByTestId('instrument-band-awaiting');
-      expect(awaiting.tagName).not.toBe('BUTTON');
-      await fireEvent.click(awaiting);
       expect(onStat).not.toHaveBeenCalled();
     });
   }
+
+  // An inert stat renders as a <span role="img">, NEVER a disabled <button>: a
+  // disabled button drops out of keyboard navigation and helps nobody. The role
+  // is what makes the aria-label replace the descendant text, exactly as a
+  // button's would.
+  it('the inert figure is a span with role="img", not a disabled button', () => {
+    const { getByTestId } = render(InstrumentBand, { props: props() });
+    const el = getByTestId('instrument-band-awaiting');
+    expect(el.tagName).toBe('SPAN');
+    expect(el.getAttribute('role')).toBe('img');
+    expect(el.hasAttribute('disabled')).toBe(false);
+  });
 });
 
 // A button's aria-label overrides ALL of its descendant text, so the visible
 // hover hint (ds-7ag.2 / plan Task 3) is invisible to screen readers unless the
 // accessible name carries the destination itself.
 describe('InstrumentBand — accessible names name their destination', () => {
-  it('desk: managed/drift say where they go; the inert awaiting figure promises nothing', () => {
+  it('managed/drift say where they go; the inert awaiting figure promises nothing', () => {
     const { getByTestId } = render(InstrumentBand, { props: props() });
     // Asserted as EXACT strings, not a loose /9/ match: these are
     // operator-facing copy under a freeze, and a substring match would still
@@ -203,15 +181,17 @@ describe('InstrumentBand — accessible names name their destination', () => {
     );
   });
 
-  it('estate: awaiting points back at the desk; the inert figures keep plain labels', () => {
-    const { getByTestId } = render(InstrumentBand, { props: props({ context: 'estate' }) });
-    expect(getByTestId('instrument-band-awaiting').getAttribute('aria-label')).toBe(
-      '1 awaiting your approval — view on desk',
-    );
-    expect(getByTestId('instrument-band-managed').getAttribute('aria-label')).toBe(
-      '9 managed by IaC',
-    );
-    expect(getByTestId('instrument-band-drift').getAttribute('aria-label')).toBe('6 drift detected');
+  // No stat names the estate as a place you NAVIGATE to any more — it is a
+  // section of this same page, so the two destination clauses that spoke of
+  // crossing between views ("view on desk") are gone with their keys. This is
+  // the assertion that would catch one being reinstated by a stale catalog.
+  it('no accessible name promises a trip to another view', () => {
+    const { getByTestId } = render(InstrumentBand, { props: props() });
+    for (const id of ['managed', 'drift', 'awaiting']) {
+      expect(getByTestId(`instrument-band-${id}`).getAttribute('aria-label')).not.toMatch(
+        /view on desk/i,
+      );
+    }
   });
 
   it('an inert awaiting stat keeps the plain label (it promises no destination)', () => {
@@ -269,18 +249,9 @@ describe('InstrumentBand — unknown figures (ds-eh6)', () => {
     );
   });
 
-  it('an unknown figure that is INERT keeps the plain unknown wording', () => {
-    // Same null figures on the estate, where managed/drift lead nowhere.
-    const { getByTestId } = render(InstrumentBand, {
-      props: props({ context: 'estate', managed: null, drift: null, awaiting: null }),
-    });
-    expect(getByTestId('instrument-band-managed').getAttribute('aria-label')).toBe(
-      'Managed by IaC: not yet known',
-    );
-    expect(getByTestId('instrument-band-drift').getAttribute('aria-label')).toBe(
-      'Drift detected: not yet known',
-    );
-  });
+  // The inert-and-unknown pairing used to be exercised on the estate, where
+  // managed/drift led nowhere. awaiting is the only inert stat left, and its
+  // unknown wording is asserted above — there is no second case to run.
 
   it('null collapses the meter to the bare "no data" track', () => {
     const { getByTestId } = render(InstrumentBand, {
@@ -290,7 +261,7 @@ describe('InstrumentBand — unknown figures (ds-eh6)', () => {
     expect(getByTestId('instrument-band-meter-drift').getAttribute('style')).toContain('flex: 0');
   });
 
-  it('an unknown managed/drift stat is still clickable on the desk (the map is where you go to find out)', async () => {
+  it('an unknown managed/drift stat is still clickable (the map is where you go to find out)', async () => {
     const onStat = vi.fn();
     const { getByTestId } = render(InstrumentBand, {
       props: props({ managed: null, drift: null, awaiting: null, onStat }),

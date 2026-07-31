@@ -8,16 +8,22 @@ import {
   conversationDetailResponse,
 } from './fixtures';
 
-// Mock-Playwright smoke for browser Back/Forward across the three views
-// (ds-7ag.1). This is the case jsdom CANNOT prove: the unit suite spies on
-// pushState/replaceState and dispatches a synthetic PopStateEvent, which shows
-// the app WRITES history correctly and REACTS to a pop, but never that a real
-// browser traversal lands where the operator expects. Only a real engine keeps
-// the entry stack, so the actual Back/Forward chain lives here.
+// Mock-Playwright smoke for browser Back/Forward across the views (ds-7ag.1).
+// This is the case jsdom CANNOT prove: the unit suite spies on pushState/
+// replaceState and dispatches a synthetic PopStateEvent, which shows the app
+// WRITES history correctly and REACTS to a pop, but never that a real browser
+// traversal lands where the operator expects. Only a real engine keeps the
+// entry stack, so the actual Back/Forward chain lives here.
 //
 // The reported failure this guards: click a desk numeral, land on the estate
 // view, press Back — and leave the app entirely, because every view write used
 // to be a replaceState.
+//
+// The 2026-07-31 merge changed what that gesture DOES rather than retiring the
+// case. There are two views now, and the estate is a section of the desk, so a
+// numeral scrolls instead of navigating. The invariant flips accordingly: the
+// click must write NO entry at all, which is a stricter thing to prove than
+// writing the right one.
 
 const AUTONOMY = {
   mode: 'propose_apply',
@@ -49,7 +55,12 @@ async function mockData(page: Page) {
     json(conversationDetailResponse()),
   );
   await page.route('**/trace/**', json(traceResponse()));
-  await page.route('**/infra/pending-approvals**', json({ pending: [] }));
+  // `approvals`, not `pending`: fetchPendingList() requires
+  // `Array.isArray(body.approvals)` and returns ok:false otherwise, so the older
+  // `{ pending: [] }` made every case here run against a FAILED approvals lane
+  // while reading like a healthy empty one. The history assertions held either
+  // way, which is exactly why it went unnoticed.
+  await page.route('**/infra/pending-approvals**', json({ approvals: [] }));
   await page.route(
     '**/infra/graph',
     json({
@@ -66,7 +77,7 @@ async function mockData(page: Page) {
 }
 
 test.describe('view history traversal (mock smoke)', () => {
-  test('Back and Forward walk the desk → chat → estate chain', async ({ page }) => {
+  test('Back and Forward walk the desk → chat → desk chain', async ({ page }) => {
     await seedToken(page);
     await mockData(page);
     // Land on the bare front door — what a judge typing the domain gets — so the
@@ -77,13 +88,15 @@ test.describe('view history traversal (mock smoke)', () => {
     await page.getByTestId('nav-chat').click();
     await expect(page.locator('#chat-form')).toBeVisible();
 
-    await page.getByTestId('nav-estate').click();
-    await expect(page.getByTestId('estate-view')).toBeVisible();
+    // Back to the desk by the nav, not by Back — this is a third entry, so the
+    // traversal below still exercises a stack deeper than one hop.
+    await page.getByTestId('nav-desk').click();
+    await expect(page.getByTestId('approval-desk')).toBeVisible();
+    await expect(page.locator('#chat-form')).toHaveCount(0);
 
-    // Back, twice: estate → chat → desk.
+    // Back, twice: desk → chat → desk.
     await page.goBack();
     await expect(page.locator('#chat-form')).toBeVisible();
-    await expect(page.getByTestId('estate-view')).toHaveCount(0);
 
     await page.goBack();
     await expect(page.getByTestId('approval-desk')).toBeVisible();
@@ -94,19 +107,30 @@ test.describe('view history traversal (mock smoke)', () => {
     await expect(page.locator('#chat-form')).toBeVisible();
   });
 
-  test('Back returns to the desk after an instrument-band numeral sends you to the estate', async ({
+  // Post-merge the estate is a SECTION of the desk, so the reported gesture is
+  // no longer a navigation at all. What has to hold is the stronger statement:
+  // the click moves the operator without spending a history entry, so Back
+  // still means "the page before this one" rather than "undo that scroll".
+  // Proven from a sentinel: one Back must leave the app entirely.
+  test('an instrument-band numeral scrolls to the estate and costs no history entry', async ({
     page,
   }) => {
     await seedToken(page);
     await mockData(page);
+    await page.goto('about:blank');
     await page.goto('/');
+    await expect(page.getByTestId('approval-desk')).toBeVisible();
 
-    // The exact reported gesture: a desk numeral, then Back.
+    const before = page.url();
     await page.getByTestId('instrument-band-drift').click();
-    await expect(page.getByTestId('estate-view')).toBeVisible();
+
+    // Focus lands on the section — the part a scroll alone would not do, and
+    // the reason a keyboard operator ends up where the numeral pointed.
+    await expect(page.getByTestId('estate-view')).toBeFocused();
+    expect(page.url()).toBe(before);
 
     await page.goBack();
-    await expect(page.getByTestId('approval-desk')).toBeVisible();
+    expect(page.url()).toBe('about:blank');
   });
 
   // A shared link's restoration must not COST a history entry, or the visitor's
@@ -130,6 +154,28 @@ test.describe('view history traversal (mock smoke)', () => {
       expect(page.url()).toBe('about:blank');
     });
   }
+
+  // The retired view id is a raw-string alias now (deeplink.viewFromSearch), so
+  // links shared before the merge still resolve. They must resolve the same way
+  // any other entry restore does — landing on the merged page WITHOUT costing a
+  // history entry, or a visitor's first Back press pops to the page they are
+  // already looking at.
+  test('a legacy ?view=estate link lands on the desk and leaves the app in ONE Back press', async ({
+    page,
+  }) => {
+    await seedToken(page);
+    await mockData(page);
+    await page.goto('about:blank');
+
+    await page.goto('/?view=estate');
+    await expect(page.getByTestId('approval-desk')).toBeVisible();
+    // The estate is right there on the same page — the link's subject is not
+    // lost, it just is not a separate destination any more.
+    await expect(page.getByTestId('estate-view')).toBeAttached();
+
+    await page.goBack();
+    expect(page.url()).toBe('about:blank');
+  });
 
   // The restore is view-only by design, so a forward entry can still name a
   // thread this session tore down. The url must stop claiming it rather than

@@ -141,6 +141,112 @@ test.describe('transparency UI (mock smoke)', () => {
     await expect(page.getByTestId('approval-desk')).toHaveCount(0);
   });
 
+  // The 2026-07-31 merge put the desk card and the estate section in one grid
+  // column, and a real layout engine is the only thing that can check they
+  // landed in the same one — jsdom has none, so the unit suite cannot see this
+  // at all. It is not hypothetical: both declared `max-width: 780px; margin: 0
+  // auto`, but as auto-margin grid items they were sized SHRINK-TO-FIT, and the
+  // estate's narrower content gave it 384px at left 448 against the desk's
+  // 780px at left 250. Two mismatched centered cards stacked in one column is
+  // precisely the "the frontend looks bolted on" reading the merge answers.
+  test('the desk card and the estate section share one column', async ({ page }) => {
+    await seedToken(page);
+    await mockData(page, freshState());
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto('/');
+
+    const desk = await page.getByTestId('approval-desk').boundingBox();
+    const estate = await page.getByTestId('estate-view').boundingBox();
+    expect(desk, 'desk card must render').not.toBeNull();
+    expect(estate, 'estate section must render').not.toBeNull();
+    // Exact, not approximate: they are the same column, so any difference is a
+    // bug rather than a rounding artifact.
+    expect(Math.round(estate!.x)).toBe(Math.round(desk!.x));
+    expect(Math.round(estate!.width)).toBe(Math.round(desk!.width));
+  });
+
+  // Phone width. The estate is on the FRONT DOOR since the merge, so a visitor
+  // on a phone meets these rows without clicking anything.
+  //
+  // Measured against the CARD, not the document, and that distinction is the
+  // whole point: `.estate-view` is `overflow: hidden`, so a chip that runs past
+  // the card is CLIPPED, never scrolled to. A document-level `scrollWidth ===
+  // clientWidth` check — the narrow-width check the plan prescribes, and the one
+  // this suite would naturally reach for — passes happily with a control sitting
+  // half off the card. It did: at 390px the adopt button was cut by 4px in ja
+  // and 16px in en until the row learned to restack (EstateView.svelte's 460px
+  // query). Both checks are below; only the first can see that failure.
+  //
+  // Every chip, not one testid: a drift row ends in exactly one of three (the
+  // adopt button, the "PR #n awaiting review" marker, or the mute "adoption
+  // status unknown" — which is what THIS fixture produces, since mockData
+  // leaves /infra/pending-approvals unrouted and an unsupported absence must
+  // not offer an Adopt). They share `.estate-view__chip`, they are the widest
+  // thing in a row, and the invariant belongs to all of them equally.
+  // Both locales, because the widest string is a DIFFERENT one in each: the EN
+  // chip is the widest element in its row, the JA type label is. A single-locale
+  // pin here would have been half a guard.
+  for (const locale of ['ja', 'en'] as const) {
+    test(`at phone width the estate row stays inside its card and does not collide (${locale})`, async ({
+      page,
+    }) => {
+      await seedToken(page);
+      await page.addInitScript((l) => localStorage.setItem('driftscribe.locale', l), locale);
+      await mockData(page, freshState());
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.goto('/');
+
+      const estate = page.getByTestId('estate-view');
+      await expect(estate).toBeVisible();
+
+      const chips = estate.locator('.estate-view__chip');
+      // The fixture's own premise. Without it, a graph fixture that stopped
+      // producing chip-bearing rows would leave this passing on an empty set.
+      await expect(chips.first()).toBeVisible();
+
+      const card = (await estate.boundingBox())!;
+      const padRight = await estate.evaluate((el) => parseFloat(getComputedStyle(el).paddingRight));
+      const limit = Math.round(card.x + card.width - padRight);
+      for (let i = 0; i < (await chips.count()); i++) {
+        const box = (await chips.nth(i).boundingBox())!;
+        expect(Math.round(box.x + box.width), `chip ${i} escapes the card`).toBeLessThanOrEqual(
+          limit,
+        );
+      }
+
+      // Fitting inside the card is not enough: the first restack attempt put the
+      // type label and the chip on one line, where both are `nowrap` and the
+      // type simply ran UNDER the chip. Every element stayed within the card, so
+      // the check above passed while the row was unreadable. Overlap is its own
+      // failure and needs its own assertion — stated as 2D rect intersection so
+      // it holds whatever arrangement the breakpoint chooses.
+      const rows = await estate.locator('.estate-view__row').all();
+      let checked = 0;
+      for (const row of rows) {
+        const type = row.locator('.estate-view__type');
+        const chip = row.locator('.estate-view__chip');
+        if ((await type.count()) === 0 || (await chip.count()) === 0) continue;
+        const t = (await type.first().boundingBox())!;
+        const c = (await chip.first().boundingBox())!;
+        const xOverlap = Math.min(t.x + t.width, c.x + c.width) - Math.max(t.x, c.x);
+        const yOverlap = Math.min(t.y + t.height, c.y + c.height) - Math.max(t.y, c.y);
+        const label = `${(await type.first().textContent())?.trim()} / ${(
+          await chip.first().textContent()
+        )?.trim()}`;
+        expect(xOverlap > 0 && yOverlap > 0, `type overlaps chip: ${label}`).toBe(false);
+        checked++;
+      }
+      expect(checked, 'no row carried both a type and a chip').toBeGreaterThan(0);
+
+      // …and the page itself still does not scroll sideways.
+      const { scrollWidth, clientWidth } = await page.evaluate(() => ({
+        scrollWidth: document.documentElement.scrollWidth,
+        clientWidth: document.documentElement.clientWidth,
+      }));
+      expect(scrollWidth).toBe(clientWidth);
+    });
+  }
+
   test('shell + built assets load with no 404 and render the chrome', async ({ page }) => {
     const bad: string[] = [];
     page.on('response', (r) => {

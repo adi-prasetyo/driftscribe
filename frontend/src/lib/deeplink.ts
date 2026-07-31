@@ -57,13 +57,20 @@ export function conversationIdFromSearch(search: string): string | null {
   return raw !== null && CONVERSATION_ID_RE.test(raw) ? raw : null;
 }
 
-// The SPA's three client-side views. No router library — this is the same
+// The SPA's two client-side views. No router library — this is the same
 // pure-function-over-location.search pattern as the deep-link helpers above,
 // just picking a view instead of a resource id.
 // VIEWS is the single source of truth and AppView is derived from it, so the
 // allowlist and the type can never drift apart (same idiom as AUTONOMY_MODES /
 // AutonomyMode in lib/autonomy.ts).
-export const VIEWS = ['desk', 'estate', 'chat'] as const;
+//
+// 'estate' left this list on 2026-07-31: the estate stopped being a view and
+// became a SECTION of the desk. Dropping it from here is what makes the type
+// enforce that — any `'estate'`-typed straggler is now a compile error rather
+// than a live route to a page that no longer exists. Old links still work; see
+// the alias in viewFromSearch below, which matches the raw string precisely so
+// it does not depend on this list.
+export const VIEWS = ['desk', 'chat'] as const;
 export type AppView = (typeof VIEWS)[number];
 
 // Flipped from 'chat' to 'desk' at Task 3.6 step 2, after the desk was
@@ -126,5 +133,10 @@ export function viewFromSearch(search: string): AppView {
   // URLSearchParams tolerates a leading "?" itself, so — like the two helpers
   // above — the raw search string goes straight in.
   const raw = new URLSearchParams(search).get('view');
+  // Legacy alias: the estate merged into the desk (2026-07-31 design doc). Old
+  // ?view=estate links land on the merged page rather than 404-ing into a blank
+  // main. Matched on the RAW string, deliberately not via VIEWS — the id is
+  // retired from the allowlist and this line must keep working without it.
+  if (raw === 'estate') return 'desk';
   return VIEWS.includes(raw as AppView) ? (raw as AppView) : DEFAULT_VIEW;
 }

@@ -1,11 +1,18 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { resolve } from 'node:path';
 
-// ── Visual walkthrough of the estate view (Task 4.1) ────────────────────────
+// ── Visual walkthrough of the estate SECTION (Task 4.1) ─────────────────────
 // Same rig shape as desk.visual.ts: drives the REAL Svelte app (vite dev) with
 // every backend endpoint mocked, then captures a PNG in BOTH locales so a human
 // can eyeball screen two against docs/plans/2026-07-28-composite-mockup.html
 // ("SCREEN 2 — 推定図", lines 360-392).
+//
+// The 2026-07-31 merge made the estate a section of the desk rather than a view
+// of its own. The rig entered through `/?view=estate`, which now ALIASES to the
+// desk — so it would have kept running, kept passing, and kept photographing
+// something other than what it claimed. It enters at the desk and scrolls to
+// the section instead; the element-scoped screenshots below are unchanged,
+// because a section screenshot never showed the surrounding chrome anyway.
 //
 // The shot list covers the states that change the view's SHAPE, not merely its
 // numbers:
@@ -27,10 +34,13 @@ const SHOTS =
   process.env.VISUAL_OUT ??
   '/tmp/claude-1000/-home-adi-driftscribe/b84d6b6e-d1da-4ea2-a670-7d8432ad1683/scratchpad/estate-screens';
 
-// Matches the desk rig: the estate view is the same centered 780px column.
+// Matches the desk rig: the estate section is the same centered 780px column.
 const VIEWPORT = { width: 1280, height: 800 };
 
-const ESTATE_URL = '/?view=estate';
+// The desk IS the estate's page now. Deliberately not `/?view=estate` — that
+// still resolves here through the legacy alias, which is exactly why using it
+// would hide a regression rather than catch one.
+const ESTATE_URL = '/';
 
 type Locale = 'en' | 'ja';
 
@@ -180,6 +190,25 @@ function graphBody(opts: { drift: boolean; degraded?: boolean }) {
         sensitive: true,
         nodes: [],
       },
+      {
+        // Feeds the UNTRACKED fold, which nothing else in this rig produced.
+        // Non-adoptable TYPE with a managed member, so isPrimaryCard's
+        // `managed > 0` arm keeps the card in the default view while its two
+        // unmanaged rows classify as `untracked` — neutral, never amber, never
+        // an Adopt button. That is the exact combination the fold exists for.
+        asset_type: 'iam.googleapis.com/ServiceAccount',
+        label: 'Service account',
+        adoptable: false,
+        count: 3,
+        managed: 1,
+        drift: 2,
+        sensitive: false,
+        nodes: [
+          node('sa1', 'driftscribe-agent-sa', 'iam.googleapis.com/ServiceAccount', true),
+          node('sa2', 'legacy-deploy-sa', 'iam.googleapis.com/ServiceAccount', false),
+          node('sa3', 'compute-default-sa', 'iam.googleapis.com/ServiceAccount', false),
+        ],
+      },
     ],
     edges: [],
     truncated: { per_type_sample: 10 },
@@ -244,6 +273,11 @@ for (const locale of ['en', 'ja'] as Locale[]) {
       const dismiss = page.getByTestId('demo-notice-dismiss');
       if (await dismiss.isVisible()) await dismiss.click();
 
+      // The section sits below the hero and the ledger now, so bring it into
+      // view before shooting. This also renders the same landing an operator
+      // gets from a band numeral, minus the focus ring.
+      await estate.scrollIntoViewIfNeeded();
+
       // Prove each fixture actually produced the SHAPE it claims before
       // shooting it — otherwise a fixture that silently collapsed to the empty
       // model hands back three near-identical screenshots and the rig looks
@@ -259,6 +293,16 @@ for (const locale of ['en', 'ja'] as Locale[]) {
         await expect(page.getByTestId('estate-pr-chip')).toHaveCount(1);
         await expect(page.getByTestId('estate-adopt-btn')).toHaveCount(2);
         await expect(page.getByTestId('estate-system-fold')).toBeVisible();
+        // The merge's density concession: the untracked group folds shut, so
+        // its COUNT is what the section spends space on. Assert it is closed —
+        // a fold that ships open is the same wall of rows under a new tag.
+        const untracked = page.getByTestId('estate-untracked-fold');
+        await expect(untracked).toBeVisible();
+        expect(await untracked.evaluate((el) => (el as HTMLDetailsElement).open)).toBe(false);
+        // The two untracked service accounts must NOT have picked up an Adopt
+        // button on the way in — the count above already pins that globally,
+        // but this says which rows it is about.
+        await expect(untracked.getByTestId('estate-adopt-btn')).toHaveCount(0);
       } else {
         // Zero drift: the group header must be ABSENT, not rendered empty.
         await expect(page.getByTestId('estate-group-drift')).toHaveCount(0);
@@ -270,6 +314,19 @@ for (const locale of ['en', 'ja'] as Locale[]) {
         path: resolve(SHOTS, `${locale}-${name}.png`),
         animations: 'disabled',
       });
+
+      // Second frame for the populated case only: both folds open. The resting
+      // shot above proves the section is calm; this one proves the detail is
+      // still legible once asked for, which is the half a fold can get wrong.
+      if (fx.drift) {
+        for (const id of ['estate-untracked-fold', 'estate-system-fold']) {
+          await page.getByTestId(id).locator('summary').click();
+        }
+        await estate.screenshot({
+          path: resolve(SHOTS, `${locale}-${name}-folds-open.png`),
+          animations: 'disabled',
+        });
+      }
     });
   }
 }

@@ -22,6 +22,15 @@ import { resolve } from 'node:path';
 // prod renders. Screenshots land OUTSIDE the repo (scratchpad) so the branch
 // stays clean.
 //
+// The 2026-07-31 merge changed what the shot list has to judge. Two states got
+// materially smaller — `resting` and `unknown` slimmed to a one-line strip,
+// because a half-screen of whitespace saying "nothing needs you" was most of
+// what made the page read as empty — and the desk gained the estate section
+// below the ledger. So each fixture now shoots three frames: the hero element,
+// the viewport (how the hero sits in the shell), and the WHOLE page, which is
+// the only one that can show whether band → hero → ledger → estate reads as one
+// document or as four stacked panels.
+//
 // Run by hand (NOT wired into CI, same as crew-handoff.visual.ts):
 //   npx playwright test --config tests/visual/playwright.visual.config.ts \
 //     desk.visual.ts
@@ -431,10 +440,23 @@ for (const locale of ['en', 'ja'] as Locale[]) {
 
       // Full viewport too: the desk is a centered 780px column, and how it sits
       // in the 1280px shell (header nav, no rails) is half of what Task 3.6 is
-      // verifying.
+      // verifying. Post-merge this is also the ABOVE-THE-FOLD test — whether
+      // the first screen still leads with the operator's decision now that the
+      // estate shares the page.
       await page.screenshot({
         path: resolve(SHOTS, `${locale}-${name}-full.png`),
         animations: 'disabled',
+      });
+
+      // The whole landing page in one frame. This is the merge's actual
+      // deliverable and the only frame that can show it: whether the four bands
+      // read as one document, and where the estate section sits relative to the
+      // fold in each hero state (a pending hero pushes it further down than a
+      // resting one, which is the point of slimming resting).
+      await page.screenshot({
+        path: resolve(SHOTS, `${locale}-${name}-page.png`),
+        animations: 'disabled',
+        fullPage: true,
       });
     });
   }

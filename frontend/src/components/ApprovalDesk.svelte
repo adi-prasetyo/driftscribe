@@ -22,7 +22,6 @@
   import { fmtWhen } from '../lib/format';
   import { notifyFailed } from '../lib/approval';
   import type { Decision } from '../lib/types';
-  import type { AppView } from '../lib/deeplink';
   import InstrumentBand, { type BandStat } from './InstrumentBand.svelte';
   import LedgerStrip from './LedgerStrip.svelte';
   import SealStamp from './SealStamp.svelte';
@@ -35,7 +34,7 @@
     settled = true,
     degraded = false,
     lastError = null,
-    onNavigate,
+    onShowEstate,
     onOpenTrace,
     refresh,
   }: {
@@ -55,7 +54,10 @@
      *  refusing to print a fresh-looking "last scan" line for a scan that did
      *  not refresh. */
     lastError?: 'graph' | 'pending' | 'decisions' | null;
-    onNavigate: (view: AppView) => void;
+    /** Bring the estate into view. Takes no argument: since the 2026-07-31
+     *  merge there is exactly one destination and it is a section of this same
+     *  page, so App scrolls (and moves focus) rather than navigating. */
+    onShowEstate: () => void;
     /** Opens a past reasoning timeline (App.svelte's openTrace — it switches
      *  to the chat view and syncs `?reasoning=`). Optional: when omitted the
      *  pending card's "view the reasoning" link is not rendered at all, rather
@@ -273,22 +275,25 @@
     return m.source === 'rollback' ? (m.decision.approval?.resolved_at ?? null) : (m.decision.applied_at ?? null);
   }
 
-  // ds-7ag.2 — where each band numeral goes FROM THE DESK: managed and drift
-  // point at the infrastructure map. `awaiting` is deliberately NOT routed here
-  // and never reaches this handler, because the band renders it as an inert
-  // figure in the 'desk' context (ds-s61 — see InstrumentBand's routing table).
-  // It used to scrollIntoView + focus this page's own pending card, but that
-  // card is already on screen ~270px below the numeral, so the scroll had
-  // nowhere to go and merely consumed the dead 38px the old viewport calc left
-  // lying around. The number sits directly above its own subject; that is the
-  // wayfinding, and it needs no click.
+  // ds-7ag.2 — where each band numeral goes: managed and drift point at the
+  // infrastructure map, which since the 2026-07-31 merge is the estate SECTION
+  // of this same page. So the click scrolls there instead of navigating, and
+  // App moves focus with the scroll.
+  //
+  // `awaiting` is deliberately NOT routed here and never reaches this handler,
+  // because the band renders it as an inert figure (ds-s61 — see
+  // InstrumentBand's routing table). It used to scrollIntoView + focus this
+  // page's own pending card, but that card is already on screen ~270px below
+  // the numeral, so the scroll had nowhere to go and merely consumed the dead
+  // 38px the old viewport calc left lying around. The number sits directly
+  // above its own subject; that is the wayfinding, and it needs no click.
   function onStat(_stat: BandStat): void {
-    onNavigate('estate');
+    onShowEstate();
   }
 </script>
 
 <section class="approval-desk" data-testid="approval-desk" aria-label={$t('desk.region.ariaLabel')}>
-  <InstrumentBand managed={bandManaged} drift={bandDrift} {awaiting} context="desk" {onStat} />
+  <InstrumentBand managed={bandManaged} drift={bandDrift} {awaiting} {onStat} />
 
   <div class="approval-desk__deskwrap" data-testid="approval-desk-state" data-state={model.kind}>
     {#if model.kind === 'unknown'}
@@ -297,7 +302,11 @@
            so. `loading` resolves itself in seconds; `degraded` admits a gap that
            may not. They share a shape but never share copy. -->
       {@const isLoading = model.reason === 'loading'}
-      <div class="approval-desk__calm" data-testid="approval-desk-unknown" data-reason={model.reason}>
+      <div
+        class="approval-desk__calm approval-desk__calm--slim"
+        data-testid="approval-desk-unknown"
+        data-reason={model.reason}
+      >
         <h2>{$t(isLoading ? 'desk.unknown.loading.headline' : 'desk.unknown.degraded.headline')}</h2>
         <p class="approval-desk__watch" data-testid="approval-desk-watch">
           <span
@@ -308,7 +317,7 @@
         </p>
       </div>
     {:else if model.kind === 'resting'}
-      <div class="approval-desk__calm" data-testid="approval-desk-resting">
+      <div class="approval-desk__calm approval-desk__calm--slim" data-testid="approval-desk-resting">
         <h2>{$t('desk.resting.headline')}</h2>
         <p class="approval-desk__watch" data-testid="approval-desk-watch">
           <span class="approval-desk__watch-dot" aria-hidden="true"></span>
@@ -491,6 +500,13 @@
 
 <style>
   .approval-desk {
+    /* Explicit, though this card happens to reach 780px on its own: the band's
+       44px numerals give it a max-content width past the cap, so shrink-to-fit
+       lands on the same number by accident. Leaving it to that accident is what
+       let EstateView render 384px wide beneath it after the 2026-07-31 merge —
+       and it would come back the moment the band slimmed. The two cards share
+       one column; keep this pair identical to EstateView's. */
+    width: 100%;
     max-width: 780px;
     margin: 0 auto;
     background: var(--ds-bg);
@@ -502,15 +518,52 @@
 
   .approval-desk__deskwrap {
     padding: 40px 40px 26px;
-    min-height: 280px;
+    /* `min-height: 280px` used to hold the hero open so a calm desk did not
+       collapse to a headline over acres of nothing. With the estate section
+       under it (2026-07-31 merge) that reserved blank height IS the emptiness
+       we are removing, and the hero growing when a decision arrives is the
+       deliberate demo beat — see the design doc's "Accepted trade-offs". */
     box-sizing: border-box;
+  }
+  /* The two calm states slim the whole block, not just its inner text: the
+     40px top inset belongs to a hero that carries the page, and this one no
+     longer does. Scoped by `data-state` on the wrapper (already there) rather
+     than by padding the nested calm div, which would inset twice. */
+  .approval-desk__deskwrap[data-state='resting'],
+  .approval-desk__deskwrap[data-state='unknown'] {
+    padding: 18px 40px;
+  }
+
+  /* One baseline-aligned row: headline, then the watch metadata beside it.
+     Wraps rather than truncates — JA runs longer and the watch line grows
+     conditional segments. */
+  .approval-desk__calm--slim {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+  }
+  /* Body-size, not the 31px Mincho hero rule — that stays for the tall states.
+     Still an h2 (see the heading-level note above); only its size changes. */
+  .approval-desk__calm--slim h2 {
+    font-family: inherit;
+    font-size: 15px;
+    line-height: 1.5;
+    font-weight: 600;
+    letter-spacing: 0;
+    margin: 0;
+  }
+  .approval-desk__calm--slim .approval-desk__watch {
+    margin-top: 0;
   }
 
   /* h2, not h3, even though the plan and the mockup both say "Mincho h3 31px"
      — that phrase pins the SIZE, which is separable from the semantic level.
      The page's only h1 is the brand title (App.svelte), so an h3 here would
-     skip a level for anyone navigating by heading, and the sibling estate view
-     already uses h2. The 31px below is what actually delivers the mockup. */
+     skip a level for anyone navigating by heading. Since the 2026-07-31 merge
+     this matters more, not less: EstateView's group headings are h2 and now sit
+     on the SAME page, so a heading walk runs h1 → h2 (desk) → h2 (estate) with
+     no gap. The 31px below is what actually delivers the mockup. */
   .approval-desk h2 {
     font-family: var(--ds-font-mincho);
     font-size: 31px;

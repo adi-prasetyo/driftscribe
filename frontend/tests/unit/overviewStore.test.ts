@@ -499,7 +499,7 @@ describe('createOverviewStore — settled / degraded (ds-eh6)', () => {
   });
 
   it('a graph failure alone does NOT mark the desk degraded', async () => {
-    // Graph feeds the estate view and is the routinely-slow endpoint
+    // Graph feeds the estate section and is the routinely-slow endpoint
     // (CAI-backed, 10-30s cold). Letting it flip `degraded` would put the desk
     // in a degraded state during ordinary cold starts.
     const { fn } = makeCall({ graph: () => res({}, 500) });

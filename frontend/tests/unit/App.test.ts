@@ -62,7 +62,7 @@ describe('App — tour wiring (smoke)', () => {
     expect(window.localStorage.getItem('driftscribe_tour_done')).toBe('1');
   });
 
-  // ds-s9q: the tour borrows the estate view for two of its steps and hands the
+  // ds-s9q: the tour borrows the desk for two of its steps and hands the
   // visitor back to chat on the last one. Wiring those steps to the full
   // navigate() applied its leave-chat teardown, so "open a conversation, click
   // Tour, press Next" discarded the open thread — it survived in the rail, but
@@ -75,7 +75,7 @@ describe('App — tour wiring (smoke)', () => {
     const { getByTestId } = render(App);
 
     await fireEvent.click(getByTestId('tour-open'));
-    // Step 2 of TOUR_STEPS carries view:'estate' — the first one that navigates.
+    // Step 2 of TOUR_STEPS carries view:'desk' — the first one that navigates.
     await fireEvent.click(getByTestId('tour-next'));
 
     expect(getByTestId('estate-view')).toBeTruthy();
@@ -111,13 +111,14 @@ describe('App — tour wiring (smoke)', () => {
     expect(window.localStorage.getItem('driftscribe_demo_notice_dismissed')).toBeNull();
   });
 
-  // ds-2co: the estate view puts the same InstrumentBand in the same top-left
-  // corner the popover drops into, so a shared `?view=estate` link reproduced
-  // the overlap ds-5yq removed from the desk. The rule is about the layout, not
-  // about one view.
-  it('does not auto-open the notice on the estate view either', () => {
+  // ds-2co: the estate put the same InstrumentBand in the same top-left corner
+  // the popover drops into, so a shared `?view=estate` link reproduced the
+  // overlap ds-5yq removed from the desk. The rule is about the layout, not
+  // about one view — and it still holds now that the link ALIASES to the desk.
+  it('does not auto-open the notice on a legacy ?view=estate link either', () => {
     history.replaceState(null, '', '/?view=estate');
     const { getByTestId, queryByTestId } = render(App);
+    expect(getByTestId('approval-desk')).toBeTruthy();
     expect(getByTestId('estate-view')).toBeTruthy();
     expect(queryByTestId('demo-notice-popover')).toBeNull();
     expect(getByTestId('demo-notice-bell')).toBeTruthy();
@@ -155,8 +156,10 @@ describe('App — tour wiring (smoke)', () => {
   // never see this: on the DESK (a bare url) InfraDiagram never mounts, so the
   // lifted state stayed null and every graph-dependent step degraded to its
   // "still loading" / "unavailable" copy for the whole tour. Task 4.1 made this
-  // worse still by routing steps 2 and 4 to the ESTATE view, which likewise
+  // worse still by routing steps 2 and 4 onto EstateView, which likewise
   // does not mount InfraDiagram — so no tour path reached a populated graph.
+  // (That target was a view of its own then; since the 2026-07-31 merge it is a
+  // section of the desk, which changes the address, not the diagnosis.)
   // Task 4.1's actual feature: the estate step's target moved onto EstateView,
   // which is NOT mounted while the tour is opened from the desk. So the step
   // must navigate AND the spotlight must land — and the lookup has to wait for
@@ -165,10 +168,30 @@ describe('App — tour wiring (smoke)', () => {
   // body continues. A synchronous querySelector therefore finds nothing and
   // silently spotlights nothing. Without this case the whole tick() deferral
   // was unpinned: the suite passed identically with the sync version.
-  it('the estate step navigates to the estate view AND spotlights it there', async () => {
+  // Post-merge the estate section is ALREADY on the desk, so this no longer
+  // proves a cross-view mount. It still pins the deferral: the step goes
+  // through navigate() and the spotlight must land, and the same case run from
+  // CHAT (below) keeps the mount-delay coverage the tick() guard exists for.
+  it('the estate step spotlights the estate section on the desk', async () => {
     history.replaceState(null, '', '/');
+    const { getByTestId } = render(App);
+    expect(getByTestId('estate-view')).toBeTruthy(); // already on the desk page
+    await fireEvent.click(getByTestId('tour-open'));
+    await fireEvent.click(getByTestId('tour-next')); // welcome → estate
+    await waitFor(() =>
+      expect(
+        document.querySelector('[data-tour="estate"]')?.classList.contains('tour-spotlight'),
+      ).toBe(true),
+    );
+  });
+
+  // The mount-delay case the tick() deferral actually guards: starting on CHAT,
+  // the estate section is NOT mounted, so a synchronous querySelector after
+  // navigate() finds nothing and silently spotlights nothing.
+  it('the estate step navigates chat → desk AND spotlights it after the mount', async () => {
+    history.replaceState(null, '', '/?view=chat');
     const { getByTestId, queryByTestId } = render(App);
-    expect(queryByTestId('estate-view')).toBeNull(); // starts on the desk
+    expect(queryByTestId('estate-view')).toBeNull(); // starts on chat
     await fireEvent.click(getByTestId('tour-open'));
     await fireEvent.click(getByTestId('tour-next')); // welcome → estate
     await waitFor(() => expect(getByTestId('estate-view')).toBeTruthy());
@@ -619,21 +642,26 @@ describe('App — history-aware view navigation (ds-7ag.1)', () => {
   // view-restore must NOT fire — that would replace the very entry the operator
   // just returned to.
   it('Back during the tour closes it and lands on the restored view', async () => {
+    history.replaceState(null, '', '/?view=chat');
     const { getByTestId, findByTestId, queryByTestId } = render(App);
     await fireEvent.click(getByTestId('tour-open'));
-    await fireEvent.click(getByTestId('tour-next')); // step 2 navigates to estate
+    await fireEvent.click(getByTestId('tour-next')); // step 2 navigates to the desk
     expect(getByTestId('estate-view')).toBeTruthy();
 
-    popTo('/?view=desk');
+    popTo('/?view=chat');
 
-    expect(await findByTestId('instrument-band')).toBeTruthy();
+    // Back to chat: the tour is gone and so is the desk it borrowed. Started
+    // from chat deliberately — with the estate merged into the desk, a
+    // desk→desk borrow would assert nothing about the restore.
+    await waitFor(() => expect(document.getElementById('chat-form')).toBeTruthy());
     expect(queryByTestId('tour-card')).toBeNull();
     expect(queryByTestId('estate-view')).toBeNull();
+    expect(queryByTestId('instrument-band')).toBeNull();
   });
 
   // Codex review of this branch: the tour borrows a view while PRESERVING the
-  // chat surface, so a Back press mid-tour arrives with `view === 'estate'` and
-  // an open thread still live behind it. Gating the teardown on
+  // chat surface, so a Back press mid-tour arrives with `view === 'desk'` (the
+  // borrowed view) and an open thread still live behind it. Gating the teardown on
   // `view === 'chat'` skipped it there, leaving a hidden thread whose later
   // settle would write ?conversation= onto a DESK url — the exact state/url
   // disagreement this handler exists to prevent. Needs a REAL open thread; the
@@ -646,10 +674,10 @@ describe('App — history-aware view navigation (ds-7ag.1)', () => {
     await findByTestId('conversation-thread');
 
     await fireEvent.click(getByTestId('tour-open'));
-    await fireEvent.click(getByTestId('tour-next')); // borrows the estate view
+    await fireEvent.click(getByTestId('tour-next')); // borrows the desk view
     expect(getByTestId('estate-view')).toBeTruthy();
 
-    popTo('/?view=desk'); // Back — arrives while `view` is 'estate', not 'chat'
+    popTo('/?view=desk'); // Back — arrives while `view` is 'desk', not 'chat'
     await findByTestId('instrument-band');
 
     // The thread is gone, and the desk url does not claim it.
@@ -666,7 +694,7 @@ describe('App — history-aware view navigation (ds-7ag.1)', () => {
     await fireEvent.click(getByTestId('tour-open'));
     const spies = historySpies();
 
-    await fireEvent.click(getByTestId('tour-next')); // → estate
+    await fireEvent.click(getByTestId('tour-next')); // → desk (estate step)
     await fireEvent.click(getByTestId('tour-next')); // → controls
     await fireEvent.click(getByTestId('tour-close')); // restores the start view
 
@@ -705,12 +733,12 @@ describe('App — view routing (Task 2.2)', () => {
   // Task 3.6 step 2 flipped DEFAULT_VIEW to 'desk'. A BARE url (no ?view=) is
   // the case that matters — it's what a judge typing the domain gets — so this
   // deliberately overrides the suite-wide `?view=chat` default set above.
-  it('a bare url defaults to the approval desk: composer absent, estate absent', () => {
+  it('a bare url defaults to the approval desk, estate section and all, composer absent', () => {
     history.replaceState(null, '', '/');
-    const { getByTestId, queryByTestId } = render(App);
+    const { getByTestId } = render(App);
     expect(getByTestId('approval-desk')).toBeTruthy();
+    expect(getByTestId('estate-view')).toBeTruthy();
     expect(document.getElementById('chat-form')).toBeNull();
-    expect(queryByTestId('estate-view')).toBeNull();
   });
 
   it('renders the chat layout for an explicit ?view=chat', () => {
@@ -728,11 +756,28 @@ describe('App — view routing (Task 2.2)', () => {
     expect(document.getElementById('chat-form')).toBeNull();
   });
 
-  it('renders the estate placeholder for ?view=estate, with the composer absent', () => {
+  // Legacy alias: shared ?view=estate links predate the merge and must still
+  // land somewhere real — the desk, which now contains the estate.
+  it('renders the DESK for a legacy ?view=estate link, with the composer absent', () => {
     history.replaceState(null, '', '/?view=estate');
     const { getByTestId } = render(App);
+    expect(getByTestId('approval-desk')).toBeTruthy();
     expect(getByTestId('estate-view')).toBeTruthy();
     expect(document.getElementById('chat-form')).toBeNull();
+  });
+
+  it('the estate section lives inside the desk view, and there is no estate nav button', () => {
+    history.replaceState(null, '', '/');
+    const { getByTestId, queryByTestId } = render(App);
+    const desk = getByTestId('approval-desk');
+    const estate = getByTestId('estate-view');
+    expect(desk).toBeTruthy();
+    expect(estate).toBeTruthy();
+    // Siblings on one page, band → hero → ledger → estate.
+    expect(desk.compareDocumentPosition(estate) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(queryByTestId('nav-estate')).toBeNull();
+    expect(getByTestId('nav-desk')).toBeTruthy();
+    expect(getByTestId('nav-chat')).toBeTruthy();
   });
 
   it('a chat intent (?reasoning=) wins over an explicit ?view=desk — chat renders, not the desk placeholder', async () => {
@@ -803,10 +848,20 @@ describe('App — view routing (Task 2.2)', () => {
   // param-less URL for chat that reloads as the desk, and THIS test fails.
   it('every navigated view round-trips through viewFromSearch (guards the Task 3.6 flip)', async () => {
     window.sessionStorage.setItem('driftscribe_token', 'tok');
-    const { getByTestId } = render(App);
+    const { getByTestId, container } = render(App);
     await waitFor(() => expect(getByTestId('nav-desk')).toBeTruthy());
 
-    for (const v of VIEWS) {
+    // Derived from the RENDERED nav rather than from VIEWS. The two agree again
+    // now that 'estate' is out of VIEWS, but reading the DOM is the stronger
+    // assertion: it fails if a view gains a button without a round-trip, or
+    // keeps a button after leaving the allowlist. Iterating VIEWS could only
+    // ever check the views VIEWS already knows about.
+    const navViews = Array.from(container.querySelectorAll('.app-header__nav button')).map((b) =>
+      (b.getAttribute('data-testid') ?? '').replace(/^nav-/, ''),
+    );
+    expect(navViews).toEqual(['desk', 'chat']);
+
+    for (const v of navViews) {
       await fireEvent.click(getByTestId(`nav-${v}`));
       expect(viewFromSearch(window.location.search)).toBe(v);
     }
@@ -869,7 +924,7 @@ describe('App — rails come off the desk (Task 3.5)', () => {
   // 32-hex trace id, mirrors the "view routing" describe block's own TID.
   const TID = 'b'.repeat(32);
 
-  it('the rails render on chat (default) and are absent on desk and estate', () => {
+  it('the rails render on chat (default) and are absent on the desk, estate section included', () => {
     const { getByTestId } = render(App);
     expect(getByTestId('rails')).toBeTruthy();
     cleanup();
@@ -878,12 +933,7 @@ describe('App — rails come off the desk (Task 3.5)', () => {
     const desk = render(App);
     expect(desk.queryByTestId('rails')).toBeNull();
     expect(desk.getByTestId('approval-desk')).toBeTruthy();
-    cleanup();
-
-    history.replaceState(null, '', '/?view=estate');
-    const estate = render(App);
-    expect(estate.queryByTestId('rails')).toBeNull();
-    expect(estate.getByTestId('estate-view')).toBeTruthy();
+    expect(desk.getByTestId('estate-view')).toBeTruthy();
   });
 
   // Codex finding baked into the plan: the guarantee the railless desk rests
@@ -948,7 +998,7 @@ describe('App — rails come off the desk (Task 3.5)', () => {
   }
 });
 
-describe('App — estate view (Task 4.1)', () => {
+describe('App — estate section (Task 4.1)', () => {
   const BUCKET = 'storage.googleapis.com/Bucket';
 
   // A graph with one real adoptable drift node (shipping-topic) — used by
@@ -999,41 +1049,150 @@ describe('App — estate view (Task 4.1)', () => {
 
   it('renders real drift rows sourced from the overview store', async () => {
     stubFetchWithAdoptableGraph();
-    history.replaceState(null, '', '/?view=estate');
+    history.replaceState(null, '', '/');
     const { findByTestId } = render(App);
     const row = await findByTestId('estate-row');
     expect(row.textContent).toContain('shipping-topic');
   });
 
-  it('an instrument-band numeral navigates from the desk to the estate view', async () => {
+  // ds-7ag.2's per-stat routing survives the merge, but the destination is on
+  // this same page now: the numeral SCROLLS to the estate section. A scroll is
+  // not navigation, so it must leave no history entry and not touch the URL —
+  // otherwise Back would have a phantom step to undo.
+  it('an instrument-band numeral scrolls to the estate section without navigating', async () => {
     history.replaceState(null, '', '/?view=desk');
-    const { getByTestId, findByTestId } = render(App);
-    await waitFor(() => expect(getByTestId('instrument-band-drift')).toBeTruthy());
-    await fireEvent.click(getByTestId('instrument-band-drift'));
-    expect(await findByTestId('estate-view')).toBeTruthy();
-    expect(new URL(window.location.href).searchParams.get('view')).toBe('estate');
-  });
-
-  it('the nav-estate adopt-target fallback marker is present when the estate has no adoptable row, and absent when one exists', async () => {
-    // Default beforeEach stub: totals.drift === 1 but `groups: []` — no
-    // nameable adoptable row, so the fallback marker belongs on the nav button.
     const { getByTestId } = render(App);
-    await waitFor(() =>
-      expect(getByTestId('nav-estate').getAttribute('data-tour')).toBe('adopt-target'),
-    );
-    cleanup();
+    await waitFor(() => expect(getByTestId('instrument-band-drift')).toBeTruthy());
+    // Spied AFTER render so boot-time writes don't count. Asserting the URL
+    // string alone is not enough: a regression that pushed the SAME url would
+    // leave a phantom Back step and still pass (Codex review of this branch).
+    const push = vi.spyOn(history, 'pushState');
+    const replace = vi.spyOn(history, 'replaceState');
+    // The suite-wide beforeEach installs a fresh scrollIntoView mock per test.
+    const scrollSpy = window.HTMLElement.prototype.scrollIntoView as ReturnType<typeof vi.fn>;
+    const before = window.location.href;
 
-    stubFetchWithAdoptableGraph();
-    const withAdopt = render(App);
-    await withAdopt.findByTestId('nav-estate');
-    await waitFor(() =>
-      expect(withAdopt.getByTestId('nav-estate').getAttribute('data-tour')).toBeNull(),
-    );
+    await fireEvent.click(getByTestId('instrument-band-drift'));
+
+    // setup.ts forces matchMedia('reduce') → matches:true, so
+    // prefersReducedMotion() picks 'auto'. Asserting the ARGUMENTS is what
+    // pins the reduced-motion branch — an unconditional 'smooth' would
+    // otherwise pass this test unnoticed.
+    expect(scrollSpy).toHaveBeenCalledWith({ behavior: 'auto', block: 'start' });
+    // A scroll is not navigation: no history entry, no url rewrite.
+    expect(push).not.toHaveBeenCalled();
+    expect(replace).not.toHaveBeenCalled();
+    expect(window.location.href).toBe(before);
+    // Focus follows the scroll, or a keyboard user stays parked on the band
+    // button that just scrolled out of view.
+    expect(document.activeElement).toBe(getByTestId('estate-view'));
   });
 
-  it('an adopt chip on the estate view lands the operator on a prefilled composer', async () => {
+  // The design's central merge invariant: the hero's state machine and the
+  // estate section's own status are INDEPENDENT. Each area reports its own
+  // truth rather than one dragging the other into a shared "something is
+  // wrong" state (ds-eh6, "unknown ≠ empty"). Both halves are covered at
+  // component level; these pin the COMPOSITION, which is where the merge could
+  // couple them.
+  //
+  // The two cases are deliberately the two DIRECTIONS, chosen so each can
+  // actually fail: overviewStore keeps a graph failure out of `degraded`
+  // (overviewStore.ts:251), so a graph outage moves ONLY the estate, and a
+  // decisions outage moves ONLY the hero.
+  //
+  // NB a provable pending decision outranks `degraded` in deskModel (desk.ts:645
+  // — absence is the only claim load state can veto), so a pending-hero fixture
+  // would render `pending` no matter how the props were wired and would pin
+  // nothing here. Hence resting/unknown.
+  it('a failed estate fetch does not drag the hero out of its all-clear', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        // Both pending-work lanes answer cleanly → the desk CAN say "all clear".
+        if (url.includes('/decisions')) return okJson({ decisions: [] });
+        if (url.includes('/infra/pending-approvals')) return okJson({ approvals: [] });
+        // …while the estate map could not be read at all.
+        if (url.includes('/infra/graph')) return new Response('boom', { status: 500 });
+        return okJson({});
+      }),
+    );
+    history.replaceState(null, '', '/');
+    const { findByTestId, getByTestId, queryByTestId } = render(App);
+
+    // The estate admits it could not be read — never a fake-empty "all clear".
+    expect(await findByTestId('estate-degraded')).toBeTruthy();
+    expect(queryByTestId('estate-row')).toBeNull();
+    // The hero keeps its own (separately established) truth.
+    expect(getByTestId('approval-desk-resting')).toBeTruthy();
+    expect(queryByTestId('approval-desk-unknown')).toBeNull();
+    // …and is honest about the scan time it no longer has.
+    expect(getByTestId('approval-desk-watch').textContent).toContain('scan time unavailable');
+  });
+
+  it('a degraded hero does not drag the estate section down with it', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        // /decisions fails → overviewStore sets degraded → the hero cannot
+        // claim the all-clear.
+        if (url.includes('/decisions')) return new Response('boom', { status: 500 });
+        if (url.includes('/infra/pending-approvals')) return okJson({ approvals: [] });
+        // …while the estate map read perfectly well.
+        if (url.includes('/infra/graph'))
+          return okJson({
+            generated_at: '2026-07-31T06:00:00Z',
+            project: 'demo-proj',
+            caveat: '',
+            degraded: false,
+            degraded_reason: null,
+            totals: { resources: 2, managed: 0, drift: 1 },
+            groups: [
+              {
+                asset_type: BUCKET,
+                label: 'Storage bucket',
+                count: 1,
+                managed: 0,
+                drift: 1,
+                sensitive: false,
+                adoptable: true,
+                nodes: [
+                  {
+                    id: 'b0',
+                    label: 'shipping-topic',
+                    asset_type: BUCKET,
+                    managed: false,
+                    location: 'asia-northeast1',
+                  },
+                ],
+              },
+            ],
+            edges: [],
+          });
+        return okJson({});
+      }),
+    );
+    history.replaceState(null, '', '/');
+    const { findByTestId, getByTestId, queryByTestId } = render(App);
+
+    // The hero admits the gap. waitFor the REASON, not just the element: the
+    // unknown state is also what a still-loading first cycle renders, so
+    // asserting on first sight would pass on 'loading' and prove nothing.
+    await waitFor(() =>
+      expect(getByTestId('approval-desk-unknown').getAttribute('data-reason')).toBe('degraded'),
+    );
+    expect(queryByTestId('approval-desk-resting')).toBeNull();
+    // …while the estate renders the rows it genuinely read.
+    const row = await findByTestId('estate-row');
+    expect(row.textContent).toContain('shipping-topic');
+    expect(queryByTestId('estate-degraded')).toBeNull();
+    expect(queryByTestId('estate-loading')).toBeNull();
+  });
+
+  it('an adopt chip on the estate section lands the operator on a prefilled composer', async () => {
     stubFetchWithAdoptableGraph();
-    history.replaceState(null, '', '/?view=estate');
+    history.replaceState(null, '', '/');
     const { findByTestId } = render(App);
     const adoptBtn = await findByTestId('estate-adopt-btn');
     await fireEvent.click(adoptBtn);
@@ -1042,13 +1201,13 @@ describe('App — estate view (Task 4.1)', () => {
     expect(textarea.value).toContain('shipping-topic');
   });
 
-  it('the tour adopt step navigates chat → estate and spotlights the first adoptable row (survives the navigate → mount delay)', async () => {
+  it('the tour adopt step navigates chat → desk and spotlights the first adoptable row (survives the navigate → mount delay)', async () => {
     stubFetchWithAdoptableGraph();
     const { getByTestId, findByTestId } = render(App); // default: chat view
     await fireEvent.click(getByTestId('tour-banner-start'));
     await fireEvent.click(getByTestId('tour-next')); // welcome → estate
     await fireEvent.click(getByTestId('tour-next')); // estate → controls
-    await fireEvent.click(getByTestId('tour-next')); // controls → adopt (navigates to 'estate')
+    await fireEvent.click(getByTestId('tour-next')); // controls → adopt (navigates to 'desk')
     const row = await findByTestId('estate-row');
     await waitFor(() => expect(row.classList.contains('tour-spotlight')).toBe(true));
   });

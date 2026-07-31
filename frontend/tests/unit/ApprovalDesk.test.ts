@@ -112,7 +112,7 @@ function pendingIac(overrides: Partial<PendingApproval> = {}): PendingApproval {
 describe('ApprovalDesk — resting state', () => {
   it('renders the calm headline and the watch line with the real scan time + resource count', () => {
     const { getByTestId, queryByTestId } = render(ApprovalDesk, {
-      props: { graph: GRAPH, decisions: [], pendingApprovals: [], onNavigate: vi.fn() },
+      props: { graph: GRAPH, decisions: [], pendingApprovals: [], onShowEstate: vi.fn() },
     });
     expect(queryByTestId('approval-desk-pending')).toBeNull();
     expect(queryByTestId('approval-desk-stamped')).toBeNull();
@@ -129,7 +129,7 @@ describe('ApprovalDesk — resting state', () => {
         graph: { ...GRAPH, generated_at: null },
         decisions: [],
         pendingApprovals: [],
-        onNavigate: vi.fn(),
+        onShowEstate: vi.fn(),
       },
     });
     // Settled with no usable scan TIME reads "unavailable"; "pending" is
@@ -144,7 +144,7 @@ describe('ApprovalDesk — resting state', () => {
         graph: graphWithGroup(9, 6),
         decisions: [],
         pendingApprovals: [],
-        onNavigate: vi.fn(),
+        onShowEstate: vi.fn(),
       },
     });
     expect(getByTestId('approval-desk-watch').textContent).not.toContain('no new drift');
@@ -152,7 +152,7 @@ describe('ApprovalDesk — resting state', () => {
 
   it('a null graph still renders resting with the scan-pending fallback, not a crash', () => {
     const { getByTestId } = render(ApprovalDesk, {
-      props: { graph: null, decisions: [], pendingApprovals: [], onNavigate: vi.fn() },
+      props: { graph: null, decisions: [], pendingApprovals: [], onShowEstate: vi.fn() },
     });
     // Settled with no usable scan TIME reads "unavailable"; "pending" is
     // reserved for a first cycle still in flight (Codex review of #258).
@@ -160,10 +160,60 @@ describe('ApprovalDesk — resting state', () => {
   });
 });
 
+// 2026-07-31 desk+estate merge — the calm states no longer have to carry the
+// page alone (the estate section sits directly below), so a quiet one-line
+// strip is the right size for "nothing needs you". This is LAYOUT, not
+// semantics: the h2 stays, or the hero's heading outline would depend on which
+// state is showing.
+describe('ApprovalDesk — calm states are a slim strip (desk+estate merge)', () => {
+  it('renders resting as a slim strip: headline and watch line share one row', () => {
+    const { getByTestId } = render(ApprovalDesk, {
+      props: { graph: GRAPH, decisions: [], pendingApprovals: [], settled: true, onShowEstate: vi.fn() },
+    });
+    const resting = getByTestId('approval-desk-resting');
+    expect(resting.classList.contains('approval-desk__calm--slim')).toBe(true);
+    expect(resting.querySelector('h2')).not.toBeNull(); // semantics preserved
+    // The watch line and its segments are untouched by the slimming.
+    expect(getByTestId('approval-desk-watch').textContent).toContain('735 resources');
+  });
+
+  it('renders the unknown pair as the same slim strip, data-reason intact', () => {
+    for (const [reason, props] of [
+      ['loading', { graph: null, settled: false }],
+      ['degraded', { graph: GRAPH, settled: true, degraded: true }],
+    ] as const) {
+      const { getByTestId } = render(ApprovalDesk, {
+        props: { decisions: [], pendingApprovals: [], onShowEstate: vi.fn(), ...props },
+      });
+      const unknown = getByTestId('approval-desk-unknown');
+      expect(unknown.getAttribute('data-reason')).toBe(reason);
+      expect(unknown.classList.contains('approval-desk__calm--slim')).toBe(true);
+      expect(unknown.querySelector('h2')).not.toBeNull();
+      cleanup();
+    }
+  });
+
+  it('the tall states do NOT take the slim class', () => {
+    const { getByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: GRAPH,
+        decisions: [rollbackDecision()],
+        pendingApprovals: [],
+        settled: true,
+        onShowEstate: vi.fn(),
+      },
+    });
+    expect(getByTestId('approval-desk-pending').classList.contains('approval-desk__calm--slim')).toBe(
+      false,
+    );
+  });
+});
+
 describe('ApprovalDesk — heading level', () => {
   // The page's only h1 is the brand title in App.svelte, so the desk's state
   // headline must be h2: an h3 skips a level for anyone navigating by heading,
-  // and the sibling estate view already uses h2. Easy to regress, because both
+  // and EstateView's group headings — on the SAME page since the 2026-07-31
+  // merge — are already h2. Easy to regress, because both
   // the plan text and the mockup say "Mincho h3 31px" — that pins the SIZE,
   // not the semantic level, and the 31px is delivered by CSS either way.
   // Asserted for ALL THREE states: they are three separate elements in three
@@ -179,7 +229,7 @@ describe('ApprovalDesk — heading level', () => {
     ];
     for (const s of states) {
       const { container } = render(ApprovalDesk, {
-        props: { graph: GRAPH, decisions: s.decisions, pendingApprovals: [], onNavigate: vi.fn() },
+        props: { graph: GRAPH, decisions: s.decisions, pendingApprovals: [], onShowEstate: vi.fn() },
       });
       const desk = container.querySelector('.approval-desk') as HTMLElement;
       expect(desk.querySelector('h2'), `${s.name} must use h2`).toBeTruthy();
@@ -198,7 +248,7 @@ describe('ApprovalDesk — instrument band composition', () => {
     // resourceCards()+scopeTotals(); a desk that read graph.totals directly
     // would render 111/222 here.
     const { getByTestId } = render(ApprovalDesk, {
-      props: { graph: graphWithGroup(9, 6), decisions: [], pendingApprovals: [], onNavigate: vi.fn() },
+      props: { graph: graphWithGroup(9, 6), decisions: [], pendingApprovals: [], onShowEstate: vi.fn() },
     });
     // Exact text, not toContain: '9' is a substring of '9xx', and more to the
     // point '222'.toContain('2') would let a raw-totals regression slide past
@@ -212,13 +262,13 @@ describe('ApprovalDesk — instrument band composition', () => {
 
   it('awaiting is 0 with nothing pending, 1 with exactly one thing pending', () => {
     const { getByTestId } = render(ApprovalDesk, {
-      props: { graph: GRAPH, decisions: [], pendingApprovals: [], onNavigate: vi.fn() },
+      props: { graph: GRAPH, decisions: [], pendingApprovals: [], onShowEstate: vi.fn() },
     });
     expect(getByTestId('instrument-band-awaiting').textContent).toContain('0');
     cleanup();
 
     const { getByTestId: gt2 } = render(ApprovalDesk, {
-      props: { graph: GRAPH, decisions: [rollbackDecision()], pendingApprovals: [], onNavigate: vi.fn() },
+      props: { graph: GRAPH, decisions: [rollbackDecision()], pendingApprovals: [], onShowEstate: vi.fn() },
     });
     expect(gt2('instrument-band-awaiting').textContent).toContain('1');
   });
@@ -233,20 +283,21 @@ describe('ApprovalDesk — instrument band composition', () => {
     const rb = rollbackDecision();
     const iac = pendingIac({ pr_number: 7 });
     const { getByTestId } = render(ApprovalDesk, {
-      props: { graph: GRAPH, decisions: [rb], pendingApprovals: [iac], onNavigate: vi.fn() },
+      props: { graph: GRAPH, decisions: [rb], pendingApprovals: [iac], onShowEstate: vi.fn() },
     });
     expect(getByTestId('approval-desk-pending').getAttribute('data-source')).toBe('rollback');
     expect(getByTestId('instrument-band-awaiting').textContent).toContain('2');
   });
 
-  it('a click on the managed or drift band stat calls onNavigate("estate")', async () => {
-    const onNavigate = vi.fn();
+  it('managed/drift stat clicks call onShowEstate (scroll, not navigation)', async () => {
+    const onShowEstate = vi.fn();
     const { getByTestId } = render(ApprovalDesk, {
-      props: { graph: GRAPH, decisions: [], pendingApprovals: [], onNavigate },
+      props: { graph: GRAPH, decisions: [], pendingApprovals: [], onShowEstate },
     });
     await fireEvent.click(getByTestId('instrument-band-managed'));
     await fireEvent.click(getByTestId('instrument-band-drift'));
-    expect(onNavigate.mock.calls).toEqual([['estate'], ['estate']]);
+    // No argument: there is one destination now, and it is on this same page.
+    expect(onShowEstate.mock.calls).toEqual([[], []]);
   });
 });
 
@@ -268,14 +319,14 @@ describe('ApprovalDesk — awaiting band stat is a figure, not a control', () =>
   // a journey the page had no room to make and merely spent the 38px of dead
   // scroll a stale `calc(100vh - 56px)` left behind. The operator saw the whole
   // page twitch and the card not arrive.
-  it('does not scroll, focus, or navigate — the card is already on screen', async () => {
-    const onNavigate = vi.fn();
+  it('does not scroll, focus, or show the estate — the card is already on screen', async () => {
+    const onShowEstate = vi.fn();
     const { getByTestId } = render(ApprovalDesk, {
       props: {
         graph: GRAPH,
         decisions: [rollbackDecision()],
         pendingApprovals: [],
-        onNavigate,
+        onShowEstate,
       },
     });
     const pending = getByTestId('approval-desk-pending');
@@ -284,7 +335,7 @@ describe('ApprovalDesk — awaiting band stat is a figure, not a control', () =>
     expect(awaiting.tagName).not.toBe('BUTTON');
     await fireEvent.click(awaiting);
 
-    expect(onNavigate).not.toHaveBeenCalled();
+    expect(onShowEstate).not.toHaveBeenCalled();
     expect(window.HTMLElement.prototype.scrollIntoView).not.toHaveBeenCalled();
     expect(document.activeElement).not.toBe(pending);
   });
@@ -294,36 +345,37 @@ describe('ApprovalDesk — awaiting band stat is a figure, not a control', () =>
   // would have to reverse-engineer.
   it('the pending card no longer carries the jump-target id or tabindex', () => {
     const { getByTestId } = render(ApprovalDesk, {
-      props: { graph: GRAPH, decisions: [rollbackDecision()], pendingApprovals: [], onNavigate: vi.fn() },
+      props: { graph: GRAPH, decisions: [rollbackDecision()], pendingApprovals: [], onShowEstate: vi.fn() },
     });
     const pending = getByTestId('approval-desk-pending');
     expect(pending.getAttribute('tabindex')).toBeNull();
     expect(pending.getAttribute('id')).toBeNull();
   });
 
-  // managed/drift are still controls here, and they still reach the estate map —
-  // making awaiting inert must not have flattened the whole band.
-  it('managed and drift still navigate to the estate', async () => {
-    const onNavigate = vi.fn();
+  // managed/drift are still controls here, and they still reach the estate —
+  // now the section further down THIS page — so making awaiting inert must not
+  // have flattened the whole band.
+  it('managed and drift still reach the estate', async () => {
+    const onShowEstate = vi.fn();
     const { getByTestId } = render(ApprovalDesk, {
-      props: { graph: GRAPH, decisions: [rollbackDecision()], pendingApprovals: [], onNavigate },
+      props: { graph: GRAPH, decisions: [rollbackDecision()], pendingApprovals: [], onShowEstate },
     });
     await fireEvent.click(getByTestId('instrument-band-managed'));
-    expect(onNavigate).toHaveBeenCalledWith('estate');
+    expect(onShowEstate).toHaveBeenCalledTimes(1);
     await fireEvent.click(getByTestId('instrument-band-drift'));
-    expect(onNavigate).toHaveBeenCalledTimes(2);
+    expect(onShowEstate).toHaveBeenCalledTimes(2);
   });
 
   it('with nothing pending, the awaiting stat is still inert', async () => {
-    const onNavigate = vi.fn();
+    const onShowEstate = vi.fn();
     const { getByTestId, queryByTestId } = render(ApprovalDesk, {
-      props: { graph: GRAPH, decisions: [], pendingApprovals: [], onNavigate },
+      props: { graph: GRAPH, decisions: [], pendingApprovals: [], onShowEstate },
     });
     expect(queryByTestId('approval-desk-pending')).toBeNull();
     const awaiting = getByTestId('instrument-band-awaiting');
     expect(awaiting.tagName).not.toBe('BUTTON');
     await fireEvent.click(awaiting);
-    expect(onNavigate).not.toHaveBeenCalled();
+    expect(onShowEstate).not.toHaveBeenCalled();
   });
 });
 
@@ -331,7 +383,7 @@ describe('ApprovalDesk — pending state, rollback source', () => {
   it('renders the Anchor who-line, the diff table, and both CTAs pointing at the safe href', () => {
     const d = rollbackDecision();
     const { getByTestId, getByText } = render(ApprovalDesk, {
-      props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onNavigate: vi.fn() },
+      props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onShowEstate: vi.fn() },
     });
     const pending = getByTestId('approval-desk-pending');
     expect(pending.getAttribute('data-source')).toBe('rollback');
@@ -360,7 +412,7 @@ describe('ApprovalDesk — pending state, rollback source', () => {
       ],
     });
     const { getByTestId } = render(ApprovalDesk, {
-      props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onNavigate: vi.fn() },
+      props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onShowEstate: vi.fn() },
     });
     const card = getByTestId('drift-diff-card');
     expect(card.textContent).toContain('Manual change not allowed');
@@ -374,7 +426,7 @@ describe('ApprovalDesk — pending state, rollback source', () => {
   it('shows the real created_at as the "proposed" time, never a fabricated one', () => {
     const d = rollbackDecision({ created_at: '2026-07-28T09:15:00Z' });
     const { getByTestId } = render(ApprovalDesk, {
-      props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onNavigate: vi.fn() },
+      props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onShowEstate: vi.fn() },
     });
     expect(getByTestId('approval-desk-pending').textContent).toMatch(/2026|09:15/);
   });
@@ -384,7 +436,7 @@ describe('ApprovalDesk — pending state, iac source, both provenance arms', () 
   it('listing arm: renders the PR title from the open-PR payload', () => {
     const approval = pendingIac({ title: 'Adopt orders-sub into IaC' });
     const { getByTestId, getByText } = render(ApprovalDesk, {
-      props: { graph: GRAPH, decisions: [], pendingApprovals: [approval], onNavigate: vi.fn() },
+      props: { graph: GRAPH, decisions: [], pendingApprovals: [approval], onShowEstate: vi.fn() },
     });
     expect(getByTestId('approval-desk-pending').getAttribute('data-source')).toBe('iac');
     expect(getByText('Adopt orders-sub into IaC')).toBeTruthy();
@@ -394,7 +446,7 @@ describe('ApprovalDesk — pending state, iac source, both provenance arms', () 
   it('decision arm (no PR title carried): falls back to the honest generic headline naming the PR number', () => {
     const d = iacDecision({ pr_number: 99, pr_title: undefined });
     const { getByTestId, getByText, queryByTestId } = render(ApprovalDesk, {
-      props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onNavigate: vi.fn() },
+      props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onShowEstate: vi.fn() },
     });
     expect(getByTestId('approval-desk-pending').getAttribute('data-source')).toBe('iac');
     expect(getByText('Infrastructure change PR #99 is waiting for your approval.')).toBeTruthy();
@@ -406,7 +458,7 @@ describe('ApprovalDesk — pending state, iac source, both provenance arms', () 
   it('decision arm WITH a carried pr_title renders it honestly instead of the fallback', () => {
     const d = iacDecision({ pr_number: 55, pr_title: 'Adopt lodash upgrade' });
     const { getByTestId } = render(ApprovalDesk, {
-      props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onNavigate: vi.fn() },
+      props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onShowEstate: vi.fn() },
     });
     // "Adopt lodash upgrade" legitimately appears twice (the desk h3 AND the
     // ledger strip's subtitle for the same decision) — scope to the pending
@@ -434,7 +486,7 @@ describe('ApprovalDesk — stamped state', () => {
       pr_title: 'Adopt orders-sub into IaC',
     });
     const { getByTestId } = render(ApprovalDesk, {
-      props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onNavigate: vi.fn() },
+      props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onShowEstate: vi.fn() },
     });
     const stamped = getByTestId('approval-desk-stamped');
     expect(stamped.getAttribute('data-source')).toBe('iac');
@@ -458,7 +510,7 @@ describe('ApprovalDesk — stamped state', () => {
       },
     });
     const { getByTestId } = render(ApprovalDesk, {
-      props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onNavigate: vi.fn() },
+      props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onShowEstate: vi.fn() },
     });
     const stamped = getByTestId('approval-desk-stamped');
     expect(stamped.getAttribute('data-source')).toBe('rollback');
@@ -508,7 +560,7 @@ describe('ApprovalDesk — unresolved state', () => {
     graph: GRAPH,
     decisions: [d],
     pendingApprovals: [],
-    onNavigate: vi.fn(),
+    onShowEstate: vi.fn(),
   });
 
   it('renders the unresolved card for a used-but-unconfirmed rollback, tagged with its phase', () => {
@@ -558,7 +610,7 @@ describe('ApprovalDesk — unresolved state', () => {
         graph: GRAPH,
         decisions: [unresolved('outcome_unknown'), stampedEarlier],
         pendingApprovals: [],
-        onNavigate: vi.fn(),
+        onShowEstate: vi.fn(),
       },
     });
     expect(getByTestId('approval-desk-unresolved')).toBeTruthy();
@@ -583,7 +635,7 @@ describe('ApprovalDesk — stamped decay timer', () => {
     const setSpy = vi.spyOn(globalThis, 'setTimeout');
     const d = iacDecision({ apply_status: 'applied', applied_at: '2026-07-28T11:59:00Z' });
     const { queryByTestId } = render(ApprovalDesk, {
-      props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onNavigate: vi.fn() },
+      props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onShowEstate: vi.fn() },
     });
     expect(setSpy).toHaveBeenCalledTimes(1);
 
@@ -603,7 +655,7 @@ describe('ApprovalDesk — stamped decay timer', () => {
   it('falls back to resting on its own once stampedUntil passes, with no new props', async () => {
     const d = iacDecision({ apply_status: 'applied', applied_at: '2026-07-28T11:59:00Z' }); // 1 min before "now"
     const { getByTestId } = render(ApprovalDesk, {
-      props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onNavigate: vi.fn() },
+      props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onShowEstate: vi.fn() },
     });
     expect(getByTestId('approval-desk-stamped')).toBeTruthy();
 
@@ -618,7 +670,7 @@ describe('ApprovalDesk — stamped decay timer', () => {
     const d = iacDecision({ apply_status: 'applied', applied_at: '2026-07-28T11:59:00Z' });
     const setSpy = vi.spyOn(globalThis, 'setTimeout');
     const { unmount } = render(ApprovalDesk, {
-      props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onNavigate: vi.fn() },
+      props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onShowEstate: vi.fn() },
     });
 
     // The previous version of this test asserted only `resolves.not.toThrow()`
@@ -648,7 +700,7 @@ describe('ApprovalDesk — stamped decay timer', () => {
   it('a second, later stamp replaces the first without leaving two timers racing', async () => {
     const first = iacDecision({ decision_id: 'iac-first', apply_status: 'applied', applied_at: '2026-07-28T11:59:00Z' });
     const { getByTestId, rerender } = render(ApprovalDesk, {
-      props: { graph: GRAPH, decisions: [first], pendingApprovals: [], onNavigate: vi.fn() },
+      props: { graph: GRAPH, decisions: [first], pendingApprovals: [], onShowEstate: vi.fn() },
     });
     expect(getByTestId('approval-desk-stamped').getAttribute('data-source')).toBe('iac');
 
@@ -659,7 +711,7 @@ describe('ApprovalDesk — stamped decay timer', () => {
       decision_id: 'rb-second',
       approval: { approval_url: '/approvals/rb-second?t=x', status: 'used', phase: 'applied', resolved_at: '2026-07-28T12:05:00Z' },
     });
-    await rerender({ graph: GRAPH, decisions: [first, second], pendingApprovals: [], onNavigate: vi.fn() });
+    await rerender({ graph: GRAPH, decisions: [first, second], pendingApprovals: [], onShowEstate: vi.fn() });
     expect(getByTestId('approval-desk-stamped').getAttribute('data-source')).toBe('rollback');
 
     // Only the SECOND stamp's window should still be governing decay: advance
@@ -681,7 +733,7 @@ describe('ApprovalDesk — fast convergence after an approval (bead ds-wd2.2)', 
     const refresh = vi.fn();
     const d = rollbackDecision();
     render(ApprovalDesk, {
-      props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onNavigate: vi.fn(), refresh },
+      props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onShowEstate: vi.fn(), refresh },
     });
     window.dispatchEvent(new Event('focus'));
     await vi.advanceTimersByTimeAsync(20_000);
@@ -692,7 +744,7 @@ describe('ApprovalDesk — fast convergence after an approval (bead ds-wd2.2)', 
     const refresh = vi.fn();
     const d = rollbackDecision();
     const { getByTestId } = render(ApprovalDesk, {
-      props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onNavigate: vi.fn(), refresh },
+      props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onShowEstate: vi.fn(), refresh },
     });
     await fireEvent.click(getByTestId('approval-desk-approve'));
     expect(refresh).not.toHaveBeenCalled(); // arming alone does nothing yet
@@ -714,7 +766,7 @@ describe('ApprovalDesk — fast convergence after an approval (bead ds-wd2.2)', 
     const refresh = vi.fn();
     const d = rollbackDecision();
     const { getByTestId } = render(ApprovalDesk, {
-      props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onNavigate: vi.fn(), refresh },
+      props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onShowEstate: vi.fn(), refresh },
     });
     await fireEvent.click(getByTestId('approval-desk-approve'));
     window.dispatchEvent(new Event('focus')); // starts the ladder
@@ -749,7 +801,7 @@ describe('ApprovalDesk — fast convergence after an approval (bead ds-wd2.2)', 
         graph: GRAPH,
         decisions: [rollbackDecision()],
         pendingApprovals: [],
-        onNavigate: vi.fn(),
+        onShowEstate: vi.fn(),
         refresh,
       },
     });
@@ -782,7 +834,7 @@ describe('ApprovalDesk — fast convergence after an approval (bead ds-wd2.2)', 
         graph: GRAPH,
         decisions: [rollbackDecision()],
         pendingApprovals: [],
-        onNavigate: vi.fn(),
+        onShowEstate: vi.fn(),
         refresh,
       },
     });
@@ -804,7 +856,7 @@ describe('ApprovalDesk — fast convergence after an approval (bead ds-wd2.2)', 
     const refresh = vi.fn();
     const d = rollbackDecision();
     const { getByTestId, unmount } = render(ApprovalDesk, {
-      props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onNavigate: vi.fn(), refresh },
+      props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onShowEstate: vi.fn(), refresh },
     });
     await fireEvent.click(getByTestId('approval-desk-approve'));
     window.dispatchEvent(new Event('focus'));
@@ -820,7 +872,7 @@ describe('ApprovalDesk — ledger strip composition', () => {
   it('renders the ledger strip fed from the same decisions list', () => {
     const d = iacDecision({ apply_status: 'applied', applied_at: '2026-07-28T05:00:00Z' });
     const { getByTestId } = render(ApprovalDesk, {
-      props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onNavigate: vi.fn() },
+      props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onShowEstate: vi.fn() },
     });
     expect(getByTestId('ledger-strip')).toBeTruthy();
   });
@@ -837,7 +889,7 @@ describe('ApprovalDesk — unknown state (ds-eh6)', () => {
         decisions: [],
         pendingApprovals: [],
         settled: false,
-        onNavigate: vi.fn(),
+        onShowEstate: vi.fn(),
       },
     });
     expect(queryByTestId('approval-desk-resting')).toBeNull();
@@ -855,7 +907,7 @@ describe('ApprovalDesk — unknown state (ds-eh6)', () => {
         pendingApprovals: [],
         settled: true,
         degraded: true,
-        onNavigate: vi.fn(),
+        onShowEstate: vi.fn(),
       },
     });
     expect(queryByTestId('approval-desk-resting')).toBeNull();
@@ -872,7 +924,7 @@ describe('ApprovalDesk — unknown state (ds-eh6)', () => {
         decisions: [],
         pendingApprovals: [],
         settled: true,
-        onNavigate: vi.fn(),
+        onShowEstate: vi.fn(),
       },
     });
     expect(queryByTestId('approval-desk-unknown')).toBeNull();
@@ -886,7 +938,7 @@ describe('ApprovalDesk — unknown state (ds-eh6)', () => {
         decisions: [],
         pendingApprovals: [],
         settled: false,
-        onNavigate: vi.fn(),
+        onShowEstate: vi.fn(),
       },
     });
     expect(getByTestId('instrument-band-awaiting').textContent).toContain('—');
@@ -902,7 +954,7 @@ describe('ApprovalDesk — unknown state (ds-eh6)', () => {
         decisions: [],
         pendingApprovals: [],
         settled: true,
-        onNavigate: vi.fn(),
+        onShowEstate: vi.fn(),
       },
     });
     expect(getByTestId('instrument-band-managed').textContent).toContain('—');
@@ -922,7 +974,7 @@ describe('ApprovalDesk — unknown state (ds-eh6)', () => {
         pendingApprovals: [],
         settled: true,
         lastError: 'graph',
-        onNavigate: vi.fn(),
+        onShowEstate: vi.fn(),
       },
     });
     expect(getByTestId('approval-desk-stale-scan').textContent).toContain('not refreshed');
@@ -936,7 +988,7 @@ describe('ApprovalDesk — unknown state (ds-eh6)', () => {
         pendingApprovals: [],
         settled: true,
         lastError: null,
-        onNavigate: vi.fn(),
+        onShowEstate: vi.fn(),
       },
     });
     expect(queryByTestId('approval-desk-stale-scan')).toBeNull();
@@ -950,7 +1002,7 @@ describe('ApprovalDesk — unknown state (ds-eh6)', () => {
         pendingApprovals: [],
         settled: false,
         degraded: true,
-        onNavigate: vi.fn(),
+        onShowEstate: vi.fn(),
       },
     });
     expect(queryByTestId('approval-desk-unknown')).toBeNull();
@@ -981,7 +1033,7 @@ describe('ApprovalDesk — view the reasoning (ds-wd2.15)', () => {
         graph: GRAPH,
         decisions: [rollbackDecision({ trace_id: TRACE })],
         pendingApprovals: [],
-        onNavigate: vi.fn(),
+        onShowEstate: vi.fn(),
         onOpenTrace: vi.fn(),
       },
     });
@@ -997,7 +1049,7 @@ describe('ApprovalDesk — view the reasoning (ds-wd2.15)', () => {
         graph: GRAPH,
         decisions: [iacDecision({ pr_number: 7, trace_id: TRACE })],
         pendingApprovals: [pendingIac({ pr_number: 7 })],
-        onNavigate: vi.fn(),
+        onShowEstate: vi.fn(),
         onOpenTrace: vi.fn(),
       },
     });
@@ -1011,7 +1063,7 @@ describe('ApprovalDesk — view the reasoning (ds-wd2.15)', () => {
         graph: GRAPH,
         decisions: [rollbackDecision({ trace_id: TRACE })],
         pendingApprovals: [],
-        onNavigate: vi.fn(),
+        onShowEstate: vi.fn(),
         onOpenTrace,
       },
     });
@@ -1025,7 +1077,7 @@ describe('ApprovalDesk — view the reasoning (ds-wd2.15)', () => {
         graph: GRAPH,
         decisions: [],
         pendingApprovals: [pendingIac()],
-        onNavigate: vi.fn(),
+        onShowEstate: vi.fn(),
         onOpenTrace: vi.fn(),
       },
     });
@@ -1038,7 +1090,7 @@ describe('ApprovalDesk — view the reasoning (ds-wd2.15)', () => {
         graph: GRAPH,
         decisions: [rollbackDecision({ trace_id: TRACE })],
         pendingApprovals: [],
-        onNavigate: vi.fn(),
+        onShowEstate: vi.fn(),
       },
     });
     expect(queryByTestId('approval-desk-why')).toBeNull();
@@ -1050,7 +1102,7 @@ describe('ApprovalDesk — view the reasoning (ds-wd2.15)', () => {
         graph: GRAPH,
         decisions: [],
         pendingApprovals: [],
-        onNavigate: vi.fn(),
+        onShowEstate: vi.fn(),
         onOpenTrace: vi.fn(),
       },
     });
@@ -1077,7 +1129,7 @@ describe('ApprovalDesk — a degraded graph is not a read graph (ds-eh6)', () =>
         decisions: [],
         pendingApprovals: [],
         settled: true,
-        onNavigate: vi.fn(),
+        onShowEstate: vi.fn(),
       },
     });
     expect(getByTestId('instrument-band-managed').textContent).toContain('—');
@@ -1093,7 +1145,7 @@ describe('ApprovalDesk — a degraded graph is not a read graph (ds-eh6)', () =>
         decisions: [],
         pendingApprovals: [],
         settled: true,
-        onNavigate: vi.fn(),
+        onShowEstate: vi.fn(),
       },
     });
     const watch = getByTestId('approval-desk-watch').textContent ?? '';
@@ -1109,7 +1161,7 @@ describe('ApprovalDesk — a degraded graph is not a read graph (ds-eh6)', () =>
         decisions: [],
         pendingApprovals: [],
         settled: true,
-        onNavigate: vi.fn(),
+        onShowEstate: vi.fn(),
       },
     });
     const watch = getByTestId('approval-desk-watch').textContent ?? '';
@@ -1124,7 +1176,7 @@ describe('ApprovalDesk — a degraded graph is not a read graph (ds-eh6)', () =>
         decisions: [],
         pendingApprovals: [],
         settled: true,
-        onNavigate: vi.fn(),
+        onShowEstate: vi.fn(),
       },
     });
     const watch = getByTestId('approval-desk-watch').textContent ?? '';
@@ -1142,7 +1194,7 @@ describe('ApprovalDesk — a degraded graph is not a read graph (ds-eh6)', () =>
         pendingApprovals: [],
         settled: true,
         degraded: true,
-        onNavigate: vi.fn(),
+        onShowEstate: vi.fn(),
       },
     });
     expect(getByTestId('instrument-band-awaiting').textContent).toContain('—');
@@ -1160,7 +1212,7 @@ describe('ApprovalDesk — settled graph failure is not "pending" (ds-eh6)', () 
         decisions: [],
         pendingApprovals: [],
         settled: false,
-        onNavigate: vi.fn(),
+        onShowEstate: vi.fn(),
       },
     });
     // Unsettled renders the unknown hero, so the watch line lives there.
@@ -1174,7 +1226,7 @@ describe('ApprovalDesk — settled graph failure is not "pending" (ds-eh6)', () 
         decisions: [],
         pendingApprovals: [],
         settled: true,
-        onNavigate: vi.fn(),
+        onShowEstate: vi.fn(),
       },
     });
     const watch = getByTestId('approval-desk-watch').textContent ?? '';
@@ -1190,7 +1242,7 @@ describe('ApprovalDesk — undelivered-notification notice (ds-hdt)', () => {
         graph: GRAPH,
         decisions: [rollbackDecision({ notify: { state: 'failed', error_code: 'worker_error', status_code: 503 } })],
         pendingApprovals: [],
-        onNavigate: vi.fn(),
+        onShowEstate: vi.fn(),
       },
     });
     expect(getByTestId('approval-desk-notify-failed').textContent).toContain(
@@ -1212,7 +1264,7 @@ describe('ApprovalDesk — undelivered-notification notice (ds-hdt)', () => {
         graph: GRAPH,
         decisions: [rollbackDecision({ notify })],
         pendingApprovals: [],
-        onNavigate: vi.fn(),
+        onShowEstate: vi.fn(),
       },
     });
     expect(queryByTestId('approval-desk-notify-failed')).toBeNull();
@@ -1224,7 +1276,7 @@ describe('ApprovalDesk — undelivered-notification notice (ds-hdt)', () => {
         graph: GRAPH,
         decisions: [rollbackDecision()],
         pendingApprovals: [],
-        onNavigate: vi.fn(),
+        onShowEstate: vi.fn(),
       },
     });
     // The card renders; only the notice is absent. Warning here would fire on

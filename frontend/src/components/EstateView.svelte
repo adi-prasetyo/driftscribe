@@ -13,25 +13,26 @@
    * `pendingApprovals` are the overview store's current snapshot, same as
    * ApprovalDesk. NEVER imports Mermaid (that stays InfraDiagram's preview-
    * only concern); this is a plain DOM row list.
+   *
+   * 2026-07-31 — a SECTION of the desk page, no longer a screen of its own (see
+   * docs/plans/2026-07-31-desk-estate-merge-design.md). The desk owns the one
+   * instrument band above; this section owns only its own loading/degraded
+   * truth, deliberately NOT coupled to the hero's state machine (ds-eh6: a
+   * pending approval can coexist with a failed graph fetch).
    */
-  import { t, locale } from '../lib/i18n';
-  import { resourceCards, scopeTotals, type InfraGraph, type PendingApproval } from '../lib/infra_graph';
-  import { awaitingCount } from '../lib/desk';
+  import { t } from '../lib/i18n';
+  import type { InfraGraph, PendingApproval } from '../lib/infra_graph';
   import { estateModel, firstAdoptableRow } from '../lib/estate';
   import type { Decision } from '../lib/types';
-  import type { AppView } from '../lib/deeplink';
-  import InstrumentBand from './InstrumentBand.svelte';
 
   let {
     graph,
     decisions,
     pendingApprovals,
     settled = true,
-    degraded = false,
     approvalsStale = false,
     adoptDisabled = false,
     onAdopt,
-    onNavigate,
   }: {
     graph: InfraGraph | null;
     decisions: ReadonlyArray<Decision | null | undefined> | null | undefined;
@@ -39,7 +40,6 @@
     /** Same contract as ApprovalDesk's — see ds-eh6. Defaults keep existing
      *  test mounts meaning what they meant. */
     settled?: boolean;
-    degraded?: boolean;
     /** The pending-approvals lane specifically was unreliable this cycle — see
      *  OverviewState.approvalsStale. Suppresses ABSENCE-derived affordances
      *  only; positively observed PR chips still render. */
@@ -47,40 +47,21 @@
     adoptDisabled?: boolean;
     /** Adopt chip click → App prefills the chat with this string (NOT auto-sent). */
     onAdopt?: (prefill: string) => void;
-    onNavigate: (view: AppView) => void;
   } = $props();
-
-  // ---- instrument band numbers — SAME derivation as ApprovalDesk, imported
-  // never re-derived, so the two views can never disagree about the figures. ----
-  const cards = $derived(graph ? resourceCards(graph, $t) : []);
-  const scope = $derived(scopeTotals(cards, graph?.totals?.resources ?? 0));
-  // ds-eh6, same rule as ApprovalDesk: an absent OR degraded graph means the
-  // estate was not read, not that it is empty. This view already SAYS the map
-  // is loading/unavailable a few lines down — it was doing so while handing the
-  // band arithmetic zeros to render as exact figures, which contradicted its own
-  // banner on the same screen.
-  const graphUsable = $derived(!!graph && graph.degraded !== true);
-  const bandManaged = $derived(graphUsable ? scope.managed : null);
-  const bandDrift = $derived(graphUsable ? scope.drift : null);
-  // Gated exactly as ApprovalDesk gates it. Both views render the SAME
-  // InstrumentBand off the SAME store snapshot, so gating one and not the other
-  // meant a cold `?view=estate` showed a confident "0 awaiting" while the desk
-  // showed "—" for identical state — the two views contradicting each other
-  // about the same fact.
-  const awaiting = $derived(
-    settled && !degraded ? awaitingCount({ decisions, pendingApprovals, locale: $locale }) : null,
-  );
 
   // ---- row model ----
   // `decisions` is threaded in for ds-0rm's resolved-PR reconciliation, NOT
-  // for row content — see estateModel's `decisions` param. Both this view and
-  // App's adopt-target call it with the same four arguments so the two can
-  // never disagree about which PRs are still open.
+  // for row content — see estateModel's `decisions` param. This view and the
+  // tour reconcile the same list the same way (App passes TourCard a
+  // `reconcileApprovals(...)` of the same two inputs), so the two can never
+  // disagree about which PRs are still open.
   const model = $derived(estateModel(graph, pendingApprovals, $t, decisions));
   // The tour's "Adopt your first resource" step spotlights this exact row
-  // (data-tour="adopt-target"); App.svelte computes the SAME predicate off the
-  // SAME model for its nav-button fallback, so the two markers are always
-  // mutually exclusive (see firstAdoptableRow's own doc comment).
+  // (data-tour="adopt-target"). App used to compute the same predicate to decide
+  // whether the インフラ nav button could host the spotlight instead; the ds-cmc
+  // merge deleted both the button and that predicate, so the step's fallback is
+  // now the estate section itself (TourCard resolves `fallback: 'estate'`), which
+  // is unconditionally present on the desk.
   // No adopt target while the approvals lane is unreliable — the target is
   // chosen from rows whose `pendingPr === null`, which is precisely the
   // unsupported absence. Nulling it here also clears the tour's spotlight.
@@ -92,40 +73,15 @@
   }
 </script>
 
+<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 <section
+  id="estate"
   class="estate-view"
   data-testid="estate-view"
   data-tour="estate"
   aria-label={$t('desk.estate.ariaLabel')}
+  tabindex="-1"
 >
-  <!-- Arrival context (plan Task 4). A visitor who got here by clicking a desk
-       numeral had nothing on the page naming where they came from, and the
-       browser Back button used to leave the app. This is a DESTINATION link,
-       not a history pop, so it renders unconditionally — including on a cold
-       `?view=estate` deep-link with no desk entry behind it, and on the
-       degraded state, where there is nothing to look at and the way back
-       matters most. Reuses .rail-more (base.css), which is exactly this
-       affordance, re-inked for the paper world. -->
-  <div class="estate-view__wayfind">
-    <button
-      type="button"
-      class="rail-more estate-view__back"
-      data-testid="estate-back-desk"
-      onclick={() => onNavigate('desk')}>{$t('desk.estate.backToDesk')}</button
-    >
-  </div>
-
-  <!-- ds-7ag.2 — context="estate": managed/drift render as inert figures here
-       (the operator is already looking at the map they would point to), and
-       awaiting is the one stat with content elsewhere — the desk's queue. -->
-  <InstrumentBand
-    managed={bandManaged}
-    drift={bandDrift}
-    {awaiting}
-    context="estate"
-    onStat={() => onNavigate('desk')}
-  />
-
   <!-- A null graph is only "loading" while the first cycle is still out. Once
        it has settled, a null graph means the fetch FINISHED and failed, and
        "Loading the estate…" would be a claim that something is still in
@@ -200,19 +156,23 @@
       </div>
     {/if}
 
+    <!-- Folded (2026-07-31 merge): nothing here is actionable — these are
+         unmanaged resources of a type DriftScribe cannot adopt — so the COUNT
+         is the information and the rows are detail-on-demand. Same pattern as
+         the system-managed fold below. -->
     {#if model.untracked.length > 0}
-      <h2 class="estate-view__group" data-testid="estate-group-untracked">
-        {$t('desk.estate.untrackedGroup', { n: model.untracked.length })}
-      </h2>
-      <div class="estate-view__rows">
-        {#each model.untracked as row (row.nodeId)}
-          <div class="estate-view__row estate-view__row--un" data-testid="estate-row">
-            <span class="estate-view__dot" aria-hidden="true"></span>
-            <span class="estate-view__name">{row.label}</span>
-            <span class="estate-view__type">{row.typeLabel}</span>
-          </div>
-        {/each}
-      </div>
+      <details class="estate-view__fold" data-testid="estate-untracked-fold">
+        <summary>{$t('desk.estate.untrackedGroup', { n: model.untracked.length })}</summary>
+        <div class="estate-view__rows">
+          {#each model.untracked as row (row.nodeId)}
+            <div class="estate-view__row estate-view__row--un" data-testid="estate-row">
+              <span class="estate-view__dot" aria-hidden="true"></span>
+              <span class="estate-view__name">{row.label}</span>
+              <span class="estate-view__type">{row.typeLabel}</span>
+            </div>
+          {/each}
+        </div>
+      </details>
     {/if}
 
     {#if model.systemManagedTotal > 0}
@@ -260,6 +220,14 @@
 
 <style>
   .estate-view {
+    /* `width: 100%` is load-bearing since the 2026-07-31 merge, and it is not
+       redundant with max-width. This is a GRID ITEM with auto margins, so
+       without an explicit width it is sized shrink-to-fit — 384px at 1280,
+       against the 780px approval-desk card directly above it. Two centered
+       cards of different widths in one column is exactly the "bolted-on
+       frontend" reading the merge exists to fix. ApprovalDesk carries the same
+       pair; keep them identical. */
+    width: 100%;
     max-width: 780px;
     margin: 0 auto;
     background: var(--ds-bg);
@@ -269,25 +237,11 @@
     overflow: hidden;
   }
 
-  /* Quiet wayfinding strip above the instrument band. Sits inside the paper
-     card's own padding rhythm (40px gutters) and adds no rule of its own — it
-     is meant to be findable, not to announce itself. */
-  .estate-view__wayfind {
-    padding: 12px 40px 0;
-  }
-  .estate-view__back {
-    margin: 0;
-    padding: 2px 0;
-    /* ds-qbo: this is the way back to the desk — navigation, not decoration —
-       so it reads through ink-2 (6.47:1) rather than the lightest grey
-       (3.08:1). It was --ds-faint only because it sits on the paper card
-       and .rail-more's legacy ink would have clashed; that is no longer a
-       choice between two worlds. */
-    color: var(--ds-fg-soft);
-    font-size: 12px;
-  }
-  .estate-view__back:hover {
-    color: var(--ds-fg);
+  /* Programmatic scroll target (the band's managed/drift stats focus this
+     section so keyboard focus follows the scroll). Not keyboard-interactive —
+     it must not grow a focus ring. */
+  .estate-view:focus {
+    outline: none;
   }
 
   /* Loading / degraded status. This is the only thing on the screen when the
@@ -309,7 +263,7 @@
     letter-spacing: 0.18em;
     /* Deliberately NO text-transform: uppercase. The mockup's .egrp doesn't
        have one, and adding it renders our own term "IaC" as "IAC" in every EN
-       group header — the estate view's most repeated string. Casing belongs in
+       group header — this section's most repeated string. Casing belongs in
        the catalog, where a translator can see it. */
     color: var(--ds-faint);
     font-weight: 400;
@@ -439,5 +393,53 @@
   .estate-view__legend-dot--un {
     background: transparent;
     border: 1.5px solid var(--ds-warn);
+  }
+
+  /* Phone widths: the row restacks instead of clipping.
+     `20px 1fr auto auto` needs the type label AND the adopt chip to fit beside
+     the name, and both refuse to shrink (`white-space: nowrap` on each, and the
+     chip is a tap target). Below ~410px they don't, and the chip runs past the
+     card — measured 2026-07-31: last broken at 390 (ja 4px over, en 16px),
+     clean from 420.
+     The reason this was never noticed is worth keeping: `.estate-view` is
+     `overflow: hidden`, so the button is CLIPPED rather than scrolled to, and a
+     document-level `scrollWidth === clientWidth` check — the exact narrow-width
+     check this plan prescribes — calls the page clean while a control sits half
+     off the card. The pin in transparency.smoke.ts measures the button against
+     the card instead, for that reason.
+     Restack, don't shrink: the name is the identity, the type says what it is,
+     the chip is the action, and each gets its own line under the dot.
+
+     ONE LINE PER ITEM, not two — the first attempt put type and chip together on
+     line 2 and that was wrong. They are BOTH `nowrap`, so pairing them just
+     moves the collision: at 390 the row offers ~278px while `Pub/Sub
+     サブスクリプション` (152px) beside 「取り込み状況を確認できません」 (191px) wants
+     343px. The type then overflowed its `minmax(0, 1fr)` track and ran UNDER the
+     chip. Measured overlap at 390 on every chip variant in both locales, worst
+     ja/unknown at 69px. Stacking is the only arrangement that cannot be broken
+     by a longer translation, which matters because the widest chip in each
+     locale is a different string.
+
+     460 rather than the measured 410 leaves headroom for a longer resource name
+     or a wider translated chip. */
+  @media (max-width: 460px) {
+    .estate-view__row {
+      grid-template-columns: 20px minmax(0, 1fr);
+      row-gap: 6px;
+    }
+    .estate-view__dot {
+      grid-area: 1 / 1;
+    }
+    .estate-view__name {
+      grid-area: 1 / 2;
+    }
+    .estate-view__type {
+      grid-area: 2 / 2;
+      justify-self: start;
+    }
+    .estate-view__chip {
+      grid-area: 3 / 2;
+      justify-self: start;
+    }
   }
 </style>

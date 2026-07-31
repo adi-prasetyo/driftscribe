@@ -48,7 +48,7 @@
   import ApprovalDesk from './components/ApprovalDesk.svelte';
   import EstateView from './components/EstateView.svelte';
   import { previewPrFromSearch } from './lib/infra_graph';
-  import { estateModel, firstAdoptableRow, reconcileApprovals } from './lib/estate';
+  import { reconcileApprovals } from './lib/estate';
   import {
     reasoningTraceFromSearch,
     conversationIdFromSearch,
@@ -196,7 +196,9 @@
     syncConversationParam(id);
   }
 
-  // The SPA's three client-side views (composite-redesign Task 2.2). No router
+  // The SPA's two client-side views (composite-redesign Task 2.2; the estate
+  // stopped being the third in the ds-cmc merge and is a section of the desk
+  // now). No router
   // — same pure-function-over-location.search pattern as the deep-link helpers
   // above, this time picking a view instead of a resource id. See lib/deeplink
   // for viewFromSearch/AppView/DEFAULT_VIEW (Task 2.1).
@@ -204,7 +206,7 @@
 
   // Navigate to view `v`. AWAY from chat, this writes `view` + clears every
   // chat-intent param (reasoning/conversation/ask_pr/preview_pr) in ONE
-  // replaceState — a copied desk/estate URL must never carry a leftover chat
+  // replaceState — a copied desk URL must never carry a leftover chat
   // errand that would silently pull a later visitor back into chat on reload
   // (viewFromSearch's hasChatIntent treats any of the four as "go to chat").
   // TO chat, this restores nothing: it's a plain destination, not an undo.
@@ -218,7 +220,7 @@
   // `preserveChatState` is for the TOUR (ds-s9q). Everything in
   // teardownChatSurface() exists because a DELIBERATE departure from chat should
   // not leave an invisible thread behind. The tour is not a departure — it
-  // borrows the estate view for two steps and hands the visitor back to chat on
+  // borrows the desk for two steps and hands the visitor back to chat on
   // its last one, so applying the teardown there meant "open a conversation,
   // click Tour, press Next" silently discarded the open thread (it survived in
   // the rail; the view, scroll position and `?conversation=` did not). The tour
@@ -227,8 +229,11 @@
   //
   // `history` (ds-7ag.1) decides whether the URL write creates a history entry.
   // A view switch is a NAVIGATION — the browser Back button has to undo it, or
-  // the operator who clicked a desk numeral onto the estate view has no way back
-  // (the reported wayfinding failure). Default 'push'; 'replace' is for writes
+  // an operator carried somewhere they did not choose has no way back. The
+  // reported wayfinding failure was a desk numeral landing on the then-separate
+  // estate view; the 2026-07-31 merge retired that particular trip (the numeral
+  // now scrolls within one page and writes no history at all), but the rule is
+  // about view switches, not that one gesture. Default 'push'; 'replace' is for writes
   // that continue the current entry rather than making one (the tour borrowing a
   // view, and its restore on close).
   function navigate(
@@ -304,7 +309,7 @@
 
   // Drop the chat surface on a departure from the chat view, so in-memory state
   // stays in lockstep with the URL: an open replay or thread would otherwise sit
-  // there invisibly (the chat branch isn't mounted in desk/estate) and reappear
+  // there invisibly (the chat branch isn't mounted on the desk) and reappear
   // out of step with the now-paramless address bar on a later return.
   //
   // Extracted from navigate() at ds-7ag.1 because the popstate handler needs the
@@ -341,8 +346,8 @@
     }
     // Unconditional on a non-chat target, NOT gated on `view === 'chat'` (Codex
     // review of this branch). The tour borrows a view while PRESERVING the chat
-    // surface, so a Back press mid-tour arrives with `view === 'estate'` and an
-    // open thread still live behind it — that gate skipped the teardown and left
+    // surface, so a Back press mid-tour arrives with a borrowed non-chat view
+    // and an open thread still live behind it — that gate skipped the teardown and left
     // a hidden thread whose later settle would write `?conversation=` onto a DESK
     // url. Exactly the state/url disagreement this handler exists to prevent.
     // On a target that never had chat state the call is a cheap no-op.
@@ -535,15 +540,15 @@
     // it never bypasses an existing lock. Routing it through Explore would turn
     // one deliberate click into an Explore turn plus a confirmation.
     chatPrefill = { text, workload: 'provision', epoch: (chatPrefill?.epoch ?? 0) + 1 };
-    // Adopt is reachable from the estate view (Task 4.1) as well as chat, but
-    // the composer only exists on chat — navigate there first, or an
-    // estate-view Adopt click would silently prefill a composer nobody can
+    // Adopt is reachable from the estate section (Task 4.1) as well as chat,
+    // but the composer only exists on chat — navigate there first, or an Adopt
+    // click on the desk would silently prefill a composer nobody can
     // see. `navigate('chat')` is a plain destination (see its own doc), so
     // this is safe even when already on chat.
     navigate('chat');
     // The chat view mounts (or, if already mounted, re-renders) on the NEXT
     // tick — #chat-form doesn't exist yet in the DOM synchronously after a
-    // navigate from desk/estate, so the scroll must wait for it too.
+    // navigate from the desk, so the scroll must wait for it too.
     void tick().then(() => {
       document.getElementById('chat-form')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     });
@@ -557,8 +562,9 @@
   // from InfraDiagram's onGraph/onPending lift. That lift only fired while the
   // CHAT view was mounted, which stopped being the front door when Task 3.6
   // flipped DEFAULT_VIEW to 'desk': a first-run visitor who opens the tour from
-  // the desk (or whom Task 4.1 now sends to the ESTATE view for steps 2 and 4 —
-  // neither mounts InfraDiagram) would leave `tourGraph` null forever, so the
+  // the desk (which is also where steps 2 and 4 send them, since Task 4.1 moved
+  // those targets onto EstateView — and the desk never mounts InfraDiagram in
+  // any of its sections) would leave `tourGraph` null forever, so the
   // estate step read "still loading" and the adopt step "unavailable" for the
   // whole tour. The store already owns exactly these two snapshots and fetches
   // eagerly on creation, so it is the correct source on every view.
@@ -572,20 +578,21 @@
   // decides once, at mount, so a later navigation to the desk must not
   // retroactively suppress a notice that already opened.
   //
-  // ds-2co: the constraint is the LAYOUT, not the desk. EstateView renders the
-  // same InstrumentBand in the same top-left corner, so a shared `?view=estate`
-  // link reproduced exactly the overlap ds-5yq removed. Chat is the only view
-  // whose top-left is chrome the popover may cover, so the test is `!== 'chat'`
-  // — which also means a future view is covered by default rather than needing
-  // to be remembered here.
+  // ds-2co: the constraint is the LAYOUT, not the desk. The estate used to be a
+  // second view rendering the same InstrumentBand in the same top-left corner,
+  // so a shared `?view=estate` link reproduced exactly the overlap ds-5yq
+  // removed. That link now aliases to the desk and the rule is unchanged. Chat
+  // is the only view whose top-left is chrome the popover may cover, so the
+  // test is `!== 'chat'` — which also means a future view is covered by default
+  // rather than needing to be remembered here.
   const coversPrimaryContent = viewFromSearch(window.location.search) !== 'chat';
   let tourOffered = $state(shouldOfferTour(window.location.search, tourDone()));
   // The tour spotlights views; it does not navigate away from them. See the
   // `preserveChatState` note on `navigate` (ds-s9q).
   //
   // Because it preserves the chat errand, the URL it writes mid-tour can read
-  // `?view=estate&conversation=…` — and viewFromSearch gives chat intent
-  // precedence, so RELOADING that exact address lands on chat, not estate.
+  // `?view=desk&conversation=…` — and viewFromSearch gives chat intent
+  // precedence, so RELOADING that exact address lands on chat, not the desk.
   // Harmless while the tour is on screen (nobody reloads mid-spotlight) but it
   // must not outlive it, or a link copied afterwards resolves somewhere the
   // operator was not. So the tour remembers where it started and puts the view
@@ -677,7 +684,7 @@
   const autonomy = createAutonomyStore(call);
   const capabilityAutonomyNote = $derived(autonomyNoteFor($autonomy, $t));
 
-  // ---- desk/estate overview store (Task 3.0a) — single owner of the
+  // ---- landing-page overview store (Task 3.0a) — single owner of the
   // graph/pending-approvals/decisions refresh triple (lib/overviewStore.ts).
   // `decisions` here is a thin derived alias so the many existing readers
   // below (DecisionsRail, noteApplied, open-trace lookups) don't all need
@@ -689,23 +696,21 @@
   const decisions = $derived($overview.decisions);
   onDestroy(() => overview.destroy());
 
-  // The tour's adopt step (Task 4.1) spotlights the first adoptable row in
-  // EstateView; when there is none, App marks the nav-estate header button
-  // instead — see lib/estate.ts's firstAdoptableRow header comment for why
-  // BOTH sides call this exact function on the SAME estateModel() output
-  // (never a second hand-rolled predicate) and why the two data-tour="adopt-
-  // target" markers are therefore mutually exclusive.
-  // Gated on approvalsStale for the same reason EstateView nulls its own
-  // adoptTarget: the target is chosen from rows with no open adoption PR, and a
-  // soft-failed approvals fetch cannot support that absence. Without this the
-  // tour would still steer a live-demo visitor at a duplicate adoption even
-  // though the estate row itself had stopped offering the button.
-  const estateHasAdoptTarget = $derived(
-    !$overview.approvalsStale &&
-      firstAdoptableRow(
-        estateModel($overview.graph, $overview.pendingApprovals, $t, $overview.decisions),
-      ) !== null,
-  );
+  // The band's managed/drift numerals point at the estate, which since the
+  // 2026-07-31 merge is a section of THIS page. Scroll to it rather than
+  // navigating: no history entry, no URL change, nothing for Back to undo.
+  //
+  // Focus moves with the scroll (the section carries tabindex="-1") or a
+  // keyboard/screen-reader user stays parked on the band button that just
+  // scrolled out of the viewport — the page would have moved and their cursor
+  // would not have. Same scroll-then-focus pattern as the conversation resume
+  // above; `preventScroll` keeps the focus call from fighting the smooth scroll.
+  function scrollToEstate(): void {
+    const el = document.getElementById('estate');
+    if (!el) return;
+    el.scrollIntoView({ behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'start' });
+    el.focus({ preventScroll: true });
+  }
 
   // Detect a freshly-`applied` iac_apply decision (decisions arrive newest-first)
   // so the Infrastructure panel can refresh the resource map after an apply lands.
@@ -1749,7 +1754,7 @@
       }
       if (bootReasoningTid) openTrace(bootReasoningTid);
     })();
-    // Browser Back/Forward across the three views (ds-7ag.1). Registered here
+    // Browser Back/Forward across the two views (ds-7ag.1). Registered here
     // rather than in the module body so it is torn down with the component.
     window.addEventListener('popstate', onPopstate);
     return () => window.removeEventListener('popstate', onPopstate);
@@ -1763,11 +1768,11 @@
     </span>
     <h1 class="app-title">DriftScribe<span class="app-title__sub">{$t('header.brand.tagline')}</span></h1>
   </a>
-  <!-- The SPA's three-view nav (composite-redesign Task 2.2): desk is the
-       front door and DEFAULT_VIEW since the Task 3.6 flip (see lib/deeplink),
-       estate is the resource map, chat the conversation view. Both desk and
-       estate landed as placeholders in Task 2.2 and were built out in Tasks
-       3.x/4.1; this comment outlived that. -->
+  <!-- The SPA's two-view nav (composite-redesign Task 2.2): desk is the front
+       door and DEFAULT_VIEW since the Task 3.6 flip (see lib/deeplink), chat is
+       the conversation view. The estate was the third tab until the ds-cmc
+       merge folded it into the desk as a section; `?view=estate` still resolves
+       here through the legacy alias in viewFromSearch. -->
   <nav class="app-header__nav" aria-label={$t('desk.nav.ariaLabel')}>
     <button
       type="button"
@@ -1776,15 +1781,6 @@
       aria-current={view === 'desk' ? 'page' : undefined}
       data-testid="nav-desk"
       onclick={() => navigate('desk')}>{$t('desk.nav.desk')}</button
-    >
-    <button
-      type="button"
-      class="app-header__nav-btn"
-      class:is-active={view === 'estate'}
-      aria-current={view === 'estate' ? 'page' : undefined}
-      data-testid="nav-estate"
-      data-tour={estateHasAdoptTarget ? undefined : 'adopt-target'}
-      onclick={() => navigate('estate')}>{$t('desk.nav.estate')}</button
     >
     <button
       type="button"
@@ -1860,7 +1856,7 @@
   <Timeline {events} {status} directlyRecorded={historicalDecision?.action === 'iac_apply'} />
 {/snippet}
 
-<!-- Rails come off the desk/estate (composite-redesign Task 3.5 decision):
+<!-- Rails come off the desk (composite-redesign Task 3.5 decision):
      the desk is a 780px centered column and LedgerStrip already IS its
      decisions summary, so DecisionsRail beside it would show the same log
      twice — the exact 見づらい/後付け texture the redesign answers. `.rails`
@@ -1958,24 +1954,26 @@
     degraded={$overview.degraded}
     lastError={$overview.lastError}
     refresh={overview.refresh}
-    onNavigate={navigate}
+    onShowEstate={scrollToEstate}
     onOpenTrace={openTrace}
   />
-  {:else if view === 'estate'}
-  <!-- The real estate view (Task 4.1). Data comes exclusively from the
-       overview store's current snapshot — EstateView performs no fetches of
-       its own, same discipline as ApprovalDesk. Adopt routes through the
-       SAME handleAdopt bridge as InfraDiagram's own Adopt buttons. -->
+  <!-- The estate, directly beneath the decision area (2026-07-31 merge — one
+       landing page: band → hero → ledger → estate). Data comes exclusively
+       from the overview store's current snapshot; EstateView performs no
+       fetches of its own, same discipline as ApprovalDesk. Adopt routes
+       through the SAME handleAdopt bridge as InfraDiagram's own Adopt buttons.
+
+       Its loading/degraded state is deliberately INDEPENDENT of the hero's:
+       a pending approval can coexist with a failed graph fetch, and each area
+       reports its own truth (ds-eh6). -->
   <EstateView
     graph={$overview.graph}
     decisions={$overview.decisions}
     pendingApprovals={$overview.pendingApprovals}
     settled={$overview.settled}
-    degraded={$overview.degraded}
     approvalsStale={$overview.approvalsStale}
     adoptDisabled={chatDisabled}
     onAdopt={handleAdopt}
-    onNavigate={navigate}
   />
   {/if}
 </main>
@@ -2143,7 +2141,7 @@
     align-items: center;
   }
   /* Phone widths: the brand and the nav stop fitting on one line together, so
-     the nav takes a row of its own. It must never wrap mid-cluster — three view
+     the nav takes a row of its own. It must never wrap mid-cluster — the view
      buttons broken across two lines is the "後付け" texture itself. */
   @media (max-width: 640px) {
     .app-header {
@@ -2215,7 +2213,7 @@
        (ds-s61). */
     flex: 1;
   }
-  /* Desk/estate: no rails column at all (see the `.rails` {#if} above) —
+  /* Desk: no rails column at all (see the `.rails` {#if} above) —
      collapse the grid to one full-width column instead of leaving a bare
      280px gap where the rails used to sit. */
   .layout--full {

@@ -158,15 +158,17 @@ describe('TourCard — view navigation (Task 4.1)', () => {
     // welcome: view === null — no call yet.
     expect(onNavigate).not.toHaveBeenCalled();
 
+    // Both estate-ish steps navigate to the DESK now — the estate is a section
+    // of it (2026-07-31 merge), not a view of its own.
     await fireEvent.click(getByTestId('tour-next')); // → estate
-    expect(onNavigate).toHaveBeenLastCalledWith('estate');
+    expect(onNavigate).toHaveBeenLastCalledWith('desk');
     const afterEstate = onNavigate.mock.calls.length;
 
     await fireEvent.click(getByTestId('tour-next')); // → controls (view: null)
     expect(onNavigate.mock.calls.length).toBe(afterEstate); // no new call
 
     await fireEvent.click(getByTestId('tour-next')); // → adopt
-    expect(onNavigate).toHaveBeenLastCalledWith('estate');
+    expect(onNavigate).toHaveBeenLastCalledWith('desk');
 
     await fireEvent.click(getByTestId('tour-next')); // → next
     expect(onNavigate).toHaveBeenLastCalledWith('chat');
@@ -271,6 +273,46 @@ describe('TourCard — spotlight', () => {
       expect(estate.classList.contains('tour-spotlight')).toBe(false);
     } finally {
       estate.remove();
+    }
+  });
+
+  // The adopt step's real target (the first adoptable row) is absent whenever
+  // nothing is adoptable. It used to fall back to the nav-estate header button;
+  // the desk+estate merge deleted that button, so the step declares
+  // `fallback: 'estate'` and the resolver honours it — otherwise the spotlight
+  // would land on nothing and the step would silently point at empty air.
+  it('falls back to the estate section when the adopt target is absent', async () => {
+    const estate = document.createElement('div');
+    estate.setAttribute('data-tour', 'estate');
+    const controls = document.createElement('div');
+    controls.setAttribute('data-tour', 'controls');
+    document.body.append(estate, controls);
+    try {
+      // graphWithTarget() would give the estate an adoptable row, but no
+      // [data-tour="adopt-target"] element exists in this bare DOM either way.
+      const { getByTestId } = render(TourCard, { props: { graph: graphWithTarget() } });
+      await advanceTo(getByTestId, 3); // → adopt
+      expect(estate.classList.contains('tour-spotlight')).toBe(true);
+    } finally {
+      estate.remove();
+      controls.remove();
+    }
+  });
+
+  it('prefers the real adopt target over the fallback when it IS present', async () => {
+    const estate = document.createElement('div');
+    estate.setAttribute('data-tour', 'estate');
+    const row = document.createElement('div');
+    row.setAttribute('data-tour', 'adopt-target');
+    document.body.append(estate, row);
+    try {
+      const { getByTestId } = render(TourCard, { props: { graph: graphWithTarget() } });
+      await advanceTo(getByTestId, 3); // → adopt
+      expect(row.classList.contains('tour-spotlight')).toBe(true);
+      expect(estate.classList.contains('tour-spotlight')).toBe(false);
+    } finally {
+      estate.remove();
+      row.remove();
     }
   });
 });

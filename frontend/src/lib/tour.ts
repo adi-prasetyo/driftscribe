@@ -79,17 +79,33 @@ export interface TourStep {
    * anchor).
    */
   view: AppView | null;
+  /**
+   * `data-tour` attribute to spotlight when `target` matches nothing. Only the
+   * adopt step needs one: its target is the first adoptable row, which simply
+   * does not exist when nothing is adoptable right now. Every other target is
+   * unconditionally mounted on the view its step navigates to.
+   */
+  fallback?: string;
 }
 
 export const TOUR_STEPS: readonly TourStep[] = [
   { id: 'welcome', titleKey: 'tour.step.welcome.title', target: null, view: null },
-  { id: 'estate', titleKey: 'tour.step.estate.title', target: 'estate', view: 'estate' },
+  // Both estate steps navigate to the DESK: EstateView is a section of the desk
+  // page as of the 2026-07-31 merge, not a view of its own.
+  { id: 'estate', titleKey: 'tour.step.estate.title', target: 'estate', view: 'desk' },
   { id: 'controls', titleKey: 'tour.step.controls.title', target: 'controls', view: null },
   // Spotlights the FIRST adoptable row in EstateView (data-tour="adopt-target",
-  // written by EstateView.svelte), falling back to the nav-estate header
-  // button (App.svelte) when the estate has no adoptable row right now — see
-  // lib/estate.ts's firstAdoptableRow, the single predicate both sides share.
-  { id: 'adopt', titleKey: 'tour.step.adopt.title', target: 'adopt-target', view: 'estate' },
+  // written by EstateView.svelte). When the estate has no adoptable row right
+  // now — see lib/estate.ts's firstAdoptableRow — the row is absent, so the
+  // spotlight falls back to the estate section itself. It used to fall back to
+  // the nav-estate header button, which the merge deleted.
+  {
+    id: 'adopt',
+    titleKey: 'tour.step.adopt.title',
+    target: 'adopt-target',
+    view: 'desk',
+    fallback: 'estate',
+  },
   { id: 'next', titleKey: 'tour.step.next.title', target: 'composer', view: 'chat' },
 ];
 
