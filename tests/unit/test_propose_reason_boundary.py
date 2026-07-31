@@ -57,7 +57,11 @@ def _worker_propose_bounds() -> dict[str, int]:
     import re
     from pathlib import Path
 
-    src = Path("workers/rollback/main.py").read_text(encoding="utf-8")
+    # Resolved from THIS file, not the process cwd: a run started from
+    # elsewhere would otherwise fail on a missing path and read as a broken
+    # test rather than a bound mismatch.
+    repo_root = Path(__file__).resolve().parents[2]
+    src = (repo_root / "workers" / "rollback" / "main.py").read_text(encoding="utf-8")
     body = src[src.index("class ProposeRequest"):src.index("class ExecuteRequest")]
     reason_line = next(
         ln for ln in body.splitlines() if ln.strip().startswith("reason:")

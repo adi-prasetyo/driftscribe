@@ -563,8 +563,17 @@ class ProposeRequest(BaseModel):
       on the approval page.
 
       ⚠️ DEPLOY ORDER: this worker must ship BEFORE a coordinator that sends
-      more than 500 chars — same ``extra="forbid"`` asymmetry the ds-uwc
-      fields document below.
+      more than 500 chars. The mechanism here is ``max_length`` rather than the
+      ``extra="forbid"`` asymmetry the ds-uwc fields document below, but the
+      operational rule is identical — a consumer bound always deploys ahead of
+      a producer that will exceed the old one.
+
+      Note this does NOT collide with the writer-last rule in
+      ``infra/cloudbuild.rollback-update.yaml`` (ds-wjw). That rule protects
+      older READERS from a newer field this worker WRITES; widening an input
+      bound writes no new field, and ``driftscribe_lib.approvals.Approval``
+      declares ``reason: str`` unconstrained, so a longer stored value parses
+      fine in every existing reader.
     """
 
     target_revision: str = Field(min_length=1, max_length=64, pattern=_REVISION_NAME.pattern)

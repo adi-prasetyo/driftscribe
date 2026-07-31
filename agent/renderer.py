@@ -296,11 +296,12 @@ def normalize_rollback_reason(scrubbed: str) -> str:
     """Bound an already-SCRUBBED rationale to the worker's ``reason`` contract.
 
     ds-j0i, proven on prod 2026-07-31: the coordinator sent this field
-    unbounded while ``workers/rollback`` declares
-    ``reason: Field(min_length=1, max_length=500)`` with ``extra="forbid"``. A
-    581-char model rationale produced a pydantic 422, the approval was never
-    minted, and autonomous self-heal died one step after the ds-q38 fix had
-    correctly evicted the poisoned row.
+    unbounded while ``workers/rollback`` then declared
+    ``reason: Field(min_length=1, max_length=500)``. A 581-char model rationale
+    produced a pydantic ``string_too_long`` 422, the approval was never minted,
+    and autonomous self-heal died one step after the ds-q38 fix had correctly
+    evicted the poisoned row. (The cap is now 2000 on both sides; ``min_length``
+    still makes an EMPTY rationale its own 422, handled below.)
 
     **Order matters: scrub FIRST, then clamp.** Redaction replaces values with
     ``(redacted)`` and so changes length; clamping first could hand the worker a
