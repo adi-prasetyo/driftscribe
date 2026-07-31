@@ -6,7 +6,7 @@ import type { Decision } from '../../src/lib/types';
 // First component-render test in the repo. Uses @testing-library/svelte (v5,
 // Svelte-5-native render) on the jsdom environment configured in
 // vitest.config.ts. We assert the supersession behaviour (a later `applied`
-// iac_apply row retires the stale "Review & approve →" CTA on its
+// iac_apply row retires the stale "Apply this change →" CTA on its
 // `waiting_for_rebake` siblings) and the new meta-line status token end-to-end
 // through the component, not just via the pure helpers.
 
@@ -48,7 +48,7 @@ describe('DecisionsRail — iac_apply CTA supersession + status token', () => {
     expect(link.getAttribute('href')).toBe('/iac-approvals/68');
   });
 
-  it('keeps "Review & approve →" on a lone waiting row with no applied sibling', () => {
+  it('keeps "Apply this change →" on a lone waiting row with no applied sibling', () => {
     const decisions: Decision[] = [
       iacRow({ decision_id: 'wait-71', apply_status: 'waiting_for_rebake', pr_number: 71 }),
     ];
@@ -58,7 +58,7 @@ describe('DecisionsRail — iac_apply CTA supersession + status token', () => {
     });
 
     const link = getByTestId('iac-approve-link');
-    expect(link.textContent?.trim()).toBe('Review & approve →');
+    expect(link.textContent?.trim()).toBe('Apply this change →');
     expect(link.getAttribute('href')).toBe('/iac-approvals/71');
   });
 
@@ -116,7 +116,7 @@ describe('DecisionsRail — iac_apply CTA supersession + status token', () => {
       props: { decisions, activeTraceId: null, onOpenTrace: noop },
     });
     const link = getByTestId('iac-approve-link');
-    expect(link.textContent?.trim()).toBe('Review & approve →');
+    expect(link.textContent?.trim()).toBe('Apply this change →');
     expect(link.getAttribute('href')).toBe('/iac-approvals/216');
   });
 
@@ -390,7 +390,7 @@ describe('DecisionsRail — collapsed iac_apply lifecycle groups', () => {
     expect(opened).toEqual(['trace-waiting']);
   });
 
-  it('an all-waiting group (no applied sibling) keeps the live "Review & approve →" CTA on ONE row', () => {
+  it('an all-waiting group (no applied sibling) keeps the live "Apply this change →" CTA on ONE row', () => {
     // The highest-risk CTA case: collapsing must NOT eat the actionable label.
     const decisions: Decision[] = [
       iacRow({ decision_id: 'wait-90-a', apply_status: 'waiting_for_rebake', pr_number: 90 }),
@@ -401,7 +401,7 @@ describe('DecisionsRail — collapsed iac_apply lifecycle groups', () => {
     });
     expect(getAllByTestId('past-decision-item')).toHaveLength(1);
     const link = getByTestId('iac-approve-link');
-    expect(link.textContent?.trim()).toBe('Review & approve →');
+    expect(link.textContent?.trim()).toBe('Apply this change →');
     expect(link.getAttribute('href')).toBe('/iac-approvals/90');
   });
 
@@ -512,7 +512,7 @@ describe('DecisionsRail — collapsed iac_apply lifecycle groups', () => {
     const { getByTestId, queryByTestId } = render(DecisionsRail, {
       props: { decisions, activeTraceId: null, onOpenTrace: noop },
     });
-    expect(getByTestId('iac-approve-link').textContent?.trim()).toBe('Review & approve →');
+    expect(getByTestId('iac-approve-link').textContent?.trim()).toBe('Apply this change →');
     expect(queryByTestId('iac-lifecycle-summary')).toBeNull();
   });
 });

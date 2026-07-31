@@ -245,16 +245,30 @@
     if (m.provenance.kind === 'decision') {
       const prTitle = m.provenance.decision.pr_title;
       if (typeof prTitle === 'string' && prTitle !== '') return prTitle;
-      // Titleless `decision` provenance means the PR already merged (desk.ts:78-84)
-      // — say it is waiting to be APPLIED, never waiting for an approval the
-      // operator has already given (ds-db0).
-      return tf('desk.pending.iacMerged.headlineFallback', { pr: m.prNumber });
     }
-    // Listing provenance with no title: only ask for an approval when no
-    // decision proves one already happened (see iacApprovalRecorded).
-    return iacApprovalRecorded(m.prNumber, decisions ?? [])
+    // No title to show. Titleless `decision` provenance means the PR already
+    // merged (desk.ts:78-84); titleless `listing` provenance may STILL be an
+    // already-approved PR held over by the cache. Either way the fallback must
+    // never ask for an approval the operator has already given (ds-db0).
+    return iacAlreadyApproved(m)
       ? tf('desk.pending.iacMerged.headlineFallback', { pr: m.prNumber })
       : tf('desk.pending.iac.headlineFallback', { pr: m.prNumber });
+  }
+
+  /**
+   * The ONE discriminator for "this pending IaC change has already been
+   * approved" — byline, headline and CTAs all key off it (ds-22k).
+   *
+   * Deliberately a single function rather than the condition repeated at each
+   * site: this component's whole ds-db0 bug was one surface disagreeing with
+   * another about the same fact, and three hand-written copies of a two-branch
+   * test is how that comes back. Rollback rows are never "already approved" in
+   * this sense — a spent rollback credential leaves the pending state entirely.
+   */
+  function iacAlreadyApproved(m: DeskPending): boolean {
+    if (m.source === 'rollback') return false;
+    if (m.provenance.kind === 'decision') return true;
+    return iacApprovalRecorded(m.prNumber, decisions ?? []);
   }
 
   /**
@@ -332,11 +346,7 @@
    *  decision proves the approval happened — regardless of which arm selected
    *  the row, so a stale cached listing cannot re-ask for a given approval. */
   function pendingWhoKey(m: DeskPending): 'desk.pending.iac.who' | 'desk.pending.iacMerged.who' {
-    if (m.source === 'rollback') return 'desk.pending.iac.who';
-    if (m.provenance.kind === 'decision') return 'desk.pending.iacMerged.who';
-    return iacApprovalRecorded(m.prNumber, decisions ?? [])
-      ? 'desk.pending.iacMerged.who'
-      : 'desk.pending.iac.who';
+    return iacAlreadyApproved(m) ? 'desk.pending.iacMerged.who' : 'desk.pending.iac.who';
   }
 
   function pendingSubtitleTime(m: DeskPending): string | null {
@@ -519,23 +529,51 @@
             >
           </p>
         {/if}
+        <!-- ds-22k. Once the change is approved and merged, the pair below stops
+             describing anything the operator can do:
+
+             * "Approve this proposal" names the wrong object — the PROPOSAL was
+               approved and merged. What remains is the apply, which the approval
+               page still offers a live form for (agent/main.py:6127 keeps the
+               form for waiting_for_rebake; :7187 resumes propose→apply). So the
+               action is real and the link is unchanged; only its name was wrong.
+             * "Reject" is worse than useless. Reject persists NOTHING (it is a
+               non-binding render, main.py:6580-6586) and cannot un-merge a
+               merged PR — so on a human-in-the-loop surface it invites the
+               operator to believe they stopped a change that is still coming.
+               A control that cannot do what it says must not be offered.
+
+             One CTA in that state, therefore, and it names the apply. Keyed off
+             the same `iacAlreadyApproved` as the byline above it, so the card
+             can never say "approved" over a button asking for the approval. -->
         <div class="approval-desk__acts">
-          <a
-            class="approval-desk__btn approval-desk__btn--primary"
-            data-testid="approval-desk-approve"
-            href={model.href}
-            target="_blank"
-            rel="noopener"
-            onclick={armReturnLadder}>{$t('desk.pending.approveCta')}</a
-          >
-          <a
-            class="approval-desk__btn approval-desk__btn--ghost"
-            data-testid="approval-desk-reject"
-            href={model.href}
-            target="_blank"
-            rel="noopener"
-            onclick={armReturnLadder}>{$t('desk.pending.rejectCta')}</a
-          >
+          {#if model.kind === 'pending' && iacAlreadyApproved(model)}
+            <a
+              class="approval-desk__btn approval-desk__btn--primary"
+              data-testid="approval-desk-apply"
+              href={model.href}
+              target="_blank"
+              rel="noopener"
+              onclick={armReturnLadder}>{$t('desk.pending.applyCta')}</a
+            >
+          {:else}
+            <a
+              class="approval-desk__btn approval-desk__btn--primary"
+              data-testid="approval-desk-approve"
+              href={model.href}
+              target="_blank"
+              rel="noopener"
+              onclick={armReturnLadder}>{$t('desk.pending.approveCta')}</a
+            >
+            <a
+              class="approval-desk__btn approval-desk__btn--ghost"
+              data-testid="approval-desk-reject"
+              href={model.href}
+              target="_blank"
+              rel="noopener"
+              onclick={armReturnLadder}>{$t('desk.pending.rejectCta')}</a
+            >
+          {/if}
         </div>
       </div>
     {:else if model.kind === 'unresolved'}

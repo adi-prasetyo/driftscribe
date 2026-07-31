@@ -594,6 +594,129 @@ describe('ApprovalDesk — pending state, iac source, both provenance arms', () 
     expect(pending.getByText('Adopt lodash upgrade')).toBeTruthy();
     expect(pending.queryByText(/is waiting for your approval\.$/)).toBeNull();
   });
+
+  // ds-22k. The byline fix left a card that said "approved" directly above a
+  // button saying "Approve this proposal" and a Reject that could not un-merge
+  // a merged PR — a control whose label is a promise it cannot keep, on the
+  // human-in-the-loop surface of all places.
+  it('an already-approved change offers the APPLY, and no Reject at all', () => {
+    const d = iacDecision({ pr_number: 99, pr_title: undefined });
+    const { getByTestId, queryByTestId } = render(ApprovalDesk, {
+      props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onShowEstate: vi.fn() },
+    });
+    const apply = getByTestId('approval-desk-apply') as HTMLAnchorElement;
+    expect(apply.textContent?.trim()).toBe('Apply this change');
+    // The action is REAL — the approval page keeps a live form for
+    // waiting_for_rebake (agent/main.py:6127) and the POST resumes the apply
+    // (:7187). Only the name was wrong, so the destination must be untouched.
+    expect(apply.getAttribute('href')).toContain('/iac-approvals/99');
+    expect(apply.getAttribute('target')).toBe('_blank');
+    expect(apply.getAttribute('rel')).toBe('noopener');
+    expect(queryByTestId('approval-desk-reject')).toBeNull();
+    expect(queryByTestId('approval-desk-approve')).toBeNull();
+    const pending = queryByTestId('approval-desk-pending')?.textContent ?? '';
+    expect(pending).not.toContain('Approve this proposal');
+    expect(pending).not.toContain('Reject');
+  });
+
+  // The CTA must key off the SAME discriminator as the byline. This is the
+  // stale-cache frame again (the listing arm wins for up to 60s after the
+  // approve click): a card whose byline reads "approved" over a button reading
+  // "Approve this proposal" is the two-surfaces-disagree bug ds-db0 was.
+  it('stale cached listing + proof of approval: the CTA follows the byline', () => {
+    const approval = pendingIac({ title: undefined }); // PR #7, still "open" per cache
+    const approved = iacDecision({
+      pr_number: 7,
+      pr_title: undefined,
+      apply_status: 'waiting_for_rebake',
+      merge_state: 'merged',
+    });
+    const { getByTestId, queryByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: GRAPH,
+        decisions: [approved],
+        pendingApprovals: [approval],
+        onShowEstate: vi.fn(),
+      },
+    });
+    expect(getByTestId('approval-desk-apply')).toBeTruthy();
+    expect(queryByTestId('approval-desk-approve')).toBeNull();
+    expect(queryByTestId('approval-desk-reject')).toBeNull();
+  });
+
+  // The other direction, and the one that would matter most if it broke: a
+  // genuinely unapproved change must keep its full Approve/Reject path. Losing
+  // the gate is far worse than labelling it awkwardly.
+  it('a genuinely unapproved listing row keeps Approve AND Reject', () => {
+    const approval = pendingIac({ title: 'Adopt orders-sub into IaC' });
+    const { getByTestId, queryByTestId } = render(ApprovalDesk, {
+      props: { graph: GRAPH, decisions: [], pendingApprovals: [approval], onShowEstate: vi.fn() },
+    });
+    expect(getByTestId('approval-desk-approve').textContent?.trim()).toBe('Approve this proposal');
+    expect(getByTestId('approval-desk-reject')).toBeTruthy();
+    expect(queryByTestId('approval-desk-apply')).toBeNull();
+  });
+
+  // ds-22k's acceptance criterion, and the reason it was filed as one bead
+  // rather than three: the byline fix alone left a card saying "approved" over a
+  // button saying "Approve this proposal", under a band counting it as
+  // "Awaiting your approval". Asserting each surface separately is what let them
+  // drift apart in the first place, so this pins the whole rendered desk at
+  // once — any NEW surface that starts soliciting the approval fails here
+  // without anyone remembering to add it to a list.
+  it('no surface of an already-approved desk solicits the approval already given', () => {
+    const d = iacDecision({ pr_number: 99, pr_title: undefined });
+    const { container } = render(ApprovalDesk, {
+      props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onShowEstate: vi.fn() },
+    });
+    const text = container.textContent ?? '';
+    expect(text).not.toMatch(/awaiting your approval/i);
+    expect(text).not.toMatch(/waiting for your (approval|review)/i);
+    expect(text).not.toMatch(/approve this proposal/i);
+    // The aria layer too — a screen reader must not hear the solicitation the
+    // visible layer stopped making.
+    for (const el of Array.from(container.querySelectorAll('[aria-label]'))) {
+      expect(el.getAttribute('aria-label')).not.toMatch(/awaiting your approval/i);
+    }
+    // NOT asserted absent: "Needs your decision" (the band) and "Approved ·
+    // awaiting apply" (the ledger). Both are true — the apply is a real
+    // outstanding operator step — and demanding the desk fall silent about it
+    // would trade an over-claim for an under-claim.
+    expect(text).toContain('Needs your decision');
+  });
+
+  // A terminal failure withdraws the "already approved" claim (ab5dc94), so the
+  // card falls back to the ordinary pair rather than offering an apply for
+  // something that has terminally frozen. Pinned so the two rules stay coupled.
+  it('a contradicted witness falls back to the ordinary Approve/Reject pair', () => {
+    const approval = pendingIac({ title: undefined });
+    const approved = iacDecision({
+      decision_id: 'iac-witness',
+      pr_number: 7,
+      pr_title: undefined,
+      apply_status: 'waiting_for_rebake',
+      merge_state: 'merged',
+      created_at: '2026-07-28T11:00:00Z',
+    });
+    const frozen = iacDecision({
+      decision_id: 'iac-frozen',
+      pr_number: 7,
+      pr_title: undefined,
+      apply_status: 'failed_state_suspect',
+      merge_state: 'merged',
+      created_at: '2026-07-28T11:06:00Z',
+    });
+    const { getByTestId, queryByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: GRAPH,
+        decisions: [frozen, approved],
+        pendingApprovals: [approval],
+        onShowEstate: vi.fn(),
+      },
+    });
+    expect(getByTestId('approval-desk-approve')).toBeTruthy();
+    expect(queryByTestId('approval-desk-apply')).toBeNull();
+  });
 });
 
 describe('ApprovalDesk — stamped state', () => {

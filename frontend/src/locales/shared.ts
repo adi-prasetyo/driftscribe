@@ -94,7 +94,15 @@ export const shared = {
     'shared.tokens': '{n} tok',
 
     'shared.approve.supersededBy': 'superseded by #{pr} →',
-    'shared.approve.reviewApprove': 'Review & approve →',
+    // ds-22k. Reached ONLY for a non-superseded `waiting_for_rebake` row, which
+    // the backend records at MERGE — so the operator has already reviewed and
+    // approved this once, and "Review & approve" asked again for what they had
+    // given. What remains is the apply, which the approval page still offers a
+    // live form for (agent/main.py:6127, :7187). Distinct from
+    // `approval.iacCta.reviewApprove`, which fires on a FRESHLY authored PR with
+    // no decision row at all — that one really is a first approval and keeps its
+    // wording.
+    'shared.approve.reviewApprove': 'Apply this change →',
     'shared.approve.viewHistory': 'View approval history →',
     'shared.approve.viewFailure': 'View failure details →',
     'shared.approve.goToPage': 'Go to approval page →',
@@ -197,7 +205,7 @@ export const shared = {
     'shared.tokens': '{n} トークン',
 
     'shared.approve.supersededBy': '#{pr} に置き換え済み →',
-    'shared.approve.reviewApprove': '確認して承認 →',
+    'shared.approve.reviewApprove': 'この変更を適用する →',
     'shared.approve.viewHistory': '承認履歴を見る →',
     'shared.approve.viewFailure': '失敗の詳細を見る →',
     'shared.approve.goToPage': '承認ページへ →',

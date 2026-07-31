@@ -24,12 +24,20 @@ export const desk = {
     // than relying on visible-text concatenation order.
     'desk.band.managedLabel': 'Managed by IaC',
     'desk.band.driftLabel': 'Drift detected',
-    'desk.band.awaitingLabel': 'Awaiting your approval',
+    // "decision", not "approval" (ds-22k). `awaitingCount` unions two lanes: an
+    // unspent rollback approval, AND an iac row whose remaining operator step is
+    // the post-merge apply. Both need the operator, but only the first is
+    // waiting on an approval nobody has given — and the card directly beneath
+    // this figure now says "Apply this change" for the second, so naming the
+    // whole total "approval" put two names on one item. Echoes the resting
+    // headline ("Nothing needs your decision right now"), which is the same
+    // claim with the count at zero.
+    'desk.band.awaitingLabel': 'Needs your decision',
     // awaiting is the band's one inert figure (ds-s61 — the queue it counts is
     // directly below it), so it is the one stat whose name promises nothing.
     // managed/drift have no plain variant at all: they are always controls, and
     // a control's name must say where it leads (see the next block).
-    'desk.band.awaitingAria': '{n} awaiting your approval',
+    'desk.band.awaitingAria': '{n} needing your decision',
     // ds-7ag.2 — an INTERACTIVE stat names its destination, because the
     // aria-label overrides all descendant text: the visible hover hint is
     // invisible to a screen reader, so the accessible name has to make the same
@@ -49,7 +57,7 @@ export const desk = {
     // Read instead of the *Aria keys above when a figure is not yet known
     // (ds-eh6). The visible numeral becomes an em dash, which a screen reader
     // announces as nothing at all, so these carry the state in words.
-    'desk.band.awaitingUnknownAria': 'Awaiting your approval: not yet known',
+    'desk.band.awaitingUnknownAria': 'Needs your decision: not yet known',
     // Unknown AND still a control: managed/drift stay clickable while unknown
     // (the map is where you go to find out), so their accessible name carries
     // the destination as well.
@@ -142,6 +150,12 @@ export const desk = {
       'No notification could be sent for this proposal, so it has been waiting here unannounced.',
     'desk.pending.approveCta': 'Approve this proposal',
     'desk.pending.rejectCta': 'Reject',
+    // Shown INSTEAD of the pair above once the change is approved and merged
+    // (ds-22k) — see the comment on the CTA block in ApprovalDesk.svelte. Names
+    // the apply, matching the byline and headline directly above it; "Approve
+    // this proposal" would be asking for an approval already given, and Reject
+    // cannot un-merge a merged PR.
+    'desk.pending.applyCta': 'Apply this change',
     // The mockup's `.why` line reads "view the reasoning behind this (N
     // steps)". The step count is dropped deliberately: it lives in the trace
     // this link would open, so printing it would mean either fetching every
@@ -236,15 +250,19 @@ export const desk = {
     // label with no number.
     'desk.band.managedLabel': 'IaC 管理下',
     'desk.band.driftLabel': 'ドリフト検出',
-    'desk.band.awaitingLabel': 'あなたの承認待ち',
-    // 承認待ちだけが操作できない数値（ds-s61 — 対象のキューがすぐ下にあるため）。
-    'desk.band.awaitingAria': '{n}件、あなたの承認待ち',
+    // 「承認」ではなく「判断」（ds-22k）。awaitingCount はロールバックの未使用承認と、
+    // マージ後の適用を待つ IaC 行の両方を数える。後者に必要なのは承認ではなく適用で、
+    // すぐ下のカードも「この変更を適用する」と表示するため、合計を「承認待ち」と
+    // 呼ぶと同じ項目に二つの名前が付く。待機ゼロ時の見出しと同じ言い回しに揃える。
+    'desk.band.awaitingLabel': 'あなたの判断待ち',
+    // これだけが操作できない数値（ds-s61 — 対象のキューがすぐ下にあるため）。
+    'desk.band.awaitingAria': '{n}件、あなたの判断待ち',
     // ds-7ag.2 — 操作できる数値だけが遷移先を名乗る（EN 側の命名規則コメント参照）。
     // `Desk` サフィックスは名残：2026-07-31 の統合前は文脈を表していた。
     'desk.band.managedAriaDesk': '{n}件、IaC 管理下 — インフラを見る',
     'desk.band.driftAriaDesk': '{n}件、ドリフト検出 — インフラを見る',
     'desk.band.statHintEstate': 'インフラを見る →',
-    'desk.band.awaitingUnknownAria': 'あなたの承認待ち：未取得',
+    'desk.band.awaitingUnknownAria': 'あなたの判断待ち：未取得',
     'desk.band.managedUnknownAriaDesk': 'IaC 管理下：未取得 — インフラを見る',
     'desk.band.driftUnknownAriaDesk': 'ドリフト検出：未取得 — インフラを見る',
     'desk.ledger.heading': '最近の記録',
@@ -286,6 +304,9 @@ export const desk = {
       'この提案の通知は送信できませんでした。お知らせのないまま、ここでお待ちしていました。',
     'desk.pending.approveCta': 'この提案を承認する',
     'desk.pending.rejectCta': '却下する',
+    // 承認・マージ済みの場合は上記2つに代えてこれだけを表示する（ds-22k）。
+    // 既に与えられた承認を再度求めることはせず、残っている「適用」を示す。
+    'desk.pending.applyCta': 'この変更を適用する',
     'desk.pending.viewReasoning': 'この提案に至った推論を見る →',
 
     'desk.stamped.who': '承認済み',
