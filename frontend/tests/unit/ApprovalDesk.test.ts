@@ -600,7 +600,7 @@ describe('ApprovalDesk — pending state, iac source, both provenance arms', () 
   // a merged PR — a control whose label is a promise it cannot keep, on the
   // human-in-the-loop surface of all places.
   it('an already-approved change offers the APPLY, and no Reject at all', () => {
-    const d = iacDecision({ pr_number: 99, pr_title: undefined });
+    const d = iacDecision({ pr_number: 99, pr_title: undefined, merge_state: 'merged' });
     const { getByTestId, queryByTestId } = render(ApprovalDesk, {
       props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onShowEstate: vi.fn() },
     });
@@ -617,6 +617,24 @@ describe('ApprovalDesk — pending state, iac source, both provenance arms', () 
     const pending = queryByTestId('approval-desk-pending')?.textContent ?? '';
     expect(pending).not.toContain('Approve this proposal');
     expect(pending).not.toContain('Reject');
+  });
+
+  it('an approved pre-merge change offers CONTINUE, never Apply or a second approval', () => {
+    const d = iacDecision({
+      pr_number: 98,
+      pr_title: undefined,
+      merge_state: 'pending',
+    });
+    const { getByTestId, queryByTestId } = render(ApprovalDesk, {
+      props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onShowEstate: vi.fn() },
+    });
+
+    expect(getByTestId('approval-desk-continue').textContent?.trim()).toBe(
+      'Continue this change',
+    );
+    expect(queryByTestId('approval-desk-apply')).toBeNull();
+    expect(queryByTestId('approval-desk-approve')).toBeNull();
+    expect(queryByTestId('approval-desk-reject')).toBeNull();
   });
 
   // The CTA must key off the SAME discriminator as the byline. This is the
@@ -685,10 +703,10 @@ describe('ApprovalDesk — pending state, iac source, both provenance arms', () 
     expect(text).toContain('Needs your decision');
   });
 
-  // A terminal failure withdraws the "already approved" claim (ab5dc94), so the
-  // card falls back to the ordinary pair rather than offering an apply for
-  // something that has terminally frozen. Pinned so the two rules stay coupled.
-  it('a contradicted witness falls back to the ordinary Approve/Reject pair', () => {
+  // A terminal failure means the approval page suppresses its form. A stale
+  // listing must therefore become view-only, not re-offer Approve/Reject for a
+  // credential whose run has already ended.
+  it('a contradicted witness offers only View failure details', () => {
     const approval = pendingIac({ title: undefined });
     const approved = iacDecision({
       decision_id: 'iac-witness',
@@ -714,8 +732,100 @@ describe('ApprovalDesk — pending state, iac source, both provenance arms', () 
         onShowEstate: vi.fn(),
       },
     });
-    expect(getByTestId('approval-desk-approve')).toBeTruthy();
+    expect(getByTestId('approval-desk-view-failure').textContent?.trim()).toBe(
+      'View failure details',
+    );
+    expect(queryByTestId('approval-desk-approve')).toBeNull();
+    expect(queryByTestId('approval-desk-reject')).toBeNull();
     expect(queryByTestId('approval-desk-apply')).toBeNull();
+    expect(queryByTestId('approval-desk-continue')).toBeNull();
+  });
+
+  // The gate-safety twin of the two view-only tests above. Both of those supply
+  // a `waiting_for_rebake`+`merged` witness, which PROVES the PR merged and the
+  // listing is stale. Without that proof the same PR-wide join reaches across
+  // generations: an apply that fails never merges, so the PR STAYS OPEN, the
+  // operator pushes a fix, and the listing now points at a genuinely unapproved
+  // generation B — whose card would offer nothing but "View failure details"
+  // because generation A failed. A missed gate is the worst outcome this
+  // component has; a redundant Approve on a formless page is merely annoying,
+  // and the page itself tells the truth when they get there.
+  it.each(['failed', 'failed_state_suspect', 'ambiguous'])(
+    'a %s generation never removes the approval gate from a still-open PR',
+    (terminalStatus) => {
+      const approval = pendingIac({ title: undefined }); // PR #7, genuinely open (gen B)
+      const failedGenerationA = iacDecision({
+        decision_id: 'iac-gen-a',
+        pr_number: 7,
+        pr_title: undefined,
+        apply_status: terminalStatus,
+        merge_state: 'n/a', // never merged — which is WHY the PR is still open
+      });
+      const { getByTestId, queryByTestId } = render(ApprovalDesk, {
+        props: {
+          graph: GRAPH,
+          decisions: [failedGenerationA],
+          pendingApprovals: [approval],
+          onShowEstate: vi.fn(),
+        },
+      });
+      expect(getByTestId('approval-desk-approve')).toBeTruthy();
+      expect(getByTestId('approval-desk-reject')).toBeTruthy();
+      expect(queryByTestId('approval-desk-view-failure')).toBeNull();
+    },
+  );
+
+  // Same shape for supersession: `superseded_by_pr` is written on a
+  // waiting_for_rebake row, which can be PRE-merge, so it is not proof the PR
+  // itself is settled either.
+  it('an unmerged superseded generation never removes the gate either', () => {
+    const approval = pendingIac({ title: undefined });
+    const superseded = iacDecision({
+      decision_id: 'iac-sup-unmerged',
+      pr_number: 7,
+      pr_title: undefined,
+      apply_status: 'waiting_for_rebake',
+      merge_state: 'pending',
+      superseded_by_pr: 101,
+    });
+    const { getByTestId, queryByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: GRAPH,
+        decisions: [superseded],
+        pendingApprovals: [approval],
+        onShowEstate: vi.fn(),
+      },
+    });
+    expect(getByTestId('approval-desk-approve')).toBeTruthy();
+    expect(queryByTestId('approval-desk-view')).toBeNull();
+  });
+
+  it('a stale listing for an explicitly superseded approval is view-only', () => {
+    const approval = pendingIac({ title: undefined });
+    const superseded = iacDecision({
+      decision_id: 'iac-superseded',
+      pr_number: 7,
+      pr_title: undefined,
+      apply_status: 'waiting_for_rebake',
+      merge_state: 'merged',
+      superseded_by_pr: 101,
+    });
+    const { getByTestId, queryByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: GRAPH,
+        decisions: [superseded],
+        pendingApprovals: [approval],
+        onShowEstate: vi.fn(),
+      },
+    });
+
+    expect(getByTestId('approval-desk-view').textContent?.trim()).toBe(
+      'View approval details',
+    );
+    expect(queryByTestId('approval-desk-approve')).toBeNull();
+    expect(queryByTestId('approval-desk-reject')).toBeNull();
+    expect(queryByTestId('approval-desk-apply')).toBeNull();
+    expect(queryByTestId('approval-desk-continue')).toBeNull();
   });
 });
 

@@ -28,7 +28,7 @@ export const desk = {
     // unspent rollback approval, AND an iac row whose remaining operator step is
     // the post-merge apply. Both need the operator, but only the first is
     // waiting on an approval nobody has given — and the card directly beneath
-    // this figure now says "Apply this change" for the second, so naming the
+    // this figure now says "Continue/Apply this change" for the second, so naming the
     // whole total "approval" put two names on one item. Echoes the resting
     // headline ("Nothing needs your decision right now"), which is the same
     // claim with the count at zero.
@@ -137,6 +137,9 @@ export const desk = {
     'desk.pending.iacMerged.who': 'An approved infrastructure change is waiting to be applied',
     'desk.pending.iacMerged.headlineFallback':
       'Infrastructure change PR #{pr} is approved and waiting to be applied.',
+    'desk.pending.iacView.who': 'An infrastructure change needs attention',
+    'desk.pending.iacView.headlineFallback':
+      'Review the details for infrastructure change PR #{pr}.',
     'desk.pending.prMeta': 'PR #{pr}',
     'desk.pending.subtitleProposedAt': 'Proposed {time}',
     // Both anchors point at the SAME href (deskModel's `href`) — the actual
@@ -150,12 +153,13 @@ export const desk = {
       'No notification could be sent for this proposal, so it has been waiting here unannounced.',
     'desk.pending.approveCta': 'Approve this proposal',
     'desk.pending.rejectCta': 'Reject',
-    // Shown INSTEAD of the pair above once the change is approved and merged
-    // (ds-22k) — see the comment on the CTA block in ApprovalDesk.svelte. Names
-    // the apply, matching the byline and headline directly above it; "Approve
-    // this proposal" would be asking for an approval already given, and Reject
-    // cannot un-merge a merged PR.
+    // Shown INSTEAD of the pair above once the first approval is recorded
+    // (ds-22k). A merge that has not landed must be continued before it can be
+    // applied; after merge confirmation the remaining step is the apply.
+    'desk.pending.continueCta': 'Continue this change',
     'desk.pending.applyCta': 'Apply this change',
+    'desk.pending.viewDetailsCta': 'View approval details',
+    'desk.pending.viewFailureCta': 'View failure details',
     // The mockup's `.why` line reads "view the reasoning behind this (N
     // steps)". The step count is dropped deliberately: it lives in the trace
     // this link would open, so printing it would mean either fetching every
@@ -298,15 +302,19 @@ export const desk = {
     'desk.pending.iac.headlineFallback': 'インフラ変更 PR #{pr} があなたの承認を待っています。',
     'desk.pending.iacMerged.who': '承認済みのインフラ変更が適用を待っています',
     'desk.pending.iacMerged.headlineFallback': 'インフラ変更 PR #{pr} は承認済みで、適用を待っています。',
+    'desk.pending.iacView.who': '確認が必要なインフラ変更があります',
+    'desk.pending.iacView.headlineFallback': 'インフラ変更 PR #{pr} の詳細を確認してください。',
     'desk.pending.prMeta': 'PR #{pr}',
     'desk.pending.subtitleProposedAt': '提案 {time}',
     'desk.pending.notifyFailed':
       'この提案の通知は送信できませんでした。お知らせのないまま、ここでお待ちしていました。',
     'desk.pending.approveCta': 'この提案を承認する',
     'desk.pending.rejectCta': '却下する',
-    // 承認・マージ済みの場合は上記2つに代えてこれだけを表示する（ds-22k）。
-    // 既に与えられた承認を再度求めることはせず、残っている「適用」を示す。
+    // 初回承認済みの場合は上記2つに代えて状態に合う操作を1つだけ表示する（ds-22k）。
+    'desk.pending.continueCta': 'この変更を続行する',
     'desk.pending.applyCta': 'この変更を適用する',
+    'desk.pending.viewDetailsCta': '承認の詳細を見る',
+    'desk.pending.viewFailureCta': '失敗の詳細を見る',
     'desk.pending.viewReasoning': 'この提案に至った推論を見る →',
 
     'desk.stamped.who': '承認済み',
