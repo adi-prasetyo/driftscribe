@@ -384,15 +384,32 @@ its own bug.
    recommended as the fallback: "neutralize backticks in the retained fragments
    instead of deepening the inference."
 
-   **Honesty note on the span case:** I could not reproduce the one/two-backtick
-   re-pairing Codex reported — my constructions either stayed under the cap (no
-   cut) or failed to render a link in the *original* too, which would make it a
-   pre-existing defect rather than one the cut introduced. Rather than ship a
-   scenario test passing for a reason I cannot name — the exact failure mode
-   this change kept hitting — the alphabet was widened to cover the class
-   anyway (it costs nothing, since it only shrinks) and the test asserts the
-   property that IS true by construction: after a cut, no code delimiter of any
-   kind survives. Nothing can re-pair if nothing remains.
+   5. *Delete both alphabets in one alternation.* Wrong because `re.sub` never
+      rescans its own output: removing a backtick can **join** tilde fragments
+      into a fence that did not exist. `"~~`~"` → `"~~~"` — the neutralizer
+      manufacturing the delimiter it exists to remove. Fixed with two ordered
+      passes (backticks, then tildes), which is provably sufficient rather than
+      merely likelier to work: pass 1 leaves no backtick for pass 2 to
+      re-create, and a tilde *run* is bounded by non-tildes, so deleting one
+      cannot merge two others.
+
+   **The test fixtures were the deeper problem.** Every fence fixture in the
+   first four rounds opened a block and never closed it — so the URL was inside
+   code in the **original** too, and the test could not have shown anything
+   about truncation either way. They passed or failed for reasons unrelated to
+   the code under test.
+
+   Fixed structurally: `_assert_link_survives` now asserts the fixture renders a
+   link *before* truncation, and every fixture is a balanced document whose
+   closer is placed where the cut deletes it — which is the actual mechanism.
+   Two more fixtures were thrown out on the same grounds after `.enable(
+   "linkify")` turned out to be a silent no-op (`linkify-it-py` is not
+   installed), so bare URLs never link at all; the renderer emits `<...>`
+   autolink form, and the fixtures now match it.
+
+   The rebuilt suite discriminates **every** prior implementation: 58, 11, 8
+   and 2 failures for attempts 1–4 respectively, and 74 green for the shipped
+   one.
 
    The test oracle is now **`markdown-it`**, declared as a dev dependency. Each
    broken repair had shipped with a hand-rolled assertion that shared its blind

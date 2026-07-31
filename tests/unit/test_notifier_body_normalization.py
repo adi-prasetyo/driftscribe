@@ -83,59 +83,72 @@ def test_empty_input_is_not_the_normalizers_problem() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# The two repair artifacts, which are different bugs
+# The link survives the cut
+#
+# Every fixture below is a VALID document: the fence it opens is also closed,
+# and the URL sits outside it, so the original renders a real link. The closer
+# is then placed where the middle-out cut deletes it, which is the whole
+# mechanism — a truncation that turns a balanced document into an unbalanced
+# one. ``_assert_link_survives`` re-checks that premise on every call, because
+# an earlier round of these fixtures opened a fence and never closed it: the
+# ORIGINAL was already broken, so they could not have shown anything about the
+# clamp either way.
 # --------------------------------------------------------------------------- #
 
-def test_an_opener_stranded_in_the_head_is_closed() -> None:
-    """Otherwise everything after it — the approval URL included — renders
-    inside a code block: present, visible, and not clickable."""
-    body = "intro\n```yaml\n" + "k: v\n" * 4000 + "\ntrailing prose\n" + _URL
-    out = normalize_notifier_body(body)
-    assert len(out) <= CAP
-    before_url = out[: out.index("https://")]
-    assert _fences(before_url) % 2 == 0, "the URL rendered inside a code block"
-
-
-def test_an_orphan_closer_in_the_tail_gets_its_opener_back() -> None:
-    """The mirror-image artifact, and the one a head-only repair misses.
-
-    A tail holding a closer whose opener was deleted WAS inside a code block
-    before the cut. Left alone that closer acts as an OPENER in the reassembled
-    text and swallows everything after it. Prepending an opener reproduces the
-    original nesting instead of guessing at it.
-    """
-    body = "a\n```\n" + "code\n" * 3000 + "```\nepilogue\n" + _URL
-    out = normalize_notifier_body(body)
-    assert len(out) <= CAP
-    before_url = out[: out.index("https://")]
-    assert _fences(before_url) % 2 == 0
-
-
-def test_a_six_backtick_run_counts_as_one_delimiter() -> None:
-    """``str.count("```")`` reports two for a six-backtick run and concludes,
-    wrongly, that a block is balanced. Counting RUNS gets it right — the same
-    distinction the Notifier's own counter makes."""
-    body = "x\n``````\n" + "y\n" * 5000 + _URL
-    out = normalize_notifier_body(body)
-    assert len(out) <= CAP
-    before_url = out[: out.index("https://")]
-    assert _fences(before_url) % 2 == 0
+def _balanced(opener: str, closer: str | None = None, mid: str = "") -> str:
+    """A document whose fence is opened in the HEAD and closed in the part the
+    cut deletes, with the URL surviving in the tail."""
+    closer = opener if closer is None else closer
+    return (
+        "intro\n" + opener + "\n"
+        + "k: v\n" * 1200            # keeps the opener inside the retained head
+        + mid
+        + "z\n" * 2000               # ... and pushes the closer into the middle
+        + closer + "\n"
+        + "w\n" * 3000               # tail filler, no delimiters
+        + "\nApprove here:\n\n" + _URL + "\n"
+    )
 
 
 def _url_renders_as_a_link(text: str) -> bool:
     """Ask a REAL CommonMark parser, not a backtick counter.
 
-    This is the load-bearing choice in this file. Three hand-rolled fence
+    This is the load-bearing choice in this file. Four hand-rolled fence
     heuristics were each wrong, and each shipped with a hand-rolled assertion
-    that shared its blind spot — a parity check cannot detect a parity bug. So
-    the oracle is markdown-it: render, and look for an actual link token
-    carrying the URL. Inside a code block there is no link token, which is
-    exactly the operator-visible failure ("present, but not clickable").
+    that shared its blind spot — a parity check cannot detect a parity bug, and
+    a backtick counter cannot see a ``~~~`` fence at all. So the oracle is
+    markdown-it: render, and look for a real link token. Inside code there is
+    no link token, which is precisely the operator-visible failure ("present,
+    but not clickable").
+
+    ``_URL`` is in ``<...>`` autolink form because the rollback renderer emits
+    it that way. Do NOT switch fixtures to bare URLs: ``linkify`` is an OPT-IN
+    markdown-it plugin requiring ``linkify-it-py``, which is not installed, so
+    ``.enable("linkify")`` silently does nothing and a bare URL never links —
+    in the original OR the truncated output. Two candidate fixtures were thrown
+    out for exactly that: they "failed" for a reason that had nothing to do
+    with the code under test. :func:`_assert_link_survives` guards against it.
     """
     from markdown_it import MarkdownIt
 
-    html = MarkdownIt().enable("linkify").render(text)
-    return f'href="{_URL[1:-1]}"' in html
+    return f'href="{_URL[1:-1]}"' in MarkdownIt().render(text)
+
+
+def _assert_link_survives(body: str) -> None:
+    """Normalize ``body`` and assert the URL is still clickable — after first
+    checking it was clickable to begin with.
+
+    The premise check is the point. Without it a fixture whose ORIGINAL does
+    not render a link passes or fails for reasons unrelated to truncation, and
+    reads as coverage it does not provide. That mistake was made twice here.
+    """
+    assert _url_renders_as_a_link(body), (
+        "premise: this fixture must render a link BEFORE truncation, or the "
+        "assertion below proves nothing about the clamp"
+    )
+    out = normalize_notifier_body(body)
+    assert len(out) <= CAP
+    assert _url_renders_as_a_link(out)
 
 
 @pytest.mark.parametrize(
@@ -156,23 +169,14 @@ def _url_renders_as_a_link(text: str) -> bool:
 def test_the_url_stays_clickable_for_every_fence_arrangement(
     opener: str, mid: str
 ) -> None:
-    body = "intro\n" + opener + "\n" + mid + ("k: v\n" * 4000) + "\nepi\n" + _URL
-    out = normalize_notifier_body(body)
-    assert len(out) <= CAP
-    assert _URL in out
-    assert _url_renders_as_a_link(out), (
-        f"a {len(opener)}-backtick block swallowed the approval URL"
-    )
+    _assert_link_survives(_balanced(opener, mid=mid))
 
 
 def test_a_fence_run_split_by_the_cut_still_leaves_the_url_reachable() -> None:
     """The cut can land INSIDE a delimiter, leaving a partial run in the head —
     a shorter fence than the author wrote, which the deleted closer no longer
     matches."""
-    body = "a\n" + "`" * 8 + "\n" + ("x" * 3 + "\n") * 4000 + "\ntail\n" + _URL
-    out = normalize_notifier_body(body)
-    assert len(out) <= CAP
-    assert _url_renders_as_a_link(out)
+    _assert_link_survives(_balanced("`" * 8))
 
 
 def test_inline_backtick_runs_in_prose_are_not_treated_as_fences() -> None:
@@ -180,25 +184,39 @@ def test_inline_backtick_runs_in_prose_are_not_treated_as_fences() -> None:
     backwards: an inline ``` ``` ``` inside ordinary prose is not a fence, so
     prepending an opener to 'balance' it CREATES an unclosed block and makes
     harmless Markdown fail. Codex reproduced exactly that."""
-    body = "x" * 6000 + "\nprose with ``` inline delimiters here\n\n" + _URL
-    out = normalize_notifier_body(body)
-    assert len(out) <= CAP
-    assert _url_renders_as_a_link(out)
+    _assert_link_survives(
+        "x" * 6000 + "\n\nprose with ``` inline delimiters here\n\n" + _URL + "\n"
+    )
 
 
 def test_a_tilde_fence_is_neutralized_too() -> None:
     """CommonMark has TWO fence characters. A backtick-only rule leaves the
     other half live, and the failure is identical: the URL sits inside an
     unclosed ``~~~`` block and renders as text."""
-    body = "intro\n~~~yaml\n" + ("k: v\n" * 4000) + "\nepi\n" + _URL
-    out = normalize_notifier_body(body)
-    assert len(out) <= CAP
-    assert _url_renders_as_a_link(out)
+    _assert_link_survives(_balanced("~~~yaml", closer="~~~"))
+
+
+def test_removing_a_backtick_cannot_create_a_tilde_fence() -> None:
+    """The neutralizer must not manufacture the delimiter it removes.
+
+    ``re.sub`` matches the ORIGINAL string and never rescans its own output, so
+    a single alternation over both alphabets turns ``"~~`~"`` into ``"~~~"`` —
+    a brand-new fence, created by the function whose entire job is to leave
+    none. Backticks are therefore removed in a pass of their own, before
+    tildes.
+    """
+    from agent.renderer import _neutralize_fences
+
+    # "~~" + "`" + "~" -> pass 1 leaves "~~~", which pass 2 then removes.
+    assert _neutralize_fences("~~`~") == ""
+    for probe in ("~~`~", "~`~`~`~", "~~`~~`~~"):
+        assert not re.search(r"~{3,}", _neutralize_fences(probe)), probe
+        assert "`" not in _neutralize_fences(probe)
 
 
 @pytest.mark.parametrize(
     "delims",
-    ["`", "``", "```", "````````", "~~~", "~~~~~~", "`` ` ``` ~~~"],
+    ["`", "``", "```", "````````", "~~~", "~~~~~~", "`` ` ``` ~~~", "~~`~"],
 )
 def test_a_truncated_body_retains_no_code_delimiter_of_any_kind(delims: str) -> None:
     """The invariant the implementation actually provides, asserted directly.

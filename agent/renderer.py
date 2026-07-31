@@ -409,7 +409,7 @@ NOTIFIER_BODY_MAX_CHARS = 10000
 # infra-drift worker-skew canary is the prior incident) for the sake of one
 # heuristic the two sides may legitimately want to evolve apart.
 #
-# EVERY CommonMark code delimiter, not just the obvious one:
+# EVERY CommonMark code delimiter, removed in TWO ORDERED PASSES:
 #
 # - ``` `+ ``` — backtick runs of ANY length. Three-or-more open a fenced
 #   block; one or two open an inline span. Both are removed, because a cut can
@@ -423,7 +423,23 @@ NOTIFIER_BODY_MAX_CHARS = 10000
 #   the real rollback renderer with a ``~~~yaml`` block whose closer fell in
 #   the omitted middle. Tilde runs of one or two are NOT code delimiters (``~~``
 #   is GFM strikethrough, which cannot swallow a link), so they are left alone.
-_CODE_DELIMITER = re.compile(r"`+|~{3,}")
+#
+# ORDER IS LOAD-BEARING, and a single alternation regex gets it wrong. ``re.sub``
+# matches against the ORIGINAL string, so a removal is never rescanned — and
+# removing a backtick can JOIN tilde fragments into a fence that was not there
+# before: ``"~~`~"`` becomes ``"~~~"``. The neutralizer would then create the
+# exact delimiter it exists to remove (Codex, and the fifth distinct way this
+# one function has been wrong).
+#
+# Backticks first, then tildes, is sufficient — not merely likelier to work:
+#   - pass 1 removes every backtick, so pass 2 cannot re-create one;
+#   - pass 2 removes tilde RUNS, and a run is by definition bounded by
+#     non-tildes, so deleting one leaves those non-tildes adjacent and cannot
+#     merge two runs into a longer one.
+# No fixpoint loop is needed, and the property test asserts the postcondition
+# directly rather than trusting this argument.
+_BACKTICK_RUN = re.compile(r"`+")
+_TILDE_FENCE = re.compile(r"~{3,}")
 
 
 def _neutralize_fences(fragment: str) -> str:
@@ -447,6 +463,10 @@ def _neutralize_fences(fragment: str) -> str:
     4. Delete backtick runs of three or more. Right idea, incomplete alphabet:
        it left ``~~~`` fences live, and left one- and two-backtick span
        delimiters able to re-pair INSIDE the retained tail around the URL.
+    5. Delete both alphabets in ONE alternation. Wrong because ``re.sub`` never
+       rescans what it produced, so removing a backtick can JOIN tildes into a
+       fence that did not exist: ``"~~`~"`` -> ``"~~~"``. See the ordering
+       argument above the patterns.
 
     Every one of those delivers the notification while silently disabling the
     one thing it exists to deliver, which is strictly worse than the 422 this
@@ -465,7 +485,7 @@ def _neutralize_fences(fragment: str) -> str:
     lost its middle, and monospace rendering is worth far less than a clickable
     approval link. Bodies that fit are never passed here at all.
     """
-    return _CODE_DELIMITER.sub("", fragment)
+    return _TILDE_FENCE.sub("", _BACKTICK_RUN.sub("", fragment))
 
 
 def normalize_notifier_body(body: str) -> str:
