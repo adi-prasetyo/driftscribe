@@ -159,6 +159,82 @@ def test_the_approval_url_survives_the_coordinator_side_cut() -> None:
     assert "/approvals/8f14e45f-ceea-467a-9a3c-2b1d5f6a7b8c?t=" in payload["body"]
 
 
+def test_a_relative_approval_url_is_made_absolute_before_it_is_rendered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ds-thm: ``_approval_url_matches`` deliberately accepts the relative
+    ``/approvals/{id}?t=…`` form (a worker whose COORDINATOR_URL has drifted
+    would otherwise lose rollbacks entirely), but a CommonMark autolink
+    requires an ABSOLUTE URI — ``<​/approvals/…>`` renders as literal text with
+    no link at all.
+
+    So the shapes the validator admits are wider than the shapes the renderer
+    can make clickable: this bead's producer/consumer mismatch, in URL shape
+    rather than length. Canonicalized against our own configured origin rather
+    than rejected, because rejecting after the approval is minted would strand
+    it (ds-hdt).
+    """
+    from markdown_it import MarkdownIt
+
+    monkeypatch.setenv("COORDINATOR_ORIGIN", "https://coord.example.com")
+    get_settings.cache_clear()
+
+    captured: dict[str, Any] = {}
+    relative = "/approvals/8f14e45f-ceea-467a-9a3c-2b1d5f6a7b8c?t=" + "t" * 43
+
+    async def _agent(*_a: Any, reader_sink: list | None = None, **_k: Any) -> Any:
+        payload = worker_call("reader", {})
+        if reader_sink is not None:
+            reader_sink.append(
+                {"env": dict(payload["env"]), "revision": payload.get("revision")}
+            )
+        return DecisionProposal(
+            action=DecisionAction.ROLLBACK,
+            env_diffs=[
+                EnvDiff(
+                    name="PAYMENT_MODE", expected="mock", live="live",
+                    contract_status=ContractStatus.PRESENT_DISALLOW_MANUAL,
+                )
+            ],
+            target_revision="payment-demo-00020-5qn",
+            rationale="drifted", confidence=0.95, requires_human_review=True,
+        )
+
+    def worker_call(worker: str, payload: dict, *a: Any, **k: Any) -> Any:
+        if worker == "reader":
+            return {
+                "service": "payment-demo", "region": "asia-northeast1",
+                "project": "test-project", "env": _DRIFTED,
+                "revision": "payment-demo-00042-cur",
+            }
+        if worker == "rollback":
+            # A worker booted with an empty COORDINATOR_URL emits exactly this.
+            return {
+                "approval_id": "8f14e45f-ceea-467a-9a3c-2b1d5f6a7b8c",
+                "approval_token": "t" * 43,
+                "approval_url": relative,
+                "expires_at": "2099-01-01T00:00:00+00:00",
+            }
+        if worker == "notifier":
+            captured.update(payload)
+            return {"status": "ok"}
+        raise AssertionError(worker)
+
+    with (
+        patch("agent.main._run_adk_agent", AsyncMock(side_effect=_agent)),
+        patch("agent.main.worker_client.call", side_effect=worker_call),
+    ):
+        r = TestClient(app).post("/recheck")
+    assert r.status_code == 200, r.text
+    assert captured, "premise: the notifier was called"
+
+    absolute = f"https://coord.example.com{relative}"
+    assert f'href="{absolute}"' in MarkdownIt().render(captured["body"]), (
+        "the relative approval url was rendered as inert text — the operator "
+        "receives a notification with nothing to click"
+    )
+
+
 def test_an_ordinary_rationale_is_not_truncated_at_all() -> None:
     """Truncation is a last resort, not the common path — ds-j0i observed 581
     characters against a 2000 cap. If this ever starts failing, the clamp is

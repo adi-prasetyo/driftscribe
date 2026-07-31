@@ -1932,8 +1932,25 @@ def _do_rollback(
         # instead meant repairing whatever Markdown the cut had broken, which
         # took six wrong attempts and still could not be made sound; see
         # render_rollback_body's docstring.
+        # ds-thm: the notification renders this as a Markdown autolink
+        # (``<url>``), and CommonMark autolinks require an ABSOLUTE URI — a
+        # relative ``/approvals/…`` renders as literal text with no link at
+        # all. ``_approval_url_matches`` deliberately accepts the relative form
+        # (see above), so the shapes the validator admits are wider than the
+        # shapes the renderer can make clickable: the same producer/consumer
+        # contract mismatch this bead is about, in URL shape rather than length.
+        #
+        # Canonicalized against OUR configured origin rather than rejected,
+        # because rejecting here would strand an already-minted approval
+        # (ds-hdt). If neither origin is configured the link cannot be made
+        # absolute by anyone, and the body still carries the path as text.
+        notify_url = approval_url
+        if not notify_url.startswith(("http://", "https://")):
+            origin = (get_settings().coordinator_origin or "").rstrip("/")
+            if origin:
+                notify_url = f"{origin}/{notify_url.lstrip('/')}"
         rendered = render_rollback_body(
-            proposal, approval_url, max_chars=NOTIFIER_BODY_MAX_CHARS
+            proposal, notify_url, max_chars=NOTIFIER_BODY_MAX_CHARS
         )
     except Exception as e:
         state.release_event(event_key)

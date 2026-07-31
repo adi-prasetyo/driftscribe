@@ -489,7 +489,25 @@ its own bug.
       minted and before the decision row is written, so an exception would
       strand the approval for real (ds-hdt).
 
-   **What this cost.** Nine wrong implementations and two rounds of invalid
+  10. *Fall back by slicing the assembled body.* The "template does not fit"
+      chain went straight to a head slice, which preserved the `## DriftScribe`
+      heading and dropped the URL — so a cap that could physically hold the
+      whole autolink still produced a notification with nothing to click.
+      There is now an explicit bare-autolink tier before the unavoidable
+      hard slice: prose is not worth a link.
+
+  11. *Assume the approval URL is absolute.* `_approval_url_matches`
+      deliberately accepts the relative `/approvals/{id}?t=…` form (a worker
+      whose `COORDINATOR_URL` has drifted would otherwise lose rollbacks
+      entirely), but a CommonMark autolink requires an absolute URI —
+      `</approvals/…>` renders as inert text. The shapes the validator admits
+      are wider than the shapes the renderer can make clickable: this bead's
+      mismatch again, in URL *shape* rather than length, and independent of
+      truncation. Canonicalized against the coordinator's own configured origin
+      rather than rejected, because rejecting after the approval is minted
+      would strand it (ds-hdt).
+
+   **What this cost.** Eleven wrong implementations and two rounds of invalid
    fixtures, on a path that fires only when a model writes a ~9400-character
    rationale. Without any clamp that path is a guaranteed 422 and *no*
    notification, so every version was an improvement on the status quo — but

@@ -386,6 +386,43 @@ def test_any_body_that_fits_is_byte_identical_to_the_unbounded_render(
     assert "omitted" not in bounded
 
 
+def test_a_cap_that_can_hold_the_link_always_yields_a_link():
+    """The last thing to go is the link, not the heading.
+
+    An earlier fallback chain went straight from "the explanatory body does not
+    fit" to a head slice, which preserved the ``## DriftScribe`` heading and
+    dropped the URL — so a cap that could physically contain the whole autolink
+    still produced a notification with nothing to click (Codex). Prose is not
+    worth a link.
+    """
+    from markdown_it import MarkdownIt
+
+    autolink_len = len(f"<{_APPROVAL_URL}>\n")
+    minimal_len = len(
+        render_rollback_body(_proposal("x"), _APPROVAL_URL, max_chars=_CAP)
+    )
+    assert autolink_len < minimal_len, "premise: the tiers must be distinguishable"
+
+    for cap in range(autolink_len, autolink_len + 60):
+        body = render_rollback_body(_proposal("x" * 500), _APPROVAL_URL, max_chars=cap)
+        assert len(body) <= cap
+        assert f'href="{_APPROVAL_URL}"' in MarkdownIt().render(body), (
+            f"cap {cap} can hold the {autolink_len}-char autolink but no link "
+            "was rendered"
+        )
+
+
+def test_below_the_link_length_nothing_can_be_promised_but_the_cap_holds():
+    """The genuinely impossible case, stated rather than papered over. No
+    implementation can preserve a URL under a cap shorter than that URL; the
+    only remaining obligation is to not 422 the worker."""
+    autolink_len = len(f"<{_APPROVAL_URL}>\n")
+    for cap in (1, autolink_len // 2, autolink_len - 1):
+        assert len(
+            render_rollback_body(_proposal("x"), _APPROVAL_URL, max_chars=cap)
+        ) <= cap
+
+
 @pytest.mark.parametrize("cap", [0, -1, -10_000])
 def test_a_nonsense_cap_is_refused_rather_than_sliced(cap: int):
     """``minimal[:-1]`` would quietly emit 226 characters under Python's

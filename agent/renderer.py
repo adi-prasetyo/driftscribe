@@ -972,18 +972,28 @@ def render_rollback_body(
 
     # The template alone does not fit — only reachable via an absurd
     # ``approval_url`` (i.e. a misconfigured ``COORDINATOR_URL``), since the
-    # revision name is schema-bounded at 64. Degrade to the link.
+    # revision name is schema-bounded at 64. Degrade toward the link, in
+    # descending order of how much context survives with it.
     minimal = _minimal_rollback_body(p, approval_url)
     if len(minimal) <= max_chars:
         return minimal
 
-    # Not even the link fits. NOTHING can preserve an arbitrary URL under a cap
-    # shorter than that URL, so this is a config error, not an input to absorb
-    # — but it must still not 422 the worker and strand the approval, and it
-    # must not raise: this runs AFTER the approval is minted and BEFORE the
-    # decision row is written, so an exception here would strand it for real
-    # (ds-hdt). Bounded output, honestly degraded, is the least-bad outcome.
-    return minimal[:max_chars]
+    # Prose is not worth a link. An earlier version went straight from here to
+    # a head slice, which kept the HEADING and dropped the URL — so a cap that
+    # could physically hold the whole autolink still produced a notification
+    # with nothing to click (Codex). Spend the remaining budget on the only
+    # part that does anything.
+    autolink = f"<{approval_url}>\n"
+    if len(autolink) <= max_chars:
+        return autolink
+
+    # Not even the bare link fits. NOTHING can preserve an arbitrary URL under
+    # a cap shorter than that URL, so this is a config error rather than an
+    # input to absorb — but it must not 422 the worker, and it must not raise:
+    # this runs AFTER the approval is minted and BEFORE the decision row is
+    # written, so an exception would strand the approval for real (ds-hdt).
+    # Bounded output, honestly degraded, is the least-bad outcome left.
+    return autolink[:max_chars]
 
 
 def render_escalation_issue_body(p: DecisionProposal) -> str:
