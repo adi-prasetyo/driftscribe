@@ -10,20 +10,18 @@ locally in CI/dev), proving the committed content is byte-identical to
 ``tofu fmt`` output. ``.md`` files are never formatted, and a fmt failure is
 fail-soft (the original content is committed; CI stays the backstop).
 """
-import os
 import shutil
 import subprocess
 
 import pytest
 from fastapi.testclient import TestClient
+from workers._testenv import import_worker_main
 
-os.environ.setdefault("IAC_EDITOR_TARGET_REPO", "adi-prasetyo/driftscribe")
-os.environ.setdefault("GITHUB_TOKEN", "test-token")
-os.environ.setdefault("OWN_URL", "https://tofu-editor.example.com")
-os.environ.setdefault(
-    "ALLOWED_CALLERS",
-    "driftscribe-agent@test-proj.iam.gserviceaccount.com",
-)
+# Canonical boot env, applied before the import below. The values live in
+# workers/_testenv.py, not here: worker mains capture config at import and
+# Python caches modules, so the FIRST importer in the pytest process decides
+# them for everyone (ds-2n1).
+import_worker_main("workers.tofu_editor.main")
 
 from workers.tofu_editor import main as tofu_editor_main  # noqa: E402
 from workers.tofu_editor.main import _verify_caller_dep, app  # noqa: E402

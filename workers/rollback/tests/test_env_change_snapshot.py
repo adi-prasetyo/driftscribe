@@ -21,21 +21,15 @@ Three properties are load-bearing:
 """
 from __future__ import annotations
 
-import os
 
 import pytest
+from workers._testenv import import_worker_main
 
-# Env MUST be set before importing workers.rollback.main — the module reads its
-# configuration at import time and KeyErrors if any is missing. Mirrors the
-# preamble in ``test_rollback.py``; ``setdefault`` so running both files in one
-# session does not fight over the values.
-os.environ.setdefault("GCP_PROJECT", "test-proj")
-os.environ.setdefault("OWN_URL", "https://rollback.example.com")
-os.environ.setdefault("COORDINATOR_URL", "https://coord.example.com")
-os.environ.setdefault(
-    "ALLOWED_CALLERS", "coordinator@test-proj.iam.gserviceaccount.com"
-)
-os.environ.setdefault("APPROVAL_HMAC_KEY", "test-hmac-key")
+# Canonical boot env, applied before the import below. The values live in
+# workers/_testenv.py, not here: worker mains capture config at import and
+# Python caches modules, so the FIRST importer in the pytest process decides
+# them for everyone (ds-2n1).
+import_worker_main("workers.rollback.main")
 
 import workers.rollback.main as m  # noqa: E402
 

@@ -25,27 +25,25 @@ We bypass auth in happy-path tests via ``app.dependency_overrides`` (same idiom
 as the Reader's tests) and monkeypatch ``asset_v1.AssetServiceClient`` so no real
 Google credentials / network are touched.
 """
-import os
 from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from google.api_core import exceptions as gax
+from workers._testenv import import_worker_main
 
-# Env MUST be set before importing workers.infra_reader.main — the module reads
-# GCP_PROJECT / OWN_URL / ALLOWED_CALLERS at import time and KeyErrors if
-# missing (mirrors the Reader's fail-fast boot). IAC_DIR points at the baked-in
-# repo iac/ dir so the happy-path declared set resolves the payment-demo import.
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-os.environ.setdefault("GCP_PROJECT", "driftscribe-hack-2026")
-os.environ.setdefault("OWN_URL", "https://infra-reader.example.com")
-os.environ.setdefault(
-    "ALLOWED_CALLERS",
-    "coordinator@driftscribe-hack-2026.iam.gserviceaccount.com",
-)
-os.environ.setdefault("IAC_DIR", str(_REPO_ROOT / "iac"))
-os.environ.setdefault("IAC_SNAPSHOT_SHA", "test-sha-abc123")
+
+# Canonical boot env, applied before the import below. The values live in
+# workers/_testenv.py, not here: worker mains capture config at import and
+# Python caches modules, so the FIRST importer in the pytest process decides
+# them for everyone (ds-2n1). This worker is the clearest case for that — its
+# fixtures are built from real CAI asset names, so it needs GCP_PROJECT and
+# ALLOWED_CALLERS scoped to `driftscribe-hack-2026` where every other worker
+# wants `test-proj`, and IAC_DIR pointed at the repo's own iac/ so the
+# happy-path declared set resolves the payment-demo import.
+import_worker_main("workers.infra_reader.main")
 
 from workers.infra_reader import main as infra_main  # noqa: E402
 from workers.infra_reader.main import _verify_caller_dep, app  # noqa: E402
@@ -137,22 +135,20 @@ def _make_fake_client(
     return _FakeClient
 
 
-@pytest.fixture(autouse=True)
-def _pin_module_constants(monkeypatch):
-    """Force the module-level env-derived constants to the known test values.
+def test_module_constants_are_this_workers_own():
+    """GCP_PROJECT / IAC_DIR / IAC_SNAPSHOT_SHA are what THIS worker booted with.
 
-    main.py reads GCP_PROJECT / IAC_DIR / IAC_SNAPSHOT_SHA at import time. In a
-    unified pytest run another worker's test module may have populated those env
-    vars (e.g. ``GCP_PROJECT=test-proj`` from the Reader's tests) *before* this
-    module was imported, so the ``os.environ.setdefault`` calls at the top of
-    this file become no-ops and the constants carry the other worker's values.
-    Pinning the constants here (the same rationale as the Reader's
-    ``test_real_verify_caller_dep_wired_with_env``) keeps these tests honest
-    regardless of pytest's worker-test collection order.
+    These used to be re-pinned by an autouse fixture, because in a unified run
+    another worker's test module could set ``GCP_PROJECT=test-proj`` before
+    this module was imported and the ``setdefault`` here would be a no-op. That
+    fixture worked, and it also meant every assertion below about the project
+    id was really an assertion about the fixture. The env is deterministic now
+    (``workers/_testenv.py``), so the pin is gone and this checks the real
+    boot-time capture once, explicitly (ds-2n1).
     """
-    monkeypatch.setattr(infra_main, "GCP_PROJECT", "driftscribe-hack-2026")
-    monkeypatch.setattr(infra_main, "IAC_DIR", _REPO_ROOT / "iac")
-    monkeypatch.setattr(infra_main, "IAC_SNAPSHOT_SHA", "test-sha-abc123")
+    assert infra_main.GCP_PROJECT == "driftscribe-hack-2026"
+    assert infra_main.IAC_DIR == _REPO_ROOT / "iac"
+    assert infra_main.IAC_SNAPSHOT_SHA == "test-sha-abc123"
 
 
 @pytest.fixture

@@ -8,20 +8,16 @@ CI workflow dir, the infra dir, the Dockerfile, any Python module, etc.
 The test matrix below is exhaustive on purpose — every refused class is
 present so a regression cannot quietly widen the allowlist.
 """
-import os
 
 import pytest
 from fastapi import HTTPException
+from workers._testenv import import_worker_main
 
-# Env MUST be set before importing workers.docs.main — the module reads
-# TARGET_REPO / GITHUB_TOKEN / OWN_URL / ALLOWED_CALLERS at import time.
-os.environ.setdefault("TARGET_REPO", "adi-prasetyo/driftscribe")
-os.environ.setdefault("GITHUB_TOKEN", "test-token")
-os.environ.setdefault("OWN_URL", "https://docs.example.com")
-os.environ.setdefault(
-    "ALLOWED_CALLERS",
-    "coordinator@test-proj.iam.gserviceaccount.com",
-)
+# Canonical boot env, applied before the import below. The values live in
+# workers/_testenv.py, not here: worker mains capture config at import and
+# Python caches modules, so the FIRST importer in the pytest process decides
+# them for everyone (ds-2n1).
+import_worker_main("workers.docs.main")
 
 from workers.docs.main import _check_path  # noqa: E402
 

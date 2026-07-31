@@ -23,17 +23,13 @@ import textwrap
 import pytest
 from fastapi import HTTPException, status
 from fastapi.testclient import TestClient
+from workers._testenv import import_worker_main
 
-# Env MUST be set before importing workers.upgrade_docs.main — the module
-# reads UPGRADE_TARGET_REPO / GITHUB_TOKEN / OWN_URL / ALLOWED_CALLERS at
-# import time and KeyErrors if any are missing.
-os.environ.setdefault("UPGRADE_TARGET_REPO", "adi-prasetyo/driftscribe")
-os.environ.setdefault("GITHUB_TOKEN", "test-token")
-os.environ.setdefault("OWN_URL", "https://upgrade-docs.example.com")
-os.environ.setdefault(
-    "ALLOWED_CALLERS",
-    "coordinator@test-proj.iam.gserviceaccount.com",
-)
+# Canonical boot env, applied before the import below. The values live in
+# workers/_testenv.py, not here: worker mains capture config at import and
+# Python caches modules, so the FIRST importer in the pytest process decides
+# them for everyone (ds-2n1).
+import_worker_main("workers.upgrade_docs.main")
 
 from workers.upgrade_docs import main as upgrade_docs_main  # noqa: E402
 from workers.upgrade_docs.main import _verify_caller_dep, app  # noqa: E402
@@ -267,12 +263,11 @@ def test_real_verify_caller_dep_wired_with_env(monkeypatch) -> None:
     forward OWN_URL + ALLOWED_CALLERS (read from env at boot) to
     ``driftscribe_lib.auth.verify_caller``.
 
-    Mirrors the same integration check used in the other workers — we
-    monkeypatch the module-level constants directly because, in a unified
-    pytest run, another worker's test module may have populated OWN_URL
-    before this module was imported (Python caches the import;
-    ``os.environ.setdefault`` at the top of this file would then be a no-op
-    and the constant would carry the other worker's value).
+    Mirrors the same integration check used in the other workers. The
+    constants are read as the module captured them at boot, not re-pinned
+    here — re-pinning was the old defense against another worker winning the
+    import race, and it made this assertion self-fulfilling.
+    ``workers/_testenv.py`` removes the race instead (ds-2n1).
     """
     seen: dict = {}
 
@@ -298,14 +293,6 @@ def test_real_verify_caller_dep_wired_with_env(monkeypatch) -> None:
         upgrade_docs_main,
         "_read_lockfile",
         lambda _repo, _path: {"dependencies": {"lodash": "4.17.20"}},
-    )
-    monkeypatch.setattr(
-        upgrade_docs_main, "OWN_URL", "https://upgrade-docs.example.com"
-    )
-    monkeypatch.setattr(
-        upgrade_docs_main,
-        "ALLOWED_CALLERS",
-        frozenset({"coordinator@test-proj.iam.gserviceaccount.com"}),
     )
     # Pin TARGET_REPO so a cross-test mutation can't desync the body.
     monkeypatch.setattr(

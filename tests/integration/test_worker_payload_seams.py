@@ -17,59 +17,31 @@ neither is worth much.
 """
 from __future__ import annotations
 
-import os
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
-# Set before the worker imports (they read config at import and fail closed),
-# then RESTORED below. Leaving them set leaks this module's config into every
-# suite running later in the same pytest process — see the same note in
-# tests/unit/test_worker_bound_mirrors.py for the failure it caused.
-_PRIOR_ENV: dict[str, str | None] = {}
+import pytest
+from fastapi.testclient import TestClient
 
-# Values match each worker's own test file exactly — `setdefault` is
-# first-import-wins across the whole pytest process, so a different-but-valid
-# value here silently overrides what another suite asserts on.
-for _k, _v in {
-    "GCP_PROJECT": "test-proj",
-    "ALLOWED_CALLERS": "coordinator@test-proj.iam.gserviceaccount.com",
-    "NOTIFY_WEBHOOK_URL": "https://webhook.example.com/test",
-    "COORDINATOR_URL": "https://coord.example.com",
-    "TARGET_REPO": "adi-prasetyo/driftscribe",
-    "UPGRADE_TARGET_REPO": "adi-prasetyo/driftscribe",
-    "GITHUB_TOKEN": "test-token",
-    "APPROVAL_HMAC_KEY": "test-hmac-key",
-}.items():
-    _PRIOR_ENV[_k] = os.environ.get(_k)
-    os.environ.setdefault(_k, _v)
-
-import pytest  # noqa: E402
-from fastapi.testclient import TestClient  # noqa: E402
-
-from agent import adk_tools  # noqa: E402
-from agent.config import get_settings  # noqa: E402
-from agent.main import _reset_state_for_tests, app  # noqa: E402
-from agent.models import (  # noqa: E402
+from agent import adk_tools
+from agent.config import get_settings
+from agent.main import _reset_state_for_tests, app
+from agent.models import (
     ContractStatus,
     DecisionAction,
     DecisionProposal,
     EnvDiff,
 )
-# OWN_URL is the one value three workers pin differently; set each worker's own
-# canon immediately before importing it (see test_worker_bound_mirrors.py).
-_PRIOR_ENV["OWN_URL"] = os.environ.get("OWN_URL")
+from workers._testenv import import_worker_main
 
-os.environ["OWN_URL"] = "https://notifier.example.com"
+# Both workers boot under their own canonical env, applied per-import and rolled
+# back afterwards, so importing two of them here cannot decide either one's
+# config for the suites that run later (ds-2n1).
+import_worker_main("workers.notifier.main")
+import_worker_main("workers.upgrade_docs.main")
+
 from workers.notifier.main import NotifyRequest  # noqa: E402
-
-os.environ["OWN_URL"] = "https://upgrade-docs.example.com"
 from workers.upgrade_docs.main import ClosePrRequest  # noqa: E402
-
-for _k, _old in _PRIOR_ENV.items():
-    if _old is None:
-        os.environ.pop(_k, None)
-    else:
-        os.environ[_k] = _old
 
 _DRIFTED = {"PAYMENT_MODE": "live"}
 

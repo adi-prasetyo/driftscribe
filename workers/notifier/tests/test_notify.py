@@ -21,23 +21,17 @@ Coverage:
   from env at boot (mirror of reader/docs/rollback Layer 3 integration
   check — same Codex review #4 rationale).
 """
-import os
 
 import pytest
 from fastapi import HTTPException, status
 from fastapi.testclient import TestClient
+from workers._testenv import import_worker_main
 
-# Env MUST be set before importing workers.notifier.main — the module reads
-# OWN_URL / ALLOWED_CALLERS / GCP_PROJECT / NOTIFY_WEBHOOK_URL at import
-# time and raises if any is missing. This mirrors the production fail-fast
-# behavior.
-os.environ.setdefault("GCP_PROJECT", "test-proj")
-os.environ.setdefault("OWN_URL", "https://notifier.example.com")
-os.environ.setdefault(
-    "ALLOWED_CALLERS",
-    "coordinator@test-proj.iam.gserviceaccount.com",
-)
-os.environ.setdefault("NOTIFY_WEBHOOK_URL", "https://webhook.example.com/test")
+# Canonical boot env, applied before the import below. The values live in
+# workers/_testenv.py, not here: worker mains capture config at import and
+# Python caches modules, so the FIRST importer in the pytest process decides
+# them for everyone (ds-2n1).
+import_worker_main("workers.notifier.main")
 
 from workers.notifier import main as notifier_main  # noqa: E402
 from workers.notifier.main import _verify_caller_dep, app  # noqa: E402
@@ -722,12 +716,11 @@ def test_real_verify_caller_dep_wired_with_env(monkeypatch):
     """Layer 3 integration check (mirror of reader/docs/rollback).
 
     Without ``dependency_overrides`` the real ``_verify_caller_dep`` must
-    call ``verify_caller`` with OWN_URL + ALLOWED_CALLERS read from env
-    at boot. We monkeypatch the module-level constants rather than relying
-    on the import-time env read because, in a unified pytest run, another
-    worker's test module may have populated ``OWN_URL`` before this module
-    was imported (Python caches the import; ``os.environ.setdefault`` at
-    the top of this file would then be a no-op).
+    call ``verify_caller`` with OWN_URL + ALLOWED_CALLERS read from env at
+    boot — read as the module captured them, not re-pinned here. Re-pinning
+    was the old defense against another worker winning the import race, and it
+    made this assertion self-fulfilling; ``workers/_testenv.py`` removes the
+    race instead (ds-2n1).
     """
     seen = {}
 
@@ -737,12 +730,6 @@ def test_real_verify_caller_dep_wired_with_env(monkeypatch):
         return "coordinator@test-proj.iam.gserviceaccount.com"
 
     monkeypatch.setattr(notifier_main, "verify_caller", fake_verify)
-    monkeypatch.setattr(notifier_main, "OWN_URL", "https://notifier.example.com")
-    monkeypatch.setattr(
-        notifier_main,
-        "ALLOWED_CALLERS",
-        frozenset({"coordinator@test-proj.iam.gserviceaccount.com"}),
-    )
     # Stub httpx too so the request doesn't try to hit the network.
     monkeypatch.setattr(notifier_main.httpx, "Client", _FakeClient)
 
