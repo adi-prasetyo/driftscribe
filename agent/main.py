@@ -1959,7 +1959,7 @@ def _do_rollback(
         except ValueError:  # pragma: no cover — validated upstream
             absolute = False
         if not absolute:
-            origin = (get_settings().coordinator_origin or "").rstrip("/")
+            origin = (s.coordinator_origin or "").rstrip("/")
             if origin:
                 notify_url = f"{origin}/{notify_url.lstrip('/')}"
         rendered = render_rollback_body(
