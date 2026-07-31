@@ -377,6 +377,26 @@ describe('LedgerStrip — a trace shared by several decisions', () => {
     expect(rows[1].getAttribute('aria-expanded')).toBeNull();
   });
 
+  it('picks the newest even when the two share a timestamp to the millisecond', () => {
+    // The pair is written by ONE request, and Date.parse truncates the
+    // sub-millisecond precision that separates the two docs on the server — so
+    // `created_at` ties are the expected case, not a corner. ledgerRows' sort
+    // returns 0 for a tie and relies on Array.prototype.sort's stability to
+    // keep the input order, and the input is GET /decisions, which the backend
+    // already returns newest-first. Supplied in that order here on purpose:
+    // this asserts the whole chain, not just the comparator.
+    const tied = pair().map((d) => ({ ...d, created_at: '2026-07-28T10:00:00Z' }));
+    const { getAllByTestId } = render(LedgerStrip, {
+      props: { decisions: tied, cache: cache(), recordTraceId: null, onRecordChange: vi.fn() },
+    });
+    const rows = getAllByTestId('ledger-strip-row');
+    expect(rows[0].tagName).toBe('BUTTON');
+    expect(rows[1].tagName).not.toBe('BUTTON');
+    // ...and it is the row the backend would answer with — the merged one,
+    // identifiable by its seal.
+    expect(rows[0].querySelector('[role="img"]')).toBeTruthy();
+  });
+
   it('gives the older sibling no affordance at all, rather than a duplicate one', () => {
     const { getAllByTestId } = render(LedgerStrip, {
       props: { decisions: pair(), cache: cache(), recordTraceId: null, onRecordChange: vi.fn() },

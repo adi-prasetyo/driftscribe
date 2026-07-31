@@ -74,11 +74,25 @@
    *  successor — under a single trace id (agent/state_store.py's
    *  `find_decision_by_trace_id` documents this and answers with the NEWEST).
    *  Keying the accordion on the trace alone therefore opened a record under
-   *  every matching row at once. Only the first match is openable, and because
-   *  both this strip and that backend order by `created_at` descending, "first
-   *  here" and "the one /trace will answer with" are the same decision by
-   *  construction. The siblings are lifecycle stages of one reasoning run;
-   *  their own status is what the row already says.
+   *  every matching row at once. Only the first match is openable, and "first
+   *  here" is the same decision /trace will answer with — but that equivalence
+   *  rests on TWO things, not one, and the second is easy to lose:
+   *
+   *   1. both orderings are newest-first — this strip by the doc's `created_at`
+   *      (ledgerRows), that lookup by the server-managed `create_time`;
+   *   2. on a TIE, `ledgerRows`' comparator returns 0 and leans on
+   *      Array.prototype.sort's stability to keep the INPUT order — and the
+   *      input is GET /decisions, which `list_decisions` already returns
+   *      newest-first by `create_time`. Ties are not hypothetical: the pair is
+   *      written by one request, and `Date.parse` truncates the sub-millisecond
+   *      precision that separates the two docs on the server.
+   *
+   *  So a caller that hands this component a list in some other order can make
+   *  the older sibling the openable one. `decisions` comes straight from the
+   *  overview store's snapshot today; anything else needs a sort first.
+   *
+   *  The siblings are lifecycle stages of one reasoning run; their own status
+   *  is what the row already says.
    *
    *  Null means the row renders as plain text. Never a disabled control: the
    *  strip is a record, and a greyed-out button on a row whose reasoning was
