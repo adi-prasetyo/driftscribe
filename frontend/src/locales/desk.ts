@@ -60,16 +60,25 @@ export const desk = {
     // hero. `openTitle`/`appliedTitle` cover the two states this module
     // classifies with fixed copy; `noted` rows fall back to
     // decisionActionLabel's per-action text instead of a fixed string here.
+    // Register: settled rows are RECORD entries, so they read as noun phrases
+    // ("Approved · applied") to sit level with the `noted` fallback's bare
+    // action labels ("Rollback", "Escalation") in the same strip. They also
+    // avoid the second person on purpose: the approval doc records
+    // status/phase/resolved_at but NO actor, so "You approved" asserts an
+    // identity the system never captured — during an open demo window an
+    // anonymous visitor's click produces a byte-identical record. `openTitle`
+    // keeps "your" because that row is a live call to action addressed to the
+    // reader, and it is true regardless of who eventually clicks.
     'desk.ledger.heading': 'Recent record',
-    'desk.ledger.appliedTitle': 'You approved · applied',
+    'desk.ledger.appliedTitle': 'Approved · applied',
     'desk.ledger.openTitle': 'Awaiting your approval',
-    'desk.ledger.failedTitle': 'You approved · did not apply',
+    'desk.ledger.failedTitle': 'Approved · did not apply',
     // Deliberately not "failed": the operation may still be running or may
     // have succeeded with the response lost. Saying "failed" here would be a
     // second false claim in the opposite direction (ds-2mc).
-    'desk.ledger.unconfirmedTitle': 'You approved · outcome unconfirmed',
+    'desk.ledger.unconfirmedTitle': 'Approved · outcome unconfirmed',
     // ---- unresolved rollback outcome (desk rule 2.5) ----
-    'desk.unresolved.who': 'You approved',
+    'desk.unresolved.who': 'Approved',
     'desk.unresolved.failed.detail': 'Did not apply',
     'desk.unresolved.failed.headline': 'The rollback did not apply.',
     'desk.unresolved.failed.body':
@@ -121,7 +130,9 @@ export const desk = {
     // `shared.rail.traceButton.viewReasoning` so one product means one phrase.
     'desk.pending.viewReasoning': 'view the reasoning behind this →',
 
-    'desk.stamped.who': 'You approved',
+    // No second person — see the register note on desk.ledger.* above; the
+    // approval doc records no actor, so this byline cannot name one.
+    'desk.stamped.who': 'Approved',
     'desk.stamped.rollback.detail': 'Rollback applied',
     'desk.stamped.iac.detail': 'Change applied',
     'desk.stamped.rollback.headline': 'The proposed rollback was applied.',
@@ -217,12 +228,15 @@ export const desk = {
     'desk.band.managedUnknownAriaDesk': 'IaC 管理下：未取得 — インフラを見る',
     'desk.band.driftUnknownAriaDesk': 'ドリフト検出：未取得 — インフラを見る',
     'desk.ledger.heading': '最近の記録',
-    'desk.ledger.appliedTitle': 'あなたが承認 → 適用完了',
+    // 記録欄は体言止め（「ロールバック」「エスカレーション」と同じ調子）。
+    // 承認記録に actor は残らないため「あなたが」とは書けない。openTitle だけは
+    // 読み手への呼びかけなので「あなたの」を残す。EN 側の註記も参照。
+    'desk.ledger.appliedTitle': '承認済み → 適用完了',
     'desk.ledger.openTitle': 'あなたの承認待ち',
-    'desk.ledger.failedTitle': 'あなたが承認 → 適用されず',
-    'desk.ledger.unconfirmedTitle': 'あなたが承認 → 結果は未確認',
+    'desk.ledger.failedTitle': '承認済み → 適用されず',
+    'desk.ledger.unconfirmedTitle': '承認済み → 結果は未確認',
     // ---- unresolved rollback outcome (desk rule 2.5) ----
-    'desk.unresolved.who': 'あなたが承認しました',
+    'desk.unresolved.who': '承認済み',
     'desk.unresolved.failed.detail': '適用されず',
     'desk.unresolved.failed.headline': 'ロールバックは適用されませんでした。',
     'desk.unresolved.failed.body':
@@ -246,7 +260,7 @@ export const desk = {
     'desk.pending.rejectCta': '却下する',
     'desk.pending.viewReasoning': 'この提案に至った推論を見る →',
 
-    'desk.stamped.who': 'あなたが承認しました',
+    'desk.stamped.who': '承認済み',
     'desk.stamped.rollback.detail': 'ロールバック適用',
     'desk.stamped.iac.detail': '適用完了',
     'desk.stamped.rollback.headline': '提案されたロールバックを適用しました。',

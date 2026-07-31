@@ -76,10 +76,23 @@ describe('LedgerStrip', () => {
     expect(notedRow?.querySelector('[role="img"]')).toBeFalsy();
   });
 
-  it('applied row title reads "You approved · applied"', () => {
+  it('applied row title reads "Approved · applied"', () => {
     const d = decision({ decision_id: 'a2', apply_status: 'applied', action: 'iac_apply' });
     const { getByText } = render(LedgerStrip, { props: { decisions: [d] } });
-    expect(getByText('You approved · applied')).toBeTruthy();
+    expect(getByText('Approved · applied')).toBeTruthy();
+  });
+
+  // The settled rows must not name an actor: the approval doc carries
+  // status/phase/resolved_at but no actor field, so second-person copy would
+  // assert an identity the system never captured (an anonymous demo-window
+  // click produces an identical record). Pins the claim, not just the string.
+  it('settled row titles never claim who approved', () => {
+    const rows = [
+      decision({ decision_id: 's1', apply_status: 'applied', action: 'iac_apply' }),
+      decision({ decision_id: 's2', apply_status: 'failed', action: 'rollback' }),
+    ];
+    const { container } = render(LedgerStrip, { props: { decisions: rows } });
+    expect(container.textContent).not.toMatch(/You approved/);
   });
 
   it('open row title reads "Awaiting your approval"', () => {
