@@ -451,12 +451,22 @@ its own bug.
    because a stranded fence there can still swallow the link below it. Its
    scope is now one paragraph of prose instead of an assembled document.
 
-   **The two claims are now tested separately**, which is the clearest way to
-   see what each mechanism actually buys: disable `_neutralize_fences`
-   entirely and all ten hostile-rationale *structural* assertions still pass
-   (footer present verbatim, cap held, schema valid) while seven *rendering*
-   assertions fail. Structural guarantees do not depend on the sanitizer being
-   right — that is the point of moving the budget.
+   **The claims are tested separately**, which is the clearest way to see what
+   each mechanism actually buys. Disable `_neutralize_fences` entirely and:
+
+   - the ten *structural* assertions still pass (footer text present verbatim,
+     cap held, `NotifyRequest` valid) — that is the budget-before-assembly fix;
+   - the ten *at-least-one-link-renders* assertions still pass — that is the
+     leading link;
+   - only the six *footer-link-also-renders* assertions fail — which is all
+     neutralization is now responsible for.
+
+   An earlier draft of this section claimed disabling the neutralizer broke
+   seven rendering assertions. That was true when the only link was in the
+   footer and became false the moment the leading link landed; Codex caught it
+   by replacing the neutralizer with an identity function. Recorded rather than
+   silently corrected, because a test or a doc that describes a guarantee it no
+   longer provides is exactly how six broken repairs stayed green.
 
    8. *Bound the sections, but leave the link only in the footer.* Incomplete,
       and it exposed a defect **older than this bead**: neutralization runs

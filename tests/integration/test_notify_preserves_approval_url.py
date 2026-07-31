@@ -236,11 +236,9 @@ def test_the_approval_footer_survives_every_hostile_rationale(name: str):
     are therefore present verbatim no matter what the model wrote, and no
     Markdown reasoning is involved in making that true.
 
-    Deliberately kept separate from the rendering assertion below. Disable
-    ``_neutralize_fences`` entirely and THIS test still passes for all ten
-    rationales while the rendering one fails for seven — which is the precise
-    statement of what each mechanism buys, and it is worth being able to see
-    that at a glance after six attempts at conflating them.
+    Deliberately kept separate from the rendering assertions below, so that
+    what each mechanism guarantees stays visible after nine attempts at
+    conflating them.
     """
     body = render_rollback_body(
         _proposal(_HOSTILE[name]), _APPROVAL_URL, max_chars=_CAP
@@ -254,12 +252,18 @@ def test_the_approval_footer_survives_every_hostile_rationale(name: str):
 
 @pytest.mark.parametrize("name", sorted(_HOSTILE))
 def test_the_approval_link_still_RENDERS_for_every_hostile_rationale(name: str):
-    """The sanitizing claim: present is not the same as clickable.
+    """At least one clickable link, whatever the model wrote.
 
-    This is what ``_neutralize_fences`` is for, and unlike the footer it is not
-    structural — a truncated rationale can strand a fence or an ``<!--`` that
-    swallows everything below it, link included. Each rationale here defeated
-    at least one of the six attempts that clamped the ASSEMBLED body.
+    Now guaranteed by the LEADING link rather than by sanitization: Markdown
+    parses forwards, so the link above the rationale renders before anything
+    below it can open a fence. Verified by Codex against an identity
+    neutralizer — all ten still render.
+
+    An earlier version of this docstring claimed disabling ``_neutralize_fences``
+    made seven of these fail. That was true when the only link was in the
+    footer, and became false the moment the leading link landed. Left corrected
+    rather than deleted: a test that describes a guarantee it no longer
+    provides is how the six broken repairs stayed green.
     """
     from markdown_it import MarkdownIt
 
@@ -269,6 +273,29 @@ def test_the_approval_link_still_RENDERS_for_every_hostile_rationale(name: str):
     assert f'href="{_APPROVAL_URL}"' in MarkdownIt().render(body), (
         "the link is present but does not render — something above it is still "
         "swallowing it"
+    )
+
+
+@pytest.mark.parametrize("name", sorted(_HOSTILE))
+def test_the_FOOTER_link_renders_too_which_is_what_neutralization_buys(name: str):
+    """What ``_neutralize_fences`` is actually for, now that the leading link
+    carries the safety guarantee.
+
+    The footer is where the expiry note and the traffic warning live, and an
+    operator who scrolls expects the call to action there. Reaching it means
+    surviving the whole rationale, so this is the assertion that genuinely
+    depends on the rationale being sanitized — disable the neutralizer and
+    these fail while the leading-link test above stays green.
+    """
+    from markdown_it import MarkdownIt
+
+    body = render_rollback_body(
+        _proposal(_HOSTILE[name]), _APPROVAL_URL, max_chars=_CAP
+    )
+    html = MarkdownIt().render(body)
+    assert html.count(f'href="{_APPROVAL_URL}"') == 2, (
+        "the footer link did not render — the rationale is still swallowing "
+        "everything below it"
     )
 
 
@@ -338,18 +365,35 @@ def test_the_evidence_table_is_never_cut_mid_row(rows: int):
         assert line.count("|") == 7, f"row was cut mid-way: {line[-40:]!r}"
 
 
-def test_an_ordinary_rollback_body_is_not_abridged_at_all():
-    """The bounded path must not fire on real traffic. ds-j0i observed a
-    581-character rationale against this 10 000-char budget."""
-    body = render_rollback_body(
-        _proposal("PAYMENT_MODE drifted from 'mock' to 'live'. " * 12),
-        _APPROVAL_URL,
-        max_chars=_CAP,
-    )
-    assert "omitted" not in body
-    assert body == render_rollback_body(
-        _proposal("PAYMENT_MODE drifted from 'mock' to 'live'. " * 12), _APPROVAL_URL
-    ), "a body that fits must be byte-identical to the unbounded render"
+@pytest.mark.parametrize("rationale_len", [12, 581, 4500, 5000, 8000, 8700])
+def test_any_body_that_fits_is_byte_identical_to_the_unbounded_render(
+    rationale_len: int,
+):
+    """The bounded path must not fire on anything the worker would accept.
+
+    The lengths matter. An earlier version budgeted the rationale to half the
+    available space WITHOUT first asking whether the whole body fits, so a
+    5000-char rationale — assembling to ~6000 against a 10 000 cap — came out
+    abridged at ~5577. The old test used a short rationale only and claimed to
+    cover this (Codex). 8700 is just under the point where truncation becomes
+    genuinely necessary (template overhead is ~1250); 581 is what ds-j0i actually observed on prod.
+    """
+    rationale = "R" * rationale_len
+    bounded = render_rollback_body(_proposal(rationale), _APPROVAL_URL, max_chars=_CAP)
+    unbounded = render_rollback_body(_proposal(rationale), _APPROVAL_URL)
+    assert len(unbounded) <= _CAP, "premise: this fixture must already fit"
+    assert bounded == unbounded, "a body that fits was abridged anyway"
+    assert "omitted" not in bounded
+
+
+@pytest.mark.parametrize("cap", [0, -1, -10_000])
+def test_a_nonsense_cap_is_refused_rather_than_sliced(cap: int):
+    """``minimal[:-1]`` would quietly emit 226 characters under Python's
+    negative-index semantics — the same shape of bug this module was bitten by
+    in ``clamp_middle_out``. Callers pass a module constant, so this is a
+    programming error and must surface as one."""
+    with pytest.raises(ValueError):
+        render_rollback_body(_proposal("x"), _APPROVAL_URL, max_chars=cap)
 
 
 def _assert_link_survives_the_whole_path(rationale: str) -> None:

@@ -937,8 +937,22 @@ def render_rollback_body(
       so an LLM that quoted a secret value in prose doesn't leak it here.
     """
     rationale = _scrub_secret_values_from_rationale(p.rationale, p.env_diffs)
-    if max_chars is None:
-        return _rollback_body(p, approval_url, rationale, _evidence_table(p))
+    full = _rollback_body(p, approval_url, rationale, _evidence_table(p))
+    if max_chars is None or len(full) <= max_chars:
+        # The overwhelmingly common path, and it must be BYTE-IDENTICAL to the
+        # unbounded render. Budgeting the sections without first asking whether
+        # the whole body fits abridged inputs the worker accepts verbatim: a
+        # 5000-char rationale assembles to ~6000 against a 10 000 cap and was
+        # being cut to ~5577 by the half-budget split. That is the same
+        # "truncate acceptable input" defect this bead exists to remove, one
+        # level up from where it was first found (Codex).
+        return full
+    if max_chars <= 0:
+        # Only reachable from a caller passing a nonsense cap. Refuse rather
+        # than slice: ``minimal[:-1]`` would quietly emit 226 characters under
+        # Python's negative-index semantics, which is the shape of bug this
+        # module has already been bitten by twice.
+        raise ValueError(f"max_chars must be positive, got {max_chars}")
 
     # Measure the real template, so editing the copy above can never silently
     # invalidate the arithmetic here.
