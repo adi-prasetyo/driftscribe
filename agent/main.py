@@ -74,6 +74,7 @@ from agent.mcp.developer_knowledge import MissingDeveloperKnowledgeApiKeyError
 from agent.models import DecisionAction, DecisionProposal
 from agent.renderer import (
     attach_iac_pr_link,
+    normalize_rollback_reason,
     render_docs_pr_body,
     render_drift_issue_body,
     render_escalation_issue_body,
@@ -1811,7 +1812,18 @@ def _do_rollback(
                 # secret quoted in the rationale would leak there. The notification
                 # body (render_rollback_body below) is already scrubbed; this
                 # closes the `reason` boundary too. (PR 2)
-                "reason": scrub_rationale_text(proposal.rationale, proposal.env_diffs),
+                #
+                # ds-j0i: then CLAMP to the worker's own bound. Sending this
+                # unbounded is what took autonomous self-heal down on
+                # 2026-07-31 — a 581-char rationale against the worker's
+                # then-500-char cap returned 422, so no approval was minted.
+                # normalize_rollback_reason also supplies a deterministic
+                # fallback for an EMPTY rationale, which the worker's
+                # min_length=1 would reject the same way. Scrub first, clamp
+                # second — redaction changes length.
+                "reason": normalize_rollback_reason(
+                    scrub_rationale_text(proposal.rationale, proposal.env_diffs)
+                ),
                 # ds-uwc: lets the worker record what this rollback would
                 # change. Additive and optional on the worker; see
                 # contract_preview_payload.
