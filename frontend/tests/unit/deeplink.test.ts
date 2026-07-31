@@ -78,8 +78,16 @@ describe('viewFromSearch', () => {
 
   it('accepts the allowlist', () => {
     expect(viewFromSearch('?view=desk')).toBe('desk');
-    expect(viewFromSearch('?view=estate')).toBe('estate');
     expect(viewFromSearch('?view=chat')).toBe('chat');
+  });
+
+  // The estate merged INTO the desk (2026-07-31 design doc), so its view id is
+  // retired. Old shared links must still land on the merged page rather than
+  // falling through to the default by accident — this is an explicit alias, and
+  // it keeps working after VIEWS drops 'estate' because it matches the raw
+  // string, not the allowlist.
+  it('treats ?view=estate as a legacy alias for the desk', () => {
+    expect(viewFromSearch('?view=estate')).toBe('desk');
   });
 
   it('rejects unknown values → default', () => {

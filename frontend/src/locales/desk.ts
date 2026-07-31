@@ -8,7 +8,6 @@ export const desk = {
   en: {
     'desk.nav.ariaLabel': 'Primary navigation',
     'desk.nav.desk': 'Desk',
-    'desk.nav.estate': 'Estate',
     'desk.nav.chat': 'Chat',
     // SealStamp's accessible name (Task 3.2). The glyph text stays 承認 in
     // both locales — it's a hanko, not a translated word — but a screen
@@ -202,7 +201,6 @@ export const desk = {
     // — closer to "estimation diagram" than to "your infrastructure". Operator
     // decision 2026-07-28: use インフラ, matching the term this same domain
     // already ships under (infra.panel.title). Phase 4's EstateView keeps it.
-    'desk.nav.estate': 'インフラ',
     'desk.nav.chat': 'チャット',
     'desk.seal.ariaLabel': '承認済み',
     // Visible labels straight from the mockup (docs/plans/2026-07-28-

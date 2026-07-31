@@ -48,7 +48,7 @@
   import ApprovalDesk from './components/ApprovalDesk.svelte';
   import EstateView from './components/EstateView.svelte';
   import { previewPrFromSearch } from './lib/infra_graph';
-  import { estateModel, firstAdoptableRow, reconcileApprovals } from './lib/estate';
+  import { reconcileApprovals } from './lib/estate';
   import {
     reasoningTraceFromSearch,
     conversationIdFromSearch,
@@ -341,8 +341,8 @@
     }
     // Unconditional on a non-chat target, NOT gated on `view === 'chat'` (Codex
     // review of this branch). The tour borrows a view while PRESERVING the chat
-    // surface, so a Back press mid-tour arrives with `view === 'estate'` and an
-    // open thread still live behind it — that gate skipped the teardown and left
+    // surface, so a Back press mid-tour arrives with a borrowed non-chat view
+    // and an open thread still live behind it — that gate skipped the teardown and left
     // a hidden thread whose later settle would write `?conversation=` onto a DESK
     // url. Exactly the state/url disagreement this handler exists to prevent.
     // On a target that never had chat state the call is a cheap no-op.
@@ -572,20 +572,21 @@
   // decides once, at mount, so a later navigation to the desk must not
   // retroactively suppress a notice that already opened.
   //
-  // ds-2co: the constraint is the LAYOUT, not the desk. EstateView renders the
-  // same InstrumentBand in the same top-left corner, so a shared `?view=estate`
-  // link reproduced exactly the overlap ds-5yq removed. Chat is the only view
-  // whose top-left is chrome the popover may cover, so the test is `!== 'chat'`
-  // — which also means a future view is covered by default rather than needing
-  // to be remembered here.
+  // ds-2co: the constraint is the LAYOUT, not the desk. The estate used to be a
+  // second view rendering the same InstrumentBand in the same top-left corner,
+  // so a shared `?view=estate` link reproduced exactly the overlap ds-5yq
+  // removed. That link now aliases to the desk and the rule is unchanged. Chat
+  // is the only view whose top-left is chrome the popover may cover, so the
+  // test is `!== 'chat'` — which also means a future view is covered by default
+  // rather than needing to be remembered here.
   const coversPrimaryContent = viewFromSearch(window.location.search) !== 'chat';
   let tourOffered = $state(shouldOfferTour(window.location.search, tourDone()));
   // The tour spotlights views; it does not navigate away from them. See the
   // `preserveChatState` note on `navigate` (ds-s9q).
   //
   // Because it preserves the chat errand, the URL it writes mid-tour can read
-  // `?view=estate&conversation=…` — and viewFromSearch gives chat intent
-  // precedence, so RELOADING that exact address lands on chat, not estate.
+  // `?view=desk&conversation=…` — and viewFromSearch gives chat intent
+  // precedence, so RELOADING that exact address lands on chat, not the desk.
   // Harmless while the tour is on screen (nobody reloads mid-spotlight) but it
   // must not outlive it, or a link copied afterwards resolves somewhere the
   // operator was not. So the tour remembers where it started and puts the view
@@ -689,23 +690,21 @@
   const decisions = $derived($overview.decisions);
   onDestroy(() => overview.destroy());
 
-  // The tour's adopt step (Task 4.1) spotlights the first adoptable row in
-  // EstateView; when there is none, App marks the nav-estate header button
-  // instead — see lib/estate.ts's firstAdoptableRow header comment for why
-  // BOTH sides call this exact function on the SAME estateModel() output
-  // (never a second hand-rolled predicate) and why the two data-tour="adopt-
-  // target" markers are therefore mutually exclusive.
-  // Gated on approvalsStale for the same reason EstateView nulls its own
-  // adoptTarget: the target is chosen from rows with no open adoption PR, and a
-  // soft-failed approvals fetch cannot support that absence. Without this the
-  // tour would still steer a live-demo visitor at a duplicate adoption even
-  // though the estate row itself had stopped offering the button.
-  const estateHasAdoptTarget = $derived(
-    !$overview.approvalsStale &&
-      firstAdoptableRow(
-        estateModel($overview.graph, $overview.pendingApprovals, $t, $overview.decisions),
-      ) !== null,
-  );
+  // The band's managed/drift numerals point at the estate, which since the
+  // 2026-07-31 merge is a section of THIS page. Scroll to it rather than
+  // navigating: no history entry, no URL change, nothing for Back to undo.
+  //
+  // Focus moves with the scroll (the section carries tabindex="-1") or a
+  // keyboard/screen-reader user stays parked on the band button that just
+  // scrolled out of the viewport — the page would have moved and their cursor
+  // would not have. Same scroll-then-focus pattern as the conversation resume
+  // above; `preventScroll` keeps the focus call from fighting the smooth scroll.
+  function scrollToEstate(): void {
+    const el = document.getElementById('estate');
+    if (!el) return;
+    el.scrollIntoView({ behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'start' });
+    el.focus({ preventScroll: true });
+  }
 
   // Detect a freshly-`applied` iac_apply decision (decisions arrive newest-first)
   // so the Infrastructure panel can refresh the resource map after an apply lands.
@@ -1780,15 +1779,6 @@
     <button
       type="button"
       class="app-header__nav-btn"
-      class:is-active={view === 'estate'}
-      aria-current={view === 'estate' ? 'page' : undefined}
-      data-testid="nav-estate"
-      data-tour={estateHasAdoptTarget ? undefined : 'adopt-target'}
-      onclick={() => navigate('estate')}>{$t('desk.nav.estate')}</button
-    >
-    <button
-      type="button"
-      class="app-header__nav-btn"
       class:is-active={view === 'chat'}
       aria-current={view === 'chat' ? 'page' : undefined}
       data-testid="nav-chat"
@@ -1958,14 +1948,18 @@
     degraded={$overview.degraded}
     lastError={$overview.lastError}
     refresh={overview.refresh}
-    onNavigate={navigate}
+    onShowEstate={scrollToEstate}
     onOpenTrace={openTrace}
   />
-  {:else if view === 'estate'}
-  <!-- The real estate view (Task 4.1). Data comes exclusively from the
-       overview store's current snapshot — EstateView performs no fetches of
-       its own, same discipline as ApprovalDesk. Adopt routes through the
-       SAME handleAdopt bridge as InfraDiagram's own Adopt buttons. -->
+  <!-- The estate, directly beneath the decision area (2026-07-31 merge — one
+       landing page: band → hero → ledger → estate). Data comes exclusively
+       from the overview store's current snapshot; EstateView performs no
+       fetches of its own, same discipline as ApprovalDesk. Adopt routes
+       through the SAME handleAdopt bridge as InfraDiagram's own Adopt buttons.
+
+       Its loading/degraded state is deliberately INDEPENDENT of the hero's:
+       a pending approval can coexist with a failed graph fetch, and each area
+       reports its own truth (ds-eh6). -->
   <EstateView
     graph={$overview.graph}
     decisions={$overview.decisions}

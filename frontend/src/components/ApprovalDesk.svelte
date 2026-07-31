@@ -22,7 +22,6 @@
   import { fmtWhen } from '../lib/format';
   import { notifyFailed } from '../lib/approval';
   import type { Decision } from '../lib/types';
-  import type { AppView } from '../lib/deeplink';
   import InstrumentBand, { type BandStat } from './InstrumentBand.svelte';
   import LedgerStrip from './LedgerStrip.svelte';
   import SealStamp from './SealStamp.svelte';
@@ -35,7 +34,7 @@
     settled = true,
     degraded = false,
     lastError = null,
-    onNavigate,
+    onShowEstate,
     onOpenTrace,
     refresh,
   }: {
@@ -55,7 +54,10 @@
      *  refusing to print a fresh-looking "last scan" line for a scan that did
      *  not refresh. */
     lastError?: 'graph' | 'pending' | 'decisions' | null;
-    onNavigate: (view: AppView) => void;
+    /** Bring the estate into view. Takes no argument: since the 2026-07-31
+     *  merge there is exactly one destination and it is a section of this same
+     *  page, so App scrolls (and moves focus) rather than navigating. */
+    onShowEstate: () => void;
     /** Opens a past reasoning timeline (App.svelte's openTrace — it switches
      *  to the chat view and syncs `?reasoning=`). Optional: when omitted the
      *  pending card's "view the reasoning" link is not rendered at all, rather
@@ -273,17 +275,20 @@
     return m.source === 'rollback' ? (m.decision.approval?.resolved_at ?? null) : (m.decision.applied_at ?? null);
   }
 
-  // ds-7ag.2 — where each band numeral goes FROM THE DESK: managed and drift
-  // point at the infrastructure map. `awaiting` is deliberately NOT routed here
-  // and never reaches this handler, because the band renders it as an inert
-  // figure in the 'desk' context (ds-s61 — see InstrumentBand's routing table).
-  // It used to scrollIntoView + focus this page's own pending card, but that
-  // card is already on screen ~270px below the numeral, so the scroll had
-  // nowhere to go and merely consumed the dead 38px the old viewport calc left
-  // lying around. The number sits directly above its own subject; that is the
-  // wayfinding, and it needs no click.
+  // ds-7ag.2 — where each band numeral goes: managed and drift point at the
+  // infrastructure map, which since the 2026-07-31 merge is the estate SECTION
+  // of this same page. So the click scrolls there instead of navigating, and
+  // App moves focus with the scroll.
+  //
+  // `awaiting` is deliberately NOT routed here and never reaches this handler,
+  // because the band renders it as an inert figure (ds-s61 — see
+  // InstrumentBand's routing table). It used to scrollIntoView + focus this
+  // page's own pending card, but that card is already on screen ~270px below
+  // the numeral, so the scroll had nowhere to go and merely consumed the dead
+  // 38px the old viewport calc left lying around. The number sits directly
+  // above its own subject; that is the wayfinding, and it needs no click.
   function onStat(_stat: BandStat): void {
-    onNavigate('estate');
+    onShowEstate();
   }
 </script>
 

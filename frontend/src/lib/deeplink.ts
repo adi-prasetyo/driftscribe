@@ -126,5 +126,10 @@ export function viewFromSearch(search: string): AppView {
   // URLSearchParams tolerates a leading "?" itself, so — like the two helpers
   // above — the raw search string goes straight in.
   const raw = new URLSearchParams(search).get('view');
+  // Legacy alias: the estate merged into the desk (2026-07-31 design doc). Old
+  // ?view=estate links land on the merged page rather than 404-ing into a blank
+  // main. Matched on the RAW string, deliberately not via VIEWS — the id is
+  // retired from the allowlist and this line must keep working without it.
+  if (raw === 'estate') return 'desk';
   return VIEWS.includes(raw as AppView) ? (raw as AppView) : DEFAULT_VIEW;
 }

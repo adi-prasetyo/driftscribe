@@ -144,14 +144,29 @@ describe('TOUR_STEPS', () => {
   // step whose target lives on a specific view must navigate there first.
   // `view: null` means either no target (welcome) or a target mounted on
   // every view (controls, the header anchor).
+  //
+  // 2026-07-31: EstateView is a SECTION of the desk, so both of those steps
+  // now navigate to 'desk'. The targets themselves are unchanged.
   it('carries the view each step must navigate to before its target can resolve', () => {
     expect(TOUR_STEPS.map((s) => s.view)).toEqual([
       null,
-      'estate',
+      'desk',
       null,
-      'estate',
+      'desk',
       'chat',
     ]);
+  });
+
+  // The adopt step's target is the FIRST adoptable row, which does not exist
+  // when nothing is adoptable right now. It used to fall back to the nav-estate
+  // header button; that button is gone with the merge, so the fallback is
+  // declared on the step and resolved by TourCard.
+  it('the adopt step declares the estate section as its spotlight fallback', () => {
+    const byId = Object.fromEntries(TOUR_STEPS.map((s) => [s.id, s]));
+    expect(byId.adopt.fallback).toBe('estate');
+    // Only that step needs one — every other target is unconditionally mounted
+    // on the view it navigates to.
+    expect(TOUR_STEPS.filter((s) => s.fallback !== undefined).map((s) => s.id)).toEqual(['adopt']);
   });
 });
 
