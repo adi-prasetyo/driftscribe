@@ -601,6 +601,56 @@ test.describe('transparency UI (mock smoke)', () => {
     await expect(page).not.toHaveURL(/reasoning=/);
   });
 
+  // ds-akf: jsdom cannot see the cascade, so "the row is a BUTTON now" is the
+  // only thing the unit test can prove — not that it still LOOKS like a row.
+  // Turning a grid <div> into a <button> puts UA button styles in play, and a
+  // ledger row that lost its four-column grid would be a real regression that
+  // every green unit test would miss. Pinned on computed style, in a browser.
+  test('an openable ledger row is a button that still lays out as a row', async ({ page }) => {
+    await seedToken(page);
+    await mockData(page, freshState());
+    await page.goto('/?view=desk');
+
+    const row = page.getByTestId('ledger-strip-row').first();
+    await expect(row).toBeVisible();
+    await expect(row).toHaveJSProperty('tagName', 'BUTTON');
+
+    const box = await row.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return {
+        display: cs.display,
+        tracks: cs.gridTemplateColumns.split(' ').filter(Boolean).length,
+        align: cs.alignItems,
+        textAlign: cs.textAlign,
+        width: el.getBoundingClientRect().width,
+        // The parent's CONTENT width, not its border box: `.ledger-strip__rows`
+        // carries 40px of horizontal padding, so a border-box comparison would
+        // fail against a row that is filling its container correctly.
+        parentWidth: (() => {
+          const parent = el.parentElement as HTMLElement;
+          const pcs = getComputedStyle(parent);
+          return (
+            parent.clientWidth - parseFloat(pcs.paddingLeft) - parseFloat(pcs.paddingRight)
+          );
+        })(),
+      };
+    });
+    expect(box.display).toBe('grid');
+    expect(box.tracks).toBe(4); // time · glyph · title · stamp
+    expect(box.align).toBe('baseline');
+    expect(box.textAlign).toBe('left'); // UA buttons center their text
+    expect(box.width).toBeCloseTo(box.parentWidth, 0);
+
+    // And opening it puts the record inside the strip, under that row.
+    await row.click();
+    const record = page.getByTestId('decision-record');
+    await expect(record).toBeVisible();
+    const inStrip = await record.evaluate(
+      (el) => el.closest('[data-testid="ledger-strip"]') !== null,
+    );
+    expect(inStrip).toBe(true);
+  });
+
   test('drift decision: env-diff card shows non-secret values, redacts secret-named + credentialed-URL values, leaks no raw secret', async ({ page }) => {
     await seedToken(page);
     await mockData(page, freshState());
