@@ -443,16 +443,40 @@ describe('ApprovalDesk — pending state, iac source, both provenance arms', () 
     expect(getByText('PR #7')).toBeTruthy();
   });
 
-  it('decision arm (no PR title carried): falls back to the honest generic headline naming the PR number', () => {
+  // The ds-db0 split must not over-reach. A LISTING-provenance PR is one the
+  // open-PR listing can still see, i.e. genuinely unmerged and genuinely
+  // unapproved — "waiting for your approval" is TRUE there and must survive.
+  it('listing arm (no title): keeps the approval-request copy, which is true for an unmerged PR', () => {
+    const approval = pendingIac({ title: undefined });
+    const { getByTestId, getByText } = render(ApprovalDesk, {
+      props: { graph: GRAPH, decisions: [], pendingApprovals: [approval], onShowEstate: vi.fn() },
+    });
+    expect(getByTestId('approval-desk-pending').getAttribute('data-source')).toBe('iac');
+    expect(getByText('Infrastructure change PR #7 is waiting for your approval.')).toBeTruthy();
+    expect(getByTestId('approval-desk-pending').textContent).not.toContain('waiting to be applied');
+  });
+
+  // ds-db0: the decision arm exists only for a PR the open-PR listing can no
+  // longer see BECAUSE IT ALREADY MERGED (desk.ts:78-84), so its copy must say
+  // "waiting to be applied". Claiming it awaits approval contradicts the
+  // operator's own click on the very frame the approve→stamp beat lands.
+  it('decision arm (no PR title carried): says the merged change awaits APPLYING, never approval', () => {
     const d = iacDecision({ pr_number: 99, pr_title: undefined });
     const { getByTestId, getByText, queryByTestId } = render(ApprovalDesk, {
       props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onShowEstate: vi.fn() },
     });
     expect(getByTestId('approval-desk-pending').getAttribute('data-source')).toBe('iac');
-    expect(getByText('Infrastructure change PR #99 is waiting for your approval.')).toBeTruthy();
+    expect(
+      getByText('Infrastructure change PR #99 is approved and waiting to be applied.'),
+    ).toBeTruthy();
+    // Pins the claim, not just the string: nothing in this arm may ask the
+    // operator for an approval they have already given.
+    const pending = queryByTestId('approval-desk-pending')?.textContent ?? '';
+    expect(pending).not.toContain('waiting for your approval');
+    expect(pending).not.toContain('waiting for your review');
     // No fabricated "proposed at" time for a decision whose real created_at
     // we DO have is fine, but there must be no invented PR title:
-    expect(queryByTestId('approval-desk-pending')?.textContent).not.toContain('undefined');
+    expect(pending).not.toContain('undefined');
   });
 
   it('decision arm WITH a carried pr_title renders it honestly instead of the fallback', () => {

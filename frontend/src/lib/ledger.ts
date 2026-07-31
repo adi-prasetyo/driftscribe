@@ -24,7 +24,20 @@ import {
   isIacAwaitingOperator,
 } from './approval';
 
-export type LedgerState = 'applied' | 'open' | 'noted' | 'failed' | 'unconfirmed';
+// 'open' and 'awaiting_rebake' both mean "this row still needs the operator",
+// but they are NOT interchangeable copy. 'open' is a live solicitation (a
+// rollback approval nobody has spent yet); 'awaiting_rebake' is the IaC lane
+// AFTER approval — the backend writes that apply_status at merge time
+// (agent/main.py:7280,7331 record it alongside merge_state pending→merged), so
+// calling it "awaiting your approval" told the operator their own approval had
+// not happened (ds-db0).
+export type LedgerState =
+  | 'applied'
+  | 'open'
+  | 'awaiting_rebake'
+  | 'noted'
+  | 'failed'
+  | 'unconfirmed';
 
 export interface LedgerRow {
   decision: Decision;
@@ -82,8 +95,12 @@ function classify(
   if (isRollbackAwaitingOperator(d, { now, origin })) {
     return 'open';
   }
+  // Same predicate as before — only the STATE differs, so the desk and the
+  // ledger still agree on "does this need the operator". `isIacAwaitingOperator`
+  // is true only for apply_status === 'waiting_for_rebake', which the backend
+  // records at merge, so every row reaching here is already approved.
   if (isIacAwaitingOperator(d, supersededIds)) {
-    return 'open';
+    return 'awaiting_rebake';
   }
 
   return 'noted';
@@ -148,5 +165,31 @@ export function ledgerRows(
     return b.ts - a.ts;
   });
 
-  return rows.slice(0, cap);
+  // One event, one row (ds-b0k). A single `event_key` accumulates a SEQUENCE of
+  // phase-transition docs, by design rather than by accident: PR #168 wrote
+  // waiting_for_rebake+pending and then waiting_for_rebake+merged seven seconds
+  // apart, and the June `iac-apply-95` generation ran pending → merged →
+  // failed_state_suspect. Rendering each doc as its own row made one event look
+  // like several — with a 4-row cap, a single repeated event could swallow the
+  // whole strip. The list is already sorted newest-first, so keeping the FIRST
+  // occurrence keeps the latest phase, which is by construction the current
+  // state of that event. Deliberately mirrors the live timeline's own
+  // eventKey merge (PR #199) rather than inventing a second dedup rule.
+  //
+  // Runs AFTER the sort (so "newest" is meaningful) and BEFORE the cap (so the
+  // cap counts events, not documents). Rows with no usable `event_key` are
+  // never collapsed: an absent key is unknown identity, not shared identity,
+  // so folding them together would merge unrelated decisions.
+  const seenEventKeys = new Set<string>();
+  const deduped: LedgerRow[] = [];
+  for (const row of rows) {
+    const key = row.decision.event_key;
+    if (typeof key === 'string' && key !== '') {
+      if (seenEventKeys.has(key)) continue;
+      seenEventKeys.add(key);
+    }
+    deduped.push(row);
+  }
+
+  return deduped.slice(0, cap);
 }

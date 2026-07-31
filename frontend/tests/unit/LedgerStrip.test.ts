@@ -104,6 +104,21 @@ describe('LedgerStrip', () => {
     expect(getByText('Awaiting your approval')).toBeTruthy();
   });
 
+  // ds-db0: an IaC row reaching the strip is in waiting_for_rebake, which the
+  // backend records at merge — the operator already approved it. Borrowing the
+  // rollback lane's solicitation copy told them otherwise.
+  it('a merged iac row awaits the re-bake, never the approval already given', () => {
+    const d = decision({
+      decision_id: 'r1',
+      action: 'iac_apply',
+      apply_status: 'waiting_for_rebake',
+      pr_number: 168,
+    });
+    const { getByText, container } = render(LedgerStrip, { props: { decisions: [d] } });
+    expect(getByText('Approved · awaiting re-bake')).toBeTruthy();
+    expect(container.textContent).not.toContain('Awaiting your approval');
+  });
+
   it('noted row title falls back to decisionActionLabel (e.g. no_op → the friendly label)', () => {
     const d = decision({ decision_id: 'n2', action: 'no_op' });
     const { getByText, queryByText } = render(LedgerStrip, { props: { decisions: [d] } });

@@ -245,8 +245,21 @@
     if (m.provenance.kind === 'decision') {
       const prTitle = m.provenance.decision.pr_title;
       if (typeof prTitle === 'string' && prTitle !== '') return prTitle;
+      // Titleless `decision` provenance means the PR already merged (desk.ts:78-84)
+      // — say it is waiting to be APPLIED, never waiting for an approval the
+      // operator has already given (ds-db0).
+      return tf('desk.pending.iacMerged.headlineFallback', { pr: m.prNumber });
     }
     return tf('desk.pending.iac.headlineFallback', { pr: m.prNumber });
+  }
+
+  /** `who` byline key, split on the same provenance rule as the headline: the
+   *  `decision` arm is post-merge, so "waiting for your review" would ask for a
+   *  review that already happened. */
+  function pendingWhoKey(m: DeskPending): 'desk.pending.iac.who' | 'desk.pending.iacMerged.who' {
+    return m.source !== 'rollback' && m.provenance.kind === 'decision'
+      ? 'desk.pending.iacMerged.who'
+      : 'desk.pending.iac.who';
   }
 
   function pendingSubtitleTime(m: DeskPending): string | null {
@@ -377,7 +390,7 @@
           <span
             >{model.source === 'rollback'
               ? $t('desk.pending.rollback.who')
-              : $t('desk.pending.iac.who')}</span
+              : $t(pendingWhoKey(model))}</span
           >
           {#if proposedAt}
             <span class="approval-desk__meta"

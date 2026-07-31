@@ -72,6 +72,10 @@ export const desk = {
     'desk.ledger.heading': 'Recent record',
     'desk.ledger.appliedTitle': 'Approved · applied',
     'desk.ledger.openTitle': 'Awaiting your approval',
+    // NOT "awaiting your approval": the backend records waiting_for_rebake at
+    // merge time, so the operator has already approved and is waiting on the
+    // C6 re-bake, not on themselves (ds-db0).
+    'desk.ledger.rebakeTitle': 'Approved · awaiting re-bake',
     'desk.ledger.failedTitle': 'Approved · did not apply',
     // Deliberately not "failed": the operation may still be running or may
     // have succeeded with the response lost. Saying "failed" here would be a
@@ -106,9 +110,17 @@ export const desk = {
     // chat request) — the desk has no reliable field to attribute WHICH crew
     // authored a given PR, so this stays crew-neutral rather than guessing.
     'desk.pending.iac.who': 'An infrastructure change is waiting for your review',
-    // Fallback headline for the decisions-derived arm (rule 2b), which never
-    // carries a PR title — see DeskPendingIacProvenance's header comment.
+    // Fallback headline for a row with no PR title. Correct ONLY for `listing`
+    // provenance (a PR the open-PR listing still sees, i.e. genuinely
+    // unapproved). The `decision` arm exists specifically for a PR "the open-PR
+    // listing can no longer see because it already merged" (desk.ts:78-84), so
+    // it gets the merged copy below instead — telling an operator who just
+    // approved that their change awaits approval is a false claim on the exact
+    // frame the approve→stamp beat lands (ds-db0).
     'desk.pending.iac.headlineFallback': 'Infrastructure change PR #{pr} is waiting for your approval.',
+    'desk.pending.iacMerged.who': 'An approved infrastructure change is waiting to be applied',
+    'desk.pending.iacMerged.headlineFallback':
+      'Infrastructure change PR #{pr} is approved and waiting to be applied.',
     'desk.pending.prMeta': 'PR #{pr}',
     'desk.pending.subtitleProposedAt': 'Proposed {time}',
     // Both anchors point at the SAME href (deskModel's `href`) — the actual
@@ -233,6 +245,9 @@ export const desk = {
     // 読み手への呼びかけなので「あなたの」を残す。EN 側の註記も参照。
     'desk.ledger.appliedTitle': '承認済み → 適用完了',
     'desk.ledger.openTitle': 'あなたの承認待ち',
+    // 「承認待ち」ではない。waiting_for_rebake はマージ時点で記録されるため、
+    // 承認は済んでおり、待っているのは C6 再ビルド（ds-db0）。
+    'desk.ledger.rebakeTitle': '承認済み → 再ビルド待ち',
     'desk.ledger.failedTitle': '承認済み → 適用されず',
     'desk.ledger.unconfirmedTitle': '承認済み → 結果は未確認',
     // ---- unresolved rollback outcome (desk rule 2.5) ----
@@ -252,6 +267,8 @@ export const desk = {
     'desk.pending.rollback.headline': '承認が必要なロールバック提案があります。',
     'desk.pending.iac.who': 'インフラ変更があなたの確認を待っています',
     'desk.pending.iac.headlineFallback': 'インフラ変更 PR #{pr} があなたの承認を待っています。',
+    'desk.pending.iacMerged.who': '承認済みのインフラ変更が適用を待っています',
+    'desk.pending.iacMerged.headlineFallback': 'インフラ変更 PR #{pr} は承認済みで、適用を待っています。',
     'desk.pending.prMeta': 'PR #{pr}',
     'desk.pending.subtitleProposedAt': '提案 {time}',
     'desk.pending.notifyFailed':

@@ -110,7 +110,10 @@ describe('ledgerRows', () => {
       expect(rows[0].state).toBe('open');
     });
 
-    it('classifies a non-superseded waiting_for_rebake iac row as open', () => {
+    // ds-db0: waiting_for_rebake is written at MERGE, so the operator has
+    // already approved. It still needs them (the re-bake), but it is NOT the
+    // same state as an unspent rollback approval and must not borrow its copy.
+    it('classifies a non-superseded waiting_for_rebake iac row as awaiting_rebake, not open', () => {
       const d = decision({
         decision_id: 'o3',
         action: 'iac_apply',
@@ -119,7 +122,8 @@ describe('ledgerRows', () => {
         created_at: '2026-07-28T09:00:00Z',
       });
       const rows = ledgerRows([d], 4, { now: NOW, origin: ORIGIN });
-      expect(rows[0].state).toBe('open');
+      expect(rows[0].state).toBe('awaiting_rebake');
+      expect(rows[0].state).not.toBe('open');
     });
 
     it('falls back to noted for everything else (e.g. no_op)', () => {
@@ -194,7 +198,12 @@ describe('ledgerRows', () => {
       expect(rows[0].state).toBe('noted');
     });
 
-    it('this generation’s own applied row (same event_key) → noted, not open', () => {
+    // ds-b0k CHANGED THIS: the earlier waiting doc used to survive as its own
+    // 'noted' row, so one event drew two rows. It is now collapsed away by the
+    // event_key dedup, which satisfies this test's original intent (the stale
+    // waiting doc must never read as live work) more strongly than 'noted' did
+    // — an absent row cannot mislead at all.
+    it('this generation’s own applied row (same event_key) collapses the earlier waiting doc', () => {
       const waiting = decision({
         decision_id: 's2',
         action: 'iac_apply',
@@ -212,13 +221,20 @@ describe('ledgerRows', () => {
         created_at: '2026-07-28T09:00:00Z',
       });
       const rows = ledgerRows([waiting, applied], 4, { now: NOW, origin: ORIGIN });
-      const waitingRow = rows.find((r) => r.decision.decision_id === 's2');
-      expect(waitingRow?.state).toBe('noted');
+      // One event → exactly one row, and it is the LATEST phase of that event.
+      expect(rows).toHaveLength(1);
+      expect(rows[0].decision.decision_id).toBe('s3');
+      expect(rows[0].state).toBe('applied');
+      // The superseded waiting doc is gone, not merely relabelled.
+      expect(rows.find((r) => r.decision.decision_id === 's2')).toBeUndefined();
+      expect(rows.some((r) => r.state === 'open' || r.state === 'awaiting_rebake')).toBe(false);
     });
 
     // ds-dzd: a terminal row from a DIFFERENT generation is not this row's
     // outcome, so the ledger must keep showing it as open work.
-    it('a different generation’s applied row leaves the waiting row OPEN', () => {
+    // Also guards ds-b0k's dedup blast radius: the key is the GENERATION, not
+    // the PR number, so two generations of the same PR must both survive.
+    it('a different generation’s applied row leaves the waiting row awaiting_rebake', () => {
       const waiting = decision({
         decision_id: 's4',
         action: 'iac_apply',
@@ -236,7 +252,63 @@ describe('ledgerRows', () => {
         created_at: '2026-07-28T09:00:00Z',
       });
       const rows = ledgerRows([waiting, applied], 4, { now: NOW, origin: ORIGIN });
-      expect(rows.find((r) => r.decision.decision_id === 's4')?.state).toBe('open');
+      expect(rows.find((r) => r.decision.decision_id === 's4')?.state).toBe('awaiting_rebake');
+      // Distinct event_keys → the dedup must NOT fold them together.
+      expect(rows).toHaveLength(2);
+    });
+
+    // ds-b0k, drawn from the live PR #168 pair: the backend records a phase
+    // sequence under ONE event_key (waiting_for_rebake+pending at 15:31:01,
+    // then waiting_for_rebake+merged at 15:31:08). Both classify identically,
+    // so neither supersedes the other and the desk drew the same event twice.
+    it('collapses same-event_key phase-transition docs to the latest phase', () => {
+      const pendingPhase = decision({
+        decision_id: '26f475d9',
+        action: 'iac_apply',
+        apply_status: 'waiting_for_rebake',
+        pr_number: 168,
+        event_key: 'iac-apply-168-d58dd9c035304939e834717bb17bcac1',
+        created_at: '2026-07-31T15:31:01Z',
+      });
+      const mergedPhase = decision({
+        decision_id: 'f66d3ce4',
+        action: 'iac_apply',
+        apply_status: 'waiting_for_rebake',
+        pr_number: 168,
+        event_key: 'iac-apply-168-d58dd9c035304939e834717bb17bcac1',
+        created_at: '2026-07-31T15:31:08Z',
+      });
+      const rows = ledgerRows([pendingPhase, mergedPhase], 4, { now: NOW, origin: ORIGIN });
+      expect(rows).toHaveLength(1);
+      expect(rows[0].decision.decision_id).toBe('f66d3ce4');
+    });
+
+    // An absent event_key is UNKNOWN identity, not SHARED identity — folding
+    // those together would merge unrelated decisions into one row.
+    it('never collapses rows that carry no event_key', () => {
+      const a = decision({ decision_id: 'k1', created_at: '2026-07-28T09:00:00Z' });
+      const b = decision({ decision_id: 'k2', created_at: '2026-07-28T08:00:00Z' });
+      const rows = ledgerRows([a, b], 4, { now: NOW, origin: ORIGIN });
+      expect(rows).toHaveLength(2);
+    });
+
+    // The cap must count EVENTS, not documents: dedup runs before the slice, so
+    // one chatty event can no longer crowd out three unrelated ones.
+    it('applies the row cap after dedup, not before', () => {
+      const noisy = [1, 2, 3, 4, 5].map((n) =>
+        decision({
+          decision_id: `noise${n}`,
+          action: 'iac_apply',
+          apply_status: 'waiting_for_rebake',
+          pr_number: 500,
+          event_key: 'iac-apply-500-onegeneration',
+          created_at: `2026-07-28T0${n}:00:00Z`,
+        }),
+      );
+      const other = decision({ decision_id: 'other', created_at: '2026-07-28T06:00:00Z' });
+      const rows = ledgerRows([...noisy, other], 4, { now: NOW, origin: ORIGIN });
+      expect(rows).toHaveLength(2);
+      expect(rows.map((r) => r.decision.decision_id)).toContain('other');
     });
   });
 
