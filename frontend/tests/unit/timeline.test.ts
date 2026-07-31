@@ -9,6 +9,7 @@ import {
   eventKey,
   reconcileBackfill,
   omittedThoughtTokens,
+  deriveThoughtSubtitle,
   type GroupKey,
   type TraceEvent,
 } from '../../src/lib/timeline';
@@ -688,5 +689,66 @@ describe('Timeline — omitted-summaries note in the coordinator group', () => {
     });
     expect(getByTestId('timeline-empty')).toBeTruthy();
     expect(queryByTestId('thought-omitted-note')).toBeNull();
+  });
+});
+
+// ---- deriveThoughtSubtitle (ds-jns Task 1.3) ----
+// The collapsed reasoning line's text. First-non-empty-line + clamp is the
+// PRIMARY rule; stripping a leading bold heading is an enhancement layered on
+// top, because thought_text arrives verbatim from the model and the heading
+// shape is a habit of Gemini's summaries, not a contract.
+describe('deriveThoughtSubtitle', () => {
+  it('strips a leading bold markdown heading', () => {
+    expect(deriveThoughtSubtitle('**Assessing the drift**')).toBe('Assessing the drift');
+  });
+
+  it('strips a bold heading with a trailing colon', () => {
+    expect(deriveThoughtSubtitle('**Assessing the drift**:')).toBe('Assessing the drift');
+  });
+
+  it('strips a bold heading with a trailing fullwidth colon (JA is the default locale)', () => {
+    expect(deriveThoughtSubtitle('**ドリフトの評価**：')).toBe('ドリフトの評価');
+  });
+
+  it('keeps a plain sentence as-is when it fits', () => {
+    expect(deriveThoughtSubtitle('Checking the live env against the contract.')).toBe(
+      'Checking the live env against the contract.',
+    );
+  });
+
+  it('clamps a long line to 60 chars including the ellipsis', () => {
+    const long = 'x'.repeat(120);
+    const out = deriveThoughtSubtitle(long)!;
+    expect(out).toHaveLength(60);
+    expect(out.endsWith('…')).toBe(true);
+    expect(out.slice(0, 59)).toBe('x'.repeat(59));
+  });
+
+  it('does not clamp a line of exactly 60 chars', () => {
+    const exact = 'y'.repeat(60);
+    expect(deriveThoughtSubtitle(exact)).toBe(exact);
+  });
+
+  it('uses the FIRST non-empty line of a multi-line chunk', () => {
+    expect(deriveThoughtSubtitle('\n\n  **Reading the service**  \nthen the diff\n')).toBe(
+      'Reading the service',
+    );
+  });
+
+  it('returns null for empty, whitespace-only, null and undefined', () => {
+    expect(deriveThoughtSubtitle('')).toBeNull();
+    expect(deriveThoughtSubtitle('   \n\t\n  ')).toBeNull();
+    expect(deriveThoughtSubtitle(null)).toBeNull();
+    expect(deriveThoughtSubtitle(undefined)).toBeNull();
+  });
+
+  it('returns null for an empty bold heading rather than an empty subtitle', () => {
+    // `**  **` matches the heading shape but carries no text; the caller must
+    // fall back to the static label, not render a blank line.
+    expect(deriveThoughtSubtitle('**  **')).toBeNull();
+  });
+
+  it('leaves inline bold alone (only a WHOLE-line heading is a heading)', () => {
+    expect(deriveThoughtSubtitle('the **drift** is in PORT')).toBe('the **drift** is in PORT');
   });
 });

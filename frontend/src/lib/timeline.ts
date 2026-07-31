@@ -272,3 +272,36 @@ export function reconcileBackfill(
   }
   return additions.length > 0 ? [...live, ...additions] : live;
 }
+
+/** Longest collapsed-subtitle text before the ellipsis clamp bites. */
+const SUBTITLE_MAX = 60;
+
+/**
+ * The collapsed reasoning line's subtitle, derived from the LATEST thought
+ * chunk (ds-jns, design §2).
+ *
+ * PRIMARY RULE: the first non-empty line, clamped. The bold-heading strip is
+ * an ENHANCEMENT, not a data contract — real Gemini thought summaries often
+ * lead with `**Assessing the drift**`, but `thought_text` arrives verbatim
+ * from the model and nothing guarantees that shape. When the heading pattern
+ * doesn't match, the plain first line is used unchanged.
+ *
+ * Returns `null` (not a default string) for empty/whitespace input so the
+ * COMPONENT picks the static i18n label — locale strings stay out of lib/.
+ */
+export function deriveThoughtSubtitle(
+  thoughtText: string | null | undefined,
+): string | null {
+  if (!thoughtText) return null;
+  const line = thoughtText
+    .split('\n')
+    .map((l) => l.trim())
+    .find((l) => l.length > 0);
+  if (!line) return null;
+  // Both colon forms: the app's default locale is JA and a summary written in
+  // Japanese ends its heading with U+FF1A, not U+003A.
+  const m = /^\*\*(.+?)\*\*[:：]?\s*$/.exec(line);
+  const text = m ? m[1].trim() : line;
+  if (!text) return null;
+  return text.length > SUBTITLE_MAX ? `${text.slice(0, SUBTITLE_MAX - 1)}…` : text;
+}
