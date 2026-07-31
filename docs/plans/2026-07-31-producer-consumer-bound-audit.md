@@ -393,6 +393,16 @@ its own bug.
       re-create, and a tilde *run* is bounded by non-tildes, so deleting one
       cannot merge two others.
 
+   6. *Delete only CODE delimiters.* Wrong because removing a fence
+      **activates** what was inert inside it. An `<!--` in a fenced block whose
+      `-->` and closing fence both fall in the cut becomes a live comment and
+      eats the URL. "Nothing can open if no code delimiter survives" was true
+      only of *code*. Closed by `_HTML_SWALLOWER`, applied after the fences are
+      gone — and it is not another guessed alphabet: CommonMark defines exactly
+      seven HTML block start conditions, and this is precisely the subset whose
+      end condition is a specific terminator rather than a blank line (types
+      1–5). Types 6 and 7 end at a blank line, which the marker supplies.
+
    **The test fixtures were the deeper problem.** Every fence fixture in the
    first four rounds opened a block and never closed it — so the URL was inside
    code in the **original** too, and the test could not have shown anything
@@ -407,9 +417,24 @@ its own bug.
    installed), so bare URLs never link at all; the renderer emits `<...>`
    autolink form, and the fixtures now match it.
 
-   The rebuilt suite discriminates **every** prior implementation: 58, 11, 8
-   and 2 failures for attempts 1–4 respectively, and 74 green for the shipped
-   one.
+   Two further coverage gaps Codex caught in the rebuilt fixtures: `mid` was
+   being placed in the deleted region (so the 12-vs-3-backtick case never had
+   both runs in the head), and the "run split by the cut" fixture used an
+   8-backtick run that sat entirely inside the head and never split. Both now
+   assert their own geometry.
+
+   The rebuilt suite discriminates **every** prior implementation: 58, 11, 8, 2
+   and 6 failures for attempts 1–4 and 6 respectively, and 82 green for the
+   shipped one. Before the rebuild, three of the four then-existing attempts
+   passed.
+
+   **What this cost, and what it bought.** Six wrong implementations and two
+   rounds of invalid fixtures on a path that fires only when a model writes a
+   ~9400-character rationale. Worth stating plainly: without the clamp that
+   path is a guaranteed 422 and *no* notification, so every version here was an
+   improvement on the status quo — but four of them would have shipped a
+   notification whose link silently did not work, which is the worse failure
+   because it looks like success.
 
    The test oracle is now **`markdown-it`**, declared as a dev dependency. Each
    broken repair had shipped with a hand-rolled assertion that shared its blind

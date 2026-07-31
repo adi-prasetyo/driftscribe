@@ -441,6 +441,34 @@ NOTIFIER_BODY_MAX_CHARS = 10000
 _BACKTICK_RUN = re.compile(r"`+")
 _TILDE_FENCE = re.compile(r"~{3,}")
 
+# Removing a fence can ACTIVATE markup that was inert inside it. Codex's case:
+# a ``<!--`` sitting in a fenced block whose ``-->`` and closing fence are both
+# deleted by the cut. Once the opening fence goes, the comment is live and
+# swallows everything after it — the approval URL included. "Nothing can open
+# if no code delimiter survives" was true only of CODE.
+#
+# This is NOT another guess at an alphabet. CommonMark defines exactly seven
+# HTML block start conditions, and the ones below are precisely those whose end
+# condition is a specific terminator rather than a blank line:
+#
+#   type 1  <script | <pre | <style | <textarea   (ends at its closing tag)
+#   type 2  <!--                                  (ends at -->)
+#   type 3  <?                                    (ends at ?>)
+#   type 4  <! + letter                           (ends at >)
+#   type 5  <![CDATA[                             (ends at ]]>)
+#
+# Types 6 and 7 end at a BLANK LINE, and the omission marker supplies blank
+# lines on both sides, so they terminate on their own and are left alone.
+#
+# ``<`` is neutralized rather than the whole construct so the surrounding text
+# survives, and the pattern cannot touch ``<https://…>`` — an autolink is none
+# of these start conditions, which matters because that autolink IS the
+# approval link.
+_HTML_SWALLOWER = re.compile(
+    r"<(?=!--|\?|!\[CDATA\[|![A-Za-z]|/?(?:script|pre|style|textarea)\b)",
+    re.IGNORECASE,
+)
+
 
 def _neutralize_fences(fragment: str) -> str:
     """Remove every code delimiter from a TRUNCATED fragment.
@@ -467,6 +495,10 @@ def _neutralize_fences(fragment: str) -> str:
        rescans what it produced, so removing a backtick can JOIN tildes into a
        fence that did not exist: ``"~~`~"`` -> ``"~~~"``. See the ordering
        argument above the patterns.
+    6. Delete only CODE delimiters. Wrong because removing a fence ACTIVATES
+       what was inert inside it — an ``<!--`` in a fenced block whose ``-->``
+       fell in the cut becomes a live comment and swallows the URL. Hence
+       ``_HTML_SWALLOWER``, applied after the fences are gone.
 
     Every one of those delivers the notification while silently disabling the
     one thing it exists to deliver, which is strictly worse than the 422 this
@@ -485,7 +517,11 @@ def _neutralize_fences(fragment: str) -> str:
     lost its middle, and monospace rendering is worth far less than a clickable
     approval link. Bodies that fit are never passed here at all.
     """
-    return _TILDE_FENCE.sub("", _BACKTICK_RUN.sub("", fragment))
+    without_code = _TILDE_FENCE.sub("", _BACKTICK_RUN.sub("", fragment))
+    # Last, and only after the fences are gone: what was inert inside a code
+    # block is live now, so the HTML swallowers have to be defused on the
+    # POST-removal text, not the original.
+    return _HTML_SWALLOWER.sub("&lt;", without_code)
 
 
 def normalize_notifier_body(body: str) -> str:

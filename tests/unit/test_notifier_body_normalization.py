@@ -101,8 +101,8 @@ def _balanced(opener: str, closer: str | None = None, mid: str = "") -> str:
     closer = opener if closer is None else closer
     return (
         "intro\n" + opener + "\n"
-        + "k: v\n" * 1200            # keeps the opener inside the retained head
-        + mid
+        + mid                        # in the HEAD, beside the opener — see below
+        + "k: v\n" * 1200            # keeps both inside the retained head
         + "z\n" * 2000               # ... and pushes the closer into the middle
         + closer + "\n"
         + "w\n" * 3000               # tail filler, no delimiters
@@ -173,10 +173,29 @@ def test_the_url_stays_clickable_for_every_fence_arrangement(
 
 
 def test_a_fence_run_split_by_the_cut_still_leaves_the_url_reachable() -> None:
-    """The cut can land INSIDE a delimiter, leaving a partial run in the head —
-    a shorter fence than the author wrote, which the deleted closer no longer
-    matches."""
-    _assert_link_survives(_balanced("`" * 8))
+    """The cut lands INSIDE a delimiter, leaving a partial run in the head — a
+    SHORTER fence than the author wrote, which the deleted closer no longer
+    matches.
+
+    The run is deliberately long enough (2000 backticks starting around 4000
+    chars in) to straddle the head boundary at ~4975 whatever the exact budget
+    split works out to. An earlier version used an 8-backtick run that sat
+    entirely inside the head and so never split at all — the test passed
+    without exercising its own premise (Codex).
+    """
+    body = (
+        "intro\n" + "x\n" * 2000     # ~4000 chars, so the run below straddles
+        + "`" * 2000 + "\n"           # the head boundary at ~4977
+        + "z\n" * 2000
+        + "`" * 2000 + "\n"           # a MATCHING closer, so the original is valid
+        + "w\n" * 3000
+        + "\nApprove here:\n\n" + _URL + "\n"
+    )
+    from agent.renderer import clamp_middle_out
+
+    head, _, _ = clamp_middle_out(body, CAP)
+    assert head.endswith("`"), "premise: the cut must land inside the backtick run"
+    _assert_link_survives(body)
 
 
 def test_inline_backtick_runs_in_prose_are_not_treated_as_fences() -> None:
@@ -194,6 +213,58 @@ def test_a_tilde_fence_is_neutralized_too() -> None:
     other half live, and the failure is identical: the URL sits inside an
     unclosed ``~~~`` block and renders as text."""
     _assert_link_survives(_balanced("~~~yaml", closer="~~~"))
+
+
+@pytest.mark.parametrize(
+    "opener, closer",
+    [
+        ("<!--", "-->"),               # comment: ends at --> , NOT at a blank line
+        ("<?php", "?>"),               # processing instruction
+        ("<!DOCTYPE html", ">"),       # declaration
+        ("<![CDATA[", "]]>"),          # CDATA
+        ("<script>", "</script>"),     # type 1
+        ("<style>", "</style>"),
+    ],
+)
+def test_markup_that_was_inert_inside_a_fence_cannot_wake_up_and_eat_the_url(
+    opener: str, closer: str
+) -> None:
+    """Codex's find, and the reason "no code delimiter survives" was not enough.
+
+    Inside a fenced block this markup is literal text. Delete the fence and it
+    becomes live — and every construct here is one CommonMark ends at a SPECIFIC
+    TERMINATOR rather than at a blank line, so the marker's blank lines do not
+    stop it. With the terminator deleted by the same cut, it runs to the end of
+    the document and takes the approval link with it.
+    """
+    body = (
+        "```html\n" + opener + "\n"
+        + "k: v\n" * 1200
+        + "z\n" * 1400
+        + closer + "\n```\n"
+        + "w\n" * 3000
+        + "\nApprove:\n\n" + _URL + "\n"
+    )
+    _assert_link_survives(body)
+
+
+@pytest.mark.parametrize("tick", ["`", "``"])
+def test_span_delimiters_re_pairing_around_the_url(tick: str) -> None:
+    """Codex's construction, once corrected to the autolink form.
+
+    Two valid spans with a clickable URL between them. Under the old
+    three-or-more-backticks rule the opener is isolated in the head by the
+    marker's blank lines, its retained closer becomes an opener in the tail,
+    and that pairs with the opener before ``code`` — enclosing the URL.
+
+    My own attempt at this fixture used a BARE url and "failed" in the original
+    too, because ``.enable("linkify")`` is a silent no-op without
+    ``linkify-it-py``. Worth keeping the corrected version: it is a real
+    regression fixture, not the by-construction property below.
+    """
+    _assert_link_survives(
+        tick + "A" * 7000 + tick + " prose " + _URL + f" {tick}code{tick}" + "B" * 4000
+    )
 
 
 def test_removing_a_backtick_cannot_create_a_tilde_fence() -> None:
