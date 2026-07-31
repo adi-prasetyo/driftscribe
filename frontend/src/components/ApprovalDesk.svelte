@@ -297,7 +297,11 @@
            so. `loading` resolves itself in seconds; `degraded` admits a gap that
            may not. They share a shape but never share copy. -->
       {@const isLoading = model.reason === 'loading'}
-      <div class="approval-desk__calm" data-testid="approval-desk-unknown" data-reason={model.reason}>
+      <div
+        class="approval-desk__calm approval-desk__calm--slim"
+        data-testid="approval-desk-unknown"
+        data-reason={model.reason}
+      >
         <h2>{$t(isLoading ? 'desk.unknown.loading.headline' : 'desk.unknown.degraded.headline')}</h2>
         <p class="approval-desk__watch" data-testid="approval-desk-watch">
           <span
@@ -308,7 +312,7 @@
         </p>
       </div>
     {:else if model.kind === 'resting'}
-      <div class="approval-desk__calm" data-testid="approval-desk-resting">
+      <div class="approval-desk__calm approval-desk__calm--slim" data-testid="approval-desk-resting">
         <h2>{$t('desk.resting.headline')}</h2>
         <p class="approval-desk__watch" data-testid="approval-desk-watch">
           <span class="approval-desk__watch-dot" aria-hidden="true"></span>
@@ -502,8 +506,43 @@
 
   .approval-desk__deskwrap {
     padding: 40px 40px 26px;
-    min-height: 280px;
+    /* `min-height: 280px` used to hold the hero open so a calm desk did not
+       collapse to a headline over acres of nothing. With the estate section
+       under it (2026-07-31 merge) that reserved blank height IS the emptiness
+       we are removing, and the hero growing when a decision arrives is the
+       deliberate demo beat — see the design doc's "Accepted trade-offs". */
     box-sizing: border-box;
+  }
+  /* The two calm states slim the whole block, not just its inner text: the
+     40px top inset belongs to a hero that carries the page, and this one no
+     longer does. Scoped by `data-state` on the wrapper (already there) rather
+     than by padding the nested calm div, which would inset twice. */
+  .approval-desk__deskwrap[data-state='resting'],
+  .approval-desk__deskwrap[data-state='unknown'] {
+    padding: 18px 40px;
+  }
+
+  /* One baseline-aligned row: headline, then the watch metadata beside it.
+     Wraps rather than truncates — JA runs longer and the watch line grows
+     conditional segments. */
+  .approval-desk__calm--slim {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+  }
+  /* Body-size, not the 31px Mincho hero rule — that stays for the tall states.
+     Still an h2 (see the heading-level note above); only its size changes. */
+  .approval-desk__calm--slim h2 {
+    font-family: inherit;
+    font-size: 15px;
+    line-height: 1.5;
+    font-weight: 600;
+    letter-spacing: 0;
+    margin: 0;
+  }
+  .approval-desk__calm--slim .approval-desk__watch {
+    margin-top: 0;
   }
 
   /* h2, not h3, even though the plan and the mockup both say "Mincho h3 31px"

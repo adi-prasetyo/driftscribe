@@ -160,6 +160,55 @@ describe('ApprovalDesk — resting state', () => {
   });
 });
 
+// 2026-07-31 desk+estate merge — the calm states no longer have to carry the
+// page alone (the estate section sits directly below), so a quiet one-line
+// strip is the right size for "nothing needs you". This is LAYOUT, not
+// semantics: the h2 stays, or the hero's heading outline would depend on which
+// state is showing.
+describe('ApprovalDesk — calm states are a slim strip (desk+estate merge)', () => {
+  it('renders resting as a slim strip: headline and watch line share one row', () => {
+    const { getByTestId } = render(ApprovalDesk, {
+      props: { graph: GRAPH, decisions: [], pendingApprovals: [], settled: true, onNavigate: vi.fn() },
+    });
+    const resting = getByTestId('approval-desk-resting');
+    expect(resting.classList.contains('approval-desk__calm--slim')).toBe(true);
+    expect(resting.querySelector('h2')).not.toBeNull(); // semantics preserved
+    // The watch line and its segments are untouched by the slimming.
+    expect(getByTestId('approval-desk-watch').textContent).toContain('735 resources');
+  });
+
+  it('renders the unknown pair as the same slim strip, data-reason intact', () => {
+    for (const [reason, props] of [
+      ['loading', { graph: null, settled: false }],
+      ['degraded', { graph: GRAPH, settled: true, degraded: true }],
+    ] as const) {
+      const { getByTestId } = render(ApprovalDesk, {
+        props: { decisions: [], pendingApprovals: [], onNavigate: vi.fn(), ...props },
+      });
+      const unknown = getByTestId('approval-desk-unknown');
+      expect(unknown.getAttribute('data-reason')).toBe(reason);
+      expect(unknown.classList.contains('approval-desk__calm--slim')).toBe(true);
+      expect(unknown.querySelector('h2')).not.toBeNull();
+      cleanup();
+    }
+  });
+
+  it('the tall states do NOT take the slim class', () => {
+    const { getByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: GRAPH,
+        decisions: [rollbackDecision()],
+        pendingApprovals: [],
+        settled: true,
+        onNavigate: vi.fn(),
+      },
+    });
+    expect(getByTestId('approval-desk-pending').classList.contains('approval-desk__calm--slim')).toBe(
+      false,
+    );
+  });
+});
+
 describe('ApprovalDesk — heading level', () => {
   // The page's only h1 is the brand title in App.svelte, so the desk's state
   // headline must be h2: an h3 skips a level for anyone navigating by heading,
