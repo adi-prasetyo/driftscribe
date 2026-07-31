@@ -544,8 +544,19 @@
     gap: 6px 16px;
   }
   /* Body-size, not the 31px Mincho hero rule — that stays for the tall states.
-     Still an h2 (see the heading-level note above); only its size changes. */
-  .approval-desk__calm--slim h2 {
+     Still an h2 (see the heading-level note above); only its size changes.
+
+     The `.approval-desk` prefix is load-bearing, NOT redundant nesting. Without
+     it this selector and the `.approval-desk h2` rule below are BOTH (0,2,1) —
+     Svelte scopes each to two classes plus the `h2` type, and `:where()` adds
+     nothing — so the cascade fell to source order and the 31px rule, being
+     later, won every property here. The whole rule was dead: the strip shipped
+     with a 31px Mincho headline in it. The prefix makes this (0,3,1), which
+     beats the base rule wherever either is moved, so a future reorder of this
+     stylesheet cannot silently revive the bug. Pinned by a computed-style
+     assertion in the smoke suite — jsdom does not run the cascade, so no unit
+     test can see this class of failure. */
+  .approval-desk .approval-desk__calm--slim h2 {
     font-family: inherit;
     font-size: 15px;
     line-height: 1.5;
