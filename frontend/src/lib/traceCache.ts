@@ -174,12 +174,25 @@ export function createTraceCache(call: CallFn): TraceCache {
     }));
   }
 
+  /** Report a failed /trace — but never over the top of a successful one.
+   *
+   *  Two writers can be in flight at once: App fires its post-`done` backfill
+   *  in the BACKGROUND (it does not route through ensure(), because it also
+   *  owns the global timeline write), while the operator expands the
+   *  disclosure and ensure() starts its own request. If the racing request
+   *  loses, the entry demonstrably HAS its trace — the events and decision are
+   *  already on screen — so claiming "couldn't load" would be a visible lie
+   *  with a retry button attached to it. */
+  function failEnrich(traceId: string): void {
+    patch(traceId, (prev) => (prev.enrich === 'loaded' ? prev : { ...prev, enrich: 'error' }));
+  }
+
   async function fetchTrace(traceId: string): Promise<void> {
     patch(traceId, (prev) => ({ ...prev, enrich: 'loading' }));
     try {
       const resp = await call('/trace/' + encodeURIComponent(traceId));
       if (!resp.ok) {
-        patch(traceId, (prev) => ({ ...prev, enrich: 'error' }));
+        failEnrich(traceId);
         return;
       }
       const t = (await resp.json()) as TraceResponse;
@@ -194,7 +207,7 @@ export function createTraceCache(call: CallFn): TraceCache {
         enrich: 'loaded',
       }));
     } catch {
-      patch(traceId, (prev) => ({ ...prev, enrich: 'error' }));
+      failEnrich(traceId);
     }
   }
 

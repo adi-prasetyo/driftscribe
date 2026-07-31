@@ -44,10 +44,25 @@ test.describe('transparency UI', () => {
     // hero. Since ds-jns the crew turn carries its reasoning INLINE — expanding
     // that disclosure is what proves the trace is reachable from the message.
     await expect(page.locator('[data-testid="conversation-thread"]')).toBeVisible({ timeout: 60_000 });
+
+    // The disclosure alone is NOT a "the reply arrived and persisted" signal
+    // the way the old settled-only open-trace button was: it attaches from the
+    // `meta` frame, on the optimistic turn, before anything has completed. Wait
+    // for the two things that do mean it — the typing indicator gone (the
+    // `done` frame landed) and ?conversation set (the turn persisted).
+    await expect(page.locator('[data-testid="thread-typing"]')).toHaveCount(0, { timeout: 60_000 });
+    await expect
+      .poll(() => new URL(page.url()).searchParams.get('conversation'), { timeout: 60_000 })
+      .not.toBeNull();
+
     const disclosure = page.locator('[data-testid="reasoning-disclosure"]').first();
     await expect(disclosure).toBeVisible({ timeout: 60_000 });
     await disclosure.click();
     await expect(page.locator('[data-testid="trace-detail"]').first()).toBeVisible({ timeout: 30_000 });
+    // …and it holds real reasoning, not an empty shell.
+    await expect(
+      page.locator('[data-testid="trace-detail"]').first().locator('[data-testid^="trace-row-"]').first(),
+    ).toBeVisible({ timeout: 30_000 });
   });
 
   test('past-decisions pane renders with at least one item (seeded)', async ({ page, request }) => {

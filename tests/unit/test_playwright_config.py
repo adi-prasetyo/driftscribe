@@ -35,6 +35,7 @@ def test_transparency_spec_uses_data_testid_selectors():
     # crew turn carries its reasoning INLINE, so the spec waits on
     # conversation-thread and then expands a reasoning-disclosure.
     for tid in ("chat-prompt", "chat-submit", "conversation-thread",
+                "reasoning-disclosure", "trace-detail",
                 "past-decisions-pane", "past-decision-item",
                 "open-trace-button", "historical-banner"):
         assert f'data-testid="{tid}"' in body, f"spec missing selector for {tid}"

@@ -830,3 +830,49 @@ describe('App — the client does not know what happened', () => {
     expect(await typeAndReadWorkload(container, 'second try')).toBe('provision');
   });
 });
+
+// ---------------------------------------------------------------------------
+// A committed redemption whose joining crew failed to run (ds-jns).
+//
+// The transition persisted; the joining crew's first reply did not. The thread
+// therefore refetches — and that refetch replaces every overlay in one
+// synchronous block, deliberately, because an overlay keyed against the OLD
+// turn count collides with the refetched rows. The explanation still has to
+// survive it, or the operator is left with a crew change and no account of the
+// missing reply.
+// ---------------------------------------------------------------------------
+describe('App — a committed handoff whose join failed keeps its explanation', () => {
+  it('re-seats the failure turn after the successful refetch', async () => {
+    let redeemed = false;
+    stubFetch((url, init) => {
+      if (url.includes('/chat/handoff') && init?.method === 'POST') {
+        redeemed = true;
+        return errJson(503, "workload 'provision' is not deployed", {
+          'X-Handoff-Redeemed': '1',
+        });
+      }
+      if (url.includes('/conversations/')) {
+        // The refetch SUCCEEDS — the branch where the old code lost the message.
+        return okJson(
+          redeemed
+            ? { ...JOINED_DETAIL, turns: JOINED_DETAIL.turns.slice(0, 3), pending_handoff: null }
+            : PENDING_DETAIL,
+        );
+      }
+      return undefined;
+    });
+    window.sessionStorage.setItem('ds.handoff.c1', JSON.stringify(OFFER));
+    const { findByTestId, getByTestId } = render(App);
+    await fireEvent.click(await findByTestId('conversation-open'));
+    await findByTestId('handoff-chip');
+    await fireEvent.click(getByTestId('handoff-confirm'));
+
+    // The confirmed transition is in the thread…
+    await findByTestId('thread-turn-crew-change');
+    // …and so is the reason the joining crew never answered.
+    await waitFor(() => expect(getByTestId('thread-turn-error')).toBeTruthy());
+    expect(getByTestId('conversation-thread').textContent).toContain(
+      'its first reply failed',
+    );
+  });
+});

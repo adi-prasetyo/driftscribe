@@ -303,6 +303,48 @@ describe('createTraceCache — lazy enrichment', () => {
   });
 });
 
+describe('createTraceCache — concurrent writers', () => {
+  it('a failed ensure() does not stamp error on an entry the backfill already loaded', async () => {
+    // Both writers can be in flight at once: App fires its post-`done` backfill
+    // in the background while the operator expands the disclosure, and ensure()
+    // sees enrich:'idle' because the backfill's fetch is not routed through the
+    // cache. If ensure's own request then fails, it must not report an error
+    // for a trace we demonstrably have — the events and decision are already
+    // on screen.
+    let failTrace!: (e: Error) => void;
+    const gate = new Promise<Response>((_, rej) => {
+      failTrace = rej;
+    });
+    const { fn } = makeCall({ trace: () => gate });
+    const cache = createTraceCache(fn);
+    cache.beginLive(TID);
+    cache.appendLive(TID, thought('streamed', 'i1'));
+    cache.endLive(TID, 'complete');
+
+    const p = cache.ensure(TID);
+    expect(entryOf(cache, TID)!.enrich).toBe('loading');
+    // The backfill lands FIRST, with the real data.
+    const decision: Decision = { decision_id: 'd1', action: 'drift_pr' };
+    cache.settleBackfill(TID, traceResponse({ events: [mcp('search_documents', 'i2')], decision }));
+    expect(entryOf(cache, TID)!.enrich).toBe('loaded');
+    // …then the racing request dies.
+    failTrace(new Error('offline'));
+    await p;
+
+    const e = entryOf(cache, TID)!;
+    expect(e.enrich).toBe('loaded'); // NOT downgraded to 'error'
+    expect(e.decision).toEqual(decision);
+    expect(e.events).toHaveLength(2);
+  });
+
+  it('still reports an error when nothing else supplied the trace', async () => {
+    const { fn } = makeCall({ trace: () => res({}, 500) });
+    const cache = createTraceCache(fn);
+    await cache.ensure(TID);
+    expect(entryOf(cache, TID)!.enrich).toBe('error');
+  });
+});
+
 describe('createTraceCache — pr-body lane (fail-soft)', () => {
   it('ensure() fetches the pr-body for an iac_apply decision', async () => {
     const { fn, paths } = makeCall({

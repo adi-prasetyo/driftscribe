@@ -1364,3 +1364,47 @@ describe('App — ephemeral (non-persisted) exchanges', () => {
     expect(thread.textContent).toContain('the good prompt');
   });
 });
+
+describe('App — an ephemeral turn does not leak into historical replay', () => {
+  beforeEach(() => {
+    history.replaceState(null, '', '/?view=chat');
+  });
+
+  it('opening a past decision still renders its rationale after a failed exchange', async () => {
+    // The replay hero is gated on there being no ephemeral exchange (the two
+    // would otherwise say the same thing twice). openTrace therefore has to
+    // clear one, exactly as it already clears the optimistic overlay — or a
+    // network failure silently blanks every replay opened afterwards.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes('/chat') && init?.method === 'POST') throw new Error('offline');
+        if (url.includes('/trace/'))
+          return okJson({
+            trace_id: 't1',
+            complete: true,
+            events: [],
+            decision: { decision_id: 'd1', action: 'rollback', rationale: 'PORT drifted on the agent service' },
+          });
+        if (url.includes('/conversations')) return okJson({ conversations: [] });
+        if (url.includes('/decisions'))
+          return okJson({ decisions: [{ decision_id: 'd1', action: 'rollback', trace_id: 't1' }] });
+        if (url.includes('/infra/graph')) return okJson(GRAPH);
+        return okJson({});
+      }),
+    );
+    const { container, findByTestId, getByTestId } = render(App);
+    await findByTestId('chat-prompt');
+    await sendPrompt(container, 'anything');
+    await findByTestId('thread-turn-error');
+
+    await fireEvent.click(await findByTestId('open-trace-button'));
+    await findByTestId('historical-banner');
+    await waitFor(() => {
+      const hero = getByTestId('final-response');
+      expect(hero.hasAttribute('hidden')).toBe(false);
+      expect(hero.textContent).toContain('PORT drifted on the agent service');
+    });
+  });
+});

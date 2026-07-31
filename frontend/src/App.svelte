@@ -502,6 +502,16 @@
   };
   let ephemeralExchange = $state<EphemeralExchange | null>(null);
 
+  /** Re-seat the current ephemeral turn against the persisted turns as they
+   *  stand NOW. Callers use it around reloadConversationTurns, which clears
+   *  every overlay in one synchronous block (an overlay keyed against the old
+   *  turn count would collide with the refetched rows). The original
+   *  `createdAt` is carried, so the turn keeps the time it actually happened. */
+  function reseatEphemeral(carried: EphemeralExchange | null): void {
+    if (carried == null) return;
+    ephemeralExchange = { ...carried, baseSeq: conversationTurns.length };
+  }
+
   /** Record a non-persisted outcome as a thread turn. Always clears
    *  `liveExchange` — the optimistic bubble and this are the same exchange. */
   function setEphemeral(
@@ -1550,7 +1560,12 @@
             traceId: null, // nothing streamed — the failure is the response itself
             omitUserTurn: true,
           });
-          await reloadConversationTurns(cid, myRun);
+          {
+            const carried = ephemeralExchange;
+            await reloadConversationTurns(cid, myRun);
+            if (myRun !== runSeq) return;
+            reseatEphemeral(carried);
+          }
           return;
         }
         // Otherwise nothing happened: no crew moved, no turn ran. Not a chat
@@ -1778,8 +1793,10 @@
       // errored.
       await backfillTrace(myRun, liveTraceId);
       if (myRun !== runSeq) return;
+      const carried = ephemeralExchange;
       await reloadConversationTurns(cid, myRun);
       if (myRun !== runSeq) return;
+      reseatEphemeral(carried);
       void overview.refresh('chat-turn');
       void loadConversations(); // the thread's crew + message count just changed
     } finally {
@@ -1848,6 +1865,9 @@
     finalIsError = false;
     iacPr = null;
     liveExchange = null; // a replay always shows the hero, never a live bubble
+    // …and neither does it show the previous turn's failure. The hero is gated
+    // on this being null, so leaving it set blanks the replay's own rationale.
+    ephemeralExchange = null;
     historicalDecision = null;
     historicalPrBody = null;
     historicalPrBodyTruncated = false;
