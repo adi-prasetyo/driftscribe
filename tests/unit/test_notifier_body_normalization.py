@@ -1,16 +1,25 @@
-"""ds-thm — ``normalize_notifier_body``: the cap holds, and the cut is repaired.
+"""ds-thm — ``normalize_notifier_body``: the cap holds, and the link survives.
 
-This is the highest-risk piece of ds-thm, for a reason worth stating: the naive
-implementation ("clamp to the cap, then close an orphaned fence") emits
-``cap + 4`` characters and recreates the exact 422 the whole bead exists to
-prevent. So the invariant under test is not "roughly fits" — it is that no
-input of any shape produces output over the cap, INCLUDING the inputs that
-trigger a repair.
+Two invariants, and the second one cost four attempts to get right.
 
-Why repair at all, when the Notifier already repairs fences: it repairs only
-the Discord ``content`` field. The handler sets ``text`` to the full body
-verbatim ("Only ``content`` is capped"), so a cut made HERE that strands a
-fence reaches Slack and every generic receiver unrepaired.
+**The cap.** No input of any shape may produce output over it — including the
+inputs that trigger post-cut work, since "clamp to the cap, then append" emits
+more than the cap and recreates the exact 422 this clamp exists to prevent.
+
+**The link.** A cut through arbitrary Markdown can leave a code delimiter
+stranded, and anything inside code renders as inert text — so the approval URL
+arrives present, visible, and unclickable, which is not delivery. It matters
+here specifically because the Notifier repairs fences only on the Discord
+``content`` field; it sets ``text`` to the full body verbatim ("Only
+``content`` is capped"), so a cut made HERE reaches Slack and every generic
+receiver unrepaired.
+
+**The oracle is markdown-it, not a backtick counter.** Four fence *repairs*
+were wrong before the current neutralize-everything approach, and every one
+shipped alongside a hand-rolled assertion that shared its blind spot — a parity
+check cannot detect a parity bug, and a backtick counter cannot see a ``~~~``
+fence at all. So correctness questions here are settled by rendering the result
+and looking for a real link token.
 """
 from __future__ import annotations
 
@@ -174,6 +183,45 @@ def test_inline_backtick_runs_in_prose_are_not_treated_as_fences() -> None:
     body = "x" * 6000 + "\nprose with ``` inline delimiters here\n\n" + _URL
     out = normalize_notifier_body(body)
     assert len(out) <= CAP
+    assert _url_renders_as_a_link(out)
+
+
+def test_a_tilde_fence_is_neutralized_too() -> None:
+    """CommonMark has TWO fence characters. A backtick-only rule leaves the
+    other half live, and the failure is identical: the URL sits inside an
+    unclosed ``~~~`` block and renders as text."""
+    body = "intro\n~~~yaml\n" + ("k: v\n" * 4000) + "\nepi\n" + _URL
+    out = normalize_notifier_body(body)
+    assert len(out) <= CAP
+    assert _url_renders_as_a_link(out)
+
+
+@pytest.mark.parametrize(
+    "delims",
+    ["`", "``", "```", "````````", "~~~", "~~~~~~", "`` ` ``` ~~~"],
+)
+def test_a_truncated_body_retains_no_code_delimiter_of_any_kind(delims: str) -> None:
+    """The invariant the implementation actually provides, asserted directly.
+
+    This is deliberately a property test rather than a scenario. Codex reported
+    that one- and two-backtick spans can re-pair *inside the retained tail* and
+    enclose the URL, and I could not reproduce it: my constructions either
+    stayed under the cap (so no cut happened) or failed to render a link in the
+    ORIGINAL too, which would make it a pre-existing defect rather than one the
+    cut introduced.
+
+    Rather than ship a scenario test that passes for a reason I cannot name —
+    the failure mode this whole change keeps hitting — the alphabet was widened
+    to cover the class anyway (it only ever shrinks, so it costs nothing) and
+    the test asserts the thing that is true by construction: after a cut, no
+    delimiter capable of opening code survives in the output. Nothing can
+    re-pair if nothing remains, which makes the reproduction question moot.
+    """
+    body = f"prefix {delims} filler\n" + ("y" * 60 + "\n") * 300 + f"{delims} tail\n" + _URL
+    out = normalize_notifier_body(body)
+    assert len(out) <= CAP
+    assert "`" not in out, "a backtick survived a truncated fragment"
+    assert not re.search(r"~{3,}", out), "a tilde fence survived a truncated fragment"
     assert _url_renders_as_a_link(out)
 
 

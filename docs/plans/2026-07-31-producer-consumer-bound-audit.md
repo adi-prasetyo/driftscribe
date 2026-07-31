@@ -209,14 +209,12 @@ malformed Markdown with no repair anywhere.
   Rewritten over the helper with **byte-identical output**: characterization
   tests are written and passing *before* the refactor. This is
   production-proven code and abstraction is not worth behavioral drift.
-- `normalize_notifier_body` — Markdown-aware. Must: **reserve worst-case repair
-  space before cutting** (else "clamp then close a fence" yields 10 004 chars
-  and recreates the exact 422 this bead exists to prevent — the worker reserves
-  its closer unconditionally for this reason); repair head and tail
-  **independently** (two distinct artifacts — an opener retained in the head
-  whose closer was deleted, and an orphan closer retained in the tail whose
-  opener was deleted); guarantee `len(result) <= cap`; keep the approval URL
-  outside any repaired fence.
+- `normalize_notifier_body` — clamp, then **neutralize** every code delimiter
+  in the retained fragments (backtick runs of any length, tilde runs of three
+  or more). Guarantees `len(result) <= cap` and that the approval URL is not
+  inside code. It needs no repair reserve *because* neutralizing only removes
+  characters — see §5c for the four repair designs that came first and why
+  each was wrong.
 - `normalize_close_reason` — plain text, empty → disclosing fallback.
 
 Fix 1 clamps the **assembled body**, not the rationale. Bounding rationale and
@@ -224,12 +222,14 @@ evidence table separately would keep the template provably intact but needs its
 own budget split, and the whole path is a last resort (2000-char cap, 581
 observed). "The fix can be riskier than the bug" applies.
 
-The fence heuristic stays **duplicated** across the deploy boundary rather than
+The fence handling stays **duplicated** across the deploy boundary rather than
 hoisted into `driftscribe_lib`, which is split coordinator/worker and would
 force deploying both (prior incident: the infra-drift worker-skew canary). This
 is the house pattern, stated at `agent/validator.py:11`: mirror the constant,
 never take a build-time dependency on a worker. Test-time imports are fine and
-are what pins the mirrors.
+are what pins the mirrors. The two copies also now differ deliberately — the
+Notifier *repairs* fences for Discord (it can, since it is cutting to 2000 with
+a fixed tail budget), while the coordinator *neutralizes* them.
 
 ### 3b. Constants pinned to the consumer — both directions
 
@@ -364,15 +364,35 @@ its own bug.
    Each delivers the notification while silently disabling the one thing it
    exists to deliver — strictly worse than the 422 it replaces.
 
-   **Shipped: no inference at all.** Both retained fragments have their fence
-   delimiters deleted (`_neutralize_fences`). Nothing can be left open if
-   nothing can open; correct for every arrangement; only ever shrinks, so the
-   cut needs no repair reserve. The cost is that a *truncated* notification
-   loses code-block formatting in the fragments that survive — a body on that
-   path has already lost its middle, and monospace is worth far less than a
-   clickable link. A body that fits is untouched. This is what the Notifier's
-   own comment recommended as the fallback: "neutralize backticks in the
-   retained fragments instead of deepening the inference."
+   4. *Delete backtick runs of three or more.* Right idea, **incomplete
+      alphabet**: CommonMark has two fence characters, so a `~~~yaml` block
+      whose closer fell in the omitted middle still swallowed the URL —
+      reproduced through the real rollback renderer. Backtick runs of one and
+      two were also left live on the argument that the marker's blank lines
+      stop a span crossing from the head. That argument is true and beside the
+      point: it says nothing about two delimiters that both survive *inside*
+      the tail.
+
+   **Shipped: no inference, and no partial alphabet.** Both retained fragments
+   have every code delimiter deleted — backtick runs of any length, tilde runs
+   of three or more (`_neutralize_fences`). Nothing can be left open if nothing
+   can open; correct for every arrangement; only ever shrinks, so the cut needs
+   no repair reserve at all. The cost is that a *truncated* notification loses
+   code formatting in the fragments that survive — a body on that path has
+   already lost its middle, and monospace is worth far less than a clickable
+   link. A body that fits is untouched. This is what the Notifier's own comment
+   recommended as the fallback: "neutralize backticks in the retained fragments
+   instead of deepening the inference."
+
+   **Honesty note on the span case:** I could not reproduce the one/two-backtick
+   re-pairing Codex reported — my constructions either stayed under the cap (no
+   cut) or failed to render a link in the *original* too, which would make it a
+   pre-existing defect rather than one the cut introduced. Rather than ship a
+   scenario test passing for a reason I cannot name — the exact failure mode
+   this change kept hitting — the alphabet was widened to cover the class
+   anyway (it costs nothing, since it only shrinks) and the test asserts the
+   property that IS true by construction: after a cut, no code delimiter of any
+   kind survives. Nothing can re-pair if nothing remains.
 
    The test oracle is now **`markdown-it`**, declared as a dev dependency. Each
    broken repair had shipped with a hand-rolled assertion that shared its blind

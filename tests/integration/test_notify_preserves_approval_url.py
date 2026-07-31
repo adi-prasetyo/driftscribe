@@ -184,11 +184,32 @@ def test_a_rationale_past_the_schema_cap_still_delivers_a_clickable_link():
     cut still lands the URL outside a code block. Either alone is insufficient
     — this is the full path, end to end, with both cuts applied in order.
     """
+    _assert_link_survives_the_whole_path("Observed:\n```yaml\n" + "k: v\n" * _OVER_THE_SCHEMA_CAP)
+
+
+def test_a_tilde_fenced_rationale_also_keeps_the_link_clickable():
+    """CommonMark has TWO fence characters, and a backtick-only rule silently
+    leaves the other half live. Codex reproduced this through the real
+    renderer: a ``~~~yaml`` block whose closer fell in the omitted middle left
+    the approval URL inside the fence with no link rendered at all — a
+    notification that arrives, looks fine, and cannot be acted on.
+    """
+    _assert_link_survives_the_whole_path("Observed:\n~~~yaml\n" + "k: v\n" * _OVER_THE_SCHEMA_CAP)
+
+
+def _assert_link_survives_the_whole_path(rationale: str) -> None:
+    """Coordinator clamp -> worker schema -> Discord cut, then ask a real
+    parser whether the operator has something to click.
+
+    The assertion used to be ``before.count("```") % 2 == 0``. That is the same
+    backtick-parity reasoning that was wrong four times in the implementation,
+    and it cannot see a tilde fence or a delimiter-length mismatch at all — an
+    oracle that shares the blind spot of the code it checks is not an oracle.
+    """
+    from markdown_it import MarkdownIt
+
     body = normalize_notifier_body(
-        render_rollback_body(
-            _proposal("Observed:\n```yaml\n" + "k: v\n" * _OVER_THE_SCHEMA_CAP),
-            _APPROVAL_URL,
-        )
+        render_rollback_body(_proposal(rationale), _APPROVAL_URL)
     )
     cap = NotifyRequest.model_fields["body"].metadata[-1].max_length
     assert len(body) <= cap, "the coordinator's clamp would 422"
@@ -197,5 +218,12 @@ def test_a_rationale_past_the_schema_cap_still_delivers_a_clickable_link():
     content = _discord_safe_content(f"[DriftScribe/approval/high] {body}")
     assert len(content) <= _DISCORD_CONTENT_LIMIT
     assert _APPROVAL_URL in content, "the operator got a notification with nothing to click"
-    before = content[: content.index(_APPROVAL_URL)]
-    assert before.count("```") % 2 == 0, "the link rendered inside a code block"
+
+    # ``_APPROVAL_URL`` here is the bare URL (the renderer adds the ``<...>``
+    # autolink brackets itself), unlike the unit-test fixture which is already
+    # wrapped — hence no slicing.
+    html = MarkdownIt().enable("linkify").render(content)
+    assert f'href="{_APPROVAL_URL}"' in html, (
+        "the approval URL survived the cut but does not render as a link — "
+        "present, visible, and unclickable is not delivery"
+    )

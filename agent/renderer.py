@@ -304,11 +304,16 @@ def clamp_middle_out(
     artifact from an orphan closer stranded in the tail), and it cannot recover
     that boundary from joined output — model text may contain the marker itself.
 
-    ``reserve`` is space the caller will spend on its own repairs, subtracted
-    from the budget BEFORE the cut. That ordering is the whole point: a clamp
-    that cuts to ``cap`` and then appends a fence closer emits ``cap + 4`` and
-    recreates the 422 it exists to prevent. The Notifier reserves its closer
-    unconditionally for the same reason (``workers/notifier/main.py``).
+    ``reserve`` is space a caller will spend on text it APPENDS after the cut,
+    subtracted from the budget before cutting. The ordering is the whole point:
+    cutting to ``cap`` and then appending emits more than ``cap`` and recreates
+    the 422 the clamp exists to prevent — which is why the Notifier reserves
+    its fence closer unconditionally (``workers/notifier/main.py``).
+
+    No caller in this module needs it today: both wrappers only ever REMOVE
+    text after the cut. It is kept because "append after clamping" is the
+    natural thing for the next caller to write, and this parameter is where
+    that caller finds out it has to be paid for up front.
 
     Half the remaining budget goes to each side, odd character to the tail. Tail
     preservation is not symmetry for its own sake — see
@@ -404,17 +409,29 @@ NOTIFIER_BODY_MAX_CHARS = 10000
 # infra-drift worker-skew canary is the prior incident) for the sake of one
 # heuristic the two sides may legitimately want to evolve apart.
 #
-# Runs of three-or-more backticks, not occurrences of the literal "```": a
-# six-backtick run is ONE delimiter, while ``count("```")`` reports two.
-_FENCE_RUN = re.compile(r"`{3,}")
+# EVERY CommonMark code delimiter, not just the obvious one:
+#
+# - ``` `+ ``` — backtick runs of ANY length. Three-or-more open a fenced
+#   block; one or two open an inline span. Both are removed, because a cut can
+#   leave a lone span delimiter in the retained tail that re-pairs with a later
+#   one and encloses the approval URL between them. Reasoning about blank lines
+#   only rules out a span crossing FROM the head; it says nothing about two
+#   delimiters that both survive inside the tail (Codex reproduced both the
+#   one- and two-backtick cases end to end).
+# - ``~{3,}`` — tilde fences. CommonMark has two fence characters and a
+#   backtick-only rule silently leaves the other half live; reproduced through
+#   the real rollback renderer with a ``~~~yaml`` block whose closer fell in
+#   the omitted middle. Tilde runs of one or two are NOT code delimiters (``~~``
+#   is GFM strikethrough, which cannot swallow a link), so they are left alone.
+_CODE_DELIMITER = re.compile(r"`+|~{3,}")
 
 
 def _neutralize_fences(fragment: str) -> str:
-    """Remove every code-fence delimiter from a TRUNCATED fragment.
+    """Remove every code delimiter from a TRUNCATED fragment.
 
-    Three attempts at *repairing* fences came before this one. Each was wrong,
-    and each looked right to the test that shipped with it, so the reasoning is
-    worth keeping:
+    Four attempts at *repairing* fences came before this one. Each was wrong,
+    and each shipped with a hand-rolled assertion that shared its blind spot,
+    so the reasoning is worth keeping:
 
     1. Append ``\\n``` `` to a head with an odd delimiter count. Wrong —
        CommonMark closes a fence only with a run at least as long as the
@@ -427,27 +444,28 @@ def _neutralize_fences(fragment: str) -> str:
        other direction — an inline ``` ``` ``` inside ordinary prose is not a
        fence at all, so the prepended opener never closes and the "repair"
        CREATES the failure it was added to prevent.
+    4. Delete backtick runs of three or more. Right idea, incomplete alphabet:
+       it left ``~~~`` fences live, and left one- and two-backtick span
+       delimiters able to re-pair INSIDE the retained tail around the URL.
 
     Every one of those delivers the notification while silently disabling the
     one thing it exists to deliver, which is strictly worse than the 422 this
     clamp replaces. Parity cannot model fence state; a real fence-state walker
-    is not proportionate here (the Notifier says the same of its own copy).
+    is not proportionate in a notification path (the Notifier says the same of
+    its own copy); and each partial alphabet just moved the failure.
 
-    So: no inference. Delete the delimiters. Nothing can be left open if
-    nothing can open, it is correct for every arrangement, and it can only
-    SHRINK — which is why the cut needs no repair reserve at all.
+    So: no inference, and no partial alphabet. Delete every delimiter that can
+    open code — backtick runs of ANY length, and tilde runs of three or more.
+    Nothing can be left open if nothing can open. It is correct for every
+    arrangement, needs no reserve because it only ever SHRINKS, and has no
+    order-dependence to get wrong.
 
-    The cost is honest and small: a truncated notification loses code-block
+    The cost is honest and small: a truncated notification loses code
     *formatting* in the fragments that survive. A body on this path has already
     lost its middle, and monospace rendering is worth far less than a clickable
-    approval link.
-
-    Runs of ONE or TWO backticks are left alone on purpose. Those are inline
-    spans, and CommonMark does not let an inline span cross a blank line — the
-    omission marker carries ``\\n\\n`` on both sides, so an unclosed span in
-    the head cannot reach the tail.
+    approval link. Bodies that fit are never passed here at all.
     """
-    return _FENCE_RUN.sub("", fragment)
+    return _CODE_DELIMITER.sub("", fragment)
 
 
 def normalize_notifier_body(body: str) -> str:
