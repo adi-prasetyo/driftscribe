@@ -157,6 +157,53 @@ def _notifier_envelope() -> dict[str, Any]:
     }
 
 
+_DEFAULT_LIVE_ENV = {"PAYMENT_MODE": "live", "FEATURE_NEW_CHECKOUT": "false"}
+_DEFAULT_REVISION = "payment-demo-00042-cur"
+
+
+def _adk(proposal: Any) -> AsyncMock:
+    """A ``_run_adk_agent`` double that reads live state the way the real agent
+    does, then reports what it saw.
+
+    ds-q38: the production agent reaches live state through
+    ``read_live_env_tool`` -> ``worker_client.call("reader", {})``, and
+    ``run_agent`` reports each such response back to ``_do_recheck`` through
+    ``reader_sink``, so the coordinator can confirm the decision it is about to
+    persist describes the world its idempotency key names.
+
+    So this double performs that same call against whatever dispatcher the test
+    has patched in, rather than being handed a canned env. That keeps it
+    faithful automatically when a test customises the Reader response — and
+    faithfulness is the whole point here: the incident survived two attempted
+    fixes precisely because the doubles did not behave like the pipeline.
+    """
+
+    async def _run(*_a: Any, reader_sink: list | None = None, **_k: Any) -> Any:
+        if reader_sink is not None:
+            try:
+                payload = worker_client.call("reader", {})
+            except Exception:
+                # DELIBERATE SIMPLIFICATION, and the direction matters. In
+                # production a Reader failure inside the tool ABORTS the turn:
+                # read_live_env_tool does not catch WorkerClientError and ADK
+                # re-raises a tool exception when no on_tool_error callback
+                # handles it (build_agent installs none), so _do_recheck sees
+                # "adk agent failed" -> 502 and never reaches the coherence
+                # gate. Swallowing here lets a test keep exercising the
+                # COORDINATOR-side read failure it actually cares about, with
+                # the agent's own read having succeeded. The real abort is
+                # pinned by test_a_reader_failure_inside_the_turn_is_a_502.
+                payload = None
+            if isinstance(payload, dict) and isinstance(payload.get("env"), dict):
+                reader_sink.append(
+                    {"env": dict(payload["env"]),
+                     "revision": payload.get("revision") or None}
+                )
+        return proposal
+
+    return AsyncMock(side_effect=_run)
+
+
 def _make_dispatch(
     *,
     live_env: dict[str, str] | None = None,
@@ -222,7 +269,7 @@ def test_rollback_recheck_routes_through_worker_and_renders_approval_url(
     get_settings.cache_clear()
     _reset_state_for_tests()
 
-    mock_run_agent = AsyncMock(return_value=_rollback_proposal())
+    mock_run_agent = _adk(_rollback_proposal())
     with (
         patch("agent.main._run_adk_agent", mock_run_agent),
         patch("agent.main.worker_client.call") as m_call,
@@ -331,7 +378,7 @@ def test_rollback_reason_payload_is_scrubbed(monkeypatch: pytest.MonkeyPatch) ->
     _reset_state_for_tests()
 
     secret_url = "https://admin:hunter2ROLL@svc.internal/api"
-    mock_run_agent = AsyncMock(return_value=_rollback_proposal_with_secret(secret_url))
+    mock_run_agent = _adk(_rollback_proposal_with_secret(secret_url))
     with (
         patch("agent.main._run_adk_agent", mock_run_agent),
         patch("agent.main.worker_client.call") as m_call,
@@ -380,7 +427,7 @@ def test_rollback_decision_does_not_execute_the_rollback(
     get_settings.cache_clear()
     _reset_state_for_tests()
 
-    mock_run_agent = AsyncMock(return_value=_rollback_proposal())
+    mock_run_agent = _adk(_rollback_proposal())
     with (
         patch("agent.main._run_adk_agent", mock_run_agent),
         patch("agent.main.worker_client.call") as m_call,
@@ -580,7 +627,7 @@ def test_notifier_failure_still_records_a_reachable_decision(
     get_settings.cache_clear()
     _reset_state_for_tests()
 
-    mock_run_agent = AsyncMock(return_value=_rollback_proposal())
+    mock_run_agent = _adk(_rollback_proposal())
 
     # First call: notifier fails. Second call (same input, no force): the claim
     # is KEPT, so this must return the SAME cached decision — not re-propose.
@@ -660,7 +707,7 @@ def test_propose_failure_releases_claim_for_retry(
     get_settings.cache_clear()
     _reset_state_for_tests()
 
-    mock_run_agent = AsyncMock(return_value=_rollback_proposal())
+    mock_run_agent = _adk(_rollback_proposal())
 
     propose_state: dict[str, Any] = {"fail_next": True}
 
@@ -704,7 +751,7 @@ def test_malformed_propose_response_returns_502_and_releases_claim(
     get_settings.cache_clear()
     _reset_state_for_tests()
 
-    mock_run_agent = AsyncMock(return_value=_rollback_proposal())
+    mock_run_agent = _adk(_rollback_proposal())
 
     propose_state: dict[str, Any] = {"first": True}
 
@@ -780,7 +827,7 @@ def test_an_unusable_approval_is_never_recorded(
     get_settings.cache_clear()
     _reset_state_for_tests()
 
-    mock_run_agent = AsyncMock(return_value=_rollback_proposal())
+    mock_run_agent = _adk(_rollback_proposal())
 
     def dispatch(worker: str, payload: dict, *args: Any, **kwargs: Any) -> Any:
         if worker == "reader":
@@ -819,7 +866,7 @@ def test_idempotent_retry_returns_cached_approval(
     get_settings.cache_clear()
     _reset_state_for_tests()
 
-    mock_run_agent = AsyncMock(return_value=_rollback_proposal())
+    mock_run_agent = _adk(_rollback_proposal())
 
     with (
         patch("agent.main._run_adk_agent", mock_run_agent),
@@ -891,7 +938,7 @@ def test_cached_rollback_with_expired_approval_re_proposes(
             return _notifier_envelope()
         raise AssertionError(f"unexpected worker call: {worker!r}")
 
-    mock_run_agent = AsyncMock(return_value=_rollback_proposal())
+    mock_run_agent = _adk(_rollback_proposal())
     with (
         patch("agent.main._run_adk_agent", mock_run_agent),
         patch("agent.main.worker_client.call") as m_call,
@@ -953,7 +1000,7 @@ def test_concurrent_expired_rollback_evictions_only_one_re_proposes(
             return _notifier_envelope()
         raise AssertionError(f"unexpected worker call: {worker!r}")
 
-    mock_run_agent = AsyncMock(return_value=_rollback_proposal())
+    mock_run_agent = _adk(_rollback_proposal())
     with (
         patch("agent.main._run_adk_agent", mock_run_agent),
         patch("agent.main.worker_client.call") as m_call,
@@ -1051,7 +1098,7 @@ def test_cas_loser_with_no_fresh_decision_returns_409(
             return _notifier_envelope()
         raise AssertionError(f"unexpected worker call: {worker!r}")
 
-    mock_run_agent = AsyncMock(return_value=_rollback_proposal())
+    mock_run_agent = _adk(_rollback_proposal())
     with (
         patch("agent.main._run_adk_agent", mock_run_agent),
         patch("agent.main.worker_client.call") as m_call,
@@ -1182,7 +1229,7 @@ def test_rollback_refused_when_the_reader_read_fails_on_the_adk_path(
             return _notifier_envelope()
         raise AssertionError(f"unexpected worker call: {worker!r}")
 
-    mock_run_agent = AsyncMock(return_value=_rollback_proposal())
+    mock_run_agent = _adk(_rollback_proposal())
     with (
         patch("agent.main._run_adk_agent", mock_run_agent),
         patch("agent.main.worker_client.call") as m_call,
@@ -1222,7 +1269,7 @@ def test_rollback_refused_when_the_reader_returns_a_malformed_env(
             return _notifier_envelope()
         raise AssertionError(f"unexpected worker call: {worker!r}")
 
-    mock_run_agent = AsyncMock(return_value=_rollback_proposal())
+    mock_run_agent = _adk(_rollback_proposal())
     with (
         patch("agent.main._run_adk_agent", mock_run_agent),
         patch("agent.main.worker_client.call") as m_call,
@@ -1270,7 +1317,7 @@ def test_a_reader_payload_with_no_usable_env_block_is_not_read_as_an_empty_env(
             return _notifier_envelope()
         raise AssertionError(f"unexpected worker call: {worker!r}")
 
-    mock_run_agent = AsyncMock(return_value=_rollback_proposal())
+    mock_run_agent = _adk(_rollback_proposal())
     with (
         patch("agent.main._run_adk_agent", mock_run_agent),
         patch("agent.main.worker_client.call") as m_call,
@@ -1312,7 +1359,7 @@ def test_rollback_refused_when_observed_env_contradicts_the_proposal(
             return _notifier_envelope()
         raise AssertionError(f"unexpected worker call: {worker!r}")
 
-    mock_run_agent = AsyncMock(return_value=_rollback_proposal())
+    mock_run_agent = _adk(_rollback_proposal())
     with (
         patch("agent.main._run_adk_agent", mock_run_agent),
         patch("agent.main.worker_client.call") as m_call,
@@ -1337,7 +1384,7 @@ def test_rollback_still_proposed_when_observed_env_corroborates_the_proposal(
     get_settings.cache_clear()
     _reset_state_for_tests()
 
-    mock_run_agent = AsyncMock(return_value=_rollback_proposal())
+    mock_run_agent = _adk(_rollback_proposal())
     with (
         patch("agent.main._run_adk_agent", mock_run_agent),
         patch("agent.main.worker_client.call") as m_call,
@@ -1402,7 +1449,7 @@ def test_an_ungrounded_recheck_cannot_reuse_a_grounded_decision_from_the_cache(
     )
 
     with (
-        patch("agent.main._run_adk_agent", AsyncMock(return_value=proposal)),
+        patch("agent.main._run_adk_agent", _adk(proposal)),
         patch("agent.main.worker_client.call") as m_call,
     ):
         m_call.side_effect = _make_dispatch(live_env=grounded_env)
@@ -1411,7 +1458,7 @@ def test_an_ungrounded_recheck_cannot_reuse_a_grounded_decision_from_the_cache(
     assert r1.json()["approval"]["approval_url"] == _APPROVAL_URL_ROW
 
     with (
-        patch("agent.main._run_adk_agent", AsyncMock(return_value=proposal)),
+        patch("agent.main._run_adk_agent", _adk(proposal)),
         patch("agent.main.worker_client.call") as m_call,
     ):
         m_call.side_effect = failing_reader
@@ -1473,7 +1520,7 @@ def test_a_well_formed_empty_env_is_treated_as_an_observation_not_a_read_failure
         raise AssertionError(f"unexpected worker call: {worker!r}")
 
     with (
-        patch("agent.main._run_adk_agent", AsyncMock(return_value=_rollback_proposal())),
+        patch("agent.main._run_adk_agent", _adk(_rollback_proposal())),
         patch("agent.main.worker_client.call") as m_call,
     ):
         m_call.side_effect = dispatch
@@ -1554,7 +1601,7 @@ def test_a_non_rollback_action_keeps_ONE_idempotency_slot_across_provenance(
 
     for dispatch in (grounded, reader_down):
         with (
-            patch("agent.main._run_adk_agent", AsyncMock(return_value=proposal)),
+            patch("agent.main._run_adk_agent", _adk(proposal)),
             patch("agent.main._perform_action", _perform),
             patch("agent.main.worker_client.call") as m_call,
         ):
@@ -1614,7 +1661,7 @@ def test_an_ungrounded_run_cannot_be_served_a_cached_rollback_VIA_ANOTHER_ACTION
     )
 
     with (
-        patch("agent.main._run_adk_agent", AsyncMock(return_value=rollback)),
+        patch("agent.main._run_adk_agent", _adk(rollback)),
         patch("agent.main.worker_client.call") as m_call,
     ):
         m_call.side_effect = _make_dispatch(live_env=env)
@@ -1630,7 +1677,7 @@ def test_an_ungrounded_run_cannot_be_served_a_cached_rollback_VIA_ANOTHER_ACTION
         raise AssertionError(f"unexpected worker call: {worker!r}")
 
     with (
-        patch("agent.main._run_adk_agent", AsyncMock(return_value=issue)),
+        patch("agent.main._run_adk_agent", _adk(issue)),
         patch("agent.main.worker_client.call") as m_call,
     ):
         m_call.side_effect = reader_down
@@ -1655,8 +1702,13 @@ def test_a_claim_LOSER_is_not_handed_a_concurrent_runs_cached_rollback(
       4. its re-read finds that rollback and returns the approval — before any
          gate has spoken for this request.
 
-    Driven deterministically by making the claim fail and the SECOND lookup
-    return a rollback decision, rather than by racing real requests.
+    ds-q38 CLOSED THE ROUTE rather than the guard. An ungrounded ADK run is now
+    refused before it can claim anything, because a decision nothing observed
+    must not be persisted under any key. So this asserts both halves and the
+    distinction matters: the request is refused AND never shown the approval,
+    and ``_cached_rollback_needs_ground_truth`` — still consulted at that site
+    as defense in depth — is pinned directly, so closing the route does not
+    quietly retire the guard that would catch a future route to it.
     """
     monkeypatch.setenv("USE_ADK", "true")
     get_settings.cache_clear()
@@ -1715,16 +1767,27 @@ def test_a_claim_LOSER_is_not_handed_a_concurrent_runs_cached_rollback(
         raise AssertionError(f"unexpected worker call: {worker!r}")
 
     with (
-        patch("agent.main._run_adk_agent", AsyncMock(return_value=proposal)),
+        patch("agent.main._run_adk_agent", _adk(proposal)),
         patch("agent.main.get_state", lambda: _RacingState()),
         patch("agent.main.worker_client.call") as m_call,
     ):
         m_call.side_effect = reader_down
         r = TestClient(app).post("/recheck")
 
-    assert len(lookups) >= 2, "the race did not reach the claim-loser re-read"
-    assert r.status_code == 502, r.text
+    # Refused before the claim: nothing ungrounded gets that far any more.
+    assert r.status_code == 409, r.text
     assert _APPROVAL_TOKEN not in r.text
+    assert _APPROVAL_URL not in r.text
+
+    # The site's own guard is unchanged and still refuses, so a future path
+    # that DOES reach it with no ground truth is still caught.
+    assert agent_main._cached_rollback_needs_ground_truth(cached_rollback, None) is True
+    assert (
+        agent_main._cached_rollback_needs_ground_truth(
+            cached_rollback, {"PAYMENT_MODE": "live"}
+        )
+        is False
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -1774,7 +1837,7 @@ def test_the_decision_is_durable_before_the_notification_is_attempted(
         return _notifier_envelope()
 
     with (
-        patch("agent.main._run_adk_agent", AsyncMock(return_value=_rollback_proposal())),
+        patch("agent.main._run_adk_agent", _adk(_rollback_proposal())),
         patch("agent.main.worker_client.call") as m_call,
     ):
         m_call.side_effect = _rollback_dispatch(notifier)
@@ -1811,7 +1874,7 @@ def test_a_failed_decision_write_suppresses_the_notification_entirely(
 
     state = agent_main.get_state()
     with (
-        patch("agent.main._run_adk_agent", AsyncMock(return_value=_rollback_proposal())),
+        patch("agent.main._run_adk_agent", _adk(_rollback_proposal())),
         patch("agent.main.worker_client.call") as m_call,
         patch.object(
             type(state), "record_decision", side_effect=RuntimeError("firestore down")
@@ -1844,7 +1907,7 @@ def test_an_unexpected_notifier_exception_is_contained_like_a_worker_error(
         raise ValueError("not a WorkerClientError at all")
 
     with (
-        patch("agent.main._run_adk_agent", AsyncMock(return_value=_rollback_proposal())),
+        patch("agent.main._run_adk_agent", _adk(_rollback_proposal())),
         patch("agent.main.worker_client.call") as m_call,
     ):
         m_call.side_effect = _rollback_dispatch(notifier)
@@ -1871,7 +1934,7 @@ def test_a_failed_outcome_patch_never_fails_the_request(
 
     state = agent_main.get_state()
     with (
-        patch("agent.main._run_adk_agent", AsyncMock(return_value=_rollback_proposal())),
+        patch("agent.main._run_adk_agent", _adk(_rollback_proposal())),
         patch("agent.main.worker_client.call") as m_call,
         patch.object(
             type(state),
@@ -1951,7 +2014,7 @@ def test_the_recorded_approval_url_is_always_same_origin(
         raise AssertionError(f"unexpected worker {worker!r}")
 
     with (
-        patch("agent.main._run_adk_agent", AsyncMock(return_value=_rollback_proposal())),
+        patch("agent.main._run_adk_agent", _adk(_rollback_proposal())),
         patch("agent.main.worker_client.call") as m_call,
     ):
         m_call.side_effect = dispatch
@@ -2008,7 +2071,7 @@ def test_the_notification_still_carries_an_absolute_url(
         raise AssertionError(f"unexpected worker {worker!r}")
 
     with (
-        patch("agent.main._run_adk_agent", AsyncMock(return_value=_rollback_proposal())),
+        patch("agent.main._run_adk_agent", _adk(_rollback_proposal())),
         patch("agent.main.worker_client.call") as m_call,
     ):
         m_call.side_effect = dispatch
@@ -2051,7 +2114,7 @@ def test_an_unexpected_notifier_error_never_logs_its_message(
         raise TypeError(secret_bearing_message)
 
     with (
-        patch("agent.main._run_adk_agent", AsyncMock(return_value=_rollback_proposal())),
+        patch("agent.main._run_adk_agent", _adk(_rollback_proposal())),
         patch("agent.main.worker_client.call") as m_call,
         caplog.at_level("DEBUG"),
     ):

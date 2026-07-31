@@ -30,14 +30,56 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from agent import worker_client
 from agent.config import get_settings
 from agent.main import _reset_state_for_tests, app, get_state
 from agent.models import (
+
+
     ContractStatus,
     DecisionAction,
     DecisionProposal,
     EnvDiff,
 )
+
+
+def _adk(proposal):
+    """A ``_run_adk_agent`` double that reads live state the way the real agent
+    does, then reports what it saw (ds-q38).
+
+    The production agent reaches live state through ``read_live_env_tool`` ->
+    ``worker_client.call("reader", {})``, and ``run_agent`` reports each such
+    response back to ``_do_recheck`` via ``reader_sink`` so the coordinator can
+    confirm the decision it is about to persist describes the world its
+    idempotency key names. Performing the same call against whatever dispatcher
+    the test patched in keeps this double faithful automatically.
+    """
+
+    async def _run(*_a, reader_sink=None, **_k):
+        if reader_sink is not None:
+            try:
+                payload = worker_client.call("reader", {})
+            except Exception:
+                # DELIBERATE SIMPLIFICATION, and the direction matters. In
+                # production a Reader failure inside the tool ABORTS the turn:
+                # read_live_env_tool does not catch WorkerClientError and ADK
+                # re-raises a tool exception when no on_tool_error callback
+                # handles it (build_agent installs none), so _do_recheck sees
+                # "adk agent failed" -> 502 and never reaches the coherence
+                # gate. Swallowing here lets a test keep exercising the
+                # COORDINATOR-side read failure it actually cares about, with
+                # the agent's own read having succeeded. The real abort is
+                # pinned by test_a_reader_failure_inside_the_turn_is_a_502.
+                payload = None
+            if isinstance(payload, dict) and isinstance(payload.get("env"), dict):
+                reader_sink.append(
+                    {"env": dict(payload["env"]),
+                     "revision": payload.get("revision") or None}
+                )
+        return proposal
+
+    return AsyncMock(side_effect=_run)
+
 
 
 # --------------------------------------------------------------------------- #
@@ -173,7 +215,7 @@ def test_recheck_decision_carries_inbound_trace_id(
     _reset_state_for_tests()
 
     fixed_trace = "a" * 32
-    mock_run_agent = AsyncMock(return_value=_drift_issue_proposal())
+    mock_run_agent = _adk(_drift_issue_proposal())
     with (
         patch("agent.main._run_adk_agent", mock_run_agent),
         patch("agent.main.worker_client.call") as m_call,
@@ -210,7 +252,7 @@ def test_recheck_decision_carries_minted_trace_id_when_header_absent(
     get_settings.cache_clear()
     _reset_state_for_tests()
 
-    mock_run_agent = AsyncMock(return_value=_drift_issue_proposal())
+    mock_run_agent = _adk(_drift_issue_proposal())
     with (
         patch("agent.main._run_adk_agent", mock_run_agent),
         patch("agent.main.worker_client.call") as m_call,
@@ -255,7 +297,7 @@ def test_rollback_decision_carries_inbound_trace_id(
             return _notifier_envelope()
         raise AssertionError(f"unexpected worker: {worker!r}")
 
-    mock_run_agent = AsyncMock(return_value=_rollback_proposal())
+    mock_run_agent = _adk(_rollback_proposal())
     with (
         patch("agent.main._run_adk_agent", mock_run_agent),
         patch("agent.main.worker_client.call") as m_call,

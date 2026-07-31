@@ -1174,6 +1174,211 @@ def _cached_rollback_is_expired(cached: dict) -> bool:
     return when < dt.datetime.now(dt.timezone.utc)
 
 
+_READER_RETRY_DELAYS = (0.5, 1.0)
+
+# Per-PHASE read budget, not an end-to-end one. MUST be set explicitly:
+# ``worker_client.call`` has no entry for "reader" in _WORKER_DEFAULT_TIMEOUTS,
+# so it would otherwise inherit the 30s _HTTPX_TIMEOUT and three attempts could
+# burn ~92s of connect+read alone. See the sizing argument in _read_with_retry.
+_READER_ATTEMPT_TIMEOUT_S = 9.0
+
+# Retry ADMISSION budget — deliberately not called a deadline, because it is
+# not one. It gates whether another attempt may START; it cannot interrupt an
+# attempt already running, and a first call that hangs for a minute returns
+# without this ever being consulted. What it buys is that a SLOW reader stops
+# accumulating attempts, which is the failure mode retries would otherwise make
+# worse. See _read_with_retry for the full statement of what is and is not
+# bounded. Enforcing a real caller deadline needs an interruptible/off-loop call
+# (ds-99u), which is out of scope here.
+_READER_RETRY_ADMISSION_S = 25.0
+
+
+async def _read_with_retry() -> object:
+    """Call the Reader Worker, retrying a transient failure a bounded number of
+    times before giving up (ds-q38).
+
+    Exists for liveness, not correctness. The coherence gate refuses to record
+    anything when this read fails — which is right, because nothing would
+    corroborate what the agent saw — but on the autonomous lane that refusal has
+    NO retry driver behind it: a failed read is not a Cloud Run mutation, so it
+    emits no audit log and no new Eventarc delivery, the original event is
+    already fast-acked, and ``_EventarcCoalescer`` only reruns when a separate
+    delivery set ``dirty``. So a single transient blip would drop the only audit
+    for a real drift, silently and indefinitely — the same class of outcome as
+    the bug being fixed.
+
+    **Sized to be cheaper than the single call it replaced — with the limits of
+    that claim stated, because the obvious version of it is false.** The read
+    this wraps used to be one ``worker_client.call("reader", {})`` inheriting
+    the default 30s timeout, and it runs inside a request that already spent
+    20-120s on the agent turn and may still owe the Rollback Worker's /propose,
+    against Cloud Run's 300s request timeout. So each attempt is given 9s.
+
+    What that 9s does NOT buy is an end-to-end bound on one attempt. A scalar
+    httpx timeout applies **per phase** (connect, read, write, pool), not to the
+    call as a whole, and ``worker_client.call`` mints an ID token before the
+    HTTPX client is even reached — metadata-server work with its own retries and
+    timeouts, repeated on every attempt. So "9 x 3 + sleeps = 28.5s" is a
+    configured-budget comparison, not a wall-clock guarantee, and it is labelled
+    that way in the test that pins it. Codex round 6 caught the stronger claim.
+
+    **Nothing here is a deadline, and the earlier drafts of this docstring said
+    otherwise twice.** ``_READER_RETRY_ADMISSION_S`` gates whether another
+    attempt may START — it cannot interrupt one already running, so a single
+    call that hangs returns whenever it returns and never consults it. It is
+    also not a cap on the total: three ordinary 9s failures cost 28.5s and are
+    all admitted, because each admission check passes at the moment it runs.
+    What it does buy is that a SLOW reader stops accumulating attempts, which is
+    precisely the case where retrying makes things worse rather than better.
+
+    A genuine caller deadline would need the blocking call to be interruptible
+    or off-loop (ds-99u). Until then the honest summary is: attempts are bounded
+    per phase by httpx, their COUNT is bounded by admission, and total wall
+    clock is bounded by neither.
+
+    9s per attempt is also enough to survive a Reader COLD START, and a cold
+    start is precisely the transient this is for: attempt 1 may time out while
+    the container boots, and attempt 2 then finds it warm.
+
+    One honest limitation: ``worker_client.call`` is synchronous, so each
+    attempt blocks the event loop for its duration. That is pre-existing — the
+    single call it replaced blocked the same loop the same way — and the budget
+    above reduces the configured worst case rather than growing it. Moving the
+    call off-loop is a real improvement but a separate one (ds-99u), filed
+    rather than smuggled in here.
+    """
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    last: Exception | None = None
+    for delay in (*_READER_RETRY_DELAYS, None):
+        try:
+            return worker_client.call(
+                "reader", {}, timeout=_READER_ATTEMPT_TIMEOUT_S
+            )
+        except Exception as e:  # noqa: BLE001 — re-raised below if all fail
+            last = e
+            if delay is None:
+                break
+            # Admission, not interruption: stop stacking attempts on top of a
+            # read that has already eaten the budget. Checked BEFORE sleeping so
+            # the sleep is counted rather than being what overshoots.
+            if loop.time() - started + delay >= _READER_RETRY_ADMISSION_S:
+                break
+            await asyncio.sleep(delay)
+    assert last is not None
+    raise last
+
+
+def _revision_or_none(reader_payload: object) -> str | None:
+    """The Reader Worker's ``revision``, or ``None`` if it is not a usable one.
+
+    Separate from :func:`_observed_env_or_none` because it answers a different
+    question and must not weaken that one. ``read_live_state`` documents an
+    empty ``revision`` as a real state (a service whose deploys have all
+    failed), so an empty string is NOT a revision we can compare and is folded
+    into ``None`` here — the caller treats unknown as unverifiable, not as
+    equal.
+    """
+    if not isinstance(reader_payload, dict):
+        return None
+    revision = reader_payload.get("revision")
+    if not isinstance(revision, str) or not revision:
+        return None
+    return revision
+
+
+def _observation_skew(
+    observed_env: dict[str, str],
+    analyzed_env: dict[str, str],
+) -> list[str]:
+    """Names on which what the agent OBSERVED disagrees with what the event key
+    is HASHED FROM (ds-q38). Empty list == the decision and its key describe the
+    same world.
+
+    ``analyzed_env`` is the Reader Worker's own response to the agent's
+    ``read_live_env_tool`` call, reported back through ``run_agent``'s
+    ``reader_sink``; ``observed_env`` is this request's own post-turn read. Two
+    observations, one comparison — which is what makes this a coherence check
+    rather than a re-reading of the model's report.
+
+    The key is hashed from the post-turn read, not from the read the agent
+    reasoned over, and the two can straddle a deploy. On 2026-07-29 one did: the
+    agent read ``PAYMENT_MODE=mock`` at 05:28:28, a revision carrying ``live``
+    was created at 05:28:30, and the post-turn read at 05:28:40 saw ``live``.
+    The resulting ``no_op`` ("no configuration drift is present") was persisted
+    under the DRIFTED env's key, where it then permanently outranked every
+    correct rollback proposal for that env — a ``no_op`` row has no TTL, only
+    rollbacks expire.
+
+    Deliberately NOT driven by ``proposal.env_diffs``. That collection is
+    incomplete by contract — the drift prompt asks for variables that DIFFER,
+    the deterministic classifier emits ``no_op`` with ``env_diffs=[]``, and the
+    validator accepts it — so a diff-driven comparison iterates zero entries and
+    pronounces the world coherent no matter how far it has moved. That was the
+    first attempted fix, and it would have left the bug intact.
+
+    Not a validator and not a second copy of the ds-b3m gate: it asks only
+    whether the row we are about to persist is ABOUT the world its key names.
+    Callers supply two real observations or refuse before reaching here.
+    """
+    # Whole-snapshot comparison: an ADDED or REMOVED variable is skew just as
+    # much as a changed one.
+    return sorted(
+        name
+        for name in set(analyzed_env) | set(observed_env)
+        if analyzed_env.get(name) != observed_env.get(name)
+    )
+
+
+def _cached_decision_is_contradicted(
+    cached: dict | None, proposal: DecisionProposal
+) -> bool:
+    """True when a cached ``no_op`` must not be served to a request whose own
+    fresh proposal is an ACTION (ds-q38).
+
+    Scoped to a cached ``no_op`` on purpose, and the asymmetry is the point:
+    ``no_op`` is the only action that persists a claim about the world
+    ("nothing is wrong here") while creating no artifact an operator can see.
+    Every other cached action already leaves a PR, an issue, or an approval —
+    serving one again is the idempotency this cache exists to provide, and
+    re-proposing over it would duplicate that artifact.
+
+    Failing toward silence is what makes the ``no_op`` direction the dangerous
+    one: the operator sees nothing at all, so there is no dead link or stale
+    PR to notice. A fresh non-``no_op`` proposal is grounded in a read taken
+    now, so when the two disagree the cached row is the one describing a world
+    that has moved on.
+
+    Deliberately NOT keyed off the model-reported env (ds-b3m): the cache is a
+    second route to a rollback approval, so what is compared here is the
+    ACTION the pipeline arrived at, never values the model handed us.
+    """
+    if not cached:
+        return False
+    if cached.get("action") != DecisionAction.NO_OP.value:
+        return False
+    return proposal.action != DecisionAction.NO_OP
+
+
+def _cached_decision_is_stale(
+    cached: dict | None, proposal: DecisionProposal
+) -> bool:
+    """Single "may this cached decision still be served" question, so the two
+    reasons a cache entry can be dead cannot be checked in one place and
+    forgotten in the other.
+
+    Both call sites below must ask the SAME question — the CAS-loser re-read
+    especially, or it hands back the very row it just declined to serve. That
+    is the ds-uwc/desk lesson again: a predicate consulted in three places and
+    guarded in two is a bug with a delay on it.
+    """
+    if not cached:
+        return False
+    return _cached_rollback_is_expired(cached) or _cached_decision_is_contradicted(
+        cached, proposal
+    )
+
+
 @app.get("/healthz")
 @app.get("/health")
 def healthz():
@@ -1358,7 +1563,8 @@ def _perform_action(
 
 
 async def _run_adk_agent(
-    user_msg: str, *, workload: str = "drift", autonomy_mode: str
+    user_msg: str, *, workload: str = "drift", autonomy_mode: str,
+    reader_sink: list | None = None,
 ) -> DecisionProposal:
     """Thin wrapper so integration tests have a stable patch target.
 
@@ -1372,10 +1578,22 @@ async def _run_adk_agent(
     ``user_msg`` only still works. ``autonomy_mode`` is a REQUIRED keyword
     arg — forwarded to :func:`agent.adk_agent.run_agent` so the dial filters
     the tool set at Layer 0.
+
+    ``reader_sink`` (ds-q38) collects what the Reader Worker actually told the
+    agent, so the caller can verify the decision describes the world its
+    idempotency key names. Optional and keyword-only so every existing patch
+    site that mocks this function keeps working — a mock that ignores it
+    simply reports no observation, which the caller treats as "the agent never
+    looked" rather than as agreement.
     """
     from agent.adk_agent import run_agent
 
-    return await run_agent(user_msg, workload=workload, autonomy_mode=autonomy_mode)
+    return await run_agent(
+        user_msg,
+        workload=workload,
+        autonomy_mode=autonomy_mode,
+        reader_sink=reader_sink,
+    )
 
 
 def _notify_rollback_approval(rendered: str) -> dict[str, Any]:
@@ -1527,6 +1745,16 @@ def _do_rollback(
     claimed = state.record_event(event_key, {"trigger": trigger})
     if not claimed:
         existing = state.find_decision_for_event(event_key)
+        # ds-q38: reached only after the caller's cache check already declined
+        # (and CAS-evicted) whatever was here, so a contradicted ``no_op``
+        # surfacing NOW means the Firestore store's event_key recovery query
+        # resurrected it between the evict and a competitor's re-claim
+        # (ds-bej). Handing it back would answer a rollback proposal with
+        # "no configuration drift is present" — the exact ds-q38 failure, one
+        # layer down. 409 instead: the caller retries and the winner's real
+        # decision is there by then.
+        if _cached_decision_is_stale(existing, proposal):
+            raise HTTPException(status_code=409, detail="event in-progress, retry")
         if existing:
             return existing
         raise HTTPException(status_code=409, detail="event in-progress, retry")
@@ -2010,11 +2238,43 @@ async def _do_recheck(
         # whatever propagates out of ``_run_adk_agent`` (the reset
         # already ran in the finally). Pin in
         # ``tests/integration/test_workload_contextvar_propagation.py``.
+        # ds-q38: read BEFORE the turn as well as after it. The key is hashed
+        # from the post-turn read, but the decision was reasoned out over
+        # whatever the agent saw somewhere in between — and on 2026-07-29 a
+        # deploy landed in that gap, so a "no drift" verdict was filed under the
+        # DRIFTED env's key and outranked every correct rollback for it
+        # afterwards.
+        #
+        # Bracketing the turn is what makes the two comparable WITHOUT having to
+        # observe the agent's own tool calls. If the before and after reads
+        # agree, the world was stable across the whole turn, so whatever the
+        # agent read in between — once, five times, or never — necessarily saw
+        # the same env. That proof holds no matter how the agent behaves, which
+        # a check built on the agent's reported diffs or on capturing its tool
+        # results cannot claim: diffs are incomplete by contract (``no_op`` with
+        # ``env_diffs=[]`` is legal), and a captured tool result never reaches
+        # this task anyway — ADK runs each function call in its own
+        # ``asyncio.Task``, and a Task starts from a COPY of the context, so a
+        # ContextVar written inside a tool is invisible here. Measured:
+        # child sees the snapshot, parent sees None.
+        #
+        # ds-q38: collect what the Reader Worker actually told the agent, so
+        # the decision can be checked against the world its key will name.
+        # Bracketing the turn with the coordinator's own reads was tried first
+        # and is strictly weaker: it proves the WORLD held still, never that
+        # the agent looked at it, so an agent that skipped the read entirely
+        # (``no_op`` with ``env_diffs=[]`` is legal and the validator accepts
+        # it) sailed through. Reading the agent's own tool results answers both
+        # questions with one mechanism — and costs no extra Reader call.
+        reader_observations: list[dict] = []
         _workload_token = set_workload(workload)
         try:
             try:
                 proposal = await _run_adk_agent(
-                    user_msg, workload=workload, autonomy_mode=autonomy.mode
+                    user_msg,
+                    workload=workload,
+                    autonomy_mode=autonomy.mode,
+                    reader_sink=reader_observations,
                 )
             finally:
                 reset_workload(_workload_token)
@@ -2048,25 +2308,46 @@ async def _do_recheck(
         try:
             # Reader Worker enforces TARGET_SERVICE/region/project via its own
             # boot config (Layer 2); the coordinator no longer passes them.
-            live_env = _observed_env_or_none(worker_client.call("reader", {}))
+            #
+            # ds-q38: retried, because refusing on this read has no retry driver
+            # behind it. A failed read is not a Cloud Run mutation, so it emits
+            # no audit log and no new Eventarc delivery; the original event was
+            # already fast-acked, and the coalescer only reruns when a SEPARATE
+            # delivery marked it dirty. Without this, one transient Reader blip
+            # loses the only audit for a real drift, indefinitely. Bounded (not
+            # a loop) so a Reader that is genuinely down still fails fast, and
+            # cheap next to the model turn that already ran — this retries the
+            # read alone, never the turn.
+            _post_payload = await _read_with_retry()
+            live_env = _observed_env_or_none(_post_payload)
+            post_turn_revision = _revision_or_none(_post_payload)
         except Exception:
             live_env = None
+            post_turn_revision = None
+        # ds-q38: the agent's OWN observations decide what may be persisted.
+        # One invariant, no degraded branches: a decision is recorded only when
+        # the agent looked exactly once and what it saw is what this request
+        # sees now. Every other shape refuses, because every other shape means
+        # the row would describe a world nobody confirmed.
+        #
+        # The two previous drafts both leaked here. Hashing the key from
+        # ``proposal.env_diffs`` when a read fails uses a SUBSET that can
+        # legally be empty, so a populated service's decision lands under the
+        # `{}`-env key. And hashing it from a coordinator read the agent never
+        # saw proves nothing about the analysis. Both were "tolerances" that
+        # amounted to keeping the poisoning.
+        distinct_observations = []
+        for obs in reader_observations:
+            if obs not in distinct_observations:
+                distinct_observations.append(obs)
         if live_env is None:
-            # Trade-off: when the Reader Worker read fails on the ADK path we
-            # hash the diffs the LLM reported instead of the actual live env.
-            # That's weaker idempotency (the LLM's tool call already saw the
-            # live state, but we can't observe that here), but it lets the
-            # demo proceed even when /run.services.get permission is missing.
-            # Sentinel `<ABSENT>` keeps live=None distinct from live="" so the
-            # event_key doesn't bucket two genuinely-different states together
-            # (Cloud Run treats empty-string-as-value as a valid live state).
-            #
-            # ds-b3m: this reconstruction is for the IDEMPOTENCY KEY ONLY and
-            # must never be handed to the validator as observed state — it is
-            # built out of ``proposal.env_diffs``, so a gate fed this would be
-            # re-reading the model's own array under a name that claims
-            # otherwise. ``observed_env`` stays None so the rollback gate
-            # refuses; ``live_env`` below keeps the old event-key behaviour.
+            # Nothing this request read. Keep the historical shape exactly:
+            # hash from the model's reported diffs so the pipeline still
+            # reaches the ds-b3m gate, which refuses any rollback because
+            # ``observed_env`` is None. The coherence gate REFUSES this case
+            # too, but does so after ``validate`` so ds-b3m keeps its own
+            # 502 — the same ordering lesson as the skew check below.
+            # Sentinel `<ABSENT>` keeps live=None distinct from live="".
             observed_env = None
             live_env = {
                 d.name: "<ABSENT>" if d.live is None else d.live
@@ -2097,6 +2378,16 @@ async def _do_recheck(
                 detail="reader worker returned a malformed env payload",
             )
         live_env = observed_env
+        # Coherent by construction on this path: the classifier is a pure
+        # function of the very read the key is hashed from, so the analyzed and
+        # observed snapshots are the same object. Set explicitly rather than
+        # left None so the skew check compares snapshots here too, instead of
+        # silently dropping to the diff-list fallback.
+        # No agent turn on this path — the classifier is a pure function of
+        # this single read, so the decision and its key are the same
+        # observation by construction and there is nothing to reconcile. The
+        # gate below is scoped to ``s.use_adk`` for exactly that reason.
+        distinct_observations: list[dict] = []
         proposal = classify(
             ClassificationInput(contract=contract, live_env=live_env, recent_prs=[])
         )
@@ -2111,6 +2402,11 @@ async def _do_recheck(
         event_key = f"{event_key}-force-{uuid.uuid4().hex[:8]}"
 
     state = get_state()
+    # ds-q38: a cached decision that may no longer be served — expired rollback
+    # or a ``no_op`` this run's proposal contradicts — held back for eviction
+    # until AFTER validate() + the coherence gate. See the branch that sets it
+    # for why the CAS cannot happen at lookup time.
+    stale_cached: dict | None = None
     if not force:
         existing = state.find_decision_for_event(event_key)
         if existing:
@@ -2126,44 +2422,27 @@ async def _do_recheck(
                         "before the gate. Retry once the reader is reachable."
                     ),
                 )
-            if _cached_rollback_is_expired(existing):
-                # Phase 14 (Codex Phase 13 second-pass W2): compare-and-
-                # delete instead of unconditional release. Two concurrent
-                # retries seeing the same expired decision would otherwise
-                # both release+re-claim, double-minting approval docs.
-                # The CAS only deletes when the cached decision_id still
-                # matches; the loser re-reads and returns the winner's
-                # fresh decision rather than re-proposing.
-                cached_decision_id = existing.get("decision_id")
-                if cached_decision_id and state.evict_cached_decision(
-                    event_key, cached_decision_id
-                ):
-                    pass  # CAS won — fall through to re-propose
-                else:
-                    # Phase 15.3: CAS-loser short-circuit (Codex carry-over
-                    # from Phase 14). If the re-read finds the winner's
-                    # fresh decision, return it. Otherwise the winner is
-                    # mid-flight: do NOT fall through to record_event —
-                    # that path could succeed (event slot transiently
-                    # empty between winner's evict and re-claim) and
-                    # mint a duplicate /propose. Surface 409 so the
-                    # caller retries cleanly.
-                    existing = state.find_decision_for_event(event_key)
-                    if _cached_rollback_needs_ground_truth(existing, observed_env):
-                        raise HTTPException(
-                            status_code=502,
-                            detail=(
-                                "adk proposal rejected by safety gate: cached "
-                                "rollback not served — no observed live env is "
-                                "available to corroborate it."
-                            ),
-                        )
-                    if existing and not _cached_rollback_is_expired(existing):
-                        return existing
-                    raise HTTPException(
-                        status_code=409,
-                        detail="event in-progress, retry",
-                    )
+            if _cached_decision_is_stale(existing, proposal):
+                # NOT evicted here — remembered, and the CAS happens after
+                # validate() + the coherence gate. The ordering is the whole
+                # point, and it now covers BOTH staleness reasons.
+                #
+                # Evicting at lookup time lets a request that is about to be
+                # REFUSED destroy good cached state on its way out: a
+                # policy-invalid proposal fails validate(), or an incoherent one
+                # fails the gate, but the pointer is already gone. The decision
+                # document survives, the Firestore store's event_key recovery
+                # query keeps resurfacing it (ds-bej), and because
+                # ``evict_cached_decision`` compare-and-deletes a pointer that
+                # no longer exists, nothing can ever evict it again — every
+                # later request takes the CAS-loser branch and 409s forever.
+                #
+                # The expired-rollback branch used to evict here safely, because
+                # nothing between the CAS and the re-propose could refuse. Since
+                # ds-q38 added refusals after this point that is no longer true,
+                # so it moves too rather than being left as the one path that
+                # still mutates before the request has earned it.
+                stale_cached = existing
             else:
                 return existing
 
@@ -2193,6 +2472,155 @@ async def _do_recheck(
                 detail=f"adk proposal rejected by safety gate: {e}",
             )
         raise HTTPException(status_code=500, detail=f"validator rejected proposal: {e}")
+
+    # ds-q38: refuse to PERSIST a decision that is not about the world its key
+    # names. ``event_key`` above is hashed from the POST-turn read, while
+    # ``proposal`` was reasoned out over whatever the agent saw during the
+    # turn. On 2026-07-29 a deploy landed in that gap: the agent read
+    # ``PAYMENT_MODE=mock``, a revision carrying ``live`` was created 1.5s
+    # later, and the post-turn read saw ``live``. The resulting ``no_op`` was
+    # filed under the DRIFTED key, where it outranked every correct rollback
+    # proposal for that env from then on — a ``no_op`` row has no TTL.
+    #
+    # The gate compares what the agent ACTUALLY observed (reported back through
+    # ``reader_sink``) with what the key is hashed from. An earlier draft
+    # bracketed the turn with the coordinator's own reads instead; that proved
+    # the world held still but never that the agent looked at it.
+    #
+    # AFTER ``validate``, deliberately. ds-b3m's validator already refuses a
+    # skewed ROLLBACK, and refuses it with a 502 whose shape says "the model
+    # responded and the safety gate refused" — non-retryable on purpose.
+    # Running this gate first would convert that into a retry-shaped 409 and
+    # silently retire a distinction ds-b3m's tests exist to protect. What was
+    # missing was never the rollback case: it is that NOTHING refused a skewed
+    # ``no_op``, the one action that persists "nothing is wrong here" while
+    # creating no artifact an operator could notice.
+    #
+    # Dropping the event is safe and self-healing because the change that
+    # caused the skew announces itself: a service mutation emits an audit log
+    # (v1 ``ReplaceService`` or v2 ``UpdateService`` depending on the client —
+    # both wired as triggers, see infra/scripts/setup_secrets.sh) and therefore
+    # its own delivery. One arriving mid-audit sets ``_EventarcCoalescer.dirty``
+    # and the trailing rerun re-audits a consistent world; one arriving later
+    # starts a fresh audit. ``_run_eventarc_audit_once`` catches HTTPException
+    # and logs ``_rejected``, and the coalescer loop still honours ``dirty``
+    # after a refusal — pinned by
+    # ``test_a_refused_audit_still_gets_its_trailing_rerun``.
+    #
+    # The recovery is therefore only as good as trigger coverage: a mutation
+    # path that emits neither methodName would skew an audit with nothing
+    # scheduled to look again. That is the same coverage assumption the
+    # autonomous lane already rests on, not a new one introduced here.
+    #
+    # ⚠️ Scope, stated precisely: this refuses to PERSIST. A cache HIT above
+    # returns before any of it, so "everything else is a 409" is true of new
+    # rows only — an already-cached decision can still be served for a key this
+    # request never corroborated (notably when the post-turn read failed and the
+    # key came from ``proposal.env_diffs``). That serves a stale answer; it does
+    # not create a poisoned row, and closing it means moving the cache lookup
+    # after the gate, which would change ds-b3m's ordering. Left explicit rather
+    # than implied.
+    if s.use_adk:
+        refusal = None
+        if not distinct_observations:
+            # The agent never read live env, so nothing ties its verdict to any
+            # world. The workload prompt requires the call, but a prompt is not
+            # an enforcement boundary.
+            refusal = "the agent did not read live state"
+        elif len(distinct_observations) > 1:
+            # It watched the world move and there is no honest answer to "which
+            # reading is the conclusion about" — ADK may run function calls in
+            # parallel, so arrival order is not authority either.
+            refusal = "the agent saw live state change while it was reasoning"
+        elif observed_env is None:
+            # This request could not read, so nothing corroborates that what
+            # the agent saw still holds. The historical behaviour hashed the
+            # key from ``proposal.env_diffs`` here — a SUBSET that can legally
+            # be empty, so a populated service's decision could land under the
+            # `{}`-env key and collide with a genuinely empty one later.
+            refusal = "live state could not be read after the agent ran"
+        else:
+            analyzed = distinct_observations[0]
+            # Revision as well as env. Env equality alone is weaker than it
+            # looks: revisions A(mock) -> B(live) -> C(mock) present identical
+            # env at both ends while the world moved twice, and
+            # ``read_live_state`` pairs env with the revision it came from
+            # precisely so the two are not reasoned about separately. Unknown
+            # counts as a mismatch — a check that cannot see its subject must
+            # fail, not abstain.
+            if (
+                analyzed["revision"] is None
+                or post_turn_revision is None
+                or analyzed["revision"] != post_turn_revision
+            ):
+                refusal = "the serving revision changed while the agent was reasoning"
+            elif _observation_skew(observed_env, analyzed["env"]):
+                refusal = "live state changed while the agent was reasoning"
+        if refusal is not None:
+            # Count-only logging — never env names or values. Both this detail
+            # and log fields are read by operators, and this is exactly the
+            # text class that has carried live env values before, which is why
+            # the notify path persists a classification rather than a message.
+            log.warning(
+                "recheck_unverifiable_observation",
+                extra={
+                    "trigger": trigger,
+                    "workload": workload,
+                    "observation_count": len(distinct_observations),
+                    "post_read_ok": observed_env is not None,
+                    "action": proposal.action.value,
+                },
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"{refusal}, so this decision could not be confirmed to "
+                    f"describe the state it would be keyed on. Not recorded; "
+                    f"retry."
+                ),
+            )
+
+    if stale_cached is not None:
+        # NOW the fresh proposal has earned the right to replace what was
+        # cached: it passed the deterministic validator and it is about the same
+        # world its key names. Compare-and-delete, never an unconditional
+        # release — two concurrent Eventarc deliveries seeing the same stale row
+        # must not both re-propose and double-mint approvals for one drift.
+        stale_id = stale_cached.get("decision_id")
+        if not (stale_id and state.evict_cached_decision(event_key, stale_id)):
+            # CAS lost: the pointer now names a DIFFERENT decision, so another
+            # request is already repairing this key. Re-read and hand back its
+            # result if it has landed and is itself servable; otherwise 409 so
+            # the caller retries cleanly rather than falling through to claim an
+            # event slot the winner is mid-flight on.
+            #
+            # Note this branch is NOT taken when the pointer is simply absent —
+            # that returns True, because a repair that died after evicting must
+            # stay retryable rather than wedging the key at 409 forever. See
+            # evict_cached_decision's docstring; the property is pinned by
+            # test_a_failed_repair_leaves_the_key_retryable.
+            existing = state.find_decision_for_event(event_key)
+            if _cached_rollback_needs_ground_truth(existing, observed_env):
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        "adk proposal rejected by safety gate: cached rollback "
+                        "not served — no observed live env is available to "
+                        "corroborate it."
+                    ),
+                )
+            if existing and not _cached_decision_is_stale(existing, proposal):
+                return existing
+            raise HTTPException(status_code=409, detail="event in-progress, retry")
+        log.info(
+            "recheck_evicted_stale_decision",
+            extra={
+                "trigger": trigger,
+                "workload": workload,
+                "cached_action": stale_cached.get("action"),
+                "fresh_action": proposal.action.value,
+            },
+        )
 
     # ROLLBACK branches out before render because the render needs the
     # approval URL minted by the Rollback Worker's /propose. The Phase 11.9
@@ -2232,6 +2660,14 @@ async def _do_recheck(
                     "it."
                 ),
             )
+        # ds-q38 completes the set the comment above argues for: this site now
+        # asks the SAME "may this request be served this decision" question as
+        # the other three. A contradicted ``no_op`` can reach here the same way
+        # a rollback can — the first lookup missed, the claim was lost, and the
+        # re-read resurfaced a row (ds-bej) that says nothing is wrong while
+        # this run concluded something is.
+        if _cached_decision_is_stale(existing, proposal):
+            raise HTTPException(status_code=409, detail="event in-progress, retry")
         if existing:
             return existing
         raise HTTPException(status_code=409, detail="event in-progress, retry")

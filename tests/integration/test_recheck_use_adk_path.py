@@ -11,9 +11,49 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
+from agent import worker_client
 from agent.config import get_settings
-from agent.main import _reset_state_for_tests, app
+from agent.main import _reset_state_for_tests, app, get_state
 from agent.models import ContractStatus, DecisionAction, DecisionProposal, EnvDiff
+
+def _adk(proposal):
+    """A ``_run_adk_agent`` double that reads live state the way the real agent
+    does, then reports what it saw (ds-q38).
+
+    The production agent reaches live state through ``read_live_env_tool`` ->
+    ``worker_client.call("reader", {})``, and ``run_agent`` reports each such
+    response back to ``_do_recheck`` via ``reader_sink`` so the coordinator can
+    confirm the decision it is about to persist describes the world its
+    idempotency key names. Performing the same call against whatever dispatcher
+    the test patched in keeps this double faithful automatically.
+    """
+
+    async def _run(*_a, reader_sink=None, **_k):
+        if reader_sink is not None:
+            try:
+                payload = worker_client.call("reader", {})
+            except Exception:
+                # DELIBERATE SIMPLIFICATION, and the direction matters. In
+                # production a Reader failure inside the tool ABORTS the turn:
+                # read_live_env_tool does not catch WorkerClientError and ADK
+                # re-raises a tool exception when no on_tool_error callback
+                # handles it (build_agent installs none), so _do_recheck sees
+                # "adk agent failed" -> 502 and never reaches the coherence
+                # gate. Swallowing here lets a test keep exercising the
+                # COORDINATOR-side read failure it actually cares about, with
+                # the agent's own read having succeeded. The real abort is
+                # pinned by test_a_reader_failure_inside_the_turn_is_a_502.
+                payload = None
+            if isinstance(payload, dict) and isinstance(payload.get("env"), dict):
+                reader_sink.append(
+                    {"env": dict(payload["env"]),
+                     "revision": payload.get("revision") or None}
+                )
+        return proposal
+
+    return AsyncMock(side_effect=_run)
+
+
 
 
 def _drift_issue_proposal() -> DecisionProposal:
@@ -65,7 +105,7 @@ def test_use_adk_path_wires_through_to_perform_action(monkeypatch):
     get_settings.cache_clear()
     _reset_state_for_tests()
 
-    mock_run_agent = AsyncMock(return_value=_drift_issue_proposal())
+    mock_run_agent = _adk(_drift_issue_proposal())
     with (
         patch("agent.main._run_adk_agent", mock_run_agent),
         patch("agent.main.worker_client.call") as m_env,
@@ -129,7 +169,7 @@ def test_recheck_response_scrubs_secret_in_rationale(monkeypatch):
     _reset_state_for_tests()
 
     secret_url = "https://admin:hunter2SECRET@svc.internal/api"
-    mock_run_agent = AsyncMock(return_value=_drift_proposal_quoting_secret(secret_url))
+    mock_run_agent = _adk(_drift_proposal_quoting_secret(secret_url))
     with (
         patch("agent.main._run_adk_agent", mock_run_agent),
         patch("agent.main.worker_client.call") as m_env,
@@ -152,20 +192,33 @@ def test_recheck_response_scrubs_secret_in_rationale(monkeypatch):
     assert body["diffs"][0]["name"] == "PAYMENT_MODE"
 
 
-def test_use_adk_path_tolerates_cloud_run_read_failure(monkeypatch):
-    """USE_ADK=true: Reader Worker call raising must NOT 502.
+def test_use_adk_path_refuses_to_record_when_the_reader_read_fails(monkeypatch):
+    """USE_ADK=true, Reader Worker unreachable: the decision is NOT recorded.
 
-    The ADK agent's own tool call already read live state; the failure here
-    only affects the idempotency-hash backing store. Per spec the fallback
-    derives live_env from `proposal.env_diffs`. (Test name kept stable for
-    git-blame continuity; the underlying call is now the Reader Worker, not
-    the direct read_live_env from pre-Phase-13.)
+    This inverts a deliberate older behaviour, so the reason matters. The old
+    contract let the pipeline continue by hashing the idempotency key from
+    ``proposal.env_diffs``, on the argument that the agent's own tool call had
+    already read live state. ds-q38 showed both halves of that argument fail:
+
+    * ``env_diffs`` is a SUBSET the model chooses and can legally be empty
+      (``no_op`` with no diffs passes the validator), so the key can describe a
+      different world than the decision — including the ``{}``-env key for a
+      populated service, which then collides with a genuinely empty one.
+    * "the agent already read it" is an assumption, not an observation. Exactly
+      that assumption produced the poisoned production row: a ``no_op`` reasoned
+      over pre-deploy state was filed under the DRIFTED env's key and outranked
+      every correct rollback for it afterwards, permanently, because a ``no_op``
+      row has no TTL.
+
+    So with no corroborating read of our own, the run refuses (409) instead of
+    persisting a row nothing can vouch for. Losing an audit is recoverable — the
+    next event re-discovers the drift; a poisoned idempotency key is not.
     """
     monkeypatch.setenv("USE_ADK", "true")
     get_settings.cache_clear()
     _reset_state_for_tests()
 
-    mock_run_agent = AsyncMock(return_value=_drift_issue_proposal())
+    mock_run_agent = _adk(_drift_issue_proposal())
     with (
         patch("agent.main._run_adk_agent", mock_run_agent),
         patch("agent.main.worker_client.call") as m_env,
@@ -182,11 +235,17 @@ def test_use_adk_path_tolerates_cloud_run_read_failure(monkeypatch):
         client = TestClient(app)
         r = client.post("/recheck")
 
-    # 200 (not 502) — the non-ADK path's 502 semantic does NOT apply here.
-    assert r.status_code == 200
-    body = r.json()
-    assert body["event_key"]  # non-empty derived from proposal.env_diffs fallback
-    assert body["action"] == "drift_issue"
+    # 409, not 502: retryable — the reader may come back — and distinct from
+    # the validator's non-retryable "the model responded and the safety gate
+    # refused" 502.
+    assert r.status_code == 409, r.text
+    # With the reader down the agent could not read either, so the refusal
+    # names that first; the invariant asserted here is that NOTHING was
+    # recorded, whichever half of the observation was missing.
+    assert "could not be confirmed to describe the state" in r.text
+    # The point of the refusal: no row, so no key is claimed under a world
+    # nothing observed.
+    assert get_state().list_decisions(limit=50) == []
 
 
 def test_use_adk_path_rejects_unsafe_proposal_with_502(monkeypatch):
@@ -219,7 +278,7 @@ def test_use_adk_path_rejects_unsafe_proposal_with_502(monkeypatch):
         confidence=0.99,
         requires_human_review=False,
     )
-    mock_run_agent = AsyncMock(return_value=unsafe)
+    mock_run_agent = _adk(unsafe)
     with (
         patch("agent.main._run_adk_agent", mock_run_agent),
         patch("agent.main.worker_client.call") as m_env,

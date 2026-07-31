@@ -107,9 +107,39 @@ def test_evict_cached_decision_refuses_when_decision_id_differs():
     assert fresh["action"] == "rollback"
 
 
-def test_evict_cached_decision_returns_false_when_event_missing():
+def test_evict_cached_decision_lets_the_caller_proceed_when_event_missing():
+    """ds-q38: an ABSENT pointer is a green light, not a refusal.
+
+    This inverts the original assertion, so the reason is recorded rather than
+    the expectation just flipped. The return value answers "may I re-propose?",
+    and with no pointer there is nothing to clobber and no claim held — so the
+    honest answer is yes.
+
+    Returning False here is what turned a failed repair into a PERMANENT one.
+    The evicting run deletes the pointer, dies before recording a replacement,
+    and the stale decision doc gets resurrected by find_decision_for_event's
+    ``event_key`` recovery query (ds-bej). The next audit judges it stale,
+    tries to evict, and compares against a pointer that no longer exists — so
+    it can never win, and the key 409s forever. That lands on the path that
+    repairs a poisoned key, which is the one place permanence is unaffordable.
+
+    Minting stays gated by ``record_event`` downstream, so this cannot let two
+    runs both mint for one drift.
+    """
     s = InMemoryStateStore()
-    assert s.evict_cached_decision("never-claimed", "dec-1") is False
+    assert s.evict_cached_decision("never-claimed", "dec-1") is True
+
+
+def test_evict_cached_decision_still_refuses_a_pointer_naming_another_decision():
+    """The half of the CAS that must NOT relax: a pointer naming a different
+    decision means someone already installed a replacement, and deleting it
+    would clobber a fresh claim."""
+    s = InMemoryStateStore()
+    s.record_event("ev-1", {})
+    s.record_decision("dec-fresh", "ev-1", {"decision_id": "dec-fresh",
+                                            "action": "rollback"})
+    assert s.evict_cached_decision("ev-1", "dec-stale") is False
+    assert s.find_decision_for_event("ev-1") is not None
 
 
 def _build_firestore_mock(snap_exists: bool, snap_data: dict | None):
@@ -168,14 +198,22 @@ def test_firestore_evict_cached_decision_skips_on_mismatch():
     mock_transaction.delete.assert_not_called()
 
 
-def test_firestore_evict_cached_decision_returns_false_when_doc_missing():
+def test_firestore_evict_cached_decision_lets_the_caller_proceed_when_doc_missing():
+    """Firestore parity for the ds-q38 relaxation — see the in-memory test's
+    docstring for why an absent pointer must not wedge the key.
+
+    Note what is asserted alongside the return: no delete is issued. "Proceed"
+    must not become "delete something you did not compare", or the CAS's real
+    job — refusing to clobber a pointer that names a DIFFERENT decision — would
+    be lost along with the wedge.
+    """
     mock_db, mock_doc_ref, mock_transaction = _build_firestore_mock(
         snap_exists=False, snap_data=None
     )
     store = FirestoreStateStore(project="p", client=mock_db)
 
     result = store.evict_cached_decision("ev-1", "dec-1")
-    assert result is False
+    assert result is True
     mock_transaction.delete.assert_not_called()
 
 
@@ -311,12 +349,15 @@ def test_firestore_find_decision_for_event_query_fallback():
     missing_snap.exists = False
     mock_events.document.return_value.get.return_value = missing_snap
 
-    # decisions.where("event_key","==","ev-1").limit(1).stream() → one match.
+    # decisions.where("event_key","==","ev-1").stream() → one match. NOT
+    # .limit(...): a cap on the unordered stream takes an arbitrary subset
+    # rather than the newest row (see find_decision_for_event).
     mock_decisions = MagicMock()
     recovered = MagicMock()
     recovered.to_dict.return_value = {"action": "applied", "event_key": "ev-1"}
+    recovered.create_time = 100
     where_q = MagicMock()
-    where_q.limit.return_value.stream.return_value = iter([recovered])
+    where_q.stream.return_value = iter([recovered])
     mock_decisions.where.return_value = where_q
 
     def collection_dispatch(name):
@@ -341,7 +382,7 @@ def test_firestore_find_decision_for_event_query_fallback_no_match_returns_none(
 
     mock_decisions = MagicMock()
     where_q = MagicMock()
-    where_q.limit.return_value.stream.return_value = iter([])
+    where_q.stream.return_value = iter([])
     mock_decisions.where.return_value = where_q
 
     def collection_dispatch(name):

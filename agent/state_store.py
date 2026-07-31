@@ -404,9 +404,15 @@ class InMemoryStateStore:
         return self._decisions.get(decision_id)
 
     def evict_cached_decision(self, event_key: str, decision_id: str) -> bool:
-        """Compare-and-delete the event doc; True iff decision_id matched."""
+        """Compare-and-delete the event doc. True == the caller may re-propose.
+
+        In-memory parity with the Firestore store — see its docstring for why
+        an ABSENT event doc is a success rather than a failure (ds-q38).
+        """
         record = self._events.get(event_key)
-        if not record or record.get("decision_id") != decision_id:
+        if record is None:
+            return True
+        if record.get("decision_id") != decision_id:
             return False
         self._events.pop(event_key, None)
         return True
@@ -834,10 +840,45 @@ class FirestoreStateStore:
         # stores INSIDE the decision doc. C5e uses the decision doc as the
         # apply-then-merge reconcile pointer, so a lost pointer must still be
         # recoverable rather than silently re-minting + re-applying.
-        snaps = self._decisions.where("event_key", "==", event_key).limit(1).stream()
-        for s in snaps:
-            return s.to_dict()
-        return None
+        #
+        # NEWEST-FIRST, and here that is a safety property rather than a display
+        # nicety (ds-q38 / ds-bej). Two decisions can legitimately share one
+        # ``event_key`` with NO pointer to arbitrate between them:
+        #
+        #   1. a stale row D0 is CAS-evicted, deleting the pointer;
+        #   2. the repair claims the event and mints approval A, and
+        #      ``record_decision``'s batch COMMITS D1 + its pointer;
+        #   3. the client still sees an ambiguous transport error, so
+        #      ``_do_rollback`` releases the claim — deleting the pointer again;
+        #   4. D0 and the valid, unexpired D1 now both carry this ``event_key``.
+        #
+        # An unordered ``.limit(1)`` could hand back D0 there. D0 is stale, so
+        # the caller evicts (a no-op — the pointer is already gone), re-claims
+        # successfully, and mints approval B: TWO live approvals for one drift.
+        # ``record_event`` cannot prevent that, because it only ever sees the
+        # pointer and this state has none. Returning the NEWEST decision returns
+        # D1, which is servable, so the caller serves it instead of re-minting.
+        #
+        # Client-side sort on the server-managed ``create_time``, mirroring
+        # find_decision_by_trace_id and list_decisions: a server-side
+        # ``order_by("created_at")`` would EXCLUDE pre-19.A.7 rows missing the
+        # field, turning a recovery query into a silent miss.
+        #
+        # And NO ``.limit()`` on the unordered stream — the trap list_decisions
+        # already documents (invariant 2 in its docstring). Firestore's implicit
+        # ordering is by document ID, and decision ids are random UUIDs, so
+        # ``.limit(N)`` takes an ARBITRARY N rather than the newest N. Capping
+        # here would have re-opened the very double-mint this sort exists to
+        # close, just past N rows: the newest decision falls outside the page,
+        # recovery hands back an older stale row, and the caller evicts,
+        # re-claims and mints a second approval. The equality filter is what
+        # bounds this read (rows sharing one event_key are a handful even in the
+        # pathological repeated-replacement case), not a page size.
+        snaps = list(self._decisions.where("event_key", "==", event_key).stream())
+        if not snaps:
+            return None
+        newest = max(snaps, key=lambda s: s.create_time)
+        return newest.to_dict()
 
     def record_decision(
         self, decision_id: str, event_key: str, decision: dict[str, Any]
@@ -895,12 +936,63 @@ class FirestoreStateStore:
         return snap.to_dict() if snap.exists else None
 
     def evict_cached_decision(self, event_key: str, decision_id: str) -> bool:
-        """Compare-and-delete the event doc transactionally; True iff
-        decision_id matched. Closes Phase 13 Codex W2 carry-over — two
-        concurrent /recheck retries observing the same expired cached
-        rollback would both call release_event under the prior code,
-        letting one re-claim and the other delete that fresh claim. The
-        CAS keeps the loser from clobbering the winner."""
+        """Compare-and-delete the event doc transactionally.
+
+        Returns True when the caller may go on to re-propose — which is NOT
+        the same as "I deleted something". Three cases:
+
+        * pointer names ``decision_id`` -> delete it, True (the ordinary CAS
+          win). Closes Phase 13 Codex W2 carry-over: two concurrent /recheck
+          retries observing the same expired cached rollback would both call
+          ``release_event`` under the pre-Phase-13 code, letting one re-claim
+          and the other delete that fresh claim. The compare keeps the loser
+          from clobbering the winner.
+        * pointer names something ELSE -> False. Someone already installed a
+          replacement; deleting it would clobber a fresh claim.
+        * **pointer ABSENT -> True (ds-q38).** There is nothing to clobber and
+          no claim held, so the caller is free to proceed.
+
+        That third case used to return False, and it is worth being explicit
+        about why that was a bug rather than a nicety, because it only bites
+        in combination with ds-bej:
+
+        1. A run wins the CAS, so the event doc is gone — but the decision doc
+           survives, carrying its ``event_key`` field.
+        2. Anything then fails before a replacement is recorded (the Rollback
+           Worker's /propose, rendering, a GitHub side effect, the
+           ``record_decision`` write itself).
+        3. The next audit's :meth:`find_decision_for_event` misses on the
+           pointer and RESURRECTS the stale row through the ``event_key``
+           recovery query.
+        4. It is correctly judged stale, so the caller tries to evict it — and
+           under the old contract that CAS could never succeed again, because
+           the pointer it compares against no longer exists.
+        5. Every subsequent audit for that key 409s. Forever.
+
+        The wedge lands on exactly the path that REPAIRS a poisoned key, so a
+        single transient worker failure during a repair would have made the
+        damage permanent. Treating "already absent" as success makes the whole
+        sequence retryable instead: a failed repair leaves the key in a state
+        the next delivery can pick up.
+
+        Safety of the relaxation rests on TWO things, and both are load-bearing:
+
+        * **The claim.** Minting is gated by ``record_event``
+          (create-if-absent) downstream on BOTH branches — ``_do_rollback``
+          claims before calling /propose, and the non-rollback path claims
+          before any side effect. Two concurrent runs that both pass here
+          still serialize one step later, and only one can mint.
+        * **Deterministic recovery.** The claim only ever sees the POINTER, so
+          it cannot arbitrate between two completed decisions that share an
+          ``event_key`` with no pointer between them — a state reachable when a
+          repair's ``record_decision`` batch commits but its client sees a
+          transport error and releases the claim. If recovery handed back the
+          OLDER (stale) row there, this branch would return True, the re-claim
+          would succeed, and one drift would mint a SECOND approval.
+          :meth:`find_decision_for_event` therefore returns the newest
+          decision, which is servable, so the caller serves rather than
+          re-mints. Weakening either half re-opens the double-mint.
+        """
         from google.cloud import firestore
 
         doc_ref = self._events.document(event_key)
@@ -909,7 +1001,7 @@ class FirestoreStateStore:
         def _txn(transaction, expected_decision_id):
             snap = doc_ref.get(transaction=transaction)
             if not snap.exists:
-                return False
+                return True
             data = snap.to_dict() or {}
             if data.get("decision_id") != expected_decision_id:
                 return False

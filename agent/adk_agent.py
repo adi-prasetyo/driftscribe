@@ -883,6 +883,7 @@ def _emit_event_logs(
     *,
     tool_calls: list[str] | None = None,
     iac_pr_sink: dict | None = None,
+    reader_sink: list | None = None,
     handoff_sink: dict | None = None,
 ) -> list[dict]:
     """Emit ``llm_thought`` / ``tool_call`` / ``tool_result`` log lines
@@ -975,6 +976,42 @@ def _emit_event_logs(
             # but is not an /iac-approvals PR). propose_adoption_tool opens the
             # same approval-class PR via the shared tail, so its result must
             # populate the pointer too (Codex Phase-3 completed-work catch).
+            # ds-q38: record what the Reader Worker actually told the agent.
+            # /recheck hashes its idempotency key from a SEPARATE read taken
+            # after this turn; if a deploy lands in between, the decision is
+            # filed under a world it never analyzed and outranks every correct
+            # proposal for that world afterwards (a ``no_op`` row has no TTL).
+            #
+            # It has to be a SINK rather than a ContextVar: ADK dispatches each
+            # function call as its own ``asyncio.Task``, and a Task starts from
+            # a COPY of the context, so a ContextVar written inside the tool is
+            # invisible to the coordinator. Measured — child sees the value,
+            # parent sees None. This loop already runs in the caller's task,
+            # which is why the existing pr/handoff sinks work.
+            #
+            # Every successful response is appended, not just the last: "which
+            # read did the conclusion rest on" has no honest answer when an
+            # agent reads twice and sees two different worlds, and ADK may run
+            # function calls in parallel, so ordering is not authority either.
+            if (
+                reader_sink is not None
+                and fr.name == read_live_env_tool.__name__
+                and isinstance(response, dict)
+            ):
+                env = response.get("env")
+                if isinstance(env, dict) and all(
+                    isinstance(k, str) and isinstance(v, str) for k, v in env.items()
+                ):
+                    revision = response.get("revision")
+                    reader_sink.append(
+                        {
+                            "env": dict(env),
+                            # Empty is folded to None: read_live_state documents
+                            # "" as a real state (all deploys failed), so it is
+                            # unknown for comparison, never equal-to-empty.
+                            "revision": revision or None,
+                        }
+                    )
             if iac_pr_sink is not None and fr.name in (
                 open_infra_pr_tool.__name__,
                 propose_adoption_tool.__name__,
@@ -1125,7 +1162,8 @@ def _emit_final_response(text: str) -> dict:
 
 
 async def run_agent(
-    user_msg: str, *, workload: str = "drift", autonomy_mode: str
+    user_msg: str, *, workload: str = "drift", autonomy_mode: str,
+    reader_sink: list | None = None,
 ) -> DecisionProposal:
     """Run the ADK agent against `user_msg` and parse the final response.
 
@@ -1138,6 +1176,13 @@ async def run_agent(
     it explicitly via :func:`agent.main._run_adk_agent`. ``autonomy_mode``
     is a REQUIRED keyword arg — forwarded to :func:`build_agent` so the dial
     filters the tool set at Layer 0.
+
+    ``reader_sink`` (ds-q38): when provided, every successful
+    ``read_live_env_tool`` response is appended to it as
+    ``{"env": ..., "revision": ...}``, so the caller can check that the
+    decision it is about to persist is ABOUT the world its idempotency key
+    names. Collected here, in the caller's own task, because ADK tool calls run
+    in child tasks whose ContextVar writes never propagate back.
     """
     resolution = load_workload(workload)
     agent = build_agent(resolution, autonomy_mode=autonomy_mode)
@@ -1171,7 +1216,7 @@ async def run_agent(
         # actual emit shape lives in :func:`_emit_event_logs` and is
         # shared with :func:`run_chat`.
         if event.content and event.content.parts and getattr(event, "partial", None) is not True:
-            _emit_event_logs(event)
+            _emit_event_logs(event, reader_sink=reader_sink)
         if event.is_final_response() and event.content and event.content.parts:
             parts_text = [
                 part.text

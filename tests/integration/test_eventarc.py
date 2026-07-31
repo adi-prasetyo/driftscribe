@@ -780,6 +780,50 @@ async def test_eventarc_background_recheck_single_flight_coalesces():
     assert coalescer.dirty is False
 
 
+async def test_a_refused_audit_still_gets_its_trailing_rerun():
+    """ds-q38: the coherence gate refuses a skewed audit with an HTTPException,
+    and dropping the event is only safe if the retry driver survives that.
+
+    The deploy that caused the skew emits its own audit log and therefore its
+    own delivery, which lands mid-audit and sets ``dirty``. If a refusal
+    escaped the loop — or short-circuited it before the ``dirty`` check — the
+    world would be left drifted with nothing scheduled to look again, which is
+    the silent-failure mode this whole bead is about. Exactly one rerun, and
+    the coalescer left clean."""
+    coalescer = main_mod._EVENTARC_COALESCER
+    coalescer.active = False
+    coalescer.dirty = False
+    release = asyncio.Event()
+    calls: list[tuple] = []
+
+    async def refusing_recheck(trigger, *, workload):
+        calls.append((trigger, workload))
+        if len(calls) == 1:
+            await release.wait()
+            raise HTTPException(status_code=409, detail="live state changed")
+        return {"decision_id": "d2", "action": "rollback"}
+
+    with patch("agent.main._do_recheck", side_effect=refusing_recheck):
+        t1 = asyncio.create_task(
+            main_mod._eventarc_background_recheck("payment-demo", "asia-northeast1")
+        )
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert calls == [("eventarc", "drift")]
+        # The deploy's own delivery arrives while the first audit is in flight.
+        t2 = asyncio.create_task(
+            main_mod._eventarc_background_recheck("payment-demo", "asia-northeast1")
+        )
+        for _ in range(5):
+            await asyncio.sleep(0)
+        release.set()
+        await asyncio.wait_for(asyncio.gather(t1, t2), timeout=5)
+
+    assert len(calls) == 2, "a refusal must not swallow the trailing rerun"
+    assert coalescer.active is False
+    assert coalescer.dirty is False
+
+
 async def test_eventarc_acks_on_the_wire_before_recheck_completes(monkeypatch):
     """Codex review of the fast-ack (the ordering proof TestClient cannot
     give): drive the raw ASGI app with a ``_do_recheck`` that blocks until
