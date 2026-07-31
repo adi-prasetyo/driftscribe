@@ -357,7 +357,11 @@ describe('App — a chat turn settles into the thread', () => {
         { 'X-Trace-Id': 'trace-xyz' },
       ),
     );
-    await findByTestId('thread-open-trace');
+    // ?conversation is written by settleConversation, so it is the honest
+    // post-settle signal now that the reasoning line renders pre-settle too.
+    await waitFor(() =>
+      expect(new URLSearchParams(window.location.search).get('conversation')).toBe('new-conv'),
+    );
     expect(getByText('because someone set it in the console')).toBeTruthy();
     expect(queryByTestId('thread-typing')).toBeNull();
     // The hero stayed out of the way throughout — present again post-settle but
@@ -636,7 +640,7 @@ const HEX32 = 'eba334f9211d46cabc79e50ed200a5a1';
 // Same as stubResumeFetch, plus a generic /trace/ response — needed for tests
 // that open a reasoning replay (?reasoning=<id> boot, or "view reasoning" on a
 // thread turn) alongside the resumed thread.
-function stubResumeFetchWithTrace(graph: unknown = GRAPH) {
+function stubResumeFetchWithTrace(graph: unknown = GRAPH, decisions: unknown[] = []) {
   const { list, detail } = resumeFixtures();
   vi.stubGlobal(
     'fetch',
@@ -645,7 +649,7 @@ function stubResumeFetchWithTrace(graph: unknown = GRAPH) {
       if (url.includes('/trace/')) return okJson({ trace_id: HEX32, complete: true, events: [] });
       if (url.includes('/conversations/')) return okJson(detail);
       if (url.includes('/conversations')) return okJson(list);
-      if (url.includes('/decisions')) return okJson({ decisions: [] });
+      if (url.includes('/decisions')) return okJson({ decisions });
       if (url.includes('/infra/pending-approvals')) return okJson({ approvals: [] });
       if (url.includes('/infra/graph')) return okJson(graph);
       return okJson({});
@@ -771,7 +775,7 @@ describe('App — ?conversation boot deep-link', () => {
   });
 
   it('clears both ?conversation and ?reasoning on New chat, preserving unrelated params + hash', async () => {
-    stubResumeFetchWithTrace();
+    stubResumeFetchWithTrace(GRAPH, [{ decision_id: 'd1', action: 'rollback', trace_id: 't1' }]);
     // `view=chat` explicitly (post-Task-3.6 a bare url is the desk, which has
     // no conversations rail to click); `unrelated=1` + the hash are what this
     // test actually asserts survive the New-chat param sweep.
@@ -779,10 +783,12 @@ describe('App — ?conversation boot deep-link', () => {
     const { findByTestId, container } = render(App);
     await fireEvent.click(await findByTestId('conversation-open'));
     await findByTestId('conversation-thread');
-    // Open a turn's reasoning too, so both params are live before New chat —
-    // this is the historical-replay New chat exit (the banner's "← new chat",
-    // NOT composer-new-chat, which hides itself in historical mode).
-    await fireEvent.click(await findByTestId('thread-open-trace'));
+    // Open a replay too, so both params are live before New chat — this is the
+    // historical-replay New chat exit (the banner's "← new chat", NOT
+    // composer-new-chat, which hides itself in historical mode). Driven from
+    // the decisions rail: since ds-jns the thread carries its reasoning inline
+    // and no longer opens replay at all.
+    await fireEvent.click(await findByTestId('open-trace-button'));
     await findByTestId('historical-banner');
     await waitFor(() => {
       const p = new URLSearchParams(window.location.search);
@@ -874,12 +880,12 @@ describe('App — ?conversation boot deep-link', () => {
     expect(new URLSearchParams(window.location.search).get('reasoning')).toBeNull();
   });
 
-  it('openTrace on a thread turn keeps ?conversation alongside the new ?reasoning', async () => {
-    stubResumeFetchWithTrace();
+  it('openTrace with a thread open keeps ?conversation alongside the new ?reasoning', async () => {
+    stubResumeFetchWithTrace(GRAPH, [{ decision_id: 'd1', action: 'rollback', trace_id: 't1' }]);
     const { findByTestId } = render(App);
     await fireEvent.click(await findByTestId('conversation-open'));
     await findByTestId('conversation-thread');
-    await fireEvent.click(await findByTestId('thread-open-trace'));
+    await fireEvent.click(await findByTestId('open-trace-button'));
     await waitFor(() => {
       const p = new URLSearchParams(window.location.search);
       expect(p.get('conversation')).toBe('c1');

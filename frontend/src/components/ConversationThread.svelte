@@ -4,20 +4,29 @@
   // prompt and the crew's reply. Reply text is ESCAPED PLAIN TEXT (Svelte
   // auto-escapes `{turn.text}`; white-space: pre-wrap keeps the agent's own line
   // breaks) — deliberately NOT Markdown, matching the chat reply-plain-text XSS
-  // stance. Each crew turn links to its reasoning trace, and surfaces a PR CTA
-  // when that turn opened one.
+  // stance. Each crew turn carries its reasoning INLINE as a collapsed
+  // disclosure, and surfaces a PR CTA when that turn opened one.
   import CrewGlyph from './CrewGlyph.svelte';
+  import ReasoningDisclosure from './ReasoningDisclosure.svelte';
   import { crewName } from '../lib/workloads';
   import { iacApprovalHref } from '../lib/approval';
   import { t, locale } from '../lib/i18n';
+  import type { TraceCache } from '../lib/traceCache';
   import type { ConversationTurn } from '../lib/types';
 
   let {
     turns,
-    onOpenTrace,
+    cache,
+    conversationId = null,
   }: {
     turns: ConversationTurn[];
-    onOpenTrace: (traceId: string) => void;
+    /** Per-trace state for the inline disclosures. Required rather than
+     *  optional: a thread mounted without it would silently render no
+     *  reasoning at all, which is the one thing this view exists to show. */
+    cache: TraceCache;
+    /** The open thread's id, so a copied disclosure link can carry thread
+     *  context (design §4). Null on a not-yet-persisted conversation. */
+    conversationId?: string | null;
   } = $props();
 
   // Same-origin /iac-approvals/<n> link for a turn that opened an infra PR.
@@ -112,6 +121,16 @@
             aria-live={live ? 'polite' : undefined}
           >
             <p class="turn__byline">{crewName(turn.workload)}</p>
+            <!-- The reasoning line sits between the crew header and the reply,
+                 where the thinking happened relative to the answer. It renders
+                 on an OPTIMISTIC turn too — unlike the action links below —
+                 because a live run's whole value is watching it think. Safe to
+                 do so: expanding only reads the per-trace cache (a no-op while
+                 the stream runs), where the old open-trace button bumped runSeq
+                 and dropped the in-flight settle. -->
+            {#if turn.trace_id}
+              <ReasoningDisclosure traceId={turn.trace_id} {cache} {conversationId} />
+            {/if}
             {#if pending}
               <div class="turn__typing" data-testid="thread-typing" aria-hidden="true">
                 <span class="typing-dot"></span>
@@ -122,21 +141,11 @@
             {:else}
               <div class="turn__text">{turn.text}</div>
             {/if}
-            <!-- Suppress the action links on an optimistic turn: clicking "open
-                 trace" before it settles bumps runSeq and drops the in-flight
-                 settle (the turn would never persist). They reappear on the
-                 persisted turn a beat later. -->
+            <!-- Suppress the PR link on an optimistic turn: it points at an
+                 approval page for a turn that has not persisted yet. It
+                 reappears on the persisted turn a beat later. -->
             {#if !live}
               <div class="turn__actions">
-                {#if turn.trace_id}
-                  <button
-                    class="turn-link"
-                    data-testid="thread-open-trace"
-                    type="button"
-                    aria-label={$t('conversations.thread.viewReasoningAria', { n: turn.seq + 1 })}
-                    onclick={() => onOpenTrace(turn.trace_id as string)}
-                    >{$t('shared.rail.traceButton.viewReasoning')}</button>
-                {/if}
                 {#if prUrl}
                   <a
                     class="turn-link"

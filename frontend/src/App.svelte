@@ -66,6 +66,7 @@
   import AutonomyPill from './components/AutonomyPill.svelte';
   import { createAutonomyStore, autonomyNoteFor } from './lib/autonomyStore';
   import { createOverviewStore, NO_DECISIONS_YET } from './lib/overviewStore';
+  import { createTraceCache } from './lib/traceCache';
   import { prefersReducedMotion } from './lib/motion';
   import Timeline from './components/Timeline.svelte';
   import TourBanner from './components/TourBanner.svelte';
@@ -674,6 +675,12 @@
     }
     return resp;
   }
+
+  // ---- per-trace cache (ds-jns, design §0) — the state the inline reasoning
+  // disclosures ride on. Created ONCE here and passed down, so a live stream
+  // and every expanded historical disclosure share one source of truth per
+  // trace id instead of fighting over the single global timeline below.
+  const traceCache = createTraceCache(call);
 
   // ---- pause kill-switch (one shared store → header PausePill + content
   // PauseBanner, so the two surfaces can never diverge or double-fetch) ----
@@ -1918,7 +1925,7 @@
       />
     </div>
     {#if !historicalActive && displayTurns.length > 0}
-      <ConversationThread turns={displayTurns} onOpenTrace={openTrace} />
+      <ConversationThread turns={displayTurns} cache={traceCache} {conversationId} />
     {/if}
     <!-- The confirmation sits at the END of the transcript, directly under the
          crew reply that proposed it — the thread runs oldest-first below the

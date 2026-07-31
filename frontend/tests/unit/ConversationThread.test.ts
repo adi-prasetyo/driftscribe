@@ -1,11 +1,18 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/svelte';
 import ConversationThread from '../../src/components/ConversationThread.svelte';
+import { createTraceCache } from '../../src/lib/traceCache';
 import type { ConversationTurn } from '../../src/lib/types';
 
 afterEach(cleanup);
 
-const noop = () => {};
+// The thread no longer owns an open-trace callback — each crew turn carries an
+// inline ReasoningDisclosure reading this cache. A never-answering `call` keeps
+// these tests about the THREAD: the disclosure's own fetch behaviour is pinned
+// in ReasoningDisclosure.test.ts.
+function makeCache() {
+  return createTraceCache(async () => new Response('{}', { status: 200 }));
+}
 
 function turn(partial: Partial<ConversationTurn> & { seq: number; role: string }): ConversationTurn {
   return { text: '', workload: 'drift', ...partial } as ConversationTurn;
@@ -18,7 +25,7 @@ describe('ConversationThread', () => {
       turn({ seq: 1, role: 'crew', text: 'hi, I am Anchor', workload: 'drift' }),
     ];
     const { getAllByTestId, getByText } = render(ConversationThread, {
-      props: { turns, onOpenTrace: noop },
+      props: { turns, cache: makeCache() },
     });
     expect(getAllByTestId('thread-turn-user')).toHaveLength(1);
     expect(getAllByTestId('thread-turn-crew')).toHaveLength(1);
@@ -32,7 +39,7 @@ describe('ConversationThread', () => {
       turn({ seq: 0, role: 'crew', text: '<img src=x onerror=alert(1)>', workload: 'drift' }),
     ];
     const { container } = render(ConversationThread, {
-      props: { turns, onOpenTrace: noop },
+      props: { turns, cache: makeCache() },
     });
     // The malicious markup must appear as literal text, never as a real element.
     expect(container.querySelector('img')).toBeNull();
@@ -40,22 +47,42 @@ describe('ConversationThread', () => {
     expect(body.textContent).toContain('<img src=x onerror=alert(1)>');
   });
 
-  it('links a crew turn to its trace and fires onOpenTrace with the trace id', async () => {
-    const onOpenTrace = vi.fn();
+  it('carries the reasoning inline on a crew turn with a trace id', () => {
+    // Replaces the old "open trace" button, which swapped the whole column
+    // into replay mode. The reasoning now expands in place, under the reply
+    // that produced it.
     const turns = [turn({ seq: 1, role: 'crew', text: 'done', trace_id: 'tid-9' })];
     const { getByTestId } = render(ConversationThread, {
-      props: { turns, onOpenTrace },
+      props: { turns, cache: makeCache() },
     });
-    await fireEvent.click(getByTestId('thread-open-trace'));
-    expect(onOpenTrace).toHaveBeenCalledWith('tid-9');
+    expect(getByTestId('reasoning-disclosure')).toBeTruthy();
+    expect(getByTestId('reasoning-disclosure').getAttribute('aria-expanded')).toBe('false');
   });
 
-  it('omits the trace link when a crew turn has no trace id', () => {
+  it('places the reasoning line between the crew header and the reply body', () => {
+    const turns = [turn({ seq: 1, role: 'crew', text: 'the reply', trace_id: 'tid-9' })];
+    const { container } = render(ConversationThread, {
+      props: { turns, cache: makeCache() },
+    });
+    const bubble = container.querySelector('.bubble--crew') as HTMLElement;
+    const order = [...bubble.children].map((n) =>
+      n.classList.contains('turn__byline')
+        ? 'byline'
+        : n.querySelector('[data-testid="reasoning-disclosure"]')
+          ? 'reasoning'
+          : n.classList.contains('turn__text')
+            ? 'text'
+            : 'other',
+    );
+    expect(order.slice(0, 3)).toEqual(['byline', 'reasoning', 'text']);
+  });
+
+  it('omits the reasoning line when a crew turn has no trace id', () => {
     const turns = [turn({ seq: 1, role: 'crew', text: 'no trace', trace_id: null })];
     const { queryByTestId } = render(ConversationThread, {
-      props: { turns, onOpenTrace: noop },
+      props: { turns, cache: makeCache() },
     });
-    expect(queryByTestId('thread-open-trace')).toBeNull();
+    expect(queryByTestId('reasoning-disclosure')).toBeNull();
   });
 
   it('surfaces a PR CTA on a crew turn that opened an infra PR', () => {
@@ -68,7 +95,7 @@ describe('ConversationThread', () => {
       }),
     ];
     const { getByTestId } = render(ConversationThread, {
-      props: { turns, onOpenTrace: noop },
+      props: { turns, cache: makeCache() },
     });
     const link = getByTestId('thread-pr-link') as HTMLAnchorElement;
     expect(link.getAttribute('href')).toBe('/iac-approvals/42');
@@ -90,15 +117,20 @@ describe('ConversationThread', () => {
       }),
     ];
     const { getByTestId, queryByTestId, getByText, container } = render(ConversationThread, {
-      props: { turns, onOpenTrace: noop },
+      props: { turns, cache: makeCache() },
     });
     // The typing indicator stands in for the reply body…
     expect(getByTestId('thread-typing')).toBeTruthy();
     expect(container.querySelector('.turn__text')).toBeNull();
     // …and the assistive-tech line announces the in-progress state.
     expect(getByText('Generating reply…')).toBeTruthy();
-    // No action links on an optimistic turn, even with a trace id + PR present.
-    expect(queryByTestId('thread-open-trace')).toBeNull();
+    // The reasoning line renders even though the turn has not persisted —
+    // watching the crew think IS the live turn. Expanding it only reads the
+    // per-trace cache, so it cannot drop the in-flight settle the way the old
+    // open-trace button could.
+    expect(getByTestId('reasoning-disclosure')).toBeTruthy();
+    // The PR link still waits for persistence: it points at an approval page
+    // for a turn the backend has not committed.
     expect(queryByTestId('thread-pr-link')).toBeNull();
   });
 
@@ -116,16 +148,16 @@ describe('ConversationThread', () => {
         pending: false,
       }),
     ];
-    const { getByText, queryByTestId } = render(ConversationThread, {
-      props: { turns, onOpenTrace: noop },
+    const { getByText, getByTestId, queryByTestId } = render(ConversationThread, {
+      props: { turns, cache: makeCache() },
     });
     expect(getByText('here is the streamed reply')).toBeTruthy();
     expect(queryByTestId('thread-typing')).toBeNull();
-    expect(queryByTestId('thread-open-trace')).toBeNull();
+    expect(getByTestId('reasoning-disclosure')).toBeTruthy();
     expect(queryByTestId('thread-pr-link')).toBeNull();
   });
 
-  it('regression: a persisted crew turn renders text plus the open-trace and PR links', () => {
+  it('regression: a persisted crew turn renders text plus the reasoning line and PR link', () => {
     const turns = [
       turn({
         seq: 1,
@@ -136,10 +168,10 @@ describe('ConversationThread', () => {
       }),
     ];
     const { getByText, getByTestId } = render(ConversationThread, {
-      props: { turns, onOpenTrace: noop },
+      props: { turns, cache: makeCache() },
     });
     expect(getByText('the settled reply')).toBeTruthy();
-    expect(getByTestId('thread-open-trace')).toBeTruthy();
+    expect(getByTestId('reasoning-disclosure')).toBeTruthy();
     expect(getByTestId('thread-pr-link')).toBeTruthy();
   });
 });
@@ -167,7 +199,7 @@ describe('ConversationThread — crew transitions', () => {
       }),
     ];
     const { getByTestId, queryAllByTestId } = render(ConversationThread, {
-      props: { turns, onOpenTrace: noop },
+      props: { turns, cache: makeCache() },
     });
     const row = getByTestId('thread-turn-crew-change');
     // Both crews, by display name. A row that named only the survivor would
@@ -189,7 +221,7 @@ describe('ConversationThread — crew transitions', () => {
       }),
     ];
     const { getByTestId, queryByTestId } = render(ConversationThread, {
-      props: { turns, onOpenTrace: noop },
+      props: { turns, cache: makeCache() },
     });
     expect(queryByTestId('thread-turn-crew-change')).toBeNull();
     const row = getByTestId('thread-turn-handoff-declined');
@@ -208,7 +240,7 @@ describe('ConversationThread — crew transitions', () => {
       }),
     ];
     const { container, getByTestId } = render(ConversationThread, {
-      props: { turns, onOpenTrace: noop },
+      props: { turns, cache: makeCache() },
     });
     expect(container.querySelector('img')).toBeNull();
     expect(getByTestId('thread-transition-reason').textContent).toContain(
@@ -227,7 +259,7 @@ describe('ConversationThread — crew transitions', () => {
       }),
     ];
     const { queryByTestId } = render(ConversationThread, {
-      props: { turns, onOpenTrace: noop },
+      props: { turns, cache: makeCache() },
     });
     expect(queryByTestId('thread-transition-reason')).toBeNull();
   });
@@ -244,9 +276,9 @@ describe('ConversationThread — crew transitions', () => {
       }),
     ];
     const { queryByTestId } = render(ConversationThread, {
-      props: { turns, onOpenTrace: noop },
+      props: { turns, cache: makeCache() },
     });
-    expect(queryByTestId('thread-open-trace')).toBeNull();
+    expect(queryByTestId('reasoning-disclosure')).toBeNull();
     expect(queryByTestId('thread-pr-link')).toBeNull();
   });
 
@@ -257,7 +289,7 @@ describe('ConversationThread — crew transitions', () => {
       turn({ seq: 1, role: 'crew_change', text: '', workload: 'provision' }),
     ];
     const { getByTestId } = render(ConversationThread, {
-      props: { turns, onOpenTrace: noop },
+      props: { turns, cache: makeCache() },
     });
     expect(getByTestId('thread-turn-crew-change').textContent).toContain('Provision');
   });
@@ -278,7 +310,7 @@ describe('ConversationThread — crew transitions', () => {
       turn({ seq: 3, role: 'crew', text: 'opened a PR', workload: 'provision' }),
     ];
     const { container } = render(ConversationThread, {
-      props: { turns, onOpenTrace: noop },
+      props: { turns, cache: makeCache() },
     });
     const rows = Array.from(container.querySelectorAll('li')).map((li) =>
       li.getAttribute('data-testid'),
