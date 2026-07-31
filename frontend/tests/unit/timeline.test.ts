@@ -10,6 +10,7 @@ import {
   reconcileBackfill,
   omittedThoughtTokens,
   deriveThoughtSubtitle,
+  interleaveTimeline,
   type GroupKey,
   type TraceEvent,
 } from '../../src/lib/timeline';
@@ -750,5 +751,148 @@ describe('deriveThoughtSubtitle', () => {
 
   it('leaves inline bold alone (only a WHOLE-line heading is a heading)', () => {
     expect(deriveThoughtSubtitle('the **drift** is in PORT')).toBe('the **drift** is in PORT');
+  });
+});
+
+// ---- interleaveTimeline (ds-jns Task 1.4) ----
+// The disclosure/record row model. Timeline.svelte partitions events into three
+// sibling panels; a message-attached disclosure needs ONE chronological
+// sequence instead. Pure function, so the ordering rules are pinned here rather
+// than through a component.
+describe('interleaveTimeline', () => {
+  const tid = 'a'.repeat(32);
+  const e = (over: Partial<TraceEvent>): TraceEvent =>
+    ({ event: 'llm_thought', trace_id: tid, ...over }) as TraceEvent;
+
+  it('preserves input order for thought → tool → thought', () => {
+    const rows = interleaveTimeline([
+      e({ event: 'llm_thought', insert_id: 't1' }),
+      e({ event: 'tool_call', insert_id: 'c1', tool_name: 'read_live_env' }),
+      e({ event: 'llm_thought', insert_id: 't2' }),
+    ]);
+    expect(rows.map((r) => r.kind)).toEqual(['thought', 'tool', 'thought']);
+  });
+
+  it('anchors a tool pair at its CALL position even when the result lands later', () => {
+    const call = e({ event: 'tool_call', insert_id: 'c1', tool_name: 'read_live_env' });
+    const result = e({ event: 'tool_result', insert_id: 'r1', tool_name: 'read_live_env' });
+    const rows = interleaveTimeline([
+      e({ event: 'llm_thought', insert_id: 't1' }),
+      call,
+      e({ event: 'llm_thought', insert_id: 't2' }),
+      result,
+    ]);
+    expect(rows.map((r) => r.kind)).toEqual(['thought', 'tool', 'thought']);
+    const tool = rows[1];
+    expect(tool.kind).toBe('tool');
+    if (tool.kind === 'tool') {
+      expect(tool.call).toBe(call);
+      expect(tool.result).toBe(result);
+    }
+  });
+
+  it('pairs FIFO per tool_name, like pairToolEvents', () => {
+    const c1 = e({ event: 'tool_call', insert_id: 'c1', tool_name: 'read_live_env' });
+    const c2 = e({ event: 'tool_call', insert_id: 'c2', tool_name: 'read_live_env' });
+    const r1 = e({ event: 'tool_result', insert_id: 'r1', tool_name: 'read_live_env' });
+    const r2 = e({ event: 'tool_result', insert_id: 'r2', tool_name: 'read_live_env' });
+    const rows = interleaveTimeline([c1, c2, r1, r2]);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ kind: 'tool', call: c1, result: r1 });
+    expect(rows[1]).toMatchObject({ kind: 'tool', call: c2, result: r2 });
+  });
+
+  it('keeps an orphan result at its own position (nothing vanishes)', () => {
+    const orphan = e({ event: 'tool_result', insert_id: 'r1', tool_name: 'read_live_env' });
+    const rows = interleaveTimeline([e({ event: 'llm_thought', insert_id: 't1' }), orphan]);
+    expect(rows).toHaveLength(2);
+    expect(rows[1]).toMatchObject({ kind: 'tool', call: undefined, result: orphan });
+  });
+
+  it('keeps an unmatched in-flight call as a row with no result', () => {
+    const call = e({ event: 'tool_call', insert_id: 'c1', tool_name: 'read_live_env' });
+    const rows = interleaveTimeline([call]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ kind: 'tool', call, result: undefined });
+  });
+
+  it('moves an mcp row whose timestamp sorts earlier ahead of the later-stamped rows', () => {
+    // reconcileBackfill APPENDS the trace-only mcp side-channel, so a call the
+    // coordinator actually made first arrives last in the array.
+    const rows = interleaveTimeline([
+      e({ event: 'llm_thought', insert_id: 't1', timestamp: '2026-01-01T00:00:03Z' }),
+      e({ event: 'tool_call', insert_id: 'c1', tool_name: 'read_live_env', timestamp: '2026-01-01T00:00:04Z' }),
+      e({ event: 'mcp_call', insert_id: 'm1', mcp_server: 'dev-knowledge', mcp_tool: 'search', timestamp: '2026-01-01T00:00:01Z' }),
+    ]);
+    expect(rows.map((r) => r.kind)).toEqual(['mcp', 'thought', 'tool']);
+  });
+
+  it('inserts an mcp row before the FIRST later-stamped row, not at the very top', () => {
+    const rows = interleaveTimeline([
+      e({ event: 'llm_thought', insert_id: 't1', timestamp: '2026-01-01T00:00:01Z' }),
+      e({ event: 'tool_call', insert_id: 'c1', tool_name: 'read_live_env', timestamp: '2026-01-01T00:00:05Z' }),
+      e({ event: 'mcp_call', insert_id: 'm1', mcp_server: 'dev-knowledge', timestamp: '2026-01-01T00:00:03Z' }),
+    ]);
+    expect(rows.map((r) => r.kind)).toEqual(['thought', 'mcp', 'tool']);
+  });
+
+  it('leaves an mcp row in input order when nothing is stamped later (the live case)', () => {
+    // Streamed events carry no timestamp at all — Cloud Logging stamps them on
+    // the /trace path. So on a live+backfill entry there IS no later-stamped
+    // row and the appended mcp stays where reconcileBackfill put it. This is
+    // the documented best-effort limit, pinned so it can't regress silently.
+    const rows = interleaveTimeline([
+      e({ event: 'llm_thought' }),
+      e({ event: 'tool_call', tool_name: 'read_live_env' }),
+      e({ event: 'mcp_call', insert_id: 'm1', mcp_server: 'dev-knowledge', timestamp: '2026-01-01T00:00:01Z' }),
+    ]);
+    expect(rows.map((r) => r.kind)).toEqual(['thought', 'tool', 'mcp']);
+  });
+
+  it('leaves an mcp row without a timestamp in input order', () => {
+    const rows = interleaveTimeline([
+      e({ event: 'llm_thought', insert_id: 't1', timestamp: '2026-01-01T00:00:09Z' }),
+      e({ event: 'mcp_call', insert_id: 'm1', mcp_server: 'dev-knowledge' }),
+    ]);
+    expect(rows.map((r) => r.kind)).toEqual(['thought', 'mcp']);
+  });
+
+  it('excludes llm_usage, final_response and unknown kinds from the rows', () => {
+    const rows = interleaveTimeline([
+      e({ event: 'llm_usage', insert_id: 'u1', thoughts_token_count: 500 }),
+      e({ event: 'final_response', insert_id: 'f1' }),
+      e({ event: 'something_new', insert_id: 'x1' }),
+      e({ event: 'llm_thought', insert_id: 't1' }),
+    ]);
+    expect(rows.map((r) => r.kind)).toEqual(['thought']);
+  });
+
+  it('gives duplicate insert_ids distinct keys', () => {
+    const rows = interleaveTimeline([
+      e({ event: 'llm_thought', insert_id: 'dupe' }),
+      e({ event: 'llm_thought', insert_id: 'dupe' }),
+      e({ event: 'llm_thought', insert_id: 'dupe' }),
+    ]);
+    expect(new Set(rows.map((r) => r.key)).size).toBe(3);
+    expect(rows[0].key).toBe(eventKey(e({ event: 'llm_thought', insert_id: 'dupe' })));
+    expect(rows[1].key).toContain('#2');
+    expect(rows[2].key).toContain('#3');
+  });
+
+  it('gives every streamed thought a distinct key (they share one synthetic key)', () => {
+    // Live events carry NO insert_id, so eventKey() falls back to a synthetic
+    // built from (event, trace_id, timestamp, …) — identical for every thought
+    // chunk in one stream. Without de-duplication Svelte throws
+    // each_key_duplicate on the very first multi-thought turn.
+    const rows = interleaveTimeline([
+      e({ event: 'llm_thought', thought_text: 'first' }),
+      e({ event: 'llm_thought', thought_text: 'second' }),
+    ]);
+    expect(rows).toHaveLength(2);
+    expect(rows[0].key).not.toBe(rows[1].key);
+  });
+
+  it('returns an empty list for no events', () => {
+    expect(interleaveTimeline([])).toEqual([]);
   });
 });
