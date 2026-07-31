@@ -1971,11 +1971,9 @@
     decisions={$overview.decisions}
     pendingApprovals={$overview.pendingApprovals}
     settled={$overview.settled}
-    degraded={$overview.degraded}
     approvalsStale={$overview.approvalsStale}
     adoptDisabled={chatDisabled}
     onAdopt={handleAdopt}
-    onNavigate={navigate}
   />
   {/if}
 </main>

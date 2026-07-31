@@ -13,25 +13,26 @@
    * `pendingApprovals` are the overview store's current snapshot, same as
    * ApprovalDesk. NEVER imports Mermaid (that stays InfraDiagram's preview-
    * only concern); this is a plain DOM row list.
+   *
+   * 2026-07-31 — a SECTION of the desk page, no longer a screen of its own (see
+   * docs/plans/2026-07-31-desk-estate-merge-design.md). The desk owns the one
+   * instrument band above; this section owns only its own loading/degraded
+   * truth, deliberately NOT coupled to the hero's state machine (ds-eh6: a
+   * pending approval can coexist with a failed graph fetch).
    */
-  import { t, locale } from '../lib/i18n';
-  import { resourceCards, scopeTotals, type InfraGraph, type PendingApproval } from '../lib/infra_graph';
-  import { awaitingCount } from '../lib/desk';
+  import { t } from '../lib/i18n';
+  import type { InfraGraph, PendingApproval } from '../lib/infra_graph';
   import { estateModel, firstAdoptableRow } from '../lib/estate';
   import type { Decision } from '../lib/types';
-  import type { AppView } from '../lib/deeplink';
-  import InstrumentBand from './InstrumentBand.svelte';
 
   let {
     graph,
     decisions,
     pendingApprovals,
     settled = true,
-    degraded = false,
     approvalsStale = false,
     adoptDisabled = false,
     onAdopt,
-    onNavigate,
   }: {
     graph: InfraGraph | null;
     decisions: ReadonlyArray<Decision | null | undefined> | null | undefined;
@@ -39,7 +40,6 @@
     /** Same contract as ApprovalDesk's — see ds-eh6. Defaults keep existing
      *  test mounts meaning what they meant. */
     settled?: boolean;
-    degraded?: boolean;
     /** The pending-approvals lane specifically was unreliable this cycle — see
      *  OverviewState.approvalsStale. Suppresses ABSENCE-derived affordances
      *  only; positively observed PR chips still render. */
@@ -47,29 +47,7 @@
     adoptDisabled?: boolean;
     /** Adopt chip click → App prefills the chat with this string (NOT auto-sent). */
     onAdopt?: (prefill: string) => void;
-    onNavigate: (view: AppView) => void;
   } = $props();
-
-  // ---- instrument band numbers — SAME derivation as ApprovalDesk, imported
-  // never re-derived, so the two views can never disagree about the figures. ----
-  const cards = $derived(graph ? resourceCards(graph, $t) : []);
-  const scope = $derived(scopeTotals(cards, graph?.totals?.resources ?? 0));
-  // ds-eh6, same rule as ApprovalDesk: an absent OR degraded graph means the
-  // estate was not read, not that it is empty. This view already SAYS the map
-  // is loading/unavailable a few lines down — it was doing so while handing the
-  // band arithmetic zeros to render as exact figures, which contradicted its own
-  // banner on the same screen.
-  const graphUsable = $derived(!!graph && graph.degraded !== true);
-  const bandManaged = $derived(graphUsable ? scope.managed : null);
-  const bandDrift = $derived(graphUsable ? scope.drift : null);
-  // Gated exactly as ApprovalDesk gates it. Both views render the SAME
-  // InstrumentBand off the SAME store snapshot, so gating one and not the other
-  // meant a cold `?view=estate` showed a confident "0 awaiting" while the desk
-  // showed "—" for identical state — the two views contradicting each other
-  // about the same fact.
-  const awaiting = $derived(
-    settled && !degraded ? awaitingCount({ decisions, pendingApprovals, locale: $locale }) : null,
-  );
 
   // ---- row model ----
   // `decisions` is threaded in for ds-0rm's resolved-PR reconciliation, NOT
@@ -92,40 +70,15 @@
   }
 </script>
 
+<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 <section
+  id="estate"
   class="estate-view"
   data-testid="estate-view"
   data-tour="estate"
   aria-label={$t('desk.estate.ariaLabel')}
+  tabindex="-1"
 >
-  <!-- Arrival context (plan Task 4). A visitor who got here by clicking a desk
-       numeral had nothing on the page naming where they came from, and the
-       browser Back button used to leave the app. This is a DESTINATION link,
-       not a history pop, so it renders unconditionally — including on a cold
-       `?view=estate` deep-link with no desk entry behind it, and on the
-       degraded state, where there is nothing to look at and the way back
-       matters most. Reuses .rail-more (base.css), which is exactly this
-       affordance, re-inked for the paper world. -->
-  <div class="estate-view__wayfind">
-    <button
-      type="button"
-      class="rail-more estate-view__back"
-      data-testid="estate-back-desk"
-      onclick={() => onNavigate('desk')}>{$t('desk.estate.backToDesk')}</button
-    >
-  </div>
-
-  <!-- ds-7ag.2 — context="estate": managed/drift render as inert figures here
-       (the operator is already looking at the map they would point to), and
-       awaiting is the one stat with content elsewhere — the desk's queue. -->
-  <InstrumentBand
-    managed={bandManaged}
-    drift={bandDrift}
-    {awaiting}
-    context="estate"
-    onStat={() => onNavigate('desk')}
-  />
-
   <!-- A null graph is only "loading" while the first cycle is still out. Once
        it has settled, a null graph means the fetch FINISHED and failed, and
        "Loading the estate…" would be a claim that something is still in
@@ -200,19 +153,23 @@
       </div>
     {/if}
 
+    <!-- Folded (2026-07-31 merge): nothing here is actionable — these are
+         unmanaged resources of a type DriftScribe cannot adopt — so the COUNT
+         is the information and the rows are detail-on-demand. Same pattern as
+         the system-managed fold below. -->
     {#if model.untracked.length > 0}
-      <h2 class="estate-view__group" data-testid="estate-group-untracked">
-        {$t('desk.estate.untrackedGroup', { n: model.untracked.length })}
-      </h2>
-      <div class="estate-view__rows">
-        {#each model.untracked as row (row.nodeId)}
-          <div class="estate-view__row estate-view__row--un" data-testid="estate-row">
-            <span class="estate-view__dot" aria-hidden="true"></span>
-            <span class="estate-view__name">{row.label}</span>
-            <span class="estate-view__type">{row.typeLabel}</span>
-          </div>
-        {/each}
-      </div>
+      <details class="estate-view__fold" data-testid="estate-untracked-fold">
+        <summary>{$t('desk.estate.untrackedGroup', { n: model.untracked.length })}</summary>
+        <div class="estate-view__rows">
+          {#each model.untracked as row (row.nodeId)}
+            <div class="estate-view__row estate-view__row--un" data-testid="estate-row">
+              <span class="estate-view__dot" aria-hidden="true"></span>
+              <span class="estate-view__name">{row.label}</span>
+              <span class="estate-view__type">{row.typeLabel}</span>
+            </div>
+          {/each}
+        </div>
+      </details>
     {/if}
 
     {#if model.systemManagedTotal > 0}
@@ -269,25 +226,11 @@
     overflow: hidden;
   }
 
-  /* Quiet wayfinding strip above the instrument band. Sits inside the paper
-     card's own padding rhythm (40px gutters) and adds no rule of its own — it
-     is meant to be findable, not to announce itself. */
-  .estate-view__wayfind {
-    padding: 12px 40px 0;
-  }
-  .estate-view__back {
-    margin: 0;
-    padding: 2px 0;
-    /* ds-qbo: this is the way back to the desk — navigation, not decoration —
-       so it reads through ink-2 (6.47:1) rather than the lightest grey
-       (3.08:1). It was --ds-faint only because it sits on the paper card
-       and .rail-more's legacy ink would have clashed; that is no longer a
-       choice between two worlds. */
-    color: var(--ds-fg-soft);
-    font-size: 12px;
-  }
-  .estate-view__back:hover {
-    color: var(--ds-fg);
+  /* Programmatic scroll target (the band's managed/drift stats focus this
+     section so keyboard focus follows the scroll). Not keyboard-interactive —
+     it must not grow a focus ring. */
+  .estate-view:focus {
+    outline: none;
   }
 
   /* Loading / degraded status. This is the only thing on the screen when the
