@@ -893,19 +893,18 @@ describe('App — the failure turn keeps its reasoning across the refetch', () =
     });
   }
 
-  it('the failure turn and its inline reasoning both survive the refetch', async () => {
+  it('keeps an expanded disclosure open across the refetch', async () => {
     // A trace-bearing failure turn (the joining crew streamed a meta frame, then
-    // errored) has to keep BOTH halves of its explanation once the persisted
-    // rows land underneath it: the prose AND the trace behind the disclosure.
+    // errored) keeps BOTH halves of its explanation once the persisted rows land
+    // underneath it: the prose, and the trace the operator had already expanded.
     //
-    // KNOWN RESIDUAL, pinned deliberately rather than papered over: the
-    // disclosure comes back CLOSED. Re-seating moves the turn's `seq`, `seq` is
-    // the {#each} key (ConversationThread.svelte), so Svelte destroys and
-    // recreates the component and its local `open` state goes with it. Making
-    // the clear + re-seat atomic (which it now is) removes the intermediate
-    // render but cannot prevent this — the key genuinely changes. Surviving it
-    // needs expansion state owned ABOVE the component, which is exactly the
-    // `autoExpandTraceId` prop PR 2 introduces; ds-jns carries the follow-up.
+    // The disclosure's open state lives in the component, so it survives only if
+    // the turn keeps its {#each} key. It does: an `omitUserTurn` overlay renders
+    // at `baseSeq + 1` and leaves `baseSeq` free for the server's transition row,
+    // so the refetch lands in the gap the overlay reserved and the key is
+    // untouched. Re-basing on every refetch — even when nothing collides —
+    // remounts the bubble and drops the disclosure; `reseated()` moves the base
+    // only on a real collision.
     let releaseRefetch!: () => void;
     const refetchGate = new Promise<void>((r) => {
       releaseRefetch = r;
@@ -972,12 +971,72 @@ describe('App — the failure turn keeps its reasoning across the refetch', () =
 
     // The turn is still there, still carrying its prose explanation…
     expect(getByTestId('thread-turn-error')).toBeTruthy();
-    // …and its reasoning is still REACHABLE — the disclosure survives the
-    // re-seat even though its open state does not (see the note above).
-    const reopened = await findByTestId('reasoning-disclosure');
-    expect(queryByTestId('trace-detail')).toBeNull(); // pins the residual
-    await fireEvent.click(reopened);
-    const detail = await findByTestId('trace-detail');
-    expect(detail.textContent).toContain('Checking the provision crew');
+    // …and the trace is still OPEN — not merely re-openable.
+    const detail = queryByTestId('trace-detail');
+    expect(detail).toBeTruthy();
+    expect(detail!.textContent).toContain('Checking the provision crew');
+  });
+});
+
+describe('App — the overlay yields when the server actually claims its slot', () => {
+  const TRACE = 'c'.repeat(32);
+
+  function sseChat(frames: string): Response {
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(new TextEncoder().encode(frames));
+        c.close();
+      },
+    });
+    return new Response(stream as unknown as BodyInit, {
+      headers: { 'content-type': 'text/event-stream' },
+    });
+  }
+
+  it('re-bases when the refetch persists a row at the overlay key', async () => {
+    // The other half of `reseated()`. Here the joining crew's reply DID persist,
+    // so the refetch returns seq 0..3 and the overlay's own key (baseSeq+1 = 3)
+    // is now taken. Holding the key would render two turns keyed 3 and Svelte
+    // would throw each_key_duplicate, so the base has to move.
+    let redeemed = false;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes('/chat/handoff') && init?.method === 'POST') {
+          redeemed = true;
+          return sseChat(
+            `event: meta\ndata: {"trace_id":"${TRACE}"}\n\n` +
+              'event: error\ndata: {"detail":"the provision crew crashed"}\n\n',
+          );
+        }
+        if (url.includes('/conversations/')) {
+          // All four rows — the transition AND the crew reply persisted.
+          return okJson(redeemed ? { ...JOINED_DETAIL, pending_handoff: null } : PENDING_DETAIL);
+        }
+        if (url.includes('/conversations')) return okJson(LIST);
+        if (url.includes('/trace/')) return okJson({ trace_id: TRACE, events: [], complete: true });
+        if (url.includes('/decisions')) return okJson({ decisions: [] });
+        if (url.includes('/infra/pending-approvals')) return okJson({ approvals: [] });
+        if (url.includes('/infra/graph')) return okJson(GRAPH);
+        return okJson({});
+      }),
+    );
+
+    window.sessionStorage.setItem('ds.handoff.c1', JSON.stringify(OFFER));
+    const { findByTestId, getByTestId, getAllByTestId } = render(App);
+    await fireEvent.click(await findByTestId('conversation-open'));
+    await findByTestId('handoff-chip');
+    await fireEvent.click(getByTestId('handoff-confirm'));
+
+    // Both the persisted reply and the overlay's failure note coexist…
+    await findByTestId('thread-turn-crew-change');
+    await waitFor(() => expect(getByTestId('thread-turn-error')).toBeTruthy());
+    expect(getByTestId('conversation-thread').textContent).toContain(
+      'opened PR #42 with the bucket',
+    );
+    // …and every rendered turn still has a distinct key (no duplicate crash).
+    const seqs = getAllByTestId(/^thread-turn/).length;
+    expect(seqs).toBeGreaterThanOrEqual(4);
   });
 });

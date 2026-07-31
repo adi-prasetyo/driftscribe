@@ -502,6 +502,32 @@
   };
   let ephemeralExchange = $state<EphemeralExchange | null>(null);
 
+  /** The carried ephemeral turn, re-based against the refetched rows ONLY if
+   *  they actually claim a slot it renders.
+   *
+   *  Re-basing unconditionally to `turns.length` looks harmless and is not:
+   *  `baseSeq` decides the turn's `seq`, `seq` is the keyed {#each}'s key
+   *  (ConversationThread.svelte), so moving it remounts the bubble — silently
+   *  collapsing any reasoning disclosure the operator had opened on it, on the
+   *  one turn whose whole job is to explain itself. It also leaves a hole in the
+   *  key sequence.
+   *
+   *  Usually there is nothing to avoid: an `omitUserTurn` overlay renders only
+   *  `baseSeq + 1` and deliberately leaves `baseSeq` free for the server's
+   *  transition row, so the refetch that adds that row lands exactly in the gap
+   *  the overlay reserved for it. Only a genuine collision forces a move. */
+  function reseated(
+    carry: EphemeralExchange,
+    turns: ConversationTurn[],
+  ): EphemeralExchange {
+    const taken = new Set(turns.map((t) => t.seq));
+    const rendered = carry.omitUserTurn
+      ? [carry.baseSeq + 1]
+      : [carry.baseSeq, carry.baseSeq + 1];
+    if (!rendered.some((s) => taken.has(s))) return carry;
+    return { ...carry, baseSeq: turns.length };
+  }
+
   /** Record a non-persisted outcome as a thread turn. Always clears
    *  `liveExchange` — the optimistic bubble and this are the same exchange. */
   function setEphemeral(
@@ -1450,12 +1476,7 @@
       // empty thread. Same ordering discipline as settleConversation.
       conversationTurns = Array.isArray(detail.turns) ? detail.turns : [];
       liveExchange = null;
-      // Re-based against the persisted turns as they stand NOW — an overlay
-      // still keyed at the old turn count would collide with the refetched
-      // rows. The original `createdAt` is carried, so the turn keeps the time
-      // it actually happened.
-      ephemeralExchange =
-        carry == null ? null : { ...carry, baseSeq: conversationTurns.length };
+      ephemeralExchange = carry == null ? null : reseated(carry, conversationTurns);
       finalReply = null;
       finalIsError = false;
       iacPr = null; // the persisted crew turn carries the PR CTA now
