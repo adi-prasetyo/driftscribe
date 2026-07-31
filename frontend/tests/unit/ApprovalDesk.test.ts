@@ -212,7 +212,8 @@ describe('ApprovalDesk — calm states are a slim strip (desk+estate merge)', ()
 describe('ApprovalDesk — heading level', () => {
   // The page's only h1 is the brand title in App.svelte, so the desk's state
   // headline must be h2: an h3 skips a level for anyone navigating by heading,
-  // and the sibling estate view already uses h2. Easy to regress, because both
+  // and EstateView's group headings — on the SAME page since the 2026-07-31
+  // merge — are already h2. Easy to regress, because both
   // the plan text and the mockup say "Mincho h3 31px" — that pins the SIZE,
   // not the semantic level, and the 31px is delivered by CSS either way.
   // Asserted for ALL THREE states: they are three separate elements in three

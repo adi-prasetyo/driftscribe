@@ -260,7 +260,7 @@
     letter-spacing: 0.18em;
     /* Deliberately NO text-transform: uppercase. The mockup's .egrp doesn't
        have one, and adding it renders our own term "IaC" as "IAC" in every EN
-       group header — the estate view's most repeated string. Casing belongs in
+       group header — this section's most repeated string. Casing belongs in
        the catalog, where a translator can see it. */
     color: var(--ds-faint);
     font-weight: 400;

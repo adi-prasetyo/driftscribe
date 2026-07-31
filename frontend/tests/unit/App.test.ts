@@ -62,7 +62,7 @@ describe('App — tour wiring (smoke)', () => {
     expect(window.localStorage.getItem('driftscribe_tour_done')).toBe('1');
   });
 
-  // ds-s9q: the tour borrows the estate view for two of its steps and hands the
+  // ds-s9q: the tour borrows the desk for two of its steps and hands the
   // visitor back to chat on the last one. Wiring those steps to the full
   // navigate() applied its leave-chat teardown, so "open a conversation, click
   // Tour, press Next" discarded the open thread — it survived in the rail, but
@@ -156,8 +156,10 @@ describe('App — tour wiring (smoke)', () => {
   // never see this: on the DESK (a bare url) InfraDiagram never mounts, so the
   // lifted state stayed null and every graph-dependent step degraded to its
   // "still loading" / "unavailable" copy for the whole tour. Task 4.1 made this
-  // worse still by routing steps 2 and 4 to the ESTATE view, which likewise
+  // worse still by routing steps 2 and 4 onto EstateView, which likewise
   // does not mount InfraDiagram — so no tour path reached a populated graph.
+  // (That target was a view of its own then; since the 2026-07-31 merge it is a
+  // section of the desk, which changes the address, not the diagnosis.)
   // Task 4.1's actual feature: the estate step's target moved onto EstateView,
   // which is NOT mounted while the tour is opened from the desk. So the step
   // must navigate AND the spotlight must land — and the lookup has to wait for
@@ -996,7 +998,7 @@ describe('App — rails come off the desk (Task 3.5)', () => {
   }
 });
 
-describe('App — estate view (Task 4.1)', () => {
+describe('App — estate section (Task 4.1)', () => {
   const BUCKET = 'storage.googleapis.com/Bucket';
 
   // A graph with one real adoptable drift node (shipping-topic) — used by

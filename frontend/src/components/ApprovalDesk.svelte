@@ -560,8 +560,10 @@
   /* h2, not h3, even though the plan and the mockup both say "Mincho h3 31px"
      — that phrase pins the SIZE, which is separable from the semantic level.
      The page's only h1 is the brand title (App.svelte), so an h3 here would
-     skip a level for anyone navigating by heading, and the sibling estate view
-     already uses h2. The 31px below is what actually delivers the mockup. */
+     skip a level for anyone navigating by heading. Since the 2026-07-31 merge
+     this matters more, not less: EstateView's group headings are h2 and now sit
+     on the SAME page, so a heading walk runs h1 → h2 (desk) → h2 (estate) with
+     no gap. The 31px below is what actually delivers the mockup. */
   .approval-desk h2 {
     font-family: var(--ds-font-mincho);
     font-size: 31px;

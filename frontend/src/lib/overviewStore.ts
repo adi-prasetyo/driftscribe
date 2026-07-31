@@ -1,8 +1,8 @@
-// overviewStore.ts — single owner of the desk/estate refresh triple: the infra
-// graph, the open infra PRs awaiting approval, and the decisions log. Today
-// App.svelte fetches decisions and InfraDiagram.svelte independently fetches
-// graph + pending-approvals; the desk (Task 3.1+) and the estate view need the
-// same three snapshots and must not race three separate fetchers to build
+// overviewStore.ts — single owner of the landing page's refresh triple: the
+// infra graph, the open infra PRs awaiting approval, and the decisions log.
+// Today App.svelte fetches decisions and InfraDiagram.svelte independently
+// fetches graph + pending-approvals; the desk (Task 3.1+) and its estate
+// section need the same three snapshots and must not race three fetchers to build
 // them. This store owns exactly one copy of each, refreshed on a shared set
 // of triggers, so every consumer reads one consistent snapshot.
 //
@@ -10,7 +10,7 @@
 // autonomyStore.ts / pauseStore.ts, instantiated once in App.svelte. Unlike
 // those two, this store fetches EAGERLY on creation (see "store creation" in
 // the trigger list below) — it doesn't wait for an explicit first call — so
-// desk/estate render with data on their very first paint instead of an empty
+// the desk renders with data on its very first paint instead of an empty
 // flash-then-fill.
 //
 // NOT rewired this phase: InfraDiagram.svelte keeps its own internal graph +
@@ -19,13 +19,13 @@
 // now, noted for post-pitch cleanup.
 //
 // Scope, precisely: only the `graph` and `pendingApprovals` slices are
-// desk/estate-specific. `decisions` is consumed APP-WIDE and is NOT safe to
+// desk-specific. `decisions` is consumed APP-WIDE and is NOT safe to
 // treat as view-scoped — App.svelte renders <DecisionsRail> outside the view
 // branch (visible on chat too), and, less obviously, the decisions payload
 // drives noteApplied() -> appliedEpoch, which the CHAT view's <InfraDiagram>
 // reads to trigger its post-apply CAI-lag ride-out. So this store is already
 // load-bearing for chat's refresh timing: gating or removing it as a
-// "desk/estate thing" would silently break the chat resource map's refresh
+// "desk thing" would silently break the chat resource map's refresh
 // after an apply lands.
 import { writable, type Readable } from 'svelte/store';
 import type { InfraGraph, PendingApproval } from './infra_graph';
@@ -86,7 +86,7 @@ export interface OverviewState {
    * pending" are the same bytes apart from this bit.
    *
    * Scoped to the two desk lanes ON PURPOSE: a `/infra/graph` failure does not
-   * set it. Graph feeds the estate view, and it is the routinely-slow endpoint
+   * set it. Graph feeds the estate section, and it is the routinely-slow endpoint
    * — letting it flip this would put the desk in a degraded state during
    * ordinary cold starts.
    */

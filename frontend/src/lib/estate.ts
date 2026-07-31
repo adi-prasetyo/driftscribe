@@ -1,10 +1,10 @@
-// estate.ts — pure model for the estate view (Task 4.1, docs/plans/2026-07-28-
+// estate.ts — pure model for the estate section (Task 4.1, docs/plans/2026-07-28-
 // composite-mockup.html "SCREEN 2 — 推定図"). The mockup groups resources by
 // STATUS (drift first, then managed) and flattens across resource TYPES, with
 // the type rendered as a per-row label — the inverse of resourceCards()'s own
 // grouping (one card PER type, managed+drift rows mixed inside it). This
 // module re-groups resourceCards()'s output rather than re-deriving anything
-// from the raw graph, so the estate view can never disagree with the
+// from the raw graph, so the estate section can never disagree with the
 // desk/InfraDiagram panel about what counts as managed/drift/adoptable
 // (single source of truth: lib/infra_graph.ts).
 //
@@ -69,7 +69,7 @@ export interface EstateRow {
   label: string;
   assetType: string;
   /** Localized friendly type label (infraTypeLabel), rendered per-row since
-   *  the estate view flattens across types instead of grouping by them. */
+   *  the estate section flattens across types instead of grouping by them. */
   typeLabel: string;
   /** managed | drift | untracked — control_plane rows never reach here; they
    *  live in EstateModel.systemManaged instead (mirrors ResourceCard's own
@@ -119,7 +119,7 @@ const EMPTY_MODEL: EstateModel = {
 };
 
 /**
- * Build the estate view's row model from the same `/infra/graph` DTO the
+ * Build the estate section's row model from the same `/infra/graph` DTO the
  * desk/InfraDiagram panel already read (via resourceCards()). `graph === null`
  * (not yet loaded) and `graph.degraded` both yield the empty model — the
  * caller renders an honest loading/degraded line for those two cases (never a

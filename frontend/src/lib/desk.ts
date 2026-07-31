@@ -5,8 +5,8 @@
 // what it should point at; ApprovalDesk.svelte (Task 3.5) renders the result.
 // It does not fetch, subscribe, or touch the DOM — callers pass in the same
 // `graph`-adjacent slices `overviewStore.ts` (Task 3.0a) already holds
-// (`decisions`, `pendingApprovals`), so the desk and the estate view read one
-// consistent snapshot.
+// (`decisions`, `pendingApprovals`), so the desk and the estate section read
+// one consistent snapshot.
 //
 // Pure + fully time-injectable: every comparison takes `now` from the input
 // (defaulting to Date.now() only at this one entry point), so decay/expiry

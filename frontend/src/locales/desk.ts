@@ -1,9 +1,12 @@
-// desk namespace — the header's three-way view nav (Desk / Estate / Chat)
-// added in the composite-redesign Task 2.2 (docs/plans/2026-07-28-composite-
-// redesign-implementation.md). The desk/estate placeholder sections reuse
-// these same nav labels for their heading text; real content lands in Phase 3
-// (ApprovalDesk.svelte) and Phase 4 (EstateView.svelte) — this file only needs
-// to survive the skeleton until then.
+// desk namespace — the header's view nav, plus everything on the landing page
+// it leads to: ApprovalDesk (band, hero, ledger) and EstateView.
+//
+// The nav arrived three-way (Desk / Estate / Chat) in the composite-redesign
+// Task 2.2 (docs/plans/2026-07-28-composite-redesign-implementation.md). The
+// 2026-07-31 merge (docs/plans/2026-07-31-desk-estate-merge.md) made the estate
+// a SECTION of the desk rather than a view of its own, so the nav is two-way
+// and `desk.nav.estate` is gone. `desk.estate.*` keys stayed exactly where they
+// were — the section is unchanged, only its address is.
 export const desk = {
   en: {
     'desk.nav.ariaLabel': 'Primary navigation',
@@ -14,7 +17,7 @@ export const desk = {
     // reader needs an EN-legible name for the "approved" state it marks.
     'desk.seal.ariaLabel': 'Approved',
     // InstrumentBand (Task 3.3) — the three-number pulse across the top of
-    // the desk/estate. Visible labels sit under 44px numerals so they stay
+    // the desk. Visible labels sit under 44px numerals so they stay
     // short; the *Aria keys are separate because a bare numeral read aloud
     // ("nine") is meaningless without what it counts, so each stat button's
     // accessible name pairs the figure with its meaning explicitly rather
@@ -194,10 +197,6 @@ export const desk = {
   ja: {
     'desk.nav.ariaLabel': 'メインナビゲーション',
     'desk.nav.desk': 'デスク',
-    // The mockup called this 推定図, but 推定 reads as "estimation/inference"
-    // — closer to "estimation diagram" than to "your infrastructure". Operator
-    // decision 2026-07-28: use インフラ, matching the term this same domain
-    // already ships under (infra.panel.title). Phase 4's EstateView keeps it.
     'desk.nav.chat': 'チャット',
     'desk.seal.ariaLabel': '承認済み',
     // Visible labels straight from the mockup (docs/plans/2026-07-28-
@@ -273,6 +272,12 @@ export const desk = {
       '記録の一部を取得できなかったため、承認をお待ちしている提案がここに表示されていない可能性があります。自動的に再試行します。',
     'desk.resting.noNewDrift': '新規ドリフトなし',
 
+    // The mockup called this 推定図, but 推定 reads as "estimation/inference"
+    // — closer to "estimation diagram" than to "your infrastructure". Operator
+    // decision 2026-07-28: use インフラ, matching the term this same domain
+    // already ships under (infra.panel.title). It named the nav TAB first; the
+    // 2026-07-31 merge deleted that tab, and the decision moved here with the
+    // term, since this is now the section's only name.
     'desk.estate.ariaLabel': 'インフラ',
     'desk.estate.loading': 'インフラ情報を読み込み中…',
     'desk.estate.degraded': 'インフラ図は一時的に取得できません。',
