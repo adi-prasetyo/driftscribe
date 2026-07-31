@@ -55,7 +55,12 @@ async function mockData(page: Page) {
     json(conversationDetailResponse()),
   );
   await page.route('**/trace/**', json(traceResponse()));
-  await page.route('**/infra/pending-approvals**', json({ pending: [] }));
+  // `approvals`, not `pending`: fetchPendingList() requires
+  // `Array.isArray(body.approvals)` and returns ok:false otherwise, so the older
+  // `{ pending: [] }` made every case here run against a FAILED approvals lane
+  // while reading like a healthy empty one. The history assertions held either
+  // way, which is exactly why it went unnoticed.
+  await page.route('**/infra/pending-approvals**', json({ approvals: [] }));
   await page.route(
     '**/infra/graph',
     json({

@@ -51,14 +51,17 @@
 
   // ---- row model ----
   // `decisions` is threaded in for ds-0rm's resolved-PR reconciliation, NOT
-  // for row content — see estateModel's `decisions` param. Both this view and
-  // App's adopt-target call it with the same four arguments so the two can
-  // never disagree about which PRs are still open.
+  // for row content — see estateModel's `decisions` param. This view and the
+  // tour reconcile the same list the same way (App passes TourCard a
+  // `reconcileApprovals(...)` of the same two inputs), so the two can never
+  // disagree about which PRs are still open.
   const model = $derived(estateModel(graph, pendingApprovals, $t, decisions));
   // The tour's "Adopt your first resource" step spotlights this exact row
-  // (data-tour="adopt-target"); App.svelte computes the SAME predicate off the
-  // SAME model for its nav-button fallback, so the two markers are always
-  // mutually exclusive (see firstAdoptableRow's own doc comment).
+  // (data-tour="adopt-target"). App used to compute the same predicate to decide
+  // whether the インフラ nav button could host the spotlight instead; the ds-cmc
+  // merge deleted both the button and that predicate, so the step's fallback is
+  // now the estate section itself (TourCard resolves `fallback: 'estate'`), which
+  // is unconditionally present on the desk.
   // No adopt target while the approvals lane is unreliable — the target is
   // chosen from rows whose `pendingPr === null`, which is precisely the
   // unsupported absence. Nulling it here also clears the tour's spotlight.
@@ -404,27 +407,39 @@
      check this plan prescribes — calls the page clean while a control sits half
      off the card. The pin in transparency.smoke.ts measures the button against
      the card instead, for that reason.
-     Restack, don't shrink: line 1 is dot + name (the identity), line 2 is type +
-     action. 460 rather than 410 leaves room for a longer resource name or a
-     wider translated chip before it clips again. */
+     Restack, don't shrink: the name is the identity, the type says what it is,
+     the chip is the action, and each gets its own line under the dot.
+
+     ONE LINE PER ITEM, not two — the first attempt put type and chip together on
+     line 2 and that was wrong. They are BOTH `nowrap`, so pairing them just
+     moves the collision: at 390 the row offers ~278px while `Pub/Sub
+     サブスクリプション` (152px) beside 「取り込み状況を確認できません」 (191px) wants
+     343px. The type then overflowed its `minmax(0, 1fr)` track and ran UNDER the
+     chip. Measured overlap at 390 on every chip variant in both locales, worst
+     ja/unknown at 69px. Stacking is the only arrangement that cannot be broken
+     by a longer translation, which matters because the widest chip in each
+     locale is a different string.
+
+     460 rather than the measured 410 leaves headroom for a longer resource name
+     or a wider translated chip. */
   @media (max-width: 460px) {
     .estate-view__row {
-      grid-template-columns: 20px minmax(0, 1fr) auto;
+      grid-template-columns: 20px minmax(0, 1fr);
       row-gap: 6px;
     }
     .estate-view__dot {
       grid-area: 1 / 1;
     }
     .estate-view__name {
-      grid-area: 1 / 2 / auto / -1;
+      grid-area: 1 / 2;
     }
     .estate-view__type {
       grid-area: 2 / 2;
       justify-self: start;
     }
     .estate-view__chip {
-      grid-area: 2 / 3;
-      justify-self: end;
+      grid-area: 3 / 2;
+      justify-self: start;
     }
   }
 </style>

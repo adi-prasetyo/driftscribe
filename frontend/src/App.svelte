@@ -196,7 +196,9 @@
     syncConversationParam(id);
   }
 
-  // The SPA's three client-side views (composite-redesign Task 2.2). No router
+  // The SPA's two client-side views (composite-redesign Task 2.2; the estate
+  // stopped being the third in the ds-cmc merge and is a section of the desk
+  // now). No router
   // — same pure-function-over-location.search pattern as the deep-link helpers
   // above, this time picking a view instead of a resource id. See lib/deeplink
   // for viewFromSearch/AppView/DEFAULT_VIEW (Task 2.1).
@@ -1752,7 +1754,7 @@
       }
       if (bootReasoningTid) openTrace(bootReasoningTid);
     })();
-    // Browser Back/Forward across the three views (ds-7ag.1). Registered here
+    // Browser Back/Forward across the two views (ds-7ag.1). Registered here
     // rather than in the module body so it is torn down with the component.
     window.addEventListener('popstate', onPopstate);
     return () => window.removeEventListener('popstate', onPopstate);
@@ -1766,11 +1768,11 @@
     </span>
     <h1 class="app-title">DriftScribe<span class="app-title__sub">{$t('header.brand.tagline')}</span></h1>
   </a>
-  <!-- The SPA's three-view nav (composite-redesign Task 2.2): desk is the
-       front door and DEFAULT_VIEW since the Task 3.6 flip (see lib/deeplink),
-       estate is the resource map, chat the conversation view. Both desk and
-       estate landed as placeholders in Task 2.2 and were built out in Tasks
-       3.x/4.1; this comment outlived that. -->
+  <!-- The SPA's two-view nav (composite-redesign Task 2.2): desk is the front
+       door and DEFAULT_VIEW since the Task 3.6 flip (see lib/deeplink), chat is
+       the conversation view. The estate was the third tab until the ds-cmc
+       merge folded it into the desk as a section; `?view=estate` still resolves
+       here through the legacy alias in viewFromSearch. -->
   <nav class="app-header__nav" aria-label={$t('desk.nav.ariaLabel')}>
     <button
       type="button"
@@ -2139,7 +2141,7 @@
     align-items: center;
   }
   /* Phone widths: the brand and the nav stop fitting on one line together, so
-     the nav takes a row of its own. It must never wrap mid-cluster — three view
+     the nav takes a row of its own. It must never wrap mid-cluster — the view
      buttons broken across two lines is the "後付け" texture itself. */
   @media (max-width: 640px) {
     .app-header {

@@ -29,9 +29,12 @@ import type { Decision } from './types';
  * Sanitize an externally-sourced approvals payload AND retire any entry a
  * decision proves already applied (ds-0rm's filter).
  *
- * Exported because THREE surfaces read this list and every one of them must
- * agree: the estate rows (via `estateModel`), App's adopt-target, and the
- * tour's step-4 suggestion. When only some applied the filter, one screen
+ * Exported because TWO surfaces read this list and both must agree: the estate
+ * rows (via `estateModel`) and the tour's step-4 suggestion. It was three until
+ * the ds-cmc merge deleted App's `estateHasAdoptTarget` — that predicate existed
+ * only to decide whether the インフラ nav button was a usable spotlight host, and
+ * the nav button went with the merge. When only some callers applied the filter,
+ * one screen
  * contradicted itself — the InstrumentBand showed "0 awaiting" (its
  * `awaitingCount` does filter) directly above a row reading "PR #268 awaiting
  * review" (which did not). One function, one answer.
