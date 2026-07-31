@@ -218,7 +218,7 @@ describe('iacStatusLabel', () => {
     expect(iacStatusLabel('applied', t)).toBe('applied');
     // Operator-facing label is plain "rebuild" (the internal enum stays
     // `waiting_for_rebake`); the cryptic insider term "re-bake" is gone.
-    expect(iacStatusLabel('waiting_for_rebake', t)).toBe('awaiting rebuild');
+    expect(iacStatusLabel('waiting_for_rebake', t)).toBe('awaiting apply');
     expect(iacStatusLabel('failed', t)).toBe('failed');
     // Codex must-fix: failed_state_suspect is a real backend-emitted status.
     expect(iacStatusLabel('failed_state_suspect', t)).toBe('failed (state suspect)');
@@ -435,10 +435,30 @@ describe('iacApplyMeta — merge-aware status for the rail', () => {
     expect(iacApplyMeta('failed_state_suspect', 'n/a', undefined, t).tone).toBe('danger');
     expect(iacApplyMeta('ambiguous', 'n/a', undefined, t).tone).toBe('warn'); // mirrors decision.ts (not danger)
     const wait = iacApplyMeta('waiting_for_rebake', 'pending', undefined, t);
-    expect(wait.label).toBe('awaiting rebuild');
+    expect(wait.label).toBe('awaiting apply');
     expect(wait.tone).toBe(''); // neutral — carries its own label + help
     expect(typeof wait.help).toBe('string');
   });
+
+  // Codex r4: the ledger stopped claiming the re-bake was outstanding, and this
+  // surface was left still claiming it. The coordinator never observes the
+  // external build — it writes waiting_for_rebake at merge and leaves it until
+  // the operator's second submit (agent/main.py:7187) — so "awaiting rebuild"
+  // went stale the instant the build finished, with nothing here able to tell.
+  // The rail label is ONE token for both merge_state variants, so it has to be
+  // the claim true in both: pre-merge the wait is the merge, post-merge it is
+  // the operator's apply, and neither is a rebuild this client can vouch for.
+  it.each(['pending', 'merged', 'failed', undefined])(
+    'the waiting_for_rebake label names the apply, never the rebuild (merge_state %p)',
+    (mergeState) => {
+      const meta = iacApplyMeta('waiting_for_rebake', mergeState, undefined, t);
+      expect(meta.label).toBe('awaiting apply');
+      expect(meta.label).not.toMatch(/rebuild|re-?bake/i);
+      // The HELP text may still describe the rebuild step — there it explains
+      // why a second step exists rather than asserting its current state.
+      expect(meta.help).toMatch(/rebuilt/);
+    },
+  );
 
   it('tolerates null/undefined apply_status', () => {
     expect(iacApplyMeta(null, null, undefined, t)).toMatchObject({
@@ -472,17 +492,17 @@ describe('iacApplyMeta — merge-aware status for the rail', () => {
     expect(failed.label).not.toBe('superseded');
   });
 
-  it('superseded_by_pr rejects non-positive/non-integer values — falls through to "awaiting rebuild"', () => {
+  it('superseded_by_pr rejects non-positive/non-integer values — falls through to "awaiting apply"', () => {
     for (const bad of [0, -1, 1.5]) {
       const m = iacApplyMeta('waiting_for_rebake', 'pending', bad, t);
-      expect(m.label).toBe('awaiting rebuild');
+      expect(m.label).toBe('awaiting apply');
       expect(m.done).toBe(false);
     }
   });
 
-  it('regression: waiting_for_rebake with no third arg still reads "awaiting rebuild"', () => {
+  it('regression: waiting_for_rebake with no third arg still reads "awaiting apply"', () => {
     const m = iacApplyMeta('waiting_for_rebake', 'pending', undefined, t);
-    expect(m.label).toBe('awaiting rebuild');
+    expect(m.label).toBe('awaiting apply');
     expect(m.done).toBe(false);
   });
 });

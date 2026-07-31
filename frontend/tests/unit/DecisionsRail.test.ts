@@ -62,7 +62,7 @@ describe('DecisionsRail — iac_apply CTA supersession + status token', () => {
     expect(link.getAttribute('href')).toBe('/iac-approvals/71');
   });
 
-  it('renders the apply_status token on the meta line (applied + awaiting rebuild)', () => {
+  it('renders the apply_status token on the meta line (applied + awaiting apply)', () => {
     const decisions: Decision[] = [
       iacRow({ decision_id: 'applied-68', apply_status: 'applied', pr_number: 68, head_sha: '0496b305deadbeef' }),
       iacRow({ decision_id: 'wait-71', apply_status: 'waiting_for_rebake', pr_number: 71, head_sha: '0496b305deadbeef' }),
@@ -83,7 +83,7 @@ describe('DecisionsRail — iac_apply CTA supersession + status token', () => {
     // The HelpHint panel is collapsed by default (icon-only button, no text),
     // so both meta lines are the exact token string: action · status · ⎇ sha.
     expect(metas).toContain('iac_apply· applied· ⎇ 0496b30');
-    expect(metas).toContain('iac_apply· awaiting rebuild· ⎇ 0496b30');
+    expect(metas).toContain('iac_apply· awaiting apply· ⎇ 0496b30');
     const applied = metas.find((t) => t?.includes('applied'))!;
     expect(applied.indexOf('applied')).toBeGreaterThan(applied.indexOf('iac_apply'));
     expect(applied.indexOf('applied')).toBeLessThan(applied.indexOf('⎇'));
@@ -120,7 +120,7 @@ describe('DecisionsRail — iac_apply CTA supersession + status token', () => {
     expect(link.getAttribute('href')).toBe('/iac-approvals/216');
   });
 
-  it('a superseded_by_pr row also reads "superseded" (ok, done ✓) in the status badge, not "awaiting rebuild"', () => {
+  it('a superseded_by_pr row also reads "superseded" (ok, done ✓) in the status badge, not "awaiting apply"', () => {
     const decisions: Decision[] = [
       iacRow({
         decision_id: 'wait-216',
@@ -134,7 +134,7 @@ describe('DecisionsRail — iac_apply CTA supersession + status token', () => {
     });
     const status = getByTestId('iac-status');
     expect(status.textContent).toContain('superseded');
-    expect(status.textContent).not.toContain('awaiting rebuild');
+    expect(status.textContent).not.toContain('awaiting apply');
     expect(status.classList.contains('iac-status--ok')).toBe(true);
     expect(container.querySelector('.iac-status-check')).not.toBeNull();
   });
@@ -356,12 +356,12 @@ describe('DecisionsRail — collapsed iac_apply lifecycle groups', () => {
     // Face = newest doc: applied status on the meta line, PR link title.
     const meta = container.querySelector('.row-meta')?.textContent;
     expect(meta).toContain('applied');
-    expect(meta).not.toContain('awaiting rebuild');
+    expect(meta).not.toContain('awaiting apply');
 
     // The summary carries the status COMPOSITION (exact single-expression
     // string — lifecycleSummaryLabel), never a bare count that hides state.
     const summary = getByTestId('iac-lifecycle-summary');
-    expect(summary.textContent?.trim()).toBe('2 earlier steps · awaiting rebuild ×2');
+    expect(summary.textContent?.trim()).toBe('2 earlier steps · awaiting apply ×2');
 
     // Calm history (waiting steps only) ⇒ the expander defaults to CLOSED, and
     // the step nodes sit structurally INSIDE it so the native expander gates
@@ -379,7 +379,7 @@ describe('DecisionsRail — collapsed iac_apply lifecycle groups', () => {
       '2026-06-04T14:53:29Z',
       '2026-06-04T14:53:36Z',
     ]);
-    for (const s of steps) expect(s.textContent).toContain('awaiting rebuild');
+    for (const s of steps) expect(s.textContent).toContain('awaiting apply');
     // Each cryptic step also carries the focusable help affordance.
     expect(getAllByTestId('status-help')).toHaveLength(2);
 
