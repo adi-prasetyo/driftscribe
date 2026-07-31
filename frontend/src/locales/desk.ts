@@ -76,6 +76,9 @@ export const desk = {
     // merge time, so the operator has already approved and is waiting on the
     // C6 re-bake, not on themselves (ds-db0).
     'desk.ledger.rebakeTitle': 'Approved · awaiting re-bake',
+    // merge_state 'pending': approval is recorded but the merge has not landed
+    // (or is blocked), so the re-bake is not yet what this is waiting on.
+    'desk.ledger.mergingTitle': 'Approved · not yet applied',
     'desk.ledger.failedTitle': 'Approved · did not apply',
     // Deliberately not "failed": the operation may still be running or may
     // have succeeded with the response lost. Saying "failed" here would be a
@@ -248,6 +251,7 @@ export const desk = {
     // 「承認待ち」ではない。waiting_for_rebake はマージ時点で記録されるため、
     // 承認は済んでおり、待っているのは C6 再ビルド（ds-db0）。
     'desk.ledger.rebakeTitle': '承認済み → 再ビルド待ち',
+    'desk.ledger.mergingTitle': '承認済み → 未適用',
     'desk.ledger.failedTitle': '承認済み → 適用されず',
     'desk.ledger.unconfirmedTitle': '承認済み → 結果は未確認',
     // ---- unresolved rollback outcome (desk rule 2.5) ----

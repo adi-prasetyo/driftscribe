@@ -456,6 +456,37 @@ describe('ApprovalDesk — pending state, iac source, both provenance arms', () 
     expect(getByTestId('approval-desk-pending').textContent).not.toContain('waiting to be applied');
   });
 
+  // Codex review of ds-db0: the provenance split alone does NOT close the hole.
+  // selectPendingIac (listing) is tried first and returns immediately
+  // (desk.ts:627), the open-PR listing is cached up to 60s, and it is filtered
+  // only for applied+merged (approval.ts:337) — so for a minute after the
+  // approve click a stale listing row beats the decision row and used to
+  // re-ask for the approval just given. That minute is exactly the frame the
+  // approve→stamp beat is recorded on. Passing BOTH sources is the point of
+  // this test; the earlier decision-arm test used `decisions: []` and could
+  // never have caught it.
+  it('stale cached listing + a decision proving approval: never re-asks for that approval', () => {
+    const approval = pendingIac({ title: undefined }); // PR #7, still "open" per cache
+    const approved = iacDecision({
+      pr_number: 7,
+      pr_title: undefined,
+      apply_status: 'waiting_for_rebake',
+      merge_state: 'merged',
+    });
+    const { getByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: GRAPH,
+        decisions: [approved],
+        pendingApprovals: [approval],
+        onShowEstate: vi.fn(),
+      },
+    });
+    const pending = getByTestId('approval-desk-pending').textContent ?? '';
+    expect(pending).not.toContain('waiting for your approval');
+    expect(pending).not.toContain('waiting for your review');
+    expect(pending).toContain('approved');
+  });
+
   // ds-db0: the decision arm exists only for a PR the open-PR listing can no
   // longer see BECAUSE IT ALREADY MERGED (desk.ts:78-84), so its copy must say
   // "waiting to be applied". Claiming it awaits approval contradicts the

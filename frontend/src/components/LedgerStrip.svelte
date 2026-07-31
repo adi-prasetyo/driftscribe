@@ -43,12 +43,14 @@
   // `data-state` can distinguish "nobody has approved this" from "you approved
   // it and the re-bake has not run yet" (ds-db0).
   const GLYPH: Record<LedgerState, string> = {
-    applied: '✓', open: '◍', awaiting_rebake: '◍', noted: '⬤', failed: '✕', unconfirmed: '?',
+    applied: '✓', open: '◍', awaiting_merge: '◍', awaiting_rebake: '◍',
+    noted: '⬤', failed: '✕', unconfirmed: '?',
   };
 
   function titleFor(row: LedgerRow, tf: TranslateFn): string {
     if (row.state === 'applied') return tf('desk.ledger.appliedTitle');
     if (row.state === 'open') return tf('desk.ledger.openTitle');
+    if (row.state === 'awaiting_merge') return tf('desk.ledger.mergingTitle');
     if (row.state === 'awaiting_rebake') return tf('desk.ledger.rebakeTitle');
     if (row.state === 'failed') return tf('desk.ledger.failedTitle');
     if (row.state === 'unconfirmed') return tf('desk.ledger.unconfirmedTitle');
@@ -152,6 +154,7 @@
     color: var(--ds-ok);
   }
   .ledger-strip__glyph--open,
+  .ledger-strip__glyph--awaiting_merge,
   .ledger-strip__glyph--awaiting_rebake {
     color: var(--ds-warn);
   }

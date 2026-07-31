@@ -112,6 +112,7 @@ describe('LedgerStrip', () => {
       decision_id: 'r1',
       action: 'iac_apply',
       apply_status: 'waiting_for_rebake',
+      merge_state: 'merged',
       pr_number: 168,
     });
     const { getByText, container } = render(LedgerStrip, { props: { decisions: [d] } });

@@ -118,12 +118,31 @@ describe('ledgerRows', () => {
         decision_id: 'o3',
         action: 'iac_apply',
         apply_status: 'waiting_for_rebake',
+        merge_state: 'merged',
         pr_number: 300,
         created_at: '2026-07-28T09:00:00Z',
       });
       const rows = ledgerRows([d], 4, { now: NOW, origin: ORIGIN });
       expect(rows[0].state).toBe('awaiting_rebake');
       expect(rows[0].state).not.toBe('open');
+    });
+
+    // waiting_for_rebake is written TWICE — before the merge (merge_state
+    // 'pending', agent/main.py:7280) and after it (:7331). Only the second is
+    // actually waiting on the re-bake; naming it while the merge is unfinished
+    // would replace one false claim with another (Codex review of ds-db0).
+    it('separates the pre-merge waiting_for_rebake record from the post-merge one', () => {
+      const beforeMerge = decision({
+        decision_id: 'm1',
+        action: 'iac_apply',
+        apply_status: 'waiting_for_rebake',
+        merge_state: 'pending',
+        pr_number: 301,
+        created_at: '2026-07-28T09:00:00Z',
+      });
+      const rows = ledgerRows([beforeMerge], 4, { now: NOW, origin: ORIGIN });
+      expect(rows[0].state).toBe('awaiting_merge');
+      expect(rows[0].state).not.toBe('awaiting_rebake');
     });
 
     it('falls back to noted for everything else (e.g. no_op)', () => {
@@ -239,6 +258,7 @@ describe('ledgerRows', () => {
         decision_id: 's4',
         action: 'iac_apply',
         apply_status: 'waiting_for_rebake',
+        merge_state: 'merged',
         pr_number: 400,
         event_key: 'iac-apply-400-generationB',
         created_at: '2026-07-28T09:30:00Z',

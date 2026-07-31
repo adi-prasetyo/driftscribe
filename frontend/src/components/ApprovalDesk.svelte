@@ -250,14 +250,55 @@
       // operator has already given (ds-db0).
       return tf('desk.pending.iacMerged.headlineFallback', { pr: m.prNumber });
     }
-    return tf('desk.pending.iac.headlineFallback', { pr: m.prNumber });
+    // Listing provenance with no title: only ask for an approval when no
+    // decision proves one already happened (see iacApprovalRecorded).
+    return iacApprovalRecorded(m.prNumber, decisions ?? [])
+      ? tf('desk.pending.iacMerged.headlineFallback', { pr: m.prNumber })
+      : tf('desk.pending.iac.headlineFallback', { pr: m.prNumber });
   }
 
-  /** `who` byline key, split on the same provenance rule as the headline: the
-   *  `decision` arm is post-merge, so "waiting for your review" would ask for a
-   *  review that already happened. */
+  /**
+   * True when some decision PROVES the operator already approved this PR.
+   *
+   * Provenance alone is not enough (Codex review). `selectPendingIac` (the
+   * listing arm) is tried FIRST and returns immediately (desk.ts:627), and the
+   * open-PR listing is cached for up to 60s, so for a minute after the approve
+   * click the listing still carries the just-merged PR and wins. It is filtered
+   * only for `applied`+`merged` (approval.ts:337) — `waiting_for_rebake`+
+   * `merged` does not qualify. So "listing provenance" means "GitHub said this
+   * PR is open", NOT "nobody has approved it", and the byline must key on the
+   * decisions, not on which selector happened to win.
+   *
+   * Deliberately does NOT touch selection: desk.ts:620 records that making the
+   * PR-wide and per-generation rules share one answer is what once deleted a
+   * live generation from the desk (ds-0rm). Copy only.
+   */
+  function iacApprovalRecorded(
+    prNumber: number,
+    list: ReadonlyArray<Decision | null | undefined>,
+  ): boolean {
+    return list.some(
+      (d) =>
+        d?.action === 'iac_apply' &&
+        d?.pr_number === prNumber &&
+        // Every status at or past the approval: waiting_for_rebake is written
+        // when the operator's approval is acted on (agent/main.py:7280), and
+        // the run-ended statuses are all downstream of it.
+        (d?.apply_status === 'waiting_for_rebake' ||
+          d?.apply_status === 'applied' ||
+          d?.apply_status === 'failed' ||
+          d?.apply_status === 'failed_state_suspect' ||
+          d?.apply_status === 'ambiguous'),
+    );
+  }
+
+  /** `who` byline key. Says "already approved, waiting to be applied" whenever a
+   *  decision proves the approval happened — regardless of which arm selected
+   *  the row, so a stale cached listing cannot re-ask for a given approval. */
   function pendingWhoKey(m: DeskPending): 'desk.pending.iac.who' | 'desk.pending.iacMerged.who' {
-    return m.source !== 'rollback' && m.provenance.kind === 'decision'
+    if (m.source === 'rollback') return 'desk.pending.iac.who';
+    if (m.provenance.kind === 'decision') return 'desk.pending.iacMerged.who';
+    return iacApprovalRecorded(m.prNumber, decisions ?? [])
       ? 'desk.pending.iacMerged.who'
       : 'desk.pending.iac.who';
   }

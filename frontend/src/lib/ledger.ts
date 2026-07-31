@@ -34,6 +34,7 @@ import {
 export type LedgerState =
   | 'applied'
   | 'open'
+  | 'awaiting_merge'
   | 'awaiting_rebake'
   | 'noted'
   | 'failed'
@@ -47,6 +48,18 @@ export interface LedgerRow {
 }
 
 const DEFAULT_MAX = 4;
+
+/** Mirrors `_IAC_RUN_ENDED_STATUSES` (agent/main.py:918) — the apply_status
+ *  values meaning the apply REQUEST already ended. `waiting_for_rebake` is
+ *  deliberately absent there and here: it is the pre-merge crash-recovery
+ *  pointer, a phase rather than an outcome. Only such unfinished phases may be
+ *  collapsed into a newer doc for the same event (ds-b0k). */
+const IAC_RUN_ENDED_STATUSES: ReadonlySet<string> = new Set([
+  'applied',
+  'failed',
+  'failed_state_suspect',
+  'ambiguous',
+]);
 
 /** Parses `created_at` to epoch-ms, or null if absent/unparseable. Unlike
  *  desk.ts's `parseForOrdering` (which substitutes -Infinity so a missing
@@ -100,7 +113,13 @@ function classify(
   // is true only for apply_status === 'waiting_for_rebake', which the backend
   // records at merge, so every row reaching here is already approved.
   if (isIacAwaitingOperator(d, supersededIds)) {
-    return 'awaiting_rebake';
+    // `waiting_for_rebake` is recorded TWICE: once before the merge
+    // (merge_state 'pending', agent/main.py:7280) and once after
+    // (merge_state 'merged', :7331). Only the second is genuinely waiting on
+    // the C6 re-bake — while the merge is unfinished (or blocked) the pending
+    // work is the MERGE, so naming the re-bake there would be a second wrong
+    // claim in place of the one this fix removed.
+    return d.merge_state === 'merged' ? 'awaiting_rebake' : 'awaiting_merge';
   }
 
   return 'noted';
@@ -165,29 +184,49 @@ export function ledgerRows(
     return b.ts - a.ts;
   });
 
-  // One event, one row (ds-b0k). A single `event_key` accumulates a SEQUENCE of
-  // phase-transition docs, by design rather than by accident: PR #168 wrote
-  // waiting_for_rebake+pending and then waiting_for_rebake+merged seven seconds
-  // apart, and the June `iac-apply-95` generation ran pending → merged →
-  // failed_state_suspect. Rendering each doc as its own row made one event look
-  // like several — with a 4-row cap, a single repeated event could swallow the
-  // whole strip. The list is already sorted newest-first, so keeping the FIRST
-  // occurrence keeps the latest phase, which is by construction the current
-  // state of that event. Deliberately mirrors the live timeline's own
-  // eventKey merge (PR #199) rather than inventing a second dedup rule.
+  // One LIFECYCLE, one row (ds-b0k). A single `event_key` accumulates a SEQUENCE
+  // of phase docs by design: PR #168 wrote waiting_for_rebake+pending and then
+  // waiting_for_rebake+merged seven seconds apart, and June's `iac-apply-95`
+  // ran pending → merged → failed_state_suspect. Drawing each doc as its own row
+  // made one event look like several — and with a 4-row cap, one chatty event
+  // could swallow the whole strip.
+  //
+  // ⚠️ `event_key` is NOT unique per occurrence — it hashes the drift signature
+  // / PR generation, so a RECURRENCE reuses it. Live proof: the eventarc key
+  // ...ae4170632c79c599 carries a no_op (07-29) AND a rollback (07-31) two days
+  // apart, and `iac-apply-32-...` carries two separate applied+merged records 27
+  // days apart. A naive collapse-by-key would delete the older of each — on a
+  // strip headed "Recent record", hiding a real record is far worse than
+  // showing a redundant one, so the collapse is deliberately narrow:
+  //
+  //   collapse an older doc ONLY when it is an unfinished IaC phase pointer
+  //   that a newer doc for the same event_key has already moved past.
+  //
+  // `_IAC_RUN_ENDED_STATUSES` (agent/main.py:918) is the server's own list of
+  // statuses meaning "this apply request already ended", and it deliberately
+  // EXCLUDES waiting_for_rebake — precisely because that value is the pre-merge
+  // crash-recovery pointer, i.e. a phase and not an outcome. A terminal doc is a
+  // completed historical fact and always keeps its row. Non-iac lanes (rollback,
+  // no_op, escalation) never write multiple docs per key within one lifecycle —
+  // their repeats are recurrences — so they are excluded entirely.
   //
   // Runs AFTER the sort (so "newest" is meaningful) and BEFORE the cap (so the
-  // cap counts events, not documents). Rows with no usable `event_key` are
-  // never collapsed: an absent key is unknown identity, not shared identity,
-  // so folding them together would merge unrelated decisions.
-  const seenEventKeys = new Set<string>();
+  // cap counts lifecycles, not documents). Rows with no usable `event_key` are
+  // never collapsed: absent identity is not shared identity.
+  const seenIacEventKeys = new Set<string>();
   const deduped: LedgerRow[] = [];
   for (const row of rows) {
-    const key = row.decision.event_key;
-    if (typeof key === 'string' && key !== '') {
-      if (seenEventKeys.has(key)) continue;
-      seenEventKeys.add(key);
+    const d = row.decision;
+    const key = d.event_key;
+    if (d.action !== 'iac_apply' || typeof key !== 'string' || key === '') {
+      deduped.push(row);
+      continue;
     }
+    // Unfinished phase pointer superseded by a newer doc for the same event.
+    if (!IAC_RUN_ENDED_STATUSES.has(d.apply_status ?? '') && seenIacEventKeys.has(key)) {
+      continue;
+    }
+    seenIacEventKeys.add(key);
     deduped.push(row);
   }
 
