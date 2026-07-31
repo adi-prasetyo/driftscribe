@@ -10,7 +10,19 @@ Codex round 5 flagged that the retry was asserted only through an all-fail
 integration test, which would still pass if the helper made a SINGLE attempt —
 i.e. the liveness fix was unpinned in exactly the way that lets it silently
 regress to the behaviour it replaced. These pin the attempt count, the sleeps
-between attempts, the per-attempt timeout, and the total budget.
+between attempts, and the per-attempt timeout.
+
+Round 6 then corrected what the BUDGET tests are allowed to claim. Two
+different bounds live here and conflating them is how the false guarantee got
+written in the first place:
+
+* the **configured** budget (per-attempt timeout x attempts + sleeps) is only a
+  comparison against the 30s default this read would otherwise inherit — a
+  scalar httpx timeout is per-phase, and ID-token minting happens outside it,
+  so this is not wall-clock;
+* the **deadline** is the real end-to-end bound, checked against the loop clock
+  between attempts, and it is what stops a slow-but-not-failing reader from
+  stacking three attempts up.
 """
 from __future__ import annotations
 
@@ -21,6 +33,7 @@ import pytest
 
 from agent.main import (
     _READER_ATTEMPT_TIMEOUT_S,
+    _READER_RETRY_DEADLINE_S,
     _READER_RETRY_DELAYS,
     _read_with_retry,
 )
@@ -121,18 +134,24 @@ async def test_every_attempt_carries_the_explicit_per_attempt_timeout() -> None:
     assert [c.get("timeout") for c in calls] == [_READER_ATTEMPT_TIMEOUT_S] * 3
 
 
-def test_the_retry_costs_less_wall_clock_than_the_read_it_replaced() -> None:
-    """The budget argument, as an invariant rather than a comment.
+def test_the_configured_retry_budget_stays_under_the_default_it_replaced() -> None:
+    """The budget comparison, named for what it actually proves.
 
-    This read sits inside a request that has already spent 20-120s on the agent
-    turn and may still owe the Rollback Worker's /propose, against Cloud Run's
-    300s request timeout. Retrying is only safe because the whole ladder is
-    cheaper than the single 30s-default call it replaced — so adding retries
-    cannot push a caller past a deadline it previously made.
+    ⚠️ This is a CONFIGURED-budget assertion, not a wall-clock one, and the
+    distinction is the whole reason the test is named this way. An earlier
+    version claimed the ladder "cannot push any caller past a deadline it used
+    to make" — false, as Codex round 6 pointed out:
 
-    If a future change raises the per-attempt timeout or adds an attempt, this
-    fails and the deadline question gets re-asked deliberately instead of a
-    timeout regression shipping unnoticed.
+    * a scalar httpx timeout applies **per phase** (connect / read / write /
+      pool), so one attempt is not bounded end to end by 9s;
+    * ``worker_client.call`` mints an ID token before the HTTPX client is
+      reached, with its own metadata-server retries, repeated per attempt.
+
+    So what is pinned here is narrow and true: the configured per-attempt
+    budget times the attempt count, plus the sleeps, stays under the 30s
+    default this read would otherwise inherit. That keeps a future change from
+    quietly restoring the ~92s ladder. The end-to-end bound that IS enforced
+    lives in the next test.
     """
     from agent.worker_client import _HTTPX_TIMEOUT, _WORKER_DEFAULT_TIMEOUTS
 
@@ -141,8 +160,78 @@ def test_the_retry_costs_less_wall_clock_than_the_read_it_replaced() -> None:
         "explicit per-attempt budget is required"
     )
     attempts = len(_READER_RETRY_DELAYS) + 1
-    worst_case = _READER_ATTEMPT_TIMEOUT_S * attempts + sum(_READER_RETRY_DELAYS)
-    assert worst_case < _HTTPX_TIMEOUT, (
-        f"retry ladder worst case {worst_case}s must stay under the {_HTTPX_TIMEOUT}s "
-        "single call it replaced"
+    configured = _READER_ATTEMPT_TIMEOUT_S * attempts + sum(_READER_RETRY_DELAYS)
+    assert configured < _HTTPX_TIMEOUT, (
+        f"configured retry budget {configured}s must stay under the "
+        f"{_HTTPX_TIMEOUT}s single call it replaced"
     )
+
+
+async def test_a_slow_reader_stops_the_ladder_at_the_deadline() -> None:
+    """The bound that is genuinely enforced end to end.
+
+    Per-attempt timeouts are per-phase, so three attempts against a slow (not
+    failing) reader could stack up well past the configured budget. The elapsed
+    check against the loop clock is what stops that, and it is checked BEFORE
+    the sleep so the sleep cannot be what overshoots.
+
+    Simulated by advancing a fake loop clock inside the failing call, which is
+    the only way to exercise a deadline without actually burning the time.
+    """
+    now = [0.0]
+    calls: list[int] = []
+
+    def _call(worker: str, payload: dict, **_kw: Any) -> dict:
+        calls.append(1)
+        now[0] += 20.0  # a slow attempt, well inside the deadline on its own
+        raise _Boom("slow")
+
+    async def _sleep(d: float) -> None:
+        now[0] += d
+
+    class _Loop:
+        def time(self) -> float:
+            return now[0]
+
+    with (
+        patch("agent.main.worker_client.call", _call),
+        patch("agent.main.asyncio.sleep", _sleep),
+        patch("agent.main.asyncio.get_running_loop", lambda: _Loop()),
+    ):
+        with pytest.raises(_Boom):
+            await _read_with_retry()
+
+    assert len(calls) == 2, (
+        "after 20s elapsed, a second attempt is fine but a third must be cut "
+        f"off by the {_READER_RETRY_DEADLINE_S}s deadline; got {len(calls)}"
+    )
+
+
+async def test_a_fast_failing_reader_still_gets_all_three_attempts() -> None:
+    """The deadline must not silently eat the retries it is meant to bound —
+    the failure mode of a too-tight budget is the liveness bug this whole
+    helper exists to prevent."""
+    now = [0.0]
+    calls: list[int] = []
+
+    def _call(worker: str, payload: dict, **_kw: Any) -> dict:
+        calls.append(1)
+        now[0] += 0.05  # connection refused: fails fast
+        raise _Boom("refused")
+
+    async def _sleep(d: float) -> None:
+        now[0] += d
+
+    class _Loop:
+        def time(self) -> float:
+            return now[0]
+
+    with (
+        patch("agent.main.worker_client.call", _call),
+        patch("agent.main.asyncio.sleep", _sleep),
+        patch("agent.main.asyncio.get_running_loop", lambda: _Loop()),
+    ):
+        with pytest.raises(_Boom):
+            await _read_with_retry()
+
+    assert len(calls) == len(_READER_RETRY_DELAYS) + 1

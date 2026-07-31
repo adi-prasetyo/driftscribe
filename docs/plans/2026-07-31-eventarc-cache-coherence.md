@@ -157,10 +157,29 @@ a success** — there is nothing to clobber and no claim held:
 | names something else | False (a replacement exists; don't clobber it) |
 | **absent** | **True (ds-q38) — a failed repair stays retryable** |
 
-Safety rests on the **claim**, not this CAS: minting is gated by
-`record_event` (create-if-absent) on both branches — `_do_rollback` claims
-before `/propose`, the non-rollback path claims before any side effect. Two runs
-that both pass here still serialize one step later.
+Safety rests on **two** things, and round 6 showed the first is not enough on
+its own:
+
+1. **The claim.** Minting is gated by `record_event` (create-if-absent) on both
+   branches — `_do_rollback` claims before `/propose`, the non-rollback path
+   claims before any side effect. Two concurrent runs that both pass the CAS
+   still serialize one step later.
+2. **Deterministic recovery.** The claim only ever sees the *pointer*, so it
+   cannot arbitrate between two **completed** decisions sharing an `event_key`
+   with no pointer between them — reachable with no concurrency at all: a
+   stale row is evicted, the repair mints approval A and its `record_decision`
+   batch *commits*, but the client sees an ambiguous transport error and
+   `_do_rollback` releases the claim (`main.py:1940`), deleting the pointer
+   again. An unordered `.limit(1)` could then hand back the older stale row,
+   which is evicted (a no-op), re-claimed, and **approval B is minted** — two
+   live single-use credentials for one drift. Strictly worse than the wedge
+   this relaxation removed, since the wedge failed *closed*.
+
+   So `find_decision_for_event`'s recovery query now returns the **newest**
+   decision (client-side sort on the server-managed `create_time`, mirroring
+   `find_decision_by_trace_id` — a server `order_by("created_at")` would
+   *exclude* pre-19.A.7 rows). The newest row is servable, so the caller serves
+   instead of re-minting. Weakening either half re-opens the double-mint.
 
 ## Scope / non-goals
 
@@ -168,16 +187,23 @@ that both pass here still serialize one step later.
   so an already-cached decision can still be served under a key this request did
   not corroborate. That is a stale answer, not a new poisoned row; closing it
   means moving the cache lookup after the gate, which changes ds-b3m's ordering.
-- **ds-bej is still NOT fully fixed here.** (c) removes the permanent *wedge*,
-  which was the blocking half. The resurrection itself remains: the recovery
-  query still returns a row whose pointer was deleted, and once two rows share
-  an `event_key` the arbitrary `.limit(1)` with no `order_by` picks
-  unpredictably. That stays on ds-bej. Do not quietly widen this PR into it.
-- **The reader read still blocks the event loop.** `worker_client.call` is
-  synchronous, so each attempt holds the loop. Pre-existing — the single call it
-  replaced blocked for up to 30s — and the retry budget strictly *reduces* the
-  worst case rather than growing it (28.5s < 30s). Moving it off-loop is a real
-  improvement, filed rather than smuggled in.
+- **ds-bej is now PARTLY fixed here, because it had to be.** (c) removes the
+  permanent wedge, and the arbitrary `.limit(1)` tie-break is gone — that one
+  was not optional once the CAS relaxed, since it turned a fail-closed wedge
+  into a possible double-mint. What remains on ds-bej is the resurrection
+  itself: the recovery query still returns a decision whose pointer was
+  deleted. Every consumer declines a stale one and the newest is now
+  authoritative, so nothing acts on it wrongly — but the row persists.
+- **The reader read still blocks the event loop** (`worker_client.call` is
+  synchronous). Pre-existing — the single call it replaced blocked the same way
+  — and the configured budget reduces the worst case rather than growing it.
+  Filed as ds-99u.
+- **The per-attempt timeout is per-PHASE, not end-to-end.** A scalar httpx
+  timeout applies separately to connect/read/write/pool, and `worker_client`
+  mints an ID token before HTTPX is reached. So "9 × 3 + sleeps = 28.5s" is a
+  configured-budget comparison, *not* a wall-clock guarantee — an earlier draft
+  claimed the stronger thing and was wrong. The bound that IS enforced is
+  `_READER_RETRY_DEADLINE_S`, checked against the loop clock between attempts.
 - No change to `_cached_rollback_needs_ground_truth` or the rollback TTL.
 
 ## Tests
@@ -206,9 +232,20 @@ that both pass here still serialize one step later.
 
 ## What the review changed
 
-Five Codex rounds. Every blocker was accepted; **four of the five were defects
-in my own fix rather than in the original code** — the fix, not the bug, was
+Six Codex rounds. Every blocker was accepted; **five of the six were defects in
+my own fix rather than in the original code** — the fix, not the bug, was
 consistently the riskier thing in this change.
+
+- **Round 6 blocker:** the round-5 relaxation made ds-bej's arbitrary tie-break
+  an approval-safety problem — an orphaned *completed* decision plus an older
+  stale one under the same key can produce **two live approvals for one drift**
+  (see (c)). `record_event` cannot prevent it, because it only sees the pointer
+  and that state has none. Fixed by making recovery newest-wins; verified by
+  reverting to the unordered read and watching the regression fail. Round 6 also
+  corrected a **false claim of mine**: the retry's "cannot push any caller past
+  a deadline it used to make" is not true of a scalar httpx timeout, which is
+  per-phase. The test is renamed to what it actually proves and a real
+  loop-clock deadline now bounds the ladder.
 
 - **Round 5 blocker:** deferring the eviction (round 4) made a *permanent* wedge
   reachable — see (c). Verified by reverting the contract and watching

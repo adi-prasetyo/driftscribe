@@ -717,6 +717,71 @@ def test_a_failed_repair_leaves_the_key_retryable() -> None:
     assert propose_calls == [1, 1], "the retry minted exactly one new approval"
 
 
+def test_recovery_returns_the_newest_row_so_one_drift_cannot_mint_twice() -> None:
+    """Codex round 6 blocker: the absent-pointer relaxation makes ds-bej's
+    arbitrary tie-break an APPROVAL-SAFETY problem, not a cosmetic one.
+
+    ``record_event`` serializes concurrent contenders, but it only ever sees
+    the event POINTER — so it cannot arbitrate between two COMPLETED decisions
+    that share an ``event_key`` with no pointer between them. That state is
+    reachable without any concurrency at all:
+
+    1. stale D0 is CAS-evicted (pointer deleted);
+    2. the repair claims the event, mints approval A, and
+       ``record_decision``'s batch COMMITS D1 + its pointer;
+    3. the client still sees an ambiguous transport error, so ``_do_rollback``
+       releases the claim at ``main.py:1940`` — deleting the pointer again;
+    4. D0 and the valid, unexpired D1 both carry this ``event_key``, unpointed.
+
+    With an unordered ``.limit(1)``, recovery could hand back D0. D0 is stale,
+    so the caller evicts (a no-op now — the pointer is already gone), re-claims
+    successfully, and mints approval B. **Two live approvals for one drift**,
+    each a single-use credential to mutate prod.
+
+    That is strictly worse than the wedge this relaxation removed: the old
+    behaviour failed CLOSED. So newest-wins recovery is what makes the
+    relaxation safe, and it is asserted here at the store level — which is
+    where the tie-break lives and where an in-memory store cannot model it.
+    """
+    key = "eventarc-payment-demo-orphaned"
+    older_stale = {"decision_id": "D0-stale-noop", "action": "no_op",
+                   "event_key": key,
+                   "rationale": "No configuration drift is present."}
+    newer_valid = {"decision_id": "D1-rollback", "action": "rollback",
+                   "event_key": key,
+                   "expires_at": "2099-01-01T00:00:00+00:00"}
+
+    mock_db = MagicMock()
+    events, decisions = MagicMock(), MagicMock()
+    mock_db.collection.side_effect = lambda n: events if n == "events" else decisions
+
+    missing_pointer = MagicMock()
+    missing_pointer.exists = False
+    events.document.return_value.get.return_value = missing_pointer
+
+    d0, d1 = MagicMock(), MagicMock()
+    d0.to_dict.return_value = older_stale
+    d0.create_time = 100
+    d1.to_dict.return_value = newer_valid
+    d1.create_time = 200
+    # Returned OLDEST-FIRST on purpose: an implementation that takes the first
+    # row of the page rather than the newest one fails here.
+    decisions.where.return_value.limit.return_value.stream.return_value = iter(
+        [d0, d1]
+    )
+
+    store = FirestoreStateStore(project="p", client=mock_db)
+    found = store.find_decision_for_event(key)
+
+    assert found == newer_valid, (
+        "recovery must return the newest decision; returning the older stale "
+        "row lets the caller evict-and-re-mint a second approval for one drift"
+    )
+    # And the row it returns is one the caller will SERVE rather than replace —
+    # which is the whole point: no eviction, no re-claim, no second mint.
+    assert _cached_decision_is_stale(found, _rollback_proposal()) is False
+
+
 def test_a_claim_loser_refuses_a_resurrected_noop() -> None:
     """The call-site half of the resurrection story.
 

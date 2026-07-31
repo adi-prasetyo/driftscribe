@@ -840,10 +840,36 @@ class FirestoreStateStore:
         # stores INSIDE the decision doc. C5e uses the decision doc as the
         # apply-then-merge reconcile pointer, so a lost pointer must still be
         # recoverable rather than silently re-minting + re-applying.
-        snaps = self._decisions.where("event_key", "==", event_key).limit(1).stream()
-        for s in snaps:
-            return s.to_dict()
-        return None
+        #
+        # NEWEST-FIRST, and here that is a safety property rather than a display
+        # nicety (ds-q38 / ds-bej). Two decisions can legitimately share one
+        # ``event_key`` with NO pointer to arbitrate between them:
+        #
+        #   1. a stale row D0 is CAS-evicted, deleting the pointer;
+        #   2. the repair claims the event and mints approval A, and
+        #      ``record_decision``'s batch COMMITS D1 + its pointer;
+        #   3. the client still sees an ambiguous transport error, so
+        #      ``_do_rollback`` releases the claim — deleting the pointer again;
+        #   4. D0 and the valid, unexpired D1 now both carry this ``event_key``.
+        #
+        # An unordered ``.limit(1)`` could hand back D0 there. D0 is stale, so
+        # the caller evicts (a no-op — the pointer is already gone), re-claims
+        # successfully, and mints approval B: TWO live approvals for one drift.
+        # ``record_event`` cannot prevent that, because it only ever sees the
+        # pointer and this state has none. Returning the NEWEST decision returns
+        # D1, which is servable, so the caller serves it instead of re-minting.
+        #
+        # Client-side sort on the server-managed ``create_time``, mirroring
+        # find_decision_by_trace_id and list_decisions: a server-side
+        # ``order_by("created_at")`` would EXCLUDE pre-19.A.7 rows missing the
+        # field, turning a recovery query into a silent miss.
+        snaps = list(
+            self._decisions.where("event_key", "==", event_key).limit(10).stream()
+        )
+        if not snaps:
+            return None
+        newest = max(snaps, key=lambda s: s.create_time)
+        return newest.to_dict()
 
     def record_decision(
         self, decision_id: str, event_key: str, decision: dict[str, Any]
@@ -940,11 +966,23 @@ class FirestoreStateStore:
         sequence retryable instead: a failed repair leaves the key in a state
         the next delivery can pick up.
 
-        Safety of the relaxation rests on the claim, not on this CAS: minting
-        is gated by ``record_event`` (create-if-absent) downstream on BOTH
-        branches — ``_do_rollback`` claims before calling /propose, and the
-        non-rollback path claims before any side effect. So two runs that both
-        pass here still serialize one step later, and only one can mint.
+        Safety of the relaxation rests on TWO things, and both are load-bearing:
+
+        * **The claim.** Minting is gated by ``record_event``
+          (create-if-absent) downstream on BOTH branches — ``_do_rollback``
+          claims before calling /propose, and the non-rollback path claims
+          before any side effect. Two concurrent runs that both pass here
+          still serialize one step later, and only one can mint.
+        * **Deterministic recovery.** The claim only ever sees the POINTER, so
+          it cannot arbitrate between two completed decisions that share an
+          ``event_key`` with no pointer between them — a state reachable when a
+          repair's ``record_decision`` batch commits but its client sees a
+          transport error and releases the claim. If recovery handed back the
+          OLDER (stale) row there, this branch would return True, the re-claim
+          would succeed, and one drift would mint a SECOND approval.
+          :meth:`find_decision_for_event` therefore returns the newest
+          decision, which is servable, so the caller serves rather than
+          re-mints. Weakening either half re-opens the double-mint.
         """
         from google.cloud import firestore
 

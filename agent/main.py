@@ -1176,12 +1176,16 @@ def _cached_rollback_is_expired(cached: dict) -> bool:
 
 _READER_RETRY_DELAYS = (0.5, 1.0)
 
-# Per-attempt read budget. MUST be set explicitly: ``worker_client.call`` has no
-# entry for "reader" in _WORKER_DEFAULT_TIMEOUTS, so it would otherwise inherit
-# the 30s _HTTPX_TIMEOUT and three attempts could burn ~92s. See the sizing
-# argument in _read_with_retry, and the guard in
-# test_the_retry_costs_less_wall_clock_than_the_read_it_replaced.
+# Per-PHASE read budget, not an end-to-end one. MUST be set explicitly:
+# ``worker_client.call`` has no entry for "reader" in _WORKER_DEFAULT_TIMEOUTS,
+# so it would otherwise inherit the 30s _HTTPX_TIMEOUT and three attempts could
+# burn ~92s of connect+read alone. See the sizing argument in _read_with_retry.
 _READER_ATTEMPT_TIMEOUT_S = 9.0
+
+# The one budget that IS enforced end to end. Checked between attempts against
+# the loop clock, so a slow-but-not-failing reader cannot make the ladder run
+# indefinitely even though no single attempt is wall-clock bounded.
+_READER_RETRY_DEADLINE_S = 25.0
 
 
 async def _read_with_retry() -> object:
@@ -1198,16 +1202,26 @@ async def _read_with_retry() -> object:
     for a real drift, silently and indefinitely — the same class of outcome as
     the bug being fixed.
 
-    **Sized so retrying is strictly cheaper than the single call it replaced.**
-    That is the whole budget argument, and it is deliberately conservative
-    rather than merely "bounded". The read this wraps used to be one
-    ``worker_client.call("reader", {})`` inheriting the default 30s timeout;
-    three attempts at that timeout plus sleeps would be ~92s, and this runs
-    inside a request that already spent 20-120s on the agent turn and may still
-    owe the Rollback Worker's /propose — against Cloud Run's 300s request
-    timeout. So each attempt gets 9s and the delays are short: worst case
-    9 + 0.5 + 9 + 1.0 + 9 = 28.5s, under the 30s this replaced. Adding retries
-    therefore cannot push any caller past a deadline it used to make.
+    **Sized to be cheaper than the single call it replaced — with the limits of
+    that claim stated, because the obvious version of it is false.** The read
+    this wraps used to be one ``worker_client.call("reader", {})`` inheriting
+    the default 30s timeout, and it runs inside a request that already spent
+    20-120s on the agent turn and may still owe the Rollback Worker's /propose,
+    against Cloud Run's 300s request timeout. So each attempt is given 9s.
+
+    What that 9s does NOT buy is an end-to-end bound on one attempt. A scalar
+    httpx timeout applies **per phase** (connect, read, write, pool), not to the
+    call as a whole, and ``worker_client.call`` mints an ID token before the
+    HTTPX client is even reached — metadata-server work with its own retries and
+    timeouts, repeated on every attempt. So "9 x 3 + sleeps = 28.5s" is a
+    configured-budget comparison, not a wall-clock guarantee, and it is labelled
+    that way in the test that pins it. Codex round 6 caught the stronger claim.
+
+    What IS enforced end to end is ``_READER_RETRY_DEADLINE_S``: the elapsed
+    time is checked against the loop clock before each retry, so a slow reader
+    stops the ladder early instead of letting three attempts stack up. That
+    bounds the RETRIES; a single hung attempt is still bounded only per phase,
+    exactly as it was before this function existed.
 
     9s per attempt is also enough to survive a Reader COLD START, and a cold
     start is precisely the transient this is for: attempt 1 may time out while
@@ -1215,11 +1229,13 @@ async def _read_with_retry() -> object:
 
     One honest limitation: ``worker_client.call`` is synchronous, so each
     attempt blocks the event loop for its duration. That is pre-existing — the
-    single call it replaced blocked the same loop for up to 30s — and the
-    budget above strictly reduces the worst case rather than growing it. Moving
-    the call off-loop is a real improvement but a separate one, filed rather
-    than smuggled in here.
+    single call it replaced blocked the same loop the same way — and the budget
+    above reduces the configured worst case rather than growing it. Moving the
+    call off-loop is a real improvement but a separate one (ds-99u), filed
+    rather than smuggled in here.
     """
+    loop = asyncio.get_running_loop()
+    started = loop.time()
     last: Exception | None = None
     for delay in (*_READER_RETRY_DELAYS, None):
         try:
@@ -1229,6 +1245,11 @@ async def _read_with_retry() -> object:
         except Exception as e:  # noqa: BLE001 — re-raised below if all fail
             last = e
             if delay is None:
+                break
+            # Stop early rather than stacking another attempt on top of a read
+            # that has already eaten the budget. Checked BEFORE sleeping so the
+            # sleep itself cannot be what pushes us past the deadline.
+            if loop.time() - started + delay >= _READER_RETRY_DEADLINE_S:
                 break
             await asyncio.sleep(delay)
     assert last is not None
