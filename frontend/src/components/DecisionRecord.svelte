@@ -54,9 +54,22 @@
   };
   const entry = $derived($cache.get(traceId) ?? BLANK);
 
-  // Prefer the caller's doc — it is literally the row the operator clicked —
-  // and fall back to whatever /trace carried.
-  const doc = $derived(decision ?? entry.decision ?? null);
+  /** The decision this record is about, assembled from both docs that describe
+   *  it rather than picked between them.
+   *
+   *  They are not interchangeable. The ledger row's copy comes from
+   *  GET /decisions and carries the serve-time joins that listing performs
+   *  (live approval status, reconciled merge state); GET /trace's copy carries
+   *  the fields the listing has no reason to project — `rationale`,
+   *  `rendered_body`, the env diffs. Preferring the row outright hid the
+   *  decision's own prose; preferring the fetched one would risk downgrading an
+   *  enriched field to a staler value. The row wins on overlap and the fetched
+   *  copy fills the gaps, which is strictly additive to what either alone said. */
+  const doc = $derived(
+    decision && entry.decision
+      ? ({ ...entry.decision, ...decision } as Decision)
+      : (decision ?? entry.decision ?? null),
+  );
 
   /** The crew that produced this trace, or null.
    *
@@ -79,6 +92,7 @@
   }
   const crew = $derived(firstWorkload(entry.events));
 
+  const str = (v: unknown): string => (typeof v === 'string' && v !== '' ? v : '');
   const action = $derived(decisionActionLabel(doc?.action, $t));
   // fmtWhen, the same helper DecisionSummary's "When" row uses below — one
   // moment must never print two ways in one card (ds-qbo). Deliberately NOT
@@ -88,6 +102,20 @@
     fmtWhen(typeof doc?.created_at === 'string' ? doc.created_at : '', $locale),
   );
   const hasHeader = $derived(crew !== null || action !== '' || when !== '');
+
+  /** The decision's own prose.
+   *
+   *  Carried over from the page-level replay, whose hero card read exactly
+   *  `rationale ?? rendered_body` (App.svelte's openTrace). Nothing else on the
+   *  desk shows it — the ledger row has a title, DecisionSummary has a field
+   *  table, and neither is the sentence explaining WHY. Without this, re-routing
+   *  every door to the record would have quietly dropped the one piece of the
+   *  replay that was prose.
+   *
+   *  Escaped plain text, like every other model-authored string on this surface
+   *  (`rendered_body` is Markdown source and renders as its own text — the same
+   *  thing FinalResponse did with it). */
+  const prose = $derived(str(doc?.rationale) || str(doc?.rendered_body) || null);
 
   // "The trace loaded and nothing is attached to it" — a different fact from
   // "it wouldn't load", which TraceDetail's own error line already states, and
@@ -142,6 +170,13 @@
     </header>
   {/if}
 
+  {#if prose !== null}
+    <div class="record__prose" data-testid="decision-record-prose">
+      <p class="ds-label record__prose-label">{$t('desk.record.prose')}</p>
+      <div class="record__prose-body">{prose}</div>
+    </div>
+  {/if}
+
   <TraceDetail {traceId} {entry} onRetry={() => void cache.retry(traceId)} />
 
   {#if incomplete}
@@ -187,6 +222,22 @@
     font-size: var(--ds-fs-1);
     color: var(--ds-fg-soft);
     font-variant-numeric: tabular-nums;
+  }
+
+  /* The record's headline content, so it reads as prose rather than as another
+     muted footnote — the one thing on this card that is a sentence. */
+  .record__prose-label {
+    display: block;
+    margin: 0 0 var(--ds-sp-1);
+    color: var(--ds-muted);
+  }
+  .record__prose-body {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    max-width: var(--ds-measure);
+    color: var(--ds-fg);
+    font-size: var(--ds-fs-2);
+    line-height: var(--ds-lh-body);
   }
 
   /* Both trailing lines share TraceDetail's quiet register — they are

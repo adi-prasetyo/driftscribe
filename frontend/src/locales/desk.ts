@@ -77,6 +77,11 @@ export const desk = {
     // link lands on. Both lines are quiet statements of fact, not errors —
     // the reasoning above them may have loaded perfectly.
     //
+    // The decision's own prose (rationale, else rendered_body) — the one piece
+    // of the retired page-level replay that was a sentence. Deliberately not
+    // "Why": a rendered_body is a PR description, not a reason, and one label
+    // has to fit both without misdescribing either.
+    'desk.record.prose': 'What was decided',
     // `incomplete` is reachable without anything having gone wrong: a
     // `?reasoning=` link can legitimately name a CHAT turn's trace, which is
     // reasoning with no decision doc behind it.
@@ -238,6 +243,7 @@ export const desk = {
     'desk.ledger.failedTitle': 'あなたが承認 → 適用されず',
     'desk.ledger.unconfirmedTitle': 'あなたが承認 → 結果は未確認',
     'desk.ledger.showMore': '{n}件すべて表示',
+    'desk.record.prose': '判断の内容',
     'desk.record.incomplete': 'このトレースには判断の記録が紐づいていません。',
     'desk.record.outOfWindow': 'この判断は、下の一覧より古い記録です。',
     // ---- unresolved rollback outcome (desk rule 2.5) ----

@@ -12,6 +12,7 @@
   // over one global timeline (the reason design §0 exists).
   import { deriveThoughtSubtitle, type TraceEvent } from '../lib/timeline';
   import type { TraceCache, TraceCacheEntry } from '../lib/traceCache';
+  import { prefersReducedMotion } from '../lib/motion';
   import { t } from '../lib/i18n';
   import TraceDetail from './TraceDetail.svelte';
   import Icon from './Icon.svelte';
@@ -20,13 +21,20 @@
     traceId,
     cache,
     conversationId = null,
+    autoExpand = false,
   }: {
     traceId: string;
     cache: TraceCache;
     conversationId?: string | null;
+    /** Open on mount and bring into view — how a `?conversation=&reasoning=`
+     *  deep link lands on the MESSAGE it names (ds-jns PR 2). Replaces the
+     *  page-level replay that used to open over the top of the thread the
+     *  message belongs to. */
+    autoExpand?: boolean;
   } = $props();
 
   let open = $state(false);
+  let el = $state<HTMLElement | null>(null);
 
   // Absent until something touches this trace — a history turn's disclosure has
   // no entry until it is expanded. The blank stands in so the collapsed line
@@ -69,9 +77,20 @@
     // a trace still being produced.
     if (open) await cache.ensure(traceId);
   }
+
+  // The deep link's landing. Fires when `autoExpand` turns true (boot, or a
+  // later link opening a different message) and not again — collapsing an
+  // auto-expanded disclosure writes `open`, which this effect does not read, so
+  // it does not spring back open under the operator.
+  $effect(() => {
+    if (!autoExpand) return;
+    open = true;
+    void cache.ensure(traceId);
+    el?.scrollIntoView({ behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'center' });
+  });
 </script>
 
-<div class="disclosure" class:is-open={open}>
+<div class="disclosure" class:is-open={open} bind:this={el}>
   <button
     type="button"
     class="disclosure__line"

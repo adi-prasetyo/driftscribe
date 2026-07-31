@@ -630,7 +630,10 @@ function resumeFixtures() {
     title: 'prior chat about drift',
     turns: [
       { seq: 0, role: 'user', text: 'what changed?', workload: 'drift' },
-      { seq: 1, role: 'crew', text: 'the env var EXTRA drifted', workload: 'drift', trace_id: 't1' },
+      // A REAL trace id (32 lowercase hex), not a token like 't1': `?reasoning=`
+      // is validated by reasoningTraceFromSearch, so a fixture that cannot
+      // appear in a URL cannot exercise the deep link that names this turn.
+      { seq: 1, role: 'crew', text: 'the env var EXTRA drifted', workload: 'drift', trace_id: HEX32 },
     ],
   };
   return { list, detail };
@@ -793,29 +796,25 @@ describe('App — ?conversation boot deep-link', () => {
   });
 
   it('clears both ?conversation and ?reasoning on New chat, preserving unrelated params + hash', async () => {
-    stubResumeFetchWithTrace(GRAPH, [{ decision_id: 'd1', action: 'rollback', trace_id: 't1' }]);
-    // `view=chat` explicitly (post-Task-3.6 a bare url is the desk, which has
-    // no conversations rail to click); `unrelated=1` + the hash are what this
-    // test actually asserts survive the New-chat param sweep.
-    history.replaceState(null, '', '/?view=chat&unrelated=1#frag');
-    const { findByTestId, container } = render(App);
-    await fireEvent.click(await findByTestId('conversation-open'));
+    stubResumeFetchWithTrace();
+    // Both params live from the boot deep link. Since ds-jns that is the only
+    // way `?reasoning=` is live ON THE CHAT VIEW: the rail's button now opens a
+    // desk record, and the thread's own disclosures write no param. What the
+    // test is about is unchanged — New chat sweeps its own two params and
+    // leaves `unrelated=1` and the hash alone.
+    history.replaceState(null, '', `/?conversation=c1&reasoning=${HEX32}&unrelated=1#frag`);
+    const { findByTestId } = render(App);
     await findByTestId('conversation-thread');
-    // Open a replay too, so both params are live before New chat — this is the
-    // historical-replay New chat exit (the banner's "← new chat", NOT
-    // composer-new-chat, which hides itself in historical mode). Driven from
-    // the decisions rail: since ds-jns the thread carries its reasoning inline
-    // and no longer opens replay at all.
-    await fireEvent.click(await findByTestId('open-trace-button'));
-    await findByTestId('historical-banner');
     await waitFor(() => {
       const p = new URLSearchParams(window.location.search);
       expect(p.get('conversation')).toBe('c1');
-      expect(p.get('reasoning')).toBe('t1');
+      expect(p.get('reasoning')).toBe(HEX32);
     });
 
-    const newChatBtn = container.querySelector('#new-chat-btn') as HTMLButtonElement;
-    await fireEvent.click(newChatBtn);
+    // The COMPOSER's New chat, not the replay banner's: with no replay on
+    // screen there is no banner, and the composer's button is the exit the
+    // operator actually has.
+    await fireEvent.click(await findByTestId('composer-new-chat'));
 
     await waitFor(() => {
       const p = new URLSearchParams(window.location.search);
@@ -826,17 +825,105 @@ describe('App — ?conversation boot deep-link', () => {
     expect(window.location.hash).toBe('#frag');
   });
 
-  it('restores both the thread and a reasoning replay from ?conversation&reasoning, keeping both params', async () => {
+  // ds-jns: `?reasoning=` inside a `?conversation=` names a MESSAGE in that
+  // thread, so the thread opens THAT turn's disclosure rather than stacking a
+  // page-level replay over the thread the message belongs to. Same URL, same
+  // two params kept — a different, and much less startling, landing.
+  it('restores the thread and auto-expands the named message from ?conversation&reasoning', async () => {
     stubResumeFetchWithTrace();
     history.replaceState(null, '', `/?conversation=c1&reasoning=${HEX32}`);
-    const { findByTestId } = render(App);
+    const { findByTestId, queryByTestId } = render(App);
     await findByTestId('conversation-thread');
-    await findByTestId('historical-banner');
+    // Expanded in place — the disclosure's detail is open, and the replay
+    // overlay that used to cover the thread is not there.
+    await findByTestId('trace-detail');
+    expect(queryByTestId('historical-banner')).toBeNull();
     await waitFor(() => {
       const p = new URLSearchParams(window.location.search);
       expect(p.get('conversation')).toBe('c1');
       expect(p.get('reasoning')).toBe(HEX32);
     });
+  });
+
+  it('expands only the named message, leaving the thread’s other turns collapsed', async () => {
+    // TWO crew turns with DIFFERENT trace ids — the premise the assertion needs.
+    // The shared resume fixture has one, against which "exactly one expanded"
+    // holds even if the thread expands every turn it can.
+    const OTHER = 'f'.repeat(32);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/trace/')) return okJson({ trace_id: HEX32, complete: true, events: [] });
+        if (url.includes('/conversations/'))
+          return okJson({
+            conversation_id: 'c1',
+            workload: 'drift',
+            title: 'prior chat about drift',
+            turns: [
+              { seq: 0, role: 'user', text: 'what changed?', workload: 'drift' },
+              { seq: 1, role: 'crew', text: 'first answer', workload: 'drift', trace_id: OTHER },
+              { seq: 2, role: 'user', text: 'and then?', workload: 'drift' },
+              { seq: 3, role: 'crew', text: 'the env var EXTRA drifted', workload: 'drift', trace_id: HEX32 },
+            ],
+          });
+        if (url.includes('/conversations')) return okJson({ conversations: [] });
+        if (url.includes('/decisions')) return okJson({ decisions: [] });
+        if (url.includes('/infra/pending-approvals')) return okJson({ approvals: [] });
+        if (url.includes('/infra/graph')) return okJson(GRAPH);
+        return okJson({});
+      }),
+    );
+    history.replaceState(null, '', `/?conversation=c1&reasoning=${HEX32}`);
+    const { findByTestId, getAllByTestId, queryAllByTestId } = render(App);
+    await findByTestId('conversation-thread');
+    await findByTestId('trace-detail');
+    expect(getAllByTestId('reasoning-disclosure')).toHaveLength(2);
+    expect(queryAllByTestId('trace-detail')).toHaveLength(1);
+    const expanded = getAllByTestId('reasoning-disclosure').filter(
+      (b) => b.getAttribute('aria-expanded') === 'true',
+    );
+    expect(expanded).toHaveLength(1);
+  });
+
+  // The deep link is consumed once. New chat is a clean slate, so reopening the
+  // very thread it named must not silently re-expand the message — nor write
+  // `?reasoning=` back onto a URL the operator just cleared.
+  it('New chat consumes the deep link — reopening that thread does not re-expand it', async () => {
+    stubResumeFetchWithTrace();
+    history.replaceState(null, '', `/?conversation=c1&reasoning=${HEX32}`);
+    const { findByTestId, queryByTestId } = render(App);
+    await findByTestId('trace-detail');
+
+    await fireEvent.click(await findByTestId('composer-new-chat'));
+    await waitFor(() =>
+      expect(new URLSearchParams(window.location.search).get('reasoning')).toBeNull(),
+    );
+
+    await fireEvent.click(await findByTestId('conversation-open'));
+    await findByTestId('conversation-thread');
+    expect(queryByTestId('trace-detail')).toBeNull();
+    expect(new URLSearchParams(window.location.search).get('reasoning')).toBeNull();
+  });
+
+  // canonicalizeRestoredEntry compares `?reasoning=` against what is LIVE on the
+  // current surface. Before ds-jns there was one candidate — the page-level
+  // replay — so an auto-expanded message would have read as stale and had its
+  // param swept off a URL that describes it exactly.
+  it('a pop keeps ?reasoning= when it names the message the thread has expanded', async () => {
+    stubResumeFetchWithTrace();
+    history.replaceState(null, '', `/?conversation=c1&reasoning=${HEX32}`);
+    const { findByTestId } = render(App);
+    await findByTestId('conversation-thread');
+    await findByTestId('trace-detail');
+
+    window.dispatchEvent(new PopStateEvent('popstate'));
+    await waitFor(() => {
+      const p = new URLSearchParams(window.location.search);
+      expect(p.get('conversation')).toBe('c1');
+      expect(p.get('reasoning')).toBe(HEX32);
+    });
+    await findByTestId('trace-detail');
   });
 
   it('clears ?conversation but still opens the ?reasoning replay when the boot conversation 404s', async () => {
@@ -898,17 +985,28 @@ describe('App — ?conversation boot deep-link', () => {
     expect(new URLSearchParams(window.location.search).get('reasoning')).toBeNull();
   });
 
-  it('openTrace with a thread open keeps ?conversation alongside the new ?reasoning', async () => {
-    stubResumeFetchWithTrace(GRAPH, [{ decision_id: 'd1', action: 'rollback', trace_id: 't1' }]);
-    const { findByTestId } = render(App);
+  // ds-jns reversed this one. The rail's "view reasoning" used to swap the chat
+  // column into replay mode ALONGSIDE the open thread, which is why both params
+  // had to survive together. It now leaves chat for the desk, where the decision
+  // is listed — so the thread's param goes with the thread, and the record's
+  // arrives in its place. One URL, one thing on screen.
+  it('the rail’s view-reasoning leaves the thread for the desk record', async () => {
+    stubResumeFetchWithTrace(GRAPH, [
+      { decision_id: 'd1', action: 'rollback', trace_id: HEX32, created_at: '2026-07-28T09:00:00Z' },
+    ]);
+    const { findByTestId, queryByTestId } = render(App);
     await fireEvent.click(await findByTestId('conversation-open'));
     await findByTestId('conversation-thread');
     await fireEvent.click(await findByTestId('open-trace-button'));
+    await findByTestId('approval-desk');
     await waitFor(() => {
       const p = new URLSearchParams(window.location.search);
-      expect(p.get('conversation')).toBe('c1');
-      expect(p.get('reasoning')).toBe('t1');
+      expect(p.get('conversation')).toBeNull();
+      expect(p.get('reasoning')).toBe(HEX32);
     });
+    expect(queryByTestId('conversation-thread')).toBeNull();
+    expect(queryByTestId('historical-banner')).toBeNull();
+    await findByTestId('decision-record');
   });
 
   // Codex review 019f46e8 must-fix: conversationId is set (synchronously) before
@@ -1049,19 +1147,26 @@ describe('App — ?conversation boot deep-link', () => {
     const sendBtn = (await findByTestId('chat-submit')) as HTMLButtonElement;
     await waitFor(() => expect(sendBtn.disabled).toBe(true));
 
-    // Interrupt the pending resume with a reasoning replay from the rail.
+    // Interrupt the pending resume by opening the decision's record from the
+    // rail. Since ds-jns that LEAVES chat for the desk — a bigger interruption
+    // than the replay was, and the same trap: the departure has to clear
+    // `resumingConversation`, because openConversation's own finally is gated
+    // on a runSeq the departure just superseded.
     await fireEvent.click(await findByTestId('open-trace-button'));
-    await findByTestId('historical-banner');
+    await findByTestId('approval-desk');
 
-    // The stale resume detail landing mid-replay must not corrupt anything.
+    // The stale resume detail landing after the departure must not corrupt
+    // anything either.
     releaseDetail(okJson({ conversation_id: 'c1', workload: 'explore', title: 'x', turns: [] }));
     await new Promise((r) => setTimeout(r, 20));
 
-    // Exit the replay — Send must not be stuck disabled by a leftover flag
-    // openTrace never claimed.
-    const exitBtn = document.querySelector('#new-chat-btn') as HTMLButtonElement;
-    await fireEvent.click(exitBtn);
-    await waitFor(() => expect(sendBtn.disabled).toBe(false));
+    // Back to chat — Send must not be stuck disabled by a leftover flag.
+    // Re-queried, not reused: the chat branch unmounted on the way to the desk,
+    // so the old node is detached and frozen on whatever it last said.
+    await fireEvent.click(await findByTestId('nav-chat'));
+    await waitFor(async () =>
+      expect(((await findByTestId('chat-submit')) as HTMLButtonElement).disabled).toBe(false),
+    );
   });
 });
 
@@ -1365,16 +1470,19 @@ describe('App — ephemeral (non-persisted) exchanges', () => {
   });
 });
 
-describe('App — an ephemeral turn does not leak into historical replay', () => {
+describe('App — a past decision still shows its reasoning after a failed exchange', () => {
   beforeEach(() => {
     history.replaceState(null, '', '/?view=chat');
   });
 
   it('opening a past decision still renders its rationale after a failed exchange', async () => {
-    // The replay hero is gated on there being no ephemeral exchange (the two
-    // would otherwise say the same thing twice). openTrace therefore has to
-    // clear one, exactly as it already clears the optimistic overlay — or a
-    // network failure silently blanks every replay opened afterwards.
+    // The guarantee is unchanged; the surface that keeps it is not. The replay
+    // hero was gated on there being no ephemeral exchange, so openTrace had to
+    // clear one or a network failure silently blanked every replay opened
+    // afterwards. The desk record has no such gate — it is a different page —
+    // but it MUST still carry the decision's prose, which is the whole reason
+    // the old hero existed. Losing that in the re-route would have been the
+    // same defect with a nicer view transition.
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -1382,14 +1490,18 @@ describe('App — an ephemeral turn does not leak into historical replay', () =>
         if (url.includes('/chat') && init?.method === 'POST') throw new Error('offline');
         if (url.includes('/trace/'))
           return okJson({
-            trace_id: 't1',
+            trace_id: HEX32,
             complete: true,
             events: [],
             decision: { decision_id: 'd1', action: 'rollback', rationale: 'PORT drifted on the agent service' },
           });
         if (url.includes('/conversations')) return okJson({ conversations: [] });
         if (url.includes('/decisions'))
-          return okJson({ decisions: [{ decision_id: 'd1', action: 'rollback', trace_id: 't1' }] });
+          return okJson({
+            decisions: [
+              { decision_id: 'd1', action: 'rollback', trace_id: HEX32, created_at: '2026-07-28T09:00:00Z' },
+            ],
+          });
         if (url.includes('/infra/graph')) return okJson(GRAPH);
         return okJson({});
       }),
@@ -1400,11 +1512,11 @@ describe('App — an ephemeral turn does not leak into historical replay', () =>
     await findByTestId('thread-turn-error');
 
     await fireEvent.click(await findByTestId('open-trace-button'));
-    await findByTestId('historical-banner');
+    await findByTestId('approval-desk');
     await waitFor(() => {
-      const hero = getByTestId('final-response');
-      expect(hero.hasAttribute('hidden')).toBe(false);
-      expect(hero.textContent).toContain('PORT drifted on the agent service');
+      expect(getByTestId('decision-record-prose').textContent).toContain(
+        'PORT drifted on the agent service',
+      );
     });
   });
 });

@@ -18,6 +18,7 @@
     turns,
     cache,
     conversationId = null,
+    autoExpandTraceId = null,
   }: {
     turns: ConversationTurn[];
     /** Per-trace state for the inline disclosures. Required rather than
@@ -27,6 +28,10 @@
     /** The open thread's id, so a copied disclosure link can carry thread
      *  context (design §4). Null on a not-yet-persisted conversation. */
     conversationId?: string | null;
+    /** The turn a `?conversation=&reasoning=` deep link named: its disclosure
+     *  opens on mount and scrolls into view (ds-jns PR 2). At most one turn
+     *  matches — a trace id belongs to one turn. */
+    autoExpandTraceId?: string | null;
   } = $props();
 
   // Same-origin /iac-approvals/<n> link for a turn that opened an infra PR.
@@ -135,7 +140,12 @@
                  the stream runs), where the old open-trace button bumped runSeq
                  and dropped the in-flight settle. -->
             {#if turn.trace_id}
-              <ReasoningDisclosure traceId={turn.trace_id} {cache} {conversationId} />
+              <ReasoningDisclosure
+                traceId={turn.trace_id}
+                {cache}
+                {conversationId}
+                autoExpand={autoExpandTraceId !== null && turn.trace_id === autoExpandTraceId}
+              />
             {/if}
             {#if pending}
               <div class="turn__typing" data-testid="thread-typing" aria-hidden="true">

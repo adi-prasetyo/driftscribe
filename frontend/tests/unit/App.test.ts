@@ -215,14 +215,20 @@ describe('App — tour wiring (smoke)', () => {
 });
 
 describe('App — open-trace puts the replay at the top and scrolls the window up', () => {
-  // The historical replay now renders at the TOP of the chat column, and
-  // openTrace scrolls the WINDOW to top (top:0) to reveal it — no jump down to
-  // the bottom. The button is in the left rail; the replay region is
-  // #historical-badge.
+  // The historical replay renders at the TOP of the chat column, and openTrace
+  // scrolls the WINDOW to top (top:0) to reveal it — no jump down to the
+  // bottom. The replay region is #historical-badge.
+  //
+  // ds-jns took away the button that used to open this: the rail now opens a
+  // desk record. The replay itself is still reachable, by the one URL shape
+  // that still means it (`?view=chat&reasoning=`), and PR 3 deletes both the
+  // mode and this suite. Driving it from that URL keeps the guarantee pinned
+  // for as long as the code it describes is still shipping.
+  const REPLAY_TID = 'e'.repeat(32);
   function stubFetchWithIacDecision(): void {
     const iac = {
       decision_id: 'd1',
-      trace_id: 'tid-iac-1',
+      trace_id: REPLAY_TID,
       action: 'iac_apply',
       pr_number: 47,
       apply_status: 'applied',
@@ -233,7 +239,7 @@ describe('App — open-trace puts the replay at the top and scrolls the window u
       vi.fn(async (input: RequestInfo | URL) => {
         const url = String(input);
         if (url.includes('/trace/'))
-          return okJson({ trace_id: 'tid-iac-1', complete: true, events: [], decision: iac });
+          return okJson({ trace_id: REPLAY_TID, complete: true, events: [], decision: iac });
         if (url.includes('/decisions')) return okJson({ decisions: [iac] });
         if (url.includes('/infra/graph'))
           return okJson({
@@ -251,17 +257,14 @@ describe('App — open-trace puts the replay at the top and scrolls the window u
     );
   }
 
-  it('clicking open-trace scrolls the window to top (top:0, reduced-motion → auto) and renders the replay above the composer', async () => {
+  it('a ?view=chat&reasoning= replay scrolls the window to top (top:0, reduced-motion → auto) and renders above the composer', async () => {
     window.sessionStorage.setItem('driftscribe_token', 'tok');
     stubFetchWithIacDecision();
     const scrollSpy = vi.fn();
     window.scrollTo = scrollSpy as unknown as typeof window.scrollTo;
 
-    const { findByTestId, getByTestId } = render(App);
-
-    // Wait for the rail to load the decision, then open its trace.
-    const btn = await findByTestId('open-trace-button');
-    await fireEvent.click(btn);
+    history.replaceState(null, '', `/?view=chat&reasoning=${REPLAY_TID}`);
+    const { getByTestId } = render(App);
 
     // The banner enters the DOM (proves historicalActive flipped + tick flushed).
     await waitFor(() => expect(getByTestId('historical-banner')).toBeTruthy());
@@ -364,17 +367,22 @@ describe('App — open-trace surfaces the PR body ("what this change did")', () 
     expect(fetchMock.mock.calls.some(([u]) => String(u).includes('/pr-body'))).toBe(false);
   });
 
-  it('drops a stale PR-body response when a newer open-trace supersedes it', async () => {
-    // loadPrBody is runSeq-guarded: a slow /pr-body from an earlier open-trace
-    // must NOT overwrite a newer trace's body. Open A (its /pr-body blocked),
-    // open B (resolves), then release A — the guard must drop A's late response.
+  // The same guarantee, re-anchored to the surface that now serves it. It used
+  // to rest on openTrace's runSeq guard dropping a stale /pr-body; the desk
+  // record rests on something stronger — the per-trace cache writes every
+  // pr-body under the trace id it was fetched for, so a slow response cannot
+  // reach a different record at all. Opening A then B is what proves it: A's
+  // body arrives after B is on screen and has nowhere to land but A's entry.
+  it('a slow PR body from an earlier record never lands on the one now open', async () => {
     window.sessionStorage.setItem('driftscribe_token', 'tok');
+    const TID_A = 'a'.repeat(32);
+    const TID_B = 'c'.repeat(32);
     const decA = {
-      decision_id: 'dA', trace_id: 'tid-a', action: 'iac_apply',
+      decision_id: 'dA', trace_id: TID_A, action: 'iac_apply', created_at: '2026-07-28T10:00:00Z',
       pr_number: 1, head_sha: 'a'.repeat(40), apply_status: 'applied', approver: 'op',
     };
     const decB = {
-      decision_id: 'dB', trace_id: 'tid-b', action: 'iac_apply',
+      decision_id: 'dB', trace_id: TID_B, action: 'iac_apply', created_at: '2026-07-28T09:00:00Z',
       pr_number: 2, head_sha: 'b'.repeat(40), apply_status: 'applied', approver: 'op',
     };
     let releaseA: () => void = () => {};
@@ -384,14 +392,14 @@ describe('App — open-trace surfaces the PR body ("what this change did")', () 
       vi.fn(async (input: RequestInfo | URL) => {
         const url = String(input);
         if (url.includes('/pr-body')) {
-          if (url.includes('tid-a')) {
+          if (url.includes(TID_A)) {
             await aGate; // A's body is held until we release it
             return okJson({ pr_number: 1, head_sha: 'a'.repeat(40), body: 'A-BODY', body_truncated: false, cached: false });
           }
           return okJson({ pr_number: 2, head_sha: 'b'.repeat(40), body: 'B-BODY', body_truncated: false, cached: false });
         }
-        if (url.includes('/trace/tid-a')) return okJson({ trace_id: 'tid-a', complete: true, events: [], decision: decA });
-        if (url.includes('/trace/tid-b')) return okJson({ trace_id: 'tid-b', complete: true, events: [], decision: decB });
+        if (url.includes(`/trace/${TID_A}`)) return okJson({ trace_id: TID_A, complete: true, events: [], decision: decA });
+        if (url.includes(`/trace/${TID_B}`)) return okJson({ trace_id: TID_B, complete: true, events: [], decision: decB });
         if (url.includes('/decisions')) return okJson({ decisions: [decA, decB] });
         if (url.includes('/infra/graph'))
           return okJson({ generated_at: null, project: 'demo-proj', caveat: '', degraded: false, degraded_reason: null, totals: { resources: 1, managed: 0, drift: 1 }, groups: [], edges: [] });
@@ -399,19 +407,22 @@ describe('App — open-trace surfaces the PR body ("what this change did")', () 
       }),
     );
 
+    history.replaceState(null, '', '/?view=desk');
     const { findAllByTestId, findByTestId } = render(App);
-    const buttons = await findAllByTestId('open-trace-button');
-    await fireEvent.click(buttons[0]); // open A (newest first) — loadPrBody A blocks on aGate
-    await fireEvent.click(buttons[1]); // open B — supersedes; loadPrBody B resolves
+    const rows = await findAllByTestId('ledger-strip-row');
+    await fireEvent.click(rows[0]); // A (newest first) — its /pr-body blocks on aGate
+    await fireEvent.click((await findAllByTestId('ledger-strip-row'))[1]); // B — resolves
 
     const panel = await findByTestId('pr-body-disclosure');
-    expect(panel.querySelector('[data-testid="pr-body-md"]')?.textContent).toContain('B-BODY');
+    await waitFor(() =>
+      expect(panel.querySelector('[data-testid="pr-body-md"]')?.textContent).toContain('B-BODY'),
+    );
 
     releaseA(); // A's stale response resolves now
     await Promise.resolve();
     await Promise.resolve();
-    // The runSeq guard dropped A — B's body must remain, A's must never appear.
-    const md = panel.querySelector('[data-testid="pr-body-md"]');
+    // Keyed by trace id — B's body remains, A's never appears on B's record.
+    const md = (await findByTestId('pr-body-disclosure')).querySelector('[data-testid="pr-body-md"]');
     expect(md?.textContent).toContain('B-BODY');
     expect(md?.textContent).not.toContain('A-BODY');
   });
@@ -883,14 +894,13 @@ describe('App — view routing (Task 2.2)', () => {
     }
   });
 
-  // Superseded by the Task 3.5 "rails come off the desk" decision: the
-  // decisions rail (and its open-trace-button) is no longer rendered on the
-  // desk view at all (see the "App — rails come off the desk" suite below),
-  // so "open a trace from the rail while on the desk" is no longer a
-  // reachable interaction. This keeps the still-valid part of the old test —
-  // switching to chat surfaces the rail and opening a trace from it works —
-  // with the desk→chat navigation step made explicit first.
-  it('the rail (and its open-trace affordance) only exists on chat; navigating there and opening a trace works', async () => {
+  // Twice superseded, and worth reading as a pair. Task 3.5 took the rail off
+  // the desk, so "open a trace from the rail while on the desk" stopped being
+  // reachable. ds-jns then re-pointed what the rail's button DOES: it opens the
+  // decision's record on the desk instead of a replay in the chat column — so
+  // the round trip below (desk → chat for the rail → desk for the record) is
+  // the affordance's whole current shape.
+  it('the rail only exists on chat, and its view-reasoning brings the record back to the desk', async () => {
     window.sessionStorage.setItem('driftscribe_token', 'tok');
     const iac = {
       decision_id: 'd1',
@@ -930,9 +940,11 @@ describe('App — view routing (Task 2.2)', () => {
     const btn = await findByTestId('open-trace-button');
     await fireEvent.click(btn);
 
-    expect(queryByTestId('approval-desk')).toBeNull();
-    expect(document.getElementById('chat-form')).toBeTruthy();
-    await waitFor(() => expect(getByTestId('historical-banner')).toBeTruthy());
+    await waitFor(() => expect(getByTestId('approval-desk')).toBeTruthy());
+    expect(document.getElementById('chat-form')).toBeNull();
+    expect(queryByTestId('historical-banner')).toBeNull();
+    await findByTestId('decision-record');
+    expect(new URLSearchParams(window.location.search).get('reasoning')).toBe(TID);
   });
 });
 
@@ -1395,5 +1407,93 @@ describe('App — desk decision records (ds-jns)', () => {
     expect(queryByTestId('preview-banner')).toBeNull();
     await fireEvent.click(getByTestId('nav-desk'));
     expect(queryByTestId('preview-banner')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ds-jns — the popstate transition table for the desk's own deep state.
+//
+// The policy is unchanged and deliberate: a restore is VIEW-ONLY. Back never
+// re-resolves a deep resource — that would fire fetches the operator did not
+// ask for and race whatever they do next — so the entry is canonicalized
+// instead, until the URL stops claiming content that is not on screen. What
+// ds-jns adds is that the desk now HAS deep state to tear down.
+// ---------------------------------------------------------------------------
+describe('App — popstate and the desk record (ds-jns)', () => {
+  const TID = 'c'.repeat(32);
+  const GRAPH_BODY = {
+    generated_at: null,
+    project: 'demo-proj',
+    caveat: '',
+    degraded: false,
+    degraded_reason: null,
+    totals: { resources: 1, managed: 0, drift: 1 },
+    groups: [],
+    edges: [],
+  };
+
+  function popTo(search: string): void {
+    history.replaceState(null, '', search);
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  }
+
+  function stub(decisions: unknown[] = []) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/trace/'))
+          return okJson({ trace_id: TID, complete: true, events: [], decision: null });
+        if (url.includes('/decisions')) return okJson({ decisions });
+        if (url.includes('/conversations')) return okJson({ conversations: [] });
+        if (url.includes('/infra/graph')) return okJson(GRAPH_BODY);
+        return okJson({});
+      }),
+    );
+  }
+
+  const row = {
+    decision_id: 'dr-1',
+    trace_id: TID,
+    action: 'rollback',
+    created_at: '2026-07-28T09:00:00Z',
+  };
+
+  it('collapses an open record on a pop and stops the url claiming it', async () => {
+    stub([row]);
+    history.replaceState(null, '', '/?view=desk');
+    const { findAllByTestId, queryByTestId } = render(App);
+    await fireEvent.click((await findAllByTestId('ledger-strip-row'))[0]);
+    await waitFor(() => expect(queryByTestId('decision-record')).toBeTruthy());
+
+    // Back to an entry that still names the record: view-only restore, so the
+    // record closes and the param goes with it.
+    popTo(`/?view=desk&reasoning=${TID}`);
+    await waitFor(() => expect(queryByTestId('decision-record')).toBeNull());
+    expect(new URLSearchParams(window.location.search).get('reasoning')).toBeNull();
+  });
+
+  it('clears an open preview on a pop and stops the url claiming it', async () => {
+    stub();
+    history.replaceState(null, '', '/?preview_pr=168');
+    const { findByTestId, queryByTestId } = render(App);
+    await findByTestId('preview-banner');
+
+    popTo('/?preview_pr=168');
+    await waitFor(() => expect(queryByTestId('preview-banner')).toBeNull());
+    expect(new URLSearchParams(window.location.search).get('preview_pr')).toBeNull();
+  });
+
+  it('does not re-open a record named only by the popped entry', async () => {
+    // The other direction of the same rule: arriving at an entry that names a
+    // record this session never opened must not resolve it.
+    stub([row]);
+    history.replaceState(null, '', '/?view=chat');
+    const { queryByTestId } = render(App);
+
+    popTo(`/?reasoning=${TID}`);
+    await waitFor(() => expect(queryByTestId('approval-desk')).toBeTruthy());
+    expect(queryByTestId('decision-record')).toBeNull();
+    expect(new URLSearchParams(window.location.search).get('reasoning')).toBeNull();
   });
 });

@@ -144,6 +144,85 @@ describe('DecisionRecord — header', () => {
   });
 });
 
+describe('DecisionRecord — the decision’s own prose', () => {
+  // Carried over from the page-level replay's hero card, which read exactly
+  // `rationale ?? rendered_body`. Nothing else on the desk shows it.
+  it('renders the rationale', async () => {
+    const { getByTestId } = mount(() => res(traceResponse()), {
+      decision: { ...ROLLBACK, rationale: 'PORT drifted on the agent service' },
+    });
+    await waitFor(() =>
+      expect(getByTestId('decision-record-prose').textContent).toContain(
+        'PORT drifted on the agent service',
+      ),
+    );
+  });
+
+  it('falls back to rendered_body when there is no rationale', async () => {
+    const { getByTestId } = mount(() => res(traceResponse()), {
+      decision: { ...ROLLBACK, rendered_body: 'Adopts the orders subscription.' },
+    });
+    await waitFor(() =>
+      expect(getByTestId('decision-record-prose').textContent).toContain(
+        'Adopts the orders subscription.',
+      ),
+    );
+  });
+
+  it('takes it from the FETCHED doc when the row it was opened from lacks it', async () => {
+    // GET /decisions projects a listing row; GET /trace carries the whole
+    // decision. Preferring the row outright hid the prose entirely — the two
+    // docs describe one decision and the record has to read both.
+    const { getByTestId } = mount(
+      () => res(traceResponse({ decision: { ...ROLLBACK, rationale: 'from the trace doc' } })),
+      { decision: ROLLBACK },
+    );
+    await waitFor(() =>
+      expect(getByTestId('decision-record-prose').textContent).toContain('from the trace doc'),
+    );
+  });
+
+  it('keeps the ROW’s value where both docs carry one', async () => {
+    // The row is the serve-time-enriched copy; a fetched value must fill gaps,
+    // never downgrade a field the listing already resolved.
+    const { getByTestId } = mount(
+      () =>
+        res(
+          traceResponse({
+            // An event, purely so the assertion can wait for PROOF the fetch
+            // landed. Without it the first frame — where entry.decision is
+            // still null and the row is the only doc — satisfies the assertion
+            // and the merge order is never actually exercised.
+            events: [ev({ insert_id: 't1', thought_text: 'landed' })],
+            decision: { ...ROLLBACK, rationale: 'stale' },
+          }),
+        ),
+      { decision: { ...ROLLBACK, rationale: 'fresh' } },
+    );
+    await waitFor(() => expect(getByTestId('trace-row-thought')).toBeTruthy());
+    expect(getByTestId('decision-record-prose').textContent).toContain('fresh');
+    expect(getByTestId('decision-record-prose').textContent).not.toContain('stale');
+  });
+
+  it('renders nothing at all when the decision has no prose', async () => {
+    const { queryByTestId, getByTestId } = mount(() => res(traceResponse()), {
+      decision: ROLLBACK,
+    });
+    await waitFor(() => expect(getByTestId('trace-detail-empty')).toBeTruthy());
+    expect(queryByTestId('decision-record-prose')).toBeNull();
+  });
+
+  it('escapes it — the prose is model-authored', async () => {
+    const { getByTestId } = mount(() => res(traceResponse()), {
+      decision: { ...ROLLBACK, rationale: '<img src=x onerror=alert(1)>' },
+    });
+    await waitFor(() => expect(getByTestId('decision-record-prose')).toBeTruthy());
+    const el = getByTestId('decision-record-prose');
+    expect(el.querySelector('img')).toBeNull();
+    expect(el.textContent).toContain('<img src=x onerror=alert(1)>');
+  });
+});
+
 describe('DecisionRecord — record incomplete', () => {
   it('says so when the trace loaded and no decision doc is attached', async () => {
     // Reachable: a bare ?reasoning= link can name a CHAT turn's trace, which has

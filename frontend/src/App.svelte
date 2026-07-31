@@ -52,6 +52,7 @@
   import { reconcileApprovals } from './lib/estate';
   import {
     reasoningTraceFromSearch,
+    isReplayableTraceId,
     conversationIdFromSearch,
     viewFromSearch,
     DEFAULT_VIEW,
@@ -354,7 +355,20 @@
     // View only: custody survives, so reopening the thread from the rail finds
     // its chip intact (same reasoning as newChat).
     clearHandoff();
+    // The deep link's landing belongs to the thread just dropped. Leaving it
+    // set would re-expand a message in whatever thread opens next that happens
+    // to carry the same trace — and, more simply, would keep `?reasoning=`
+    // looking live to canonicalizeRestoredEntry below.
+    autoExpandTraceId = null;
     if (previewPr !== null) previewPr = null; // preview_pr already dropped above
+  }
+
+  // The desk counterpart of teardownChatSurface: the two pieces of desk state
+  // that a URL can name. Not called from navigate() — that clears them inline
+  // because it must also delete their params from the SAME URL write.
+  function teardownDeskSurface(): void {
+    deskRecordTraceId = null;
+    previewPr = null;
   }
 
   // Browser Back/Forward. The restore is VIEW-ONLY by design: reopening deep
@@ -378,6 +392,13 @@
     // url. Exactly the state/url disagreement this handler exists to prevent.
     // On a target that never had chat state the call is a cheap no-op.
     if (target !== 'chat') teardownChatSurface();
+    // The desk's own deep state gets the same view-only treatment as chat's:
+    // a popped entry can name a record or a preview this session never opened
+    // (or has since closed), and re-resolving it here would fire fetches the
+    // operator did not ask for — boot is the only deep-resolver. Collapse
+    // FIRST so canonicalizeRestoredEntry below sees the truth and drops the
+    // params rather than measuring them against state we are about to clear.
+    teardownDeskSurface();
     // Entering chat re-reads the rail. Cancelling a run (above, or via newChat)
     // skips the post-turn loadConversations() at :976, so a conversation the
     // server created for that cancelled turn would be missing from the
@@ -405,8 +426,16 @@
     };
     const conv = u.searchParams.get('conversation');
     if (conv !== null && conv !== conversationId) drop('conversation');
+    // `?reasoning=` has three possible live counterparts since ds-jns, one per
+    // surface it can name: the desk's open record, the chat thread's
+    // auto-expanded message, and the legacy page-level replay. Comparing
+    // against `historicalTraceId` alone (the last of the three) would drop the
+    // param off a restored entry that describes either of the first two
+    // perfectly well.
     const reasoning = u.searchParams.get('reasoning');
-    if (reasoning !== null && reasoning !== historicalTraceId) drop('reasoning');
+    const liveReasoning =
+      view === 'desk' ? deskRecordTraceId : (autoExpandTraceId ?? historicalTraceId);
+    if (reasoning !== null && reasoning !== liveReasoning) drop('reasoning');
     // ask_pr is a one-shot composer prefill consumed at boot (onMount strips it);
     // a restored one has nothing left to hand over, so it is always stale.
     if (u.searchParams.get('ask_pr')) drop('ask_pr');
@@ -850,6 +879,25 @@
   // replay, `?view=chat&reasoning=`, is not quietly claimed by the desk.
   let deskRecordTraceId = $state<string | null>(bootView === 'desk' ? bootReasoningTid : null);
 
+  // The chat-side half of the same fork. A `?reasoning=` FRAMED by a
+  // `?conversation=` names a MESSAGE in that thread, so the thread opens that
+  // turn's disclosure in place instead of stacking a page-level replay over
+  // the thread the message belongs to. Cleared on any departure from the chat
+  // surface (teardownChatSurface) so a later thread cannot inherit it.
+  let autoExpandTraceId = $state<string | null>(
+    bootConversationId !== null ? bootReasoningTid : null,
+  );
+
+  // The rail's "view reasoning" (ds-jns PR 2). It used to call openTrace, which
+  // swapped the chat column into replay mode; the decision now opens as a
+  // record on the desk that lists it. navigate() FIRST — it clears the record
+  // and drops `?reasoning=` as part of the view gesture, so setting the record
+  // afterwards is what survives.
+  function openDeskRecordFromRail(tid: string): void {
+    navigate('desk');
+    setDeskRecord(tid);
+  }
+
   // The only writer, so the `?reasoning=` param and the state can never drift —
   // same discipline as setConversationId. A shared/reloaded desk URL therefore
   // always reopens exactly the record that was on screen.
@@ -863,9 +911,18 @@
   // so "not here" is exactly "no ledger row will render it" — which is what
   // makes the pinned card below safe from rendering a second copy of a row
   // that "show more" would reveal.
-  const deskRecordInLedger = $derived(hasDecisionForTrace(decisions, deskRecordTraceId));
+  // ...and will the strip actually RENDER it? Two conditions, because they are
+  // two questions. `keepTraceId` makes "in the snapshot" survive the row cap,
+  // but LedgerStrip also refuses an affordance to a row whose trace_id is not a
+  // well-formed one — so a decision with a malformed id is in the list and has
+  // no row to open. Asking only the first question left such a record rendering
+  // NOWHERE: not pinned (the list has it) and not inline (no row will open it).
+  // The same "unknown is not empty" trap as ds-mml, one surface over.
+  const deskRecordHasRow = $derived(
+    isReplayableTraceId(deskRecordTraceId) && hasDecisionForTrace(decisions, deskRecordTraceId),
+  );
   const deskPinnedRecord = $derived(
-    deskRecordTraceId !== null && !deskRecordInLedger ? deskRecordTraceId : null,
+    deskRecordTraceId !== null && !deskRecordHasRow ? deskRecordTraceId : null,
   );
 
   // The band's managed/drift numerals point at the estate, which since the
@@ -969,8 +1026,13 @@
     // it from view WITHOUT forgetting its nonce (that proposal may still be
     // open); the incoming thread's chip is rebuilt from its own detail below.
     clearHandoff();
-    // Leaving the replay for a live thread — clear the shareable param.
-    syncReasoningParam(null);
+    // `?reasoning=` on the chat surface describes whatever is still named here:
+    // since ds-jns that is the message a boot deep link asked the thread to
+    // auto-expand, and otherwise nothing (leaving a replay for a live thread).
+    // Clearing it unconditionally, as this did when a replay was the only
+    // meaning, deleted the param out of the very link that opened this thread.
+    if (id !== bootConversationId) autoExpandTraceId = null;
+    syncReasoningParam(autoExpandTraceId);
     setConversationId(id);
     // Clear the prior thread's crew NOW so a failed rehydrate can't leave a
     // stale lock paired with the new id (which would slip the crew-change guard
@@ -2046,7 +2108,9 @@
     conversationTurns = [];
     // Back to the crew that fields an unrouted question.
     composerWorkload = 'explore';
-    // No replay on screen anymore — clear the shareable param.
+    // No replay and no auto-expanded message on screen anymore — clear both the
+    // state and the shareable param that describes them.
+    autoExpandTraceId = null;
     syncReasoningParam(null);
   }
 
@@ -2083,7 +2147,19 @@
         // thread), a newer run bumped runSeq past bootRun+1 — do NOT then force the
         // replay on top of what they navigated to. Bail out of the boot continuation.
         if (runSeq !== bootRun + 1) return;
+        // The thread opened: its own disclosure carries the reasoning
+        // (autoExpandTraceId, seeded at setup), so there is nothing to do here.
+        // A thread that FAILED to open (404, unreadable) has no turn to expand,
+        // and the link would otherwise land on an empty chat column with
+        // `?reasoning=` still in the address bar — so the page-level replay is
+        // the fallback. Deliberately not a bounce to the desk: this is chat-side
+        // error handling and the operator asked for a thread.
+        if (conversationId === null && bootReasoningTid) openTrace(bootReasoningTid);
+        return;
       }
+      // The legacy `?view=chat&reasoning=` with no thread around it: still the
+      // page-level replay. A BARE `?reasoning=` never reaches here — it resolves
+      // to the desk and was seeded into deskRecordTraceId at setup.
       if (bootReasoningTid && bootView === 'chat') openTrace(bootReasoningTid);
     })();
     // Browser Back/Forward across the two views (ds-7ag.1). Registered here
@@ -2213,7 +2289,7 @@
       activeConversationId={conversationId}
       onOpen={openConversation}
     />
-    <DecisionsRail {decisions} {activeTraceId} onOpenTrace={openTrace} />
+    <DecisionsRail {decisions} {activeTraceId} onOpenTrace={openDeskRecordFromRail} />
   </div>
   {/if}
 
@@ -2252,7 +2328,7 @@
       />
     </div>
     {#if !historicalActive && displayTurns.length > 0}
-      <ConversationThread turns={displayTurns} cache={traceCache} {conversationId} />
+      <ConversationThread turns={displayTurns} cache={traceCache} {conversationId} {autoExpandTraceId} />
     {/if}
     <!-- The confirmation sits at the END of the transcript, directly under the
          crew reply that proposed it — the thread runs oldest-first below the
