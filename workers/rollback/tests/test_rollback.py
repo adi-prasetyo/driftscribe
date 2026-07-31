@@ -25,25 +25,18 @@ Mocking strategy mirrors workers/docs/tests/test_patch.py:
 from __future__ import annotations
 
 import datetime as dt
-import os
 from typing import Any
 
 import pytest
 from fastapi import HTTPException, status
 from fastapi.testclient import TestClient
+from workers._testenv import import_worker_main
 
-# Env MUST be set before importing workers.rollback.main — the module reads
-# OWN_URL / COORDINATOR_URL / ALLOWED_CALLERS / GCP_PROJECT / APPROVAL_HMAC_KEY
-# at import time and KeyErrors if any are missing. This mirrors the
-# fail-fast behavior the Cloud Run revision will have at boot.
-os.environ.setdefault("GCP_PROJECT", "test-proj")
-os.environ.setdefault("OWN_URL", "https://rollback.example.com")
-os.environ.setdefault("COORDINATOR_URL", "https://coord.example.com")
-os.environ.setdefault(
-    "ALLOWED_CALLERS",
-    "coordinator@test-proj.iam.gserviceaccount.com",
-)
-os.environ.setdefault("APPROVAL_HMAC_KEY", "test-hmac-key")
+# Canonical boot env, applied before the import below. The values live in
+# workers/_testenv.py, not here: worker mains capture config at import and
+# Python caches modules, so the FIRST importer in the pytest process decides
+# them for everyone (ds-2n1).
+import_worker_main("workers.rollback.main")
 
 from driftscribe_lib.approvals import (  # noqa: E402
     PHASE_APPLIED,
@@ -1476,10 +1469,10 @@ def test_real_verify_caller_dep_wired_with_env(monkeypatch: pytest.MonkeyPatch) 
     OWN_URL + ALLOWED_CALLERS (read from env at boot) to
     ``driftscribe_lib.auth.verify_caller``.
 
-    Module-level constants are monkeypatched directly because in a unified
-    pytest run another worker's test module may have populated OWN_URL
-    before this module was imported (``os.environ.setdefault`` would then
-    be a no-op and the constant would carry the other worker's value).
+    The constants are read as the module captured them at boot, not re-pinned
+    here. Re-pinning was the old defense against another worker winning the
+    import race, and it made this assertion self-fulfilling;
+    ``workers/_testenv.py`` removes the race instead (ds-2n1).
     """
     seen: dict = {}
 
@@ -1498,12 +1491,6 @@ def test_real_verify_caller_dep_wired_with_env(monkeypatch: pytest.MonkeyPatch) 
         rollback_main,
         "_list_revisions",
         lambda: (["payment-demo-00002-bbb", "payment-demo-00003-ccc"], "payment-demo-00003-ccc"),
-    )
-    monkeypatch.setattr(rollback_main, "OWN_URL", "https://rollback.example.com")
-    monkeypatch.setattr(
-        rollback_main,
-        "ALLOWED_CALLERS",
-        frozenset({"coordinator@test-proj.iam.gserviceaccount.com"}),
     )
 
     c = TestClient(app)

@@ -5,21 +5,17 @@ the FastAPI app's dependencies are swapped via ``app.dependency_overrides``,
 and the GitHub side-effect (``open_docs_pr``) is monkey-patched on the
 ``workers.docs.main`` module so we never touch github.com.
 """
-import os
 
 import pytest
 from fastapi import HTTPException, status
 from fastapi.testclient import TestClient
+from workers._testenv import import_worker_main
 
-# Env MUST be set before importing workers.docs.main — the module reads
-# TARGET_REPO / GITHUB_TOKEN / OWN_URL / ALLOWED_CALLERS at import time.
-os.environ.setdefault("TARGET_REPO", "adi-prasetyo/driftscribe")
-os.environ.setdefault("GITHUB_TOKEN", "test-token")
-os.environ.setdefault("OWN_URL", "https://docs.example.com")
-os.environ.setdefault(
-    "ALLOWED_CALLERS",
-    "coordinator@test-proj.iam.gserviceaccount.com",
-)
+# Canonical boot env, applied before the import below. The values live in
+# workers/_testenv.py, not here: worker mains capture config at import and
+# Python caches modules, so the FIRST importer in the pytest process decides
+# them for everyone (ds-2n1).
+import_worker_main("workers.docs.main")
 
 from workers.docs import main as docs_main  # noqa: E402
 from workers.docs.main import _verify_caller_dep, app  # noqa: E402
@@ -213,13 +209,13 @@ def test_real_verify_caller_dep_wired_with_env(monkeypatch) -> None:
     ``_verify_caller_dep`` must forward OWN_URL + ALLOWED_CALLERS (read from
     env at boot) to ``driftscribe_lib.auth.verify_caller``.
 
-    We monkeypatch the module-level constants rather than relying on the
-    import-time env read because, in a unified pytest run, another worker's
-    test module may have populated ``OWN_URL`` before this module was
-    imported (Python caches the import; ``os.environ.setdefault`` at the top
-    of this file would then be a no-op and the constant would carry the
-    other worker's value). Forcing the value here keeps the test honest no
-    matter what order pytest collects worker test modules.
+    The constants are read as the module captured them, NOT re-pinned with
+    ``monkeypatch.setattr``. Pinning them was how this test used to defend
+    against another worker's env winning the import race — but it also meant
+    the assertions below only proved the fixture had just written those
+    values, so the boot-time capture this test names in its own title went
+    unexercised. ``workers/_testenv.py`` removes the race at the source, which
+    is what makes reading the real constants safe (ds-2n1).
     """
     seen: dict = {}
 
@@ -242,12 +238,6 @@ def test_real_verify_caller_dep_wired_with_env(monkeypatch) -> None:
         },
     )
     monkeypatch.setattr(docs_main, "_get_repo", lambda: object())
-    monkeypatch.setattr(docs_main, "OWN_URL", "https://docs.example.com")
-    monkeypatch.setattr(
-        docs_main,
-        "ALLOWED_CALLERS",
-        frozenset({"coordinator@test-proj.iam.gserviceaccount.com"}),
-    )
 
     # No dependency_overrides — exercise the real _verify_caller_dep.
     c = TestClient(app)

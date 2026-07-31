@@ -34,6 +34,7 @@ from driftscribe_lib.logging import (
     reset_trace_id,
     set_trace_id,
 )
+from workers._testenv import import_worker_main
 
 
 HEX32 = re.compile(r"^[0-9a-f]{32}$")
@@ -178,14 +179,16 @@ def _reader_app_for_logging_test(monkeypatch):
     ``install_trace_middleware(app)`` after app construction. We
     monkeypatch the verify_caller dep to bypass auth and stub the Cloud
     Run read.
+
+    The env goes through ``import_worker_main`` rather than ``monkeypatch``:
+    this import runs at TEST time, by which point a full-suite run has long
+    since imported and cached ``workers.reader.main``. Setting env here would
+    do nothing at all in that case — and quietly, since the cached module
+    already has values. The helper is correct either way: it boots the module
+    under the reader's canon when this file runs alone, and verifies the cached
+    module carries that same canon when it does not (ds-2n1).
     """
-    monkeypatch.setenv("GCP_PROJECT", "test-proj")
-    monkeypatch.setenv("OWN_URL", "https://reader.example.com")
-    monkeypatch.setenv(
-        "ALLOWED_CALLERS",
-        "coordinator@test-proj.iam.gserviceaccount.com",
-    )
-    from workers.reader import main as reader_main
+    reader_main = import_worker_main("workers.reader.main")
 
     monkeypatch.setattr(
         reader_main,

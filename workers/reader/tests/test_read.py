@@ -14,22 +14,18 @@ by the Phase 11.0 spike's tests; here we use FastAPI's
 ``app.dependency_overrides`` to swap the dependency, which is faster and
 doesn't require a Google ID token at all.
 """
-import os
 
 import pytest
 from fastapi import HTTPException, status
 from fastapi.testclient import TestClient
 from google.api_core import exceptions as gax
+from workers._testenv import import_worker_main
 
-# Env MUST be set before importing workers.reader.main — the module reads
-# OWN_URL / ALLOWED_CALLERS / GCP_PROJECT at import time and KeyErrors if
-# missing. This mirrors the production fail-fast behavior.
-os.environ.setdefault("GCP_PROJECT", "test-proj")
-os.environ.setdefault("OWN_URL", "https://reader.example.com")
-os.environ.setdefault(
-    "ALLOWED_CALLERS",
-    "coordinator@test-proj.iam.gserviceaccount.com",
-)
+# Canonical boot env, applied before the import below. The values live in
+# workers/_testenv.py, not here: worker mains capture config at import and
+# Python caches modules, so the FIRST importer in the pytest process decides
+# them for everyone (ds-2n1).
+import_worker_main("workers.reader.main")
 
 from workers.reader import main as reader_main  # noqa: E402
 from workers.reader.main import _verify_caller_dep, app  # noqa: E402
@@ -63,17 +59,13 @@ def client(monkeypatch):
     # real gRPC channel / ADC lookup is attempted — both consumers above are
     # stubbed and swallow the revisions_client kwarg via **_.
     monkeypatch.setattr(reader_main, "_get_revisions_client", lambda: object())
-    # Pin the boot-time env-derived constants this test hard-asserts so the
-    # asserted values can't be polluted by import order. In a unified pytest
-    # run another worker's test module (e.g. infra_reader) may set GCP_PROJECT
-    # via os.environ.setdefault *before* reader.main imports, turning this
-    # module's own setdefault("GCP_PROJECT", "test-proj") into a no-op. Pinning
-    # here mirrors how test_real_verify_caller_dep_wired_with_env pins
-    # OWN_URL/ALLOWED_CALLERS, and keeps the test honest regardless of
-    # collection order.
-    monkeypatch.setattr(reader_main, "GCP_PROJECT", "test-proj")
-    monkeypatch.setattr(reader_main, "TARGET_SERVICE", "payment-demo")
-    monkeypatch.setattr(reader_main, "TARGET_REGION", "asia-northeast1")
+    # The boot-time constants this suite hard-asserts are no longer re-pinned
+    # here: `workers/_testenv.py` boots the reader under its own canon, so
+    # GCP_PROJECT / TARGET_SERVICE / TARGET_REGION already hold these values
+    # and the assertions downstream test the real capture (ds-2n1).
+    assert reader_main.GCP_PROJECT == "test-proj"
+    assert reader_main.TARGET_SERVICE == "payment-demo"
+    assert reader_main.TARGET_REGION == "asia-northeast1"
     # Default to "auth passed" — failure tests override this again.
     app.dependency_overrides[_verify_caller_dep] = (
         lambda: "coordinator@test-proj.iam.gserviceaccount.com"
@@ -204,13 +196,11 @@ def test_real_verify_caller_dep_wired_with_env(monkeypatch):
     OWN_URL and ALLOWED_CALLERS read from env at boot. Stub the lib function
     and capture its kwargs so we don't need a real Google ID token.
 
-    We monkeypatch the module-level constants rather than relying on the
-    import-time env read because, in a unified pytest run, another worker's
-    test module may have populated ``OWN_URL`` before this module was
-    imported (Python caches the import; ``os.environ.setdefault`` at the top
-    of this file would then be a no-op and the constant would carry the
-    other worker's value). Forcing the value here keeps the test honest no
-    matter what order pytest collects worker test modules.
+    The constants are read as the module captured them at boot, NOT re-pinned
+    with ``monkeypatch.setattr``. Re-pinning was the old defense against
+    another worker winning the import race, and it made the assertions below
+    self-fulfilling. ``workers/_testenv.py`` removes the race instead, so this
+    now checks what it claims to (ds-2n1).
     """
     seen = {}
 
@@ -232,12 +222,6 @@ def test_real_verify_caller_dep_wired_with_env(monkeypatch):
         reader_main,
         "read_live_state",
         lambda s, r, p, **_: {"env": {}, "revision": "rev-x"},
-    )
-    monkeypatch.setattr(reader_main, "OWN_URL", "https://reader.example.com")
-    monkeypatch.setattr(
-        reader_main,
-        "ALLOWED_CALLERS",
-        frozenset({"coordinator@test-proj.iam.gserviceaccount.com"}),
     )
     # No dependency_overrides — exercise the real _verify_caller_dep.
     c = TestClient(app)

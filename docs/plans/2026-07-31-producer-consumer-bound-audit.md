@@ -336,6 +336,13 @@ next test that asserts on an audience will hit it. Filed rather than fixed:
 correcting it means changing how every worker test file bootstraps its env,
 which is a much larger change than this bead.
 
+> **Resolved by ds-2n1** — see `docs/plans/2026-07-31-worker-boot-env-race.md`.
+> Measuring it first showed the estimate above was wrong in the interesting
+> direction: six of nine workers were already booting with the *notifier's*
+> `OWN_URL`, and `infra_reader` with the reader's project id on top of that.
+> "Harmless because the suites override it" was true, and was the problem — the
+> overrides lived in the very tests that check boot-time capture.
+
 ## 5c. Codex round 3 — three defects in the fix itself
 
 Reviewed after implementation. All three were mine, all three verified before

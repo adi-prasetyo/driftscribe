@@ -23,85 +23,31 @@ duplicating these constants is safe rather than sloppy.
 """
 from __future__ import annotations
 
-import os
 import re
+from pathlib import Path
 
-# Worker modules read config at import and fail closed if it is missing, so the
-# values have to be in place BEFORE the imports below — a fixture is too late.
-#
-# The process env is then RESTORED once the imports are done. Without that, this
-# module's values leak into every suite that runs after it in the same pytest
-# process: a worker whose own test file uses ``setdefault`` would silently
-# inherit ours instead of its own, and the resulting failure appears in a file
-# nobody touched. (Observed here: it broke the rollback worker's
-# ``test_propose_happy_path`` only in a full-suite run.) The imported modules
-# have already captured what they need, so restoring costs nothing.
-_PRIOR_ENV: dict[str, str | None] = {}
+import annotated_types
+import pytest
+from pydantic import BaseModel, ValidationError
 
-# Every value below is the SAME one that worker's own test file uses. That
-# matters more than it looks: `setdefault` makes the winner whichever module
-# imports first in the pytest process, so a different-but-valid value here
-# silently overrides the value another suite asserts on. It broke
-# workers/rollback/tests/test_rollback.py::test_propose_happy_path (which pins
-# coord.example.com) in the full-suite run only. Matching the canon makes the
-# import order stop mattering.
-_SHARED = {
-    "GCP_PROJECT": "test-proj",
-    "ALLOWED_CALLERS": "coordinator@test-proj.iam.gserviceaccount.com",
-    "NOTIFY_WEBHOOK_URL": "https://webhook.example.com/test",
-    "COORDINATOR_URL": "https://coord.example.com",
-    # Self-describing placeholder, matching the rollback worker's own tests. A
-    # random-looking value here would trip GitGuardian's generic high-entropy
-    # rule on every commit in the PR (the ds-y5i fixture lesson) while adding
-    # nothing: this module never signs anything, it only imports the schema.
-    "APPROVAL_HMAC_KEY": "test-hmac-key",
-    "TARGET_REPO": "adi-prasetyo/driftscribe",
-    "UPGRADE_TARGET_REPO": "adi-prasetyo/driftscribe",
-    "GITHUB_TOKEN": "test-token",
-}
+from agent import renderer
+from agent.validator import _REVISION_NAME as COORDINATOR_REVISION_NAME
+from workers._testenv import import_worker_main
 
+# Each worker main is booted under its OWN canonical env — three of them pin
+# ``OWN_URL`` three different ways and only one value can be in ``os.environ``
+# at a time, so importing them naively makes whichever module got there first
+# decide for the rest of the process. ``import_worker_main`` sets each worker's
+# canon immediately before its import and hands the process env back untouched
+# afterwards, which is what lets this module import three workers in a row
+# without leaking any of them into the suites that run later (ds-2n1).
+import_worker_main("workers.notifier.main")
+import_worker_main("workers.rollback.main")
+import_worker_main("workers.upgrade_docs.main")
 
-def _set(**kw: str) -> None:
-    for k, v in kw.items():
-        _PRIOR_ENV.setdefault(k, os.environ.get(k))
-        os.environ.setdefault(k, v)
-
-
-_set(**_SHARED)
-
-from pathlib import Path  # noqa: E402
-
-import annotated_types  # noqa: E402
-import pytest  # noqa: E402
-from pydantic import BaseModel, ValidationError  # noqa: E402
-
-from agent import renderer  # noqa: E402
-from agent.validator import _REVISION_NAME as COORDINATOR_REVISION_NAME  # noqa: E402
-
-# ``OWN_URL`` is the one value three workers pin three different ways, and only
-# one can win per process — so it is set to each worker's own canon immediately
-# before that worker is imported, and forced (not setdefault) between imports.
-# It feeds `verify_caller`'s audience check, which these tests never exercise;
-# doing it properly anyway keeps this module from being the reason a future
-# audience assertion fails somewhere else.
-_PRIOR_ENV["OWN_URL"] = os.environ.get("OWN_URL")
-os.environ["OWN_URL"] = "https://notifier.example.com"
 from workers.notifier.main import NotifyRequest  # noqa: E402
-
-os.environ["OWN_URL"] = "https://rollback.example.com"
-from workers.rollback.main import (  # noqa: E402
-    _REVISION_NAME as WORKER_REVISION_NAME,
-)
-
-os.environ["OWN_URL"] = "https://upgrade-docs.example.com"
+from workers.rollback.main import _REVISION_NAME as WORKER_REVISION_NAME  # noqa: E402
 from workers.upgrade_docs.main import ClosePrRequest  # noqa: E402
-
-# Imports done — hand the process env back exactly as it was found.
-for _k, _old in _PRIOR_ENV.items():
-    if _old is None:
-        os.environ.pop(_k, None)
-    else:
-        os.environ[_k] = _old
 
 
 def _bound(model: type[BaseModel], field: str, kind: type) -> int | None:

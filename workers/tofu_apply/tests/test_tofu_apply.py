@@ -19,19 +19,13 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from workers._testenv import import_worker_main
 
-# Env MUST be set before importing the worker (module reads it at import; KeyError
-# on any missing required value — mirrors the Cloud Run boot fail-fast).
-os.environ.setdefault("GCP_PROJECT", "test-proj")
-os.environ.setdefault("OWN_URL", "https://tofu-apply.example.com")
-os.environ.setdefault("COORDINATOR_URL", "https://coord.example.com")
-os.environ.setdefault("ALLOWED_CALLERS", "alice@corp.example,coordinator@test-proj.iam.gserviceaccount.com")
-os.environ.setdefault("PLAN_APPROVAL_HMAC_KEY", "test-plan-hmac-key")
-os.environ.setdefault("TF_VAR_tofu_state_kms_key", "projects/p/locations/l/keyRings/r/cryptoKeys/tofu-state")
-# C5b-2: default the offline suite to "e2e" mode so the no-JWT propose/apply tests
-# pass via the legacy caller==approver fallback (exactly the pre-C5 behavior). The
-# new enforce-mode tests monkeypatch m.IAC_OPERATOR_AUTH_MODE="enforce" per-test.
-os.environ.setdefault("IAC_OPERATOR_AUTH_MODE", "e2e")
+# Canonical boot env, applied before the import below. The values live in
+# workers/_testenv.py, not here: worker mains capture config at import and
+# Python caches modules, so the FIRST importer in the pytest process decides
+# them for everyone (ds-2n1).
+import_worker_main("workers.tofu_apply.main")
 
 import httpx  # noqa: E402
 import jwt  # noqa: E402

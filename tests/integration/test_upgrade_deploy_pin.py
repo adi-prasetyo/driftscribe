@@ -50,34 +50,18 @@ workers/``) stays empty after this file lands.
 """
 from __future__ import annotations
 
-import os
 import re
 
 import pytest
+from workers._testenv import import_worker_main
 
 
-# Env MUST be set before importing ``workers.upgrade_reader.main`` or
-# ``workers.upgrade_docs.main`` — both modules read UPGRADE_TARGET_REPO /
-# GITHUB_TOKEN / GCP_PROJECT / OWN_URL / ALLOWED_CALLERS at IMPORT time
-# (boot-time fail-fast, matches production semantics — see
-# ``workers/upgrade_reader/main.py:76`` and ``workers/upgrade_docs/main.py:93``).
-# Without this seeding the first ``from workers.upgrade_*`` import inside a
-# test body raises ``KeyError`` BEFORE the assertion logic ever runs.
-#
-# We use ``setdefault`` so a hosted CI environment that already exports
-# these vars (unlikely but possible) keeps its values. The actual values
-# don't matter for THIS file — we only ever read ``_LOCKFILE_PATH_RE``,
-# not ``TARGET_REPO`` — but the import-time read must succeed. Mirrors
-# the pattern in ``workers/upgrade_reader/tests/test_read.py`` and
-# ``workers/upgrade_docs/tests/test_patch.py``.
-os.environ.setdefault("UPGRADE_TARGET_REPO", "adi-prasetyo/driftscribe")
-os.environ.setdefault("GITHUB_TOKEN", "test-token")
-os.environ.setdefault("GCP_PROJECT", "test-proj")
-os.environ.setdefault("OWN_URL", "https://upgrade-worker.example.com")
-os.environ.setdefault(
-    "ALLOWED_CALLERS",
-    "coordinator@test-proj.iam.gserviceaccount.com",
-)
+# Canonical boot env, applied before the import below. The values live in
+# workers/_testenv.py, not here: worker mains capture config at import and
+# Python caches modules, so the FIRST importer in the pytest process decides
+# them for everyone (ds-2n1).
+import_worker_main("workers.upgrade_docs.main")
+import_worker_main("workers.upgrade_reader.main")
 
 
 # --------------------------------------------------------------------------- #

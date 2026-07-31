@@ -26,19 +26,13 @@ import pytest
 import requests
 from fastapi import HTTPException, status
 from fastapi.testclient import TestClient
+from workers._testenv import import_worker_main
 
-# Env MUST be set before importing workers.upgrade_reader.main — the module
-# reads UPGRADE_TARGET_REPO / GITHUB_TOKEN / GCP_PROJECT / OWN_URL /
-# ALLOWED_CALLERS at import time and KeyErrors if any are missing. This
-# mirrors the production fail-fast behavior.
-os.environ.setdefault("UPGRADE_TARGET_REPO", "adi-prasetyo/driftscribe")
-os.environ.setdefault("GITHUB_TOKEN", "test-token")
-os.environ.setdefault("GCP_PROJECT", "test-proj")
-os.environ.setdefault("OWN_URL", "https://upgrade-reader.example.com")
-os.environ.setdefault(
-    "ALLOWED_CALLERS",
-    "coordinator@test-proj.iam.gserviceaccount.com",
-)
+# Canonical boot env, applied before the import below. The values live in
+# workers/_testenv.py, not here: worker mains capture config at import and
+# Python caches modules, so the FIRST importer in the pytest process decides
+# them for everyone (ds-2n1).
+import_worker_main("workers.upgrade_reader.main")
 
 from workers.upgrade_reader import main as upgrade_reader_main  # noqa: E402
 from workers.upgrade_reader.main import _verify_caller_dep, app  # noqa: E402
@@ -175,10 +169,10 @@ def test_real_verify_caller_dep_wired_with_env(monkeypatch) -> None:
     ``verify_caller`` with the ``OWN_URL`` and ``ALLOWED_CALLERS`` read from
     env at boot.
 
-    We monkeypatch the module-level constants rather than relying on the
-    import-time env read because, in a unified pytest run, another worker's
-    test module may have populated ``OWN_URL`` before this module was
-    imported.
+    The constants are read as the module captured them at boot, not re-pinned
+    here. Re-pinning was the old defense against another worker winning the
+    import race, and it made this assertion self-fulfilling;
+    ``workers/_testenv.py`` removes the race instead (ds-2n1).
     """
     seen: dict = {}
 
@@ -192,14 +186,6 @@ def test_real_verify_caller_dep_wired_with_env(monkeypatch) -> None:
     monkeypatch.setattr(upgrade_reader_main, "_read_lockfile", _stub_lockfile)
     monkeypatch.setattr(
         upgrade_reader_main, "_lookup_advisories", _stub_no_advisories
-    )
-    monkeypatch.setattr(
-        upgrade_reader_main, "OWN_URL", "https://upgrade-reader.example.com"
-    )
-    monkeypatch.setattr(
-        upgrade_reader_main,
-        "ALLOWED_CALLERS",
-        frozenset({"coordinator@test-proj.iam.gserviceaccount.com"}),
     )
     # Also pin TARGET_REPO so a cross-test mutation can't desync the body.
     monkeypatch.setattr(

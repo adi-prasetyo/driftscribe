@@ -17,16 +17,13 @@ silently vanishing from production notifications.
 Bead: ds-v00. Companion to the notifier's own unit tests, which cover the
 truncation primitive in isolation.
 """
-import os
+from workers._testenv import import_worker_main
 
-# The notifier reads its config at import time and raises if anything is
-# missing (deliberate fail-closed boot). Mirror the worker's own test setup.
-os.environ.setdefault("GCP_PROJECT", "test-proj")
-os.environ.setdefault("OWN_URL", "https://notifier.example.com")
-os.environ.setdefault(
-    "ALLOWED_CALLERS", "coordinator@test-proj.iam.gserviceaccount.com"
-)
-os.environ.setdefault("NOTIFY_WEBHOOK_URL", "https://webhook.example.com/test")
+# Canonical boot env, applied before the import below. The values live in
+# workers/_testenv.py, not here: worker mains capture config at import and
+# Python caches modules, so the FIRST importer in the pytest process decides
+# them for everyone (ds-2n1).
+import_worker_main("workers.notifier.main")
 
 import pytest  # noqa: E402
 
