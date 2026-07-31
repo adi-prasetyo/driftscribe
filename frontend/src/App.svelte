@@ -449,8 +449,8 @@
   // latency before settle is no longer visible (no blue→green swap, no upward
   // hop). Captured (not reactive) at submit time so the bubble keys/labels stay
   // stable for the whole run. Cleared the MOMENT a non-persistable outcome is
-  // known (paused / one-shot / error) so those fall back to the hero without
-  // flashing in a bubble first — see the clear points in submitChat.
+  // known (paused / one-shot / error), which since ds-jns hands the exchange to
+  // `ephemeralExchange` rather than to the standalone hero — see setEphemeral.
   type LiveExchange = {
     prompt: string;
     workload: Workload;
@@ -590,8 +590,8 @@
   // The composer's New chat button shows whenever a clean slate would clear
   // something. displayTurns already unifies "persisted thread + optimistic
   // in-flight exchange" (reuse it — one source of thread visibility, no drift);
-  // finalReply/busy/events cover the hero + timeline-only states (a paused /
-  // one-shot / error reply persists no thread but still occupies the hero), and
+  // finalReply/busy/events cover the timeline-only states (a paused / one-shot
+  // / error reply persists no thread but still occupies the screen), and
   // conversationId is a belt for an open-but-empty thread edge. Hidden in
   // historical replay — the banner owns the exit there.
   const composerNewChat = $derived(
@@ -1165,8 +1165,8 @@
           // Mirror the SSE done frame: the JSON path echoes conversation_id
           // when the turn persisted. Decide persistability NOW (a paused refusal
           // echoes conversation_id but persists nothing; a one-shot has none) so
-          // a non-persistable reply drops the optimistic bubble immediately and
-          // falls back to the hero, instead of flashing in a bubble across the
+          // a non-persistable reply becomes an ephemeral thread turn
+          // immediately, instead of sitting in an optimistic bubble across the
           // backfill/decisions round-trips that precede settle.
           const jsonRcid =
             !body?.paused &&
@@ -1237,14 +1237,14 @@
             finalIsError = false;
             iacPr = d.iac_pr ?? null;
             // A paused refusal echoes conversation_id for crew-lock symmetry but
-            // persists NO turn — never settle it into the thread (it would
-            // vanish on reload); leave the calm paused reply in the hero.
+            // persists NO turn — never settle it into conversationTurns (it
+            // would vanish on reload); it becomes an ephemeral turn below.
             doneConversationId = d.paused ? undefined : d.conversation_id;
             // Non-persistable (paused refusal or one-shot with no
-            // conversation_id): drop the optimistic bubble now so the reply
-            // lands in the hero and never flashes in a bubble during the
-            // post-stream backfill. The persistable case keeps the bubble (the
-            // reply fills it in place) until settle promotes it.
+            // conversation_id): convert the optimistic bubble into an ephemeral
+            // turn now, so the reply stops claiming it is about to persist. The
+            // persistable case keeps the bubble (the reply fills it in place)
+            // until settle promotes it.
             if (typeof doneConversationId !== 'string' || doneConversationId.length === 0) {
               // A PAUSED refusal arrives here with liveTraceId still null: the
               // backend answers it with a lone `done` frame and no `meta`, so
@@ -1529,7 +1529,8 @@
         // moved and the nonce is spent, so treating it as retryable would keep
         // a dead chip on screen AND leave the composer bound to the crew that
         // left, whose next typed turn the crew lock then refuses. The failure
-        // belongs in the hero; the transition still has to land in the thread.
+        // is reported as an ephemeral turn; the transition still has to land in
+        // the thread.
         if (resp.headers.get('X-Handoff-Redeemed') === '1') {
           clearHandoff(cid);
           // The marker is stamped only past the burn, and only the ACCEPT
@@ -1554,7 +1555,7 @@
         }
         // Otherwise nothing happened: no crew moved, no turn ran. Not a chat
         // error — report it on the chip the operator clicked and leave the
-        // hero alone.
+        // transcript alone.
         const refusal = handoffRefusal(resp, crews);
         handoffError = refusal.text;
         if (refusal.dead) forgetOffer(cid); // spent server-side; don't restore it on reload
@@ -2057,10 +2058,10 @@
   <HistoricalBanner active={historicalActive} traceId={historicalTraceId} onNewChat={newChat} />
   <TraceBadge {traceId} {status} />
   <!-- During a live chat the reply lands in the thread's crew bubble (see
-       displayTurns), so the standalone hero + its loading shimmer yield. They
-       stay for historical replay and the non-persist fallback (paused / one-shot
-       / error), where liveExchange is cleared and there is no bubble to hold the
-       reply. -->
+       displayTurns), so the standalone hero + its loading shimmer yield. Since
+       ds-jns the non-persist fallbacks (paused / one-shot / error) render as
+       ephemeral thread turns too, so the only caller left is historical replay
+       — which is why PR 3 can delete this whole cluster. -->
   {#if !liveExchangeActive && ephemeralExchange === null}
     <FinalResponse reply={finalReply} isError={finalIsError} />
   {/if}
