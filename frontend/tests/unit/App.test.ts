@@ -849,10 +849,11 @@ describe('App — view routing (Task 2.2)', () => {
     const { getByTestId, container } = render(App);
     await waitFor(() => expect(getByTestId('nav-desk')).toBeTruthy());
 
-    // Derived from the RENDERED nav rather than from VIEWS: 'estate' is still
-    // in VIEWS at this commit but has no button (it is a legacy URL alias now),
-    // so iterating VIEWS would look for a nav-estate that cannot exist. Task F
-    // retires the id from VIEWS; this loop is correct either way.
+    // Derived from the RENDERED nav rather than from VIEWS. The two agree again
+    // now that 'estate' is out of VIEWS, but reading the DOM is the stronger
+    // assertion: it fails if a view gains a button without a round-trip, or
+    // keeps a button after leaving the allowlist. Iterating VIEWS could only
+    // ever check the views VIEWS already knows about.
     const navViews = Array.from(container.querySelectorAll('.app-header__nav button')).map((b) =>
       (b.getAttribute('data-testid') ?? '').replace(/^nav-/, ''),
     );
